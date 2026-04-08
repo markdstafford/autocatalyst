@@ -77,7 +77,7 @@ At the end of the week, Phoebe pulls up the activity log: six features shipped, 
 - **Workspace state**: filesystem — one directory per run, persisted across retries, cleaned up on terminal states
 - **Loop state**: persistent record per idea-to-implementation run (stage, spec content, approval history, implementation output, terminal reason); required for resumability, observability, and loop improvement
 - **State store**: TBD (ADR); in-memory with filesystem recovery initially; external store (e.g. Postgres, Redis) for hosted deployments
-- **Spec artifacts**: written to disk as versioned files in the target repo (`.eng-docs/` convention from micromanager)
+- **Spec artifacts**: written to disk as versioned files in the target repo (`context-human/specs/` per ADR-002)
 - **No user-facing database**: all durable state lives in the filesystem, the state store, or the human interface platform (e.g. issue tracker, message thread)
 
 ### Security decisions
