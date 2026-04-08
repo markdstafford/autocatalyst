@@ -25,16 +25,15 @@ Specs are structured Markdown files with YAML frontmatter, committed to `context
 The current convention includes:
 
 - **Spec types**: feature specs and enhancement specs for new and iterative work; human ADRs for architectural decisions — all committed artifacts
-- **Bugs**: tracked in GitHub Issues rather than committed specs, but follow a similar structured process
-- **Structure**: every spec starts with what and why, and ends with a task list that gets checked off during implementation
-- **Source of truth**: the spec is always canonical — implementation follows the spec, not the other way around
+- **Bugs**: tracked in an issue tracker rather than committed specs, but follow a similar structured process
+- **Structure**: every spec starts with what and why, and ends with a task list; tasks are checked off during implementation so work can be paused and resumed without loss of context
+- **Living document**: the spec is updated alongside implementation — it reflects the current state of the work, not just the original plan
 - **Accumulated context**: specs are committed alongside the code they describe; future specs benefit from the full history of prior decisions and designs
 
 This is a baseline, not a fixed standard. The spec format is expected to evolve as the loop runs and patterns emerge. Examples of changes that might be warranted:
 
 - New spec types or lifecycle states as new patterns emerge
-- A single synthesized spec per run (combining what/why, design, tech, and task list) rather than separate artifacts per stage — as Symphony demonstrates
-- Tighter integration between the spec and the implementation workpad
+- A synthesized app-level spec that summarizes and organizes the context scattered across all individual specs — existing specs remain as-is, and the synthesized view is derived from them
 
 Changes to the spec format are made by updating the template and this ADR, not by ad-hoc divergence across individual specs.
 
