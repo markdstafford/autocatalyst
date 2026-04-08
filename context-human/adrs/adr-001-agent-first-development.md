@@ -20,7 +20,7 @@ All architectural decisions — language, framework, documentation standards, te
 
 The one exception is spec work. Specs are a collaboration between humans and agents — humans seed ideas, review sections, and make approval decisions. The artifacts and interfaces involved in spec work must work for both.
 
-Agent capabilities, foundation models, and tooling are evolving rapidly. What is optimal for agent efficacy today may not be optimal in three months. This principle requires ongoing evaluation, not a one-time decision.
+IMPORTANT: Agent capabilities, foundation models, and tooling are evolving rapidly. What is optimal for agent efficacy today may not be optimal in three months. This principle requires ongoing evaluation, not a one-time decision.
 
 ## Decision
 
