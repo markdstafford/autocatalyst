@@ -14,11 +14,9 @@ Accepted
 
 ## Context
 
-Agents need to find context quickly and place new artifacts in the right location without explicit instruction for every operation. Without a deliberate structure, two failure modes emerge: agents misplace artifacts (putting agent-maintained content where humans expect to collaborate), and humans struggle to find the artifacts that require their attention.
+Specs are the primary artifact humans need to read or act on. A repo that mixes specs with agent-maintained artifacts — standards, wiki documents, decision logs — creates noise that makes it harder to find the things that need human attention.
 
-Two distinct types of context exist in this repo. The first is collaborative — specs and ADRs that humans and agents create and refine together, and that humans must review and approve. The second is agent-maintained — standards, wiki documents, and decision records that agents create and update autonomously, and that humans rarely need to interact with directly.
-
-The naming and structure of these two layers should be self-documenting. Agents encountering the repo for the first time should be able to infer where to look and where to write without reading documentation first. Humans should immediately know which folders require their attention.
+Context is organized for human legibility. By separating collaborative artifacts (specs, ADRs) from agent-maintained artifacts (standards, wiki, decisions), humans can open the repo, go to one folder, and see exactly what requires their input — nothing more.
 
 A root-level `AGENTS.md` is also needed as an entry point and map. This is an established convention across agent-optimized repositories and serves as the first file agents load when orienting to a new codebase.
 
@@ -26,70 +24,28 @@ A root-level `AGENTS.md` is also needed as an entry point and map. This is an es
 
 The repo uses three top-level context artifacts:
 
-- **`AGENTS.md`** (root level, ~100 lines): entry point and map for agents. Points to key locations, summarizes conventions, and provides orientation. Maintained collaboratively; kept short so it fits in context without crowding out the task.
-- **`context-human/`**: human-agent collaborative content. Humans actively review and approve artifacts here. Contains `specs/` and `adrs/`.
-- **`context-agent/`**: agent-maintained content. Agents create and update these artifacts autonomously. Contains `wiki/`, `standards/`, and `decisions/`.
+- **`AGENTS.md`** (root level, ~100 lines): a map of the repo. Points agents to key locations and artifacts. Kept intentionally short so it fits easily in context.
+- **`context-human/`**: artifacts that humans have authority over. Humans decide what goes here, review it, and approve changes.
+- **`context-agent/`**: artifacts that agents have authority over. Agents create and maintain these autonomously.
 
-Audience is encoded in the folder name, not in file frontmatter. The naming convention — `context-human` and `context-agent` — is symmetric and self-documenting.
-
-Note: `context-human` means "humans and agents collaborate here," not "only for humans." Agents read and reference these artifacts freely; the distinction is about who initiates and approves changes.
+The distinction is about authority, not access. Agents read both folders freely. The folder name signals who has the final say over what it contains.
 
 ## Consequences
 
 **Positive:**
 
-- Agents know exactly where to place new artifacts without explicit instruction — misclassification is unlikely
-- Humans know exactly which folder requires their attention for reviews and approvals
-- The symmetric naming is self-documenting — no documentation required to understand the split
-- Doc-gardening agents have a clear, bounded target for maintenance tasks in `context-agent/`
-- Scales cleanly as artifact counts grow in either layer
+- Humans can open the repo and immediately find what requires their attention — no noise from agent-maintained content
+- The symmetric naming is self-documenting — the convention is clear without reading documentation
+- Agents know exactly where to place new artifacts, reducing misclassification
 
 **Negative:**
 
 - `context-human` can be misread as "only for humans" — requires a clarifying note in `AGENTS.md`
-- Broad context sweeps require checking two roots; agents must be instructed to look in both
-- `context-agent` sorts before `context-human` alphabetically — agent-maintained content appears first in directory listings
+- Broad context sweeps require checking two roots
+- `context-agent` sorts before `context-human` alphabetically
 
 ## Alternatives considered
 
-### Single `context/` root with agent subfolder
-
-All content under one root, with agent-maintained artifacts in a named subfolder (`context/auto/`, `context/z/`, `context/faba/`).
-
-**Pros:**
-- Single root simplifies broad context loading (`context/**` gets everything)
-- Keeps all context visually grouped
-
-**Cons:**
-- Placement reliability depends on how self-descriptive the subfolder name is; opaque names like `faba/` produce misplacements
-- The distinction between collaborative and agent-maintained content is less visible at a glance
-
-**Why not chosen:** Two named roots make the audience distinction explicit at the top level, reducing misplacement without requiring agents to internalize a subfolder convention.
-
-### Underscore prefix within `context/`
-
-Agent-maintained directories prefixed with `_` inside a single `context/` root (`_wiki/`, `_standards/`, `_decisions/`).
-
-**Pros:**
-- Underscore-as-internal is a widely understood convention
-- Single root for all context
-
-**Cons:**
-- Underscore-prefixed items sort to the top of directory listings, not the bottom
-- The semantic meaning of `_` is ambiguous across ecosystems
-
-**Why not chosen:** Sort order works against discoverability (agent-maintained content surfaces first), and the meaning of `_` requires documentation to interpret correctly.
-
-### Single `context/` root, no audience distinction
-
-All artifacts in one root with audience encoded only in frontmatter metadata.
-
-**Pros:**
-- Simplest possible structure
-- No convention to learn
-
-**Cons:**
-- Agents must read frontmatter to determine placement rules rather than inferring from location
-- Humans cannot visually distinguish what requires their attention from what does not
-
-**Why not chosen:** Encodes audience in metadata rather than structure, which reduces the self-documenting property that makes agent-first repos reliable.
+- **Single `context/` root with agent subfolder** (`context/auto/`, `context/z/`, `context/faba/`): the authority distinction is less visible at a glance; subfolder naming requires an internalized convention rather than being self-documenting at the root level
+- **Underscore prefix within `context/`** (`_wiki/`, `_standards/`): underscore-prefixed items sort to the top, not the bottom; the meaning of `_` is ambiguous across ecosystems
+- **Single `context/` root, no distinction**: humans cannot visually separate what requires their attention from what does not
