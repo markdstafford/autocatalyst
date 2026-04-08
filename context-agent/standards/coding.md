@@ -1,5 +1,7 @@
 # Coding standards
 
+**Read `testing.md` before writing any code.** This repo uses strict TDD — tests are written before implementation. Do not write production code without a failing test.
+
 ## Language
 
 TypeScript with strict mode enabled. Target Node.js LTS (22+).
