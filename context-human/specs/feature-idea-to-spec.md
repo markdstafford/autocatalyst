@@ -16,3 +16,10 @@ Spec generation from an idea, posted to Slack for iterative human review.
 - Collect human feedback from thread replies
 - Iterate: feed feedback back to spec generation, repost updated sections
 - Continue until human is satisfied (but approval is a separate feature)
+
+## Implementation Progress
+
+- [x] **Story: Run types**
+  - [x] **Task: Define `RunStage` and `Run` types**
+- [x] **Story: Workspace management**
+  - [x] **Task: Implement `WorkspaceManager`**
