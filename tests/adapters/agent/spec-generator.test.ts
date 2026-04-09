@@ -37,6 +37,10 @@ function makeArtifact(filenameLineContent: string, body: string): string {
   return `# claude advisor artifact\n\n## Raw output\n\n\`\`\`text\n${filenameLineContent}\n${body}\n\`\`\`\n`;
 }
 
+function makeRevisionArtifact(body: string): string {
+  return `# claude advisor artifact\n\n## Raw output\n\n\`\`\`text\n${body}\n\`\`\`\n`;
+}
+
 let tempRoot: string;
 
 beforeEach(() => {
@@ -146,7 +150,7 @@ describe('SpecGenerator.create', () => {
 
 describe('SpecGenerator.revise', () => {
   it('prompt leads with feedback in <<<>>>, follows with spec content in <<<>>>', async () => {
-    const artifact = `# claude advisor artifact\n\n## Raw output\n\n\`\`\`text\n# Revised Spec\n\`\`\`\n`;
+    const artifact = makeRevisionArtifact('# Revised Spec');
     const artifactPath = writeArtifactFile(artifact);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath, stderr: '' });
 
@@ -166,7 +170,7 @@ describe('SpecGenerator.revise', () => {
   });
 
   it('reads the current spec from spec_path before invoking OMC', async () => {
-    const artifact = `# claude advisor artifact\n\n## Raw output\n\n\`\`\`text\n# Revised\n\`\`\`\n`;
+    const artifact = makeRevisionArtifact('# Revised');
     const artifactPath = writeArtifactFile(artifact);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath, stderr: '' });
 
@@ -183,7 +187,8 @@ describe('SpecGenerator.revise', () => {
   });
 
   it('overwrites spec_path in place with revised content', async () => {
-    const artifact = `# claude advisor artifact\n\n## Raw output\n\n\`\`\`text\n# Revised Spec\ncontent\n\`\`\`\n`;
+    const revisedBody = '# Revised Spec\ncontent\n';
+    const artifact = makeRevisionArtifact(revisedBody);
     const artifactPath = writeArtifactFile(artifact);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath, stderr: '' });
 
@@ -194,8 +199,24 @@ describe('SpecGenerator.revise', () => {
     await sg.revise(makeFeedback(), specPath, tempRoot);
 
     const revised = readFileSync(specPath, 'utf-8');
+    expect(revised).toBe('# Revised Spec\ncontent\n\n');
+  });
+
+  it('strips FILENAME: line from revision artifact when present', async () => {
+    const revisedBody = '# Revised Spec\nsome content\n';
+    const artifact = makeRevisionArtifact(`FILENAME: feature-setup-wizard.md\n${revisedBody}`);
+    const artifactPath = writeArtifactFile(artifact);
+    const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath, stderr: '' });
+
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-test.md');
+    writeFileSync(specPath, '# Original Spec', 'utf-8');
+
+    const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
+    await sg.revise(makeFeedback(), specPath, tempRoot);
+
+    const revised = readFileSync(specPath, 'utf-8');
+    expect(revised).not.toContain('FILENAME:');
     expect(revised).toContain('# Revised Spec');
-    expect(revised).not.toContain('# Original Spec');
   });
 
   it('throws if OMC exits non-zero', async () => {
