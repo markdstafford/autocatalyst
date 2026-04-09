@@ -19,6 +19,14 @@ describe('classifyMessage', () => {
     ).intent).toBe('ignore');
   });
 
+  it('returns ignore when message text is undefined', () => {
+    expect(classifyMessage(
+      { text: undefined, user: 'U999', ts: '100.0' },
+      'UBOT001',
+      new ThreadRegistry(),
+    ).intent).toBe('ignore');
+  });
+
   it('returns new_idea for @mention in root message (no thread_ts)', () => {
     expect(classifyMessage(
       { text: `<@${BOT_ID}> add a setup wizard`, user: 'U999', ts: '100.0' },
