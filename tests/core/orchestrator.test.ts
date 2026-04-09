@@ -171,6 +171,9 @@ describe('Orchestrator — new_idea failure paths', () => {
     expect(wm.destroy).toHaveBeenCalledWith('/ws/idea-001');
     expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('omc failed'));
     expect(cp.create).not.toHaveBeenCalled();
+
+    const runs = (orch as never as { runs: Map<string, { stage: string }> }).runs;
+    expect(runs.get('idea-001')!.stage).toBe('failed');
   });
 
   it('CanvasPublisher failure: run is failed, error posted, workspace destroyed', async () => {
@@ -188,5 +191,8 @@ describe('Orchestrator — new_idea failure paths', () => {
 
     expect(wm.destroy).toHaveBeenCalledWith('/ws/idea-001');
     expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('canvas error'));
+
+    const runs = (orch as never as { runs: Map<string, { stage: string }> }).runs;
+    expect(runs.get('idea-001')!.stage).toBe('failed');
   });
 });
