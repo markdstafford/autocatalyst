@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { rmSync } from 'node:fs';
-import { loadConfig, redactConfig, resolveEnvVars } from '../../src/core/config.js';
+import { loadConfig, redactConfig } from '../../src/core/config.js';
 
 describe('cross-cutting: JSON output validity', () => {
   let tempDir: string;
