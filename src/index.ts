@@ -70,18 +70,35 @@ try {
     process.exit(1);
   }
 
+  // Validate Slack tokens
+  const botToken = currentConfig.config.slack?.bot_token;
+  const appToken = currentConfig.config.slack?.app_token;
+  if (!botToken || !appToken) {
+    logger.error({ event: 'config.parse_error', error: 'slack.bot_token and slack.app_token are required' }, 'Missing Slack tokens');
+    process.exit(1);
+  }
+
   // Build Bolt App
   const boltApp = new App({
-    token: currentConfig.config.slack?.bot_token,
-    appToken: currentConfig.config.slack?.app_token,
+    token: botToken,
+    appToken,
     socketMode: true,
   });
 
+  // Validate channel name
+  const channelName = currentConfig.config.slack?.channel_name;
+  if (!channelName) {
+    logger.error({ event: 'config.parse_error', error: 'slack.channel_name is required' }, 'Missing Slack channel name');
+    process.exit(1);
+  }
+
   // Build adapter, components, orchestrator
+  const approvalEmojis = currentConfig.config.slack?.approval_emojis ?? ['thumbsup'];
   const adapter = new SlackAdapter(boltApp, {
-    channelName: currentConfig.config.slack?.channel_name ?? '',
-    approvalEmojis: currentConfig.config.slack?.approval_emojis ?? ['thumbsup'],
+    channelName,
+    approvalEmojis,
   });
+  logger.info({ event: 'service.config', approval_emojis: approvalEmojis }, 'Active approval emojis');
 
   const workspaceManager = new WorkspaceManagerImpl(workspaceRoot);
   const specGenerator = new OMCSpecGenerator();
