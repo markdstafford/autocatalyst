@@ -45,4 +45,9 @@ describe('parseArgs', () => {
     const result = parseArgs(['--help']);
     expect(result.help).toBe(true);
   });
+
+  it('returns help flag when -h is passed', () => {
+    const result = parseArgs(['-h']);
+    expect(result.help).toBe(true);
+  });
 });
