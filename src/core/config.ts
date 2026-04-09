@@ -1,7 +1,7 @@
 import { parse as parseYaml } from 'yaml';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, basename, resolve } from 'node:path';
-import type { WorkflowConfig } from '../types/config.js';
+import type { WorkflowConfig, LoadedConfig } from '../types/config.js';
 import { generateDefaultWorkflow } from '../config/defaults.js';
 
 interface ResolveResult {
@@ -130,6 +130,22 @@ export function redactConfig(
   }
 
   return redactObject(config);
+}
+
+export function loadConfig(
+  filePath: string,
+  env: Record<string, string | undefined>,
+): LoadedConfig {
+  const content = readFileSync(filePath, 'utf-8');
+  const { config, promptTemplate } = parseWorkflow(content);
+  const { resolved } = resolveEnvVars(config as Record<string, unknown>, env);
+  validateConfig(resolved as WorkflowConfig);
+
+  return {
+    config: resolved as WorkflowConfig,
+    promptTemplate,
+    filePath,
+  };
 }
 
 export function bootstrapWorkflow(repoPath: string): boolean {
