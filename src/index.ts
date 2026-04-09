@@ -6,7 +6,14 @@ import { ConfigWatcher } from './core/config-watcher.js';
 import { Service } from './core/service.js';
 import { registerSignalHandlers } from './core/signals.js';
 import { createLogger } from './core/logger.js';
+import { execSync } from 'node:child_process';
 import { join } from 'node:path';
+import { App } from '@slack/bolt';
+import { SlackAdapter } from './adapters/slack/slack-adapter.js';
+import { WorkspaceManagerImpl } from './core/workspace-manager.js';
+import { OMCSpecGenerator } from './adapters/agent/spec-generator.js';
+import { SlackCanvasPublisher } from './adapters/slack/canvas-publisher.js';
+import { OrchestratorImpl } from './core/orchestrator.js';
 
 const logger = createLogger('cli');
 
@@ -18,20 +25,16 @@ try {
     process.exit(0);
   }
 
-  // Bootstrap WORKFLOW.md if missing
   logger.info({ event: 'service.starting' }, 'Starting Autocatalyst');
 
   const bootstrapped = bootstrapWorkflow(args.repoPath);
   if (bootstrapped) {
-    logger.info({ event: 'config.bootstrapped', repoPath: args.repoPath },
-      'Created default WORKFLOW.md');
+    logger.info({ event: 'config.bootstrapped', repoPath: args.repoPath }, 'Created default WORKFLOW.md');
   }
 
-  // Load config
   const workflowPath = join(args.repoPath, 'WORKFLOW.md');
   let currentConfig = loadConfig(workflowPath, process.env as Record<string, string>);
 
-  // Log loaded config (redacted)
   const { resolved: _resolved, missing } = resolveEnvVars(
     currentConfig.config as Record<string, unknown>,
     process.env as Record<string, string>,
@@ -50,13 +53,55 @@ try {
   );
   logger.info({ event: 'config.loaded', config: redacted }, 'Configuration loaded');
 
-  // Create service
-  const service = new Service(currentConfig);
+  // Resolve repo_url from git origin
+  let repo_url: string;
+  try {
+    repo_url = execSync('git remote get-url origin', { cwd: args.repoPath }).toString().trim();
+    if (!repo_url) throw new Error('git remote get-url origin returned empty string');
+  } catch (err) {
+    logger.error({ event: 'config.parse_error', error: String(err) }, 'Could not resolve git origin URL. Run: git remote add origin <url>');
+    process.exit(1);
+  }
 
-  // Register signal handlers
+  // Validate workspace.root
+  const workspaceRoot = currentConfig.config.workspace?.root;
+  if (!workspaceRoot || typeof workspaceRoot !== 'string' || workspaceRoot.trim() === '') {
+    logger.error({ event: 'config.parse_error', error: 'workspace.root is not set in WORKFLOW.md' }, 'workspace.root is required');
+    process.exit(1);
+  }
+
+  // Build Bolt App
+  const boltApp = new App({
+    token: currentConfig.config.slack?.bot_token,
+    appToken: currentConfig.config.slack?.app_token,
+    socketMode: true,
+  });
+
+  // Build adapter, components, orchestrator
+  const adapter = new SlackAdapter(boltApp, {
+    channelName: currentConfig.config.slack?.channel_name ?? '',
+    approvalEmojis: currentConfig.config.slack?.approval_emojis ?? ['thumbsup'],
+  });
+
+  const workspaceManager = new WorkspaceManagerImpl(workspaceRoot);
+  const specGenerator = new OMCSpecGenerator();
+  const canvasPublisher = new SlackCanvasPublisher(boltApp);
+
+  const orchestrator = new OrchestratorImpl({
+    adapter,
+    workspaceManager,
+    specGenerator,
+    canvasPublisher,
+    postError: async (channel_id, thread_ts, text) => {
+      await boltApp.client.chat.postMessage({ channel: channel_id, thread_ts, text });
+    },
+    repo_url,
+  });
+
+  const service = new Service(currentConfig, { orchestrator });
+
   const cleanupSignals = registerSignalHandlers(service);
 
-  // Start config watcher
   const watcher = new ConfigWatcher(workflowPath, {
     onReload: () => {
       try {
@@ -68,17 +113,14 @@ try {
         service.updateConfig(newConfig);
         logger.info({ event: 'config.reloaded', changed_keys: changedKeys }, 'Configuration reloaded');
       } catch (err) {
-        logger.warn({ event: 'config.reload_failed', error: String(err) },
-          'Config reload failed, keeping current config');
+        logger.warn({ event: 'config.reload_failed', error: String(err) }, 'Config reload failed, keeping current config');
       }
     },
   });
   watcher.start();
 
-  // Start service
   service.start();
 
-  // Wait for shutdown
   service.stopped.then(() => {
     watcher.stop();
     cleanupSignals();
