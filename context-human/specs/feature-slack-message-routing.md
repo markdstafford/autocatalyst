@@ -434,8 +434,8 @@ Socket Mode delivers events in real time; there is no replay of events missed wh
       - [ ] `tsc --noEmit` passes
     - **Dependencies**: Task: Extend WorkflowConfig with slack fields
 
-- [ ] **Story: Thread registry**
-  - [ ] **Task: Implement ThreadRegistry**
+- [x] **Story: Thread registry**
+  - [x] **Task: Implement ThreadRegistry**
     - **Description**: Create `src/adapters/slack/thread-registry.ts`. The class maintains an in-memory `Map<string, string>` mapping `thread_ts` to `idea_id`. Expose two methods: `register(thread_ts: string, idea_id: string): void` and `resolve(thread_ts: string): string | undefined`. No persistence — the registry is empty on construction and lost on process exit. Write unit tests in `tests/adapters/slack/thread-registry.test.ts` covering all cases in the testing plan.
     - **Acceptance criteria**:
       - [ ] `ThreadRegistry` class created with `register` and `resolve` methods
