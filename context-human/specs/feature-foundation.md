@@ -2,6 +2,7 @@
 created: 2026-04-08
 last_updated: 2026-04-08
 status: approved
+issue: 1
 ---
 
 # Foundation
