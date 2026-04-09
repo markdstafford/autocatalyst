@@ -401,7 +401,7 @@ Socket Mode delivers events in real time; there is no replay of events missed wh
 
 ## Task list
 
-- [ ] **Story: Types and configuration**
+- [x] **Story: Types and configuration**
   - [x] **Task: Define event types and update adapter interface**
     - **Description**: Create `src/types/events.ts` with the `Idea`, `SpecFeedback`, and `ApprovalSignal` interfaces and the `InboundEvent` union type. Update the `HumanInterfaceAdapter` interface's `receive()` return type from `AsyncIterable<Idea>` to `AsyncIterable<InboundEvent>`. Update `context-agent/wiki/domain-model.md` to reflect the `thread_ts` and `channel_id` fields added to `Idea`.
     - **Acceptance criteria**:
@@ -420,7 +420,7 @@ Socket Mode delivers events in real time; there is no replay of events missed wh
       - [ ] `tsc --noEmit` passes
     - **Dependencies**: None
 
-  - [ ] **Task: Extend validateConfig with slack validation**
+  - [x] **Task: Extend validateConfig with slack validation**
     - **Description**: Add slack validation logic to `validateConfig` in `src/core/config.ts`. When `slack` is present: `bot_token`, `app_token`, and `channel_name` must be non-empty strings; `approval_emojis` defaults to `['thumbsup']` when absent and must be a non-empty array when present. Missing `slack` section is valid. Extend `redactConfig` to mask `bot_token` and `app_token`. Write unit tests in `tests/core/config.test.ts` (extending existing tests) covering all cases in the testing plan.
     - **Acceptance criteria**:
       - [ ] Missing `slack` section passes validation
