@@ -461,7 +461,7 @@ Socket Mode delivers events in real time; there is no replay of events missed wh
     - **Dependencies**: Story: Thread registry
 
 - [ ] **Story: Slack adapter**
-  - [ ] **Task: Implement BoltApp factory**
+  - [x] **Task: Implement BoltApp factory**
     - **Description**: Create `src/adapters/slack/bolt-app.ts`. Export a `createBoltApp(botToken: string, appToken: string): App` factory function that initializes a Slack Bolt `App` configured for Socket Mode using `SocketModeReceiver`. The factory creates and returns the app instance; event handlers are not registered here.
     - **Acceptance criteria**:
       - [ ] `createBoltApp` creates a Bolt `App` with `SocketModeReceiver` using the provided tokens
