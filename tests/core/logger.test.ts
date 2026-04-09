@@ -23,6 +23,8 @@ describe('createLogger', () => {
     expect(parsed.event).toBe('test.event');
     expect(parsed.level).toBeDefined();
     expect(parsed.timestamp).toBeDefined();
+    expect(parsed.pid).toBeUndefined();
+    expect(parsed.hostname).toBeUndefined();
   });
 
   it('includes timestamp as ISO 8601', () => {

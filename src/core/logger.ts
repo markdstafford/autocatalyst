@@ -9,6 +9,7 @@ export function createLogger(component: string, options?: LoggerOptions): pino.L
 
   return pino(
     {
+      base: null,
       level: 'debug',
       timestamp: () => `,"timestamp":"${new Date().toISOString()}"`,
       formatters: {
