@@ -1,7 +1,7 @@
 ---
 created: 2026-04-08
 last_updated: 2026-04-09
-status: implemented
+status: complete
 issue: 4
 specced_by: markdstafford
 implemented_by: markdstafford
