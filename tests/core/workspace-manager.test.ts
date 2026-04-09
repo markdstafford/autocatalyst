@@ -71,14 +71,19 @@ describe('WorkspaceManager.create', () => {
     expect(existsSync(join(tempRoot, 'idea-fail'))).toBe(false);
   });
 
-  it('throws if git checkout -b fails', async () => {
+  it('throws and removes directory if git checkout -b fails', async () => {
     const execFn = vi.fn()
       .mockResolvedValueOnce({ stdout: '', stderr: '' }) // clone succeeds
       .mockRejectedValueOnce(new Error('checkout failed')); // checkout fails
+    // Pre-create directory to simulate what clone would have done
+    mkdirSync(join(tempRoot, 'idea-xyz'), { recursive: true });
 
     const wm = new WorkspaceManagerImpl(tempRoot, { execFn, logDestination: nullDest });
 
     await expect(wm.create('idea-xyz', 'https://github.com/org/repo.git')).rejects.toThrow('git checkout -b failed');
+
+    const { existsSync } = await import('node:fs');
+    expect(existsSync(join(tempRoot, 'idea-xyz'))).toBe(false);
   });
 
   it('two ideas with different idea_ids produce non-overlapping paths', async () => {
@@ -96,6 +101,14 @@ describe('WorkspaceManager.create', () => {
     const wm = new WorkspaceManagerImpl(tempRoot, { execFn, logDestination: nullDest });
 
     await expect(wm.create('idea/evil', 'https://github.com/org/repo.git')).rejects.toThrow(/Invalid idea_id/);
+    expect(execFn).not.toHaveBeenCalled();
+  });
+
+  it('throws on invalid idea_id containing dot-dot traversal', async () => {
+    const execFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
+    const wm = new WorkspaceManagerImpl(tempRoot, { execFn, logDestination: nullDest });
+
+    await expect(wm.create('idea..evil', 'https://github.com/org/repo.git')).rejects.toThrow(/Invalid idea_id/);
     expect(execFn).not.toHaveBeenCalled();
   });
 });
