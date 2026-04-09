@@ -64,10 +64,11 @@ describe('WorkspaceManager.create', () => {
 
     const wm = new WorkspaceManagerImpl(tempRoot, { execFn, logDestination: nullDest });
 
+    const { existsSync } = await import('node:fs');
+    expect(existsSync(join(tempRoot, 'idea-fail'))).toBe(true); // confirm dir exists before create
     await expect(wm.create('idea-fail', 'https://github.com/org/repo.git')).rejects.toThrow('git clone failed');
 
     // Verify cleanup occurred
-    const { existsSync } = await import('node:fs');
     expect(existsSync(join(tempRoot, 'idea-fail'))).toBe(false);
   });
 
@@ -80,9 +81,10 @@ describe('WorkspaceManager.create', () => {
 
     const wm = new WorkspaceManagerImpl(tempRoot, { execFn, logDestination: nullDest });
 
+    const { existsSync } = await import('node:fs');
+    expect(existsSync(join(tempRoot, 'idea-xyz'))).toBe(true); // confirm dir exists before create
     await expect(wm.create('idea-xyz', 'https://github.com/org/repo.git')).rejects.toThrow('git checkout -b failed');
 
-    const { existsSync } = await import('node:fs');
     expect(existsSync(join(tempRoot, 'idea-xyz'))).toBe(false);
   });
 
