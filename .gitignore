@@ -22,3 +22,6 @@ venv/
 
 # Worktrees
 .worktrees/
+
+# Ephemeral implementation plans
+.superpowers-plans/
