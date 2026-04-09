@@ -1,7 +1,7 @@
 ---
 created: 2026-04-08
 last_updated: 2026-04-08
-status: implementing
+status: complete
 issue: TBD
 specced_by: markdstafford
 implemented_by: markdstafford
@@ -405,91 +405,91 @@ Socket Mode delivers events in real time; there is no replay of events missed wh
   - [x] **Task: Define event types and update adapter interface**
     - **Description**: Create `src/types/events.ts` with the `Idea`, `SpecFeedback`, and `ApprovalSignal` interfaces and the `InboundEvent` union type. Update the `HumanInterfaceAdapter` interface's `receive()` return type from `AsyncIterable<Idea>` to `AsyncIterable<InboundEvent>`. Update `context-agent/wiki/domain-model.md` to reflect the `thread_ts` and `channel_id` fields added to `Idea`.
     - **Acceptance criteria**:
-      - [ ] `src/types/events.ts` created with `Idea` (`id`, `source`, `content`, `author`, `received_at`, `thread_ts`, `channel_id`), `SpecFeedback` (`idea_id`, `content`, `author`, `received_at`, `thread_ts`, `channel_id`), `ApprovalSignal` (`idea_id`, `approver`, `emoji`, `received_at`)
-      - [ ] `InboundEvent` union covers `new_idea`, `spec_feedback`, `approval_signal`
-      - [ ] `HumanInterfaceAdapter.receive()` updated to `AsyncIterable<InboundEvent>`
-      - [ ] `context-agent/wiki/domain-model.md` updated to include `thread_ts` and `channel_id` on `Idea`
-      - [ ] `tsc --noEmit` passes
+      - [x] `src/types/events.ts` created with `Idea` (`id`, `source`, `content`, `author`, `received_at`, `thread_ts`, `channel_id`), `SpecFeedback` (`idea_id`, `content`, `author`, `received_at`, `thread_ts`, `channel_id`), `ApprovalSignal` (`idea_id`, `approver`, `emoji`, `received_at`)
+      - [x] `InboundEvent` union covers `new_idea`, `spec_feedback`, `approval_signal`
+      - [x] `HumanInterfaceAdapter.receive()` updated to `AsyncIterable<InboundEvent>`
+      - [x] `context-agent/wiki/domain-model.md` updated to include `thread_ts` and `channel_id` on `Idea`
+      - [x] `tsc --noEmit` passes
     - **Dependencies**: None
 
   - [x] **Task: Extend WorkflowConfig with slack fields**
     - **Description**: Add the optional `slack` field to `WorkflowConfig` in `src/types/config.ts` with `bot_token`, `app_token`, `channel_name`, and `approval_emojis` sub-fields — all optional at the type level (runtime validation handles which are required).
     - **Acceptance criteria**:
-      - [ ] `WorkflowConfig.slack?` added with correct shape matching the tech spec
-      - [ ] All sub-fields typed as optional (`string | undefined`, `string[] | undefined`)
-      - [ ] `tsc --noEmit` passes
+      - [x] `WorkflowConfig.slack?` added with correct shape matching the tech spec
+      - [x] All sub-fields typed as optional (`string | undefined`, `string[] | undefined`)
+      - [x] `tsc --noEmit` passes
     - **Dependencies**: None
 
   - [x] **Task: Extend validateConfig with slack validation**
     - **Description**: Add slack validation logic to `validateConfig` in `src/core/config.ts`. When `slack` is present: `bot_token`, `app_token`, and `channel_name` must be non-empty strings; `approval_emojis` defaults to `['thumbsup']` when absent and must be a non-empty array when present. Missing `slack` section is valid. Extend `redactConfig` to mask `bot_token` and `app_token`. Write unit tests in `tests/core/config.test.ts` (extending existing tests) covering all cases in the testing plan.
     - **Acceptance criteria**:
-      - [ ] Missing `slack` section passes validation
-      - [ ] `slack` with all required fields non-empty passes
-      - [ ] `slack` with empty `bot_token`, `app_token`, or `channel_name` fails with a field-specific error message
-      - [ ] `approval_emojis` absent → defaults to `['thumbsup']`
-      - [ ] `approval_emojis` empty array → validation error
-      - [ ] `redactConfig` masks `bot_token` and `app_token`
-      - [ ] `$VAR` env var resolution works for `bot_token` and `app_token`
-      - [ ] All unit test cases from the testing plan for this component pass
-      - [ ] `tsc --noEmit` passes
+      - [x] Missing `slack` section passes validation
+      - [x] `slack` with all required fields non-empty passes
+      - [x] `slack` with empty `bot_token`, `app_token`, or `channel_name` fails with a field-specific error message
+      - [x] `approval_emojis` absent → defaults to `['thumbsup']`
+      - [x] `approval_emojis` empty array → validation error
+      - [x] `redactConfig` masks `bot_token` and `app_token`
+      - [x] `$VAR` env var resolution works for `bot_token` and `app_token`
+      - [x] All unit test cases from the testing plan for this component pass
+      - [x] `tsc --noEmit` passes
     - **Dependencies**: Task: Extend WorkflowConfig with slack fields
 
 - [x] **Story: Thread registry**
   - [x] **Task: Implement ThreadRegistry**
     - **Description**: Create `src/adapters/slack/thread-registry.ts`. The class maintains an in-memory `Map<string, string>` mapping `thread_ts` to `idea_id`. Expose two methods: `register(thread_ts: string, idea_id: string): void` and `resolve(thread_ts: string): string | undefined`. No persistence — the registry is empty on construction and lost on process exit. Write unit tests in `tests/adapters/slack/thread-registry.test.ts` covering all cases in the testing plan.
     - **Acceptance criteria**:
-      - [ ] `ThreadRegistry` class created with `register` and `resolve` methods
-      - [ ] New instance starts empty; `resolve` on any key returns `undefined`
-      - [ ] `register` followed by `resolve` returns the registered `idea_id`
-      - [ ] `resolve` on unregistered key returns `undefined`
-      - [ ] Re-registering the same `thread_ts` overwrites the previous `idea_id`
-      - [ ] All unit test cases from the testing plan pass
-      - [ ] `tsc --noEmit` passes
+      - [x] `ThreadRegistry` class created with `register` and `resolve` methods
+      - [x] New instance starts empty; `resolve` on any key returns `undefined`
+      - [x] `register` followed by `resolve` returns the registered `idea_id`
+      - [x] `resolve` on unregistered key returns `undefined`
+      - [x] Re-registering the same `thread_ts` overwrites the previous `idea_id`
+      - [x] All unit test cases from the testing plan pass
+      - [x] `tsc --noEmit` passes
     - **Dependencies**: None
 
 - [x] **Story: Message classifier**
   - [x] **Task: Implement Classifier**
     - **Description**: Create `src/adapters/slack/classifier.ts`. Implement two pure functions with no side effects. `classifyMessage(message, botUserId, registry)` applies the rules from the tech spec: check for `<@{botUserId}>` → check `thread_ts` → check registry. `classifyReaction(event, approvalEmojis, registry)` checks emoji membership then registry. Both functions suppress events from the bot's own user ID. The `@mention` check must use exact token matching — `<@U12345>` should not match a bot ID of `U1234` or `U123456`. Write unit tests in `tests/adapters/slack/classifier.test.ts` covering all cases in the testing plan.
     - **Acceptance criteria**:
-      - [ ] `classifyMessage` returns the correct intent for all branches: no `@mention` → `ignore`; `@mention` root message → `new_idea`; `@mention` reply with registered `thread_ts` → `spec_feedback`; `@mention` reply with unregistered `thread_ts` → `ignore`
-      - [ ] `classifyMessage` returns `ignore` for messages from `botUserId`
-      - [ ] `@mention` matching does not false-positive on a user ID that contains `botUserId` as a substring
-      - [ ] `classifyReaction` returns `approval_signal` only when emoji is in the list AND `item.ts` is in registry
-      - [ ] `classifyReaction` returns `ignore` for reactions from `botUserId`
-      - [ ] All unit test cases from the testing plan pass
-      - [ ] `tsc --noEmit` passes
+      - [x] `classifyMessage` returns the correct intent for all branches: no `@mention` → `ignore`; `@mention` root message → `new_idea`; `@mention` reply with registered `thread_ts` → `spec_feedback`; `@mention` reply with unregistered `thread_ts` → `ignore`
+      - [x] `classifyMessage` returns `ignore` for messages from `botUserId`
+      - [x] `@mention` matching does not false-positive on a user ID that contains `botUserId` as a substring
+      - [x] `classifyReaction` returns `approval_signal` only when emoji is in the list AND `item.ts` is in registry
+      - [x] `classifyReaction` returns `ignore` for reactions from `botUserId`
+      - [x] All unit test cases from the testing plan pass
+      - [x] `tsc --noEmit` passes
     - **Dependencies**: Story: Thread registry
 
 - [x] **Story: Slack adapter**
   - [x] **Task: Implement BoltApp factory**
     - **Description**: Create `src/adapters/slack/bolt-app.ts`. Export a `createBoltApp(botToken: string, appToken: string): App` factory function that initializes a Slack Bolt `App` configured for Socket Mode using `SocketModeReceiver`. The factory creates and returns the app instance; event handlers are not registered here.
     - **Acceptance criteria**:
-      - [ ] `createBoltApp` creates a Bolt `App` with `SocketModeReceiver` using the provided tokens
-      - [ ] Returned `App` instance is ready to have event listeners added
-      - [ ] `tsc --noEmit` passes
+      - [x] `createBoltApp` creates a Bolt `App` with `SocketModeReceiver` using the provided tokens
+      - [x] Returned `App` instance is ready to have event listeners added
+      - [x] `tsc --noEmit` passes
     - **Dependencies**: Task: Define event types and update adapter interface
 
   - [x] **Task: Implement SlackAdapter**
     - **Description**: Create `src/adapters/slack/slack-adapter.ts`. This is the main wiring component implementing `HumanInterfaceAdapter`. On `start()`: (1) call `app.client.conversations.list` to resolve `channel_name` → `channel_id`, logging `slack.startup.channel_resolved`; fail with a clear error if not found; (2) register `message` and `reaction_added` event handlers filtered to the resolved channel; (3) call `app.start()` and log `slack.connected`. Message handler: classify via `classifyMessage`; on `new_idea`, post the acknowledgement, register the thread, emit the event; on `spec_feedback`, post the acknowledgement, emit; on `ignore`, log at debug and drop. Reaction handler: classify via `classifyReaction`; on `approval_signal`, emit; on `ignore`, log at debug and drop. On `stop()`: call `app.stop()` and log `slack.disconnected`. Emit all observability events from Section 5. Never log message content.
     - **Acceptance criteria**:
-      - [ ] Channel name resolved to ID before any event handlers process messages
-      - [ ] `conversations.list` returning no match fails with a clear log error
-      - [ ] `@mention` root message → correct acknowledgement text posted in thread, `new_idea` event on `InboundEvent` stream, `thread_ts` registered
-      - [ ] `@mention` reply to registered thread → acknowledgement posted, `spec_feedback` event emitted with `idea_id` from registry
-      - [ ] Approval emoji reaction on registered message → `approval_signal` event emitted
-      - [ ] All ignore cases produce no acknowledgement and no emitted event
-      - [ ] Bot's own messages and reactions are silently dropped
-      - [ ] `chat.postMessage` failure logs `slack.error` and does not crash the adapter
-      - [ ] All 9 observability events from Section 5 emitted at the correct levels with the correct fields
-      - [ ] `tsc --noEmit` passes
+      - [x] Channel name resolved to ID before any event handlers process messages
+      - [x] `conversations.list` returning no match fails with a clear log error
+      - [x] `@mention` root message → correct acknowledgement text posted in thread, `new_idea` event on `InboundEvent` stream, `thread_ts` registered
+      - [x] `@mention` reply to registered thread → acknowledgement posted, `spec_feedback` event emitted with `idea_id` from registry
+      - [x] Approval emoji reaction on registered message → `approval_signal` event emitted
+      - [x] All ignore cases produce no acknowledgement and no emitted event
+      - [x] Bot's own messages and reactions are silently dropped
+      - [x] `chat.postMessage` failure logs `slack.error` and does not crash the adapter
+      - [x] All 9 observability events from Section 5 emitted at the correct levels with the correct fields
+      - [x] `tsc --noEmit` passes
     - **Dependencies**: Task: Implement BoltApp factory, Task: Implement Classifier, Story: Thread registry, Task: Extend validateConfig with slack validation
 
   - [x] **Task: Write SlackAdapter integration tests**
     - **Description**: Write `tests/adapters/slack/slack-adapter.test.ts`. Inject a Bolt test double — mock `App` and `WebClient` — via the adapter constructor so no live Slack API calls are made. Cover all integration test cases from the testing plan: startup (channel found, channel not found, handler ordering), new idea pipeline (event shape, acknowledgement text, thread registration, chaining to spec_feedback), spec feedback pipeline, approval signal pipeline, all four ignore cases, error handling (postMessage failure, Bolt error event), and service lifecycle (start/stop).
     - **Acceptance criteria**:
-      - [ ] All integration test cases from the testing plan pass
-      - [ ] Tests verify no `postMessage` call is made for ignore cases
-      - [ ] Tests verify the `InboundEvent` stream emits events with the correct shape
-      - [ ] No live Slack API calls (Bolt test double injected)
-      - [ ] `tsc --noEmit` passes
+      - [x] All integration test cases from the testing plan pass
+      - [x] Tests verify no `postMessage` call is made for ignore cases
+      - [x] Tests verify the `InboundEvent` stream emits events with the correct shape
+      - [x] No live Slack API calls (Bolt test double injected)
+      - [x] `tsc --noEmit` passes
     - **Dependencies**: Task: Implement SlackAdapter
