@@ -13,7 +13,7 @@ export interface SpecFeedback {
   content: string;
   author: string;
   received_at: string; // ISO 8601
-  thread_ts: string;
+  thread_ts: string;   // Slack thread identifier; used to post replies
   channel_id: string;
 }
 
