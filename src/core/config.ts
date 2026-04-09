@@ -1,6 +1,65 @@
 import { parse as parseYaml } from 'yaml';
 import type { WorkflowConfig } from '../types/config.js';
 
+interface ResolveResult {
+  resolved: Record<string, unknown>;
+  missing: string[];
+}
+
+export function resolveEnvVars(
+  obj: Record<string, unknown>,
+  env: Record<string, string | undefined>,
+): ResolveResult {
+  const missing: string[] = [];
+
+  function resolveValue(value: unknown): unknown {
+    if (typeof value === 'string') {
+      // First replace $$ with a placeholder
+      const placeholder = '\x00DOLLAR\x00';
+      let result = value.replace(/\$\$/g, placeholder);
+
+      // Replace ${VAR} and $VAR patterns
+      result = result.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
+        (_match, braced: string | undefined, bare: string | undefined) => {
+          const varName = braced ?? bare!;
+          const envValue = env[varName];
+          if (envValue === undefined || envValue === '') {
+            if (!missing.includes(varName)) {
+              missing.push(varName);
+            }
+            return _match;
+          }
+          return envValue;
+        },
+      );
+
+      // Restore literal $
+      result = result.replace(new RegExp(placeholder, 'g'), '$');
+      return result;
+    }
+
+    if (Array.isArray(value)) {
+      return value.map(resolveValue);
+    }
+
+    if (value !== null && typeof value === 'object') {
+      return resolveObject(value as Record<string, unknown>);
+    }
+
+    return value;
+  }
+
+  function resolveObject(obj: Record<string, unknown>): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(obj)) {
+      result[key] = resolveValue(val);
+    }
+    return result;
+  }
+
+  return { resolved: resolveObject(obj), missing };
+}
+
 interface ParseResult {
   config: WorkflowConfig;
   promptTemplate: string;
