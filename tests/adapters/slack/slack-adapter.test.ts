@@ -71,6 +71,8 @@ describe('SlackAdapter — startup', () => {
   it('registers event handlers before calling app.start()', async () => {
     const mock = makeMockApp({});
     const order: string[] = [];
+    // Override to record ordering only — handler capture is intentionally skipped
+    // because this test does not trigger messages or reactions after start().
     mock.message.mockImplementation(() => { order.push('message_registered'); });
     mock.event.mockImplementation(() => { order.push('event_registered'); });
     mock.start.mockImplementation(async () => { order.push('app_started'); });
@@ -101,9 +103,9 @@ describe('SlackAdapter — new idea pipeline', () => {
       ts: '100.0',
       channel: CHANNEL_ID,
     });
-    await adapter.stop();
 
     const event = await eventPromise;
+    await adapter.stop();
     expect(event.type).toBe('new_idea');
     const idea = event.payload as Idea;
     expect(idea.source).toBe('slack');
@@ -203,6 +205,8 @@ describe('SlackAdapter — spec feedback pipeline', () => {
     expect(feedback.author).toBe('U456');
     expect(feedback.thread_ts).toBe('100.0');
     expect(feedback.content).toBe(`<@${BOT_ID}> the field is confusing`);
+    expect(feedback.channel_id).toBe(CHANNEL_ID);
+    expect(feedback.received_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 
     expect(mock.client.chat.postMessage).toHaveBeenLastCalledWith(
       expect.objectContaining({
