@@ -27,9 +27,15 @@ function makeSpecFile(content = '# My Spec\n\nsome content'): string {
 function makeMockApp(canvasId = 'CANVAS001') {
   return {
     client: {
+      auth: {
+        test: vi.fn().mockResolvedValue({ url: 'https://testworkspace.slack.com/', team_id: 'T123' }),
+      },
       canvases: {
         create: vi.fn().mockResolvedValue({ canvas_id: canvasId }),
         edit: vi.fn().mockResolvedValue({}),
+        access: {
+          set: vi.fn().mockResolvedValue({}),
+        },
       },
       chat: {
         postMessage: vi.fn().mockResolvedValue({}),

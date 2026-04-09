@@ -1,5 +1,6 @@
 // src/adapters/slack/canvas-publisher.ts
 import { readFileSync } from 'node:fs';
+import { basename } from 'node:path';
 import type { App } from '@slack/bolt';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
@@ -16,28 +17,63 @@ interface CanvasPublisherOptions {
 export class SlackCanvasPublisher implements CanvasPublisher {
   private readonly app: App;
   private readonly logger: pino.Logger;
+  private workspaceUrl: string | undefined;
+  private teamId: string | undefined;
 
   constructor(app: App, options?: CanvasPublisherOptions) {
     this.app = app;
     this.logger = createLogger('canvas-publisher', { destination: options?.logDestination });
   }
 
+  private async resolveWorkspace(): Promise<void> {
+    if (this.workspaceUrl && this.teamId) return;
+    const auth = await this.app.client.auth.test();
+    this.workspaceUrl = (auth.url as string).replace(/\/$/, '');
+    this.teamId = auth.team_id as string;
+  }
+
+  private canvasUrl(canvas_id: string): string {
+    return `${this.workspaceUrl}/docs/${this.teamId}/${canvas_id}`;
+  }
+
+  private titleFromPath(spec_path: string): string {
+    const slug = basename(spec_path, '.md')
+      .replace(/^(feature|enhancement)-/, '')
+      .replace(/-/g, ' ');
+    return slug.charAt(0).toUpperCase() + slug.slice(1);
+  }
+
   async create(channel_id: string, thread_ts: string, spec_path: string): Promise<string> {
+    await this.resolveWorkspace();
     const content = readFileSync(spec_path, 'utf-8');
+    const title = this.titleFromPath(spec_path);
 
     // Create the canvas
     const createResult = await (this.app.client as unknown as {
-      canvases: { create: (args: { title?: string; document_content: { type: string; markdown: string } }) => Promise<{ canvas_id: string }> }
+      canvases: {
+        create: (args: { title?: string; document_content: { type: string; markdown: string } }) => Promise<{ canvas_id: string }>;
+        access: { set: (args: { canvas_id: string; access_level: string; channel_ids: string[] }) => Promise<void> };
+      }
     }).canvases.create({
+      title,
       document_content: { type: 'markdown', markdown: content },
     });
     const canvas_id = createResult.canvas_id;
+
+    // Grant write access to the channel so members can comment
+    await (this.app.client as unknown as {
+      canvases: { access: { set: (args: { canvas_id: string; access_level: string; channel_ids: string[] }) => Promise<void> } }
+    }).canvases.access.set({
+      canvas_id,
+      access_level: 'write',
+      channel_ids: [channel_id],
+    });
 
     // Post canvas link to thread
     await this.app.client.chat.postMessage({
       channel: channel_id,
       thread_ts,
-      text: `Here's the spec: <https://app.slack.com/canvas/${canvas_id}|View spec canvas>`,
+      text: `Here's the spec: <${this.canvasUrl(canvas_id)}|View spec canvas>`,
     });
 
     this.logger.info({ event: 'canvas.created', channel_id, thread_ts, canvas_id }, 'Canvas created');

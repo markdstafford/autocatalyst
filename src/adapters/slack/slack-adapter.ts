@@ -48,7 +48,7 @@ export class SlackAdapter implements HumanInterfaceAdapter {
 
     // Resolve channel name → channel ID
     const listResult = await this.app.client.conversations.list({
-      types: 'public_channel,private_channel',
+      types: 'public_channel',
       limit: 1000,
     });
     // Warn if results were truncated — the target channel may be in a subsequent page

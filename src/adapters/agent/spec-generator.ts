@@ -23,30 +23,77 @@ interface SpecGeneratorOptions {
   logDestination?: pino.DestinationStream;
 }
 
+// Extract the content of the ## Raw output code fence, handling nested fences via depth tracking.
 function extractRawOutput(artifactContent: string, context: string): string {
-  const match = artifactContent.match(/^## Raw output\s*\n```(?:\w+)?\n([\s\S]*?)```/m);
+  const match = artifactContent.match(/^## Raw output\s*\n```(?:\w+)?\n/m);
   if (!match) throw new Error(`${context}: artifact missing ## Raw output section`);
-  return match[1];
+
+  const lines = artifactContent.slice(match.index! + match[0].length).split('\n');
+  let depth = 1;
+  const result: string[] = [];
+  for (const line of lines) {
+    if (line.startsWith('```')) {
+      if (line === '```') {
+        depth--;
+        if (depth === 0) break;
+        result.push(line);
+      } else {
+        depth++;
+        result.push(line);
+      }
+    } else {
+      result.push(line);
+    }
+  }
+  return result.join('\n');
+}
+
+// If text begins with a code fence (```lang), extract the content inside it.
+function unwrapFence(text: string): string {
+  const lines = text.split('\n');
+  const first = lines.findIndex(l => l.trim() !== '');
+  if (first === -1 || !lines[first].startsWith('```')) return text;
+
+  let depth = 1;
+  const result: string[] = [];
+  for (let i = first + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.startsWith('```')) {
+      if (line === '```') {
+        depth--;
+        if (depth === 0) break;
+        result.push(line);
+      } else {
+        depth++;
+        result.push(line);
+      }
+    } else {
+      result.push(line);
+    }
+  }
+  return result.join('\n');
 }
 
 function parseArtifact(artifactContent: string): { filename: string; body: string } {
   const rawOutput = extractRawOutput(artifactContent, 'Spec creation');
 
-  // First line must be FILENAME: <name>
+  // Find the FILENAME: line anywhere in the raw output (Claude may emit preamble before it)
   const lines = rawOutput.split('\n');
-  const firstLine = lines[0].trim();
-  if (!firstLine.startsWith('FILENAME:')) {
-    throw new Error(`Artifact ## Raw output must begin with "FILENAME: <name>", got: "${firstLine}"`);
+  const filenameIdx = lines.findIndex(l => l.trim().startsWith('FILENAME:'));
+  if (filenameIdx === -1) {
+    throw new Error(`Artifact ## Raw output missing "FILENAME: <name>" line`);
   }
 
-  const filename = firstLine.replace(/^FILENAME:\s*/, '').trim();
+  const filename = lines[filenameIdx].replace(/^FILENAME:\s*/, '').trim();
   if (!FILENAME_REGEX.test(filename)) {
     throw new Error(
       `Invalid spec filename "${filename}". Must match ${FILENAME_REGEX} (e.g. feature-my-feature.md or enhancement-my-enhancement.md)`
     );
   }
 
-  const body = lines.slice(1).join('\n').trimStart();
+  // Claude may wrap the spec body in a ```markdown fence — unwrap it if present
+  const rawBody = lines.slice(filenameIdx + 1).join('\n').trimStart();
+  const body = unwrapFence(rawBody).trimStart();
   return { filename, body };
 }
 
@@ -148,13 +195,15 @@ export class OMCSpecGenerator implements SpecGenerator {
     }
 
     // For revision, OMC returns the full revised spec in ## Raw output (no FILENAME line required,
-    // but if present we strip it). Write the body back to the same spec_path.
+    // but if present we strip it). Unwrap any markdown code fence, then write back to spec_path.
     const rawOutput = extractRawOutput(artifactContent, 'Spec revision');
-    let revisedBody = rawOutput;
+    let revisedBody = rawOutput.trimStart();
     // Strip leading FILENAME: line if present (revision may omit it)
-    if (revisedBody.trimStart().startsWith('FILENAME:')) {
+    if (revisedBody.startsWith('FILENAME:')) {
       revisedBody = revisedBody.split('\n').slice(1).join('\n').trimStart();
     }
+    // Claude may wrap the revised spec in a ```markdown fence — unwrap it
+    revisedBody = unwrapFence(revisedBody).trimStart();
 
     writeFileSync(spec_path, revisedBody, 'utf-8');
     this.logger.info({ event: 'spec.revised', idea_id: feedback.idea_id, spec_path }, 'Spec revised');

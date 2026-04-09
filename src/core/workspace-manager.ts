@@ -2,6 +2,7 @@ import { promisify } from 'node:util';
 import { exec as _exec } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { homedir } from 'node:os';
 import type pino from 'pino';
 import { createLogger } from './logger.js';
 
@@ -25,7 +26,7 @@ export class WorkspaceManagerImpl implements WorkspaceManager {
   private readonly logger: pino.Logger;
 
   constructor(workspaceRoot: string, options?: WorkspaceManagerOptions) {
-    this.workspaceRoot = workspaceRoot;
+    this.workspaceRoot = workspaceRoot.replace(/^~/, homedir());
     this.execFn = options?.execFn ?? defaultExec;
     this.logger = createLogger('workspace-manager', { destination: options?.logDestination });
   }

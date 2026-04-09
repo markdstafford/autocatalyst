@@ -199,7 +199,7 @@ describe('SpecGenerator.revise', () => {
     await sg.revise(makeFeedback(), specPath, tempRoot);
 
     const revised = readFileSync(specPath, 'utf-8');
-    expect(revised).toBe('# Revised Spec\ncontent\n\n');
+    expect(revised).toBe('# Revised Spec\ncontent\n');
   });
 
   it('strips FILENAME: line from revision artifact when present', async () => {
