@@ -65,6 +65,10 @@ describe('WorkspaceManager.create', () => {
     const wm = new WorkspaceManagerImpl(tempRoot, { execFn, logDestination: nullDest });
 
     await expect(wm.create('idea-fail', 'https://github.com/org/repo.git')).rejects.toThrow('git clone failed');
+
+    // Verify cleanup occurred
+    const { existsSync } = await import('node:fs');
+    expect(existsSync(join(tempRoot, 'idea-fail'))).toBe(false);
   });
 
   it('throws if git checkout -b fails', async () => {
