@@ -98,3 +98,33 @@ export function validateConfig(config: WorkflowConfig): void {
     }
   }
 }
+
+export function redactConfig(
+  config: Record<string, unknown>,
+  resolvedValues: Record<string, string>,
+): Record<string, unknown> {
+  const secretValues = new Set(Object.values(resolvedValues).filter(v => v.length > 0));
+
+  function redactValue(value: unknown): unknown {
+    if (typeof value === 'string' && secretValues.has(value)) {
+      return '[from env]';
+    }
+    if (Array.isArray(value)) {
+      return value.map(redactValue);
+    }
+    if (value !== null && typeof value === 'object') {
+      return redactObject(value as Record<string, unknown>);
+    }
+    return value;
+  }
+
+  function redactObject(obj: Record<string, unknown>): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(obj)) {
+      result[key] = redactValue(val);
+    }
+    return result;
+  }
+
+  return redactObject(config);
+}

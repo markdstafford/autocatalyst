@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseWorkflow, resolveEnvVars, validateConfig } from '../../src/core/config.js';
+import { parseWorkflow, resolveEnvVars, validateConfig, redactConfig } from '../../src/core/config.js';
 
 const fixture = (name: string) =>
   readFileSync(join(import.meta.dirname, '../fixtures', name), 'utf-8');
@@ -151,5 +151,28 @@ describe('validateConfig', () => {
       slack: { channel: 'general' },
       custom: 'value',
     })).not.toThrow();
+  });
+});
+
+describe('redactConfig', () => {
+  it('replaces resolved env var values with [from env]', () => {
+    const config = { slack: { token: 'xoxb-secret-123' }, polling: { interval_ms: 5000 } };
+    const varValues = { SLACK_BOT_TOKEN: 'xoxb-secret-123' };
+    const redacted = redactConfig(config, varValues);
+    expect((redacted.slack as Record<string, string>).token).toBe('[from env]');
+    expect((redacted.polling as Record<string, number>).interval_ms).toBe(5000);
+  });
+
+  it('leaves non-env values untouched', () => {
+    const config = { channel: 'general', interval: 5000 };
+    const redacted = redactConfig(config, {});
+    expect(redacted.channel).toBe('general');
+    expect(redacted.interval).toBe(5000);
+  });
+
+  it('handles nested objects', () => {
+    const config = { outer: { inner: 'secret-value' } };
+    const redacted = redactConfig(config, { SECRET: 'secret-value' });
+    expect((redacted.outer as Record<string, string>).inner).toBe('[from env]');
   });
 });
