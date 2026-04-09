@@ -1,5 +1,4 @@
-import { watch, watchFile, unwatchFile, type FSWatcher, existsSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { watch, watchFile, unwatchFile, type FSWatcher } from 'node:fs';
 
 interface ConfigWatcherOptions {
   onReload: () => void;
