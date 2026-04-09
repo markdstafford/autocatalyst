@@ -61,9 +61,12 @@ try {
     onReload: () => {
       try {
         const newConfig = loadConfig(workflowPath, process.env as Record<string, string>);
+        const changedKeys = Object.keys(newConfig.config).filter(
+          k => JSON.stringify(newConfig.config[k]) !== JSON.stringify(currentConfig.config[k]),
+        );
         currentConfig = newConfig;
         service.updateConfig(newConfig);
-        logger.info({ event: 'config.reloaded' }, 'Configuration reloaded');
+        logger.info({ event: 'config.reloaded', changed_keys: changedKeys }, 'Configuration reloaded');
       } catch (err) {
         logger.warn({ event: 'config.reload_failed', error: String(err) },
           'Config reload failed, keeping current config');
