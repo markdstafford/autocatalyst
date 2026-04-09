@@ -51,6 +51,13 @@ export class SlackAdapter implements HumanInterfaceAdapter {
       types: 'public_channel,private_channel',
       limit: 1000,
     });
+    // Warn if results were truncated — the target channel may be in a subsequent page
+    if ((listResult as { response_metadata?: { next_cursor?: string } }).response_metadata?.next_cursor) {
+      this.logger.warn(
+        { event: 'slack.error', error: 'conversations.list result truncated — channel may not be found if workspace has >1000 channels' },
+        'Channel list truncated; consider paginating if channel is not found',
+      );
+    }
     const channel = listResult.channels?.find(
       (c: { name?: string }) => c.name === this.config.channelName,
     );
