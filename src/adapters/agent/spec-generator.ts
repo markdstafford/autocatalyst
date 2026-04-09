@@ -1,15 +1,15 @@
 // src/adapters/agent/spec-generator.ts
 import { promisify } from 'node:util';
-import { exec as _exec } from 'node:child_process';
+import { execFile as _execFile } from 'node:child_process';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 import type { Idea, SpecFeedback } from '../../types/events.js';
 
-const defaultExec = promisify(_exec);
+const defaultExecFile = promisify(_execFile);
 
-type ExecFn = (cmd: string, opts?: { cwd?: string }) => Promise<{ stdout: string; stderr: string }>;
+type ExecFn = (file: string, args: string[], opts?: { cwd?: string }) => Promise<{ stdout: string; stderr: string }>;
 
 const FILENAME_REGEX = /^(feature|enhancement)-[a-z0-9-]+\.md$/;
 
@@ -23,13 +23,14 @@ interface SpecGeneratorOptions {
   logDestination?: pino.DestinationStream;
 }
 
+function extractRawOutput(artifactContent: string, context: string): string {
+  const match = artifactContent.match(/^## Raw output\s*\n```(?:\w+)?\n([\s\S]*?)```/m);
+  if (!match) throw new Error(`${context}: artifact missing ## Raw output section`);
+  return match[1];
+}
+
 function parseArtifact(artifactContent: string): { filename: string; body: string } {
-  // Find the ## Raw output section
-  const rawOutputMatch = artifactContent.match(/^## Raw output\s*\n```(?:\w+)?\n([\s\S]*?)```/m);
-  if (!rawOutputMatch) {
-    throw new Error('Artifact missing ## Raw output section');
-  }
-  const rawOutput = rawOutputMatch[1];
+  const rawOutput = extractRawOutput(artifactContent, 'Spec creation');
 
   // First line must be FILENAME: <name>
   const lines = rawOutput.split('\n');
@@ -54,7 +55,7 @@ export class OMCSpecGenerator implements SpecGenerator {
   private readonly logger: pino.Logger;
 
   constructor(options?: SpecGeneratorOptions) {
-    this.execFn = options?.execFn ?? defaultExec;
+    this.execFn = options?.execFn ?? defaultExecFile;
     this.logger = createLogger('spec-generator', { destination: options?.logDestination });
   }
 
@@ -75,7 +76,7 @@ export class OMCSpecGenerator implements SpecGenerator {
 
     let artifactPath: string;
     try {
-      const { stdout } = await this.execFn(`omc ask claude --print "${prompt.replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`, { cwd: workspace_path });
+      const { stdout } = await this.execFn('omc', ['ask', 'claude', '--print', prompt], { cwd: workspace_path });
       artifactPath = stdout.trim();
     } catch (err) {
       this.logger.error({ event: 'omc.failed', idea_id: idea.id, error: String(err) }, 'OMC exited non-zero');
@@ -84,7 +85,16 @@ export class OMCSpecGenerator implements SpecGenerator {
 
     this.logger.debug({ event: 'omc.completed', idea_id: idea.id, artifactPath }, 'OMC completed');
 
-    const artifactContent = readFileSync(artifactPath, 'utf-8');
+    if (!artifactPath) {
+      throw new Error(`OMC returned empty artifact path for idea ${idea.id}`);
+    }
+
+    let artifactContent: string;
+    try {
+      artifactContent = readFileSync(artifactPath, 'utf-8');
+    } catch (err) {
+      throw new Error(`Failed to read artifact at "${artifactPath}": ${String(err)}`, { cause: err });
+    }
     const { filename, body } = parseArtifact(artifactContent);
 
     const specDir = join(workspace_path, 'context-human', 'specs');
@@ -117,7 +127,7 @@ export class OMCSpecGenerator implements SpecGenerator {
 
     let artifactPath: string;
     try {
-      const { stdout } = await this.execFn(`omc ask claude --print "${prompt.replace(/"/g, '\\"').replace(/\n/g, '\\n')}"`, { cwd: workspace_path });
+      const { stdout } = await this.execFn('omc', ['ask', 'claude', '--print', prompt], { cwd: workspace_path });
       artifactPath = stdout.trim();
     } catch (err) {
       this.logger.error({ event: 'omc.failed', idea_id: feedback.idea_id, error: String(err) }, 'OMC exited non-zero during revision');
@@ -126,13 +136,21 @@ export class OMCSpecGenerator implements SpecGenerator {
 
     this.logger.debug({ event: 'omc.completed', idea_id: feedback.idea_id, artifactPath }, 'OMC revision completed');
 
-    const artifactContent = readFileSync(artifactPath, 'utf-8');
+    if (!artifactPath) {
+      throw new Error(`OMC returned empty artifact path for idea ${feedback.idea_id}`);
+    }
+
+    let artifactContent: string;
+    try {
+      artifactContent = readFileSync(artifactPath, 'utf-8');
+    } catch (err) {
+      throw new Error(`Failed to read artifact at "${artifactPath}": ${String(err)}`, { cause: err });
+    }
+
     // For revision, OMC returns the full revised spec in ## Raw output (no FILENAME line required,
     // but if present we strip it). Write the body back to the same spec_path.
-    const rawOutputMatch = artifactContent.match(/^## Raw output\s*\n```(?:\w+)?\n([\s\S]*?)```/m);
-    if (!rawOutputMatch) throw new Error('Revision artifact missing ## Raw output section');
-
-    let revisedBody = rawOutputMatch[1];
+    const rawOutput = extractRawOutput(artifactContent, 'Spec revision');
+    let revisedBody = rawOutput;
     // Strip leading FILENAME: line if present (revision may omit it)
     if (revisedBody.trimStart().startsWith('FILENAME:')) {
       revisedBody = revisedBody.split('\n').slice(1).join('\n').trimStart();
