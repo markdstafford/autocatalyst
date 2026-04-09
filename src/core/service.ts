@@ -42,6 +42,7 @@ export class Service {
     if (this.orchestrator) {
       this.orchestrator.start().catch(err => {
         this.logger.error({ event: 'service.orchestrator_start_failed', error: String(err) }, 'Orchestrator failed to start');
+        this.stop();
       });
     }
 
@@ -67,11 +68,17 @@ export class Service {
     this.running = false;
     this.stopping = false;
 
-    this.logger.info({ event: 'service.stopped' }, 'Shutdown complete');
-
     if (this.orchestrator) {
-      this.orchestrator.stop().finally(() => this._resolveStopped());
+      this.orchestrator.stop()
+        .catch(err => {
+          this.logger.error({ event: 'service.orchestrator_stop_failed', error: String(err) }, 'Orchestrator failed to stop');
+        })
+        .finally(() => {
+          this.logger.info({ event: 'service.stopped' }, 'Shutdown complete');
+          this._resolveStopped();
+        });
     } else {
+      this.logger.info({ event: 'service.stopped' }, 'Shutdown complete');
       this._resolveStopped();
     }
   }
