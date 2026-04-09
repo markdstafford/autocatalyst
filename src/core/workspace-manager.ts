@@ -31,7 +31,11 @@ export class WorkspaceManagerImpl implements WorkspaceManager {
   }
 
   async create(idea_id: string, repo_url: string): Promise<{ workspace_path: string; branch: string }> {
+    if (idea_id.includes('/') || idea_id.includes('..')) {
+      throw new Error(`Invalid idea_id: "${idea_id}"`);
+    }
     const workspace_path = join(this.workspaceRoot, idea_id);
+    // idea_id is a UUID; strip non-alphanumeric chars for a valid branch name segment
     const slug = idea_id.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
     const branch = `spec/${slug}`;
 
@@ -41,7 +45,7 @@ export class WorkspaceManagerImpl implements WorkspaceManager {
     } catch (err) {
       // Clean up partially-created directory if present
       try { rmSync(workspace_path, { recursive: true, force: true }); } catch { /* ignore */ }
-      throw new Error(`git clone failed: ${String(err)}`);
+      throw new Error(`git clone failed`, { cause: err });
     }
 
     // Create branch
@@ -50,7 +54,7 @@ export class WorkspaceManagerImpl implements WorkspaceManager {
     } catch (err) {
       // Clean up cloned directory if present
       try { rmSync(workspace_path, { recursive: true, force: true }); } catch { /* ignore */ }
-      throw new Error(`git checkout -b failed: ${String(err)}`);
+      throw new Error(`git checkout -b failed`, { cause: err });
     }
 
     this.logger.info({ event: 'workspace.created', idea_id, workspace_path, branch }, 'Workspace created');
