@@ -82,6 +82,9 @@ export class OrchestratorImpl implements Orchestrator {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
+    // Keyed by idea_id: at most one active run per idea is the design invariant.
+    // The event loop is sequential, so a second new_idea for the same idea_id
+    // would not arrive until the first is fully processed.
     this.runs.set(idea_id, run);
     this.logger.info({ event: 'run.created', run_id: run.id, idea_id }, 'Run created');
     return run;
@@ -138,20 +141,28 @@ export class OrchestratorImpl implements Orchestrator {
     const run = this.runs.get(feedback.idea_id);
     if (!run || run.stage !== 'review') return; // discard if not found or not in review
 
+    if (!run.spec_path || !run.canvas_id) {
+      await this.failRun(run, feedback.channel_id, feedback.thread_ts, new Error('Run in review state is missing spec_path or canvas_id'));
+      return;
+    }
+
     this.transition(run, 'speccing');
     run.attempt += 1;
 
     // Step 1: Revise spec
     try {
-      await this.deps.specGenerator.revise(feedback, run.spec_path!, run.workspace_path);
+      await this.deps.specGenerator.revise(feedback, run.spec_path, run.workspace_path);
     } catch (err) {
       await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
       return;
     }
 
+    // Note: workspace is intentionally NOT destroyed on revision failure — preserve it for debugging.
+    // This differs from new-idea failures where the workspace is always cleaned up.
+
     // Step 2: Update canvas
     try {
-      await this.deps.canvasPublisher.update(run.canvas_id!, run.spec_path!);
+      await this.deps.canvasPublisher.update(run.canvas_id, run.spec_path);
     } catch (err) {
       await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
       return;
