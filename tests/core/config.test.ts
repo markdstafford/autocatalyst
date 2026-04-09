@@ -53,6 +53,11 @@ describe('resolveEnvVars', () => {
     expect(result.resolved.key).toBe('prefix-middle-suffix');
   });
 
+  it('resolves $VAR at end of string', () => {
+    const result = resolveEnvVars({ key: 'hello-$VAR' }, { VAR: 'world' });
+    expect(result.resolved.key).toBe('hello-world');
+  });
+
   it('resolves ${VAR} with braces', () => {
     const result = resolveEnvVars({ key: '${MY_VAR}' }, { MY_VAR: 'value' });
     expect(result.resolved.key).toBe('value');
@@ -88,6 +93,11 @@ describe('resolveEnvVars', () => {
     const result = resolveEnvVars({ a: '$ONE', b: '$TWO' }, {});
     expect(result.missing).toContain('ONE');
     expect(result.missing).toContain('TWO');
+  });
+
+  it('deduplicates repeated missing variables', () => {
+    const result = resolveEnvVars({ a: '$X', b: '$X' }, {});
+    expect(result.missing).toEqual(['X']);
   });
 
   it('resolves nested objects recursively', () => {
