@@ -447,8 +447,8 @@ Socket Mode delivers events in real time; there is no replay of events missed wh
       - [ ] `tsc --noEmit` passes
     - **Dependencies**: None
 
-- [ ] **Story: Message classifier**
-  - [ ] **Task: Implement Classifier**
+- [x] **Story: Message classifier**
+  - [x] **Task: Implement Classifier**
     - **Description**: Create `src/adapters/slack/classifier.ts`. Implement two pure functions with no side effects. `classifyMessage(message, botUserId, registry)` applies the rules from the tech spec: check for `<@{botUserId}>` → check `thread_ts` → check registry. `classifyReaction(event, approvalEmojis, registry)` checks emoji membership then registry. Both functions suppress events from the bot's own user ID. The `@mention` check must use exact token matching — `<@U12345>` should not match a bot ID of `U1234` or `U123456`. Write unit tests in `tests/adapters/slack/classifier.test.ts` covering all cases in the testing plan.
     - **Acceptance criteria**:
       - [ ] `classifyMessage` returns the correct intent for all branches: no `@mention` → `ignore`; `@mention` root message → `new_idea`; `@mention` reply with registered `thread_ts` → `spec_feedback`; `@mention` reply with unregistered `thread_ts` → `ignore`
