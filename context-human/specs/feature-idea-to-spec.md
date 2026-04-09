@@ -29,7 +29,7 @@ Spec generation from an idea, posted to Slack for iterative human review.
       - [ ] File compiles without errors under `NodeNext` module resolution
     - **Dependencies**: None
 
-- [ ] **Story: WorkspaceManager**
+- [x] **Story: WorkspaceManager**
   - [x] **Task: Implement `WorkspaceManager`**
     - **Description**: Create `src/core/workspace-manager.ts` with the `WorkspaceManager` interface and a concrete implementation. `create` runs `git clone --depth=1 <repo_url> <workspace_path>` then `git -C <workspace_path> checkout -b spec/<slug>` as child processes with `util.promisify(exec)`. The slug is derived from the first five words of `idea_id`, lowercased and hyphenated. If clone fails, remove the directory before throwing. `destroy` removes the directory recursively.
     - **Acceptance criteria**:
@@ -44,7 +44,7 @@ Spec generation from an idea, posted to Slack for iterative human review.
       - [ ] All relative imports use `.js` extensions
     - **Dependencies**: None
 
-  - [ ] **Task: Unit tests for `WorkspaceManager`**
+  - [x] **Task: Unit tests for `WorkspaceManager`**
     - **Description**: Create `tests/core/workspace-manager.test.ts`. Mock `child_process.exec` (via the promisified wrapper) with `vi.fn()`. Use a real temp directory for path construction assertions. Cover all cases from the testing plan's WorkspaceManager section.
     - **Acceptance criteria**:
       - [ ] `create` issues the correct `git clone` command with `--depth=1` and the right path
