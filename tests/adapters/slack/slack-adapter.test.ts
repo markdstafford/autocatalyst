@@ -202,6 +202,7 @@ describe('SlackAdapter — spec feedback pipeline', () => {
     expect(feedback.idea_id).toBe((ideaEvent.payload as Idea).id);
     expect(feedback.author).toBe('U456');
     expect(feedback.thread_ts).toBe('100.0');
+    expect(feedback.content).toBe(`<@${BOT_ID}> the field is confusing`);
 
     expect(mock.client.chat.postMessage).toHaveBeenLastCalledWith(
       expect.objectContaining({
