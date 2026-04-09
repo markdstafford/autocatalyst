@@ -37,7 +37,7 @@ export class WorkspaceManagerImpl implements WorkspaceManager {
 
     // Clone
     try {
-      await this.execFn(`git clone --depth=1 ${repo_url} ${workspace_path}`);
+      await this.execFn(`git clone --depth=1 "${repo_url}" "${workspace_path}"`);
     } catch (err) {
       // Clean up partially-created directory if present
       try { rmSync(workspace_path, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -46,8 +46,10 @@ export class WorkspaceManagerImpl implements WorkspaceManager {
 
     // Create branch
     try {
-      await this.execFn(`git checkout -b ${branch}`, { cwd: workspace_path });
+      await this.execFn(`git checkout -b "${branch}"`, { cwd: workspace_path });
     } catch (err) {
+      // Clean up cloned directory if present
+      try { rmSync(workspace_path, { recursive: true, force: true }); } catch { /* ignore */ }
       throw new Error(`git checkout -b failed: ${String(err)}`);
     }
 
