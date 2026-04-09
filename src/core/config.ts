@@ -1,5 +1,8 @@
 import { parse as parseYaml } from 'yaml';
+import { existsSync, writeFileSync } from 'node:fs';
+import { join, basename, resolve } from 'node:path';
 import type { WorkflowConfig } from '../types/config.js';
+import { generateDefaultWorkflow } from '../config/defaults.js';
 
 interface ResolveResult {
   resolved: Record<string, unknown>;
@@ -127,4 +130,19 @@ export function redactConfig(
   }
 
   return redactObject(config);
+}
+
+export function bootstrapWorkflow(repoPath: string): boolean {
+  const normalizedPath = resolve(repoPath);
+  const workflowPath = join(normalizedPath, 'WORKFLOW.md');
+
+  if (existsSync(workflowPath)) {
+    return false; // already exists
+  }
+
+  const repoName = basename(normalizedPath);
+  const content = generateDefaultWorkflow(repoName);
+
+  writeFileSync(workflowPath, content, 'utf-8');
+  return true; // created
 }
