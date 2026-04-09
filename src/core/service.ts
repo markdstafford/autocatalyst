@@ -43,8 +43,7 @@ export class Service {
 
   stop(): void {
     if (this.stopping || !this.running) {
-      this._resolveStopped();
-      return;
+      return; // no-op: either already stopping or never started
     }
     this.stopping = true;
 
