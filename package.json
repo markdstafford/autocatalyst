@@ -1,0 +1,32 @@
+{
+  "name": "autocatalyst",
+  "version": "0.0.1",
+  "description": "AI-led development loop: idea → spec → approval → implementation → evaluation",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "autocatalyst": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "test:core": "vitest run tests/core/",
+    "test:adapters": "vitest run tests/adapters/",
+    "lint": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "dependencies": {
+    "pino": "9.6.0",
+    "yaml": "2.7.1"
+  },
+  "devDependencies": {
+    "typescript": "5.8.3",
+    "vitest": "3.1.1",
+    "tsx": "4.19.3",
+    "@types/node": "22.14.1"
+  }
+}

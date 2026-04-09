@@ -1,7 +1,8 @@
 ---
 created: 2026-04-08
 last_updated: 2026-04-08
-status: approved
+status: complete
+implemented_by: markdstafford
 issue: 1
 ---
 
@@ -310,160 +311,160 @@ All events include `timestamp`, `level`, `component`, `event` per the logging st
 
 ## Task list
 
-- [ ] **Story: Project scaffolding**
-  - [ ] **Task: Initialize TypeScript project**
+- [x] **Story: Project scaffolding**
+  - [x] **Task: Initialize TypeScript project**
     - **Description**: Create `package.json`, `tsconfig.json`, and Vitest config. Set up `src/` and `tests/` directory structure per coding standard. Add pino and yaml as dependencies. Pin exact versions.
     - **Acceptance criteria**:
-      - [ ] `npm install` completes without errors
-      - [ ] `npm test` runs Vitest (no tests yet, exits clean)
-      - [ ] `npx tsc --noEmit` compiles with zero errors
-      - [ ] Directory structure matches coding standard (`src/core/`, `src/types/`, `src/config/`, `tests/core/`)
+      - [x] `npm install` completes without errors
+      - [x] `npm test` runs Vitest (no tests yet, exits clean)
+      - [x] `npx tsc --noEmit` compiles with zero errors
+      - [x] Directory structure matches coding standard (`src/core/`, `src/types/`, `src/config/`, `tests/core/`)
     - **Dependencies**: None
-  - [ ] **Task: Set up pino structured logging**
+  - [x] **Task: Set up pino structured logging**
     - **Description**: Create a logger factory that produces pino instances with the standard fields (`timestamp`, `level`, `component`, `event`). Export a `createLogger(component: string)` function.
     - **Acceptance criteria**:
-      - [ ] `createLogger("test")` produces a pino instance
-      - [ ] Log output is valid JSON with all required fields per logging standard
-      - [ ] Tests: logger output is valid JSON, required fields present
+      - [x] `createLogger("test")` produces a pino instance
+      - [x] Log output is valid JSON with all required fields per logging standard
+      - [x] Tests: logger output is valid JSON, required fields present
     - **Dependencies**: "Initialize TypeScript project"
 
-- [ ] **Story: Config types and parsing**
-  - [ ] **Task: Define WorkflowConfig type and LoadedConfig interface**
+- [x] **Story: Config types and parsing**
+  - [x] **Task: Define WorkflowConfig type and LoadedConfig interface**
     - **Description**: Create `src/types/config.ts` with `WorkflowConfig` (extensible, unknown keys preserved) and `LoadedConfig` (config + promptTemplate + filePath).
     - **Acceptance criteria**:
-      - [ ] Types compile without errors
-      - [ ] `WorkflowConfig` accepts unknown keys via index signature
-      - [ ] Tests: type assertions verify structure
+      - [x] Types compile without errors
+      - [x] `WorkflowConfig` accepts unknown keys via index signature
+      - [x] Tests: type assertions verify structure
     - **Dependencies**: "Initialize TypeScript project"
-  - [ ] **Task: Implement WORKFLOW.md parser**
+  - [x] **Task: Implement WORKFLOW.md parser**
     - **Description**: Create `src/core/config.ts` with a `parseWorkflow(content: string)` function. Splits on `---` delimiters, parses YAML frontmatter, extracts Markdown body as prompt template.
     - **Acceptance criteria**:
-      - [ ] Valid YAML + Markdown → correct `LoadedConfig`
-      - [ ] Empty frontmatter → config with defaults
-      - [ ] No frontmatter → parse error
-      - [ ] Duplicate YAML keys → parse error
-      - [ ] Unknown keys preserved
-      - [ ] Null values handled without crash
-      - [ ] Tests: all cases from testing plan "Config parser" section
+      - [x] Valid YAML + Markdown → correct `LoadedConfig`
+      - [x] Empty frontmatter → config with defaults
+      - [x] No frontmatter → parse error
+      - [x] Duplicate YAML keys → parse error
+      - [x] Unknown keys preserved
+      - [x] Null values handled without crash
+      - [x] Tests: all cases from testing plan "Config parser" section
     - **Dependencies**: "Define WorkflowConfig type"
-  - [ ] **Task: Implement $VAR resolution**
+  - [x] **Task: Implement $VAR resolution**
     - **Description**: Add `resolveEnvVars(config: object)` to `src/core/config.ts`. Recursively walks all string values, resolves `$VAR` and `${VAR}` patterns, handles `$$` escape, collects missing variables.
     - **Acceptance criteria**:
-      - [ ] `$VAR` at start/middle/end resolved correctly
-      - [ ] `${VAR}` with braces resolved
-      - [ ] `$$` produces literal `$`
-      - [ ] Multiple `$VAR` in one string both resolved
-      - [ ] Non-string values (numbers, booleans) not resolved
-      - [ ] `$VAR` resolving to string containing `$OTHER` not recursively resolved
-      - [ ] Empty env var treated as missing
-      - [ ] Returns list of missing variables
-      - [ ] Tests: all cases from testing plan "$VAR" section
+      - [x] `$VAR` at start/middle/end resolved correctly
+      - [x] `${VAR}` with braces resolved
+      - [x] `$$` produces literal `$`
+      - [x] Multiple `$VAR` in one string both resolved
+      - [x] Non-string values (numbers, booleans) not resolved
+      - [x] `$VAR` resolving to string containing `$OTHER` not recursively resolved
+      - [x] Empty env var treated as missing
+      - [x] Returns list of missing variables
+      - [x] Tests: all cases from testing plan "$VAR" section
     - **Dependencies**: "Implement WORKFLOW.md parser"
-  - [ ] **Task: Implement config validation**
+  - [x] **Task: Implement config validation**
     - **Description**: Add `validateConfig(config: WorkflowConfig)` to `src/core/config.ts`. Validates known fields after $VAR resolution. Returns typed errors for invalid values.
     - **Acceptance criteria**:
-      - [ ] Valid config passes
-      - [ ] Negative `interval_ms` → validation error
-      - [ ] Empty `workspace.root` after resolution → validation error
-      - [ ] Unknown keys do not trigger errors
-      - [ ] Tests: valid and invalid cases
+      - [x] Valid config passes
+      - [x] Negative `interval_ms` → validation error
+      - [x] Empty `workspace.root` after resolution → validation error
+      - [x] Unknown keys do not trigger errors
+      - [x] Tests: valid and invalid cases
     - **Dependencies**: "Implement $VAR resolution"
-  - [ ] **Task: Implement config redaction for logging**
+  - [x] **Task: Implement config redaction for logging**
     - **Description**: Add `redactConfig(config: object, resolvedVars: string[])` that replaces any value that was resolved from a `$VAR` with `"[from env]"`. Used when logging loaded config.
     - **Acceptance criteria**:
-      - [ ] Values from env vars show `"[from env]"`
-      - [ ] Non-env values logged as-is
-      - [ ] Nested values handled correctly
-      - [ ] Tests: redaction covers all resolved vars, leaves others untouched
+      - [x] Values from env vars show `"[from env]"`
+      - [x] Non-env values logged as-is
+      - [x] Nested values handled correctly
+      - [x] Tests: redaction covers all resolved vars, leaves others untouched
     - **Dependencies**: "Implement $VAR resolution"
 
-- [ ] **Story: WORKFLOW.md bootstrap**
-  - [ ] **Task: Create default WORKFLOW.md template**
+- [x] **Story: WORKFLOW.md bootstrap**
+  - [x] **Task: Create default WORKFLOW.md template**
     - **Description**: Create `src/config/defaults.ts` exporting a function that generates the default WORKFLOW.md content with repo name substituted.
     - **Acceptance criteria**:
-      - [ ] Template is valid YAML frontmatter + Markdown
-      - [ ] Repo name substituted correctly
-      - [ ] Parseable by the config parser
-      - [ ] Tests: generated template parses successfully, repo name appears in correct locations
+      - [x] Template is valid YAML frontmatter + Markdown
+      - [x] Repo name substituted correctly
+      - [x] Parseable by the config parser
+      - [x] Tests: generated template parses successfully, repo name appears in correct locations
     - **Dependencies**: "Implement WORKFLOW.md parser"
-  - [ ] **Task: Implement bootstrap logic**
+  - [x] **Task: Implement bootstrap logic**
     - **Description**: Add `bootstrapWorkflow(repoPath: string)` to `src/core/config.ts`. Checks if WORKFLOW.md exists, generates default if missing, writes to repo root.
     - **Acceptance criteria**:
-      - [ ] Missing WORKFLOW.md → file created
-      - [ ] Existing WORKFLOW.md → not overwritten
-      - [ ] Read-only repo → clear error
-      - [ ] Repo name derived correctly from paths with trailing slashes, nested paths
-      - [ ] Tests: all bootstrap cases from testing plan
+      - [x] Missing WORKFLOW.md → file created
+      - [x] Existing WORKFLOW.md → not overwritten
+      - [x] Read-only repo → clear error
+      - [x] Repo name derived correctly from paths with trailing slashes, nested paths
+      - [x] Tests: all bootstrap cases from testing plan
     - **Dependencies**: "Create default WORKFLOW.md template"
 
-- [ ] **Story: Config watcher**
-  - [ ] **Task: Implement file watcher with debounce**
+- [x] **Story: Config watcher**
+  - [x] **Task: Implement file watcher with debounce**
     - **Description**: Create `src/core/config-watcher.ts`. Uses `fs.watch` with a 200ms debounce window. On detected change, calls a reload callback. Handles watch recovery for editors that delete+recreate files.
     - **Acceptance criteria**:
-      - [ ] File change triggers reload callback
-      - [ ] Rapid changes within debounce → exactly one callback
-      - [ ] File deleted → error logged, watcher remains active
-      - [ ] File replaced (delete + recreate) → watcher recovers
-      - [ ] `stop()` cleans up — no leaked file handles
-      - [ ] Tests: all config watcher cases from testing plan
+      - [x] File change triggers reload callback
+      - [x] Rapid changes within debounce → exactly one callback
+      - [x] File deleted → error logged, watcher remains active
+      - [x] File replaced (delete + recreate) → watcher recovers
+      - [x] `stop()` cleans up — no leaked file handles
+      - [x] Tests: all config watcher cases from testing plan
     - **Dependencies**: "Implement WORKFLOW.md parser"
-  - [ ] **Task: Implement hot-reload logic**
+  - [x] **Task: Implement hot-reload logic**
     - **Description**: Wire config watcher to config loader. On successful reload: swap config and prompt template, log with changed keys. On failure: log error, keep current config.
     - **Acceptance criteria**:
-      - [ ] Successful reload swaps config and prompt template
-      - [ ] Failed reload keeps previous config
-      - [ ] `config.reloaded` event logged with changed keys on success
-      - [ ] `config.reload_failed` event logged with error on failure
-      - [ ] Tests: reload success and failure paths
+      - [x] Successful reload swaps config and prompt template
+      - [x] Failed reload keeps previous config
+      - [x] `config.reloaded` event logged with changed keys on success
+      - [x] `config.reload_failed` event logged with error on failure
+      - [x] Tests: reload success and failure paths
     - **Dependencies**: "Implement file watcher with debounce", "Implement config validation"
 
-- [ ] **Story: Service lifecycle**
-  - [ ] **Task: Implement service class**
+- [x] **Story: Service lifecycle**
+  - [x] **Task: Implement service class**
     - **Description**: Create `src/core/service.ts` with `start()`, `stop()`, and a tick loop. `start()` logs `service.ready` and begins ticking. `stop()` waits for current tick, logs shutdown events, and exits. The tick loop is a no-op for now — future features register tick handlers.
     - **Acceptance criteria**:
-      - [ ] `start()` logs `service.ready`
-      - [ ] `stop()` logs `service.stopping` then `service.stopped`
-      - [ ] `stop()` waits for current tick to complete
-      - [ ] Double `stop()` does not crash
-      - [ ] `stop()` before `start()` does not crash
-      - [ ] Tests: all service lifecycle cases from testing plan
+      - [x] `start()` logs `service.ready`
+      - [x] `stop()` logs `service.stopping` then `service.stopped`
+      - [x] `stop()` waits for current tick to complete
+      - [x] Double `stop()` does not crash
+      - [x] `stop()` before `start()` does not crash
+      - [x] Tests: all service lifecycle cases from testing plan
     - **Dependencies**: "Set up pino structured logging"
-  - [ ] **Task: Implement signal handlers**
+  - [x] **Task: Implement signal handlers**
     - **Description**: In `src/index.ts`, register `SIGINT` and `SIGTERM` handlers that call `service.stop()`. Handle double-signal gracefully.
     - **Acceptance criteria**:
-      - [ ] SIGINT triggers clean shutdown
-      - [ ] SIGTERM triggers clean shutdown
-      - [ ] Double SIGINT does not crash
-      - [ ] Tests: signal handling produces correct log sequence
+      - [x] SIGINT triggers clean shutdown
+      - [x] SIGTERM triggers clean shutdown
+      - [x] Double SIGINT does not crash
+      - [x] Tests: signal handling produces correct log sequence
     - **Dependencies**: "Implement service class"
 
-- [ ] **Story: CLI entry point**
-  - [ ] **Task: Implement CLI argument parsing**
+- [x] **Story: CLI entry point**
+  - [x] **Task: Implement CLI argument parsing**
     - **Description**: Create `src/index.ts` as the entry point. Parse `--repo` and `--help` flags. Validate repo path exists and is a directory. Resolve relative paths to absolute.
     - **Acceptance criteria**:
-      - [ ] `--repo` with valid directory → proceeds to config loading
-      - [ ] `--repo` with nonexistent path → error, exit 1
-      - [ ] `--repo` with file instead of directory → error, exit 1
-      - [ ] `--repo` with relative path → resolved to absolute
-      - [ ] No `--repo` → usage message, exit 1
-      - [ ] `--help` → usage info, exit 0
-      - [ ] Tests: all CLI cases from testing plan
+      - [x] `--repo` with valid directory → proceeds to config loading
+      - [x] `--repo` with nonexistent path → error, exit 1
+      - [x] `--repo` with file instead of directory → error, exit 1
+      - [x] `--repo` with relative path → resolved to absolute
+      - [x] No `--repo` → usage message, exit 1
+      - [x] `--help` → usage info, exit 0
+      - [x] Tests: all CLI cases from testing plan
     - **Dependencies**: "Implement service class", "Implement hot-reload logic", "Implement bootstrap logic"
-  - [ ] **Task: Wire startup sequence**
+  - [x] **Task: Wire startup sequence**
     - **Description**: Connect all components in `src/index.ts`: parse args → bootstrap/load config → resolve env vars → validate → create service → register signals → start watcher → start service.
     - **Acceptance criteria**:
-      - [ ] Full startup sequence completes and logs `service.ready`
-      - [ ] Missing env vars → logs which, exits 1
-      - [ ] Invalid WORKFLOW.md → logs parse error, exits 1
-      - [ ] All startup log events emitted in correct order
-      - [ ] Tests: integration tests from testing plan
+      - [x] Full startup sequence completes and logs `service.ready`
+      - [x] Missing env vars → logs which, exits 1
+      - [x] Invalid WORKFLOW.md → logs parse error, exits 1
+      - [x] All startup log events emitted in correct order
+      - [x] Tests: integration tests from testing plan
     - **Dependencies**: "Implement CLI argument parsing"
 
-- [ ] **Story: Cross-cutting verification**
-  - [ ] **Task: Implement cross-cutting invariant tests**
+- [x] **Story: Cross-cutting verification**
+  - [x] **Task: Implement cross-cutting invariant tests**
     - **Description**: Write tests that verify the two cross-cutting invariants across all error paths: all stdout is valid JSON, and no log entry contains a resolved secret.
     - **Acceptance criteria**:
-      - [ ] Every error path tested produces valid JSON output
-      - [ ] Config with `$VAR` values never appears unredacted in any log
-      - [ ] Tests: exercise startup errors, reload errors, shutdown, and normal operation
+      - [x] Every error path tested produces valid JSON output
+      - [x] Config with `$VAR` values never appears unredacted in any log
+      - [x] Tests: exercise startup errors, reload errors, shutdown, and normal operation
     - **Dependencies**: "Wire startup sequence"
