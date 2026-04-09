@@ -460,7 +460,7 @@ Socket Mode delivers events in real time; there is no replay of events missed wh
       - [ ] `tsc --noEmit` passes
     - **Dependencies**: Story: Thread registry
 
-- [ ] **Story: Slack adapter**
+- [x] **Story: Slack adapter**
   - [x] **Task: Implement BoltApp factory**
     - **Description**: Create `src/adapters/slack/bolt-app.ts`. Export a `createBoltApp(botToken: string, appToken: string): App` factory function that initializes a Slack Bolt `App` configured for Socket Mode using `SocketModeReceiver`. The factory creates and returns the app instance; event handlers are not registered here.
     - **Acceptance criteria**:
@@ -484,7 +484,7 @@ Socket Mode delivers events in real time; there is no replay of events missed wh
       - [ ] `tsc --noEmit` passes
     - **Dependencies**: Task: Implement BoltApp factory, Task: Implement Classifier, Story: Thread registry, Task: Extend validateConfig with slack validation
 
-  - [ ] **Task: Write SlackAdapter integration tests**
+  - [x] **Task: Write SlackAdapter integration tests**
     - **Description**: Write `tests/adapters/slack/slack-adapter.test.ts`. Inject a Bolt test double — mock `App` and `WebClient` — via the adapter constructor so no live Slack API calls are made. Cover all integration test cases from the testing plan: startup (channel found, channel not found, handler ordering), new idea pipeline (event shape, acknowledgement text, thread registration, chaining to spec_feedback), spec feedback pipeline, approval signal pipeline, all four ignore cases, error handling (postMessage failure, Bolt error event), and service lifecycle (start/stop).
     - **Acceptance criteria**:
       - [ ] All integration test cases from the testing plan pass
