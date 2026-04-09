@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseWorkflow, resolveEnvVars, validateConfig, redactConfig } from '../../src/core/config.js';
+import type { WorkflowConfig } from '../../src/types/config.js';
 
 const fixture = (name: string) =>
   readFileSync(join(import.meta.dirname, '../fixtures', name), 'utf-8');
@@ -148,8 +149,8 @@ describe('validateConfig', () => {
 
   it('does not throw for unknown keys', () => {
     expect(() => validateConfig({
-      slack: { channel: 'general' },
       custom: 'value',
+      another_unknown: { nested: true },
     })).not.toThrow();
   });
 });
@@ -174,5 +175,109 @@ describe('redactConfig', () => {
     const config = { outer: { inner: 'secret-value' } };
     const redacted = redactConfig(config, { SECRET: 'secret-value' });
     expect((redacted.outer as Record<string, string>).inner).toBe('[from env]');
+  });
+});
+
+describe('validateConfig — slack', () => {
+  it('passes when slack section is absent', () => {
+    expect(() => validateConfig({})).not.toThrow();
+  });
+
+  it('passes with all required slack fields present', () => {
+    expect(() => validateConfig({
+      slack: { bot_token: 'xoxb-test', app_token: 'xapp-test', channel_name: 'my-channel' },
+    })).not.toThrow();
+  });
+
+  it('throws when bot_token is missing', () => {
+    expect(() => validateConfig({
+      slack: { app_token: 'xapp-test', channel_name: 'my-channel' },
+    })).toThrow(/slack\.bot_token/);
+  });
+
+  it('throws when bot_token is empty', () => {
+    expect(() => validateConfig({
+      slack: { bot_token: '', app_token: 'xapp-test', channel_name: 'my-channel' },
+    })).toThrow(/slack\.bot_token/);
+  });
+
+  it('throws when app_token is missing', () => {
+    expect(() => validateConfig({
+      slack: { bot_token: 'xoxb-test', channel_name: 'my-channel' },
+    })).toThrow(/slack\.app_token/);
+  });
+
+  it('throws when app_token is empty', () => {
+    expect(() => validateConfig({
+      slack: { bot_token: 'xoxb-test', app_token: '', channel_name: 'my-channel' },
+    })).toThrow(/slack\.app_token/);
+  });
+
+  it('throws when channel_name is missing', () => {
+    expect(() => validateConfig({
+      slack: { bot_token: 'xoxb-test', app_token: 'xapp-test' },
+    })).toThrow(/slack\.channel_name/);
+  });
+
+  it('throws when channel_name is empty', () => {
+    expect(() => validateConfig({
+      slack: { bot_token: 'xoxb-test', app_token: 'xapp-test', channel_name: '' },
+    })).toThrow(/slack\.channel_name/);
+  });
+
+  it('$VAR references in bot_token and app_token are resolved before validation', () => {
+    const raw = {
+      slack: { bot_token: '$AC_SLACK_BOT_TOKEN', app_token: '$AC_SLACK_APP_TOKEN', channel_name: 'ch' },
+    };
+    const { resolved } = resolveEnvVars(raw, {
+      AC_SLACK_BOT_TOKEN: 'xoxb-real',
+      AC_SLACK_APP_TOKEN: 'xapp-real',
+    });
+    // After resolution the values are real tokens; validateConfig should pass
+    expect(() => validateConfig(resolved as WorkflowConfig)).not.toThrow();
+    expect((resolved as WorkflowConfig).slack?.bot_token).toBe('xoxb-real');
+    expect((resolved as WorkflowConfig).slack?.app_token).toBe('xapp-real');
+  });
+
+  it('defaults approval_emojis to ["thumbsup"] when absent', () => {
+    const config: WorkflowConfig = {
+      slack: { bot_token: 'xoxb-test', app_token: 'xapp-test', channel_name: 'ch' },
+    };
+    validateConfig(config);
+    expect(config.slack?.approval_emojis).toEqual(['thumbsup']);
+  });
+
+  it('passes when approval_emojis is a non-empty array', () => {
+    expect(() => validateConfig({
+      slack: {
+        bot_token: 'xoxb-test', app_token: 'xapp-test', channel_name: 'ch',
+        approval_emojis: ['thumbsup', 'white_check_mark'],
+      },
+    })).not.toThrow();
+  });
+
+  it('throws when approval_emojis is an empty array', () => {
+    expect(() => validateConfig({
+      slack: {
+        bot_token: 'xoxb-test', app_token: 'xapp-test', channel_name: 'ch',
+        approval_emojis: [],
+      },
+    })).toThrow(/slack\.approval_emojis/);
+  });
+});
+
+describe('redactConfig — slack tokens', () => {
+  it('redacts bot_token and app_token values resolved from env', () => {
+    const config = {
+      slack: { bot_token: 'xoxb-secret', app_token: 'xapp-secret', channel_name: 'ch' },
+    };
+    const redacted = redactConfig(config, {
+      AC_SLACK_BOT_TOKEN: 'xoxb-secret',
+      AC_SLACK_APP_TOKEN: 'xapp-secret',
+    });
+    const slack = redacted.slack as Record<string, string>;
+    expect(slack.bot_token).toBe('[from env]');
+    expect(slack.app_token).toBe('[from env]');
+    expect(slack.channel_name).toBe('ch');
   });
 });

@@ -6,7 +6,7 @@ Core concepts in the Autocatalyst system.
 
 The seed input from a human. A short description of what to build or change. Arrives through the human interface adapter.
 
-**Fields:** `id`, `source` (which adapter), `content` (raw text), `author`, `received_at`
+**Fields:** `id`, `source` (which adapter), `content` (raw text), `author`, `received_at`, `thread_ts` (Slack thread identifier for posting replies), `channel_id`
 
 ## Spec
 

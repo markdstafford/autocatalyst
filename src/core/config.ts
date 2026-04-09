@@ -100,6 +100,31 @@ export function validateConfig(config: WorkflowConfig): void {
       throw new Error('workspace.root must be a non-empty string');
     }
   }
+
+  if (config.slack !== undefined) {
+    // Re-cast to unknown sub-fields: YAML can deliver null for any optional field
+    const slack = config.slack as {
+      bot_token?: unknown;
+      app_token?: unknown;
+      channel_name?: unknown;
+      approval_emojis?: unknown;
+    };
+
+    if (typeof slack.bot_token !== 'string' || slack.bot_token.trim() === '') {
+      throw new Error('slack.bot_token must be a non-empty string');
+    }
+    if (typeof slack.app_token !== 'string' || slack.app_token.trim() === '') {
+      throw new Error('slack.app_token must be a non-empty string');
+    }
+    if (typeof slack.channel_name !== 'string' || slack.channel_name.trim() === '') {
+      throw new Error('slack.channel_name must be a non-empty string');
+    }
+    if (slack.approval_emojis === undefined) {
+      slack.approval_emojis = ['thumbsup']; // apply default in-place
+    } else if (!Array.isArray(slack.approval_emojis) || (slack.approval_emojis as unknown[]).length === 0) {
+      throw new Error('slack.approval_emojis must be a non-empty array of strings');
+    }
+  }
 }
 
 export function redactConfig(
