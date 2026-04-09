@@ -84,3 +84,17 @@ export function parseWorkflow(content: string): ParseResult {
     promptTemplate: markdownBody.trimStart(),
   };
 }
+
+export function validateConfig(config: WorkflowConfig): void {
+  if (config.polling?.interval_ms !== undefined) {
+    if (typeof config.polling.interval_ms !== 'number' || config.polling.interval_ms <= 0) {
+      throw new Error('polling.interval_ms must be a positive number');
+    }
+  }
+
+  if (config.workspace?.root !== undefined) {
+    if (typeof config.workspace.root !== 'string' || config.workspace.root.trim() === '') {
+      throw new Error('workspace.root must be a non-empty string');
+    }
+  }
+}

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseWorkflow, resolveEnvVars } from '../../src/core/config.js';
+import { parseWorkflow, resolveEnvVars, validateConfig } from '../../src/core/config.js';
 
 const fixture = (name: string) =>
   readFileSync(join(import.meta.dirname, '../fixtures', name), 'utf-8');
@@ -107,5 +107,49 @@ describe('resolveEnvVars', () => {
     );
     expect((result.resolved.slack as Record<string, string>).token).toBe('xoxb-123');
     expect((result.resolved.slack as Record<string, string>).channel).toBe('general');
+  });
+});
+
+describe('validateConfig', () => {
+  it('passes for valid config with defaults', () => {
+    expect(() => validateConfig({})).not.toThrow();
+  });
+
+  it('passes for valid config with explicit values', () => {
+    expect(() => validateConfig({
+      polling: { interval_ms: 5000 },
+      workspace: { root: '/tmp/workspaces' },
+    })).not.toThrow();
+  });
+
+  it('throws for negative interval_ms', () => {
+    expect(() => validateConfig({
+      polling: { interval_ms: -1 },
+    })).toThrow(/interval_ms/);
+  });
+
+  it('throws for zero interval_ms', () => {
+    expect(() => validateConfig({
+      polling: { interval_ms: 0 },
+    })).toThrow(/interval_ms/);
+  });
+
+  it('throws for non-number interval_ms', () => {
+    expect(() => validateConfig({
+      polling: { interval_ms: 'fast' as unknown as number },
+    })).toThrow(/interval_ms/);
+  });
+
+  it('throws for empty workspace root', () => {
+    expect(() => validateConfig({
+      workspace: { root: '' },
+    })).toThrow(/workspace.root/);
+  });
+
+  it('does not throw for unknown keys', () => {
+    expect(() => validateConfig({
+      slack: { channel: 'general' },
+      custom: 'value',
+    })).not.toThrow();
   });
 });
