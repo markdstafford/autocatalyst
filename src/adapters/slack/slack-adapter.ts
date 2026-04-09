@@ -41,7 +41,10 @@ export class SlackAdapter implements HumanInterfaceAdapter {
   async start(): Promise<void> {
     // Resolve bot user ID
     const authResult = await this.app.client.auth.test();
-    this.botUserId = authResult.user_id as string;
+    if (typeof authResult.user_id !== 'string') {
+      throw new Error('auth.test() did not return a user_id');
+    }
+    this.botUserId = authResult.user_id;
 
     // Resolve channel name → channel ID
     const listResult = await this.app.client.conversations.list({
@@ -112,8 +115,8 @@ export class SlackAdapter implements HumanInterfaceAdapter {
         };
 
         // Post acknowledgement and register thread before emitting
-        await this.postMessage(this.channelId!, msg.ts, "Got it — I'll work on a spec and post it here.");
         this.registry.register(msg.ts, idea.id);
+        await this.postMessage(this.channelId!, msg.ts, "Got it — I'll work on a spec and post it here.");
         this.emit({ type: 'new_idea', payload: idea });
 
       } else if (result.intent === 'spec_feedback') {
@@ -136,6 +139,8 @@ export class SlackAdapter implements HumanInterfaceAdapter {
       if (event.item.type !== 'message') return;
       if (event.item.channel !== this.channelId) return;
 
+      // item_ts is the ts of the reacted-to message — only original idea messages are registered;
+      // reactions on bot reply messages are intentionally ignored.
       const result = classifyReaction(
         { reaction: event.reaction, user: event.user, item_ts: event.item.ts },
         this.config.approvalEmojis,
@@ -175,6 +180,8 @@ export class SlackAdapter implements HumanInterfaceAdapter {
 
   async stop(): Promise<void> {
     await this.app.stop();
+    // Events that arrive during app.stop() teardown are discarded intentionally —
+    // stop() signals end-of-stream, remaining queued events will still be drained by receive().
     this.closed = true;
     if (this.waiter) {
       const resolve = this.waiter;
