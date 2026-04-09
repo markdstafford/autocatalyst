@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { Service } from '../../src/core/service.js';
 import type { LoadedConfig } from '../../src/types/config.js';
 
@@ -59,5 +59,73 @@ describe('Service', () => {
     const log = captureLog();
     const service = new Service(makeConfig(), { logDestination: log.destination });
     expect(() => service.stop()).not.toThrow();
+  });
+});
+
+import type { Orchestrator } from '../../src/core/orchestrator.js';
+
+function makeMockOrchestrator(): Orchestrator {
+  return {
+    start: vi.fn().mockResolvedValue(undefined),
+    stop: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+describe('Service — orchestrator delegation', () => {
+  it('start() calls orchestrator.start()', async () => {
+    const orch = makeMockOrchestrator();
+    const service = new Service(makeConfig(), { orchestrator: orch });
+    service.start();
+    await new Promise(r => setTimeout(r, 50));
+    service.stop();
+    await service.stopped;
+
+    expect(orch.start).toHaveBeenCalledTimes(1);
+  });
+
+  it('stop() calls orchestrator.stop()', async () => {
+    const orch = makeMockOrchestrator();
+    const service = new Service(makeConfig(), { orchestrator: orch });
+    service.start();
+    await new Promise(r => setTimeout(r, 50));
+    service.stop();
+    await service.stopped;
+
+    expect(orch.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it('service.stopped resolves after orchestrator.stop() resolves', async () => {
+    let resolveOrchStop!: () => void;
+    const orch: Orchestrator = {
+      start: vi.fn().mockResolvedValue(undefined),
+      stop: vi.fn().mockReturnValue(new Promise<void>(r => { resolveOrchStop = r; })),
+    };
+    const service = new Service(makeConfig(), { orchestrator: orch });
+    service.start();
+    await new Promise(r => setTimeout(r, 50));
+
+    let stoppedResolved = false;
+    service.stopped.then(() => { stoppedResolved = true; });
+
+    service.stop();
+    await new Promise(r => setTimeout(r, 20));
+    expect(stoppedResolved).toBe(false); // not yet, orchestrator hasn't finished
+
+    resolveOrchStop();
+    await new Promise(r => setTimeout(r, 20));
+    expect(stoppedResolved).toBe(true);
+  });
+
+  it('service without orchestrator behaves identically to before', async () => {
+    const log = captureLog();
+    const service = new Service(makeConfig(), { logDestination: log.destination });
+    service.start();
+    await new Promise(r => setTimeout(r, 50));
+    service.stop();
+    await service.stopped;
+
+    const events = log.entries.map(e => e.event);
+    expect(events).toContain('service.ready');
+    expect(events).toContain('service.stopped');
   });
 });
