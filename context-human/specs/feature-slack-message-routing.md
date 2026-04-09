@@ -469,7 +469,7 @@ Socket Mode delivers events in real time; there is no replay of events missed wh
       - [ ] `tsc --noEmit` passes
     - **Dependencies**: Task: Define event types and update adapter interface
 
-  - [ ] **Task: Implement SlackAdapter**
+  - [x] **Task: Implement SlackAdapter**
     - **Description**: Create `src/adapters/slack/slack-adapter.ts`. This is the main wiring component implementing `HumanInterfaceAdapter`. On `start()`: (1) call `app.client.conversations.list` to resolve `channel_name` → `channel_id`, logging `slack.startup.channel_resolved`; fail with a clear error if not found; (2) register `message` and `reaction_added` event handlers filtered to the resolved channel; (3) call `app.start()` and log `slack.connected`. Message handler: classify via `classifyMessage`; on `new_idea`, post the acknowledgement, register the thread, emit the event; on `spec_feedback`, post the acknowledgement, emit; on `ignore`, log at debug and drop. Reaction handler: classify via `classifyReaction`; on `approval_signal`, emit; on `ignore`, log at debug and drop. On `stop()`: call `app.stop()` and log `slack.disconnected`. Emit all observability events from Section 5. Never log message content.
     - **Acceptance criteria**:
       - [ ] Channel name resolved to ID before any event handlers process messages
