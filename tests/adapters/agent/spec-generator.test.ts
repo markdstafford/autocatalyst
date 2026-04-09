@@ -158,10 +158,10 @@ describe('SpecGenerator.revise', () => {
 
     const args = execFn.mock.calls[0][1] as string[];
     const prompt = args[args.length - 1]; // --print <prompt>
+    expect(prompt).toContain('<<<\nthe wizard should not require');
+    expect(prompt).toContain('<<<\n# Original Spec');
     const feedbackIdx = prompt.indexOf('the wizard should not require');
     const specIdx = prompt.indexOf('# Original Spec');
-    expect(feedbackIdx).toBeGreaterThan(-1);
-    expect(specIdx).toBeGreaterThan(-1);
     expect(feedbackIdx).toBeLessThan(specIdx); // feedback before spec
   });
 
