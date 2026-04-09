@@ -102,6 +102,7 @@ export function validateConfig(config: WorkflowConfig): void {
   }
 
   if (config.slack !== undefined) {
+    // Re-cast to unknown sub-fields: YAML can deliver null for any optional field
     const slack = config.slack as {
       bot_token?: unknown;
       app_token?: unknown;

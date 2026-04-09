@@ -225,6 +225,20 @@ describe('validateConfig — slack', () => {
     })).toThrow(/slack\.channel_name/);
   });
 
+  it('$VAR references in bot_token and app_token are resolved before validation', () => {
+    const raw = {
+      slack: { bot_token: '$AC_SLACK_BOT_TOKEN', app_token: '$AC_SLACK_APP_TOKEN', channel_name: 'ch' },
+    };
+    const { resolved } = resolveEnvVars(raw, {
+      AC_SLACK_BOT_TOKEN: 'xoxb-real',
+      AC_SLACK_APP_TOKEN: 'xapp-real',
+    });
+    // After resolution the values are real tokens; validateConfig should pass
+    expect(() => validateConfig(resolved as WorkflowConfig)).not.toThrow();
+    expect((resolved as WorkflowConfig).slack?.bot_token).toBe('xoxb-real');
+    expect((resolved as WorkflowConfig).slack?.app_token).toBe('xapp-real');
+  });
+
   it('defaults approval_emojis to ["thumbsup"] when absent', () => {
     const config: WorkflowConfig = {
       slack: { bot_token: 'xoxb-test', app_token: 'xapp-test', channel_name: 'ch' },
