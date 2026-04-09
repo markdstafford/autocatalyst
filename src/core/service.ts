@@ -1,9 +1,11 @@
 import type { LoadedConfig } from '../types/config.js';
 import { createLogger } from './logger.js';
 import type pino from 'pino';
+import type { Orchestrator } from './orchestrator.js';
 
 interface ServiceOptions {
   logDestination?: pino.DestinationStream;
+  orchestrator?: Orchestrator;
 }
 
 export class Service {
@@ -14,9 +16,11 @@ export class Service {
   private tickTimer: ReturnType<typeof setInterval> | null = null;
   private _stopped: Promise<void>;
   private _resolveStopped!: () => void;
+  private readonly orchestrator: Orchestrator | undefined;
 
   constructor(config: LoadedConfig, options?: ServiceOptions) {
     this.config = config;
+    this.orchestrator = options?.orchestrator;
     this.logger = createLogger('service', { destination: options?.logDestination });
     this._stopped = new Promise(resolve => {
       this._resolveStopped = resolve;
@@ -35,6 +39,12 @@ export class Service {
     if (this.running) return;
     this.running = true;
 
+    if (this.orchestrator) {
+      this.orchestrator.start().catch(err => {
+        this.logger.error({ event: 'service.orchestrator_start_failed', error: String(err) }, 'Orchestrator failed to start');
+      });
+    }
+
     const intervalMs = this.config.config.polling?.interval_ms ?? 30000;
     this.tickTimer = setInterval(() => this.tick(), intervalMs);
 
@@ -43,7 +53,7 @@ export class Service {
 
   stop(): void {
     if (this.stopping || !this.running) {
-      return; // no-op: either already stopping or never started
+      return;
     }
     this.stopping = true;
 
@@ -58,7 +68,12 @@ export class Service {
     this.stopping = false;
 
     this.logger.info({ event: 'service.stopped' }, 'Shutdown complete');
-    this._resolveStopped();
+
+    if (this.orchestrator) {
+      this.orchestrator.stop().finally(() => this._resolveStopped());
+    } else {
+      this._resolveStopped();
+    }
   }
 
   private tick(): void {
