@@ -32,12 +32,38 @@ export class NotionFeedbackSource implements FeedbackSource {
   }
 
   async fetch(publisher_ref: string): Promise<NotionComment[]> {
-    const response = await this.client.comments.list({ block_id: publisher_ref } as Parameters<NotionClient['comments']['list']>[0]);
-    const comments = response.results as unknown as NotionCommentRecord[];
+    // Collect all raw comment records from the page and every direct child block.
+    // The Notion API only returns comments for the specific block_id supplied — there
+    // is no recursive or "all comments on page" endpoint — so we must enumerate child
+    // blocks and query each one individually.
+    const allComments: NotionCommentRecord[] = [];
+
+    // Page-level comments
+    const pageResponse = await this.client.comments.list({ block_id: publisher_ref } as Parameters<NotionClient['comments']['list']>[0]);
+    allComments.push(...(pageResponse.results as unknown as NotionCommentRecord[]));
+
+    // Inline comments on direct child blocks (paginated)
+    let cursor: string | undefined;
+    do {
+      const blocksResponse = await this.client.blocks.children.list({
+        block_id: publisher_ref,
+        ...(cursor ? { start_cursor: cursor } : {}),
+      } as Parameters<NotionClient['blocks']['children']['list']>[0]);
+
+      const blocks = blocksResponse.results as unknown as Array<{ id: string }>;
+      for (const block of blocks) {
+        const blockComments = await this.client.comments.list({ block_id: block.id } as Parameters<NotionClient['comments']['list']>[0]);
+        allComments.push(...(blockComments.results as unknown as NotionCommentRecord[]));
+      }
+
+      cursor = (blocksResponse as unknown as { has_more: boolean; next_cursor?: string }).has_more
+        ? ((blocksResponse as unknown as { next_cursor?: string }).next_cursor ?? undefined)
+        : undefined;
+    } while (cursor);
 
     // Group comments by discussion_id, only include unresolved
     const threadMap = new Map<string, NotionCommentRecord[]>();
-    for (const comment of comments) {
+    for (const comment of allComments) {
       if (comment.resolved) continue;
       const existing = threadMap.get(comment.discussion_id) ?? [];
       existing.push(comment);

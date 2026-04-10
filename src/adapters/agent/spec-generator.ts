@@ -222,6 +222,7 @@ export class OMCSpecGenerator implements SpecGenerator {
       `>>>`,
     ].filter(line => line !== undefined).join('\n');
 
+    this.logger.debug({ event: 'spec_revision.input', idea_id: feedback.idea_id, notion_comment_count: notion_comments.length, comment_ids: notion_comments.map(c => c.id) }, 'Revise called with Notion comments');
     this.logger.debug({ event: 'omc.invoked', idea_id: feedback.idea_id }, 'Invoking OMC for spec revision');
 
     let artifactPath: string;
@@ -246,6 +247,7 @@ export class OMCSpecGenerator implements SpecGenerator {
       throw new Error(`Failed to read artifact at "${artifactPath}": ${String(err)}`, { cause: err });
     }
 
+    this.logger.debug({ event: 'omc.artifact_content', idea_id: feedback.idea_id, artifactContent }, 'Raw OMC artifact for revision');
     const rawOutput = extractRawOutput(artifactContent, 'Spec revision');
 
     // Parse JSON response
@@ -283,6 +285,7 @@ export class OMCSpecGenerator implements SpecGenerator {
       commentResponses.push({ comment_id: entry['comment_id'], response: entry['response'] });
     }
 
+    this.logger.debug({ event: 'spec_revision.output', idea_id: feedback.idea_id, comment_response_count: commentResponses.length, comment_response_ids: commentResponses.map(r => r.comment_id) }, 'Parsed comment responses from revision');
     writeFileSync(spec_path, obj['spec'] as string, 'utf-8');
     this.logger.info({ event: 'spec.revised', idea_id: feedback.idea_id, spec_path }, 'Spec revised');
 
