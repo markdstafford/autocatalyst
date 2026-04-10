@@ -224,6 +224,7 @@ describe('Orchestrator — spec_feedback happy path', () => {
 
     expect(sg.revise).toHaveBeenCalledWith(
       expect.objectContaining({ idea_id: 'idea-001' }),
+      [],
       '/ws/idea-001/context-human/specs/feature-test.md',
       '/ws/idea-001',
     );
