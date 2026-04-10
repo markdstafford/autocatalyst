@@ -7,6 +7,16 @@ import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 import type { Idea, SpecFeedback } from '../../types/events.js';
 
+export interface NotionComment {
+  id: string;   // discussion ID — used to post the reply
+  body: string; // full thread text: all comments in the discussion concatenated, separated by "\n"
+}
+
+export interface NotionCommentResponse {
+  comment_id: string; // matches NotionComment.id
+  response: string;
+}
+
 const defaultExecFile = promisify(_execFile);
 
 type ExecFn = (file: string, args: string[], opts?: { cwd?: string }) => Promise<{ stdout: string; stderr: string }>;
