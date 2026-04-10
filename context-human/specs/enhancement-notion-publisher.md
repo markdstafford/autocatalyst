@@ -716,8 +716,8 @@ Pages are created on every `new_idea` run and never deleted. A misconfigured or 
       - [ ] All tests from the preceding task pass: `npm test`
     - **Dependencies**: "Task: Update `SpecGenerator` tests for `revise()`"
 
-- [ ] **Story: Orchestrator enrichment and dispatch**
-  - [ ] **Task: Update Orchestrator tests for enrichment and dispatch**
+- [x] **Story: Orchestrator enrichment and dispatch**
+  - [x] **Task: Update Orchestrator tests for enrichment and dispatch**
     - **Description**: Update `tests/core/orchestrator.test.ts`. Update existing `spec_feedback` tests to pass `notion_comments: []` where needed. Add test cases covering all new scenarios from the Section 6 testing plan for the Orchestrator. Tests will fail until the implementation task is complete.
     - **Acceptance criteria**:
       - [ ] All existing orchestrator tests updated and passing
@@ -731,7 +731,7 @@ Pages are created on every `new_idea` run and never deleted. A misconfigured or 
       - [ ] All tests pass: `npm test`
     - **Dependencies**: "Task: Rename `CanvasPublisher` → `SpecPublisher`", "Task: Add `NotionComment`, `NotionCommentResponse` types", "Task: Define `FeedbackSource` interface and implement `NotionFeedbackSource`", "Task: Update `OMCSpecGenerator.revise()`"
 
-  - [ ] **Task: Update `OrchestratorImpl` for feedback enrichment and comment dispatch**
+  - [x] **Task: Update `OrchestratorImpl` for feedback enrichment and comment dispatch**
     - **Description**: Update `src/core/orchestrator.ts`. Add `feedbackSource?: FeedbackSource` to `OrchestratorDeps`. Update `_handleSpecFeedback()` to implement the enrichment and dispatch logic from Section 3: (1) fetch Notion comments via `feedbackSource.fetch(run.publisher_ref)` if source is present, else use `[]`; (2) emit `spec_revision.enriched` log event with `slack_feedback` and `notion_comment_count`; (3) pass `notion_comments` to `specGenerator.revise()`; (4) call `specPublisher.update()`; (5) if `feedbackSource` present and `commentResponses.length > 0`, call `feedbackSource.reply()` for each response then `feedbackSource.resolve()` — step 5 failures log errors but do not fail the run. Update `createRun()` to initialize `publisher_ref: undefined` instead of `canvas_id`.
     - **Acceptance criteria**:
       - [ ] `OrchestratorDeps` has `specPublisher: SpecPublisher` and `feedbackSource?: FeedbackSource`
