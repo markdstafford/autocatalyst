@@ -620,7 +620,7 @@ Pages are created on every `new_idea` run and never deleted. A misconfigured or 
       - [ ] All relative imports use `.js` extensions
     - **Dependencies**: None
 
-- [ ] **Story: NotionPublisher**
+- [x] **Story: NotionPublisher**
   - [x] **Task: Unit tests for `NotionPublisher`**
     - **Description**: Create `tests/adapters/notion/notion-publisher.test.ts`. Use a mock `NotionClient` (all methods `vi.fn()`) and a mock Bolt `App` with `chat.postMessage` mocked. Use real temp files for spec content. Tests will fail until the implementation task is complete. Cover all cases from the Section 6 testing plan for `NotionPublisher`.
     - **Acceptance criteria**:
@@ -638,7 +638,7 @@ Pages are created on every `new_idea` run and never deleted. A misconfigured or 
       - [ ] All tests pass: `npm test`
     - **Dependencies**: "Task: Implement `NotionClient`", "Task: Rename `CanvasPublisher` → `SpecPublisher`"
 
-  - [ ] **Task: Implement `NotionPublisher`**
+  - [x] **Task: Implement `NotionPublisher`**
     - **Description**: Create `src/adapters/notion/notion-publisher.ts`. Implement `NotionPublisher` which implements `SpecPublisher`. Constructor takes `NotionClient`, the Bolt `App` (for posting the Slack message), and `parent_page_id`. Install `@tryfabric/martian` as a dependency and use `markdownToBlocks(content)` for all Markdown-to-blocks conversion. `create()`: reads spec from `spec_path`, derives title via `titleFromPath` (same logic as `SlackCanvasPublisher`), calls `notionClient.pages.create` with `parent: { page_id: parent_page_id }`, `properties: { title }`, and `children: markdownToBlocks(content)`, then calls `app.client.chat.postMessage` with the Notion page URL (`https://notion.so/<page_id>`), and returns `page_id`. `update()`: reads spec, fetches existing child block IDs via `blocks.children.list`, deletes each sequentially via `blocks.delete`, then appends new blocks via `blocks.children.append`. Uses `createLogger('notion-publisher')`. All relative imports use `.js` extensions.
     - **Acceptance criteria**:
       - [ ] `NotionPublisher` implements `SpecPublisher` interface
@@ -653,8 +653,8 @@ Pages are created on every `new_idea` run and never deleted. A misconfigured or 
       - [ ] All tests from the preceding task pass: `npm test`
     - **Dependencies**: "Task: Unit tests for `NotionPublisher`"
 
-- [ ] **Story: NotionFeedbackSource**
-  - [ ] **Task: Unit tests for `NotionFeedbackSource`**
+- [x] **Story: NotionFeedbackSource**
+  - [x] **Task: Unit tests for `NotionFeedbackSource`**
     - **Description**: Create `tests/adapters/notion/notion-feedback-source.test.ts`. Use a mock `NotionClient` (all methods `vi.fn()`). Tests will fail until the implementation task is complete. Cover all cases from the Section 6 testing plan for `NotionFeedbackSource`.
     - **Acceptance criteria**:
       - [ ] `fetch` returns only unresolved threads; resolved threads excluded
@@ -672,7 +672,7 @@ Pages are created on every `new_idea` run and never deleted. A misconfigured or 
       - [ ] All tests pass: `npm test`
     - **Dependencies**: "Task: Implement `NotionClient`", "Task: Add `NotionComment`, `NotionCommentResponse` types"
 
-  - [ ] **Task: Define `FeedbackSource` interface and implement `NotionFeedbackSource`**
+  - [x] **Task: Define `FeedbackSource` interface and implement `NotionFeedbackSource`**
     - **Description**: Create `src/adapters/notion/notion-feedback-source.ts`. Export the `FeedbackSource` interface with three methods: `fetch(publisher_ref: string): Promise<NotionComment[]>`, `reply(publisher_ref: string, comment_id: string, response: string): Promise<void>`, and `resolve(publisher_ref: string, comment_ids: string[]): Promise<void>`. Implement `NotionFeedbackSource` which takes `NotionClient` in its constructor. `fetch()`: calls `comments.list` with `block_id: publisher_ref`, filters to `resolved === false`, formats each thread as `{author_name}: {plain_text}` per comment joined by `"\n"` (falling back to `created_by.id` when `name` is absent), and returns `{ id: discussion_id, body }[]`. `reply()`: calls `comments.create` with `discussion_id: comment_id` and a `rich_text` entry. `resolve()`: for each ID calls `comments.update` with `{ resolved: true }`; catches 404/405 errors, emits `notion_comments.resolve_skipped` at `warn` level, and continues. Uses `createLogger('notion-feedback-source')`. All relative imports use `.js` extensions.
     - **Acceptance criteria**:
       - [ ] `FeedbackSource` interface exported with correct method signatures
