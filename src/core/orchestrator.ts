@@ -190,6 +190,8 @@ export class OrchestratorImpl implements Orchestrator {
       return;
     }
 
+    this.logger.debug({ event: 'spec_revision.responses', run_id: run.id, idea_id: run.idea_id, comment_response_count: commentResponses?.length ?? 0, comment_response_ids: commentResponses?.map(r => r.comment_id) ?? [] }, 'Comment responses returned from revise()');
+
     // Step 3: Update published page
     try {
       await this.deps.specPublisher.update(run.publisher_ref, run.spec_path);
