@@ -13,7 +13,11 @@ import { SlackAdapter } from './adapters/slack/slack-adapter.js';
 import { WorkspaceManagerImpl } from './core/workspace-manager.js';
 import { OMCSpecGenerator } from './adapters/agent/spec-generator.js';
 import { SlackCanvasPublisher } from './adapters/slack/canvas-publisher.js';
+import type { SpecPublisher } from './adapters/slack/canvas-publisher.js';
 import { OrchestratorImpl } from './core/orchestrator.js';
+import { NotionClientImpl } from './adapters/notion/notion-client.js';
+import { NotionPublisher } from './adapters/notion/notion-publisher.js';
+import { NotionFeedbackSource, type FeedbackSource } from './adapters/notion/notion-feedback-source.js';
 
 const logger = createLogger('cli');
 
@@ -102,13 +106,36 @@ try {
 
   const workspaceManager = new WorkspaceManagerImpl(workspaceRoot);
   const specGenerator = new OMCSpecGenerator();
-  const specPublisher = new SlackCanvasPublisher(boltApp);
+
+  let specPublisher: SpecPublisher;
+  let feedbackSource: FeedbackSource | undefined;
+
+  if (currentConfig.config.notion) {
+    const notionToken = process.env['AC_NOTION_INTEGRATION_TOKEN'];
+    if (!notionToken) {
+      logger.error({ event: 'config.parse_error' }, 'AC_NOTION_INTEGRATION_TOKEN is required when notion config is present');
+      process.exit(1);
+    }
+    const parentPageId = currentConfig.config.notion.parent_page_id;
+    if (!parentPageId) {
+      logger.error({ event: 'config.parse_error' }, 'notion.parent_page_id is required in WORKFLOW.md');
+      process.exit(1);
+    }
+    const notionClient = new NotionClientImpl({ integration_token: notionToken });
+    specPublisher = new NotionPublisher(notionClient, boltApp, parentPageId);
+    feedbackSource = new NotionFeedbackSource(notionClient);
+    logger.info({ event: 'service.config', publisher: 'notion' }, 'Using Notion publisher');
+  } else {
+    specPublisher = new SlackCanvasPublisher(boltApp);
+    logger.info({ event: 'service.config', publisher: 'slack-canvas' }, 'Using Slack canvas publisher');
+  }
 
   const orchestrator = new OrchestratorImpl({
     adapter,
     workspaceManager,
     specGenerator,
     specPublisher,
+    feedbackSource,
     postError: async (channel_id, thread_ts, text) => {
       await boltApp.client.chat.postMessage({ channel: channel_id, thread_ts, text });
     },
