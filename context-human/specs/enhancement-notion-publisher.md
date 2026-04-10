@@ -687,7 +687,7 @@ Pages are created on every `new_idea` run and never deleted. A misconfigured or 
       - [ ] All tests from the preceding task pass: `npm test`
     - **Dependencies**: "Task: Unit tests for `NotionFeedbackSource`"
 
-- [ ] **Story: SpecGenerator revision update**
+- [x] **Story: SpecGenerator revision update**
   - [x] **Task: Update `SpecGenerator` tests for `revise()`**
     - **Description**: Update `tests/adapters/agent/spec-generator.test.ts`. Add the new `notion_comments` argument to all existing `revise()` call sites (passing `[]` to preserve existing behavior). Add new test cases covering all scenarios from the Section 6 testing plan for `SpecGenerator.revise()`. Tests will fail until the implementation task is complete.
     - **Acceptance criteria**:
@@ -702,7 +702,7 @@ Pages are created on every `new_idea` run and never deleted. A misconfigured or 
       - [ ] All tests pass: `npm test`
     - **Dependencies**: "Task: Add `NotionComment`, `NotionCommentResponse` types"
 
-  - [ ] **Task: Update `OMCSpecGenerator.revise()` — new signature, JSON prompt, and parsing**
+  - [x] **Task: Update `OMCSpecGenerator.revise()` — new signature, JSON prompt, and parsing**
     - **Description**: Update `src/adapters/agent/spec-generator.ts`. Change the `revise()` signature to `revise(feedback: SpecFeedback, notion_comments: NotionComment[], spec_path: string, workspace_path: string): Promise<NotionCommentResponse[]>`. Update the prompt to include the Notion comments section (formatted as `[COMMENT_ID: <id>]\n<body>` per comment) and the JSON shape example when `notion_comments` is non-empty; omit the Notion section and instruct `comment_responses: []` when empty. After OMC completes, extract the `## Raw output` section using the existing depth-tracking logic, parse as JSON, validate that `spec` is a non-empty string and `comment_responses` is an array of `{ comment_id: string; response: string }`, write `spec` to `spec_path`, and return `comment_responses`. Throw descriptive errors for all validation failures.
     - **Acceptance criteria**:
       - [ ] `revise()` signature updated to accept `notion_comments: NotionComment[]` and return `Promise<NotionCommentResponse[]>`
