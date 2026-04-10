@@ -7,8 +7,8 @@ slack:
   bot_token: ${AC_SLACK_BOT_TOKEN}
   app_token: ${AC_SLACK_APP_TOKEN}
   channel_name: ac-recursive
-# notion:
-#   parent_page_id: YOUR_NOTION_PARENT_PAGE_ID  # The page ID under which specs will be created
+notion:
+  parent_page_id: 33e4409428b780a2a9cfd3e38f06b8e4
 # Note: Set AC_NOTION_INTEGRATION_TOKEN as an environment variable (not in this file)
 ---
 
