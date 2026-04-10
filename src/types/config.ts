@@ -11,6 +11,9 @@ export interface WorkflowConfig {
     channel_name?: string;
     approval_emojis?: string[];
   };
+  notion?: {
+    parent_page_id?: string;
+  };
   [key: string]: unknown;
 }
 

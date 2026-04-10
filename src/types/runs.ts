@@ -9,7 +9,7 @@ export interface Run {
   workspace_path: string;
   branch: string;
   spec_path: string | undefined;
-  canvas_id: string | undefined;
+  publisher_ref: string | undefined; // Notion page ID or Slack canvas ID
   attempt: number;
   created_at: string; // ISO 8601
   updated_at: string; // ISO 8601
