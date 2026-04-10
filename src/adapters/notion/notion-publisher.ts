@@ -51,7 +51,7 @@ export class NotionPublisher implements SpecPublisher {
     });
 
     const pageId = page.id;
-    const pageUrl = `https://notion.so/${pageId}`;
+    const pageUrl = `https://notion.so/${pageId.replace(/-/g, '')}`;
 
     await this.app.client.chat.postMessage({
       channel: channel_id,
@@ -69,6 +69,10 @@ export class NotionPublisher implements SpecPublisher {
 
     // Fetch existing child block IDs
     const existing = await this.client.blocks.children.list({ block_id: publisher_ref });
+    // Guard: Notion paginates at 100 blocks; throw loudly rather than silently corrupting the page
+    if ((existing as { has_more?: boolean }).has_more) {
+      throw new Error(`Notion page ${publisher_ref} has more than 100 blocks; pagination not yet supported`);
+    }
     const blockIds = existing.results.map((b: { id: string }) => b.id);
 
     // Delete each existing block sequentially

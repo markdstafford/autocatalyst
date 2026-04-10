@@ -130,7 +130,7 @@ describe('NotionPublisher.create', () => {
   });
 
   it('calls postMessage after pages.create with Notion page URL', async () => {
-    const client = makeMockNotionClient('page-abc123');
+    const client = makeMockNotionClient('page-abc-123-xyz');
     const app = makeMockApp();
     const publisher = new NotionPublisher(client, app as unknown as App, 'parent-page-xyz', { logDestination: nullDest });
     const specPath = makeSpecFile();
@@ -138,7 +138,7 @@ describe('NotionPublisher.create', () => {
     const callOrder: string[] = [];
     (client.pages.create as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
       callOrder.push('pages.create');
-      return { id: 'page-abc123' };
+      return { id: 'page-abc-123-xyz' };
     });
     (app.client.chat.postMessage as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
       callOrder.push('postMessage');
@@ -152,7 +152,7 @@ describe('NotionPublisher.create', () => {
       expect.objectContaining({
         channel: 'C123',
         thread_ts: '100.0',
-        text: expect.stringContaining('page-abc123'),
+        text: expect.stringContaining('pageabc123xyz'),
       }),
     );
   });
@@ -265,5 +265,18 @@ describe('NotionPublisher.update', () => {
     await publisher.update('page-xyz', makeSpecFile());
 
     expect(app.client.chat.postMessage).not.toHaveBeenCalled();
+  });
+
+  it('throws if blocks.children.list returns has_more: true', async () => {
+    const client = makeMockNotionClient();
+    (client.blocks.children.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      results: [{ id: 'block-1' }],
+      has_more: true,
+    });
+    const app = makeMockApp();
+    const publisher = new NotionPublisher(client, app as unknown as App, 'parent-page-xyz', { logDestination: nullDest });
+
+    await expect(publisher.update('page-xyz', makeSpecFile())).rejects.toThrow(/pagination not yet supported/i);
+    expect(client.blocks.delete).not.toHaveBeenCalled();
   });
 });

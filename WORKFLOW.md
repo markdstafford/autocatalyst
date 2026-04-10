@@ -8,8 +8,8 @@ slack:
   app_token: ${AC_SLACK_APP_TOKEN}
   channel_name: ac-recursive
 # notion:
-#   integration_token: ${AC_NOTION_INTEGRATION_TOKEN}
 #   parent_page_id: YOUR_NOTION_PARENT_PAGE_ID  # The page ID under which specs will be created
+# Note: Set AC_NOTION_INTEGRATION_TOKEN as an environment variable (not in this file)
 ---
 
 You are working on an idea for the autocatalyst project.

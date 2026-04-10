@@ -12,7 +12,6 @@ export interface WorkflowConfig {
     approval_emojis?: string[];
   };
   notion?: {
-    integration_token?: string;
     parent_page_id?: string;
   };
   [key: string]: unknown;
