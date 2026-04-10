@@ -5,7 +5,7 @@ import { createLogger } from './logger.js';
 import type { SlackAdapter } from '../adapters/slack/slack-adapter.js';
 import type { WorkspaceManager } from './workspace-manager.js';
 import type { SpecGenerator } from '../adapters/agent/spec-generator.js';
-import type { CanvasPublisher } from '../adapters/slack/canvas-publisher.js';
+import type { SpecPublisher } from '../adapters/slack/canvas-publisher.js';
 import type { Run, RunStage } from '../types/runs.js';
 import type { Idea, SpecFeedback } from '../types/events.js';
 
@@ -18,7 +18,7 @@ interface OrchestratorDeps {
   adapter: SlackAdapter;
   workspaceManager: WorkspaceManager;
   specGenerator: SpecGenerator;
-  canvasPublisher: CanvasPublisher;
+  specPublisher: SpecPublisher;
   postError: (channel_id: string, thread_ts: string, text: string) => Promise<void>;
   repo_url: string;
 }
@@ -77,7 +77,7 @@ export class OrchestratorImpl implements Orchestrator {
       workspace_path: '',
       branch: '',
       spec_path: undefined,
-      canvas_id: undefined,
+      publisher_ref: undefined,
       attempt: 0,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -124,10 +124,10 @@ export class OrchestratorImpl implements Orchestrator {
     }
 
     // Step 3: Publish canvas
-    let canvas_id: string;
+    let publisher_ref: string;
     try {
-      canvas_id = await this.deps.canvasPublisher.create(idea.channel_id, idea.thread_ts, spec_path);
-      run.canvas_id = canvas_id;
+      publisher_ref = await this.deps.specPublisher.create(idea.channel_id, idea.thread_ts, spec_path);
+      run.publisher_ref = publisher_ref;
     } catch (err) {
       await this.deps.workspaceManager.destroy(workspace_path);
       await this.failRun(run, idea.channel_id, idea.thread_ts, err);
@@ -141,8 +141,8 @@ export class OrchestratorImpl implements Orchestrator {
     const run = this.runs.get(feedback.idea_id);
     if (!run || run.stage !== 'review') return; // discard if not found or not in review
 
-    if (!run.spec_path || !run.canvas_id) {
-      await this.failRun(run, feedback.channel_id, feedback.thread_ts, new Error('Run in review state is missing spec_path or canvas_id'));
+    if (!run.spec_path || !run.publisher_ref) {
+      await this.failRun(run, feedback.channel_id, feedback.thread_ts, new Error('Run in review state is missing spec_path or publisher_ref'));
       return;
     }
 
@@ -162,7 +162,7 @@ export class OrchestratorImpl implements Orchestrator {
 
     // Step 2: Update canvas
     try {
-      await this.deps.canvasPublisher.update(run.canvas_id, run.spec_path);
+      await this.deps.specPublisher.update(run.publisher_ref, run.spec_path);
     } catch (err) {
       await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
       return;

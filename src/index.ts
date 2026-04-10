@@ -102,13 +102,13 @@ try {
 
   const workspaceManager = new WorkspaceManagerImpl(workspaceRoot);
   const specGenerator = new OMCSpecGenerator();
-  const canvasPublisher = new SlackCanvasPublisher(boltApp);
+  const specPublisher = new SlackCanvasPublisher(boltApp);
 
   const orchestrator = new OrchestratorImpl({
     adapter,
     workspaceManager,
     specGenerator,
-    canvasPublisher,
+    specPublisher,
     postError: async (channel_id, thread_ts, text) => {
       await boltApp.client.chat.postMessage({ channel: channel_id, thread_ts, text });
     },

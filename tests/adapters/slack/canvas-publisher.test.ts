@@ -44,7 +44,7 @@ function makeMockApp(canvasId = 'CANVAS001') {
   };
 }
 
-describe('CanvasPublisher.create', () => {
+describe('SpecPublisher.create', () => {
   it('calls canvases.create with spec file content', async () => {
     const mock = makeMockApp();
     const specPath = makeSpecFile('# My Spec\n\ncontent');
@@ -116,7 +116,7 @@ describe('CanvasPublisher.create', () => {
   });
 });
 
-describe('CanvasPublisher.update', () => {
+describe('SpecPublisher.update', () => {
   it('calls canvases.edit with canvas_id and updated spec content', async () => {
     const mock = makeMockApp();
     const specPath = makeSpecFile('# Revised Spec\n\nnew content');

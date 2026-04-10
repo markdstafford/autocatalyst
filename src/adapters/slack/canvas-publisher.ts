@@ -5,16 +5,16 @@ import type { App } from '@slack/bolt';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 
-export interface CanvasPublisher {
+export interface SpecPublisher {
   create(channel_id: string, thread_ts: string, spec_path: string): Promise<string>;
-  update(canvas_id: string, spec_path: string): Promise<void>;
+  update(publisher_ref: string, spec_path: string): Promise<void>;
 }
 
 interface CanvasPublisherOptions {
   logDestination?: pino.DestinationStream;
 }
 
-export class SlackCanvasPublisher implements CanvasPublisher {
+export class SlackCanvasPublisher implements SpecPublisher {
   private readonly app: App;
   private readonly logger: pino.Logger;
   private workspaceUrl: string | undefined;
