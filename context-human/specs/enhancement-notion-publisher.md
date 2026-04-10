@@ -750,7 +750,7 @@ Pages are created on every `new_idea` run and never deleted. A misconfigured or 
     - **Dependencies**: "Task: Update Orchestrator tests for enrichment and dispatch"
 
 - [ ] **Story: Wiring and configuration**
-  - [ ] **Task: Update `src/index.ts` to wire `NotionPublisher` and `NotionFeedbackSource`**
+  - [x] **Task: Update `src/index.ts` to wire `NotionPublisher` and `NotionFeedbackSource`**
     - **Description**: Update `src/index.ts`. When `config.notion` is present, read `AC_NOTION_INTEGRATION_TOKEN` from `process.env` (exit with code 1 and a descriptive error if absent), create `NotionClientImpl`, create `NotionPublisher` and `NotionFeedbackSource`, and pass them to `OrchestratorDeps` as `specPublisher` and `feedbackSource`. When `config.notion` is absent, create `SlackCanvasPublisher` as `specPublisher` and omit `feedbackSource` (existing behavior). All relative imports use `.js` extensions.
     - **Acceptance criteria**:
       - [ ] `config.notion` present + `AC_NOTION_INTEGRATION_TOKEN` set: `NotionPublisher` and `NotionFeedbackSource` created and wired
