@@ -251,7 +251,7 @@ export class OMCSpecGenerator implements SpecGenerator {
     // Parse JSON response
     let parsed: unknown;
     try {
-      parsed = JSON.parse(rawOutput.trim());
+      parsed = JSON.parse(unwrapFence(rawOutput.trim()));
     } catch {
       throw new Error(`Spec revision: OMC response is not valid JSON`);
     }
