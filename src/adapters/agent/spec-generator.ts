@@ -25,7 +25,12 @@ const FILENAME_REGEX = /^(feature|enhancement)-[a-z0-9-]+\.md$/;
 
 export interface SpecGenerator {
   create(idea: Idea, workspace_path: string): Promise<string>;
-  revise(feedback: SpecFeedback, spec_path: string, workspace_path: string): Promise<void>;
+  revise(
+    feedback: SpecFeedback,
+    notion_comments: NotionComment[],
+    spec_path: string,
+    workspace_path: string,
+  ): Promise<NotionCommentResponse[]>;
 }
 
 interface SpecGeneratorOptions {
@@ -163,22 +168,59 @@ export class OMCSpecGenerator implements SpecGenerator {
     return spec_path;
   }
 
-  async revise(feedback: SpecFeedback, spec_path: string, workspace_path: string): Promise<void> {
+  async revise(
+    feedback: SpecFeedback,
+    notion_comments: NotionComment[],
+    spec_path: string,
+    workspace_path: string,
+  ): Promise<NotionCommentResponse[]> {
     const currentSpec = readFileSync(spec_path, 'utf-8');
 
+    const notionSection = notion_comments.length > 0
+      ? [
+          ``,
+          `Notion page comments:`,
+          `<<<`,
+          ...notion_comments.map(c => `[COMMENT_ID: ${c.id}]\n${c.body}`),
+          `>>>`,
+        ].join('\n')
+      : '';
+
+    const shapeLines = notion_comments.length > 0
+      ? [
+          `Your response must match this shape exactly:`,
+          `{`,
+          `  "spec": "<complete revised spec as a Markdown string — preserve YAML frontmatter>",`,
+          `  "comment_responses": [`,
+          `    { "comment_id": "<id from [COMMENT_ID:] tag>", "response": "<1-2 sentences explaining how this comment was addressed>" }`,
+          `  ]`,
+          `}`,
+        ]
+      : [
+          `Your response must match this shape exactly:`,
+          `{`,
+          `  "spec": "<complete revised spec as a Markdown string — preserve YAML frontmatter>",`,
+          `  "comment_responses": []`,
+          `}`,
+          `Return "comment_responses": [] since there are no Notion comments.`,
+        ];
+
     const prompt = [
-      `Revise the spec below based on the feedback. Return the complete revised spec as a Markdown document.`,
+      `Revise the spec below based on the following feedback. Respond with only a JSON object — no other text before or after it.`,
       ``,
-      `Feedback:`,
+      ...shapeLines,
+      ``,
+      `Slack message:`,
       `<<<`,
       feedback.content,
       `>>>`,
+      notionSection,
       ``,
       `Current spec:`,
       `<<<`,
       currentSpec,
       `>>>`,
-    ].join('\n');
+    ].filter(line => line !== undefined).join('\n');
 
     this.logger.debug({ event: 'omc.invoked', idea_id: feedback.idea_id }, 'Invoking OMC for spec revision');
 
@@ -204,18 +246,46 @@ export class OMCSpecGenerator implements SpecGenerator {
       throw new Error(`Failed to read artifact at "${artifactPath}": ${String(err)}`, { cause: err });
     }
 
-    // For revision, OMC returns the full revised spec in ## Raw output (no FILENAME line required,
-    // but if present we strip it). Unwrap any markdown code fence, then write back to spec_path.
     const rawOutput = extractRawOutput(artifactContent, 'Spec revision');
-    let revisedBody = rawOutput.trimStart();
-    // Strip leading FILENAME: line if present (revision may omit it)
-    if (revisedBody.startsWith('FILENAME:')) {
-      revisedBody = revisedBody.split('\n').slice(1).join('\n').trimStart();
-    }
-    // Claude may wrap the revised spec in a ```markdown fence — unwrap it
-    revisedBody = unwrapFence(revisedBody).trimStart();
 
-    writeFileSync(spec_path, revisedBody, 'utf-8');
+    // Parse JSON response
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawOutput.trim());
+    } catch {
+      throw new Error(`Spec revision: OMC response is not valid JSON`);
+    }
+
+    if (typeof parsed !== 'object' || parsed === null) {
+      throw new Error(`Spec revision: OMC response is not a JSON object`);
+    }
+    const obj = parsed as Record<string, unknown>;
+
+    if (typeof obj['spec'] !== 'string' || obj['spec'].length === 0) {
+      throw new Error(`Spec revision: JSON response missing non-empty "spec" field`);
+    }
+    if (!Array.isArray(obj['comment_responses'])) {
+      throw new Error(`Spec revision: JSON response missing "comment_responses" array`);
+    }
+
+    const commentResponses: NotionCommentResponse[] = [];
+    for (const item of obj['comment_responses'] as unknown[]) {
+      if (typeof item !== 'object' || item === null) {
+        throw new Error(`Spec revision: comment_responses entry is not an object`);
+      }
+      const entry = item as Record<string, unknown>;
+      if (typeof entry['comment_id'] !== 'string') {
+        throw new Error(`Spec revision: comment_responses entry missing string "comment_id"`);
+      }
+      if (typeof entry['response'] !== 'string') {
+        throw new Error(`Spec revision: comment_responses entry missing string "response"`);
+      }
+      commentResponses.push({ comment_id: entry['comment_id'], response: entry['response'] });
+    }
+
+    writeFileSync(spec_path, obj['spec'] as string, 'utf-8');
     this.logger.info({ event: 'spec.revised', idea_id: feedback.idea_id, spec_path }, 'Spec revised');
+
+    return commentResponses;
   }
 }

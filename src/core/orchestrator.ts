@@ -151,7 +151,7 @@ export class OrchestratorImpl implements Orchestrator {
 
     // Step 1: Revise spec
     try {
-      await this.deps.specGenerator.revise(feedback, run.spec_path, run.workspace_path);
+      await this.deps.specGenerator.revise(feedback, [], run.spec_path, run.workspace_path);
     } catch (err) {
       await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
       return;
