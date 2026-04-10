@@ -8,6 +8,8 @@ import type { SpecGenerator } from '../adapters/agent/spec-generator.js';
 import type { SpecPublisher } from '../adapters/slack/canvas-publisher.js';
 import type { Run, RunStage } from '../types/runs.js';
 import type { Idea, SpecFeedback } from '../types/events.js';
+import type { FeedbackSource } from '../adapters/notion/notion-feedback-source.js';
+import type { NotionComment } from '../adapters/agent/spec-generator.js';
 
 export interface Orchestrator {
   start(): Promise<void>;
@@ -19,6 +21,7 @@ interface OrchestratorDeps {
   workspaceManager: WorkspaceManager;
   specGenerator: SpecGenerator;
   specPublisher: SpecPublisher;
+  feedbackSource?: FeedbackSource;
   postError: (channel_id: string, thread_ts: string, text: string) => Promise<void>;
   repo_url: string;
 }
@@ -42,6 +45,16 @@ export class OrchestratorImpl implements Orchestrator {
   async start(): Promise<void> {
     await this.deps.adapter.start();
     this._loopPromise = this._runLoop();
+
+    // Wrap adapter.stop so that calling it directly (e.g. in tests) also drains
+    // any in-flight event handler before returning.  orch.stop() already awaits
+    // _loopPromise; this ensures the same guarantee even when callers bypass it.
+    const adapter = this.deps.adapter as unknown as { stop: () => Promise<void> };
+    const originalStop = adapter.stop.bind(this.deps.adapter);
+    adapter.stop = async () => {
+      await originalStop();
+      await this._loopPromise;
+    };
   }
 
   async stop(): Promise<void> {
@@ -139,7 +152,7 @@ export class OrchestratorImpl implements Orchestrator {
 
   private async _handleSpecFeedback(feedback: SpecFeedback): Promise<void> {
     const run = this.runs.get(feedback.idea_id);
-    if (!run || run.stage !== 'review') return; // discard if not found or not in review
+    if (!run || run.stage !== 'review') return;
 
     if (!run.spec_path || !run.publisher_ref) {
       await this.failRun(run, feedback.channel_id, feedback.thread_ts, new Error('Run in review state is missing spec_path or publisher_ref'));
@@ -149,23 +162,56 @@ export class OrchestratorImpl implements Orchestrator {
     this.transition(run, 'speccing');
     run.attempt += 1;
 
-    // Step 1: Revise spec
+    // Step 1: Fetch Notion comments if a feedback source is configured
+    let notionComments: NotionComment[] = [];
+    if (this.deps.feedbackSource) {
+      try {
+        notionComments = await this.deps.feedbackSource.fetch(run.publisher_ref);
+      } catch (err) {
+        await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
+        return;
+      }
+    }
+
+    this.logger.debug({
+      event: 'spec_revision.enriched',
+      run_id: run.id,
+      idea_id: run.idea_id,
+      slack_feedback: feedback.content.length > 0,
+      notion_comment_count: notionComments.length,
+    }, 'Revision enriched with feedback sources');
+
+    // Step 2: Revise spec
+    let commentResponses;
     try {
-      await this.deps.specGenerator.revise(feedback, [], run.spec_path, run.workspace_path);
+      commentResponses = await this.deps.specGenerator.revise(feedback, notionComments, run.spec_path, run.workspace_path);
     } catch (err) {
       await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
       return;
     }
 
-    // Note: workspace is intentionally NOT destroyed on revision failure — preserve it for debugging.
-    // This differs from new-idea failures where the workspace is always cleaned up.
-
-    // Step 2: Update canvas
+    // Step 3: Update published page
     try {
       await this.deps.specPublisher.update(run.publisher_ref, run.spec_path);
     } catch (err) {
       await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
       return;
+    }
+
+    // Step 4: Dispatch comment responses (best-effort — failures don't fail the run)
+    if (this.deps.feedbackSource && commentResponses && commentResponses.length > 0) {
+      for (const cr of commentResponses) {
+        try {
+          await this.deps.feedbackSource.reply(run.publisher_ref, cr.comment_id, cr.response);
+        } catch (err) {
+          this.logger.error({ event: 'run.reply_failed', run_id: run.id, comment_id: cr.comment_id, error: String(err) }, 'Failed to reply to Notion comment');
+        }
+      }
+      try {
+        await this.deps.feedbackSource.resolve(run.publisher_ref, commentResponses.map(r => r.comment_id));
+      } catch (err) {
+        this.logger.error({ event: 'run.resolve_failed', run_id: run.id, error: String(err) }, 'Failed to resolve Notion comments');
+      }
     }
 
     this.transition(run, 'review');
