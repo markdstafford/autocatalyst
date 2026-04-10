@@ -26,3 +26,6 @@ venv/
 # Ephemeral implementation plans
 .superpowers-plans/
 context-human/.superpowers-plans/
+
+# Friction logs
+.eng-docs/.friction-logs/
