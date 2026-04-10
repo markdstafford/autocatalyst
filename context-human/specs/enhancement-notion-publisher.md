@@ -749,7 +749,7 @@ Pages are created on every `new_idea` run and never deleted. A misconfigured or 
       - [ ] All tests from the preceding task pass: `npm test`
     - **Dependencies**: "Task: Update Orchestrator tests for enrichment and dispatch"
 
-- [ ] **Story: Wiring and configuration**
+- [x] **Story: Wiring and configuration**
   - [x] **Task: Update `src/index.ts` to wire `NotionPublisher` and `NotionFeedbackSource`**
     - **Description**: Update `src/index.ts`. When `config.notion` is present, read `AC_NOTION_INTEGRATION_TOKEN` from `process.env` (exit with code 1 and a descriptive error if absent), create `NotionClientImpl`, create `NotionPublisher` and `NotionFeedbackSource`, and pass them to `OrchestratorDeps` as `specPublisher` and `feedbackSource`. When `config.notion` is absent, create `SlackCanvasPublisher` as `specPublisher` and omit `feedbackSource` (existing behavior). All relative imports use `.js` extensions.
     - **Acceptance criteria**:
@@ -760,7 +760,7 @@ Pages are created on every `new_idea` run and never deleted. A misconfigured or 
       - [ ] All relative imports use `.js` extensions
     - **Dependencies**: "Task: Implement `NotionPublisher`", "Task: Define `FeedbackSource` interface and implement `NotionFeedbackSource`", "Task: Update `OrchestratorImpl` for feedback enrichment and comment dispatch"
 
-  - [ ] **Task: Add `notion` block to `WORKFLOW.md` config template**
+  - [x] **Task: Add `notion` block to `WORKFLOW.md` config template**
     - **Description**: Update `WORKFLOW.md` in the repo root to add the `notion` config block as an optional, commented-out section. Follow the same pattern as the `slack` block: reference `AC_NOTION_INTEGRATION_TOKEN` via `${AC_NOTION_INTEGRATION_TOKEN}` interpolation and include a placeholder comment for `parent_page_id`.
     - **Acceptance criteria**:
       - [ ] `WORKFLOW.md` contains a `notion` config block (commented out by default)
