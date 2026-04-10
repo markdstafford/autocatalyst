@@ -688,7 +688,7 @@ Pages are created on every `new_idea` run and never deleted. A misconfigured or 
     - **Dependencies**: "Task: Unit tests for `NotionFeedbackSource`"
 
 - [ ] **Story: SpecGenerator revision update**
-  - [ ] **Task: Update `SpecGenerator` tests for `revise()`**
+  - [x] **Task: Update `SpecGenerator` tests for `revise()`**
     - **Description**: Update `tests/adapters/agent/spec-generator.test.ts`. Add the new `notion_comments` argument to all existing `revise()` call sites (passing `[]` to preserve existing behavior). Add new test cases covering all scenarios from the Section 6 testing plan for `SpecGenerator.revise()`. Tests will fail until the implementation task is complete.
     - **Acceptance criteria**:
       - [ ] All existing `revise()` test cases updated with `notion_comments: []` argument
