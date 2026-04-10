@@ -27,5 +27,8 @@ venv/
 .superpowers-plans/
 context-human/.superpowers-plans/
 
+# eng-docs (project uses context-human/ structure)
+.eng-docs/
+
 # Friction logs
-.eng-docs/.friction-logs/
+context-human/.friction-logs/
