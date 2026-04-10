@@ -26,3 +26,9 @@ venv/
 # Ephemeral implementation plans
 .superpowers-plans/
 context-human/.superpowers-plans/
+
+# eng-docs (project uses context-human/ structure)
+.eng-docs/
+
+# Friction logs
+context-human/.friction-logs/
