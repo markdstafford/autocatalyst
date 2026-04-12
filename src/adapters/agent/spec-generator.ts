@@ -141,8 +141,7 @@ export class OMCSpecGenerator implements SpecGenerator {
 
   async create(idea: Idea, workspace_path: string): Promise<string> {
     const prompt = [
-      `Using mm:planning conventions, generate a SHORT product spec for the following idea.`,
-      `Only include these sections: What, Why, Personas, and Narratives. No tech spec, no task list.`,
+      `Using mm:planning conventions, generate a complete product spec for the following idea.`,
       ``,
       `On the very first line of your response, write: FILENAME: <feature-or-enhancement-slug>.md`,
       `Then write the spec as a Markdown document with YAML frontmatter.`,
