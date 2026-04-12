@@ -147,6 +147,9 @@ try {
     postError: async (channel_id, thread_ts, text) => {
       await boltApp.client.chat.postMessage({ channel: channel_id, thread_ts, text });
     },
+    postMessage: async (channel_id, thread_ts, text) => {
+      await boltApp.client.chat.postMessage({ channel: channel_id, thread_ts, text });
+    },
     repo_url,
   });
 

@@ -23,6 +23,7 @@ interface OrchestratorDeps {
   specPublisher: SpecPublisher;
   feedbackSource?: FeedbackSource;
   postError: (channel_id: string, thread_ts: string, text: string) => Promise<void>;
+  postMessage: (channel_id: string, thread_ts: string, text: string) => Promise<void>;
   repo_url: string;
 }
 
@@ -220,6 +221,18 @@ export class OrchestratorImpl implements Orchestrator {
           this.logger.error({ event: 'run.reply_failed', run_id: run.id, comment_id: cr.comment_id, error: String(err) }, 'Failed to reply to Notion comment');
         }
       }
+    }
+
+    // Step 5: Notify user that comment processing is complete
+    const count = commentResponses?.length ?? 0;
+    const noun = count === 1 ? 'comment' : 'comments';
+    const summary = count > 0
+      ? `Done \u2014 responded to ${count} ${noun}. The spec is ready for another look.`
+      : `Done \u2014 the spec has been updated. Ready for another look.`;
+    try {
+      await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, summary);
+    } catch (err) {
+      this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post completion notification');
     }
 
     this.transition(run, 'review');
