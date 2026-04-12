@@ -26,6 +26,10 @@ venv/
 # Ephemeral implementation plans
 .superpowers-plans/
 context-human/.superpowers-plans/
+docs/plans/
+
+# oh-my-claudecode
+.omc/
 
 # eng-docs (project uses context-human/ structure)
 .eng-docs/
