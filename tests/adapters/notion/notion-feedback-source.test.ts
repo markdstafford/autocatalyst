@@ -11,14 +11,11 @@ function makeMockClient(): NotionClient {
     blocks: {
       children: {
         list: vi.fn().mockResolvedValue({ results: [], has_more: false }),
-        append: vi.fn(),
       },
-      delete: vi.fn(),
     },
     comments: {
       list: vi.fn(),
       create: vi.fn().mockResolvedValue({}),
-      update: vi.fn().mockResolvedValue(undefined),
     },
   };
 }
@@ -250,57 +247,3 @@ describe('NotionFeedbackSource.reply', () => {
   });
 });
 
-describe('NotionFeedbackSource.resolve', () => {
-  it('calls comments.update once per ID', async () => {
-    const client = makeMockClient();
-    const source = new NotionFeedbackSource(client, { logDestination: nullDest });
-
-    await source.resolve('page-abc', ['disc-1', 'disc-2', 'disc-3']);
-
-    expect(client.comments.update).toHaveBeenCalledTimes(3);
-    expect(client.comments.update).toHaveBeenCalledWith('disc-1');
-    expect(client.comments.update).toHaveBeenCalledWith('disc-2');
-    expect(client.comments.update).toHaveBeenCalledWith('disc-3');
-  });
-
-  it('empty array: no API calls made', async () => {
-    const client = makeMockClient();
-    const source = new NotionFeedbackSource(client, { logDestination: nullDest });
-
-    await source.resolve('page-abc', []);
-
-    expect(client.comments.update).not.toHaveBeenCalled();
-  });
-
-  it('404 on one ID: logs notion_comments.resolve_skipped, does not throw, continues processing remaining IDs', async () => {
-    const client = makeMockClient();
-    (client.comments.update as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce(undefined)        // disc-1 succeeds
-      .mockRejectedValueOnce(Object.assign(new Error('not found'), { status: 404 }))  // disc-2 fails
-      .mockResolvedValueOnce(undefined);        // disc-3 succeeds
-    const logLines: unknown[] = [];
-    const dest = { write: (line: string) => logLines.push(JSON.parse(line)) };
-    const source = new NotionFeedbackSource(client, { logDestination: dest });
-
-    await expect(source.resolve('page-abc', ['disc-1', 'disc-2', 'disc-3'])).resolves.toBeUndefined();
-
-    expect(client.comments.update).toHaveBeenCalledTimes(3);
-    const warnLog = logLines.find((l: unknown) => (l as { event?: string }).event === 'notion_comments.resolve_skipped');
-    expect(warnLog).toBeDefined();
-    expect((warnLog as { comment_id?: string }).comment_id).toBe('disc-2');
-  });
-
-  it('405 on one ID: same warn-and-continue behavior', async () => {
-    const client = makeMockClient();
-    (client.comments.update as ReturnType<typeof vi.fn>)
-      .mockRejectedValueOnce(Object.assign(new Error('method not allowed'), { status: 405 }));
-    const logLines: unknown[] = [];
-    const dest = { write: (line: string) => logLines.push(JSON.parse(line)) };
-    const source = new NotionFeedbackSource(client, { logDestination: dest });
-
-    await expect(source.resolve('page-abc', ['disc-1'])).resolves.toBeUndefined();
-
-    const warnLog = logLines.find((l: unknown) => (l as { event?: string }).event === 'notion_comments.resolve_skipped');
-    expect(warnLog).toBeDefined();
-  });
-});

@@ -59,7 +59,6 @@ function makeFeedbackSource(overrides: Partial<FeedbackSource> = {}): FeedbackSo
   return {
     fetch: vi.fn().mockResolvedValue([]),
     reply: vi.fn().mockResolvedValue(undefined),
-    resolve: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -442,7 +441,6 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     (sg.revise as ReturnType<typeof vi.fn>).mockImplementation(async () => { callOrder.push('revise'); return { comment_responses: commentResponses }; });
     (sp.update as ReturnType<typeof vi.fn>).mockImplementation(async () => { callOrder.push('update'); });
     (fs.reply as ReturnType<typeof vi.fn>).mockImplementation(async () => { callOrder.push('reply'); });
-    (fs.resolve as ReturnType<typeof vi.fn>).mockImplementation(async () => { callOrder.push('resolve'); });
 
     const orch = new OrchestratorImpl(
       { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: sp, feedbackSource: fs, postError, repo_url: 'https://github.com/org/repo' } as never,
@@ -454,7 +452,7 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
     expect(runs.get('idea-001')?.stage).toBe('review');
-    expect(callOrder).toEqual(['fetch', 'getPageMarkdown', 'revise', 'update', 'reply', 'reply', 'resolve']);
+    expect(callOrder).toEqual(['fetch', 'getPageMarkdown', 'revise', 'update', 'reply', 'reply']);
     expect(sp.getPageMarkdown).toHaveBeenCalledWith('CANVAS001');
     expect(fs.fetch).toHaveBeenCalledWith('CANVAS001');
     expect(sg.revise).toHaveBeenCalledWith(
@@ -467,7 +465,6 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     expect(fs.reply).toHaveBeenCalledTimes(2);
     expect(fs.reply).toHaveBeenCalledWith('CANVAS001', 'disc-1', 'Updated per Phoebe');
     expect(fs.reply).toHaveBeenCalledWith('CANVAS001', 'disc-2', 'Updated per Enzo');
-    expect(fs.resolve).toHaveBeenCalledWith('CANVAS001', ['disc-1', 'disc-2']);
   });
 
   it('empty fetch: revise called with []; no reply or resolve', async () => {
@@ -491,7 +488,6 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
       undefined,
     );
     expect(fs.reply).not.toHaveBeenCalled();
-    expect(fs.resolve).not.toHaveBeenCalled();
   });
 
   it('no feedbackSource: revise called with []; no fetch/reply/resolve', async () => {
@@ -565,29 +561,7 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
     expect(runs.get('idea-001')?.stage).toBe('review');
     expect(fs.reply).toHaveBeenCalledTimes(3);
-    expect(fs.resolve).toHaveBeenCalled();
     expect(postError).not.toHaveBeenCalled();
   });
 
-  it('resolve rejects: run stays in review; postError not called', async () => {
-    const fs = makeFeedbackSource({
-      fetch: vi.fn().mockResolvedValue([{ id: 'd1', body: 'feedback' }]),
-      resolve: vi.fn().mockRejectedValue(new Error('resolve error')),
-    });
-    const sg = makeSpecGenerator({ revise: vi.fn().mockResolvedValue({ comment_responses: [{ comment_id: 'd1', response: 'r1' }] }) });
-    const adapter = makeMockAdapter();
-    const postError = vi.fn().mockResolvedValue(undefined);
-
-    const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), feedbackSource: fs, postError, repo_url: 'r' } as never,
-      { logDestination: nullDest },
-    );
-    await orch.start();
-    await seedAndFeedback(orch, adapter);
-    await adapter.stop();
-
-    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    expect(runs.get('idea-001')?.stage).toBe('review');
-    expect(postError).not.toHaveBeenCalled();
-  });
 });

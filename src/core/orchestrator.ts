@@ -220,11 +220,6 @@ export class OrchestratorImpl implements Orchestrator {
           this.logger.error({ event: 'run.reply_failed', run_id: run.id, comment_id: cr.comment_id, error: String(err) }, 'Failed to reply to Notion comment');
         }
       }
-      try {
-        await this.deps.feedbackSource.resolve(run.publisher_ref, commentResponses.map(r => r.comment_id));
-      } catch (err) {
-        this.logger.error({ event: 'run.resolve_failed', run_id: run.id, error: String(err) }, 'Failed to resolve Notion comments');
-      }
     }
 
     this.transition(run, 'review');

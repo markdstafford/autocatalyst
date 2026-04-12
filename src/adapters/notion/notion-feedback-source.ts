@@ -7,7 +7,6 @@ import type { NotionComment } from '../agent/spec-generator.js';
 export interface FeedbackSource {
   fetch(publisher_ref: string): Promise<NotionComment[]>;
   reply(publisher_ref: string, comment_id: string, response: string): Promise<void>;
-  resolve(publisher_ref: string, comment_ids: string[]): Promise<void>;
 }
 
 interface NotionFeedbackSourceOptions {
@@ -95,19 +94,4 @@ export class NotionFeedbackSource implements FeedbackSource {
     this.logger.debug({ event: 'notion_comment.replied', publisher_ref, comment_id }, 'Replied to Notion comment');
   }
 
-  async resolve(publisher_ref: string, comment_ids: string[]): Promise<void> {
-    for (const comment_id of comment_ids) {
-      try {
-        await this.client.comments.update(comment_id);
-        this.logger.debug({ event: 'notion_comments.resolved', publisher_ref, comment_id }, 'Resolved Notion comment');
-      } catch (err: unknown) {
-        const status = (err as { status?: number }).status;
-        if (status === 404 || status === 405) {
-          this.logger.warn({ event: 'notion_comments.resolve_skipped', publisher_ref, comment_id, status }, 'Notion comment resolve not supported; skipping');
-        } else {
-          throw err;
-        }
-      }
-    }
-  }
 }
