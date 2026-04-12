@@ -420,7 +420,7 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     await vi.waitUntil(() => runs.get('idea-001')?.stage !== 'speccing', { timeout: 2000 });
   }
 
-  it('with feedbackSource: fetch called before revise, revise receives notion_comments, update/reply/resolve called in order', async () => {
+  it('with feedbackSource: fetch called before revise, revise receives notion_comments, update/reply called in order', async () => {
     const notionComments: NotionComment[] = [
       { id: 'disc-1', body: 'Phoebe: first feedback' },
       { id: 'disc-2', body: 'Enzo: second feedback' },
@@ -467,7 +467,7 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     expect(fs.reply).toHaveBeenCalledWith('CANVAS001', 'disc-2', 'Updated per Enzo');
   });
 
-  it('empty fetch: revise called with []; no reply or resolve', async () => {
+  it('empty fetch: revise called with []; no reply', async () => {
     const fs = makeFeedbackSource({ fetch: vi.fn().mockResolvedValue([]) });
     const sg = makeSpecGenerator({ revise: vi.fn().mockResolvedValue({ comment_responses: [] }) });
     const adapter = makeMockAdapter();
@@ -490,7 +490,7 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     expect(fs.reply).not.toHaveBeenCalled();
   });
 
-  it('no feedbackSource: revise called with []; no fetch/reply/resolve', async () => {
+  it('no feedbackSource: revise called with []; no fetch/reply', async () => {
     const sg = makeSpecGenerator({ revise: vi.fn().mockResolvedValue({ comment_responses: [] }) });
     const adapter = makeMockAdapter();
 
@@ -533,7 +533,7 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     expect(postError).toHaveBeenCalled();
   });
 
-  it('reply fails on one of three: run stays in review; resolve still called; postError not called', async () => {
+  it('reply fails on one of three: run stays in review; postError not called', async () => {
     const commentResponses: NotionCommentResponse[] = [
       { comment_id: 'd1', response: 'r1' },
       { comment_id: 'd2', response: 'r2' },
