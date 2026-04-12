@@ -122,8 +122,16 @@ try {
       process.exit(1);
     }
     const notionClient = new NotionClientImpl({ integration_token: notionToken });
+    let botUser: { id: string };
+    try {
+      botUser = await notionClient.users.me();
+    } catch (err) {
+      logger.error({ event: 'notion.auth_failed', error: String(err) }, 'Failed to detect Notion bot user. Check AC_NOTION_INTEGRATION_TOKEN permissions.');
+      process.exit(1);
+    }
+    logger.info({ event: 'service.config', bot_user_id: botUser.id }, 'Detected Notion bot user ID');
     specPublisher = new NotionPublisher(notionClient, boltApp, parentPageId);
-    feedbackSource = new NotionFeedbackSource(notionClient);
+    feedbackSource = new NotionFeedbackSource(notionClient, { bot_user_id: botUser.id });
     logger.info({ event: 'service.config', publisher: 'notion' }, 'Using Notion publisher');
   } else {
     specPublisher = new SlackCanvasPublisher(boltApp);
@@ -137,6 +145,9 @@ try {
     specPublisher,
     feedbackSource,
     postError: async (channel_id, thread_ts, text) => {
+      await boltApp.client.chat.postMessage({ channel: channel_id, thread_ts, text });
+    },
+    postMessage: async (channel_id, thread_ts, text) => {
       await boltApp.client.chat.postMessage({ channel: channel_id, thread_ts, text });
     },
     repo_url,

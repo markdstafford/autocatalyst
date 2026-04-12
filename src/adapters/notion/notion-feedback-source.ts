@@ -7,10 +7,10 @@ import type { NotionComment } from '../agent/spec-generator.js';
 export interface FeedbackSource {
   fetch(publisher_ref: string): Promise<NotionComment[]>;
   reply(publisher_ref: string, comment_id: string, response: string): Promise<void>;
-  resolve(publisher_ref: string, comment_ids: string[]): Promise<void>;
 }
 
 interface NotionFeedbackSourceOptions {
+  bot_user_id?: string;
   logDestination?: pino.DestinationStream;
 }
 
@@ -24,10 +24,12 @@ interface NotionCommentRecord {
 
 export class NotionFeedbackSource implements FeedbackSource {
   private readonly client: NotionClient;
+  private readonly bot_user_id?: string;
   private readonly logger: pino.Logger;
 
   constructor(client: NotionClient, options?: NotionFeedbackSourceOptions) {
     this.client = client;
+    this.bot_user_id = options?.bot_user_id;
     this.logger = createLogger('notion-feedback-source', { destination: options?.logDestination });
   }
 
@@ -70,6 +72,18 @@ export class NotionFeedbackSource implements FeedbackSource {
       threadMap.set(comment.discussion_id, existing);
     }
 
+    // Filter out threads where the last comment is from the bot
+    let botSkippedCount = 0;
+    if (this.bot_user_id) {
+      for (const [discussion_id, threadComments] of threadMap) {
+        const lastComment = threadComments[threadComments.length - 1];
+        if (lastComment.created_by.id === this.bot_user_id) {
+          threadMap.delete(discussion_id);
+          botSkippedCount++;
+        }
+      }
+    }
+
     const result: NotionComment[] = [];
     for (const [discussion_id, threadComments] of threadMap) {
       const body = threadComments
@@ -82,7 +96,7 @@ export class NotionFeedbackSource implements FeedbackSource {
       result.push({ id: discussion_id, body });
     }
 
-    this.logger.debug({ event: 'notion_comments.fetched', publisher_ref, comment_count: result.length }, 'Fetched Notion comments');
+    this.logger.debug({ event: 'notion_comments.fetched', publisher_ref, comment_count: result.length, bot_skipped_count: botSkippedCount }, 'Fetched Notion comments');
     return result;
   }
 
@@ -95,19 +109,4 @@ export class NotionFeedbackSource implements FeedbackSource {
     this.logger.debug({ event: 'notion_comment.replied', publisher_ref, comment_id }, 'Replied to Notion comment');
   }
 
-  async resolve(publisher_ref: string, comment_ids: string[]): Promise<void> {
-    for (const comment_id of comment_ids) {
-      try {
-        await this.client.comments.update(comment_id);
-        this.logger.debug({ event: 'notion_comments.resolved', publisher_ref, comment_id }, 'Resolved Notion comment');
-      } catch (err: unknown) {
-        const status = (err as { status?: number }).status;
-        if (status === 404 || status === 405) {
-          this.logger.warn({ event: 'notion_comments.resolve_skipped', publisher_ref, comment_id, status }, 'Notion comment resolve not supported; skipping');
-        } else {
-          throw err;
-        }
-      }
-    }
-  }
 }

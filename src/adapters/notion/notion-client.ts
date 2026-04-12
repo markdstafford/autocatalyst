@@ -12,8 +12,7 @@ import type {
 } from '@notionhq/client/build/src/api-endpoints.js';
 
 export type MarkdownOperation =
-  | { type: 'replace_content'; replace_content: { new_str: string } }
-  | { type: 'update_content'; update_content: { content_updates: Array<{ old_str: string; new_str: string }> } };
+  { type: 'replace_content'; replace_content: { new_str: string } };
 
 export interface NotionClient {
   pages: {
@@ -29,7 +28,9 @@ export interface NotionClient {
   comments: {
     list(args: ListCommentsParameters): Promise<ListCommentsResponse>;
     create(args: CreateCommentParameters): Promise<CreateCommentResponse>;
-    update(comment_id: string): Promise<void>; // best-effort resolve; may 404/405
+  };
+  users: {
+    me(): Promise<{ id: string }>;
   };
 }
 
@@ -79,15 +80,18 @@ export class NotionClientImpl implements NotionClient {
       this.client.comments.list(args),
     create: (args: CreateCommentParameters): Promise<CreateCommentResponse> =>
       this.client.comments.create(args),
-    update: async (comment_id: string): Promise<void> => {
-      // PATCH /v1/comments/:id — best-effort; Notion API may not support this
-      await (this.client as unknown as {
-        request: (args: { path: string; method: string; body: unknown }) => Promise<unknown>;
+  };
+
+  readonly users = {
+    me: async (): Promise<{ id: string }> => {
+      const response = await (this.client as unknown as {
+        request: (args: { path: string; method: string }) => Promise<unknown>;
       }).request({
-        path: `comments/${comment_id}`,
-        method: 'PATCH',
-        body: { resolved: true },
+        path: 'users/me',
+        method: 'GET',
       });
+      // Top-level `id` is the bot's own user ID — matches `created_by.id` on comments
+      return { id: (response as { id: string }).id };
     },
   };
 }

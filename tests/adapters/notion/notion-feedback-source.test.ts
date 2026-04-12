@@ -11,15 +11,13 @@ function makeMockClient(): NotionClient {
     blocks: {
       children: {
         list: vi.fn().mockResolvedValue({ results: [], has_more: false }),
-        append: vi.fn(),
       },
-      delete: vi.fn(),
     },
     comments: {
       list: vi.fn(),
       create: vi.fn().mockResolvedValue({}),
-      update: vi.fn().mockResolvedValue(undefined),
     },
+    users: { me: vi.fn() },
   };
 }
 
@@ -250,57 +248,68 @@ describe('NotionFeedbackSource.reply', () => {
   });
 });
 
-describe('NotionFeedbackSource.resolve', () => {
-  it('calls comments.update once per ID', async () => {
+describe('NotionFeedbackSource.fetch — bot thread filtering', () => {
+  it('skips thread where last comment is from the bot', async () => {
     const client = makeMockClient();
+    (client.comments.list as ReturnType<typeof vi.fn>).mockResolvedValue({
+      results: [
+        makeComment({ discussion_id: 'disc-1', created_by: { id: 'user-1', name: 'Phoebe' } }),
+        makeComment({ id: 'comment-2', discussion_id: 'disc-1', created_by: { id: 'bot-user-1', name: 'Autocatalyst' } }),
+      ],
+    });
+    const source = new NotionFeedbackSource(client, { bot_user_id: 'bot-user-1', logDestination: nullDest });
+
+    const result = await source.fetch('page-abc');
+
+    expect(result).toEqual([]);
+  });
+
+  it('includes thread where last comment is from a human', async () => {
+    const client = makeMockClient();
+    (client.comments.list as ReturnType<typeof vi.fn>).mockResolvedValue({
+      results: [
+        makeComment({ discussion_id: 'disc-1', created_by: { id: 'bot-user-1', name: 'Autocatalyst' } }),
+        makeComment({ id: 'comment-2', discussion_id: 'disc-1', created_by: { id: 'user-1', name: 'Phoebe' } }),
+      ],
+    });
+    const source = new NotionFeedbackSource(client, { bot_user_id: 'bot-user-1', logDestination: nullDest });
+
+    const result = await source.fetch('page-abc');
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('disc-1');
+  });
+
+  it('includes thread when no bot_user_id configured', async () => {
+    const client = makeMockClient();
+    (client.comments.list as ReturnType<typeof vi.fn>).mockResolvedValue({
+      results: [
+        makeComment({ discussion_id: 'disc-1', created_by: { id: 'bot-user-1', name: 'Autocatalyst' } }),
+      ],
+    });
     const source = new NotionFeedbackSource(client, { logDestination: nullDest });
 
-    await source.resolve('page-abc', ['disc-1', 'disc-2', 'disc-3']);
+    const result = await source.fetch('page-abc');
 
-    expect(client.comments.update).toHaveBeenCalledTimes(3);
-    expect(client.comments.update).toHaveBeenCalledWith('disc-1');
-    expect(client.comments.update).toHaveBeenCalledWith('disc-2');
-    expect(client.comments.update).toHaveBeenCalledWith('disc-3');
+    expect(result).toHaveLength(1);
   });
 
-  it('empty array: no API calls made', async () => {
+  it('logs skipped thread count', async () => {
     const client = makeMockClient();
-    const source = new NotionFeedbackSource(client, { logDestination: nullDest });
-
-    await source.resolve('page-abc', []);
-
-    expect(client.comments.update).not.toHaveBeenCalled();
-  });
-
-  it('404 on one ID: logs notion_comments.resolve_skipped, does not throw, continues processing remaining IDs', async () => {
-    const client = makeMockClient();
-    (client.comments.update as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce(undefined)        // disc-1 succeeds
-      .mockRejectedValueOnce(Object.assign(new Error('not found'), { status: 404 }))  // disc-2 fails
-      .mockResolvedValueOnce(undefined);        // disc-3 succeeds
+    (client.comments.list as ReturnType<typeof vi.fn>).mockResolvedValue({
+      results: [
+        makeComment({ discussion_id: 'disc-1', created_by: { id: 'bot-user-1', name: 'Autocatalyst' } }),
+      ],
+    });
     const logLines: unknown[] = [];
     const dest = { write: (line: string) => logLines.push(JSON.parse(line)) };
-    const source = new NotionFeedbackSource(client, { logDestination: dest });
+    const source = new NotionFeedbackSource(client, { bot_user_id: 'bot-user-1', logDestination: dest });
 
-    await expect(source.resolve('page-abc', ['disc-1', 'disc-2', 'disc-3'])).resolves.toBeUndefined();
+    await source.fetch('page-abc');
 
-    expect(client.comments.update).toHaveBeenCalledTimes(3);
-    const warnLog = logLines.find((l: unknown) => (l as { event?: string }).event === 'notion_comments.resolve_skipped');
-    expect(warnLog).toBeDefined();
-    expect((warnLog as { comment_id?: string }).comment_id).toBe('disc-2');
-  });
-
-  it('405 on one ID: same warn-and-continue behavior', async () => {
-    const client = makeMockClient();
-    (client.comments.update as ReturnType<typeof vi.fn>)
-      .mockRejectedValueOnce(Object.assign(new Error('method not allowed'), { status: 405 }));
-    const logLines: unknown[] = [];
-    const dest = { write: (line: string) => logLines.push(JSON.parse(line)) };
-    const source = new NotionFeedbackSource(client, { logDestination: dest });
-
-    await expect(source.resolve('page-abc', ['disc-1'])).resolves.toBeUndefined();
-
-    const warnLog = logLines.find((l: unknown) => (l as { event?: string }).event === 'notion_comments.resolve_skipped');
-    expect(warnLog).toBeDefined();
+    const fetchLog = logLines.find((l: unknown) => (l as { event?: string }).event === 'notion_comments.fetched');
+    expect(fetchLog).toBeDefined();
+    expect((fetchLog as { bot_skipped_count?: number }).bot_skipped_count).toBe(1);
   });
 });
+
