@@ -4,7 +4,7 @@ import type pino from 'pino';
 import { createLogger } from './logger.js';
 import type { SlackAdapter } from '../adapters/slack/slack-adapter.js';
 import type { WorkspaceManager } from './workspace-manager.js';
-import type { SpecGenerator } from '../adapters/agent/spec-generator.js';
+import type { SpecGenerator, ReviseResult } from '../adapters/agent/spec-generator.js';
 import type { SpecPublisher } from '../adapters/slack/canvas-publisher.js';
 import type { Run, RunStage } from '../types/runs.js';
 import type { Idea, SpecFeedback } from '../types/events.js';
@@ -173,28 +173,39 @@ export class OrchestratorImpl implements Orchestrator {
       }
     }
 
+    // Step 1.5: Get page markdown with comment spans
+    let pageMarkdown: string | undefined;
+    try {
+      pageMarkdown = await this.deps.specPublisher.getPageMarkdown(run.publisher_ref);
+      if (!pageMarkdown) pageMarkdown = undefined;
+    } catch (err) {
+      this.logger.warn({ event: 'page_markdown.failed', run_id: run.id, idea_id: run.idea_id, error: String(err) }, 'Failed to get page markdown; spans will not be preserved');
+    }
+
     this.logger.debug({
       event: 'spec_revision.enriched',
       run_id: run.id,
       idea_id: run.idea_id,
       slack_feedback: feedback.content.length > 0,
       notion_comment_count: notionComments.length,
+      has_page_markdown: !!pageMarkdown,
     }, 'Revision enriched with feedback sources');
 
     // Step 2: Revise spec
-    let commentResponses;
+    let result: ReviseResult;
     try {
-      commentResponses = await this.deps.specGenerator.revise(feedback, notionComments, run.spec_path, run.workspace_path);
+      result = await this.deps.specGenerator.revise(feedback, notionComments, run.spec_path, run.workspace_path, pageMarkdown);
     } catch (err) {
       await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
       return;
     }
 
+    const { comment_responses: commentResponses, page_content } = result;
     this.logger.debug({ event: 'spec_revision.responses', run_id: run.id, idea_id: run.idea_id, comment_response_count: commentResponses?.length ?? 0, comment_response_ids: commentResponses?.map(r => r.comment_id) ?? [] }, 'Comment responses returned from revise()');
 
     // Step 3: Update published page
     try {
-      await this.deps.specPublisher.update(run.publisher_ref, run.spec_path);
+      await this.deps.specPublisher.update(run.publisher_ref, run.spec_path, page_content);
     } catch (err) {
       await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
       return;

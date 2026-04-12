@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { OMCSpecGenerator } from '../../../src/adapters/agent/spec-generator.js';
 import type { Idea, SpecFeedback } from '../../../src/types/events.js';
-import type { NotionCommentResponse } from '../../../src/adapters/agent/spec-generator.js';
+import type { NotionCommentResponse, ReviseResult } from '../../../src/adapters/agent/spec-generator.js';
 
 const nullDest = { write: () => {} };
 
@@ -38,10 +38,22 @@ function makeArtifact(filenameLineContent: string, body: string): string {
   return `# claude advisor artifact\n\n## Raw output\n\n\`\`\`text\n${filenameLineContent}\n${body}\n\`\`\`\n`;
 }
 
-function makeRevisionArtifact(rawContent: string): string {
-  // rawContent is placed in the ## Raw output section
-  // After Task 9, revise() will parse it as JSON
-  // So rawContent should be a JSON string like: JSON.stringify({ spec: "...", comment_responses: [] })
+function makeRevisionArtifact(spec: string, commentResponses: unknown[] = []): string {
+  const sections = [
+    `SPEC:`,
+    `<<<`,
+    spec,
+    `>>>`,
+    ``,
+    `COMMENT_RESPONSES:`,
+    `<<<`,
+    JSON.stringify(commentResponses),
+    `>>>`,
+  ].join('\n');
+  return `# claude advisor artifact\n\n## Raw output\n\n\`\`\`text\n${sections}\n\`\`\`\n`;
+}
+
+function makeRevisionArtifactRaw(rawContent: string): string {
   return `# claude advisor artifact\n\n## Raw output\n\n\`\`\`text\n${rawContent}\n\`\`\`\n`;
 }
 
@@ -154,7 +166,7 @@ describe('SpecGenerator.create', () => {
 
 describe('SpecGenerator.revise', () => {
   it('prompt leads with feedback in <<<>>>, follows with spec content in <<<>>>', async () => {
-    const artifact = makeRevisionArtifact(JSON.stringify({ spec: '# Revised Spec', comment_responses: [] }));
+    const artifact = makeRevisionArtifact('# Revised Spec');
     const artifactPath = writeArtifactFile(artifact);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath, stderr: '' });
 
@@ -171,11 +183,11 @@ describe('SpecGenerator.revise', () => {
     const feedbackIdx = prompt.indexOf('the wizard should not require');
     const specIdx = prompt.indexOf('# Original Spec');
     expect(feedbackIdx).toBeLessThan(specIdx); // feedback before spec
-    expect(result).toEqual([]);
+    expect(result.comment_responses).toEqual([]);
   });
 
   it('reads the current spec from spec_path before invoking OMC', async () => {
-    const artifact = makeRevisionArtifact(JSON.stringify({ spec: '# Revised', comment_responses: [] }));
+    const artifact = makeRevisionArtifact('# Revised');
     const artifactPath = writeArtifactFile(artifact);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath, stderr: '' });
 
@@ -189,12 +201,12 @@ describe('SpecGenerator.revise', () => {
     const args = execFn.mock.calls[0][1] as string[];
     const prompt = args[args.length - 1];
     expect(prompt).toContain('# Original Spec Content');
-    expect(result).toEqual([]);
+    expect(result.comment_responses).toEqual([]);
   });
 
   it('overwrites spec_path in place with revised content', async () => {
     const revisedBody = '# Revised Spec\ncontent\n';
-    const artifact = makeRevisionArtifact(JSON.stringify({ spec: revisedBody, comment_responses: [] }));
+    const artifact = makeRevisionArtifact(revisedBody);
     const artifactPath = writeArtifactFile(artifact);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath, stderr: '' });
 
@@ -206,11 +218,11 @@ describe('SpecGenerator.revise', () => {
 
     const revised = readFileSync(specPath, 'utf-8');
     expect(revised).toBe('# Revised Spec\ncontent\n');
-    expect(result).toEqual([]);
+    expect(result.comment_responses).toEqual([]);
   });
 
-  it('returns [] when comment_responses is empty in JSON output', async () => {
-    const artifact = makeRevisionArtifact(JSON.stringify({ spec: '# Revised Spec\nsome content\n', comment_responses: [] }));
+  it('returns empty comment_responses when none present', async () => {
+    const artifact = makeRevisionArtifact('# Revised Spec\nsome content\n');
     const artifactPath = writeArtifactFile(artifact);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath, stderr: '' });
 
@@ -223,7 +235,7 @@ describe('SpecGenerator.revise', () => {
     const revised = readFileSync(specPath, 'utf-8');
     expect(revised).not.toContain('comment_responses');
     expect(revised).toContain('# Revised Spec');
-    expect(result).toEqual([]);
+    expect(result.comment_responses).toEqual([]);
   });
 
   it('throws if OMC exits non-zero', async () => {
@@ -238,10 +250,7 @@ describe('SpecGenerator.revise', () => {
 
 describe('SpecGenerator.revise — Notion comments', () => {
   it('prompt includes [COMMENT_ID:] blocks when notion_comments is non-empty', async () => {
-    const revisionArtifactContent = makeRevisionArtifact(JSON.stringify({
-      spec: '# Revised\n\ncontent',
-      comment_responses: [{ comment_id: 'disc-abc', response: 'Updated X' }],
-    }));
+    const revisionArtifactContent = makeRevisionArtifact('# Revised\n\ncontent', [{ comment_id: 'disc-abc', response: 'Updated X' }]);
     const artifactPath = writeArtifactFile(revisionArtifactContent);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
@@ -256,14 +265,11 @@ describe('SpecGenerator.revise — Notion comments', () => {
     const prompt = args[args.length - 1]; // the last arg to omc is the prompt
     expect(prompt).toContain('[COMMENT_ID: disc-abc]');
     expect(prompt).toContain('Phoebe: use inline flow');
-    expect(prompt).toContain('comment_responses');
+    expect(prompt).toContain('COMMENT_RESPONSES:');
   });
 
   it('prompt omits Notion section when notion_comments is []', async () => {
-    const revisionArtifactContent = makeRevisionArtifact(JSON.stringify({
-      spec: '# Revised',
-      comment_responses: [],
-    }));
+    const revisionArtifactContent = makeRevisionArtifact('# Revised', []);
     const artifactPath = writeArtifactFile(revisionArtifactContent);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
@@ -279,11 +285,8 @@ describe('SpecGenerator.revise — Notion comments', () => {
     expect(prompt).not.toContain('Notion page comments');
   });
 
-  it('valid JSON: spec written to disk, NotionCommentResponse[] returned', async () => {
-    const revisionArtifactContent = makeRevisionArtifact(JSON.stringify({
-      spec: '# Revised\n\ncontent',
-      comment_responses: [{ comment_id: 'disc-abc', response: 'Done' }],
-    }));
+  it('spec written to disk, comment_responses returned in ReviseResult', async () => {
+    const revisionArtifactContent = makeRevisionArtifact('# Revised\n\ncontent', [{ comment_id: 'disc-abc', response: 'Done' }]);
     const artifactPath = writeArtifactFile(revisionArtifactContent);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
@@ -294,11 +297,11 @@ describe('SpecGenerator.revise — Notion comments', () => {
     const result = await sg.revise(makeFeedback(), [{ id: 'disc-abc', body: 'feedback' }], specPath, tempRoot);
 
     expect(readFileSync(specPath, 'utf-8')).toBe('# Revised\n\ncontent');
-    expect(result).toEqual([{ comment_id: 'disc-abc', response: 'Done' }]);
+    expect(result.comment_responses).toEqual([{ comment_id: 'disc-abc', response: 'Done' }]);
   });
 
-  it('valid JSON with empty comment_responses: spec written, [] returned', async () => {
-    const revisionArtifactContent = makeRevisionArtifact(JSON.stringify({ spec: '# Revised', comment_responses: [] }));
+  it('empty comment_responses: spec written, empty array returned', async () => {
+    const revisionArtifactContent = makeRevisionArtifact('# Revised', []);
     const artifactPath = writeArtifactFile(revisionArtifactContent);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
@@ -309,11 +312,13 @@ describe('SpecGenerator.revise — Notion comments', () => {
     const result = await sg.revise(makeFeedback(), [], specPath, tempRoot);
 
     expect(readFileSync(specPath, 'utf-8')).toBe('# Revised');
-    expect(result).toEqual([]);
+    expect(result.comment_responses).toEqual([]);
   });
 
-  it('malformed JSON: throws, spec file not modified', async () => {
-    const revisionArtifactContent = makeRevisionArtifact('this is not json');
+  it('malformed COMMENT_RESPONSES JSON: throws, spec file not modified', async () => {
+    const revisionArtifactContent = makeRevisionArtifactRaw(
+      'SPEC:\n<<<\n# Revised\n>>>\n\nCOMMENT_RESPONSES:\n<<<\nthis is not json\n>>>',
+    );
     const artifactPath = writeArtifactFile(revisionArtifactContent);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
@@ -325,8 +330,8 @@ describe('SpecGenerator.revise — Notion comments', () => {
     expect(readFileSync(specPath, 'utf-8')).toBe('# Original');
   });
 
-  it('missing spec field: throws', async () => {
-    const revisionArtifactContent = makeRevisionArtifact(JSON.stringify({ comment_responses: [] }));
+  it('missing SPEC section: throws', async () => {
+    const revisionArtifactContent = makeRevisionArtifactRaw('COMMENT_RESPONSES:\n<<<\n[]\n>>>');
     const artifactPath = writeArtifactFile(revisionArtifactContent);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
@@ -337,8 +342,8 @@ describe('SpecGenerator.revise — Notion comments', () => {
     await expect(sg.revise(makeFeedback(), [], specPath, tempRoot)).rejects.toThrow(/spec/i);
   });
 
-  it('empty spec field: throws', async () => {
-    const revisionArtifactContent = makeRevisionArtifact(JSON.stringify({ spec: '', comment_responses: [] }));
+  it('empty SPEC section: throws', async () => {
+    const revisionArtifactContent = makeRevisionArtifact('', []);
     const artifactPath = writeArtifactFile(revisionArtifactContent);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
@@ -349,8 +354,8 @@ describe('SpecGenerator.revise — Notion comments', () => {
     await expect(sg.revise(makeFeedback(), [], specPath, tempRoot)).rejects.toThrow(/spec/i);
   });
 
-  it('missing comment_responses field: throws', async () => {
-    const revisionArtifactContent = makeRevisionArtifact(JSON.stringify({ spec: '# Revised' }));
+  it('missing COMMENT_RESPONSES section: throws', async () => {
+    const revisionArtifactContent = makeRevisionArtifactRaw('SPEC:\n<<<\n# Revised\n>>>');
     const artifactPath = writeArtifactFile(revisionArtifactContent);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
@@ -361,8 +366,10 @@ describe('SpecGenerator.revise — Notion comments', () => {
     await expect(sg.revise(makeFeedback(), [], specPath, tempRoot)).rejects.toThrow(/comment_responses/i);
   });
 
-  it('comment_responses is not an array: throws', async () => {
-    const revisionArtifactContent = makeRevisionArtifact(JSON.stringify({ spec: '# Revised', comment_responses: 'oops' }));
+  it('COMMENT_RESPONSES is not a JSON array: throws', async () => {
+    const revisionArtifactContent = makeRevisionArtifactRaw(
+      'SPEC:\n<<<\n# Revised\n>>>\n\nCOMMENT_RESPONSES:\n<<<\n"oops"\n>>>',
+    );
     const artifactPath = writeArtifactFile(revisionArtifactContent);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
@@ -374,7 +381,7 @@ describe('SpecGenerator.revise — Notion comments', () => {
   });
 
   it('comment_responses entry missing comment_id: throws', async () => {
-    const revisionArtifactContent = makeRevisionArtifact(JSON.stringify({ spec: '# Revised', comment_responses: [{ response: 'done' }] }));
+    const revisionArtifactContent = makeRevisionArtifact('# Revised', [{ response: 'done' }]);
     const artifactPath = writeArtifactFile(revisionArtifactContent);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
@@ -386,7 +393,7 @@ describe('SpecGenerator.revise — Notion comments', () => {
   });
 
   it('comment_responses entry missing response: throws', async () => {
-    const revisionArtifactContent = makeRevisionArtifact(JSON.stringify({ spec: '# Revised', comment_responses: [{ comment_id: 'disc-1' }] }));
+    const revisionArtifactContent = makeRevisionArtifact('# Revised', [{ comment_id: 'disc-1' }]);
     const artifactPath = writeArtifactFile(revisionArtifactContent);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
@@ -397,8 +404,8 @@ describe('SpecGenerator.revise — Notion comments', () => {
     await expect(sg.revise(makeFeedback(), [], specPath, tempRoot)).rejects.toThrow(/response/i);
   });
 
-  it('extra unknown fields in JSON: tolerated', async () => {
-    const revisionArtifactContent = makeRevisionArtifact(JSON.stringify({ spec: '# Revised', comment_responses: [], extra_field: 'ignored' }));
+  it('extra fields in comment_responses entries: tolerated', async () => {
+    const revisionArtifactContent = makeRevisionArtifact('# Revised', [{ comment_id: 'x', response: 'y', extra_field: 'ignored' }]);
     const artifactPath = writeArtifactFile(revisionArtifactContent);
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
@@ -406,6 +413,133 @@ describe('SpecGenerator.revise — Notion comments', () => {
     const specPath = join(tempRoot, 'context-human', 'specs', 'feature-wizard.md');
     writeFileSync(specPath, '# Original', 'utf-8');
 
-    await expect(sg.revise(makeFeedback(), [], specPath, tempRoot)).resolves.toEqual([]);
+    const result = await sg.revise(makeFeedback(), [], specPath, tempRoot);
+    expect(result.comment_responses).toEqual([{ comment_id: 'x', response: 'y' }]);
+  });
+});
+
+describe('SpecGenerator.revise — span passthrough', () => {
+  it('uses page markdown as prompt source when current_page_markdown provided with spans', async () => {
+    const pageMarkdown = '# Spec\n\n<span discussion-urls="discussion://abc">commented text</span> here.';
+    const artifact = makeRevisionArtifact('# Revised\n\n<span discussion-urls="discussion://abc">commented text</span> here.');
+    const artifactPath = writeArtifactFile(artifact);
+    const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
+    const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
+
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-wizard.md');
+    writeFileSync(specPath, '# Spec\n\ncommented text here.', 'utf-8');
+
+    await sg.revise(makeFeedback(), [], specPath, tempRoot, pageMarkdown);
+
+    const [, args] = execFn.mock.calls[0] as [string, string[]];
+    const prompt = args[args.length - 1];
+    // Prompt should contain the span-bearing page markdown, not the disk spec
+    expect(prompt).toContain('<span discussion-urls="discussion://abc">');
+    expect(prompt).toContain('discussion-urls');
+  });
+
+  it('adds span-preservation instructions when spans present', async () => {
+    const pageMarkdown = '# Spec\n\n<span discussion-urls="discussion://abc">text</span>';
+    const artifact = makeRevisionArtifact('# Revised\n\n<span discussion-urls="discussion://abc">text</span>');
+    const artifactPath = writeArtifactFile(artifact);
+    const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
+    const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
+
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-wizard.md');
+    writeFileSync(specPath, '# Spec\n\ntext', 'utf-8');
+
+    await sg.revise(makeFeedback(), [], specPath, tempRoot, pageMarkdown);
+
+    const [, args] = execFn.mock.calls[0] as [string, string[]];
+    const prompt = args[args.length - 1];
+    expect(prompt).toContain('CRITICAL');
+    expect(prompt).toContain('span');
+  });
+
+  it('returns page_content with spans preserved', async () => {
+    const pageMarkdown = '# Spec\n\n<span discussion-urls="discussion://abc">text</span>';
+    const revisedWithSpan = '# Revised\n\n<span discussion-urls="discussion://abc">text</span>';
+    const artifact = makeRevisionArtifact(revisedWithSpan);
+    const artifactPath = writeArtifactFile(artifact);
+    const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
+    const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
+
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-wizard.md');
+    writeFileSync(specPath, '# Spec\n\ntext', 'utf-8');
+
+    const result = await sg.revise(makeFeedback(), [], specPath, tempRoot, pageMarkdown);
+
+    expect(result.page_content).toContain('<span discussion-urls="discussion://abc">');
+  });
+
+  it('writes stripped (clean) spec to disk when spans present', async () => {
+    const pageMarkdown = '# Spec\n\n<span discussion-urls="discussion://abc">text</span>';
+    const revisedWithSpan = '# Revised\n\n<span discussion-urls="discussion://abc">text</span>';
+    const artifact = makeRevisionArtifact(revisedWithSpan);
+    const artifactPath = writeArtifactFile(artifact);
+    const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
+    const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
+
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-wizard.md');
+    writeFileSync(specPath, '# Spec\n\ntext', 'utf-8');
+
+    await sg.revise(makeFeedback(), [], specPath, tempRoot, pageMarkdown);
+
+    const diskContent = readFileSync(specPath, 'utf-8');
+    expect(diskContent).not.toContain('<span');
+    expect(diskContent).toContain('# Revised');
+    expect(diskContent).toContain('text');
+  });
+
+  it('appends orphaned spans when Claude drops them', async () => {
+    const pageMarkdown = '# Spec\n\n<span discussion-urls="discussion://abc">commented</span> text.';
+    // Claude's output drops the span entirely
+    const revisedNoSpan = '# Revised\n\ntext without the span.';
+    const artifact = makeRevisionArtifact(revisedNoSpan);
+    const artifactPath = writeArtifactFile(artifact);
+    const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
+    const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
+
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-wizard.md');
+    writeFileSync(specPath, '# Spec\n\ncommented text.', 'utf-8');
+
+    const result = await sg.revise(makeFeedback(), [], specPath, tempRoot, pageMarkdown);
+
+    // page_content should have the orphaned comments section
+    expect(result.page_content).toContain('## Orphaned comments');
+    expect(result.page_content).toContain('<span discussion-urls="discussion://abc">commented</span>');
+    expect(result.page_content).toContain('[dropped by Claude]');
+  });
+
+  it('does not return page_content when no spans in input', async () => {
+    const pageMarkdown = '# Spec\n\nno spans here';
+    const artifact = makeRevisionArtifact('# Revised');
+    const artifactPath = writeArtifactFile(artifact);
+    const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
+    const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
+
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-wizard.md');
+    writeFileSync(specPath, '# Spec\n\nno spans here', 'utf-8');
+
+    const result = await sg.revise(makeFeedback(), [], specPath, tempRoot, pageMarkdown);
+
+    expect(result.page_content).toBeUndefined();
+  });
+
+  it('falls back to disk spec when no current_page_markdown provided', async () => {
+    const artifact = makeRevisionArtifact('# Revised');
+    const artifactPath = writeArtifactFile(artifact);
+    const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
+    const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
+
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-wizard.md');
+    writeFileSync(specPath, '# Disk Spec Content', 'utf-8');
+
+    const result = await sg.revise(makeFeedback(), [], specPath, tempRoot);
+
+    const [, args] = execFn.mock.calls[0] as [string, string[]];
+    const prompt = args[args.length - 1];
+    expect(prompt).toContain('# Disk Spec Content');
+    expect(result.page_content).toBeUndefined();
   });
 });

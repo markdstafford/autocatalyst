@@ -5,14 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { App } from '@slack/bolt';
 import type { NotionClient } from '../../../src/adapters/notion/notion-client.js';
-
-// Mock @tryfabric/martian before importing NotionPublisher
-vi.mock('@tryfabric/martian', () => ({
-  markdownToBlocks: vi.fn().mockReturnValue([{ type: 'paragraph', paragraph: { rich_text: [{ type: 'text', text: { content: 'mocked' } }] } }]),
-}));
-
 import { NotionPublisher } from '../../../src/adapters/notion/notion-publisher.js';
-import { markdownToBlocks } from '@tryfabric/martian';
 
 const nullDest = { write: () => {} };
 
@@ -37,13 +30,13 @@ function makeMockNotionClient(pageId = 'page-abc123'): NotionClient {
   return {
     pages: {
       create: vi.fn().mockResolvedValue({ id: pageId }),
+      getMarkdown: vi.fn().mockResolvedValue(''),
+      updateMarkdown: vi.fn().mockResolvedValue(undefined),
     },
     blocks: {
       children: {
-        list: vi.fn().mockResolvedValue({ results: [{ id: 'block-1' }, { id: 'block-2' }] }),
-        append: vi.fn().mockResolvedValue({}),
+        list: vi.fn().mockResolvedValue({ results: [], has_more: false }),
       },
-      delete: vi.fn().mockResolvedValue({}),
     },
     comments: {
       list: vi.fn().mockResolvedValue({ results: [] }),
@@ -64,7 +57,7 @@ function makeMockApp() {
 }
 
 describe('NotionPublisher.create', () => {
-  it('calls pages.create with correct parent_page_id', async () => {
+  it('calls pages.create with correct parent_page_id and title only (no children)', async () => {
     const client = makeMockNotionClient();
     const app = makeMockApp();
     const publisher = new NotionPublisher(client, app as unknown as App, 'parent-page-xyz', { logDestination: nullDest });
@@ -75,6 +68,9 @@ describe('NotionPublisher.create', () => {
     expect(client.pages.create).toHaveBeenCalledWith(
       expect.objectContaining({ parent: { page_id: 'parent-page-xyz' } }),
     );
+    // No children in pages.create — content set via markdown API
+    const createCall = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(createCall.children).toBeUndefined();
   });
 
   it('derives title from filename slug — feature-setup-wizard.md → "Setup wizard"', async () => {
@@ -115,17 +111,27 @@ describe('NotionPublisher.create', () => {
     );
   });
 
-  it('passes markdownToBlocks output as children', async () => {
+  it('calls pages.updateMarkdown with replace_content after pages.create', async () => {
     const client = makeMockNotionClient();
     const app = makeMockApp();
     const publisher = new NotionPublisher(client, app as unknown as App, 'parent-page-xyz', { logDestination: nullDest });
     const specPath = makeSpecFile('# My Spec\n\ncontent');
 
+    const callOrder: string[] = [];
+    (client.pages.create as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      callOrder.push('pages.create');
+      return { id: 'page-abc123' };
+    });
+    (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      callOrder.push('pages.updateMarkdown');
+    });
+
     await publisher.create('C123', '100.0', specPath);
 
-    expect(markdownToBlocks).toHaveBeenCalledWith(expect.stringContaining('My Spec'));
-    expect(client.pages.create).toHaveBeenCalledWith(
-      expect.objectContaining({ children: expect.any(Array) }),
+    expect(callOrder).toEqual(['pages.create', 'pages.updateMarkdown']);
+    expect(client.pages.updateMarkdown).toHaveBeenCalledWith(
+      'page-abc123',
+      { type: 'replace_content', replace_content: { new_str: '# My Spec\n\ncontent' } },
     );
   });
 
@@ -140,6 +146,9 @@ describe('NotionPublisher.create', () => {
       callOrder.push('pages.create');
       return { id: 'page-abc-123-xyz' };
     });
+    (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
+      callOrder.push('pages.updateMarkdown');
+    });
     (app.client.chat.postMessage as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
       callOrder.push('postMessage');
       return {};
@@ -147,7 +156,7 @@ describe('NotionPublisher.create', () => {
 
     await publisher.create('C123', '100.0', specPath);
 
-    expect(callOrder).toEqual(['pages.create', 'postMessage']);
+    expect(callOrder).toEqual(['pages.create', 'pages.updateMarkdown', 'postMessage']);
     expect(app.client.chat.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         channel: 'C123',
@@ -167,17 +176,28 @@ describe('NotionPublisher.create', () => {
     expect(result).toBe('returned-page-id');
   });
 
-  it('throws if pages.create rejects; postMessage never called', async () => {
+  it('throws if pages.create rejects; updateMarkdown and postMessage never called', async () => {
     const client = makeMockNotionClient();
     (client.pages.create as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('API error'));
     const app = makeMockApp();
     const publisher = new NotionPublisher(client, app as unknown as App, 'parent-page-xyz', { logDestination: nullDest });
 
     await expect(publisher.create('C123', '100.0', makeSpecFile())).rejects.toThrow('API error');
+    expect(client.pages.updateMarkdown).not.toHaveBeenCalled();
     expect(app.client.chat.postMessage).not.toHaveBeenCalled();
   });
 
-  it('throws if postMessage rejects after successful pages.create', async () => {
+  it('throws if pages.updateMarkdown rejects; postMessage never called', async () => {
+    const client = makeMockNotionClient();
+    (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('Markdown error'));
+    const app = makeMockApp();
+    const publisher = new NotionPublisher(client, app as unknown as App, 'parent-page-xyz', { logDestination: nullDest });
+
+    await expect(publisher.create('C123', '100.0', makeSpecFile())).rejects.toThrow('Markdown error');
+    expect(app.client.chat.postMessage).not.toHaveBeenCalled();
+  });
+
+  it('throws if postMessage rejects after successful create and updateMarkdown', async () => {
     const client = makeMockNotionClient();
     const app = makeMockApp();
     (app.client.chat.postMessage as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('Slack error'));
@@ -188,73 +208,50 @@ describe('NotionPublisher.create', () => {
 });
 
 describe('NotionPublisher.update', () => {
-  it('fetches existing blocks, deletes each in order, then appends new blocks', async () => {
+  it('reads spec from disk and calls replace_content when no page_content provided', async () => {
     const client = makeMockNotionClient();
     const app = makeMockApp();
     const publisher = new NotionPublisher(client, app as unknown as App, 'parent-page-xyz', { logDestination: nullDest });
-    const specPath = makeSpecFile('# Updated');
 
-    const callOrder: string[] = [];
-    (client.blocks.children.list as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
-      callOrder.push('list');
-      return { results: [{ id: 'block-1' }, { id: 'block-2' }] };
-    });
-    (client.blocks.delete as ReturnType<typeof vi.fn>).mockImplementation(async ({ block_id }: { block_id: string }) => {
-      callOrder.push(`delete:${block_id}`);
-      return {};
-    });
-    (client.blocks.children.append as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
-      callOrder.push('append');
-      return {};
-    });
+    await publisher.update('page-xyz', makeSpecFile('# My Spec\n\ncontent'));
 
-    await publisher.update('page-xyz', specPath);
-
-    expect(callOrder).toEqual(['list', 'delete:block-1', 'delete:block-2', 'append']);
+    expect(client.pages.updateMarkdown).toHaveBeenCalledWith(
+      'page-xyz',
+      { type: 'replace_content', replace_content: { new_str: '# My Spec\n\ncontent' } },
+    );
   });
 
-  it('handles empty page: no deletes, append proceeds', async () => {
+  it('uses page_content directly when provided (span-bearing)', async () => {
     const client = makeMockNotionClient();
-    (client.blocks.children.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ results: [] });
     const app = makeMockApp();
     const publisher = new NotionPublisher(client, app as unknown as App, 'parent-page-xyz', { logDestination: nullDest });
 
-    await publisher.update('page-xyz', makeSpecFile());
+    const spanContent = '# Spec\n\n<span discussion-urls="discussion://abc">text</span>';
+    await publisher.update('page-xyz', makeSpecFile('# Spec\n\ntext'), spanContent);
 
-    expect(client.blocks.delete).not.toHaveBeenCalled();
-    expect(client.blocks.children.append).toHaveBeenCalled();
+    expect(client.pages.updateMarkdown).toHaveBeenCalledWith(
+      'page-xyz',
+      { type: 'replace_content', replace_content: { new_str: spanContent } },
+    );
   });
 
-  it('throws if blocks.children.list rejects; no deletes or appends', async () => {
+  it('does not call getMarkdown (no diff needed)', async () => {
     const client = makeMockNotionClient();
-    (client.blocks.children.list as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('list error'));
     const app = makeMockApp();
     const publisher = new NotionPublisher(client, app as unknown as App, 'parent-page-xyz', { logDestination: nullDest });
 
-    await expect(publisher.update('page-xyz', makeSpecFile())).rejects.toThrow('list error');
-    expect(client.blocks.delete).not.toHaveBeenCalled();
-    expect(client.blocks.children.append).not.toHaveBeenCalled();
+    await publisher.update('page-xyz', makeSpecFile('# Spec'));
+
+    expect(client.pages.getMarkdown).not.toHaveBeenCalled();
   });
 
-  it('throws if blocks.delete rejects; append not called', async () => {
+  it('throws if pages.updateMarkdown rejects', async () => {
     const client = makeMockNotionClient();
-    (client.blocks.delete as ReturnType<typeof vi.fn>)
-      .mockResolvedValueOnce({})
-      .mockRejectedValueOnce(new Error('delete error'));
+    (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('patch error'));
     const app = makeMockApp();
     const publisher = new NotionPublisher(client, app as unknown as App, 'parent-page-xyz', { logDestination: nullDest });
 
-    await expect(publisher.update('page-xyz', makeSpecFile())).rejects.toThrow('delete error');
-    expect(client.blocks.children.append).not.toHaveBeenCalled();
-  });
-
-  it('throws if blocks.children.append rejects', async () => {
-    const client = makeMockNotionClient();
-    (client.blocks.children.append as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('append error'));
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'parent-page-xyz', { logDestination: nullDest });
-
-    await expect(publisher.update('page-xyz', makeSpecFile())).rejects.toThrow('append error');
+    await expect(publisher.update('page-xyz', makeSpecFile('# New'))).rejects.toThrow('patch error');
   });
 
   it('never calls postMessage during update', async () => {
@@ -262,21 +259,45 @@ describe('NotionPublisher.update', () => {
     const app = makeMockApp();
     const publisher = new NotionPublisher(client, app as unknown as App, 'parent-page-xyz', { logDestination: nullDest });
 
-    await publisher.update('page-xyz', makeSpecFile());
+    await publisher.update('page-xyz', makeSpecFile('# New'));
 
     expect(app.client.chat.postMessage).not.toHaveBeenCalled();
   });
+});
 
-  it('throws if blocks.children.list returns has_more: true', async () => {
+describe('NotionPublisher.getPageMarkdown', () => {
+  it('returns page markdown from client', async () => {
     const client = makeMockNotionClient();
-    (client.blocks.children.list as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      results: [{ id: 'block-1' }],
-      has_more: true,
-    });
     const app = makeMockApp();
     const publisher = new NotionPublisher(client, app as unknown as App, 'parent-page-xyz', { logDestination: nullDest });
 
-    await expect(publisher.update('page-xyz', makeSpecFile())).rejects.toThrow(/pagination not yet supported/i);
-    expect(client.blocks.delete).not.toHaveBeenCalled();
+    const markdown = '# Spec\n\n<span discussion-urls="discussion://abc">text</span>';
+    (client.pages.getMarkdown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(markdown);
+
+    const result = await publisher.getPageMarkdown('page-xyz');
+
+    expect(client.pages.getMarkdown).toHaveBeenCalledWith('page-xyz');
+    expect(result).toBe(markdown);
+  });
+
+  it('returns empty string when page has no content', async () => {
+    const client = makeMockNotionClient();
+    const app = makeMockApp();
+    const publisher = new NotionPublisher(client, app as unknown as App, 'parent-page-xyz', { logDestination: nullDest });
+
+    (client.pages.getMarkdown as ReturnType<typeof vi.fn>).mockResolvedValueOnce('');
+
+    const result = await publisher.getPageMarkdown('page-xyz');
+
+    expect(result).toBe('');
+  });
+
+  it('throws if client rejects', async () => {
+    const client = makeMockNotionClient();
+    (client.pages.getMarkdown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('API error'));
+    const app = makeMockApp();
+    const publisher = new NotionPublisher(client, app as unknown as App, 'parent-page-xyz', { logDestination: nullDest });
+
+    await expect(publisher.getPageMarkdown('page-xyz')).rejects.toThrow('API error');
   });
 });
