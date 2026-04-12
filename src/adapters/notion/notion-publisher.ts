@@ -1,10 +1,10 @@
 // src/adapters/notion/notion-publisher.ts
 import { readFileSync } from 'node:fs';
-import { basename } from 'node:path';
 import type { App } from '@slack/bolt';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 import type { NotionClient } from './notion-client.js';
+import { titleFromPath } from '../slack/canvas-publisher.js';
 import type { SpecPublisher } from '../slack/canvas-publisher.js';
 
 interface NotionPublisherOptions {
@@ -29,16 +29,9 @@ export class NotionPublisher implements SpecPublisher {
     this.logger = createLogger('notion-publisher', { destination: options?.logDestination });
   }
 
-  private titleFromPath(spec_path: string): string {
-    const slug = basename(spec_path, '.md')
-      .replace(/^(feature|enhancement)-/, '')
-      .replace(/-/g, ' ');
-    return slug.charAt(0).toUpperCase() + slug.slice(1);
-  }
-
   async create(channel_id: string, thread_ts: string, spec_path: string): Promise<string> {
     const content = readFileSync(spec_path, 'utf-8');
-    const title = this.titleFromPath(spec_path);
+    const title = titleFromPath(spec_path);
 
     const page = await this.client.pages.create({
       parent: { page_id: this.parent_page_id },

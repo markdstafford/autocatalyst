@@ -11,6 +11,13 @@ export interface SpecPublisher {
   getPageMarkdown(publisher_ref: string): Promise<string>;
 }
 
+export function titleFromPath(spec_path: string): string {
+  const slug = basename(spec_path, '.md')
+    .replace(/^(feature|enhancement)-/, '')
+    .replace(/-/g, ' ');
+  return slug.charAt(0).toUpperCase() + slug.slice(1);
+}
+
 interface CanvasPublisherOptions {
   logDestination?: pino.DestinationStream;
 }
@@ -37,17 +44,10 @@ export class SlackCanvasPublisher implements SpecPublisher {
     return `${this.workspaceUrl}/docs/${this.teamId}/${canvas_id}`;
   }
 
-  private titleFromPath(spec_path: string): string {
-    const slug = basename(spec_path, '.md')
-      .replace(/^(feature|enhancement)-/, '')
-      .replace(/-/g, ' ');
-    return slug.charAt(0).toUpperCase() + slug.slice(1);
-  }
-
   async create(channel_id: string, thread_ts: string, spec_path: string): Promise<string> {
     await this.resolveWorkspace();
     const content = readFileSync(spec_path, 'utf-8');
-    const title = this.titleFromPath(spec_path);
+    const title = titleFromPath(spec_path);
 
     // Create the canvas
     const createResult = await (this.app.client as unknown as {

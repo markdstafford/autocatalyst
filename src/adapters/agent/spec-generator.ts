@@ -45,15 +45,13 @@ interface SpecGeneratorOptions {
   logDestination?: pino.DestinationStream;
 }
 
-// Extract the content of the ## Raw output code fence, handling nested fences via depth tracking.
-function extractRawOutput(artifactContent: string, context: string): string {
-  const match = artifactContent.match(/^## Raw output\s*\n```(?:\w+)?\n/m);
-  if (!match) throw new Error(`${context}: artifact missing ## Raw output section`);
-
-  const lines = artifactContent.slice(match.index! + match[0].length).split('\n');
+// Collect lines from an already-opened code fence, tracking nested fences via depth.
+// Stops at the matching closing fence (depth returns to 0).
+function collectFenceContent(lines: string[], startIndex: number): string {
   let depth = 1;
   const result: string[] = [];
-  for (const line of lines) {
+  for (let i = startIndex; i < lines.length; i++) {
+    const line = lines[i];
     if (line.startsWith('```')) {
       if (line === '```') {
         depth--;
@@ -70,30 +68,21 @@ function extractRawOutput(artifactContent: string, context: string): string {
   return result.join('\n');
 }
 
+// Extract the content of the ## Raw output code fence, handling nested fences via depth tracking.
+function extractRawOutput(artifactContent: string, context: string): string {
+  const match = artifactContent.match(/^## Raw output\s*\n```(?:\w+)?\n/m);
+  if (!match) throw new Error(`${context}: artifact missing ## Raw output section`);
+
+  const lines = artifactContent.slice(match.index! + match[0].length).split('\n');
+  return collectFenceContent(lines, 0);
+}
+
 // If text begins with a code fence (```lang), extract the content inside it.
 function unwrapFence(text: string): string {
   const lines = text.split('\n');
   const first = lines.findIndex(l => l.trim() !== '');
   if (first === -1 || !lines[first].startsWith('```')) return text;
-
-  let depth = 1;
-  const result: string[] = [];
-  for (let i = first + 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.startsWith('```')) {
-      if (line === '```') {
-        depth--;
-        if (depth === 0) break;
-        result.push(line);
-      } else {
-        depth++;
-        result.push(line);
-      }
-    } else {
-      result.push(line);
-    }
-  }
-  return result.join('\n');
+  return collectFenceContent(lines, first + 1);
 }
 
 // Extract the content between "LABEL:\n<<<\n" and "\n>>>" delimiters.
