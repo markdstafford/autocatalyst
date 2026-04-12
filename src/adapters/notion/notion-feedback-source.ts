@@ -10,6 +10,7 @@ export interface FeedbackSource {
 }
 
 interface NotionFeedbackSourceOptions {
+  bot_user_id?: string;
   logDestination?: pino.DestinationStream;
 }
 
@@ -23,10 +24,12 @@ interface NotionCommentRecord {
 
 export class NotionFeedbackSource implements FeedbackSource {
   private readonly client: NotionClient;
+  private readonly bot_user_id?: string;
   private readonly logger: pino.Logger;
 
   constructor(client: NotionClient, options?: NotionFeedbackSourceOptions) {
     this.client = client;
+    this.bot_user_id = options?.bot_user_id;
     this.logger = createLogger('notion-feedback-source', { destination: options?.logDestination });
   }
 
@@ -69,6 +72,18 @@ export class NotionFeedbackSource implements FeedbackSource {
       threadMap.set(comment.discussion_id, existing);
     }
 
+    // Filter out threads where the last comment is from the bot
+    let botSkippedCount = 0;
+    if (this.bot_user_id) {
+      for (const [discussion_id, threadComments] of threadMap) {
+        const lastComment = threadComments[threadComments.length - 1];
+        if (lastComment.created_by.id === this.bot_user_id) {
+          threadMap.delete(discussion_id);
+          botSkippedCount++;
+        }
+      }
+    }
+
     const result: NotionComment[] = [];
     for (const [discussion_id, threadComments] of threadMap) {
       const body = threadComments
@@ -81,7 +96,7 @@ export class NotionFeedbackSource implements FeedbackSource {
       result.push({ id: discussion_id, body });
     }
 
-    this.logger.debug({ event: 'notion_comments.fetched', publisher_ref, comment_count: result.length }, 'Fetched Notion comments');
+    this.logger.debug({ event: 'notion_comments.fetched', publisher_ref, comment_count: result.length, bot_skipped_count: botSkippedCount }, 'Fetched Notion comments');
     return result;
   }
 

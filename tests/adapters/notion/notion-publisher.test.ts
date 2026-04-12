@@ -42,6 +42,7 @@ function makeMockNotionClient(pageId = 'page-abc123'): NotionClient {
       list: vi.fn().mockResolvedValue({ results: [] }),
       create: vi.fn().mockResolvedValue({}),
     },
+    users: { me: vi.fn() },
   };
 }
 

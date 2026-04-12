@@ -29,6 +29,9 @@ export interface NotionClient {
     list(args: ListCommentsParameters): Promise<ListCommentsResponse>;
     create(args: CreateCommentParameters): Promise<CreateCommentResponse>;
   };
+  users: {
+    me(): Promise<{ id: string }>;
+  };
 }
 
 export class NotionClientImpl implements NotionClient {
@@ -77,5 +80,18 @@ export class NotionClientImpl implements NotionClient {
       this.client.comments.list(args),
     create: (args: CreateCommentParameters): Promise<CreateCommentResponse> =>
       this.client.comments.create(args),
+  };
+
+  readonly users = {
+    me: async (): Promise<{ id: string }> => {
+      const response = await (this.client as unknown as {
+        request: (args: { path: string; method: string }) => Promise<unknown>;
+      }).request({
+        path: 'users/me',
+        method: 'GET',
+      });
+      // Top-level `id` is the bot's own user ID — matches `created_by.id` on comments
+      return { id: (response as { id: string }).id };
+    },
   };
 }

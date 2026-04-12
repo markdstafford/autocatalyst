@@ -17,6 +17,7 @@ function makeMockClient(): NotionClient {
       list: vi.fn(),
       create: vi.fn().mockResolvedValue({}),
     },
+    users: { me: vi.fn() },
   };
 }
 
@@ -244,6 +245,71 @@ describe('NotionFeedbackSource.reply', () => {
     const source = new NotionFeedbackSource(client, { logDestination: nullDest });
 
     await expect(source.reply('page-abc', 'disc-123', 'response')).rejects.toThrow('create error');
+  });
+});
+
+describe('NotionFeedbackSource.fetch — bot thread filtering', () => {
+  it('skips thread where last comment is from the bot', async () => {
+    const client = makeMockClient();
+    (client.comments.list as ReturnType<typeof vi.fn>).mockResolvedValue({
+      results: [
+        makeComment({ discussion_id: 'disc-1', created_by: { id: 'user-1', name: 'Phoebe' } }),
+        makeComment({ id: 'comment-2', discussion_id: 'disc-1', created_by: { id: 'bot-user-1', name: 'Autocatalyst' } }),
+      ],
+    });
+    const source = new NotionFeedbackSource(client, { bot_user_id: 'bot-user-1', logDestination: nullDest });
+
+    const result = await source.fetch('page-abc');
+
+    expect(result).toEqual([]);
+  });
+
+  it('includes thread where last comment is from a human', async () => {
+    const client = makeMockClient();
+    (client.comments.list as ReturnType<typeof vi.fn>).mockResolvedValue({
+      results: [
+        makeComment({ discussion_id: 'disc-1', created_by: { id: 'bot-user-1', name: 'Autocatalyst' } }),
+        makeComment({ id: 'comment-2', discussion_id: 'disc-1', created_by: { id: 'user-1', name: 'Phoebe' } }),
+      ],
+    });
+    const source = new NotionFeedbackSource(client, { bot_user_id: 'bot-user-1', logDestination: nullDest });
+
+    const result = await source.fetch('page-abc');
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('disc-1');
+  });
+
+  it('includes thread when no bot_user_id configured', async () => {
+    const client = makeMockClient();
+    (client.comments.list as ReturnType<typeof vi.fn>).mockResolvedValue({
+      results: [
+        makeComment({ discussion_id: 'disc-1', created_by: { id: 'bot-user-1', name: 'Autocatalyst' } }),
+      ],
+    });
+    const source = new NotionFeedbackSource(client, { logDestination: nullDest });
+
+    const result = await source.fetch('page-abc');
+
+    expect(result).toHaveLength(1);
+  });
+
+  it('logs skipped thread count', async () => {
+    const client = makeMockClient();
+    (client.comments.list as ReturnType<typeof vi.fn>).mockResolvedValue({
+      results: [
+        makeComment({ discussion_id: 'disc-1', created_by: { id: 'bot-user-1', name: 'Autocatalyst' } }),
+      ],
+    });
+    const logLines: unknown[] = [];
+    const dest = { write: (line: string) => logLines.push(JSON.parse(line)) };
+    const source = new NotionFeedbackSource(client, { bot_user_id: 'bot-user-1', logDestination: dest });
+
+    await source.fetch('page-abc');
+
+    const fetchLog = logLines.find((l: unknown) => (l as { event?: string }).event === 'notion_comments.fetched');
+    expect(fetchLog).toBeDefined();
+    expect((fetchLog as { bot_skipped_count?: number }).bot_skipped_count).toBe(1);
   });
 });
 
