@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 import type { Idea, SpecFeedback } from '../../types/events.js';
+import { stripCommentSpans, extractCommentSpans, ensureSpansPreserved } from '../notion/markdown-diff.js';
 
 export interface NotionComment {
   id: string;   // discussion ID — used to post the reply
@@ -23,6 +24,11 @@ type ExecFn = (file: string, args: string[], opts?: { cwd?: string }) => Promise
 
 const FILENAME_REGEX = /^(feature|enhancement)-[a-z0-9-]+\.md$/;
 
+export interface ReviseResult {
+  comment_responses: NotionCommentResponse[];
+  page_content?: string;  // span-bearing markdown for publisher; undefined if no spans in input
+}
+
 export interface SpecGenerator {
   create(idea: Idea, workspace_path: string): Promise<string>;
   revise(
@@ -30,7 +36,8 @@ export interface SpecGenerator {
     notion_comments: NotionComment[],
     spec_path: string,
     workspace_path: string,
-  ): Promise<NotionCommentResponse[]>;
+    current_page_markdown?: string,
+  ): Promise<ReviseResult>;
 }
 
 interface SpecGeneratorOptions {
@@ -89,6 +96,17 @@ function unwrapFence(text: string): string {
   return result.join('\n');
 }
 
+// Extract the content between "LABEL:\n<<<\n" and "\n>>>" delimiters.
+function extractDelimitedSection(text: string, label: string, context: string): string {
+  const startMarker = `${label}\n<<<\n`;
+  const start = text.indexOf(startMarker);
+  if (start === -1) throw new Error(`${context}: missing ${label} section`);
+  const contentStart = start + startMarker.length;
+  const end = text.indexOf('\n>>>', contentStart);
+  if (end === -1) throw new Error(`${context}: ${label} section missing closing >>>`);
+  return text.slice(contentStart, end);
+}
+
 function parseArtifact(artifactContent: string): { filename: string; body: string } {
   const rawOutput = extractRawOutput(artifactContent, 'Spec creation');
 
@@ -123,10 +141,11 @@ export class OMCSpecGenerator implements SpecGenerator {
 
   async create(idea: Idea, workspace_path: string): Promise<string> {
     const prompt = [
-      `Using mm:planning conventions, generate a complete product spec for the following idea.`,
+      `Using mm:planning conventions, generate a SHORT product spec for the following idea.`,
+      `Only include these sections: What, Why, Personas, and Narratives. No tech spec, no task list.`,
       ``,
       `On the very first line of your response, write: FILENAME: <feature-or-enhancement-slug>.md`,
-      `Then write the complete spec as a Markdown document with YAML frontmatter.`,
+      `Then write the spec as a Markdown document with YAML frontmatter.`,
       ``,
       `Idea:`,
       `<<<`,
@@ -173,8 +192,11 @@ export class OMCSpecGenerator implements SpecGenerator {
     notion_comments: NotionComment[],
     spec_path: string,
     workspace_path: string,
-  ): Promise<NotionCommentResponse[]> {
-    const currentSpec = readFileSync(spec_path, 'utf-8');
+    current_page_markdown?: string,
+  ): Promise<ReviseResult> {
+    const originalSpans = current_page_markdown ? extractCommentSpans(current_page_markdown) : [];
+    const hasSpans = originalSpans.length > 0;
+    const currentSpec = hasSpans ? current_page_markdown! : readFileSync(spec_path, 'utf-8');
 
     const notionSection = notion_comments.length > 0
       ? [
@@ -186,29 +208,47 @@ export class OMCSpecGenerator implements SpecGenerator {
         ].join('\n')
       : '';
 
-    const shapeLines = notion_comments.length > 0
+    const commentResponsesShape = notion_comments.length > 0
+      ? `[{ "comment_id": "<id from [COMMENT_ID:] tag>", "response": "<1-2 sentences explaining how this comment was addressed>" }, ...]`
+      : `[]`;
+
+    const shapeLines = [
+      `Your response must use this structure exactly — no other text before or after it:`,
+      ``,
+      `SPEC:`,
+      `<<<`,
+      `[complete revised spec as a Markdown document — preserve YAML frontmatter]`,
+      `>>>`,
+      ``,
+      `COMMENT_RESPONSES:`,
+      `<<<`,
+      commentResponsesShape,
+      `>>>`,
+      ...(notion_comments.length === 0 ? [``, `Use an empty array for COMMENT_RESPONSES since there are no Notion comments.`] : []),
+    ];
+
+    const spanInstructions = hasSpans
       ? [
-          `Your response must match this shape exactly:`,
-          `{`,
-          `  "spec": "<complete revised spec as a Markdown string — preserve YAML frontmatter>",`,
-          `  "comment_responses": [`,
-          `    { "comment_id": "<id from [COMMENT_ID:] tag>", "response": "<1-2 sentences explaining how this comment was addressed>" }`,
-          `  ]`,
-          `}`,
+          ``,
+          `CRITICAL: The spec contains <span discussion-urls="..."> tags marking inline comment anchors.`,
+          `Every span in the input MUST appear somewhere in your output. Follow these rules exactly:`,
+          ``,
+          `1. Span text unchanged — keep the span wrapping that same text.`,
+          `2. Span text rewritten — move the span to wrap the closest equivalent text in your revision.`,
+          `3. Span text removed entirely — add an "## Orphaned comments" section at the very end`,
+          `   of the spec with one bullet per orphaned span:`,
+          `   - <span discussion-urls="EXACT_UUID_HERE">exact original inner text</span>`,
+          ``,
+          `DO NOT drop any span. If you are uncertain where to place one, orphan it.`,
+          `The "## Orphaned comments" section must be the last section in the document.`,
         ]
-      : [
-          `Your response must match this shape exactly:`,
-          `{`,
-          `  "spec": "<complete revised spec as a Markdown string — preserve YAML frontmatter>",`,
-          `  "comment_responses": []`,
-          `}`,
-          `Return "comment_responses": [] since there are no Notion comments.`,
-        ];
+      : [];
 
     const prompt = [
-      `Revise the spec below based on the following feedback. Respond with only a JSON object — no other text before or after it.`,
+      `Revise the spec below based on the following feedback.`,
       ``,
       ...shapeLines,
+      ...spanInstructions,
       ``,
       `Slack message:`,
       `<<<`,
@@ -249,29 +289,28 @@ export class OMCSpecGenerator implements SpecGenerator {
 
     this.logger.debug({ event: 'omc.artifact_content', idea_id: feedback.idea_id, artifactContent }, 'Raw OMC artifact for revision');
     const rawOutput = extractRawOutput(artifactContent, 'Spec revision');
+    const unwrapped = unwrapFence(rawOutput.trim());
 
-    // Parse JSON response
-    let parsed: unknown;
+    // Extract spec from SPEC: <<< ... >>> section
+    const spec = extractDelimitedSection(unwrapped, 'SPEC:', 'Spec revision');
+    if (!spec) {
+      throw new Error(`Spec revision: response missing non-empty SPEC section`);
+    }
+
+    // Extract and parse comment_responses from COMMENT_RESPONSES: <<< ... >>> section
+    const commentResponsesRaw = extractDelimitedSection(unwrapped, 'COMMENT_RESPONSES:', 'Spec revision');
+    let parsedResponses: unknown;
     try {
-      parsed = JSON.parse(unwrapFence(rawOutput.trim()));
+      parsedResponses = JSON.parse(commentResponsesRaw.trim() || '[]');
     } catch {
-      throw new Error(`Spec revision: OMC response is not valid JSON`);
+      throw new Error(`Spec revision: COMMENT_RESPONSES section is not valid JSON`);
     }
-
-    if (typeof parsed !== 'object' || parsed === null) {
-      throw new Error(`Spec revision: OMC response is not a JSON object`);
-    }
-    const obj = parsed as Record<string, unknown>;
-
-    if (typeof obj['spec'] !== 'string' || obj['spec'].length === 0) {
-      throw new Error(`Spec revision: JSON response missing non-empty "spec" field`);
-    }
-    if (!Array.isArray(obj['comment_responses'])) {
-      throw new Error(`Spec revision: JSON response missing "comment_responses" array`);
+    if (!Array.isArray(parsedResponses)) {
+      throw new Error(`Spec revision: COMMENT_RESPONSES is not a JSON array`);
     }
 
     const commentResponses: NotionCommentResponse[] = [];
-    for (const item of obj['comment_responses'] as unknown[]) {
+    for (const item of parsedResponses as unknown[]) {
       if (typeof item !== 'object' || item === null) {
         throw new Error(`Spec revision: comment_responses entry is not an object`);
       }
@@ -286,9 +325,16 @@ export class OMCSpecGenerator implements SpecGenerator {
     }
 
     this.logger.debug({ event: 'spec_revision.output', idea_id: feedback.idea_id, comment_response_count: commentResponses.length, comment_response_ids: commentResponses.map(r => r.comment_id) }, 'Parsed comment responses from revision');
-    writeFileSync(spec_path, obj['spec'] as string, 'utf-8');
-    this.logger.info({ event: 'spec.revised', idea_id: feedback.idea_id, spec_path }, 'Spec revised');
 
-    return commentResponses;
+    if (hasSpans) {
+      const pageContent = ensureSpansPreserved(spec, originalSpans);
+      writeFileSync(spec_path, stripCommentSpans(pageContent), 'utf-8');
+      this.logger.info({ event: 'spec.revised', idea_id: feedback.idea_id, spec_path, spans_preserved: true }, 'Spec revised with span passthrough');
+      return { comment_responses: commentResponses, page_content: pageContent };
+    }
+
+    writeFileSync(spec_path, spec, 'utf-8');
+    this.logger.info({ event: 'spec.revised', idea_id: feedback.idea_id, spec_path }, 'Spec revised');
+    return { comment_responses: commentResponses };
   }
 }

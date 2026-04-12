@@ -5,26 +5,26 @@ import type {
   CreatePageResponse,
   ListBlockChildrenParameters,
   ListBlockChildrenResponse,
-  AppendBlockChildrenParameters,
-  AppendBlockChildrenResponse,
-  DeleteBlockParameters,
-  DeleteBlockResponse,
   ListCommentsParameters,
   ListCommentsResponse,
   CreateCommentParameters,
   CreateCommentResponse,
 } from '@notionhq/client/build/src/api-endpoints.js';
 
+export type MarkdownOperation =
+  | { type: 'replace_content'; replace_content: { new_str: string } }
+  | { type: 'update_content'; update_content: { content_updates: Array<{ old_str: string; new_str: string }> } };
+
 export interface NotionClient {
   pages: {
     create(args: CreatePageParameters): Promise<CreatePageResponse>;
+    getMarkdown(page_id: string): Promise<string>;
+    updateMarkdown(page_id: string, operation: MarkdownOperation): Promise<void>;
   };
   blocks: {
     children: {
       list(args: ListBlockChildrenParameters): Promise<ListBlockChildrenResponse>;
-      append(args: AppendBlockChildrenParameters): Promise<AppendBlockChildrenResponse>;
     };
-    delete(args: DeleteBlockParameters): Promise<DeleteBlockResponse>;
   };
   comments: {
     list(args: ListCommentsParameters): Promise<ListCommentsResponse>;
@@ -43,17 +43,35 @@ export class NotionClientImpl implements NotionClient {
   readonly pages = {
     create: (args: CreatePageParameters): Promise<CreatePageResponse> =>
       this.client.pages.create(args),
+
+    getMarkdown: async (page_id: string): Promise<string> => {
+      const response = await (this.client as unknown as {
+        request: (args: { path: string; method: string; headers?: Record<string, string> }) => Promise<unknown>;
+      }).request({
+        path: `pages/${page_id}/markdown`,
+        method: 'GET',
+        headers: { 'Notion-Version': '2026-03-11' },
+      });
+      return (response as { markdown: string }).markdown;
+    },
+
+    updateMarkdown: async (page_id: string, operation: MarkdownOperation): Promise<void> => {
+      await (this.client as unknown as {
+        request: (args: { path: string; method: string; body: unknown; headers?: Record<string, string> }) => Promise<unknown>;
+      }).request({
+        path: `pages/${page_id}/markdown`,
+        method: 'PATCH',
+        headers: { 'Notion-Version': '2026-03-11' },
+        body: operation,
+      });
+    },
   };
 
   readonly blocks = {
     children: {
       list: (args: ListBlockChildrenParameters): Promise<ListBlockChildrenResponse> =>
         this.client.blocks.children.list(args),
-      append: (args: AppendBlockChildrenParameters): Promise<AppendBlockChildrenResponse> =>
-        this.client.blocks.children.append(args),
     },
-    delete: (args: DeleteBlockParameters): Promise<DeleteBlockResponse> =>
-      this.client.blocks.delete(args),
   };
 
   readonly comments = {

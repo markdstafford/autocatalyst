@@ -1,7 +1,6 @@
 // src/adapters/notion/notion-publisher.ts
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
-import { markdownToBlocks } from '@tryfabric/martian';
 import type { App } from '@slack/bolt';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
@@ -40,17 +39,18 @@ export class NotionPublisher implements SpecPublisher {
   async create(channel_id: string, thread_ts: string, spec_path: string): Promise<string> {
     const content = readFileSync(spec_path, 'utf-8');
     const title = this.titleFromPath(spec_path);
-    const blocks = markdownToBlocks(content);
 
     const page = await this.client.pages.create({
       parent: { page_id: this.parent_page_id },
       properties: {
         title: [{ type: 'text', text: { content: title } }],
       } as unknown as Parameters<NotionClient['pages']['create']>[0]['properties'],
-      children: blocks as Parameters<NotionClient['pages']['create']>[0]['children'],
     });
 
     const pageId = page.id;
+
+    await this.client.pages.updateMarkdown(pageId, { type: 'replace_content', replace_content: { new_str: content } });
+
     const pageUrl = `https://notion.so/${pageId.replace(/-/g, '')}`;
 
     await this.app.client.chat.postMessage({
@@ -63,29 +63,18 @@ export class NotionPublisher implements SpecPublisher {
     return pageId;
   }
 
-  async update(publisher_ref: string, spec_path: string): Promise<void> {
-    const content = readFileSync(spec_path, 'utf-8');
-    const blocks = markdownToBlocks(content);
+  async getPageMarkdown(publisher_ref: string): Promise<string> {
+    return this.client.pages.getMarkdown(publisher_ref);
+  }
 
-    // Fetch existing child block IDs
-    const existing = await this.client.blocks.children.list({ block_id: publisher_ref });
-    // Guard: Notion paginates at 100 blocks; throw loudly rather than silently corrupting the page
-    if ((existing as { has_more?: boolean }).has_more) {
-      throw new Error(`Notion page ${publisher_ref} has more than 100 blocks; pagination not yet supported`);
-    }
-    const blockIds = existing.results.map((b: { id: string }) => b.id);
+  async update(publisher_ref: string, spec_path: string, page_content?: string): Promise<void> {
+    const content = page_content ?? readFileSync(spec_path, 'utf-8');
 
-    // Delete each existing block sequentially
-    for (const block_id of blockIds) {
-      await this.client.blocks.delete({ block_id });
-    }
-
-    // Append new blocks
-    await this.client.blocks.children.append({
-      block_id: publisher_ref,
-      children: blocks as Parameters<NotionClient['blocks']['children']['append']>[0]['children'],
+    await this.client.pages.updateMarkdown(publisher_ref, {
+      type: 'replace_content',
+      replace_content: { new_str: content },
     });
 
-    this.logger.info({ event: 'notion_page.updated', page_id: publisher_ref, block_count: blocks.length }, 'Notion page updated');
+    this.logger.info({ event: 'notion_page.updated', page_id: publisher_ref }, 'Notion page updated');
   }
 }

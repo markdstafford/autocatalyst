@@ -50,7 +50,7 @@ function makeWorkspaceManager(overrides: Partial<WorkspaceManager> = {}): Worksp
 function makeSpecGenerator(overrides: Partial<SpecGenerator> = {}): SpecGenerator {
   return {
     create: vi.fn().mockResolvedValue('/ws/idea-001/context-human/specs/feature-test.md'),
-    revise: vi.fn().mockResolvedValue([]),
+    revise: vi.fn().mockResolvedValue({ comment_responses: [] }),
     ...overrides,
   };
 }
@@ -68,6 +68,7 @@ function makeSpecPublisher(overrides: Partial<SpecPublisher> = {}): SpecPublishe
   return {
     create: vi.fn().mockResolvedValue('CANVAS001'),
     update: vi.fn().mockResolvedValue(undefined),
+    getPageMarkdown: vi.fn().mockResolvedValue(''),
     ...overrides,
   };
 }
@@ -234,13 +235,15 @@ describe('Orchestrator — spec_feedback happy path', () => {
     expect(run.stage).toBe('review');
     expect(run.attempt).toBe(1);
 
+    expect(cp.getPageMarkdown).toHaveBeenCalledWith('CANVAS001');
     expect(sg.revise).toHaveBeenCalledWith(
       expect.objectContaining({ idea_id: 'idea-001' }),
       [],
       '/ws/idea-001/context-human/specs/feature-test.md',
       '/ws/idea-001',
+      undefined,
     );
-    expect(cp.update).toHaveBeenCalledWith('CANVAS001', '/ws/idea-001/context-human/specs/feature-test.md');
+    expect(cp.update).toHaveBeenCalledWith('CANVAS001', '/ws/idea-001/context-human/specs/feature-test.md', undefined);
   });
 });
 
@@ -381,7 +384,7 @@ describe('Orchestrator — concurrency', () => {
       create: vi.fn().mockImplementation(async (_idea: Idea, workspace_path: string) =>
         `${workspace_path}/context-human/specs/feature-test.md`
       ),
-      revise: vi.fn().mockResolvedValue([]),
+      revise: vi.fn().mockResolvedValue({ comment_responses: [] }),
     };
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
@@ -428,14 +431,15 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
       { comment_id: 'disc-2', response: 'Updated per Enzo' },
     ];
     const fs = makeFeedbackSource({ fetch: vi.fn().mockResolvedValue(notionComments) });
-    const sg = makeSpecGenerator({ revise: vi.fn().mockResolvedValue(commentResponses) });
+    const sg = makeSpecGenerator({ revise: vi.fn().mockResolvedValue({ comment_responses: commentResponses }) });
     const sp = makeSpecPublisher();
     const adapter = makeMockAdapter();
     const postError = vi.fn().mockResolvedValue(undefined);
 
     const callOrder: string[] = [];
+    (sp.getPageMarkdown as ReturnType<typeof vi.fn>).mockImplementation(async () => { callOrder.push('getPageMarkdown'); return ''; });
     (fs.fetch as ReturnType<typeof vi.fn>).mockImplementation(async () => { callOrder.push('fetch'); return notionComments; });
-    (sg.revise as ReturnType<typeof vi.fn>).mockImplementation(async () => { callOrder.push('revise'); return commentResponses; });
+    (sg.revise as ReturnType<typeof vi.fn>).mockImplementation(async () => { callOrder.push('revise'); return { comment_responses: commentResponses }; });
     (sp.update as ReturnType<typeof vi.fn>).mockImplementation(async () => { callOrder.push('update'); });
     (fs.reply as ReturnType<typeof vi.fn>).mockImplementation(async () => { callOrder.push('reply'); });
     (fs.resolve as ReturnType<typeof vi.fn>).mockImplementation(async () => { callOrder.push('resolve'); });
@@ -450,13 +454,15 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
     expect(runs.get('idea-001')?.stage).toBe('review');
-    expect(callOrder).toEqual(['fetch', 'revise', 'update', 'reply', 'reply', 'resolve']);
-    expect(fs.fetch).toHaveBeenCalledWith('CANVAS001'); // publisher_ref from sp.create mock
+    expect(callOrder).toEqual(['fetch', 'getPageMarkdown', 'revise', 'update', 'reply', 'reply', 'resolve']);
+    expect(sp.getPageMarkdown).toHaveBeenCalledWith('CANVAS001');
+    expect(fs.fetch).toHaveBeenCalledWith('CANVAS001');
     expect(sg.revise).toHaveBeenCalledWith(
       expect.objectContaining({ idea_id: 'idea-001' }),
       notionComments,
       expect.any(String),
       expect.any(String),
+      undefined,
     );
     expect(fs.reply).toHaveBeenCalledTimes(2);
     expect(fs.reply).toHaveBeenCalledWith('CANVAS001', 'disc-1', 'Updated per Phoebe');
@@ -466,7 +472,7 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
 
   it('empty fetch: revise called with []; no reply or resolve', async () => {
     const fs = makeFeedbackSource({ fetch: vi.fn().mockResolvedValue([]) });
-    const sg = makeSpecGenerator({ revise: vi.fn().mockResolvedValue([]) });
+    const sg = makeSpecGenerator({ revise: vi.fn().mockResolvedValue({ comment_responses: [] }) });
     const adapter = makeMockAdapter();
 
     const orch = new OrchestratorImpl(
@@ -482,13 +488,14 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
       [],
       expect.any(String),
       expect.any(String),
+      undefined,
     );
     expect(fs.reply).not.toHaveBeenCalled();
     expect(fs.resolve).not.toHaveBeenCalled();
   });
 
   it('no feedbackSource: revise called with []; no fetch/reply/resolve', async () => {
-    const sg = makeSpecGenerator({ revise: vi.fn().mockResolvedValue([]) });
+    const sg = makeSpecGenerator({ revise: vi.fn().mockResolvedValue({ comment_responses: [] }) });
     const adapter = makeMockAdapter();
 
     const orch = new OrchestratorImpl(
@@ -504,6 +511,7 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
       [],
       expect.any(String),
       expect.any(String),
+      undefined,
     );
   });
 
@@ -542,7 +550,7 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
         .mockRejectedValueOnce(new Error('reply error'))
         .mockResolvedValueOnce(undefined),
     });
-    const sg = makeSpecGenerator({ revise: vi.fn().mockResolvedValue(commentResponses) });
+    const sg = makeSpecGenerator({ revise: vi.fn().mockResolvedValue({ comment_responses: commentResponses }) });
     const adapter = makeMockAdapter();
     const postError = vi.fn().mockResolvedValue(undefined);
 
@@ -566,7 +574,7 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
       fetch: vi.fn().mockResolvedValue([{ id: 'd1', body: 'feedback' }]),
       resolve: vi.fn().mockRejectedValue(new Error('resolve error')),
     });
-    const sg = makeSpecGenerator({ revise: vi.fn().mockResolvedValue([{ comment_id: 'd1', response: 'r1' }]) });
+    const sg = makeSpecGenerator({ revise: vi.fn().mockResolvedValue({ comment_responses: [{ comment_id: 'd1', response: 'r1' }] }) });
     const adapter = makeMockAdapter();
     const postError = vi.fn().mockResolvedValue(undefined);
 

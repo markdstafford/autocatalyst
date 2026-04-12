@@ -7,7 +7,8 @@ import { createLogger } from '../../core/logger.js';
 
 export interface SpecPublisher {
   create(channel_id: string, thread_ts: string, spec_path: string): Promise<string>;
-  update(publisher_ref: string, spec_path: string): Promise<void>;
+  update(publisher_ref: string, spec_path: string, page_content?: string): Promise<void>;
+  getPageMarkdown(publisher_ref: string): Promise<string>;
 }
 
 interface CanvasPublisherOptions {
@@ -80,7 +81,11 @@ export class SlackCanvasPublisher implements SpecPublisher {
     return canvas_id;
   }
 
-  async update(canvas_id: string, spec_path: string): Promise<void> {
+  async getPageMarkdown(_publisher_ref: string): Promise<string> {
+    return '';
+  }
+
+  async update(canvas_id: string, spec_path: string, _page_content?: string): Promise<void> {
     const content = readFileSync(spec_path, 'utf-8');
 
     await (this.app.client as unknown as {
