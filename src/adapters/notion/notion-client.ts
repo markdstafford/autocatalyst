@@ -12,8 +12,7 @@ import type {
 } from '@notionhq/client/build/src/api-endpoints.js';
 
 export type MarkdownOperation =
-  | { type: 'replace_content'; replace_content: { new_str: string } }
-  | { type: 'update_content'; update_content: { content_updates: Array<{ old_str: string; new_str: string }> } };
+  { type: 'replace_content'; replace_content: { new_str: string } };
 
 export interface NotionClient {
   pages: {

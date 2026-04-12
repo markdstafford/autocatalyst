@@ -1,6 +1,6 @@
 ---
 created: 2026-04-09
-last_updated: 2026-04-10
+last_updated: 2026-04-12
 status: complete
 issue: 6
 specced_by: markdstafford
@@ -71,7 +71,7 @@ Autocatalyst fetches both open comment threads from the Notion page, combines th
 - Polling Notion for new comments — the trigger for processing Notion feedback is always a Slack @mention
 
 **Glossary**
-- **Notion page** — a document in the Notion API (`page` object); spec content is written as child blocks via the Blocks API
+- **Notion page** — a document in the Notion API (`page` object); spec content is written as Markdown via the Markdown API (`PATCH /v1/pages/{page_id}/markdown`)
 - **Notion comment** — a top-level discussion on a page (`discussion` object); feedback left by reviewers before they trigger a revision pass
 - **Open comment thread** — a Notion comment thread with `resolved: false`; included in the feedback payload when a revision is triggered
 - **Notion integration token** — a secret issued by a Notion internal integration; authenticates all Notion API calls; provided via the `AC_NOTION_INTEGRATION_TOKEN` environment variable
@@ -91,27 +91,33 @@ Autocatalyst fetches both open comment threads from the Notion page, combines th
 - `src/index.ts` — wires `NotionPublisher` + `NotionFeedbackSource` when `config.notion` is present; falls back to `SlackCanvasPublisher`
 
 *New*
-- `src/adapters/notion/notion-client.ts` — thin wrapper around `@notionhq/client` SDK; injectable for testing
-- `src/adapters/notion/notion-publisher.ts` — `NotionPublisher` implements `SpecPublisher`; `create` creates a Notion page under `parent_page_id`, converts spec Markdown to Notion blocks, posts Slack message with page link; `update` replaces the page's child blocks with revised spec content
+- `src/adapters/notion/notion-client.ts` — thin wrapper around `@notionhq/client` SDK; injectable for testing; includes `pages.getMarkdown` and `pages.updateMarkdown` for the Markdown API (via the SDK's generic `request()` method, since the SDK may not expose these endpoints natively)
+- `src/adapters/notion/notion-publisher.ts` — `NotionPublisher` implements `SpecPublisher`; `create` creates a Notion page under `parent_page_id`, sets content via the Markdown API (`replace_content`), posts Slack message with page link; `update` accepts optional `page_content` (span-bearing markdown from the revision pass) and writes via `replace_content`; `getPageMarkdown` fetches page markdown with comment spans for the revision pass
+- `src/adapters/notion/markdown-diff.ts` — span utilities: `stripCommentSpans` removes inline comment `<span>` anchors from Notion markdown; `extractCommentSpans` extracts span UUIDs and inner text; `ensureSpansPreserved` appends missing spans to an "Orphaned comments" section
 - `src/adapters/notion/notion-feedback-source.ts` — defines the `FeedbackSource` interface and `NotionFeedbackSource` implementation; `fetch(publisher_ref)` calls `GET /v1/comments?block_id=<page_id>` and returns open threads; `reply(publisher_ref, comment_id, response)` posts a reply via `POST /v1/comments`; `resolve(publisher_ref, comment_ids)` marks each thread resolved via `PATCH /v1/comments/<id>`
 
 **Revision response format**
 
 `SpecGenerator.create()` keeps the existing `## Raw output` / `FILENAME:` artifact format — it works and returns only the spec.
 
-`SpecGenerator.revise()` shifts to a JSON response from OMC:
+`SpecGenerator.revise()` uses a delimited-section format from OMC:
 
-```json
-{
-  "spec": "---\nfrontmatter...\n---\n# Feature...",
-  "comment_responses": [
-    { "comment_id": "abc123", "response": "Updated: wizard now uses an inline flow rather than a modal" },
-    { "comment_id": "def456", "response": "Updated: three settings are now marked optional" }
-  ]
-}
+```
+SPEC:
+<<<
+---
+frontmatter...
+---
+# Feature...
+>>>
+
+COMMENT_RESPONSES:
+<<<
+[{ "comment_id": "abc123", "response": "Updated: wizard now uses an inline flow" }]
+>>>
 ```
 
-`comment_responses` is an empty array when there are no Notion comments. `SpecGenerator.revise()` parses with `JSON.parse()` + validation, writes `spec` to disk, and returns `NotionCommentResponse[]`. The Orchestrator dispatches each response via `feedbackSource.reply()` then calls `feedbackSource.resolve()`.
+`comment_responses` is an empty JSON array when there are no Notion comments. `SpecGenerator.revise()` extracts each section by delimiter, parses `COMMENT_RESPONSES` with `JSON.parse()` + validation, and returns a `ReviseResult { comment_responses, page_content? }`. When the input page markdown contains comment spans, the SPEC output includes span-preservation instructions and the result includes `page_content` (span-bearing markdown for the publisher); the disk file is written with spans stripped. The Orchestrator dispatches each response via `feedbackSource.reply()` then calls `feedbackSource.resolve()`.
 
 **High-level architecture**
 
@@ -152,7 +158,8 @@ sequenceDiagram
     OMC-->>SpecGenerator: artifact with spec content
     SpecGenerator-->>Orchestrator: spec_path
     Orchestrator->>NotionPublisher: create(channel_id, thread_ts, spec_path)
-    NotionPublisher->>Notion: POST /pages (create page + blocks)
+    NotionPublisher->>Notion: POST /pages (create page, title only)
+    NotionPublisher->>Notion: PATCH /pages/{id}/markdown (replace_content)
     NotionPublisher->>Slack: chat.postMessage (Notion page link)
     Slack-->>Phoebe: link posted in thread
 ```
@@ -176,13 +183,16 @@ sequenceDiagram
     Orchestrator->>NotionFeedbackSource: fetch(publisher_ref)
     NotionFeedbackSource->>Notion: GET /comments?block_id=<page_id>
     Notion-->>NotionFeedbackSource: 2 open comment threads
-    Note over Orchestrator: combines Slack message + 2 comment bodies (with IDs)
-    Orchestrator->>SpecGenerator: revise(feedback, notion_comments, spec_path, workspace_path)
-    SpecGenerator->>OMC: omc ask claude --print "..."
-    OMC-->>SpecGenerator: JSON — revised spec + comment_responses[]
-    SpecGenerator-->>Orchestrator: spec written to disk, NotionCommentResponse[]
-    Orchestrator->>NotionPublisher: update(publisher_ref, spec_path)
-    NotionPublisher->>Notion: replace page child blocks
+    Orchestrator->>NotionPublisher: getPageMarkdown(publisher_ref)
+    NotionPublisher->>Notion: GET /pages/{id}/markdown
+    Notion-->>NotionPublisher: page markdown (with comment spans)
+    Note over Orchestrator: combines Slack message + 2 comment bodies (with IDs) + page markdown
+    Orchestrator->>SpecGenerator: revise(feedback, notion_comments, spec_path, workspace_path, page_markdown)
+    SpecGenerator->>OMC: omc ask claude --print "..." (with span-preservation instructions)
+    OMC-->>SpecGenerator: delimited sections — revised spec (with spans) + comment_responses[]
+    SpecGenerator-->>Orchestrator: ReviseResult { comment_responses, page_content }
+    Orchestrator->>NotionPublisher: update(publisher_ref, spec_path, page_content)
+    NotionPublisher->>Notion: PATCH /pages/{id}/markdown (replace_content)
     loop for each NotionCommentResponse
         Orchestrator->>NotionFeedbackSource: reply(publisher_ref, comment_id, response)
         NotionFeedbackSource->>Notion: POST /comments (reply to thread)
@@ -243,10 +253,16 @@ One `NotionComment` represents one discussion thread. One `NotionCommentResponse
 // src/adapters/slack/canvas-publisher.ts — interface renamed
 export interface SpecPublisher {
   create(channel_id: string, thread_ts: string, spec_path: string): Promise<string>; // returns publisher_ref
-  update(publisher_ref: string, spec_path: string): Promise<void>;
+  update(publisher_ref: string, spec_path: string, page_content?: string): Promise<void>;
+  getPageMarkdown(publisher_ref: string): Promise<string>;
 }
 
 // src/adapters/agent/spec-generator.ts — revise() signature updated
+export interface ReviseResult {
+  comment_responses: NotionCommentResponse[];
+  page_content?: string;  // span-bearing markdown for publisher; undefined if no spans in input
+}
+
 export interface SpecGenerator {
   create(idea: Idea, workspace_path: string): Promise<string>;
   revise(
@@ -254,7 +270,8 @@ export interface SpecGenerator {
     notion_comments: NotionComment[],
     spec_path: string,
     workspace_path: string,
-  ): Promise<NotionCommentResponse[]>;
+    current_page_markdown?: string,
+  ): Promise<ReviseResult>;
 }
 
 // src/adapters/notion/notion-feedback-source.ts
@@ -276,20 +293,24 @@ interface OrchestratorDeps {
 }
 ```
 
-**`SpecGenerator.revise()` — prompt and JSON parsing**
+**`SpecGenerator.revise()` — prompt and delimited-section parsing**
 
 When `notion_comments` is non-empty, the revision prompt includes a Notion comments section with IDs:
 
 ```
-Revise the spec below based on the following feedback. Respond with only a JSON object — no other text before or after it.
+Revise the spec below based on the following feedback.
 
-Your response must match this shape exactly:
-{
-  "spec": "<complete revised spec as a Markdown string — preserve YAML frontmatter>",
-  "comment_responses": [
-    { "comment_id": "<id from [COMMENT_ID:] tag>", "response": "<1-2 sentences explaining how this comment was addressed>" }
-  ]
-}
+Your response must use this structure exactly — no other text before or after it:
+
+SPEC:
+<<<
+[complete revised spec as a Markdown document — preserve YAML frontmatter]
+>>>
+
+COMMENT_RESPONSES:
+<<<
+[{ "comment_id": "<id from [COMMENT_ID:] tag>", "response": "<1-2 sentences explaining how this comment was addressed>" }, ...]
+>>>
 
 Slack message:
 <<<
@@ -307,36 +328,48 @@ Second comment body...
 
 Current spec:
 <<<
-{spec content}
+{spec content — page markdown with comment spans when available}
 >>>
 ```
 
-When `notion_comments` is empty, the Notion section is omitted and the model is instructed to return `"comment_responses": []`.
+When `current_page_markdown` contains `<span discussion-urls="...">` comment anchors, the prompt includes span-preservation instructions: keep spans on unchanged text, move spans to equivalent text when rewritten, orphan spans to an "## Orphaned comments" section when the anchored text is removed entirely. When `notion_comments` is empty, the Notion section is omitted and the model is instructed to use an empty array for `COMMENT_RESPONSES`.
 
 Parsing:
 1. Extract the `## Raw output` section from the OMC artifact (same depth-tracking logic as `create`)
-2. `JSON.parse()` the content
-3. Validate: `spec` is a non-empty string; `comment_responses` is an array of `{ comment_id: string; response: string }`; throw with a descriptive error if either check fails
-4. Write `spec` to `spec_path` (overwrite in place)
-5. Return `comment_responses`
+2. Unwrap any code fence wrapper
+3. Extract `SPEC:` delimited section and `COMMENT_RESPONSES:` delimited section via `extractDelimitedSection`
+4. Validate: `SPEC` is non-empty; `COMMENT_RESPONSES` parses as a JSON array of `{ comment_id: string; response: string }`; throw with a descriptive error if either check fails
+5. If spans were present in input: call `ensureSpansPreserved` on the spec output to recover any dropped spans, write span-stripped content to `spec_path`, return `{ comment_responses, page_content }` with the span-bearing content
+6. If no spans: write spec directly to `spec_path`, return `{ comment_responses }`
 
-**`NotionPublisher` — Markdown to blocks and page operations**
+**`NotionPublisher` — Markdown API page operations**
 
-Spec Markdown is converted to Notion block format using `@tryfabric/martian` (`markdownToBlocks(content)`). This handles headings, paragraphs, bullet and numbered lists, code blocks, and inline formatting.
+Spec content is written and updated as Markdown via the Notion Markdown API (`/v1/pages/{page_id}/markdown`), which requires `Notion-Version: 2026-03-11`. This preserves inline comments during updates — the block-level APIs (`blocks.update`, `blocks.delete`) destroy inline comment anchors (see Alternatives).
 
 `create()`:
 1. Read spec from `spec_path`; derive title via `titleFromPath` (same logic as `SlackCanvasPublisher`)
-2. `POST /v1/pages` with `parent: { page_id: config.notion.parent_page_id }`, `properties: { title }`, and `children: markdownToBlocks(content)`
-3. Post Slack message to the thread with the Notion page URL (`https://notion.so/<page_id>`)
-4. Return `page_id`
+2. `POST /v1/pages` with `parent: { page_id: config.notion.parent_page_id }`, `properties: { title }` — no children
+3. `PATCH /v1/pages/<page_id>/markdown` with `replace_content` operation containing the spec Markdown
+4. Post Slack message to the thread with the Notion page URL (`https://notion.so/<page_id>`)
+5. Return `page_id`
+
+`getPageMarkdown()`:
+1. `GET /v1/pages/<page_id>/markdown` → raw markdown (includes `<span discussion-urls="...">text</span>` comment anchors)
+2. Called by the Orchestrator before `revise()` so the spec generator can do span passthrough
 
 `update()`:
-1. Read spec from `spec_path`
-2. `GET /v1/blocks/<page_id>/children` → existing child block IDs
-3. `DELETE /v1/blocks/<block_id>` for each existing child (sequential)
-4. `PATCH /v1/blocks/<page_id>/children` with `markdownToBlocks(content)`
+1. If `page_content` is provided (span-bearing markdown from the revision pass), use it directly; otherwise read from `spec_path`
+2. `PATCH /v1/pages/<page_id>/markdown` with `replace_content` operation containing the content
 
-Note: Notion's append endpoint accepts up to 100 blocks per request. Large specs that produce more than 100 blocks will fail silently at the truncation point. Pagination is not implemented in this iteration — see Risks.
+Inline comments are preserved via span passthrough in the spec generator: the page markdown (with comment spans) is passed into `revise()`, which instructs the model to preserve spans in its output. The spec generator validates span preservation via `ensureSpansPreserved` and returns the span-bearing content as `page_content`. The publisher writes this span-bearing content via `replace_content`, which preserves the comment anchors.
+
+**`markdown-diff.ts` — span utilities**
+
+`stripCommentSpans(raw)`: removes `<span discussion-urls="...">text</span>` wrapper tags from Notion markdown, preserving the inner text. Used to write clean (span-free) spec content to disk.
+
+`extractCommentSpans(markdown)`: extracts all comment span anchors from markdown content. Returns `CommentSpan[]` with `uuid` (the `discussion-urls` value) and `inner_text` in document order.
+
+`ensureSpansPreserved(revisedContent, originalSpans)`: checks whether all original spans are present in the revised content (by UUID). Missing spans are appended to an "## Orphaned comments" section with a `[dropped by Claude]` tag. Returns content unchanged if no spans are missing.
 
 **`NotionFeedbackSource` — comment operations**
 
@@ -360,11 +393,12 @@ Updated `_handleSpecFeedback` logic:
 
 ```
 1. Fetch: notionComments = feedbackSource ? await feedbackSource.fetch(run.publisher_ref) : []
-2. Revise: commentResponses = await specGenerator.revise(feedback, notionComments, run.spec_path, run.workspace_path)
-3. Update page: await specPublisher.update(run.publisher_ref, run.spec_path)
-4. If feedbackSource && commentResponses.length > 0:
+1.5. Get page markdown: pageMarkdown = await specPublisher.getPageMarkdown(run.publisher_ref) (best-effort; failure logs warn, proceeds without spans)
+2. Revise: result = await specGenerator.revise(feedback, notionComments, run.spec_path, run.workspace_path, pageMarkdown)
+3. Update page: await specPublisher.update(run.publisher_ref, run.spec_path, result.page_content)
+4. If feedbackSource && result.comment_responses.length > 0:
    a. For each response: await feedbackSource.reply(run.publisher_ref, response.comment_id, response.response)
-   b. await feedbackSource.resolve(run.publisher_ref, commentResponses.map(r => r.comment_id))
+   b. await feedbackSource.resolve(run.publisher_ref, result.comment_responses.map(r => r.comment_id))
 5. Transition run to 'review'
 ```
 
@@ -385,7 +419,7 @@ Step 4 failures (reply/resolve) are logged as errors but do **not** fail the run
 **Input validation**
 - `publisher_ref` values stored on `Run` originate from Notion API responses, not user input — no further validation needed at call sites
 - Notion comment content is passed to the OMC prompt wrapped in `<<<`/`>>>` delimiters; it is not executed or interpreted as code
-- The JSON response from OMC is parsed with `JSON.parse()` and structurally validated before any field is used — invalid shape throws and fails the run rather than passing untrusted data downstream
+- The OMC response is parsed via delimited-section extraction; the `COMMENT_RESPONSES` section is parsed with `JSON.parse()` and structurally validated before any field is used — invalid shape throws and fails the run rather than passing untrusted data downstream
 
 ### 5. Observability
 
@@ -424,31 +458,58 @@ All tests use Vitest. `NotionClient` is injectable, so all Notion API calls are 
 **`NotionPublisher`**
 
 _`create` — happy path_
-- Reads spec content from `spec_path` and passes it to `markdownToBlocks`
-- Calls `notionClient.pages.create` with `parent: { page_id: config.notion.parent_page_id }` — asserts exact `parent_page_id` value
+- Calls `notionClient.pages.create` with `parent: { page_id: config.notion.parent_page_id }` — asserts exact `parent_page_id` value; no `children` property
 - Calls `notionClient.pages.create` with `properties.title` derived from the spec filename slug (e.g., `setup-wizard.md` → `"Setup wizard"`)
-- Calls `notionClient.pages.create` with `children` equal to the output of `markdownToBlocks`
-- Calls `app.client.chat.postMessage` after `pages.create` (never before)
+- Calls `notionClient.pages.updateMarkdown` after `pages.create` with `replace_content` containing the spec Markdown
+- Calls `app.client.chat.postMessage` after `updateMarkdown` (never before)
 - `postMessage` uses `channel_id` and `thread_ts` from the arguments
 - `postMessage` body contains the Notion page URL in the form `https://notion.so/<page_id>`
 - Returns the `page_id` from the `pages.create` response
 
 _`create` — failure paths_
-- `pages.create` rejects → throws; `postMessage` is never called
-- `postMessage` rejects after a successful `pages.create` → throws; `page_id` is not returned (caller cannot store a ref to an unannounced page)
+- `pages.create` rejects → throws; `updateMarkdown` and `postMessage` never called
+- `pages.updateMarkdown` rejects → throws; `postMessage` never called
+- `postMessage` rejects after successful `pages.create` and `updateMarkdown` → throws; `page_id` is not returned
+
+_`getPageMarkdown`_
+- Returns page markdown from client
+- Returns empty string when page has no content
+- Throws if client rejects
 
 _`update` — happy path_
-- Reads spec content from `spec_path`
-- Calls `notionClient.blocks.children.list` with `publisher_ref` to get existing block IDs
-- Calls `notionClient.blocks.delete` for each existing block ID, in order
-- Calls `notionClient.blocks.children.append` with `publisher_ref` and the new blocks after all deletes complete
+- Reads spec from disk and calls `replace_content` when no `page_content` provided
+- Uses `page_content` directly when provided (span-bearing markdown)
+- Does not call `getMarkdown` (no diff needed — content is provided or read from disk)
 - `postMessage` is never called during `update`
-- Correctly handles an empty page: `children.list` returns no blocks → no deletes → append proceeds normally
 
 _`update` — failure paths_
-- `blocks.children.list` rejects → throws; no deletes or appends called
-- `blocks.delete` rejects on the second of three blocks → throws; remaining blocks are not deleted and append is not called
-- `blocks.children.append` rejects → throws
+- `pages.updateMarkdown` rejects → throws
+
+**`markdown-diff`**
+
+_`stripCommentSpans`_
+- Returns unchanged text when no spans present
+- Strips a single span, preserving inner text
+- Strips multiple spans in the same line
+- Strips spans across multiple lines
+- Handles span with extra attributes
+- Preserves non-comment span tags (e.g., `class="highlight"`)
+
+_`extractCommentSpans`_
+- Returns empty array when no spans present
+- Extracts a single span with uuid and inner_text
+- Extracts multiple spans in document order
+- Extracts span with extra attributes
+- Handles empty inner text
+- Ignores non-comment spans
+
+_`ensureSpansPreserved`_
+- Returns content unchanged when all spans present
+- Returns content unchanged when originalSpans is empty
+- Appends missing span to new Orphaned comments section with `[dropped by Claude]` tag
+- Appends multiple missing spans
+- Appends to existing Orphaned comments section
+- Only appends missing spans — preserves already-present ones
 
 ---
 
@@ -489,18 +550,27 @@ _Prompt construction_
 - OMC is invoked with the correct `cwd: workspace_path`
 
 _Artifact parsing_
-- Valid JSON with non-empty `spec` and populated `comment_responses`: spec written to `spec_path`; `NotionCommentResponse[]` returned with correct `comment_id` and `response` values
-- Valid JSON with empty `comment_responses: []`: spec written; empty array returned
-- `spec` field written to disk overwrites the previous file content exactly — no trailing characters added or removed
-- Malformed JSON (not parseable): throws with a descriptive error; spec file is not modified
-- JSON missing `spec` field: throws with a descriptive error
-- JSON with `spec` as empty string: throws with a descriptive error
-- JSON missing `comment_responses` field: throws with a descriptive error
-- JSON with `comment_responses` as a non-array: throws with a descriptive error
+- Valid SPEC and COMMENT_RESPONSES sections: spec written to `spec_path`; `ReviseResult` returned with correct `comment_responses`
+- Empty `COMMENT_RESPONSES: []`: spec written; empty array returned
+- Spec written to disk overwrites the previous file content exactly — no trailing characters added or removed
+- Malformed COMMENT_RESPONSES JSON (not parseable): throws with a descriptive error; spec file is not modified
+- Missing SPEC section: throws with a descriptive error
+- Empty SPEC section: throws with a descriptive error
+- Missing COMMENT_RESPONSES section: throws with a descriptive error
+- COMMENT_RESPONSES is not a JSON array: throws with a descriptive error
 - `comment_responses` entry missing `comment_id`: throws with a descriptive error
 - `comment_responses` entry missing `response`: throws with a descriptive error
-- Extra unknown fields in the JSON object: tolerated without error
+- Extra fields in comment_responses entries: tolerated without error
 - OMC exits non-zero: throws; spec file is not modified
+
+_Span passthrough_
+- Uses page markdown as prompt source when `current_page_markdown` provided with spans
+- Adds span-preservation instructions when spans present in input
+- Returns `page_content` with spans preserved in `ReviseResult`
+- Writes stripped (span-free) spec to disk when spans present
+- Appends orphaned spans when Claude drops them (via `ensureSpansPreserved`)
+- Does not return `page_content` when no spans in input
+- Falls back to disk spec when no `current_page_markdown` provided
 
 ---
 
@@ -508,8 +578,9 @@ _Artifact parsing_
 
 _Happy path — with Notion comments_
 - `feedbackSource.fetch` is called with `run.publisher_ref` before `specGenerator.revise`
-- `specGenerator.revise` receives the `notion_comments` array returned by `fetch` alongside the `SpecFeedback` event
-- `specPublisher.update` is called after `specGenerator.revise` resolves, before any `reply` calls
+- `specPublisher.getPageMarkdown` is called with `run.publisher_ref` before `specGenerator.revise`
+- `specGenerator.revise` receives the `notion_comments` array returned by `fetch`, alongside the `SpecFeedback` event and page markdown
+- `specPublisher.update` is called after `specGenerator.revise` resolves with `page_content` from `ReviseResult`, before any `reply` calls
 - `feedbackSource.reply` is called once per entry in `commentResponses`, in order, with the correct `comment_id` and `response`
 - `feedbackSource.resolve` is called after all `reply` calls complete, with the IDs from `commentResponses` (not all fetched IDs)
 - Run transitions back to `review` after all steps complete
@@ -551,9 +622,13 @@ _Failure paths_
 
 Notion does not expose a public webhook API for comment events. Polling on a timer was considered but rejected (Non-goals, Section 1) — it adds latency unpredictability and requires the service to hold a timer per active run. The Slack @mention reuses the existing feedback mechanism at no added complexity cost.
 
-**Spec stored as a single Notion code block instead of converted blocks**
+**Block-level API with `@tryfabric/martian` and LCS diff (attempted and abandoned)**
 
-Skipping the Markdown-to-blocks conversion would eliminate the `@tryfabric/martian` dependency and simplify `NotionPublisher` considerably — the spec would be stored as a single `code` block. The cost is that the Notion page renders as a wall of raw Markdown text with no headings, structure, or inline formatting. Since Notion readability is the primary motivation for this enhancement, that cost is unacceptable. Block conversion is the right trade-off.
+The initial implementation converted spec Markdown to Notion blocks using `@tryfabric/martian` (`markdownToBlocks`), stored them as page children, and updated pages by computing a block-level LCS diff (`block-diff.ts`) to produce minimal `blocks.update`, `blocks.delete`, and `blocks.children.append` operations. This approach was implemented, tested (236 passing unit tests), and deployed for live testing. It was abandoned after confirming that `blocks.update` inherently destroys inline comments — this is a Notion API limitation. Even a single-character text change via `blocks.update` detaches all comment anchors from that block. The Markdown API's `update_content` operation was experimentally confirmed to preserve inline comments including text-span anchors, making it the correct approach.
+
+**Spec stored as a single Notion code block**
+
+Storing the spec as a single `code` block would eliminate both the Markdown API complexity and any dependency. The cost is that the Notion page renders as a wall of raw Markdown text with no headings, structure, or inline formatting. Since Notion readability is the primary motivation for this enhancement, that cost is unacceptable.
 
 **Unify `create()` and `revise()` to both return JSON**
 
@@ -569,17 +644,17 @@ A slash command would be unambiguous — it can only mean "process my Notion com
 
 The Notion public API may not support `PATCH /v1/comments/<id>` with `resolved: true` (the resolution endpoint was not publicly available as of the spec date). Mitigation: `resolve()` is best-effort — 404/405 responses log a warning and do not fail the run. The reply posted by Autocatalyst still signals that the feedback was processed, even if the thread remains technically open.
 
-**Large specs exceeding Notion's 100-block append limit**
+**Notion Markdown API version requirement**
 
-Notion's `blocks.children.append` endpoint accepts at most 100 blocks per call. A spec that produces more than 100 blocks will be silently truncated at the page boundary. Mitigation: log the block count at `debug` level during `update()` so truncation is detectable; implement chunked appending in a follow-up. At current spec sizes this limit is unlikely to be reached.
+The Markdown API (`GET` and `PATCH /v1/pages/{page_id}/markdown`) requires `Notion-Version: 2026-03-11`. The `@notionhq/client` SDK may not natively expose these endpoints; `NotionClientImpl` uses the SDK's generic `request()` method. If the SDK changes its internal `request()` API, the implementation will break. Mitigation: pin the SDK version; add integration tests that exercise the markdown endpoints against a real Notion workspace.
 
-**`@tryfabric/martian` conversion fidelity**
+**Span passthrough reliability**
 
-The converter may not handle every Markdown construct in generated specs correctly — notably YAML frontmatter, nested lists, and tables. Mitigation: validate against real spec output during manual acceptance testing; if the converter drops content, scope a fallback (e.g., render frontmatter as a Notion callout block and unsupported constructs as paragraph text) as a follow-up.
+The span-passthrough approach depends on the model following span-preservation instructions in the prompt. If the model drops spans, `ensureSpansPreserved` appends them as orphaned comments — no comment anchors are permanently lost, but orphaned spans require manual relocation. Mitigation: the prompt is explicit about span rules; the orphan-recovery mechanism is a safety net.
 
-**OMC JSON response reliability**
+**OMC delimited-section response reliability**
 
-The model must return well-formed JSON matching the specified shape. Prompt changes or model updates could degrade reliability. Mitigation: the prompt shows the exact expected shape with a concrete example; `JSON.parse()` + structural validation fails fast with a descriptive error; the run can be retried by re-triggering with an @mention.
+The model must return well-formed `SPEC:` and `COMMENT_RESPONSES:` delimited sections. The `COMMENT_RESPONSES` section must contain valid JSON. Prompt changes or model updates could degrade reliability. Mitigation: the prompt shows the exact expected structure; `extractDelimitedSection` + `JSON.parse()` + structural validation fails fast with a descriptive error; the run can be retried by re-triggering with an @mention.
 
 **`created_by.name` unavailability**
 
@@ -611,43 +686,44 @@ Pages are created on every `new_idea` run and never deleted. A misconfigured or 
 
 - [x] **Story: NotionClient**
   - [x] **Task: Implement `NotionClient`**
-    - **Description**: Create `src/adapters/notion/notion-client.ts`. Define and export a `NotionClient` interface with methods wrapping the `@notionhq/client` SDK calls used by `NotionPublisher` and `NotionFeedbackSource`: `pages.create`, `blocks.children.list`, `blocks.children.append`, `blocks.delete`, `comments.list`, `comments.create`, and `comments.update`. Implement `NotionClientImpl` that takes `integration_token` in its constructor and delegates each method to the underlying `@notionhq/client` `Client`. Install `@notionhq/client` as a dependency. All relative imports use `.js` extensions.
+    - **Description**: Created `src/adapters/notion/notion-client.ts`. Defines and exports a `NotionClient` interface with methods wrapping the `@notionhq/client` SDK calls: `pages.create`, `pages.getMarkdown`, `pages.updateMarkdown`, `blocks.children.list`, `comments.list`, `comments.create`, and `comments.update`. Implements `NotionClientImpl` that takes `integration_token` in its constructor. Exports `MarkdownOperation` type. `getMarkdown` and `updateMarkdown` use the SDK's generic `request()` method with `Notion-Version: 2026-03-11`.
     - **Acceptance criteria**:
-      - [x] `NotionClient` interface exported with all seven methods matching the SDK signatures
+      - [x] `NotionClient` interface exported with all methods matching the SDK signatures
       - [x] `NotionClientImpl` constructor takes `{ integration_token: string }`; never logs the token value
       - [x] `@notionhq/client` added to `package.json` dependencies
+      - [x] `MarkdownOperation` type exported with `replace_content` variant
       - [x] File compiles without errors under `NodeNext` module resolution
       - [x] All relative imports use `.js` extensions
     - **Dependencies**: None
 
 - [x] **Story: NotionPublisher**
   - [x] **Task: Unit tests for `NotionPublisher`**
-    - **Description**: Create `tests/adapters/notion/notion-publisher.test.ts`. Use a mock `NotionClient` (all methods `vi.fn()`) and a mock Bolt `App` with `chat.postMessage` mocked. Use real temp files for spec content. Tests will fail until the implementation task is complete. Cover all cases from the Section 6 testing plan for `NotionPublisher`.
+    - **Description**: Created `tests/adapters/notion/notion-publisher.test.ts`. Uses a mock `NotionClient` (all methods `vi.fn()`) and a mock Bolt `App` with `chat.postMessage` mocked. Uses real temp files for spec content. Covers all cases from the Section 6 testing plan for `NotionPublisher`.
     - **Acceptance criteria**:
-      - [x] `create` calls `pages.create` with exact `parent_page_id`, correct title for multiple filename formats, and blocks from `markdownToBlocks`
-      - [x] `create` calls `postMessage` after `pages.create`; URL contains `page_id`
+      - [x] `create` calls `pages.create` with exact `parent_page_id`, correct title for multiple filename formats, and no children
+      - [x] `create` calls `pages.updateMarkdown` after `pages.create` with `replace_content`
+      - [x] `create` calls `postMessage` after `updateMarkdown`; URL contains `page_id`
       - [x] `create` returns `page_id`
-      - [x] `create` throws if `pages.create` rejects; `postMessage` never called
-      - [x] `create` throws if `postMessage` rejects after successful `pages.create`
-      - [x] `update` calls `blocks.children.list`, then `blocks.delete` for each block ID in order, then `blocks.children.append` with new blocks
-      - [x] `update` handles empty page (no existing blocks): no deletes, append called
-      - [x] `update` throws if `blocks.children.list` rejects; no deletes or appends called
-      - [x] `update` throws if any `blocks.delete` rejects; append not called
-      - [x] `update` throws if `blocks.children.append` rejects
+      - [x] `create` throws if `pages.create` rejects; `updateMarkdown` and `postMessage` never called
+      - [x] `create` throws if `pages.updateMarkdown` rejects; `postMessage` never called
+      - [x] `create` throws if `postMessage` rejects after successful `pages.create` and `updateMarkdown`
+      - [x] `update` reads spec from disk and calls `replace_content` when no `page_content` provided
+      - [x] `update` uses `page_content` directly when provided (span-bearing markdown)
+      - [x] `update` throws if `pages.updateMarkdown` rejects
       - [x] `postMessage` never called during `update`
+      - [x] `getPageMarkdown` returns page markdown from client; throws if client rejects
       - [x] All tests pass: `npm test`
     - **Dependencies**: "Task: Implement `NotionClient`", "Task: Rename `CanvasPublisher` → `SpecPublisher`"
 
   - [x] **Task: Implement `NotionPublisher`**
-    - **Description**: Create `src/adapters/notion/notion-publisher.ts`. Implement `NotionPublisher` which implements `SpecPublisher`. Constructor takes `NotionClient`, the Bolt `App` (for posting the Slack message), and `parent_page_id`. Install `@tryfabric/martian` as a dependency and use `markdownToBlocks(content)` for all Markdown-to-blocks conversion. `create()`: reads spec from `spec_path`, derives title via `titleFromPath` (same logic as `SlackCanvasPublisher`), calls `notionClient.pages.create` with `parent: { page_id: parent_page_id }`, `properties: { title }`, and `children: markdownToBlocks(content)`, then calls `app.client.chat.postMessage` with the Notion page URL (`https://notion.so/<page_id>`), and returns `page_id`. `update()`: reads spec, fetches existing child block IDs via `blocks.children.list`, deletes each sequentially via `blocks.delete`, then appends new blocks via `blocks.children.append`. Uses `createLogger('notion-publisher')`. All relative imports use `.js` extensions.
+    - **Description**: Created `src/adapters/notion/notion-publisher.ts`. Implements `NotionPublisher` which implements `SpecPublisher`. Constructor takes `NotionClient`, the Bolt `App` (for posting the Slack message), and `parent_page_id`. `create()`: reads spec from `spec_path`, derives title via shared `titleFromPath`, calls `pages.create` with title only (no children), then `pages.updateMarkdown` with `replace_content`, then `chat.postMessage` with the Notion page URL. `update()`: accepts optional `page_content` and writes via `replace_content`. `getPageMarkdown()`: delegates to `pages.getMarkdown`. Uses `createLogger('notion-publisher')`.
     - **Acceptance criteria**:
       - [x] `NotionPublisher` implements `SpecPublisher` interface
-      - [x] `@tryfabric/martian` added to `package.json` dependencies
-      - [x] `create()` calls `pages.create` with correct `parent_page_id`, title, and block children
-      - [x] `create()` calls `postMessage` after `pages.create` with a URL containing the `page_id`
-      - [x] `create()` returns `page_id`; throws if `pages.create` rejects (no `postMessage` call); throws if `postMessage` rejects
-      - [x] `update()` fetches existing blocks, deletes each, then appends new blocks
-      - [x] `update()` handles empty page (no existing blocks) without error
+      - [x] `create()` calls `pages.create` with title only, then `pages.updateMarkdown` with `replace_content`
+      - [x] `create()` calls `postMessage` after `updateMarkdown` with a URL containing the `page_id`
+      - [x] `create()` returns `page_id`; throws if any step rejects
+      - [x] `update()` accepts optional `page_content`; writes via `replace_content`
+      - [x] `getPageMarkdown()` returns page markdown from client
       - [x] `notion_page.created` and `notion_page.updated` log events emitted with correct fields
       - [x] All relative imports use `.js` extensions
       - [x] All tests from the preceding task pass: `npm test`
@@ -689,28 +765,30 @@ Pages are created on every `new_idea` run and never deleted. A misconfigured or 
 
 - [x] **Story: SpecGenerator revision update**
   - [x] **Task: Update `SpecGenerator` tests for `revise()`**
-    - **Description**: Update `tests/adapters/agent/spec-generator.test.ts`. Add the new `notion_comments` argument to all existing `revise()` call sites (passing `[]` to preserve existing behavior). Add new test cases covering all scenarios from the Section 6 testing plan for `SpecGenerator.revise()`. Tests will fail until the implementation task is complete.
+    - **Description**: Updated `tests/adapters/agent/spec-generator.test.ts`. Added `notion_comments` argument to all existing `revise()` call sites. Added new test cases covering delimited-section parsing, span passthrough, and all error paths from the Section 6 testing plan.
     - **Acceptance criteria**:
       - [x] All existing `revise()` test cases updated with `notion_comments: []` argument
       - [x] Prompt includes `[COMMENT_ID:]` blocks when `notion_comments` is non-empty
       - [x] Prompt omits Notion section when `notion_comments` is `[]`
-      - [x] Valid JSON parsed correctly: spec written, `NotionCommentResponse[]` returned with correct values
+      - [x] Valid SPEC and COMMENT_RESPONSES sections parsed correctly: spec written, `ReviseResult` returned
       - [x] Empty `comment_responses` array returned correctly
-      - [x] Throws with descriptive error for each invalid JSON shape (malformed, missing `spec`, empty `spec`, missing `comment_responses`, non-array, missing `comment_id`, missing `response`)
-      - [x] Extra fields tolerated
+      - [x] Throws with descriptive error for each invalid shape (malformed JSON, missing SPEC, empty SPEC, missing COMMENT_RESPONSES, non-array, missing `comment_id`, missing `response`)
+      - [x] Extra fields in entries tolerated
+      - [x] Span passthrough: uses page markdown as prompt source, adds span instructions, returns `page_content`, writes stripped spec to disk, recovers dropped spans
       - [x] OMC exit non-zero: throws, file not modified
       - [x] All tests pass: `npm test`
     - **Dependencies**: "Task: Add `NotionComment`, `NotionCommentResponse` types"
 
-  - [x] **Task: Update `OMCSpecGenerator.revise()` — new signature, JSON prompt, and parsing**
-    - **Description**: Update `src/adapters/agent/spec-generator.ts`. Change the `revise()` signature to `revise(feedback: SpecFeedback, notion_comments: NotionComment[], spec_path: string, workspace_path: string): Promise<NotionCommentResponse[]>`. Update the prompt to include the Notion comments section (formatted as `[COMMENT_ID: <id>]\n<body>` per comment) and the JSON shape example when `notion_comments` is non-empty; omit the Notion section and instruct `comment_responses: []` when empty. After OMC completes, extract the `## Raw output` section using the existing depth-tracking logic, parse as JSON, validate that `spec` is a non-empty string and `comment_responses` is an array of `{ comment_id: string; response: string }`, write `spec` to `spec_path`, and return `comment_responses`. Throw descriptive errors for all validation failures.
+  - [x] **Task: Update `OMCSpecGenerator.revise()` — new signature, delimited-section prompt, and parsing**
+    - **Description**: Updated `src/adapters/agent/spec-generator.ts`. Changed the `revise()` signature to accept `current_page_markdown?: string` and return `Promise<ReviseResult>`. Changed the response format from JSON to delimited sections (`SPEC:` and `COMMENT_RESPONSES:`). When page markdown contains comment spans, includes span-preservation instructions and returns span-bearing `page_content`; writes span-stripped content to disk. Added `ReviseResult` type and `extractDelimitedSection` helper.
     - **Acceptance criteria**:
-      - [x] `revise()` signature updated to accept `notion_comments: NotionComment[]` and return `Promise<NotionCommentResponse[]>`
-      - [x] Prompt includes `[COMMENT_ID: <id>]` blocks and JSON shape example when `notion_comments` is non-empty
-      - [x] Prompt omits Notion section and instructs `comment_responses: []` when `notion_comments` is `[]`
-      - [x] Valid JSON: `spec` written to `spec_path`; `NotionCommentResponse[]` returned
-      - [x] Throws on malformed JSON, missing `spec`, empty `spec`, missing `comment_responses`, non-array `comment_responses`, entry missing `comment_id` or `response`
-      - [x] Extra unknown fields in JSON: tolerated
+      - [x] `revise()` signature updated to accept optional `current_page_markdown` and return `Promise<ReviseResult>`
+      - [x] Prompt uses delimited-section format with `SPEC:` and `COMMENT_RESPONSES:` sections
+      - [x] Prompt includes `[COMMENT_ID: <id>]` blocks when `notion_comments` is non-empty
+      - [x] Prompt includes span-preservation instructions when page markdown has comment spans
+      - [x] Delimited sections parsed via `extractDelimitedSection`; COMMENT_RESPONSES parsed as JSON
+      - [x] Throws on missing/empty SPEC, malformed/non-array COMMENT_RESPONSES, entry missing `comment_id` or `response`
+      - [x] Span passthrough: `page_content` returned with spans; disk file written span-free; dropped spans recovered
       - [x] OMC exit non-zero: throws; `spec_path` not modified
       - [x] All relative imports use `.js` extensions
       - [x] All tests from the preceding task pass: `npm test`
@@ -767,3 +845,54 @@ Pages are created on every `new_idea` run and never deleted. A misconfigured or 
       - [x] `integration_token` references `${AC_NOTION_INTEGRATION_TOKEN}`
       - [x] `parent_page_id` has a placeholder value with a comment directing the operator to set it
     - **Dependencies**: "Task: Add `NotionComment`, `NotionCommentResponse` types and `notion` config block"
+
+- [x] **Story: Preserve inline comments during spec updates (issue #13)**
+  - [x] **Task: Add markdown API methods to `NotionClient` and remove unused block methods**
+    - **Description**: Updated `src/adapters/notion/notion-client.ts`. Added `pages.getMarkdown(page_id)` (`GET /v1/pages/{page_id}/markdown`) and `pages.updateMarkdown(page_id, operation)` (`PATCH /v1/pages/{page_id}/markdown`) using the SDK's generic `request()` method with `Notion-Version: 2026-03-11`. Exported `MarkdownOperation` type with `replace_content` variant. Removed `blocks.children.append` and `blocks.delete` — no longer used by any consumer.
+    - **Acceptance criteria**:
+      - [x] `pages.getMarkdown` returns page content as markdown string
+      - [x] `pages.updateMarkdown` accepts `MarkdownOperation` and sends PATCH request
+      - [x] `MarkdownOperation` type exported with `replace_content` variant
+      - [x] `blocks.children.append`, `blocks.delete` removed from interface and implementation
+      - [x] `blocks.children.list` retained (used by `NotionFeedbackSource`)
+      - [x] All existing tests pass: `npm test`
+    - **Dependencies**: None
+
+  - [x] **Task: Implement `markdown-diff.ts` span utilities**
+    - **Description**: Created `src/adapters/notion/markdown-diff.ts`. Exported `stripCommentSpans(raw)` which removes `<span discussion-urls="...">text</span>` wrapper tags preserving inner text. Exported `extractCommentSpans(markdown)` which returns `CommentSpan[]` with uuid and inner_text. Exported `ensureSpansPreserved(revisedContent, originalSpans)` which appends missing spans to an "Orphaned comments" section. Created `tests/adapters/notion/markdown-diff.test.ts` with TDD.
+    - **Acceptance criteria**:
+      - [x] `stripCommentSpans` strips comment spans, preserves inner text, handles multiple/adjacent spans, preserves non-comment spans
+      - [x] `extractCommentSpans` extracts span UUIDs and inner text in document order
+      - [x] `ensureSpansPreserved` appends missing spans to Orphaned comments section with `[dropped by Claude]` tag; returns content unchanged when all present
+      - [x] All tests pass: `npm test`
+    - **Dependencies**: None
+
+  - [x] **Task: Rewrite `NotionPublisher` to use Markdown API with span passthrough**
+    - **Description**: Rewrote `src/adapters/notion/notion-publisher.ts`. `create()`: calls `pages.create` with title only (no children), then `pages.updateMarkdown` with `replace_content`. `update()`: accepts optional `page_content` (span-bearing markdown from revision pass) and writes via `replace_content`. Added `getPageMarkdown()` which calls `pages.getMarkdown`. Removed `@tryfabric/martian` import. Rewrote `tests/adapters/notion/notion-publisher.test.ts` with TDD.
+    - **Acceptance criteria**:
+      - [x] `create()` calls `pages.create` with no children, then `pages.updateMarkdown` with `replace_content`
+      - [x] `update()` uses `page_content` when provided, otherwise reads from disk; calls `pages.updateMarkdown` with `replace_content`
+      - [x] `getPageMarkdown()` returns page markdown from client
+      - [x] No references to `markdownToBlocks`, `block-diff`, `blocks.delete`, or `blocks.children.append`
+      - [x] All error paths tested
+      - [x] All tests pass: `npm test`
+    - **Dependencies**: "Task: Add markdown API methods to `NotionClient`", "Task: Implement `markdown-diff.ts`"
+
+  - [x] **Task: Update `SpecGenerator.revise()` for span passthrough and delimited-section format**
+    - **Description**: Updated `src/adapters/agent/spec-generator.ts`. Changed response format from JSON to delimited sections (`SPEC:` and `COMMENT_RESPONSES:`). Added `current_page_markdown` parameter. When page markdown contains comment spans, includes span-preservation instructions in the prompt and returns `ReviseResult` with `page_content` (span-bearing markdown). Writes span-stripped content to disk. Added `ReviseResult` type.
+    - **Acceptance criteria**:
+      - [x] `revise()` accepts optional `current_page_markdown` and returns `ReviseResult`
+      - [x] Delimited-section format parsed correctly via `extractDelimitedSection`
+      - [x] Span-preservation instructions included when spans present
+      - [x] `page_content` returned with spans preserved; disk file written span-free
+      - [x] Missing spans recovered via `ensureSpansPreserved`
+      - [x] All tests pass: `npm test`
+    - **Dependencies**: "Task: Implement `markdown-diff.ts`"
+
+  - [x] **Task: Delete obsolete code and remove `@tryfabric/martian`**
+    - **Description**: Removed `@tryfabric/martian` from `package.json` dependencies. `block-diff.ts` files were already removed in prior work. Verified no remaining references to `martian` or `block-diff` in source or tests.
+    - **Acceptance criteria**:
+      - [x] `@tryfabric/martian` removed from `package.json`
+      - [x] No remaining imports of `martian` or `block-diff` in the codebase
+      - [x] `npm test` passes
+    - **Dependencies**: "Task: Rewrite `NotionPublisher` to use Markdown API"
