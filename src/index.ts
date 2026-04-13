@@ -15,9 +15,17 @@ import { OMCSpecGenerator } from './adapters/agent/spec-generator.js';
 import { SlackCanvasPublisher } from './adapters/slack/canvas-publisher.js';
 import type { SpecPublisher } from './adapters/slack/canvas-publisher.js';
 import { OrchestratorImpl } from './core/orchestrator.js';
+import { FileRunStore } from './core/run-store.js';
 import { NotionClientImpl } from './adapters/notion/notion-client.js';
 import { NotionPublisher } from './adapters/notion/notion-publisher.js';
 import { NotionFeedbackSource, type FeedbackSource } from './adapters/notion/notion-feedback-source.js';
+import { AnthropicIntentClassifier } from './adapters/agent/intent-classifier.js';
+import { OMCImplementer } from './adapters/agent/implementer.js';
+import { GHPRCreator } from './adapters/agent/pr-creator.js';
+import { NotionSpecCommitter } from './adapters/notion/spec-committer.js';
+import { NotionImplementationFeedbackPage } from './adapters/notion/implementation-feedback-page.js';
+import type { SpecCommitter } from './adapters/notion/spec-committer.js';
+import type { ImplementationFeedbackPage } from './adapters/notion/implementation-feedback-page.js';
 
 const logger = createLogger('cli');
 
@@ -96,19 +104,30 @@ try {
     process.exit(1);
   }
 
+  // Validate Anthropic API key for intent classification
+  const anthropicApiKey = process.env['AC_ANTHROPIC_API_KEY'];
+  if (!anthropicApiKey) {
+    logger.error({ event: 'config.parse_error' }, 'AC_ANTHROPIC_API_KEY is required for intent classification');
+    process.exit(1);
+  }
+
   // Build adapter, components, orchestrator
-  const approvalEmojis = currentConfig.config.slack?.approval_emojis ?? ['thumbsup'];
   const adapter = new SlackAdapter(boltApp, {
     channelName,
-    approvalEmojis,
   });
-  logger.info({ event: 'service.config', approval_emojis: approvalEmojis }, 'Active approval emojis');
 
   const workspaceManager = new WorkspaceManagerImpl(workspaceRoot);
+  const runStore = new FileRunStore(workspaceRoot);
   const specGenerator = new OMCSpecGenerator();
+
+  const intentClassifier = new AnthropicIntentClassifier(anthropicApiKey);
+  const implementer = new OMCImplementer();
+  const prCreator = new GHPRCreator();
 
   let specPublisher: SpecPublisher;
   let feedbackSource: FeedbackSource | undefined;
+  let specCommitter: SpecCommitter | undefined;
+  let implFeedbackPage: ImplementationFeedbackPage | undefined;
 
   if (currentConfig.config.notion) {
     const notionToken = process.env['AC_NOTION_INTEGRATION_TOKEN'];
@@ -132,6 +151,8 @@ try {
     logger.info({ event: 'service.config', bot_user_id: botUser.id }, 'Detected Notion bot user ID');
     specPublisher = new NotionPublisher(notionClient, boltApp, parentPageId);
     feedbackSource = new NotionFeedbackSource(notionClient, { bot_user_id: botUser.id });
+    specCommitter = new NotionSpecCommitter(specPublisher);
+    implFeedbackPage = new NotionImplementationFeedbackPage(notionClient);
     logger.info({ event: 'service.config', publisher: 'notion' }, 'Using Notion publisher');
   } else {
     specPublisher = new SlackCanvasPublisher(boltApp);
@@ -144,6 +165,12 @@ try {
     specGenerator,
     specPublisher,
     feedbackSource,
+    intentClassifier,
+    specCommitter,
+    implementer,
+    implFeedbackPage,
+    prCreator,
+    runStore,
     postError: async (channel_id, thread_ts, text) => {
       await boltApp.client.chat.postMessage({ channel: channel_id, thread_ts, text });
     },

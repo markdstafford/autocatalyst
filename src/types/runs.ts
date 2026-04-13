@@ -1,6 +1,14 @@
 // src/types/runs.ts
 
-export type RunStage = 'intake' | 'speccing' | 'review' | 'approved' | 'failed';
+export type RunStage =
+  | 'intake'
+  | 'speccing'
+  | 'reviewing_spec'
+  | 'implementing'
+  | 'awaiting_impl_input'
+  | 'reviewing_implementation'
+  | 'done'
+  | 'failed';
 
 export interface Run {
   id: string;
@@ -10,7 +18,10 @@ export interface Run {
   branch: string;
   spec_path: string | undefined;
   publisher_ref: string | undefined; // Notion page ID or Slack canvas ID
+  impl_feedback_ref: string | undefined; // Notion page ID for implementation feedback
   attempt: number;
+  channel_id: string;
+  thread_ts: string;
   created_at: string; // ISO 8601
   updated_at: string; // ISO 8601
 }

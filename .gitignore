@@ -36,3 +36,10 @@ docs/plans/
 
 # Friction logs
 context-human/.friction-logs/
+
+# Claude Code local config
+.claude/settings.local.json
+.claude/skills/
+
+# OMC ephemeral state
+.omc/

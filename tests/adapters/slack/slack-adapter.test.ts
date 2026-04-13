@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { App } from '@slack/bolt';
 import { SlackAdapter } from '../../../src/adapters/slack/slack-adapter.js';
-import type { Idea, SpecFeedback, ApprovalSignal } from '../../../src/types/events.js';
+import type { Idea, ThreadMessage } from '../../../src/types/events.js';
 
 // Captures one event from the AsyncIterable then stops
 async function takeOne<T>(iterable: AsyncIterable<T>): Promise<T> {
@@ -16,7 +16,6 @@ function makeMockApp(opts: {
   channels?: Array<{ name: string; id: string }>;
 }) {
   const messageHandlers: Array<(args: { message: unknown }) => Promise<void>> = [];
-  const reactionHandlers: Array<(args: { event: unknown }) => Promise<void>> = [];
 
   const app = {
     client: {
@@ -35,17 +34,11 @@ function makeMockApp(opts: {
     message: vi.fn((handler: (args: { message: unknown }) => Promise<void>) => {
       messageHandlers.push(handler);
     }),
-    event: vi.fn((name: string, handler: (args: { event: unknown }) => Promise<void>) => {
-      if (name === 'reaction_added') reactionHandlers.push(handler);
-    }),
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
-    // Test helpers — not part of the real App API
+    // Test helper — not part of the real App API
     _triggerMessage: async (msg: unknown) => {
       for (const h of messageHandlers) await h({ message: msg });
-    },
-    _triggerReaction: async (evt: unknown) => {
-      for (const h of reactionHandlers) await h({ event: evt });
     },
   };
   return app;
@@ -54,7 +47,7 @@ function makeMockApp(opts: {
 describe('SlackAdapter — startup', () => {
   it('resolves channel name to ID and logs slack.startup.channel_resolved', async () => {
     const mock = makeMockApp({ channels: [{ name: 'my-channel', id: 'C123' }] });
-    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel', approvalEmojis: ['thumbsup'] }, { logDestination: nullDest });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel', }, { logDestination: nullDest });
     await adapter.start();
     await adapter.stop();
     expect(mock.client.conversations.list).toHaveBeenCalled();
@@ -63,26 +56,24 @@ describe('SlackAdapter — startup', () => {
 
   it('throws when channel is not found', async () => {
     const mock = makeMockApp({ channels: [] });
-    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'missing-channel', approvalEmojis: ['thumbsup'] }, { logDestination: nullDest });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'missing-channel', }, { logDestination: nullDest });
     await expect(adapter.start()).rejects.toThrow(/missing-channel/);
     expect(mock.start).not.toHaveBeenCalled();
   });
 
-  it('registers event handlers before calling app.start()', async () => {
+  it('registers message handler before calling app.start()', async () => {
     const mock = makeMockApp({});
     const order: string[] = [];
     // Override to record ordering only — handler capture is intentionally skipped
-    // because this test does not trigger messages or reactions after start().
+    // because this test does not trigger messages after start().
     mock.message.mockImplementation(() => { order.push('message_registered'); });
-    mock.event.mockImplementation(() => { order.push('event_registered'); });
     mock.start.mockImplementation(async () => { order.push('app_started'); });
 
-    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel', approvalEmojis: ['thumbsup'] }, { logDestination: nullDest });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel', }, { logDestination: nullDest });
     await adapter.start();
     await adapter.stop();
 
     expect(order.indexOf('message_registered')).toBeLessThan(order.indexOf('app_started'));
-    expect(order.indexOf('event_registered')).toBeLessThan(order.indexOf('app_started'));
   });
 });
 
@@ -93,7 +84,7 @@ describe('SlackAdapter — new idea pipeline', () => {
 
   it('emits new_idea event with correct Idea shape', async () => {
     const mock = makeMockApp({ botUserId: BOT_ID });
-    const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME, approvalEmojis: ['thumbsup'] }, { logDestination: nullDest });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME, }, { logDestination: nullDest });
     await adapter.start();
 
     const eventPromise = takeOne(adapter.receive());
@@ -119,7 +110,7 @@ describe('SlackAdapter — new idea pipeline', () => {
 
   it('posts acknowledgement in the correct thread', async () => {
     const mock = makeMockApp({ botUserId: BOT_ID });
-    const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME, approvalEmojis: ['thumbsup'] }, { logDestination: nullDest });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME, }, { logDestination: nullDest });
     await adapter.start();
 
     const eventPromise = takeOne(adapter.receive());
@@ -143,7 +134,7 @@ describe('SlackAdapter — new idea pipeline', () => {
 
   it('registers the thread so a subsequent reply is spec_feedback', async () => {
     const mock = makeMockApp({ botUserId: BOT_ID });
-    const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME, approvalEmojis: ['thumbsup'] }, { logDestination: nullDest });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME, }, { logDestination: nullDest });
     await adapter.start();
 
     // Seed the idea to populate the registry
@@ -169,7 +160,7 @@ describe('SlackAdapter — new idea pipeline', () => {
     const event = await feedbackEventPromise;
     await adapter.stop();
 
-    expect(event.type).toBe('spec_feedback');
+    expect(event.type).toBe('thread_message');
   });
 });
 
@@ -179,7 +170,7 @@ describe('SlackAdapter — spec feedback pipeline', () => {
 
   it('emits spec_feedback with correct shape and posts acknowledgement', async () => {
     const mock = makeMockApp({ botUserId: BOT_ID });
-    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel', approvalEmojis: ['thumbsup'] }, { logDestination: nullDest });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel', }, { logDestination: nullDest });
     await adapter.start();
 
     // Seed idea first
@@ -199,8 +190,8 @@ describe('SlackAdapter — spec feedback pipeline', () => {
     const feedbackEvent = await feedbackPromise;
     await adapter.stop();
 
-    expect(feedbackEvent.type).toBe('spec_feedback');
-    const feedback = feedbackEvent.payload as SpecFeedback;
+    expect(feedbackEvent.type).toBe('thread_message');
+    const feedback = feedbackEvent.payload as ThreadMessage;
     expect(feedback.idea_id).toBe((ideaEvent.payload as Idea).id);
     expect(feedback.author).toBe('U456');
     expect(feedback.thread_ts).toBe('100.0');
@@ -218,44 +209,13 @@ describe('SlackAdapter — spec feedback pipeline', () => {
   });
 });
 
-describe('SlackAdapter — approval signal pipeline', () => {
-  const BOT_ID = 'UBOT001';
-  const CHANNEL_ID = 'C123';
-
-  it('emits approval_signal for approval emoji on registered message', async () => {
-    const mock = makeMockApp({ botUserId: BOT_ID });
-    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel', approvalEmojis: ['thumbsup'] }, { logDestination: nullDest });
-    await adapter.start();
-
-    // Seed idea to register the thread
-    const ideaPromise = takeOne(adapter.receive());
-    await mock._triggerMessage({ text: `<@${BOT_ID}> seed`, user: 'U123', ts: '100.0', channel: CHANNEL_ID });
-    const ideaEvent = await ideaPromise;
-
-    // React to the idea message
-    const signalPromise = takeOne(adapter.receive());
-    await mock._triggerReaction({
-      reaction: 'thumbsup',
-      user: 'U456',
-      item: { type: 'message', ts: '100.0', channel: CHANNEL_ID },
-    });
-    const signalEvent = await signalPromise;
-    await adapter.stop();
-
-    expect(signalEvent.type).toBe('approval_signal');
-    const signal = signalEvent.payload as ApprovalSignal;
-    expect(signal.idea_id).toBe((ideaEvent.payload as Idea).id);
-    expect(signal.approver).toBe('U456');
-    expect(signal.emoji).toBe('thumbsup');
-  });
-});
 
 describe('SlackAdapter — ignore cases', () => {
   const BOT_ID = 'UBOT001';
   const CHANNEL_ID = 'C123';
 
   async function setupAdapter(mock: ReturnType<typeof makeMockApp>) {
-    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel', approvalEmojis: ['thumbsup'] }, { logDestination: nullDest });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel', }, { logDestination: nullDest });
     await adapter.start();
     return adapter;
   }
@@ -282,36 +242,6 @@ describe('SlackAdapter — ignore cases', () => {
     expect(mock.client.chat.postMessage).not.toHaveBeenCalled();
   });
 
-  it('non-approval emoji reaction: no event', async () => {
-    const mock = makeMockApp({ botUserId: BOT_ID });
-    const adapter = await setupAdapter(mock);
-    // Seed idea to register thread
-    const ideaPromise = takeOne(adapter.receive());
-    await mock._triggerMessage({ text: `<@${BOT_ID}> seed`, user: 'U123', ts: '100.0', channel: CHANNEL_ID });
-    await ideaPromise;
-    // React with non-approval emoji
-    mock.client.chat.postMessage.mockClear();
-    await mock._triggerReaction({
-      reaction: 'wave',
-      user: 'U456',
-      item: { type: 'message', ts: '100.0', channel: CHANNEL_ID },
-    });
-    await adapter.stop();
-    expect(mock.client.chat.postMessage).not.toHaveBeenCalled();
-  });
-
-  it('approval emoji on unregistered message: no event', async () => {
-    const mock = makeMockApp({ botUserId: BOT_ID });
-    const adapter = await setupAdapter(mock);
-    await mock._triggerReaction({
-      reaction: 'thumbsup',
-      user: 'U456',
-      item: { type: 'message', ts: '999.0', channel: CHANNEL_ID }, // not registered
-    });
-    await adapter.stop();
-    expect(mock.client.chat.postMessage).not.toHaveBeenCalled();
-  });
-
   it("bot's own message: no postMessage, no event", async () => {
     const mock = makeMockApp({ botUserId: BOT_ID });
     const adapter = await setupAdapter(mock);
@@ -333,7 +263,7 @@ describe('SlackAdapter — error handling', () => {
   it('postMessage failure does not propagate — adapter continues running', async () => {
     const mock = makeMockApp({ botUserId: BOT_ID });
     mock.client.chat.postMessage.mockRejectedValueOnce(new Error('rate limited'));
-    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel', approvalEmojis: ['thumbsup'] }, { logDestination: nullDest });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel', }, { logDestination: nullDest });
     await adapter.start();
 
     // This should not throw even though postMessage fails
@@ -348,7 +278,7 @@ describe('SlackAdapter — error handling', () => {
 describe('SlackAdapter — service lifecycle', () => {
   it('start() calls app.start(); stop() calls app.stop()', async () => {
     const mock = makeMockApp({});
-    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel', approvalEmojis: ['thumbsup'] }, { logDestination: nullDest });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel', }, { logDestination: nullDest });
     await adapter.start();
     expect(mock.start).toHaveBeenCalledTimes(1);
     await adapter.stop();

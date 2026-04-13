@@ -1,7 +1,7 @@
 ---
 created: 2026-04-08
-last_updated: 2026-04-11
-status: draft
+last_updated: 2026-04-13
+status: complete
 issue: null
 specced_by: markdstafford
 implemented_by: null
@@ -1123,321 +1123,321 @@ The `PRCreator` depends on `gh` being installed and authenticated. If the host d
 
 ## Task list
 
-- [ ] **Story: Type and event renames**
-  - [ ] **Task: Rename `SpecFeedback` → `ThreadMessage` and `spec_feedback` → `thread_message`**
+- [x] **Story: Type and event renames**
+  - [x] **Task: Rename `SpecFeedback` → `ThreadMessage` and `spec_feedback` → `thread_message`**
     - **Description**: Mechanical rename across all files. In `src/types/events.ts`, rename the `SpecFeedback` interface to `ThreadMessage`. In the `InboundEvent` union, change the `spec_feedback` variant to `thread_message` with payload `ThreadMessage`. Remove the `ApprovalSignal` interface and its `approval_signal` variant from the union. Update all imports and references in `src/core/orchestrator.ts`, `src/adapters/slack/slack-adapter.ts`, `src/adapters/slack/classifier.ts`, and all test files that reference these names. No behavior changes — all existing tests must still pass after this task.
     - **Acceptance criteria**:
-      - [ ] `ThreadMessage` is the exported interface name in `events.ts`; `SpecFeedback` does not appear anywhere in the codebase
-      - [ ] `InboundEvent` union uses `thread_message` type; `spec_feedback` does not appear as an event type anywhere in the codebase
-      - [ ] `ApprovalSignal` removed from `events.ts`; `approval_signal` does not appear anywhere in the codebase
-      - [ ] All existing tests pass: `npx vitest run`
+      - [x] `ThreadMessage` is the exported interface name in `events.ts`; `SpecFeedback` does not appear anywhere in the codebase
+      - [x] `InboundEvent` union uses `thread_message` type; `spec_feedback` does not appear as an event type anywhere in the codebase
+      - [x] `ApprovalSignal` removed from `events.ts`; `approval_signal` does not appear anywhere in the codebase
+      - [x] All existing tests pass: `npx vitest run`
     - **Dependencies**: None
 
-  - [ ] **Task: Rename `review` → `reviewing_spec` in RunStage and add new stages**
+  - [x] **Task: Rename `review` → `reviewing_spec` in RunStage and add new stages**
     - **Description**: In `src/types/runs.ts`, rename the `review` value in `RunStage` to `reviewing_spec`. Add `implementing`, `awaiting_impl_input`, `reviewing_implementation`, and `done` to the `RunStage` union. Add `impl_feedback_ref: string | undefined` to the `Run` interface. Update all references to `review` in `src/core/orchestrator.ts` and all test files. No behavior changes — all existing tests must still pass.
     - **Acceptance criteria**:
-      - [ ] `RunStage` includes `reviewing_spec`, `implementing`, `awaiting_impl_input`, `reviewing_implementation`, `done`
-      - [ ] `review` does not appear as a `RunStage` value anywhere in the codebase
-      - [ ] `Run` interface includes `impl_feedback_ref: string | undefined`
-      - [ ] All existing tests pass: `npx vitest run`
+      - [x] `RunStage` includes `reviewing_spec`, `implementing`, `awaiting_impl_input`, `reviewing_implementation`, `done`
+      - [x] `review` does not appear as a `RunStage` value anywhere in the codebase
+      - [x] `Run` interface includes `impl_feedback_ref: string | undefined`
+      - [x] All existing tests pass: `npx vitest run`
     - **Dependencies**: None
 
-  - [ ] **Task: Remove `classifyReaction` and reaction handling from classifier and adapter**
+  - [x] **Task: Remove `classifyReaction` and reaction handling from classifier and adapter**
     - **Description**: Remove the `classifyReaction` function from `src/adapters/slack/classifier.ts`. Remove the `reaction_added` event handler from `src/adapters/slack/slack-adapter.ts`. Remove `approval_emojis` from the `SlackAdapter` constructor options (and from `validateConfig` if it validates this field). Remove all tests for `classifyReaction` in `tests/adapters/slack/classifier.test.ts` and reaction-related tests in `tests/adapters/slack/slack-adapter.test.ts`. Remove `approval_emojis` from `WorkflowConfig` in `src/types/config.ts` and related validation. No behavior changes to message classification — all remaining tests must pass.
     - **Acceptance criteria**:
-      - [ ] `classifyReaction` does not exist in the codebase
-      - [ ] No `reaction_added` event handler registered in `SlackAdapter`
-      - [ ] `approval_emojis` removed from config types, validation, and adapter options
-      - [ ] All remaining tests pass: `npx vitest run`
+      - [x] `classifyReaction` does not exist in the codebase
+      - [x] No `reaction_added` event handler registered in `SlackAdapter`
+      - [x] `approval_emojis` removed from config types, validation, and adapter options
+      - [x] All remaining tests pass: `npx vitest run`
     - **Dependencies**: "Task: Rename `SpecFeedback` → `ThreadMessage`"
 
-- [ ] **Story: IntentClassifier**
-  - [ ] **Task: Define `Intent` type and `IntentClassifier` interface**
+- [x] **Story: IntentClassifier**
+  - [x] **Task: Define `Intent` type and `IntentClassifier` interface**
     - **Description**: Create `src/adapters/agent/intent-classifier.ts`. Export the `Intent` union type (`spec_feedback | spec_approval | implementation_feedback | implementation_approval`) and the `IntentClassifier` interface with a single `classify(message: string, run_stage: RunStage): Promise<Intent>` method. No implementation yet — just the types and interface.
     - **Acceptance criteria**:
-      - [ ] `Intent` and `IntentClassifier` exported from `intent-classifier.ts`
-      - [ ] `RunStage` imported correctly
-      - [ ] File compiles without errors: `npx tsc --noEmit`
+      - [x] `Intent` and `IntentClassifier` exported from `intent-classifier.ts`
+      - [x] `RunStage` imported correctly
+      - [x] File compiles without errors: `npx tsc --noEmit`
     - **Dependencies**: "Task: Rename `review` → `reviewing_spec`"
 
-  - [ ] **Task: Unit tests for `AnthropicIntentClassifier`**
+  - [x] **Task: Unit tests for `AnthropicIntentClassifier`**
     - **Description**: Create `tests/adapters/agent/intent-classifier.test.ts`. Mock the Anthropic Messages API call with `vi.fn()`. Cover all test cases from the testing plan: classification accuracy per stage, stage-intent validation (retry + fallback), response parsing edge cases (whitespace, extra text, JSON wrapping, empty), error handling (429, 500, timeout, malformed, empty message), conservative fallback defaults, and all logging assertions.
     - **Acceptance criteria**:
-      - [ ] All classification accuracy tests per stage from the testing plan
-      - [ ] Stage-intent validation: retry on invalid intent, fall back to conservative default
-      - [ ] Response parsing: trimming, first-token extraction, JSON unwrapping, empty handling
-      - [ ] API errors: 429, 500, timeout, malformed JSON — all fall back correctly
-      - [ ] Empty message → fallback without API call
-      - [ ] Conservative defaults verified per stage
-      - [ ] Logging: `intent.classified`, `intent.classification_failed`, `intent.invalid_for_stage` emitted with correct fields
-      - [ ] Human message content never appears in log output
-      - [ ] All tests pass: `npx vitest run`
+      - [x] All classification accuracy tests per stage from the testing plan
+      - [x] Stage-intent validation: retry on invalid intent, fall back to conservative default
+      - [x] Response parsing: trimming, first-token extraction, JSON unwrapping, empty handling
+      - [x] API errors: 429, 500, timeout, malformed JSON — all fall back correctly
+      - [x] Empty message → fallback without API call
+      - [x] Conservative defaults verified per stage
+      - [x] Logging: `intent.classified`, `intent.classification_failed`, `intent.invalid_for_stage` emitted with correct fields
+      - [x] Human message content never appears in log output
+      - [x] All tests pass: `npx vitest run`
     - **Dependencies**: "Task: Define `Intent` type and `IntentClassifier` interface"
 
-  - [ ] **Task: Implement `AnthropicIntentClassifier`**
+  - [x] **Task: Implement `AnthropicIntentClassifier`**
     - **Description**: Add `AnthropicIntentClassifier` class to `src/adapters/agent/intent-classifier.ts`. Constructor takes an Anthropic API key. `classify()` builds a prompt with the message content, current run stage, and valid intents for that stage (from the stage-intent validity matrix). Calls the Anthropic Messages API. Parses the response as a single intent string (trimmed, first token extracted). If the intent is invalid for the stage, retries once. On second failure or any API error, falls back to the conservative default for the stage. Uses `createLogger('intent-classifier')`.
     - **Acceptance criteria**:
-      - [ ] Prompt includes message content, run stage, and valid intents for that stage
-      - [ ] Valid intents for `reviewing_spec`: `spec_feedback`, `spec_approval`
-      - [ ] Valid intents for `reviewing_implementation`: `implementation_feedback`, `implementation_approval`
-      - [ ] Valid intents for `awaiting_impl_input`: `implementation_feedback`
-      - [ ] Response parsed correctly with whitespace trimming and first-token extraction
-      - [ ] Invalid intent for stage triggers exactly one retry
-      - [ ] API errors fall back to conservative default after one retry
-      - [ ] Conservative defaults: `spec_feedback`, `implementation_feedback`, `implementation_feedback` per stage
-      - [ ] All tests from preceding task pass: `npx vitest run`
+      - [x] Prompt includes message content, run stage, and valid intents for that stage
+      - [x] Valid intents for `reviewing_spec`: `spec_feedback`, `spec_approval`
+      - [x] Valid intents for `reviewing_implementation`: `implementation_feedback`, `implementation_approval`
+      - [x] Valid intents for `awaiting_impl_input`: `implementation_feedback`
+      - [x] Response parsed correctly with whitespace trimming and first-token extraction
+      - [x] Invalid intent for stage triggers exactly one retry
+      - [x] API errors fall back to conservative default after one retry
+      - [x] Conservative defaults: `spec_feedback`, `implementation_feedback`, `implementation_feedback` per stage
+      - [x] All tests from preceding task pass: `npx vitest run`
     - **Dependencies**: "Task: Unit tests for `AnthropicIntentClassifier`"
 
-- [ ] **Story: SpecCommitter**
-  - [ ] **Task: Implement markdown prettification utility**
+- [x] **Story: SpecCommitter**
+  - [x] **Task: Implement markdown prettification utility**
     - **Description**: Add a `prettifyMarkdown(raw: string): string` function to `src/adapters/notion/markdown-diff.ts` (extending the existing file). Ensures a blank line after every heading (`#`, `##`, `###`, etc.), collapses multiple consecutive blank lines into one, and removes the `## Orphaned comments` section (from heading to next `##` heading or end of file). Write unit tests in `tests/adapters/notion/markdown-diff.test.ts` (extending the existing file) covering all prettification cases from the testing plan.
     - **Acceptance criteria**:
-      - [ ] Heading not followed by blank line → blank line inserted
-      - [ ] Heading already followed by blank line → no double blank line
-      - [ ] Multiple consecutive blank lines → collapsed to one
-      - [ ] `## Orphaned comments` section removed (including all content until next `##` or EOF)
-      - [ ] Content with no orphaned comments section passes through unchanged
-      - [ ] Trailing content after orphaned comments section preserved
-      - [ ] All tests pass: `npx vitest run`
+      - [x] Heading not followed by blank line → blank line inserted
+      - [x] Heading already followed by blank line → no double blank line
+      - [x] Multiple consecutive blank lines → collapsed to one
+      - [x] `## Orphaned comments` section removed (including all content until next `##` or EOF)
+      - [x] Content with no orphaned comments section passes through unchanged
+      - [x] Trailing content after orphaned comments section preserved
+      - [x] All tests pass: `npx vitest run`
     - **Dependencies**: None
 
-  - [ ] **Task: Unit tests for `NotionSpecCommitter`**
+  - [x] **Task: Unit tests for `NotionSpecCommitter`**
     - **Description**: Create `tests/adapters/notion/spec-committer.test.ts`. Mock `SpecPublisher.getPageMarkdown` and git subprocess calls with `vi.fn()`. Use real temp directories for filesystem operations. Cover all test cases from the testing plan: markdown fetching, span stripping, orphaned comments removal, prettification, frontmatter normalization (all fields), file writing with mm config resolution, git add + commit, and all error paths.
     - **Acceptance criteria**:
-      - [ ] `getPageMarkdown` called with correct `publisher_ref`
-      - [ ] Comment spans stripped from output
-      - [ ] Orphaned comments section removed
-      - [ ] Blank lines after all headers
-      - [ ] Frontmatter: `status: approved`, `last_updated` set to today, `created` preserved, other fields preserved
-      - [ ] File written to correct path using `docs_root` from mm config (or default `context-human`)
-      - [ ] `git add` and `git commit` called with correct arguments
-      - [ ] Commit message follows conventional format: `docs: commit approved spec — <title>`
-      - [ ] Error: `getPageMarkdown` rejects → throws, no file written
-      - [ ] Error: empty markdown → throws
-      - [ ] Error: no frontmatter → throws
-      - [ ] Error: `git add` fails → throws
-      - [ ] Error: `git commit` fails → throws
-      - [ ] Error: `docs_root` dir missing → directory created
-      - [ ] `spec.committed` and `spec.commit_failed` log events emitted correctly
-      - [ ] All tests pass: `npx vitest run`
+      - [x] `getPageMarkdown` called with correct `publisher_ref`
+      - [x] Comment spans stripped from output
+      - [x] Orphaned comments section removed
+      - [x] Blank lines after all headers
+      - [x] Frontmatter: `status: approved`, `last_updated` set to today, `created` preserved, other fields preserved
+      - [x] File written to correct path using `docs_root` from mm config (or default `context-human`)
+      - [x] `git add` and `git commit` called with correct arguments
+      - [x] Commit message follows conventional format: `docs: commit approved spec — <title>`
+      - [x] Error: `getPageMarkdown` rejects → throws, no file written
+      - [x] Error: empty markdown → throws
+      - [x] Error: no frontmatter → throws
+      - [x] Error: `git add` fails → throws
+      - [x] Error: `git commit` fails → throws
+      - [x] Error: `docs_root` dir missing → directory created
+      - [x] `spec.committed` and `spec.commit_failed` log events emitted correctly
+      - [x] All tests pass: `npx vitest run`
     - **Dependencies**: "Task: Implement markdown prettification utility", "Task: Rename `review` → `reviewing_spec`"
 
-  - [ ] **Task: Implement `NotionSpecCommitter`**
+  - [x] **Task: Implement `NotionSpecCommitter`**
     - **Description**: Create `src/adapters/notion/spec-committer.ts`. Export the `SpecCommitter` interface and `NotionSpecCommitter` implementation. Constructor takes `SpecPublisher` (for `getPageMarkdown`), an `execFn` (for git commands, injectable for testing), and optionally `docs_root` (from mm config). `commit()` fetches markdown from Notion, runs it through `stripCommentSpans`, `prettifyMarkdown`, normalizes frontmatter, writes to `<workspace_path>/<docs_root>/specs/<filename>`, and runs `git add` + `git commit`. Uses `createLogger('spec-committer')`.
     - **Acceptance criteria**:
-      - [ ] `SpecCommitter` interface exported with `commit(workspace_path, publisher_ref, spec_path)`
-      - [ ] Fetches markdown via `getPageMarkdown`
-      - [ ] Strips comment spans, removes orphaned comments, prettifies markdown
-      - [ ] Frontmatter normalized: `status: approved`, `last_updated` to today, `created` preserved
-      - [ ] File written to `<workspace_path>/<docs_root>/specs/<filename>`
-      - [ ] `docs_root` resolved from mm config or defaults to `context-human`
-      - [ ] `git add` + `git commit` with conventional message
-      - [ ] All error paths throw with descriptive messages
-      - [ ] All tests from preceding task pass: `npx vitest run`
+      - [x] `SpecCommitter` interface exported with `commit(workspace_path, publisher_ref, spec_path)`
+      - [x] Fetches markdown via `getPageMarkdown`
+      - [x] Strips comment spans, removes orphaned comments, prettifies markdown
+      - [x] Frontmatter normalized: `status: approved`, `last_updated` to today, `created` preserved
+      - [x] File written to `<workspace_path>/<docs_root>/specs/<filename>`
+      - [x] `docs_root` resolved from mm config or defaults to `context-human`
+      - [x] `git add` + `git commit` with conventional message
+      - [x] All error paths throw with descriptive messages
+      - [x] All tests from preceding task pass: `npx vitest run`
     - **Dependencies**: "Task: Unit tests for `NotionSpecCommitter`"
 
-- [ ] **Story: Implementer**
-  - [ ] **Task: Unit tests for `OMCImplementer`**
+- [x] **Story: Implementer**
+  - [x] **Task: Unit tests for `OMCImplementer`**
     - **Description**: Create `tests/adapters/agent/implementer.test.ts`. Mock the OMC subprocess with `vi.fn()`. Use real temp directories for spec files. Cover all test cases from the testing plan: OMC invocation (initial and re-invocation with context), prompt construction (spec content, mm handoff instructions, additional context), result parsing for all three statuses, all error cases (missing STATUS, invalid STATUS, missing required sections, empty sections, non-zero exit), and logging assertions.
     - **Acceptance criteria**:
-      - [ ] `omc team 1:claude` spawned with correct `cwd`
-      - [ ] Prompt includes full spec content
-      - [ ] Prompt includes mm implementation handoff instructions
-      - [ ] Prompt includes additional context section when provided; absent when not
-      - [ ] Unresolved feedback items included; resolved items excluded
-      - [ ] `STATUS: complete` with SUMMARY + TESTING_INSTRUCTIONS → correct `ImplementationResult`
-      - [ ] `STATUS: needs_input` with QUESTION → correct result
-      - [ ] `STATUS: failed` with ERROR → correct result
-      - [ ] Missing STATUS → throws
-      - [ ] Invalid STATUS value → throws
-      - [ ] `complete` without SUMMARY → throws
-      - [ ] `complete` without TESTING_INSTRUCTIONS → throws
-      - [ ] `needs_input` without QUESTION → throws
-      - [ ] `failed` without ERROR → throws
-      - [ ] Empty SUMMARY → throws
-      - [ ] Non-zero exit code → throws with exit code and stderr
-      - [ ] No `## Raw output` section → throws
-      - [ ] Logging: `omc.team_invoked`, `omc.team_completed`, `omc.team_failed` with correct fields
-      - [ ] Prompt content never logged at info or above
-      - [ ] All tests pass: `npx vitest run`
+      - [x] `omc team 1:claude` spawned with correct `cwd`
+      - [x] Prompt includes full spec content
+      - [x] Prompt includes mm implementation handoff instructions
+      - [x] Prompt includes additional context section when provided; absent when not
+      - [x] Unresolved feedback items included; resolved items excluded
+      - [x] `STATUS: complete` with SUMMARY + TESTING_INSTRUCTIONS → correct `ImplementationResult`
+      - [x] `STATUS: needs_input` with QUESTION → correct result
+      - [x] `STATUS: failed` with ERROR → correct result
+      - [x] Missing STATUS → throws
+      - [x] Invalid STATUS value → throws
+      - [x] `complete` without SUMMARY → throws
+      - [x] `complete` without TESTING_INSTRUCTIONS → throws
+      - [x] `needs_input` without QUESTION → throws
+      - [x] `failed` without ERROR → throws
+      - [x] Empty SUMMARY → throws
+      - [x] Non-zero exit code → throws with exit code and stderr
+      - [x] No `## Raw output` section → throws
+      - [x] Logging: `omc.team_invoked`, `omc.team_completed`, `omc.team_failed` with correct fields
+      - [x] Prompt content never logged at info or above
+      - [x] All tests pass: `npx vitest run`
     - **Dependencies**: "Task: Rename `review` → `reviewing_spec`"
 
-  - [ ] **Task: Implement `OMCImplementer`**
+  - [x] **Task: Implement `OMCImplementer`**
     - **Description**: Create `src/adapters/agent/implementer.ts`. Export the `ImplementationStatus`, `ImplementationResult`, and `Implementer` interfaces and the `OMCImplementer` class. Constructor takes an `execFn` (injectable for testing). `implement()` reads the spec from `spec_path`, builds the implementation prompt (spec content + mm handoff instructions + optional additional context), spawns `omc team 1:claude` with `cwd: workspace_path`, reads the artifact, extracts `## Raw output`, parses delimited sections (STATUS, SUMMARY, TESTING_INSTRUCTIONS, QUESTION, ERROR), validates required sections per status, and returns `ImplementationResult`. Uses `createLogger('implementer')`.
     - **Acceptance criteria**:
-      - [ ] `ImplementationStatus`, `ImplementationResult`, `Implementer` exported
-      - [ ] `omc team 1:claude` invoked with `cwd: workspace_path`
-      - [ ] Prompt includes spec content, mm handoff instructions, and conditional additional context
-      - [ ] Result correctly parsed for `complete`, `needs_input`, and `failed` statuses
-      - [ ] All validation errors throw with descriptive messages
-      - [ ] All tests from preceding task pass: `npx vitest run`
+      - [x] `ImplementationStatus`, `ImplementationResult`, `Implementer` exported
+      - [x] `omc team 1:claude` invoked with `cwd: workspace_path`
+      - [x] Prompt includes spec content, mm handoff instructions, and conditional additional context
+      - [x] Result correctly parsed for `complete`, `needs_input`, and `failed` statuses
+      - [x] All validation errors throw with descriptive messages
+      - [x] All tests from preceding task pass: `npx vitest run`
     - **Dependencies**: "Task: Unit tests for `OMCImplementer`"
 
-- [ ] **Story: ImplementationFeedbackPage**
-  - [ ] **Task: Unit tests for `NotionImplementationFeedbackPage`**
+- [x] **Story: ImplementationFeedbackPage**
+  - [x] **Task: Unit tests for `NotionImplementationFeedbackPage`**
     - **Description**: Create `tests/adapters/notion/implementation-feedback-page.test.ts`. Mock `NotionClient` methods with `vi.fn()`. Cover all test cases from the testing plan: `create` (page structure, spec link at top, sections in order, returns page_id, API rejection), `readFeedback` (empty, single unchecked, single checked, with sub-bullets, multiple items, items outside Feedback section ignored), `update` (summary replacement, item resolution with resolution comments, items not in resolved_items unchanged, missing ID logged as warning, API rejection), and logging assertions.
     - **Acceptance criteria**:
-      - [ ] `create`: page created under correct parent, title includes spec name, spec link at top, summary/testing/feedback sections in order, empty to-do list, returns page_id, throws on API rejection
-      - [ ] `readFeedback`: empty → `[]`; unchecked item → `resolved: false`; checked → `resolved: true`; sub-bullets → `conversation` array in order; multiple items in document order; items outside Feedback heading ignored
-      - [ ] `update`: summary replaced when provided, left alone when not; resolved items checked with resolution comment sub-bullet prefixed `✓`; unmentioned items unchanged; missing ID → warning logged; API rejection → throws
-      - [ ] Logging: `impl_feedback_page.created`, `implementation.feedback_read`, `implementation.feedback_updated` with correct fields
-      - [ ] All tests pass: `npx vitest run`
+      - [x] `create`: page created under correct parent, title includes spec name, spec link at top, summary/testing/feedback sections in order, empty to-do list, returns page_id, throws on API rejection
+      - [x] `readFeedback`: empty → `[]`; unchecked item → `resolved: false`; checked → `resolved: true`; sub-bullets → `conversation` array in order; multiple items in document order; items outside Feedback heading ignored
+      - [x] `update`: summary replaced when provided, left alone when not; resolved items checked with resolution comment sub-bullet prefixed `✓`; unmentioned items unchanged; missing ID → warning logged; API rejection → throws
+      - [x] Logging: `impl_feedback_page.created`, `implementation.feedback_read`, `implementation.feedback_updated` with correct fields
+      - [x] All tests pass: `npx vitest run`
     - **Dependencies**: None
 
-  - [ ] **Task: Implement `NotionImplementationFeedbackPage`**
+  - [x] **Task: Implement `NotionImplementationFeedbackPage`**
     - **Description**: Create `src/adapters/notion/implementation-feedback-page.ts`. Export the `FeedbackItem` and `ImplementationFeedbackPage` interfaces and a `NotionImplementationFeedbackPage` implementation. Constructor takes `NotionClient`. `create()` creates a page via the Notion API with title, spec link bookmark, summary section, testing instructions section, and an empty Feedback to-do list section. `readFeedback()` fetches page blocks, finds the Feedback section, parses to-do items and their children into `FeedbackItem[]`. `update()` replaces summary content and marks specified items as resolved with resolution comment sub-bullets. Uses `createLogger('implementation-feedback-page')`.
     - **Acceptance criteria**:
-      - [ ] `FeedbackItem` and `ImplementationFeedbackPage` exported with correct signatures
-      - [ ] `create` produces correct Notion page structure with spec link at top
-      - [ ] `readFeedback` parses to-do items with checked state and sub-bullets
-      - [ ] `update` replaces summary, checks items, adds `✓`-prefixed resolution comments
-      - [ ] All tests from preceding task pass: `npx vitest run`
+      - [x] `FeedbackItem` and `ImplementationFeedbackPage` exported with correct signatures
+      - [x] `create` produces correct Notion page structure with spec link at top
+      - [x] `readFeedback` parses to-do items with checked state and sub-bullets
+      - [x] `update` replaces summary, checks items, adds `✓`-prefixed resolution comments
+      - [x] All tests from preceding task pass: `npx vitest run`
     - **Dependencies**: "Task: Unit tests for `NotionImplementationFeedbackPage`"
 
-- [ ] **Story: PRCreator**
-  - [ ] **Task: Unit tests for `GHPRCreator`**
+- [x] **Story: PRCreator**
+  - [x] **Task: Unit tests for `GHPRCreator`**
     - **Description**: Create `tests/adapters/agent/pr-creator.test.ts`. Mock subprocess calls (`git push`, `gh pr create`) with `vi.fn()`. Cover all test cases from the testing plan: happy path (push + PR create in order, conventional commit title, body content, PR URL returned), title sanitization examples, and all error paths (push fails, gh fails, gh not found, gh not authed).
     - **Acceptance criteria**:
-      - [ ] `git push origin <branch>` called with correct `cwd`
-      - [ ] `gh pr create` called after push with `--title "feat: <lowercased_title>"` and `--body` containing spec link
-      - [ ] Title sanitization: "CLI Setup Wizard" → `feat: cli setup wizard`; leading/trailing whitespace trimmed
-      - [ ] PR URL returned from stdout, trimmed
-      - [ ] Push fails → throws; `gh pr create` not called
-      - [ ] `gh pr create` fails → throws
-      - [ ] `gh` not found → throws with descriptive error
-      - [ ] Logging: `pr.created`, `pr.creation_failed` with correct fields
-      - [ ] All tests pass: `npx vitest run`
+      - [x] `git push origin <branch>` called with correct `cwd`
+      - [x] `gh pr create` called after push with `--title "feat: <lowercased_title>"` and `--body` containing spec link
+      - [x] Title sanitization: "CLI Setup Wizard" → `feat: cli setup wizard`; leading/trailing whitespace trimmed
+      - [x] PR URL returned from stdout, trimmed
+      - [x] Push fails → throws; `gh pr create` not called
+      - [x] `gh pr create` fails → throws
+      - [x] `gh` not found → throws with descriptive error
+      - [x] Logging: `pr.created`, `pr.creation_failed` with correct fields
+      - [x] All tests pass: `npx vitest run`
     - **Dependencies**: None
 
-  - [ ] **Task: Implement `GHPRCreator`**
+  - [x] **Task: Implement `GHPRCreator`**
     - **Description**: Create `src/adapters/agent/pr-creator.ts`. Export the `PRCreator` interface and `GHPRCreator` class. Constructor takes an `execFn` (injectable for testing). `createPR()` reads the spec title from the spec file's `# Title` heading, sanitizes it (lowercase, trim), runs `git push origin <branch>` in the workspace, then runs `gh pr create --title "feat: <title>" --body "<body>"` where body includes a spec link and implementation summary. Returns the PR URL. Uses `createLogger('pr-creator')`.
     - **Acceptance criteria**:
-      - [ ] `PRCreator` interface and `GHPRCreator` exported
-      - [ ] `git push` then `gh pr create` in order
-      - [ ] Conventional commit title: `feat: <lowercased_spec_title>`
-      - [ ] PR body includes spec link and summary
-      - [ ] Returns trimmed PR URL
-      - [ ] All error paths throw with descriptive messages
-      - [ ] All tests from preceding task pass: `npx vitest run`
+      - [x] `PRCreator` interface and `GHPRCreator` exported
+      - [x] `git push` then `gh pr create` in order
+      - [x] Conventional commit title: `feat: <lowercased_spec_title>`
+      - [x] PR body includes spec link and summary
+      - [x] Returns trimmed PR URL
+      - [x] All error paths throw with descriptive messages
+      - [x] All tests from preceding task pass: `npx vitest run`
     - **Dependencies**: "Task: Unit tests for `GHPRCreator`"
 
-- [ ] **Story: Orchestrator — intent classification and routing**
-  - [ ] **Task: Update orchestrator tests for intent classification routing**
+- [x] **Story: Orchestrator — intent classification and routing**
+  - [x] **Task: Update orchestrator tests for intent classification routing**
     - **Description**: Update `tests/core/orchestrator.test.ts`. Add a mock `IntentClassifier` to the test helpers. Update all existing `spec_feedback` / `thread_message` tests to include the classifier mock returning `spec_feedback` so existing behavior is preserved. Add new test cases for the classification routing: classifier called with correct message and stage, each classified intent routes to the correct handler. Add guard tests: unknown idea_id discarded, `implementing` stage posts busy message, `done`/`failed` discarded. Add concurrency tests.
     - **Acceptance criteria**:
-      - [ ] All existing orchestrator tests pass with the added classifier mock
-      - [ ] `IntentClassifier.classify` called with message content and run stage for every `thread_message`
-      - [ ] Intent `spec_feedback` → `_handleSpecFeedback` called
-      - [ ] Intent `spec_approval` → `_handleSpecApproval` called
-      - [ ] Intent `implementation_feedback` → `_handleImplementationFeedback` called
-      - [ ] Intent `implementation_approval` → `_handleImplementationApproval` called
-      - [ ] Unknown `idea_id` → discarded, no classifier called
-      - [ ] Run in `implementing` → busy message posted, no classifier called
-      - [ ] Run in `done` → discarded
-      - [ ] Run in `failed` → discarded
-      - [ ] Run in `speccing` → discarded
-      - [ ] Concurrency: two ideas classified independently
-      - [ ] All tests pass: `npx vitest run`
+      - [x] All existing orchestrator tests pass with the added classifier mock
+      - [x] `IntentClassifier.classify` called with message content and run stage for every `thread_message`
+      - [x] Intent `spec_feedback` → `_handleSpecFeedback` called
+      - [x] Intent `spec_approval` → `_handleSpecApproval` called
+      - [x] Intent `implementation_feedback` → `_handleImplementationFeedback` called
+      - [x] Intent `implementation_approval` → `_handleImplementationApproval` called
+      - [x] Unknown `idea_id` → discarded, no classifier called
+      - [x] Run in `implementing` → busy message posted, no classifier called
+      - [x] Run in `done` → discarded
+      - [x] Run in `failed` → discarded
+      - [x] Run in `speccing` → discarded
+      - [x] Concurrency: two ideas classified independently
+      - [x] All tests pass: `npx vitest run`
     - **Dependencies**: "Task: Implement `AnthropicIntentClassifier`", "Task: Rename `SpecFeedback` → `ThreadMessage`", "Task: Rename `review` → `reviewing_spec`"
 
-  - [ ] **Task: Implement intent classification routing in orchestrator**
+  - [x] **Task: Implement intent classification routing in orchestrator**
     - **Description**: Update `src/core/orchestrator.ts`. Add `intentClassifier: IntentClassifier` to `OrchestratorDeps`. Replace the existing `_handleSpecFeedback` dispatch in `_runLoop` with a `_handleThreadMessage` method that: (1) looks up the run, (2) checks guards (implementing → busy message; done/failed/speccing/intake → discard), (3) calls `intentClassifier.classify(message, run.stage)`, (4) routes to the appropriate handler. The existing `_handleSpecFeedback` is unchanged internally — it's just called via a different dispatch path.
     - **Acceptance criteria**:
-      - [ ] `IntentClassifier` added to `OrchestratorDeps`
-      - [ ] `_handleThreadMessage` dispatches to correct handler per classified intent
-      - [ ] Guards checked before classification (no API call for guarded stages)
-      - [ ] `implementing` guard posts message to Slack
-      - [ ] Existing `_handleSpecFeedback` behavior unchanged
-      - [ ] All tests from preceding task pass: `npx vitest run`
+      - [x] `IntentClassifier` added to `OrchestratorDeps`
+      - [x] `_handleThreadMessage` dispatches to correct handler per classified intent
+      - [x] Guards checked before classification (no API call for guarded stages)
+      - [x] `implementing` guard posts message to Slack
+      - [x] Existing `_handleSpecFeedback` behavior unchanged
+      - [x] All tests from preceding task pass: `npx vitest run`
     - **Dependencies**: "Task: Update orchestrator tests for intent classification routing"
 
-- [ ] **Story: Orchestrator — spec approval path**
-  - [ ] **Task: Unit tests for `_handleSpecApproval`**
+- [x] **Story: Orchestrator — spec approval path**
+  - [x] **Task: Unit tests for `_handleSpecApproval`**
     - **Description**: Add test cases to `tests/core/orchestrator.test.ts` for the spec approval path. Cover: happy path (complete), happy path (needs_input), exit-and-re-invoke cycle, call order verification, and all failure paths from the testing plan (SpecCommitter rejects, Implementer fails/crashes, FeedbackPage rejects as degraded, postMessage rejects as non-fatal).
     - **Acceptance criteria**:
-      - [ ] Happy path complete: transitions `reviewing_spec` → `implementing` → `reviewing_implementation`; all components called in order; `impl_feedback_ref` stored
-      - [ ] Happy path needs_input: transitions to `awaiting_impl_input`; question posted; feedback page NOT created
-      - [ ] Exit-and-re-invoke: `awaiting_impl_input` → `implementing` → `reviewing_implementation` on subsequent message
-      - [ ] Multiple re-invoke cycles supported; `attempt` incremented each time
-      - [ ] Call order: postMessage → commit → implement → createFeedbackPage → postMessage
-      - [ ] SpecCommitter rejects → `failed`; implementer not called
-      - [ ] Implementer returns failed → `failed`; feedback page not created
-      - [ ] Implementer throws → `failed`
-      - [ ] FeedbackPage.create rejects → error logged; completion message posted WITHOUT link; still transitions to `reviewing_implementation`
-      - [ ] postMessage rejects → logged; execution continues
-      - [ ] All tests pass: `npx vitest run`
+      - [x] Happy path complete: transitions `reviewing_spec` → `implementing` → `reviewing_implementation`; all components called in order; `impl_feedback_ref` stored
+      - [x] Happy path needs_input: transitions to `awaiting_impl_input`; question posted; feedback page NOT created
+      - [x] Exit-and-re-invoke: `awaiting_impl_input` → `implementing` → `reviewing_implementation` on subsequent message
+      - [x] Multiple re-invoke cycles supported; `attempt` incremented each time
+      - [x] Call order: postMessage → commit → implement → createFeedbackPage → postMessage
+      - [x] SpecCommitter rejects → `failed`; implementer not called
+      - [x] Implementer returns failed → `failed`; feedback page not created
+      - [x] Implementer throws → `failed`
+      - [x] FeedbackPage.create rejects → error logged; completion message posted WITHOUT link; still transitions to `reviewing_implementation`
+      - [x] postMessage rejects → logged; execution continues
+      - [x] All tests pass: `npx vitest run`
     - **Dependencies**: "Task: Implement intent classification routing in orchestrator", "Task: Implement `NotionSpecCommitter`", "Task: Implement `OMCImplementer`", "Task: Implement `NotionImplementationFeedbackPage`"
 
-  - [ ] **Task: Implement `_handleSpecApproval` in orchestrator**
+  - [x] **Task: Implement `_handleSpecApproval` in orchestrator**
     - **Description**: Add `specCommitter: SpecCommitter`, `implementer: Implementer`, and `implementationFeedbackPage: ImplementationFeedbackPage` to `OrchestratorDeps`. Implement `_handleSpecApproval` following the spec: transition to `implementing`, post approval ack, commit spec, invoke implementer, handle complete/needs_input/failed results, create feedback page on success, store `impl_feedback_ref`. Add `parent_page_id` to deps (from config).
     - **Acceptance criteria**:
-      - [ ] `SpecCommitter`, `Implementer`, `ImplementationFeedbackPage` added to deps
-      - [ ] Transitions, component calls, and error handling match spec exactly
-      - [ ] `impl_feedback_ref` stored on run after feedback page created
-      - [ ] `implementation.started`, `implementation.complete`, `implementation.needs_input` log events emitted
-      - [ ] All tests from preceding task pass: `npx vitest run`
+      - [x] `SpecCommitter`, `Implementer`, `ImplementationFeedbackPage` added to deps
+      - [x] Transitions, component calls, and error handling match spec exactly
+      - [x] `impl_feedback_ref` stored on run after feedback page created
+      - [x] `implementation.started`, `implementation.complete`, `implementation.needs_input` log events emitted
+      - [x] All tests from preceding task pass: `npx vitest run`
     - **Dependencies**: "Task: Unit tests for `_handleSpecApproval`"
 
-- [ ] **Story: Orchestrator — implementation feedback path**
-  - [ ] **Task: Unit tests for `_handleImplementationFeedback`**
+- [x] **Story: Orchestrator — implementation feedback path**
+  - [x] **Task: Unit tests for `_handleImplementationFeedback`**
     - **Description**: Add test cases to `tests/core/orchestrator.test.ts`. Cover: happy path from `reviewing_implementation` (read feedback → implement → update page), happy path from `awaiting_impl_input` (message content as context, no page read), multiple feedback rounds, and all failure paths (readFeedback rejects, implement fails/needs_input, update rejects as degraded).
     - **Acceptance criteria**:
-      - [ ] From `reviewing_implementation`: `readFeedback` called with `impl_feedback_ref`; items passed to implementer; page updated on success
-      - [ ] From `awaiting_impl_input`: `readFeedback` NOT called; message content passed directly
-      - [ ] Multiple rounds: attempt incremented, page updated each round
-      - [ ] `readFeedback` rejects → `failed`; implementer not called
-      - [ ] Implementer returns `failed` → `failed`; page not updated
-      - [ ] Implementer returns `needs_input` → `awaiting_impl_input`; page not updated
-      - [ ] `update` rejects → error logged; still transitions to `reviewing_implementation`
-      - [ ] All tests pass: `npx vitest run`
+      - [x] From `reviewing_implementation`: `readFeedback` called with `impl_feedback_ref`; items passed to implementer; page updated on success
+      - [x] From `awaiting_impl_input`: `readFeedback` NOT called; message content passed directly
+      - [x] Multiple rounds: attempt incremented, page updated each round
+      - [x] `readFeedback` rejects → `failed`; implementer not called
+      - [x] Implementer returns `failed` → `failed`; page not updated
+      - [x] Implementer returns `needs_input` → `awaiting_impl_input`; page not updated
+      - [x] `update` rejects → error logged; still transitions to `reviewing_implementation`
+      - [x] All tests pass: `npx vitest run`
     - **Dependencies**: "Task: Implement `_handleSpecApproval` in orchestrator"
 
-  - [ ] **Task: Implement `_handleImplementationFeedback` in orchestrator**
+  - [x] **Task: Implement `_handleImplementationFeedback` in orchestrator**
     - **Description**: Implement `_handleImplementationFeedback` in `src/core/orchestrator.ts`. If run is in `reviewing_implementation`, read feedback from page via `implementationFeedbackPage.readFeedback(impl_feedback_ref)` and serialize as additional context. If run is in `awaiting_impl_input`, use the message content directly. Transition to `implementing`, call `implementer.implement`, handle results. On `complete`, call `implementationFeedbackPage.update` with new summary and resolved items.
     - **Acceptance criteria**:
-      - [ ] Reads from feedback page when in `reviewing_implementation`; uses message directly when in `awaiting_impl_input`
-      - [ ] Result handling identical to spec approval path (complete/needs_input/failed)
-      - [ ] Page updated on success with summary and resolution comments
-      - [ ] Page update failure logged but non-fatal
-      - [ ] All tests from preceding task pass: `npx vitest run`
+      - [x] Reads from feedback page when in `reviewing_implementation`; uses message directly when in `awaiting_impl_input`
+      - [x] Result handling identical to spec approval path (complete/needs_input/failed)
+      - [x] Page updated on success with summary and resolution comments
+      - [x] Page update failure logged but non-fatal
+      - [x] All tests from preceding task pass: `npx vitest run`
     - **Dependencies**: "Task: Unit tests for `_handleImplementationFeedback`"
 
-- [ ] **Story: Orchestrator — implementation approval path**
-  - [ ] **Task: Unit tests for `_handleImplementationApproval`**
+- [x] **Story: Orchestrator — implementation approval path**
+  - [x] **Task: Unit tests for `_handleImplementationApproval`**
     - **Description**: Add test cases to `tests/core/orchestrator.test.ts`. Cover: happy path (PR created, link posted, transitions to `done`), PRCreator rejects, and postMessage rejects (non-fatal — PR was already created).
     - **Acceptance criteria**:
-      - [ ] `PRCreator.createPR` called with workspace_path, branch, spec title
-      - [ ] PR URL posted to Slack
-      - [ ] Run transitions to `done`
-      - [ ] PRCreator rejects → `failed`; error posted
-      - [ ] postMessage rejects → logged; still transitions to `done`
-      - [ ] All tests pass: `npx vitest run`
+      - [x] `PRCreator.createPR` called with workspace_path, branch, spec title
+      - [x] PR URL posted to Slack
+      - [x] Run transitions to `done`
+      - [x] PRCreator rejects → `failed`; error posted
+      - [x] postMessage rejects → logged; still transitions to `done`
+      - [x] All tests pass: `npx vitest run`
     - **Dependencies**: "Task: Implement `_handleImplementationFeedback` in orchestrator", "Task: Implement `GHPRCreator`"
 
-  - [ ] **Task: Implement `_handleImplementationApproval` in orchestrator**
+  - [x] **Task: Implement `_handleImplementationApproval` in orchestrator**
     - **Description**: Add `prCreator: PRCreator` to `OrchestratorDeps`. Implement `_handleImplementationApproval`: call `prCreator.createPR`, post PR link to Slack, transition to `done`. Handle PRCreator failure.
     - **Acceptance criteria**:
-      - [ ] `PRCreator` added to deps
-      - [ ] PR created, link posted, run transitions to `done`
-      - [ ] PRCreator failure → `failed`; error posted
-      - [ ] All tests from preceding task pass: `npx vitest run`
+      - [x] `PRCreator` added to deps
+      - [x] PR created, link posted, run transitions to `done`
+      - [x] PRCreator failure → `failed`; error posted
+      - [x] All tests from preceding task pass: `npx vitest run`
     - **Dependencies**: "Task: Unit tests for `_handleImplementationApproval`"
 
-- [ ] **Story: Service wiring**
-  - [ ] **Task: Wire new components in `src/index.ts`**
+- [x] **Story: Service wiring**
+  - [x] **Task: Wire new components in `src/index.ts`**
     - **Description**: Update `src/index.ts` to create and wire all new components: `AnthropicIntentClassifier` (using `AC_ANTHROPIC_API_KEY`), `OMCImplementer`, `GHPRCreator`, `NotionSpecCommitter`, `NotionImplementationFeedbackPage`. Pass all to `OrchestratorDeps`. Add startup validation: exit with code 1 if `AC_ANTHROPIC_API_KEY` is missing. Add startup check: log warning if `gh auth status` fails.
     - **Acceptance criteria**:
-      - [ ] All new components created and passed to `OrchestratorImpl`
-      - [ ] Missing `AC_ANTHROPIC_API_KEY` → exit code 1 with descriptive error
-      - [ ] `gh auth status` failure → warning logged (not fatal)
-      - [ ] Existing behavior unchanged when no new features are triggered
-      - [ ] All tests pass: `npx vitest run`
+      - [x] All new components created and passed to `OrchestratorImpl`
+      - [x] Missing `AC_ANTHROPIC_API_KEY` → exit code 1 with descriptive error
+      - [x] `gh auth status` failure → warning logged (not fatal)
+      - [x] Existing behavior unchanged when no new features are triggered
+      - [x] All tests pass: `npx vitest run`
     - **Dependencies**: "Task: Implement `_handleImplementationApproval` in orchestrator"
 
-  - [ ] **Task: Run full test suite and verify no regressions**
+  - [x] **Task: Run full test suite and verify no regressions**
     - **Description**: Run the complete test suite and verify all tests pass. Check that the type renames, removed reaction handling, and new orchestrator paths haven't introduced any regressions in existing functionality. Verify `tsc --noEmit` produces no errors.
     - **Acceptance criteria**:
-      - [ ] `npx vitest run` — all tests pass
-      - [ ] `npx tsc --noEmit` — no type errors
-      - [ ] Test count has increased (new tests added, some reaction tests removed)
+      - [x] `npx vitest run` — all tests pass
+      - [x] `npx tsc --noEmit` — no type errors
+      - [x] Test count has increased (new tests added, some reaction tests removed)
     - **Dependencies**: "Task: Wire new components in `src/index.ts`"

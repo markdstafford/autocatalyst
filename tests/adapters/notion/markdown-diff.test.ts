@@ -4,6 +4,7 @@ import {
   stripCommentSpans,
   extractCommentSpans,
   ensureSpansPreserved,
+  prettifyMarkdown,
 } from '../../../src/adapters/notion/markdown-diff.js';
 
 // ─── stripCommentSpans ──────────────────────────────────────────────────
@@ -154,5 +155,111 @@ describe('ensureSpansPreserved', () => {
     // The "kept" span should NOT be in the orphaned section
     const orphanedSection = result.slice(result.indexOf('## Orphaned comments'));
     expect(orphanedSection).not.toContain('discussion://kept');
+  });
+});
+
+// ─── prettifyMarkdown ────────────────────────────────────────────────────
+
+describe('prettifyMarkdown — heading spacing', () => {
+  it('inserts blank line after # heading not followed by one', () => {
+    const input = '# Title\nFirst paragraph.';
+    const result = prettifyMarkdown(input);
+    expect(result).toContain('# Title\n\nFirst paragraph.');
+  });
+
+  it('inserts blank line after ## heading', () => {
+    const input = '## Section\nContent here.';
+    const result = prettifyMarkdown(input);
+    expect(result).toContain('## Section\n\nContent here.');
+  });
+
+  it('inserts blank line after ### heading', () => {
+    const input = '### Sub\nContent.';
+    const result = prettifyMarkdown(input);
+    expect(result).toContain('### Sub\n\nContent.');
+  });
+
+  it('does not double-insert when heading already followed by blank line', () => {
+    const input = '## Section\n\nContent here.';
+    const result = prettifyMarkdown(input);
+    expect(result).toBe('## Section\n\nContent here.');
+  });
+
+  it('handles heading at the end of file — no blank line inserted', () => {
+    const input = '# Title\n\nParagraph.\n\n## End';
+    const result = prettifyMarkdown(input);
+    expect(result.endsWith('## End')).toBe(true);
+  });
+});
+
+describe('prettifyMarkdown — blank line collapsing', () => {
+  it('collapses three consecutive blank lines into one', () => {
+    const input = 'Line 1\n\n\n\nLine 2';
+    const result = prettifyMarkdown(input);
+    expect(result).toBe('Line 1\n\nLine 2');
+  });
+
+  it('collapses many blank lines into one', () => {
+    const input = 'A\n\n\n\n\n\nB';
+    const result = prettifyMarkdown(input);
+    expect(result).toBe('A\n\nB');
+  });
+
+  it('preserves single blank lines', () => {
+    const input = 'Para 1\n\nPara 2';
+    expect(prettifyMarkdown(input)).toBe('Para 1\n\nPara 2');
+  });
+});
+
+describe('prettifyMarkdown — orphaned comments removal', () => {
+  it('removes ## Orphaned comments section at end of file', () => {
+    const input = '# Spec\n\nContent.\n\n## Orphaned comments\n\n- some orphan';
+    const result = prettifyMarkdown(input);
+    expect(result).not.toContain('## Orphaned comments');
+    expect(result).not.toContain('some orphan');
+    expect(result).toContain('Content.');
+  });
+
+  it('removes ## Orphaned comments section with content until end', () => {
+    const input = [
+      '# Spec',
+      '',
+      'Body.',
+      '',
+      '## Orphaned comments',
+      '',
+      '- orphan 1',
+      '- orphan 2',
+    ].join('\n');
+    const result = prettifyMarkdown(input);
+    expect(result).not.toContain('## Orphaned comments');
+    expect(result).not.toContain('orphan 1');
+    expect(result).toContain('Body.');
+  });
+
+  it('passes through content with no ## Orphaned comments section unchanged (aside from prettification)', () => {
+    const input = '# Spec\n\nBody.';
+    expect(prettifyMarkdown(input)).toBe('# Spec\n\nBody.');
+  });
+
+  it('preserves content after orphaned comments if followed by ## heading', () => {
+    const input = [
+      '# Spec',
+      '',
+      'Body.',
+      '',
+      '## Orphaned comments',
+      '',
+      '- orphan',
+      '',
+      '## Next Section',
+      '',
+      'Kept.',
+    ].join('\n');
+    const result = prettifyMarkdown(input);
+    expect(result).not.toContain('orphan');
+    // The ## Next Section and content following it should NOT be removed
+    expect(result).toContain('## Next Section');
+    expect(result).toContain('Kept.');
   });
 });

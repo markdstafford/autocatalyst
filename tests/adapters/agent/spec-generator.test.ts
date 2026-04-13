@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { OMCSpecGenerator } from '../../../src/adapters/agent/spec-generator.js';
-import type { Idea, SpecFeedback } from '../../../src/types/events.js';
+import type { Idea, ThreadMessage } from '../../../src/types/events.js';
 import type { NotionCommentResponse, ReviseResult } from '../../../src/adapters/agent/spec-generator.js';
 
 const nullDest = { write: () => {} };
@@ -22,7 +22,7 @@ function makeIdea(overrides: Partial<Idea> = {}): Idea {
   };
 }
 
-function makeFeedback(overrides: Partial<SpecFeedback> = {}): SpecFeedback {
+function makeFeedback(overrides: Partial<ThreadMessage> = {}): ThreadMessage {
   return {
     idea_id: 'idea-001',
     content: 'the wizard should not require all settings before exiting',

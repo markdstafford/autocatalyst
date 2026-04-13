@@ -239,31 +239,6 @@ describe('validateConfig — slack', () => {
     expect((resolved as WorkflowConfig).slack?.app_token).toBe('xapp-real');
   });
 
-  it('defaults approval_emojis to ["thumbsup"] when absent', () => {
-    const config: WorkflowConfig = {
-      slack: { bot_token: 'xoxb-test', app_token: 'xapp-test', channel_name: 'ch' },
-    };
-    validateConfig(config);
-    expect(config.slack?.approval_emojis).toEqual(['thumbsup']);
-  });
-
-  it('passes when approval_emojis is a non-empty array', () => {
-    expect(() => validateConfig({
-      slack: {
-        bot_token: 'xoxb-test', app_token: 'xapp-test', channel_name: 'ch',
-        approval_emojis: ['thumbsup', 'white_check_mark'],
-      },
-    })).not.toThrow();
-  });
-
-  it('throws when approval_emojis is an empty array', () => {
-    expect(() => validateConfig({
-      slack: {
-        bot_token: 'xoxb-test', app_token: 'xapp-test', channel_name: 'ch',
-        approval_emojis: [],
-      },
-    })).toThrow(/slack\.approval_emojis/);
-  });
 });
 
 describe('redactConfig — slack tokens', () => {

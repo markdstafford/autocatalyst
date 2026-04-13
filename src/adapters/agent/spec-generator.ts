@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
-import type { Idea, SpecFeedback } from '../../types/events.js';
+import type { Idea, ThreadMessage } from '../../types/events.js';
 import { stripCommentSpans, extractCommentSpans, ensureSpansPreserved } from '../notion/markdown-diff.js';
 
 export interface NotionComment {
@@ -32,7 +32,7 @@ export interface ReviseResult {
 export interface SpecGenerator {
   create(idea: Idea, workspace_path: string): Promise<string>;
   revise(
-    feedback: SpecFeedback,
+    feedback: ThreadMessage,
     notion_comments: NotionComment[],
     spec_path: string,
     workspace_path: string,
@@ -176,7 +176,7 @@ export class OMCSpecGenerator implements SpecGenerator {
   }
 
   async revise(
-    feedback: SpecFeedback,
+    feedback: ThreadMessage,
     notion_comments: NotionComment[],
     spec_path: string,
     workspace_path: string,

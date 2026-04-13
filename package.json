@@ -20,6 +20,7 @@
     "node": ">=22.0.0"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.88.0",
     "@notionhq/client": "^5.17.0",
     "@slack/bolt": "^4.7.0",
     "pino": "9.6.0",
