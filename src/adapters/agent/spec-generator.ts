@@ -1,6 +1,5 @@
 // src/adapters/agent/spec-generator.ts
-import { promisify } from 'node:util';
-import { execFile as _execFile } from 'node:child_process';
+import { query as _query } from '@anthropic-ai/claude-agent-sdk';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type pino from 'pino';
@@ -9,24 +8,22 @@ import type { Idea, ThreadMessage } from '../../types/events.js';
 import { stripCommentSpans, extractCommentSpans, ensureSpansPreserved } from '../notion/markdown-diff.js';
 
 export interface NotionComment {
-  id: string;   // discussion ID — used to post the reply
-  body: string; // full thread text: all comments in the discussion concatenated, separated by "\n"
+  id: string;
+  body: string;
 }
 
 export interface NotionCommentResponse {
-  comment_id: string; // matches NotionComment.id
+  comment_id: string;
   response: string;
 }
 
-const defaultExecFile = promisify(_execFile);
-
-type ExecFn = (file: string, args: string[], opts?: { cwd?: string }) => Promise<{ stdout: string; stderr: string }>;
+type QueryFn = typeof _query;
 
 const FILENAME_REGEX = /^(feature|enhancement)-[a-z0-9-]+\.md$/;
 
 export interface ReviseResult {
   comment_responses: NotionCommentResponse[];
-  page_content?: string;  // span-bearing markdown for publisher; undefined if no spans in input
+  page_content?: string;
 }
 
 export interface SpecGenerator {
@@ -40,49 +37,23 @@ export interface SpecGenerator {
   ): Promise<ReviseResult>;
 }
 
-interface SpecGeneratorOptions {
-  execFn?: ExecFn;
+interface AgentSDKSpecGeneratorOptions {
+  queryFn?: QueryFn;
   logDestination?: pino.DestinationStream;
 }
 
-// Collect lines from an already-opened code fence, tracking nested fences via depth.
-// Stops at the matching closing fence (depth returns to 0).
-function collectFenceContent(lines: string[], startIndex: number): string {
-  let depth = 1;
-  const result: string[] = [];
-  for (let i = startIndex; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.startsWith('```')) {
-      if (line === '```') {
-        depth--;
-        if (depth === 0) break;
-        result.push(line);
-      } else {
-        depth++;
-        result.push(line);
-      }
-    } else {
-      result.push(line);
-    }
-  }
-  return result.join('\n');
-}
-
-// Extract the content of the ## Raw output code fence, handling nested fences via depth tracking.
-function extractRawOutput(artifactContent: string, context: string): string {
-  const match = artifactContent.match(/^## Raw output\s*\n```(?:\w+)?\n/m);
-  if (!match) throw new Error(`${context}: artifact missing ## Raw output section`);
-
-  const lines = artifactContent.slice(match.index! + match[0].length).split('\n');
-  return collectFenceContent(lines, 0);
-}
-
 // If text begins with a code fence (```lang), extract the content inside it.
+// Uses last-match strategy for the outer fence closer.
 function unwrapFence(text: string): string {
   const lines = text.split('\n');
   const first = lines.findIndex(l => l.trim() !== '');
   if (first === -1 || !lines[first].startsWith('```')) return text;
-  return collectFenceContent(lines, first + 1);
+  for (let i = lines.length - 1; i > first; i--) {
+    if (/^```[ \t]*$/.test(lines[i])) {
+      return lines.slice(first + 1, i).join('\n');
+    }
+  }
+  return lines.slice(first + 1).join('\n');
 }
 
 // Extract the content between "LABEL:\n<<<\n" and "\n>>>" delimiters.
@@ -96,11 +67,8 @@ function extractDelimitedSection(text: string, label: string, context: string): 
   return text.slice(contentStart, end);
 }
 
-function parseArtifact(artifactContent: string): { filename: string; body: string } {
-  const rawOutput = extractRawOutput(artifactContent, 'Spec creation');
-
-  // Find the FILENAME: line anywhere in the raw output (Claude may emit preamble before it)
-  const lines = rawOutput.split('\n');
+function parseSpecResponse(responseText: string): { filename: string; body: string } {
+  const lines = responseText.split('\n');
   const filenameIdx = lines.findIndex(l => l.trim().startsWith('FILENAME:'));
   if (filenameIdx === -1) {
     throw new Error(`Artifact ## Raw output missing "FILENAME: <name>" line`);
@@ -113,18 +81,44 @@ function parseArtifact(artifactContent: string): { filename: string; body: strin
     );
   }
 
-  // Claude may wrap the spec body in a ```markdown fence — unwrap it if present
   const rawBody = lines.slice(filenameIdx + 1).join('\n').trimStart();
   const body = unwrapFence(rawBody).trimStart();
   return { filename, body };
 }
 
-export class OMCSpecGenerator implements SpecGenerator {
-  private readonly execFn: ExecFn;
+async function runQuery(queryFn: QueryFn, prompt: string, workspace_path: string): Promise<string> {
+  let resultText = '';
+  try {
+    // @ts-expect-error — SDK option types may not perfectly match all fields used at runtime
+    for await (const message of queryFn({
+      prompt,
+      options: {
+        cwd: workspace_path,
+        allowedTools: [],
+        maxTurns: 1,
+        systemPrompt: { type: 'preset', preset: 'claude_code' },
+      },
+    })) {
+      const msg = message as { result?: string };
+      if (typeof msg.result === 'string') {
+        resultText = msg.result;
+      }
+    }
+  } catch (err) {
+    throw new Error(String(err));
+  }
+  if (!resultText) {
+    throw new Error('Agent SDK returned no result text for spec generation');
+  }
+  return resultText;
+}
+
+export class AgentSDKSpecGenerator implements SpecGenerator {
+  private readonly queryFn: QueryFn;
   private readonly logger: pino.Logger;
 
-  constructor(options?: SpecGeneratorOptions) {
-    this.execFn = options?.execFn ?? defaultExecFile;
+  constructor(options?: AgentSDKSpecGeneratorOptions) {
+    this.queryFn = options?.queryFn ?? _query;
     this.logger = createLogger('spec-generator', { destination: options?.logDestination });
   }
 
@@ -132,7 +126,8 @@ export class OMCSpecGenerator implements SpecGenerator {
     const prompt = [
       `Using mm:planning conventions, generate a complete product spec for the following idea.`,
       ``,
-      `On the very first line of your response, write: FILENAME: <feature-or-enhancement-slug>.md`,
+      `On the very first line of your response, write: FILENAME: feature-<slug>.md`,
+      `Use the "feature-" prefix for new standalone functionality, or "enhancement-" prefix for improvements to an existing feature.`,
       `Then write the spec as a Markdown document with YAML frontmatter.`,
       ``,
       `Idea:`,
@@ -141,30 +136,13 @@ export class OMCSpecGenerator implements SpecGenerator {
       `>>>`,
     ].join('\n');
 
-    this.logger.debug({ event: 'omc.invoked', idea_id: idea.id }, 'Invoking OMC for spec creation');
+    this.logger.debug({ event: 'spec.agent_invoked', idea_id: idea.id }, 'Invoking Agent SDK for spec creation');
 
-    let artifactPath: string;
-    try {
-      const { stdout } = await this.execFn('omc', ['ask', 'claude', '--print', prompt], { cwd: workspace_path });
-      artifactPath = stdout.trim();
-    } catch (err) {
-      this.logger.error({ event: 'omc.failed', idea_id: idea.id, error: String(err) }, 'OMC exited non-zero');
-      throw new Error(`OMC failed: ${String(err)}`);
-    }
+    const resultText = await runQuery(this.queryFn, prompt, workspace_path);
 
-    this.logger.debug({ event: 'omc.completed', idea_id: idea.id, artifactPath }, 'OMC completed');
+    this.logger.debug({ event: 'spec.agent_completed', idea_id: idea.id }, 'Agent SDK spec creation completed');
 
-    if (!artifactPath) {
-      throw new Error(`OMC returned empty artifact path for idea ${idea.id}`);
-    }
-
-    let artifactContent: string;
-    try {
-      artifactContent = readFileSync(artifactPath, 'utf-8');
-    } catch (err) {
-      throw new Error(`Failed to read artifact at "${artifactPath}": ${String(err)}`, { cause: err });
-    }
-    const { filename, body } = parseArtifact(artifactContent);
+    const { filename, body } = parseSpecResponse(resultText);
 
     const specDir = join(workspace_path, 'context-human', 'specs');
     mkdirSync(specDir, { recursive: true });
@@ -250,42 +228,20 @@ export class OMCSpecGenerator implements SpecGenerator {
       `>>>`,
     ].filter(line => line !== undefined).join('\n');
 
-    this.logger.debug({ event: 'spec_revision.input', idea_id: feedback.idea_id, notion_comment_count: notion_comments.length, comment_ids: notion_comments.map(c => c.id) }, 'Revise called with Notion comments');
-    this.logger.debug({ event: 'omc.invoked', idea_id: feedback.idea_id }, 'Invoking OMC for spec revision');
+    this.logger.debug({ event: 'spec_revision.input', idea_id: feedback.idea_id, notion_comment_count: notion_comments.length }, 'Revise called with Notion comments');
+    this.logger.debug({ event: 'spec.agent_invoked', idea_id: feedback.idea_id }, 'Invoking Agent SDK for spec revision');
 
-    let artifactPath: string;
-    try {
-      const { stdout } = await this.execFn('omc', ['ask', 'claude', '--print', prompt], { cwd: workspace_path });
-      artifactPath = stdout.trim();
-    } catch (err) {
-      this.logger.error({ event: 'omc.failed', idea_id: feedback.idea_id, error: String(err) }, 'OMC exited non-zero during revision');
-      throw new Error(`OMC revision failed: ${String(err)}`);
-    }
+    const resultText = await runQuery(this.queryFn, prompt, workspace_path);
 
-    this.logger.debug({ event: 'omc.completed', idea_id: feedback.idea_id, artifactPath }, 'OMC revision completed');
+    this.logger.debug({ event: 'spec.agent_completed', idea_id: feedback.idea_id }, 'Agent SDK spec revision completed');
 
-    if (!artifactPath) {
-      throw new Error(`OMC returned empty artifact path for idea ${feedback.idea_id}`);
-    }
+    const unwrapped = unwrapFence(resultText.trim());
 
-    let artifactContent: string;
-    try {
-      artifactContent = readFileSync(artifactPath, 'utf-8');
-    } catch (err) {
-      throw new Error(`Failed to read artifact at "${artifactPath}": ${String(err)}`, { cause: err });
-    }
-
-    this.logger.debug({ event: 'omc.artifact_content', idea_id: feedback.idea_id, artifactContent }, 'Raw OMC artifact for revision');
-    const rawOutput = extractRawOutput(artifactContent, 'Spec revision');
-    const unwrapped = unwrapFence(rawOutput.trim());
-
-    // Extract spec from SPEC: <<< ... >>> section
     const spec = extractDelimitedSection(unwrapped, 'SPEC:', 'Spec revision');
     if (!spec) {
       throw new Error(`Spec revision: response missing non-empty SPEC section`);
     }
 
-    // Extract and parse comment_responses from COMMENT_RESPONSES: <<< ... >>> section
     const commentResponsesRaw = extractDelimitedSection(unwrapped, 'COMMENT_RESPONSES:', 'Spec revision');
     let parsedResponses: unknown;
     try {
@@ -312,7 +268,7 @@ export class OMCSpecGenerator implements SpecGenerator {
       commentResponses.push({ comment_id: entry['comment_id'], response: entry['response'] });
     }
 
-    this.logger.debug({ event: 'spec_revision.output', idea_id: feedback.idea_id, comment_response_count: commentResponses.length, comment_response_ids: commentResponses.map(r => r.comment_id) }, 'Parsed comment responses from revision');
+    this.logger.debug({ event: 'spec_revision.output', idea_id: feedback.idea_id, comment_response_count: commentResponses.length }, 'Parsed comment responses from revision');
 
     if (hasSpans) {
       const pageContent = ensureSpansPreserved(spec, originalSpans);
