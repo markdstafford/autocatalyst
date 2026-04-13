@@ -1,51 +1,28 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { OMCImplementer } from '../../../src/adapters/agent/implementer.js';
+import { AgentSDKImplementer } from '../../../src/adapters/agent/implementer.js';
 
 const nullDest = { write: () => {} };
 
-function makeArtifactContent(rawContent: string): string {
-  return `# omc artifact\n\n## Raw output\n\n\`\`\`text\n${rawContent}\n\`\`\`\n`;
+function makeQueryFn() {
+  return vi.fn().mockReturnValue((async function* () {})());
 }
 
-function makeCompleteArtifact(summary: string, testingInstructions: string): string {
-  return makeArtifactContent([
-    'STATUS: complete',
-    '',
-    'SUMMARY:',
-    '<<<',
-    summary,
-    '>>>',
-    '',
-    'TESTING_INSTRUCTIONS:',
-    '<<<',
-    testingInstructions,
-    '>>>',
-  ].join('\n'));
+function makeReadFileFn(result: object) {
+  return vi.fn().mockResolvedValue(JSON.stringify(result));
 }
 
-function makeNeedsInputArtifact(question: string): string {
-  return makeArtifactContent([
-    'STATUS: needs_input',
-    '',
-    'QUESTION:',
-    '<<<',
-    question,
-    '>>>',
-  ].join('\n'));
-}
-
-function makeFailedArtifact(error: string): string {
-  return makeArtifactContent([
-    'STATUS: failed',
-    '',
-    'ERROR:',
-    '<<<',
-    error,
-    '>>>',
-  ].join('\n'));
+function makeImpl(result: object, queryFn = makeQueryFn()) {
+  return {
+    impl: new AgentSDKImplementer({
+      logDestination: nullDest,
+      queryFn,
+      readFile: makeReadFileFn(result),
+    }),
+    queryFn,
+  };
 }
 
 let tmpDir: string;
@@ -54,82 +31,99 @@ let specPath: string;
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), 'impl-test-'));
   specPath = join(tmpDir, 'spec.md');
-  writeFileSync(specPath, '# My Feature\n\nSpec content here.\n\n## Task list\n\n- [ ] Build it', 'utf-8');
+  vi.clearAllMocks();
 });
 
 afterEach(() => {
   rmSync(tmpDir, { recursive: true, force: true });
 });
 
-function makeExecFn(artifactContent: string) {
-  const artifactPath = join(tmpDir, 'artifact.md');
-  writeFileSync(artifactPath, artifactContent, 'utf-8');
-  return vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
-}
-
-describe('OMCImplementer — OMC invocation', () => {
-  it('spawns omc team 1:claude with cwd set to workspace_path', async () => {
-    const execFn = makeExecFn(makeCompleteArtifact('Built it.', 'Run npm test'));
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
+describe('AgentSDKImplementer — query invocation', () => {
+  it('calls queryFn with cwd set to workspace_path', async () => {
+    const queryFn = makeQueryFn();
+    const impl = new AgentSDKImplementer({
+      logDestination: nullDest,
+      queryFn,
+      readFile: makeReadFileFn({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' }),
+    });
 
     await impl.implement(specPath, tmpDir);
 
-    expect(execFn).toHaveBeenCalledOnce();
-    const [cmd, args, opts] = execFn.mock.calls[0] as [string, string[], { cwd: string }];
-    expect(cmd).toBe('omc');
-    expect(args[0]).toBe('team');
-    expect(args[1]).toBe('1:claude');
-    expect(opts.cwd).toBe(tmpDir);
+    expect(queryFn).toHaveBeenCalledOnce();
+    const call = queryFn.mock.calls[0][0] as { options: { cwd: string } };
+    expect(call.options.cwd).toBe(tmpDir);
   });
 
-  it('prompt includes the full spec content', async () => {
-    const execFn = makeExecFn(makeCompleteArtifact('Built it.', 'Run npm test'));
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
+  it('calls queryFn with permissionMode: bypassPermissions', async () => {
+    const { impl, queryFn } = makeImpl({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' });
 
     await impl.implement(specPath, tmpDir);
 
-    const prompt = (execFn.mock.calls[0] as unknown[][])[1][2] as string;
-    expect(prompt).toContain('My Feature');
-    expect(prompt).toContain('Spec content here');
-    expect(prompt).toContain('Task list');
+    const call = queryFn.mock.calls[0][0] as { options: { permissionMode: string } };
+    expect(call.options.permissionMode).toBe('bypassPermissions');
   });
 
-  it('prompt includes mm implementation handoff instructions', async () => {
-    const execFn = makeExecFn(makeCompleteArtifact('Built it.', 'Run npm test'));
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
+  it('prompt contains spec_path', async () => {
+    const { impl, queryFn } = makeImpl({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' });
 
     await impl.implement(specPath, tmpDir);
 
-    const prompt = (execFn.mock.calls[0] as unknown[][])[1][2] as string;
-    expect(prompt).toMatch(/task list|implementation plan|dependency order/i);
+    const call = queryFn.mock.calls[0][0] as { prompt: string };
+    expect(call.prompt).toContain(specPath);
   });
 
-  it('prompt does not contain additional context section when not provided', async () => {
-    const execFn = makeExecFn(makeCompleteArtifact('Built it.', 'Run npm test'));
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
+  it('prompt contains result file path under .autocatalyst/', async () => {
+    const { impl, queryFn } = makeImpl({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' });
 
     await impl.implement(specPath, tmpDir);
 
-    const prompt = (execFn.mock.calls[0] as unknown[][])[1][2] as string;
-    expect(prompt).not.toMatch(/additional context/i);
+    const call = queryFn.mock.calls[0][0] as { prompt: string };
+    const expectedPath = join(tmpDir, '.autocatalyst', 'impl-result.json');
+    expect(call.prompt).toContain(expectedPath);
+  });
+
+  it('prompt contains writing-plans step on initial invocation', async () => {
+    const { impl, queryFn } = makeImpl({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' });
+
+    await impl.implement(specPath, tmpDir);
+
+    const call = queryFn.mock.calls[0][0] as { prompt: string };
+    expect(call.prompt).toContain('writing-plans');
+  });
+
+  it('prompt does not contain additional context when not provided', async () => {
+    const { impl, queryFn } = makeImpl({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' });
+
+    await impl.implement(specPath, tmpDir);
+
+    const call = queryFn.mock.calls[0][0] as { prompt: string };
+    expect(call.prompt).not.toMatch(/additional context/i);
   });
 
   it('prompt includes additional context when provided', async () => {
-    const execFn = makeExecFn(makeCompleteArtifact('Built it.', 'Run npm test'));
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
+    const { impl, queryFn } = makeImpl({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' });
 
     await impl.implement(specPath, tmpDir, 'go with the subtype approach');
 
-    const prompt = (execFn.mock.calls[0] as unknown[][])[1][2] as string;
-    expect(prompt).toContain('go with the subtype approach');
-    expect(prompt).toMatch(/additional context/i);
+    const call = queryFn.mock.calls[0][0] as { prompt: string };
+    expect(call.prompt).toContain('go with the subtype approach');
+    expect(call.prompt).toMatch(/additional context/i);
+  });
+
+  it('prompt skips writing-plans and contains Skip Step 1 on re-invocation', async () => {
+    const { impl, queryFn } = makeImpl({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' });
+
+    await impl.implement(specPath, tmpDir, 'continue from here');
+
+    const call = queryFn.mock.calls[0][0] as { prompt: string };
+    expect(call.prompt).toContain('Skip Step 1');
+    expect(call.prompt).not.toContain('/superpowers:writing-plans');
   });
 });
 
-describe('OMCImplementer — result parsing (complete)', () => {
-  it('returns status complete with summary and testing_instructions', async () => {
-    const execFn = makeExecFn(makeCompleteArtifact('Implementation done.', 'Pull branch, run npm test'));
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
+describe('AgentSDKImplementer — result parsing (complete)', () => {
+  it('returns complete result with summary and testing_instructions', async () => {
+    const { impl } = makeImpl({ status: 'complete', summary: 'Implementation done.', testing_instructions: 'Pull branch, run npm test' });
 
     const result = await impl.implement(specPath, tmpDir);
 
@@ -140,20 +134,18 @@ describe('OMCImplementer — result parsing (complete)', () => {
     expect(result.error).toBeUndefined();
   });
 
-  it('captures multi-line summary correctly', async () => {
+  it('multi-line summary is preserved', async () => {
     const summary = 'Line 1\nLine 2\nLine 3';
-    const execFn = makeExecFn(makeCompleteArtifact(summary, 'Run tests'));
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
+    const { impl } = makeImpl({ status: 'complete', summary, testing_instructions: 'Run tests' });
 
     const result = await impl.implement(specPath, tmpDir);
 
     expect(result.summary).toBe(summary);
   });
 
-  it('captures multi-line testing instructions correctly', async () => {
+  it('multi-line testing_instructions is preserved', async () => {
     const instructions = 'Pull branch spec/my-feature\nnpm install\nnpm test';
-    const execFn = makeExecFn(makeCompleteArtifact('Done.', instructions));
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
+    const { impl } = makeImpl({ status: 'complete', summary: 'Done.', testing_instructions: instructions });
 
     const result = await impl.implement(specPath, tmpDir);
 
@@ -161,10 +153,9 @@ describe('OMCImplementer — result parsing (complete)', () => {
   });
 });
 
-describe('OMCImplementer — result parsing (needs_input)', () => {
-  it('returns status needs_input with question', async () => {
-    const execFn = makeExecFn(makeNeedsInputArtifact('Should I use approach A or B?'));
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
+describe('AgentSDKImplementer — result parsing (needs_input)', () => {
+  it('returns needs_input result with question', async () => {
+    const { impl } = makeImpl({ status: 'needs_input', question: 'Should I use approach A or B?' });
 
     const result = await impl.implement(specPath, tmpDir);
 
@@ -175,10 +166,9 @@ describe('OMCImplementer — result parsing (needs_input)', () => {
   });
 });
 
-describe('OMCImplementer — result parsing (failed)', () => {
-  it('returns status failed with error', async () => {
-    const execFn = makeExecFn(makeFailedArtifact('Could not find the config file.'));
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
+describe('AgentSDKImplementer — result parsing (failed)', () => {
+  it('returns failed result with error', async () => {
+    const { impl } = makeImpl({ status: 'failed', error: 'Could not find the config file.' });
 
     const result = await impl.implement(specPath, tmpDir);
 
@@ -187,150 +177,117 @@ describe('OMCImplementer — result parsing (failed)', () => {
   });
 });
 
-describe('OMCImplementer — result parsing (error cases)', () => {
-  it('throws when STATUS line is missing', async () => {
-    const artifact = makeArtifactContent('SUMMARY:\n<<<\nsome content\n>>>');
-    const execFn = makeExecFn(artifact);
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
+describe('AgentSDKImplementer — error cases', () => {
+  it('throws with result file not found message when ENOENT after agent completes', async () => {
+    const queryFn = makeQueryFn();
+    const enoentError = Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    const readFile = vi.fn().mockRejectedValue(enoentError);
+    const impl = new AgentSDKImplementer({ logDestination: nullDest, queryFn, readFile });
+
+    await expect(impl.implement(specPath, tmpDir)).rejects.toThrow(/result file not found/i);
+  });
+
+  it('throws when result file is not valid JSON', async () => {
+    const queryFn = makeQueryFn();
+    const readFile = vi.fn().mockResolvedValue('not json');
+    const impl = new AgentSDKImplementer({ logDestination: nullDest, queryFn, readFile });
+
+    await expect(impl.implement(specPath, tmpDir)).rejects.toThrow(/not valid JSON/i);
+  });
+
+  it('throws when status field is missing', async () => {
+    const queryFn = makeQueryFn();
+    const readFile = vi.fn().mockResolvedValue(JSON.stringify({ summary: 'hi' }));
+    const impl = new AgentSDKImplementer({ logDestination: nullDest, queryFn, readFile });
 
     await expect(impl.implement(specPath, tmpDir)).rejects.toThrow(/STATUS/i);
   });
 
-  it('throws when STATUS value is invalid', async () => {
-    const artifact = makeArtifactContent('STATUS: unknown_value\n\nSUMMARY:\n<<<\nstuff\n>>>');
-    const execFn = makeExecFn(artifact);
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
+  it('throws when status is an invalid value', async () => {
+    const queryFn = makeQueryFn();
+    const readFile = vi.fn().mockResolvedValue(JSON.stringify({ status: 'unknown' }));
+    const impl = new AgentSDKImplementer({ logDestination: nullDest, queryFn, readFile });
 
     await expect(impl.implement(specPath, tmpDir)).rejects.toThrow(/STATUS|invalid/i);
   });
 
-  it('throws when STATUS is complete but SUMMARY is missing', async () => {
-    const artifact = makeArtifactContent('STATUS: complete\n\nTESTING_INSTRUCTIONS:\n<<<\nRun tests\n>>>');
-    const execFn = makeExecFn(artifact);
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
+  it('throws when queryFn iterator throws', async () => {
+    const queryFn = vi.fn().mockReturnValue((async function* () {
+      throw new Error('agent crashed');
+    })());
+    const impl = new AgentSDKImplementer({
+      logDestination: nullDest,
+      queryFn,
+      readFile: makeReadFileFn({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' }),
+    });
 
-    await expect(impl.implement(specPath, tmpDir)).rejects.toThrow(/SUMMARY/i);
-  });
-
-  it('throws when STATUS is complete but TESTING_INSTRUCTIONS is missing', async () => {
-    const artifact = makeArtifactContent('STATUS: complete\n\nSUMMARY:\n<<<\nDone.\n>>>');
-    const execFn = makeExecFn(artifact);
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
-
-    await expect(impl.implement(specPath, tmpDir)).rejects.toThrow(/TESTING_INSTRUCTIONS/i);
-  });
-
-  it('throws when STATUS is needs_input but QUESTION is missing', async () => {
-    const artifact = makeArtifactContent('STATUS: needs_input\n\nSUMMARY:\n<<<\nsome\n>>>');
-    const execFn = makeExecFn(artifact);
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
-
-    await expect(impl.implement(specPath, tmpDir)).rejects.toThrow(/QUESTION/i);
-  });
-
-  it('throws when STATUS is failed but ERROR is missing', async () => {
-    const artifact = makeArtifactContent('STATUS: failed');
-    const execFn = makeExecFn(artifact);
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
-
-    await expect(impl.implement(specPath, tmpDir)).rejects.toThrow(/ERROR/i);
-  });
-
-  it('throws when SUMMARY section is empty (only whitespace)', async () => {
-    const artifact = makeArtifactContent(
-      'STATUS: complete\n\nSUMMARY:\n<<<\n   \n>>>\n\nTESTING_INSTRUCTIONS:\n<<<\nRun tests\n>>>'
-    );
-    const execFn = makeExecFn(artifact);
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
-
-    await expect(impl.implement(specPath, tmpDir)).rejects.toThrow(/SUMMARY|empty/i);
-  });
-
-  it('throws when OMC exits non-zero', async () => {
-    const execFn = vi.fn().mockRejectedValue(Object.assign(new Error('exit 1'), { stderr: 'fatal error' }));
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
-
-    await expect(impl.implement(specPath, tmpDir)).rejects.toThrow();
-  });
-
-  it('throws when artifact has no ## Raw output section', async () => {
-    const artifactPath = join(tmpDir, 'artifact.md');
-    writeFileSync(artifactPath, '# artifact\n\nNo raw output section.', 'utf-8');
-    const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
-    const impl = new OMCImplementer(execFn, { logDestination: nullDest });
-
-    await expect(impl.implement(specPath, tmpDir)).rejects.toThrow(/Raw output/i);
+    await expect(impl.implement(specPath, tmpDir)).rejects.toThrow(/agent crashed/);
   });
 });
 
-describe('OMCImplementer — logging', () => {
-  it('emits omc.team_invoked before spawn', async () => {
+describe('AgentSDKImplementer — logging', () => {
+  it('impl.agent_invoked logged before query with has_additional_context: false', async () => {
     const logs: unknown[] = [];
-    const dest = { write: (line: string) => logs.push(JSON.parse(line)) };
-    const execFn = makeExecFn(makeCompleteArtifact('Done.', 'Run tests'));
-    const impl = new OMCImplementer(execFn, { logDestination: dest });
+    const dest = { write: (line: string) => { logs.push(JSON.parse(line)); } };
+    const impl = new AgentSDKImplementer({
+      logDestination: dest,
+      queryFn: makeQueryFn(),
+      readFile: makeReadFileFn({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' }),
+    });
 
     await impl.implement(specPath, tmpDir);
 
-    const invoked = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'omc.team_invoked');
+    const invoked = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'impl.agent_invoked');
     expect(invoked).toBeDefined();
-    expect(typeof invoked!['has_additional_context']).toBe('boolean');
+    expect(invoked!['has_additional_context']).toBe(false);
   });
 
-  it('emits omc.team_invoked with has_additional_context: true when context provided', async () => {
+  it('impl.agent_invoked logged with has_additional_context: true when additional context provided', async () => {
     const logs: unknown[] = [];
-    const dest = { write: (line: string) => logs.push(JSON.parse(line)) };
-    const execFn = makeExecFn(makeCompleteArtifact('Done.', 'Run tests'));
-    const impl = new OMCImplementer(execFn, { logDestination: dest });
+    const dest = { write: (line: string) => { logs.push(JSON.parse(line)); } };
+    const impl = new AgentSDKImplementer({
+      logDestination: dest,
+      queryFn: makeQueryFn(),
+      readFile: makeReadFileFn({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' }),
+    });
 
     await impl.implement(specPath, tmpDir, 'use approach A');
 
-    const invoked = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'omc.team_invoked');
+    const invoked = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'impl.agent_invoked');
     expect(invoked!['has_additional_context']).toBe(true);
   });
 
-  it('emits omc.team_completed on success with status', async () => {
+  it('impl.agent_completed logged on success with correct status', async () => {
     const logs: unknown[] = [];
-    const dest = { write: (line: string) => logs.push(JSON.parse(line)) };
-    const execFn = makeExecFn(makeCompleteArtifact('Done.', 'Run tests'));
-    const impl = new OMCImplementer(execFn, { logDestination: dest });
+    const dest = { write: (line: string) => { logs.push(JSON.parse(line)); } };
+    const impl = new AgentSDKImplementer({
+      logDestination: dest,
+      queryFn: makeQueryFn(),
+      readFile: makeReadFileFn({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' }),
+    });
 
     await impl.implement(specPath, tmpDir);
 
-    const completed = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'omc.team_completed');
+    const completed = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'impl.agent_completed');
     expect(completed).toBeDefined();
     expect(completed!['status']).toBe('complete');
   });
 
-  it('emits omc.team_failed on non-zero exit', async () => {
+  it('impl.agent_failed logged when queryFn iterator throws', async () => {
     const logs: unknown[] = [];
-    const dest = { write: (line: string) => logs.push(JSON.parse(line)) };
-    const execFn = vi.fn().mockRejectedValue(Object.assign(new Error('fail'), { stderr: 'some error' }));
-    const impl = new OMCImplementer(execFn, { logDestination: dest });
+    const dest = { write: (line: string) => { logs.push(JSON.parse(line)); } };
+    const queryFn = vi.fn().mockReturnValue((async function* () {
+      throw new Error('fail');
+    })());
+    const impl = new AgentSDKImplementer({
+      logDestination: dest,
+      queryFn,
+      readFile: makeReadFileFn({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' }),
+    });
 
     await expect(impl.implement(specPath, tmpDir)).rejects.toThrow();
 
-    const failed = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'omc.team_failed');
+    const failed = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'impl.agent_failed');
     expect(failed).toBeDefined();
-  });
-
-  it('prompt content is not logged at info level or above', async () => {
-    const logs: string[] = [];
-    const dest = { write: (line: string) => logs.push(line) };
-    const execFn = makeExecFn(makeCompleteArtifact('Done.', 'Run tests'));
-    const impl = new OMCImplementer(execFn, { logDestination: dest });
-
-    await impl.implement(specPath, tmpDir);
-
-    const infoLogs = logs.filter(l => {
-      try {
-        const p = JSON.parse(l) as Record<string, unknown>;
-        return p['level'] === 'info' || p['level'] === 30;
-      } catch { return false; }
-    });
-
-    for (const line of infoLogs) {
-      expect(line).not.toContain('Spec content here');
-    }
   });
 });
