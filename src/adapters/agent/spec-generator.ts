@@ -89,7 +89,6 @@ function parseSpecResponse(responseText: string): { filename: string; body: stri
 async function runQuery(queryFn: QueryFn, prompt: string, workspace_path: string): Promise<string> {
   let resultText = '';
   try {
-    // @ts-expect-error — SDK option types may not perfectly match all fields used at runtime
     for await (const message of queryFn({
       prompt,
       options: {

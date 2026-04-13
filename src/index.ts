@@ -10,8 +10,9 @@ import { execSync } from 'node:child_process';
 import { join } from 'node:path';
 import { App } from '@slack/bolt';
 import { SlackAdapter } from './adapters/slack/slack-adapter.js';
+import { ThreadRegistry } from './adapters/slack/thread-registry.js';
 import { WorkspaceManagerImpl } from './core/workspace-manager.js';
-import { OMCSpecGenerator } from './adapters/agent/spec-generator.js';
+import { AgentSDKSpecGenerator } from './adapters/agent/spec-generator.js';
 import { SlackCanvasPublisher } from './adapters/slack/canvas-publisher.js';
 import type { SpecPublisher } from './adapters/slack/canvas-publisher.js';
 import { OrchestratorImpl } from './core/orchestrator.js';
@@ -20,7 +21,9 @@ import { NotionClientImpl } from './adapters/notion/notion-client.js';
 import { NotionPublisher } from './adapters/notion/notion-publisher.js';
 import { NotionFeedbackSource, type FeedbackSource } from './adapters/notion/notion-feedback-source.js';
 import { AnthropicIntentClassifier } from './adapters/agent/intent-classifier.js';
-import { OMCImplementer } from './adapters/agent/implementer.js';
+import AnthropicBedrock from '@anthropic-ai/bedrock-sdk';
+import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
+import { AgentSDKImplementer } from './adapters/agent/implementer.js';
 import { GHPRCreator } from './adapters/agent/pr-creator.js';
 import { NotionSpecCommitter } from './adapters/notion/spec-committer.js';
 import { NotionImplementationFeedbackPage } from './adapters/notion/implementation-feedback-page.js';
@@ -104,24 +107,50 @@ try {
     process.exit(1);
   }
 
-  // Validate Anthropic API key for intent classification
+  // Build intent classifier — prefer direct API key, fall back to Bedrock via AWS credential chain
   const anthropicApiKey = process.env['AC_ANTHROPIC_API_KEY'];
-  if (!anthropicApiKey) {
-    logger.error({ event: 'config.parse_error' }, 'AC_ANTHROPIC_API_KEY is required for intent classification');
-    process.exit(1);
+  let intentClassifier: AnthropicIntentClassifier;
+  if (anthropicApiKey) {
+    intentClassifier = new AnthropicIntentClassifier(anthropicApiKey);
+    logger.info({ event: 'service.config', auth: 'anthropic-api-key' }, 'Using Anthropic API key for intent classification');
+  } else {
+    const bedrockClient = new AnthropicBedrock({
+      providerChainResolver: () => Promise.resolve(fromNodeProviderChain()),
+    });
+    intentClassifier = new AnthropicIntentClassifier('', {
+      createFn: async (params) => {
+        try {
+          return await bedrockClient.messages.create({
+            ...params,
+            model: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+          }) as unknown as { content: Array<{ type: string; text: string }> };
+        } catch (err) {
+          const msg = String(err);
+          if (msg.includes('CredentialsProviderError') || msg.includes('Could not load credentials') || msg.includes('sso')) {
+            logger.error(
+              { event: 'bedrock.credentials_expired', aws_profile: process.env['AWS_PROFILE'] ?? 'default' },
+              'AWS credentials expired or unavailable. Run: aws sso login --profile <profile>',
+            );
+          }
+          throw err;
+        }
+      },
+    });
+    logger.info({ event: 'service.config', auth: 'bedrock', aws_profile: process.env['AWS_PROFILE'] ?? 'default' }, 'Using AWS Bedrock for intent classification');
   }
 
   // Build adapter, components, orchestrator
+  const threadRegistry = new ThreadRegistry();
   const adapter = new SlackAdapter(boltApp, {
     channelName,
+  }, {
+    registry: threadRegistry,
   });
 
   const workspaceManager = new WorkspaceManagerImpl(workspaceRoot);
   const runStore = new FileRunStore(workspaceRoot);
-  const specGenerator = new OMCSpecGenerator();
-
-  const intentClassifier = new AnthropicIntentClassifier(anthropicApiKey);
-  const implementer = new OMCImplementer();
+  const specGenerator = new AgentSDKSpecGenerator();
+  const implementer = new AgentSDKImplementer();
   const prCreator = new GHPRCreator();
 
   let specPublisher: SpecPublisher;
@@ -171,6 +200,7 @@ try {
     implFeedbackPage,
     prCreator,
     runStore,
+    threadRegistry,
     postError: async (channel_id, thread_ts, text) => {
       await boltApp.client.chat.postMessage({ channel: channel_id, thread_ts, text });
     },

@@ -80,7 +80,6 @@ export class AgentSDKImplementer implements Implementer {
     );
 
     try {
-      // @ts-expect-error options shape may not perfectly match SDK types
       for await (const _message of this.queryFn({
         prompt,
         options: {
