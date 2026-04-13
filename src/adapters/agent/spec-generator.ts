@@ -49,6 +49,9 @@ function parseCommentResponses(content: string, path: string): NotionCommentResp
   } catch (err) {
     throw new Error(`Spec revision: result file at "${path}" is not valid JSON: ${String(err)}`);
   }
+  if (typeof data !== 'object' || data === null) {
+    throw new Error(`Spec revision: result file at "${path}" is not a JSON object`);
+  }
   const obj = data as Record<string, unknown>;
   const raw = obj['comment_responses'];
   if (!Array.isArray(raw)) {
@@ -126,6 +129,9 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
       data = JSON.parse(content);
     } catch (err) {
       throw new Error(`Spec creation: result file at "${createResultPath}" is not valid JSON: ${String(err)}`);
+    }
+    if (typeof data !== 'object' || data === null) {
+      throw new Error(`Spec creation: result file at "${createResultPath}" is not a JSON object`);
     }
     const obj = data as Record<string, unknown>;
     if (typeof obj['spec_path'] !== 'string') {
