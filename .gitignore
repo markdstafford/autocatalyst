@@ -43,3 +43,6 @@ context-human/.friction-logs/
 
 # OMC ephemeral state
 .omc/
+
+# Autocatalyst ephemeral state
+.autocatalyst/
