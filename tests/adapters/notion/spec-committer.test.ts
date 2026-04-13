@@ -34,6 +34,10 @@ function makePublisher(markdown: string = SAMPLE_MARKDOWN): SpecPublisher {
 function makeExecFn(exitCode = 0) {
   const fn = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
     if (exitCode !== 0) throw Object.assign(new Error('git failed'), { code: exitCode });
+    // Simulate staged changes present by default: diff --cached --quiet exits non-zero
+    if ((args as string[]).includes('diff') && (args as string[]).includes('--cached')) {
+      throw Object.assign(new Error('staged changes present'), { code: 1 });
+    }
     return { stdout: '', stderr: '' };
   });
   return fn;
@@ -287,6 +291,10 @@ describe('NotionSpecCommitter — git operations', () => {
     const execFn = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
       if ((args as string[]).includes('add')) order.push('add');
       if ((args as string[]).includes('commit')) order.push('commit');
+      // Simulate staged changes so commit is not skipped
+      if ((args as string[]).includes('diff') && (args as string[]).includes('--cached')) {
+        throw Object.assign(new Error('staged'), { code: 1 });
+      }
       return { stdout: '', stderr: '' };
     });
     const publisher = makePublisher(SAMPLE_MARKDOWN);
@@ -311,6 +319,26 @@ describe('NotionSpecCommitter — git operations', () => {
         expect((call[2] as { cwd?: string }).cwd).toBe(tmpDir);
       }
     }
+  });
+
+  it('skips git commit when nothing is staged (spec already committed)', async () => {
+    const execFn = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
+      // diff --cached --quiet exits 0: no staged changes
+      if ((args as string[]).includes('diff') && (args as string[]).includes('--cached')) {
+        return { stdout: '', stderr: '' };
+      }
+      return { stdout: '', stderr: '' };
+    });
+    const publisher = makePublisher(SAMPLE_MARKDOWN);
+    const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: nullDest });
+
+    const specPath = join(tmpDir, 'context-human', 'specs', 'feature-my-feature.md');
+    await committer.commit(tmpDir, 'page-id', specPath);
+
+    const commitCall = (execFn.mock.calls as unknown[][]).find(
+      c => c[0] === 'git' && (c[1] as string[]).includes('commit'),
+    );
+    expect(commitCall).toBeUndefined();
   });
 });
 
@@ -363,6 +391,7 @@ describe('NotionSpecCommitter — error handling', () => {
   it('throws when git commit fails', async () => {
     const execFn = vi.fn()
       .mockResolvedValueOnce({ stdout: '', stderr: '' }) // git add succeeds
+      .mockRejectedValueOnce(Object.assign(new Error('staged'), { code: 1 })) // diff --cached --quiet: staged changes present
       .mockRejectedValueOnce(new Error('git commit failed')); // git commit fails
     const publisher = makePublisher(SAMPLE_MARKDOWN);
     const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: nullDest });
