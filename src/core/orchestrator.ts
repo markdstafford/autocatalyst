@@ -16,6 +16,7 @@ import type { Implementer } from '../adapters/agent/implementer.js';
 import type { ImplementationFeedbackPage, FeedbackItem } from '../adapters/notion/implementation-feedback-page.js';
 import type { PRCreator } from '../adapters/agent/pr-creator.js';
 import { RunStore, FileRunStore } from './run-store.js';
+import type { ThreadRegistry } from '../adapters/slack/thread-registry.js';
 
 export interface Orchestrator {
   start(): Promise<void>;
@@ -34,6 +35,7 @@ interface OrchestratorDeps {
   implFeedbackPage?: ImplementationFeedbackPage;
   prCreator?: PRCreator;
   runStore?: RunStore;
+  threadRegistry?: ThreadRegistry;
   postError: (channel_id: string, thread_ts: string, text: string) => Promise<void>;
   postMessage: (channel_id: string, thread_ts: string, text: string) => Promise<void>;
   repo_url: string;
@@ -57,6 +59,7 @@ export class OrchestratorImpl implements Orchestrator {
       const loaded = deps.runStore.load();
       for (const run of loaded) {
         this.runs.set(run.idea_id, run);
+        deps.threadRegistry?.register(run.thread_ts, run.idea_id);
       }
       if (deps.runStore instanceof FileRunStore && deps.runStore.demotedIds.size > 0) {
         const demotedRuns = [...deps.runStore.demotedIds]

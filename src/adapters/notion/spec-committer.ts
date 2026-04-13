@@ -124,6 +124,18 @@ export class NotionSpecCommitter implements SpecCommitter {
       throw err;
     }
 
+    // Skip commit if nothing was staged (spec already committed and unchanged)
+    try {
+      await this.execFn('git', ['diff', '--cached', '--quiet'], { cwd: workspace_path });
+      this.logger.info(
+        { event: 'spec.committed', publisher_ref, spec_path, workspace_path, skipped: true },
+        'Spec already committed — skipping git commit',
+      );
+      return;
+    } catch {
+      // non-zero exit means there are staged changes — proceed with commit
+    }
+
     try {
       await this.execFn('git', ['commit', '-m', `docs: commit approved spec — ${title}`], { cwd: workspace_path });
     } catch (err) {
