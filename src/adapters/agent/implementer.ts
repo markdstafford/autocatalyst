@@ -150,7 +150,10 @@ function buildPrompt(spec_path: string, result_file_path: string, additionalCont
 
   lines.push('/superpowers:subagent-driven-development');
   lines.push('');
-  lines.push(`Step 3 — Write the result to: ${result_file_path}`);
+  lines.push('Step 3 — Commit all remaining changes');
+  lines.push('Run `git status` and commit anything uncommitted before proceeding.');
+  lines.push('');
+  lines.push(`Step 4 — Write the result to: ${result_file_path}`);
   lines.push('Create the directory if it does not exist. The JSON must have this structure:');
   lines.push('{');
   lines.push('  "status": "complete" | "needs_input" | "failed",');

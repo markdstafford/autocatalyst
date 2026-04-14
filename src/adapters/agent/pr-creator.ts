@@ -56,7 +56,7 @@ export class GHPRCreator implements PRCreator {
     try {
       const { stdout } = await this.execFn(
         'gh',
-        ['pr', 'create', '--title', prTitle, '--body', prBody],
+        ['pr', 'create', '--head', branch, '--title', prTitle, '--body', prBody],
         { cwd: workspace_path },
       );
       prUrl = stdout.trim();

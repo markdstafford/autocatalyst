@@ -327,10 +327,7 @@ export class OrchestratorImpl implements Orchestrator {
     // Step 1: Create PR
     let prUrl: string;
     try {
-      const specTitle = run.spec_path
-        ? run.spec_path.replace(/.*\//, '').replace(/\.md$/, '').replace(/-/g, ' ')
-        : 'implementation';
-      prUrl = await this.deps.prCreator!.createPR(run.workspace_path, run.branch, specTitle);
+      prUrl = await this.deps.prCreator!.createPR(run.workspace_path, run.branch, run.spec_path ?? '');
     } catch (err) {
       await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
       return;
