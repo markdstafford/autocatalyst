@@ -1,6 +1,6 @@
 ---
 created: 2026-04-08
-last_updated: 2026-04-13
+last_updated: 2026-04-14
 status: complete
 issue: null
 specced_by: markdstafford
@@ -70,7 +70,7 @@ Autocatalyst reads the feedback from the Notion page, classifies the message as 
 
 - Every @mention in an idea thread is classified by AI into one of four intents: spec feedback, approval, implementation feedback, or ship
 - Implementation starts within 1 minute of an approval message being classified
-- Spec generation uses mm:planning conventions; implementation delegated to OMC
+- Spec generation uses mm:planning conventions; implementation delegated to Agent SDK
 - On completion, the orchestrator creates an implementation feedback page in Notion (summary, testing instructions, feedback to-do list) and posts a link to the Slack thread
 - Mid-run progress updates deferred (markdstafford/autocatalyst#23); the agent can ask questions by exiting with a structured question that the orchestrator posts to Slack
 - Implementation feedback is tracked on the Notion feedback page; @mentioning the bot triggers the agent to read and address feedback items
@@ -93,19 +93,19 @@ Autocatalyst reads the feedback from the Notion page, classifies the message as 
 - Feature: Idea to spec to review — provides the `Orchestrator`, `SpecGenerator`, `WorkspaceManager`, and the `InboundEvent` stream
 - Feature: Slack message routing — provides `SlackAdapter`, `Classifier`, `ThreadRegistry`, and the `approval_signal` event type (though this feature replaces emoji-based approval with AI-classified intent)
 - Enhancement: Notion publisher — provides `SpecPublisher`, `FeedbackSource`, and the Notion-based spec publishing pipeline
-- Decision: Agent runtime adapter — defines OMC via `claude` CLI subprocess as the implementation runtime
+- Decision: Agent runtime adapter — uses the Anthropic Agent SDK (`@anthropic-ai/claude-agent-sdk`) for agent-driven implementation
 - Decision: Workspace isolation — each run has a dedicated shallow clone; this feature reuses the workspace created during spec generation
 
 **Technical goals**
 - AI intent classification determines the meaning of every @mention in an idea thread: spec feedback, approval, implementation feedback, or ship
 - Intent classification completes within 1 minute of receiving the message
-- Implementation invocation uses mm:planning for spec conventions; execution delegated to OMC
+- Implementation invocation uses mm:planning for spec conventions; execution delegated to Agent SDK
 - Completion summary posted to Slack includes branch name, setup commands, and instructions for exercising the feature
 - Agent questions (exit-and-re-invoke pattern) surface in the Slack thread; human response re-invokes the agent with additional context
 - PR created from the implementation branch to main on ship confirmation
 
 **Non-goals**
-- Mid-run progress updates from the agent to Slack (deferred — OMC lacks mid-run notification hooks)
+- Mid-run progress updates from the agent to Slack (deferred — markdstafford/autocatalyst#23)
 - Parallel implementation of multiple specs
 - Persisting implementation state across service restarts
 - Automatic CI or test execution
@@ -128,7 +128,7 @@ Autocatalyst reads the feedback from the Notion page, classifies the message as 
 
 *New*
 - `src/adapters/agent/intent-classifier.ts` — calls the Anthropic API with the message content and current run stage; returns a classified intent. Initial intents: `spec_feedback`, `spec_approval`, `implementation_feedback`, `implementation_approval`. Extensible for future intents.
-- `src/adapters/agent/implementer.ts` — invokes OMC with the approved spec in the workspace; parses the result for completion status or structured questions
+- `src/adapters/agent/implementer.ts` — invokes the Agent SDK with the approved spec in the workspace; reads the result JSON from `.autocatalyst/impl-result.json` for completion status or structured questions
 - `src/adapters/agent/pr-creator.ts` — creates a PR from the implementation branch to main using `gh` CLI
 - `src/adapters/notion/spec-committer.ts` — at spec approval: fetches spec markdown from Notion, cleans it up (strip comment spans, remove orphaned comments, prettify markdown, fix frontmatter), writes to the spec location in the workspace, and commits
 - `src/adapters/notion/implementation-feedback-page.ts` — creates and manages the Notion page for implementation feedback; creates the page with summary, testing instructions, and a to-do list feedback section; reads feedback items from the page for the re-invoke cycle
@@ -145,7 +145,7 @@ flowchart LR
     Orchestrator -->|spec_approval| SpecCommitter
     SpecCommitter -->|commit spec| Workspace
     Orchestrator -->|spec_approval| Implementer
-    Implementer -->|invoke OMC| OMC
+    Implementer -->|invoke Agent SDK| AgentSDK
     Orchestrator -->|on completion| ImplFeedbackPage
     ImplFeedbackPage -->|create page| Notion
     Orchestrator -->|impl_feedback| Implementer
@@ -165,7 +165,7 @@ sequenceDiagram
     participant SpecCommitter
     participant Implementer
     participant ImplFeedbackPage
-    participant OMC
+    participant AgentSDK
 
     Enzo->>Slack: @ac approved, go ahead
     Slack->>Orchestrator: thread_message event
@@ -177,8 +177,8 @@ sequenceDiagram
     SpecCommitter->>SpecCommitter: clean up markdown
     SpecCommitter->>Workspace: write spec file + git commit
     Orchestrator->>Implementer: implement(spec_path, workspace_path)
-    Implementer->>OMC: omc ask claude --print "..."
-    OMC-->>Implementer: result (success)
+    Implementer->>AgentSDK: query({ prompt, options: { cwd: workspace_path } })
+    AgentSDK-->>Implementer: writes impl-result.json; result (success)
     Implementer-->>Orchestrator: ImplementResult{status: complete, summary}
     Orchestrator->>ImplFeedbackPage: create(summary, testing_instructions, spec_page_url)
     ImplFeedbackPage->>Notion: create page with to-do feedback section
@@ -195,11 +195,11 @@ sequenceDiagram
     participant Orchestrator
     participant IntentClassifier
     participant Implementer
-    participant OMC
+    participant AgentSDK
 
     Note over Orchestrator: run in implementing stage
-    Implementer->>OMC: omc ask claude --print "..."
-    OMC-->>Implementer: result (question: "Which approach?")
+    Implementer->>AgentSDK: query({ prompt, options: { cwd: workspace_path } })
+    AgentSDK-->>Implementer: writes impl-result.json; result (question: "Which approach?")
     Implementer-->>Orchestrator: ImplementResult{status: needs_input, question}
     Orchestrator->>Slack: "I need input — Which approach?"
     Phoebe->>Slack: @ac go with the subtype
@@ -207,8 +207,8 @@ sequenceDiagram
     Orchestrator->>IntentClassifier: classify(message, stage=awaiting_impl_input)
     IntentClassifier-->>Orchestrator: implementation_feedback
     Orchestrator->>Implementer: implement(spec_path, workspace_path, additional_context)
-    Implementer->>OMC: omc ask claude --print "..." (with answer)
-    OMC-->>Implementer: result (success)
+    Implementer->>AgentSDK: query({ prompt, options: { cwd: workspace_path } }) (with answer)
+    AgentSDK-->>Implementer: writes impl-result.json; result (success)
     Orchestrator->>Slack: completion summary + feedback page link
 ```
 
@@ -233,8 +233,8 @@ sequenceDiagram
     ImplFeedbackPage->>Notion: GET page content
     ImplFeedbackPage-->>Orchestrator: feedback items
     Orchestrator->>Implementer: implement(spec_path, workspace_path, feedback)
-    Implementer->>OMC: omc ask claude --print "..." (with feedback)
-    OMC-->>Implementer: result (success)
+    Implementer->>AgentSDK: query({ prompt, options: { cwd: workspace_path } }) (with feedback)
+    AgentSDK-->>Implementer: writes impl-result.json; result (success)
     Orchestrator->>ImplFeedbackPage: update(page_id, new_summary, resolved_items)
     Orchestrator->>Slack: "Updated. Feedback page refreshed."
 ```
@@ -411,7 +411,7 @@ export interface ImplementationFeedbackPage {
 
 **IntentClassifier implementation**
 
-`AnthropicIntentClassifier` calls the Anthropic Messages API directly (not via OMC — classification is a lightweight call that doesn't need agent orchestration). The prompt includes:
+`AnthropicIntentClassifier` calls the Anthropic Messages API directly (not via Agent SDK — classification is a lightweight call that doesn't need agent orchestration). The prompt includes:
 - The human's message
 - The current run stage
 - The valid intents for that stage (from the stage-intent validity matrix)
@@ -433,46 +433,42 @@ The response is parsed as a single intent string. If the model returns an invali
 
 **Implementer implementation**
 
-`OMCImplementer` invokes OMC with `cwd` set to `workspace_path` using `omc team`:
+`AgentSDKImplementer` calls the Agent SDK `query()` function with `cwd` set to `workspace_path`:
 
-```bash
-omc team 1:claude "<implementation prompt>"
+```typescript
+for await (const _message of query({
+  prompt,
+  options: {
+    cwd: workspace_path,
+    permissionMode: 'bypassPermissions',
+    allowDangerouslySkipPermissions: true,
+    tools: { type: 'preset', preset: 'claude_code' },
+    settingSources: ['user', 'project'],
+    systemPrompt: { type: 'preset', preset: 'claude_code' },
+  },
+})) { /* drain iterator */ }
 ```
 
-The implementation prompt follows the mm implementation handoff process:
-- Includes the approved spec content (read from `spec_path`) which contains the task list
-- Instructs the agent to use the task list in the spec as the implementation plan; execute tasks in dependency order
-- As each task completes, the agent checks off the corresponding item in the spec's task list (`- [ ]` → `- [x]`), propagating up the hierarchy when all siblings are complete
-- If `additional_context` is provided (human's answer to a question, or feedback items from the implementation feedback page), it's included as additional input
-- On completion, the agent runs tests and produces a structured result
+The implementation prompt instructs the agent to:
+1. Read the spec at `spec_path` and use its task list as the implementation plan
+2. Execute tasks in dependency order, checking off items (`- [ ]` → `- [x]`) as they complete
+3. If `additional_context` is provided, continue from the existing workspace state using it as additional input
+4. Commit all remaining changes when done
+5. Write the result to `.autocatalyst/impl-result.json`
 
-The result format from OMC uses delimited sections (same pattern as `SpecGenerator.revise()`):
+The result file uses a JSON contract:
 
+```json
+{
+  "status": "complete | needs_input | failed",
+  "summary": "what was built (present when complete)",
+  "testing_instructions": "Branch: ...\nSetup: ...\nTest: ... (present when complete)",
+  "question": "the decision needed from the human (present when needs_input)",
+  "error": "what went wrong (present when failed)"
+}
 ```
-STATUS: complete | needs_input | failed
 
-SUMMARY:
-<<<
-What was implemented...
->>>
-
-TESTING_INSTRUCTIONS:
-<<<
-Branch: spec/setup-wizard
-Setup: npm install && npm run build
-Test: npx autocatalyst --repo ~/git/amp-cli, then run amp setup
->>>
-
-QUESTION:
-<<<
-(only present when STATUS is needs_input)
->>>
-
-ERROR:
-<<<
-(only present when STATUS is failed)
->>>
-```
+After the iterator drains, the orchestrator reads and parses this file to obtain the `ImplementationResult`.
 
 **PRCreator implementation**
 
@@ -552,19 +548,19 @@ on thread_message:
 
 **Authentication and authorization**
 - Anthropic API key for intent classification is read from `AC_ANTHROPIC_API_KEY` environment variable — same pattern as other secrets (`$VAR` resolution, never logged)
-- OMC invocation for implementation reuses the existing agent runtime credentials (Anthropic API key, git credentials in the workspace)
+- Agent SDK invocation for implementation uses `AC_ANTHROPIC_API_KEY` (same key as intent classification) and git credentials in the workspace
 - `gh` CLI for PR creation uses whatever git/GitHub credentials are configured on the host (SSH keys, credential helpers, `GITHUB_TOKEN`). No new credential is introduced.
 - No per-user authorization — any Slack user in the configured channel can approve specs, provide feedback, and trigger PRs. Access control is at the Slack channel level.
 
 **Data privacy**
-- The human's message content is sent to the Anthropic API for intent classification. This mirrors existing behavior where message content is sent to OMC for spec generation.
-- Implementation feedback items (from the Notion page) are sent to OMC as part of the implementation prompt. This is the same pattern as spec feedback being sent to OMC for revision.
+- The human's message content is sent to the Anthropic API for intent classification. This mirrors existing behavior where message content is sent to the Agent SDK for spec generation.
+- Implementation feedback items (from the Notion page) are sent to the Agent SDK as part of the implementation prompt. This is the same pattern as spec feedback being sent to the Agent SDK for revision.
 - The spec content committed to the repo is a cleaned version of what was already visible on the Notion page — no new data exposure.
 - The implementation feedback Notion page is never committed to the repo. It exists only in Notion under the configured parent page.
 
 **Input validation**
 - Intent classifier output is validated against the stage-intent validity matrix before routing. Invalid intents are retried once, then default to the conservative fallback.
-- OMC implementation result is parsed via delimited-section extraction (same as `SpecGenerator.revise()`). Malformed output causes the run to transition to `failed` with a descriptive error.
+- Agent SDK implementation result is read from `.autocatalyst/impl-result.json` as JSON. Malformed or missing output causes the run to transition to `failed` with a descriptive error.
 - PR title and body are constructed from spec metadata, not raw user input. The spec title is sanitized (lowercased, special characters removed) before use in the conventional commit title.
 - `gh pr create` runs in the workspace directory — the branch name comes from the workspace, not user input.
 
@@ -590,9 +586,9 @@ All new components use `createLogger()` from `src/core/logger.ts`. New stable ev
 | `impl_feedback_page.created` | info | implementation-feedback-page |
 | `pr.created` | info | pr-creator |
 | `pr.creation_failed` | error | pr-creator |
-| `omc.team_invoked` | debug | implementer |
-| `omc.team_completed` | debug | implementer |
-| `omc.team_failed` | error | implementer |
+| `impl.agent_invoked` | debug | implementer |
+| `impl.agent_completed` | debug | implementer |
+| `impl.agent_failed` | error | implementer |
 
 `intent.classified` includes `run_id`, `idea_id`, `run_stage`, `classified_intent`, and `message_length` (not content). `implementation.complete` includes `run_id`, `idea_id`, and `attempt`. Human message content and feedback item text are not logged at `info` level or above.
 
@@ -611,7 +607,7 @@ All new components use `createLogger()` from `src/core/logger.ts`. New stable ev
 
 ### 6. Testing plan
 
-All tests use Vitest. External calls (Anthropic API, OMC subprocess, `gh` CLI, Notion API) are mocked with `vi.fn()`. Filesystem operations use real temp directories created in `beforeEach` and cleaned up in `afterEach`. Log output is captured via the `destination` injection pattern from `src/core/logger.ts`.
+All tests use Vitest. External calls (Anthropic API, Agent SDK `query()`, `gh` CLI, Notion API) are mocked with `vi.fn()`. Filesystem operations use real temp directories created in `beforeEach` and cleaned up in `afterEach`. Log output is captured via the `destination` injection pattern from `src/core/logger.ts`.
 
 ---
 
@@ -733,53 +729,49 @@ _Logging_
 
 **Implementer**
 
-_OMC invocation — initial implementation_
-- `omc team 1:claude` spawned as a child process with `cwd` set to `workspace_path`
-- The prompt includes the full spec content read from `spec_path`
-- The prompt includes mm implementation handoff instructions: use the task list in the spec as the implementation plan, execute tasks in dependency order, check off task list items as they complete
-- The prompt instructs the agent to produce a structured result with delimited STATUS, SUMMARY, TESTING_INSTRUCTIONS, QUESTION, and ERROR sections
+_Agent SDK invocation — initial implementation_
+- `query()` called with `cwd` set to `workspace_path` and `permissionMode: 'bypassPermissions'`
+- The prompt instructs the agent to read the spec at `spec_path` and use the task list as the implementation plan
+- The prompt includes mm implementation handoff instructions: execute tasks in dependency order, check off task list items as they complete
+- The prompt instructs the agent to write the result to `.autocatalyst/impl-result.json` when done
 - `workspace_path` is validated as a non-empty string before invocation
 - `spec_path` is validated as an existing file before invocation
 - When `additional_context` is not provided, the prompt does not contain an additional context section
 
-_OMC invocation — re-invocation with context_
-- When `additional_context` is provided, it appears in the prompt in a clearly delimited section (e.g., `Additional context from the human:\n<<<\n{content}\n>>>`)
-- The prompt still includes the full spec content and mm handoff instructions
-- The agent is instructed to continue from where the previous invocation left off, using the existing workspace state
+_Agent SDK invocation — re-invocation with context_
+- When `additional_context` is provided, it appears in the prompt in a clearly delimited section (`Additional context from the human:\n<<<\n{content}\n>>>`)
+- The prompt instructs the agent to skip the planning step and continue from the existing workspace state
+- The agent is instructed to write a fresh result JSON to `.autocatalyst/impl-result.json` when done
 
-_OMC invocation — re-invocation with feedback items_
+_Agent SDK invocation — re-invocation with feedback items_
 - When `additional_context` contains serialized feedback items (from the implementation feedback page), each item's text and conversation history is included
 - Resolved items are excluded from the context — only unresolved items are passed
 
 _Result parsing — complete_
-- OMC artifact contains `STATUS: complete` followed by `SUMMARY:` and `TESTING_INSTRUCTIONS:` delimited sections → `ImplementationResult` with `status: 'complete'`, `summary` and `testing_instructions` populated
-- `SUMMARY` section may contain multiple paragraphs — all content between `<<<` and `>>>` delimiters is captured
-- `TESTING_INSTRUCTIONS` section may contain multiple lines with specific commands — all captured verbatim
-- `QUESTION` and `ERROR` sections are absent or empty when STATUS is `complete` — `question` and `error` are `undefined` on the result
+- Result file contains `{ "status": "complete", "summary": "...", "testing_instructions": "..." }` → `ImplementationResult` with `status: 'complete'`, `summary` and `testing_instructions` populated
+- `summary` may contain multiple paragraphs
+- `testing_instructions` may contain multiple lines with specific commands — captured verbatim
+- `question` and `error` keys are absent or `undefined` on the result when status is `complete`
 
 _Result parsing — needs_input_
-- OMC artifact contains `STATUS: needs_input` followed by `QUESTION:` delimited section → `ImplementationResult` with `status: 'needs_input'`, `question` populated
-- `SUMMARY` and `TESTING_INSTRUCTIONS` are absent or empty — `summary` and `testing_instructions` are `undefined`
+- Result file contains `{ "status": "needs_input", "question": "..." }` → `ImplementationResult` with `status: 'needs_input'`, `question` populated
+- `summary` and `testing_instructions` are absent — `undefined` on the result
 
 _Result parsing — failed_
-- OMC artifact contains `STATUS: failed` followed by `ERROR:` delimited section → `ImplementationResult` with `status: 'failed'`, `error` populated
+- Result file contains `{ "status": "failed", "error": "..." }` → `ImplementationResult` with `status: 'failed'`, `error` populated
 
 _Result parsing — error cases_
-- Missing STATUS line in the OMC output → throws with descriptive error; workspace state is preserved
-- STATUS value is not one of `complete`, `needs_input`, `failed` → throws with descriptive error
-- STATUS is `complete` but SUMMARY section is missing → throws with descriptive error
-- STATUS is `complete` but TESTING_INSTRUCTIONS section is missing → throws with descriptive error
-- STATUS is `needs_input` but QUESTION section is missing → throws with descriptive error
-- STATUS is `failed` but ERROR section is missing → throws with descriptive error
-- SUMMARY section is present but empty (only whitespace between delimiters) → throws
-- OMC exits with non-zero exit code → throws with descriptive error including exit code and stderr; workspace state is preserved
-- OMC output contains no `## Raw output` section → throws with descriptive error
+- Result file not found after agent completes → throws with descriptive error including the expected path
+- Result file is not valid JSON → throws with descriptive error
+- Result file is not a JSON object → throws with descriptive error
+- `status` value is not one of `complete`, `needs_input`, `failed` → throws with descriptive error
+- Agent SDK `query()` throws → throws with descriptive error; workspace state is preserved
 
 _Logging_
-- `omc.team_invoked` emitted at debug level before subprocess spawn with `workspace_path` and `has_additional_context: boolean`
-- `omc.team_completed` emitted at debug level after successful parse with `status` from the result
-- `omc.team_failed` emitted at error level when OMC exits non-zero, with `exit_code` and truncated `stderr`
-- Prompt content and OMC output content are never logged at `info` level or above
+- `impl.agent_invoked` emitted at debug level before `query()` call with `workspace_path` and `has_additional_context: boolean`
+- `impl.agent_completed` emitted at debug level after successful parse with `status` from the result
+- `impl.agent_failed` emitted at error level when `query()` throws, with the error message
+- Prompt content and result file content are never logged at `info` level or above
 
 ---
 
@@ -923,7 +915,7 @@ _Call order verification_
 _Failure paths_
 - `SpecCommitter.commit` rejects → run transitions to `failed`; error posted to Slack; `Implementer.implement` not called
 - `Implementer.implement` returns `{ status: 'failed', error: "..." }` → error message posted to Slack; run transitions to `failed`; `ImplementationFeedbackPage.create` not called
-- `Implementer.implement` throws (OMC crash) → run transitions to `failed`; error posted to Slack
+- `Implementer.implement` throws (Agent SDK error) → run transitions to `failed`; error posted to Slack
 - `ImplementationFeedbackPage.create` rejects → error logged (not posted to Slack); completion message posted WITHOUT feedback page link; run still transitions to `reviewing_implementation` (degraded but functional)
 - `postMessage` for approval acknowledgement rejects → logged as error; execution continues (SpecCommitter still called)
 - `postMessage` for completion summary rejects → logged as error; run still transitions to `reviewing_implementation`
@@ -1038,7 +1030,7 @@ _All existing orchestrator tests for spec_feedback continue to pass_
 **Service and entry point wiring**
 
 - `src/index.ts` creates `AnthropicIntentClassifier` with the `AC_ANTHROPIC_API_KEY` env var
-- `src/index.ts` creates `OMCImplementer`
+- `src/index.ts` creates `AgentSDKImplementer`
 - `src/index.ts` creates `GHPRCreator`
 - `src/index.ts` creates `NotionSpecCommitter` with the existing `NotionClient` and `SpecPublisher`
 - `src/index.ts` creates `NotionImplementationFeedbackPage` with the existing `NotionClient`
@@ -1067,7 +1059,7 @@ _Intent classification at wrong stage_
 - Reply with `@ac ship it` during `reviewing_spec`; confirm: classified as `spec_feedback`, handled gracefully
 
 _Error handling_
-- Trigger deliberate OMC failure during implementation; confirm: error message appears in thread, run transitions to `failed`
+- Trigger deliberate Agent SDK failure during implementation; confirm: error message appears in thread, run transitions to `failed`
 - Remove `gh` authentication and attempt `@ac ship it`; confirm: error message about gh auth posted in thread
 
 _Spec commit quality_
@@ -1083,13 +1075,13 @@ The stub spec and the existing `ApprovalSignal` type used emoji reactions (`:thu
 
 Using the same Notion page for spec review and implementation feedback would reduce page sprawl. It was rejected because the two have different lifecycles — the spec page is finalized at approval and its content is committed to the repo, while the implementation feedback page is transient and never committed. Mixing them would create confusion about which comments are spec feedback and which are implementation feedback.
 
-**Streaming OMC output for progress updates**
+**Streaming Agent SDK output for progress updates**
 
-Rather than the one-shot invoke-and-wait pattern, Autocatalyst could stream OMC's stdout and parse progress events in real time. This was deferred (markdstafford/autocatalyst#23) because OMC lacks mid-run notification hooks — implementing streaming would require building a custom wrapper or MCP tool. The exit-and-re-invoke pattern handles the most important case (agent needs human input) without streaming infrastructure.
+Rather than the one-shot invoke-and-wait pattern, Autocatalyst could process Agent SDK messages as they stream and post progress events to Slack in real time. This was deferred (markdstafford/autocatalyst#23). The exit-and-re-invoke pattern handles the most important case (agent needs human input) without streaming infrastructure.
 
-**Direct Anthropic SDK call for implementation instead of OMC**
+**OMC subprocess instead of Agent SDK**
 
-Calling the Anthropic API directly would eliminate the OMC dependency for implementation. OMC was chosen because it provides multi-agent orchestration via `omc team`, task verification via ralph, and a consistent invocation pattern. Bypassing it would require reimplementing orchestration and diverge from the agent-first architecture (ADR-001).
+Using OMC (`omc team 1:claude`) as a subprocess was the original design. The Agent SDK (`@anthropic-ai/claude-agent-sdk`) was chosen instead because it provides a programmatic interface with no external CLI dependency, cleaner error handling (exceptions vs. exit codes), and a type-safe `query()` function that streams agent messages as an async iterator. The file-based JSON output contract (`impl-result.json`) is more robust than parsing delimited sections from stdout.
 
 **Slack-only feedback (no Notion implementation page)**
 
@@ -1101,9 +1093,9 @@ Implementation feedback could stay entirely in the Slack thread — the human de
 
 The AI classifier may misclassify messages — especially ambiguous ones like "this looks right" (approval or feedback?). Mitigation: the stage-intent validity matrix constrains the classifier to valid intents for the current stage, reducing the blast radius of misclassification. The conservative fallback (default to feedback rather than approval) ensures the system never takes an irreversible action on a misclassified message. Humans can always re-state their intent.
 
-**OMC implementation reliability**
+**Agent SDK implementation reliability**
 
-The implementation agent is a complex, long-running process that may fail partway through. Mitigation: the workspace persists across failures, so the human can inspect the partial implementation. The exit-and-re-invoke pattern allows the agent to resume from where it left off with additional context. Repeated failures (attempt > 2) trigger an operational alert.
+The implementation agent is a complex, long-running process that may fail partway through or fail to write the result file. Mitigation: the workspace persists across failures, so the human can inspect the partial implementation. The exit-and-re-invoke pattern allows the agent to resume from where it left off with additional context. A missing or malformed `impl-result.json` is surfaced as a `failed` result. Repeated failures (attempt > 2) trigger an operational alert.
 
 **Notion to-do list API limitations**
 
@@ -1237,10 +1229,10 @@ The `PRCreator` depends on `gh` being installed and authenticated. If the host d
     - **Dependencies**: "Task: Unit tests for `NotionSpecCommitter`"
 
 - [x] **Story: Implementer**
-  - [x] **Task: Unit tests for `OMCImplementer`**
-    - **Description**: Create `tests/adapters/agent/implementer.test.ts`. Mock the OMC subprocess with `vi.fn()`. Use real temp directories for spec files. Cover all test cases from the testing plan: OMC invocation (initial and re-invocation with context), prompt construction (spec content, mm handoff instructions, additional context), result parsing for all three statuses, all error cases (missing STATUS, invalid STATUS, missing required sections, empty sections, non-zero exit), and logging assertions.
+  - [x] **Task: Unit tests for `AgentSDKImplementer`**
+    - **Description**: Create `tests/adapters/agent/implementer.test.ts`. Mock the Agent SDK `query()` function with `vi.fn()`. Use real temp directories for spec files and result JSON. Cover all test cases from the testing plan: Agent SDK invocation (initial and re-invocation with context), prompt construction (spec content, mm handoff instructions, additional context), result JSON parsing for all three statuses, all error cases (result file missing, invalid JSON, invalid status value, `query()` throws), and logging assertions.
     - **Acceptance criteria**:
-      - [x] `omc team 1:claude` spawned with correct `cwd`
+      - [x] `query()` invoked with `cwd: workspace_path` and `permissionMode: 'bypassPermissions'`
       - [x] Prompt includes full spec content
       - [x] Prompt includes mm implementation handoff instructions
       - [x] Prompt includes additional context section when provided; absent when not
@@ -1257,21 +1249,21 @@ The `PRCreator` depends on `gh` being installed and authenticated. If the host d
       - [x] Empty SUMMARY → throws
       - [x] Non-zero exit code → throws with exit code and stderr
       - [x] No `## Raw output` section → throws
-      - [x] Logging: `omc.team_invoked`, `omc.team_completed`, `omc.team_failed` with correct fields
+      - [x] Logging: `impl.agent_invoked`, `impl.agent_completed`, `impl.agent_failed` with correct fields
       - [x] Prompt content never logged at info or above
       - [x] All tests pass: `npx vitest run`
     - **Dependencies**: "Task: Rename `review` → `reviewing_spec`"
 
-  - [x] **Task: Implement `OMCImplementer`**
-    - **Description**: Create `src/adapters/agent/implementer.ts`. Export the `ImplementationStatus`, `ImplementationResult`, and `Implementer` interfaces and the `OMCImplementer` class. Constructor takes an `execFn` (injectable for testing). `implement()` reads the spec from `spec_path`, builds the implementation prompt (spec content + mm handoff instructions + optional additional context), spawns `omc team 1:claude` with `cwd: workspace_path`, reads the artifact, extracts `## Raw output`, parses delimited sections (STATUS, SUMMARY, TESTING_INSTRUCTIONS, QUESTION, ERROR), validates required sections per status, and returns `ImplementationResult`. Uses `createLogger('implementer')`.
+  - [x] **Task: Implement `AgentSDKImplementer`**
+    - **Description**: Create `src/adapters/agent/implementer.ts`. Export the `ImplementationStatus`, `ImplementationResult`, and `Implementer` interfaces and the `AgentSDKImplementer` class. Constructor takes an optional `queryFn` (injectable for testing). `implement()` reads the spec from `spec_path`, builds the implementation prompt (spec content + mm handoff instructions + optional additional context + result file path), calls `query()` with `cwd: workspace_path`, drains the async iterator, reads `.autocatalyst/impl-result.json`, parses and validates the JSON, and returns `ImplementationResult`. Uses `createLogger('implementer')`.
     - **Acceptance criteria**:
       - [x] `ImplementationStatus`, `ImplementationResult`, `Implementer` exported
-      - [x] `omc team 1:claude` invoked with `cwd: workspace_path`
-      - [x] Prompt includes spec content, mm handoff instructions, and conditional additional context
-      - [x] Result correctly parsed for `complete`, `needs_input`, and `failed` statuses
+      - [x] `query()` invoked with `cwd: workspace_path` and `permissionMode: 'bypassPermissions'`
+      - [x] Prompt includes spec path, mm handoff instructions, and conditional additional context
+      - [x] Result correctly parsed from JSON for `complete`, `needs_input`, and `failed` statuses
       - [x] All validation errors throw with descriptive messages
       - [x] All tests from preceding task pass: `npx vitest run`
-    - **Dependencies**: "Task: Unit tests for `OMCImplementer`"
+    - **Dependencies**: "Task: Unit tests for `AgentSDKImplementer`"
 
 - [x] **Story: ImplementationFeedbackPage**
   - [x] **Task: Unit tests for `NotionImplementationFeedbackPage`**
@@ -1366,7 +1358,7 @@ The `PRCreator` depends on `gh` being installed and authenticated. If the host d
       - [x] FeedbackPage.create rejects → error logged; completion message posted WITHOUT link; still transitions to `reviewing_implementation`
       - [x] postMessage rejects → logged; execution continues
       - [x] All tests pass: `npx vitest run`
-    - **Dependencies**: "Task: Implement intent classification routing in orchestrator", "Task: Implement `NotionSpecCommitter`", "Task: Implement `OMCImplementer`", "Task: Implement `NotionImplementationFeedbackPage`"
+    - **Dependencies**: "Task: Implement intent classification routing in orchestrator", "Task: Implement `NotionSpecCommitter`", "Task: Implement `AgentSDKImplementer`", "Task: Implement `NotionImplementationFeedbackPage`"
 
   - [x] **Task: Implement `_handleSpecApproval` in orchestrator**
     - **Description**: Add `specCommitter: SpecCommitter`, `implementer: Implementer`, and `implementationFeedbackPage: ImplementationFeedbackPage` to `OrchestratorDeps`. Implement `_handleSpecApproval` following the spec: transition to `implementing`, post approval ack, commit spec, invoke implementer, handle complete/needs_input/failed results, create feedback page on success, store `impl_feedback_ref`. Add `parent_page_id` to deps (from config).
@@ -1425,7 +1417,7 @@ The `PRCreator` depends on `gh` being installed and authenticated. If the host d
 
 - [x] **Story: Service wiring**
   - [x] **Task: Wire new components in `src/index.ts`**
-    - **Description**: Update `src/index.ts` to create and wire all new components: `AnthropicIntentClassifier` (using `AC_ANTHROPIC_API_KEY`), `OMCImplementer`, `GHPRCreator`, `NotionSpecCommitter`, `NotionImplementationFeedbackPage`. Pass all to `OrchestratorDeps`. Add startup validation: exit with code 1 if `AC_ANTHROPIC_API_KEY` is missing. Add startup check: log warning if `gh auth status` fails.
+    - **Description**: Update `src/index.ts` to create and wire all new components: `AnthropicIntentClassifier` (using `AC_ANTHROPIC_API_KEY`), `AgentSDKImplementer`, `GHPRCreator`, `NotionSpecCommitter`, `NotionImplementationFeedbackPage`. Pass all to `OrchestratorDeps`. Add startup validation: exit with code 1 if `AC_ANTHROPIC_API_KEY` is missing. Add startup check: log warning if `gh auth status` fails.
     - **Acceptance criteria**:
       - [x] All new components created and passed to `OrchestratorImpl`
       - [x] Missing `AC_ANTHROPIC_API_KEY` → exit code 1 with descriptive error
