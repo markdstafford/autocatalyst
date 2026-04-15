@@ -46,6 +46,7 @@ Every inbound message is a request for something — a new feature, a bug fix, a
 - `src/adapters/slack/classifier.ts` — update ignore rules for `@other_user` in-thread; remove `spec_feedback` return
 - `src/adapters/slack/slack-adapter.ts` — emit `new_request` / `thread_message`; remove hardcoded intent routing
 - `src/adapters/slack/thread-registry.ts` — rename `idea_id` → `request_id` internally
+- `src/adapters/agent/question-answerer.ts` — new: `QuestionAnswerer` interface and `AnthropicQuestionAnswerer` implementation for answering questions in-thread using the Anthropic API
 - `src/core/orchestrator.ts` — replace multi-handler dispatch with `_handleRequest`; add intent upgrade logic; add question stub handler
 - `src/types/events.ts` — rename `Idea` → `Request`, `new_idea` → `new_request`, `ThreadMessage.idea_id` → `request_id`
 - `src/types/runs.ts` — add `intent: RequestIntent` field; rename `idea_id` → `request_id`
@@ -401,7 +402,7 @@ The conservative fallback for `new_thread` and `intake` contexts needs to be def
 
 **Question handler requires a new AI call**
 
-Answering a question in-thread requires generating a response, which isn't currently implemented anywhere in the system. The spec says "answer question" but the mechanism isn't defined. Mitigation: for this PR, a question response can be a simple acknowledgement stub with a follow-up issue to implement real question answering.
+Answering a question in-thread requires generating a response, which isn't currently implemented anywhere in the system. The spec says "answer question" but the mechanism isn't defined. Mitigation: question answering is implemented in this PR using a `QuestionAnswerer` component (`AnthropicQuestionAnswerer`) that calls the Anthropic API with a focused system prompt. The orchestrator injects `QuestionAnswerer` as an optional dependency and falls back to a static acknowledgement message if it is not configured or if the API call fails.
 
 ## Task list
 
@@ -516,12 +517,14 @@ Answering a question in-thread requires generating a response, which isn't curre
       - [ ] `tsc --noEmit` passes
     - **Dependencies**: Task: Implement `_handleRequest` with intent × stage routing
 
-  - [ ] **Task: Add question stub handler and follow-up issue**
-    - **Description**: Add `_handleQuestion(content: string, channel_id: string, thread_ts: string)` to the orchestrator. For this PR, it posts a stub acknowledgement: `"I've noted your question — question answering is coming soon."`. Create a GitHub issue for implementing real question answering.
+  - [ ] **Task: Add question handler with real AI answering**
+    - **Description**: Add `_handleQuestion(content: string, channel_id: string, thread_ts: string, run: Run)` to the orchestrator. Implement real question answering via a new `QuestionAnswerer` interface and `AnthropicQuestionAnswerer` class (`src/adapters/agent/question-answerer.ts`) that calls the Anthropic API with a focused system prompt. The orchestrator injects `questionAnswerer` as an optional dependency; if absent, falls back to a static acknowledgement. If the API call fails, a fallback message is posted and the run is not failed.
     - **Acceptance criteria**:
-      - [ ] `_handleQuestion` posts stub acknowledgement
+      - [ ] `QuestionAnswerer` interface and `AnthropicQuestionAnswerer` class created in `src/adapters/agent/question-answerer.ts`
+      - [ ] `_handleQuestion` calls `questionAnswerer.answer(content)` and posts the result
+      - [ ] On `questionAnswerer` error, fallback message posted; run not failed; `postError` not called
+      - [ ] When no `questionAnswerer` configured, static fallback text posted
       - [ ] All `question` intent cases in routing table call `_handleQuestion`
-      - [ ] GitHub issue created for real question answering implementation
       - [ ] `tsc --noEmit` passes
     - **Dependencies**: Task: Implement `_handleRequest` with intent × stage routing
 

@@ -9,6 +9,7 @@ import type { FeedbackSource } from '../../src/adapters/notion/notion-feedback-s
 import type { NotionComment, NotionCommentResponse } from '../../src/adapters/agent/spec-generator.js';
 import type { Run } from '../../src/types/runs.js';
 import type { IntentClassifier } from '../../src/adapters/agent/intent-classifier.js';
+import type { QuestionAnswerer } from '../../src/adapters/agent/question-answerer.js';
 import type { SpecCommitter } from '../../src/adapters/notion/spec-committer.js';
 import type { Implementer, ImplementationResult } from '../../src/adapters/agent/implementer.js';
 import type { ImplementationFeedbackPage } from '../../src/adapters/notion/implementation-feedback-page.js';
@@ -104,6 +105,12 @@ function makeFeedback(overrides: Partial<ThreadMessage> = {}): ThreadMessage {
 function makeIntentClassifier(intent = 'feedback'): IntentClassifier {
   return {
     classify: vi.fn().mockResolvedValue(intent),
+  };
+}
+
+function makeQuestionAnswerer(response = 'Here is your answer.'): QuestionAnswerer {
+  return {
+    answer: vi.fn().mockResolvedValue(response),
   };
 }
 
@@ -1841,5 +1848,122 @@ describe('Orchestrator — run persistence', () => {
     await orch.stop();
 
     expect(postMessage).toHaveBeenCalledWith('C999', '9999.0000', expect.stringContaining('Server restarted'));
+  });
+});
+
+describe('Orchestrator — question intent', () => {
+  it('new_request with question intent: questionAnswerer.answer called with content, response posted', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const qa = makeQuestionAnswerer('You can submit ideas by @mentioning me.');
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: makeIntentClassifier('question'),
+        questionAnswerer: qa,
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+        repo_url: 'r',
+      },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+
+    const request = makeRequest({ content: 'How do I submit a feature request?' });
+    adapter._emit({ type: 'new_request', payload: request });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(qa.answer).toHaveBeenCalledWith('How do I submit a feature request?');
+    expect(postMessage).toHaveBeenCalledWith('C123', '100.0', 'You can submit ideas by @mentioning me.');
+  });
+
+  it('thread_message with question intent: questionAnswerer.answer called with feedback content, stage unchanged', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const qa = makeQuestionAnswerer('Great question about the auth flow.');
+    const ic = makeIntentClassifier('question');
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: ic,
+        questionAnswerer: qa,
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+        repo_url: 'r',
+      },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    runs.set('request-001', makeRun({ stage: 'reviewing_spec' }));
+    adapter._emit({ type: 'thread_message', payload: makeFeedback({ content: 'How does auth work?' }) });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(qa.answer).toHaveBeenCalledWith('How does auth work?');
+    expect(postMessage).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'Great question about the auth flow.');
+    expect(runs.get('request-001')!.stage).toBe('reviewing_spec');
+  });
+
+  it('questionAnswerer throws: fallback response posted, run does not fail', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const postError = vi.fn().mockResolvedValue(undefined);
+    const qa: QuestionAnswerer = { answer: vi.fn().mockRejectedValue(new Error('API down')) };
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: makeIntentClassifier('question'),
+        questionAnswerer: qa,
+        postError,
+        postMessage,
+        repo_url: 'r',
+      },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+
+    adapter._emit({ type: 'new_request', payload: makeRequest({ content: 'what can you do?' }) });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(postMessage).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining("wasn't able"));
+    expect(postError).not.toHaveBeenCalled();
+  });
+
+  it('no questionAnswerer configured: fallback text posted', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: makeIntentClassifier('question'),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+        repo_url: 'r',
+      },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(postMessage).toHaveBeenCalledWith('C123', '100.0', expect.any(String));
   });
 });

@@ -11,6 +11,7 @@ import type { Request, ThreadMessage, InboundEvent } from '../types/events.js';
 import type { FeedbackSource } from '../adapters/notion/notion-feedback-source.js';
 import type { NotionComment } from '../adapters/agent/spec-generator.js';
 import type { IntentClassifier, ClassificationContext, Intent } from '../adapters/agent/intent-classifier.js';
+import type { QuestionAnswerer } from '../adapters/agent/question-answerer.js';
 import type { SpecCommitter } from '../adapters/notion/spec-committer.js';
 import type { Implementer } from '../adapters/agent/implementer.js';
 import type { ImplementationFeedbackPage, FeedbackItem } from '../adapters/notion/implementation-feedback-page.js';
@@ -30,6 +31,7 @@ interface OrchestratorDeps {
   specPublisher: SpecPublisher;
   feedbackSource?: FeedbackSource;
   intentClassifier?: IntentClassifier;
+  questionAnswerer?: QuestionAnswerer;
   specCommitter?: SpecCommitter;
   implementer?: Implementer;
   implFeedbackPage?: ImplementationFeedbackPage;
@@ -133,7 +135,7 @@ export class OrchestratorImpl implements Orchestrator {
       } else if (intent === 'question') {
         run.intent = 'question';
         this._persistRuns();
-        await this._handleQuestion(request.channel_id, request.thread_ts, run);
+        await this._handleQuestion(request.content, request.channel_id, request.thread_ts, run);
       } else {
         // ignore
         this.runs.delete(request.id);
@@ -221,18 +223,31 @@ export class OrchestratorImpl implements Orchestrator {
           await this._handleImplementationApproval(feedback, run);
         }
       } else if (intent === 'question') {
-        await this._handleQuestion(feedback.channel_id, feedback.thread_ts, run);
+        await this._handleQuestion(feedback.content, feedback.channel_id, feedback.thread_ts, run);
       }
       // 'ignore' and other intents: silently discard
     }
   }
 
-  private async _handleQuestion(channel_id: string, thread_ts: string, run: Run): Promise<void> {
-    this.logger.info({ event: 'question.received', run_id: run.id, request_id: run.request_id }, 'Question received; stub handler');
+  private async _handleQuestion(content: string, channel_id: string, thread_ts: string, run: Run): Promise<void> {
+    this.logger.info({ event: 'question.received', run_id: run.id, request_id: run.request_id }, 'Question received');
+
+    let response: string;
+    if (this.deps.questionAnswerer) {
+      try {
+        response = await this.deps.questionAnswerer.answer(content);
+      } catch (err) {
+        this.logger.error({ event: 'question.answer_failed', run_id: run.id, error: String(err) }, 'Failed to answer question; posting fallback');
+        response = "I wasn't able to answer that right now \u2014 try asking the team directly.";
+      }
+    } else {
+      response = "I've noted your question \u2014 question answering is coming soon.";
+    }
+
     try {
-      await this.deps.postMessage(channel_id, thread_ts, "I noted your question. Question handling is not yet implemented \u2014 please ask the team directly for now.");
+      await this.deps.postMessage(channel_id, thread_ts, response);
     } catch (err) {
-      this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post question ack');
+      this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post question response');
     }
   }
 
