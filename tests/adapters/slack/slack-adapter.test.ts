@@ -141,7 +141,7 @@ describe('SlackAdapter — new idea pipeline', () => {
     );
   });
 
-  it('registers the thread so a subsequent reply is spec_feedback', async () => {
+  it('registers the thread so a subsequent reply is thread_message', async () => {
     const mock = makeMockApp({ botUserId: BOT_ID });
     const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME, approvalEmojis: ['thumbsup'] }, { logDestination: nullDest });
     await adapter.start();
@@ -156,7 +156,7 @@ describe('SlackAdapter — new idea pipeline', () => {
     });
     await ideaEventPromise;
 
-    // Now trigger a reply — should be spec_feedback
+    // Now trigger a reply — should be thread_message
     const feedbackEventPromise = takeOne(adapter.receive());
     await mock._triggerMessage({
       text: `<@${BOT_ID}> revise this`,
@@ -177,7 +177,7 @@ describe('SlackAdapter — spec feedback pipeline', () => {
   const BOT_ID = 'UBOT001';
   const CHANNEL_ID = 'C123';
 
-  it('emits spec_feedback with correct shape and posts acknowledgement', async () => {
+  it('emits thread_message with correct shape and posts acknowledgement', async () => {
     const mock = makeMockApp({ botUserId: BOT_ID });
     const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel', approvalEmojis: ['thumbsup'] }, { logDestination: nullDest });
     await adapter.start();
