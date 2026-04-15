@@ -271,6 +271,21 @@ _handleRequest(event: InboundEvent):
     answer question, no stage change
 ```
 
+### 4. Security, privacy, and compliance
+
+**Authentication and authorization**
+- No changes to the authentication model — Bolt SDK verifies Slack request signatures; the orchestrator trusts only events from the authenticated adapter
+- Intent classification runs against message content using the Anthropic API; the API key is already managed via `AC_ANTHROPIC_API_KEY` and redacted in logs per the foundation's logging standard
+
+**Data privacy**
+- Message content is passed to the Anthropic API for classification — this is an extension of the existing `spec_generator` and `implementer` pattern; no new data sharing model is introduced
+- Message content is not logged at any stage; only metadata (author, channel, intent, `thread_ts`) is logged
+- `request_id` replaces `idea_id` in all log fields; no PII is introduced
+
+**Input validation**
+- Message content is treated as untrusted user input throughout — passed as a typed field, never interpolated into system prompts without proper isolation
+- The classifier prompt treats the message as opaque user content, not as instructions — prompt injection risk is mitigated by structural separation between system instructions and message content
+
 ## Task list
 
 *(Added by task decomposition stage)*
