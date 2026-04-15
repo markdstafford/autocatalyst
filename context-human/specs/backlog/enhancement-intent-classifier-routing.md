@@ -81,6 +81,88 @@ Every inbound message is a request for something — a new feature, a bug fix, a
 - **In-thread intent** — the intent of a reply in a tracked thread: `feedback`, `approval`, `question`, `ignore`
 - **Request** — the generic term for any incoming work item, replacing `Idea` in the codebase
 
+### 2. System design and architecture
+
+**Modified components**
+
+- `src/adapters/agent/intent-classifier.ts` — replace stage-specific taxonomy with unified taxonomy; add `'new_thread'` context for top-level classification alongside run-stage contexts
+- `src/adapters/slack/classifier.ts` — update ignore rules: suppress in-thread messages where only someone other than the bot is @mentioned; remove `spec_feedback` return (all @mentions pass through as top-level or in-thread)
+- `src/adapters/slack/slack-adapter.ts` — remove hardcoded `new_idea` / `spec_feedback` routing; emit `new_request` for top-level @mentions, `thread_message` for in-thread @mentions
+- `src/core/orchestrator.ts` — replace multi-handler intent dispatch with single `_handleRequest`; routing logic is intent × stage; add `intent` field to `Run`; implement upgrade path (question → idea/bug only when stage is `intake`)
+- `src/types/events.ts` — rename `Idea` → `Request`, `new_idea` → `new_request`; `ThreadMessage.idea_id` → `request_id`
+- `src/types/runs.ts` — add `intent` field; `idea_id` → `request_id`
+- `src/adapters/slack/thread-registry.ts` — rename `idea_id` references to `request_id` internally
+
+**High-level flow**
+
+```mermaid
+flowchart LR
+    Slack -->|Socket Mode| BoltApp
+    BoltApp -->|raw message| SlackClassifier
+    SlackClassifier -->|ignore| /dev/null
+    SlackClassifier -->|top-level @mention| SlackAdapter
+    SlackClassifier -->|in-thread @mention| SlackAdapter
+    SlackAdapter -->|new_request| Orchestrator
+    SlackAdapter -->|thread_message| Orchestrator
+    Orchestrator -->|content + context| IntentClassifier
+    IntentClassifier -->|unified intent| Orchestrator
+    Orchestrator -->|intent × stage| _handleRequest
+```
+
+**Sequence — top-level @mention**
+
+```mermaid
+sequenceDiagram
+    actor Phoebe
+    participant SlackAdapter
+    participant Orchestrator
+    participant IntentClassifier
+
+    Phoebe->>SlackAdapter: @ac add a setup wizard
+    SlackAdapter->>SlackAdapter: register thread, post ack
+    SlackAdapter->>Orchestrator: new_request
+    Orchestrator->>IntentClassifier: classify(content, 'new_thread')
+    IntentClassifier-->>Orchestrator: idea
+    Orchestrator->>Orchestrator: createRun(intent=idea) → speccing
+```
+
+**Sequence — in-thread question then upgrade**
+
+```mermaid
+sequenceDiagram
+    actor Enzo
+    participant SlackAdapter
+    participant Orchestrator
+    participant IntentClassifier
+
+    Enzo->>SlackAdapter: @ac how does the auth flow work?
+    SlackAdapter->>Orchestrator: new_request
+    Orchestrator->>IntentClassifier: classify(content, 'new_thread')
+    IntentClassifier-->>Orchestrator: question
+    Orchestrator->>Orchestrator: createRun(intent=question) → intake
+    Note over Orchestrator: answer question, stay at intake
+
+    Enzo->>SlackAdapter: @ac actually, let's fix this
+    SlackAdapter->>Orchestrator: thread_message
+    Orchestrator->>IntentClassifier: classify(content, run.stage=intake)
+    IntentClassifier-->>Orchestrator: idea
+    Orchestrator->>Orchestrator: upgrade run intent → idea → speccing
+```
+
+**Intent × stage routing table**
+
+| Intent | Stage | Action |
+|---|---|---|
+| `idea` | `new_thread` / `intake` | start spec pipeline |
+| `bug` | `new_thread` / `intake` | ack + log (handler in #42) |
+| `question` | `new_thread` / `intake` | answer, stay at `intake` |
+| `feedback` | `reviewing_spec` | revise spec |
+| `feedback` | `reviewing_implementation` / `awaiting_impl_input` | handle impl feedback |
+| `approval` | `reviewing_spec` | commit spec, start implementation |
+| `approval` | `reviewing_implementation` | create PR |
+| `question` | any other stage | answer, no stage change |
+| `ignore` | any | discard |
+
 ## Task list
 
 *(Added by task decomposition stage)*
