@@ -455,8 +455,8 @@ Answering a question in-thread requires generating a response, which isn't curre
       - [ ] All existing tests pass
     - **Dependencies**: Task: Rename all call sites
 
-- [ ] **Story: Update Slack classifier ignore rules**
-  - [ ] **Task: Update `classifier.ts` for new ignore rules and return type**
+- [x] **Story: Update Slack classifier ignore rules**
+  - [x] **Task: Update `classifier.ts` for new ignore rules and return type**
     - **Description**: Update `classifyMessage` in `src/adapters/slack/classifier.ts`. Add rule: if the message is a thread reply and @mentions at least one other user but does NOT mention the bot → `ignore`. Remove the `spec_feedback` return; in-thread @mentions that pass all ignore checks should return a new `{ intent: 'thread_message'; request_id: string }` result (the Slack adapter will emit the `thread_message` event). Remove `classifyReaction` and `ReactionClassification` (emoji approval is out of scope).
     - **Acceptance criteria**:
       - [ ] `@other_user` only in thread → `ignore`
@@ -467,7 +467,7 @@ Answering a question in-thread requires generating a response, which isn't curre
       - [ ] `tsc --noEmit` passes
     - **Dependencies**: Task: Rename types in `events.ts` and `runs.ts`
 
-  - [ ] **Task: Update `classifier.ts` unit tests**
+  - [x] **Task: Update `classifier.ts` unit tests**
     - **Description**: Update `tests/adapters/slack/classifier.test.ts` to cover the new ignore rules and return types. Add cases: `@other_user` only in thread → `ignore`; `@other_user` + `@bot` in thread → `thread_message`; `@bot` only in thread → `thread_message`. Remove all `classifyReaction` tests.
     - **Acceptance criteria**:
       - [ ] All new ignore rule cases covered
