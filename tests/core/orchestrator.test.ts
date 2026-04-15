@@ -120,7 +120,7 @@ describe('Orchestrator — new_request happy path', () => {
     expect(cp.create).toHaveBeenCalledWith('C123', '100.0', '/ws/idea-001/context-human/specs/feature-test.md');
   });
 
-  it('run ends in review stage with all fields populated', async () => {
+  it('run ends in reviewing_spec stage with all fields populated', async () => {
     const adapter = makeMockAdapter();
     const wm = makeWorkspaceManager();
     const sg = makeSpecGenerator();
@@ -137,7 +137,7 @@ describe('Orchestrator — new_request happy path', () => {
     // Access internal state to verify — cast through any for testing
     const runs = (orch as never as { runs: Map<string, { stage: string; workspace_path: string; branch: string; spec_path: string; publisher_ref: string }> }).runs;
     const run = runs.get('idea-001')!;
-    expect(run.stage).toBe('review');
+    expect(run.stage).toBe('reviewing_spec');
     expect(run.workspace_path).toBe('/ws/idea-001');
     expect(run.branch).toBe('spec/idea-001');
     expect(run.spec_path).toBe('/ws/idea-001/context-human/specs/feature-test.md');
@@ -210,7 +210,7 @@ describe('Orchestrator — new_request failure paths', () => {
 });
 
 describe('Orchestrator — spec_feedback happy path', () => {
-  it('increments attempt, calls revise and update, run back in review', async () => {
+  it('increments attempt, calls revise and update, run back in reviewing_spec', async () => {
     const adapter = makeMockAdapter();
     const wm = makeWorkspaceManager();
     const sg = makeSpecGenerator();
@@ -231,7 +231,7 @@ describe('Orchestrator — spec_feedback happy path', () => {
 
     const runs = (orch as never as { runs: Map<string, { stage: string; attempt: number }> }).runs;
     const run = runs.get('idea-001')!;
-    expect(run.stage).toBe('review');
+    expect(run.stage).toBe('reviewing_spec');
     expect(run.attempt).toBe(1);
 
     expect(cp.getPageMarkdown).toHaveBeenCalledWith('CANVAS001');
@@ -291,7 +291,7 @@ describe('Orchestrator — spec_feedback guard conditions', () => {
     await orch.stop();
 
     // NOTE: With a sequential event loop, spec_feedback is queued while new_request is being processed.
-    // By the time spec_feedback is dequeued, the run is already in 'review', not 'speccing'.
+    // By the time spec_feedback is dequeued, the run is already in 'reviewing_spec', not 'speccing'.
     // So revise WILL be called — the guard for speccing stage is not observable in this sequential model.
     // We verify the actual observable behavior: run ends in review, revise was called once.
     expect(sg.revise).toHaveBeenCalledTimes(1);
@@ -397,14 +397,14 @@ describe('Orchestrator — concurrency', () => {
     await orch.stop();
 
     const runs = (orch as never as { runs: Map<string, { stage: string; workspace_path: string }> }).runs;
-    expect(runs.get('idea-A')!.stage).toBe('review');
-    expect(runs.get('idea-B')!.stage).toBe('review');
+    expect(runs.get('idea-A')!.stage).toBe('reviewing_spec');
+    expect(runs.get('idea-B')!.stage).toBe('reviewing_spec');
     expect(runs.get('idea-A')!.workspace_path).toBe('/ws/idea-A');
     expect(runs.get('idea-B')!.workspace_path).toBe('/ws/idea-B');
   });
 });
 
-// Helper to seed a run to 'review' stage, then trigger feedback
+// Helper to seed a run to 'reviewing_spec' stage, then trigger feedback
 async function seedAndFeedback(
   orch: OrchestratorImpl,
   adapter: ReturnType<typeof makeMockAdapter>,
@@ -412,8 +412,8 @@ async function seedAndFeedback(
 ) {
   const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
   adapter._emit({ type: 'new_request', payload: makeRequest() });
-  // Wait for run to reach 'review'
-  await vi.waitUntil(() => runs.get('idea-001')?.stage === 'review', { timeout: 2000 });
+  // Wait for run to reach 'reviewing_spec'
+  await vi.waitUntil(() => runs.get('idea-001')?.stage === 'reviewing_spec', { timeout: 2000 });
   adapter._emit({ type: 'thread_message', payload: makeFeedback(feedbackOverrides) });
   // Wait for run to no longer be 'speccing'
   await vi.waitUntil(() => runs.get('idea-001')?.stage !== 'speccing', { timeout: 2000 });
@@ -452,7 +452,7 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     await adapter.stop();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    expect(runs.get('idea-001')?.stage).toBe('review');
+    expect(runs.get('idea-001')?.stage).toBe('reviewing_spec');
     expect(callOrder).toEqual(['fetch', 'getPageMarkdown', 'revise', 'update', 'reply', 'reply', 'postMessage']);
     expect(sp.getPageMarkdown).toHaveBeenCalledWith('CANVAS001');
     expect(fs.fetch).toHaveBeenCalledWith('CANVAS001');
@@ -525,7 +525,7 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     await orch.start();
     adapter._emit({ type: 'new_request', payload: makeRequest() });
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    await vi.waitUntil(() => runs.get('idea-001')?.stage === 'review', { timeout: 2000 });
+    await vi.waitUntil(() => runs.get('idea-001')?.stage === 'reviewing_spec', { timeout: 2000 });
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
     await vi.waitUntil(() => runs.get('idea-001')?.stage === 'failed', { timeout: 2000 });
     await adapter.stop();
@@ -560,7 +560,7 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     await adapter.stop();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    expect(runs.get('idea-001')?.stage).toBe('review');
+    expect(runs.get('idea-001')?.stage).toBe('reviewing_spec');
     expect(fs.reply).toHaveBeenCalledTimes(3);
     expect(postError).not.toHaveBeenCalled();
   });
@@ -618,7 +618,319 @@ describe('Orchestrator — spec_feedback completion notification', () => {
     await adapter.stop();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    expect(runs.get('idea-001')?.stage).toBe('review');
+    expect(runs.get('idea-001')?.stage).toBe('reviewing_spec');
     expect(postError).not.toHaveBeenCalled();
+  });
+});
+
+// --- Intent classifier routing tests ---
+
+function makeIntentClassifier(intentToReturn: string = 'idea') {
+  return {
+    classify: vi.fn().mockResolvedValue(intentToReturn),
+  };
+}
+
+describe('Orchestrator — _handleRequest routing by intent', () => {
+  it('new_request + classifier=idea → spec pipeline starts', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const sg = makeSpecGenerator();
+    const cp = makeSpecPublisher();
+    const intentClassifier = makeIntentClassifier('idea');
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: wm,
+      specGenerator: sg,
+      specPublisher: cp,
+      intentClassifier,
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage: vi.fn().mockResolvedValue(undefined),
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: nullDest });
+    await orch.start();
+
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(wm.create).toHaveBeenCalled();
+    expect(intentClassifier.classify).toHaveBeenCalledWith(expect.any(String), 'new_thread');
+  });
+
+  it('new_request + classifier=bug → ack posted, no spec pipeline', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const intentClassifier = makeIntentClassifier('bug');
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: wm,
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      intentClassifier,
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage,
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: nullDest });
+    await orch.start();
+
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(wm.create).not.toHaveBeenCalled();
+    expect(postMessage).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('bug'));
+
+    const runs = (orch as never as { runs: Map<string, { intent: string; stage: string }> }).runs;
+    const run = runs.get('idea-001')!;
+    expect(run.intent).toBe('bug');
+    expect(run.stage).toBe('intake');
+  });
+
+  it('new_request + classifier=question → question stub posted, no spec pipeline', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const intentClassifier = makeIntentClassifier('question');
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: wm,
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      intentClassifier,
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage,
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: nullDest });
+    await orch.start();
+
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(wm.create).not.toHaveBeenCalled();
+    expect(postMessage).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('question'));
+  });
+
+  it('new_request + classifier=ignore → no run created, no messages posted', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const intentClassifier = makeIntentClassifier('ignore');
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: wm,
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      intentClassifier,
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage,
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: nullDest });
+    await orch.start();
+
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    const runs = (orch as never as { runs: Map<string, unknown> }).runs;
+    expect(runs.has('idea-001')).toBe(false);
+    expect(wm.create).not.toHaveBeenCalled();
+    expect(postMessage).not.toHaveBeenCalled();
+  });
+
+  it('no intentClassifier → defaults to idea, spec pipeline starts', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: wm,
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage: vi.fn().mockResolvedValue(undefined),
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: nullDest });
+    await orch.start();
+
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(wm.create).toHaveBeenCalled();
+  });
+
+  it('thread_message + intent=question + run.stage=reviewing_spec → question stub, stage unchanged', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const sg = makeSpecGenerator();
+    const cp = makeSpecPublisher();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    // Default classifier returns 'idea' for new_request, 'question' for thread_message
+    const intentClassifier = {
+      classify: vi.fn()
+        .mockResolvedValueOnce('idea')      // for new_request
+        .mockResolvedValueOnce('question'),  // for thread_message
+    };
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: wm,
+      specGenerator: sg,
+      specPublisher: cp,
+      intentClassifier,
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage,
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: nullDest });
+    await orch.start();
+
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+
+    // Start spec pipeline
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await vi.waitUntil(() => runs.get('idea-001')?.stage === 'reviewing_spec', { timeout: 2000 });
+
+    postMessage.mockClear();
+
+    // Send a question thread_message
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(postMessage).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('question'));
+    expect(sg.revise).not.toHaveBeenCalled();
+    expect(runs.get('idea-001')?.stage).toBe('reviewing_spec');
+  });
+
+  it('thread_message when run.stage=implementing → busy message posted, revise not called', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const sg = makeSpecGenerator();
+    const cp = makeSpecPublisher();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    // Classifier: idea for new_request, then feedback for thread_message
+    const intentClassifier = {
+      classify: vi.fn()
+        .mockResolvedValueOnce('idea')
+        .mockResolvedValueOnce('feedback'),
+    };
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: wm,
+      specGenerator: sg,
+      specPublisher: cp,
+      intentClassifier,
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage,
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: nullDest });
+    await orch.start();
+
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+
+    // Start spec pipeline, wait for reviewing_spec
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await vi.waitUntil(() => runs.get('idea-001')?.stage === 'reviewing_spec', { timeout: 2000 });
+
+    // Manually set stage to 'implementing' to test the guard
+    runs.get('idea-001')!.stage = 'implementing';
+
+    postMessage.mockClear();
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(postMessage).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('in progress'));
+    expect(sg.revise).not.toHaveBeenCalled();
+  });
+
+  it('thread_message + run.intent=question + stage=intake + classifier=idea → upgrade to idea, spec pipeline starts', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const sg = makeSpecGenerator();
+    const cp = makeSpecPublisher();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    // Classifier: question for new_request, then idea for thread_message
+    const intentClassifier = {
+      classify: vi.fn()
+        .mockResolvedValueOnce('question')  // for new_request → creates run with intent='question'
+        .mockResolvedValueOnce('idea'),     // for thread_message at intake
+    };
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: wm,
+      specGenerator: sg,
+      specPublisher: cp,
+      intentClassifier,
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage,
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: nullDest });
+    await orch.start();
+
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+
+    // new_request classified as question → creates run, posts question stub, stage=intake
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+
+    expect(runs.get('idea-001')?.intent).toBe('question');
+    expect(runs.get('idea-001')?.stage).toBe('intake');
+    expect(wm.create).not.toHaveBeenCalled();
+
+    // thread_message classified as idea → upgrades intent, starts spec pipeline
+    postMessage.mockClear();
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await new Promise(r => setTimeout(r, 100));
+    await orch.stop();
+
+    expect(runs.get('idea-001')?.intent).toBe('idea');
+    expect(wm.create).toHaveBeenCalled();
+    expect(sg.create).toHaveBeenCalled();
+  });
+
+  it('thread_message + run.intent=question + stage=intake + classifier=bug → upgrade to bug, ack posted', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const intentClassifier = {
+      classify: vi.fn()
+        .mockResolvedValueOnce('question')  // for new_request
+        .mockResolvedValueOnce('bug'),      // for thread_message at intake
+    };
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      intentClassifier,
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage,
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: nullDest });
+    await orch.start();
+
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+
+    postMessage.mockClear();
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(runs.get('idea-001')?.intent).toBe('bug');
+    expect(postMessage).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('bug'));
   });
 });
