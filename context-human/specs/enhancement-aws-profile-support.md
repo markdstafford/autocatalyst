@@ -206,12 +206,12 @@ If an operator sets `aws_profile: " "` in [WORKFLOW.md](http://WORKFLOW.md), the
 ## Task list
 
 - [ ] **Story: Implement AWS profile resolution**
-	- [ ] **Task: Add ****`aws_profile`**** field to ****`WorkflowConfig`**
+	- [x] **Task: Add ****`aws_profile`**** field to ****`WorkflowConfig`**
 		- **Description**: In `src/types/config.ts`, add `aws_profile?: string` to the `WorkflowConfig` interface, immediately after the `notion` block and before the index signature.
 		- **Acceptance criteria**:
-			- [ ] `WorkflowConfig` has an optional `aws_profile?: string` field
-			- [ ] `WorkflowConfig` without `aws_profile` still compiles (field is optional)
-			- [ ] `tsc --noEmit` passes
+			- [x] `WorkflowConfig` has an optional `aws_profile?: string` field
+			- [x] `WorkflowConfig` without `aws_profile` still compiles (field is optional)
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: None
 	- [ ] **Task: Add ****`resolveAwsProfile`**** to ****`src/core/config.ts`**
 		- **Description**: Add the `resolveAwsProfile(config: WorkflowConfig, env: Record<string, string | undefined>): string | undefined` function to `src/core/config.ts`. Implement config \> env precedence; trim both values; treat empty/whitespace as absent; return `undefined` when neither source provides a non-empty value. Export the function. Import `WorkflowConfig` at the top of the file if not already imported.

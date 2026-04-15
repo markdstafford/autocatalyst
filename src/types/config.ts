@@ -13,6 +13,7 @@ export interface WorkflowConfig {
   notion?: {
     parent_page_id?: string;
   };
+  aws_profile?: string;
   [key: string]: unknown;
 }
 
