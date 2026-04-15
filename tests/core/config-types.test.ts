@@ -18,6 +18,20 @@ describe('WorkflowConfig type', () => {
     };
     expect(config['slack']).toBeDefined();
   });
+
+  it('accepts aws_profile field', () => {
+    const config: WorkflowConfig = {
+      aws_profile: 'my-profile',
+    };
+    expect(config.aws_profile).toBe('my-profile');
+  });
+
+  it('accepts WorkflowConfig without aws_profile field', () => {
+    const config: WorkflowConfig = {
+      polling: { interval_ms: 5000 },
+    };
+    expect(config.aws_profile).toBeUndefined();
+  });
 });
 
 describe('LoadedConfig type', () => {
