@@ -369,7 +369,7 @@ The queue notification is posted to the `thread_ts` of the incoming event before
 `_launch` removes the promise from `_inFlight` in `.finally()`. If new slots open during the drain and promote queued events, those new promises are added to `_inFlight`. The drain loop (`while (this._inFlight.size > 0) { await Promise.allSettled([...this._inFlight]); }`) handles this correctly by re-checking `_inFlight` size after each `allSettled` pass, catching any promises added by promotions during the drain.
 ## Task list
 
-- [ ] **Story: Prerequisites**
+- [x] **Story: Prerequisites**
 	- [x] **Task: Write ADR for concurrent dispatch**
 		- **Description**: Create `adr-NNN-concurrent-dispatch.md` documenting the decision to adopt concurrent dispatch over the existing serial processing model. Cover rationale, trade-offs, the serial classification guarantee, and the alternatives considered (fire-and-forget, back-pressure via generator pause, fully concurrent classification, worker pool library).
 		- **Acceptance criteria**:
@@ -378,7 +378,7 @@ The queue notification is posted to the `thread_ts` of the incoming event before
 			- [x] Explains the serial classification guarantee and why it is the primary deduplication mechanism
 			- [x] References the alternatives considered and why each was rejected
 		- **Dependencies**: None
-- [ ] **Story: Serial classification gate**
+- [x] **Story: Serial classification gate**
 	- [x] **Task: Add ****`_inFlight`****, ****`_queue`****, and ****`_maxConcurrentRuns`**** fields**
 		- **Description**: Add three private fields to `OrchestratorImpl`: `_inFlight = new Set<Promise<void>>()`, `_queue: InboundEvent[] = []`, and `readonly _maxConcurrentRuns: number`. Extend `OrchestratorOptions` with `maxConcurrentRuns?: number`. Initialise `_maxConcurrentRuns = options?.maxConcurrentRuns ?? 5` in the constructor.
 		- **Acceptance criteria**:
@@ -426,73 +426,73 @@ The queue notification is posted to the `thread_ts` of the incoming event before
 			- [x] `orchestrator.queue_wait_ms` recorded for each queued event when dispatched; value is non-negative
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Update `_runLoop` to use `_classify` and `_dispatchOrEnqueue`, and drain on stop
-- [ ] **Story: Tests**
-	- [ ] **Task: Set up test infrastructure and helpers**
+- [x] **Story: Tests**
+	- [x] **Task: Set up test infrastructure and helpers**
 		- **Description**: Establish shared test helpers in `tests/core/orchestrator.test.ts` per §6: `makeControllablePromise()` returning a `{ promise, resolve, reject }` triple; `makeEventFixture(type, overrides?)` returning a valid `InboundEvent` with deterministic identifiers; log capture via the `logDestination` stream option for structured JSON assertion; and `vi.useFakeTimers()` setup for timing-sensitive tests.
 		- **Acceptance criteria**:
-			- [ ] `makeControllablePromise()` helper available in test file; used to simulate long-running handlers
-			- [ ] `makeEventFixture()` helper available; produces deterministic `request_id`, `channel_id`, `thread_ts`
-			- [ ] Log capture wired via `logDestination`; tests can assert on structured JSON log records
-			- [ ] `vi.useFakeTimers()` configured for timing-sensitive test cases
-			- [ ] All existing orchestrator tests continue to pass
+			- [x] `makeControllablePromise()` helper available in test file; used to simulate long-running handlers
+			- [x] `makeEventFixture()` helper available; produces deterministic `request_id`, `channel_id`, `thread_ts`
+			- [x] Log capture wired via `logDestination`; tests can assert on structured JSON log records
+			- [x] `vi.useFakeTimers()` configured for timing-sensitive test cases
+			- [x] All existing orchestrator tests continue to pass
 		- **Dependencies**: Task: Add metrics instrumentation
-	- [ ] **Task: Add serial classification and deduplication tests**
+	- [x] **Task: Add serial classification and deduplication tests**
 		- **Description**: Add tests for all eight cases in §6 "Serial classification and deduplication": (1) two rapid approvals for same run — only first dispatched; (2) stage advance happens before `_classify` returns; (3) `thread_message` with no run → `'discard'`; (4) `thread_message` with non-actionable stage (`speccing`) → `'discard'`; (5) `thread_message` with run in `implementing` → `'discard'`; (6) `new_request` always → `'dispatch'`; (7) two `new_request` events for different runs — both dispatched, no `request_id` cross-contamination; (8) classification serial guarantee — no handler entered before its event's `_classify` call returns.
 		- **Acceptance criteria**:
-			- [ ] Two rapid approvals for same run: `_classify` returns `'dispatch'` then `'discard'`; only one `_handleRequest` call made
-			- [ ] Run stage is mutated by `_classify` before it returns
-			- [ ] `thread_message` with no run: `'discard'`; `classify.run_not_found` logged with correct `request_id`
-			- [ ] `thread_message` with non-actionable stage: `'discard'`; `classify.stage_blocked` logged with correct `stage` field (tested for both `speccing` and `implementing`)
-			- [ ] `new_request`: always `'dispatch'`
-			- [ ] Two `new_request` events for different runs: both dispatched; `request_id` values not cross-contaminated
-			- [ ] Serial guarantee: no handler entered before its event's `_classify` call returns
-			- [ ] All existing orchestrator tests pass
+			- [x] Two rapid approvals for same run: `_classify` returns `'dispatch'` then `'discard'`; only one `_handleRequest` call made
+			- [x] Run stage is mutated by `_classify` before it returns
+			- [x] `thread_message` with no run: `'discard'`; `classify.run_not_found` logged with correct `request_id`
+			- [x] `thread_message` with non-actionable stage: `'discard'`; `classify.stage_blocked` logged with correct `stage` field (tested for both `speccing` and `implementing`)
+			- [x] `new_request`: always `'dispatch'`
+			- [x] Two `new_request` events for different runs: both dispatched; `request_id` values not cross-contaminated
+			- [x] Serial guarantee: no handler entered before its event's `_classify` call returns
+			- [x] All existing orchestrator tests pass
 		- **Dependencies**: Task: Set up test infrastructure and helpers
-	- [ ] **Task: Add concurrent dispatch tests**
+	- [x] **Task: Add concurrent dispatch tests**
 		- **Description**: Add tests for all four cases in §6 "Concurrent dispatch": (1) `maxConcurrentRuns: 2`, two simultaneous `new_request` events — both `_handleRequest` calls entered before either resolves (use controllable promises); (2) `_inFlight.size` accurate throughout — 2 while both pending, 1 after first resolves, 0 after both resolve; (3) no payload cross-contamination — each handler receives its own `channel_id`, `thread_ts`, `request_id`; (4) stage isolation — transitions for run A have no effect on run B's stage.
 		- **Acceptance criteria**:
-			- [ ] Both handlers entered before either completes (verified via controllable promises)
-			- [ ] `_inFlight.size` equals 2, then 1, then 0 at the correct points
-			- [ ] Each handler's received event payload is its own (no cross-contamination)
-			- [ ] Run A stage transition does not affect run B's stage
-			- [ ] All existing orchestrator tests pass
+			- [x] Both handlers entered before either completes (verified via controllable promises)
+			- [x] `_inFlight.size` equals 2, then 1, then 0 at the correct points
+			- [x] Each handler's received event payload is its own (no cross-contamination)
+			- [x] Run A stage transition does not affect run B's stage
+			- [x] All existing orchestrator tests pass
 		- **Dependencies**: Task: Add serial classification and deduplication tests
-	- [ ] **Task: Add failure isolation tests**
+	- [x] **Task: Add failure isolation tests**
 		- **Description**: Add tests for all four cases in §6 "Failure isolation": (1) unhandled throw in run A — `run.unhandled_error` logged; run B unaffected and completes normally; (2) `_inFlight` cleanup after unhandled throw — `_inFlight.size` decrements correctly, no ghost entries; (3) `failRun` path in run A — run B continues to `reviewing_spec` unimpeded; (4) queue continues after failure — run A fails while run C is queued; run C still promoted and dispatched; `run.dequeued` logged.
 		- **Acceptance criteria**:
-			- [ ] Unhandled throw in run A: `run.unhandled_error` logged with `error` field; run B completes normally
-			- [ ] `_inFlight.size` decrements correctly after unhandled throw; no ghost entries
-			- [ ] `failRun` in run A: run B reaches `reviewing_spec`
-			- [ ] Queue continues after failure: run C promoted and dispatched; `run.dequeued` logged
-			- [ ] All existing orchestrator tests pass
+			- [x] Unhandled throw in run A: `run.unhandled_error` logged with `error` field; run B completes normally
+			- [x] `_inFlight.size` decrements correctly after unhandled throw; no ghost entries
+			- [x] `failRun` in run A: run B reaches `reviewing_spec`
+			- [x] Queue continues after failure: run C promoted and dispatched; `run.dequeued` logged
+			- [x] All existing orchestrator tests pass
 		- **Dependencies**: Task: Add concurrent dispatch tests
-	- [ ] **Task: Add concurrency limit and queue tests**
+	- [x] **Task: Add concurrency limit and queue tests**
 		- **Description**: Add tests for all eight cases in §6 "Concurrency limit and queue": (1) at-capacity enqueue; (2) queue notification only for `new_request`; (3) FIFO ordering with `maxConcurrentRuns: 1`; (4) slot opens → dequeue with correct log fields; (5) queue drains to zero; (6) log fields accurate at each stage; (7) `maxConcurrentRuns: 1` effectively serial; (8) boundary — exactly at limit then above, both dequeued in FIFO order.
 		- **Acceptance criteria**:
-			- [ ] Third event enqueued when `_inFlight.size === maxConcurrentRuns`; `run.queued` logged with correct `queue_depth`
-			- [ ] Queue notification posted to third event's `channel_id`/`thread_ts` for `new_request`; not posted for `thread_message`
-			- [ ] Slot opens → queued event dispatched; `_inFlight.size` and `_queue.length` accurate; `run.dequeued` logged
-			- [ ] Queue and in-flight both empty after all processing completes
-			- [ ] FIFO dispatch ordering verified with `maxConcurrentRuns: 1`
-			- [ ] Fourth and fifth events enqueued and dequeued in order at boundary
-			- [ ] All log record fields match actual data structure state at time of emission
-			- [ ] All existing orchestrator tests pass
+			- [x] Third event enqueued when `_inFlight.size === maxConcurrentRuns`; `run.queued` logged with correct `queue_depth`
+			- [x] Queue notification posted to third event's `channel_id`/`thread_ts` for `new_request`; not posted for `thread_message`
+			- [x] Slot opens → queued event dispatched; `_inFlight.size` and `_queue.length` accurate; `run.dequeued` logged
+			- [x] Queue and in-flight both empty after all processing completes
+			- [x] FIFO dispatch ordering verified with `maxConcurrentRuns: 1`
+			- [x] Fourth and fifth events enqueued and dequeued in order at boundary
+			- [x] All log record fields match actual data structure state at time of emission
+			- [x] All existing orchestrator tests pass
 		- **Dependencies**: Task: Add failure isolation tests
-	- [ ] **Task: Add stop-drain tests**
+	- [x] **Task: Add stop-drain tests**
 		- **Description**: Add tests for all four cases in §6 "Stop drains in-flight work": (1) `stop()` called while two handlers are in-flight — `_loopPromise` does not resolve until both complete; (2) `stop()` called with two in-flight handlers and one queued event — all three complete (including promoted queued handler) before `stop()` resolves; (3) no post-stop errors — handlers completing after `stop()` do not log additional errors or attempt to dequeue new events; (4) `_stopping` breaks the receive loop — no new events dequeued after `_stopping` is set; only drain loop runs.
 		- **Acceptance criteria**:
-			- [ ] `stop()` with in-flight handlers: `_loopPromise` not resolved until both handlers complete
-			- [ ] `stop()` with queued events: queued event promoted, completes, and `stop()` resolves only after all three finish
-			- [ ] No post-stop errors or spurious dequeue attempts from completing handlers
-			- [ ] `_stopping` prevents new event dequeue; drain loop runs to completion
-			- [ ] All existing orchestrator tests pass
+			- [x] `stop()` with in-flight handlers: `_loopPromise` not resolved until both handlers complete
+			- [x] `stop()` with queued events: queued event promoted, completes, and `stop()` resolves only after all three finish
+			- [x] No post-stop errors or spurious dequeue attempts from completing handlers
+			- [x] `_stopping` prevents new event dequeue; drain loop runs to completion
+			- [x] All existing orchestrator tests pass
 		- **Dependencies**: Task: Add concurrency limit and queue tests
-	- [ ] **Task: Add observability and metrics tests**
+	- [x] **Task: Add observability and metrics tests**
 		- **Description**: Add tests for all four cases in §6 "Observability and metrics": (1) each log event emits all documented fields with correct values; (2) `orchestrator.in_flight` gauge correct at dispatch and release; (3) `orchestrator.queue_depth` gauge reflects actual queue depth at each enqueue and dequeue; (4) `orchestrator.queue_wait_ms` histogram entry recorded for each queued event; value is non-negative.
 		- **Acceptance criteria**:
-			- [ ] All seven log events assert on all documented fields with correct values
-			- [ ] `orchestrator.in_flight` values correct at dispatch and release points
-			- [ ] `orchestrator.queue_depth` values match `_queue.length` after each operation
-			- [ ] `orchestrator.queue_wait_ms` entries non-negative for all queued events
-			- [ ] All existing orchestrator tests pass
+			- [x] All seven log events assert on all documented fields with correct values
+			- [x] `orchestrator.in_flight` values correct at dispatch and release points
+			- [x] `orchestrator.queue_depth` values match `_queue.length` after each operation
+			- [x] `orchestrator.queue_wait_ms` entries non-negative for all queued events
+			- [x] All existing orchestrator tests pass
 		- **Dependencies**: Task: Add stop-drain tests
