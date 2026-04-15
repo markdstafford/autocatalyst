@@ -1,6 +1,14 @@
 // src/types/runs.ts
 
-export type RunStage = 'intake' | 'speccing' | 'review' | 'approved' | 'failed';
+export type RunStage =
+  | 'intake'
+  | 'speccing'
+  | 'reviewing_spec'
+  | 'implementing'
+  | 'awaiting_impl_input'
+  | 'reviewing_implementation'
+  | 'done'
+  | 'failed';
 
 export interface Run {
   id: string;
