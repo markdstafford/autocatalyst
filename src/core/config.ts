@@ -181,3 +181,24 @@ export function bootstrapWorkflow(repoPath: string): boolean {
   writeFileSync(workflowPath, content, 'utf-8');
   return true; // created
 }
+
+/**
+ * Resolves the effective AWS profile to use, applying config-level override
+ * precedence over the environment variable.
+ *
+ * Returns undefined when neither source provides a value, leaving existing
+ * process.env['AWS_PROFILE'] (if any) unchanged.
+ */
+export function resolveAwsProfile(
+  config: WorkflowConfig,
+  env: Record<string, string | undefined>,
+): string | undefined {
+  if (typeof config.aws_profile === 'string' && config.aws_profile.trim() !== '') {
+    return config.aws_profile.trim();
+  }
+  const envProfile = env['AWS_PROFILE'];
+  if (typeof envProfile === 'string' && envProfile.trim() !== '') {
+    return envProfile.trim();
+  }
+  return undefined;
+}

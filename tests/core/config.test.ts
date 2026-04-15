@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseWorkflow, resolveEnvVars, validateConfig, redactConfig } from '../../src/core/config.js';
+import { parseWorkflow, resolveEnvVars, validateConfig, redactConfig, resolveAwsProfile } from '../../src/core/config.js';
 import type { WorkflowConfig } from '../../src/types/config.js';
 
 const fixture = (name: string) =>
@@ -254,5 +254,42 @@ describe('redactConfig — slack tokens', () => {
     expect(slack.bot_token).toBe('[from env]');
     expect(slack.app_token).toBe('[from env]');
     expect(slack.channel_name).toBe('ch');
+  });
+});
+
+describe('resolveAwsProfile', () => {
+  it('returns config value when config aws_profile is set and env AWS_PROFILE is not set', () => {
+    const result = resolveAwsProfile({ aws_profile: 'my-profile' }, {});
+    expect(result).toBe('my-profile');
+  });
+
+  it('returns env value when config aws_profile is not set and env AWS_PROFILE is set', () => {
+    const result = resolveAwsProfile({}, { AWS_PROFILE: 'env-profile' });
+    expect(result).toBe('env-profile');
+  });
+
+  it('returns config value when both config aws_profile and env AWS_PROFILE are set (config wins)', () => {
+    const result = resolveAwsProfile({ aws_profile: 'config-profile' }, { AWS_PROFILE: 'env-profile' });
+    expect(result).toBe('config-profile');
+  });
+
+  it('returns undefined when neither config aws_profile nor env AWS_PROFILE is set', () => {
+    const result = resolveAwsProfile({}, {});
+    expect(result).toBeUndefined();
+  });
+
+  it('treats empty string config aws_profile as absent and falls through to env value', () => {
+    const result = resolveAwsProfile({ aws_profile: '' }, { AWS_PROFILE: 'env-profile' });
+    expect(result).toBe('env-profile');
+  });
+
+  it('treats whitespace-only config aws_profile as absent', () => {
+    const result = resolveAwsProfile({ aws_profile: '   ' }, {});
+    expect(result).toBeUndefined();
+  });
+
+  it('trims leading and trailing whitespace from config aws_profile', () => {
+    const result = resolveAwsProfile({ aws_profile: '  trimmed-profile  ' }, {});
+    expect(result).toBe('trimmed-profile');
   });
 });
