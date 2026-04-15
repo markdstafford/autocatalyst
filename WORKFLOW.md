@@ -1,6 +1,7 @@
 ---
 polling:
   interval_ms: 30000
+aws_profile: ai-prod-llm
 workspace:
   root: ~/.autocatalyst/workspaces/autocatalyst
 slack:
