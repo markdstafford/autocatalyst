@@ -177,6 +177,7 @@ export class OrchestratorImpl implements Orchestrator {
         });
       }
       this.logger.warn({ event: 'run.queued', queue_depth: this._queue.length }, 'Concurrency limit reached; event queued');
+      this.logger.info({ metric: 'orchestrator.queue_depth', value: this._queue.length }, 'queue_depth gauge (enqueue)');
       return;
     }
     this._launch(event);
@@ -190,6 +191,7 @@ export class OrchestratorImpl implements Orchestrator {
       })
       .finally(() => {
         this._inFlight.delete(p);
+        this.logger.info({ metric: 'orchestrator.in_flight', value: this._inFlight.size }, 'in_flight gauge (release)');
         // Dequeue next event if any
         const next = this._queue.shift();
         if (next) {
@@ -198,11 +200,13 @@ export class OrchestratorImpl implements Orchestrator {
           const waitMs = enqueuedAt !== undefined ? Date.now() - enqueuedAt : 0;
           this.logger.debug({ event: 'run.dequeued', in_flight: this._inFlight.size, queue_depth: this._queue.length }, 'Dequeued event; dispatching');
           this.logger.info({ metric: 'orchestrator.queue_wait_ms', value: waitMs }, 'queue_wait_ms histogram');
+          this.logger.info({ metric: 'orchestrator.queue_depth', value: this._queue.length }, 'queue_depth gauge (dequeue)');
           this._launch(next);
         }
       });
     this._inFlight.add(p);
     this.logger.debug({ event: 'run.dispatched', in_flight: this._inFlight.size }, 'Handler dispatched');
+    this.logger.info({ metric: 'orchestrator.in_flight', value: this._inFlight.size }, 'in_flight gauge (dispatch)');
   }
 
   private async _handleRequest(event: InboundEvent): Promise<void> {

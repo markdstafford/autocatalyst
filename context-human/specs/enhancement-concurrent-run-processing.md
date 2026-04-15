@@ -417,14 +417,14 @@ The queue notification is posted to the `thread_ts` of the incoming event before
 			- [x] `stop()` continues to resolve only after all in-flight handlers complete
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement `_dispatchOrEnqueue` and `_launch`
-- [ ] **Story: Observability and metrics**
-	- [ ] **Task: Add metrics instrumentation**
+- [x] **Story: Observability and metrics**
+	- [x] **Task: Add metrics instrumentation**
 		- **Description**: Instrument `_launch` and its `.finally` callback to emit `orchestrator.in_flight` (gauge) on dispatch and slot release. Instrument `_dispatchOrEnqueue` to emit `orchestrator.queue_depth` (gauge) on enqueue and dequeue. Record `orchestrator.queue_wait_ms` (histogram) in `_launch` when dispatching a previously-queued event — capture enqueue timestamp in `_dispatchOrEnqueue` and compute elapsed time in `_launch`.
 		- **Acceptance criteria**:
-			- [ ] `orchestrator.in_flight` emitted on each dispatch (value = new `_inFlight.size`) and each slot release (value = decremented `_inFlight.size`)
-			- [ ] `orchestrator.queue_depth` emitted on each enqueue and dequeue (value matches `_queue.length` after operation)
-			- [ ] `orchestrator.queue_wait_ms` recorded for each queued event when dispatched; value is non-negative
-			- [ ] `tsc --noEmit` passes
+			- [x] `orchestrator.in_flight` emitted on each dispatch (value = new `_inFlight.size`) and each slot release (value = decremented `_inFlight.size`)
+			- [x] `orchestrator.queue_depth` emitted on each enqueue and dequeue (value matches `_queue.length` after operation)
+			- [x] `orchestrator.queue_wait_ms` recorded for each queued event when dispatched; value is non-negative
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Update `_runLoop` to use `_classify` and `_dispatchOrEnqueue`, and drain on stop
 - [ ] **Story: Tests**
 	- [ ] **Task: Set up test infrastructure and helpers**

@@ -2463,3 +2463,120 @@ describe('_runLoop — classify-dispatch integration', () => {
     expect(callCount).toBe(2);
   });
 });
+
+describe('metrics instrumentation', () => {
+  beforeEach(() => { _fixtureSeq = 0; });
+
+  it('orchestrator.in_flight gauge emitted on dispatch and release', async () => {
+    const { records, destination } = makeLogCapture();
+    const ctrl = makeControllablePromise();
+    const handleReq = vi.fn().mockReturnValue(ctrl.promise);
+    const adapter = makeMockAdapter();
+    const orch = new OrchestratorImpl({
+      adapter,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn(),
+      postMessage: vi.fn(),
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: destination });
+    (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
+    await orch.start();
+
+    const event = makeEventFixture('new_request');
+    (orch as unknown as { _dispatchOrEnqueue(e: unknown): void })._dispatchOrEnqueue(event);
+    await vi.waitUntil(() => handleReq.mock.calls.length === 1, { timeout: 200 });
+
+    // dispatch gauge emitted (value=1)
+    const dispatchGauge = records.find(r => r['metric'] === 'orchestrator.in_flight' && r['value'] === 1);
+    expect(dispatchGauge).toBeDefined();
+
+    ctrl.resolve();
+    await vi.waitUntil(() => records.some(r => r['metric'] === 'orchestrator.in_flight' && r['value'] === 0), { timeout: 200 });
+
+    // release gauge emitted (value=0)
+    const releaseGauge = records.find(r => r['metric'] === 'orchestrator.in_flight' && r['value'] === 0);
+    expect(releaseGauge).toBeDefined();
+
+    await orch.stop();
+  });
+
+  it('orchestrator.queue_depth gauge emitted on enqueue and after dequeue', async () => {
+    const { records, destination } = makeLogCapture();
+    const ctrl = makeControllablePromise();
+    let callCount = 0;
+    const handleReq = vi.fn().mockImplementation(() => {
+      callCount++;
+      return callCount === 1 ? ctrl.promise : Promise.resolve();
+    });
+    const adapter = makeMockAdapter();
+    const orch = new OrchestratorImpl({
+      adapter,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn(),
+      postMessage: vi.fn().mockResolvedValue(undefined),
+      repo_url: 'https://github.com/org/repo',
+    }, { maxConcurrentRuns: 1, logDestination: destination });
+    (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
+    await orch.start();
+
+    const e1 = makeEventFixture('new_request', { id: 'r1' });
+    const e2 = makeEventFixture('new_request', { id: 'r2' });
+    (orch as unknown as { _dispatchOrEnqueue(e: unknown): void })._dispatchOrEnqueue(e1);
+    await vi.waitUntil(() => callCount === 1, { timeout: 200 });
+    (orch as unknown as { _dispatchOrEnqueue(e: unknown): void })._dispatchOrEnqueue(e2);
+
+    // After enqueue: queue_depth should have been emitted with value 1
+    await vi.waitUntil(() => records.some(r => r['metric'] === 'orchestrator.queue_depth' && r['value'] === 1), { timeout: 200 });
+    expect(records.some(r => r['metric'] === 'orchestrator.queue_depth' && r['value'] === 1)).toBe(true);
+
+    ctrl.resolve();
+    await vi.waitUntil(() => callCount === 2, { timeout: 200 });
+
+    // After dequeue: queue_depth emitted with value 0
+    await vi.waitUntil(() => records.some(r => r['metric'] === 'orchestrator.queue_depth' && r['value'] === 0), { timeout: 200 });
+    expect(records.some(r => r['metric'] === 'orchestrator.queue_depth' && r['value'] === 0)).toBe(true);
+
+    await orch.stop();
+  });
+
+  it('orchestrator.queue_wait_ms recorded with non-negative value for queued events', async () => {
+    const { records, destination } = makeLogCapture();
+    const ctrl = makeControllablePromise();
+    let callCount = 0;
+    const handleReq = vi.fn().mockImplementation(() => {
+      callCount++;
+      return callCount === 1 ? ctrl.promise : Promise.resolve();
+    });
+    const adapter = makeMockAdapter();
+    const orch = new OrchestratorImpl({
+      adapter,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn(),
+      postMessage: vi.fn().mockResolvedValue(undefined),
+      repo_url: 'https://github.com/org/repo',
+    }, { maxConcurrentRuns: 1, logDestination: destination });
+    (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
+    await orch.start();
+
+    const e1 = makeEventFixture('new_request', { id: 'r1' });
+    const e2 = makeEventFixture('new_request', { id: 'r2' });
+    (orch as unknown as { _dispatchOrEnqueue(e: unknown): void })._dispatchOrEnqueue(e1);
+    await vi.waitUntil(() => callCount === 1, { timeout: 200 });
+    (orch as unknown as { _dispatchOrEnqueue(e: unknown): void })._dispatchOrEnqueue(e2);
+
+    ctrl.resolve();
+    await vi.waitUntil(() => records.some(r => r['metric'] === 'orchestrator.queue_wait_ms'), { timeout: 200 });
+    const waitMs = records.find(r => r['metric'] === 'orchestrator.queue_wait_ms');
+    expect(waitMs).toBeDefined();
+    expect(typeof waitMs!['value']).toBe('number');
+    expect(waitMs!['value'] as number).toBeGreaterThanOrEqual(0);
+
+    await orch.stop();
+  });
+});
