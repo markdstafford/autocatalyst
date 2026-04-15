@@ -408,14 +408,14 @@ The queue notification is posted to the `thread_ts` of the incoming event before
 			- [x] `.catch` logs `run.unhandled_error` on unexpected throws
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement `_classify`
-	- [ ] **Task: Update ****`_runLoop`**** to use ****`_classify`**** and ****`_dispatchOrEnqueue`****, and drain on stop**
+	- [x] **Task: Update ****`_runLoop`**** to use ****`_classify`**** and ****`_dispatchOrEnqueue`****, and drain on stop**
 		- **Description**: Replace `await this._handleRequest(event as InboundEvent)` in `_runLoop` with: `const action = await this._classify(event as InboundEvent); if (action === 'dispatch') { this._dispatchOrEnqueue(event as InboundEvent); }`. After the `for await` loop exits, add a drain loop: `while (this._inFlight.size > 0) { await Promise.allSettled([...this._inFlight]); }`.
 		- **Acceptance criteria**:
-			- [ ] `_runLoop` awaits `_classify` for each event before processing the next
-			- [ ] `_runLoop` calls `_dispatchOrEnqueue` only when `_classify` returns `'dispatch'`
-			- [ ] `_runLoop` awaits full drain of `_inFlight` after the event loop exits
-			- [ ] `stop()` continues to resolve only after all in-flight handlers complete
-			- [ ] `tsc --noEmit` passes
+			- [x] `_runLoop` awaits `_classify` for each event before processing the next
+			- [x] `_runLoop` calls `_dispatchOrEnqueue` only when `_classify` returns `'dispatch'`
+			- [x] `_runLoop` awaits full drain of `_inFlight` after the event loop exits
+			- [x] `stop()` continues to resolve only after all in-flight handlers complete
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement `_dispatchOrEnqueue` and `_launch`
 - [ ] **Story: Observability and metrics**
 	- [ ] **Task: Add metrics instrumentation**

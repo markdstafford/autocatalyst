@@ -116,7 +116,17 @@ export class OrchestratorImpl implements Orchestrator {
   private async _runLoop(): Promise<void> {
     for await (const event of this.deps.adapter.receive()) {
       if (this._stopping) break;
-      await this._handleRequest(event as InboundEvent);
+      // Classification is serial and awaited: advances run state and commits the
+      // dispatch decision before the next event is processed. Prevents duplicate
+      // or conflicting dispatches for the same run (e.g., double-approval).
+      const action = await this._classify(event as InboundEvent);
+      if (action === 'dispatch') {
+        this._dispatchOrEnqueue(event as InboundEvent);
+      }
+    }
+    // Drain all in-flight handlers before resolving (including those promoted from queue)
+    while (this._inFlight.size > 0) {
+      await Promise.allSettled([...this._inFlight]);
     }
   }
 
@@ -242,77 +252,41 @@ export class OrchestratorImpl implements Orchestrator {
       const feedback = event.payload;
       const run = this.runs.get(feedback.request_id);
       if (!run) {
+        // Safety net: _classify already checked this
         this.logger.debug({ event: 'thread_message.discarded', request_id: feedback.request_id, reason: 'no_run' }, 'No run for request_id; discarding');
         return;
       }
 
-      // Guard: implementation in progress -- tell the user to wait
-      if (run.stage === 'implementing') {
-        this.logger.info({ event: 'thread_message.busy', run_id: run.id, request_id: run.request_id }, 'Implementation in progress; notifying user');
-        try {
-          await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, "Implementation is in progress \u2014 I'll let you know when it's ready for review.");
-        } catch (err) {
-          this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post busy notification');
-        }
-        return;
-      }
+      // Retrieve and clear the routing stage stored by _classify before it advanced run.stage.
+      // This preserves the original stage for correct intent × stage routing below.
+      const routingStage = this._pendingStage.get(feedback.request_id) ?? run.stage;
+      this._pendingStage.delete(feedback.request_id);
 
-      // Only classify for stages that accept thread messages
-      if (run.stage !== 'reviewing_spec' && run.stage !== 'reviewing_implementation' && run.stage !== 'awaiting_impl_input' && run.stage !== 'intake') {
-        this.logger.debug({ event: 'thread_message.discarded', run_id: run.id, request_id: run.request_id, stage: run.stage, reason: 'wrong_stage' }, 'Run not in a reviewable stage; discarding');
-        return;
-      }
-
-      // Classify intent
+      // _classify has already validated the stage and advanced it for deduplication.
+      // Classify intent using the original (routing) stage as context.
       let intent: Intent = 'feedback';
       if (this.deps.intentClassifier) {
-        const context: ClassificationContext = run.stage;
+        const context: ClassificationContext = routingStage as ClassificationContext;
         try {
           intent = await this.deps.intentClassifier.classify(feedback.content, context);
         } catch (err) {
           this.logger.warn({ event: 'intent_classification.failed', run_id: run.id, error: String(err) }, 'Intent classification failed; defaulting to feedback');
           intent = 'feedback';
         }
-        this.logger.debug({ event: 'intent_classification.result', run_id: run.id, intent, stage: run.stage }, 'Intent classified');
+        this.logger.debug({ event: 'intent_classification.result', run_id: run.id, intent, stage: routingStage }, 'Intent classified');
       }
 
-      // Intent upgrade: run.intent='question' + stage='intake' + classifier returns 'idea'/'bug'
-      if (run.stage === 'intake' && (intent === 'idea' || intent === 'bug')) {
-        run.intent = intent as RequestIntent;
-        this._persistRuns();
-        if (intent === 'idea') {
-          // Build a Request from the thread message for spec pipeline
-          const request: Request = {
-            id: run.request_id,
-            source: 'slack',
-            content: feedback.content,
-            author: feedback.author,
-            received_at: feedback.received_at,
-            thread_ts: feedback.thread_ts,
-            channel_id: feedback.channel_id,
-          };
-          await this._startSpecPipeline(run, request);
-        } else {
-          try {
-            await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, 'Got it \u2014 bug report noted. Bug triage is not yet implemented.');
-          } catch (err) {
-            this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post bug ack');
-          }
-        }
-        return;
-      }
-
-      // Route by intent x stage
+      // Route by intent × routingStage
       if (intent === 'feedback') {
-        if (run.stage === 'reviewing_spec') {
+        if (routingStage === 'reviewing_spec') {
           await this._handleSpecFeedback(feedback);
-        } else if (run.stage === 'reviewing_implementation' || run.stage === 'awaiting_impl_input') {
-          await this._handleImplementationFeedback(feedback, run);
+        } else if (routingStage === 'reviewing_implementation' || routingStage === 'awaiting_impl_input') {
+          await this._handleImplementationFeedback(feedback, run, routingStage);
         }
       } else if (intent === 'approval') {
-        if (run.stage === 'reviewing_spec') {
+        if (routingStage === 'reviewing_spec') {
           await this._handleSpecApproval(feedback, run);
-        } else if (run.stage === 'reviewing_implementation') {
+        } else if (routingStage === 'reviewing_implementation') {
           await this._handleImplementationApproval(feedback, run);
         }
       } else if (intent === 'question') {
@@ -434,8 +408,8 @@ export class OrchestratorImpl implements Orchestrator {
     this.transition(run, 'reviewing_implementation');
   }
 
-  private async _handleImplementationFeedback(feedback: ThreadMessage, run: Run): Promise<void> {
-    const wasAwaiting = run.stage === 'awaiting_impl_input';
+  private async _handleImplementationFeedback(feedback: ThreadMessage, run: Run, routingStage: RunStage = run.stage): Promise<void> {
+    const wasAwaiting = routingStage === 'awaiting_impl_input';
 
     // Step 1: Get additional context
     let additional_context: string;
@@ -624,7 +598,7 @@ export class OrchestratorImpl implements Orchestrator {
 
   private async _handleSpecFeedback(feedback: ThreadMessage): Promise<void> {
     const run = this.runs.get(feedback.request_id);
-    if (!run || run.stage !== 'reviewing_spec') return;
+    if (!run) return; // safety net
 
     if (!run.spec_path || !run.publisher_ref) {
       await this.failRun(run, feedback.channel_id, feedback.thread_ts, new Error('Run in review state is missing spec_path or publisher_ref'));

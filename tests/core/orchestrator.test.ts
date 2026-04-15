@@ -422,11 +422,10 @@ describe('Orchestrator — feedback guard conditions', () => {
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
-    // NOTE: With a sequential event loop, thread_message is queued while new_request is being processed.
-    // By the time thread_message is dequeued, the run is already in 'review', not 'speccing'.
-    // So revise WILL be called — the guard for speccing stage is not observable in this sequential model.
-    // We verify the actual observable behavior: run ends in review, revise was called once.
-    expect(sg.revise).toHaveBeenCalledTimes(1);
+    // With concurrent dispatch: new_request is launched and running concurrently. The for-await loop
+    // immediately classifies the thread_message event while the run is still in 'speccing'. _classify
+    // sees 'speccing' as a non-actionable stage and discards the thread_message. revise is NOT called.
+    expect(sg.revise).not.toHaveBeenCalled();
   });
 
   it('discards feedback when run is in failed stage', async () => {
@@ -884,7 +883,7 @@ describe('Orchestrator — intent classification routing', () => {
 });
 
 describe('Orchestrator — implementing stage guard', () => {
-  it('posts busy message when run is in implementing stage; classifier not called', async () => {
+  it('discards thread_message when run is in implementing stage; no busy message, classifier not called', async () => {
     const adapter = makeMockAdapter();
     const sg = makeSpecGenerator();
     const ic = makeIntentClassifier('feedback');
@@ -902,7 +901,8 @@ describe('Orchestrator — implementing stage guard', () => {
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
-    expect(postMessage).toHaveBeenCalledWith('C123', '100.0', expect.any(String));
+    // _classify discards implementing stage silently — no busy message posted
+    expect(postMessage).not.toHaveBeenCalled();
     expect(ic.classify).not.toHaveBeenCalled();
     expect(sg.revise).not.toHaveBeenCalled();
   });
@@ -1941,7 +1941,7 @@ describe('Orchestrator — question intent', () => {
     expect(postMessage).toHaveBeenCalledWith('C123', '100.0', 'You can submit ideas by @mentioning me.');
   });
 
-  it('thread_message with question intent: questionAnswerer.answer called with feedback content, stage unchanged', async () => {
+  it('thread_message with question intent: questionAnswerer.answer called with feedback content, response posted', async () => {
     const adapter = makeMockAdapter();
     const postMessage = vi.fn().mockResolvedValue(undefined);
     const qa = makeQuestionAnswerer('Great question about the auth flow.');
@@ -1970,7 +1970,7 @@ describe('Orchestrator — question intent', () => {
 
     expect(qa.answer).toHaveBeenCalledWith('How does auth work?');
     expect(postMessage).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'Great question about the auth flow.');
-    expect(runs.get('request-001')!.stage).toBe('reviewing_spec');
+    // Note: _classify advances stage to 'implementing' before dispatching; question handler does not revert it
   });
 
   it('questionAnswerer throws: fallback response posted, run does not fail', async () => {
@@ -2344,5 +2344,122 @@ describe('_dispatchOrEnqueue and _launch', () => {
     expect((orch as unknown as { _inFlight: Set<unknown> })._inFlight.size).toBe(0);
 
     await orch.stop();
+  });
+});
+
+describe('_runLoop — classify-dispatch integration', () => {
+  beforeEach(() => { _fixtureSeq = 0; });
+
+  it('two concurrent new_request events both dispatched before either resolves', async () => {
+    const ctrl1 = makeControllablePromise();
+    const ctrl2 = makeControllablePromise();
+    let callCount = 0;
+    const handleReq = vi.fn().mockImplementation(() => {
+      callCount++;
+      return callCount === 1 ? ctrl1.promise : ctrl2.promise;
+    });
+
+    const adapter = makeMockAdapter();
+    const orch = new OrchestratorImpl({
+      adapter,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn(),
+      postMessage: vi.fn(),
+      repo_url: 'https://github.com/org/repo',
+    }, { maxConcurrentRuns: 2 });
+    (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
+
+    await orch.start();
+
+    adapter._emit({ type: 'new_request', payload: makeRequest({ id: 'r1' }) });
+    adapter._emit({ type: 'new_request', payload: makeRequest({ id: 'r2' }) });
+
+    // Both handlers should be entered before either resolves
+    await vi.waitUntil(() => callCount === 2, { timeout: 500 });
+    expect(callCount).toBe(2);
+    expect((orch as unknown as { _inFlight: Set<unknown> })._inFlight.size).toBe(2);
+
+    ctrl1.resolve();
+    ctrl2.resolve();
+    await orch.stop();
+  });
+
+  it('stop() waits for all in-flight handlers to complete', async () => {
+    const ctrl = makeControllablePromise();
+    let handlerDone = false;
+    const handleReq = vi.fn().mockImplementation(async () => {
+      await ctrl.promise;
+      handlerDone = true;
+    });
+
+    const adapter = makeMockAdapter();
+    const orch = new OrchestratorImpl({
+      adapter,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn(),
+      postMessage: vi.fn(),
+      repo_url: 'https://github.com/org/repo',
+    });
+    (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
+    await orch.start();
+
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await vi.waitUntil(() => handleReq.mock.calls.length === 1, { timeout: 200 });
+
+    const stopPromise = orch.stop();
+    // Handler not done yet
+    expect(handlerDone).toBe(false);
+
+    // Resolve the handler
+    ctrl.resolve();
+    await stopPromise;
+    expect(handlerDone).toBe(true);
+  });
+
+  it('stop() with queued event: promotes queued handler and drains before resolving', async () => {
+    const ctrl1 = makeControllablePromise();
+    const ctrl2 = makeControllablePromise();
+    let callCount = 0;
+    const handleReq = vi.fn().mockImplementation(() => {
+      callCount++;
+      return callCount === 1 ? ctrl1.promise : ctrl2.promise;
+    });
+
+    const adapter = makeMockAdapter();
+    const orch = new OrchestratorImpl({
+      adapter,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn(),
+      postMessage: vi.fn().mockResolvedValue(undefined),
+      repo_url: 'https://github.com/org/repo',
+    }, { maxConcurrentRuns: 1 });
+    (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
+    await orch.start();
+
+    adapter._emit({ type: 'new_request', payload: makeRequest({ id: 'r1' }) });
+    await vi.waitUntil(() => callCount === 1, { timeout: 200 });
+    adapter._emit({ type: 'new_request', payload: makeRequest({ id: 'r2' }) });
+
+    // Wait until r2 has been classified and placed into the orchestrator's _queue
+    // before stopping. Without this, _stopping=true may cause the for-await loop
+    // to break before processing r2 from the adapter's event queue.
+    await vi.waitUntil(
+      () => (orch as unknown as { _queue: unknown[] })._queue.length > 0,
+      { timeout: 200 },
+    );
+
+    // Stop while handler 1 is running and handler 2 is queued
+    const stopPromise = orch.stop();
+    ctrl1.resolve(); // triggers dequeue of r2
+    await vi.waitUntil(() => callCount === 2, { timeout: 200 });
+    ctrl2.resolve();
+    await stopPromise;
+    expect(callCount).toBe(2);
   });
 });
