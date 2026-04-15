@@ -235,15 +235,15 @@ If an operator sets `aws_profile: " "` in [WORKFLOW.md](http://WORKFLOW.md), the
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `resolveAwsProfile` to `src/core/config.ts`
 - [ ] **Story: Tests**
-	- [ ] **Task: Unit tests for ****`resolveAwsProfile`**
+	- [x] **Task: Unit tests for ****`resolveAwsProfile`**
 		- **Description**: In `tests/core/config.test.ts`, add a `describe('resolveAwsProfile', ...)` block. Cover all cases from the testing plan: config wins over env; env used when config absent; `undefined` when neither set; empty string from config falls through to env; whitespace-only config treated as absent; trimming of leading/trailing whitespace from config value.
 		- **Acceptance criteria**:
-			- [ ] 7 test cases covering all cases from the testing plan §6
-			- [ ] Config \> env precedence asserted
-			- [ ] `undefined` return asserted when both absent
-			- [ ] Empty and whitespace config values asserted to fall through to env
-			- [ ] Trimming behavior asserted
-			- [ ] All tests pass (`npm test` or `npx vitest run`)
+			- [x] 7 test cases covering all cases from the testing plan §6
+			- [x] Config \> env precedence asserted
+			- [x] `undefined` return asserted when both absent
+			- [x] Empty and whitespace config values asserted to fall through to env
+			- [x] Trimming behavior asserted
+			- [x] All tests pass (`npm test` or `npx vitest run`)
 		- **Dependencies**: Task: Add `resolveAwsProfile` to `src/core/config.ts`
 	- [ ] **Task: Config type test for ****`aws_profile`**** field**
 		- **Description**: In `tests/core/config-types.test.ts`, add test cases verifying that `WorkflowConfig` with `aws_profile: 'my-profile'` satisfies the type, and that `WorkflowConfig` without `aws_profile` still satisfies the type. These are TypeScript-level type tests; use `satisfies WorkflowConfig` or assignment assertions.
