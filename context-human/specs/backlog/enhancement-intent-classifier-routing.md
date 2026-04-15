@@ -365,6 +365,34 @@ Message content is never logged. `request_id` replaces `idea_id` in all existing
 
 **`thread-registry.ts` — no new tests**; rename-only change, existing tests cover behavior
 
+### 7. Alternatives considered
+
+**Keep stage-specific intents in `IntentClassifier`, add separate top-level classifier**
+
+The existing `IntentClassifier` could be left as-is and a new classifier added for top-level messages. This avoids touching working code. Rejected because it splits the classification surface across two implementations with different taxonomies — exactly the inconsistency this enhancement exists to fix. One classifier, one taxonomy, one place to tune.
+
+**Keyword heuristics instead of AI classification for top-level messages**
+
+Simple pattern matching ("this is broken" → bug, ends with "?" → question) would be fast and cheap. Rejected because the AI classifier already exists and is proven; heuristics would need ongoing maintenance and would misclassify ambiguous messages that a language model handles well.
+
+**Persist intent on `ThreadRegistry` instead of `Run`**
+
+Intent could be stored alongside `thread_ts → request_id` in the registry rather than on the run. Rejected because `Run` is already the authoritative state record for a thread's lifecycle — adding intent there keeps all run state in one place and avoids a second lookup.
+
+### 8. Risks
+
+**Terminology rename blast radius**
+
+`idea_id` / `new_idea` / `Idea` appear across types, orchestrator, adapter, tests, and run store serialization. A partial rename will cause type errors; a serialization mismatch will break run persistence across the deploy. Mitigation: rename in a single task, run `tsc --noEmit` and full test suite before committing; treat the run store format as a breaking change and document it.
+
+**Classifier fallback produces wrong default for new contexts**
+
+The conservative fallback for `new_thread` and `intake` contexts needs to be defined explicitly — currently the fallback logic defaults to `spec_feedback` which won't exist after this change. Mitigation: define fallback as `idea` for `new_thread`/`intake` and `feedback` for reviewing stages; enforce via test.
+
+**Question handler requires a new AI call**
+
+Answering a question in-thread requires generating a response, which isn't currently implemented anywhere in the system. The spec says "answer question" but the mechanism isn't defined. Mitigation: for this PR, a question response can be a simple acknowledgement stub with a follow-up issue to implement real question answering.
+
 ## Task list
 
 *(Added by task decomposition stage)*
