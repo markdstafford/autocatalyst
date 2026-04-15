@@ -27,23 +27,26 @@ export function classifyMessage(
   botUserId: string,
   registry: ThreadRegistry,
 ): MessageClassification {
-  // Suppress bot's own messages (prevents response loops)
+  // Suppress bot's own messages
   if (message.user === botUserId) return { intent: 'ignore' };
 
-  // Must contain exact @mention token
+  // Must contain exact @mention of the bot
   const mention = `<@${botUserId}>`;
-  if (!message.text || !message.text.includes(mention)) {
-    return { intent: 'ignore' };
-  }
+  const hasBotMention = message.text?.includes(mention) ?? false;
 
-  // Thread reply: thread_ts exists and differs from ts
   const isReply = message.thread_ts !== undefined && message.thread_ts !== message.ts;
+
   if (isReply) {
+    // In-thread: ignore if bot is not mentioned
+    if (!hasBotMention) return { intent: 'ignore' };
+
     const request_id = registry.resolve(message.thread_ts!);
     if (request_id === undefined) return { intent: 'ignore' };
     return { intent: 'thread_message', request_id };
   }
 
+  // Top-level: must mention bot
+  if (!hasBotMention) return { intent: 'ignore' };
   return { intent: 'new_request' };
 }
 
