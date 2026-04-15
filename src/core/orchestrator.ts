@@ -19,6 +19,14 @@ import type { PRCreator } from '../adapters/agent/pr-creator.js';
 import { RunStore, FileRunStore } from './run-store.js';
 import type { ThreadRegistry } from '../adapters/slack/thread-registry.js';
 
+/** Maps an actionable review stage to the in-progress stage that prevents duplicate dispatch. */
+function stageAfterApproval(stage: RunStage): RunStage {
+  if (stage === 'reviewing_spec') return 'implementing';
+  if (stage === 'reviewing_implementation') return 'implementing';
+  if (stage === 'awaiting_impl_input') return 'implementing';
+  return stage;
+}
+
 export interface Orchestrator {
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -110,6 +118,39 @@ export class OrchestratorImpl implements Orchestrator {
       if (this._stopping) break;
       await this._handleRequest(event as InboundEvent);
     }
+  }
+
+  /**
+   * Classifies an event and decides whether to dispatch a heavy handler.
+   * Runs serially in the main loop — this is the deduplication gate.
+   *
+   * For new_request events: always returns 'dispatch'.
+   * For thread_message events: checks the run's current stage. If the action is
+   * valid, stores the original stage in _pendingStage (for routing in _handleRequest),
+   * advances the stage atomically before returning 'dispatch' so that a concurrent
+   * duplicate message sees the updated stage and is discarded.
+   */
+  private async _classify(event: InboundEvent): Promise<'dispatch' | 'discard'> {
+    if (event.type === 'new_request') {
+      return 'dispatch';
+    }
+    // thread_message path: look up run and check stage
+    const run = this.runs.get(event.payload.request_id);
+    if (!run) {
+      this.logger.debug({ event: 'classify.run_not_found', request_id: event.payload.request_id }, 'No run found; discarding');
+      return 'discard';
+    }
+    const actionableStages: RunStage[] = ['reviewing_spec', 'reviewing_implementation', 'awaiting_impl_input'];
+    if (!actionableStages.includes(run.stage)) {
+      this.logger.debug({ event: 'classify.stage_blocked', stage: run.stage }, 'Stage blocked: discarding thread_message');
+      return 'discard';
+    }
+    // Store original stage for routing in _handleRequest before advancing
+    this._pendingStage.set(event.payload.request_id, run.stage);
+    // Advance stage here — prevents a duplicate message from also dispatching
+    run.stage = stageAfterApproval(run.stage);
+    this.logger.debug({ event: 'classify.dispatched', stage: run.stage }, 'Stage advanced; dispatching');
+    return 'dispatch';
   }
 
   private async _handleRequest(event: InboundEvent): Promise<void> {

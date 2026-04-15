@@ -16,6 +16,66 @@ import type { ImplementationFeedbackPage } from '../../src/adapters/notion/imple
 
 const nullDest = { write: () => {} };
 
+// Helper: returns a promise whose resolution can be controlled externally
+function makeControllablePromise<T = void>(): { promise: Promise<T>; resolve: (v: T) => void; reject: (e: unknown) => void } {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
+// Helper: captures pino log records for assertion
+function makeLogCapture() {
+  const records: Record<string, unknown>[] = [];
+  const destination = {
+    write(msg: string) {
+      try { records.push(JSON.parse(msg) as Record<string, unknown>); } catch { /* ignore non-JSON */ }
+    },
+  };
+  return { records, destination: destination as unknown as import('pino').DestinationStream };
+}
+
+// Counter for deterministic fixture IDs — reset in beforeEach
+let _fixtureSeq = 0;
+function makeEventFixture(
+  type: 'new_request',
+  overrides?: Partial<Request>,
+): { type: 'new_request'; payload: Request };
+function makeEventFixture(
+  type: 'thread_message',
+  overrides?: Partial<ThreadMessage>,
+): { type: 'thread_message'; payload: ThreadMessage };
+function makeEventFixture(type: 'new_request' | 'thread_message', overrides: Record<string, unknown> = {}): { type: 'new_request'; payload: Request } | { type: 'thread_message'; payload: ThreadMessage } {
+  const n = ++_fixtureSeq;
+  if (type === 'new_request') {
+    return {
+      type: 'new_request',
+      payload: {
+        id: `req-${n}`,
+        source: 'slack' as const,
+        content: `content ${n}`,
+        author: `U${n}`,
+        received_at: new Date().toISOString(),
+        thread_ts: `${n}00.0`,
+        channel_id: `C${n}`,
+        ...overrides,
+      } as Request,
+    };
+  }
+  return {
+    type: 'thread_message',
+    payload: {
+      request_id: `req-${n}`,
+      content: `content ${n}`,
+      author: `U${n}`,
+      received_at: new Date().toISOString(),
+      thread_ts: `${n}00.0`,
+      channel_id: `C${n}`,
+      ...overrides,
+    } as ThreadMessage,
+  };
+}
+
 // Minimal mock of SlackAdapter — controls event emission
 function makeMockAdapter() {
   const eventQueue: unknown[] = [];
@@ -1965,5 +2025,182 @@ describe('Orchestrator — question intent', () => {
     await orch.stop();
 
     expect(postMessage).toHaveBeenCalledWith('C123', '100.0', expect.any(String));
+  });
+});
+
+describe('_classify — serial classification gate', () => {
+  beforeEach(() => { _fixtureSeq = 0; });
+
+  it('new_request always returns dispatch', async () => {
+    const adapter = makeMockAdapter();
+    const orch = new OrchestratorImpl({
+      adapter,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn(),
+      postMessage: vi.fn(),
+      repo_url: 'https://github.com/org/repo',
+    });
+    await orch.start();
+
+    const event = makeEventFixture('new_request');
+    const action = await (orch as unknown as { _classify(e: unknown): Promise<string> })._classify(event);
+    expect(action).toBe('dispatch');
+
+    await orch.stop();
+  });
+
+  it('thread_message with no matching run returns discard and logs classify.run_not_found', async () => {
+    const { records, destination } = makeLogCapture();
+    const adapter = makeMockAdapter();
+    const orch = new OrchestratorImpl({
+      adapter,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn(),
+      postMessage: vi.fn(),
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: destination });
+    await orch.start();
+
+    const event = makeEventFixture('thread_message', { request_id: 'nonexistent-run' });
+    const action = await (orch as unknown as { _classify(e: unknown): Promise<string> })._classify(event);
+    expect(action).toBe('discard');
+    const logEntry = records.find(r => r['event'] === 'classify.run_not_found');
+    expect(logEntry).toBeDefined();
+    expect(logEntry!['request_id']).toBe('nonexistent-run');
+
+    await orch.stop();
+  });
+
+  it('thread_message with run in speccing stage returns discard and logs classify.stage_blocked', async () => {
+    const { records, destination } = makeLogCapture();
+    const adapter = makeMockAdapter();
+    const orch = new OrchestratorImpl({
+      adapter,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn(),
+      postMessage: vi.fn(),
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: destination });
+    await orch.start();
+
+    const run: Run = {
+      id: 'run-1', request_id: 'req-speccing', intent: 'idea', stage: 'speccing',
+      workspace_path: '/ws', branch: 'b', spec_path: undefined, publisher_ref: undefined,
+      impl_feedback_ref: undefined, attempt: 0, channel_id: 'C1', thread_ts: '100.0',
+      created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    };
+    (orch as unknown as { runs: Map<string, Run> }).runs.set('req-speccing', run);
+
+    const event = makeEventFixture('thread_message', { request_id: 'req-speccing' });
+    const action = await (orch as unknown as { _classify(e: unknown): Promise<string> })._classify(event);
+    expect(action).toBe('discard');
+    const logEntry = records.find(r => r['event'] === 'classify.stage_blocked');
+    expect(logEntry).toBeDefined();
+    expect(logEntry!['stage']).toBe('speccing');
+
+    await orch.stop();
+  });
+
+  it('thread_message with run in implementing stage returns discard (stage_blocked)', async () => {
+    const { records, destination } = makeLogCapture();
+    const adapter = makeMockAdapter();
+    const orch = new OrchestratorImpl({
+      adapter,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn(),
+      postMessage: vi.fn(),
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: destination });
+    await orch.start();
+
+    const run: Run = {
+      id: 'run-1', request_id: 'req-impl', intent: 'idea', stage: 'implementing',
+      workspace_path: '/ws', branch: 'b', spec_path: '/spec.md', publisher_ref: 'PAGE1',
+      impl_feedback_ref: undefined, attempt: 1, channel_id: 'C1', thread_ts: '100.0',
+      created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    };
+    (orch as unknown as { runs: Map<string, Run> }).runs.set('req-impl', run);
+
+    const event = makeEventFixture('thread_message', { request_id: 'req-impl' });
+    const action = await (orch as unknown as { _classify(e: unknown): Promise<string> })._classify(event);
+    expect(action).toBe('discard');
+    expect(records.find(r => r['event'] === 'classify.stage_blocked' && r['stage'] === 'implementing')).toBeDefined();
+
+    await orch.stop();
+  });
+
+  it('thread_message in reviewing_spec advances stage to implementing and returns dispatch', async () => {
+    const { records, destination } = makeLogCapture();
+    const adapter = makeMockAdapter();
+    const orch = new OrchestratorImpl({
+      adapter,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn(),
+      postMessage: vi.fn(),
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: destination });
+    await orch.start();
+
+    const run: Run = {
+      id: 'run-1', request_id: 'req-review', intent: 'idea', stage: 'reviewing_spec',
+      workspace_path: '/ws', branch: 'b', spec_path: '/spec.md', publisher_ref: 'PAGE1',
+      impl_feedback_ref: undefined, attempt: 0, channel_id: 'C1', thread_ts: '100.0',
+      created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    };
+    (orch as unknown as { runs: Map<string, Run> }).runs.set('req-review', run);
+
+    const event = makeEventFixture('thread_message', { request_id: 'req-review' });
+    const action = await (orch as unknown as { _classify(e: unknown): Promise<string> })._classify(event);
+    expect(action).toBe('dispatch');
+    // Stage must be advanced before _classify returns
+    expect(run.stage).toBe('implementing');
+    expect(records.find(r => r['event'] === 'classify.dispatched')).toBeDefined();
+
+    await orch.stop();
+  });
+
+  it('duplicate approval: first returns dispatch advancing stage; second sees implementing and returns discard', async () => {
+    const adapter = makeMockAdapter();
+    const orch = new OrchestratorImpl({
+      adapter,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn(),
+      postMessage: vi.fn(),
+      repo_url: 'https://github.com/org/repo',
+    }, { maxConcurrentRuns: 10 });
+
+    const run: Run = {
+      id: 'run-1', request_id: 'req-dup', intent: 'idea', stage: 'reviewing_spec',
+      workspace_path: '/ws', branch: 'b', spec_path: '/spec.md', publisher_ref: 'PAGE1',
+      impl_feedback_ref: undefined, attempt: 0, channel_id: 'C1', thread_ts: '100.0',
+      created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+    };
+    (orch as unknown as { runs: Map<string, Run> }).runs.set('req-dup', run);
+
+    await orch.start();
+
+    const approval1 = makeEventFixture('thread_message', { request_id: 'req-dup' });
+    const approval2 = makeEventFixture('thread_message', { request_id: 'req-dup' });
+
+    const action1 = await (orch as unknown as { _classify(e: unknown): Promise<string> })._classify(approval1);
+    expect(action1).toBe('dispatch');
+    expect(run.stage).toBe('implementing');
+
+    const action2 = await (orch as unknown as { _classify(e: unknown): Promise<string> })._classify(approval2);
+    expect(action2).toBe('discard');
+
+    await orch.stop();
   });
 });

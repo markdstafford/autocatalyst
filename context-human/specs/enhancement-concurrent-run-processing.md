@@ -387,15 +387,15 @@ The queue notification is posted to the `thread_ts` of the incoming event before
 			- [x] Default value of `5` used when option is omitted
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: None
-	- [ ] **Task: Implement ****`_classify`**
+	- [x] **Task: Implement ****`_classify`**
 		- **Description**: Add `_classify(event: InboundEvent): Promise<'dispatch' | 'discard'>` to `OrchestratorImpl` per the detailed design in §3. For `new_request` events: return `'dispatch'`. For `thread_message` events: look up the run; if not found return `'discard'`; if found but stage is not actionable (`reviewing_spec`, `reviewing_implementation`, `awaiting_impl_input`) return `'discard'`; otherwise advance the run's stage atomically and return `'dispatch'`. Log `classify.run_not_found`, `classify.stage_blocked`, and `classify.dispatched` as appropriate.
 		- **Acceptance criteria**:
-			- [ ] `new_request` always returns `'dispatch'`
-			- [ ] `thread_message` with no matching run returns `'discard'` and logs `classify.run_not_found`
-			- [ ] `thread_message` with run in non-actionable stage returns `'discard'` and logs `classify.stage_blocked`
-			- [ ] `thread_message` with run in actionable stage advances stage and returns `'dispatch'`; logs `classify.dispatched`
-			- [ ] Stage advance happens before method returns (visible to next classify call)
-			- [ ] `tsc --noEmit` passes
+			- [x] `new_request` always returns `'dispatch'`
+			- [x] `thread_message` with no matching run returns `'discard'` and logs `classify.run_not_found`
+			- [x] `thread_message` with run in non-actionable stage returns `'discard'` and logs `classify.stage_blocked`
+			- [x] `thread_message` with run in actionable stage advances stage and returns `'dispatch'`; logs `classify.dispatched`
+			- [x] Stage advance happens before method returns (visible to next classify call)
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `_inFlight`, `_queue`, and `_maxConcurrentRuns` fields
 	- [ ] **Task: Implement ****`_dispatchOrEnqueue`**** and ****`_launch`**
 		- **Description**: Add `_dispatchOrEnqueue(event: InboundEvent): void` and `_launch(event: InboundEvent): void` to `OrchestratorImpl` per the detailed design in §3. `_dispatchOrEnqueue` checks `_inFlight.size >= _maxConcurrentRuns`; if at capacity, pushes to `_queue`, posts a "queued" notification (best-effort, non-blocking), and logs `run.queued`. Otherwise calls `_launch`. `_launch` wraps `_handleRequest` in a promise, attaches `.catch` for unhandled errors (logs `run.unhandled_error`), and `.finally` to delete from `_inFlight`, dequeue the next event, and log `run.dequeued` if applicable. Adds the promise to `_inFlight` and logs `run.dispatched`.
