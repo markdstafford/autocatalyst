@@ -88,7 +88,7 @@ describe('WorkspaceManager.create', () => {
     expect(existsSync(join(tempRoot, 'idea-xyz'))).toBe(false);
   });
 
-  it('two ideas with different idea_ids produce non-overlapping paths', async () => {
+  it('two requests with different request_ids produce non-overlapping paths', async () => {
     const execFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
     const wm = new WorkspaceManagerImpl(tempRoot, { execFn, logDestination: nullDest });
 
@@ -98,19 +98,19 @@ describe('WorkspaceManager.create', () => {
     expect(r1.workspace_path).not.toBe(r2.workspace_path);
   });
 
-  it('throws on invalid idea_id containing path separator', async () => {
+  it('throws on invalid request_id containing path separator', async () => {
     const execFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
     const wm = new WorkspaceManagerImpl(tempRoot, { execFn, logDestination: nullDest });
 
-    await expect(wm.create('idea/evil', 'https://github.com/org/repo.git')).rejects.toThrow(/Invalid idea_id/);
+    await expect(wm.create('idea/evil', 'https://github.com/org/repo.git')).rejects.toThrow(/Invalid request_id/);
     expect(execFn).not.toHaveBeenCalled();
   });
 
-  it('throws on invalid idea_id containing dot-dot traversal', async () => {
+  it('throws on invalid request_id containing dot-dot traversal', async () => {
     const execFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
     const wm = new WorkspaceManagerImpl(tempRoot, { execFn, logDestination: nullDest });
 
-    await expect(wm.create('idea..evil', 'https://github.com/org/repo.git')).rejects.toThrow(/Invalid idea_id/);
+    await expect(wm.create('idea..evil', 'https://github.com/org/repo.git')).rejects.toThrow(/Invalid request_id/);
     expect(execFn).not.toHaveBeenCalled();
   });
 });

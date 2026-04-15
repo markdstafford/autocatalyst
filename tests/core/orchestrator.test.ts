@@ -97,7 +97,7 @@ function makeFeedback(overrides: Partial<ThreadMessage> = {}): ThreadMessage {
   };
 }
 
-describe('Orchestrator — new_idea happy path', () => {
+describe('Orchestrator — new_request happy path', () => {
   it('calls all four components in order with correct arguments', async () => {
     const adapter = makeMockAdapter();
     const wm = makeWorkspaceManager();
@@ -145,7 +145,7 @@ describe('Orchestrator — new_idea happy path', () => {
   });
 });
 
-describe('Orchestrator — new_idea failure paths', () => {
+describe('Orchestrator — new_request failure paths', () => {
   it('WorkspaceManager failure: run is failed, error posted, no further components called', async () => {
     const adapter = makeMockAdapter();
     const wm = makeWorkspaceManager({ create: vi.fn().mockRejectedValue(new Error('clone failed')) });
@@ -247,7 +247,7 @@ describe('Orchestrator — spec_feedback happy path', () => {
 });
 
 describe('Orchestrator — spec_feedback guard conditions', () => {
-  it('discards feedback for unknown idea_id', async () => {
+  it('discards feedback for unknown request_id', async () => {
     const adapter = makeMockAdapter();
     const wm = makeWorkspaceManager();
     const sg = makeSpecGenerator();
@@ -290,7 +290,7 @@ describe('Orchestrator — spec_feedback guard conditions', () => {
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
-    // NOTE: With a sequential event loop, spec_feedback is queued while new_idea is being processed.
+    // NOTE: With a sequential event loop, spec_feedback is queued while new_request is being processed.
     // By the time spec_feedback is dequeued, the run is already in 'review', not 'speccing'.
     // So revise WILL be called — the guard for speccing stage is not observable in this sequential model.
     // We verify the actual observable behavior: run ends in review, revise was called once.
@@ -373,9 +373,9 @@ describe('Orchestrator — concurrency', () => {
   it('two simultaneous ideas produce independent runs with no cross-contamination', async () => {
     const adapter = makeMockAdapter();
     const wm: WorkspaceManager = {
-      create: vi.fn().mockImplementation(async (idea_id: string) => ({
-        workspace_path: `/ws/${idea_id}`,
-        branch: `spec/${idea_id}`,
+      create: vi.fn().mockImplementation(async (request_id: string) => ({
+        workspace_path: `/ws/${request_id}`,
+        branch: `spec/${request_id}`,
       })),
       destroy: vi.fn().mockResolvedValue(undefined),
     };

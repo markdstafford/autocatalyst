@@ -110,7 +110,7 @@ export class SlackAdapter implements HumanInterfaceAdapter {
         'Message classified',
       );
 
-      if (result.intent === 'new_idea') {
+      if (result.intent === 'new_request') {
         const request: Request = {
           id: randomUUID(),
           source: 'slack',
@@ -126,9 +126,9 @@ export class SlackAdapter implements HumanInterfaceAdapter {
         await this.postMessage(this.channelId!, msg.ts, "Got it — I'll work on a spec and post it here.");
         this.emit({ type: 'new_request', payload: request });
 
-      } else if (result.intent === 'spec_feedback') {
+      } else if (result.intent === 'thread_message') {
         const feedback: ThreadMessage = {
-          request_id: result.idea_id,
+          request_id: result.request_id,
           content: msg.text ?? '',
           author: msg.user,
           received_at: new Date().toISOString(),

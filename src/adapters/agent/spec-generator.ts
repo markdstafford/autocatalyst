@@ -135,7 +135,7 @@ export class OMCSpecGenerator implements SpecGenerator {
       `On the very first line of your response, write: FILENAME: <feature-or-enhancement-slug>.md`,
       `Then write the spec as a Markdown document with YAML frontmatter.`,
       ``,
-      `Idea:`,
+      `Request:`,
       `<<<`,
       request.content,
       `>>>`,

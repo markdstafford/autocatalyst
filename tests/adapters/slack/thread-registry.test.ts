@@ -7,7 +7,7 @@ describe('ThreadRegistry', () => {
     expect(registry.resolve('any-ts')).toBeUndefined();
   });
 
-  it('register then resolve returns the idea_id', () => {
+  it('register then resolve returns the request_id', () => {
     const registry = new ThreadRegistry();
     registry.register('1234567890.000001', 'idea-abc');
     expect(registry.resolve('1234567890.000001')).toBe('idea-abc');
@@ -19,7 +19,7 @@ describe('ThreadRegistry', () => {
     expect(registry.resolve('9999999999.000001')).toBeUndefined();
   });
 
-  it('re-registering the same thread_ts overwrites the previous idea_id', () => {
+  it('re-registering the same thread_ts overwrites the previous request_id', () => {
     const registry = new ThreadRegistry();
     registry.register('1234567890.000001', 'idea-first');
     registry.register('1234567890.000001', 'idea-second');
