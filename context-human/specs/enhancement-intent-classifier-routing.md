@@ -405,8 +405,8 @@ Answering a question in-thread requires generating a response, which isn't curre
 
 ## Task list
 
-- [ ] **Story: Unify intent taxonomy**
-  - [ ] **Task: Refactor `IntentClassifier` to unified taxonomy and `ClassificationContext`**
+- [x] **Story: Unify intent taxonomy**
+  - [x] **Task: Refactor `IntentClassifier` to unified taxonomy and `ClassificationContext`**
     - **Description**: Replace the existing stage-specific `Intent` type (`spec_feedback`, `spec_approval`, `implementation_feedback`, `implementation_approval`) with the unified taxonomy (`idea`, `bug`, `question`, `feedback`, `approval`, `ignore`). Replace the `RunStage` parameter with a `ClassificationContext` type (`'new_thread' | RunStage`). Update `VALID_INTENTS_BY_CONTEXT` to map each context to its valid intents. Update conservative fallbacks: `new_thread`/`intake` → `idea`; reviewing stages → `feedback`. Update the classifier prompt to use the new intent names and descriptions.
     - **Acceptance criteria**:
       - [ ] `Intent` type is `'idea' | 'bug' | 'question' | 'feedback' | 'approval' | 'ignore'`
@@ -416,7 +416,7 @@ Answering a question in-thread requires generating a response, which isn't curre
       - [ ] `tsc --noEmit` passes
     - **Dependencies**: None
 
-  - [ ] **Task: Update `IntentClassifier` unit tests**
+  - [x] **Task: Update `IntentClassifier` unit tests**
     - **Description**: Update `tests/adapters/agent/intent-classifier.test.ts` to cover the unified taxonomy. Add test cases for each `ClassificationContext` verifying valid intent sets. Add cases for fallback on invalid-for-context intent, empty message, and API failure. Remove tests for old stage-specific intents.
     - **Acceptance criteria**:
       - [ ] Test cases cover all five `ClassificationContext` values
