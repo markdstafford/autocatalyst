@@ -4,7 +4,7 @@ import { OrchestratorImpl } from '../../src/core/orchestrator.js';
 import type { WorkspaceManager } from '../../src/core/workspace-manager.js';
 import type { SpecGenerator } from '../../src/adapters/agent/spec-generator.js';
 import type { SpecPublisher } from '../../src/adapters/slack/canvas-publisher.js';
-import type { Idea, SpecFeedback } from '../../src/types/events.js';
+import type { Request, ThreadMessage } from '../../src/types/events.js';
 import type { FeedbackSource } from '../../src/adapters/notion/notion-feedback-source.js';
 import type { NotionComment, NotionCommentResponse } from '../../src/adapters/agent/spec-generator.js';
 import type { Run } from '../../src/types/runs.js';
@@ -72,7 +72,7 @@ function makeSpecPublisher(overrides: Partial<SpecPublisher> = {}): SpecPublishe
   };
 }
 
-function makeIdea(overrides: Partial<Idea> = {}): Idea {
+function makeRequest(overrides: Partial<Request> = {}): Request {
   return {
     id: 'idea-001',
     source: 'slack',
@@ -85,9 +85,9 @@ function makeIdea(overrides: Partial<Idea> = {}): Idea {
   };
 }
 
-function makeFeedback(overrides: Partial<SpecFeedback> = {}): SpecFeedback {
+function makeFeedback(overrides: Partial<ThreadMessage> = {}): ThreadMessage {
   return {
-    idea_id: 'idea-001',
+    request_id: 'idea-001',
     content: 'wizard should not require all settings',
     author: 'U456',
     received_at: new Date().toISOString(),
@@ -108,15 +108,15 @@ describe('Orchestrator — new_idea happy path', () => {
     const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo' }, { logDestination: nullDest });
     await orch.start();
 
-    const idea = makeIdea();
-    adapter._emit({ type: 'new_idea', payload: idea });
+    const request = makeRequest();
+    adapter._emit({ type: 'new_request', payload: request });
 
     // Give the loop time to process
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
     expect(wm.create).toHaveBeenCalledWith('idea-001', 'https://github.com/org/repo');
-    expect(sg.create).toHaveBeenCalledWith(idea, '/ws/idea-001');
+    expect(sg.create).toHaveBeenCalledWith(request, '/ws/idea-001');
     expect(cp.create).toHaveBeenCalledWith('C123', '100.0', '/ws/idea-001/context-human/specs/feature-test.md');
   });
 
@@ -130,7 +130,7 @@ describe('Orchestrator — new_idea happy path', () => {
     const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo' }, { logDestination: nullDest });
     await orch.start();
 
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
@@ -155,7 +155,7 @@ describe('Orchestrator — new_idea failure paths', () => {
 
     const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo' }, { logDestination: nullDest });
     await orch.start();
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
@@ -176,7 +176,7 @@ describe('Orchestrator — new_idea failure paths', () => {
 
     const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo' }, { logDestination: nullDest });
     await orch.start();
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
@@ -197,7 +197,7 @@ describe('Orchestrator — new_idea failure paths', () => {
 
     const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo' }, { logDestination: nullDest });
     await orch.start();
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
@@ -221,11 +221,11 @@ describe('Orchestrator — spec_feedback happy path', () => {
     await orch.start();
 
     // First seed the idea to get a run in review
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50));
 
     // Then send feedback
-    adapter._emit({ type: 'spec_feedback', payload: makeFeedback() });
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
@@ -236,7 +236,7 @@ describe('Orchestrator — spec_feedback happy path', () => {
 
     expect(cp.getPageMarkdown).toHaveBeenCalledWith('CANVAS001');
     expect(sg.revise).toHaveBeenCalledWith(
-      expect.objectContaining({ idea_id: 'idea-001' }),
+      expect.objectContaining({ request_id: 'idea-001' }),
       [],
       '/ws/idea-001/context-human/specs/feature-test.md',
       '/ws/idea-001',
@@ -257,7 +257,7 @@ describe('Orchestrator — spec_feedback guard conditions', () => {
     const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo' }, { logDestination: nullDest });
     await orch.start();
 
-    adapter._emit({ type: 'spec_feedback', payload: makeFeedback({ idea_id: 'unknown-idea' }) });
+    adapter._emit({ type: 'thread_message', payload: makeFeedback({ request_id: 'unknown-idea' }) });
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
@@ -279,10 +279,10 @@ describe('Orchestrator — spec_feedback guard conditions', () => {
     const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo' }, { logDestination: nullDest });
     await orch.start();
 
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 10)); // let it reach speccing stage
 
-    adapter._emit({ type: 'spec_feedback', payload: makeFeedback() });
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
     await new Promise(r => setTimeout(r, 10));
 
     // Now resolve the slow create so the loop can finish
@@ -307,11 +307,11 @@ describe('Orchestrator — spec_feedback guard conditions', () => {
     const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo' }, { logDestination: nullDest });
     await orch.start();
 
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50)); // run is now failed
 
     postError.mockClear();
-    adapter._emit({ type: 'spec_feedback', payload: makeFeedback() });
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
@@ -331,11 +331,11 @@ describe('Orchestrator — spec_feedback failure paths', () => {
     const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo' }, { logDestination: nullDest });
     await orch.start();
 
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50));
     postError.mockClear();
 
-    adapter._emit({ type: 'spec_feedback', payload: makeFeedback() });
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
@@ -354,11 +354,11 @@ describe('Orchestrator — spec_feedback failure paths', () => {
     const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo' }, { logDestination: nullDest });
     await orch.start();
 
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50));
     postError.mockClear();
 
-    adapter._emit({ type: 'spec_feedback', payload: makeFeedback() });
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
@@ -380,7 +380,7 @@ describe('Orchestrator — concurrency', () => {
       destroy: vi.fn().mockResolvedValue(undefined),
     };
     const sg: SpecGenerator = {
-      create: vi.fn().mockImplementation(async (_idea: Idea, workspace_path: string) =>
+      create: vi.fn().mockImplementation(async (_request: Request, workspace_path: string) =>
         `${workspace_path}/context-human/specs/feature-test.md`
       ),
       revise: vi.fn().mockResolvedValue({ comment_responses: [] }),
@@ -391,8 +391,8 @@ describe('Orchestrator — concurrency', () => {
     const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo' }, { logDestination: nullDest });
     await orch.start();
 
-    adapter._emit({ type: 'new_idea', payload: makeIdea({ id: 'idea-A', thread_ts: 'A.0' }) });
-    adapter._emit({ type: 'new_idea', payload: makeIdea({ id: 'idea-B', thread_ts: 'B.0' }) });
+    adapter._emit({ type: 'new_request', payload: makeRequest({ id: 'idea-A', thread_ts: 'A.0' }) });
+    adapter._emit({ type: 'new_request', payload: makeRequest({ id: 'idea-B', thread_ts: 'B.0' }) });
     await new Promise(r => setTimeout(r, 100));
     await orch.stop();
 
@@ -408,13 +408,13 @@ describe('Orchestrator — concurrency', () => {
 async function seedAndFeedback(
   orch: OrchestratorImpl,
   adapter: ReturnType<typeof makeMockAdapter>,
-  feedbackOverrides: Partial<SpecFeedback> = {},
+  feedbackOverrides: Partial<ThreadMessage> = {},
 ) {
   const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-  adapter._emit({ type: 'new_idea', payload: makeIdea() });
+  adapter._emit({ type: 'new_request', payload: makeRequest() });
   // Wait for run to reach 'review'
   await vi.waitUntil(() => runs.get('idea-001')?.stage === 'review', { timeout: 2000 });
-  adapter._emit({ type: 'spec_feedback', payload: makeFeedback(feedbackOverrides) });
+  adapter._emit({ type: 'thread_message', payload: makeFeedback(feedbackOverrides) });
   // Wait for run to no longer be 'speccing'
   await vi.waitUntil(() => runs.get('idea-001')?.stage !== 'speccing', { timeout: 2000 });
 }
@@ -457,7 +457,7 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     expect(sp.getPageMarkdown).toHaveBeenCalledWith('CANVAS001');
     expect(fs.fetch).toHaveBeenCalledWith('CANVAS001');
     expect(sg.revise).toHaveBeenCalledWith(
-      expect.objectContaining({ idea_id: 'idea-001' }),
+      expect.objectContaining({ request_id: 'idea-001' }),
       notionComments,
       expect.any(String),
       expect.any(String),
@@ -482,7 +482,7 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     await adapter.stop();
 
     expect(sg.revise).toHaveBeenCalledWith(
-      expect.objectContaining({ idea_id: 'idea-001' }),
+      expect.objectContaining({ request_id: 'idea-001' }),
       [],
       expect.any(String),
       expect.any(String),
@@ -504,7 +504,7 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     await adapter.stop();
 
     expect(sg.revise).toHaveBeenCalledWith(
-      expect.objectContaining({ idea_id: 'idea-001' }),
+      expect.objectContaining({ request_id: 'idea-001' }),
       [],
       expect.any(String),
       expect.any(String),
@@ -523,10 +523,10 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
       { logDestination: nullDest },
     );
     await orch.start();
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
     await vi.waitUntil(() => runs.get('idea-001')?.stage === 'review', { timeout: 2000 });
-    adapter._emit({ type: 'spec_feedback', payload: makeFeedback() });
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
     await vi.waitUntil(() => runs.get('idea-001')?.stage === 'failed', { timeout: 2000 });
     await adapter.stop();
 

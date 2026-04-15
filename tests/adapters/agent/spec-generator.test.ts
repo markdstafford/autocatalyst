@@ -4,12 +4,12 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync, existsSync
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { OMCSpecGenerator } from '../../../src/adapters/agent/spec-generator.js';
-import type { Idea, SpecFeedback } from '../../../src/types/events.js';
+import type { Request, ThreadMessage } from '../../../src/types/events.js';
 import type { NotionCommentResponse, ReviseResult } from '../../../src/adapters/agent/spec-generator.js';
 
 const nullDest = { write: () => {} };
 
-function makeIdea(overrides: Partial<Idea> = {}): Idea {
+function makeRequest(overrides: Partial<Request> = {}): Request {
   return {
     id: 'idea-001',
     source: 'slack',
@@ -22,9 +22,9 @@ function makeIdea(overrides: Partial<Idea> = {}): Idea {
   };
 }
 
-function makeFeedback(overrides: Partial<SpecFeedback> = {}): SpecFeedback {
+function makeFeedback(overrides: Partial<ThreadMessage> = {}): ThreadMessage {
   return {
-    idea_id: 'idea-001',
+    request_id: 'idea-001',
     content: 'the wizard should not require all settings before exiting',
     author: 'U456',
     received_at: new Date().toISOString(),
@@ -83,7 +83,7 @@ describe('SpecGenerator.create', () => {
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath + '\n', stderr: '' });
 
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
-    const result = await sg.create(makeIdea(), tempRoot);
+    const result = await sg.create(makeRequest(), tempRoot);
 
     expect(execFn).toHaveBeenCalledWith(
       'omc',
@@ -99,7 +99,7 @@ describe('SpecGenerator.create', () => {
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath, stderr: '' });
 
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
-    const result = await sg.create(makeIdea(), tempRoot);
+    const result = await sg.create(makeRequest(), tempRoot);
 
     const written = readFileSync(result, 'utf-8');
     expect(written).toContain('# Spec content');
@@ -111,7 +111,7 @@ describe('SpecGenerator.create', () => {
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath, stderr: '' });
 
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
-    const result = await sg.create(makeIdea(), tempRoot);
+    const result = await sg.create(makeRequest(), tempRoot);
 
     expect(result).toContain('enhancement-some-thing.md');
   });
@@ -122,7 +122,7 @@ describe('SpecGenerator.create', () => {
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath, stderr: '' });
 
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
-    await expect(sg.create(makeIdea(), tempRoot)).rejects.toThrow(/Invalid spec filename/);
+    await expect(sg.create(makeRequest(), tempRoot)).rejects.toThrow(/Invalid spec filename/);
   });
 
   it('throws on FILENAME: setup-wizard.md (missing feature-/enhancement- prefix)', async () => {
@@ -131,7 +131,7 @@ describe('SpecGenerator.create', () => {
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath, stderr: '' });
 
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
-    await expect(sg.create(makeIdea(), tempRoot)).rejects.toThrow(/Invalid spec filename/);
+    await expect(sg.create(makeRequest(), tempRoot)).rejects.toThrow(/Invalid spec filename/);
   });
 
   it('throws when FILENAME: line is absent', async () => {
@@ -140,14 +140,14 @@ describe('SpecGenerator.create', () => {
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath, stderr: '' });
 
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
-    await expect(sg.create(makeIdea(), tempRoot)).rejects.toThrow(/FILENAME/);
+    await expect(sg.create(makeRequest(), tempRoot)).rejects.toThrow(/FILENAME/);
   });
 
   it('throws if OMC exits non-zero', async () => {
     const execFn = vi.fn().mockRejectedValue(new Error('omc crashed'));
 
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
-    await expect(sg.create(makeIdea(), tempRoot)).rejects.toThrow(/OMC failed/);
+    await expect(sg.create(makeRequest(), tempRoot)).rejects.toThrow(/OMC failed/);
   });
 
   it('writes the correct spec body to the path and excludes the FILENAME line', async () => {
@@ -156,7 +156,7 @@ describe('SpecGenerator.create', () => {
     const execFn = vi.fn().mockResolvedValue({ stdout: artifactPath, stderr: '' });
 
     const sg = new OMCSpecGenerator({ execFn, logDestination: nullDest });
-    const result = await sg.create(makeIdea(), tempRoot);
+    const result = await sg.create(makeRequest(), tempRoot);
 
     const written = readFileSync(result, 'utf-8');
     expect(written).toContain('# My Spec');

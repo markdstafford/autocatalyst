@@ -6,10 +6,11 @@ import type { SlackAdapter } from '../adapters/slack/slack-adapter.js';
 import type { WorkspaceManager } from './workspace-manager.js';
 import type { SpecGenerator, ReviseResult } from '../adapters/agent/spec-generator.js';
 import type { SpecPublisher } from '../adapters/slack/canvas-publisher.js';
-import type { Run, RunStage } from '../types/runs.js';
-import type { Idea, SpecFeedback } from '../types/events.js';
+import type { Run, RunStage, RequestIntent } from '../types/runs.js';
+import type { Request, ThreadMessage } from '../types/events.js';
 import type { FeedbackSource } from '../adapters/notion/notion-feedback-source.js';
 import type { NotionComment } from '../adapters/agent/spec-generator.js';
+import type { IntentClassifier } from '../adapters/agent/intent-classifier.js';
 
 export interface Orchestrator {
   start(): Promise<void>;
@@ -22,6 +23,7 @@ interface OrchestratorDeps {
   specGenerator: SpecGenerator;
   specPublisher: SpecPublisher;
   feedbackSource?: FeedbackSource;
+  intentClassifier?: IntentClassifier;
   postError: (channel_id: string, thread_ts: string, text: string) => Promise<void>;
   postMessage: (channel_id: string, thread_ts: string, text: string) => Promise<void>;
   repo_url: string;
@@ -67,9 +69,9 @@ export class OrchestratorImpl implements Orchestrator {
   private async _runLoop(): Promise<void> {
     for await (const event of this.deps.adapter.receive()) {
       if (this._stopping) break;
-      if (event.type === 'new_idea') {
-        await this._handleNewIdea(event.payload);
-      } else if (event.type === 'spec_feedback') {
+      if (event.type === 'new_request') {
+        await this._handleNewRequest(event.payload);
+      } else if (event.type === 'thread_message') {
         await this._handleSpecFeedback(event.payload);
       }
       // approval_signal handled in a future feature
@@ -80,80 +82,84 @@ export class OrchestratorImpl implements Orchestrator {
     const from = run.stage;
     run.stage = stage;
     run.updated_at = new Date().toISOString();
-    this.logger.info({ event: 'run.stage_transition', run_id: run.id, idea_id: run.idea_id, from_stage: from, to_stage: stage }, 'Stage transition');
+    this.logger.info({ event: 'run.stage_transition', run_id: run.id, request_id: run.request_id, from_stage: from, to_stage: stage }, 'Stage transition');
   }
 
-  private createRun(idea_id: string): Run {
+  private createRun(request: Request): Run {
     const run: Run = {
       id: randomUUID(),
-      idea_id,
+      request_id: request.id,
+      intent: 'idea' as RequestIntent,
       stage: 'intake',
       workspace_path: '',
       branch: '',
       spec_path: undefined,
       publisher_ref: undefined,
+      impl_feedback_ref: undefined,
       attempt: 0,
+      channel_id: request.channel_id,
+      thread_ts: request.thread_ts,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    // Keyed by idea_id: at most one active run per idea is the design invariant.
-    // The event loop is sequential, so a second new_idea for the same idea_id
+    // Keyed by request_id: at most one active run per request is the design invariant.
+    // The event loop is sequential, so a second new_request for the same request_id
     // would not arrive until the first is fully processed.
-    this.runs.set(idea_id, run);
-    this.logger.info({ event: 'run.created', run_id: run.id, idea_id }, 'Run created');
+    this.runs.set(request.id, run);
+    this.logger.info({ event: 'run.created', run_id: run.id, request_id: request.id }, 'Run created');
     return run;
   }
 
   private async failRun(run: Run, channel_id: string, thread_ts: string, error: unknown): Promise<void> {
     this.transition(run, 'failed');
-    this.logger.error({ event: 'run.failed', run_id: run.id, idea_id: run.idea_id, error: String(error) }, 'Run failed');
+    this.logger.error({ event: 'run.failed', run_id: run.id, request_id: run.request_id, error: String(error) }, 'Run failed');
     await this.deps.postError(channel_id, thread_ts, `Sorry, something went wrong: ${String(error)}`);
   }
 
-  private async _handleNewIdea(idea: Idea): Promise<void> {
-    const run = this.createRun(idea.id);
+  private async _handleNewRequest(request: Request): Promise<void> {
+    const run = this.createRun(request);
     this.transition(run, 'speccing');
 
     // Step 1: Create workspace
     let workspace_path: string;
     let branch: string;
     try {
-      ({ workspace_path, branch } = await this.deps.workspaceManager.create(idea.id, this.deps.repo_url));
+      ({ workspace_path, branch } = await this.deps.workspaceManager.create(request.id, this.deps.repo_url));
       run.workspace_path = workspace_path;
       run.branch = branch;
     } catch (err) {
-      await this.failRun(run, idea.channel_id, idea.thread_ts, err);
+      await this.failRun(run, request.channel_id, request.thread_ts, err);
       return;
     }
 
     // Step 2: Generate spec
     let spec_path: string;
     try {
-      spec_path = await this.deps.specGenerator.create(idea, workspace_path);
+      spec_path = await this.deps.specGenerator.create(request, workspace_path);
       run.spec_path = spec_path;
     } catch (err) {
       await this.deps.workspaceManager.destroy(workspace_path);
-      await this.failRun(run, idea.channel_id, idea.thread_ts, err);
+      await this.failRun(run, request.channel_id, request.thread_ts, err);
       return;
     }
 
     // Step 3: Publish canvas
     let publisher_ref: string;
     try {
-      publisher_ref = await this.deps.specPublisher.create(idea.channel_id, idea.thread_ts, spec_path);
+      publisher_ref = await this.deps.specPublisher.create(request.channel_id, request.thread_ts, spec_path);
       run.publisher_ref = publisher_ref;
     } catch (err) {
       await this.deps.workspaceManager.destroy(workspace_path);
-      await this.failRun(run, idea.channel_id, idea.thread_ts, err);
+      await this.failRun(run, request.channel_id, request.thread_ts, err);
       return;
     }
 
-    this.transition(run, 'review');
+    this.transition(run, 'review' as RunStage);
   }
 
-  private async _handleSpecFeedback(feedback: SpecFeedback): Promise<void> {
-    const run = this.runs.get(feedback.idea_id);
-    if (!run || run.stage !== 'review') return;
+  private async _handleSpecFeedback(feedback: ThreadMessage): Promise<void> {
+    const run = this.runs.get(feedback.request_id);
+    if (!run || run.stage !== ('review' as RunStage)) return;
 
     if (!run.spec_path || !run.publisher_ref) {
       await this.failRun(run, feedback.channel_id, feedback.thread_ts, new Error('Run in review state is missing spec_path or publisher_ref'));
@@ -180,13 +186,13 @@ export class OrchestratorImpl implements Orchestrator {
       pageMarkdown = await this.deps.specPublisher.getPageMarkdown(run.publisher_ref);
       if (!pageMarkdown) pageMarkdown = undefined;
     } catch (err) {
-      this.logger.warn({ event: 'page_markdown.failed', run_id: run.id, idea_id: run.idea_id, error: String(err) }, 'Failed to get page markdown; spans will not be preserved');
+      this.logger.warn({ event: 'page_markdown.failed', run_id: run.id, request_id: run.request_id, error: String(err) }, 'Failed to get page markdown; spans will not be preserved');
     }
 
     this.logger.debug({
       event: 'spec_revision.enriched',
       run_id: run.id,
-      idea_id: run.idea_id,
+      request_id: run.request_id,
       slack_feedback: feedback.content.length > 0,
       notion_comment_count: notionComments.length,
       has_page_markdown: !!pageMarkdown,
@@ -202,7 +208,7 @@ export class OrchestratorImpl implements Orchestrator {
     }
 
     const { comment_responses: commentResponses, page_content } = result;
-    this.logger.debug({ event: 'spec_revision.responses', run_id: run.id, idea_id: run.idea_id, comment_response_count: commentResponses?.length ?? 0, comment_response_ids: commentResponses?.map(r => r.comment_id) ?? [] }, 'Comment responses returned from revise()');
+    this.logger.debug({ event: 'spec_revision.responses', run_id: run.id, request_id: run.request_id, comment_response_count: commentResponses?.length ?? 0, comment_response_ids: commentResponses?.map(r => r.comment_id) ?? [] }, 'Comment responses returned from revise()');
 
     // Step 3: Update published page
     try {
@@ -235,6 +241,6 @@ export class OrchestratorImpl implements Orchestrator {
       this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post completion notification');
     }
 
-    this.transition(run, 'review');
+    this.transition(run, 'review' as RunStage);
   }
 }

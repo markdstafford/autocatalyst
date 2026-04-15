@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
-import type { Idea, SpecFeedback } from '../../types/events.js';
+import type { Request, ThreadMessage } from '../../types/events.js';
 import { stripCommentSpans, extractCommentSpans, ensureSpansPreserved } from '../notion/markdown-diff.js';
 
 export interface NotionComment {
@@ -30,9 +30,9 @@ export interface ReviseResult {
 }
 
 export interface SpecGenerator {
-  create(idea: Idea, workspace_path: string): Promise<string>;
+  create(request: Request, workspace_path: string): Promise<string>;
   revise(
-    feedback: SpecFeedback,
+    feedback: ThreadMessage,
     notion_comments: NotionComment[],
     spec_path: string,
     workspace_path: string,
@@ -128,7 +128,7 @@ export class OMCSpecGenerator implements SpecGenerator {
     this.logger = createLogger('spec-generator', { destination: options?.logDestination });
   }
 
-  async create(idea: Idea, workspace_path: string): Promise<string> {
+  async create(request: Request, workspace_path: string): Promise<string> {
     const prompt = [
       `Using mm:planning conventions, generate a complete product spec for the following idea.`,
       ``,
@@ -137,25 +137,25 @@ export class OMCSpecGenerator implements SpecGenerator {
       ``,
       `Idea:`,
       `<<<`,
-      idea.content,
+      request.content,
       `>>>`,
     ].join('\n');
 
-    this.logger.debug({ event: 'omc.invoked', idea_id: idea.id }, 'Invoking OMC for spec creation');
+    this.logger.debug({ event: 'omc.invoked', request_id: request.id }, 'Invoking OMC for spec creation');
 
     let artifactPath: string;
     try {
       const { stdout } = await this.execFn('omc', ['ask', 'claude', '--print', prompt], { cwd: workspace_path });
       artifactPath = stdout.trim();
     } catch (err) {
-      this.logger.error({ event: 'omc.failed', idea_id: idea.id, error: String(err) }, 'OMC exited non-zero');
+      this.logger.error({ event: 'omc.failed', request_id: request.id, error: String(err) }, 'OMC exited non-zero');
       throw new Error(`OMC failed: ${String(err)}`);
     }
 
-    this.logger.debug({ event: 'omc.completed', idea_id: idea.id, artifactPath }, 'OMC completed');
+    this.logger.debug({ event: 'omc.completed', request_id: request.id, artifactPath }, 'OMC completed');
 
     if (!artifactPath) {
-      throw new Error(`OMC returned empty artifact path for idea ${idea.id}`);
+      throw new Error(`OMC returned empty artifact path for request ${request.id}`);
     }
 
     let artifactContent: string;
@@ -171,12 +171,12 @@ export class OMCSpecGenerator implements SpecGenerator {
     const spec_path = join(specDir, filename);
     writeFileSync(spec_path, body, 'utf-8');
 
-    this.logger.info({ event: 'spec.generated', idea_id: idea.id, spec_path }, 'Spec generated');
+    this.logger.info({ event: 'spec.generated', request_id: request.id, spec_path }, 'Spec generated');
     return spec_path;
   }
 
   async revise(
-    feedback: SpecFeedback,
+    feedback: ThreadMessage,
     notion_comments: NotionComment[],
     spec_path: string,
     workspace_path: string,
@@ -250,22 +250,22 @@ export class OMCSpecGenerator implements SpecGenerator {
       `>>>`,
     ].filter(line => line !== undefined).join('\n');
 
-    this.logger.debug({ event: 'spec_revision.input', idea_id: feedback.idea_id, notion_comment_count: notion_comments.length, comment_ids: notion_comments.map(c => c.id) }, 'Revise called with Notion comments');
-    this.logger.debug({ event: 'omc.invoked', idea_id: feedback.idea_id }, 'Invoking OMC for spec revision');
+    this.logger.debug({ event: 'spec_revision.input', request_id: feedback.request_id, notion_comment_count: notion_comments.length, comment_ids: notion_comments.map(c => c.id) }, 'Revise called with Notion comments');
+    this.logger.debug({ event: 'omc.invoked', request_id: feedback.request_id }, 'Invoking OMC for spec revision');
 
     let artifactPath: string;
     try {
       const { stdout } = await this.execFn('omc', ['ask', 'claude', '--print', prompt], { cwd: workspace_path });
       artifactPath = stdout.trim();
     } catch (err) {
-      this.logger.error({ event: 'omc.failed', idea_id: feedback.idea_id, error: String(err) }, 'OMC exited non-zero during revision');
+      this.logger.error({ event: 'omc.failed', request_id: feedback.request_id, error: String(err) }, 'OMC exited non-zero during revision');
       throw new Error(`OMC revision failed: ${String(err)}`);
     }
 
-    this.logger.debug({ event: 'omc.completed', idea_id: feedback.idea_id, artifactPath }, 'OMC revision completed');
+    this.logger.debug({ event: 'omc.completed', request_id: feedback.request_id, artifactPath }, 'OMC revision completed');
 
     if (!artifactPath) {
-      throw new Error(`OMC returned empty artifact path for idea ${feedback.idea_id}`);
+      throw new Error(`OMC returned empty artifact path for request ${feedback.request_id}`);
     }
 
     let artifactContent: string;
@@ -275,7 +275,7 @@ export class OMCSpecGenerator implements SpecGenerator {
       throw new Error(`Failed to read artifact at "${artifactPath}": ${String(err)}`, { cause: err });
     }
 
-    this.logger.debug({ event: 'omc.artifact_content', idea_id: feedback.idea_id, artifactContent }, 'Raw OMC artifact for revision');
+    this.logger.debug({ event: 'omc.artifact_content', request_id: feedback.request_id, artifactContent }, 'Raw OMC artifact for revision');
     const rawOutput = extractRawOutput(artifactContent, 'Spec revision');
     const unwrapped = unwrapFence(rawOutput.trim());
 
@@ -312,17 +312,17 @@ export class OMCSpecGenerator implements SpecGenerator {
       commentResponses.push({ comment_id: entry['comment_id'], response: entry['response'] });
     }
 
-    this.logger.debug({ event: 'spec_revision.output', idea_id: feedback.idea_id, comment_response_count: commentResponses.length, comment_response_ids: commentResponses.map(r => r.comment_id) }, 'Parsed comment responses from revision');
+    this.logger.debug({ event: 'spec_revision.output', request_id: feedback.request_id, comment_response_count: commentResponses.length, comment_response_ids: commentResponses.map(r => r.comment_id) }, 'Parsed comment responses from revision');
 
     if (hasSpans) {
       const pageContent = ensureSpansPreserved(spec, originalSpans);
       writeFileSync(spec_path, stripCommentSpans(pageContent), 'utf-8');
-      this.logger.info({ event: 'spec.revised', idea_id: feedback.idea_id, spec_path, spans_preserved: true }, 'Spec revised with span passthrough');
+      this.logger.info({ event: 'spec.revised', request_id: feedback.request_id, spec_path, spans_preserved: true }, 'Spec revised with span passthrough');
       return { comment_responses: commentResponses, page_content: pageContent };
     }
 
     writeFileSync(spec_path, spec, 'utf-8');
-    this.logger.info({ event: 'spec.revised', idea_id: feedback.idea_id, spec_path }, 'Spec revised');
+    this.logger.info({ event: 'spec.revised', request_id: feedback.request_id, spec_path }, 'Spec revised');
     return { comment_responses: commentResponses };
   }
 }
