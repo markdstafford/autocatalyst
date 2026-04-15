@@ -42,7 +42,17 @@ Every inbound message is a request for something — a new feature, a bug fix, a
 
 ### Affected files
 
-*(Populated during tech specs stage — list files that will change and why)*
+- `src/adapters/agent/intent-classifier.ts` — replace stage-specific taxonomy with unified taxonomy; add `new_thread` / `intake` contexts
+- `src/adapters/slack/classifier.ts` — update ignore rules for `@other_user` in-thread; remove `spec_feedback` return
+- `src/adapters/slack/slack-adapter.ts` — emit `new_request` / `thread_message`; remove hardcoded intent routing
+- `src/adapters/slack/thread-registry.ts` — rename `idea_id` → `request_id` internally
+- `src/core/orchestrator.ts` — replace multi-handler dispatch with `_handleRequest`; add intent upgrade logic; add question stub handler
+- `src/types/events.ts` — rename `Idea` → `Request`, `new_idea` → `new_request`, `ThreadMessage.idea_id` → `request_id`
+- `src/types/runs.ts` — add `intent: RequestIntent` field; rename `idea_id` → `request_id`
+- `tests/adapters/agent/intent-classifier.test.ts` — update for unified taxonomy
+- `tests/adapters/slack/classifier.test.ts` — update for new ignore rules and return types
+- `tests/adapters/slack/slack-adapter.test.ts` — update for `new_request` event type
+- `tests/core/orchestrator.test.ts` — update for unified intent routing and rename
 
 ### Changes
 
