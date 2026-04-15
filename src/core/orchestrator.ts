@@ -45,6 +45,7 @@ interface OrchestratorDeps {
 
 interface OrchestratorOptions {
   logDestination?: pino.DestinationStream;
+  maxConcurrentRuns?: number; // default: 5
 }
 
 export class OrchestratorImpl implements Orchestrator {
@@ -53,10 +54,19 @@ export class OrchestratorImpl implements Orchestrator {
   private readonly runs = new Map<string, Run>();
   private _stopping = false;
   private _loopPromise: Promise<void> = Promise.resolve();
+  private _inFlight = new Set<Promise<void>>();
+  private _queue: InboundEvent[] = [];
+  private readonly _maxConcurrentRuns: number;
+  /** Maps request_id → the run stage that was current when _classify dispatched the event.
+   *  Stored before _classify advances the stage; read and deleted by _handleRequest for routing. */
+  private _pendingStage = new Map<string, RunStage>();
+  /** Maps queued InboundEvent reference → enqueue timestamp (ms) for queue_wait_ms metric. */
+  private _queueTimestamps = new Map<InboundEvent, number>();
 
   constructor(deps: OrchestratorDeps, options?: OrchestratorOptions) {
     this.deps = deps;
     this.logger = createLogger('orchestrator', { destination: options?.logDestination });
+    this._maxConcurrentRuns = options?.maxConcurrentRuns ?? 5;
     if (deps.runStore) {
       const loaded = deps.runStore.load();
       for (const run of loaded) {

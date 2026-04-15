@@ -379,13 +379,13 @@ The queue notification is posted to the `thread_ts` of the incoming event before
 			- [x] References the alternatives considered and why each was rejected
 		- **Dependencies**: None
 - [ ] **Story: Serial classification gate**
-	- [ ] **Task: Add ****`_inFlight`****, ****`_queue`****, and ****`_maxConcurrentRuns`**** fields**
+	- [x] **Task: Add ****`_inFlight`****, ****`_queue`****, and ****`_maxConcurrentRuns`**** fields**
 		- **Description**: Add three private fields to `OrchestratorImpl`: `_inFlight = new Set<Promise<void>>()`, `_queue: InboundEvent[] = []`, and `readonly _maxConcurrentRuns: number`. Extend `OrchestratorOptions` with `maxConcurrentRuns?: number`. Initialise `_maxConcurrentRuns = options?.maxConcurrentRuns ?? 5` in the constructor.
 		- **Acceptance criteria**:
-			- [ ] `_inFlight`, `_queue`, and `_maxConcurrentRuns` fields present on `OrchestratorImpl`
-			- [ ] `OrchestratorOptions` has `maxConcurrentRuns?: number`
-			- [ ] Default value of `5` used when option is omitted
-			- [ ] `tsc --noEmit` passes
+			- [x] `_inFlight`, `_queue`, and `_maxConcurrentRuns` fields present on `OrchestratorImpl`
+			- [x] `OrchestratorOptions` has `maxConcurrentRuns?: number`
+			- [x] Default value of `5` used when option is omitted
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: None
 	- [ ] **Task: Implement ****`_classify`**
 		- **Description**: Add `_classify(event: InboundEvent): Promise<'dispatch' | 'discard'>` to `OrchestratorImpl` per the detailed design in §3. For `new_request` events: return `'dispatch'`. For `thread_message` events: look up the run; if not found return `'discard'`; if found but stage is not actionable (`reviewing_spec`, `reviewing_implementation`, `awaiting_impl_input`) return `'discard'`; otherwise advance the run's stage atomically and return `'dispatch'`. Log `classify.run_not_found`, `classify.stage_blocked`, and `classify.dispatched` as appropriate.
