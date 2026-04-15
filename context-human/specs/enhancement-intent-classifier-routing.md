@@ -476,8 +476,8 @@ Answering a question in-thread requires generating a response, which isn't curre
       - [ ] All tests pass
     - **Dependencies**: Task: Update `classifier.ts` for new ignore rules and return type
 
-- [ ] **Story: Wire top-level classification through `IntentClassifier`**
-  - [ ] **Task: Update `slack-adapter.ts` to emit `new_request` via `IntentClassifier`**
+- [x] **Story: Wire top-level classification through `IntentClassifier`**
+  - [x] **Task: Update `slack-adapter.ts` to emit `new_request` via `IntentClassifier`**
     - **Description**: Update `src/adapters/slack/slack-adapter.ts`. On top-level @mention: call `IntentClassifier.classify(content, 'new_thread')` before emitting. Emit `{ type: 'new_request', payload: Request }` regardless of intent — the orchestrator handles routing. Remove hardcoded `new_idea` / `spec_feedback` paths. For in-thread @mentions that pass classification: emit `{ type: 'thread_message', payload: ThreadMessage }` unchanged. The `IntentClassifier` is injected via the adapter constructor (optional dep, same pattern as existing deps).
     - **Acceptance criteria**:
       - [ ] `IntentClassifier` injected via constructor as optional dep
@@ -487,7 +487,7 @@ Answering a question in-thread requires generating a response, which isn't curre
       - [ ] `tsc --noEmit` passes
     - **Dependencies**: Task: Update `classifier.ts` for new ignore rules and return type, Task: Refactor `IntentClassifier` to unified taxonomy and `ClassificationContext`
 
-  - [ ] **Task: Update `slack-adapter.ts` integration tests**
+  - [x] **Task: Update `slack-adapter.ts` integration tests**
     - **Description**: Update `tests/adapters/slack/slack-adapter.test.ts`. Replace `new_idea` event assertions with `new_request`. Add cases verifying `IntentClassifier` is called with `'new_thread'` context on top-level @mentions. Verify `thread_message` is still emitted correctly for in-thread @mentions. Verify `@other_user`-only threads are ignored.
     - **Acceptance criteria**:
       - [ ] `new_request` event shape verified
