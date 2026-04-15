@@ -427,8 +427,8 @@ Answering a question in-thread requires generating a response, which isn't curre
       - [ ] All tests pass
     - **Dependencies**: Task: Refactor `IntentClassifier` to unified taxonomy and `ClassificationContext`
 
-- [ ] **Story: Rename `Idea` → `Request` throughout**
-  - [ ] **Task: Rename types in `events.ts` and `runs.ts`**
+- [x] **Story: Rename `Idea` → `Request` throughout**
+  - [x] **Task: Rename types in `events.ts` and `runs.ts`**
     - **Description**: In `src/types/events.ts`: rename `Idea` → `Request`, `new_idea` → `new_request`, `ThreadMessage.idea_id` → `request_id`. In `src/types/runs.ts`: rename `idea_id` → `request_id`; add `intent: RequestIntent` field where `RequestIntent = 'idea' | 'bug' | 'question'`.
     - **Acceptance criteria**:
       - [ ] `Request` interface exists with same fields as old `Idea`
@@ -440,7 +440,7 @@ Answering a question in-thread requires generating a response, which isn't curre
       - [ ] `tsc --noEmit` passes (will have downstream errors until call sites updated)
     - **Dependencies**: None
 
-  - [ ] **Task: Rename all call sites**
+  - [x] **Task: Rename all call sites**
     - **Description**: Update every file that references `idea_id`, `new_idea`, or `Idea` in the work-item context: `src/core/orchestrator.ts`, `src/adapters/slack/slack-adapter.ts`, `src/adapters/slack/thread-registry.ts`, `src/core/run-store.ts` (serialization — treat as breaking change, document in commit message), `src/index.ts`. Grep for remaining references after the rename: `grep -r "idea_id\|new_idea\|: Idea\b" src/`.
     - **Acceptance criteria**:
       - [ ] `grep -r "idea_id\|new_idea\|: Idea\b" src/` returns no matches
@@ -448,7 +448,7 @@ Answering a question in-thread requires generating a response, which isn't curre
       - [ ] `tsc --noEmit` passes
     - **Dependencies**: Task: Rename types in `events.ts` and `runs.ts`
 
-  - [ ] **Task: Update all affected tests**
+  - [x] **Task: Update all affected tests**
     - **Description**: Update all test files that reference `idea_id`, `new_idea`, or `Idea` in the work-item context. Grep for remaining references: `grep -r "idea_id\|new_idea\|: Idea\b" tests/`.
     - **Acceptance criteria**:
       - [ ] `grep -r "idea_id\|new_idea\|: Idea\b" tests/` returns no matches
