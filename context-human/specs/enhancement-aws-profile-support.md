@@ -205,7 +205,7 @@ Setting `process.env['AWS_PROFILE']` is a global side effect. If any code runnin
 If an operator sets `aws_profile: " "` in [WORKFLOW.md](http://WORKFLOW.md), the intent is ambiguous (mistake or deliberate reset?). The spec treats whitespace-only as absent and falls back to the env var. This is the safer default — a blank config field shouldn't override a valid env var. Mitigation: documented in the trimming behavior; no special error is raised.
 ## Task list
 
-- [ ] **Story: Implement AWS profile resolution**
+- [x] **Story: Implement AWS profile resolution**
 	- [x] **Task: Add ****`aws_profile`**** field to ****`WorkflowConfig`**
 		- **Description**: In `src/types/config.ts`, add `aws_profile?: string` to the `WorkflowConfig` interface, immediately after the `notion` block and before the index signature.
 		- **Acceptance criteria**:
@@ -224,15 +224,15 @@ If an operator sets `aws_profile: " "` in [WORKFLOW.md](http://WORKFLOW.md), the
 			- [x] Values are trimmed before returning
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `aws_profile` field to `WorkflowConfig`
-	- [ ] **Task: Apply resolved profile in ****`src/index.ts`**
+	- [x] **Task: Apply resolved profile in ****`src/index.ts`**
 		- **Description**: In `src/index.ts`, import `resolveAwsProfile` from `./core/config.js`. After the `loadConfig` call and before the `if (anthropicApiKey)` / Bedrock client block, add the resolution and application logic: call `resolveAwsProfile(currentConfig.config, process.env)`, and if the result is defined, set `process.env['AWS_PROFILE']` and log a `service.config` event with the `aws_profile` field. Verify the insertion point is before line 112 (the `const anthropicApiKey` line).
 		- **Acceptance criteria**:
-			- [ ] `resolveAwsProfile` is called after `loadConfig`
-			- [ ] `process.env['AWS_PROFILE']` is set to the resolved value when defined
-			- [ ] `service.config` event is logged with `aws_profile` when a profile is applied
-			- [ ] Block is inserted before Bedrock client construction
-			- [ ] When resolved profile is `undefined`, `process.env['AWS_PROFILE']` is not modified
-			- [ ] `tsc --noEmit` passes
+			- [x] `resolveAwsProfile` is called after `loadConfig`
+			- [x] `process.env['AWS_PROFILE']` is set to the resolved value when defined
+			- [x] `service.config` event is logged with `aws_profile` when a profile is applied
+			- [x] Block is inserted before Bedrock client construction
+			- [x] When resolved profile is `undefined`, `process.env['AWS_PROFILE']` is not modified
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `resolveAwsProfile` to `src/core/config.ts`
 - [ ] **Story: Tests**
 	- [ ] **Task: Unit tests for ****`resolveAwsProfile`**

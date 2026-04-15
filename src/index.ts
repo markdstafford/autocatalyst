@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { parseArgs, printUsage } from './core/cli.js';
-import { bootstrapWorkflow, loadConfig, redactConfig, resolveEnvVars } from './core/config.js';
+import { bootstrapWorkflow, loadConfig, redactConfig, resolveEnvVars, resolveAwsProfile } from './core/config.js';
 import { ConfigWatcher } from './core/config-watcher.js';
 import { Service } from './core/service.js';
 import { registerSignalHandlers } from './core/signals.js';
@@ -68,6 +68,16 @@ try {
     ),
   );
   logger.info({ event: 'config.loaded', config: redacted }, 'Configuration loaded');
+
+  // Resolve AWS profile — config takes precedence over environment variable
+  const resolvedAwsProfile = resolveAwsProfile(currentConfig.config, process.env as Record<string, string | undefined>);
+  if (resolvedAwsProfile !== undefined) {
+    process.env['AWS_PROFILE'] = resolvedAwsProfile;
+    logger.info(
+      { event: 'service.config', aws_profile: resolvedAwsProfile },
+      'Using AWS profile',
+    );
+  }
 
   // Resolve repo_url from git origin
   let repo_url: string;
