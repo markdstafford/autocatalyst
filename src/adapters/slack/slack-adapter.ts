@@ -3,7 +3,7 @@ import type { App } from '@slack/bolt';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 import type { HumanInterfaceAdapter } from '../human-interface-adapter.js';
-import type { InboundEvent, Idea, ThreadMessage } from '../../types/events.js';
+import type { InboundEvent, Request, ThreadMessage } from '../../types/events.js';
 import { classifyMessage } from './classifier.js';
 import { ThreadRegistry } from './thread-registry.js';
 
@@ -109,8 +109,8 @@ export class SlackAdapter implements HumanInterfaceAdapter {
         'Message classified',
       );
 
-      if (result.intent === 'new_idea') {
-        const idea: Idea = {
+      if (result.intent === 'new_request') {
+        const request: Request = {
           id: randomUUID(),
           source: 'slack',
           content: msg.text ?? '',
@@ -121,13 +121,13 @@ export class SlackAdapter implements HumanInterfaceAdapter {
         };
 
         // Post acknowledgement and register thread before emitting
-        this.registry.register(msg.ts, idea.id);
+        this.registry.register(msg.ts, request.id);
         await this.postMessage(this.channelId!, msg.ts, "Got it — I'll work on a spec and post it here.");
-        this.emit({ type: 'new_idea', payload: idea });
+        this.emit({ type: 'new_request', payload: request });
 
-      } else if (result.intent === 'spec_feedback') {
+      } else if (result.intent === 'thread_message') {
         const message: ThreadMessage = {
-          idea_id: result.idea_id,
+          request_id: result.request_id,
           content: msg.text ?? '',
           author: msg.user,
           received_at: new Date().toISOString(),

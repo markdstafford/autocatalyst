@@ -4,13 +4,13 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'nod
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { AgentSDKSpecGenerator } from '../../../src/adapters/agent/spec-generator.js';
-import type { Idea, ThreadMessage } from '../../../src/types/events.js';
+import type { Request, ThreadMessage } from '../../../src/types/events.js';
 
 const nullDest = { write: () => {} };
 
-function makeIdea(overrides: Partial<Idea> = {}): Idea {
+function makeRequest(overrides: Partial<Request> = {}): Request {
   return {
-    id: 'idea-001',
+    id: 'request-001',
     source: 'slack',
     content: 'add a setup wizard to the CLI',
     author: 'U123',
@@ -23,7 +23,7 @@ function makeIdea(overrides: Partial<Idea> = {}): Idea {
 
 function makeFeedback(overrides: Partial<ThreadMessage> = {}): ThreadMessage {
   return {
-    idea_id: 'idea-001',
+    request_id: 'request-001',
     content: 'the wizard should not require all settings before exiting',
     author: 'U456',
     received_at: new Date().toISOString(),
@@ -82,7 +82,7 @@ describe('AgentSDKSpecGenerator.create — query invocation', () => {
       readFile: makeReadFileFn({ spec_path: join(tempRoot, 'context-human', 'specs', 'feature-wizard.md') }),
     });
 
-    await sg.create(makeIdea(), tempRoot);
+    await sg.create(makeRequest(), tempRoot);
 
     const call = queryFn.mock.calls[0][0] as { options: { cwd: string } };
     expect(call.options.cwd).toBe(tempRoot);
@@ -96,7 +96,7 @@ describe('AgentSDKSpecGenerator.create — query invocation', () => {
       readFile: makeReadFileFn({ spec_path: join(tempRoot, 'context-human', 'specs', 'feature-wizard.md') }),
     });
 
-    await sg.create(makeIdea(), tempRoot);
+    await sg.create(makeRequest(), tempRoot);
 
     const call = queryFn.mock.calls[0][0] as { options: { permissionMode: string } };
     expect(call.options.permissionMode).toBe('bypassPermissions');
@@ -110,7 +110,7 @@ describe('AgentSDKSpecGenerator.create — query invocation', () => {
       readFile: makeReadFileFn({ spec_path: join(tempRoot, 'context-human', 'specs', 'feature-wizard.md') }),
     });
 
-    await sg.create(makeIdea(), tempRoot);
+    await sg.create(makeRequest(), tempRoot);
 
     const call = queryFn.mock.calls[0][0] as { options: { settingSources: string[] } };
     expect(call.options.settingSources).toContain('user');
@@ -127,13 +127,13 @@ describe('AgentSDKSpecGenerator.create — prompt', () => {
       readFile: makeReadFileFn({ spec_path: join(tempRoot, 'context-human', 'specs', 'feature-wizard.md') }),
     });
 
-    await sg.create(makeIdea(), tempRoot);
+    await sg.create(makeRequest(), tempRoot);
 
     const call = queryFn.mock.calls[0][0] as { prompt: string };
     expect(call.prompt).toContain('/mm:planning');
   });
 
-  it('prompt contains idea content', async () => {
+  it('prompt contains request content', async () => {
     const queryFn = makeQueryFn();
     const sg = new AgentSDKSpecGenerator({
       queryFn,
@@ -141,7 +141,7 @@ describe('AgentSDKSpecGenerator.create — prompt', () => {
       readFile: makeReadFileFn({ spec_path: join(tempRoot, 'context-human', 'specs', 'feature-wizard.md') }),
     });
 
-    await sg.create(makeIdea({ content: 'build a time machine' }), tempRoot);
+    await sg.create(makeRequest({ content: 'build a time machine' }), tempRoot);
 
     const call = queryFn.mock.calls[0][0] as { prompt: string };
     expect(call.prompt).toContain('build a time machine');
@@ -155,7 +155,7 @@ describe('AgentSDKSpecGenerator.create — prompt', () => {
       readFile: makeReadFileFn({ spec_path: join(tempRoot, 'context-human', 'specs', 'feature-wizard.md') }),
     });
 
-    await sg.create(makeIdea(), tempRoot);
+    await sg.create(makeRequest(), tempRoot);
 
     const call = queryFn.mock.calls[0][0] as { prompt: string };
     const expectedPath = join(tempRoot, '.autocatalyst', 'spec-create-result.json');
@@ -172,7 +172,7 @@ describe('AgentSDKSpecGenerator.create — result handling', () => {
       readFile: makeReadFileFn({ spec_path: specPath }),
     });
 
-    const result = await sg.create(makeIdea(), tempRoot);
+    const result = await sg.create(makeRequest(), tempRoot);
 
     expect(result).toBe(specPath);
   });
@@ -185,7 +185,7 @@ describe('AgentSDKSpecGenerator.create — result handling', () => {
       readFile: vi.fn().mockRejectedValue(enoentError),
     });
 
-    await expect(sg.create(makeIdea(), tempRoot)).rejects.toThrow(/result file not found/i);
+    await expect(sg.create(makeRequest(), tempRoot)).rejects.toThrow(/result file not found/i);
   });
 
   it('throws when result file is not valid JSON', async () => {
@@ -195,7 +195,7 @@ describe('AgentSDKSpecGenerator.create — result handling', () => {
       readFile: vi.fn().mockResolvedValue('not json'),
     });
 
-    await expect(sg.create(makeIdea(), tempRoot)).rejects.toThrow(/not valid JSON/i);
+    await expect(sg.create(makeRequest(), tempRoot)).rejects.toThrow(/not valid JSON/i);
   });
 
   it('throws when spec_path is missing from result', async () => {
@@ -205,7 +205,7 @@ describe('AgentSDKSpecGenerator.create — result handling', () => {
       readFile: makeReadFileFn({ other_field: 'oops' }),
     });
 
-    await expect(sg.create(makeIdea(), tempRoot)).rejects.toThrow(/spec_path/i);
+    await expect(sg.create(makeRequest(), tempRoot)).rejects.toThrow(/spec_path/i);
   });
 
   it('throws when queryFn iterator throws', async () => {
@@ -215,7 +215,7 @@ describe('AgentSDKSpecGenerator.create — result handling', () => {
       readFile: makeReadFileFn({ spec_path: join(tempRoot, 'context-human', 'specs', 'feature-wizard.md') }),
     });
 
-    await expect(sg.create(makeIdea(), tempRoot)).rejects.toThrow(/agent crashed/);
+    await expect(sg.create(makeRequest(), tempRoot)).rejects.toThrow(/agent crashed/);
   });
 });
 
@@ -229,7 +229,7 @@ describe('AgentSDKSpecGenerator.create — logging', () => {
       readFile: makeReadFileFn({ spec_path: join(tempRoot, 'context-human', 'specs', 'feature-wizard.md') }),
     });
 
-    await sg.create(makeIdea(), tempRoot);
+    await sg.create(makeRequest(), tempRoot);
 
     const invoked = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'spec.agent_invoked');
     expect(invoked).toBeDefined();
@@ -244,7 +244,7 @@ describe('AgentSDKSpecGenerator.create — logging', () => {
       readFile: makeReadFileFn({ spec_path: join(tempRoot, 'context-human', 'specs', 'feature-wizard.md') }),
     });
 
-    await sg.create(makeIdea(), tempRoot);
+    await sg.create(makeRequest(), tempRoot);
 
     const completed = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'spec.agent_completed');
     expect(completed).toBeDefined();
@@ -259,7 +259,7 @@ describe('AgentSDKSpecGenerator.create — logging', () => {
       readFile: makeReadFileFn({ spec_path: '' }),
     });
 
-    await expect(sg.create(makeIdea(), tempRoot)).rejects.toThrow();
+    await expect(sg.create(makeRequest(), tempRoot)).rejects.toThrow();
 
     const failed = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'spec.agent_failed');
     expect(failed).toBeDefined();

@@ -11,7 +11,7 @@ const defaultExec = promisify(_exec);
 type ExecFn = (cmd: string, opts?: { cwd?: string }) => Promise<{ stdout: string; stderr: string }>;
 
 export interface WorkspaceManager {
-  create(idea_id: string, repo_url: string): Promise<{ workspace_path: string; branch: string }>;
+  create(request_id: string, repo_url: string): Promise<{ workspace_path: string; branch: string }>;
   destroy(workspace_path: string): Promise<void>;
 }
 
@@ -31,13 +31,13 @@ export class WorkspaceManagerImpl implements WorkspaceManager {
     this.logger = createLogger('workspace-manager', { destination: options?.logDestination });
   }
 
-  async create(idea_id: string, repo_url: string): Promise<{ workspace_path: string; branch: string }> {
-    if (idea_id.includes('/') || idea_id.includes('..')) {
-      throw new Error(`Invalid idea_id: "${idea_id}"`);
+  async create(request_id: string, repo_url: string): Promise<{ workspace_path: string; branch: string }> {
+    if (request_id.includes('/') || request_id.includes('..')) {
+      throw new Error(`Invalid request_id: "${request_id}"`);
     }
-    const workspace_path = join(this.workspaceRoot, idea_id);
-    // idea_id is a UUID; strip non-alphanumeric chars for a valid branch name segment
-    const slug = idea_id.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
+    const workspace_path = join(this.workspaceRoot, request_id);
+    // request_id is a UUID; strip non-alphanumeric chars for a valid branch name segment
+    const slug = request_id.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
     const branch = `spec/${slug}`;
 
     // Clone
@@ -58,7 +58,7 @@ export class WorkspaceManagerImpl implements WorkspaceManager {
       throw new Error(`git checkout -b failed`, { cause: err });
     }
 
-    this.logger.info({ event: 'workspace.created', idea_id, workspace_path, branch }, 'Workspace created');
+    this.logger.info({ event: 'workspace.created', request_id, workspace_path, branch }, 'Workspace created');
     return { workspace_path, branch };
   }
 

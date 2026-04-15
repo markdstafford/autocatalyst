@@ -27,30 +27,30 @@ describe('classifyMessage', () => {
     ).intent).toBe('ignore');
   });
 
-  it('returns new_idea for @mention in root message (no thread_ts)', () => {
+  it('returns new_request for @mention in root message (no thread_ts)', () => {
     expect(classifyMessage(
       { text: `<@${BOT_ID}> add a setup wizard`, user: 'U999', ts: '100.0' },
       BOT_ID,
       makeRegistry(),
-    ).intent).toBe('new_idea');
+    ).intent).toBe('new_request');
   });
 
-  it('returns new_idea for @mention when thread_ts equals ts', () => {
+  it('returns new_request for @mention when thread_ts equals ts', () => {
     expect(classifyMessage(
       { text: `<@${BOT_ID}> start an idea`, user: 'U999', ts: '100.0', thread_ts: '100.0' },
       BOT_ID,
       makeRegistry(),
-    ).intent).toBe('new_idea');
+    ).intent).toBe('new_request');
   });
 
-  it('returns spec_feedback for @mention reply to registered thread', () => {
+  it('returns thread_message for @mention reply to registered thread', () => {
     const result = classifyMessage(
       { text: `<@${BOT_ID}> that field is confusing`, user: 'U999', ts: '200.0', thread_ts: '100.0' },
       BOT_ID,
-      makeRegistry({ '100.0': 'idea-xyz' }),
+      makeRegistry({ '100.0': 'request-xyz' }),
     );
-    expect(result.intent).toBe('spec_feedback');
-    if (result.intent === 'spec_feedback') expect(result.idea_id).toBe('idea-xyz');
+    expect(result.intent).toBe('thread_message');
+    if (result.intent === 'thread_message') expect(result.request_id).toBe('request-xyz');
   });
 
   it('returns ignore for @mention reply to unregistered thread', () => {
@@ -77,5 +77,22 @@ describe('classifyMessage', () => {
       makeRegistry(),
     ).intent).toBe('ignore');
   });
-});
 
+  it('returns ignore for in-thread message mentioning only another user (not bot)', () => {
+    expect(classifyMessage(
+      { text: '<@UOTHER> what do you think?', user: 'U999', ts: '200.0', thread_ts: '100.0' },
+      BOT_ID,
+      makeRegistry({ '100.0': 'request-xyz' }),
+    ).intent).toBe('ignore');
+  });
+
+  it('returns thread_message for in-thread message mentioning both bot and another user', () => {
+    const result = classifyMessage(
+      { text: `<@${BOT_ID}> <@UOTHER> please review`, user: 'U999', ts: '200.0', thread_ts: '100.0' },
+      BOT_ID,
+      makeRegistry({ '100.0': 'request-xyz' }),
+    );
+    expect(result.intent).toBe('thread_message');
+    if (result.intent === 'thread_message') expect(result.request_id).toBe('request-xyz');
+  });
+});

@@ -4,11 +4,12 @@ import { OrchestratorImpl } from '../../src/core/orchestrator.js';
 import type { WorkspaceManager } from '../../src/core/workspace-manager.js';
 import type { SpecGenerator } from '../../src/adapters/agent/spec-generator.js';
 import type { SpecPublisher } from '../../src/adapters/slack/canvas-publisher.js';
-import type { Idea, ThreadMessage } from '../../src/types/events.js';
+import type { Request, ThreadMessage } from '../../src/types/events.js';
 import type { FeedbackSource } from '../../src/adapters/notion/notion-feedback-source.js';
 import type { NotionComment, NotionCommentResponse } from '../../src/adapters/agent/spec-generator.js';
 import type { Run } from '../../src/types/runs.js';
 import type { IntentClassifier } from '../../src/adapters/agent/intent-classifier.js';
+import type { QuestionAnswerer } from '../../src/adapters/agent/question-answerer.js';
 import type { SpecCommitter } from '../../src/adapters/notion/spec-committer.js';
 import type { Implementer, ImplementationResult } from '../../src/adapters/agent/implementer.js';
 import type { ImplementationFeedbackPage } from '../../src/adapters/notion/implementation-feedback-page.js';
@@ -45,7 +46,7 @@ function makeMockAdapter() {
 
 function makeWorkspaceManager(overrides: Partial<WorkspaceManager> = {}): WorkspaceManager {
   return {
-    create: vi.fn().mockResolvedValue({ workspace_path: '/ws/idea-001', branch: 'spec/idea-001' }),
+    create: vi.fn().mockResolvedValue({ workspace_path: '/ws/request-001', branch: 'spec/request-001' }),
     destroy: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
@@ -53,7 +54,7 @@ function makeWorkspaceManager(overrides: Partial<WorkspaceManager> = {}): Worksp
 
 function makeSpecGenerator(overrides: Partial<SpecGenerator> = {}): SpecGenerator {
   return {
-    create: vi.fn().mockResolvedValue('/ws/idea-001/context-human/specs/feature-test.md'),
+    create: vi.fn().mockResolvedValue('/ws/request-001/context-human/specs/feature-test.md'),
     revise: vi.fn().mockResolvedValue({ comment_responses: [] }),
     ...overrides,
   };
@@ -76,9 +77,9 @@ function makeSpecPublisher(overrides: Partial<SpecPublisher> = {}): SpecPublishe
   };
 }
 
-function makeIdea(overrides: Partial<Idea> = {}): Idea {
+function makeRequest(overrides: Partial<Request> = {}): Request {
   return {
-    id: 'idea-001',
+    id: 'request-001',
     source: 'slack',
     content: 'add a setup wizard',
     author: 'U123',
@@ -91,7 +92,7 @@ function makeIdea(overrides: Partial<Idea> = {}): Idea {
 
 function makeFeedback(overrides: Partial<ThreadMessage> = {}): ThreadMessage {
   return {
-    idea_id: 'idea-001',
+    request_id: 'request-001',
     content: 'wizard should not require all settings',
     author: 'U456',
     received_at: new Date().toISOString(),
@@ -101,20 +102,27 @@ function makeFeedback(overrides: Partial<ThreadMessage> = {}): ThreadMessage {
   };
 }
 
-function makeIntentClassifier(intent = 'spec_feedback'): IntentClassifier {
+function makeIntentClassifier(intent = 'feedback'): IntentClassifier {
   return {
     classify: vi.fn().mockResolvedValue(intent),
+  };
+}
+
+function makeQuestionAnswerer(response = 'Here is your answer.'): QuestionAnswerer {
+  return {
+    answer: vi.fn().mockResolvedValue(response),
   };
 }
 
 function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: 'run-001',
-    idea_id: 'idea-001',
+    request_id: 'request-001',
+    intent: 'idea',
     stage: 'reviewing_spec',
-    workspace_path: '/ws/idea-001',
-    branch: 'spec/idea-001',
-    spec_path: '/ws/idea-001/context-human/specs/feature-test.md',
+    workspace_path: '/ws/request-001',
+    branch: 'spec/request-001',
+    spec_path: '/ws/request-001/context-human/specs/feature-test.md',
     publisher_ref: 'CANVAS001',
     impl_feedback_ref: undefined,
     attempt: 0,
@@ -154,7 +162,7 @@ function makeImplFeedbackPage(overrides: Partial<ImplementationFeedbackPage> = {
   };
 }
 
-describe('Orchestrator — new_idea happy path', () => {
+describe('Orchestrator — new_request happy path', () => {
   it('calls all four components in order with correct arguments', async () => {
     const adapter = makeMockAdapter();
     const wm = makeWorkspaceManager();
@@ -162,19 +170,19 @@ describe('Orchestrator — new_idea happy path', () => {
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier() }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
     await orch.start();
 
-    const idea = makeIdea();
-    adapter._emit({ type: 'new_idea', payload: idea });
+    const request = makeRequest();
+    adapter._emit({ type: 'new_request', payload: request });
 
     // Give the loop time to process
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
-    expect(wm.create).toHaveBeenCalledWith('idea-001', 'https://github.com/org/repo');
-    expect(sg.create).toHaveBeenCalledWith(idea, '/ws/idea-001');
-    expect(cp.create).toHaveBeenCalledWith('C123', '100.0', '/ws/idea-001/context-human/specs/feature-test.md');
+    expect(wm.create).toHaveBeenCalledWith('request-001', 'https://github.com/org/repo');
+    expect(sg.create).toHaveBeenCalledWith(request, '/ws/request-001');
+    expect(cp.create).toHaveBeenCalledWith('C123', '100.0', '/ws/request-001/context-human/specs/feature-test.md');
   });
 
   it('run ends in review stage with all fields populated', async () => {
@@ -184,25 +192,25 @@ describe('Orchestrator — new_idea happy path', () => {
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier() }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
     await orch.start();
 
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
     // Access internal state to verify — cast through any for testing
     const runs = (orch as never as { runs: Map<string, { stage: string; workspace_path: string; branch: string; spec_path: string; publisher_ref: string }> }).runs;
-    const run = runs.get('idea-001')!;
+    const run = runs.get('request-001')!;
     expect(run.stage).toBe('reviewing_spec');
-    expect(run.workspace_path).toBe('/ws/idea-001');
-    expect(run.branch).toBe('spec/idea-001');
-    expect(run.spec_path).toBe('/ws/idea-001/context-human/specs/feature-test.md');
+    expect(run.workspace_path).toBe('/ws/request-001');
+    expect(run.branch).toBe('spec/request-001');
+    expect(run.spec_path).toBe('/ws/request-001/context-human/specs/feature-test.md');
     expect(run.publisher_ref).toBe('CANVAS001');
   });
 });
 
-describe('Orchestrator — new_idea failure paths', () => {
+describe('Orchestrator — new_request failure paths', () => {
   it('WorkspaceManager failure: run is failed, error posted, no further components called', async () => {
     const adapter = makeMockAdapter();
     const wm = makeWorkspaceManager({ create: vi.fn().mockRejectedValue(new Error('clone failed')) });
@@ -210,9 +218,9 @@ describe('Orchestrator — new_idea failure paths', () => {
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier() }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
     await orch.start();
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
@@ -221,7 +229,7 @@ describe('Orchestrator — new_idea failure paths', () => {
     expect(cp.create).not.toHaveBeenCalled();
 
     const runs = (orch as never as { runs: Map<string, { stage: string }> }).runs;
-    expect(runs.get('idea-001')!.stage).toBe('failed');
+    expect(runs.get('request-001')!.stage).toBe('failed');
   });
 
   it('SpecGenerator failure: run is failed, error posted, workspace destroyed', async () => {
@@ -231,18 +239,18 @@ describe('Orchestrator — new_idea failure paths', () => {
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier() }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
     await orch.start();
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
-    expect(wm.destroy).toHaveBeenCalledWith('/ws/idea-001');
+    expect(wm.destroy).toHaveBeenCalledWith('/ws/request-001');
     expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('omc failed'));
     expect(cp.create).not.toHaveBeenCalled();
 
     const runs = (orch as never as { runs: Map<string, { stage: string }> }).runs;
-    expect(runs.get('idea-001')!.stage).toBe('failed');
+    expect(runs.get('request-001')!.stage).toBe('failed');
   });
 
   it('SpecPublisher failure: run is failed, error posted, workspace destroyed', async () => {
@@ -252,21 +260,21 @@ describe('Orchestrator — new_idea failure paths', () => {
     const cp = makeSpecPublisher({ create: vi.fn().mockRejectedValue(new Error('canvas error')) });
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier() }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
     await orch.start();
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
-    expect(wm.destroy).toHaveBeenCalledWith('/ws/idea-001');
+    expect(wm.destroy).toHaveBeenCalledWith('/ws/request-001');
     expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('canvas error'));
 
     const runs = (orch as never as { runs: Map<string, { stage: string }> }).runs;
-    expect(runs.get('idea-001')!.stage).toBe('failed');
+    expect(runs.get('request-001')!.stage).toBe('failed');
   });
 });
 
-describe('Orchestrator — spec_feedback happy path', () => {
+describe('Orchestrator — feedback happy path', () => {
   it('increments attempt, calls revise and update, run back in review', async () => {
     const adapter = makeMockAdapter();
     const wm = makeWorkspaceManager();
@@ -274,11 +282,15 @@ describe('Orchestrator — spec_feedback happy path', () => {
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier() }, { logDestination: nullDest });
+    // First call: classify new_request as 'idea'; subsequent calls: classify thread_message as 'feedback'
+    const ic = makeIntentClassifier('idea');
+    (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
+
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: ic }, { logDestination: nullDest });
     await orch.start();
 
-    // First seed the idea to get a run in review
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    // First seed the request to get a run in review
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50));
 
     // Then send feedback
@@ -287,34 +299,34 @@ describe('Orchestrator — spec_feedback happy path', () => {
     await orch.stop();
 
     const runs = (orch as never as { runs: Map<string, { stage: string; attempt: number }> }).runs;
-    const run = runs.get('idea-001')!;
+    const run = runs.get('request-001')!;
     expect(run.stage).toBe('reviewing_spec');
     expect(run.attempt).toBe(1);
 
     expect(cp.getPageMarkdown).toHaveBeenCalledWith('CANVAS001');
     expect(sg.revise).toHaveBeenCalledWith(
-      expect.objectContaining({ idea_id: 'idea-001' }),
+      expect.objectContaining({ request_id: 'request-001' }),
       [],
-      '/ws/idea-001/context-human/specs/feature-test.md',
-      '/ws/idea-001',
+      '/ws/request-001/context-human/specs/feature-test.md',
+      '/ws/request-001',
       undefined,
     );
-    expect(cp.update).toHaveBeenCalledWith('CANVAS001', '/ws/idea-001/context-human/specs/feature-test.md', undefined);
+    expect(cp.update).toHaveBeenCalledWith('CANVAS001', '/ws/request-001/context-human/specs/feature-test.md', undefined);
   });
 });
 
-describe('Orchestrator — spec_feedback guard conditions', () => {
-  it('discards feedback for unknown idea_id', async () => {
+describe('Orchestrator — feedback guard conditions', () => {
+  it('discards feedback for unknown request_id', async () => {
     const adapter = makeMockAdapter();
     const wm = makeWorkspaceManager();
     const sg = makeSpecGenerator();
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier() }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('feedback') }, { logDestination: nullDest });
     await orch.start();
 
-    adapter._emit({ type: 'thread_message', payload: makeFeedback({ idea_id: 'unknown-idea' }) });
+    adapter._emit({ type: 'thread_message', payload: makeFeedback({ request_id: 'unknown-request' }) });
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
@@ -327,16 +339,19 @@ describe('Orchestrator — spec_feedback guard conditions', () => {
     const adapter = makeMockAdapter();
     // Make spec generation slow so run stays in speccing when feedback arrives
     let resolveCreate!: () => void;
-    const slowCreate = vi.fn().mockReturnValue(new Promise<string>(r => { resolveCreate = () => r('/ws/idea-001/context-human/specs/feature-test.md'); }));
+    const slowCreate = vi.fn().mockReturnValue(new Promise<string>(r => { resolveCreate = () => r('/ws/request-001/context-human/specs/feature-test.md'); }));
     const wm = makeWorkspaceManager();
     const sg = makeSpecGenerator({ create: slowCreate });
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier() }, { logDestination: nullDest });
+    const ic = makeIntentClassifier('idea');
+    (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
+
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: ic }, { logDestination: nullDest });
     await orch.start();
 
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 10)); // let it reach speccing stage
 
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
@@ -347,8 +362,8 @@ describe('Orchestrator — spec_feedback guard conditions', () => {
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
-    // NOTE: With a sequential event loop, spec_feedback is queued while new_idea is being processed.
-    // By the time spec_feedback is dequeued, the run is already in 'review', not 'speccing'.
+    // NOTE: With a sequential event loop, thread_message is queued while new_request is being processed.
+    // By the time thread_message is dequeued, the run is already in 'review', not 'speccing'.
     // So revise WILL be called — the guard for speccing stage is not observable in this sequential model.
     // We verify the actual observable behavior: run ends in review, revise was called once.
     expect(sg.revise).toHaveBeenCalledTimes(1);
@@ -361,10 +376,10 @@ describe('Orchestrator — spec_feedback guard conditions', () => {
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier() }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
     await orch.start();
 
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50)); // run is now failed
 
     postError.mockClear();
@@ -377,7 +392,7 @@ describe('Orchestrator — spec_feedback guard conditions', () => {
   });
 });
 
-describe('Orchestrator — spec_feedback failure paths', () => {
+describe('Orchestrator — feedback failure paths', () => {
   it('SpecGenerator.revise failure: run is failed, error posted', async () => {
     const adapter = makeMockAdapter();
     const wm = makeWorkspaceManager();
@@ -385,10 +400,13 @@ describe('Orchestrator — spec_feedback failure paths', () => {
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier() }, { logDestination: nullDest });
+    const ic = makeIntentClassifier('idea');
+    (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
+
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: ic }, { logDestination: nullDest });
     await orch.start();
 
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50));
     postError.mockClear();
 
@@ -397,7 +415,7 @@ describe('Orchestrator — spec_feedback failure paths', () => {
     await orch.stop();
 
     const runs = (orch as never as { runs: Map<string, { stage: string }> }).runs;
-    expect(runs.get('idea-001')!.stage).toBe('failed');
+    expect(runs.get('request-001')!.stage).toBe('failed');
     expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('revise failed'));
   });
 
@@ -408,10 +426,13 @@ describe('Orchestrator — spec_feedback failure paths', () => {
     const cp = makeSpecPublisher({ update: vi.fn().mockRejectedValue(new Error('update failed')) });
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier() }, { logDestination: nullDest });
+    const ic = makeIntentClassifier('idea');
+    (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
+
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: ic }, { logDestination: nullDest });
     await orch.start();
 
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50));
     postError.mockClear();
 
@@ -422,22 +443,22 @@ describe('Orchestrator — spec_feedback failure paths', () => {
     expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('update failed'));
 
     const runs = (orch as never as { runs: Map<string, { stage: string }> }).runs;
-    expect(runs.get('idea-001')!.stage).toBe('failed');
+    expect(runs.get('request-001')!.stage).toBe('failed');
   });
 });
 
 describe('Orchestrator — concurrency', () => {
-  it('two simultaneous ideas produce independent runs with no cross-contamination', async () => {
+  it('two simultaneous requests produce independent runs with no cross-contamination', async () => {
     const adapter = makeMockAdapter();
     const wm: WorkspaceManager = {
-      create: vi.fn().mockImplementation(async (idea_id: string) => ({
-        workspace_path: `/ws/${idea_id}`,
-        branch: `spec/${idea_id}`,
+      create: vi.fn().mockImplementation(async (request_id: string) => ({
+        workspace_path: `/ws/${request_id}`,
+        branch: `spec/${request_id}`,
       })),
       destroy: vi.fn().mockResolvedValue(undefined),
     };
     const sg: SpecGenerator = {
-      create: vi.fn().mockImplementation(async (_idea: Idea, workspace_path: string) =>
+      create: vi.fn().mockImplementation(async (_request: Request, workspace_path: string) =>
         `${workspace_path}/context-human/specs/feature-test.md`
       ),
       revise: vi.fn().mockResolvedValue({ comment_responses: [] }),
@@ -445,19 +466,19 @@ describe('Orchestrator — concurrency', () => {
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier() }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
     await orch.start();
 
-    adapter._emit({ type: 'new_idea', payload: makeIdea({ id: 'idea-A', thread_ts: 'A.0' }) });
-    adapter._emit({ type: 'new_idea', payload: makeIdea({ id: 'idea-B', thread_ts: 'B.0' }) });
+    adapter._emit({ type: 'new_request', payload: makeRequest({ id: 'request-A', thread_ts: 'A.0' }) });
+    adapter._emit({ type: 'new_request', payload: makeRequest({ id: 'request-B', thread_ts: 'B.0' }) });
     await new Promise(r => setTimeout(r, 100));
     await orch.stop();
 
     const runs = (orch as never as { runs: Map<string, { stage: string; workspace_path: string }> }).runs;
-    expect(runs.get('idea-A')!.stage).toBe('reviewing_spec');
-    expect(runs.get('idea-B')!.stage).toBe('reviewing_spec');
-    expect(runs.get('idea-A')!.workspace_path).toBe('/ws/idea-A');
-    expect(runs.get('idea-B')!.workspace_path).toBe('/ws/idea-B');
+    expect(runs.get('request-A')!.stage).toBe('reviewing_spec');
+    expect(runs.get('request-B')!.stage).toBe('reviewing_spec');
+    expect(runs.get('request-A')!.workspace_path).toBe('/ws/request-A');
+    expect(runs.get('request-B')!.workspace_path).toBe('/ws/request-B');
   });
 });
 
@@ -468,15 +489,15 @@ async function seedAndFeedback(
   feedbackOverrides: Partial<ThreadMessage> = {},
 ) {
   const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-  adapter._emit({ type: 'new_idea', payload: makeIdea() });
+  adapter._emit({ type: 'new_request', payload: makeRequest() });
   // Wait for run to reach 'reviewing_spec'
-  await vi.waitUntil(() => runs.get('idea-001')?.stage === 'reviewing_spec', { timeout: 2000 });
+  await vi.waitUntil(() => runs.get('request-001')?.stage === 'reviewing_spec', { timeout: 2000 });
   adapter._emit({ type: 'thread_message', payload: makeFeedback(feedbackOverrides) });
   // Wait for run to no longer be 'speccing'
-  await vi.waitUntil(() => runs.get('idea-001')?.stage !== 'speccing', { timeout: 2000 });
+  await vi.waitUntil(() => runs.get('request-001')?.stage !== 'speccing', { timeout: 2000 });
 }
 
-describe('Orchestrator — spec_feedback with feedbackSource', () => {
+describe('Orchestrator — feedback with feedbackSource', () => {
   it('with feedbackSource: fetch called before revise, revise receives notion_comments, update/reply called in order', async () => {
     const notionComments: NotionComment[] = [
       { id: 'disc-1', body: 'Phoebe: first feedback' },
@@ -500,8 +521,11 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     (fs.reply as ReturnType<typeof vi.fn>).mockImplementation(async () => { callOrder.push('reply'); });
     const postMessage = vi.fn().mockImplementation(async () => { callOrder.push('postMessage'); });
 
+    const ic = makeIntentClassifier('idea');
+    (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
+
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: sp, feedbackSource: fs, postError, postMessage, repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier() } as never,
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: sp, feedbackSource: fs, postError, postMessage, repo_url: 'https://github.com/org/repo', intentClassifier: ic } as never,
       { logDestination: nullDest },
     );
     await orch.start();
@@ -509,12 +533,12 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     await adapter.stop();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    expect(runs.get('idea-001')?.stage).toBe('reviewing_spec');
+    expect(runs.get('request-001')?.stage).toBe('reviewing_spec');
     expect(callOrder).toEqual(['fetch', 'getPageMarkdown', 'revise', 'update', 'reply', 'reply', 'postMessage']);
     expect(sp.getPageMarkdown).toHaveBeenCalledWith('CANVAS001');
     expect(fs.fetch).toHaveBeenCalledWith('CANVAS001');
     expect(sg.revise).toHaveBeenCalledWith(
-      expect.objectContaining({ idea_id: 'idea-001' }),
+      expect.objectContaining({ request_id: 'request-001' }),
       notionComments,
       expect.any(String),
       expect.any(String),
@@ -530,8 +554,11 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     const sg = makeSpecGenerator({ revise: vi.fn().mockResolvedValue({ comment_responses: [] }) });
     const adapter = makeMockAdapter();
 
+    const ic = makeIntentClassifier('idea');
+    (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
+
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), feedbackSource: fs, postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: makeIntentClassifier() } as never,
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), feedbackSource: fs, postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic } as never,
       { logDestination: nullDest },
     );
     await orch.start();
@@ -539,7 +566,7 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     await adapter.stop();
 
     expect(sg.revise).toHaveBeenCalledWith(
-      expect.objectContaining({ idea_id: 'idea-001' }),
+      expect.objectContaining({ request_id: 'request-001' }),
       [],
       expect.any(String),
       expect.any(String),
@@ -552,8 +579,11 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     const sg = makeSpecGenerator({ revise: vi.fn().mockResolvedValue({ comment_responses: [] }) });
     const adapter = makeMockAdapter();
 
+    const ic = makeIntentClassifier('idea');
+    (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
+
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: makeIntentClassifier() },
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -561,7 +591,7 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     await adapter.stop();
 
     expect(sg.revise).toHaveBeenCalledWith(
-      expect.objectContaining({ idea_id: 'idea-001' }),
+      expect.objectContaining({ request_id: 'request-001' }),
       [],
       expect.any(String),
       expect.any(String),
@@ -575,16 +605,19 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     const adapter = makeMockAdapter();
     const postError = vi.fn().mockResolvedValue(undefined);
 
+    const ic = makeIntentClassifier('idea');
+    (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
+
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), feedbackSource: fs, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: makeIntentClassifier() } as never,
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), feedbackSource: fs, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic } as never,
       { logDestination: nullDest },
     );
     await orch.start();
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    await vi.waitUntil(() => runs.get('idea-001')?.stage === 'reviewing_spec', { timeout: 2000 });
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'reviewing_spec', { timeout: 2000 });
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
-    await vi.waitUntil(() => runs.get('idea-001')?.stage === 'failed', { timeout: 2000 });
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'failed', { timeout: 2000 });
     await adapter.stop();
 
     expect(sg.revise).not.toHaveBeenCalled();
@@ -608,8 +641,11 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     const adapter = makeMockAdapter();
     const postError = vi.fn().mockResolvedValue(undefined);
 
+    const ic = makeIntentClassifier('idea');
+    (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
+
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), feedbackSource: fs, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: makeIntentClassifier() } as never,
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), feedbackSource: fs, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic } as never,
       { logDestination: nullDest },
     );
     await orch.start();
@@ -617,14 +653,14 @@ describe('Orchestrator — spec_feedback with feedbackSource', () => {
     await adapter.stop();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    expect(runs.get('idea-001')?.stage).toBe('reviewing_spec');
+    expect(runs.get('request-001')?.stage).toBe('reviewing_spec');
     expect(fs.reply).toHaveBeenCalledTimes(3);
     expect(postError).not.toHaveBeenCalled();
   });
 
 });
 
-describe('Orchestrator — spec_feedback completion notification', () => {
+describe('Orchestrator — feedback completion notification', () => {
   it('posts completion message with comment count after replies', async () => {
     const notionComments = [{ id: 'disc-1', body: 'feedback' }];
     const commentResponses = [{ comment_id: 'disc-1', response: 'Done' }];
@@ -633,8 +669,11 @@ describe('Orchestrator — spec_feedback completion notification', () => {
     const adapter = makeMockAdapter();
     const postMessage = vi.fn().mockResolvedValue(undefined);
 
+    const ic = makeIntentClassifier('idea');
+    (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
+
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), feedbackSource: fs, postError: vi.fn().mockResolvedValue(undefined), postMessage, repo_url: 'r', intentClassifier: makeIntentClassifier() } as never,
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), feedbackSource: fs, postError: vi.fn().mockResolvedValue(undefined), postMessage, repo_url: 'r', intentClassifier: ic } as never,
       { logDestination: nullDest },
     );
     await orch.start();
@@ -649,8 +688,11 @@ describe('Orchestrator — spec_feedback completion notification', () => {
     const adapter = makeMockAdapter();
     const postMessage = vi.fn().mockResolvedValue(undefined);
 
+    const ic = makeIntentClassifier('idea');
+    (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
+
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage, repo_url: 'r', intentClassifier: makeIntentClassifier() } as never,
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage, repo_url: 'r', intentClassifier: ic } as never,
       { logDestination: nullDest },
     );
     await orch.start();
@@ -666,8 +708,11 @@ describe('Orchestrator — spec_feedback completion notification', () => {
     const postMessage = vi.fn().mockRejectedValue(new Error('Slack error'));
     const postError = vi.fn().mockResolvedValue(undefined);
 
+    const ic = makeIntentClassifier('idea');
+    (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
+
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError, postMessage, repo_url: 'r', intentClassifier: makeIntentClassifier() } as never,
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError, postMessage, repo_url: 'r', intentClassifier: ic } as never,
       { logDestination: nullDest },
     );
     await orch.start();
@@ -675,7 +720,7 @@ describe('Orchestrator — spec_feedback completion notification', () => {
     await adapter.stop();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    expect(runs.get('idea-001')?.stage).toBe('reviewing_spec');
+    expect(runs.get('request-001')?.stage).toBe('reviewing_spec');
     expect(postError).not.toHaveBeenCalled();
   });
 });
@@ -683,7 +728,8 @@ describe('Orchestrator — spec_feedback completion notification', () => {
 describe('Orchestrator — intent classification routing', () => {
   it('classifier called with feedback content and run stage when in reviewing_spec', async () => {
     const adapter = makeMockAdapter();
-    const ic = makeIntentClassifier('spec_feedback');
+    const ic = makeIntentClassifier('idea');
+    (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
     const orch = new OrchestratorImpl(
       { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: makeSpecGenerator(), specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic },
       { logDestination: nullDest },
@@ -692,16 +738,18 @@ describe('Orchestrator — intent classification routing', () => {
     await seedAndFeedback(orch, adapter);
     await adapter.stop();
 
+    // Second call is the thread_message classification (first is new_request)
     expect(ic.classify).toHaveBeenCalledWith(
       'wizard should not require all settings',
       'reviewing_spec',
     );
   });
 
-  it('spec_feedback intent routes to spec feedback handler (calls revise)', async () => {
+  it('feedback intent routes to spec feedback handler (calls revise)', async () => {
     const adapter = makeMockAdapter();
     const sg = makeSpecGenerator();
-    const ic = makeIntentClassifier('spec_feedback');
+    const ic = makeIntentClassifier('idea');
+    (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
     const orch = new OrchestratorImpl(
       { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic },
       { logDestination: nullDest },
@@ -713,19 +761,19 @@ describe('Orchestrator — intent classification routing', () => {
     expect(sg.revise).toHaveBeenCalledOnce();
   });
 
-  it('spec_approval intent: does not call revise', async () => {
+  it('approval intent: does not call revise', async () => {
     const adapter = makeMockAdapter();
     const sg = makeSpecGenerator();
-    const ic = makeIntentClassifier('spec_approval');
+    const ic = makeIntentClassifier('approval');
     const orch = new OrchestratorImpl(
       { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic },
       { logDestination: nullDest },
     );
     await orch.start();
 
-    // Inject a run in reviewing_spec so we don't have to go through new_idea
+    // Inject a run in reviewing_spec so we don't have to go through new_request
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    runs.set('idea-001', makeRun({ stage: 'reviewing_spec' }));
+    runs.set('request-001', makeRun({ stage: 'reviewing_spec' }));
 
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
     await new Promise(r => setTimeout(r, 50));
@@ -734,10 +782,10 @@ describe('Orchestrator — intent classification routing', () => {
     expect(sg.revise).not.toHaveBeenCalled();
   });
 
-  it('implementation_feedback intent: does not call revise', async () => {
+  it('feedback intent on reviewing_implementation: does not call revise', async () => {
     const adapter = makeMockAdapter();
     const sg = makeSpecGenerator();
-    const ic = makeIntentClassifier('implementation_feedback');
+    const ic = makeIntentClassifier('feedback');
     const orch = new OrchestratorImpl(
       { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic },
       { logDestination: nullDest },
@@ -745,7 +793,7 @@ describe('Orchestrator — intent classification routing', () => {
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    runs.set('idea-001', makeRun({ stage: 'reviewing_implementation' }));
+    runs.set('request-001', makeRun({ stage: 'reviewing_implementation' }));
 
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
     await new Promise(r => setTimeout(r, 50));
@@ -754,10 +802,10 @@ describe('Orchestrator — intent classification routing', () => {
     expect(sg.revise).not.toHaveBeenCalled();
   });
 
-  it('implementation_approval intent: does not call revise', async () => {
+  it('approval intent on reviewing_implementation: does not call revise', async () => {
     const adapter = makeMockAdapter();
     const sg = makeSpecGenerator();
-    const ic = makeIntentClassifier('implementation_approval');
+    const ic = makeIntentClassifier('approval');
     const orch = new OrchestratorImpl(
       { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic },
       { logDestination: nullDest },
@@ -765,7 +813,7 @@ describe('Orchestrator — intent classification routing', () => {
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    runs.set('idea-001', makeRun({ stage: 'reviewing_implementation' }));
+    runs.set('request-001', makeRun({ stage: 'reviewing_implementation' }));
 
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
     await new Promise(r => setTimeout(r, 50));
@@ -779,7 +827,7 @@ describe('Orchestrator — implementing stage guard', () => {
   it('posts busy message when run is in implementing stage; classifier not called', async () => {
     const adapter = makeMockAdapter();
     const sg = makeSpecGenerator();
-    const ic = makeIntentClassifier('spec_feedback');
+    const ic = makeIntentClassifier('feedback');
     const postMessage = vi.fn().mockResolvedValue(undefined);
     const orch = new OrchestratorImpl(
       { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage, repo_url: 'r', intentClassifier: ic },
@@ -788,7 +836,7 @@ describe('Orchestrator — implementing stage guard', () => {
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    runs.set('idea-001', makeRun({ stage: 'implementing' }));
+    runs.set('request-001', makeRun({ stage: 'implementing' }));
 
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
     await new Promise(r => setTimeout(r, 50));
@@ -804,7 +852,7 @@ describe('Orchestrator — done stage guard', () => {
   it('discards thread_message when run is in done stage; classifier not called', async () => {
     const adapter = makeMockAdapter();
     const sg = makeSpecGenerator();
-    const ic = makeIntentClassifier('spec_feedback');
+    const ic = makeIntentClassifier('feedback');
     const postError = vi.fn().mockResolvedValue(undefined);
     const orch = new OrchestratorImpl(
       { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic },
@@ -813,7 +861,7 @@ describe('Orchestrator — done stage guard', () => {
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    runs.set('idea-001', makeRun({ stage: 'done' }));
+    runs.set('request-001', makeRun({ stage: 'done' }));
 
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
     await new Promise(r => setTimeout(r, 50));
@@ -826,7 +874,7 @@ describe('Orchestrator — done stage guard', () => {
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Spec approval handler tests (Task 18 / Task 19)
+// Spec approval handler tests
 // ──────────────────────────────────────────────────────────────────────────────
 
 function makeApprovalOrch(opts: {
@@ -843,7 +891,7 @@ function makeApprovalOrch(opts: {
       workspaceManager: makeWorkspaceManager(),
       specGenerator: makeSpecGenerator(),
       specPublisher: makeSpecPublisher(),
-      intentClassifier: makeIntentClassifier('spec_approval'),
+      intentClassifier: makeIntentClassifier('approval'),
       specCommitter: opts.specCommitter ?? makeSpecCommitter(),
       implementer: opts.implementer ?? makeImplementer(),
       implFeedbackPage: opts.implFeedbackPage ?? makeImplFeedbackPage(),
@@ -855,17 +903,17 @@ function makeApprovalOrch(opts: {
   );
 }
 
-// Inject a run in reviewing_spec and emit spec_approval thread_message
+// Inject a run in reviewing_spec and emit approval thread_message
 async function approveSpec(
   orch: OrchestratorImpl,
   adapter: ReturnType<typeof makeMockAdapter>,
 ) {
   const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-  runs.set('idea-001', makeRun({ stage: 'reviewing_spec' }));
+  runs.set('request-001', makeRun({ stage: 'reviewing_spec' }));
   adapter._emit({ type: 'thread_message', payload: makeFeedback() });
   await vi.waitUntil(
     () => {
-      const r = runs.get('idea-001');
+      const r = runs.get('request-001');
       return r?.stage !== 'reviewing_spec' && r?.stage !== 'implementing';
     },
     { timeout: 3000 },
@@ -878,7 +926,7 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
     const stages: string[] = [];
     const commitFn = vi.fn().mockImplementation(async () => {
       const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-      stages.push(runs.get('idea-001')!.stage);
+      stages.push(runs.get('request-001')!.stage);
     });
     const sc = makeSpecCommitter({ commit: commitFn });
     const orch = makeApprovalOrch({ adapter, specCommitter: sc });
@@ -919,9 +967,9 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
 
     expect(sc.commit).toHaveBeenCalledOnce();
     expect(sc.commit).toHaveBeenCalledWith(
-      '/ws/idea-001',
+      '/ws/request-001',
       'CANVAS001',
-      '/ws/idea-001/context-human/specs/feature-test.md',
+      '/ws/request-001/context-human/specs/feature-test.md',
     );
   });
 
@@ -942,8 +990,8 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
 
     expect(callOrder.indexOf('commit')).toBeLessThan(callOrder.indexOf('implement'));
     expect(implementFn).toHaveBeenCalledWith(
-      '/ws/idea-001/context-human/specs/feature-test.md',
-      '/ws/idea-001',
+      '/ws/request-001/context-human/specs/feature-test.md',
+      '/ws/request-001',
     );
   });
 
@@ -972,7 +1020,7 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
     await orch.stop();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    expect(runs.get('idea-001')!.impl_feedback_ref).toBe('impl-page-xyz');
+    expect(runs.get('request-001')!.impl_feedback_ref).toBe('impl-page-xyz');
   });
 
   it('complete result: posts completion message containing feedback page URL', async () => {
@@ -999,7 +1047,7 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
     await orch.stop();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    expect(runs.get('idea-001')!.stage).toBe('reviewing_implementation');
+    expect(runs.get('request-001')!.stage).toBe('reviewing_implementation');
   });
 
   it('needs_input result: question posted to Slack; run transitions to awaiting_impl_input', async () => {
@@ -1011,12 +1059,12 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    runs.set('idea-001', makeRun({ stage: 'reviewing_spec' }));
+    runs.set('request-001', makeRun({ stage: 'reviewing_spec' }));
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
-    await vi.waitUntil(() => runs.get('idea-001')?.stage === 'awaiting_impl_input', { timeout: 3000 });
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'awaiting_impl_input', { timeout: 3000 });
     await orch.stop();
 
-    expect(runs.get('idea-001')!.stage).toBe('awaiting_impl_input');
+    expect(runs.get('request-001')!.stage).toBe('awaiting_impl_input');
     const messages = (postMessage as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[2] as string);
     expect(messages.some(m => m.includes('Which approach do you prefer?'))).toBe(true);
     expect(implFeedbackPage.create).not.toHaveBeenCalled();
@@ -1033,12 +1081,12 @@ describe('Orchestrator — _handleSpecApproval failure paths', () => {
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    runs.set('idea-001', makeRun({ stage: 'reviewing_spec' }));
+    runs.set('request-001', makeRun({ stage: 'reviewing_spec' }));
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
-    await vi.waitUntil(() => runs.get('idea-001')?.stage === 'failed', { timeout: 3000 });
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'failed', { timeout: 3000 });
     await orch.stop();
 
-    expect(runs.get('idea-001')!.stage).toBe('failed');
+    expect(runs.get('request-001')!.stage).toBe('failed');
     expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('commit failed'));
     expect(impl.implement).not.toHaveBeenCalled();
   });
@@ -1052,12 +1100,12 @@ describe('Orchestrator — _handleSpecApproval failure paths', () => {
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    runs.set('idea-001', makeRun({ stage: 'reviewing_spec' }));
+    runs.set('request-001', makeRun({ stage: 'reviewing_spec' }));
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
-    await vi.waitUntil(() => runs.get('idea-001')?.stage === 'failed', { timeout: 3000 });
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'failed', { timeout: 3000 });
     await orch.stop();
 
-    expect(runs.get('idea-001')!.stage).toBe('failed');
+    expect(runs.get('request-001')!.stage).toBe('failed');
     expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('agent crashed'));
     expect(implFeedbackPage.create).not.toHaveBeenCalled();
   });
@@ -1070,12 +1118,12 @@ describe('Orchestrator — _handleSpecApproval failure paths', () => {
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    runs.set('idea-001', makeRun({ stage: 'reviewing_spec' }));
+    runs.set('request-001', makeRun({ stage: 'reviewing_spec' }));
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
-    await vi.waitUntil(() => runs.get('idea-001')?.stage === 'failed', { timeout: 3000 });
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'failed', { timeout: 3000 });
     await orch.stop();
 
-    expect(runs.get('idea-001')!.stage).toBe('failed');
+    expect(runs.get('request-001')!.stage).toBe('failed');
     expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('OMC crashed'));
   });
 
@@ -1090,12 +1138,12 @@ describe('Orchestrator — _handleSpecApproval failure paths', () => {
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    runs.set('idea-001', makeRun({ stage: 'reviewing_spec' }));
+    runs.set('request-001', makeRun({ stage: 'reviewing_spec' }));
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
-    await vi.waitUntil(() => runs.get('idea-001')?.stage === 'reviewing_implementation', { timeout: 3000 });
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'reviewing_implementation', { timeout: 3000 });
     await orch.stop();
 
-    expect(runs.get('idea-001')!.stage).toBe('reviewing_implementation');
+    expect(runs.get('request-001')!.stage).toBe('reviewing_implementation');
     // Completion message still posted even without page link
     expect(postMessage.mock.calls.length).toBeGreaterThanOrEqual(2); // approval ack + completion
     // postError not called for page creation failure (it's degraded, not fatal)
@@ -1112,18 +1160,18 @@ describe('Orchestrator — _handleSpecApproval failure paths', () => {
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    runs.set('idea-001', makeRun({ stage: 'reviewing_spec' }));
+    runs.set('request-001', makeRun({ stage: 'reviewing_spec' }));
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
-    await vi.waitUntil(() => runs.get('idea-001')?.stage === 'reviewing_implementation', { timeout: 3000 });
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'reviewing_implementation', { timeout: 3000 });
     await orch.stop();
 
     expect(sc.commit).toHaveBeenCalledOnce();
-    expect(runs.get('idea-001')!.stage).toBe('reviewing_implementation');
+    expect(runs.get('request-001')!.stage).toBe('reviewing_implementation');
   });
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Implementation feedback handler tests (Task 20 / Task 21)
+// Implementation feedback handler tests
 // ──────────────────────────────────────────────────────────────────────────────
 
 function makeImplFeedbackOrch(opts: {
@@ -1140,7 +1188,7 @@ function makeImplFeedbackOrch(opts: {
       workspaceManager: makeWorkspaceManager(),
       specGenerator: makeSpecGenerator(),
       specPublisher: makeSpecPublisher(),
-      intentClassifier: makeIntentClassifier(opts.intentOverride ?? 'implementation_feedback'),
+      intentClassifier: makeIntentClassifier(opts.intentOverride ?? 'feedback'),
       specCommitter: makeSpecCommitter(),
       implementer: opts.implementer ?? makeImplementer(),
       implFeedbackPage: opts.implFeedbackPage ?? makeImplFeedbackPage(),
@@ -1152,7 +1200,7 @@ function makeImplFeedbackOrch(opts: {
   );
 }
 
-// Inject a run in reviewing_implementation and emit thread_message classified as implementation_feedback.
+// Inject a run in reviewing_implementation and emit thread_message classified as feedback.
 // Waits until the handler finishes: attempt incremented and no longer in 'implementing'.
 async function sendImplFeedback(
   orch: OrchestratorImpl,
@@ -1160,11 +1208,11 @@ async function sendImplFeedback(
   runOverrides: Partial<Run> = {},
 ) {
   const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-  runs.set('idea-001', makeRun({ stage: 'reviewing_implementation', impl_feedback_ref: 'feedback-page-id', ...runOverrides }));
+  runs.set('request-001', makeRun({ stage: 'reviewing_implementation', impl_feedback_ref: 'feedback-page-id', ...runOverrides }));
   adapter._emit({ type: 'thread_message', payload: makeFeedback() });
   await vi.waitUntil(
     () => {
-      const r = runs.get('idea-001');
+      const r = runs.get('request-001');
       // Handler increments attempt before implementing; done when attempt > 0 and no longer implementing
       return r !== undefined && r.attempt > 0 && r.stage !== 'implementing';
     },
@@ -1247,7 +1295,7 @@ describe('Orchestrator — _handleImplementationFeedback happy path (reviewing_i
     await orch.stop();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    expect(runs.get('idea-001')!.stage).toBe('reviewing_implementation');
+    expect(runs.get('request-001')!.stage).toBe('reviewing_implementation');
   });
 
   it('complete result: posts completion message to Slack', async () => {
@@ -1269,12 +1317,12 @@ describe('Orchestrator — _handleImplementationFeedback happy path (reviewing_i
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    runs.set('idea-001', makeRun({ stage: 'reviewing_implementation', impl_feedback_ref: 'feedback-page-id' }));
+    runs.set('request-001', makeRun({ stage: 'reviewing_implementation', impl_feedback_ref: 'feedback-page-id' }));
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
-    await vi.waitUntil(() => runs.get('idea-001')?.stage === 'awaiting_impl_input', { timeout: 3000 });
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'awaiting_impl_input', { timeout: 3000 });
     await orch.stop();
 
-    expect(runs.get('idea-001')!.stage).toBe('awaiting_impl_input');
+    expect(runs.get('request-001')!.stage).toBe('awaiting_impl_input');
     const messages = (postMessage as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[2] as string);
     expect(messages.some(m => m.includes('Which refactor pattern?'))).toBe(true);
   });
@@ -1289,11 +1337,11 @@ describe('Orchestrator — _handleImplementationFeedback happy path (awaiting_im
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    runs.set('idea-001', makeRun({ stage: 'awaiting_impl_input', impl_feedback_ref: 'feedback-page-id' }));
+    runs.set('request-001', makeRun({ stage: 'awaiting_impl_input', impl_feedback_ref: 'feedback-page-id' }));
     adapter._emit({ type: 'thread_message', payload: makeFeedback({ content: 'go with the subtype approach' }) });
     await vi.waitUntil(
       () => {
-        const r = runs.get('idea-001');
+        const r = runs.get('request-001');
         return r?.stage !== 'awaiting_impl_input' && r?.stage !== 'implementing';
       },
       { timeout: 3000 },
@@ -1318,12 +1366,12 @@ describe('Orchestrator — _handleImplementationFeedback failure paths', () => {
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    runs.set('idea-001', makeRun({ stage: 'reviewing_implementation', impl_feedback_ref: 'feedback-page-id' }));
+    runs.set('request-001', makeRun({ stage: 'reviewing_implementation', impl_feedback_ref: 'feedback-page-id' }));
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
-    await vi.waitUntil(() => runs.get('idea-001')?.stage === 'failed', { timeout: 3000 });
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'failed', { timeout: 3000 });
     await orch.stop();
 
-    expect(runs.get('idea-001')!.stage).toBe('failed');
+    expect(runs.get('request-001')!.stage).toBe('failed');
     expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('Notion read failed'));
     expect(impl.implement).not.toHaveBeenCalled();
   });
@@ -1337,12 +1385,12 @@ describe('Orchestrator — _handleImplementationFeedback failure paths', () => {
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    runs.set('idea-001', makeRun({ stage: 'reviewing_implementation', impl_feedback_ref: 'feedback-page-id' }));
+    runs.set('request-001', makeRun({ stage: 'reviewing_implementation', impl_feedback_ref: 'feedback-page-id' }));
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
-    await vi.waitUntil(() => runs.get('idea-001')?.stage === 'failed', { timeout: 3000 });
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'failed', { timeout: 3000 });
     await orch.stop();
 
-    expect(runs.get('idea-001')!.stage).toBe('failed');
+    expect(runs.get('request-001')!.stage).toBe('failed');
     expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('agent crashed'));
     expect(implFeedbackPage.update).not.toHaveBeenCalled();
   });
@@ -1359,13 +1407,13 @@ describe('Orchestrator — _handleImplementationFeedback failure paths', () => {
     await orch.stop();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    expect(runs.get('idea-001')!.stage).toBe('reviewing_implementation');
+    expect(runs.get('request-001')!.stage).toBe('reviewing_implementation');
     expect(postError).not.toHaveBeenCalled();
   });
 });
 
 // ──────────────────────────────────────────────────────────────────────────────
-// Implementation approval handler tests (Task 22 / Task 23)
+// Implementation approval handler tests
 // ──────────────────────────────────────────────────────────────────────────────
 
 import type { PRCreator } from '../../src/adapters/agent/pr-creator.js';
@@ -1389,7 +1437,7 @@ function makeApprovalOrch2(opts: {
       workspaceManager: makeWorkspaceManager(),
       specGenerator: makeSpecGenerator(),
       specPublisher: makeSpecPublisher(),
-      intentClassifier: makeIntentClassifier('implementation_approval'),
+      intentClassifier: makeIntentClassifier('approval'),
       specCommitter: makeSpecCommitter(),
       implementer: makeImplementer(),
       implFeedbackPage: makeImplFeedbackPage(),
@@ -1407,11 +1455,11 @@ async function sendImplApproval(
   adapter: ReturnType<typeof makeMockAdapter>,
 ) {
   const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-  runs.set('idea-001', makeRun({ stage: 'reviewing_implementation', branch: 'spec/idea-001' }));
+  runs.set('request-001', makeRun({ stage: 'reviewing_implementation', branch: 'spec/request-001' }));
   adapter._emit({ type: 'thread_message', payload: makeFeedback() });
   await vi.waitUntil(
     () => {
-      const r = runs.get('idea-001');
+      const r = runs.get('request-001');
       return r?.stage === 'done' || r?.stage === 'failed';
     },
     { timeout: 3000 },
@@ -1429,8 +1477,8 @@ describe('Orchestrator — _handleImplementationApproval happy path', () => {
 
     expect(prCreator.createPR).toHaveBeenCalledOnce();
     expect(prCreator.createPR).toHaveBeenCalledWith(
-      '/ws/idea-001',
-      'spec/idea-001',
+      '/ws/request-001',
+      'spec/request-001',
       expect.any(String),
     );
   });
@@ -1458,7 +1506,7 @@ describe('Orchestrator — _handleImplementationApproval happy path', () => {
     await orch.stop();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    expect(runs.get('idea-001')!.stage).toBe('done');
+    expect(runs.get('request-001')!.stage).toBe('done');
   });
 });
 
@@ -1475,7 +1523,7 @@ describe('Orchestrator — _handleImplementationApproval failure paths', () => {
     await orch.stop();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    expect(runs.get('idea-001')!.stage).toBe('failed');
+    expect(runs.get('request-001')!.stage).toBe('failed');
     expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('gh pr create failed'));
   });
 
@@ -1489,7 +1537,7 @@ describe('Orchestrator — _handleImplementationApproval failure paths', () => {
     await orch.stop();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    expect(runs.get('idea-001')!.stage).toBe('done');
+    expect(runs.get('request-001')!.stage).toBe('done');
     expect(postError).not.toHaveBeenCalled();
   });
 });
@@ -1504,8 +1552,8 @@ import { join } from 'node:path';
 import { FileRunStore } from '../../src/core/run-store.js';
 
 describe('Orchestrator — run persistence', () => {
-  it('loads runs on construction: existing run is matched by idea_id on thread_message', async () => {
-    const existingRun = makeRun({ idea_id: 'idea-loaded', stage: 'reviewing_spec', channel_id: 'C999', thread_ts: '9000.0' });
+  it('loads runs on construction: existing run is matched by request_id on thread_message', async () => {
+    const existingRun = makeRun({ request_id: 'request-loaded', stage: 'reviewing_spec', channel_id: 'C999', thread_ts: '9000.0' });
     const mockRunStore = { load: vi.fn().mockReturnValue([existingRun]), save: vi.fn() };
 
     const adapter = makeMockAdapter();
@@ -1516,7 +1564,7 @@ describe('Orchestrator — run persistence', () => {
         workspaceManager: makeWorkspaceManager(),
         specGenerator: sg,
         specPublisher: makeSpecPublisher(),
-        intentClassifier: makeIntentClassifier('spec_feedback'),
+        intentClassifier: makeIntentClassifier('feedback'),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
         repo_url: 'r',
@@ -1526,17 +1574,17 @@ describe('Orchestrator — run persistence', () => {
     );
     await orch.start();
 
-    // Send thread_message for the loaded run's idea_id — if loaded, revise will be called
-    adapter._emit({ type: 'thread_message', payload: { ...makeFeedback(), idea_id: 'idea-loaded', channel_id: 'C999', thread_ts: '9000.0' } });
+    // Send thread_message for the loaded run's request_id — if loaded, revise will be called
+    adapter._emit({ type: 'thread_message', payload: { ...makeFeedback(), request_id: 'request-loaded', channel_id: 'C999', thread_ts: '9000.0' } });
     await new Promise(r => setTimeout(r, 100));
     await orch.stop();
 
-    // revise called means the run was found by idea_id (not discarded as unknown)
+    // revise called means the run was found by request_id (not discarded as unknown)
     expect(sg.revise).toHaveBeenCalledOnce();
     expect(mockRunStore.load).toHaveBeenCalledOnce();
   });
 
-  it('persists after createRun: save is called when new_idea is processed', async () => {
+  it('persists after createRun: save is called when new_request is processed', async () => {
     const mockRunStore = { load: vi.fn().mockReturnValue([]), save: vi.fn() };
 
     const adapter = makeMockAdapter();
@@ -1546,7 +1594,7 @@ describe('Orchestrator — run persistence', () => {
         workspaceManager: makeWorkspaceManager(),
         specGenerator: makeSpecGenerator(),
         specPublisher: makeSpecPublisher(),
-        intentClassifier: makeIntentClassifier('spec_feedback'),
+        intentClassifier: makeIntentClassifier('idea'),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
         repo_url: 'r',
@@ -1556,27 +1604,30 @@ describe('Orchestrator — run persistence', () => {
     );
     await orch.start();
 
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 100));
     await orch.stop();
 
     expect(mockRunStore.save).toHaveBeenCalled();
     // The Map passed to save should contain the new run
     const savedMap = (mockRunStore.save as ReturnType<typeof vi.fn>).mock.calls[0][0] as Map<string, Run>;
-    expect(savedMap.has('idea-001')).toBe(true);
+    expect(savedMap.has('request-001')).toBe(true);
   });
 
   it('persists after transition: save is called on stage transition', async () => {
     const mockRunStore = { load: vi.fn().mockReturnValue([]), save: vi.fn() };
 
     const adapter = makeMockAdapter();
+    const ic = makeIntentClassifier('idea');
+    (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
+
     const orch = new OrchestratorImpl(
       {
         adapter: adapter as never,
         workspaceManager: makeWorkspaceManager(),
         specGenerator: makeSpecGenerator(),
         specPublisher: makeSpecPublisher(),
-        intentClassifier: makeIntentClassifier('spec_feedback'),
+        intentClassifier: ic,
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
         repo_url: 'r',
@@ -1588,12 +1639,12 @@ describe('Orchestrator — run persistence', () => {
 
     // Seed a run and send feedback to trigger a transition
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
-    await vi.waitUntil(() => runs.get('idea-001')?.stage === 'reviewing_spec', { timeout: 2000 });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'reviewing_spec', { timeout: 2000 });
 
     mockRunStore.save.mockClear();
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
-    await vi.waitUntil(() => runs.get('idea-001')?.stage === 'reviewing_spec' && runs.get('idea-001')?.attempt === 1, { timeout: 2000 });
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'reviewing_spec' && runs.get('request-001')?.attempt === 1, { timeout: 2000 });
     await orch.stop();
 
     expect(mockRunStore.save).toHaveBeenCalled();
@@ -1609,7 +1660,7 @@ describe('Orchestrator — run persistence', () => {
         workspaceManager: makeWorkspaceManager(),
         specGenerator: makeSpecGenerator(),
         specPublisher: makeSpecPublisher(),
-        intentClassifier: makeIntentClassifier('spec_approval'),
+        intentClassifier: makeIntentClassifier('approval'),
         specCommitter: makeSpecCommitter(),
         implementer: makeImplementer(),
         implFeedbackPage: makeImplFeedbackPage(),
@@ -1623,13 +1674,13 @@ describe('Orchestrator — run persistence', () => {
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    runs.set('idea-001', makeRun({ stage: 'reviewing_spec' }));
+    runs.set('request-001', makeRun({ stage: 'reviewing_spec' }));
     mockRunStore.save.mockClear();
 
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
     await vi.waitUntil(
       () => {
-        const r = runs.get('idea-001');
+        const r = runs.get('request-001');
         return r?.stage === 'reviewing_implementation' || r?.stage === 'failed';
       },
       { timeout: 3000 },
@@ -1649,7 +1700,7 @@ describe('Orchestrator — run persistence', () => {
         workspaceManager: makeWorkspaceManager(),
         specGenerator: makeSpecGenerator(),
         specPublisher: makeSpecPublisher(),
-        intentClassifier: makeIntentClassifier('implementation_feedback'),
+        intentClassifier: makeIntentClassifier('feedback'),
         specCommitter: makeSpecCommitter(),
         implementer: makeImplementer(),
         implFeedbackPage: makeImplFeedbackPage(),
@@ -1663,13 +1714,13 @@ describe('Orchestrator — run persistence', () => {
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    runs.set('idea-001', makeRun({ stage: 'reviewing_implementation', impl_feedback_ref: 'fp-id' }));
+    runs.set('request-001', makeRun({ stage: 'reviewing_implementation', impl_feedback_ref: 'fp-id' }));
     mockRunStore.save.mockClear();
 
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
     await vi.waitUntil(
       () => {
-        const r = runs.get('idea-001');
+        const r = runs.get('request-001');
         return r !== undefined && r.attempt > 0 && r.stage !== 'implementing';
       },
       { timeout: 3000 },
@@ -1690,7 +1741,7 @@ describe('Orchestrator — run persistence', () => {
         workspaceManager: makeWorkspaceManager(),
         specGenerator: makeSpecGenerator(),
         specPublisher: makeSpecPublisher(),
-        intentClassifier: makeIntentClassifier('spec_approval'),
+        intentClassifier: makeIntentClassifier('approval'),
         specCommitter: makeSpecCommitter(),
         implementer: makeImplementer(),
         implFeedbackPage,
@@ -1704,11 +1755,11 @@ describe('Orchestrator — run persistence', () => {
     await orch.start();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    runs.set('idea-001', makeRun({ stage: 'reviewing_spec' }));
+    runs.set('request-001', makeRun({ stage: 'reviewing_spec' }));
     mockRunStore.save.mockClear();
 
     adapter._emit({ type: 'thread_message', payload: makeFeedback() });
-    await vi.waitUntil(() => runs.get('idea-001')?.impl_feedback_ref === 'new-feedback-page', { timeout: 3000 });
+    await vi.waitUntil(() => runs.get('request-001')?.impl_feedback_ref === 'new-feedback-page', { timeout: 3000 });
     await orch.stop();
 
     expect(mockRunStore.save).toHaveBeenCalled();
@@ -1724,7 +1775,7 @@ describe('Orchestrator — run persistence', () => {
         workspaceManager: makeWorkspaceManager(),
         specGenerator: sg,
         specPublisher: makeSpecPublisher(),
-        intentClassifier: makeIntentClassifier('spec_feedback'),
+        intentClassifier: makeIntentClassifier('idea'),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
         repo_url: 'r',
@@ -1733,13 +1784,13 @@ describe('Orchestrator — run persistence', () => {
     );
     await orch.start();
 
-    adapter._emit({ type: 'new_idea', payload: makeIdea() });
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 100));
     await orch.stop();
 
     // Verify normal operation still works
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    expect(runs.get('idea-001')?.stage).toBe('reviewing_spec');
+    expect(runs.get('request-001')?.stage).toBe('reviewing_spec');
   });
 
   it('Slack restart notification: posts "Server restarted" to channel/thread of demoted runs', async () => {
@@ -1753,7 +1804,8 @@ describe('Orchestrator — run persistence', () => {
 
     const persistedRun: Run = {
       id: 'run-restart',
-      idea_id: 'idea-restart',
+      request_id: 'request-restart',
+      intent: 'idea',
       stage: 'implementing',
       workspace_path: workspacePath,
       branch: 'feat/restart',
@@ -1779,7 +1831,7 @@ describe('Orchestrator — run persistence', () => {
         workspaceManager: makeWorkspaceManager(),
         specGenerator: makeSpecGenerator(),
         specPublisher: makeSpecPublisher(),
-        intentClassifier: makeIntentClassifier('spec_feedback'),
+        intentClassifier: makeIntentClassifier('feedback'),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage,
         repo_url: 'r',
@@ -1796,5 +1848,122 @@ describe('Orchestrator — run persistence', () => {
     await orch.stop();
 
     expect(postMessage).toHaveBeenCalledWith('C999', '9999.0000', expect.stringContaining('Server restarted'));
+  });
+});
+
+describe('Orchestrator — question intent', () => {
+  it('new_request with question intent: questionAnswerer.answer called with content, response posted', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const qa = makeQuestionAnswerer('You can submit ideas by @mentioning me.');
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: makeIntentClassifier('question'),
+        questionAnswerer: qa,
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+        repo_url: 'r',
+      },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+
+    const request = makeRequest({ content: 'How do I submit a feature request?' });
+    adapter._emit({ type: 'new_request', payload: request });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(qa.answer).toHaveBeenCalledWith('How do I submit a feature request?');
+    expect(postMessage).toHaveBeenCalledWith('C123', '100.0', 'You can submit ideas by @mentioning me.');
+  });
+
+  it('thread_message with question intent: questionAnswerer.answer called with feedback content, stage unchanged', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const qa = makeQuestionAnswerer('Great question about the auth flow.');
+    const ic = makeIntentClassifier('question');
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: ic,
+        questionAnswerer: qa,
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+        repo_url: 'r',
+      },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    runs.set('request-001', makeRun({ stage: 'reviewing_spec' }));
+    adapter._emit({ type: 'thread_message', payload: makeFeedback({ content: 'How does auth work?' }) });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(qa.answer).toHaveBeenCalledWith('How does auth work?');
+    expect(postMessage).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'Great question about the auth flow.');
+    expect(runs.get('request-001')!.stage).toBe('reviewing_spec');
+  });
+
+  it('questionAnswerer throws: fallback response posted, run does not fail', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const postError = vi.fn().mockResolvedValue(undefined);
+    const qa: QuestionAnswerer = { answer: vi.fn().mockRejectedValue(new Error('API down')) };
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: makeIntentClassifier('question'),
+        questionAnswerer: qa,
+        postError,
+        postMessage,
+        repo_url: 'r',
+      },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+
+    adapter._emit({ type: 'new_request', payload: makeRequest({ content: 'what can you do?' }) });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(postMessage).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining("wasn't able"));
+    expect(postError).not.toHaveBeenCalled();
+  });
+
+  it('no questionAnswerer configured: fallback text posted', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: makeIntentClassifier('question'),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+        repo_url: 'r',
+      },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(postMessage).toHaveBeenCalledWith('C123', '100.0', expect.any(String));
   });
 });

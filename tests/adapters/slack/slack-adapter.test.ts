@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { App } from '@slack/bolt';
 import { SlackAdapter } from '../../../src/adapters/slack/slack-adapter.js';
-import type { Idea, ThreadMessage } from '../../../src/types/events.js';
+import type { Request, ThreadMessage } from '../../../src/types/events.js';
 
 // Captures one event from the AsyncIterable then stops
 async function takeOne<T>(iterable: AsyncIterable<T>): Promise<T> {
@@ -77,12 +77,12 @@ describe('SlackAdapter — startup', () => {
   });
 });
 
-describe('SlackAdapter — new idea pipeline', () => {
+describe('SlackAdapter — new request pipeline', () => {
   const BOT_ID = 'UBOT001';
   const CHANNEL_ID = 'C123';
   const CHANNEL_NAME = 'my-channel';
 
-  it('emits new_idea event with correct Idea shape', async () => {
+  it('emits new_request event with correct Request shape', async () => {
     const mock = makeMockApp({ botUserId: BOT_ID });
     const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME, }, { logDestination: nullDest });
     await adapter.start();
@@ -97,15 +97,15 @@ describe('SlackAdapter — new idea pipeline', () => {
 
     const event = await eventPromise;
     await adapter.stop();
-    expect(event.type).toBe('new_idea');
-    const idea = event.payload as Idea;
-    expect(idea.source).toBe('slack');
-    expect(idea.author).toBe('U123');
-    expect(idea.content).toBe(`<@${BOT_ID}> add a setup wizard`);
-    expect(idea.thread_ts).toBe('100.0');
-    expect(idea.channel_id).toBe(CHANNEL_ID);
-    expect(idea.received_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-    expect(typeof idea.id).toBe('string');
+    expect(event.type).toBe('new_request');
+    const request = event.payload as Request;
+    expect(request.source).toBe('slack');
+    expect(request.author).toBe('U123');
+    expect(request.content).toBe(`<@${BOT_ID}> add a setup wizard`);
+    expect(request.thread_ts).toBe('100.0');
+    expect(request.channel_id).toBe(CHANNEL_ID);
+    expect(request.received_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(typeof request.id).toBe('string');
   });
 
   it('posts acknowledgement in the correct thread', async () => {
@@ -132,7 +132,7 @@ describe('SlackAdapter — new idea pipeline', () => {
     );
   });
 
-  it('registers the thread so a subsequent reply is spec_feedback', async () => {
+  it('registers the thread so a subsequent reply is thread_message', async () => {
     const mock = makeMockApp({ botUserId: BOT_ID });
     const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME, }, { logDestination: nullDest });
     await adapter.start();
@@ -147,7 +147,7 @@ describe('SlackAdapter — new idea pipeline', () => {
     });
     await ideaEventPromise;
 
-    // Now trigger a reply — should be spec_feedback
+    // Now trigger a reply — should be thread_message
     const feedbackEventPromise = takeOne(adapter.receive());
     await mock._triggerMessage({
       text: `<@${BOT_ID}> revise this`,
@@ -168,7 +168,7 @@ describe('SlackAdapter — spec feedback pipeline', () => {
   const BOT_ID = 'UBOT001';
   const CHANNEL_ID = 'C123';
 
-  it('emits spec_feedback with correct shape and posts acknowledgement', async () => {
+  it('emits thread_message with correct shape and posts acknowledgement', async () => {
     const mock = makeMockApp({ botUserId: BOT_ID });
     const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel', }, { logDestination: nullDest });
     await adapter.start();
@@ -192,7 +192,7 @@ describe('SlackAdapter — spec feedback pipeline', () => {
 
     expect(feedbackEvent.type).toBe('thread_message');
     const feedback = feedbackEvent.payload as ThreadMessage;
-    expect(feedback.idea_id).toBe((ideaEvent.payload as Idea).id);
+    expect(feedback.request_id).toBe((ideaEvent.payload as Request).id);
     expect(feedback.author).toBe('U456');
     expect(feedback.thread_ts).toBe('100.0');
     expect(feedback.content).toBe(`<@${BOT_ID}> the field is confusing`);

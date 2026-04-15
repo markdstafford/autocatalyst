@@ -21,6 +21,7 @@ import { NotionClientImpl } from './adapters/notion/notion-client.js';
 import { NotionPublisher } from './adapters/notion/notion-publisher.js';
 import { NotionFeedbackSource, type FeedbackSource } from './adapters/notion/notion-feedback-source.js';
 import { AnthropicIntentClassifier } from './adapters/agent/intent-classifier.js';
+import { AgentSDKQuestionAnswerer } from './adapters/agent/question-answerer.js';
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { AgentSDKImplementer } from './adapters/agent/implementer.js';
@@ -117,27 +118,29 @@ try {
     const bedrockClient = new AnthropicBedrock({
       providerChainResolver: () => Promise.resolve(fromNodeProviderChain()),
     });
-    intentClassifier = new AnthropicIntentClassifier('', {
-      createFn: async (params) => {
-        try {
-          return await bedrockClient.messages.create({
-            ...params,
-            model: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
-          }) as unknown as { content: Array<{ type: string; text: string }> };
-        } catch (err) {
-          const msg = String(err);
-          if (msg.includes('CredentialsProviderError') || msg.includes('Could not load credentials') || msg.includes('sso')) {
-            logger.error(
-              { event: 'bedrock.credentials_expired', aws_profile: process.env['AWS_PROFILE'] ?? 'default' },
-              'AWS credentials expired or unavailable. Run: aws sso login --profile <profile>',
-            );
-          }
-          throw err;
+    const bedrockCreateFn = async (params: { model: string; max_tokens: number; messages: Array<{ role: 'user'; content: string }> }) => {
+      try {
+        return await bedrockClient.messages.create({
+          ...params,
+          model: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+        }) as unknown as { content: Array<{ type: string; text: string }> };
+      } catch (err) {
+        const msg = String(err);
+        if (msg.includes('CredentialsProviderError') || msg.includes('Could not load credentials') || msg.includes('sso')) {
+          logger.error(
+            { event: 'bedrock.credentials_expired', aws_profile: process.env['AWS_PROFILE'] ?? 'default' },
+            'AWS credentials expired or unavailable. Run: aws sso login --profile <profile>',
+          );
         }
-      },
-    });
+        throw err;
+      }
+    };
+    intentClassifier = new AnthropicIntentClassifier('', { createFn: bedrockCreateFn });
     logger.info({ event: 'service.config', auth: 'bedrock', aws_profile: process.env['AWS_PROFILE'] ?? 'default' }, 'Using AWS Bedrock for intent classification');
   }
+
+  // Build question answerer — always uses Agent SDK with repo path as cwd (no Bedrock variant needed)
+  const questionAnswerer = new AgentSDKQuestionAnswerer(args.repoPath);
 
   // Build adapter, components, orchestrator
   const threadRegistry = new ThreadRegistry();
@@ -195,6 +198,7 @@ try {
     specPublisher,
     feedbackSource,
     intentClassifier,
+    questionAnswerer,
     specCommitter,
     implementer,
     implFeedbackPage,

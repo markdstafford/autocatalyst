@@ -5,7 +5,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
-import type { Idea, ThreadMessage } from '../../types/events.js';
+import type { Request, ThreadMessage } from '../../types/events.js';
 import { stripCommentSpans, extractCommentSpans, ensureSpansPreserved } from '../notion/markdown-diff.js';
 
 export interface NotionComment {
@@ -26,7 +26,7 @@ export interface ReviseResult {
 }
 
 export interface SpecGenerator {
-  create(idea: Idea, workspace_path: string): Promise<string>;
+  create(request: Request, workspace_path: string): Promise<string>;
   revise(
     feedback: ThreadMessage,
     notion_comments: NotionComment[],
@@ -85,12 +85,12 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
     this.readFileFn = options?.readFile ?? ((path, enc) => _readFile(path, enc));
   }
 
-  async create(idea: Idea, workspace_path: string): Promise<string> {
+  async create(request: Request, workspace_path: string): Promise<string> {
     const createResultPath = join(workspace_path, '.autocatalyst', 'spec-create-result.json');
     const specDir = join(workspace_path, 'context-human', 'specs');
-    const prompt = buildCreatePrompt(idea, specDir, createResultPath);
+    const prompt = buildCreatePrompt(request, specDir, createResultPath);
 
-    this.logger.debug({ event: 'spec.agent_invoked', idea_id: idea.id }, 'Invoking Agent SDK for spec creation');
+    this.logger.debug({ event: 'spec.agent_invoked', request_id: request.id }, 'Invoking Agent SDK for spec creation');
 
     try {
       for await (const _message of this.queryFn({
@@ -108,7 +108,7 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
       }
     } catch (err) {
       this.logger.error(
-        { event: 'spec.agent_failed', idea_id: idea.id, error: String(err) },
+        { event: 'spec.agent_failed', request_id: request.id, error: String(err) },
         'Agent SDK exited with error during spec creation',
       );
       throw new Error(`Agent SDK spec creation failed: ${String(err)}`);
@@ -139,8 +139,8 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
     }
     const spec_path = obj['spec_path'];
 
-    this.logger.debug({ event: 'spec.agent_completed', idea_id: idea.id }, 'Agent SDK spec creation completed');
-    this.logger.info({ event: 'spec.generated', idea_id: idea.id, spec_path }, 'Spec generated');
+    this.logger.debug({ event: 'spec.agent_completed', request_id: request.id }, 'Agent SDK spec creation completed');
+    this.logger.info({ event: 'spec.generated', request_id: request.id, spec_path }, 'Spec generated');
     return spec_path;
   }
 
@@ -159,10 +159,10 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
     const prompt = buildRevisePrompt(feedback, notion_comments, spec_path, reviseResultPath, currentSpec, hasSpans);
 
     this.logger.debug(
-      { event: 'spec_revision.input', idea_id: feedback.idea_id, notion_comment_count: notion_comments.length },
+      { event: 'spec_revision.input', request_id: feedback.request_id, notion_comment_count: notion_comments.length },
       'Revise called with Notion comments',
     );
-    this.logger.debug({ event: 'spec.agent_invoked', idea_id: feedback.idea_id }, 'Invoking Agent SDK for spec revision');
+    this.logger.debug({ event: 'spec.agent_invoked', request_id: feedback.request_id }, 'Invoking Agent SDK for spec revision');
 
     try {
       for await (const _message of this.queryFn({
@@ -180,7 +180,7 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
       }
     } catch (err) {
       this.logger.error(
-        { event: 'spec.agent_failed', idea_id: feedback.idea_id, error: String(err) },
+        { event: 'spec.agent_failed', request_id: feedback.request_id, error: String(err) },
         'Agent SDK exited with error during spec revision',
       );
       throw new Error(`Agent SDK spec revision failed: ${String(err)}`);
@@ -198,9 +198,9 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
 
     const commentResponses = parseCommentResponses(content, reviseResultPath);
 
-    this.logger.debug({ event: 'spec.agent_completed', idea_id: feedback.idea_id }, 'Agent SDK spec revision completed');
+    this.logger.debug({ event: 'spec.agent_completed', request_id: feedback.request_id }, 'Agent SDK spec revision completed');
     this.logger.debug(
-      { event: 'spec_revision.output', idea_id: feedback.idea_id, comment_response_count: commentResponses.length },
+      { event: 'spec_revision.output', request_id: feedback.request_id, comment_response_count: commentResponses.length },
       'Parsed comment responses from revision',
     );
 
@@ -209,26 +209,26 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
       const pageContent = ensureSpansPreserved(agentSpec, originalSpans);
       writeFileSync(spec_path, stripCommentSpans(pageContent), 'utf-8');
       this.logger.info(
-        { event: 'spec.revised', idea_id: feedback.idea_id, spec_path, spans_preserved: true },
+        { event: 'spec.revised', request_id: feedback.request_id, spec_path, spans_preserved: true },
         'Spec revised with span passthrough',
       );
       return { comment_responses: commentResponses, page_content: pageContent };
     }
 
-    this.logger.info({ event: 'spec.revised', idea_id: feedback.idea_id, spec_path }, 'Spec revised');
+    this.logger.info({ event: 'spec.revised', request_id: feedback.request_id, spec_path }, 'Spec revised');
     return { comment_responses: commentResponses };
   }
 }
 
-function buildCreatePrompt(idea: Idea, specDir: string, createResultPath: string): string {
+function buildCreatePrompt(request: Request, specDir: string, createResultPath: string): string {
   return [
-    `Use the /mm:planning skill to create a complete product spec for the following idea.`,
+    `Use the /mm:planning skill to create a complete product spec for the following request.`,
     ``,
     `/mm:planning`,
     ``,
-    `Idea:`,
+    `Request:`,
     `<<<`,
-    idea.content,
+    request.content,
     `>>>`,
     ``,
     `When the spec is complete:`,
