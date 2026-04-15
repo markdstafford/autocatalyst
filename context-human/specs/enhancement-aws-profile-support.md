@@ -213,16 +213,16 @@ If an operator sets `aws_profile: " "` in [WORKFLOW.md](http://WORKFLOW.md), the
 			- [x] `WorkflowConfig` without `aws_profile` still compiles (field is optional)
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: None
-	- [ ] **Task: Add ****`resolveAwsProfile`**** to ****`src/core/config.ts`**
+	- [x] **Task: Add ****`resolveAwsProfile`**** to ****`src/core/config.ts`**
 		- **Description**: Add the `resolveAwsProfile(config: WorkflowConfig, env: Record<string, string | undefined>): string | undefined` function to `src/core/config.ts`. Implement config \> env precedence; trim both values; treat empty/whitespace as absent; return `undefined` when neither source provides a non-empty value. Export the function. Import `WorkflowConfig` at the top of the file if not already imported.
 		- **Acceptance criteria**:
-			- [ ] Function is exported from `src/core/config.ts`
-			- [ ] Config value takes precedence when both sources are set
-			- [ ] Env value is returned when config field is absent
-			- [ ] Returns `undefined` when both sources are absent
-			- [ ] Empty string and whitespace-only values from either source are treated as absent
-			- [ ] Values are trimmed before returning
-			- [ ] `tsc --noEmit` passes
+			- [x] Function is exported from `src/core/config.ts`
+			- [x] Config value takes precedence when both sources are set
+			- [x] Env value is returned when config field is absent
+			- [x] Returns `undefined` when both sources are absent
+			- [x] Empty string and whitespace-only values from either source are treated as absent
+			- [x] Values are trimmed before returning
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `aws_profile` field to `WorkflowConfig`
 	- [ ] **Task: Apply resolved profile in ****`src/index.ts`**
 		- **Description**: In `src/index.ts`, import `resolveAwsProfile` from `./core/config.js`. After the `loadConfig` call and before the `if (anthropicApiKey)` / Bedrock client block, add the resolution and application logic: call `resolveAwsProfile(currentConfig.config, process.env)`, and if the result is defined, set `process.env['AWS_PROFILE']` and log a `service.config` event with the `aws_profile` field. Verify the insertion point is before line 112 (the `const anthropicApiKey` line).
