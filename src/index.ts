@@ -21,7 +21,7 @@ import { NotionClientImpl } from './adapters/notion/notion-client.js';
 import { NotionPublisher } from './adapters/notion/notion-publisher.js';
 import { NotionFeedbackSource, type FeedbackSource } from './adapters/notion/notion-feedback-source.js';
 import { AnthropicIntentClassifier } from './adapters/agent/intent-classifier.js';
-import { AnthropicQuestionAnswerer } from './adapters/agent/question-answerer.js';
+import { AgentSDKQuestionAnswerer } from './adapters/agent/question-answerer.js';
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { AgentSDKImplementer } from './adapters/agent/implementer.js';
@@ -108,19 +108,17 @@ try {
     process.exit(1);
   }
 
-  // Build intent classifier and question answerer — prefer direct API key, fall back to Bedrock via AWS credential chain
+  // Build intent classifier — prefer direct API key, fall back to Bedrock via AWS credential chain
   const anthropicApiKey = process.env['AC_ANTHROPIC_API_KEY'];
   let intentClassifier: AnthropicIntentClassifier;
-  let questionAnswerer: AnthropicQuestionAnswerer;
   if (anthropicApiKey) {
     intentClassifier = new AnthropicIntentClassifier(anthropicApiKey);
-    questionAnswerer = new AnthropicQuestionAnswerer(anthropicApiKey);
-    logger.info({ event: 'service.config', auth: 'anthropic-api-key' }, 'Using Anthropic API key for AI features');
+    logger.info({ event: 'service.config', auth: 'anthropic-api-key' }, 'Using Anthropic API key for intent classification');
   } else {
     const bedrockClient = new AnthropicBedrock({
       providerChainResolver: () => Promise.resolve(fromNodeProviderChain()),
     });
-    const bedrockCreateFn = async (params: { model: string; max_tokens: number; system?: string; messages: Array<{ role: 'user'; content: string }> }) => {
+    const bedrockCreateFn = async (params: { model: string; max_tokens: number; messages: Array<{ role: 'user'; content: string }> }) => {
       try {
         return await bedrockClient.messages.create({
           ...params,
@@ -138,9 +136,11 @@ try {
       }
     };
     intentClassifier = new AnthropicIntentClassifier('', { createFn: bedrockCreateFn });
-    questionAnswerer = new AnthropicQuestionAnswerer('', { createFn: bedrockCreateFn });
-    logger.info({ event: 'service.config', auth: 'bedrock', aws_profile: process.env['AWS_PROFILE'] ?? 'default' }, 'Using AWS Bedrock for AI features');
+    logger.info({ event: 'service.config', auth: 'bedrock', aws_profile: process.env['AWS_PROFILE'] ?? 'default' }, 'Using AWS Bedrock for intent classification');
   }
+
+  // Build question answerer — always uses Agent SDK with repo path as cwd (no Bedrock variant needed)
+  const questionAnswerer = new AgentSDKQuestionAnswerer(args.repoPath);
 
   // Build adapter, components, orchestrator
   const threadRegistry = new ThreadRegistry();

@@ -1,64 +1,81 @@
 // src/adapters/agent/question-answerer.ts
-import Anthropic from '@anthropic-ai/sdk';
+import { query as _query } from '@anthropic-ai/claude-agent-sdk';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 
-type CreateFn = (params: {
-  model: string;
-  max_tokens: number;
-  system?: string;
-  messages: Array<{ role: 'user'; content: string }>;
-}) => Promise<{ content: Array<{ type: string; text: string }> }>;
+type QueryFn = typeof _query;
 
 export interface QuestionAnswerer {
   answer(question: string): Promise<string>;
 }
 
-interface AnthropicQuestionAnswererOptions {
-  createFn?: CreateFn;
+interface AgentSDKQuestionAnswererOptions {
+  queryFn?: QueryFn;
   logDestination?: pino.DestinationStream;
 }
 
-const SYSTEM_PROMPT = `You are Autocatalyst, an AI-powered product engineering assistant integrated into Slack.
+const PROMPT_PREFIX = [
+  `You are Autocatalyst, an AI-powered product engineering assistant integrated into Slack.`,
+  ``,
+  `You have access to the repository via shell tools. Use them to answer the question accurately.`,
+  `For example: run \`gh issue list\`, \`gh pr list\`, \`git log\`, read files, etc.`,
+  ``,
+  `Answer concisely — this response will be posted directly to Slack.`,
+  `Do not include preamble or sign-off. Just the answer.`,
+  ``,
+  `Question:`,
+].join('\n');
 
-You help teams turn ideas into shipped features by:
-- Taking feature requests and bug reports from Slack
-- Generating product specs collaboratively with the team
-- Implementing features using AI agents and creating pull requests
-- Routing in-thread feedback and approvals to the right handlers
-
-Answer the user's question concisely and helpfully. If the question is about a specific codebase, repository, or domain you don't have context about, say so clearly and suggest they check with a team member directly.`;
-
-export class AnthropicQuestionAnswerer implements QuestionAnswerer {
-  private readonly createFn: CreateFn;
+export class AgentSDKQuestionAnswerer implements QuestionAnswerer {
+  private readonly queryFn: QueryFn;
   private readonly logger: pino.Logger;
+  private readonly repo_path: string;
 
-  constructor(apiKey: string, options?: AnthropicQuestionAnswererOptions) {
-    if (options?.createFn) {
-      this.createFn = options.createFn;
-    } else {
-      const client = new Anthropic({ apiKey });
-      this.createFn = (params) => client.messages.create(params) as Promise<{ content: Array<{ type: string; text: string }> }>;
-    }
+  constructor(repo_path: string, options?: AgentSDKQuestionAnswererOptions) {
+    this.repo_path = repo_path;
+    this.queryFn = options?.queryFn ?? _query;
     this.logger = createLogger('question-answerer', { destination: options?.logDestination });
   }
 
   async answer(question: string): Promise<string> {
-    this.logger.debug({ event: 'question.answering', question_length: question.length }, 'Answering question');
+    this.logger.debug({ event: 'question.answering', question_length: question.length }, 'Answering question via Agent SDK');
 
-    const response = await this.createFn({
-      model: 'claude-haiku-4-5-20251001',
-      max_tokens: 500,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: 'user', content: question }],
-    });
+    const prompt = `${PROMPT_PREFIX}${question}`;
+    const chunks: string[] = [];
 
-    const text = response.content.find(b => b.type === 'text')?.text ?? '';
-    if (!text) {
-      return "I'm not sure how to answer that — try rephrasing or asking the team directly.";
+    try {
+      for await (const message of this.queryFn({
+        prompt,
+        options: {
+          cwd: this.repo_path,
+          permissionMode: 'bypassPermissions',
+          allowDangerouslySkipPermissions: true,
+          tools: { type: 'preset', preset: 'claude_code' },
+          settingSources: ['user', 'project'],
+          systemPrompt: { type: 'preset', preset: 'claude_code' },
+        },
+      })) {
+        // Collect assistant text from the final message
+        const msg = message as { role?: string; content?: Array<{ type: string; text?: string }> };
+        if (msg.role === 'assistant' && Array.isArray(msg.content)) {
+          for (const block of msg.content) {
+            if (block.type === 'text' && block.text) {
+              chunks.push(block.text);
+            }
+          }
+        }
+      }
+    } catch (err) {
+      this.logger.error({ event: 'question.agent_failed', error: String(err) }, 'Agent SDK exited with error during question answering');
+      throw new Error(`Agent SDK question answering failed: ${String(err)}`);
     }
 
-    this.logger.info({ event: 'question.answered', response_length: text.length }, 'Question answered');
-    return text;
+    const response = chunks.join('').trim();
+    if (!response) {
+      throw new Error('Agent SDK returned no text response for question');
+    }
+
+    this.logger.info({ event: 'question.answered', response_length: response.length }, 'Question answered');
+    return response;
   }
 }
