@@ -370,13 +370,13 @@ The queue notification is posted to the `thread_ts` of the incoming event before
 ## Task list
 
 - [ ] **Story: Prerequisites**
-	- [ ] **Task: Write ADR for concurrent dispatch**
+	- [x] **Task: Write ADR for concurrent dispatch**
 		- **Description**: Create `adr-NNN-concurrent-dispatch.md` documenting the decision to adopt concurrent dispatch over the existing serial processing model. Cover rationale, trade-offs, the serial classification guarantee, and the alternatives considered (fire-and-forget, back-pressure via generator pause, fully concurrent classification, worker pool library).
 		- **Acceptance criteria**:
-			- [ ] ADR file exists at `adr-NNN-concurrent-dispatch.md`
-			- [ ] Documents the decision, rationale, and trade-offs
-			- [ ] Explains the serial classification guarantee and why it is the primary deduplication mechanism
-			- [ ] References the alternatives considered and why each was rejected
+			- [x] ADR file exists at `adr-NNN-concurrent-dispatch.md`
+			- [x] Documents the decision, rationale, and trade-offs
+			- [x] Explains the serial classification guarantee and why it is the primary deduplication mechanism
+			- [x] References the alternatives considered and why each was rejected
 		- **Dependencies**: None
 - [ ] **Story: Serial classification gate**
 	- [ ] **Task: Add ****`_inFlight`****, ****`_queue`****, and ****`_maxConcurrentRuns`**** fields**
