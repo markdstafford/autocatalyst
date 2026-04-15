@@ -397,16 +397,16 @@ The queue notification is posted to the `thread_ts` of the incoming event before
 			- [x] Stage advance happens before method returns (visible to next classify call)
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `_inFlight`, `_queue`, and `_maxConcurrentRuns` fields
-	- [ ] **Task: Implement ****`_dispatchOrEnqueue`**** and ****`_launch`**
+	- [x] **Task: Implement ****`_dispatchOrEnqueue`**** and ****`_launch`**
 		- **Description**: Add `_dispatchOrEnqueue(event: InboundEvent): void` and `_launch(event: InboundEvent): void` to `OrchestratorImpl` per the detailed design in §3. `_dispatchOrEnqueue` checks `_inFlight.size >= _maxConcurrentRuns`; if at capacity, pushes to `_queue`, posts a "queued" notification (best-effort, non-blocking), and logs `run.queued`. Otherwise calls `_launch`. `_launch` wraps `_handleRequest` in a promise, attaches `.catch` for unhandled errors (logs `run.unhandled_error`), and `.finally` to delete from `_inFlight`, dequeue the next event, and log `run.dequeued` if applicable. Adds the promise to `_inFlight` and logs `run.dispatched`.
 		- **Acceptance criteria**:
-			- [ ] `_dispatchOrEnqueue` enqueues when `_inFlight.size >= _maxConcurrentRuns`
-			- [ ] Queue notification posted to `channel_id`/`thread_ts` of `new_request` events only (not `thread_message`)
-			- [ ] `run.queued` logged with `queue_depth` when enqueuing
-			- [ ] `_launch` creates a promise wrapping `_handleRequest`, adds it to `_inFlight`, logs `run.dispatched`
-			- [ ] `.finally` removes promise from `_inFlight` and dequeues next event if any; logs `run.dequeued`
-			- [ ] `.catch` logs `run.unhandled_error` on unexpected throws
-			- [ ] `tsc --noEmit` passes
+			- [x] `_dispatchOrEnqueue` enqueues when `_inFlight.size >= _maxConcurrentRuns`
+			- [x] Queue notification posted to `channel_id`/`thread_ts` of `new_request` events only (not `thread_message`)
+			- [x] `run.queued` logged with `queue_depth` when enqueuing
+			- [x] `_launch` creates a promise wrapping `_handleRequest`, adds it to `_inFlight`, logs `run.dispatched`
+			- [x] `.finally` removes promise from `_inFlight` and dequeues next event if any; logs `run.dequeued`
+			- [x] `.catch` logs `run.unhandled_error` on unexpected throws
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement `_classify`
 	- [ ] **Task: Update ****`_runLoop`**** to use ****`_classify`**** and ****`_dispatchOrEnqueue`****, and drain on stop**
 		- **Description**: Replace `await this._handleRequest(event as InboundEvent)` in `_runLoop` with: `const action = await this._classify(event as InboundEvent); if (action === 'dispatch') { this._dispatchOrEnqueue(event as InboundEvent); }`. After the `for await` loop exits, add a drain loop: `while (this._inFlight.size > 0) { await Promise.allSettled([...this._inFlight]); }`.

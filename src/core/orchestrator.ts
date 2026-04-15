@@ -153,6 +153,48 @@ export class OrchestratorImpl implements Orchestrator {
     return 'dispatch';
   }
 
+  private _dispatchOrEnqueue(event: InboundEvent): void {
+    if (this._inFlight.size >= this._maxConcurrentRuns) {
+      this._queueTimestamps.set(event, Date.now());
+      this._queue.push(event);
+      // Notify user their request has been queued (best-effort; new_request only)
+      if (event.type === 'new_request') {
+        const { channel_id, thread_ts } = event.payload;
+        this.deps.postMessage(channel_id, thread_ts,
+          'The system is at capacity right now — your request has been queued and will start shortly.',
+        ).catch(err => {
+          this.logger.error({ event: 'run.notify_failed', error: String(err) }, 'Failed to post queue notification');
+        });
+      }
+      this.logger.warn({ event: 'run.queued', queue_depth: this._queue.length }, 'Concurrency limit reached; event queued');
+      return;
+    }
+    this._launch(event);
+  }
+
+  private _launch(event: InboundEvent): void {
+    let p: Promise<void>;
+    p = this._handleRequest(event)
+      .catch(err => {
+        this.logger.error({ event: 'run.unhandled_error', error: String(err) }, 'Unhandled error in request handler');
+      })
+      .finally(() => {
+        this._inFlight.delete(p);
+        // Dequeue next event if any
+        const next = this._queue.shift();
+        if (next) {
+          const enqueuedAt = this._queueTimestamps.get(next);
+          this._queueTimestamps.delete(next);
+          const waitMs = enqueuedAt !== undefined ? Date.now() - enqueuedAt : 0;
+          this.logger.debug({ event: 'run.dequeued', in_flight: this._inFlight.size, queue_depth: this._queue.length }, 'Dequeued event; dispatching');
+          this.logger.info({ metric: 'orchestrator.queue_wait_ms', value: waitMs }, 'queue_wait_ms histogram');
+          this._launch(next);
+        }
+      });
+    this._inFlight.add(p);
+    this.logger.debug({ event: 'run.dispatched', in_flight: this._inFlight.size }, 'Handler dispatched');
+  }
+
   private async _handleRequest(event: InboundEvent): Promise<void> {
     if (event.type === 'new_request') {
       const request = event.payload;

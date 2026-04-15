@@ -2204,3 +2204,145 @@ describe('_classify — serial classification gate', () => {
     await orch.stop();
   });
 });
+
+describe('_dispatchOrEnqueue and _launch', () => {
+  beforeEach(() => { _fixtureSeq = 0; });
+
+  it('launches immediately when below concurrency limit', async () => {
+    const adapter = makeMockAdapter();
+    const handleReq = vi.fn().mockResolvedValue(undefined);
+    const orch = new OrchestratorImpl({
+      adapter,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn(),
+      postMessage: vi.fn(),
+      repo_url: 'https://github.com/org/repo',
+    }, { maxConcurrentRuns: 2 });
+    (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
+    await orch.start();
+
+    const event = makeEventFixture('new_request');
+    (orch as unknown as { _dispatchOrEnqueue(e: unknown): void })._dispatchOrEnqueue(event);
+
+    await vi.waitUntil(() => handleReq.mock.calls.length === 1, { timeout: 200 });
+    expect(handleReq).toHaveBeenCalledTimes(1);
+
+    await orch.stop();
+  });
+
+  it('enqueues and logs run.queued when at capacity', async () => {
+    const { records, destination } = makeLogCapture();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+
+    const ctrl1 = makeControllablePromise();
+    const ctrl2 = makeControllablePromise();
+    let callCount = 0;
+    const handleReq = vi.fn().mockImplementation(() => {
+      callCount++;
+      return callCount === 1 ? ctrl1.promise : ctrl2.promise;
+    });
+
+    const adapter = makeMockAdapter();
+    const orch = new OrchestratorImpl({
+      adapter,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn(),
+      postMessage,
+      repo_url: 'https://github.com/org/repo',
+    }, { maxConcurrentRuns: 2, logDestination: destination });
+    (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
+    await orch.start();
+
+    const e1 = makeEventFixture('new_request', { id: 'r1', channel_id: 'C1', thread_ts: '1.0' });
+    const e2 = makeEventFixture('new_request', { id: 'r2', channel_id: 'C2', thread_ts: '2.0' });
+    const e3 = makeEventFixture('new_request', { id: 'r3', channel_id: 'C3', thread_ts: '3.0' });
+
+    (orch as unknown as { _dispatchOrEnqueue(e: unknown): void })._dispatchOrEnqueue(e1);
+    (orch as unknown as { _dispatchOrEnqueue(e: unknown): void })._dispatchOrEnqueue(e2);
+    await vi.waitUntil(() => callCount === 2, { timeout: 200 });
+
+    (orch as unknown as { _dispatchOrEnqueue(e: unknown): void })._dispatchOrEnqueue(e3);
+
+    // Third event should be queued
+    const queuedLog = records.find(r => r['event'] === 'run.queued');
+    expect(queuedLog).toBeDefined();
+    expect(queuedLog!['queue_depth']).toBe(1);
+    // Queue notification sent to C3
+    expect(postMessage).toHaveBeenCalledWith('C3', '3.0', expect.stringContaining('queued'));
+    // _handleRequest called only twice (not three times yet)
+    expect(handleReq).toHaveBeenCalledTimes(2);
+
+    // Resolve first handler — third should now be dispatched
+    ctrl1.resolve();
+    await vi.waitUntil(() => handleReq.mock.calls.length === 3, { timeout: 200 });
+    expect(records.find(r => r['event'] === 'run.dequeued')).toBeDefined();
+
+    ctrl2.resolve();
+    await orch.stop();
+  });
+
+  it('_inFlight.size is accurate throughout dispatch lifecycle', async () => {
+    const ctrl = makeControllablePromise();
+    const handleReq = vi.fn().mockReturnValue(ctrl.promise);
+    const adapter = makeMockAdapter();
+    const orch = new OrchestratorImpl({
+      adapter,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn(),
+      postMessage: vi.fn(),
+      repo_url: 'https://github.com/org/repo',
+    }, { maxConcurrentRuns: 5 });
+    (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
+    await orch.start();
+
+    const inFlight = () => (orch as unknown as { _inFlight: Set<unknown> })._inFlight.size;
+
+    expect(inFlight()).toBe(0);
+    const event = makeEventFixture('new_request');
+    (orch as unknown as { _dispatchOrEnqueue(e: unknown): void })._dispatchOrEnqueue(event);
+    await vi.waitUntil(() => handleReq.mock.calls.length === 1, { timeout: 200 });
+    expect(inFlight()).toBe(1);
+
+    ctrl.resolve();
+    await vi.waitUntil(() => inFlight() === 0, { timeout: 200 });
+    expect(inFlight()).toBe(0);
+
+    await orch.stop();
+  });
+
+  it('catch handler logs run.unhandled_error for unexpected throws', async () => {
+    const { records, destination } = makeLogCapture();
+    const handleReq = vi.fn().mockRejectedValue(new Error('kaboom'));
+    const adapter = makeMockAdapter();
+    const orch = new OrchestratorImpl({
+      adapter,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn(),
+      postMessage: vi.fn(),
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: destination });
+    (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
+    await orch.start();
+
+    const event = makeEventFixture('new_request');
+    (orch as unknown as { _dispatchOrEnqueue(e: unknown): void })._dispatchOrEnqueue(event);
+
+    await vi.waitUntil(
+      () => records.some(r => r['event'] === 'run.unhandled_error'),
+      { timeout: 200 },
+    );
+    const errLog = records.find(r => r['event'] === 'run.unhandled_error');
+    expect(errLog!['error']).toContain('kaboom');
+    expect((orch as unknown as { _inFlight: Set<unknown> })._inFlight.size).toBe(0);
+
+    await orch.stop();
+  });
+});
