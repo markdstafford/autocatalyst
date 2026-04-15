@@ -405,4 +405,132 @@ Answering a question in-thread requires generating a response, which isn't curre
 
 ## Task list
 
-*(Added by task decomposition stage)*
+- [ ] **Story: Unify intent taxonomy**
+  - [ ] **Task: Refactor `IntentClassifier` to unified taxonomy and `ClassificationContext`**
+    - **Description**: Replace the existing stage-specific `Intent` type (`spec_feedback`, `spec_approval`, `implementation_feedback`, `implementation_approval`) with the unified taxonomy (`idea`, `bug`, `question`, `feedback`, `approval`, `ignore`). Replace the `RunStage` parameter with a `ClassificationContext` type (`'new_thread' | RunStage`). Update `VALID_INTENTS_BY_CONTEXT` to map each context to its valid intents. Update conservative fallbacks: `new_thread`/`intake` → `idea`; reviewing stages → `feedback`. Update the classifier prompt to use the new intent names and descriptions.
+    - **Acceptance criteria**:
+      - [ ] `Intent` type is `'idea' | 'bug' | 'question' | 'feedback' | 'approval' | 'ignore'`
+      - [ ] `ClassificationContext` type is `'new_thread' | RunStage`
+      - [ ] `VALID_INTENTS_BY_CONTEXT` covers `new_thread`, `intake`, `reviewing_spec`, `reviewing_implementation`, `awaiting_impl_input`
+      - [ ] Conservative fallback is `idea` for `new_thread`/`intake`, `feedback` for reviewing stages
+      - [ ] `tsc --noEmit` passes
+    - **Dependencies**: None
+
+  - [ ] **Task: Update `IntentClassifier` unit tests**
+    - **Description**: Update `tests/adapters/agent/intent-classifier.test.ts` to cover the unified taxonomy. Add test cases for each `ClassificationContext` verifying valid intent sets. Add cases for fallback on invalid-for-context intent, empty message, and API failure. Remove tests for old stage-specific intents.
+    - **Acceptance criteria**:
+      - [ ] Test cases cover all five `ClassificationContext` values
+      - [ ] Invalid-for-context intent → conservative fallback asserted
+      - [ ] Empty message → conservative fallback asserted
+      - [ ] API failure → conservative fallback after 2 retries asserted
+      - [ ] No references to `spec_feedback`, `spec_approval`, `implementation_feedback`, `implementation_approval` remain in test file
+      - [ ] All tests pass
+    - **Dependencies**: Task: Refactor `IntentClassifier` to unified taxonomy and `ClassificationContext`
+
+- [ ] **Story: Rename `Idea` → `Request` throughout**
+  - [ ] **Task: Rename types in `events.ts` and `runs.ts`**
+    - **Description**: In `src/types/events.ts`: rename `Idea` → `Request`, `new_idea` → `new_request`, `ThreadMessage.idea_id` → `request_id`. In `src/types/runs.ts`: rename `idea_id` → `request_id`; add `intent: RequestIntent` field where `RequestIntent = 'idea' | 'bug' | 'question'`.
+    - **Acceptance criteria**:
+      - [ ] `Request` interface exists with same fields as old `Idea`
+      - [ ] `InboundEvent` uses `new_request` / `Request`
+      - [ ] `ThreadMessage.request_id` replaces `idea_id`
+      - [ ] `Run.request_id` replaces `idea_id`
+      - [ ] `Run.intent: RequestIntent` field added
+      - [ ] `RequestIntent` type exported from `runs.ts`
+      - [ ] `tsc --noEmit` passes (will have downstream errors until call sites updated)
+    - **Dependencies**: None
+
+  - [ ] **Task: Rename all call sites**
+    - **Description**: Update every file that references `idea_id`, `new_idea`, or `Idea` in the work-item context: `src/core/orchestrator.ts`, `src/adapters/slack/slack-adapter.ts`, `src/adapters/slack/thread-registry.ts`, `src/core/run-store.ts` (serialization — treat as breaking change, document in commit message), `src/index.ts`. Grep for remaining references after the rename: `grep -r "idea_id\|new_idea\|: Idea\b" src/`.
+    - **Acceptance criteria**:
+      - [ ] `grep -r "idea_id\|new_idea\|: Idea\b" src/` returns no matches
+      - [ ] Run store serialization updated; breaking change noted in commit message
+      - [ ] `tsc --noEmit` passes
+    - **Dependencies**: Task: Rename types in `events.ts` and `runs.ts`
+
+  - [ ] **Task: Update all affected tests**
+    - **Description**: Update all test files that reference `idea_id`, `new_idea`, or `Idea` in the work-item context. Grep for remaining references: `grep -r "idea_id\|new_idea\|: Idea\b" tests/`.
+    - **Acceptance criteria**:
+      - [ ] `grep -r "idea_id\|new_idea\|: Idea\b" tests/` returns no matches
+      - [ ] All existing tests pass
+    - **Dependencies**: Task: Rename all call sites
+
+- [ ] **Story: Update Slack classifier ignore rules**
+  - [ ] **Task: Update `classifier.ts` for new ignore rules and return type**
+    - **Description**: Update `classifyMessage` in `src/adapters/slack/classifier.ts`. Add rule: if the message is a thread reply and @mentions at least one other user but does NOT mention the bot → `ignore`. Remove the `spec_feedback` return; in-thread @mentions that pass all ignore checks should return a new `{ intent: 'thread_message'; request_id: string }` result (the Slack adapter will emit the `thread_message` event). Remove `classifyReaction` and `ReactionClassification` (emoji approval is out of scope).
+    - **Acceptance criteria**:
+      - [ ] `@other_user` only in thread → `ignore`
+      - [ ] `@other_user` + `@bot` in thread → `thread_message` result
+      - [ ] `@bot` only in thread → `thread_message` result
+      - [ ] `@bot` top-level → `new_request` result (rename from `new_idea`)
+      - [ ] `classifyReaction` removed
+      - [ ] `tsc --noEmit` passes
+    - **Dependencies**: Task: Rename types in `events.ts` and `runs.ts`
+
+  - [ ] **Task: Update `classifier.ts` unit tests**
+    - **Description**: Update `tests/adapters/slack/classifier.test.ts` to cover the new ignore rules and return types. Add cases: `@other_user` only in thread → `ignore`; `@other_user` + `@bot` in thread → `thread_message`; `@bot` only in thread → `thread_message`. Remove all `classifyReaction` tests.
+    - **Acceptance criteria**:
+      - [ ] All new ignore rule cases covered
+      - [ ] No `classifyReaction` tests remain
+      - [ ] No `spec_feedback` intent references remain
+      - [ ] All tests pass
+    - **Dependencies**: Task: Update `classifier.ts` for new ignore rules and return type
+
+- [ ] **Story: Wire top-level classification through `IntentClassifier`**
+  - [ ] **Task: Update `slack-adapter.ts` to emit `new_request` via `IntentClassifier`**
+    - **Description**: Update `src/adapters/slack/slack-adapter.ts`. On top-level @mention: call `IntentClassifier.classify(content, 'new_thread')` before emitting. Emit `{ type: 'new_request', payload: Request }` regardless of intent — the orchestrator handles routing. Remove hardcoded `new_idea` / `spec_feedback` paths. For in-thread @mentions that pass classification: emit `{ type: 'thread_message', payload: ThreadMessage }` unchanged. The `IntentClassifier` is injected via the adapter constructor (optional dep, same pattern as existing deps).
+    - **Acceptance criteria**:
+      - [ ] `IntentClassifier` injected via constructor as optional dep
+      - [ ] Top-level @mention → `IntentClassifier.classify(content, 'new_thread')` called
+      - [ ] `new_request` event emitted with correct `Request` shape
+      - [ ] In-thread @mention → `thread_message` event emitted (no classifier call here; orchestrator calls it)
+      - [ ] `tsc --noEmit` passes
+    - **Dependencies**: Task: Update `classifier.ts` for new ignore rules and return type, Task: Refactor `IntentClassifier` to unified taxonomy and `ClassificationContext`
+
+  - [ ] **Task: Update `slack-adapter.ts` integration tests**
+    - **Description**: Update `tests/adapters/slack/slack-adapter.test.ts`. Replace `new_idea` event assertions with `new_request`. Add cases verifying `IntentClassifier` is called with `'new_thread'` context on top-level @mentions. Verify `thread_message` is still emitted correctly for in-thread @mentions. Verify `@other_user`-only threads are ignored.
+    - **Acceptance criteria**:
+      - [ ] `new_request` event shape verified
+      - [ ] `IntentClassifier.classify` called with `'new_thread'` on top-level @mention
+      - [ ] `thread_message` emitted correctly for in-thread @mention
+      - [ ] `@other_user`-only in-thread → no event emitted
+      - [ ] All tests pass
+    - **Dependencies**: Task: Update `slack-adapter.ts` to emit `new_request` via `IntentClassifier`
+
+- [ ] **Story: Refactor orchestrator to `_handleRequest`**
+  - [ ] **Task: Implement `_handleRequest` with intent × stage routing**
+    - **Description**: Refactor `src/core/orchestrator.ts`. Replace `_handleNewIdea` and the top-level dispatch in `_handleThreadMessage` with a single `_handleRequest(event: InboundEvent)` entry point. Implement the routing table from the tech spec: `idea` + new/intake → spec pipeline; `bug` + new/intake → ack + log; `feedback` + reviewing stage → existing feedback handlers; `approval` + reviewing stage → existing approval handlers. The existing `_handleSpecFeedback`, `_handleSpecApproval`, `_handleImplementationFeedback`, `_handleImplementationApproval` methods are retained as internal helpers — only the dispatch logic changes.
+    - **Acceptance criteria**:
+      - [ ] `_runLoop` calls `_handleRequest` for both `new_request` and `thread_message` events
+      - [ ] All intent × stage routing cases from the tech spec routing table are handled
+      - [ ] `run.intent` is set on run creation
+      - [ ] `tsc --noEmit` passes
+    - **Dependencies**: Task: Rename all call sites, Task: Refactor `IntentClassifier` to unified taxonomy and `ClassificationContext`
+
+  - [ ] **Task: Implement intent upgrade path**
+    - **Description**: In `_handleRequest`, add the upgrade path: when a `thread_message` arrives for a run with `intent = 'question'` and `stage = 'intake'`, reclassify with `IntentClassifier.classify(content, 'intake')`. If result is `idea` or `bug`, update `run.intent`, log `run.intent_upgraded`, and route to the appropriate handler. If result is `question` or `ignore`, handle as before.
+    - **Acceptance criteria**:
+      - [ ] `run.intent = 'question'` + `stage = 'intake'` + classifier returns `idea` → intent upgraded, spec pipeline starts, `run.intent_upgraded` logged
+      - [ ] `run.intent = 'question'` + `stage = 'intake'` + classifier returns `bug` → intent upgraded to `bug`, ack posted
+      - [ ] `run.intent = 'idea'` + any stage + classifier returns `question` → no upgrade, question stub response posted
+      - [ ] `tsc --noEmit` passes
+    - **Dependencies**: Task: Implement `_handleRequest` with intent × stage routing
+
+  - [ ] **Task: Add question stub handler and follow-up issue**
+    - **Description**: Add `_handleQuestion(content: string, channel_id: string, thread_ts: string)` to the orchestrator. For this PR, it posts a stub acknowledgement: `"I've noted your question — question answering is coming soon."`. Create a GitHub issue for implementing real question answering.
+    - **Acceptance criteria**:
+      - [ ] `_handleQuestion` posts stub acknowledgement
+      - [ ] All `question` intent cases in routing table call `_handleQuestion`
+      - [ ] GitHub issue created for real question answering implementation
+      - [ ] `tsc --noEmit` passes
+    - **Dependencies**: Task: Implement `_handleRequest` with intent × stage routing
+
+  - [ ] **Task: Update orchestrator unit tests**
+    - **Description**: Update `tests/core/orchestrator.test.ts` to cover the unified routing. Add test cases from the testing plan: `new_request` routing by intent; upgrade path cases; in-thread routing by intent × stage; question stub handler. Remove references to `new_idea`, `spec_feedback`, `spec_approval`, `implementation_feedback`, `implementation_approval`. Verify all existing pipeline tests (spec feedback, spec approval, impl feedback, impl approval) still pass under the new dispatch.
+    - **Acceptance criteria**:
+      - [ ] All new routing cases from §6 testing plan covered
+      - [ ] No references to `new_idea`, `spec_feedback`, `spec_approval`, `implementation_feedback`, `implementation_approval` in test file
+      - [ ] All existing pipeline tests pass
+      - [ ] `grep -r "idea_id\|new_idea\|spec_feedback\|spec_approval\|implementation_feedback\|implementation_approval" tests/core/orchestrator.test.ts` returns no matches
+      - [ ] All tests pass
+    - **Dependencies**: Task: Implement intent upgrade path, Task: Add question stub handler and follow-up issue
