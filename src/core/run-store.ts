@@ -59,7 +59,7 @@ export class FileRunStore implements RunStore {
     for (const run of runs) {
       // 4. Drop runs with missing workspace
       if (!run.workspace_path || !fs.existsSync(run.workspace_path)) {
-        this.logger.warn({ event: 'run_store.run_dropped', idea_id: run.idea_id, workspace_path: run.workspace_path }, 'Dropping run with missing workspace_path');
+        this.logger.warn({ event: 'run_store.run_dropped', request_id: run.request_id, workspace_path: run.workspace_path }, 'Dropping run with missing workspace_path');
         droppedCount++;
         continue;
       }
@@ -69,9 +69,9 @@ export class FileRunStore implements RunStore {
         const fromStage = run.stage;
         run.stage = 'failed';
         run.updated_at = new Date().toISOString();
-        this.demotedIds.add(run.idea_id);
+        this.demotedIds.add(run.request_id);
         demotedCount++;
-        this.logger.info({ event: 'run_store.run_demoted', idea_id: run.idea_id, from_stage: fromStage, to_stage: 'failed' }, 'Demoted stale run to failed');
+        this.logger.info({ event: 'run_store.run_demoted', request_id: run.request_id, from_stage: fromStage, to_stage: 'failed' }, 'Demoted stale run to failed');
       }
 
       kept.push(run);

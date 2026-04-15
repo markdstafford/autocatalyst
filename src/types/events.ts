@@ -1,4 +1,4 @@
-export interface Idea {
+export interface Request {
   id: string;
   source: 'slack';
   content: string;
@@ -9,7 +9,7 @@ export interface Idea {
 }
 
 export interface ThreadMessage {
-  idea_id: string;
+  request_id: string;
   content: string;
   author: string;
   received_at: string; // ISO 8601
@@ -18,5 +18,5 @@ export interface ThreadMessage {
 }
 
 export type InboundEvent =
-  | { type: 'new_idea'; payload: Idea }
+  | { type: 'new_request'; payload: Request }
   | { type: 'thread_message'; payload: ThreadMessage };

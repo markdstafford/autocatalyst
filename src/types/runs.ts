@@ -10,9 +10,12 @@ export type RunStage =
   | 'done'
   | 'failed';
 
+export type RequestIntent = 'idea' | 'bug' | 'question';
+
 export interface Run {
   id: string;
-  idea_id: string;
+  request_id: string;
+  intent: RequestIntent;
   stage: RunStage;
   workspace_path: string;
   branch: string;

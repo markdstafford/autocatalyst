@@ -27,7 +27,8 @@ function parseLogs(lines: string[]): Record<string, unknown>[] {
 function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: randomUUID(),
-    idea_id: randomUUID(),
+    request_id: randomUUID(),
+    intent: 'idea',
     stage: 'reviewing_spec',
     workspace_path: '/tmp/placeholder',
     branch: 'spec/test',
@@ -122,7 +123,7 @@ describe('FileRunStore.load — non-array JSON', () => {
 // ─────────────────────────────────────────────
 
 describe('FileRunStore.load — workspace_path missing', () => {
-  it('drops run with non-existent workspace_path and emits run_store.run_dropped with idea_id', () => {
+  it('drops run with non-existent workspace_path and emits run_store.run_dropped with request_id', () => {
     const run = makeRun({
       workspace_path: path.join(tmpDir, 'nonexistent-workspace'),
     });
@@ -140,7 +141,7 @@ describe('FileRunStore.load — workspace_path missing', () => {
     const logs = parseLogs(lines);
     const dropped = logs.find(l => l['event'] === 'run_store.run_dropped');
     expect(dropped).toBeDefined();
-    expect(dropped!['idea_id']).toBe(run.idea_id);
+    expect(dropped!['request_id']).toBe(run.request_id);
   });
 });
 
@@ -359,7 +360,7 @@ describe('FileRunStore.save — creates directory', () => {
     const store = new FileRunStore(tmpDir, { logDestination: dest });
 
     const run = makeRun({ workspace_path: tmpDir });
-    const runs = new Map<string, Run>([[run.idea_id, run]]);
+    const runs = new Map<string, Run>([[run.request_id, run]]);
     store.save(runs);
 
     const filePath = path.join(tmpDir, '.autocatalyst', 'runs.json');
@@ -387,7 +388,7 @@ describe('FileRunStore.save — round-trip', () => {
       attempt: 3,
     });
 
-    const runs = new Map<string, Run>([[run.idea_id, run]]);
+    const runs = new Map<string, Run>([[run.request_id, run]]);
     store.save(runs);
 
     const { dest: dest2 } = makeLogCapture();
@@ -397,7 +398,7 @@ describe('FileRunStore.save — round-trip', () => {
     expect(loaded).toHaveLength(1);
     const loaded0 = loaded[0];
     expect(loaded0.id).toBe(run.id);
-    expect(loaded0.idea_id).toBe(run.idea_id);
+    expect(loaded0.request_id).toBe(run.request_id);
     expect(loaded0.stage).toBe(run.stage);
     expect(loaded0.workspace_path).toBe(run.workspace_path);
     expect(loaded0.branch).toBe(run.branch);
@@ -426,7 +427,7 @@ describe('FileRunStore.save — write failure non-fatal', () => {
     const store = new FileRunStore(tmpDir, { logDestination: dest });
 
     const run = makeRun({ workspace_path: tmpDir });
-    const runs = new Map<string, Run>([[run.idea_id, run]]);
+    const runs = new Map<string, Run>([[run.request_id, run]]);
 
     expect(() => store.save(runs)).not.toThrow();
 
@@ -447,7 +448,7 @@ describe('FileRunStore.demotedIds', () => {
     expect(store.demotedIds.size).toBe(0);
   });
 
-  it('is populated after load() with the demoted run idea_id', () => {
+  it('is populated after load() with the demoted run request_id', () => {
     const workspacePath = path.join(tmpDir, 'ws-demote');
     fs.mkdirSync(workspacePath, { recursive: true });
 
@@ -464,7 +465,7 @@ describe('FileRunStore.demotedIds', () => {
     const store = new FileRunStore(tmpDir, { logDestination: dest });
     store.load();
 
-    expect(store.demotedIds.has(run.idea_id)).toBe(true);
+    expect(store.demotedIds.has(run.request_id)).toBe(true);
   });
 
   it('is empty when no runs are demoted', () => {

@@ -4,32 +4,39 @@ import { createLogger } from '../../core/logger.js';
 import type { RunStage } from '../../types/runs.js';
 
 export type Intent =
-  | 'spec_feedback'
-  | 'spec_approval'
-  | 'implementation_feedback'
-  | 'implementation_approval';
+  | 'idea'
+  | 'bug'
+  | 'question'
+  | 'feedback'
+  | 'approval'
+  | 'ignore';
 
-export interface IntentClassifier {
-  classify(message: string, run_stage: RunStage): Promise<Intent>;
-}
+export type ClassificationContext = 'new_thread' | RunStage;
 
-const ALL_INTENTS: Intent[] = [
-  'spec_feedback',
-  'spec_approval',
-  'implementation_feedback',
-  'implementation_approval',
-];
+const ALL_INTENTS: Intent[] = ['idea', 'bug', 'question', 'feedback', 'approval', 'ignore'];
 
-const VALID_INTENTS_BY_STAGE: Partial<Record<RunStage, Intent[]>> = {
-  reviewing_spec: ['spec_feedback', 'spec_approval'],
-  reviewing_implementation: ['implementation_feedback', 'implementation_approval'],
-  awaiting_impl_input: ['implementation_feedback'],
+export const VALID_INTENTS_BY_CONTEXT: Partial<Record<ClassificationContext, Intent[]>> = {
+  new_thread:               ['idea', 'bug', 'question', 'ignore'],
+  intake:                   ['idea', 'bug', 'question', 'ignore'],
+  reviewing_spec:           ['feedback', 'approval', 'question', 'ignore'],
+  reviewing_implementation: ['feedback', 'approval', 'question', 'ignore'],
+  awaiting_impl_input:      ['feedback', 'question', 'ignore'],
+  speccing:                 ['feedback', 'question', 'ignore'],
+  implementing:             ['feedback', 'question', 'ignore'],
+  done:                     ['ignore'],
+  failed:                   ['ignore'],
 };
 
-const CONSERVATIVE_FALLBACK: Partial<Record<RunStage, Intent>> = {
-  reviewing_spec: 'spec_feedback',
-  reviewing_implementation: 'implementation_feedback',
-  awaiting_impl_input: 'implementation_feedback',
+const CONSERVATIVE_FALLBACK: Partial<Record<ClassificationContext, Intent>> = {
+  new_thread:               'idea',
+  intake:                   'idea',
+  reviewing_spec:           'feedback',
+  reviewing_implementation: 'feedback',
+  awaiting_impl_input:      'feedback',
+  speccing:                 'feedback',
+  implementing:             'feedback',
+  done:                     'ignore',
+  failed:                   'ignore',
 };
 
 type CreateFn = (params: { model: string; max_tokens: number; messages: Array<{ role: 'user'; content: string }> }) => Promise<{ content: Array<{ type: string; text: string }> }>;
@@ -43,7 +50,6 @@ function parseIntentFromResponse(text: string): Intent | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
 
-  // Try JSON unwrapping (handles `"spec_feedback"` format)
   if (trimmed.startsWith('"') || trimmed.startsWith('{')) {
     try {
       const parsed = JSON.parse(trimmed);
@@ -51,13 +57,16 @@ function parseIntentFromResponse(text: string): Intent | null {
         return ALL_INTENTS.includes(parsed as Intent) ? (parsed as Intent) : null;
       }
     } catch {
-      // fall through to token extraction
+      // fall through
     }
   }
 
-  // Extract first whitespace-delimited token (handles "spec_approval — explanation" format)
   const firstToken = trimmed.split(/[\s—–-]/)[0].trim();
   return ALL_INTENTS.includes(firstToken as Intent) ? (firstToken as Intent) : null;
+}
+
+export interface IntentClassifier {
+  classify(message: string, context: ClassificationContext): Promise<Intent>;
 }
 
 export class AnthropicIntentClassifier implements IntentClassifier {
@@ -74,27 +83,28 @@ export class AnthropicIntentClassifier implements IntentClassifier {
     this.logger = createLogger('intent-classifier', { destination: options?.logDestination });
   }
 
-  async classify(message: string, run_stage: RunStage): Promise<Intent> {
-    const fallback = CONSERVATIVE_FALLBACK[run_stage] ?? 'spec_feedback';
+  async classify(message: string, context: ClassificationContext): Promise<Intent> {
+    const fallback = CONSERVATIVE_FALLBACK[context] ?? 'feedback';
 
-    if (!message.trim()) {
-      return fallback;
-    }
+    if (!message.trim()) return fallback;
 
-    const validIntents = VALID_INTENTS_BY_STAGE[run_stage] ?? ALL_INTENTS;
+    const validIntents = VALID_INTENTS_BY_CONTEXT[context] ?? ALL_INTENTS;
+
     const intentDescriptions: Record<Intent, string> = {
-      spec_feedback: 'the human wants to revise or give feedback on the spec',
-      spec_approval: 'the human is approving the spec and wants implementation to begin',
-      implementation_feedback: 'the human is providing feedback, a bug report, or answering a question about the implementation',
-      implementation_approval: 'the human confirms the implementation is ready and wants a PR created',
+      idea:     'the human wants to build a new feature or improvement',
+      bug:      'the human is reporting a bug or something broken',
+      question: 'the human is asking a question',
+      feedback: 'the human is providing feedback, a revision request, or answering a question about the current work',
+      approval: 'the human is approving the current work and wants to proceed',
+      ignore:   'the message is not directed at the bot or has no actionable intent',
     };
 
     const prompt = [
-      `Classify the following Slack message into one of these intents, given the current workflow stage.`,
+      `Classify the following Slack message into one of these intents, given the current context.`,
       ``,
-      `Current stage: ${run_stage}`,
+      `Current context: ${context}`,
       ``,
-      `Valid intents for this stage:`,
+      `Valid intents for this context:`,
       ...validIntents.map(i => `- ${i}: ${intentDescriptions[i]}`),
       ``,
       `Message:`,
@@ -117,7 +127,7 @@ export class AnthropicIntentClassifier implements IntentClassifier {
 
         if (intent && validIntents.includes(intent)) {
           this.logger.info(
-            { event: 'intent.classified', run_stage, classified_intent: intent, message_length: message.length },
+            { event: 'intent.classified', context, classified_intent: intent, message_length: message.length },
             'Intent classified',
           );
           return intent;
@@ -125,13 +135,13 @@ export class AnthropicIntentClassifier implements IntentClassifier {
 
         if (intent && !validIntents.includes(intent)) {
           this.logger.warn(
-            { event: 'intent.invalid_for_stage', returned_intent: intent, run_stage, valid_intents: validIntents },
-            'Model returned intent not valid for stage',
+            { event: 'intent.invalid_for_context', returned_intent: intent, context, valid_intents: validIntents },
+            'Model returned intent not valid for context',
           );
         }
       } catch (err) {
         this.logger.warn(
-          { event: 'intent.classification_failed', run_stage, error: String(err) },
+          { event: 'intent.classification_failed', context, error: String(err) },
           'Intent classification API call failed',
         );
       }
@@ -140,7 +150,7 @@ export class AnthropicIntentClassifier implements IntentClassifier {
     }
 
     this.logger.warn(
-      { event: 'intent.classified', run_stage, classified_intent: fallback, message_length: message.length },
+      { event: 'intent.classified_fallback', context, classified_intent: fallback, message_length: message.length },
       'Falling back to conservative default intent',
     );
     return fallback;

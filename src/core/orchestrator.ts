@@ -6,11 +6,11 @@ import type { SlackAdapter } from '../adapters/slack/slack-adapter.js';
 import type { WorkspaceManager } from './workspace-manager.js';
 import type { SpecGenerator, ReviseResult } from '../adapters/agent/spec-generator.js';
 import type { SpecPublisher } from '../adapters/slack/canvas-publisher.js';
-import type { Run, RunStage } from '../types/runs.js';
-import type { Idea, ThreadMessage } from '../types/events.js';
+import type { Run, RunStage, RequestIntent } from '../types/runs.js';
+import type { Request, ThreadMessage, InboundEvent } from '../types/events.js';
 import type { FeedbackSource } from '../adapters/notion/notion-feedback-source.js';
 import type { NotionComment } from '../adapters/agent/spec-generator.js';
-import type { IntentClassifier } from '../adapters/agent/intent-classifier.js';
+import type { IntentClassifier, ClassificationContext, Intent } from '../adapters/agent/intent-classifier.js';
 import type { SpecCommitter } from '../adapters/notion/spec-committer.js';
 import type { Implementer } from '../adapters/agent/implementer.js';
 import type { ImplementationFeedbackPage, FeedbackItem } from '../adapters/notion/implementation-feedback-page.js';
@@ -58,8 +58,8 @@ export class OrchestratorImpl implements Orchestrator {
     if (deps.runStore) {
       const loaded = deps.runStore.load();
       for (const run of loaded) {
-        this.runs.set(run.idea_id, run);
-        deps.threadRegistry?.register(run.thread_ts, run.idea_id);
+        this.runs.set(run.request_id, run);
+        deps.threadRegistry?.register(run.thread_ts, run.request_id);
       }
       if (deps.runStore instanceof FileRunStore && deps.runStore.demotedIds.size > 0) {
         const demotedRuns = [...deps.runStore.demotedIds]
@@ -96,66 +96,144 @@ export class OrchestratorImpl implements Orchestrator {
   private async _runLoop(): Promise<void> {
     for await (const event of this.deps.adapter.receive()) {
       if (this._stopping) break;
-      if (event.type === 'new_idea') {
-        await this._handleNewIdea(event.payload);
-      } else if (event.type === 'thread_message') {
-        await this._handleThreadMessage(event.payload);
-      }
+      await this._handleRequest(event as InboundEvent);
     }
   }
 
-  private async _handleThreadMessage(feedback: ThreadMessage): Promise<void> {
-    const run = this.runs.get(feedback.idea_id);
-    if (!run) {
-      this.logger.debug({ event: 'thread_message.discarded', idea_id: feedback.idea_id, reason: 'no_run' }, 'No run for idea_id; discarding');
-      return;
-    }
+  private async _handleRequest(event: InboundEvent): Promise<void> {
+    if (event.type === 'new_request') {
+      const request = event.payload;
+      const run = this.createRun(request);
 
-    // Guard: implementation in progress — tell the user to wait
-    if (run.stage === 'implementing') {
-      this.logger.info({ event: 'thread_message.busy', run_id: run.id, idea_id: run.idea_id }, 'Implementation in progress; notifying user');
-      try {
-        await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, "Implementation is in progress — I'll let you know when it's ready for review.");
-      } catch (err) {
-        this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post busy notification');
+      // Classify intent for new request
+      let intent: Intent = 'idea';
+      if (this.deps.intentClassifier) {
+        try {
+          intent = await this.deps.intentClassifier.classify(request.content, 'new_thread');
+        } catch (err) {
+          this.logger.warn({ event: 'intent_classification.failed', run_id: run.id, error: String(err) }, 'Intent classification failed for new request; defaulting to idea');
+          intent = 'idea';
+        }
+        this.logger.debug({ event: 'intent_classification.result', run_id: run.id, intent }, 'Intent classified for new request');
+      }
+
+      // Route by intent
+      if (intent === 'idea') {
+        run.intent = 'idea';
+        this._persistRuns();
+        await this._startSpecPipeline(run, request);
+      } else if (intent === 'bug') {
+        run.intent = 'bug';
+        this._persistRuns();
+        try {
+          await this.deps.postMessage(request.channel_id, request.thread_ts, 'Got it \u2014 bug report noted. Bug triage is not yet implemented.');
+        } catch (err) {
+          this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post bug ack');
+        }
+      } else if (intent === 'question') {
+        run.intent = 'question';
+        this._persistRuns();
+        await this._handleQuestion(request.channel_id, request.thread_ts, run);
+      } else {
+        // ignore
+        this.runs.delete(request.id);
+        this._persistRuns();
+        this.logger.debug({ event: 'new_request.ignored', request_id: request.id }, 'New request classified as ignore; discarding');
       }
       return;
     }
 
-    // Only classify for stages that accept thread messages
-    if (run.stage !== 'reviewing_spec' && run.stage !== 'reviewing_implementation' && run.stage !== 'awaiting_impl_input') {
-      this.logger.debug({ event: 'thread_message.discarded', run_id: run.id, idea_id: run.idea_id, stage: run.stage, reason: 'wrong_stage' }, 'Run not in a reviewable stage; discarding');
-      return;
+    if (event.type === 'thread_message') {
+      const feedback = event.payload;
+      const run = this.runs.get(feedback.request_id);
+      if (!run) {
+        this.logger.debug({ event: 'thread_message.discarded', request_id: feedback.request_id, reason: 'no_run' }, 'No run for request_id; discarding');
+        return;
+      }
+
+      // Guard: implementation in progress -- tell the user to wait
+      if (run.stage === 'implementing') {
+        this.logger.info({ event: 'thread_message.busy', run_id: run.id, request_id: run.request_id }, 'Implementation in progress; notifying user');
+        try {
+          await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, "Implementation is in progress \u2014 I'll let you know when it's ready for review.");
+        } catch (err) {
+          this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post busy notification');
+        }
+        return;
+      }
+
+      // Only classify for stages that accept thread messages
+      if (run.stage !== 'reviewing_spec' && run.stage !== 'reviewing_implementation' && run.stage !== 'awaiting_impl_input' && run.stage !== 'intake') {
+        this.logger.debug({ event: 'thread_message.discarded', run_id: run.id, request_id: run.request_id, stage: run.stage, reason: 'wrong_stage' }, 'Run not in a reviewable stage; discarding');
+        return;
+      }
+
+      // Classify intent
+      let intent: Intent = 'feedback';
+      if (this.deps.intentClassifier) {
+        const context: ClassificationContext = run.stage;
+        try {
+          intent = await this.deps.intentClassifier.classify(feedback.content, context);
+        } catch (err) {
+          this.logger.warn({ event: 'intent_classification.failed', run_id: run.id, error: String(err) }, 'Intent classification failed; defaulting to feedback');
+          intent = 'feedback';
+        }
+        this.logger.debug({ event: 'intent_classification.result', run_id: run.id, intent, stage: run.stage }, 'Intent classified');
+      }
+
+      // Intent upgrade: run.intent='question' + stage='intake' + classifier returns 'idea'/'bug'
+      if (run.stage === 'intake' && (intent === 'idea' || intent === 'bug')) {
+        run.intent = intent as RequestIntent;
+        this._persistRuns();
+        if (intent === 'idea') {
+          // Build a Request from the thread message for spec pipeline
+          const request: Request = {
+            id: run.request_id,
+            source: 'slack',
+            content: feedback.content,
+            author: feedback.author,
+            received_at: feedback.received_at,
+            thread_ts: feedback.thread_ts,
+            channel_id: feedback.channel_id,
+          };
+          await this._startSpecPipeline(run, request);
+        } else {
+          try {
+            await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, 'Got it \u2014 bug report noted. Bug triage is not yet implemented.');
+          } catch (err) {
+            this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post bug ack');
+          }
+        }
+        return;
+      }
+
+      // Route by intent x stage
+      if (intent === 'feedback') {
+        if (run.stage === 'reviewing_spec') {
+          await this._handleSpecFeedback(feedback);
+        } else if (run.stage === 'reviewing_implementation' || run.stage === 'awaiting_impl_input') {
+          await this._handleImplementationFeedback(feedback, run);
+        }
+      } else if (intent === 'approval') {
+        if (run.stage === 'reviewing_spec') {
+          await this._handleSpecApproval(feedback, run);
+        } else if (run.stage === 'reviewing_implementation') {
+          await this._handleImplementationApproval(feedback, run);
+        }
+      } else if (intent === 'question') {
+        await this._handleQuestion(feedback.channel_id, feedback.thread_ts, run);
+      }
+      // 'ignore' and other intents: silently discard
     }
+  }
 
-    // Classify intent
-    if (this.deps.intentClassifier) {
-      let intent: string;
-      try {
-        intent = await this.deps.intentClassifier.classify(feedback.content, run.stage);
-      } catch (err) {
-        this.logger.warn({ event: 'intent_classification.failed', run_id: run.id, error: String(err) }, 'Intent classification failed; defaulting to spec_feedback');
-        intent = run.stage === 'reviewing_spec' ? 'spec_feedback' : 'implementation_feedback';
-      }
-
-      this.logger.debug({ event: 'intent_classification.result', run_id: run.id, intent }, 'Intent classified');
-
-      if (intent === 'spec_approval') {
-        await this._handleSpecApproval(feedback, run);
-        return;
-      }
-      if (intent === 'implementation_feedback') {
-        await this._handleImplementationFeedback(feedback, run);
-        return;
-      }
-      if (intent === 'implementation_approval') {
-        await this._handleImplementationApproval(feedback, run);
-        return;
-      }
-      // intent === 'spec_feedback' falls through to _handleSpecFeedback
+  private async _handleQuestion(channel_id: string, thread_ts: string, run: Run): Promise<void> {
+    this.logger.info({ event: 'question.received', run_id: run.id, request_id: run.request_id }, 'Question received; stub handler');
+    try {
+      await this.deps.postMessage(channel_id, thread_ts, "I noted your question. Question handling is not yet implemented \u2014 please ask the team directly for now.");
+    } catch (err) {
+      this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post question ack');
     }
-
-    await this._handleSpecFeedback(feedback);
   }
 
   private async _handleSpecApproval(feedback: ThreadMessage, run: Run): Promise<void> {
@@ -165,11 +243,11 @@ export class OrchestratorImpl implements Orchestrator {
     }
 
     this.transition(run, 'implementing');
-    this.logger.info({ event: 'implementation.started', run_id: run.id, idea_id: run.idea_id }, 'Implementation started');
+    this.logger.info({ event: 'implementation.started', run_id: run.id, request_id: run.request_id }, 'Implementation started');
     run.attempt += 1;
     this._persistRuns();
 
-    // Step 1: Acknowledge approval (best-effort — failure doesn't abort)
+    // Step 1: Acknowledge approval (best-effort -- failure doesn't abort)
     try {
       await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, 'Approved \u2014 committing spec and starting implementation.');
     } catch (err) {
@@ -201,7 +279,7 @@ export class OrchestratorImpl implements Orchestrator {
     }
 
     if (result.status === 'needs_input') {
-      this.logger.info({ event: 'implementation.needs_input', run_id: run.id, idea_id: run.idea_id }, 'Implementation needs input');
+      this.logger.info({ event: 'implementation.needs_input', run_id: run.id, request_id: run.request_id }, 'Implementation needs input');
       try {
         await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, `I need input \u2014 ${result.question ?? 'please provide more context'}`);
       } catch (err) {
@@ -217,9 +295,9 @@ export class OrchestratorImpl implements Orchestrator {
     }
 
     // status === 'complete'
-    this.logger.info({ event: 'implementation.complete', run_id: run.id, idea_id: run.idea_id, attempt: run.attempt }, 'Implementation complete');
+    this.logger.info({ event: 'implementation.complete', run_id: run.id, request_id: run.request_id, attempt: run.attempt }, 'Implementation complete');
 
-    // Create implementation feedback page (degraded if it fails — don't abort)
+    // Create implementation feedback page (degraded if it fails -- don't abort)
     let feedbackPageUrl: string | undefined;
     try {
       const specPageUrl = `https://notion.so/${run.publisher_ref!.replace(/-/g, '')}`;
@@ -238,7 +316,7 @@ export class OrchestratorImpl implements Orchestrator {
 
     const completionMsg = feedbackPageUrl
       ? `Implementation complete. Feedback page: ${feedbackPageUrl}`
-      : 'Implementation complete. (Could not create feedback page — check logs.)';
+      : 'Implementation complete. (Could not create feedback page \u2014 check logs.)';
     try {
       await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, completionMsg);
     } catch (err) {
@@ -287,7 +365,7 @@ export class OrchestratorImpl implements Orchestrator {
     }
 
     if (result.status === 'needs_input') {
-      this.logger.info({ event: 'implementation.needs_input', run_id: run.id, idea_id: run.idea_id }, 'Implementation needs more input');
+      this.logger.info({ event: 'implementation.needs_input', run_id: run.id, request_id: run.request_id }, 'Implementation needs more input');
       try {
         await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, `I need input \u2014 ${result.question ?? 'please provide more context'}`);
       } catch (err) {
@@ -303,9 +381,9 @@ export class OrchestratorImpl implements Orchestrator {
     }
 
     // status === 'complete'
-    this.logger.info({ event: 'implementation.complete', run_id: run.id, idea_id: run.idea_id, attempt: run.attempt }, 'Implementation complete');
+    this.logger.info({ event: 'implementation.complete', run_id: run.id, request_id: run.request_id, attempt: run.attempt }, 'Implementation complete');
 
-    // Step 3: Update feedback page (degraded if fails — don't abort)
+    // Step 3: Update feedback page (degraded if fails -- don't abort)
     if (run.impl_feedback_ref) {
       try {
         await this.deps.implFeedbackPage!.update(run.impl_feedback_ref, { summary: result.summary });
@@ -347,7 +425,7 @@ export class OrchestratorImpl implements Orchestrator {
     const from = run.stage;
     run.stage = stage;
     run.updated_at = new Date().toISOString();
-    this.logger.info({ event: 'run.stage_transition', run_id: run.id, idea_id: run.idea_id, from_stage: from, to_stage: stage }, 'Stage transition');
+    this.logger.info({ event: 'run.stage_transition', run_id: run.id, request_id: run.request_id, from_stage: from, to_stage: stage }, 'Stage transition');
     this._persistRuns();
   }
 
@@ -364,10 +442,11 @@ export class OrchestratorImpl implements Orchestrator {
     }
   }
 
-  private createRun(idea: Idea): Run {
+  private createRun(request: Request): Run {
     const run: Run = {
       id: randomUUID(),
-      idea_id: idea.id,
+      request_id: request.id,
+      intent: 'idea',
       stage: 'intake',
       workspace_path: '',
       branch: '',
@@ -375,61 +454,60 @@ export class OrchestratorImpl implements Orchestrator {
       publisher_ref: undefined,
       impl_feedback_ref: undefined,
       attempt: 0,
-      channel_id: idea.channel_id,
-      thread_ts: idea.thread_ts,
+      channel_id: request.channel_id,
+      thread_ts: request.thread_ts,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    // Keyed by idea_id: at most one active run per idea is the design invariant.
-    // The event loop is sequential, so a second new_idea for the same idea_id
+    // Keyed by request_id: at most one active run per request is the design invariant.
+    // The event loop is sequential, so a second new_request for the same request_id
     // would not arrive until the first is fully processed.
-    this.runs.set(idea.id, run);
+    this.runs.set(request.id, run);
     this._persistRuns();
-    this.logger.info({ event: 'run.created', run_id: run.id, idea_id: idea.id }, 'Run created');
+    this.logger.info({ event: 'run.created', run_id: run.id, request_id: request.id }, 'Run created');
     return run;
   }
 
   private async failRun(run: Run, channel_id: string, thread_ts: string, error: unknown): Promise<void> {
     this.transition(run, 'failed');
-    this.logger.error({ event: 'run.failed', run_id: run.id, idea_id: run.idea_id, error: String(error) }, 'Run failed');
+    this.logger.error({ event: 'run.failed', run_id: run.id, request_id: run.request_id, error: String(error) }, 'Run failed');
     await this.deps.postError(channel_id, thread_ts, `Sorry, something went wrong: ${String(error)}`);
   }
 
-  private async _handleNewIdea(idea: Idea): Promise<void> {
-    const run = this.createRun(idea);
+  private async _startSpecPipeline(run: Run, request: Request): Promise<void> {
     this.transition(run, 'speccing');
 
     // Step 1: Create workspace
     let workspace_path: string;
     let branch: string;
     try {
-      ({ workspace_path, branch } = await this.deps.workspaceManager.create(idea.id, this.deps.repo_url));
+      ({ workspace_path, branch } = await this.deps.workspaceManager.create(request.id, this.deps.repo_url));
       run.workspace_path = workspace_path;
       run.branch = branch;
     } catch (err) {
-      await this.failRun(run, idea.channel_id, idea.thread_ts, err);
+      await this.failRun(run, request.channel_id, request.thread_ts, err);
       return;
     }
 
     // Step 2: Generate spec
     let spec_path: string;
     try {
-      spec_path = await this.deps.specGenerator.create(idea, workspace_path);
+      spec_path = await this.deps.specGenerator.create(request, workspace_path);
       run.spec_path = spec_path;
     } catch (err) {
       await this.deps.workspaceManager.destroy(workspace_path);
-      await this.failRun(run, idea.channel_id, idea.thread_ts, err);
+      await this.failRun(run, request.channel_id, request.thread_ts, err);
       return;
     }
 
     // Step 3: Publish canvas
     let publisher_ref: string;
     try {
-      publisher_ref = await this.deps.specPublisher.create(idea.channel_id, idea.thread_ts, spec_path);
+      publisher_ref = await this.deps.specPublisher.create(request.channel_id, request.thread_ts, spec_path);
       run.publisher_ref = publisher_ref;
     } catch (err) {
       await this.deps.workspaceManager.destroy(workspace_path);
-      await this.failRun(run, idea.channel_id, idea.thread_ts, err);
+      await this.failRun(run, request.channel_id, request.thread_ts, err);
       return;
     }
 
@@ -437,7 +515,7 @@ export class OrchestratorImpl implements Orchestrator {
   }
 
   private async _handleSpecFeedback(feedback: ThreadMessage): Promise<void> {
-    const run = this.runs.get(feedback.idea_id);
+    const run = this.runs.get(feedback.request_id);
     if (!run || run.stage !== 'reviewing_spec') return;
 
     if (!run.spec_path || !run.publisher_ref) {
@@ -465,13 +543,13 @@ export class OrchestratorImpl implements Orchestrator {
       pageMarkdown = await this.deps.specPublisher.getPageMarkdown(run.publisher_ref);
       if (!pageMarkdown) pageMarkdown = undefined;
     } catch (err) {
-      this.logger.warn({ event: 'page_markdown.failed', run_id: run.id, idea_id: run.idea_id, error: String(err) }, 'Failed to get page markdown; spans will not be preserved');
+      this.logger.warn({ event: 'page_markdown.failed', run_id: run.id, request_id: run.request_id, error: String(err) }, 'Failed to get page markdown; spans will not be preserved');
     }
 
     this.logger.debug({
       event: 'spec_revision.enriched',
       run_id: run.id,
-      idea_id: run.idea_id,
+      request_id: run.request_id,
       slack_feedback: feedback.content.length > 0,
       notion_comment_count: notionComments.length,
       has_page_markdown: !!pageMarkdown,
@@ -487,7 +565,7 @@ export class OrchestratorImpl implements Orchestrator {
     }
 
     const { comment_responses: commentResponses, page_content } = result;
-    this.logger.debug({ event: 'spec_revision.responses', run_id: run.id, idea_id: run.idea_id, comment_response_count: commentResponses?.length ?? 0, comment_response_ids: commentResponses?.map(r => r.comment_id) ?? [] }, 'Comment responses returned from revise()');
+    this.logger.debug({ event: 'spec_revision.responses', run_id: run.id, request_id: run.request_id, comment_response_count: commentResponses?.length ?? 0, comment_response_ids: commentResponses?.map(r => r.comment_id) ?? [] }, 'Comment responses returned from revise()');
 
     // Step 3: Update published page
     try {
@@ -497,7 +575,7 @@ export class OrchestratorImpl implements Orchestrator {
       return;
     }
 
-    // Step 4: Dispatch comment responses (best-effort — failures don't fail the run)
+    // Step 4: Dispatch comment responses (best-effort -- failures don't fail the run)
     if (this.deps.feedbackSource && commentResponses && commentResponses.length > 0) {
       for (const cr of commentResponses) {
         try {
