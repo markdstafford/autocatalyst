@@ -311,6 +311,60 @@ Message content is never logged. `request_id` replaces `idea_id` in all existing
 **Alerting**
 - No new alerting thresholds beyond existing; `intent.classification_failed` warn-level events warrant investigation if sustained
 
+### 6. Testing plan
+
+**`intent-classifier.ts` — unit tests**
+
+*Unified taxonomy:*
+- `new_thread` context → valid intents are `idea`, `bug`, `question`, `ignore`
+- `reviewing_spec` context → valid intents are `feedback`, `approval`, `question`, `ignore`
+- `reviewing_implementation` context → valid intents are `feedback`, `approval`, `question`, `ignore`
+- `awaiting_impl_input` context → valid intents are `feedback`, `question`, `ignore`
+- `intake` context → valid intents are `idea`, `bug`, `question`, `ignore`
+- Model returns intent not valid for context → fallback to conservative default
+- Empty message → fallback to conservative default
+- API call fails → fallback to conservative default after 2 retries
+
+**`classifier.ts` (Slack) — unit tests**
+
+*Top-level:*
+- @mention, no `thread_ts` → top-level classification pass-through
+- No @mention → `ignore`
+- Message from bot's own user ID → `ignore`
+
+*In-thread:*
+- @mention in thread, `thread_ts` in registry → in-thread classification pass-through
+- @mention in thread, `thread_ts` not in registry → `ignore`
+- `@other_user` only in thread (no bot mention) → `ignore`
+- `@other_user` + `@bot` in thread → in-thread classification pass-through (bot is mentioned)
+- Message from bot's own user ID → `ignore`
+
+**`orchestrator.ts` — unit tests (delta on existing)**
+
+*New request routing:*
+- `new_request` + classifier returns `idea` → spec pipeline starts, `run.intent = 'idea'`
+- `new_request` + classifier returns `bug` → ack posted, run created with `intent = 'bug'`, stays at `intake`
+- `new_request` + classifier returns `question` → question answered, run created with `intent = 'question'`, stays at `intake`
+- `new_request` + classifier returns `ignore` → no run created, no response
+
+*Upgrade path:*
+- `thread_message` + `run.intent = 'question'` + `run.stage = 'intake'` + classifier returns `idea` → intent upgraded, spec pipeline starts
+- `thread_message` + `run.intent = 'question'` + `run.stage = 'intake'` + classifier returns `bug` → intent upgraded to `bug`, ack posted
+- `thread_message` + `run.intent = 'idea'` + classifier returns `question` → no upgrade, question answered, stage unchanged
+
+*In-thread routing:*
+- `feedback` + `reviewing_spec` → spec feedback handler
+- `feedback` + `reviewing_implementation` → impl feedback handler
+- `approval` + `reviewing_spec` → spec approval handler
+- `approval` + `reviewing_implementation` → impl approval handler
+- `question` + any active stage → question answered, stage unchanged
+- `ignore` → discarded
+
+*Rename coverage:*
+- All existing orchestrator tests pass with `request_id` / `new_request` — no `idea_id` / `new_idea` references remain
+
+**`thread-registry.ts` — no new tests**; rename-only change, existing tests cover behavior
+
 ## Task list
 
 *(Added by task decomposition stage)*
