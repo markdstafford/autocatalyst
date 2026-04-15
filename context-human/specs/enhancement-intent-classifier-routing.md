@@ -497,8 +497,8 @@ Answering a question in-thread requires generating a response, which isn't curre
       - [ ] All tests pass
     - **Dependencies**: Task: Update `slack-adapter.ts` to emit `new_request` via `IntentClassifier`
 
-- [ ] **Story: Refactor orchestrator to `_handleRequest`**
-  - [ ] **Task: Implement `_handleRequest` with intent × stage routing**
+- [x] **Story: Refactor orchestrator to `_handleRequest`**
+  - [x] **Task: Implement `_handleRequest` with intent × stage routing**
     - **Description**: Refactor `src/core/orchestrator.ts`. Replace `_handleNewIdea` and the top-level dispatch in `_handleThreadMessage` with a single `_handleRequest(event: InboundEvent)` entry point. Implement the routing table from the tech spec: `idea` + new/intake → spec pipeline; `bug` + new/intake → ack + log; `feedback` + reviewing stage → existing feedback handlers; `approval` + reviewing stage → existing approval handlers. The existing `_handleSpecFeedback`, `_handleSpecApproval`, `_handleImplementationFeedback`, `_handleImplementationApproval` methods are retained as internal helpers — only the dispatch logic changes.
     - **Acceptance criteria**:
       - [ ] `_runLoop` calls `_handleRequest` for both `new_request` and `thread_message` events
@@ -507,7 +507,7 @@ Answering a question in-thread requires generating a response, which isn't curre
       - [ ] `tsc --noEmit` passes
     - **Dependencies**: Task: Rename all call sites, Task: Refactor `IntentClassifier` to unified taxonomy and `ClassificationContext`
 
-  - [ ] **Task: Implement intent upgrade path**
+  - [x] **Task: Implement intent upgrade path**
     - **Description**: In `_handleRequest`, add the upgrade path: when a `thread_message` arrives for a run with `intent = 'question'` and `stage = 'intake'`, reclassify with `IntentClassifier.classify(content, 'intake')`. If result is `idea` or `bug`, update `run.intent`, log `run.intent_upgraded`, and route to the appropriate handler. If result is `question` or `ignore`, handle as before.
     - **Acceptance criteria**:
       - [ ] `run.intent = 'question'` + `stage = 'intake'` + classifier returns `idea` → intent upgraded, spec pipeline starts, `run.intent_upgraded` logged
@@ -516,7 +516,7 @@ Answering a question in-thread requires generating a response, which isn't curre
       - [ ] `tsc --noEmit` passes
     - **Dependencies**: Task: Implement `_handleRequest` with intent × stage routing
 
-  - [ ] **Task: Add question stub handler and follow-up issue**
+  - [x] **Task: Add question stub handler and follow-up issue**
     - **Description**: Add `_handleQuestion(content: string, channel_id: string, thread_ts: string)` to the orchestrator. For this PR, it posts a stub acknowledgement: `"I've noted your question — question answering is coming soon."`. Create a GitHub issue for implementing real question answering.
     - **Acceptance criteria**:
       - [ ] `_handleQuestion` posts stub acknowledgement
@@ -525,7 +525,7 @@ Answering a question in-thread requires generating a response, which isn't curre
       - [ ] `tsc --noEmit` passes
     - **Dependencies**: Task: Implement `_handleRequest` with intent × stage routing
 
-  - [ ] **Task: Update orchestrator unit tests**
+  - [x] **Task: Update orchestrator unit tests**
     - **Description**: Update `tests/core/orchestrator.test.ts` to cover the unified routing. Add test cases from the testing plan: `new_request` routing by intent; upgrade path cases; in-thread routing by intent × stage; question stub handler. Remove references to `new_idea`, `spec_feedback`, `spec_approval`, `implementation_feedback`, `implementation_approval`. Verify all existing pipeline tests (spec feedback, spec approval, impl feedback, impl approval) still pass under the new dispatch.
     - **Acceptance criteria**:
       - [ ] All new routing cases from §6 testing plan covered
