@@ -55,3 +55,42 @@ export function ensureSpansPreserved(
 
   return revisedContent + '\n\n' + orphanedHeading + '\n\n' + orphanLines.join('\n');
 }
+
+/**
+ * Prettify markdown content:
+ * - Ensures a blank line after every heading (# through ######)
+ * - Collapses multiple consecutive blank lines into one
+ * - Removes the ## Orphaned comments section and all content below it
+ *   until the next ## heading or end of file
+ */
+export function prettifyMarkdown(raw: string): string {
+  // Step 1: Remove ## Orphaned comments section
+  const orphanPattern = /\n## Orphaned comments\b[^\n]*(?:\n(?!##)[^\n]*)*/;
+  let result = raw.replace(orphanPattern, '');
+
+  // Also handle when orphaned comments is at the very start (unlikely but safe)
+  if (result.startsWith('## Orphaned comments')) {
+    result = result.replace(/^## Orphaned comments\b[^\n]*(?:\n(?!##)[^\n]*)*/, '');
+  }
+
+  // Step 2: Ensure blank line after every heading
+  // A heading line is one that starts with one or more # followed by a space
+  const lines = result.split('\n');
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    out.push(lines[i]);
+    const isHeading = /^#{1,6} /.test(lines[i]);
+    if (isHeading) {
+      const nextLine = lines[i + 1];
+      // If next line is not already blank and we're not at the end, insert blank line
+      if (nextLine !== undefined && nextLine !== '') {
+        out.push('');
+      }
+    }
+  }
+
+  // Step 3: Collapse multiple consecutive blank lines into one
+  const collapsed = out.join('\n').replace(/\n{3,}/g, '\n\n');
+
+  return collapsed;
+}

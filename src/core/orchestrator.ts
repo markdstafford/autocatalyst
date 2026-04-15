@@ -7,9 +7,16 @@ import type { WorkspaceManager } from './workspace-manager.js';
 import type { SpecGenerator, ReviseResult } from '../adapters/agent/spec-generator.js';
 import type { SpecPublisher } from '../adapters/slack/canvas-publisher.js';
 import type { Run, RunStage } from '../types/runs.js';
-import type { Idea, SpecFeedback } from '../types/events.js';
+import type { Idea, ThreadMessage } from '../types/events.js';
 import type { FeedbackSource } from '../adapters/notion/notion-feedback-source.js';
 import type { NotionComment } from '../adapters/agent/spec-generator.js';
+import type { IntentClassifier } from '../adapters/agent/intent-classifier.js';
+import type { SpecCommitter } from '../adapters/notion/spec-committer.js';
+import type { Implementer } from '../adapters/agent/implementer.js';
+import type { ImplementationFeedbackPage, FeedbackItem } from '../adapters/notion/implementation-feedback-page.js';
+import type { PRCreator } from '../adapters/agent/pr-creator.js';
+import { RunStore, FileRunStore } from './run-store.js';
+import type { ThreadRegistry } from '../adapters/slack/thread-registry.js';
 
 export interface Orchestrator {
   start(): Promise<void>;
@@ -22,6 +29,13 @@ interface OrchestratorDeps {
   specGenerator: SpecGenerator;
   specPublisher: SpecPublisher;
   feedbackSource?: FeedbackSource;
+  intentClassifier?: IntentClassifier;
+  specCommitter?: SpecCommitter;
+  implementer?: Implementer;
+  implFeedbackPage?: ImplementationFeedbackPage;
+  prCreator?: PRCreator;
+  runStore?: RunStore;
+  threadRegistry?: ThreadRegistry;
   postError: (channel_id: string, thread_ts: string, text: string) => Promise<void>;
   postMessage: (channel_id: string, thread_ts: string, text: string) => Promise<void>;
   repo_url: string;
@@ -41,6 +55,21 @@ export class OrchestratorImpl implements Orchestrator {
   constructor(deps: OrchestratorDeps, options?: OrchestratorOptions) {
     this.deps = deps;
     this.logger = createLogger('orchestrator', { destination: options?.logDestination });
+    if (deps.runStore) {
+      const loaded = deps.runStore.load();
+      for (const run of loaded) {
+        this.runs.set(run.idea_id, run);
+        deps.threadRegistry?.register(run.thread_ts, run.idea_id);
+      }
+      if (deps.runStore instanceof FileRunStore && deps.runStore.demotedIds.size > 0) {
+        const demotedRuns = [...deps.runStore.demotedIds]
+          .map(id => this.runs.get(id))
+          .filter((r): r is Run => r !== undefined);
+        if (demotedRuns.length > 0) {
+          setImmediate(() => this._notifyRestartFailures(demotedRuns));
+        }
+      }
+    }
   }
 
   async start(): Promise<void> {
@@ -69,11 +98,249 @@ export class OrchestratorImpl implements Orchestrator {
       if (this._stopping) break;
       if (event.type === 'new_idea') {
         await this._handleNewIdea(event.payload);
-      } else if (event.type === 'spec_feedback') {
-        await this._handleSpecFeedback(event.payload);
+      } else if (event.type === 'thread_message') {
+        await this._handleThreadMessage(event.payload);
       }
-      // approval_signal handled in a future feature
     }
+  }
+
+  private async _handleThreadMessage(feedback: ThreadMessage): Promise<void> {
+    const run = this.runs.get(feedback.idea_id);
+    if (!run) {
+      this.logger.debug({ event: 'thread_message.discarded', idea_id: feedback.idea_id, reason: 'no_run' }, 'No run for idea_id; discarding');
+      return;
+    }
+
+    // Guard: implementation in progress — tell the user to wait
+    if (run.stage === 'implementing') {
+      this.logger.info({ event: 'thread_message.busy', run_id: run.id, idea_id: run.idea_id }, 'Implementation in progress; notifying user');
+      try {
+        await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, "Implementation is in progress — I'll let you know when it's ready for review.");
+      } catch (err) {
+        this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post busy notification');
+      }
+      return;
+    }
+
+    // Only classify for stages that accept thread messages
+    if (run.stage !== 'reviewing_spec' && run.stage !== 'reviewing_implementation' && run.stage !== 'awaiting_impl_input') {
+      this.logger.debug({ event: 'thread_message.discarded', run_id: run.id, idea_id: run.idea_id, stage: run.stage, reason: 'wrong_stage' }, 'Run not in a reviewable stage; discarding');
+      return;
+    }
+
+    // Classify intent
+    if (this.deps.intentClassifier) {
+      let intent: string;
+      try {
+        intent = await this.deps.intentClassifier.classify(feedback.content, run.stage);
+      } catch (err) {
+        this.logger.warn({ event: 'intent_classification.failed', run_id: run.id, error: String(err) }, 'Intent classification failed; defaulting to spec_feedback');
+        intent = run.stage === 'reviewing_spec' ? 'spec_feedback' : 'implementation_feedback';
+      }
+
+      this.logger.debug({ event: 'intent_classification.result', run_id: run.id, intent }, 'Intent classified');
+
+      if (intent === 'spec_approval') {
+        await this._handleSpecApproval(feedback, run);
+        return;
+      }
+      if (intent === 'implementation_feedback') {
+        await this._handleImplementationFeedback(feedback, run);
+        return;
+      }
+      if (intent === 'implementation_approval') {
+        await this._handleImplementationApproval(feedback, run);
+        return;
+      }
+      // intent === 'spec_feedback' falls through to _handleSpecFeedback
+    }
+
+    await this._handleSpecFeedback(feedback);
+  }
+
+  private async _handleSpecApproval(feedback: ThreadMessage, run: Run): Promise<void> {
+    if (!run.spec_path || !run.publisher_ref) {
+      await this.failRun(run, feedback.channel_id, feedback.thread_ts, new Error('Run missing spec_path or publisher_ref for approval'));
+      return;
+    }
+
+    this.transition(run, 'implementing');
+    this.logger.info({ event: 'implementation.started', run_id: run.id, idea_id: run.idea_id }, 'Implementation started');
+    run.attempt += 1;
+    this._persistRuns();
+
+    // Step 1: Acknowledge approval (best-effort — failure doesn't abort)
+    try {
+      await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, 'Approved \u2014 committing spec and starting implementation.');
+    } catch (err) {
+      this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post approval acknowledgement');
+    }
+
+    // Step 2: Commit spec to workspace
+    try {
+      await this.deps.specCommitter!.commit(run.workspace_path, run.publisher_ref, run.spec_path);
+    } catch (err) {
+      await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
+      return;
+    }
+
+    // Step 3: Run implementation
+    await this._runImplementation(feedback, run);
+  }
+
+  private async _runImplementation(feedback: ThreadMessage, run: Run, additional_context?: string): Promise<void> {
+    // Invoke the implementer
+    let result;
+    try {
+      result = additional_context !== undefined
+        ? await this.deps.implementer!.implement(run.spec_path!, run.workspace_path, additional_context)
+        : await this.deps.implementer!.implement(run.spec_path!, run.workspace_path);
+    } catch (err) {
+      await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
+      return;
+    }
+
+    if (result.status === 'needs_input') {
+      this.logger.info({ event: 'implementation.needs_input', run_id: run.id, idea_id: run.idea_id }, 'Implementation needs input');
+      try {
+        await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, `I need input \u2014 ${result.question ?? 'please provide more context'}`);
+      } catch (err) {
+        this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post question');
+      }
+      this.transition(run, 'awaiting_impl_input');
+      return;
+    }
+
+    if (result.status === 'failed') {
+      await this.failRun(run, feedback.channel_id, feedback.thread_ts, new Error(result.error ?? 'Implementation failed'));
+      return;
+    }
+
+    // status === 'complete'
+    this.logger.info({ event: 'implementation.complete', run_id: run.id, idea_id: run.idea_id, attempt: run.attempt }, 'Implementation complete');
+
+    // Create implementation feedback page (degraded if it fails — don't abort)
+    let feedbackPageUrl: string | undefined;
+    try {
+      const specPageUrl = `https://notion.so/${run.publisher_ref!.replace(/-/g, '')}`;
+      const pageId = await this.deps.implFeedbackPage!.create(
+        run.publisher_ref!,
+        specPageUrl,
+        result.summary ?? '',
+        result.testing_instructions ?? '',
+      );
+      run.impl_feedback_ref = pageId;
+      this._persistRuns();
+      feedbackPageUrl = `https://notion.so/${pageId.replace(/-/g, '')}`;
+    } catch (err) {
+      this.logger.error({ event: 'run.feedback_page_failed', run_id: run.id, error: String(err) }, 'Failed to create implementation feedback page; continuing in degraded state');
+    }
+
+    const completionMsg = feedbackPageUrl
+      ? `Implementation complete. Feedback page: ${feedbackPageUrl}`
+      : 'Implementation complete. (Could not create feedback page — check logs.)';
+    try {
+      await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, completionMsg);
+    } catch (err) {
+      this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post completion notification');
+    }
+
+    this.transition(run, 'reviewing_implementation');
+  }
+
+  private async _handleImplementationFeedback(feedback: ThreadMessage, run: Run): Promise<void> {
+    const wasAwaiting = run.stage === 'awaiting_impl_input';
+
+    // Step 1: Get additional context
+    let additional_context: string;
+    if (!wasAwaiting && run.impl_feedback_ref) {
+      let feedbackItems: FeedbackItem[];
+      try {
+        feedbackItems = await this.deps.implFeedbackPage!.readFeedback(run.impl_feedback_ref);
+      } catch (err) {
+        await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
+        return;
+      }
+      const unresolved = feedbackItems.filter(item => !item.resolved);
+      additional_context = unresolved
+        .map(item =>
+          `- ${item.text}${item.conversation.length > 0 ? '\n  ' + item.conversation.join('\n  ') : ''}`,
+        )
+        .join('\n');
+    } else {
+      additional_context = feedback.content;
+    }
+
+    this.transition(run, 'implementing');
+    run.attempt += 1;
+    this._persistRuns();
+
+    // Step 2: Run implementation
+    let result;
+    try {
+      result = additional_context
+        ? await this.deps.implementer!.implement(run.spec_path!, run.workspace_path, additional_context)
+        : await this.deps.implementer!.implement(run.spec_path!, run.workspace_path);
+    } catch (err) {
+      await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
+      return;
+    }
+
+    if (result.status === 'needs_input') {
+      this.logger.info({ event: 'implementation.needs_input', run_id: run.id, idea_id: run.idea_id }, 'Implementation needs more input');
+      try {
+        await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, `I need input \u2014 ${result.question ?? 'please provide more context'}`);
+      } catch (err) {
+        this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post question');
+      }
+      this.transition(run, 'awaiting_impl_input');
+      return;
+    }
+
+    if (result.status === 'failed') {
+      await this.failRun(run, feedback.channel_id, feedback.thread_ts, new Error(result.error ?? 'Implementation failed'));
+      return;
+    }
+
+    // status === 'complete'
+    this.logger.info({ event: 'implementation.complete', run_id: run.id, idea_id: run.idea_id, attempt: run.attempt }, 'Implementation complete');
+
+    // Step 3: Update feedback page (degraded if fails — don't abort)
+    if (run.impl_feedback_ref) {
+      try {
+        await this.deps.implFeedbackPage!.update(run.impl_feedback_ref, { summary: result.summary });
+      } catch (err) {
+        this.logger.error({ event: 'run.feedback_page_update_failed', run_id: run.id, error: String(err) }, 'Failed to update implementation feedback page; continuing in degraded state');
+      }
+    }
+
+    try {
+      await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, 'Implementation updated \u2014 check the feedback page for the latest summary and testing instructions.');
+    } catch (err) {
+      this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post completion notification');
+    }
+
+    this.transition(run, 'reviewing_implementation');
+  }
+
+  private async _handleImplementationApproval(feedback: ThreadMessage, run: Run): Promise<void> {
+    // Step 1: Create PR
+    let prUrl: string;
+    try {
+      prUrl = await this.deps.prCreator!.createPR(run.workspace_path, run.branch, run.spec_path ?? '');
+    } catch (err) {
+      await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
+      return;
+    }
+
+    // Step 2: Post PR link (best-effort)
+    try {
+      await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, `PR opened: ${prUrl}`);
+    } catch (err) {
+      this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post PR link');
+    }
+
+    this.transition(run, 'done');
   }
 
   private transition(run: Run, stage: RunStage): void {
@@ -81,26 +348,44 @@ export class OrchestratorImpl implements Orchestrator {
     run.stage = stage;
     run.updated_at = new Date().toISOString();
     this.logger.info({ event: 'run.stage_transition', run_id: run.id, idea_id: run.idea_id, from_stage: from, to_stage: stage }, 'Stage transition');
+    this._persistRuns();
   }
 
-  private createRun(idea_id: string): Run {
+  private _persistRuns(): void {
+    this.deps.runStore?.save(this.runs);
+  }
+
+  private _notifyRestartFailures(runs: Run[]): void {
+    const message = "Server restarted while this was running. The run has been marked as failed. Reply in this thread to try again.";
+    for (const run of runs) {
+      this.deps.postMessage(run.channel_id, run.thread_ts, message).catch(err => {
+        this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post restart notification');
+      });
+    }
+  }
+
+  private createRun(idea: Idea): Run {
     const run: Run = {
       id: randomUUID(),
-      idea_id,
+      idea_id: idea.id,
       stage: 'intake',
       workspace_path: '',
       branch: '',
       spec_path: undefined,
       publisher_ref: undefined,
+      impl_feedback_ref: undefined,
       attempt: 0,
+      channel_id: idea.channel_id,
+      thread_ts: idea.thread_ts,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
     // Keyed by idea_id: at most one active run per idea is the design invariant.
     // The event loop is sequential, so a second new_idea for the same idea_id
     // would not arrive until the first is fully processed.
-    this.runs.set(idea_id, run);
-    this.logger.info({ event: 'run.created', run_id: run.id, idea_id }, 'Run created');
+    this.runs.set(idea.id, run);
+    this._persistRuns();
+    this.logger.info({ event: 'run.created', run_id: run.id, idea_id: idea.id }, 'Run created');
     return run;
   }
 
@@ -111,7 +396,7 @@ export class OrchestratorImpl implements Orchestrator {
   }
 
   private async _handleNewIdea(idea: Idea): Promise<void> {
-    const run = this.createRun(idea.id);
+    const run = this.createRun(idea);
     this.transition(run, 'speccing');
 
     // Step 1: Create workspace
@@ -148,12 +433,12 @@ export class OrchestratorImpl implements Orchestrator {
       return;
     }
 
-    this.transition(run, 'review');
+    this.transition(run, 'reviewing_spec');
   }
 
-  private async _handleSpecFeedback(feedback: SpecFeedback): Promise<void> {
+  private async _handleSpecFeedback(feedback: ThreadMessage): Promise<void> {
     const run = this.runs.get(feedback.idea_id);
-    if (!run || run.stage !== 'review') return;
+    if (!run || run.stage !== 'reviewing_spec') return;
 
     if (!run.spec_path || !run.publisher_ref) {
       await this.failRun(run, feedback.channel_id, feedback.thread_ts, new Error('Run in review state is missing spec_path or publisher_ref'));
@@ -235,6 +520,6 @@ export class OrchestratorImpl implements Orchestrator {
       this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post completion notification');
     }
 
-    this.transition(run, 'review');
+    this.transition(run, 'reviewing_spec');
   }
 }

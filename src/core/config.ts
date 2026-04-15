@@ -107,7 +107,6 @@ export function validateConfig(config: WorkflowConfig): void {
       bot_token?: unknown;
       app_token?: unknown;
       channel_name?: unknown;
-      approval_emojis?: unknown;
     };
 
     if (typeof slack.bot_token !== 'string' || slack.bot_token.trim() === '') {
@@ -118,11 +117,6 @@ export function validateConfig(config: WorkflowConfig): void {
     }
     if (typeof slack.channel_name !== 'string' || slack.channel_name.trim() === '') {
       throw new Error('slack.channel_name must be a non-empty string');
-    }
-    if (slack.approval_emojis === undefined) {
-      slack.approval_emojis = ['thumbsup']; // apply default in-place
-    } else if (!Array.isArray(slack.approval_emojis) || (slack.approval_emojis as unknown[]).length === 0) {
-      throw new Error('slack.approval_emojis must be a non-empty array of strings');
     }
   }
 }

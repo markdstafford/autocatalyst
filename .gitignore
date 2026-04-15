@@ -26,13 +26,21 @@ venv/
 # Ephemeral implementation plans
 .superpowers-plans/
 context-human/.superpowers-plans/
-docs/plans/
-
-# oh-my-claudecode
-.omc/
+docs/superpowers/
 
 # eng-docs (project uses context-human/ structure)
 .eng-docs/
 
 # Friction logs
 context-human/.friction-logs/
+
+# Claude Code local config
+.claude/settings.local.json
+.claude/skills/
+.claude/CLAUDE.md
+
+# OMC ephemeral state
+.omc/
+
+# Autocatalyst ephemeral state
+.autocatalyst/

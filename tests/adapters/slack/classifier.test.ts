@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyMessage, classifyReaction } from '../../../src/adapters/slack/classifier.js';
+import { classifyMessage } from '../../../src/adapters/slack/classifier.js';
 import { ThreadRegistry } from '../../../src/adapters/slack/thread-registry.js';
 
 const BOT_ID = 'UBOT001';
@@ -79,44 +79,3 @@ describe('classifyMessage', () => {
   });
 });
 
-describe('classifyReaction', () => {
-  const EMOJIS = ['thumbsup', 'white_check_mark'];
-
-  it('returns approval_signal for approval emoji on registered message', () => {
-    const result = classifyReaction(
-      { reaction: 'thumbsup', user: 'U999', item_ts: '100.0' },
-      EMOJIS,
-      makeRegistry({ '100.0': 'idea-xyz' }),
-      BOT_ID,
-    );
-    expect(result.intent).toBe('approval_signal');
-    if (result.intent === 'approval_signal') expect(result.idea_id).toBe('idea-xyz');
-  });
-
-  it('returns ignore for non-approval emoji', () => {
-    expect(classifyReaction(
-      { reaction: 'wave', user: 'U999', item_ts: '100.0' },
-      EMOJIS,
-      makeRegistry({ '100.0': 'idea-xyz' }),
-      BOT_ID,
-    ).intent).toBe('ignore');
-  });
-
-  it('returns ignore for approval emoji on unregistered message', () => {
-    expect(classifyReaction(
-      { reaction: 'thumbsup', user: 'U999', item_ts: '999.0' },
-      EMOJIS,
-      makeRegistry(),
-      BOT_ID,
-    ).intent).toBe('ignore');
-  });
-
-  it('returns ignore for reaction from the bot itself', () => {
-    expect(classifyReaction(
-      { reaction: 'thumbsup', user: BOT_ID, item_ts: '100.0' },
-      EMOJIS,
-      makeRegistry({ '100.0': 'idea-xyz' }),
-      BOT_ID,
-    ).intent).toBe('ignore');
-  });
-});

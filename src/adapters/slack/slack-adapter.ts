@@ -3,13 +3,12 @@ import type { App } from '@slack/bolt';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 import type { HumanInterfaceAdapter } from '../human-interface-adapter.js';
-import type { InboundEvent, Idea, SpecFeedback, ApprovalSignal } from '../../types/events.js';
-import { classifyMessage, classifyReaction } from './classifier.js';
+import type { InboundEvent, Idea, ThreadMessage } from '../../types/events.js';
+import { classifyMessage } from './classifier.js';
 import { ThreadRegistry } from './thread-registry.js';
 
 interface SlackAdapterConfig {
   channelName: string;
-  approvalEmojis: string[];
 }
 
 interface SlackAdapterOptions {
@@ -127,7 +126,7 @@ export class SlackAdapter implements HumanInterfaceAdapter {
         this.emit({ type: 'new_idea', payload: idea });
 
       } else if (result.intent === 'spec_feedback') {
-        const feedback: SpecFeedback = {
+        const message: ThreadMessage = {
           idea_id: result.idea_id,
           content: msg.text ?? '',
           author: msg.user,
@@ -137,44 +136,8 @@ export class SlackAdapter implements HumanInterfaceAdapter {
         };
 
         await this.postMessage(this.channelId!, msg.thread_ts!, "Thanks — I'll incorporate that feedback.");
-        this.emit({ type: 'spec_feedback', payload: feedback });
+        this.emit({ type: 'thread_message', payload: message });
       }
-    });
-
-    // Register reaction handler
-    this.app.event('reaction_added', async ({ event }) => {
-      if (event.item.type !== 'message') return;
-      if (event.item.channel !== this.channelId) return;
-
-      // item_ts is the ts of the reacted-to message — only original idea messages are registered;
-      // reactions on bot reply messages are intentionally ignored.
-      const result = classifyReaction(
-        { reaction: event.reaction, user: event.user, item_ts: event.item.ts },
-        this.config.approvalEmojis,
-        this.registry,
-        this.botUserId!,
-      );
-
-      if (result.intent === 'ignore') {
-        this.logger.debug(
-          { event: 'slack.reaction.ignored', author: event.user, thread_ts: event.item.ts },
-          'Reaction ignored',
-        );
-        return;
-      }
-
-      this.logger.info(
-        { event: 'slack.reaction.classified', author: event.user, thread_ts: event.item.ts, intent: 'approval_signal' },
-        'Reaction classified',
-      );
-
-      const signal: ApprovalSignal = {
-        idea_id: result.idea_id,
-        approver: event.user,
-        emoji: event.reaction,
-        received_at: new Date().toISOString(),
-      };
-      this.emit({ type: 'approval_signal', payload: signal });
     });
 
     // Start Bolt (opens Socket Mode WebSocket)

@@ -8,7 +8,7 @@ export interface Idea {
   channel_id: string;
 }
 
-export interface SpecFeedback {
+export interface ThreadMessage {
   idea_id: string;
   content: string;
   author: string;
@@ -17,14 +17,6 @@ export interface SpecFeedback {
   channel_id: string;
 }
 
-export interface ApprovalSignal {
-  idea_id: string;
-  approver: string;
-  emoji: string;
-  received_at: string; // ISO 8601
-}
-
 export type InboundEvent =
   | { type: 'new_idea'; payload: Idea }
-  | { type: 'spec_feedback'; payload: SpecFeedback }
-  | { type: 'approval_signal'; payload: ApprovalSignal };
+  | { type: 'thread_message'; payload: ThreadMessage };

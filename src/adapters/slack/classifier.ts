@@ -7,19 +7,9 @@ export interface MessageInput {
   thread_ts?: string;
 }
 
-export interface ReactionInput {
-  reaction: string;
-  user: string;
-  item_ts: string;
-}
-
 export type MessageClassification =
   | { intent: 'new_idea' }
   | { intent: 'spec_feedback'; idea_id: string }
-  | { intent: 'ignore' };
-
-export type ReactionClassification =
-  | { intent: 'approval_signal'; idea_id: string }
   | { intent: 'ignore' };
 
 export function classifyMessage(
@@ -45,20 +35,4 @@ export function classifyMessage(
   }
 
   return { intent: 'new_idea' };
-}
-
-export function classifyReaction(
-  reaction: ReactionInput,
-  approvalEmojis: string[],
-  registry: ThreadRegistry,
-  botUserId: string,
-): ReactionClassification {
-  // Suppress bot's own reactions
-  if (reaction.user === botUserId) return { intent: 'ignore' };
-
-  if (!approvalEmojis.includes(reaction.reaction)) return { intent: 'ignore' };
-
-  const idea_id = registry.resolve(reaction.item_ts);
-  if (idea_id === undefined) return { intent: 'ignore' };
-  return { intent: 'approval_signal', idea_id };
 }

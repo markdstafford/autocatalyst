@@ -9,7 +9,6 @@ export interface WorkflowConfig {
     bot_token?: string;
     app_token?: string;
     channel_name?: string;
-    approval_emojis?: string[];
   };
   notion?: {
     parent_page_id?: string;
