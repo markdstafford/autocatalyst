@@ -21,6 +21,10 @@ export const VALID_INTENTS_BY_CONTEXT: Partial<Record<ClassificationContext, Int
   reviewing_spec:           ['feedback', 'approval', 'question', 'ignore'],
   reviewing_implementation: ['feedback', 'approval', 'question', 'ignore'],
   awaiting_impl_input:      ['feedback', 'question', 'ignore'],
+  speccing:                 ['feedback', 'question', 'ignore'],
+  implementing:             ['feedback', 'question', 'ignore'],
+  done:                     ['ignore'],
+  failed:                   ['ignore'],
 };
 
 const CONSERVATIVE_FALLBACK: Partial<Record<ClassificationContext, Intent>> = {
@@ -29,6 +33,10 @@ const CONSERVATIVE_FALLBACK: Partial<Record<ClassificationContext, Intent>> = {
   reviewing_spec:           'feedback',
   reviewing_implementation: 'feedback',
   awaiting_impl_input:      'feedback',
+  speccing:                 'feedback',
+  implementing:             'feedback',
+  done:                     'ignore',
+  failed:                   'ignore',
 };
 
 type CreateFn = (params: { model: string; max_tokens: number; messages: Array<{ role: 'user'; content: string }> }) => Promise<{ content: Array<{ type: string; text: string }> }>;
@@ -142,7 +150,7 @@ export class AnthropicIntentClassifier implements IntentClassifier {
     }
 
     this.logger.warn(
-      { event: 'intent.classified', context, classified_intent: fallback, message_length: message.length },
+      { event: 'intent.classified_fallback', context, classified_intent: fallback, message_length: message.length },
       'Falling back to conservative default intent',
     );
     return fallback;
