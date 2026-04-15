@@ -286,6 +286,31 @@ _handleRequest(event: InboundEvent):
 - Message content is treated as untrusted user input throughout — passed as a typed field, never interpolated into system prompts without proper isolation
 - The classifier prompt treats the message as opaque user content, not as instructions — prompt injection risk is mitigated by structural separation between system instructions and message content
 
+### 5. Observability
+
+**Log events**
+
+| Event | Level | Fields |
+|---|---|---|
+| `slack.message.classified` | info | `author`, `channel_id`, `intent`, `thread_ts`, `context` |
+| `slack.message.ignored` | debug | `author`, `channel_id`, `reason` |
+| `intent.classified` | info | `context`, `classified_intent`, `message_length` |
+| `intent.classification_failed` | warn | `context`, `error` |
+| `intent.invalid_for_context` | warn | `returned_intent`, `context`, `valid_intents` |
+| `run.intent_upgraded` | info | `run_id`, `request_id`, `from_intent`, `to_intent` |
+| `thread_message.discarded` | debug | `run_id`, `request_id`, `stage`, `reason` |
+
+Message content is never logged. `request_id` replaces `idea_id` in all existing log fields.
+
+**Metrics**
+- `slack.messages.classified` — counter with `intent` and `context` labels
+- `slack.messages.ignored` — counter with `reason` label
+- `intent.classification_latency_ms` — histogram; classification call duration
+- `run.intent_upgrades` — counter with `from_intent` and `to_intent` labels
+
+**Alerting**
+- No new alerting thresholds beyond existing; `intent.classification_failed` warn-level events warrant investigation if sustained
+
 ## Task list
 
 *(Added by task decomposition stage)*
