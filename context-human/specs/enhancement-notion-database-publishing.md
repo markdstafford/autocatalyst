@@ -682,12 +682,12 @@ These tests live in the `src/index.ts` config block or a dedicated unit for the 
 ## Task list
 
 - [ ] **Story: Configuration layer**
-	- [ ] **Task: Update ****`WorkflowConfig.notion`**** type**
+	- [x] **Task: Update ****`WorkflowConfig.notion`**** type**
 		- **Description**: In `src/types/config.ts`, replace the `parent_page_id: string` field with `specs_database_id: string` and `testing_guides_database_id: string`. Remove `parent_page_id` entirely.
 		- **Acceptance criteria**:
-			- [ ] `WorkflowConfig.notion` has `integration_token`, `specs_database_id`, and `testing_guides_database_id` fields
-			- [ ] `parent_page_id` field is removed
-			- [ ] TypeScript compiles with no errors after the change
+			- [x] `WorkflowConfig.notion` has `integration_token`, `specs_database_id`, and `testing_guides_database_id` fields
+			- [x] `parent_page_id` field is removed
+			- [x] TypeScript compiles with no errors after the change
 		- **Dependencies**: None
 	- [ ] **Task: Update startup validation, ****`repo_name`**** derivation, and constructors in ****`src/index.ts`**
 		- **Description**: Replace `parent_page_id` validation with `specs_database_id` + `testing_guides_database_id` validation (exit with a config error if either is missing). Derive `repo_name` from `repo_url` by stripping `.git` and taking the last two path segments joined by `/`. Update `NotionPublisher` and `NotionImplementationFeedbackPage` constructor calls to use the new IDs.
