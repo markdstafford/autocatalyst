@@ -32,6 +32,21 @@ describe('WorkflowConfig type', () => {
     };
     expect(config.aws_profile).toBeUndefined();
   });
+
+  it('notion block has specs_database_id and testing_guides_database_id (no parent_page_id)', () => {
+    const config: WorkflowConfig = {
+      notion: {
+        integration_token: 'tok_abc',
+        specs_database_id: 'db-specs-id',
+        testing_guides_database_id: 'db-tg-id',
+      },
+    };
+    expect(config.notion?.specs_database_id).toBe('db-specs-id');
+    expect(config.notion?.testing_guides_database_id).toBe('db-tg-id');
+    expect(config.notion?.integration_token).toBe('tok_abc');
+    // @ts-expect-error parent_page_id should not exist
+    expect(config.notion?.parent_page_id).toBeUndefined();
+  });
 });
 
 describe('LoadedConfig type', () => {
