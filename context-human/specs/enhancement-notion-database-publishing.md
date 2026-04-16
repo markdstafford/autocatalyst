@@ -772,7 +772,7 @@ These tests live in the `src/index.ts` config block or a dedicated unit for the 
 			- [x] Throws if `pages.updateProperties` rejects
 			- [x] Unit tests cover all valid `SpecEntryStatus` values and rejection propagation
 		- **Dependencies**: "Task: Add `pages.updateProperties()` to `NotionClient`", "Task: Export `SpecEntryStatus` type and add optional `updateStatus?()` to `SpecPublisher`"
-- [ ] **Story: ImplementationFeedbackPage database publishing**
+- [x] **Story: ImplementationFeedbackPage database publishing**
 	- [x] **Task: Add ****`TestingGuideStatus`**** type and update ****`ImplementationFeedbackPage`**** interface**
 		- **Description**: In `src/adapters/notion/implementation-feedback-page.ts`, export `TestingGuideStatus` as `'Not started' | 'In progress' | 'Waiting on feedback' | 'Approved'`. Update the `ImplementationFeedbackPage` interface: add `spec_title: string` as the third parameter to `create()`; add optional `updateStatus?(page_id: string, status: TestingGuideStatus): Promise<void>` and `setPRLink?(page_id: string, pr_url: string): Promise<void>`.
 		- **Acceptance criteria**:
@@ -791,14 +791,14 @@ These tests live in the `src/index.ts` config block or a dedicated unit for the 
 			- [x] Returns `page_id` from the Notion response
 			- [x] Unit tests cover all cases in the Testing plan section
 		- **Dependencies**: "Task: Add `TestingGuideStatus` type and update `ImplementationFeedbackPage` interface"
-	- [ ] **Task: Implement ****`updateStatus()`**** and ****`setPRLink()`**** on ****`NotionImplementationFeedbackPage`**
+	- [x] **Task: Implement ****`updateStatus()`**** and ****`setPRLink()`**** on ****`NotionImplementationFeedbackPage`**
 		- **Description**: Implement `updateStatus(page_id, status)` by calling `pages.updateProperties(page_id, { Status: { status: { name: status } } })` and logging `notion_testing_guide.status_updated`. Implement `setPRLink(page_id, pr_url)` by calling `pages.updateProperties(page_id, { 'PR link': { url: pr_url } })` and logging `notion_testing_guide.pr_link_set`. Both throw if `pages.updateProperties` rejects.
 		- **Acceptance criteria**:
-			- [ ] `updateStatus()` calls `pages.updateProperties` with the correct Status payload
-			- [ ] `setPRLink()` calls `pages.updateProperties` with the correct `PR link` payload
-			- [ ] Both log the appropriate event on success
-			- [ ] Both throw on rejection from `pages.updateProperties`
-			- [ ] Unit tests cover all valid `TestingGuideStatus` values, PR link passthrough, and rejection cases
+			- [x] `updateStatus()` calls `pages.updateProperties` with the correct Status payload
+			- [x] `setPRLink()` calls `pages.updateProperties` with the correct `PR link` payload
+			- [x] Both log the appropriate event on success
+			- [x] Both throw on rejection from `pages.updateProperties`
+			- [x] Unit tests cover all valid `TestingGuideStatus` values, PR link passthrough, and rejection cases
 		- **Dependencies**: "Task: Add `TestingGuideStatus` type and update `ImplementationFeedbackPage` interface", "Task: Add `pages.updateProperties()` to `NotionClient`"
 - [ ] **Story: Orchestrator status transitions**
 	- [ ] **Task: Wire spec lifecycle status update call-sites**
