@@ -781,15 +781,15 @@ These tests live in the `src/index.ts` config block or a dedicated unit for the 
 			- [x] Optional `updateStatus?()` and `setPRLink?()` added to the interface
 			- [x] TypeScript compiles with no errors
 		- **Dependencies**: None
-	- [ ] **Task: Update ****`NotionImplementationFeedbackPage`**** constructor and ****`create()`**** for Testing guides database**
+	- [x] **Task: Update ****`NotionImplementationFeedbackPage`**** constructor and ****`create()`**** for Testing guides database**
 		- **Description**: Add `testing_guides_database_id: string` as the second positional constructor parameter (before `options`). Update `create()` to post with `parent: { type: 'database_id', database_id: testing_guides_database_id }` and set typed properties: Title (`"Testing guide: {spec_title}"`), Spec relation (`[{ id: spec_page_id }]`), Status (`"Not started"`). Page body `children` (bookmark, Summary, Testing instructions, Feedback sections) are unchanged.
 		- **Acceptance criteria**:
-			- [ ] Constructor signature is `(client, testing_guides_database_id, options?)`
-			- [ ] `create()` posts to database parent with the three required properties
-			- [ ] Title passes `spec_title` through verbatim (special characters not escaped)
-			- [ ] `children` blocks are unchanged from the current implementation
-			- [ ] Returns `page_id` from the Notion response
-			- [ ] Unit tests cover all cases in the Testing plan section
+			- [x] Constructor signature is `(client, testing_guides_database_id, options?)`
+			- [x] `create()` posts to database parent with the three required properties
+			- [x] Title passes `spec_title` through verbatim (special characters not escaped)
+			- [x] `children` blocks are unchanged from the current implementation
+			- [x] Returns `page_id` from the Notion response
+			- [x] Unit tests cover all cases in the Testing plan section
 		- **Dependencies**: "Task: Add `TestingGuideStatus` type and update `ImplementationFeedbackPage` interface"
 	- [ ] **Task: Implement ****`updateStatus()`**** and ****`setPRLink()`**** on ****`NotionImplementationFeedbackPage`**
 		- **Description**: Implement `updateStatus(page_id, status)` by calling `pages.updateProperties(page_id, { Status: { status: { name: status } } })` and logging `notion_testing_guide.status_updated`. Implement `setPRLink(page_id, pr_url)` by calling `pages.updateProperties(page_id, { 'PR link': { url: pr_url } })` and logging `notion_testing_guide.pr_link_set`. Both throw if `pages.updateProperties` rejects.
