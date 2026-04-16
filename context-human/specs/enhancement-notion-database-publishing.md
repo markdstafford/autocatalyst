@@ -681,7 +681,7 @@ These tests live in the `src/index.ts` config block or a dedicated unit for the 
 **Select option auto-creation**: Notion's select property auto-creates new options when a value not already in the option list is used. If `repo_name` produces an unexpected value or the Repo/Codebase option list is locked, the `pages.create()` call may fail or create an unintended option. Mitigation: `repo_name` is derived deterministically from `repo_url` in `org/repo` format; operators should confirm the value matches an existing option or allow auto-creation.
 ## Task list
 
-- [ ] **Story: Configuration layer**
+- [x] **Story: Configuration layer**
 	- [x] **Task: Update ****`WorkflowConfig.notion`**** type**
 		- **Description**: In `src/types/config.ts`, replace the `parent_page_id: string` field with `specs_database_id: string` and `testing_guides_database_id: string`. Remove `parent_page_id` entirely.
 		- **Acceptance criteria**:
@@ -689,14 +689,14 @@ These tests live in the `src/index.ts` config block or a dedicated unit for the 
 			- [x] `parent_page_id` field is removed
 			- [x] TypeScript compiles with no errors after the change
 		- **Dependencies**: None
-	- [ ] **Task: Update startup validation, ****`repo_name`**** derivation, and constructors in ****`src/index.ts`**
+	- [x] **Task: Update startup validation, ****`repo_name`**** derivation, and constructors in ****`src/index.ts`**
 		- **Description**: Replace `parent_page_id` validation with `specs_database_id` + `testing_guides_database_id` validation (exit with a config error if either is missing). Derive `repo_name` from `repo_url` by stripping `.git` and taking the last two path segments joined by `/`. Update `NotionPublisher` and `NotionImplementationFeedbackPage` constructor calls to use the new IDs.
 		- **Acceptance criteria**:
-			- [ ] Process exits with a config error if either `specs_database_id` or `testing_guides_database_id` is missing from the `notion` block
-			- [ ] `repo_name` is derived as `org/repo` from HTTPS and SSH `repo_url` formats, with and without `.git` suffix
-			- [ ] `NotionPublisher` constructed with `(notionClient, boltApp, specsDatabaseId, { repo_name })`
-			- [ ] `NotionImplementationFeedbackPage` constructed with `(notionClient, testingGuidesDatabaseId)`
-			- [ ] Unit tests cover: both IDs present (no exit), one absent (exit), both absent (exit), `notion` block absent entirely, all four `repo_url` format variants
+			- [x] Process exits with a config error if either `specs_database_id` or `testing_guides_database_id` is missing from the `notion` block
+			- [x] `repo_name` is derived as `org/repo` from HTTPS and SSH `repo_url` formats, with and without `.git` suffix
+			- [x] `NotionPublisher` constructed with `(notionClient, boltApp, specsDatabaseId, { repo_name })`
+			- [x] `NotionImplementationFeedbackPage` constructed with `(notionClient, testingGuidesDatabaseId)`
+			- [x] Unit tests cover: both IDs present (no exit), one absent (exit), both absent (exit), `notion` block absent entirely, all four `repo_url` format variants
 		- **Dependencies**: "Task: Update `WorkflowConfig.notion` type"
 - [x] **Story: NotionClient API extensions**
 	- [x] **Task: Add ****`pages.updateProperties()`**** to ****`NotionClient`**
