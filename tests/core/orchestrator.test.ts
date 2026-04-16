@@ -1052,6 +1052,8 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
     expect(implementFn).toHaveBeenCalledWith(
       '/ws/request-001/context-human/specs/feature-test.md',
       '/ws/request-001',
+      undefined,
+      expect.any(Function),
     );
   });
 
@@ -1128,6 +1130,91 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
     const messages = (postMessage as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[2] as string);
     expect(messages.some(m => m.includes('Which approach do you prefer?'))).toBe(true);
     expect(implFeedbackPage.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('Orchestrator — _runImplementation onProgress wiring', () => {
+  it('implement() receives an onProgress function', async () => {
+    const adapter = makeMockAdapter();
+    let capturedOnProgress: ((msg: string) => Promise<void>) | undefined;
+    const implementFn = vi.fn().mockImplementation(async (_sp: string, _wp: string, _ctx: string | undefined, onProg?: (m: string) => Promise<void>) => {
+      capturedOnProgress = onProg;
+      return { status: 'complete', summary: 'Done', testing_instructions: 'Test' };
+    });
+    const impl = { implement: implementFn };
+    const orch = makeApprovalOrch({ adapter, implementer: impl as Implementer });
+    await orch.start();
+    await approveSpec(orch, adapter);
+    await orch.stop();
+
+    expect(capturedOnProgress).toBeTypeOf('function');
+  });
+
+  it('onProgress callback invokes postMessage with channel_id, thread_ts, and message', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    let capturedOnProgress: ((msg: string) => Promise<void>) | undefined;
+    const implementFn = vi.fn().mockImplementation(async (_sp: string, _wp: string, _ctx: string | undefined, onProg?: (m: string) => Promise<void>) => {
+      capturedOnProgress = onProg;
+      return { status: 'complete', summary: 'Done', testing_instructions: 'Test' };
+    });
+    const impl = { implement: implementFn };
+    const orch = makeApprovalOrch({ adapter, implementer: impl as Implementer, postMessage });
+    await orch.start();
+    await approveSpec(orch, adapter);
+    await orch.stop();
+
+    // Invoke the captured callback
+    await capturedOnProgress!('Task 3 of 7: Implementing the helper');
+
+    const progressCalls = (postMessage as ReturnType<typeof vi.fn>).mock.calls.filter((c: unknown[]) => c[2] === 'Task 3 of 7: Implementing the helper');
+    expect(progressCalls).toHaveLength(1);
+    expect(progressCalls[0][0]).toBe('C123');
+    expect(progressCalls[0][1]).toBe('100.0');
+  });
+
+  it('postMessage rejection inside onProgress does not fail the run, progress_failed logged at warn', async () => {
+    const adapter = makeMockAdapter();
+    const { records, destination } = makeLogCapture();
+    let capturedOnProgress: ((msg: string) => Promise<void>) | undefined;
+    const implementFn = vi.fn().mockImplementation(async (_sp: string, _wp: string, _ctx: string | undefined, onProg?: (m: string) => Promise<void>) => {
+      capturedOnProgress = onProg;
+      return { status: 'complete', summary: 'Done', testing_instructions: 'Test' };
+    });
+    const impl = { implement: implementFn };
+    const postMessage = vi.fn().mockImplementation((_ch: string, _ts: string, msg: string) => {
+      if (msg === 'progress relay msg') return Promise.reject(new Error('slack timeout'));
+      return Promise.resolve();
+    });
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: makeIntentClassifier('approval'),
+        specCommitter: makeSpecCommitter(),
+        implementer: impl as Implementer,
+        implFeedbackPage: makeImplFeedbackPage(),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+        repo_url: 'https://github.com/org/repo',
+      } as never,
+      { logDestination: destination },
+    );
+    await orch.start();
+    await approveSpec(orch, adapter);
+    await orch.stop();
+
+    // Invoke the captured callback with a message that will make postMessage reject
+    if (capturedOnProgress) {
+      await capturedOnProgress('progress relay msg').catch(() => {});
+      await new Promise(r => setTimeout(r, 0));
+    }
+
+    const failLog = records.find(r => r['event'] === 'progress_failed' && r['phase'] === 'implementation');
+    expect(failLog).toBeDefined();
+    expect(String(failLog!['error'])).toContain('slack timeout');
   });
 });
 

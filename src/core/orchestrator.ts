@@ -353,12 +353,22 @@ export class OrchestratorImpl implements Orchestrator {
   }
 
   private async _runImplementation(feedback: ThreadMessage, run: Run, additional_context?: string): Promise<void> {
-    // Invoke the implementer
+    const onProgress = (message: string): Promise<void> =>
+      this.deps.postMessage(feedback.channel_id, feedback.thread_ts, message).catch(err => {
+        this.logger.warn(
+          { event: 'progress_failed', phase: 'implementation', run_id: run.id, error: String(err) },
+          'Failed to post progress update',
+        );
+      });
+
     let result;
     try {
-      result = additional_context !== undefined
-        ? await this.deps.implementer!.implement(run.spec_path!, run.workspace_path, additional_context)
-        : await this.deps.implementer!.implement(run.spec_path!, run.workspace_path);
+      result = await this.deps.implementer!.implement(
+        run.spec_path!,
+        run.workspace_path,
+        additional_context,
+        onProgress,
+      );
     } catch (err) {
       await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
       return;

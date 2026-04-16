@@ -520,7 +520,7 @@ If the agent emits `[Relay]` outside a checkpoint context (e.g., inside a code b
 			- [ ] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `parseRelayMessage` helper and augment spec gen prompts
 - [ ] **Story: Wire ****`onProgress`**** in the orchestrator**
-	- [ ] **Task: Pass ****`onProgress`**** callback to ****`implement()`**** in ****`_runImplementation`**
+	- [x] **Task: Pass ****`onProgress`**** callback to ****`implement()`**** in ****`_runImplementation`**
 		- **Description**: In `src/core/orchestrator.ts`, update `_runImplementation` to construct an `onProgress` callback closing over `feedback.channel_id`, `feedback.thread_ts`, and `run.id`. Replace the current ternary with a single `implement()` call passing `additional_context` (which may be `undefined`) and `onProgress`.
 		- **Acceptance criteria**:
 			- [ ] Both call paths (with and without `additional_context`) pass `onProgress`
@@ -556,7 +556,7 @@ If the agent emits `[Relay]` outside a checkpoint context (e.g., inside a code b
 			- [ ] `progress_update` (info) and `progress_failed` (warn) log events asserted via structured JSON capture (logDestination stream) for both methods
 			- [ ] All existing speccer tests pass
 		- **Dependencies**: Task: Implement relay detection in `AgentSDKSpeccer` drain loop
-	- [ ] **Task: Add orchestrator ****`_runImplementation`**** progress tests**
+	- [x] **Task: Add orchestrator ****`_runImplementation`**** progress tests**
 		- **Description**: Add the three test cases from §6 to `tests/core/orchestrator.test.ts`.
 		- **Acceptance criteria**:
 			- [ ] Callback wired for both call paths; `postMessage` invocation verified; failure handling confirmed with log event
