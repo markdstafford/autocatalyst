@@ -801,15 +801,15 @@ These tests live in the `src/index.ts` config block or a dedicated unit for the 
 			- [x] Unit tests cover all valid `TestingGuideStatus` values, PR link passthrough, and rejection cases
 		- **Dependencies**: "Task: Add `TestingGuideStatus` type and update `ImplementationFeedbackPage` interface", "Task: Add `pages.updateProperties()` to `NotionClient`"
 - [ ] **Story: Orchestrator status transitions**
-	- [ ] **Task: Wire spec lifecycle status update call-sites**
+	- [x] **Task: Wire spec lifecycle status update call-sites**
 		- **Description**: In `src/core/orchestrator.ts`, add best-effort `specPublisher.updateStatus?.()` calls using optional chaining + `.catch()` at three points: after `transition(run, 'reviewing_spec')` in `_startSpecPipeline` (→ "Waiting on feedback"), after `transition(run, 'speccing')` in `_handleSpecFeedback` (→ "Speccing"), and after successful `specCommitter.commit()` in `_handleSpecApproval` (→ "Approved"). Each failure logs `run.status_update_failed` with `run_id` and target `status` but does not abort the run.
 		- **Acceptance criteria**:
-			- [ ] `updateStatus('Waiting on feedback')` called after `reviewing_spec` transition
-			- [ ] `updateStatus('Speccing')` called after `speccing` transition
-			- [ ] `updateStatus('Approved')` called after successful `specCommitter.commit()`
-			- [ ] Each rejection logs `run.status_update_failed` with `run_id` and `status`; rejection does not propagate to the run state machine
-			- [ ] When `specPublisher` is `SlackCanvasPublisher` (no `updateStatus`), optional chaining short-circuits with no error
-			- [ ] Unit tests added to `tests/core/orchestrator.test.ts` for each call-site and for rejection behavior
+			- [x] `updateStatus('Waiting on feedback')` called after `reviewing_spec` transition
+			- [x] `updateStatus('Speccing')` called after `speccing` transition
+			- [x] `updateStatus('Approved')` called after successful `specCommitter.commit()`
+			- [x] Each rejection logs `run.status_update_failed` with `run_id` and `status`; rejection does not propagate to the run state machine
+			- [x] When `specPublisher` is `SlackCanvasPublisher` (no `updateStatus`), optional chaining short-circuits with no error
+			- [x] Unit tests added to `tests/core/orchestrator.test.ts` for each call-site and for rejection behavior
 		- **Dependencies**: "Task: Add `updateStatus()` to `NotionPublisher`", "Task: Export `SpecEntryStatus` type and add optional `updateStatus?()` to `SpecPublisher`"
 	- [ ] **Task: Wire implementation lifecycle status update call-sites**
 		- **Description**: In `src/core/orchestrator.ts`, add best-effort `implFeedbackPage.updateStatus?.()` calls: before `implementer.implement()` in `_runImplementation` (→ "In progress", only if `impl_feedback_ref` is set), and after implementation completes before `transition(run, 'reviewing_implementation')` (→ "Waiting on feedback"). Add a `Promise.allSettled` block in `_handleImplementationApproval` after a successful PR creation that calls `setPRLink`, `implFeedbackPage.updateStatus('Approved')`, and `specPublisher.updateStatus('Complete')`; log each rejection individually.
