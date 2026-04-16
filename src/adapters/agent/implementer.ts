@@ -22,6 +22,7 @@ export interface Implementer {
     spec_path: string,
     workspace_path: string,
     additional_context?: string,
+    onProgress?: (message: string) => Promise<void>,
   ): Promise<ImplementationResult>;
 }
 
@@ -69,7 +70,7 @@ export class AgentSDKImplementer implements Implementer {
     this.readFileFn = options?.readFile ?? ((path, enc) => _readFile(path, enc));
   }
 
-  async implement(spec_path: string, workspace_path: string, additional_context?: string): Promise<ImplementationResult> {
+  async implement(spec_path: string, workspace_path: string, additional_context?: string, onProgress?: (message: string) => Promise<void>): Promise<ImplementationResult> {
     const resultFilePath = join(workspace_path, '.autocatalyst', 'impl-result.json');
     const hasAdditionalContext = Boolean(additional_context);
     const prompt = buildPrompt(spec_path, resultFilePath, additional_context);

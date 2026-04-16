@@ -468,7 +468,7 @@ If the agent emits `[Relay]` outside a checkpoint context (e.g., inside a code b
 ## Task list
 
 - [ ] **Story: Update ****`Implementer`**** interface and ****`AgentSDKImplementer`**
-	- [ ] **Task: Add ****`onProgress`**** parameter to ****`Implementer`**** interface**
+	- [x] **Task: Add ****`onProgress`**** parameter to ****`Implementer`**** interface**
 		- **Description**: Add `onProgress?: (message: string) => Promise<void>` as the fourth positional parameter to `Implementer.implement()` in `src/adapters/agent/implementer.ts`. Interface change only — no implementation logic yet.
 		- **Acceptance criteria**:
 			- [ ] `Implementer.implement()` signature includes the optional `onProgress` parameter
