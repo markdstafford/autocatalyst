@@ -177,11 +177,7 @@ try {
       logger.error({ event: 'config.parse_error' }, 'AC_NOTION_INTEGRATION_TOKEN is required when notion config is present');
       process.exit(1);
     }
-    const parentPageId = currentConfig.config.notion.parent_page_id;
-    if (!parentPageId) {
-      logger.error({ event: 'config.parse_error' }, 'notion.parent_page_id is required in WORKFLOW.md');
-      process.exit(1);
-    }
+    // TODO Task 14: add specs_database_id / testing_guides_database_id validation
     const notionClient = new NotionClientImpl({ integration_token: notionToken });
     let botUser: { id: string };
     try {
@@ -191,7 +187,7 @@ try {
       process.exit(1);
     }
     logger.info({ event: 'service.config', bot_user_id: botUser.id }, 'Detected Notion bot user ID');
-    specPublisher = new NotionPublisher(notionClient, boltApp, parentPageId);
+    specPublisher = new NotionPublisher(notionClient, boltApp, '');
     feedbackSource = new NotionFeedbackSource(notionClient, { bot_user_id: botUser.id });
     specCommitter = new NotionSpecCommitter(specPublisher);
     implFeedbackPage = new NotionImplementationFeedbackPage(notionClient);
