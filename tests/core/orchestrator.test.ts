@@ -3624,3 +3624,92 @@ describe('Orchestrator — _handleSpecFeedback onProgress wiring', () => {
     expect(String(failLog!['error'])).toContain('connection reset');
   });
 });
+
+describe('Orchestrator — spec lifecycle status updates', () => {
+  it('calls updateStatus("Waiting on feedback") after reviewing_spec transition in _startSpecPipeline', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const sg = makeSpecGenerator();
+    const updateStatus = vi.fn().mockResolvedValue(undefined);
+    const cp = makeSpecPublisher({ updateStatus });
+    const ic = makeIntentClassifier('idea');
+
+    const orch = new OrchestratorImpl(
+      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError: vi.fn(), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: ic },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(updateStatus).toHaveBeenCalledWith('CANVAS001', 'Waiting on feedback');
+  });
+
+  it('updateStatus rejection after reviewing_spec transition: run still reaches reviewing_spec', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const sg = makeSpecGenerator();
+    const updateStatus = vi.fn().mockRejectedValue(new Error('Notion down'));
+    const cp = makeSpecPublisher({ updateStatus });
+    const ic = makeIntentClassifier('idea');
+
+    const orch = new OrchestratorImpl(
+      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError: vi.fn(), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: ic },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    const runs = (orch as never as { runs: Map<string, { stage: string }> }).runs;
+    expect(runs.get('request-001')!.stage).toBe('reviewing_spec');
+  });
+
+  it('calls updateStatus("Speccing") after speccing transition in _handleSpecFeedback', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const sg = makeSpecGenerator();
+    const updateStatus = vi.fn().mockResolvedValue(undefined);
+    const cp = makeSpecPublisher({ updateStatus });
+    const ic = makeIntentClassifier('idea');
+    (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
+
+    const orch = new OrchestratorImpl(
+      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError: vi.fn(), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: ic },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    const statusCalls = (updateStatus as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1]);
+    expect(statusCalls).toContain('Speccing');
+    expect(statusCalls).toContain('Waiting on feedback');
+  });
+
+  it('when specPublisher has no updateStatus (SlackCanvasPublisher pattern), optional chaining short-circuits, run reaches reviewing_spec', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const sg = makeSpecGenerator();
+    // makeSpecPublisher() without updateStatus — simulates SlackCanvasPublisher
+    const cp = makeSpecPublisher();
+    const ic = makeIntentClassifier('idea');
+
+    const orch = new OrchestratorImpl(
+      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError: vi.fn(), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: ic },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    const runs = (orch as never as { runs: Map<string, { stage: string }> }).runs;
+    expect(runs.get('request-001')!.stage).toBe('reviewing_spec');
+  });
+});

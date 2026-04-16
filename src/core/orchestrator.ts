@@ -348,7 +348,15 @@ export class OrchestratorImpl implements Orchestrator {
       return;
     }
 
-    // Step 3: Run implementation
+    // Step 3: Update status to Approved (best-effort)
+    await this.deps.specPublisher.updateStatus?.(run.publisher_ref!, 'Approved').catch(err =>
+      this.logger.error(
+        { event: 'run.status_update_failed', run_id: run.id, status: 'Approved', error: String(err) },
+        'Failed to update spec status',
+      ),
+    );
+
+    // Step 4: Run implementation
     await this._runImplementation(feedback, run);
   }
 
@@ -616,6 +624,12 @@ export class OrchestratorImpl implements Orchestrator {
     }
 
     this.transition(run, 'reviewing_spec');
+    await this.deps.specPublisher.updateStatus?.(run.publisher_ref!, 'Waiting on feedback').catch(err =>
+      this.logger.error(
+        { event: 'run.status_update_failed', run_id: run.id, status: 'Waiting on feedback', error: String(err) },
+        'Failed to update spec status',
+      ),
+    );
   }
 
   private async _handleSpecFeedback(feedback: ThreadMessage): Promise<void> {
@@ -628,6 +642,12 @@ export class OrchestratorImpl implements Orchestrator {
     }
 
     this.transition(run, 'speccing');
+    await this.deps.specPublisher.updateStatus?.(run.publisher_ref!, 'Speccing').catch(err =>
+      this.logger.error(
+        { event: 'run.status_update_failed', run_id: run.id, status: 'Speccing', error: String(err) },
+        'Failed to update spec status',
+      ),
+    );
     run.attempt += 1;
 
     // Step 1: Fetch Notion comments if a feedback source is configured
