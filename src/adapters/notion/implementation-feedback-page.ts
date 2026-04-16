@@ -228,6 +228,26 @@ export class NotionImplementationFeedbackPage implements ImplementationFeedbackP
       'Implementation feedback page updated',
     );
   }
+
+  async updateStatus(page_id: string, status: TestingGuideStatus): Promise<void> {
+    await this.client.pages.updateProperties(page_id, {
+      Status: { status: { name: status } },
+    });
+    this.logger.info(
+      { event: 'notion_testing_guide.status_updated', page_id, status },
+      'Testing guide status updated',
+    );
+  }
+
+  async setPRLink(page_id: string, pr_url: string): Promise<void> {
+    await this.client.pages.updateProperties(page_id, {
+      'PR link': { url: pr_url },
+    });
+    this.logger.info(
+      { event: 'notion_testing_guide.pr_link_set', page_id, pr_url },
+      'Testing guide PR link set',
+    );
+  }
 }
 
 function escapeRegex(str: string): string {

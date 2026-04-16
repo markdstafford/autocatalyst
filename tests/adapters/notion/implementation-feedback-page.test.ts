@@ -415,3 +415,109 @@ describe('NotionImplementationFeedbackPage — logging', () => {
     expect(updated).toBeDefined();
   });
 });
+
+describe('NotionImplementationFeedbackPage — updateStatus', () => {
+  it('calls pages.updateProperties with Status payload', async () => {
+    const pagesUpdateProperties = vi.fn().mockResolvedValue(undefined);
+    const client = makeNotionClient({ pagesUpdateProperties });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    await page.updateStatus!('page-tg-id', 'In progress');
+
+    expect(pagesUpdateProperties).toHaveBeenCalledWith('page-tg-id', {
+      Status: { status: { name: 'In progress' } },
+    });
+  });
+
+  it.each([
+    ['Not started'],
+    ['In progress'],
+    ['Waiting on feedback'],
+    ['Approved'],
+  ] as const)('passes status "%s" through correctly', async (status) => {
+    const pagesUpdateProperties = vi.fn().mockResolvedValue(undefined);
+    const client = makeNotionClient({ pagesUpdateProperties });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    await page.updateStatus!('page-id', status);
+
+    expect(pagesUpdateProperties.mock.calls[0][1]['Status'].status.name).toBe(status);
+  });
+
+  it('throws if pages.updateProperties rejects', async () => {
+    const pagesUpdateProperties = vi.fn().mockRejectedValue(new Error('API error'));
+    const client = makeNotionClient({ pagesUpdateProperties });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    await expect(page.updateStatus!('page-id', 'Approved')).rejects.toThrow('API error');
+  });
+
+  it('logs notion_testing_guide.status_updated event', async () => {
+    const records: Record<string, unknown>[] = [];
+    const logDest = {
+      write(msg: string) {
+        try { records.push(JSON.parse(msg) as Record<string, unknown>); } catch { /* ignore */ }
+      },
+    };
+    const pagesUpdateProperties = vi.fn().mockResolvedValue(undefined);
+    const client = makeNotionClient({ pagesUpdateProperties });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', {
+      logDestination: logDest as unknown as import('pino').DestinationStream,
+    });
+
+    await page.updateStatus!('page-id', 'Approved');
+
+    expect(records.find(r => r['event'] === 'notion_testing_guide.status_updated')).toBeDefined();
+  });
+});
+
+describe('NotionImplementationFeedbackPage — setPRLink', () => {
+  it('calls pages.updateProperties with PR link payload', async () => {
+    const pagesUpdateProperties = vi.fn().mockResolvedValue(undefined);
+    const client = makeNotionClient({ pagesUpdateProperties });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    await page.setPRLink!('page-tg-id', 'https://github.com/org/repo/pull/42');
+
+    expect(pagesUpdateProperties).toHaveBeenCalledWith('page-tg-id', {
+      'PR link': { url: 'https://github.com/org/repo/pull/42' },
+    });
+  });
+
+  it('passes pr_url through verbatim', async () => {
+    const pagesUpdateProperties = vi.fn().mockResolvedValue(undefined);
+    const client = makeNotionClient({ pagesUpdateProperties });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    const url = 'https://github.com/org/repo/pull/99?special=true&x=1';
+    await page.setPRLink!('page-id', url);
+
+    expect(pagesUpdateProperties.mock.calls[0][1]['PR link'].url).toBe(url);
+  });
+
+  it('throws if pages.updateProperties rejects', async () => {
+    const pagesUpdateProperties = vi.fn().mockRejectedValue(new Error('API error'));
+    const client = makeNotionClient({ pagesUpdateProperties });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    await expect(page.setPRLink!('page-id', 'https://example.com/pr')).rejects.toThrow('API error');
+  });
+
+  it('logs notion_testing_guide.pr_link_set event', async () => {
+    const records: Record<string, unknown>[] = [];
+    const logDest = {
+      write(msg: string) {
+        try { records.push(JSON.parse(msg) as Record<string, unknown>); } catch { /* ignore */ }
+      },
+    };
+    const pagesUpdateProperties = vi.fn().mockResolvedValue(undefined);
+    const client = makeNotionClient({ pagesUpdateProperties });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', {
+      logDestination: logDest as unknown as import('pino').DestinationStream,
+    });
+
+    await page.setPRLink!('page-id', 'https://github.com/org/repo/pull/1');
+
+    expect(records.find(r => r['event'] === 'notion_testing_guide.pr_link_set')).toBeDefined();
+  });
+});
