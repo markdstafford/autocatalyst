@@ -493,8 +493,8 @@ If the agent emits `[Relay]` outside a checkpoint context (e.g., inside a code b
 			- [ ] When `onProgress` omitted, behavior identical to before
 			- [ ] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `parseRelayMessage` helper and augment implementation prompts
-- [ ] **Story: Update ****`Speccer`**** interface and ****`AgentSDKSpeccer`**
-	- [ ] **Task: Add ****`onProgress`**** parameter to ****`Speccer`**** interface**
+- [x] **Story: Update ****`Speccer`**** interface and ****`AgentSDKSpeccer`**
+	- [x] **Task: Add ****`onProgress`**** parameter to ****`Speccer`**** interface**
 		- **Description**: Add `onProgress?: (message: string) => Promise<void>` as the last optional parameter to both `Speccer.generateSpec()` and `Speccer.reviseSpec()` in `src/adapters/agent/speccer.ts`. Interface change only.
 		- **Acceptance criteria**:
 			- [ ] Both method signatures include the optional `onProgress` parameter
@@ -502,7 +502,7 @@ If the agent emits `[Relay]` outside a checkpoint context (e.g., inside a code b
 			- [ ] `tsc --noEmit` passes
 			- [ ] All existing tests pass
 		- **Dependencies**: None
-	- [ ] **Task: Add ****`parseRelayMessage`**** helper and augment spec gen prompts**
+	- [x] **Task: Add ****`parseRelayMessage`**** helper and augment spec gen prompts**
 		- **Description**: Add `parseRelayMessage` helper to `src/adapters/agent/speccer.ts` (same implementation as in `implementer.ts`). Update `buildSpecPrompt` and `buildSpecRevisionPrompt` to append the checkpoint instruction block.
 		- **Acceptance criteria**:
 			- [ ] `parseRelayMessage` handles all cases in the §6 unit test matrix
