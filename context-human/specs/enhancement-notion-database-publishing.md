@@ -726,51 +726,51 @@ These tests live in the `src/index.ts` config block or a dedicated unit for the 
 			- [x] TypeScript compiles with no errors
 			- [x] Existing `canvas-publisher.test.ts` tests pass unchanged; no new tests required unless existing assertions break
 		- **Dependencies**: None
-- [ ] **Story: NotionPublisher database publishing**
-	- [ ] **Task: Implement ****`parseFrontmatter()`**** private helper**
+- [x] **Story: NotionPublisher database publishing**
+	- [x] **Task: Implement ****`parseFrontmatter()`**** private helper**
 		- **Description**: Add a private `parseFrontmatter(spec_path: string): Record<string, unknown>` method to `NotionPublisher`. Reads the file, extracts the YAML block between the first pair of `---` delimiters, and parses it with the `yaml` package. Returns `{}` when no frontmatter block is found, the block is empty, or YAML parsing fails.
 		- **Acceptance criteria**:
-			- [ ] Returns all frontmatter fields as a `Record<string, unknown>` when present
-			- [ ] Returns `{}` for files with no `---` delimiters, empty frontmatter block, or YAML parse error
-			- [ ] `issue: null` parses as `null`; `issue: 42` parses as the number `42` (not a string)
-			- [ ] Extra/unknown frontmatter fields are included in the returned map without filtering
-			- [ ] Unit tests cover all cases in the Testing plan section
+			- [x] Returns all frontmatter fields as a `Record<string, unknown>` when present
+			- [x] Returns `{}` for files with no `---` delimiters, empty frontmatter block, or YAML parse error
+			- [x] `issue: null` parses as `null`; `issue: 42` parses as the number `42` (not a string)
+			- [x] Extra/unknown frontmatter fields are included in the returned map without filtering
+			- [x] Unit tests cover all cases in the Testing plan section
 		- **Dependencies**: None
-	- [ ] **Task: Implement ****`resolveFilenameToPageId()`**** private helper**
+	- [x] **Task: Implement ****`resolveFilenameToPageId()`**** private helper**
 		- **Description**: Add a private `resolveFilenameToPageId(filename: string): Promise<string | undefined>` method to `NotionPublisher`. Queries the Specs database filtering by `Filename` equals `filename`. Returns `results[0].id` if found; returns `undefined` and logs `notion_spec.filename_lookup_failed` at warn if no results. Propagates rejection from `databases.query`.
 		- **Acceptance criteria**:
-			- [ ] Returns the first result's `id` when one or more results are found
-			- [ ] Returns `undefined` and logs `notion_spec.filename_lookup_failed` with the filename when results are empty
-			- [ ] Rejection from `databases.query` propagates to the caller (not swallowed)
-			- [ ] Unit tests cover all cases in the Testing plan section
+			- [x] Returns the first result's `id` when one or more results are found
+			- [x] Returns `undefined` and logs `notion_spec.filename_lookup_failed` with the filename when results are empty
+			- [x] Rejection from `databases.query` propagates to the caller (not swallowed)
+			- [x] Unit tests cover all cases in the Testing plan section
 		- **Dependencies**: "Task: Add `databases.query()` to `NotionClient`"
-	- [ ] **Task: Update ****`create()`**** to publish as Specs database entry with typed properties**
+	- [x] **Task: Update ****`create()`**** to publish as Specs database entry with typed properties**
 		- **Description**: Update `NotionPublisher.create()` to call `pages.create` with `parent: { database_id: specs_database_id }` and typed properties built from parsed frontmatter: Title, Filename, Status ("Speccing"), Specced by, Repo/Codebase (only if `repo_name` is in options), Issue # (only if non-null), Last updated, Implemented by (only if non-null), and Superseded by / Supersedes (resolved via `resolveFilenameToPageId()` if `supersedes` is set in frontmatter). Markdown write and Slack postMessage steps are unchanged.
 		- **Acceptance criteria**:
-			- [ ] `pages.create` called with `parent: { database_id: specs_database_id }`, not `page_id`
-			- [ ] All properties set as specified in the Design changes section
-			- [ ] Optional properties omitted (not set to null/empty) when their frontmatter values are absent
-			- [ ] When `supersedes` filename is not found in the database, `notion_spec.filename_lookup_failed` is logged and `pages.create` still succeeds without the relation property
-			- [ ] Unit tests cover all cases in the Testing plan section
+			- [x] `pages.create` called with `parent: { database_id: specs_database_id }`, not `page_id`
+			- [x] All properties set as specified in the Design changes section
+			- [x] Optional properties omitted (not set to null/empty) when their frontmatter values are absent
+			- [x] When `supersedes` filename is not found in the database, `notion_spec.filename_lookup_failed` is logged and `pages.create` still succeeds without the relation property
+			- [x] Unit tests cover all cases in the Testing plan section
 		- **Dependencies**: "Task: Implement `parseFrontmatter()` private helper", "Task: Implement `resolveFilenameToPageId()` private helper", "Task: Update `WorkflowConfig.notion` type"
-	- [ ] **Task: Update ****`update()`**** to sync frontmatter properties**
+	- [x] **Task: Update ****`update()`**** to sync frontmatter properties**
 		- **Description**: After the existing Markdown write in `NotionPublisher.update()`, call `pages.updateProperties()` to sync `last_updated` and `implemented_by` from freshly-parsed frontmatter. If `superseded_by` is now set in frontmatter, also update Status to `"Superseded"` and set the Superseded by / Supersedes relation (resolved via `resolveFilenameToPageId()`). Always call `pages.updateProperties()` — no diffing.
 		- **Acceptance criteria**:
-			- [ ] `pages.updateProperties()` called after Markdown write with `last_updated` and `implemented_by`
-			- [ ] `implemented_by` key omitted from payload when absent from frontmatter
-			- [ ] `superseded_by` set in frontmatter: Status updated to `"Superseded"` and relation set when filename resolves
-			- [ ] `superseded_by` set but filename not found: `last_updated`/`implemented_by` still synced; Status not changed; `notion_spec.filename_lookup_failed` logged
-			- [ ] No diffing — `pages.updateProperties()` called even when frontmatter is unchanged
-			- [ ] Unit tests cover all cases in the Testing plan section
+			- [x] `pages.updateProperties()` called after Markdown write with `last_updated` and `implemented_by`
+			- [x] `implemented_by` key omitted from payload when absent from frontmatter
+			- [x] `superseded_by` set in frontmatter: Status updated to `"Superseded"` and relation set when filename resolves
+			- [x] `superseded_by` set but filename not found: `last_updated`/`implemented_by` still synced; Status not changed; `notion_spec.filename_lookup_failed` logged
+			- [x] No diffing — `pages.updateProperties()` called even when frontmatter is unchanged
+			- [x] Unit tests cover all cases in the Testing plan section
 		- **Dependencies**: "Task: Implement `parseFrontmatter()` private helper", "Task: Implement `resolveFilenameToPageId()` private helper", "Task: Add `pages.updateProperties()` to `NotionClient`"
-	- [ ] **Task: Add ****`updateStatus()`**** to ****`NotionPublisher`**
+	- [x] **Task: Add ****`updateStatus()`**** to ****`NotionPublisher`**
 		- **Description**: Add a public `updateStatus(page_id: string, status: SpecEntryStatus): Promise<void>` method to `NotionPublisher`. Calls `pages.updateProperties(page_id, { Status: { status: { name: status } } })` and logs `notion_spec.status_updated` with `page_id` and `status`. Throws if `pages.updateProperties` rejects.
 		- **Acceptance criteria**:
-			- [ ] Method satisfies the optional `updateStatus?()` signature on the `SpecPublisher` interface
-			- [ ] Calls `pages.updateProperties` with the correct Status payload structure
-			- [ ] Logs `notion_spec.status_updated` on success
-			- [ ] Throws if `pages.updateProperties` rejects
-			- [ ] Unit tests cover all valid `SpecEntryStatus` values and rejection propagation
+			- [x] Method satisfies the optional `updateStatus?()` signature on the `SpecPublisher` interface
+			- [x] Calls `pages.updateProperties` with the correct Status payload structure
+			- [x] Logs `notion_spec.status_updated` on success
+			- [x] Throws if `pages.updateProperties` rejects
+			- [x] Unit tests cover all valid `SpecEntryStatus` values and rejection propagation
 		- **Dependencies**: "Task: Add `pages.updateProperties()` to `NotionClient`", "Task: Export `SpecEntryStatus` type and add optional `updateStatus?()` to `SpecPublisher`"
 - [ ] **Story: ImplementationFeedbackPage database publishing**
 	- [x] **Task: Add ****`TestingGuideStatus`**** type and update ****`ImplementationFeedbackPage`**** interface**
