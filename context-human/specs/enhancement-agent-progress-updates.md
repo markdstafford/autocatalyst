@@ -536,8 +536,8 @@ If the agent emits `[Relay]` outside a checkpoint context (e.g., inside a code b
 			- [ ] `postMessage` rejection handled; `progress_failed` logged at warn with `phase: 'spec_generation'`, `run_id`, `error`; run continues
 			- [ ] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement relay detection in `AgentSDKSpeccer` drain loop
-- [ ] **Story: Tests**
-	- [ ] **Task: Add ****`parseRelayMessage`**** unit tests**
+- [x] **Story: Tests**
+	- [x] **Task: Add ****`parseRelayMessage`**** unit tests**
 		- **Description**: Add unit tests covering the full §6 test matrix to both `tests/adapters/agent/implementer.test.ts` and `tests/adapters/agent/speccer.test.ts`.
 		- **Acceptance criteria**:
 			- [ ] All 8 matrix cases covered in both test files
