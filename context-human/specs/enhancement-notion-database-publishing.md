@@ -800,7 +800,7 @@ These tests live in the `src/index.ts` config block or a dedicated unit for the 
 			- [x] Both throw on rejection from `pages.updateProperties`
 			- [x] Unit tests cover all valid `TestingGuideStatus` values, PR link passthrough, and rejection cases
 		- **Dependencies**: "Task: Add `TestingGuideStatus` type and update `ImplementationFeedbackPage` interface", "Task: Add `pages.updateProperties()` to `NotionClient`"
-- [ ] **Story: Orchestrator status transitions**
+- [x] **Story: Orchestrator status transitions**
 	- [x] **Task: Wire spec lifecycle status update call-sites**
 		- **Description**: In `src/core/orchestrator.ts`, add best-effort `specPublisher.updateStatus?.()` calls using optional chaining + `.catch()` at three points: after `transition(run, 'reviewing_spec')` in `_startSpecPipeline` (→ "Waiting on feedback"), after `transition(run, 'speccing')` in `_handleSpecFeedback` (→ "Speccing"), and after successful `specCommitter.commit()` in `_handleSpecApproval` (→ "Approved"). Each failure logs `run.status_update_failed` with `run_id` and target `status` but does not abort the run.
 		- **Acceptance criteria**:
@@ -811,20 +811,20 @@ These tests live in the `src/index.ts` config block or a dedicated unit for the 
 			- [x] When `specPublisher` is `SlackCanvasPublisher` (no `updateStatus`), optional chaining short-circuits with no error
 			- [x] Unit tests added to `tests/core/orchestrator.test.ts` for each call-site and for rejection behavior
 		- **Dependencies**: "Task: Add `updateStatus()` to `NotionPublisher`", "Task: Export `SpecEntryStatus` type and add optional `updateStatus?()` to `SpecPublisher`"
-	- [ ] **Task: Wire implementation lifecycle status update call-sites**
+	- [x] **Task: Wire implementation lifecycle status update call-sites**
 		- **Description**: In `src/core/orchestrator.ts`, add best-effort `implFeedbackPage.updateStatus?.()` calls: before `implementer.implement()` in `_runImplementation` (→ "In progress", only if `impl_feedback_ref` is set), and after implementation completes before `transition(run, 'reviewing_implementation')` (→ "Waiting on feedback"). Add a `Promise.allSettled` block in `_handleImplementationApproval` after a successful PR creation that calls `setPRLink`, `implFeedbackPage.updateStatus('Approved')`, and `specPublisher.updateStatus('Complete')`; log each rejection individually.
 		- **Acceptance criteria**:
-			- [ ] `implFeedbackPage.updateStatus('In progress')` called before `implementer.implement()` when `impl_feedback_ref` is set; not called when unset
-			- [ ] `implFeedbackPage.updateStatus('Waiting on feedback')` called after implementation completes
-			- [ ] `Promise.allSettled` in `_handleImplementationApproval` calls all three updates; one rejection does not prevent the other two
-			- [ ] Each rejection individually logged with `run.status_update_failed`
-			- [ ] Unit tests added to `tests/core/orchestrator.test.ts` for each call-site and rejection behavior
+			- [x] `implFeedbackPage.updateStatus('In progress')` called before `implementer.implement()` when `impl_feedback_ref` is set; not called when unset
+			- [x] `implFeedbackPage.updateStatus('Waiting on feedback')` called after implementation completes
+			- [x] `Promise.allSettled` in `_handleImplementationApproval` calls all three updates; one rejection does not prevent the other two
+			- [x] Each rejection individually logged with `run.status_update_failed`
+			- [x] Unit tests added to `tests/core/orchestrator.test.ts` for each call-site and rejection behavior
 		- **Dependencies**: "Task: Implement `updateStatus()` and `setPRLink()` on `NotionImplementationFeedbackPage`", "Task: Add `updateStatus()` to `NotionPublisher`"
-	- [ ] **Task: Update ****`implFeedbackPage.create()`**** call with new ****`spec_title`**** parameter**
+	- [x] **Task: Update ****`implFeedbackPage.create()`**** call with new ****`spec_title`**** parameter**
 		- **Description**: In `_runImplementation` in `src/core/orchestrator.ts`, update the `implFeedbackPage.create()` call to pass `titleFromPath(run.spec_path!)` as the new third `spec_title` argument. Add a direct import for `titleFromPath` from `canvas-publisher.ts` if it is not already available in scope.
 		- **Acceptance criteria**:
-			- [ ] `implFeedbackPage.create()` called with `(run.publisher_ref!, specPageUrl, titleFromPath(run.spec_path!), result.summary ?? '', result.testing_instructions ?? '')`
-			- [ ] `titleFromPath` imported and available in `orchestrator.ts`
-			- [ ] TypeScript compiles with no errors
-			- [ ] Existing orchestrator tests updated to include `spec_title` in mock expectations
+			- [x] `implFeedbackPage.create()` called with `(run.publisher_ref!, specPageUrl, titleFromPath(run.spec_path!), result.summary ?? '', result.testing_instructions ?? '')`
+			- [x] `titleFromPath` imported and available in `orchestrator.ts`
+			- [x] TypeScript compiles with no errors
+			- [x] Existing orchestrator tests updated to include `spec_title` in mock expectations
 		- **Dependencies**: "Task: Add `TestingGuideStatus` type and update `ImplementationFeedbackPage` interface"
