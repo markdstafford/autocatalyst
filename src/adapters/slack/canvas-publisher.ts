@@ -5,10 +5,18 @@ import type { App } from '@slack/bolt';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 
+export type SpecEntryStatus =
+  | 'Speccing'
+  | 'Waiting on feedback'
+  | 'Approved'
+  | 'Complete'
+  | 'Superseded';
+
 export interface SpecPublisher {
   create(channel_id: string, thread_ts: string, spec_path: string): Promise<string>;
   update(publisher_ref: string, spec_path: string, page_content?: string): Promise<void>;
   getPageMarkdown(publisher_ref: string): Promise<string>;
+  updateStatus?(publisher_ref: string, status: SpecEntryStatus): Promise<void>;
 }
 
 export function titleFromPath(spec_path: string): string {
