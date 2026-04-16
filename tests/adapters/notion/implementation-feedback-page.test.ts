@@ -75,44 +75,113 @@ function makeBlocksChildrenListFn(
 }
 
 describe('NotionImplementationFeedbackPage — create', () => {
-  it('creates a page under the given parent_page_id', async () => {
+  it('creates a page in the testing_guides_database_id (not under a parent page)', async () => {
     const pagesCreate = vi.fn().mockResolvedValue({ id: 'new-page-id' });
     const client = makeNotionClient({ pagesCreate });
-    const page = new NotionImplementationFeedbackPage(client, { logDestination: nullDest });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
 
-    await page.create('parent-123', 'https://notion.so/spec', 'Summary text', 'Run npm test');
+    await page.create('spec-page-id', 'https://notion.so/spec', 'Setup wizard', 'the summary', 'run npm test');
 
-    expect(pagesCreate).toHaveBeenCalledOnce();
-    const args = pagesCreate.mock.calls[0][0];
-    expect(JSON.stringify(args)).toContain('parent-123');
+    const createCall = pagesCreate.mock.calls[0][0];
+    expect(createCall.parent).toEqual(
+      expect.objectContaining({ database_id: 'db-testing-guides-id' }),
+    );
+    expect(createCall.parent.page_id).toBeUndefined();
   });
 
-  it('returns the page_id from the created page', async () => {
-    const client = makeNotionClient({ pagesCreate: vi.fn().mockResolvedValue({ id: 'page-xyz' }) });
-    const page = new NotionImplementationFeedbackPage(client, { logDestination: nullDest });
-
-    const result = await page.create('parent', 'https://notion.so/spec', 'Summary', 'Test');
-    expect(result).toBe('page-xyz');
-  });
-
-  it('includes the spec link in the page content', async () => {
+  it('returns the page_id', async () => {
     const pagesCreate = vi.fn().mockResolvedValue({ id: 'new-page-id' });
     const client = makeNotionClient({ pagesCreate });
-    const page = new NotionImplementationFeedbackPage(client, { logDestination: nullDest });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
 
-    await page.create('parent', 'https://notion.so/spec-page', 'Summary', 'Test instructions');
+    const result = await page.create('spec-page-id', 'https://notion.so/spec', 'Setup wizard', 'sum', 'test');
 
-    const args = JSON.stringify(pagesCreate.mock.calls[0][0]);
-    expect(args).toContain('notion.so/spec-page');
+    expect(result).toBe('new-page-id');
+  });
+
+  it('sets Title to "Testing guide: {spec_title}"', async () => {
+    const pagesCreate = vi.fn().mockResolvedValue({ id: 'new-page-id' });
+    const client = makeNotionClient({ pagesCreate });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    await page.create('spec-page-id', 'https://notion.so/spec', 'Setup wizard', 'sum', 'test');
+
+    const createCall = pagesCreate.mock.calls[0][0];
+    expect(createCall.properties['Title'].title[0].text.content).toBe('Testing guide: Setup wizard');
+  });
+
+  it('sets Spec relation to spec_page_id', async () => {
+    const pagesCreate = vi.fn().mockResolvedValue({ id: 'new-page-id' });
+    const client = makeNotionClient({ pagesCreate });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    await page.create('spec-page-abc', 'https://notion.so/spec', 'Setup wizard', 'sum', 'test');
+
+    const createCall = pagesCreate.mock.calls[0][0];
+    expect(createCall.properties['Spec'].relation).toEqual([{ id: 'spec-page-abc' }]);
+  });
+
+  it('sets Status to "Not started"', async () => {
+    const pagesCreate = vi.fn().mockResolvedValue({ id: 'new-page-id' });
+    const client = makeNotionClient({ pagesCreate });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    await page.create('spec-page-id', 'https://notion.so/spec', 'Setup wizard', 'sum', 'test');
+
+    const createCall = pagesCreate.mock.calls[0][0];
+    expect(createCall.properties['Status'].status.name).toBe('Not started');
+  });
+
+  it('includes spec link bookmark in page children', async () => {
+    const pagesCreate = vi.fn().mockResolvedValue({ id: 'new-page-id' });
+    const client = makeNotionClient({ pagesCreate });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    await page.create('spec-page-id', 'https://notion.so/spec-url', 'Setup wizard', 'sum', 'test');
+
+    const createCall = pagesCreate.mock.calls[0][0];
+    const bookmarkBlock = createCall.children.find(
+      (b: { type: string }) => b.type === 'bookmark',
+    );
+    expect(bookmarkBlock?.bookmark?.url).toBe('https://notion.so/spec-url');
+  });
+
+  it('spec_title with special characters passes through verbatim', async () => {
+    const pagesCreate = vi.fn().mockResolvedValue({ id: 'new-page-id' });
+    const client = makeNotionClient({ pagesCreate });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    await page.create('spec-page-id', 'https://notion.so/spec', 'API: v2/beta', 'sum', 'test');
+
+    const createCall = pagesCreate.mock.calls[0][0];
+    expect(createCall.properties['Title'].title[0].text.content).toBe('Testing guide: API: v2/beta');
   });
 
   it('throws when pages.create rejects', async () => {
-    const client = makeNotionClient({
-      pagesCreate: vi.fn().mockRejectedValue(new Error('Notion API error')),
-    });
-    const page = new NotionImplementationFeedbackPage(client, { logDestination: nullDest });
+    const pagesCreate = vi.fn().mockRejectedValue(new Error('Notion error'));
+    const client = makeNotionClient({ pagesCreate });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
 
-    await expect(page.create('parent', 'https://url', 'Summary', 'Test')).rejects.toThrow();
+    await expect(
+      page.create('spec-page-id', 'https://notion.so/spec', 'Setup wizard', 'sum', 'test'),
+    ).rejects.toThrow('Notion error');
+  });
+
+  it('emits notion_testing_guide.created log event', async () => {
+    const records: Record<string, unknown>[] = [];
+    const logDest = {
+      write(msg: string) {
+        try { records.push(JSON.parse(msg) as Record<string, unknown>); } catch { /* ignore */ }
+      },
+    };
+    const client = makeNotionClient();
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', {
+      logDestination: logDest as unknown as import('pino').DestinationStream,
+    });
+
+    await page.create('spec-page-id', 'https://notion.so/spec', 'Setup wizard', 'sum', 'test');
+
+    expect(records.find(r => r['event'] === 'notion_testing_guide.created')).toBeDefined();
   });
 });
 
@@ -121,7 +190,7 @@ describe('NotionImplementationFeedbackPage — readFeedback', () => {
     const client = makeNotionClient({
       blocksChildrenList: makeBlocksChildrenListFn([]),
     });
-    const page = new NotionImplementationFeedbackPage(client, { logDestination: nullDest });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
 
     const result = await page.readFeedback('page-id');
     expect(result).toEqual([]);
@@ -132,7 +201,7 @@ describe('NotionImplementationFeedbackPage — readFeedback', () => {
     const client = makeNotionClient({
       blocksChildrenList: makeBlocksChildrenListFn([todoBlock]),
     });
-    const page = new NotionImplementationFeedbackPage(client, { logDestination: nullDest });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
 
     const result = await page.readFeedback('page-id');
     expect(result).toHaveLength(1);
@@ -146,7 +215,7 @@ describe('NotionImplementationFeedbackPage — readFeedback', () => {
     const client = makeNotionClient({
       blocksChildrenList: makeBlocksChildrenListFn([todoBlock]),
     });
-    const page = new NotionImplementationFeedbackPage(client, { logDestination: nullDest });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
 
     const result = await page.readFeedback('page-id');
     expect(result[0].resolved).toBe(true);
@@ -164,7 +233,7 @@ describe('NotionImplementationFeedbackPage — readFeedback', () => {
     });
 
     const client = makeNotionClient({ blocksChildrenList });
-    const page = new NotionImplementationFeedbackPage(client, { logDestination: nullDest });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
 
     const result = await page.readFeedback('page-id');
     expect(result[0].conversation).toEqual(['Comment A', 'Comment B']);
@@ -177,7 +246,7 @@ describe('NotionImplementationFeedbackPage — readFeedback', () => {
     const client = makeNotionClient({
       blocksChildrenList: makeBlocksChildrenListFn([block1, block2, block3]),
     });
-    const page = new NotionImplementationFeedbackPage(client, { logDestination: nullDest });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
 
     const result = await page.readFeedback('page-id');
     expect(result).toHaveLength(3);
@@ -193,7 +262,7 @@ describe('NotionImplementationFeedbackPage — readFeedback', () => {
     const client = makeNotionClient({
       blocksChildrenList: makeBlocksChildrenListFn([heading, paragraph, todo]),
     });
-    const page = new NotionImplementationFeedbackPage(client, { logDestination: nullDest });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
 
     const result = await page.readFeedback('page-id');
     expect(result).toHaveLength(1);
@@ -219,7 +288,7 @@ describe('NotionImplementationFeedbackPage — update', () => {
       '',
     ].join('\n'));
     const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown });
-    const page = new NotionImplementationFeedbackPage(client, { logDestination: nullDest });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
 
     await page.update('page-id', { summary: 'New summary text.' });
 
@@ -241,7 +310,7 @@ describe('NotionImplementationFeedbackPage — update', () => {
     ].join('\n'));
     const blocksChildrenList = vi.fn().mockResolvedValue({ results: [] });
     const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList });
-    const page = new NotionImplementationFeedbackPage(client, { logDestination: nullDest });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
 
     await page.update('page-id', {
       resolved_items: [],
@@ -280,7 +349,7 @@ describe('NotionImplementationFeedbackPage — update', () => {
       return { results: [] };
     });
     const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList });
-    const page = new NotionImplementationFeedbackPage(client, { logDestination: nullDest });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
 
     await page.update('page-id', {
       resolved_items: [{ id: 'todo-1', resolution_comment: 'Fixed the config validator' }],
@@ -298,22 +367,22 @@ describe('NotionImplementationFeedbackPage — update', () => {
     const pagesUpdateMarkdown = vi.fn().mockRejectedValue(new Error('API error'));
     const blocksChildrenList = vi.fn().mockResolvedValue({ results: [] });
     const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList });
-    const page = new NotionImplementationFeedbackPage(client, { logDestination: nullDest });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
 
     await expect(page.update('page-id', { summary: 'New summary' })).rejects.toThrow();
   });
 });
 
 describe('NotionImplementationFeedbackPage — logging', () => {
-  it('emits impl_feedback_page.created on successful create', async () => {
+  it('emits notion_testing_guide.created on successful create', async () => {
     const logs: unknown[] = [];
     const dest = { write: (line: string) => logs.push(JSON.parse(line)) };
     const client = makeNotionClient();
-    const page = new NotionImplementationFeedbackPage(client, { logDestination: dest });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: dest });
 
-    await page.create('parent', 'https://url', 'Summary', 'Test');
+    await page.create('spec-page-id', 'https://url', 'Test title', 'Summary', 'Test');
 
-    const created = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'impl_feedback_page.created');
+    const created = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'notion_testing_guide.created');
     expect(created).toBeDefined();
   });
 
@@ -323,7 +392,7 @@ describe('NotionImplementationFeedbackPage — logging', () => {
     const client = makeNotionClient({
       blocksChildrenList: makeBlocksChildrenListFn([]),
     });
-    const page = new NotionImplementationFeedbackPage(client, { logDestination: dest });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: dest });
 
     await page.readFeedback('page-id');
 
@@ -338,7 +407,7 @@ describe('NotionImplementationFeedbackPage — logging', () => {
     const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
     const blocksChildrenList = vi.fn().mockResolvedValue({ results: [] });
     const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList });
-    const page = new NotionImplementationFeedbackPage(client, { logDestination: dest });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: dest });
 
     await page.update('page-id', { summary: 'New summary' });
 

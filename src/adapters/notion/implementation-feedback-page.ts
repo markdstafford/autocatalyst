@@ -47,26 +47,39 @@ interface NotionImplementationFeedbackPageOptions {
 
 export class NotionImplementationFeedbackPage implements ImplementationFeedbackPage {
   private readonly client: NotionClient;
+  private readonly testing_guides_database_id: string;
   private readonly logger: pino.Logger;
 
-  constructor(client: NotionClient, options?: NotionImplementationFeedbackPageOptions) {
+  constructor(
+    client: NotionClient,
+    testing_guides_database_id: string,
+    options?: NotionImplementationFeedbackPageOptions,
+  ) {
     this.client = client;
+    this.testing_guides_database_id = testing_guides_database_id;
     this.logger = createLogger('implementation-feedback-page', { destination: options?.logDestination });
   }
 
   async create(
-    parent_page_id: string,
+    spec_page_id: string,
     spec_page_url: string,
+    spec_title: string,
     summary: string,
     testing_instructions: string,
   ): Promise<string> {
     const response = await this.client.pages.create({
-      parent: { type: 'page_id', page_id: parent_page_id },
+      parent: { type: 'database_id', database_id: this.testing_guides_database_id } as never,
       properties: {
-        title: {
-          title: [{ text: { content: 'Implementation feedback' } }],
+        Title: {
+          title: [{ text: { content: `Testing guide: ${spec_title}` } }],
         },
-      },
+        Spec: {
+          relation: [{ id: spec_page_id }],
+        },
+        Status: {
+          status: { name: 'Not started' },
+        },
+      } as never,
       children: [
         // Spec link bookmark
         {
@@ -91,7 +104,7 @@ export class NotionImplementationFeedbackPage implements ImplementationFeedbackP
           type: 'paragraph',
           paragraph: { rich_text: [{ text: { content: testing_instructions } }] },
         } as never,
-        // Feedback section (empty to-do list)
+        // Feedback section
         {
           type: 'heading_2',
           heading_2: { rich_text: [{ text: { content: 'Feedback' } }] },
@@ -101,8 +114,8 @@ export class NotionImplementationFeedbackPage implements ImplementationFeedbackP
 
     const page_id = (response as { id: string }).id;
     this.logger.info(
-      { event: 'impl_feedback_page.created', page_id, parent_page_id },
-      'Implementation feedback page created',
+      { event: 'notion_testing_guide.created', page_id, spec_page_id },
+      'Testing guide database entry created',
     );
     return page_id;
   }
