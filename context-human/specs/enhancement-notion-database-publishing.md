@@ -698,23 +698,23 @@ These tests live in the `src/index.ts` config block or a dedicated unit for the 
 			- [ ] `NotionImplementationFeedbackPage` constructed with `(notionClient, testingGuidesDatabaseId)`
 			- [ ] Unit tests cover: both IDs present (no exit), one absent (exit), both absent (exit), `notion` block absent entirely, all four `repo_url` format variants
 		- **Dependencies**: "Task: Update `WorkflowConfig.notion` type"
-- [ ] **Story: NotionClient API extensions**
-	- [ ] **Task: Add ****`pages.updateProperties()`**** to ****`NotionClient`**
+- [x] **Story: NotionClient API extensions**
+	- [x] **Task: Add ****`pages.updateProperties()`**** to ****`NotionClient`**
 		- **Description**: Add `updateProperties(page_id: string, properties: Record<string, unknown>): Promise<void>` to the `NotionClient` interface and implement it in `NotionClientImpl` via the Notion SDK's `pages.update()` method. The properties payload is passed through unchanged.
 		- **Acceptance criteria**:
-			- [ ] Method added to `NotionClient` interface in `src/adapters/notion/notion-client.ts`
-			- [ ] `NotionClientImpl.pages.updateProperties` calls `this.client.pages.update({ page_id, properties })` as a passthrough
-			- [ ] Rejection from the SDK propagates to the caller
-			- [ ] Unit tests added to `tests/adapters/notion/notion-client.test.ts`
+			- [x] Method added to `NotionClient` interface in `src/adapters/notion/notion-client.ts`
+			- [x] `NotionClientImpl.pages.updateProperties` calls `this.client.pages.update({ page_id, properties })` as a passthrough
+			- [x] Rejection from the SDK propagates to the caller
+			- [x] Unit tests added to `tests/adapters/notion/notion-client.test.ts`
 		- **Dependencies**: None
-	- [ ] **Task: Add ****`databases.query()`**** to ****`NotionClient`**
+	- [x] **Task: Add ****`databases.query()`**** to ****`NotionClient`**
 		- **Description**: Add a `databases` namespace to `NotionClient` with `query(database_id: string, filter?: unknown): Promise<{ results: Array<{ id: string; properties: Record<string, unknown> }> }>`. Implement in `NotionClientImpl` via the Notion SDK's `databases.query()` method. Calling without a filter must not error.
 		- **Acceptance criteria**:
-			- [ ] Method added to `NotionClient` interface
-			- [ ] `NotionClientImpl.databases.query` calls the SDK and returns the `results` array shaped as specified
-			- [ ] Calling without a filter does not error
-			- [ ] Rejection from the SDK propagates to the caller
-			- [ ] Unit tests added to `tests/adapters/notion/notion-client.test.ts`
+			- [x] Method added to `NotionClient` interface
+			- [x] `NotionClientImpl.databases.query` calls the SDK and returns the `results` array shaped as specified
+			- [x] Calling without a filter does not error
+			- [x] Rejection from the SDK propagates to the caller
+			- [x] Unit tests added to `tests/adapters/notion/notion-client.test.ts`
 		- **Dependencies**: None
 - [x] **Story: SpecPublisher interface extension**
 	- [x] **Task: Export ****`SpecEntryStatus`**** type and add optional ****`updateStatus?()`**** to ****`SpecPublisher`**
