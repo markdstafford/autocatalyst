@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { AgentSDKImplementer } from '../../../src/adapters/agent/implementer.js';
+import { AgentSDKImplementer, parseRelayMessage } from '../../../src/adapters/agent/implementer.js';
 
 const nullDest = { write: () => {} };
 
@@ -289,5 +289,49 @@ describe('AgentSDKImplementer — logging', () => {
 
     const failed = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'impl.agent_failed');
     expect(failed).toBeDefined();
+  });
+});
+
+describe('parseRelayMessage', () => {
+  it('single relay line: returns text after [Relay], trimmed', () => {
+    const content = [{ type: 'text' as const, text: '[Relay] Planning started' }];
+    expect(parseRelayMessage(content as never)).toBe('Planning started');
+  });
+
+  it('first of multiple relay lines: returns only the first', () => {
+    const content = [{ type: 'text' as const, text: '[Relay] First\n[Relay] Second' }];
+    expect(parseRelayMessage(content as never)).toBe('First');
+  });
+
+  it('relay line among non-relay lines: returns correct extraction', () => {
+    const content = [{ type: 'text' as const, text: 'line one\n[Relay] Found it\nline three' }];
+    expect(parseRelayMessage(content as never)).toBe('Found it');
+  });
+
+  it('no relay line: returns null', () => {
+    const content = [{ type: 'text' as const, text: 'just regular text' }];
+    expect(parseRelayMessage(content as never)).toBeNull();
+  });
+
+  it('tool-use block only: returns null', () => {
+    const content = [{ type: 'tool_use' as const, id: 'x', name: 'bash', input: {} }];
+    expect(parseRelayMessage(content as never)).toBeNull();
+  });
+
+  it('empty content array: returns null', () => {
+    expect(parseRelayMessage([])).toBeNull();
+  });
+
+  it('case-sensitive prefix: [relay] lowercase and [Relay]: with colon do not match', () => {
+    const content = [{ type: 'text' as const, text: '[relay] lowercase\n[Relay]: with colon' }];
+    expect(parseRelayMessage(content as never)).toBeNull();
+  });
+
+  it('multi-block content: relay line in second block is found', () => {
+    const content = [
+      { type: 'text' as const, text: 'no relay here' },
+      { type: 'text' as const, text: '[Relay] In second block' },
+    ];
+    expect(parseRelayMessage(content as never)).toBe('In second block');
   });
 });

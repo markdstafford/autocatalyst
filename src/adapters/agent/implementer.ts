@@ -4,6 +4,7 @@ import { readFile as _readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
+import type { BetaMessage } from '@anthropic-ai/sdk/resources/beta/messages';
 
 type QueryFn = typeof _query;
 
@@ -118,6 +119,34 @@ export class AgentSDKImplementer implements Implementer {
   }
 }
 
+const CHECKPOINT_INSTRUCTIONS = `At any point during your work, if you have something worth reporting to the human watching —
+a phase transition, your current focus, something interesting you found, or a meaningful
+milestone — emit it on its own line using this exact format:
+
+[Relay] <your message here>
+
+Examples of good checkpoints:
+- [Relay] Planning started — analyzing spec and requirements
+- [Relay] Planning complete — 7 tasks identified
+- [Relay] Task 3 of 7: Implementing the parseRelayMessage helper
+- [Relay] Found a potential issue with the existing auth middleware — investigating
+- [Relay] Starting final code review
+
+The goal is to keep a human informed at intervals they'd find interesting. You decide what's
+worth reporting and when.`;
+
+function parseRelayMessage(content: BetaMessage['content']): string | null {
+  for (const block of content) {
+    if (block.type === 'text') {
+      for (const line of block.text.split('\n')) {
+        const match = line.match(/^\[Relay\]\s+(.+)$/);
+        if (match) return match[1].trim();
+      }
+    }
+  }
+  return null;
+}
+
 function buildPrompt(spec_path: string, result_file_path: string, additionalContext?: string): string {
   const lines: string[] = [];
 
@@ -168,5 +197,11 @@ function buildPrompt(spec_path: string, result_file_path: string, additionalCont
   lines.push('and where a wrong choice would require significant rework.');
   lines.push('Do not signal completion until the result file has been written.');
 
+  lines.push('');
+  lines.push(CHECKPOINT_INSTRUCTIONS);
+
   return lines.join('\n');
 }
+
+// Exported for testing only
+export { parseRelayMessage };

@@ -476,7 +476,7 @@ If the agent emits `[Relay]` outside a checkpoint context (e.g., inside a code b
 			- [ ] `tsc --noEmit` passes
 			- [ ] All existing tests pass
 		- **Dependencies**: None
-	- [ ] **Task: Add ****`parseRelayMessage`**** helper and augment implementation prompts**
+	- [x] **Task: Add ****`parseRelayMessage`**** helper and augment implementation prompts**
 		- **Description**: Add module-local helper `parseRelayMessage(content: BetaMessage['content']): string | null` to `src/adapters/agent/implementer.ts`. The function iterates each text block's lines, matches the first line of the form `/^\[Relay\]\s+(.+)$/`, and returns the capture group trimmed, or `null` if none found. Update `buildPrompt` and `buildFeedbackPrompt` to append the goal-oriented checkpoint instruction block.
 		- **Acceptance criteria**:
 			- [ ] `parseRelayMessage` handles all cases in the §6 unit test matrix
