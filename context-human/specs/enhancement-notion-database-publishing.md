@@ -716,15 +716,15 @@ These tests live in the `src/index.ts` config block or a dedicated unit for the 
 			- [ ] Rejection from the SDK propagates to the caller
 			- [ ] Unit tests added to `tests/adapters/notion/notion-client.test.ts`
 		- **Dependencies**: None
-- [ ] **Story: SpecPublisher interface extension**
-	- [ ] **Task: Export ****`SpecEntryStatus`**** type and add optional ****`updateStatus?()`**** to ****`SpecPublisher`**
+- [x] **Story: SpecPublisher interface extension**
+	- [x] **Task: Export ****`SpecEntryStatus`**** type and add optional ****`updateStatus?()`**** to ****`SpecPublisher`**
 		- **Description**: In `src/adapters/slack/canvas-publisher.ts`, export `SpecEntryStatus` as `'Speccing' | 'Waiting on feedback' | 'Approved' | 'Complete' | 'Superseded'`. Add optional `updateStatus?(publisher_ref: string, status: SpecEntryStatus): Promise<void>` to the `SpecPublisher` interface. `SlackCanvasPublisher` must not declare this method — all call-sites use optional chaining.
 		- **Acceptance criteria**:
-			- [ ] `SpecEntryStatus` type exported from `canvas-publisher.ts`
-			- [ ] `SpecPublisher` interface has optional `updateStatus?()` with the correct signature
-			- [ ] `SlackCanvasPublisher` does not declare `updateStatus` (method absent on instances)
-			- [ ] TypeScript compiles with no errors
-			- [ ] Existing `canvas-publisher.test.ts` tests pass unchanged; no new tests required unless existing assertions break
+			- [x] `SpecEntryStatus` type exported from `canvas-publisher.ts`
+			- [x] `SpecPublisher` interface has optional `updateStatus?()` with the correct signature
+			- [x] `SlackCanvasPublisher` does not declare `updateStatus` (method absent on instances)
+			- [x] TypeScript compiles with no errors
+			- [x] Existing `canvas-publisher.test.ts` tests pass unchanged; no new tests required unless existing assertions break
 		- **Dependencies**: None
 - [ ] **Story: NotionPublisher database publishing**
 	- [ ] **Task: Implement ****`parseFrontmatter()`**** private helper**
