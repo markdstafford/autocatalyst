@@ -509,7 +509,7 @@ If the agent emits `[Relay]` outside a checkpoint context (e.g., inside a code b
 			- [ ] Both `buildSpecPrompt` and `buildSpecRevisionPrompt` output includes the checkpoint instruction block
 			- [ ] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `onProgress` parameter to `Speccer` interface
-	- [ ] **Task: Implement relay detection in ****`AgentSDKSpeccer`**** drain loop**
+	- [x] **Task: Implement relay detection in ****`AgentSDKSpeccer`**** drain loop**
 		- **Description**: Apply the same relay detection and logging pattern to both `generateSpec()` and `reviseSpec()` drain loops using `phase: 'spec_generation'`. Do not await `onProgress`.
 		- **Acceptance criteria**:
 			- [ ] `onProgress` called correctly in both `generateSpec` and `reviseSpec` when a `[Relay]` line is present
@@ -549,7 +549,7 @@ If the agent emits `[Relay]` outside a checkpoint context (e.g., inside a code b
 			- [ ] `progress_update` (info) and `progress_failed` (warn) log events asserted via structured JSON capture (logDestination stream)
 			- [ ] All existing implementer tests pass
 		- **Dependencies**: Task: Implement relay detection in `AgentSDKImplementer.implement()` drain loop
-	- [ ] **Task: Add ****`AgentSDKSpeccer`**** drain loop tests**
+	- [x] **Task: Add ****`AgentSDKSpeccer`**** drain loop tests**
 		- **Description**: Mirror of the implementer drain loop tests for `tests/adapters/agent/speccer.test.ts`. Both `generateSpec()` and `reviseSpec()` must be covered independently, each with all 8 cases from §6 substituting `phase: 'spec_generation'`.
 		- **Acceptance criteria**:
 			- [ ] All 8 cases covered independently for both `generateSpec()` and `reviseSpec()`

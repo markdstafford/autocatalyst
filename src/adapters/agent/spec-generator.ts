@@ -1,5 +1,6 @@
 // src/adapters/agent/spec-generator.ts
 import { query as _query } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { BetaMessage } from '@anthropic-ai/sdk/resources/beta/messages';
 import { readFile as _readFile } from 'node:fs/promises';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -99,7 +100,7 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
     this.logger.debug({ event: 'spec.agent_invoked', request_id: request.id }, 'Invoking Agent SDK for spec creation');
 
     try {
-      for await (const _message of this.queryFn({
+      for await (const message of this.queryFn({
         prompt,
         options: {
           cwd: workspace_path,
@@ -110,7 +111,25 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
           systemPrompt: { type: 'preset', preset: 'claude_code' },
         },
       })) {
-        // drain iterator — agent writes spec and result file on completion
+        if (onProgress && (message as SDKMessage).type === 'assistant') {
+          const assistantMsg = message as Extract<SDKMessage, { type: 'assistant' }>;
+          const relayMessage = parseRelayMessage(assistantMsg.message.content);
+          if (relayMessage) {
+            onProgress(relayMessage)
+              .then(() => {
+                this.logger.info(
+                  { event: 'progress_update', phase: 'spec_generation', message: relayMessage },
+                  'Progress update posted',
+                );
+              })
+              .catch(err => {
+                this.logger.warn(
+                  { event: 'progress_failed', phase: 'spec_generation', error: String(err) },
+                  'Failed to post progress update',
+                );
+              });
+          }
+        }
       }
     } catch (err) {
       this.logger.error(
@@ -172,7 +191,7 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
     this.logger.debug({ event: 'spec.agent_invoked', request_id: feedback.request_id }, 'Invoking Agent SDK for spec revision');
 
     try {
-      for await (const _message of this.queryFn({
+      for await (const message of this.queryFn({
         prompt,
         options: {
           cwd: workspace_path,
@@ -183,7 +202,25 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
           systemPrompt: { type: 'preset', preset: 'claude_code' },
         },
       })) {
-        // drain iterator — agent writes revised spec and result file on completion
+        if (onProgress && (message as SDKMessage).type === 'assistant') {
+          const assistantMsg = message as Extract<SDKMessage, { type: 'assistant' }>;
+          const relayMessage = parseRelayMessage(assistantMsg.message.content);
+          if (relayMessage) {
+            onProgress(relayMessage)
+              .then(() => {
+                this.logger.info(
+                  { event: 'progress_update', phase: 'spec_generation', message: relayMessage },
+                  'Progress update posted',
+                );
+              })
+              .catch(err => {
+                this.logger.warn(
+                  { event: 'progress_failed', phase: 'spec_generation', error: String(err) },
+                  'Failed to post progress update',
+                );
+              });
+          }
+        }
       }
     } catch (err) {
       this.logger.error(
