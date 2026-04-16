@@ -1,5 +1,7 @@
 // src/adapters/agent/spec-generator.ts
 import { query as _query } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { BetaMessage } from '@anthropic-ai/sdk/resources/beta/messages';
 import { readFile as _readFile } from 'node:fs/promises';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -26,13 +28,18 @@ export interface ReviseResult {
 }
 
 export interface SpecGenerator {
-  create(request: Request, workspace_path: string): Promise<string>;
+  create(
+    request: Request,
+    workspace_path: string,
+    onProgress?: (message: string) => Promise<void>,
+  ): Promise<string>;
   revise(
     feedback: ThreadMessage,
     notion_comments: NotionComment[],
     spec_path: string,
     workspace_path: string,
     current_page_markdown?: string,
+    onProgress?: (message: string) => Promise<void>,
   ): Promise<ReviseResult>;
 }
 
@@ -85,7 +92,7 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
     this.readFileFn = options?.readFile ?? ((path, enc) => _readFile(path, enc));
   }
 
-  async create(request: Request, workspace_path: string): Promise<string> {
+  async create(request: Request, workspace_path: string, onProgress?: (message: string) => Promise<void>): Promise<string> {
     const createResultPath = join(workspace_path, '.autocatalyst', 'spec-create-result.json');
     const specDir = join(workspace_path, 'context-human', 'specs');
     const prompt = buildCreatePrompt(request, specDir, createResultPath);
@@ -93,7 +100,7 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
     this.logger.debug({ event: 'spec.agent_invoked', request_id: request.id }, 'Invoking Agent SDK for spec creation');
 
     try {
-      for await (const _message of this.queryFn({
+      for await (const message of this.queryFn({
         prompt,
         options: {
           cwd: workspace_path,
@@ -104,7 +111,25 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
           systemPrompt: { type: 'preset', preset: 'claude_code' },
         },
       })) {
-        // drain iterator — agent writes spec and result file on completion
+        if (onProgress && (message as SDKMessage).type === 'assistant') {
+          const assistantMsg = message as Extract<SDKMessage, { type: 'assistant' }>;
+          const relayMessage = parseRelayMessage(assistantMsg.message.content);
+          if (relayMessage) {
+            onProgress(relayMessage)
+              .then(() => {
+                this.logger.info(
+                  { event: 'progress_update', phase: 'spec_generation', message: relayMessage },
+                  'Progress update posted',
+                );
+              })
+              .catch(err => {
+                this.logger.warn(
+                  { event: 'progress_failed', phase: 'spec_generation', error: String(err) },
+                  'Failed to post progress update',
+                );
+              });
+          }
+        }
       }
     } catch (err) {
       this.logger.error(
@@ -150,6 +175,7 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
     spec_path: string,
     workspace_path: string,
     current_page_markdown?: string,
+    onProgress?: (message: string) => Promise<void>,
   ): Promise<ReviseResult> {
     const reviseResultPath = join(workspace_path, '.autocatalyst', 'spec-revise-result.json');
     const originalSpans = current_page_markdown ? extractCommentSpans(current_page_markdown) : [];
@@ -165,7 +191,7 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
     this.logger.debug({ event: 'spec.agent_invoked', request_id: feedback.request_id }, 'Invoking Agent SDK for spec revision');
 
     try {
-      for await (const _message of this.queryFn({
+      for await (const message of this.queryFn({
         prompt,
         options: {
           cwd: workspace_path,
@@ -176,7 +202,25 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
           systemPrompt: { type: 'preset', preset: 'claude_code' },
         },
       })) {
-        // drain iterator — agent writes revised spec and result file on completion
+        if (onProgress && (message as SDKMessage).type === 'assistant') {
+          const assistantMsg = message as Extract<SDKMessage, { type: 'assistant' }>;
+          const relayMessage = parseRelayMessage(assistantMsg.message.content);
+          if (relayMessage) {
+            onProgress(relayMessage)
+              .then(() => {
+                this.logger.info(
+                  { event: 'progress_update', phase: 'spec_generation', message: relayMessage },
+                  'Progress update posted',
+                );
+              })
+              .catch(err => {
+                this.logger.warn(
+                  { event: 'progress_failed', phase: 'spec_generation', error: String(err) },
+                  'Failed to post progress update',
+                );
+              });
+          }
+        }
       }
     } catch (err) {
       this.logger.error(
@@ -220,6 +264,33 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
   }
 }
 
+function parseRelayMessage(content: BetaMessage['content']): string | null {
+  for (const block of content) {
+    if (block.type === 'text') {
+      for (const line of block.text.split('\n')) {
+        const match = line.match(/^\[Relay\]\s+(.+)$/);
+        if (match) return match[1].trim();
+      }
+    }
+  }
+  return null;
+}
+
+const CHECKPOINT_INSTRUCTIONS = `At any point during your work, if you have something worth reporting to the human watching —
+a phase transition, your current focus, something interesting you found, or a meaningful
+milestone — emit it on its own line using this exact format:
+
+[Relay] <your message here>
+
+Examples of good checkpoints:
+- [Relay] Analyzing requirements and reviewing existing specs
+- [Relay] Processing feedback comment 3 of 8 — authentication design section
+- [Relay] Drafting technical design section
+- [Relay] Spec draft complete — reviewing for consistency
+
+The goal is to keep a human informed at intervals they'd find interesting. You decide what's
+worth reporting and when.`;
+
 function buildCreatePrompt(request: Request, specDir: string, createResultPath: string): string {
   return [
     `Use the /mm:planning skill to create a complete product spec for the following request.`,
@@ -238,6 +309,8 @@ function buildCreatePrompt(request: Request, specDir: string, createResultPath: 
     `  Content must be: { "spec_path": "<absolute path to the spec file you wrote>" }`,
     ``,
     `Do not signal completion until both files have been written.`,
+    ``,
+    CHECKPOINT_INSTRUCTIONS,
   ].join('\n');
 }
 
@@ -307,5 +380,10 @@ function buildRevisePrompt(
     `<<<`,
     currentSpec,
     `>>>`,
+    ``,
+    CHECKPOINT_INSTRUCTIONS,
   ].filter(line => line !== undefined).join('\n');
 }
+
+// Exported for testing only
+export { parseRelayMessage };

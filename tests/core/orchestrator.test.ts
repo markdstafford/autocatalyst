@@ -241,7 +241,7 @@ describe('Orchestrator — new_request happy path', () => {
     await orch.stop();
 
     expect(wm.create).toHaveBeenCalledWith('request-001', 'https://github.com/org/repo');
-    expect(sg.create).toHaveBeenCalledWith(request, '/ws/request-001');
+    expect(sg.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function));
     expect(cp.create).toHaveBeenCalledWith('C123', '100.0', '/ws/request-001/context-human/specs/feature-test.md');
   });
 
@@ -370,6 +370,7 @@ describe('Orchestrator — feedback happy path', () => {
       '/ws/request-001/context-human/specs/feature-test.md',
       '/ws/request-001',
       undefined,
+      expect.any(Function),
     );
     expect(cp.update).toHaveBeenCalledWith('CANVAS001', '/ws/request-001/context-human/specs/feature-test.md', undefined);
   });
@@ -602,6 +603,7 @@ describe('Orchestrator — feedback with feedbackSource', () => {
       expect.any(String),
       expect.any(String),
       undefined,
+      expect.any(Function),
     );
     expect(fs.reply).toHaveBeenCalledTimes(2);
     expect(fs.reply).toHaveBeenCalledWith('CANVAS001', 'disc-1', 'Updated per Phoebe');
@@ -630,6 +632,7 @@ describe('Orchestrator — feedback with feedbackSource', () => {
       expect.any(String),
       expect.any(String),
       undefined,
+      expect.any(Function),
     );
     expect(fs.reply).not.toHaveBeenCalled();
   });
@@ -655,6 +658,7 @@ describe('Orchestrator — feedback with feedbackSource', () => {
       expect.any(String),
       expect.any(String),
       undefined,
+      expect.any(Function),
     );
   });
 
@@ -1052,6 +1056,8 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
     expect(implementFn).toHaveBeenCalledWith(
       '/ws/request-001/context-human/specs/feature-test.md',
       '/ws/request-001',
+      undefined,
+      expect.any(Function),
     );
   });
 
@@ -1128,6 +1134,91 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
     const messages = (postMessage as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[2] as string);
     expect(messages.some(m => m.includes('Which approach do you prefer?'))).toBe(true);
     expect(implFeedbackPage.create).not.toHaveBeenCalled();
+  });
+});
+
+describe('Orchestrator — _runImplementation onProgress wiring', () => {
+  it('implement() receives an onProgress function', async () => {
+    const adapter = makeMockAdapter();
+    let capturedOnProgress: ((msg: string) => Promise<void>) | undefined;
+    const implementFn = vi.fn().mockImplementation(async (_sp: string, _wp: string, _ctx: string | undefined, onProg?: (m: string) => Promise<void>) => {
+      capturedOnProgress = onProg;
+      return { status: 'complete', summary: 'Done', testing_instructions: 'Test' };
+    });
+    const impl = { implement: implementFn };
+    const orch = makeApprovalOrch({ adapter, implementer: impl as Implementer });
+    await orch.start();
+    await approveSpec(orch, adapter);
+    await orch.stop();
+
+    expect(capturedOnProgress).toBeTypeOf('function');
+  });
+
+  it('onProgress callback invokes postMessage with channel_id, thread_ts, and message', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    let capturedOnProgress: ((msg: string) => Promise<void>) | undefined;
+    const implementFn = vi.fn().mockImplementation(async (_sp: string, _wp: string, _ctx: string | undefined, onProg?: (m: string) => Promise<void>) => {
+      capturedOnProgress = onProg;
+      return { status: 'complete', summary: 'Done', testing_instructions: 'Test' };
+    });
+    const impl = { implement: implementFn };
+    const orch = makeApprovalOrch({ adapter, implementer: impl as Implementer, postMessage });
+    await orch.start();
+    await approveSpec(orch, adapter);
+    await orch.stop();
+
+    // Invoke the captured callback
+    await capturedOnProgress!('Task 3 of 7: Implementing the helper');
+
+    const progressCalls = (postMessage as ReturnType<typeof vi.fn>).mock.calls.filter((c: unknown[]) => c[2] === 'Task 3 of 7: Implementing the helper');
+    expect(progressCalls).toHaveLength(1);
+    expect(progressCalls[0][0]).toBe('C123');
+    expect(progressCalls[0][1]).toBe('100.0');
+  });
+
+  it('postMessage rejection inside onProgress does not fail the run, progress_failed logged at warn', async () => {
+    const adapter = makeMockAdapter();
+    const { records, destination } = makeLogCapture();
+    let capturedOnProgress: ((msg: string) => Promise<void>) | undefined;
+    const implementFn = vi.fn().mockImplementation(async (_sp: string, _wp: string, _ctx: string | undefined, onProg?: (m: string) => Promise<void>) => {
+      capturedOnProgress = onProg;
+      return { status: 'complete', summary: 'Done', testing_instructions: 'Test' };
+    });
+    const impl = { implement: implementFn };
+    const postMessage = vi.fn().mockImplementation((_ch: string, _ts: string, msg: string) => {
+      if (msg === 'progress relay msg') return Promise.reject(new Error('slack timeout'));
+      return Promise.resolve();
+    });
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: makeIntentClassifier('approval'),
+        specCommitter: makeSpecCommitter(),
+        implementer: impl as Implementer,
+        implFeedbackPage: makeImplFeedbackPage(),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+        repo_url: 'https://github.com/org/repo',
+      } as never,
+      { logDestination: destination },
+    );
+    await orch.start();
+    await approveSpec(orch, adapter);
+    await orch.stop();
+
+    // Invoke the captured callback with a message that will make postMessage reject
+    if (capturedOnProgress) {
+      await capturedOnProgress('progress relay msg').catch(() => {});
+      await new Promise(r => setTimeout(r, 0));
+    }
+
+    const failLog = records.find(r => r['event'] === 'progress_failed' && r['phase'] === 'implementation');
+    expect(failLog).toBeDefined();
+    expect(String(failLog!['error'])).toContain('slack timeout');
   });
 });
 
@@ -3284,5 +3375,252 @@ describe('observability — log field correctness', () => {
     expect(typeof log!['error']).toBe('string');
     expect(log!['error']).toContain('oops');
     await orch.stop();
+  });
+});
+
+describe('Orchestrator — _startSpecPipeline onProgress wiring', () => {
+  it('specGenerator.create() receives an onProgress function', async () => {
+    const adapter = makeMockAdapter();
+    let capturedOnProgress: ((msg: string) => Promise<void>) | undefined;
+    const createFn = vi.fn().mockImplementation(async (_req: unknown, _wp: string, onProg?: (m: string) => Promise<void>) => {
+      capturedOnProgress = onProg;
+      return '/ws/request-001/context-human/specs/feature-test.md';
+    });
+    const sg = makeSpecGenerator({ create: createFn });
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: sg,
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: makeIntentClassifier('idea'),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        repo_url: 'r',
+      } as never,
+      { logDestination: nullDest },
+    );
+    await orch.start();
+    const event = makeEventFixture('new_request');
+    adapter._emit(event);
+    await vi.waitUntil(() => {
+      const runs = (orch as unknown as { runs: Map<string, unknown> }).runs;
+      const run = [...runs.values()][0] as { stage: string } | undefined;
+      return run?.stage === 'reviewing_spec';
+    }, { timeout: 3000 });
+    await orch.stop();
+
+    expect(capturedOnProgress).toBeTypeOf('function');
+  });
+
+  it('create() onProgress invokes postMessage with correct channel_id, thread_ts, and message', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    let capturedOnProgress: ((msg: string) => Promise<void>) | undefined;
+    const createFn = vi.fn().mockImplementation(async (_req: unknown, _wp: string, onProg?: (m: string) => Promise<void>) => {
+      capturedOnProgress = onProg;
+      return '/ws/request-001/context-human/specs/feature-test.md';
+    });
+    const sg = makeSpecGenerator({ create: createFn });
+    const event = makeEventFixture('new_request');
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: sg,
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: makeIntentClassifier('idea'),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+        repo_url: 'r',
+      } as never,
+      { logDestination: nullDest },
+    );
+    await orch.start();
+    adapter._emit(event);
+    await vi.waitUntil(() => {
+      const runs = (orch as unknown as { runs: Map<string, unknown> }).runs;
+      const run = [...runs.values()][0] as { stage: string } | undefined;
+      return run?.stage === 'reviewing_spec';
+    }, { timeout: 3000 });
+    await orch.stop();
+
+    await capturedOnProgress!('Analyzing requirements');
+
+    const progressCalls = (postMessage as ReturnType<typeof vi.fn>).mock.calls.filter((c: unknown[]) => c[2] === 'Analyzing requirements');
+    expect(progressCalls).toHaveLength(1);
+    expect(progressCalls[0][0]).toBe(event.payload.channel_id);
+    expect(progressCalls[0][1]).toBe(event.payload.thread_ts);
+  });
+
+  it('postMessage rejection in create() onProgress does not fail the run, progress_failed logged at warn', async () => {
+    const adapter = makeMockAdapter();
+    const { records, destination } = makeLogCapture();
+    let capturedOnProgress: ((msg: string) => Promise<void>) | undefined;
+    const createFn = vi.fn().mockImplementation(async (_req: unknown, _wp: string, onProg?: (m: string) => Promise<void>) => {
+      capturedOnProgress = onProg;
+      return '/ws/request-001/context-human/specs/feature-test.md';
+    });
+    const sg = makeSpecGenerator({ create: createFn });
+    const postMessage = vi.fn().mockImplementation((_ch: string, _ts: string, msg: string) => {
+      if (msg === 'spec progress relay') return Promise.reject(new Error('slack unavailable'));
+      return Promise.resolve();
+    });
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: sg,
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: makeIntentClassifier('idea'),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+        repo_url: 'r',
+      } as never,
+      { logDestination: destination },
+    );
+    await orch.start();
+    adapter._emit(makeEventFixture('new_request'));
+    await vi.waitUntil(() => {
+      const runs = (orch as unknown as { runs: Map<string, unknown> }).runs;
+      const run = [...runs.values()][0] as { stage: string } | undefined;
+      return run?.stage === 'reviewing_spec';
+    }, { timeout: 3000 });
+    await orch.stop();
+
+    if (capturedOnProgress) {
+      await capturedOnProgress('spec progress relay').catch(() => {});
+      await new Promise(r => setTimeout(r, 0));
+    }
+
+    const failLog = records.find(r => r['event'] === 'progress_failed' && r['phase'] === 'spec_generation');
+    expect(failLog).toBeDefined();
+    expect(String(failLog!['error'])).toContain('slack unavailable');
+  });
+});
+
+describe('Orchestrator — _handleSpecFeedback onProgress wiring', () => {
+  it('specGenerator.revise() receives an onProgress function', async () => {
+    const adapter = makeMockAdapter();
+    let capturedOnProgress: ((msg: string) => Promise<void>) | undefined;
+    const reviseFn = vi.fn().mockImplementation(async (...args: unknown[]) => {
+      capturedOnProgress = args[5] as ((m: string) => Promise<void>) | undefined;
+      return { comment_responses: [] };
+    });
+    const sg = makeSpecGenerator({ revise: reviseFn });
+    const ic = makeIntentClassifier('feedback');
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: sg,
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: ic,
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        repo_url: 'r',
+      } as never,
+      { logDestination: nullDest },
+    );
+    await orch.start();
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    runs.set('request-001', makeRun({ stage: 'reviewing_spec' }));
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await vi.waitUntil(
+      () => runs.get('request-001')?.stage === 'reviewing_spec' && reviseFn.mock.calls.length > 0,
+      { timeout: 3000 },
+    );
+    await orch.stop();
+
+    expect(capturedOnProgress).toBeTypeOf('function');
+  });
+
+  it('revise() onProgress invokes postMessage with correct channel_id, thread_ts, and message', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    let capturedOnProgress: ((msg: string) => Promise<void>) | undefined;
+    const reviseFn = vi.fn().mockImplementation(async (...args: unknown[]) => {
+      capturedOnProgress = args[5] as ((m: string) => Promise<void>) | undefined;
+      return { comment_responses: [] };
+    });
+    const sg = makeSpecGenerator({ revise: reviseFn });
+    const ic = makeIntentClassifier('feedback');
+    const feedback = makeFeedback();
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: sg,
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: ic,
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+        repo_url: 'r',
+      } as never,
+      { logDestination: nullDest },
+    );
+    await orch.start();
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    runs.set('request-001', makeRun({ stage: 'reviewing_spec' }));
+    adapter._emit({ type: 'thread_message', payload: feedback });
+    await vi.waitUntil(
+      () => runs.get('request-001')?.stage === 'reviewing_spec' && reviseFn.mock.calls.length > 0,
+      { timeout: 3000 },
+    );
+    await orch.stop();
+
+    await capturedOnProgress!('Drafting technical section');
+
+    const progressCalls = (postMessage as ReturnType<typeof vi.fn>).mock.calls.filter((c: unknown[]) => c[2] === 'Drafting technical section');
+    expect(progressCalls).toHaveLength(1);
+    expect(progressCalls[0][0]).toBe(feedback.channel_id);
+    expect(progressCalls[0][1]).toBe(feedback.thread_ts);
+  });
+
+  it('postMessage rejection in revise() onProgress does not fail the run, progress_failed logged at warn', async () => {
+    const adapter = makeMockAdapter();
+    const { records, destination } = makeLogCapture();
+    let capturedOnProgress: ((msg: string) => Promise<void>) | undefined;
+    const reviseFn = vi.fn().mockImplementation(async (...args: unknown[]) => {
+      capturedOnProgress = args[5] as ((m: string) => Promise<void>) | undefined;
+      return { comment_responses: [] };
+    });
+    const sg = makeSpecGenerator({ revise: reviseFn });
+    const ic = makeIntentClassifier('feedback');
+    const postMessage = vi.fn().mockImplementation((_ch: string, _ts: string, msg: string) => {
+      if (msg === 'revise progress relay') return Promise.reject(new Error('connection reset'));
+      return Promise.resolve();
+    });
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: sg,
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: ic,
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+        repo_url: 'r',
+      } as never,
+      { logDestination: destination },
+    );
+    await orch.start();
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    runs.set('request-001', makeRun({ stage: 'reviewing_spec' }));
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await vi.waitUntil(
+      () => runs.get('request-001')?.stage === 'reviewing_spec' && reviseFn.mock.calls.length > 0,
+      { timeout: 3000 },
+    );
+    await orch.stop();
+
+    if (capturedOnProgress) {
+      await capturedOnProgress('revise progress relay').catch(() => {});
+      await new Promise(r => setTimeout(r, 0));
+    }
+
+    const failLog = records.find(r => r['event'] === 'progress_failed' && r['phase'] === 'spec_generation');
+    expect(failLog).toBeDefined();
+    expect(String(failLog!['error'])).toContain('connection reset');
   });
 });

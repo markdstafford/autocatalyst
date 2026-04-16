@@ -1,9 +1,11 @@
 // src/adapters/agent/implementer.ts
 import { query as _query } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { readFile as _readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
+import type { BetaMessage } from '@anthropic-ai/sdk/resources/beta/messages';
 
 type QueryFn = typeof _query;
 
@@ -22,6 +24,7 @@ export interface Implementer {
     spec_path: string,
     workspace_path: string,
     additional_context?: string,
+    onProgress?: (message: string) => Promise<void>,
   ): Promise<ImplementationResult>;
 }
 
@@ -69,7 +72,7 @@ export class AgentSDKImplementer implements Implementer {
     this.readFileFn = options?.readFile ?? ((path, enc) => _readFile(path, enc));
   }
 
-  async implement(spec_path: string, workspace_path: string, additional_context?: string): Promise<ImplementationResult> {
+  async implement(spec_path: string, workspace_path: string, additional_context?: string, onProgress?: (message: string) => Promise<void>): Promise<ImplementationResult> {
     const resultFilePath = join(workspace_path, '.autocatalyst', 'impl-result.json');
     const hasAdditionalContext = Boolean(additional_context);
     const prompt = buildPrompt(spec_path, resultFilePath, additional_context);
@@ -80,7 +83,7 @@ export class AgentSDKImplementer implements Implementer {
     );
 
     try {
-      for await (const _message of this.queryFn({
+      for await (const message of this.queryFn({
         prompt,
         options: {
           cwd: workspace_path,
@@ -91,7 +94,25 @@ export class AgentSDKImplementer implements Implementer {
           systemPrompt: { type: 'preset', preset: 'claude_code' },
         },
       })) {
-        // drain iterator — agent writes result to file on completion
+        if (onProgress && (message as SDKMessage).type === 'assistant') {
+          const assistantMsg = message as Extract<SDKMessage, { type: 'assistant' }>;
+          const relayMessage = parseRelayMessage(assistantMsg.message.content);
+          if (relayMessage) {
+            onProgress(relayMessage)
+              .then(() => {
+                this.logger.info(
+                  { event: 'progress_update', phase: 'implementation', message: relayMessage },
+                  'Progress update posted',
+                );
+              })
+              .catch(err => {
+                this.logger.warn(
+                  { event: 'progress_failed', phase: 'implementation', error: String(err) },
+                  'Failed to post progress update',
+                );
+              });
+          }
+        }
       }
     } catch (err) {
       this.logger.error(
@@ -115,6 +136,34 @@ export class AgentSDKImplementer implements Implementer {
     this.logger.debug({ event: 'impl.agent_completed', status: result.status }, 'Agent SDK implementation completed');
     return result;
   }
+}
+
+const CHECKPOINT_INSTRUCTIONS = `At any point during your work, if you have something worth reporting to the human watching —
+a phase transition, your current focus, something interesting you found, or a meaningful
+milestone — emit it on its own line using this exact format:
+
+[Relay] <your message here>
+
+Examples of good checkpoints:
+- [Relay] Planning started — analyzing spec and requirements
+- [Relay] Planning complete — 7 tasks identified
+- [Relay] Task 3 of 7: Implementing the parseRelayMessage helper
+- [Relay] Found a potential issue with the existing auth middleware — investigating
+- [Relay] Starting final code review
+
+The goal is to keep a human informed at intervals they'd find interesting. You decide what's
+worth reporting and when.`;
+
+function parseRelayMessage(content: BetaMessage['content']): string | null {
+  for (const block of content) {
+    if (block.type === 'text') {
+      for (const line of block.text.split('\n')) {
+        const match = line.match(/^\[Relay\]\s+(.+)$/);
+        if (match) return match[1].trim();
+      }
+    }
+  }
+  return null;
 }
 
 function buildPrompt(spec_path: string, result_file_path: string, additionalContext?: string): string {
@@ -167,5 +216,11 @@ function buildPrompt(spec_path: string, result_file_path: string, additionalCont
   lines.push('and where a wrong choice would require significant rework.');
   lines.push('Do not signal completion until the result file has been written.');
 
+  lines.push('');
+  lines.push(CHECKPOINT_INSTRUCTIONS);
+
   return lines.join('\n');
 }
+
+// Exported for testing only
+export { parseRelayMessage };

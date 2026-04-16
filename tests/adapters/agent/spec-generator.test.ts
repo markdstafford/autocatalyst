@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { AgentSDKSpecGenerator } from '../../../src/adapters/agent/spec-generator.js';
+import { AgentSDKSpecGenerator, parseRelayMessage } from '../../../src/adapters/agent/spec-generator.js';
 import type { Request, ThreadMessage } from '../../../src/types/events.js';
 
 const nullDest = { write: () => {} };
@@ -55,6 +55,16 @@ function makeThrowingQueryFn(message: string) {
 // Injects the JSON result file content returned after agent completes.
 function makeReadFileFn(result: object) {
   return vi.fn().mockResolvedValue(JSON.stringify(result));
+}
+
+function makeAssistantMsg(text: string): object {
+  return { type: 'assistant', message: { content: [{ type: 'text', text }] } };
+}
+
+function makeQueryFnWithMessages(messages: unknown[]) {
+  return vi.fn().mockReturnValue((async function* () {
+    for (const msg of messages) yield msg;
+  })());
 }
 
 let tempRoot: string;
@@ -632,5 +642,344 @@ describe('AgentSDKSpecGenerator.revise — span passthrough', () => {
     const call = queryFn.mock.calls[0][0] as { prompt: string };
     expect(call.prompt).toContain('# Disk Spec Content');
     expect(result.page_content).toBeUndefined();
+  });
+});
+
+describe('parseRelayMessage (spec-generator)', () => {
+  it('single relay line: returns text after [Relay], trimmed', () => {
+    const content = [{ type: 'text' as const, text: '[Relay] Analyzing requirements' }];
+    expect(parseRelayMessage(content as never)).toBe('Analyzing requirements');
+  });
+
+  it('first of multiple relay lines: returns only the first', () => {
+    const content = [{ type: 'text' as const, text: '[Relay] First\n[Relay] Second' }];
+    expect(parseRelayMessage(content as never)).toBe('First');
+  });
+
+  it('relay line among non-relay lines: returns correct extraction', () => {
+    const content = [{ type: 'text' as const, text: 'thinking...\n[Relay] Processing comment 2\ndone' }];
+    expect(parseRelayMessage(content as never)).toBe('Processing comment 2');
+  });
+
+  it('no relay line: returns null', () => {
+    const content = [{ type: 'text' as const, text: 'just writing the spec' }];
+    expect(parseRelayMessage(content as never)).toBeNull();
+  });
+
+  it('tool-use block only: returns null', () => {
+    const content = [{ type: 'tool_use' as const, id: 'x', name: 'bash', input: {} }];
+    expect(parseRelayMessage(content as never)).toBeNull();
+  });
+
+  it('empty content array: returns null', () => {
+    expect(parseRelayMessage([])).toBeNull();
+  });
+
+  it('case-sensitive prefix: [relay] lowercase and [Relay]: with colon do not match', () => {
+    const content = [{ type: 'text' as const, text: '[relay] lowercase\n[Relay]: with colon' }];
+    expect(parseRelayMessage(content as never)).toBeNull();
+  });
+
+  it('multi-block content: relay line in second block is found', () => {
+    const content = [
+      { type: 'text' as const, text: 'no relay here' },
+      { type: 'text' as const, text: '[Relay] In second block' },
+    ];
+    expect(parseRelayMessage(content as never)).toBe('In second block');
+  });
+});
+
+describe('AgentSDKSpecGenerator.create — drain loop relay detection', () => {
+  it('relay line forwarded: onProgress called once with extracted text', async () => {
+    const logs: unknown[] = [];
+    const dest = { write: (line: string) => { logs.push(JSON.parse(line)); } };
+    const onProgress = vi.fn().mockResolvedValue(undefined);
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-wizard.md');
+    const sg = new AgentSDKSpecGenerator({
+      queryFn: makeQueryFnWithMessages([makeAssistantMsg('[Relay] Analyzing requirements')]),
+      logDestination: dest,
+      readFile: makeReadFileFn({ spec_path: specPath }),
+    });
+
+    await sg.create(makeRequest(), tempRoot, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onProgress).toHaveBeenCalledOnce();
+    expect(onProgress).toHaveBeenCalledWith('Analyzing requirements');
+    const progressLog = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'progress_update');
+    expect(progressLog).toBeDefined();
+    expect(progressLog!['phase']).toBe('spec_generation');
+    expect(progressLog!['message']).toBe('Analyzing requirements');
+  });
+
+  it('non-relay assistant turn: onProgress not called', async () => {
+    const onProgress = vi.fn().mockResolvedValue(undefined);
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-wizard.md');
+    const sg = new AgentSDKSpecGenerator({
+      queryFn: makeQueryFnWithMessages([makeAssistantMsg('Just thinking')]),
+      logDestination: nullDest,
+      readFile: makeReadFileFn({ spec_path: specPath }),
+    });
+
+    await sg.create(makeRequest(), tempRoot, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it('non-assistant messages ignored: onProgress not called', async () => {
+    const onProgress = vi.fn().mockResolvedValue(undefined);
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-wizard.md');
+    const sg = new AgentSDKSpecGenerator({
+      queryFn: makeQueryFnWithMessages([{ type: 'tool_progress', content: 'x' }]),
+      logDestination: nullDest,
+      readFile: makeReadFileFn({ spec_path: specPath }),
+    });
+
+    await sg.create(makeRequest(), tempRoot, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it('tool-use-only assistant message: onProgress not called', async () => {
+    const onProgress = vi.fn().mockResolvedValue(undefined);
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-wizard.md');
+    const toolUseMsg = { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'x', name: 'bash', input: {} }] } };
+    const sg = new AgentSDKSpecGenerator({
+      queryFn: makeQueryFnWithMessages([toolUseMsg]),
+      logDestination: nullDest,
+      readFile: makeReadFileFn({ spec_path: specPath }),
+    });
+
+    await sg.create(makeRequest(), tempRoot, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it('failed callback does not throw: create resolves normally, progress_failed logged', async () => {
+    const logs: unknown[] = [];
+    const dest = { write: (line: string) => { logs.push(JSON.parse(line)); } };
+    const onProgress = vi.fn().mockRejectedValue(new Error('network error'));
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-wizard.md');
+    const sg = new AgentSDKSpecGenerator({
+      queryFn: makeQueryFnWithMessages([makeAssistantMsg('[Relay] Starting')]),
+      logDestination: dest,
+      readFile: makeReadFileFn({ spec_path: specPath }),
+    });
+
+    const result = await sg.create(makeRequest(), tempRoot, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(result).toBe(specPath);
+    const failLog = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'progress_failed');
+    expect(failLog).toBeDefined();
+    expect(failLog!['phase']).toBe('spec_generation');
+    expect(failLog!['error']).toContain('network error');
+  });
+
+  it('no callback: behavior unchanged, no progress events logged', async () => {
+    const logs: unknown[] = [];
+    const dest = { write: (line: string) => { logs.push(JSON.parse(line)); } };
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-wizard.md');
+    const sg = new AgentSDKSpecGenerator({
+      queryFn: makeQueryFnWithMessages([makeAssistantMsg('[Relay] Something')]),
+      logDestination: dest,
+      readFile: makeReadFileFn({ spec_path: specPath }),
+    });
+
+    const result = await sg.create(makeRequest(), tempRoot);
+
+    expect(result).toBe(specPath);
+    const progressLog = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'progress_update' || l['event'] === 'progress_failed');
+    expect(progressLog).toBeUndefined();
+  });
+
+  it('multiple relay lines in one turn: onProgress called once (first relay only)', async () => {
+    const onProgress = vi.fn().mockResolvedValue(undefined);
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-wizard.md');
+    const sg = new AgentSDKSpecGenerator({
+      queryFn: makeQueryFnWithMessages([makeAssistantMsg('[Relay] First\n[Relay] Second')]),
+      logDestination: nullDest,
+      readFile: makeReadFileFn({ spec_path: specPath }),
+    });
+
+    await sg.create(makeRequest(), tempRoot, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onProgress).toHaveBeenCalledOnce();
+    expect(onProgress).toHaveBeenCalledWith('First');
+  });
+
+  it('relay across multiple messages: onProgress called twice', async () => {
+    const onProgress = vi.fn().mockResolvedValue(undefined);
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-wizard.md');
+    const sg = new AgentSDKSpecGenerator({
+      queryFn: makeQueryFnWithMessages([
+        makeAssistantMsg('[Relay] First message'),
+        makeAssistantMsg('[Relay] Second message'),
+      ]),
+      logDestination: nullDest,
+      readFile: makeReadFileFn({ spec_path: specPath }),
+    });
+
+    await sg.create(makeRequest(), tempRoot, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onProgress).toHaveBeenCalledTimes(2);
+    expect(onProgress).toHaveBeenNthCalledWith(1, 'First message');
+    expect(onProgress).toHaveBeenNthCalledWith(2, 'Second message');
+  });
+});
+
+describe('AgentSDKSpecGenerator.revise — drain loop relay detection', () => {
+  it('relay line forwarded: onProgress called once with extracted text', async () => {
+    const logs: unknown[] = [];
+    const dest = { write: (line: string) => { logs.push(JSON.parse(line)); } };
+    const onProgress = vi.fn().mockResolvedValue(undefined);
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-test.md');
+    writeFileSync(specPath, '# Spec', 'utf-8');
+    const sg = new AgentSDKSpecGenerator({
+      queryFn: makeQueryFnWithMessages([makeAssistantMsg('[Relay] Processing comment 1 of 3')]),
+      logDestination: dest,
+      readFile: makeReadFileFn({ comment_responses: [] }),
+    });
+
+    await sg.revise(makeFeedback(), [], specPath, tempRoot, undefined, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onProgress).toHaveBeenCalledOnce();
+    expect(onProgress).toHaveBeenCalledWith('Processing comment 1 of 3');
+    const progressLog = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'progress_update');
+    expect(progressLog).toBeDefined();
+    expect(progressLog!['phase']).toBe('spec_generation');
+  });
+
+  it('non-relay assistant turn: onProgress not called', async () => {
+    const onProgress = vi.fn().mockResolvedValue(undefined);
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-test.md');
+    writeFileSync(specPath, '# Spec', 'utf-8');
+    const sg = new AgentSDKSpecGenerator({
+      queryFn: makeQueryFnWithMessages([makeAssistantMsg('Regular text')]),
+      logDestination: nullDest,
+      readFile: makeReadFileFn({ comment_responses: [] }),
+    });
+
+    await sg.revise(makeFeedback(), [], specPath, tempRoot, undefined, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it('non-assistant messages ignored: onProgress not called', async () => {
+    const onProgress = vi.fn().mockResolvedValue(undefined);
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-test.md');
+    writeFileSync(specPath, '# Spec', 'utf-8');
+    const sg = new AgentSDKSpecGenerator({
+      queryFn: makeQueryFnWithMessages([{ type: 'tool_progress', content: 'x' }]),
+      logDestination: nullDest,
+      readFile: makeReadFileFn({ comment_responses: [] }),
+    });
+
+    await sg.revise(makeFeedback(), [], specPath, tempRoot, undefined, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it('tool-use-only assistant message: onProgress not called', async () => {
+    const onProgress = vi.fn().mockResolvedValue(undefined);
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-test.md');
+    writeFileSync(specPath, '# Spec', 'utf-8');
+    const toolUseMsg = { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'x', name: 'bash', input: {} }] } };
+    const sg = new AgentSDKSpecGenerator({
+      queryFn: makeQueryFnWithMessages([toolUseMsg]),
+      logDestination: nullDest,
+      readFile: makeReadFileFn({ comment_responses: [] }),
+    });
+
+    await sg.revise(makeFeedback(), [], specPath, tempRoot, undefined, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it('failed callback does not throw: revise resolves normally, progress_failed logged', async () => {
+    const logs: unknown[] = [];
+    const dest = { write: (line: string) => { logs.push(JSON.parse(line)); } };
+    const onProgress = vi.fn().mockRejectedValue(new Error('slack error'));
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-test.md');
+    writeFileSync(specPath, '# Spec', 'utf-8');
+    const sg = new AgentSDKSpecGenerator({
+      queryFn: makeQueryFnWithMessages([makeAssistantMsg('[Relay] Starting revision')]),
+      logDestination: dest,
+      readFile: makeReadFileFn({ comment_responses: [] }),
+    });
+
+    const result = await sg.revise(makeFeedback(), [], specPath, tempRoot, undefined, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(result.comment_responses).toEqual([]);
+    const failLog = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'progress_failed');
+    expect(failLog).toBeDefined();
+    expect(failLog!['phase']).toBe('spec_generation');
+    expect(failLog!['error']).toContain('slack error');
+  });
+
+  it('no callback: behavior unchanged, no progress events logged', async () => {
+    const logs: unknown[] = [];
+    const dest = { write: (line: string) => { logs.push(JSON.parse(line)); } };
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-test.md');
+    writeFileSync(specPath, '# Spec', 'utf-8');
+    const sg = new AgentSDKSpecGenerator({
+      queryFn: makeQueryFnWithMessages([makeAssistantMsg('[Relay] Something')]),
+      logDestination: dest,
+      readFile: makeReadFileFn({ comment_responses: [] }),
+    });
+
+    const result = await sg.revise(makeFeedback(), [], specPath, tempRoot);
+
+    expect(result.comment_responses).toEqual([]);
+    const progressLog = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'progress_update' || l['event'] === 'progress_failed');
+    expect(progressLog).toBeUndefined();
+  });
+
+  it('multiple relay lines in one turn: onProgress called once (first relay only)', async () => {
+    const onProgress = vi.fn().mockResolvedValue(undefined);
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-test.md');
+    writeFileSync(specPath, '# Spec', 'utf-8');
+    const sg = new AgentSDKSpecGenerator({
+      queryFn: makeQueryFnWithMessages([makeAssistantMsg('[Relay] First\n[Relay] Second')]),
+      logDestination: nullDest,
+      readFile: makeReadFileFn({ comment_responses: [] }),
+    });
+
+    await sg.revise(makeFeedback(), [], specPath, tempRoot, undefined, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onProgress).toHaveBeenCalledOnce();
+    expect(onProgress).toHaveBeenCalledWith('First');
+  });
+
+  it('relay across multiple messages: onProgress called twice', async () => {
+    const onProgress = vi.fn().mockResolvedValue(undefined);
+    const specPath = join(tempRoot, 'context-human', 'specs', 'feature-test.md');
+    writeFileSync(specPath, '# Spec', 'utf-8');
+    const sg = new AgentSDKSpecGenerator({
+      queryFn: makeQueryFnWithMessages([
+        makeAssistantMsg('[Relay] First message'),
+        makeAssistantMsg('[Relay] Second message'),
+      ]),
+      logDestination: nullDest,
+      readFile: makeReadFileFn({ comment_responses: [] }),
+    });
+
+    await sg.revise(makeFeedback(), [], specPath, tempRoot, undefined, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onProgress).toHaveBeenCalledTimes(2);
+    expect(onProgress).toHaveBeenNthCalledWith(1, 'First message');
+    expect(onProgress).toHaveBeenNthCalledWith(2, 'Second message');
   });
 });
