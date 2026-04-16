@@ -773,13 +773,13 @@ These tests live in the `src/index.ts` config block or a dedicated unit for the 
 			- [ ] Unit tests cover all valid `SpecEntryStatus` values and rejection propagation
 		- **Dependencies**: "Task: Add `pages.updateProperties()` to `NotionClient`", "Task: Export `SpecEntryStatus` type and add optional `updateStatus?()` to `SpecPublisher`"
 - [ ] **Story: ImplementationFeedbackPage database publishing**
-	- [ ] **Task: Add ****`TestingGuideStatus`**** type and update ****`ImplementationFeedbackPage`**** interface**
+	- [x] **Task: Add ****`TestingGuideStatus`**** type and update ****`ImplementationFeedbackPage`**** interface**
 		- **Description**: In `src/adapters/notion/implementation-feedback-page.ts`, export `TestingGuideStatus` as `'Not started' | 'In progress' | 'Waiting on feedback' | 'Approved'`. Update the `ImplementationFeedbackPage` interface: add `spec_title: string` as the third parameter to `create()`; add optional `updateStatus?(page_id: string, status: TestingGuideStatus): Promise<void>` and `setPRLink?(page_id: string, pr_url: string): Promise<void>`.
 		- **Acceptance criteria**:
-			- [ ] `TestingGuideStatus` type exported
-			- [ ] `ImplementationFeedbackPage.create()` signature updated with `spec_title` as third parameter
-			- [ ] Optional `updateStatus?()` and `setPRLink?()` added to the interface
-			- [ ] TypeScript compiles with no errors
+			- [x] `TestingGuideStatus` type exported
+			- [x] `ImplementationFeedbackPage.create()` signature updated with `spec_title` as third parameter
+			- [x] Optional `updateStatus?()` and `setPRLink?()` added to the interface
+			- [x] TypeScript compiles with no errors
 		- **Dependencies**: None
 	- [ ] **Task: Update ****`NotionImplementationFeedbackPage`**** constructor and ****`create()`**** for Testing guides database**
 		- **Description**: Add `testing_guides_database_id: string` as the second positional constructor parameter (before `options`). Update `create()` to post with `parent: { type: 'database_id', database_id: testing_guides_database_id }` and set typed properties: Title (`"Testing guide: {spec_title}"`), Spec relation (`[{ id: spec_page_id }]`), Status (`"Not started"`). Page body `children` (bookmark, Summary, Testing instructions, Feedback sections) are unchanged.
