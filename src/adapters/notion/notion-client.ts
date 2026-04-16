@@ -110,9 +110,13 @@ export class NotionClientImpl implements NotionClient {
       database_id: string,
       filter?: unknown,
     ): Promise<{ results: Array<{ id: string; properties: Record<string, unknown> }> }> => {
-      const response = await this.client.databases.query({
+      const response = await (this.client as unknown as {
+        databases: {
+          query: (args: { database_id: string; filter?: unknown }) => Promise<{ results: unknown[] }>;
+        };
+      }).databases.query({
         database_id,
-        ...(filter !== undefined ? { filter: filter as never } : {}),
+        ...(filter !== undefined ? { filter } : {}),
       });
       return {
         results: response.results as Array<{ id: string; properties: Record<string, unknown> }>,
