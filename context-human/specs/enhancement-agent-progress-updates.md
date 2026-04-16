@@ -467,7 +467,7 @@ If the agent omits a `[Relay]` line, the Slack thread simply receives no update 
 If the agent emits `[Relay]` outside a checkpoint context (e.g., inside a code block or explanation), it would generate a spurious Slack post. This is low-risk given explicit prompt instructions and the goal-oriented framing.
 ## Task list
 
-- [ ] **Story: Update ****`Implementer`**** interface and ****`AgentSDKImplementer`**
+- [x] **Story: Update ****`Implementer`**** interface and ****`AgentSDKImplementer`**
 	- [x] **Task: Add ****`onProgress`**** parameter to ****`Implementer`**** interface**
 		- **Description**: Add `onProgress?: (message: string) => Promise<void>` as the fourth positional parameter to `Implementer.implement()` in `src/adapters/agent/implementer.ts`. Interface change only — no implementation logic yet.
 		- **Acceptance criteria**:
@@ -483,7 +483,7 @@ If the agent emits `[Relay]` outside a checkpoint context (e.g., inside a code b
 			- [ ] Both `buildPrompt` and `buildFeedbackPrompt` output includes the checkpoint instruction block
 			- [ ] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `onProgress` parameter to `Implementer` interface
-	- [ ] **Task: Implement relay detection in ****`AgentSDKImplementer.implement()`**** drain loop**
+	- [x] **Task: Implement relay detection in ****`AgentSDKImplementer.implement()`**** drain loop**
 		- **Description**: Update `AgentSDKImplementer.implement()` drain loop. When `onProgress` is defined and the message is `type === 'assistant'`, call `parseRelayMessage(message.message.content)`. If non-null, call `onProgress(relayMessage).then(() => logger.info(...)).catch(err => logger.warn(...))`. Do not await.
 		- **Acceptance criteria**:
 			- [ ] `onProgress` called when agent emits a `[Relay]` line
@@ -542,7 +542,7 @@ If the agent emits `[Relay]` outside a checkpoint context (e.g., inside a code b
 		- **Acceptance criteria**:
 			- [ ] All 8 matrix cases covered in both test files
 		- **Dependencies**: Task: Add `parseRelayMessage` helper and augment implementation prompts; Task: Add `parseRelayMessage` helper and augment spec gen prompts
-	- [ ] **Task: Add ****`AgentSDKImplementer`**** drain loop tests**
+	- [x] **Task: Add ****`AgentSDKImplementer`**** drain loop tests**
 		- **Description**: Add all 8 drain loop test cases from §6 to `tests/adapters/agent/implementer.test.ts`.
 		- **Acceptance criteria**:
 			- [ ] All 8 cases covered

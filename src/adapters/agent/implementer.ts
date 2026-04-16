@@ -1,5 +1,6 @@
 // src/adapters/agent/implementer.ts
 import { query as _query } from '@anthropic-ai/claude-agent-sdk';
+import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { readFile as _readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type pino from 'pino';
@@ -82,7 +83,7 @@ export class AgentSDKImplementer implements Implementer {
     );
 
     try {
-      for await (const _message of this.queryFn({
+      for await (const message of this.queryFn({
         prompt,
         options: {
           cwd: workspace_path,
@@ -93,7 +94,25 @@ export class AgentSDKImplementer implements Implementer {
           systemPrompt: { type: 'preset', preset: 'claude_code' },
         },
       })) {
-        // drain iterator — agent writes result to file on completion
+        if (onProgress && (message as SDKMessage).type === 'assistant') {
+          const assistantMsg = message as Extract<SDKMessage, { type: 'assistant' }>;
+          const relayMessage = parseRelayMessage(assistantMsg.message.content);
+          if (relayMessage) {
+            onProgress(relayMessage)
+              .then(() => {
+                this.logger.info(
+                  { event: 'progress_update', phase: 'implementation', message: relayMessage },
+                  'Progress update posted',
+                );
+              })
+              .catch(err => {
+                this.logger.warn(
+                  { event: 'progress_failed', phase: 'implementation', error: String(err) },
+                  'Failed to post progress update',
+                );
+              });
+          }
+        }
       }
     } catch (err) {
       this.logger.error(

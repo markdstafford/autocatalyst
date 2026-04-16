@@ -25,6 +25,16 @@ function makeImpl(result: object, queryFn = makeQueryFn()) {
   };
 }
 
+function makeAssistantMsg(text: string): object {
+  return { type: 'assistant', message: { content: [{ type: 'text', text }] } };
+}
+
+function makeQueryFnWithMessages(messages: unknown[]) {
+  return vi.fn().mockReturnValue((async function* () {
+    for (const msg of messages) yield msg;
+  })());
+}
+
 let tmpDir: string;
 let specPath: string;
 
@@ -333,5 +343,145 @@ describe('parseRelayMessage', () => {
       { type: 'text' as const, text: '[Relay] In second block' },
     ];
     expect(parseRelayMessage(content as never)).toBe('In second block');
+  });
+});
+
+describe('AgentSDKImplementer — drain loop relay detection', () => {
+  it('relay line forwarded: onProgress called once with extracted text', async () => {
+    const logs: unknown[] = [];
+    const dest = { write: (line: string) => { logs.push(JSON.parse(line)); } };
+    const onProgress = vi.fn().mockResolvedValue(undefined);
+    const impl = new AgentSDKImplementer({
+      logDestination: dest,
+      queryFn: makeQueryFnWithMessages([makeAssistantMsg('[Relay] Task 1 of 3: Starting')]),
+      readFile: makeReadFileFn({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' }),
+    });
+
+    await impl.implement(specPath, tmpDir, undefined, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onProgress).toHaveBeenCalledOnce();
+    expect(onProgress).toHaveBeenCalledWith('Task 1 of 3: Starting');
+    const progressLog = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'progress_update');
+    expect(progressLog).toBeDefined();
+    expect(progressLog!['phase']).toBe('implementation');
+    expect(progressLog!['message']).toBe('Task 1 of 3: Starting');
+  });
+
+  it('non-relay assistant turn: onProgress not called', async () => {
+    const onProgress = vi.fn().mockResolvedValue(undefined);
+    const impl = new AgentSDKImplementer({
+      logDestination: nullDest,
+      queryFn: makeQueryFnWithMessages([makeAssistantMsg('Just a regular message')]),
+      readFile: makeReadFileFn({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' }),
+    });
+
+    await impl.implement(specPath, tmpDir, undefined, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it('non-assistant messages ignored: onProgress not called', async () => {
+    const onProgress = vi.fn().mockResolvedValue(undefined);
+    const nonAssistantMessages = [
+      { type: 'tool_progress', content: 'something' },
+      { type: 'result', subtype: 'success', total_cost_usd: 0, duration_ms: 0, num_turns: 1, result: '', session_id: 'x', is_error: false },
+    ];
+    const impl = new AgentSDKImplementer({
+      logDestination: nullDest,
+      queryFn: makeQueryFnWithMessages(nonAssistantMessages),
+      readFile: makeReadFileFn({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' }),
+    });
+
+    await impl.implement(specPath, tmpDir, undefined, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it('tool-use-only assistant message: onProgress not called', async () => {
+    const onProgress = vi.fn().mockResolvedValue(undefined);
+    const toolUseMsg = { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'x', name: 'bash', input: { command: 'ls' } }] } };
+    const impl = new AgentSDKImplementer({
+      logDestination: nullDest,
+      queryFn: makeQueryFnWithMessages([toolUseMsg]),
+      readFile: makeReadFileFn({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' }),
+    });
+
+    await impl.implement(specPath, tmpDir, undefined, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onProgress).not.toHaveBeenCalled();
+  });
+
+  it('failed callback does not throw: implement resolves normally, progress_failed logged', async () => {
+    const logs: unknown[] = [];
+    const dest = { write: (line: string) => { logs.push(JSON.parse(line)); } };
+    const onProgress = vi.fn().mockRejectedValue(new Error('Slack down'));
+    const impl = new AgentSDKImplementer({
+      logDestination: dest,
+      queryFn: makeQueryFnWithMessages([makeAssistantMsg('[Relay] Starting')]),
+      readFile: makeReadFileFn({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' }),
+    });
+
+    const result = await impl.implement(specPath, tmpDir, undefined, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(result.status).toBe('complete');
+    const failLog = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'progress_failed');
+    expect(failLog).toBeDefined();
+    expect(failLog!['phase']).toBe('implementation');
+    expect(failLog!['error']).toContain('Slack down');
+  });
+
+  it('no callback: behavior unchanged, no progress events logged', async () => {
+    const logs: unknown[] = [];
+    const dest = { write: (line: string) => { logs.push(JSON.parse(line)); } };
+    const impl = new AgentSDKImplementer({
+      logDestination: dest,
+      queryFn: makeQueryFnWithMessages([makeAssistantMsg('[Relay] Something')]),
+      readFile: makeReadFileFn({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' }),
+    });
+
+    const result = await impl.implement(specPath, tmpDir);
+
+    expect(result.status).toBe('complete');
+    const progressLog = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'progress_update' || l['event'] === 'progress_failed');
+    expect(progressLog).toBeUndefined();
+  });
+
+  it('multiple relay lines in one turn: onProgress called once (first relay only)', async () => {
+    const onProgress = vi.fn().mockResolvedValue(undefined);
+    const impl = new AgentSDKImplementer({
+      logDestination: nullDest,
+      queryFn: makeQueryFnWithMessages([makeAssistantMsg('[Relay] First\n[Relay] Second')]),
+      readFile: makeReadFileFn({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' }),
+    });
+
+    await impl.implement(specPath, tmpDir, undefined, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onProgress).toHaveBeenCalledOnce();
+    expect(onProgress).toHaveBeenCalledWith('First');
+  });
+
+  it('relay across multiple messages: onProgress called twice', async () => {
+    const onProgress = vi.fn().mockResolvedValue(undefined);
+    const impl = new AgentSDKImplementer({
+      logDestination: nullDest,
+      queryFn: makeQueryFnWithMessages([
+        makeAssistantMsg('[Relay] First message'),
+        makeAssistantMsg('[Relay] Second message'),
+      ]),
+      readFile: makeReadFileFn({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' }),
+    });
+
+    await impl.implement(specPath, tmpDir, undefined, onProgress);
+    await new Promise(r => setTimeout(r, 0));
+
+    expect(onProgress).toHaveBeenCalledTimes(2);
+    expect(onProgress).toHaveBeenNthCalledWith(1, 'First message');
+    expect(onProgress).toHaveBeenNthCalledWith(2, 'Second message');
   });
 });
