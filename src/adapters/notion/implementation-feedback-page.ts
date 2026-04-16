@@ -2,6 +2,12 @@ import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 import type { NotionClient } from './notion-client.js';
 
+export type TestingGuideStatus =
+  | 'Not started'
+  | 'In progress'
+  | 'Waiting on feedback'
+  | 'Approved';
+
 export interface FeedbackItem {
   id: string;
   text: string;
@@ -11,8 +17,9 @@ export interface FeedbackItem {
 
 export interface ImplementationFeedbackPage {
   create(
-    parent_page_id: string,
+    spec_page_id: string,
     spec_page_url: string,
+    spec_title: string,
     summary: string,
     testing_instructions: string,
   ): Promise<string>;
@@ -29,6 +36,9 @@ export interface ImplementationFeedbackPage {
       }>;
     },
   ): Promise<void>;
+
+  updateStatus?(page_id: string, status: TestingGuideStatus): Promise<void>;
+  setPRLink?(page_id: string, pr_url: string): Promise<void>;
 }
 
 interface NotionImplementationFeedbackPageOptions {
