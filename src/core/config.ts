@@ -182,6 +182,13 @@ export function bootstrapWorkflow(repoPath: string): boolean {
   return true; // created
 }
 
+export function repoNameFromUrl(repo_url: string): string {
+  // Strip trailing .git, then normalize SSH colon separator to slash
+  const normalized = repo_url.replace(/\.git$/, '').replace(/^[^@]+@[^:]+:/, '/');
+  const segments = normalized.split('/').filter(Boolean);
+  return segments.slice(-2).join('/') || 'unknown';
+}
+
 /**
  * Resolves the effective AWS profile to use, applying config-level override
  * precedence over the environment variable.

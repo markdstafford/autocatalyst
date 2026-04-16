@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseWorkflow, resolveEnvVars, validateConfig, redactConfig, resolveAwsProfile } from '../../src/core/config.js';
+import { parseWorkflow, resolveEnvVars, validateConfig, redactConfig, resolveAwsProfile, repoNameFromUrl } from '../../src/core/config.js';
 import type { WorkflowConfig } from '../../src/types/config.js';
 
 const fixture = (name: string) =>
@@ -291,5 +291,28 @@ describe('resolveAwsProfile', () => {
   it('trims leading and trailing whitespace from config aws_profile', () => {
     const result = resolveAwsProfile({ aws_profile: '  trimmed-profile  ' }, {});
     expect(result).toBe('trimmed-profile');
+  });
+});
+
+describe('repoNameFromUrl', () => {
+  it('HTTPS URL without .git', () => {
+    expect(repoNameFromUrl('https://github.com/acme-org/autocatalyst')).toBe('acme-org/autocatalyst');
+  });
+
+  it('HTTPS URL with .git', () => {
+    expect(repoNameFromUrl('https://github.com/acme-org/autocatalyst.git')).toBe('acme-org/autocatalyst');
+  });
+
+  it('SSH URL with .git', () => {
+    expect(repoNameFromUrl('git@github.com:acme-org/autocatalyst.git')).toBe('acme-org/autocatalyst');
+  });
+
+  it('SSH URL without .git', () => {
+    expect(repoNameFromUrl('git@github.com:acme-org/autocatalyst')).toBe('acme-org/autocatalyst');
+  });
+
+  it('URL with only one path segment falls back gracefully', () => {
+    const result = repoNameFromUrl('https://selfhosted/repo');
+    expect(result).toMatch(/repo/);
   });
 });
