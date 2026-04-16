@@ -586,9 +586,17 @@ export class OrchestratorImpl implements Orchestrator {
     }
 
     // Step 2: Generate spec
+    const specCreateProgress = (message: string): Promise<void> =>
+      this.deps.postMessage(request.channel_id, request.thread_ts, message).catch(err => {
+        this.logger.warn(
+          { event: 'progress_failed', phase: 'spec_generation', run_id: run.id, error: String(err) },
+          'Failed to post progress update',
+        );
+      });
+
     let spec_path: string;
     try {
-      spec_path = await this.deps.specGenerator.create(request, workspace_path);
+      spec_path = await this.deps.specGenerator.create(request, workspace_path, specCreateProgress);
       run.spec_path = spec_path;
     } catch (err) {
       await this.deps.workspaceManager.destroy(workspace_path);
@@ -652,9 +660,17 @@ export class OrchestratorImpl implements Orchestrator {
     }, 'Revision enriched with feedback sources');
 
     // Step 2: Revise spec
+    const specReviseProgress = (message: string): Promise<void> =>
+      this.deps.postMessage(feedback.channel_id, feedback.thread_ts, message).catch(err => {
+        this.logger.warn(
+          { event: 'progress_failed', phase: 'spec_generation', run_id: run.id, error: String(err) },
+          'Failed to post progress update',
+        );
+      });
+
     let result: ReviseResult;
     try {
-      result = await this.deps.specGenerator.revise(feedback, notionComments, run.spec_path, run.workspace_path, pageMarkdown);
+      result = await this.deps.specGenerator.revise(feedback, notionComments, run.spec_path, run.workspace_path, pageMarkdown, specReviseProgress);
     } catch (err) {
       await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
       return;

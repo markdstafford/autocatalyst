@@ -519,7 +519,7 @@ If the agent emits `[Relay]` outside a checkpoint context (e.g., inside a code b
 			- [ ] When `onProgress` omitted, behavior identical to before in both methods
 			- [ ] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `parseRelayMessage` helper and augment spec gen prompts
-- [ ] **Story: Wire ****`onProgress`**** in the orchestrator**
+- [x] **Story: Wire ****`onProgress`**** in the orchestrator**
 	- [x] **Task: Pass ****`onProgress`**** callback to ****`implement()`**** in ****`_runImplementation`**
 		- **Description**: In `src/core/orchestrator.ts`, update `_runImplementation` to construct an `onProgress` callback closing over `feedback.channel_id`, `feedback.thread_ts`, and `run.id`. Replace the current ternary with a single `implement()` call passing `additional_context` (which may be `undefined`) and `onProgress`.
 		- **Acceptance criteria**:
@@ -528,7 +528,7 @@ If the agent emits `[Relay]` outside a checkpoint context (e.g., inside a code b
 			- [ ] `postMessage` rejection handled; `progress_failed` logged at warn with `phase: 'implementation'`, `run_id`, `error`; run continues
 			- [ ] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement relay detection in `AgentSDKImplementer.implement()` drain loop
-	- [ ] **Task: Pass ****`onProgress`**** callback in ****`_runSpecGeneration`**
+	- [x] **Task: Pass ****`onProgress`**** callback in ****`_runSpecGeneration`**
 		- **Description**: Apply the same `onProgress` wiring to `_runSpecGeneration` in `src/core/orchestrator.ts`. Construct the callback closing over `feedback.channel_id`, `feedback.thread_ts`, and `run.id`, and pass it to both the `speccer.generateSpec()` and `speccer.reviseSpec()` call sites in the method. Use `phase: 'spec_generation'` in the warn log.
 		- **Acceptance criteria**:
 			- [ ] `onProgress` passed to both `generateSpec()` and `reviseSpec()` call sites within `_runSpecGeneration`
@@ -562,7 +562,7 @@ If the agent emits `[Relay]` outside a checkpoint context (e.g., inside a code b
 			- [ ] Callback wired for both call paths; `postMessage` invocation verified; failure handling confirmed with log event
 			- [ ] All existing orchestrator tests pass
 		- **Dependencies**: Task: Pass `onProgress` callback in `_runImplementation`
-	- [ ] **Task: Add orchestrator ****`_runSpecGeneration`**** progress tests**
+	- [x] **Task: Add orchestrator ****`_runSpecGeneration`**** progress tests**
 		- **Description**: Mirror of the `_runImplementation` orchestrator tests for the spec gen path, substituting `deps.speccer` (or equivalent) and `phase: 'spec_generation'`.
 		- **Acceptance criteria**:
 			- [ ] Callback wired to speccer call site(s); `postMessage` invocation verified with correct `channel_id`, `thread_ts`, and message
