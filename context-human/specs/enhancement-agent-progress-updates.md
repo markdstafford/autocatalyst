@@ -1,10 +1,10 @@
 ---
 created: 2026-04-15
 last_updated: 2026-04-16
-status: approved
+status: complete
 issue: 23
 specced_by: markdstafford
-implemented_by: null
+implemented_by: markdstafford
 superseded_by: null
 ---
 # Enhancement: Agent progress updates during long-running operations
@@ -471,101 +471,101 @@ If the agent emits `[Relay]` outside a checkpoint context (e.g., inside a code b
 	- [x] **Task: Add ****`onProgress`**** parameter to ****`Implementer`**** interface**
 		- **Description**: Add `onProgress?: (message: string) => Promise<void>` as the fourth positional parameter to `Implementer.implement()` in `src/adapters/agent/implementer.ts`. Interface change only — no implementation logic yet.
 		- **Acceptance criteria**:
-			- [ ] `Implementer.implement()` signature includes the optional `onProgress` parameter
-			- [ ] `AgentSDKImplementer.implement()` signature updated to match (no body changes yet)
-			- [ ] `tsc --noEmit` passes
-			- [ ] All existing tests pass
+			- [x] `Implementer.implement()` signature includes the optional `onProgress` parameter
+			- [x] `AgentSDKImplementer.implement()` signature updated to match (no body changes yet)
+			- [x] `tsc --noEmit` passes
+			- [x] All existing tests pass
 		- **Dependencies**: None
 	- [x] **Task: Add ****`parseRelayMessage`**** helper and augment implementation prompts**
 		- **Description**: Add module-local helper `parseRelayMessage(content: BetaMessage['content']): string | null` to `src/adapters/agent/implementer.ts`. The function iterates each text block's lines, matches the first line of the form `/^\[Relay\]\s+(.+)$/`, and returns the capture group trimmed, or `null` if none found. Update `buildPrompt` and `buildFeedbackPrompt` to append the goal-oriented checkpoint instruction block.
 		- **Acceptance criteria**:
-			- [ ] `parseRelayMessage` handles all cases in the §6 unit test matrix
-			- [ ] Both `buildPrompt` and `buildFeedbackPrompt` output includes the checkpoint instruction block
-			- [ ] `tsc --noEmit` passes
+			- [x] `parseRelayMessage` handles all cases in the §6 unit test matrix
+			- [x] Both `buildPrompt` and `buildFeedbackPrompt` output includes the checkpoint instruction block
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `onProgress` parameter to `Implementer` interface
 	- [x] **Task: Implement relay detection in ****`AgentSDKImplementer.implement()`**** drain loop**
 		- **Description**: Update `AgentSDKImplementer.implement()` drain loop. When `onProgress` is defined and the message is `type === 'assistant'`, call `parseRelayMessage(message.message.content)`. If non-null, call `onProgress(relayMessage).then(() => logger.info(...)).catch(err => logger.warn(...))`. Do not await.
 		- **Acceptance criteria**:
-			- [ ] `onProgress` called when agent emits a `[Relay]` line
-			- [ ] `onProgress` not called for non-relay turns or non-assistant messages
-			- [ ] Success: `progress_update` logged at info with `phase: 'implementation'`
-			- [ ] Failure: `progress_failed` logged at warn with `phase: 'implementation'`; `implement()` resolves normally
-			- [ ] When `onProgress` omitted, behavior identical to before
-			- [ ] `tsc --noEmit` passes
+			- [x] `onProgress` called when agent emits a `[Relay]` line
+			- [x] `onProgress` not called for non-relay turns or non-assistant messages
+			- [x] Success: `progress_update` logged at info with `phase: 'implementation'`
+			- [x] Failure: `progress_failed` logged at warn with `phase: 'implementation'`; `implement()` resolves normally
+			- [x] When `onProgress` omitted, behavior identical to before
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `parseRelayMessage` helper and augment implementation prompts
 - [x] **Story: Update ****`Speccer`**** interface and ****`AgentSDKSpeccer`**
 	- [x] **Task: Add ****`onProgress`**** parameter to ****`Speccer`**** interface**
 		- **Description**: Add `onProgress?: (message: string) => Promise<void>` as the last optional parameter to both `Speccer.generateSpec()` and `Speccer.reviseSpec()` in `src/adapters/agent/speccer.ts`. Interface change only.
 		- **Acceptance criteria**:
-			- [ ] Both method signatures include the optional `onProgress` parameter
-			- [ ] `AgentSDKSpeccer` implementations updated to match (no body changes yet)
-			- [ ] `tsc --noEmit` passes
-			- [ ] All existing tests pass
+			- [x] Both method signatures include the optional `onProgress` parameter
+			- [x] `AgentSDKSpeccer` implementations updated to match (no body changes yet)
+			- [x] `tsc --noEmit` passes
+			- [x] All existing tests pass
 		- **Dependencies**: None
 	- [x] **Task: Add ****`parseRelayMessage`**** helper and augment spec gen prompts**
 		- **Description**: Add `parseRelayMessage` helper to `src/adapters/agent/speccer.ts` (same implementation as in `implementer.ts`). Update `buildSpecPrompt` and `buildSpecRevisionPrompt` to append the checkpoint instruction block.
 		- **Acceptance criteria**:
-			- [ ] `parseRelayMessage` handles all cases in the §6 unit test matrix
-			- [ ] Both `buildSpecPrompt` and `buildSpecRevisionPrompt` output includes the checkpoint instruction block
-			- [ ] `tsc --noEmit` passes
+			- [x] `parseRelayMessage` handles all cases in the §6 unit test matrix
+			- [x] Both `buildSpecPrompt` and `buildSpecRevisionPrompt` output includes the checkpoint instruction block
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `onProgress` parameter to `Speccer` interface
 	- [x] **Task: Implement relay detection in ****`AgentSDKSpeccer`**** drain loop**
 		- **Description**: Apply the same relay detection and logging pattern to both `generateSpec()` and `reviseSpec()` drain loops using `phase: 'spec_generation'`. Do not await `onProgress`.
 		- **Acceptance criteria**:
-			- [ ] `onProgress` called correctly in both `generateSpec` and `reviseSpec` when a `[Relay]` line is present
-			- [ ] `onProgress` not called for non-relay turns or non-assistant messages in either method
-			- [ ] Success: `progress_update` logged at info with `phase: 'spec_generation'`
-			- [ ] Failure: `progress_failed` logged at warn with `phase: 'spec_generation'`; the spec method resolves normally
-			- [ ] When `onProgress` omitted, behavior identical to before in both methods
-			- [ ] `tsc --noEmit` passes
+			- [x] `onProgress` called correctly in both `generateSpec` and `reviseSpec` when a `[Relay]` line is present
+			- [x] `onProgress` not called for non-relay turns or non-assistant messages in either method
+			- [x] Success: `progress_update` logged at info with `phase: 'spec_generation'`
+			- [x] Failure: `progress_failed` logged at warn with `phase: 'spec_generation'`; the spec method resolves normally
+			- [x] When `onProgress` omitted, behavior identical to before in both methods
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `parseRelayMessage` helper and augment spec gen prompts
 - [x] **Story: Wire ****`onProgress`**** in the orchestrator**
 	- [x] **Task: Pass ****`onProgress`**** callback to ****`implement()`**** in ****`_runImplementation`**
 		- **Description**: In `src/core/orchestrator.ts`, update `_runImplementation` to construct an `onProgress` callback closing over `feedback.channel_id`, `feedback.thread_ts`, and `run.id`. Replace the current ternary with a single `implement()` call passing `additional_context` (which may be `undefined`) and `onProgress`.
 		- **Acceptance criteria**:
-			- [ ] Both call paths (with and without `additional_context`) pass `onProgress`
-			- [ ] Callback calls `deps.postMessage` with correct args
-			- [ ] `postMessage` rejection handled; `progress_failed` logged at warn with `phase: 'implementation'`, `run_id`, `error`; run continues
-			- [ ] `tsc --noEmit` passes
+			- [x] Both call paths (with and without `additional_context`) pass `onProgress`
+			- [x] Callback calls `deps.postMessage` with correct args
+			- [x] `postMessage` rejection handled; `progress_failed` logged at warn with `phase: 'implementation'`, `run_id`, `error`; run continues
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement relay detection in `AgentSDKImplementer.implement()` drain loop
 	- [x] **Task: Pass ****`onProgress`**** callback in ****`_runSpecGeneration`**
 		- **Description**: Apply the same `onProgress` wiring to `_runSpecGeneration` in `src/core/orchestrator.ts`. Construct the callback closing over `feedback.channel_id`, `feedback.thread_ts`, and `run.id`, and pass it to both the `speccer.generateSpec()` and `speccer.reviseSpec()` call sites in the method. Use `phase: 'spec_generation'` in the warn log.
 		- **Acceptance criteria**:
-			- [ ] `onProgress` passed to both `generateSpec()` and `reviseSpec()` call sites within `_runSpecGeneration`
-			- [ ] Callback calls `deps.postMessage` with the run's `channel_id`, `thread_ts`, and message
-			- [ ] `postMessage` rejection handled; `progress_failed` logged at warn with `phase: 'spec_generation'`, `run_id`, `error`; run continues
-			- [ ] `tsc --noEmit` passes
+			- [x] `onProgress` passed to both `generateSpec()` and `reviseSpec()` call sites within `_runSpecGeneration`
+			- [x] Callback calls `deps.postMessage` with the run's `channel_id`, `thread_ts`, and message
+			- [x] `postMessage` rejection handled; `progress_failed` logged at warn with `phase: 'spec_generation'`, `run_id`, `error`; run continues
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement relay detection in `AgentSDKSpeccer` drain loop
 - [x] **Story: Tests**
 	- [x] **Task: Add ****`parseRelayMessage`**** unit tests**
 		- **Description**: Add unit tests covering the full §6 test matrix to both `tests/adapters/agent/implementer.test.ts` and `tests/adapters/agent/speccer.test.ts`.
 		- **Acceptance criteria**:
-			- [ ] All 8 matrix cases covered in both test files
+			- [x] All 8 matrix cases covered in both test files
 		- **Dependencies**: Task: Add `parseRelayMessage` helper and augment implementation prompts; Task: Add `parseRelayMessage` helper and augment spec gen prompts
 	- [x] **Task: Add ****`AgentSDKImplementer`**** drain loop tests**
 		- **Description**: Add all 8 drain loop test cases from §6 to `tests/adapters/agent/implementer.test.ts`.
 		- **Acceptance criteria**:
-			- [ ] All 8 cases covered
-			- [ ] `progress_update` (info) and `progress_failed` (warn) log events asserted via structured JSON capture (logDestination stream)
-			- [ ] All existing implementer tests pass
+			- [x] All 8 cases covered
+			- [x] `progress_update` (info) and `progress_failed` (warn) log events asserted via structured JSON capture (logDestination stream)
+			- [x] All existing implementer tests pass
 		- **Dependencies**: Task: Implement relay detection in `AgentSDKImplementer.implement()` drain loop
 	- [x] **Task: Add ****`AgentSDKSpeccer`**** drain loop tests**
 		- **Description**: Mirror of the implementer drain loop tests for `tests/adapters/agent/speccer.test.ts`. Both `generateSpec()` and `reviseSpec()` must be covered independently, each with all 8 cases from §6 substituting `phase: 'spec_generation'`.
 		- **Acceptance criteria**:
-			- [ ] All 8 cases covered independently for both `generateSpec()` and `reviseSpec()`
-			- [ ] `progress_update` (info) and `progress_failed` (warn) log events asserted via structured JSON capture (logDestination stream) for both methods
-			- [ ] All existing speccer tests pass
+			- [x] All 8 cases covered independently for both `generateSpec()` and `reviseSpec()`
+			- [x] `progress_update` (info) and `progress_failed` (warn) log events asserted via structured JSON capture (logDestination stream) for both methods
+			- [x] All existing speccer tests pass
 		- **Dependencies**: Task: Implement relay detection in `AgentSDKSpeccer` drain loop
 	- [x] **Task: Add orchestrator ****`_runImplementation`**** progress tests**
 		- **Description**: Add the three test cases from §6 to `tests/core/orchestrator.test.ts`.
 		- **Acceptance criteria**:
-			- [ ] Callback wired for both call paths; `postMessage` invocation verified; failure handling confirmed with log event
-			- [ ] All existing orchestrator tests pass
+			- [x] Callback wired for both call paths; `postMessage` invocation verified; failure handling confirmed with log event
+			- [x] All existing orchestrator tests pass
 		- **Dependencies**: Task: Pass `onProgress` callback in `_runImplementation`
 	- [x] **Task: Add orchestrator ****`_runSpecGeneration`**** progress tests**
 		- **Description**: Mirror of the `_runImplementation` orchestrator tests for the spec gen path, substituting `deps.speccer` (or equivalent) and `phase: 'spec_generation'`.
 		- **Acceptance criteria**:
-			- [ ] Callback wired to speccer call site(s); `postMessage` invocation verified with correct `channel_id`, `thread_ts`, and message
-			- [ ] `postMessage` failure does not fail the run; `progress_failed` logged at warn with `phase: 'spec_generation'`, `run_id`, and `error`
-			- [ ] All existing orchestrator tests pass
+			- [x] Callback wired to speccer call site(s); `postMessage` invocation verified with correct `channel_id`, `thread_ts`, and message
+			- [x] `postMessage` failure does not fail the run; `progress_failed` logged at warn with `phase: 'spec_generation'`, `run_id`, and `error`
+			- [x] All existing orchestrator tests pass
 		- **Dependencies**: Task: Pass `onProgress` callback in `_runSpecGeneration`
