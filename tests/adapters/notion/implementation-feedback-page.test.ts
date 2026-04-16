@@ -9,12 +9,14 @@ function makeNotionClient(overrides: Partial<{
   blocksChildrenList: ReturnType<typeof vi.fn>;
   pagesGetMarkdown: ReturnType<typeof vi.fn>;
   pagesUpdateMarkdown: ReturnType<typeof vi.fn>;
+  pagesUpdateProperties: ReturnType<typeof vi.fn>;
 }> = {}): NotionClient {
   return {
     pages: {
       create: overrides.pagesCreate ?? vi.fn().mockResolvedValue({ id: 'new-page-id' }),
       getMarkdown: overrides.pagesGetMarkdown ?? vi.fn().mockResolvedValue(''),
       updateMarkdown: overrides.pagesUpdateMarkdown ?? vi.fn().mockResolvedValue(undefined),
+      updateProperties: overrides.pagesUpdateProperties ?? vi.fn().mockResolvedValue(undefined),
     },
     blocks: {
       children: {
@@ -27,6 +29,9 @@ function makeNotionClient(overrides: Partial<{
     },
     users: {
       me: vi.fn().mockResolvedValue({ id: 'bot-id' }),
+    },
+    databases: {
+      query: vi.fn().mockResolvedValue({ results: [] }),
     },
   } as unknown as NotionClient;
 }

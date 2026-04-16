@@ -32,6 +32,7 @@ function makeMockNotionClient(pageId = 'page-abc123'): NotionClient {
       create: vi.fn().mockResolvedValue({ id: pageId }),
       getMarkdown: vi.fn().mockResolvedValue(''),
       updateMarkdown: vi.fn().mockResolvedValue(undefined),
+      updateProperties: vi.fn().mockResolvedValue(undefined),
     },
     blocks: {
       children: {
@@ -43,6 +44,9 @@ function makeMockNotionClient(pageId = 'page-abc123'): NotionClient {
       create: vi.fn().mockResolvedValue({}),
     },
     users: { me: vi.fn() },
+    databases: {
+      query: vi.fn().mockResolvedValue({ results: [] }),
+    },
   };
 }
 
