@@ -5,6 +5,7 @@ import { createLogger } from './logger.js';
 import type { SlackAdapter } from '../adapters/slack/slack-adapter.js';
 import type { WorkspaceManager } from './workspace-manager.js';
 import type { SpecGenerator, ReviseResult } from '../adapters/agent/spec-generator.js';
+import { titleFromPath } from '../adapters/slack/canvas-publisher.js';
 import type { SpecPublisher } from '../adapters/slack/canvas-publisher.js';
 import type { Run, RunStage, RequestIntent } from '../types/runs.js';
 import type { Request, ThreadMessage, InboundEvent } from '../types/events.js';
@@ -369,6 +370,15 @@ export class OrchestratorImpl implements Orchestrator {
         );
       });
 
+    if (run.impl_feedback_ref) {
+      await this.deps.implFeedbackPage?.updateStatus?.(run.impl_feedback_ref, 'In progress').catch(err =>
+        this.logger.error(
+          { event: 'run.status_update_failed', run_id: run.id, status: 'In progress', error: String(err) },
+          'Failed to update testing guide status',
+        ),
+      );
+    }
+
     let result;
     try {
       result = await this.deps.implementer!.implement(
@@ -408,6 +418,7 @@ export class OrchestratorImpl implements Orchestrator {
       const pageId = await this.deps.implFeedbackPage!.create(
         run.publisher_ref!,
         specPageUrl,
+        titleFromPath(run.spec_path!),
         result.summary ?? '',
         result.testing_instructions ?? '',
       );
@@ -425,6 +436,15 @@ export class OrchestratorImpl implements Orchestrator {
       await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, completionMsg);
     } catch (err) {
       this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post completion notification');
+    }
+
+    if (run.impl_feedback_ref) {
+      await this.deps.implFeedbackPage?.updateStatus?.(run.impl_feedback_ref, 'Waiting on feedback').catch(err =>
+        this.logger.error(
+          { event: 'run.status_update_failed', run_id: run.id, status: 'Waiting on feedback', error: String(err) },
+          'Failed to update testing guide status',
+        ),
+      );
     }
 
     this.transition(run, 'reviewing_implementation');
@@ -520,6 +540,24 @@ export class OrchestratorImpl implements Orchestrator {
       await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, `PR opened: ${prUrl}`);
     } catch (err) {
       this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post PR link');
+    }
+
+    // Step 3: Update statuses (best-effort, all in parallel)
+    if (run.impl_feedback_ref) {
+      await Promise.allSettled([
+        this.deps.implFeedbackPage?.setPRLink?.(run.impl_feedback_ref, prUrl),
+        this.deps.implFeedbackPage?.updateStatus?.(run.impl_feedback_ref, 'Approved'),
+        this.deps.specPublisher.updateStatus?.(run.publisher_ref!, 'Complete'),
+      ]).then(results => {
+        for (const r of results) {
+          if (r.status === 'rejected') {
+            this.logger.error(
+              { event: 'run.status_update_failed', run_id: run.id, error: String(r.reason) },
+              'Failed to update status on implementation approval',
+            );
+          }
+        }
+      });
     }
 
     this.transition(run, 'done');

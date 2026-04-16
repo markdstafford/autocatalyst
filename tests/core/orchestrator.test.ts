@@ -213,7 +213,10 @@ function makeImplementer(resultOverrides: Partial<ImplementationResult> = {}): I
   };
 }
 
-function makeImplFeedbackPage(overrides: Partial<ImplementationFeedbackPage> = {}): ImplementationFeedbackPage {
+function makeImplFeedbackPage(overrides: Partial<ImplementationFeedbackPage> & {
+  updateStatus?: ReturnType<typeof vi.fn>;
+  setPRLink?: ReturnType<typeof vi.fn>;
+} = {}): ImplementationFeedbackPage {
   return {
     create: vi.fn().mockResolvedValue('feedback-page-id'),
     readFeedback: vi.fn().mockResolvedValue([]),
@@ -1071,8 +1074,9 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
 
     expect(implFeedbackPage.create).toHaveBeenCalledOnce();
     const createArgs = (implFeedbackPage.create as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(createArgs[2]).toBe('Implemented the feature successfully.');
-    expect(createArgs[3]).toBe('npm install && npm test');
+    expect(createArgs[2]).toBe('Test'); // spec_title derived from spec_path
+    expect(createArgs[3]).toBe('Implemented the feature successfully.');
+    expect(createArgs[4]).toBe('npm install && npm test');
   });
 
   it('complete result: stores impl_feedback_ref on run after page creation', async () => {
@@ -3622,6 +3626,197 @@ describe('Orchestrator — _handleSpecFeedback onProgress wiring', () => {
     const failLog = records.find(r => r['event'] === 'progress_failed' && r['phase'] === 'spec_generation');
     expect(failLog).toBeDefined();
     expect(String(failLog!['error'])).toContain('connection reset');
+  });
+});
+
+describe('Orchestrator — implementation lifecycle status updates', () => {
+  function makeOrchestratorWithNotionDeps(overrides: {
+    specPublisherUpdateStatus?: ReturnType<typeof vi.fn>;
+    implFeedbackPageUpdateStatus?: ReturnType<typeof vi.fn>;
+    implFeedbackPageSetPRLink?: ReturnType<typeof vi.fn>;
+    implFeedbackPageCreate?: ReturnType<typeof vi.fn>;
+  } = {}) {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const sg = makeSpecGenerator();
+    const updateStatus = overrides.specPublisherUpdateStatus ?? vi.fn().mockResolvedValue(undefined);
+    const cp = makeSpecPublisher({ updateStatus });
+    const sc = makeSpecCommitter();
+    const impl = makeImplementer();
+    const implFbUpdateStatus = overrides.implFeedbackPageUpdateStatus ?? vi.fn().mockResolvedValue(undefined);
+    const implFbSetPRLink = overrides.implFeedbackPageSetPRLink ?? vi.fn().mockResolvedValue(undefined);
+    const implFbCreate = overrides.implFeedbackPageCreate ?? vi.fn().mockResolvedValue('feedback-page-id');
+    const implFb = makeImplFeedbackPage({
+      create: implFbCreate,
+      updateStatus: implFbUpdateStatus,
+      setPRLink: implFbSetPRLink,
+    });
+    const prCreator = { createPR: vi.fn().mockResolvedValue('https://github.com/org/repo/pull/1') };
+    return {
+      adapter, wm, sg, cp, sc, impl, implFb, prCreator,
+      specPublisherUpdateStatus: updateStatus,
+      implFeedbackPageUpdateStatus: implFbUpdateStatus,
+      implFeedbackPageSetPRLink: implFbSetPRLink,
+      implFeedbackPageCreate: implFbCreate,
+    };
+  }
+
+  it('calls implFeedbackPage.updateStatus("In progress") and ("Waiting on feedback") during first implementation', async () => {
+    const deps = makeOrchestratorWithNotionDeps();
+    const ic = makeIntentClassifier('approval');
+
+    const orch = new OrchestratorImpl(
+      {
+        adapter: deps.adapter as never,
+        workspaceManager: deps.wm,
+        specGenerator: deps.sg,
+        specPublisher: deps.cp,
+        postError: vi.fn(),
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        repo_url: 'https://github.com/org/repo',
+        intentClassifier: ic,
+        specCommitter: deps.sc,
+        implementer: deps.impl,
+        implFeedbackPage: deps.implFb,
+        prCreator: deps.prCreator as never,
+      } as never,
+      { logDestination: nullDest },
+    );
+    await orch.start();
+
+    // Inject run with existing impl_feedback_ref to test 'In progress' call
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    runs.set('request-001', makeRun({ stage: 'reviewing_spec', impl_feedback_ref: 'existing-feedback-id' }));
+    deps.adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await vi.waitUntil(
+      () => runs.get('request-001')?.stage === 'reviewing_implementation' || runs.get('request-001')?.stage === 'failed',
+      { timeout: 3000 },
+    );
+    await orch.stop();
+
+    const statusCalls = (deps.implFeedbackPageUpdateStatus as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1]);
+    expect(statusCalls).toContain('In progress');
+    expect(statusCalls).toContain('Waiting on feedback');
+  });
+
+  it('calls implFeedbackPage.updateStatus("Approved"), specPublisher.updateStatus("Complete"), and setPRLink on implementation approval', async () => {
+    const deps = makeOrchestratorWithNotionDeps();
+    const ic = makeIntentClassifier('approval');
+
+    const orch = new OrchestratorImpl(
+      {
+        adapter: deps.adapter as never,
+        workspaceManager: deps.wm,
+        specGenerator: deps.sg,
+        specPublisher: deps.cp,
+        postError: vi.fn(),
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        repo_url: 'https://github.com/org/repo',
+        intentClassifier: ic,
+        specCommitter: deps.sc,
+        implementer: deps.impl,
+        implFeedbackPage: deps.implFb,
+        prCreator: deps.prCreator as never,
+      } as never,
+      { logDestination: nullDest },
+    );
+    await orch.start();
+
+    // Inject run in reviewing_implementation with impl_feedback_ref set
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    runs.set('request-001', makeRun({ stage: 'reviewing_implementation', impl_feedback_ref: 'feedback-page-id', publisher_ref: 'CANVAS001' }));
+    deps.adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await vi.waitUntil(
+      () => runs.get('request-001')?.stage === 'done' || runs.get('request-001')?.stage === 'failed',
+      { timeout: 3000 },
+    );
+    await orch.stop();
+
+    const implStatusCalls = (deps.implFeedbackPageUpdateStatus as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1]);
+    expect(implStatusCalls).toContain('Approved');
+    const specStatusCalls = (deps.specPublisherUpdateStatus as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1]);
+    expect(specStatusCalls).toContain('Complete');
+    expect(deps.implFeedbackPageSetPRLink).toHaveBeenCalledWith('feedback-page-id', 'https://github.com/org/repo/pull/1');
+  });
+
+  it('implFeedbackPage.create() called with spec_title derived from spec_path', async () => {
+    const deps = makeOrchestratorWithNotionDeps();
+    const ic = makeIntentClassifier('approval');
+
+    const orch = new OrchestratorImpl(
+      {
+        adapter: deps.adapter as never,
+        workspaceManager: deps.wm,
+        specGenerator: deps.sg,
+        specPublisher: deps.cp,
+        postError: vi.fn(),
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        repo_url: 'https://github.com/org/repo',
+        intentClassifier: ic,
+        specCommitter: deps.sc,
+        implementer: deps.impl,
+        implFeedbackPage: deps.implFb,
+      } as never,
+      { logDestination: nullDest },
+    );
+    await orch.start();
+
+    // spec_path from makeRun is '/ws/request-001/context-human/specs/feature-test.md'
+    // titleFromPath('feature-test.md') -> 'Test'
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    runs.set('request-001', makeRun({ stage: 'reviewing_spec' }));
+    deps.adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await vi.waitUntil(
+      () => runs.get('request-001')?.stage === 'reviewing_implementation' || runs.get('request-001')?.stage === 'failed',
+      { timeout: 3000 },
+    );
+    await orch.stop();
+
+    const createCall = (deps.implFeedbackPageCreate as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(createCall[2]).toBe('Test'); // spec_title is 3rd argument
+  });
+
+  it('one rejection in Promise.allSettled on implementation approval does not prevent others', async () => {
+    const deps = makeOrchestratorWithNotionDeps({
+      implFeedbackPageUpdateStatus: vi.fn().mockRejectedValue(new Error('status failed')),
+      implFeedbackPageSetPRLink: vi.fn().mockResolvedValue(undefined),
+      specPublisherUpdateStatus: vi.fn().mockResolvedValue(undefined),
+    });
+    const ic = makeIntentClassifier('approval');
+
+    const orch = new OrchestratorImpl(
+      {
+        adapter: deps.adapter as never,
+        workspaceManager: deps.wm,
+        specGenerator: deps.sg,
+        specPublisher: deps.cp,
+        postError: vi.fn(),
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        repo_url: 'https://github.com/org/repo',
+        intentClassifier: ic,
+        specCommitter: deps.sc,
+        implementer: deps.impl,
+        implFeedbackPage: deps.implFb,
+        prCreator: deps.prCreator as never,
+      } as never,
+      { logDestination: nullDest },
+    );
+    await orch.start();
+
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    runs.set('request-001', makeRun({ stage: 'reviewing_implementation', impl_feedback_ref: 'feedback-page-id', publisher_ref: 'CANVAS001' }));
+    deps.adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await vi.waitUntil(
+      () => runs.get('request-001')?.stage === 'done' || runs.get('request-001')?.stage === 'failed',
+      { timeout: 3000 },
+    );
+    await orch.stop();
+
+    // setPRLink and specPublisher.updateStatus('Complete') still called despite implFb.updateStatus rejection
+    expect(deps.implFeedbackPageSetPRLink).toHaveBeenCalled();
+    expect(deps.specPublisherUpdateStatus).toHaveBeenCalledWith(expect.any(String), 'Complete');
+    // Run reaches 'done' despite the rejection
+    expect(runs.get('request-001')!.stage).toBe('done');
   });
 });
 
