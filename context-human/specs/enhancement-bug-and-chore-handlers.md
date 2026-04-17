@@ -405,78 +405,78 @@ The `chore` upgrade path cannot be exercised until intake-stage thread_message r
 The Notion page property update (step 4 of the approval handler) is a best-effort operation. If it fails after the GitHub issue has been written, the run should proceed to implementation rather than failing. A failed update is logged as an error but is non-blocking. Mitigation: wrap the Notion update in a try/catch that logs and continues, matching the pattern used for `updateStatus` in the triage pipeline.
 ## Task list
 
-- [ ] **Story: Add ****`chore`**** to the intent taxonomy**
-	- [ ] **Task: Add ****`chore`**** to ****`RequestIntent`**
+- [x] **Story: Add ****`chore`**** to the intent taxonomy**
+	- [x] **Task: Add ****`chore`**** to ****`RequestIntent`**
 		- **Description**: In `src/types/runs.ts`, extend `RequestIntent` from `'idea' | 'bug' | 'question'` to `'idea' | 'bug' | 'chore' | 'question'`.
 		- **Acceptance criteria**:
-			- [ ] `RequestIntent` type is `'idea' | 'bug' | 'chore' | 'question'`
-			- [ ] `tsc --noEmit` passes (downstream errors expected until `Intent` type is updated)
+			- [x] `RequestIntent` type is `'idea' | 'bug' | 'chore' | 'question'`
+			- [x] `tsc --noEmit` passes (downstream errors expected until `Intent` type is updated)
 		- **Dependencies**: None
-	- [ ] **Task: Add ****`chore`**** to ****`Intent`**** type and classifier**
+	- [x] **Task: Add ****`chore`**** to ****`Intent`**** type and classifier**
 		- **Description**: In `src/adapters/agent/intent-classifier.ts`: (1) add `'chore'` to the `Intent` union type; (2) add `'chore'` to `ALL_INTENTS`; (3) add `'chore'` to `VALID_INTENTS_BY_CONTEXT` for `new_thread` and `intake` contexts; (4) add `'chore'` to `intentDescriptions` with description `'the human is requesting maintenance work — a refactor, cleanup, dependency update, or other non-feature, non-bug task'`; (5) confirm `CONSERVATIVE_FALLBACK` for `new_thread` and `intake` remains `'idea'` (no change needed).
 		- **Acceptance criteria**:
-			- [ ] `Intent` type includes `'chore'`
-			- [ ] `ALL_INTENTS` includes `'chore'`
-			- [ ] `VALID_INTENTS_BY_CONTEXT.new_thread` includes `'chore'`
-			- [ ] `VALID_INTENTS_BY_CONTEXT.intake` includes `'chore'`
-			- [ ] `intentDescriptions` has an accurate description for `'chore'`
-			- [ ] `CONSERVATIVE_FALLBACK` for `new_thread` and `intake` is still `'idea'`
-			- [ ] `tsc --noEmit` passes
+			- [x] `Intent` type includes `'chore'`
+			- [x] `ALL_INTENTS` includes `'chore'`
+			- [x] `VALID_INTENTS_BY_CONTEXT.new_thread` includes `'chore'`
+			- [x] `VALID_INTENTS_BY_CONTEXT.intake` includes `'chore'`
+			- [x] `intentDescriptions` has an accurate description for `'chore'`
+			- [x] `CONSERVATIVE_FALLBACK` for `new_thread` and `intake` is still `'idea'`
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `chore` to `RequestIntent`
-	- [ ] **Task: Update intent classifier tests for ****`chore`**
+	- [x] **Task: Update intent classifier tests for ****`chore`**
 		- **Description**: In `tests/adapters/agent/intent-classifier.test.ts`, add cases: (1) `new_thread` context → valid intents include `'chore'`; (2) `intake` context → valid intents include `'chore'`; (3) a maintenance-work message example classifies as `'chore'`; (4) `'chore'` returned for `reviewing_spec` context → conservative fallback (`'feedback'`) asserted.
 		- **Acceptance criteria**:
-			- [ ] `new_thread` valid intents test includes `'chore'`
-			- [ ] `intake` valid intents test includes `'chore'`
-			- [ ] Maintenance work message example classifies as `'chore'`
-			- [ ] Out-of-context `'chore'` → fallback asserted
-			- [ ] All tests pass
+			- [x] `new_thread` valid intents test includes `'chore'`
+			- [x] `intake` valid intents test includes `'chore'`
+			- [x] Maintenance work message example classifies as `'chore'`
+			- [x] Out-of-context `'chore'` → fallback asserted
+			- [x] All tests pass
 		- **Dependencies**: Task: Add `chore` to `Intent` type and classifier
-- [ ] **Story: Implement triage pipeline**
-	- [ ] **Task: Update ****`SpecGenerator.create()`**** to support triage intent**
+- [x] **Story: Implement triage pipeline**
+	- [x] **Task: Update ****`SpecGenerator.create()`**** to support triage intent**
 		- **Description**: In `src/adapters/agent/spec-generator.ts`, add an optional fourth parameter `intent?: 'idea' | 'bug' | 'chore'` to both the `SpecGenerator` interface and `AgentSDKSpecGenerator.create()`. When `intent === 'bug'`, use the bug triage prompt (see section 3 — invokes `mm:issue-triage` with thorough investigation; output format is determined by the micromanager skill). When `intent === 'chore'`, use the chore spec prompt (see section 3 — invokes `mm:issue-triage`; output format is determined by the micromanager skill). When `intent === 'idea'` or omitted, existing behavior is unchanged.
 		- **Acceptance criteria**:
-			- [ ] `SpecGenerator` interface `create()` has optional `intent` parameter
-			- [ ] `AgentSDKSpecGenerator.create()` implementation updated accordingly
-			- [ ] Bug agent prompt includes instruction to invoke `mm:issue-triage` with thorough investigation
-			- [ ] Chore agent prompt includes instruction to invoke `mm:issue-triage`
-			- [ ] Omitting `intent` or passing `'idea'` produces existing feature spec behavior unchanged
+			- [x] `SpecGenerator` interface `create()` has optional `intent` parameter
+			- [x] `AgentSDKSpecGenerator.create()` implementation updated accordingly
+			- [x] Bug agent prompt includes instruction to invoke `mm:issue-triage` with thorough investigation
+			- [x] Chore agent prompt includes instruction to invoke `mm:issue-triage`
+			- [x] Omitting `intent` or passing `'idea'` produces existing feature spec behavior unchanged
 			- [ ] Manually verify `mm:issue-triage` produces appropriate output for a representative bug report; if insufficient, file against micromanager before merging
-			- [ ] `tsc --noEmit` passes
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `chore` to `RequestIntent`
-	- [ ] **Task: Implement ****`_startTriagePipeline`**** in orchestrator**
+	- [x] **Task: Implement ****`_startTriagePipeline`**** in orchestrator**
 		- **Description**: In `src/core/orchestrator.ts`, add a private method `_startTriagePipeline(run: Run, request: Request, intent: 'bug' | 'chore'): Promise<void>`. It mirrors `_startSpecPipeline` in structure: (1) `this.transition(run, 'speccing')`; (2) create workspace via `workspaceManager.create()`; (3) generate triage document via `this.deps.specGenerator.create(request, workspace_path, onProgress, intent)`; (4) publish via `specPublisher.create()`; (5) `this.transition(run, 'reviewing_spec')`; (6) update Notion status to `'Waiting on feedback'`. All error paths follow the same `failRun` + workspace destroy pattern as `_startSpecPipeline`.
 		- **Acceptance criteria**:
-			- [ ] `_startTriagePipeline` exists and is callable with `'bug'` and `'chore'`
-			- [ ] On success: run transitions `intake → speccing → reviewing_spec`
-			- [ ] On workspace creation failure: `failRun` called; run marked `failed`
-			- [ ] On spec generator failure: workspace destroyed; `failRun` called
-			- [ ] On publisher failure: workspace destroyed; `failRun` called
-			- [ ] `specGenerator.create()` called with the correct `intent` argument
-			- [ ] `tsc --noEmit` passes
+			- [x] `_startTriagePipeline` exists and is callable with `'bug'` and `'chore'`
+			- [x] On success: run transitions `intake → speccing → reviewing_spec`
+			- [x] On workspace creation failure: `failRun` called; run marked `failed`
+			- [x] On spec generator failure: workspace destroyed; `failRun` called
+			- [x] On publisher failure: workspace destroyed; `failRun` called
+			- [x] `specGenerator.create()` called with the correct `intent` argument
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Update `SpecGenerator.create()` to support triage intent
-	- [ ] **Task: Wire ****`bug`**** and ****`chore`**** intents to ****`_startTriagePipeline`**
+	- [x] **Task: Wire ****`bug`**** and ****`chore`**** intents to ****`_startTriagePipeline`**
 		- **Description**: In `src/core/orchestrator.ts`, `_handleRequest`: replace the stub bug handler (the block currently posting "Got it — bug report noted. Bug triage is not yet implemented.", lines 235–242) with `run.intent = 'bug'; this._persistRuns(); await this._startTriagePipeline(run, request, 'bug');`. Add a parallel `chore` branch: `run.intent = 'chore'; this._persistRuns(); await this._startTriagePipeline(run, request, 'chore');`.
 		- **Acceptance criteria**:
-			- [ ] `bug` intent routes to `_startTriagePipeline(run, request, 'bug')`
-			- [ ] `chore` intent routes to `_startTriagePipeline(run, request, 'chore')`
-			- [ ] Stub "Bug triage is not yet implemented." post is removed
-			- [ ] `run.intent` is set before `_persistRuns()` in both branches
-			- [ ] `tsc --noEmit` passes
+			- [x] `bug` intent routes to `_startTriagePipeline(run, request, 'bug')`
+			- [x] `chore` intent routes to `_startTriagePipeline(run, request, 'chore')`
+			- [x] Stub "Bug triage is not yet implemented." post is removed
+			- [x] `run.intent` is set before `_persistRuns()` in both branches
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement `_startTriagePipeline` in orchestrator, Task: Add `chore` to `Intent` type and classifier
-	- [ ] **Task: Update approval handler for bug and chore runs**
+	- [x] **Task: Update approval handler for bug and chore runs**
 		- **Description**: In `src/core/orchestrator.ts`, update the approval handler for `reviewing_spec`-stage runs: when `run.intent === 'bug'` or `run.intent === 'chore'`: (1) fetch triage content from Notion via `run.publisher_ref` (not `run.spec_path` — the Notion page is the canonical reviewed version); (2) write the content to the associated GitHub issue if `run.issue` is set, or create a new GitHub issue if none exists; (3) store the issue number on the run; (4) update the Notion page properties — set the linked GitHub issue URL and set page status to Approved (this step is non-blocking: log errors but do not fail the run); (5) proceed with implementation. When `run.intent === 'idea'`, existing behavior (commit spec file) is unchanged.
 		- **Acceptance criteria**:
-			- [ ] Approval of a bug run fetches triage content from Notion via `run.publisher_ref`, not from `run.spec_path`
-			- [ ] Approval of a chore run fetches triage content from Notion via `run.publisher_ref`
-			- [ ] Triage content written to the associated GitHub issue for both bug and chore runs
-			- [ ] If no issue is associated with the run, a new GitHub issue is created and its number stored on the run
-			- [ ] Notion page properties updated: issue URL recorded, page status set to Approved
-			- [ ] Notion property update failure is logged as an error but does not fail the run
-			- [ ] `triage.approved` log event emitted with `run_id`, `request_id`, `intent`, `issue_number`
-			- [ ] No md file is committed to the repository for bug or chore runs
-			- [ ] Approval of an idea run continues to commit the spec file (unchanged behavior)
-			- [ ] `tsc --noEmit` passes
+			- [x] Approval of a bug run fetches triage content from Notion via `run.publisher_ref`, not from `run.spec_path`
+			- [x] Approval of a chore run fetches triage content from Notion via `run.publisher_ref`
+			- [x] Triage content written to the associated GitHub issue for both bug and chore runs
+			- [x] If no issue is associated with the run, a new GitHub issue is created and its number stored on the run
+			- [x] Notion page properties updated: issue URL recorded, page status set to Approved
+			- [x] Notion property update failure is logged as an error but does not fail the run
+			- [x] `triage.approved` log event emitted with `run_id`, `request_id`, `intent`, `issue_number`
+			- [x] No md file is committed to the repository for bug or chore runs
+			- [x] Approval of an idea run continues to commit the spec file (unchanged behavior)
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Wire `bug` and `chore` intents to `_startTriagePipeline`
 	- [ ] **Task: Extend upgrade path for ****`bug`**** and ****`chore`**** (dependent on #43)**
 		- **Description**: Once intake-stage thread_message routing from #43 is confirmed available, update the upgrade path in `_handleRequest`: when `run.intent === 'question'` and `run.stage === 'intake'` and classifier returns `'bug'` or `'chore'`, update `run.intent`, log `run.intent_upgraded`, and call `_startTriagePipeline` with the appropriate intent. Note: the `'bug'` upgrade previously called a stub ack — this task replaces that with the real pipeline call. This task MUST NOT be started until intake-stage routing is confirmed operational.
@@ -486,16 +486,16 @@ The Notion page property update (step 4 of the approval handler) is a best-effor
 			- [ ] `tsc --noEmit` passes
 			- [ ] All tests pass
 		- **Dependencies**: Task: Wire `bug` and `chore` intents to `_startTriagePipeline`; intake-stage thread routing from `enhancement-intent-classifier-routing.md` (#43) confirmed available
-- [ ] **Story: Test coverage**
-	- [ ] **Task: Update orchestrator unit tests**
+- [x] **Story: Test coverage**
+	- [x] **Task: Update orchestrator unit tests**
 		- **Description**: In `tests/core/orchestrator.test.ts`, add cases covering: routing (bug and chore new_request → `_startTriagePipeline`, correct `run.intent` set, run reaches `reviewing_spec`); error paths (workspace failure, spec generator failure, publisher failure for each intent; Notion fetch failure on approval; GitHub issue write failure on approval); approval paths (triage content fetched from Notion via `publisher_ref` not `spec_path`; issue written; Notion page properties updated; no file committed; new issue created when none exists; Notion update failure is non-blocking); and existing behavior (feedback routing for bug/chore in `reviewing_spec` unchanged; idea approval unchanged).
 		- **Acceptance criteria**:
-			- [ ] Bug and chore routing test cases pass; `run.intent` and stage transitions asserted
-			- [ ] Error path tests pass for workspace, generator, and publisher failures for both intents
-			- [ ] Approval tests assert triage content fetched from Notion (mock `specPublisher.getContent` or equivalent), not read from `spec_path`
-			- [ ] Approval tests assert Notion page properties updated on success
-			- [ ] Approval tests assert Notion update failure is logged and run proceeds to implementation
-			- [ ] Approval tests assert new GitHub issue created and stored when `run.issue` is unset
-			- [ ] Existing `idea` feedback and approval tests unchanged and passing
-			- [ ] All tests pass
+			- [x] Bug and chore routing test cases pass; `run.intent` and stage transitions asserted
+			- [x] Error path tests pass for workspace, generator, and publisher failures for both intents
+			- [x] Approval tests assert triage content fetched from Notion (mock `specPublisher.getContent` or equivalent), not read from `spec_path`
+			- [x] Approval tests assert Notion page properties updated on success
+			- [x] Approval tests assert Notion update failure is logged and run proceeds to implementation
+			- [x] Approval tests assert new GitHub issue created and stored when `run.issue` is unset
+			- [x] Existing `idea` feedback and approval tests unchanged and passing
+			- [x] All tests pass
 		- **Dependencies**: Task: Wire `bug` and `chore` intents to `_startTriagePipeline`, Task: Update approval handler for bug and chore runs
