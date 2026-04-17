@@ -9,7 +9,7 @@ superseded_by: null
 **Decision:** TypeScript on Node.js.
 
 **Rationale:**
-- oh-my-claudecode (OMC) is TypeScript — shared language reduces friction at the adapter boundary
+- `@anthropic-ai/claude-agent-sdk` is TypeScript — shared language reduces friction at the adapter boundary
 - Slack Bolt SDK is Node-native and best-in-class
 - TypeScript's type system catches errors at compile time — faster feedback loops for agents
 - Well-represented in LLM training data — agents write fluent TypeScript
