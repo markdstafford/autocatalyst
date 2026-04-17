@@ -78,9 +78,9 @@ This one holds up. By the time it's ready for approval, the spec reflects three 
 
 **Dependencies**
 - Feature: Slack message routing — provides the `SlackAdapter` and `InboundEvent` stream (`new_idea`, `spec_feedback`)
-- ADR-001: Agent-first development — establishes OMC as the agent runtime and mm:planning as the spec generation skill
+- ADR-001: Agent-first development — establishes Agent SDK as the agent runtime and mm:planning as the spec generation skill
 - ADR-003: Spec format — defines the Markdown + YAML frontmatter standard all generated specs must follow
-- Decision: Agent runtime adapter — defines the `AgentRuntimeAdapter` interface Autocatalyst uses to invoke OMC
+- Decision: Agent runtime adapter — defines the `AgentRuntimeAdapter` interface Autocatalyst uses to invoke Agent SDK
 
 **Technical goals**
 - First spec draft posted to Slack canvas within 5 minutes of `new_idea` event received
@@ -93,7 +93,7 @@ This one holds up. By the time it's ready for approval, the spec reflects three 
 - Persisting run state across service restarts
 
 **Glossary**
-- **OMC (oh-my-claudecode)** — agent orchestration tool; Autocatalyst invokes it as a subprocess to run Claude with specific skills and context
+- **Agent SDK (`@anthropic-ai/claude-agent-sdk`)** — the Anthropic Agent SDK; Autocatalyst uses its `query()` function to run Claude with a prompt and workspace context
 - **mm:planning** — the Claude Code skill that generates structured specs from a seed idea, used here in headless mode
 - **Canvas** — Slack's native document format; created and updated via the Slack Web API; used to post the spec to the idea's thread
 - **Workspace** — an isolated directory containing a shallow git clone of the target repository on a dedicated branch; supports commits and PRs
@@ -105,7 +105,7 @@ This one holds up. By the time it's ready for approval, the spec reflects three 
 
 - `src/core/orchestrator.ts` — wires the `SlackAdapter` event stream to the speccing pipeline; owns the in-memory run registry; drives stage transitions
 - `src/core/workspace-manager.ts` — creates and tears down workspaces (shallow git clone + dedicated branch per idea)
-- `src/adapters/agent/spec-generator.ts` — invokes OMC with mm:planning and the idea content; captures the generated spec file from the workspace
+- `src/adapters/agent/spec-generator.ts` — invokes Agent SDK with mm:planning and the idea content; captures the generated spec file from the workspace
 - `src/adapters/slack/canvas-publisher.ts` — creates and updates a Slack canvas with spec content; posts the canvas link to the idea's thread
 
 **High-level flow**
@@ -116,8 +116,8 @@ flowchart LR
     SlackAdapter -->|InboundEvent| Orchestrator
     Orchestrator -->|create workspace| WorkspaceManager
     Orchestrator -->|generate spec| SpecGenerator
-    SpecGenerator -->|invoke OMC| OMC["OMC (oh-my-claudecode)"]
-    OMC -->|spec content returned| SpecGenerator
+    SpecGenerator -->|invoke Agent SDK| AgentSDK["Agent SDK (@anthropic-ai/claude-agent-sdk)"]
+    AgentSDK -->|spec content returned| SpecGenerator
     Orchestrator -->|publish| CanvasPublisher
     CanvasPublisher -->|canvas create/update| Slack
 ```
@@ -140,8 +140,8 @@ sequenceDiagram
     Orchestrator->>WorkspaceManager: create(idea_id, repo_url)
     WorkspaceManager-->>Orchestrator: workspace_path + branch
     Orchestrator->>SpecGenerator: create(idea, workspace_path)
-    SpecGenerator->>OMC: omc ask claude --print "..."
-    OMC-->>SpecGenerator: artifact with spec content
+    SpecGenerator->>AgentSDK: query(prompt, workspace_path)
+    AgentSDK-->>SpecGenerator: spec content
     SpecGenerator-->>Orchestrator: spec_path
     Orchestrator->>CanvasPublisher: create(channel_id, thread_ts, spec_path)
     CanvasPublisher->>Slack: canvases.create + chat.postMessage
@@ -163,8 +163,8 @@ sequenceDiagram
     Slack->>SlackAdapter: message event (thread reply)
     SlackAdapter->>Orchestrator: spec_feedback event
     Orchestrator->>SpecGenerator: revise(feedback, spec_path, workspace_path)
-    SpecGenerator->>OMC: omc ask claude --print "..."
-    OMC-->>SpecGenerator: artifact with revised spec content
+    SpecGenerator->>AgentSDK: query(prompt, workspace_path)
+    AgentSDK-->>SpecGenerator: revised spec content
     SpecGenerator-->>Orchestrator: done
     Orchestrator->>CanvasPublisher: update(canvas_id, spec_path)
     CanvasPublisher->>Slack: canvases.edit
@@ -215,12 +215,14 @@ export interface CanvasPublisher {
 }
 ```
 
-**OMC invocation**
+**Agent SDK invocation**
 
-`SpecGenerator` invokes OMC as a child process with `cwd` set to `workspace_path`:
+`SpecGenerator` invokes Agent SDK's `query()` function with `cwd` set to `workspace_path`:
 
-```bash
-omc ask claude --print "<prompt>"
+```typescript
+for await (const message of query({ prompt, options: { cwd: workspace_path, permissionMode: 'bypassPermissions', tools: { type: 'preset', preset: 'claude_code' } } })) {
+  // stream agent messages
+}
 ```
 
 Generation prompt:
@@ -251,7 +253,7 @@ Current spec:
 >>>
 ```
 
-OMC prints the artifact path to stdout on exit (code 0 = success). `SpecGenerator` reads the artifact, extracts the `## Raw output` section, parses the `FILENAME:` line, writes the spec body to `<workspace_path>/context-human/specs/<filename>`, and returns that path. The filename is validated against `^(feature|enhancement)-[a-z0-9-]+\.md$` before use.
+`SpecGenerator` instructs Agent SDK to write the result to `.autocatalyst/spec-create-result.json` in the workspace. On completion, it reads the result file, parses the `FILENAME:` line, writes the spec body to `<workspace_path>/context-human/specs/<filename>`, and returns that path. The filename is validated against `^(feature|enhancement)-[a-z0-9-]+\.md$` before use.
 
 **WorkspaceManager implementation**
 
@@ -324,12 +326,12 @@ export interface Orchestrator {
 - `repo_url` is derived from the `origin` remote of the `--repo` directory. Workspace access is governed by the OS user running the process and whatever credentials are configured for git (SSH keys, credential helpers).
 
 **Data privacy**
-- Idea content and spec feedback are sent to Anthropic via OMC. This data is not logged by Autocatalyst.
+- Idea content and spec feedback are sent to Anthropic via Agent SDK. This data is not logged by Autocatalyst.
 - The generated spec is written to disk in the workspace but is not committed to the repository until the approval signal is received (Feature 4).
 
 **Input validation**
 - Events are pre-filtered by `SlackAdapter` before reaching the Orchestrator — only `new_idea` and `spec_feedback` events are processed.
-- The `FILENAME` line in OMC output is validated against `^(feature|enhancement)-[a-z0-9-]+\.md$` before the spec is written to disk. An invalid filename causes the run to transition to `failed`.
+- The `FILENAME` line in Agent SDK output is validated against `^(feature|enhancement)-[a-z0-9-]+\.md$` before the spec is written to disk. An invalid filename causes the run to transition to `failed`.
 
 ### 5. Observability
 
@@ -348,15 +350,15 @@ Stable event names for this feature:
 | `workspace.destroyed` | info | workspace-manager |
 | `spec.generated` | info | spec-generator |
 | `spec.revised` | info | spec-generator |
-| `omc.invoked` | debug | spec-generator |
-| `omc.completed` | debug | spec-generator |
-| `omc.failed` | error | spec-generator |
+| `spec.agent_invoked` | debug | spec-generator |
+| `spec.agent_completed` | debug | spec-generator |
+| `spec.agent_failed` | error | spec-generator |
 | `canvas.created` | info | canvas-publisher |
 | `canvas.updated` | info | canvas-publisher |
 
 **Traces**
 
-Per the observability-stack ADR, OpenTelemetry traces will wrap each orchestrator stage transition and each OMC invocation. Not implemented in this feature — tracked separately.
+Per the observability-stack ADR, OpenTelemetry traces will wrap each orchestrator stage transition and each Agent SDK invocation. Not implemented in this feature — tracked separately.
 
 ### 6. Testing plan
 
@@ -383,12 +385,12 @@ _Path construction_
 
 **SpecGenerator**
 
-_OMC invocation — `create`_
-- `create` spawns OMC with `cwd` set to `workspace_path`
+_Agent SDK invocation — `create`_
+- `create` calls `query()` with `cwd` set to `workspace_path`
 - The prompt includes the idea content wrapped in `<<<`/`>>>` delimiters
-- The prompt instructs OMC to write `FILENAME: <slug>.md` on the first line
-- `create` throws if OMC exits non-zero
-- `create` throws if the artifact file path printed to stdout does not exist
+- The prompt instructs Agent SDK to write `FILENAME: <slug>.md` on the first line
+- `create` throws if Agent SDK `query()` rejects
+- `create` throws if the result file does not exist
 
 _Artifact parsing — `create`_
 - `FILENAME: feature-setup-wizard.md` on the first line of `## Raw output` is parsed correctly
@@ -399,13 +401,13 @@ _Artifact parsing — `create`_
 - After a successful parse, the spec body (everything after the `FILENAME:` line) is written to `<workspace_path>/context-human/specs/<filename>`
 - `create` returns the full spec path
 
-_OMC invocation — `revise`_
-- `revise` spawns OMC with `cwd` set to `workspace_path`
+_Agent SDK invocation — `revise`_
+- `revise` calls `query()` with `cwd` set to `workspace_path`
 - The prompt leads with feedback content wrapped in `<<<`/`>>>`
 - The prompt follows with the current spec file content wrapped in `<<<`/`>>>`
-- `revise` reads the spec from `spec_path` before invoking OMC
+- `revise` reads the spec from `spec_path` before invoking Agent SDK
 - `revise` overwrites the spec file in place with the revised content from the artifact
-- `revise` throws if OMC exits non-zero
+- `revise` throws if Agent SDK `query()` rejects
 
 ---
 
@@ -477,9 +479,9 @@ _Failure paths_
 - `run.created` is emitted with `run_id` and `idea_id` when a run is first created
 - `run.stage_transition` is emitted with `run_id`, `idea_id`, `from_stage`, `to_stage` on every transition
 - `run.failed` is emitted with `run_id`, `idea_id`, and the error at the error level when a run fails
-- `omc.invoked` and `omc.completed` are emitted at debug level with `run_id` and `idea_id`
-- `omc.failed` is emitted at error level with the exit code and stderr when OMC exits non-zero
-- Idea content is not logged at `info` level or above (content goes to OMC, not logs)
+- `spec.agent_invoked` and `spec.agent_completed` are emitted at debug level with `run_id` and `idea_id`
+- `spec.agent_failed` is emitted at error level with the exit code and stderr when Agent SDK `query()` rejects
+- Idea content is not logged at `info` level or above (content goes to Agent SDK, not logs)
 
 ---
 
@@ -498,7 +500,7 @@ _Failure paths_
 - Reply with feedback; confirm the canvas is updated (not a new message) within 5 minutes
 - Inspect the canvas content; confirm it matches the ADR-003 Markdown + YAML frontmatter format
 - Confirm no spec file exists in the workspace repository until the approval signal is sent (Feature 4)
-- Trigger a deliberate OMC failure (bad credentials); confirm an error message appears in the thread and no canvas is posted
+- Trigger a deliberate Agent SDK failure (bad credentials); confirm an error message appears in the thread and no canvas is posted
 
 ### 7. Alternatives considered
 
@@ -510,9 +512,9 @@ The spec content will typically exceed Slack's message length limit and lacks st
 
 A persistent store would survive service restarts and support multi-process deployments. For the initial feature, in-memory state was chosen: it eliminates infrastructure dependencies, keeps the data model simple, and the cost of losing in-flight runs on restart is low given that ideas are seeded via Slack (the history is still there). Persistence is deferred as an explicit non-goal.
 
-**Invoking Claude directly via the Anthropic SDK instead of OMC**
+**Invoking Claude directly via the Anthropic SDK instead of Agent SDK**
 
-Calling the SDK directly would remove the OMC dependency and give full control over the API call. OMC was chosen because it provides the mm:planning skill context, artifact management, and a consistent invocation pattern shared across the system. Bypassing it would require reimplementing that context injection and diverge from the ADR-001 agent-first architecture.
+Calling the SDK directly would remove the Agent SDK dependency and give full control over the API call. Agent SDK was chosen because it provides the mm:planning skill context, artifact management, and a consistent invocation pattern shared across the system. Bypassing it would require reimplementing that context injection and diverge from the ADR-001 agent-first architecture.
 
 **One workspace shared across all ideas vs. one per idea**
 
@@ -520,9 +522,9 @@ A shared workspace reduces disk usage but creates branch conflicts and race cond
 
 ### 8. Risks
 
-**OMC output format changes**
+**Agent SDK output format changes**
 
-The artifact parsing logic depends on OMC's `## Raw output` section and the `FILENAME:` convention on the first line. If OMC's output format changes, `SpecGenerator` will fail to parse and all runs will transition to `failed`. Mitigation: pin the OMC version in `package.json` and treat upgrades as explicit changes that require re-validating the parsing logic.
+The artifact parsing logic depends on the `FILENAME:` convention on the first line of the result file. If the Agent SDK output format changes, `SpecGenerator` will fail to parse and all runs will transition to `failed`. Mitigation: pin the Agent SDK version in `package.json` and treat upgrades as explicit changes that require re-validating the parsing logic.
 
 **Slack Canvas API availability**
 
@@ -530,7 +532,7 @@ The Canvases API is newer than the core Slack messaging API and has had availabi
 
 **Shallow clone missing required history**
 
-`--depth=1` gives the latest commit only. If the mm:planning skill or any OMC invocation needs git history (e.g., to understand recent changes), it will be absent. Current OMC usage in this feature is stateless — it reads the working tree but not git history — so this is not an immediate issue. Worth revisiting if OMC's behavior changes.
+`--depth=1` gives the latest commit only. If the mm:planning skill or any Agent SDK invocation needs git history (e.g., to understand recent changes), it will be absent. Current Agent SDK usage in this feature is stateless — it reads the working tree but not git history — so this is not an immediate issue. Worth revisiting if Agent SDK's behavior changes.
 
 **Disk accumulation from orphaned workspaces**
 
@@ -578,39 +580,39 @@ Workspaces are created on `new_idea` and are only destroyed on failure or approv
 
 - [x] **Story: SpecGenerator**
   - [x] **Task: Implement `SpecGenerator`**
-    - **Description**: Create `src/adapters/agent/spec-generator.ts` with the `SpecGenerator` interface and a concrete `OMCSpecGenerator` implementation. `create` spawns `omc ask claude --print "<prompt>"` with `cwd` set to `workspace_path`, reads the artifact at the path printed to stdout, extracts the `## Raw output` section, parses the `FILENAME:` line, validates it against `^(feature|enhancement)-[a-z0-9-]+\.md$`, writes the spec body to `<workspace_path>/context-human/specs/<filename>`, and returns the path. `revise` builds a prompt with the feedback content in `<<<`/`>>>` delimiters first, then the current spec content in `<<<`/`>>>` delimiters, invokes OMC identically, and overwrites the spec file in place with the revised content.
+    - **Description**: Create `src/adapters/agent/spec-generator.ts` with the `SpecGenerator` interface and a concrete `AgentSDKSpecGenerator` implementation. `create` calls `query()` with `cwd` set to `workspace_path`, reads the result file at `.autocatalyst/spec-create-result.json`, parses the `FILENAME:` line, validates it against `^(feature|enhancement)-[a-z0-9-]+\.md$`, writes the spec body to `<workspace_path>/context-human/specs/<filename>`, and returns the path. `revise` builds a prompt with the feedback content in `<<<`/`>>>` delimiters first, then the current spec content in `<<<`/`>>>` delimiters, invokes Agent SDK identically, and overwrites the spec file in place with the revised content.
     - **Acceptance criteria**:
       - [x] `SpecGenerator` interface exported: `create(idea, workspace_path)` and `revise(feedback, spec_path, workspace_path)`
-      - [x] `create` spawns OMC with `cwd: workspace_path` and the generation prompt from Section 3
+      - [x] `create` calls `query()` with `cwd: workspace_path` and the generation prompt from Section 3
       - [x] Generation prompt wraps `idea.content` in `<<<`/`>>>` and includes the `FILENAME:` instruction on the first line
-      - [x] `create` reads the artifact file from the path printed to stdout
-      - [x] `create` parses `FILENAME:` from within the `## Raw output` section
+      - [x] `create` reads the result file from `.autocatalyst/spec-create-result.json`
+      - [x] `create` parses `FILENAME:` from the result file
       - [x] `create` validates the filename against `^(feature|enhancement)-[a-z0-9-]+\.md$`; throws with a descriptive error if invalid or missing
       - [x] `create` writes the spec body (everything after the `FILENAME:` line) to `<workspace_path>/context-human/specs/<filename>`
       - [x] `create` returns the full spec path
-      - [x] `create` throws if OMC exits non-zero
+      - [x] `create` throws if Agent SDK `query()` rejects
       - [x] `revise` prompt leads with feedback in `<<<`/`>>>`, follows with current spec content in `<<<`/`>>>`
-      - [x] `revise` reads the current spec from `spec_path` before invoking OMC
+      - [x] `revise` reads the current spec from `spec_path` before invoking Agent SDK
       - [x] `revise` overwrites `spec_path` with the revised content from the artifact
-      - [x] `revise` throws if OMC exits non-zero
+      - [x] `revise` throws if Agent SDK `query()` rejects
       - [x] All relative imports use `.js` extensions
     - **Dependencies**: None
 
   - [x] **Task: Unit tests for `SpecGenerator`**
-    - **Description**: Create `tests/adapters/agent/spec-generator.test.ts`. Mock the OMC subprocess with `vi.fn()` by intercepting the spawn/exec call. Use real temp directories for file I/O. Write fixture artifact files with varying `FILENAME:` values to test parsing. Cover all cases from the testing plan's SpecGenerator section.
+    - **Description**: Create `tests/adapters/agent/spec-generator.test.ts`. Mock the Agent SDK `query()` function with `vi.fn()`. Use real temp directories for file I/O. Write fixture result files with varying `FILENAME:` values to test parsing. Cover all cases from the testing plan's SpecGenerator section.
     - **Acceptance criteria**:
-      - [x] `create` spawns OMC with the correct `cwd` and prompt content
+      - [x] `create` calls `query()` with the correct `cwd` and prompt content
       - [x] `create` correctly parses `FILENAME: feature-setup-wizard.md`
       - [x] `create` correctly parses `FILENAME: enhancement-some-thing.md`
       - [x] `create` throws with a descriptive error on `FILENAME: invalid_name.md` (underscore)
       - [x] `create` throws on `FILENAME: setup-wizard.md` (missing `feature-`/`enhancement-` prefix)
       - [x] `create` throws when the `FILENAME:` line is absent
       - [x] `create` writes the correct spec body to the correct path and returns it
-      - [x] `create` throws if OMC exits non-zero
+      - [x] `create` throws if Agent SDK `query()` rejects
       - [x] `revise` prompt leads with feedback in `<<<`/`>>>`, follows with spec content in `<<<`/`>>>`
-      - [x] `revise` reads the current spec from `spec_path` before invoking OMC
+      - [x] `revise` reads the current spec from `spec_path` before invoking Agent SDK
       - [x] `revise` overwrites the spec file in place with revised content
-      - [x] `revise` throws if OMC exits non-zero
+      - [x] `revise` throws if Agent SDK `query()` rejects
       - [x] All tests pass: `npm test`
     - **Dependencies**: "Task: Implement `SpecGenerator`"
 
