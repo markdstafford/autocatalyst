@@ -11,7 +11,9 @@ export interface WorkflowConfig {
     channel_name?: string;
   };
   notion?: {
-    parent_page_id?: string;
+    integration_token: string;
+    specs_database_id: string;
+    testing_guides_database_id: string;
   };
   aws_profile?: string;
   [key: string]: unknown;

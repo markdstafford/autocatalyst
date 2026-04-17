@@ -2,6 +2,12 @@ import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 import type { NotionClient } from './notion-client.js';
 
+export type TestingGuideStatus =
+  | 'Not started'
+  | 'In progress'
+  | 'Waiting on feedback'
+  | 'Approved';
+
 export interface FeedbackItem {
   id: string;
   text: string;
@@ -11,8 +17,9 @@ export interface FeedbackItem {
 
 export interface ImplementationFeedbackPage {
   create(
-    parent_page_id: string,
+    spec_page_id: string,
     spec_page_url: string,
+    spec_title: string,
     summary: string,
     testing_instructions: string,
   ): Promise<string>;
@@ -29,6 +36,9 @@ export interface ImplementationFeedbackPage {
       }>;
     },
   ): Promise<void>;
+
+  updateStatus?(page_id: string, status: TestingGuideStatus): Promise<void>;
+  setPRLink?(page_id: string, pr_url: string): Promise<void>;
 }
 
 interface NotionImplementationFeedbackPageOptions {
@@ -37,26 +47,39 @@ interface NotionImplementationFeedbackPageOptions {
 
 export class NotionImplementationFeedbackPage implements ImplementationFeedbackPage {
   private readonly client: NotionClient;
+  private readonly testing_guides_database_id: string;
   private readonly logger: pino.Logger;
 
-  constructor(client: NotionClient, options?: NotionImplementationFeedbackPageOptions) {
+  constructor(
+    client: NotionClient,
+    testing_guides_database_id: string,
+    options?: NotionImplementationFeedbackPageOptions,
+  ) {
     this.client = client;
+    this.testing_guides_database_id = testing_guides_database_id;
     this.logger = createLogger('implementation-feedback-page', { destination: options?.logDestination });
   }
 
   async create(
-    parent_page_id: string,
+    spec_page_id: string,
     spec_page_url: string,
+    spec_title: string,
     summary: string,
     testing_instructions: string,
   ): Promise<string> {
     const response = await this.client.pages.create({
-      parent: { type: 'page_id', page_id: parent_page_id },
+      parent: { type: 'database_id', database_id: this.testing_guides_database_id } as never,
       properties: {
-        title: {
-          title: [{ text: { content: 'Implementation feedback' } }],
+        Title: {
+          title: [{ text: { content: `Testing guide: ${spec_title}` } }],
         },
-      },
+        Spec: {
+          relation: [{ id: spec_page_id }],
+        },
+        Status: {
+          status: { name: 'Not started' },
+        },
+      } as never,
       children: [
         // Spec link bookmark
         {
@@ -81,7 +104,7 @@ export class NotionImplementationFeedbackPage implements ImplementationFeedbackP
           type: 'paragraph',
           paragraph: { rich_text: [{ text: { content: testing_instructions } }] },
         } as never,
-        // Feedback section (empty to-do list)
+        // Feedback section
         {
           type: 'heading_2',
           heading_2: { rich_text: [{ text: { content: 'Feedback' } }] },
@@ -91,8 +114,8 @@ export class NotionImplementationFeedbackPage implements ImplementationFeedbackP
 
     const page_id = (response as { id: string }).id;
     this.logger.info(
-      { event: 'impl_feedback_page.created', page_id, parent_page_id },
-      'Implementation feedback page created',
+      { event: 'notion_testing_guide.created', page_id, spec_page_id },
+      'Testing guide database entry created',
     );
     return page_id;
   }
@@ -203,6 +226,26 @@ export class NotionImplementationFeedbackPage implements ImplementationFeedbackP
     this.logger.info(
       { event: 'implementation.feedback_updated', page_id, resolved_count: options.resolved_items?.length ?? 0 },
       'Implementation feedback page updated',
+    );
+  }
+
+  async updateStatus(page_id: string, status: TestingGuideStatus): Promise<void> {
+    await this.client.pages.updateProperties(page_id, {
+      Status: { status: { name: status } },
+    });
+    this.logger.info(
+      { event: 'notion_testing_guide.status_updated', page_id, status },
+      'Testing guide status updated',
+    );
+  }
+
+  async setPRLink(page_id: string, pr_url: string): Promise<void> {
+    await this.client.pages.updateProperties(page_id, {
+      'PR link': { url: pr_url },
+    });
+    this.logger.info(
+      { event: 'notion_testing_guide.pr_link_set', page_id, pr_url },
+      'Testing guide PR link set',
     );
   }
 }

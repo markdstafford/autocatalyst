@@ -19,6 +19,7 @@ export interface NotionClient {
     create(args: CreatePageParameters): Promise<CreatePageResponse>;
     getMarkdown(page_id: string): Promise<string>;
     updateMarkdown(page_id: string, operation: MarkdownOperation): Promise<void>;
+    updateProperties(page_id: string, properties: Record<string, unknown>): Promise<void>;
   };
   blocks: {
     children: {
@@ -31,6 +32,12 @@ export interface NotionClient {
   };
   users: {
     me(): Promise<{ id: string }>;
+  };
+  databases: {
+    query(
+      database_id: string,
+      filter?: unknown,
+    ): Promise<{ results: Array<{ id: string; properties: Record<string, unknown> }> }>;
   };
 }
 
@@ -66,6 +73,10 @@ export class NotionClientImpl implements NotionClient {
         body: operation,
       });
     },
+
+    updateProperties: async (page_id: string, properties: Record<string, unknown>): Promise<void> => {
+      await this.client.pages.update({ page_id, properties: properties as never });
+    },
   };
 
   readonly blocks = {
@@ -90,8 +101,26 @@ export class NotionClientImpl implements NotionClient {
         path: 'users/me',
         method: 'GET',
       });
-      // Top-level `id` is the bot's own user ID — matches `created_by.id` on comments
       return { id: (response as { id: string }).id };
+    },
+  };
+
+  readonly databases = {
+    query: async (
+      database_id: string,
+      filter?: unknown,
+    ): Promise<{ results: Array<{ id: string; properties: Record<string, unknown> }> }> => {
+      const response = await (this.client as unknown as {
+        databases: {
+          query: (args: { database_id: string; filter?: unknown }) => Promise<{ results: unknown[] }>;
+        };
+      }).databases.query({
+        database_id,
+        ...(filter !== undefined ? { filter } : {}),
+      });
+      return {
+        results: response.results as Array<{ id: string; properties: Record<string, unknown> }>,
+      };
     },
   };
 }

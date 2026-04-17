@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { parseArgs, printUsage } from './core/cli.js';
-import { bootstrapWorkflow, loadConfig, redactConfig, resolveEnvVars, resolveAwsProfile } from './core/config.js';
+import { bootstrapWorkflow, loadConfig, redactConfig, resolveEnvVars, resolveAwsProfile, repoNameFromUrl } from './core/config.js';
 import { ConfigWatcher } from './core/config-watcher.js';
 import { Service } from './core/service.js';
 import { registerSignalHandlers } from './core/signals.js';
@@ -88,6 +88,7 @@ try {
     logger.error({ event: 'config.parse_error', error: String(err) }, 'Could not resolve git origin URL. Run: git remote add origin <url>');
     process.exit(1);
   }
+  const repo_name = repoNameFromUrl(repo_url);
 
   // Validate workspace.root
   const workspaceRoot = currentConfig.config.workspace?.root;
@@ -177,9 +178,13 @@ try {
       logger.error({ event: 'config.parse_error' }, 'AC_NOTION_INTEGRATION_TOKEN is required when notion config is present');
       process.exit(1);
     }
-    const parentPageId = currentConfig.config.notion.parent_page_id;
-    if (!parentPageId) {
-      logger.error({ event: 'config.parse_error' }, 'notion.parent_page_id is required in WORKFLOW.md');
+    const specsDatabaseId = currentConfig.config.notion.specs_database_id;
+    const testingGuidesDatabaseId = currentConfig.config.notion.testing_guides_database_id;
+    if (!specsDatabaseId || !testingGuidesDatabaseId) {
+      logger.error(
+        { event: 'config.parse_error' },
+        'notion.specs_database_id and notion.testing_guides_database_id are required in WORKFLOW.md',
+      );
       process.exit(1);
     }
     const notionClient = new NotionClientImpl({ integration_token: notionToken });
@@ -191,10 +196,10 @@ try {
       process.exit(1);
     }
     logger.info({ event: 'service.config', bot_user_id: botUser.id }, 'Detected Notion bot user ID');
-    specPublisher = new NotionPublisher(notionClient, boltApp, parentPageId);
+    specPublisher = new NotionPublisher(notionClient, boltApp, specsDatabaseId, { repo_name });
     feedbackSource = new NotionFeedbackSource(notionClient, { bot_user_id: botUser.id });
     specCommitter = new NotionSpecCommitter(specPublisher);
-    implFeedbackPage = new NotionImplementationFeedbackPage(notionClient);
+    implFeedbackPage = new NotionImplementationFeedbackPage(notionClient, testingGuidesDatabaseId);
     logger.info({ event: 'service.config', publisher: 'notion' }, 'Using Notion publisher');
   } else {
     specPublisher = new SlackCanvasPublisher(boltApp);

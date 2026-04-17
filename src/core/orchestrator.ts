@@ -5,6 +5,7 @@ import { createLogger } from './logger.js';
 import type { SlackAdapter } from '../adapters/slack/slack-adapter.js';
 import type { WorkspaceManager } from './workspace-manager.js';
 import type { SpecGenerator, ReviseResult } from '../adapters/agent/spec-generator.js';
+import { titleFromPath } from '../adapters/slack/canvas-publisher.js';
 import type { SpecPublisher } from '../adapters/slack/canvas-publisher.js';
 import type { Run, RunStage, RequestIntent } from '../types/runs.js';
 import type { Request, ThreadMessage, InboundEvent } from '../types/events.js';
@@ -348,7 +349,15 @@ export class OrchestratorImpl implements Orchestrator {
       return;
     }
 
-    // Step 3: Run implementation
+    // Step 3: Update status to Approved (best-effort)
+    await this.deps.specPublisher.updateStatus?.(run.publisher_ref!, 'Approved').catch(err =>
+      this.logger.error(
+        { event: 'run.status_update_failed', run_id: run.id, status: 'Approved', error: String(err) },
+        'Failed to update spec status',
+      ),
+    );
+
+    // Step 4: Run implementation
     await this._runImplementation(feedback, run);
   }
 
@@ -360,6 +369,15 @@ export class OrchestratorImpl implements Orchestrator {
           'Failed to post progress update',
         );
       });
+
+    if (run.impl_feedback_ref) {
+      await this.deps.implFeedbackPage?.updateStatus?.(run.impl_feedback_ref, 'In progress').catch(err =>
+        this.logger.error(
+          { event: 'run.status_update_failed', run_id: run.id, status: 'In progress', error: String(err) },
+          'Failed to update testing guide status',
+        ),
+      );
+    }
 
     let result;
     try {
@@ -400,6 +418,7 @@ export class OrchestratorImpl implements Orchestrator {
       const pageId = await this.deps.implFeedbackPage!.create(
         run.publisher_ref!,
         specPageUrl,
+        titleFromPath(run.spec_path!),
         result.summary ?? '',
         result.testing_instructions ?? '',
       );
@@ -417,6 +436,15 @@ export class OrchestratorImpl implements Orchestrator {
       await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, completionMsg);
     } catch (err) {
       this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post completion notification');
+    }
+
+    if (run.impl_feedback_ref) {
+      await this.deps.implFeedbackPage?.updateStatus?.(run.impl_feedback_ref, 'Waiting on feedback').catch(err =>
+        this.logger.error(
+          { event: 'run.status_update_failed', run_id: run.id, status: 'Waiting on feedback', error: String(err) },
+          'Failed to update testing guide status',
+        ),
+      );
     }
 
     this.transition(run, 'reviewing_implementation');
@@ -512,6 +540,24 @@ export class OrchestratorImpl implements Orchestrator {
       await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, `PR opened: ${prUrl}`);
     } catch (err) {
       this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post PR link');
+    }
+
+    // Step 3: Update statuses (best-effort, all in parallel)
+    if (run.impl_feedback_ref) {
+      await Promise.allSettled([
+        this.deps.implFeedbackPage?.setPRLink?.(run.impl_feedback_ref, prUrl),
+        this.deps.implFeedbackPage?.updateStatus?.(run.impl_feedback_ref, 'Approved'),
+        this.deps.specPublisher.updateStatus?.(run.publisher_ref!, 'Complete'),
+      ]).then(results => {
+        for (const r of results) {
+          if (r.status === 'rejected') {
+            this.logger.error(
+              { event: 'run.status_update_failed', run_id: run.id, error: String(r.reason) },
+              'Failed to update status on implementation approval',
+            );
+          }
+        }
+      });
     }
 
     this.transition(run, 'done');
@@ -616,6 +662,12 @@ export class OrchestratorImpl implements Orchestrator {
     }
 
     this.transition(run, 'reviewing_spec');
+    await this.deps.specPublisher.updateStatus?.(run.publisher_ref!, 'Waiting on feedback').catch(err =>
+      this.logger.error(
+        { event: 'run.status_update_failed', run_id: run.id, status: 'Waiting on feedback', error: String(err) },
+        'Failed to update spec status',
+      ),
+    );
   }
 
   private async _handleSpecFeedback(feedback: ThreadMessage): Promise<void> {
@@ -628,6 +680,12 @@ export class OrchestratorImpl implements Orchestrator {
     }
 
     this.transition(run, 'speccing');
+    await this.deps.specPublisher.updateStatus?.(run.publisher_ref!, 'Speccing').catch(err =>
+      this.logger.error(
+        { event: 'run.status_update_failed', run_id: run.id, status: 'Speccing', error: String(err) },
+        'Failed to update spec status',
+      ),
+    );
     run.attempt += 1;
 
     // Step 1: Fetch Notion comments if a feedback source is configured
