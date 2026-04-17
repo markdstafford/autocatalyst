@@ -17,6 +17,7 @@ import type { SpecCommitter } from '../adapters/notion/spec-committer.js';
 import type { Implementer } from '../adapters/agent/implementer.js';
 import type { ImplementationFeedbackPage, FeedbackItem } from '../adapters/notion/implementation-feedback-page.js';
 import type { PRCreator } from '../adapters/agent/pr-creator.js';
+import type { IssueManager } from '../adapters/agent/issue-manager.js';
 import { RunStore, FileRunStore } from './run-store.js';
 import type { ThreadRegistry } from '../adapters/slack/thread-registry.js';
 
@@ -45,6 +46,7 @@ interface OrchestratorDeps {
   implementer?: Implementer;
   implFeedbackPage?: ImplementationFeedbackPage;
   prCreator?: PRCreator;
+  issueManager?: IssueManager;
   runStore?: RunStore;
   threadRegistry?: ThreadRegistry;
   postError: (channel_id: string, thread_ts: string, text: string) => Promise<void>;
@@ -235,11 +237,11 @@ export class OrchestratorImpl implements Orchestrator {
       } else if (intent === 'bug') {
         run.intent = 'bug';
         this._persistRuns();
-        try {
-          await this.deps.postMessage(request.channel_id, request.thread_ts, 'Got it \u2014 bug report noted. Bug triage is not yet implemented.');
-        } catch (err) {
-          this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post bug ack');
-        }
+        await this._startTriagePipeline(run, request, 'bug');
+      } else if (intent === 'chore') {
+        run.intent = 'chore';
+        this._persistRuns();
+        await this._startTriagePipeline(run, request, 'chore');
       } else if (intent === 'question') {
         run.intent = 'question';
         this._persistRuns();
@@ -667,6 +669,68 @@ export class OrchestratorImpl implements Orchestrator {
       this.logger.error(
         { event: 'run.status_update_failed', run_id: run.id, status: 'Waiting on feedback', error: String(err) },
         'Failed to update spec status',
+      ),
+    );
+  }
+
+  private async _startTriagePipeline(run: Run, request: Request, intent: 'bug' | 'chore'): Promise<void> {
+    this.transition(run, 'speccing');
+    this.logger.info(
+      { event: 'triage.started', run_id: run.id, request_id: run.request_id, intent },
+      'Triage started',
+    );
+
+    // Step 1: Create workspace
+    let workspace_path: string;
+    let branch: string;
+    try {
+      ({ workspace_path, branch } = await this.deps.workspaceManager.create(request.id, this.deps.repo_url));
+      run.workspace_path = workspace_path;
+      run.branch = branch;
+    } catch (err) {
+      await this.failRun(run, request.channel_id, request.thread_ts, err);
+      return;
+    }
+
+    // Step 2: Generate triage document
+    const onProgress = (message: string): Promise<void> =>
+      this.deps.postMessage(request.channel_id, request.thread_ts, message).catch(err => {
+        this.logger.warn(
+          { event: 'progress_failed', phase: 'triage_generation', run_id: run.id, error: String(err) },
+          'Failed to post progress update',
+        );
+      });
+
+    let spec_path: string;
+    try {
+      spec_path = await this.deps.specGenerator.create(request, workspace_path, onProgress, intent);
+      run.spec_path = spec_path;
+    } catch (err) {
+      await this.deps.workspaceManager.destroy(workspace_path);
+      await this.failRun(run, request.channel_id, request.thread_ts, err);
+      return;
+    }
+
+    // Step 3: Publish triage document
+    let publisher_ref: string;
+    try {
+      publisher_ref = await this.deps.specPublisher.create(request.channel_id, request.thread_ts, spec_path);
+      run.publisher_ref = publisher_ref;
+    } catch (err) {
+      await this.deps.workspaceManager.destroy(workspace_path);
+      await this.failRun(run, request.channel_id, request.thread_ts, err);
+      return;
+    }
+
+    this.transition(run, 'reviewing_spec');
+    this.logger.info(
+      { event: 'triage.complete', run_id: run.id, request_id: run.request_id, intent, publisher_ref },
+      'Triage complete',
+    );
+    await this.deps.specPublisher.updateStatus?.(run.publisher_ref!, 'Waiting on feedback').catch(err =>
+      this.logger.error(
+        { event: 'run.status_update_failed', run_id: run.id, status: 'Waiting on feedback', error: String(err) },
+        'Failed to update triage document status',
       ),
     );
   }
