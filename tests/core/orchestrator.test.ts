@@ -298,7 +298,7 @@ describe('Orchestrator — new_request failure paths', () => {
   it('SpecGenerator failure: run is failed, error posted, workspace destroyed', async () => {
     const adapter = makeMockAdapter();
     const wm = makeWorkspaceManager();
-    const sg = makeSpecGenerator({ create: vi.fn().mockRejectedValue(new Error('omc failed')) });
+    const sg = makeSpecGenerator({ create: vi.fn().mockRejectedValue(new Error('spec generation failed')) });
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
 
@@ -309,7 +309,7 @@ describe('Orchestrator — new_request failure paths', () => {
     await orch.stop();
 
     expect(wm.destroy).toHaveBeenCalledWith('/ws/request-001');
-    expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('omc failed'));
+    expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('spec generation failed'));
     expect(cp.create).not.toHaveBeenCalled();
 
     const runs = (orch as never as { runs: Map<string, { stage: string }> }).runs;
@@ -1268,7 +1268,7 @@ describe('Orchestrator — _handleSpecApproval failure paths', () => {
   it('Implementer throws: run fails, error posted', async () => {
     const adapter = makeMockAdapter();
     const postError = vi.fn().mockResolvedValue(undefined);
-    const impl = { implement: vi.fn().mockRejectedValue(new Error('OMC crashed')) } as Implementer;
+    const impl = { implement: vi.fn().mockRejectedValue(new Error('agent crashed')) } as Implementer;
     const orch = makeApprovalOrch({ adapter, implementer: impl, postError });
     await orch.start();
 
@@ -1279,7 +1279,7 @@ describe('Orchestrator — _handleSpecApproval failure paths', () => {
     await orch.stop();
 
     expect(runs.get('request-001')!.stage).toBe('failed');
-    expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('OMC crashed'));
+    expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('agent crashed'));
   });
 
   it('ImplementationFeedbackPage.create rejects: run still transitions to reviewing_implementation; completion message still posted', async () => {
