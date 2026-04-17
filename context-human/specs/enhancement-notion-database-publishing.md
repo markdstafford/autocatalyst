@@ -1,10 +1,10 @@
 ---
 created: 2026-04-16
 last_updated: 2026-04-16
-status: approved
-issue: null
+status: complete
+issue: 53
 specced_by: markdstafford
-implemented_by: null
+implemented_by: markdstafford
 superseded_by: null
 ---
 # Enhancement: Notion database publishing
