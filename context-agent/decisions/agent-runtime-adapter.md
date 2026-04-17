@@ -25,6 +25,6 @@ superseded_by: null
 - Interface must be backend-agnostic — future adapters implement the same interface
 
 **Rejected:**
-- oh-my-claudecode (OMC) subprocess instead of Agent SDK: subprocess spawning adds process management overhead and CLI version dependencies; Agent SDK provides the same capability as a typed library import
+- oh-my-claudecode subprocess instead of Agent SDK: subprocess spawning adds process management overhead and CLI version dependencies; Agent SDK provides the same capability as a typed library import
 - claw CLI instead of claude CLI: we use Claude Code, not the claw reimplementation
 - Direct subprocess CLI: subprocess is the simplest integration but requires managing process lifecycle and stdout parsing
