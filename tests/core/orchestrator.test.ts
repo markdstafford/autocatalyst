@@ -185,6 +185,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     spec_path: '/ws/request-001/context-human/specs/feature-test.md',
     publisher_ref: 'CANVAS001',
     impl_feedback_ref: undefined,
+    issue: undefined,
     attempt: 0,
     channel_id: 'C001',
     thread_ts: '1000.0000',

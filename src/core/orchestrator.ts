@@ -595,6 +595,7 @@ export class OrchestratorImpl implements Orchestrator {
       spec_path: undefined,
       publisher_ref: undefined,
       impl_feedback_ref: undefined,
+      issue: undefined,
       attempt: 0,
       channel_id: request.channel_id,
       thread_ts: request.thread_ts,
