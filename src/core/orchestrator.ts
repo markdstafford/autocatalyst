@@ -21,6 +21,11 @@ import type { IssueManager } from '../adapters/agent/issue-manager.js';
 import { RunStore, FileRunStore } from './run-store.js';
 import type { ThreadRegistry } from '../adapters/slack/thread-registry.js';
 
+function extractH1(content: string): string | undefined {
+  const match = content.match(/^#\s+(.+)$/m);
+  return match ? match[1].trim() : undefined;
+}
+
 /** Maps an actionable review stage to the in-progress stage that prevents duplicate dispatch. */
 function stageAfterApproval(stage: RunStage): RunStage {
   if (stage === 'reviewing_spec') return 'implementing';
@@ -338,28 +343,85 @@ export class OrchestratorImpl implements Orchestrator {
 
     // Step 1: Acknowledge approval (best-effort -- failure doesn't abort)
     try {
-      await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, 'Approved \u2014 committing spec and starting implementation.');
+      const ackMsg = (run.intent === 'bug' || run.intent === 'chore')
+        ? 'Approved \u2014 writing triage to issue and starting implementation.'
+        : 'Approved \u2014 committing spec and starting implementation.';
+      await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, ackMsg);
     } catch (err) {
       this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post approval acknowledgement');
     }
 
-    // Step 2: Commit spec to workspace
-    try {
-      await this.deps.specCommitter!.commit(run.workspace_path, run.publisher_ref, run.spec_path);
-    } catch (err) {
-      await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
-      return;
+    if (run.intent === 'bug' || run.intent === 'chore') {
+      // Bug / chore approval path: fetch from Notion, write to GitHub issue
+
+      // Step 2: Fetch triage content from Notion (canonical reviewed version)
+      let triageContent: string;
+      try {
+        triageContent = await this.deps.specPublisher.getPageMarkdown(run.publisher_ref);
+      } catch (err) {
+        await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
+        return;
+      }
+
+      // Step 3: Write to GitHub issue (create new if none associated with this run)
+      let issue_number: number;
+      try {
+        if (run.issue) {
+          await this.deps.issueManager!.writeIssue(run.workspace_path, run.issue, triageContent);
+          issue_number = run.issue;
+        } else {
+          const title = extractH1(triageContent) ?? `${run.intent} triage`;
+          issue_number = await this.deps.issueManager!.createIssue(run.workspace_path, title, triageContent);
+          run.issue = issue_number;
+          this._persistRuns();
+        }
+      } catch (err) {
+        await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
+        return;
+      }
+
+      this.logger.info(
+        { event: 'triage.approved', run_id: run.id, request_id: run.request_id, intent: run.intent, issue_number },
+        'Triage approved',
+      );
+
+      const issue_url = `${this.deps.repo_url}/issues/${issue_number}`;
+
+      // Step 4: Update Notion page properties (best-effort — non-blocking)
+      await Promise.allSettled([
+        this.deps.specPublisher.setIssueLink?.(run.publisher_ref, issue_url),
+        this.deps.specPublisher.updateStatus?.(run.publisher_ref, 'Approved'),
+      ]).then(results => {
+        for (const r of results) {
+          if (r.status === 'rejected') {
+            this.logger.error(
+              { event: 'run.status_update_failed', run_id: run.id, error: String(r.reason) },
+              'Failed to update triage document properties',
+            );
+          }
+        }
+      });
+    } else {
+      // Idea approval path: commit spec file to workspace
+
+      // Step 2: Commit spec to workspace
+      try {
+        await this.deps.specCommitter!.commit(run.workspace_path, run.publisher_ref, run.spec_path);
+      } catch (err) {
+        await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
+        return;
+      }
+
+      // Step 3: Update status to Approved (best-effort)
+      await this.deps.specPublisher.updateStatus?.(run.publisher_ref!, 'Approved').catch(err =>
+        this.logger.error(
+          { event: 'run.status_update_failed', run_id: run.id, status: 'Approved', error: String(err) },
+          'Failed to update spec status',
+        ),
+      );
     }
 
-    // Step 3: Update status to Approved (best-effort)
-    await this.deps.specPublisher.updateStatus?.(run.publisher_ref!, 'Approved').catch(err =>
-      this.logger.error(
-        { event: 'run.status_update_failed', run_id: run.id, status: 'Approved', error: String(err) },
-        'Failed to update spec status',
-      ),
-    );
-
-    // Step 4: Run implementation
+    // Run implementation (both paths)
     await this._runImplementation(feedback, run);
   }
 
