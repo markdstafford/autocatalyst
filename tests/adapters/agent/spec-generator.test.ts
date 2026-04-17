@@ -983,3 +983,68 @@ describe('AgentSDKSpecGenerator.revise — drain loop relay detection', () => {
     expect(onProgress).toHaveBeenNthCalledWith(2, 'Second message');
   });
 });
+
+describe('AgentSDKSpecGenerator.create — intent-based prompts', () => {
+  it('intent omitted: prompt contains /mm:planning, not mm:issue-triage', async () => {
+    const queryFn = makeQueryFn();
+    const sg = new AgentSDKSpecGenerator({
+      queryFn,
+      logDestination: nullDest,
+      readFile: makeReadFileFn({ spec_path: join(tempRoot, 'context-human', 'specs', 'feature-wizard.md') }),
+    });
+
+    await sg.create(makeRequest(), tempRoot);
+
+    const call = queryFn.mock.calls[0][0] as { prompt: string };
+    expect(call.prompt).toContain('/mm:planning');
+    expect(call.prompt).not.toContain('mm:issue-triage');
+  });
+
+  it('intent=idea: prompt contains /mm:planning, not mm:issue-triage', async () => {
+    const queryFn = makeQueryFn();
+    const sg = new AgentSDKSpecGenerator({
+      queryFn,
+      logDestination: nullDest,
+      readFile: makeReadFileFn({ spec_path: join(tempRoot, 'context-human', 'specs', 'feature-wizard.md') }),
+    });
+
+    await sg.create(makeRequest(), tempRoot, undefined, 'idea');
+
+    const call = queryFn.mock.calls[0][0] as { prompt: string };
+    expect(call.prompt).toContain('/mm:planning');
+    expect(call.prompt).not.toContain('mm:issue-triage');
+  });
+
+  it('intent=bug: prompt contains mm:issue-triage with thorough investigation', async () => {
+    const queryFn = makeQueryFn();
+    const sg = new AgentSDKSpecGenerator({
+      queryFn,
+      logDestination: nullDest,
+      readFile: makeReadFileFn({ spec_path: join(tempRoot, 'context-human', 'specs', 'triage-bug-wizard.md') }),
+    });
+
+    await sg.create(makeRequest({ content: 'login is broken' }), tempRoot, undefined, 'bug');
+
+    const call = queryFn.mock.calls[0][0] as { prompt: string };
+    expect(call.prompt).toContain('mm:issue-triage');
+    expect(call.prompt).toContain('thorough');
+    expect(call.prompt).toContain('login is broken');
+    expect(call.prompt).not.toContain('/mm:planning');
+  });
+
+  it('intent=chore: prompt contains mm:issue-triage', async () => {
+    const queryFn = makeQueryFn();
+    const sg = new AgentSDKSpecGenerator({
+      queryFn,
+      logDestination: nullDest,
+      readFile: makeReadFileFn({ spec_path: join(tempRoot, 'context-human', 'specs', 'triage-chore-node.md') }),
+    });
+
+    await sg.create(makeRequest({ content: 'upgrade Node to v22' }), tempRoot, undefined, 'chore');
+
+    const call = queryFn.mock.calls[0][0] as { prompt: string };
+    expect(call.prompt).toContain('mm:issue-triage');
+    expect(call.prompt).toContain('upgrade Node to v22');
+    expect(call.prompt).not.toContain('/mm:planning');
+  });
+});
