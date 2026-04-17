@@ -13,7 +13,7 @@ src/
   core/              ← orchestrator, state, reconciliation, loop logic
   adapters/
     slack/           ← Slack human interface adapter
-    omc/             ← OMC agent runtime adapter
+    agent/           ← Agent SDK agent runtime adapter
   types/             ← shared type definitions
   config/            ← configuration loading, WORKFLOW.md parsing
   index.ts           ← CLI entry point
@@ -29,7 +29,7 @@ src/
 - Types/interfaces: `PascalCase`
 - Functions/variables: `camelCase`
 - Constants: `UPPER_SNAKE_CASE`
-- Adapter directories: lowercase, match the platform name (`slack`, `omc`)
+- Adapter directories: lowercase, match the platform name (`slack`, `agent`)
 
 ## Interfaces
 
