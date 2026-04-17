@@ -13,6 +13,7 @@ import type { QuestionAnswerer } from '../../src/adapters/agent/question-answere
 import type { SpecCommitter } from '../../src/adapters/notion/spec-committer.js';
 import type { Implementer, ImplementationResult } from '../../src/adapters/agent/implementer.js';
 import type { ImplementationFeedbackPage } from '../../src/adapters/notion/implementation-feedback-page.js';
+import type { IssueManager } from '../../src/adapters/agent/issue-manager.js';
 
 const nullDest = { write: () => {} };
 
@@ -198,6 +199,14 @@ function makeRun(overrides: Partial<Run> = {}): Run {
 function makeSpecCommitter(overrides: Partial<SpecCommitter> = {}): SpecCommitter {
   return {
     commit: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+}
+
+function makeIssueManager(overrides: Partial<IssueManager> = {}): IssueManager {
+  return {
+    writeIssue: vi.fn().mockResolvedValue(undefined),
+    createIssue: vi.fn().mockResolvedValue(42),
     ...overrides,
   };
 }
@@ -3907,5 +3916,545 @@ describe('Orchestrator — spec lifecycle status updates', () => {
 
     const runs = (orch as never as { runs: Map<string, { stage: string }> }).runs;
     expect(runs.get('request-001')!.stage).toBe('reviewing_spec');
+  });
+});
+
+describe('Orchestrator — bug and chore routing', () => {
+  it('new_request classified as bug: run.intent=bug, run reaches reviewing_spec', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const sg = makeSpecGenerator();
+    const cp = makeSpecPublisher();
+
+    const orch = new OrchestratorImpl(
+      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('bug') },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    const runs = (orch as never as { runs: Map<string, Run> }).runs;
+    const run = runs.get('request-001')!;
+    expect(run.intent).toBe('bug');
+    expect(run.stage).toBe('reviewing_spec');
+  });
+
+  it('new_request classified as chore: run.intent=chore, run reaches reviewing_spec', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const sg = makeSpecGenerator();
+    const cp = makeSpecPublisher();
+
+    const orch = new OrchestratorImpl(
+      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('chore') },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    const runs = (orch as never as { runs: Map<string, Run> }).runs;
+    const run = runs.get('request-001')!;
+    expect(run.intent).toBe('chore');
+    expect(run.stage).toBe('reviewing_spec');
+  });
+
+  it('bug routing: specGenerator.create called with intent=bug', async () => {
+    const adapter = makeMockAdapter();
+    const sg = makeSpecGenerator();
+
+    const orch = new OrchestratorImpl(
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('bug') },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+    const request = makeRequest();
+    adapter._emit({ type: 'new_request', payload: request });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(sg.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), 'bug');
+  });
+
+  it('chore routing: specGenerator.create called with intent=chore', async () => {
+    const adapter = makeMockAdapter();
+    const sg = makeSpecGenerator();
+
+    const orch = new OrchestratorImpl(
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('chore') },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+    const request = makeRequest();
+    adapter._emit({ type: 'new_request', payload: request });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(sg.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), 'chore');
+  });
+});
+
+describe('Orchestrator — triage pipeline error paths', () => {
+  it('bug: workspace creation failure → failRun called; run marked failed', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager({ create: vi.fn().mockRejectedValue(new Error('clone failed')) });
+    const postError = vi.fn().mockResolvedValue(undefined);
+
+    const orch = new OrchestratorImpl(
+      { adapter: adapter as never, workspaceManager: wm, specGenerator: makeSpecGenerator(), specPublisher: makeSpecPublisher(), postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('bug') },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    const runs = (orch as never as { runs: Map<string, Run> }).runs;
+    expect(runs.get('request-001')!.stage).toBe('failed');
+    expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('clone failed'));
+  });
+
+  it('chore: spec generator failure → workspace destroyed; failRun called', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const sg = makeSpecGenerator({ create: vi.fn().mockRejectedValue(new Error('triage failed')) });
+    const postError = vi.fn().mockResolvedValue(undefined);
+
+    const orch = new OrchestratorImpl(
+      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: makeSpecPublisher(), postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('chore') },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(wm.destroy).toHaveBeenCalledWith('/ws/request-001');
+    expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('triage failed'));
+    const runs = (orch as never as { runs: Map<string, Run> }).runs;
+    expect(runs.get('request-001')!.stage).toBe('failed');
+  });
+
+  it('bug: publisher failure → workspace destroyed; failRun called', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const cp = makeSpecPublisher({ create: vi.fn().mockRejectedValue(new Error('publish failed')) });
+    const postError = vi.fn().mockResolvedValue(undefined);
+
+    const orch = new OrchestratorImpl(
+      { adapter: adapter as never, workspaceManager: wm, specGenerator: makeSpecGenerator(), specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('bug') },
+      { logDestination: nullDest },
+    );
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(wm.destroy).toHaveBeenCalledWith('/ws/request-001');
+    expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('publish failed'));
+    const runs = (orch as never as { runs: Map<string, Run> }).runs;
+    expect(runs.get('request-001')!.stage).toBe('failed');
+  });
+});
+
+describe('Orchestrator — bug/chore approval paths', () => {
+  it('bug approval: triage content fetched from Notion via publisher_ref; new issue created; issue number stored', async () => {
+    const adapter = makeMockAdapter();
+    const cp = makeSpecPublisher({
+      getPageMarkdown: vi.fn().mockResolvedValue('# Bug: login broken\n\nDetails here.'),
+    });
+    const im = makeIssueManager({ createIssue: vi.fn().mockResolvedValue(99) });
+    const postError = vi.fn().mockResolvedValue(undefined);
+
+    const ic = makeIntentClassifier('bug');
+    (ic.classify as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce('bug')
+      .mockResolvedValueOnce('approval');
+
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: cp,
+        specCommitter: makeSpecCommitter(),
+        implementer: makeImplementer(),
+        implFeedbackPage: makeImplFeedbackPage(),
+        issueManager: im,
+        postError,
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        repo_url: 'https://github.com/org/repo',
+        intentClassifier: ic,
+      },
+      { logDestination: nullDest },
+    );
+
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'reviewing_spec', { timeout: 2000 });
+
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await vi.waitUntil(() => {
+      const s = runs.get('request-001')?.stage;
+      return s !== 'reviewing_spec' && s !== 'speccing';
+    }, { timeout: 2000 });
+    await adapter.stop();
+
+    expect(cp.getPageMarkdown).toHaveBeenCalledWith('CANVAS001');
+    expect(im.createIssue).toHaveBeenCalledWith('/ws/request-001', 'Bug: login broken', '# Bug: login broken\n\nDetails here.');
+    expect(runs.get('request-001')!.issue).toBe(99);
+    expect(postError).not.toHaveBeenCalled();
+  });
+
+  it('bug approval: if run.issue already set, writeIssue called instead of createIssue', async () => {
+    const adapter = makeMockAdapter();
+    const cp = makeSpecPublisher({
+      getPageMarkdown: vi.fn().mockResolvedValue('# Bug: login broken\n\nDetails here.'),
+    });
+    const im = makeIssueManager();
+
+    const ic = makeIntentClassifier('bug');
+    (ic.classify as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce('bug')
+      .mockResolvedValueOnce('approval');
+
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: cp,
+        specCommitter: makeSpecCommitter(),
+        implementer: makeImplementer(),
+        implFeedbackPage: makeImplFeedbackPage(),
+        issueManager: im,
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        repo_url: 'https://github.com/org/repo',
+        intentClassifier: ic,
+      },
+      { logDestination: nullDest },
+    );
+
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'reviewing_spec', { timeout: 2000 });
+
+    runs.get('request-001')!.issue = 55;
+
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await vi.waitUntil(() => {
+      const s = runs.get('request-001')?.stage;
+      return s !== 'reviewing_spec' && s !== 'speccing';
+    }, { timeout: 2000 });
+    await adapter.stop();
+
+    expect(im.writeIssue).toHaveBeenCalledWith('/ws/request-001', 55, '# Bug: login broken\n\nDetails here.');
+    expect(im.createIssue).not.toHaveBeenCalled();
+  });
+
+  it('bug approval: Notion page properties updated with issue URL and Approved status', async () => {
+    const adapter = makeMockAdapter();
+    const setIssueLink = vi.fn().mockResolvedValue(undefined);
+    const updateStatus = vi.fn().mockResolvedValue(undefined);
+    const cp = makeSpecPublisher({
+      getPageMarkdown: vi.fn().mockResolvedValue('# Bug triage\n\nContent.'),
+      setIssueLink,
+      updateStatus,
+    });
+    const im = makeIssueManager({ createIssue: vi.fn().mockResolvedValue(77) });
+
+    const ic = makeIntentClassifier('bug');
+    (ic.classify as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce('bug')
+      .mockResolvedValueOnce('approval');
+
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: cp,
+        specCommitter: makeSpecCommitter(),
+        implementer: makeImplementer(),
+        implFeedbackPage: makeImplFeedbackPage(),
+        issueManager: im,
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        repo_url: 'https://github.com/org/repo',
+        intentClassifier: ic,
+      },
+      { logDestination: nullDest },
+    );
+
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'reviewing_spec', { timeout: 2000 });
+
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await vi.waitUntil(() => {
+      const s = runs.get('request-001')?.stage;
+      return s !== 'reviewing_spec' && s !== 'speccing';
+    }, { timeout: 2000 });
+    await adapter.stop();
+
+    expect(setIssueLink).toHaveBeenCalledWith('CANVAS001', 'https://github.com/org/repo/issues/77');
+    expect(updateStatus).toHaveBeenCalledWith('CANVAS001', 'Approved');
+  });
+
+  it('bug approval: Notion property update failure is non-blocking — run proceeds to implementation', async () => {
+    const adapter = makeMockAdapter();
+    const logs: Record<string, unknown>[] = [];
+    const dest = {
+      write(s: string) {
+        try { logs.push(JSON.parse(s) as Record<string, unknown>); } catch { /* ignore */ }
+      },
+    };
+
+    const cp = makeSpecPublisher({
+      getPageMarkdown: vi.fn().mockResolvedValue('# Bug triage\n\nContent.'),
+      setIssueLink: vi.fn().mockRejectedValue(new Error('notion down')),
+      updateStatus: vi.fn().mockRejectedValue(new Error('notion down')),
+    });
+    const im = makeIssueManager({ createIssue: vi.fn().mockResolvedValue(88) });
+    const implementer = makeImplementer();
+
+    const ic = makeIntentClassifier('bug');
+    (ic.classify as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce('bug')
+      .mockResolvedValueOnce('approval');
+
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: cp,
+        specCommitter: makeSpecCommitter(),
+        implementer,
+        implFeedbackPage: makeImplFeedbackPage(),
+        issueManager: im,
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        repo_url: 'https://github.com/org/repo',
+        intentClassifier: ic,
+      },
+      { logDestination: dest as import('pino').DestinationStream },
+    );
+
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'reviewing_spec', { timeout: 2000 });
+
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await vi.waitUntil(() => {
+      const s = runs.get('request-001')?.stage;
+      return s !== 'reviewing_spec' && s !== 'speccing' && s !== 'implementing';
+    }, { timeout: 2000 });
+    await adapter.stop();
+
+    expect(implementer.implement).toHaveBeenCalled();
+    const statusFailed = logs.find(l => l['event'] === 'run.status_update_failed');
+    expect(statusFailed).toBeDefined();
+  });
+
+  it('bug approval: Notion content fetch failure → failRun called; run does not proceed to implementation', async () => {
+    const adapter = makeMockAdapter();
+    const cp = makeSpecPublisher({
+      getPageMarkdown: vi.fn().mockRejectedValue(new Error('notion fetch failed')),
+    });
+    const im = makeIssueManager();
+    const implementer = makeImplementer();
+    const postError = vi.fn().mockResolvedValue(undefined);
+
+    const ic = makeIntentClassifier('bug');
+    (ic.classify as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce('bug')
+      .mockResolvedValueOnce('approval');
+
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: cp,
+        specCommitter: makeSpecCommitter(),
+        implementer,
+        implFeedbackPage: makeImplFeedbackPage(),
+        issueManager: im,
+        postError,
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        repo_url: 'https://github.com/org/repo',
+        intentClassifier: ic,
+      },
+      { logDestination: nullDest },
+    );
+
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'reviewing_spec', { timeout: 2000 });
+
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'failed', { timeout: 2000 });
+    await adapter.stop();
+
+    expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('notion fetch failed'));
+    expect(im.createIssue).not.toHaveBeenCalled();
+    expect(implementer.implement).not.toHaveBeenCalled();
+  });
+
+  it('chore approval: GitHub issue write failure → failRun called', async () => {
+    const adapter = makeMockAdapter();
+    const cp = makeSpecPublisher({
+      getPageMarkdown: vi.fn().mockResolvedValue('# Chore: upgrade Node\n\nContent.'),
+    });
+    const im = makeIssueManager({ createIssue: vi.fn().mockRejectedValue(new Error('gh failed')) });
+    const implementer = makeImplementer();
+    const postError = vi.fn().mockResolvedValue(undefined);
+
+    const ic = makeIntentClassifier('chore');
+    (ic.classify as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce('chore')
+      .mockResolvedValueOnce('approval');
+
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: cp,
+        specCommitter: makeSpecCommitter(),
+        implementer,
+        implFeedbackPage: makeImplFeedbackPage(),
+        issueManager: im,
+        postError,
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        repo_url: 'https://github.com/org/repo',
+        intentClassifier: ic,
+      },
+      { logDestination: nullDest },
+    );
+
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'reviewing_spec', { timeout: 2000 });
+
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'failed', { timeout: 2000 });
+    await adapter.stop();
+
+    expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('gh failed'));
+    expect(implementer.implement).not.toHaveBeenCalled();
+  });
+
+  it('idea approval: spec file committed; setIssueLink NOT called; issueManager NOT called', async () => {
+    const adapter = makeMockAdapter();
+    const setIssueLink = vi.fn().mockResolvedValue(undefined);
+    const cp = makeSpecPublisher({ setIssueLink });
+    const sc = makeSpecCommitter();
+    const im = makeIssueManager();
+
+    const ic = makeIntentClassifier('idea');
+    (ic.classify as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce('idea')
+      .mockResolvedValueOnce('approval');
+
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: cp,
+        specCommitter: sc,
+        implementer: makeImplementer(),
+        implFeedbackPage: makeImplFeedbackPage(),
+        issueManager: im,
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        repo_url: 'https://github.com/org/repo',
+        intentClassifier: ic,
+      },
+      { logDestination: nullDest },
+    );
+
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'reviewing_spec', { timeout: 2000 });
+
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await vi.waitUntil(() => {
+      const s = runs.get('request-001')?.stage;
+      return s !== 'reviewing_spec' && s !== 'speccing';
+    }, { timeout: 2000 });
+    await adapter.stop();
+
+    expect(sc.commit).toHaveBeenCalled();
+    expect(setIssueLink).not.toHaveBeenCalled();
+    expect(im.createIssue).not.toHaveBeenCalled();
+  });
+
+  it('triage.approved log event emitted with correct fields on bug approval', async () => {
+    const logs: Record<string, unknown>[] = [];
+    const dest = {
+      write(s: string) {
+        try { logs.push(JSON.parse(s) as Record<string, unknown>); } catch { /* ignore */ }
+      },
+    };
+
+    const adapter = makeMockAdapter();
+    const cp = makeSpecPublisher({
+      getPageMarkdown: vi.fn().mockResolvedValue('# Bug triage\n\nContent.'),
+    });
+    const im = makeIssueManager({ createIssue: vi.fn().mockResolvedValue(123) });
+
+    const ic = makeIntentClassifier('bug');
+    (ic.classify as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce('bug')
+      .mockResolvedValueOnce('approval');
+
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: cp,
+        specCommitter: makeSpecCommitter(),
+        implementer: makeImplementer(),
+        implFeedbackPage: makeImplFeedbackPage(),
+        issueManager: im,
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        repo_url: 'https://github.com/org/repo',
+        intentClassifier: ic,
+      },
+      { logDestination: dest as import('pino').DestinationStream },
+    );
+
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'reviewing_spec', { timeout: 2000 });
+
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await vi.waitUntil(() => {
+      const s = runs.get('request-001')?.stage;
+      return s !== 'reviewing_spec' && s !== 'speccing';
+    }, { timeout: 2000 });
+    await adapter.stop();
+
+    const triageApproved = logs.find(l => l['event'] === 'triage.approved');
+    expect(triageApproved).toBeDefined();
+    expect(triageApproved!['intent']).toBe('bug');
+    expect(triageApproved!['issue_number']).toBe(123);
   });
 });
