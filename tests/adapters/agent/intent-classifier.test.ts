@@ -262,3 +262,43 @@ describe('AnthropicIntentClassifier — logging', () => {
     for (const line of logs) expect(line).not.toContain(secret);
   });
 });
+
+describe('AnthropicIntentClassifier — chore intent', () => {
+  it('new_thread: model returns chore → chore', async () => {
+    const cf = vi.fn().mockResolvedValue(makeApiResponse('chore'));
+    expect(await makeClassifier(cf).classify('we should upgrade Node to v22', 'new_thread')).toBe('chore');
+  });
+
+  it('intake: model returns chore → chore', async () => {
+    const cf = vi.fn().mockResolvedValue(makeApiResponse('chore'));
+    expect(await makeClassifier(cf).classify('clean up the test helpers', 'intake')).toBe('chore');
+  });
+
+  it('reviewing_spec: model returns chore (not valid) → falls back to feedback', async () => {
+    const cf = vi.fn().mockResolvedValue(makeApiResponse('chore'));
+    expect(await makeClassifier(cf).classify('some message', 'reviewing_spec')).toBe('feedback');
+  });
+});
+
+describe('AnthropicIntentClassifier — prompt includes chore for new_thread and intake', () => {
+  it('prompt for new_thread includes chore', async () => {
+    const cf = vi.fn().mockResolvedValue(makeApiResponse('idea'));
+    await makeClassifier(cf).classify('any message', 'new_thread');
+    const prompt = cf.mock.calls[0][0].messages[0].content as string;
+    expect(prompt).toContain('chore');
+  });
+
+  it('prompt for intake includes chore', async () => {
+    const cf = vi.fn().mockResolvedValue(makeApiResponse('idea'));
+    await makeClassifier(cf).classify('any message', 'intake');
+    const prompt = cf.mock.calls[0][0].messages[0].content as string;
+    expect(prompt).toContain('chore');
+  });
+
+  it('prompt for reviewing_spec does not include chore', async () => {
+    const cf = vi.fn().mockResolvedValue(makeApiResponse('feedback'));
+    await makeClassifier(cf).classify('any message', 'reviewing_spec');
+    const prompt = cf.mock.calls[0][0].messages[0].content as string;
+    expect(prompt).not.toContain('chore');
+  });
+});
