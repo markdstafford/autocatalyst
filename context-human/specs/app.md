@@ -53,7 +53,7 @@ At the end of the week, Phoebe pulls up the activity log: six features shipped, 
 
 - **Runtime**: backend service, started via CLI initially, hosted eventually
 - **Human interface**: pluggable adapter model — designed to work with any input/output channel (Slack, Discord, Linear, GitHub Issues, etc.); initial implementation targets one
-- **Agent runtime**: pluggable adapter model; initial implementation targets oh-my-claudecode (OMC), which orchestrates Claude Code
+- **Agent runtime**: pluggable adapter model; initial implementation targets Agent SDK (`@anthropic-ai/claude-agent-sdk`), which invokes Claude via `query()`
 - **Observability**: required from day one; logs, metrics, and traces must be queryable by agents without human intermediaries; stack TBD (Victoria stack is a strong candidate)
 - **Clients**: no dedicated UI; the human interface is the client
 - **Deployment target**: local machine initially; cloud-hosted long-term (provider TBD)
@@ -112,7 +112,7 @@ At the end of the week, Phoebe pulls up the activity log: six features shipped, 
 ### Adapters
 
 - **Human interface adapter: Slack** — inbound ideas and approvals via Slack events; outbound spec/status posts
-- **Agent runtime adapter: oh-my-claudecode** — implementation via OMC orchestrating Claude Code
+- **Agent runtime adapter: Agent SDK** — implementation via `@anthropic-ai/claude-agent-sdk` `query()`
 
 ### Loop improvement
 

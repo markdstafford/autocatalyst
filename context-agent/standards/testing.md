@@ -30,7 +30,7 @@ tests/
   core/              ← mirrors src/core/
   adapters/
     slack/           ← mirrors src/adapters/slack/
-    omc/             ← mirrors src/adapters/omc/
+    agent/           ← mirrors src/adapters/agent/
   fixtures/          ← shared test data
 ```
 
@@ -39,7 +39,7 @@ Test files: `<module>.test.ts`, placed in the `tests/` directory mirroring `src/
 ## Types of tests
 
 - **Unit tests**: test core logic (orchestrator state transitions, reconciliation, retry strategy) in isolation. No I/O.
-- **Integration tests**: test adapter implementations against real APIs (Slack, OMC). Use test credentials/sandboxes. Mark as `describe.skip` when credentials are unavailable.
+- **Integration tests**: test adapter implementations against real APIs (Slack, Agent SDK). Use test credentials/sandboxes. Mark as `describe.skip` when credentials are unavailable.
 - **Contract tests**: verify adapter implementations satisfy the adapter interface. Run against all adapters.
 
 ## Principles

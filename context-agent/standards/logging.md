@@ -12,7 +12,7 @@ Every log entry is a JSON object with these fields:
 |-------------|--------|----------|------------------------------------------------|
 | `timestamp` | string | yes      | ISO 8601                                       |
 | `level`     | string | yes      | `debug`, `info`, `warn`, `error`               |
-| `component` | string | yes      | Module that emitted the log (`orchestrator`, `slack-adapter`, `omc-adapter`) |
+| `component` | string | yes      | Module that emitted the log (`orchestrator`, `slack-adapter`, `agent-adapter`) |
 | `event`     | string | yes      | Stable event name (`run.started`, `spec.generated`, `approval.received`) |
 | `run_id`    | string | when applicable | ID of the current run                 |
 | `idea_id`   | string | when applicable | ID of the originating idea            |
@@ -37,7 +37,7 @@ Every log entry is a JSON object with these fields:
 
 Traces and metrics use OpenTelemetry SDK. Spans wrap:
 - Each orchestrator tick
-- Each adapter call (Slack API, OMC subprocess)
+- Each adapter call (Slack API, Agent SDK)
 - Each stage transition within a run
 
 Trace context propagates from orchestrator → adapter → agent subprocess where possible.

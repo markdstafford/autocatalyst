@@ -100,7 +100,7 @@ Autocatalyst fetches both open comment threads from the Notion page, combines th
 
 `SpecGenerator.create()` keeps the existing `## Raw output` / `FILENAME:` artifact format — it works and returns only the spec.
 
-`SpecGenerator.revise()` uses a delimited-section format from OMC:
+`SpecGenerator.revise()` uses a delimited-section format from Agent SDK:
 
 ```
 SPEC:
@@ -127,8 +127,8 @@ flowchart LR
     SlackAdapter -->|InboundEvent| Orchestrator
     Orchestrator -->|create workspace| WorkspaceManager
     Orchestrator -->|generate/revise spec| SpecGenerator
-    SpecGenerator -->|invoke OMC| OMC["OMC (oh-my-claudecode)"]
-    OMC -->|spec + comment responses as JSON| SpecGenerator
+    SpecGenerator -->|invoke Agent SDK| AgentSDK["Agent SDK (@anthropic-ai/claude-agent-sdk)"]
+    AgentSDK -->|spec + comment responses as JSON| SpecGenerator
     Orchestrator -->|fetch / reply / resolve| NotionFeedbackSource
     NotionFeedbackSource <-->|GET/POST/PATCH /comments| Notion
     Orchestrator -->|create/update| SpecPublisher
@@ -154,8 +154,8 @@ sequenceDiagram
     Orchestrator->>WorkspaceManager: create(idea_id, repo_url)
     WorkspaceManager-->>Orchestrator: workspace_path + branch
     Orchestrator->>SpecGenerator: create(idea, workspace_path)
-    SpecGenerator->>OMC: omc ask claude --print "..."
-    OMC-->>SpecGenerator: artifact with spec content
+    SpecGenerator->>AgentSDK: query(prompt, workspace_path)
+    AgentSDK-->>SpecGenerator: spec content
     SpecGenerator-->>Orchestrator: spec_path
     Orchestrator->>NotionPublisher: create(channel_id, thread_ts, spec_path)
     NotionPublisher->>Notion: POST /pages (create page, title only)
@@ -188,8 +188,8 @@ sequenceDiagram
     Notion-->>NotionPublisher: page markdown (with comment spans)
     Note over Orchestrator: combines Slack message + 2 comment bodies (with IDs) + page markdown
     Orchestrator->>SpecGenerator: revise(feedback, notion_comments, spec_path, workspace_path, page_markdown)
-    SpecGenerator->>OMC: omc ask claude --print "..." (with span-preservation instructions)
-    OMC-->>SpecGenerator: delimited sections — revised spec (with spans) + comment_responses[]
+    SpecGenerator->>AgentSDK: query(prompt, workspace_path, span_instructions)
+    AgentSDK-->>SpecGenerator: delimited sections — revised spec (with spans) + comment_responses[]
     SpecGenerator-->>Orchestrator: ReviseResult { comment_responses, page_content }
     Orchestrator->>NotionPublisher: update(publisher_ref, spec_path, page_content)
     NotionPublisher->>Notion: PATCH /pages/{id}/markdown (replace_content)
@@ -335,7 +335,7 @@ Current spec:
 When `current_page_markdown` contains `<span discussion-urls="...">` comment anchors, the prompt includes span-preservation instructions: keep spans on unchanged text, move spans to equivalent text when rewritten, orphan spans to an "## Orphaned comments" section when the anchored text is removed entirely. When `notion_comments` is empty, the Notion section is omitted and the model is instructed to use an empty array for `COMMENT_RESPONSES`.
 
 Parsing:
-1. Extract the `## Raw output` section from the OMC artifact (same depth-tracking logic as `create`)
+1. Extract the `## Raw output` section from the Agent SDK result (same depth-tracking logic as `create`)
 2. Unwrap any code fence wrapper
 3. Extract `SPEC:` delimited section and `COMMENT_RESPONSES:` delimited section via `extractDelimitedSection`
 4. Validate: `SPEC` is non-empty; `COMMENT_RESPONSES` parses as a JSON array of `{ comment_id: string; response: string }`; throw with a descriptive error if either check fails
@@ -413,13 +413,13 @@ Step 4 failures (reply/resolve) are logged as errors but do **not** fail the run
 
 **Data privacy**
 - Spec content is written to Notion pages — this is a broader surface than Slack canvases (which stay within the workspace). Operators should ensure the Notion integration is scoped to an appropriate parent page and not granted workspace-wide access
-- Notion comment bodies, including `created_by.name` attribution, are fetched and included in the OMC revision prompt, meaning they are sent to Anthropic. This mirrors the existing behavior for Slack feedback content and is not new in kind, but operators should be aware that Notion comment authors' names are now part of the data sent to Anthropic
+- Notion comment bodies, including `created_by.name` attribution, are fetched and included in the Agent SDK revision prompt, meaning they are sent to Anthropic. This mirrors the existing behavior for Slack feedback content and is not new in kind, but operators should be aware that Notion comment authors' names are now part of the data sent to Anthropic
 - The integration token must not appear in any log output; `NotionClient` must never log the token value
 
 **Input validation**
 - `publisher_ref` values stored on `Run` originate from Notion API responses, not user input — no further validation needed at call sites
-- Notion comment content is passed to the OMC prompt wrapped in `<<<`/`>>>` delimiters; it is not executed or interpreted as code
-- The OMC response is parsed via delimited-section extraction; the `COMMENT_RESPONSES` section is parsed with `JSON.parse()` and structurally validated before any field is used — invalid shape throws and fails the run rather than passing untrusted data downstream
+- Notion comment content is passed to the Agent SDK prompt wrapped in `<<<`/`>>>` delimiters; it is not executed or interpreted as code
+- The Agent SDK response is parsed via delimited-section extraction; the `COMMENT_RESPONSES` section is parsed with `JSON.parse()` and structurally validated before any field is used — invalid shape throws and fails the run rather than passing untrusted data downstream
 
 ### 5. Observability
 
@@ -443,7 +443,7 @@ Sensitive content (comment bodies, spec content) is not logged at `info` level o
 
 **Metrics**
 
-No new metrics beyond what the parent feature already tracks (run stage transitions, OMC invocation counts). Notion API call failures surface as `run.failed` events on the existing metric.
+No new metrics beyond what the parent feature already tracks (run stage transitions, Agent SDK invocation counts). Notion API call failures surface as `run.failed` events on the existing metric.
 
 **Alerting**
 
@@ -547,7 +547,7 @@ _Prompt construction_
 - With `notion_comments` empty: prompt does not contain `[COMMENT_ID:` anywhere; `comment_responses` instruction says to return `[]`
 - Slack message content appears in the `<<<`/`>>>` delimiters regardless of whether Notion comments are present
 - Current spec content appears in the `<<<`/`>>>` delimiters in both cases
-- OMC is invoked with the correct `cwd: workspace_path`
+- Agent SDK `query()` is invoked with the correct `cwd: workspace_path`
 
 _Artifact parsing_
 - Valid SPEC and COMMENT_RESPONSES sections: spec written to `spec_path`; `ReviseResult` returned with correct `comment_responses`
@@ -561,7 +561,7 @@ _Artifact parsing_
 - `comment_responses` entry missing `comment_id`: throws with a descriptive error
 - `comment_responses` entry missing `response`: throws with a descriptive error
 - Extra fields in comment_responses entries: tolerated without error
-- OMC exits non-zero: throws; spec file is not modified
+- Agent SDK `query()` rejects: throws; spec file is not modified
 
 _Span passthrough_
 - Uses page markdown as prompt source when `current_page_markdown` provided with spans
@@ -652,7 +652,7 @@ The Markdown API (`GET` and `PATCH /v1/pages/{page_id}/markdown`) requires `Noti
 
 The span-passthrough approach depends on the model following span-preservation instructions in the prompt. If the model drops spans, `ensureSpansPreserved` appends them as orphaned comments — no comment anchors are permanently lost, but orphaned spans require manual relocation. Mitigation: the prompt is explicit about span rules; the orphan-recovery mechanism is a safety net.
 
-**OMC delimited-section response reliability**
+**Agent SDK delimited-section response reliability**
 
 The model must return well-formed `SPEC:` and `COMMENT_RESPONSES:` delimited sections. The `COMMENT_RESPONSES` section must contain valid JSON. Prompt changes or model updates could degrade reliability. Mitigation: the prompt shows the exact expected structure; `extractDelimitedSection` + `JSON.parse()` + structural validation fails fast with a descriptive error; the run can be retried by re-triggering with an @mention.
 
@@ -775,11 +775,11 @@ Pages are created on every `new_idea` run and never deleted. A misconfigured or 
       - [x] Throws with descriptive error for each invalid shape (malformed JSON, missing SPEC, empty SPEC, missing COMMENT_RESPONSES, non-array, missing `comment_id`, missing `response`)
       - [x] Extra fields in entries tolerated
       - [x] Span passthrough: uses page markdown as prompt source, adds span instructions, returns `page_content`, writes stripped spec to disk, recovers dropped spans
-      - [x] OMC exit non-zero: throws, file not modified
+      - [x] Agent SDK `query()` rejects: throws, file not modified
       - [x] All tests pass: `npm test`
     - **Dependencies**: "Task: Add `NotionComment`, `NotionCommentResponse` types"
 
-  - [x] **Task: Update `OMCSpecGenerator.revise()` — new signature, delimited-section prompt, and parsing**
+  - [x] **Task: Update `AgentSpecGenerator.revise()` — new signature, delimited-section prompt, and parsing**
     - **Description**: Updated `src/adapters/agent/spec-generator.ts`. Changed the `revise()` signature to accept `current_page_markdown?: string` and return `Promise<ReviseResult>`. Changed the response format from JSON to delimited sections (`SPEC:` and `COMMENT_RESPONSES:`). When page markdown contains comment spans, includes span-preservation instructions and returns span-bearing `page_content`; writes span-stripped content to disk. Added `ReviseResult` type and `extractDelimitedSection` helper.
     - **Acceptance criteria**:
       - [x] `revise()` signature updated to accept optional `current_page_markdown` and return `Promise<ReviseResult>`
@@ -789,7 +789,7 @@ Pages are created on every `new_idea` run and never deleted. A misconfigured or 
       - [x] Delimited sections parsed via `extractDelimitedSection`; COMMENT_RESPONSES parsed as JSON
       - [x] Throws on missing/empty SPEC, malformed/non-array COMMENT_RESPONSES, entry missing `comment_id` or `response`
       - [x] Span passthrough: `page_content` returned with spans; disk file written span-free; dropped spans recovered
-      - [x] OMC exit non-zero: throws; `spec_path` not modified
+      - [x] Agent SDK `query()` rejects: throws; `spec_path` not modified
       - [x] All relative imports use `.js` extensions
       - [x] All tests from the preceding task pass: `npm test`
     - **Dependencies**: "Task: Update `SpecGenerator` tests for `revise()`"
@@ -807,7 +807,7 @@ Pages are created on every `new_idea` run and never deleted. A misconfigured or 
       - [x] `feedbackSource.reply` rejects on second of three: error logged; run stays in `review`; remaining replies attempted; `resolve` called
       - [x] `feedbackSource.resolve` rejects: error logged; run stays in `review`
       - [x] All tests pass: `npm test`
-    - **Dependencies**: "Task: Rename `CanvasPublisher` → `SpecPublisher`", "Task: Add `NotionComment`, `NotionCommentResponse` types", "Task: Define `FeedbackSource` interface and implement `NotionFeedbackSource`", "Task: Update `OMCSpecGenerator.revise()`"
+    - **Dependencies**: "Task: Rename `CanvasPublisher` → `SpecPublisher`", "Task: Add `NotionComment`, `NotionCommentResponse` types", "Task: Define `FeedbackSource` interface and implement `NotionFeedbackSource`", "Task: Update `AgentSpecGenerator.revise()`"
 
   - [x] **Task: Update `OrchestratorImpl` for feedback enrichment and comment dispatch**
     - **Description**: Update `src/core/orchestrator.ts`. Add `feedbackSource?: FeedbackSource` to `OrchestratorDeps`. Update `_handleSpecFeedback()` to implement the enrichment and dispatch logic from Section 3: (1) fetch Notion comments via `feedbackSource.fetch(run.publisher_ref)` if source is present, else use `[]`; (2) emit `spec_revision.enriched` log event with `slack_feedback` and `notion_comment_count`; (3) pass `notion_comments` to `specGenerator.revise()`; (4) call `specPublisher.update()`; (5) if `feedbackSource` present and `commentResponses.length > 0`, call `feedbackSource.reply()` for each response then `feedbackSource.resolve()` — step 5 failures log errors but do not fail the run. Update `createRun()` to initialize `publisher_ref: undefined` instead of `canvas_id`.

@@ -10,7 +10,7 @@ Slack via Bolt SDK. Ideas as messages, specs pushed to Canvases, feedback in thr
 
 ## Agent runtime
 
-oh-my-claudecode (OMC) via `claude` CLI subprocess. Multi-agent orchestration via `/autopilot`, `/team`. Adapter interface: `start()`, `stream()`, `stop()`, `status()`.
+`@anthropic-ai/claude-agent-sdk` via the `query()` function. Adapter interface: `start()`, `stream()`, `stop()`, `status()`.
 
 ## Spec format
 
@@ -38,7 +38,7 @@ WORKFLOW.md in target repo. Prompt templates, stage policies, runtime settings. 
 | Node.js 22+ | Runtime |
 | TypeScript | Language |
 | Slack Bolt SDK | Human interface adapter |
-| oh-my-claudecode | Agent runtime adapter |
+| `@anthropic-ai/claude-agent-sdk` | Agent runtime adapter |
 | pino | Structured logging |
 | OpenTelemetry SDK | Traces and metrics |
 | Vitest | Testing |
