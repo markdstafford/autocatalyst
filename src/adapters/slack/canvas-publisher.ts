@@ -17,6 +17,7 @@ export interface SpecPublisher {
   update(publisher_ref: string, spec_path: string, page_content?: string): Promise<void>;
   getPageMarkdown(publisher_ref: string, stripHtml?: boolean): Promise<string>;
   updateStatus?(publisher_ref: string, status: SpecEntryStatus): Promise<void>;
+  setIssueLink?(publisher_ref: string, issue_url: string): Promise<void>;
 }
 
 export function titleFromPath(spec_path: string): string {

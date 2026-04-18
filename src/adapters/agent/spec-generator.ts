@@ -32,6 +32,7 @@ export interface SpecGenerator {
     request: Request,
     workspace_path: string,
     onProgress?: (message: string) => Promise<void>,
+    intent?: 'idea' | 'bug' | 'chore',
   ): Promise<string>;
   revise(
     feedback: ThreadMessage,
@@ -92,10 +93,15 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
     this.readFileFn = options?.readFile ?? ((path, enc) => _readFile(path, enc));
   }
 
-  async create(request: Request, workspace_path: string, onProgress?: (message: string) => Promise<void>): Promise<string> {
+  async create(
+    request: Request,
+    workspace_path: string,
+    onProgress?: (message: string) => Promise<void>,
+    intent?: 'idea' | 'bug' | 'chore',
+  ): Promise<string> {
     const createResultPath = join(workspace_path, '.autocatalyst', 'spec-create-result.json');
     const specDir = join(workspace_path, 'context-human', 'specs');
-    const prompt = buildCreatePrompt(request, specDir, createResultPath);
+    const prompt = buildCreatePrompt(request, specDir, createResultPath, intent);
 
     this.logger.debug({ event: 'spec.agent_invoked', request_id: request.id }, 'Invoking Agent SDK for spec creation');
 
@@ -291,7 +297,57 @@ Examples of good checkpoints:
 The goal is to keep a human informed at intervals they'd find interesting. You decide what's
 worth reporting and when.`;
 
-function buildCreatePrompt(request: Request, specDir: string, createResultPath: string): string {
+function buildCreatePrompt(
+  request: Request,
+  specDir: string,
+  createResultPath: string,
+  intent?: 'idea' | 'bug' | 'chore',
+): string {
+  if (intent === 'bug') {
+    return [
+      `You are producing a bug triage document for the following report:`,
+      ``,
+      request.content,
+      ``,
+      `Invoke the \`mm:issue-triage\` skill to perform a thorough investigation of this bug.`,
+      `Examine relevant source files, recent commits, and related issues to understand the`,
+      `root cause before forming conclusions. The investigation must be thorough — do not`,
+      `skip the codebase inspection step.`,
+      ``,
+      `When the triage document is complete:`,
+      `- Write the triage file to: ${specDir}`,
+      `  Use "triage-bug-<slug>.md" as the filename.`,
+      `- Write the result to: ${createResultPath}`,
+      `  Content must be: { "spec_path": "<absolute path to the triage file you wrote>" }`,
+      ``,
+      `Do not signal completion until both files have been written.`,
+      ``,
+      CHECKPOINT_INSTRUCTIONS,
+    ].join('\n');
+  }
+
+  if (intent === 'chore') {
+    return [
+      `You are producing a chore specification for the following maintenance request:`,
+      ``,
+      request.content,
+      ``,
+      `Invoke the \`mm:issue-triage\` skill to investigate the current state of the relevant`,
+      `code and understand why this work is needed now. Use thorough investigation.`,
+      ``,
+      `When the chore specification is complete:`,
+      `- Write the spec file to: ${specDir}`,
+      `  Use "triage-chore-<slug>.md" as the filename.`,
+      `- Write the result to: ${createResultPath}`,
+      `  Content must be: { "spec_path": "<absolute path to the spec file you wrote>" }`,
+      ``,
+      `Do not signal completion until both files have been written.`,
+      ``,
+      CHECKPOINT_INSTRUCTIONS,
+    ].join('\n');
+  }
+
+  // Default: 'idea' or omitted — existing behavior unchanged
   return [
     `Use the /mm:planning skill to create a complete product spec for the following request.`,
     ``,

@@ -10,7 +10,7 @@ export type RunStage =
   | 'done'
   | 'failed';
 
-export type RequestIntent = 'idea' | 'bug' | 'question';
+export type RequestIntent = 'idea' | 'bug' | 'chore' | 'question';
 
 export interface Run {
   id: string;
@@ -22,6 +22,7 @@ export interface Run {
   spec_path: string | undefined;
   publisher_ref: string | undefined; // Notion page ID or Slack canvas ID
   impl_feedback_ref: string | undefined; // Notion page ID for implementation feedback
+  issue: number | undefined; // GitHub issue number (bug and chore runs)
   attempt: number;
   channel_id: string;
   thread_ts: string;
