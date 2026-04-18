@@ -8,6 +8,7 @@ import { createLogger } from '../../core/logger.js';
 import type { NotionClient } from './notion-client.js';
 import { titleFromPath } from '../slack/canvas-publisher.js';
 import type { SpecPublisher, SpecEntryStatus } from '../slack/canvas-publisher.js';
+import { stripAllHtml } from './markdown-diff.js';
 
 interface NotionPublisherOptions {
   logDestination?: pino.DestinationStream;
@@ -100,8 +101,9 @@ export class NotionPublisher implements SpecPublisher {
     return pageId;
   }
 
-  async getPageMarkdown(publisher_ref: string): Promise<string> {
-    return this.client.pages.getMarkdown(publisher_ref);
+  async getPageMarkdown(publisher_ref: string, stripHtml = false): Promise<string> {
+    const raw = await this.client.pages.getMarkdown(publisher_ref);
+    return stripHtml ? stripAllHtml(raw) : raw;
   }
 
   async update(publisher_ref: string, spec_path: string, page_content?: string): Promise<void> {

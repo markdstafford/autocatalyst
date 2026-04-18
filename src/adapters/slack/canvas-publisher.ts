@@ -15,7 +15,7 @@ export type SpecEntryStatus =
 export interface SpecPublisher {
   create(channel_id: string, thread_ts: string, spec_path: string): Promise<string>;
   update(publisher_ref: string, spec_path: string, page_content?: string): Promise<void>;
-  getPageMarkdown(publisher_ref: string): Promise<string>;
+  getPageMarkdown(publisher_ref: string, stripHtml?: boolean): Promise<string>;
   updateStatus?(publisher_ref: string, status: SpecEntryStatus): Promise<void>;
 }
 
@@ -89,7 +89,7 @@ export class SlackCanvasPublisher implements SpecPublisher {
     return canvas_id;
   }
 
-  async getPageMarkdown(_publisher_ref: string): Promise<string> {
+  async getPageMarkdown(_publisher_ref: string, _stripHtml?: boolean): Promise<string> {
     return '';
   }
 

@@ -66,7 +66,7 @@ export class NotionSpecCommitter implements SpecCommitter {
   async commit(workspace_path: string, publisher_ref: string, spec_path: string): Promise<void> {
     let raw: string;
     try {
-      raw = await this.publisher.getPageMarkdown(publisher_ref);
+      raw = await this.publisher.getPageMarkdown(publisher_ref, true);
     } catch (err) {
       this.logger.error(
         { event: 'spec.commit_failed', error: String(err), publisher_ref, step: 'fetch' },

@@ -22,11 +22,16 @@ const SAMPLE_MARKDOWN = [
   'This is the spec body.',
 ].join('\n');
 
-function makePublisher(markdown: string = SAMPLE_MARKDOWN): SpecPublisher {
+function makePublisher(
+  markdown: string = SAMPLE_MARKDOWN,
+  strippedMarkdown?: string,
+): SpecPublisher {
   return {
     publish: vi.fn(),
     postMessage: vi.fn(),
-    getPageMarkdown: vi.fn().mockResolvedValue(markdown),
+    getPageMarkdown: vi.fn().mockImplementation((_ref: string, stripHtml?: boolean) =>
+      Promise.resolve(stripHtml && strippedMarkdown !== undefined ? strippedMarkdown : markdown)
+    ),
     updatePage: vi.fn(),
   } as unknown as SpecPublisher;
 }
@@ -48,7 +53,7 @@ describe('NotionSpecCommitter — markdown fetching', () => {
   beforeEach(() => { tmpDir = mkdtempSync(join(tmpdir(), 'spec-committer-')); });
   afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
 
-  it('calls getPageMarkdown with the provided publisher_ref', async () => {
+  it('calls getPageMarkdown with the provided publisher_ref and stripHtml=true', async () => {
     const publisher = makePublisher();
     const execFn = makeExecFn();
     const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: nullDest });
@@ -56,7 +61,45 @@ describe('NotionSpecCommitter — markdown fetching', () => {
     const specPath = join(tmpDir, 'context-human', 'specs', 'feature-my-feature.md');
     await committer.commit(tmpDir, 'page-id-123', specPath);
 
-    expect(publisher.getPageMarkdown).toHaveBeenCalledWith('page-id-123');
+    expect(publisher.getPageMarkdown).toHaveBeenCalledWith('page-id-123', true);
+  });
+
+  it('strips Notion HTML table tags from the written spec file', async () => {
+    const markdownWithTable = [
+      '---',
+      'created: 2026-04-01',
+      'last_updated: 2026-04-01',
+      'status: draft',
+      '---',
+      '',
+      '# Title',
+      '',
+      '<table header-row="true"><tr><td>Column A</td><td>Column B</td></tr></table>',
+    ].join('\n');
+    const strippedMarkdown = [
+      '---',
+      'created: 2026-04-01',
+      'last_updated: 2026-04-01',
+      'status: draft',
+      '---',
+      '',
+      '# Title',
+      '',
+      'Column AColumn B',
+    ].join('\n');
+    const publisher = makePublisher(markdownWithTable, strippedMarkdown);
+    const execFn = makeExecFn();
+    const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: nullDest });
+
+    const specPath = join(tmpDir, 'context-human', 'specs', 'feature-table.md');
+    await committer.commit(tmpDir, 'page-id', specPath);
+
+    const written = readFileSync(specPath, 'utf-8');
+    expect(written).not.toContain('<table');
+    expect(written).not.toContain('<tr>');
+    expect(written).not.toContain('<td>');
+    expect(written).toContain('Column A');
+    expect(written).toContain('Column B');
   });
 });
 
