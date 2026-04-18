@@ -318,6 +318,36 @@ describe('NotionPublisher.getPageMarkdown', () => {
 
     await expect(publisher.getPageMarkdown('page-xyz')).rejects.toThrow('API error');
   });
+
+  it('strips all HTML when stripHtml=true', async () => {
+    const client = makeMockNotionClient();
+    const app = makeMockApp();
+    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+
+    const rawMarkdown = '# Spec\n\n<table header-row="true"><tr><td>Cell</td></tr></table>\n\n<span discussion-urls="discussion://abc">text</span>';
+    (client.pages.getMarkdown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(rawMarkdown);
+
+    const result = await publisher.getPageMarkdown('page-xyz', true);
+
+    expect(result).not.toContain('<');
+    expect(result).not.toContain('>');
+    expect(result).toContain('Cell');
+    expect(result).toContain('text');
+  });
+
+  it('returns raw HTML when stripHtml=false (default)', async () => {
+    const client = makeMockNotionClient();
+    const app = makeMockApp();
+    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+
+    const rawMarkdown = '# Spec\n\n<table header-row="true"><tr><td>Cell</td></tr></table>';
+    (client.pages.getMarkdown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(rawMarkdown);
+
+    const result = await publisher.getPageMarkdown('page-xyz');
+
+    expect(result).toContain('<table');
+    expect(result).toContain('<td>Cell</td>');
+  });
 });
 
 describe('NotionPublisher — parseFrontmatter behavior (via create)', () => {
