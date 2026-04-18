@@ -94,3 +94,12 @@ export function prettifyMarkdown(raw: string): string {
 
   return collapsed;
 }
+
+/**
+ * Strip all HTML tags from Notion-flavored markdown, preserving inner text.
+ * Handles <table>, <tr>, <td>, <span discussion-urls>, <br/>, and any other
+ * Notion HTML artifacts.
+ */
+export function stripAllHtml(raw: string): string {
+  return raw.replace(/<[^>]*>/g, '');
+}

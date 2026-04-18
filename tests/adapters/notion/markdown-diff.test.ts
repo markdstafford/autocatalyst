@@ -5,6 +5,7 @@ import {
   extractCommentSpans,
   ensureSpansPreserved,
   prettifyMarkdown,
+  stripAllHtml,
 } from '../../../src/adapters/notion/markdown-diff.js';
 
 // ─── stripCommentSpans ──────────────────────────────────────────────────
@@ -261,5 +262,42 @@ describe('prettifyMarkdown — orphaned comments removal', () => {
     // The ## Next Section and content following it should NOT be removed
     expect(result).toContain('## Next Section');
     expect(result).toContain('Kept.');
+  });
+});
+
+// ─── stripAllHtml ────────────────────────────────────────────────────────
+
+describe('stripAllHtml', () => {
+  it('strips <table> and child tags, preserving cell text', () => {
+    const input = '<table header-row="true"><tr><td>Cell A</td><td>Cell B</td></tr></table>';
+    expect(stripAllHtml(input)).toBe('Cell ACell B');
+  });
+
+  it('strips <span discussion-urls> tags, preserving inner text', () => {
+    const input = 'Before <span discussion-urls="discussion://abc">highlighted</span> after.';
+    expect(stripAllHtml(input)).toBe('Before highlighted after.');
+  });
+
+  it('passes through content with no HTML unchanged', () => {
+    const input = '# Heading\n\nSome paragraph text with no HTML.';
+    expect(stripAllHtml(input)).toBe(input);
+  });
+
+  it('strips self-closing tags without leaving artifacts', () => {
+    const input = 'Line 1<br/>Line 2';
+    expect(stripAllHtml(input)).toBe('Line 1Line 2');
+  });
+
+  it('returns empty string for empty input', () => {
+    expect(stripAllHtml('')).toBe('');
+  });
+
+  it('handles mixed HTML and markdown', () => {
+    const input = '# Title\n\n<table><tr><td>data</td></tr></table>\n\nNormal paragraph.';
+    const result = stripAllHtml(input);
+    expect(result).not.toContain('<');
+    expect(result).not.toContain('>');
+    expect(result).toContain('data');
+    expect(result).toContain('Normal paragraph.');
   });
 });
