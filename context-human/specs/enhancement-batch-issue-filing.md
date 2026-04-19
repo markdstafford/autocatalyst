@@ -612,22 +612,22 @@ The filing pipeline destroys the workspace before posting the summary, so a fail
 			- [x] `filing.complete` emitted with `run_id`, `request_id`, `filed_count`, `duplicate_count`
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Create `issue-filer.ts` — types, interface, and `AgentSDKIssueFiler`
-	- [ ] **Task: Wire ****`file_issues`**** intent routing in ****`_handleRequest`**
+	- [x] **Task: Wire ****`file_issues`**** intent routing in ****`_handleRequest`**
 		- **Description**: In `src/core/orchestrator.ts`, `_handleRequest`: add a `file_issues` branch after the `chore` branch — `run.intent = 'file_issues'; this._persistRuns(); await this._startFilingPipeline(run, request);`. Verify existing `idea`, `bug`, `chore`, and `question` branches are unmodified.
 		- **Acceptance criteria**:
-			- [ ] `file_issues` intent branch routes to `_startFilingPipeline`
-			- [ ] `run.intent` set to `'file_issues'` before `_persistRuns()`
-			- [ ] Branch placed after the `chore` branch
-			- [ ] Existing `idea`, `bug`, `chore`, `question` branches unchanged
-			- [ ] `tsc --noEmit` passes
+			- [x] `file_issues` intent branch routes to `_startFilingPipeline`
+			- [x] `run.intent` set to `'file_issues'` before `_persistRuns()`
+			- [x] Branch placed after the `chore` branch
+			- [x] Existing `idea`, `bug`, `chore`, `question` branches unchanged
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `issueFiler` to `OrchestratorDeps` and implement `_startFilingPipeline`, Task: Add `file_issues` to `Intent` type and classifier
-	- [ ] **Task: Wire ****`AgentSDKIssueFiler`**** in ****`index.ts`**
+	- [x] **Task: Wire ****`AgentSDKIssueFiler`**** in ****`index.ts`**
 		- **Description**: In `src/index.ts`: (1) import `AgentSDKIssueFiler` from `./adapters/agent/issue-filer.js`; (2) instantiate `const issueFiler = new AgentSDKIssueFiler(issueManager)` — `issueManager` is the existing `GHIssueManager` instance already created for the bug/chore pipelines; (3) add `issueFiler` to the `OrchestratorImpl` deps object.
 		- **Acceptance criteria**:
-			- [ ] `AgentSDKIssueFiler` imported and instantiated
-			- [ ] Existing `GHIssueManager` instance passed to the `AgentSDKIssueFiler` constructor
-			- [ ] `issueFiler` passed in orchestrator deps
-			- [ ] `tsc --noEmit` passes
+			- [x] `AgentSDKIssueFiler` imported and instantiated
+			- [x] Existing `GHIssueManager` instance passed to the `AgentSDKIssueFiler` constructor
+			- [x] `issueFiler` passed in orchestrator deps
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Wire `file_issues` intent routing in `_handleRequest`
 	- [ ] **Task: Update orchestrator unit tests for ****`file_issues`**
 		- **Description**: In `tests/core/orchestrator.test.ts`, add test cases as specified in section 6. *Routing*: `new_request` + classifier returns `'file_issues'` → `_startFilingPipeline` called; `run.intent = 'file_issues'`; run reaches `done`. *Error paths*: (1) workspace creation failure → `failRun`; `issueFiler.file()` not called; (2) `issueFiler.file()` throws (enrichment failure) → workspace destroyed; `failRun`; (3) `issueFiler.file()` throws (creation phase — `IssueManager.create()` failure) → workspace destroyed; `failRun`; (4) `result.status === 'failed'` → workspace destroyed; `failRun` with `result.error`. *Success path*: (5) mixed result (1 filed + 1 duplicate) → `filing.issue_filed` emitted with correct `issue_number`/`issue_title`, `filing.duplicate_detected` emitted with correct `existing_issue_number`/`existing_issue_title`, workspace destroyed, summary posted, `filing.complete` with `filed_count: 1`/`duplicate_count: 1`, run `done`; (6) all new → only `filing.issue_filed` events; no `filing.duplicate_detected`; (7) all duplicates → only `filing.duplicate_detected`; `IssueManager.create()` never called; (8) acknowledgment post fails → pipeline continues; (9) summary post fails → run transitions to `done`. *Existing routing*: `idea`, `bug`, `chore`, `question` routing unaffected.

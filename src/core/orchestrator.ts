@@ -249,6 +249,10 @@ export class OrchestratorImpl implements Orchestrator {
         run.intent = 'chore';
         this._persistRuns();
         await this._startTriagePipeline(run, request, 'chore');
+      } else if (intent === 'file_issues') {
+        run.intent = 'file_issues';
+        this._persistRuns();
+        await this._startFilingPipeline(run, request);
       } else if (intent === 'question') {
         run.intent = 'question';
         this._persistRuns();

@@ -27,6 +27,7 @@ import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { AgentSDKImplementer } from './adapters/agent/implementer.js';
 import { GHPRCreator } from './adapters/agent/pr-creator.js';
 import { GHIssueManager } from './adapters/agent/issue-manager.js';
+import { AgentSDKIssueFiler } from './adapters/agent/issue-filer.js';
 import { NotionSpecCommitter } from './adapters/notion/spec-committer.js';
 import { NotionImplementationFeedbackPage } from './adapters/notion/implementation-feedback-page.js';
 import type { SpecCommitter } from './adapters/notion/spec-committer.js';
@@ -168,6 +169,7 @@ try {
   const implementer = new AgentSDKImplementer();
   const prCreator = new GHPRCreator();
   const issueManager = new GHIssueManager();
+  const issueFiler = new AgentSDKIssueFiler(issueManager);
 
   let specPublisher: SpecPublisher;
   let feedbackSource: FeedbackSource | undefined;
@@ -221,6 +223,7 @@ try {
     implFeedbackPage,
     prCreator,
     issueManager,
+    issueFiler,
     runStore,
     threadRegistry,
     postError: async (channel_id, thread_ts, text) => {
