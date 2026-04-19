@@ -14,6 +14,7 @@ import type { SpecCommitter } from '../../src/adapters/notion/spec-committer.js'
 import type { Implementer, ImplementationResult } from '../../src/adapters/agent/implementer.js';
 import type { ImplementationFeedbackPage } from '../../src/adapters/notion/implementation-feedback-page.js';
 import type { IssueManager } from '../../src/adapters/agent/issue-manager.js';
+import type { IssueFiler, FilingResult } from '../../src/adapters/agent/issue-filer.js';
 
 const nullDest = { write: () => {} };
 
@@ -208,6 +209,18 @@ function makeIssueManager(overrides: Partial<IssueManager> = {}): IssueManager {
     writeIssue: vi.fn().mockResolvedValue(undefined),
     createIssue: vi.fn().mockResolvedValue(42),
     ...overrides,
+  };
+}
+
+function makeIssueFiler(resultOverrides: Partial<FilingResult> = {}): IssueFiler {
+  const defaultResult: FilingResult = {
+    status: 'complete',
+    summary: 'Filed 1 new issue: #10 Test Issue',
+    filed_issues: [{ number: 10, title: 'Test Issue', action: 'filed' }],
+    ...resultOverrides,
+  };
+  return {
+    file: vi.fn().mockResolvedValue(defaultResult),
   };
 }
 
@@ -4456,5 +4469,346 @@ describe('Orchestrator — bug/chore approval paths', () => {
     expect(triageApproved).toBeDefined();
     expect(triageApproved!['intent']).toBe('bug');
     expect(triageApproved!['issue_number']).toBe(123);
+  });
+});
+
+describe('Orchestrator — file_issues routing', () => {
+  it('new_request + file_issues intent → run reaches done with intent=file_issues', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const issueFiler = makeIssueFiler();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: wm,
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      intentClassifier: makeIntentClassifier('file_issues'),
+      issueFiler,
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage,
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: nullDest });
+
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    const runs = (orch as never as { runs: Map<string, Run> }).runs;
+    const run = runs.get('request-001')!;
+    expect(run.intent).toBe('file_issues');
+    expect(run.stage).toBe('done');
+    expect(issueFiler.file).toHaveBeenCalled();
+  });
+});
+
+describe('Orchestrator — _startFilingPipeline error paths', () => {
+  it('workspace creation failure → failRun; issueFiler.file() not called', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager({ create: vi.fn().mockRejectedValue(new Error('clone failed')) });
+    const issueFiler = makeIssueFiler();
+    const postError = vi.fn().mockResolvedValue(undefined);
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: wm,
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      intentClassifier: makeIntentClassifier('file_issues'),
+      issueFiler,
+      postError,
+      postMessage: vi.fn().mockResolvedValue(undefined),
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: nullDest });
+
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(issueFiler.file).not.toHaveBeenCalled();
+    expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('clone failed'));
+    const runs = (orch as never as { runs: Map<string, Run> }).runs;
+    expect(runs.get('request-001')!.stage).toBe('failed');
+  });
+
+  it('issueFiler.file() throws → workspace destroyed; failRun called', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const issueFiler = makeIssueFiler();
+    (issueFiler.file as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('enrichment failed'));
+    const postError = vi.fn().mockResolvedValue(undefined);
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: wm,
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      intentClassifier: makeIntentClassifier('file_issues'),
+      issueFiler,
+      postError,
+      postMessage: vi.fn().mockResolvedValue(undefined),
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: nullDest });
+
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(wm.destroy).toHaveBeenCalledWith('/ws/request-001');
+    expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('enrichment failed'));
+    const runs = (orch as never as { runs: Map<string, Run> }).runs;
+    expect(runs.get('request-001')!.stage).toBe('failed');
+  });
+
+  it('result.status === failed → workspace destroyed; failRun called with result.error', async () => {
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const issueFiler = makeIssueFiler({
+      status: 'failed',
+      summary: '',
+      filed_issues: [],
+      error: 'enrichment agent error',
+    });
+    const postError = vi.fn().mockResolvedValue(undefined);
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: wm,
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      intentClassifier: makeIntentClassifier('file_issues'),
+      issueFiler,
+      postError,
+      postMessage: vi.fn().mockResolvedValue(undefined),
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: nullDest });
+
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(wm.destroy).toHaveBeenCalledWith('/ws/request-001');
+    expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('enrichment agent error'));
+    const runs = (orch as never as { runs: Map<string, Run> }).runs;
+    expect(runs.get('request-001')!.stage).toBe('failed');
+  });
+});
+
+describe('Orchestrator — _startFilingPipeline success paths', () => {
+  it('mixed result (1 filed + 1 duplicate): correct events, workspace destroyed, summary posted, done', async () => {
+    const { records: logRecords, destination: logDest } = makeLogCapture();
+    const adapter = makeMockAdapter();
+    const wm = makeWorkspaceManager();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+
+    const issueFiler = makeIssueFiler({
+      status: 'complete',
+      summary: 'Filed 1 new issue: #10 New — Found 1 existing issue: #45 Dup',
+      filed_issues: [
+        { number: 10, title: 'New Issue', action: 'filed' },
+        { number: 45, title: 'Duplicate', action: 'duplicate' },
+      ],
+    });
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: wm,
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      intentClassifier: makeIntentClassifier('file_issues'),
+      issueFiler,
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage,
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: logDest });
+
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    // Workspace destroyed
+    expect(wm.destroy).toHaveBeenCalledWith('/ws/request-001');
+
+    // Summary posted
+    expect(postMessage).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('Filed 1 new issue'));
+
+    // Run reached done
+    const runs = (orch as never as { runs: Map<string, Run> }).runs;
+    expect(runs.get('request-001')!.stage).toBe('done');
+
+    // Log events
+    const filedEvent = logRecords.find(r => r['event'] === 'filing.issue_filed');
+    expect(filedEvent).toBeTruthy();
+    expect(filedEvent!['issue_number']).toBe(10);
+    expect(filedEvent!['issue_title']).toBe('New Issue');
+
+    const dupEvent = logRecords.find(r => r['event'] === 'filing.duplicate_detected');
+    expect(dupEvent).toBeTruthy();
+    expect(dupEvent!['existing_issue_number']).toBe(45);
+    expect(dupEvent!['existing_issue_title']).toBe('Duplicate');
+
+    const completeEvent = logRecords.find(r => r['event'] === 'filing.complete');
+    expect(completeEvent).toBeTruthy();
+    expect(completeEvent!['filed_count']).toBe(1);
+    expect(completeEvent!['duplicate_count']).toBe(1);
+  });
+
+  it('all new: only filing.issue_filed events; no filing.duplicate_detected', async () => {
+    const { records: logRecords, destination: logDest } = makeLogCapture();
+    const adapter = makeMockAdapter();
+    const issueFiler = makeIssueFiler({
+      status: 'complete',
+      summary: 'Filed 2 new issues',
+      filed_issues: [
+        { number: 1, title: 'Issue 1', action: 'filed' },
+        { number: 2, title: 'Issue 2', action: 'filed' },
+      ],
+    });
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      intentClassifier: makeIntentClassifier('file_issues'),
+      issueFiler,
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage: vi.fn().mockResolvedValue(undefined),
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: logDest });
+
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    const filedEvents = logRecords.filter(r => r['event'] === 'filing.issue_filed');
+    const dupEvents = logRecords.filter(r => r['event'] === 'filing.duplicate_detected');
+    expect(filedEvents).toHaveLength(2);
+    expect(dupEvents).toHaveLength(0);
+  });
+
+  it('all duplicates: only filing.duplicate_detected events', async () => {
+    const { records: logRecords, destination: logDest } = makeLogCapture();
+    const adapter = makeMockAdapter();
+    const issueFiler = makeIssueFiler({
+      status: 'complete',
+      summary: 'Found 2 existing issues',
+      filed_issues: [
+        { number: 45, title: 'Dup 1', action: 'duplicate' },
+        { number: 46, title: 'Dup 2', action: 'duplicate' },
+      ],
+    });
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      intentClassifier: makeIntentClassifier('file_issues'),
+      issueFiler,
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage: vi.fn().mockResolvedValue(undefined),
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: logDest });
+
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    const filedEvents = logRecords.filter(r => r['event'] === 'filing.issue_filed');
+    const dupEvents = logRecords.filter(r => r['event'] === 'filing.duplicate_detected');
+    expect(filedEvents).toHaveLength(0);
+    expect(dupEvents).toHaveLength(2);
+  });
+
+  it('acknowledgment post fails → pipeline continues to done', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn()
+      .mockRejectedValueOnce(new Error('Slack timeout')) // acknowledgment fails
+      .mockResolvedValue(undefined);                      // subsequent calls succeed
+    const issueFiler = makeIssueFiler();
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      intentClassifier: makeIntentClassifier('file_issues'),
+      issueFiler,
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage,
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: nullDest });
+
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    const runs = (orch as never as { runs: Map<string, Run> }).runs;
+    expect(runs.get('request-001')!.stage).toBe('done');
+  });
+
+  it('summary post fails → run transitions to done; issues remain filed', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn()
+      .mockResolvedValueOnce(undefined) // acknowledgment succeeds
+      .mockRejectedValueOnce(new Error('Slack timeout')); // summary fails
+    const issueFiler = makeIssueFiler();
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      intentClassifier: makeIntentClassifier('file_issues'),
+      issueFiler,
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage,
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: nullDest });
+
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    const runs = (orch as never as { runs: Map<string, Run> }).runs;
+    expect(runs.get('request-001')!.stage).toBe('done');
+  });
+});
+
+describe('Orchestrator — existing routing unaffected by file_issues', () => {
+  it('idea intent still routes to _startSpecPipeline', async () => {
+    const adapter = makeMockAdapter();
+    const sg = makeSpecGenerator();
+    const cp = makeSpecPublisher();
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: sg,
+      specPublisher: cp,
+      intentClassifier: makeIntentClassifier('idea'),
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage: vi.fn().mockResolvedValue(undefined),
+      repo_url: 'https://github.com/org/repo',
+    }, { logDestination: nullDest });
+
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(sg.create).toHaveBeenCalled();
+    expect(cp.create).toHaveBeenCalled();
   });
 });

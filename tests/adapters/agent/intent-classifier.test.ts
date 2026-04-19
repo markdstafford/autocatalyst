@@ -97,6 +97,21 @@ describe('AnthropicIntentClassifier — unified taxonomy: valid intents by conte
     const cf = vi.fn().mockResolvedValue(makeApiResponse('approval'));
     expect(await makeClassifier(cf).classify('some message', 'awaiting_impl_input')).toBe('feedback');
   });
+
+  it('new_thread: model returns file_issues → file_issues', async () => {
+    const cf = vi.fn().mockResolvedValue(makeApiResponse('file_issues'));
+    expect(await makeClassifier(cf).classify('please file these issues: ...', 'new_thread')).toBe('file_issues');
+  });
+
+  it('intake: model returns file_issues → file_issues', async () => {
+    const cf = vi.fn().mockResolvedValue(makeApiResponse('file_issues'));
+    expect(await makeClassifier(cf).classify('file an issue for X', 'intake')).toBe('file_issues');
+  });
+
+  it('reviewing_spec: model returns file_issues (not valid) → falls back to feedback', async () => {
+    const cf = vi.fn().mockResolvedValue(makeApiResponse('file_issues'));
+    expect(await makeClassifier(cf).classify('file these', 'reviewing_spec')).toBe('feedback');
+  });
 });
 
 describe('AnthropicIntentClassifier — prompt construction', () => {
@@ -300,5 +315,32 @@ describe('AnthropicIntentClassifier — prompt includes chore for new_thread and
     await makeClassifier(cf).classify('any message', 'reviewing_spec');
     const prompt = cf.mock.calls[0][0].messages[0].content as string;
     expect(prompt).not.toContain('chore');
+  });
+});
+
+describe('AnthropicIntentClassifier — file_issues intent', () => {
+  it('list-of-items message classifies as file_issues', async () => {
+    const cf = vi.fn().mockResolvedValue(makeApiResponse('file_issues'));
+    expect(
+      await makeClassifier(cf).classify('please file these: 1) add dark mode 2) fix login bug', 'new_thread'),
+    ).toBe('file_issues');
+  });
+
+  it('single explicit filing message classifies as file_issues', async () => {
+    const cf = vi.fn().mockResolvedValue(makeApiResponse('file_issues'));
+    expect(
+      await makeClassifier(cf).classify('please file an issue for the missing pagination on the dashboard', 'new_thread'),
+    ).toBe('file_issues');
+  });
+});
+
+describe('AnthropicIntentClassifier — ALL_INTENTS snapshot', () => {
+  it('ALL_INTENTS includes file_issues', async () => {
+    // Exercise the classifier with all intents to verify file_issues is in the taxonomy.
+    // We use the fact that intentDescriptions must cover every intent — if file_issues
+    // is returned by the model and it's in the valid set, it will be accepted.
+    const cf = vi.fn().mockResolvedValue(makeApiResponse('file_issues'));
+    const result = await makeClassifier(cf).classify('file these issues', 'new_thread');
+    expect(result).toBe('file_issues');
   });
 });

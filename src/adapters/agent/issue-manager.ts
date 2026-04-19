@@ -17,6 +17,10 @@ export interface IssueManager {
    * Creates a new GitHub issue and returns its issue number.
    */
   createIssue(workspace_path: string, title: string, body: string): Promise<number>;
+  /**
+   * Creates a new GitHub issue with optional labels. Returns an object with the assigned issue number.
+   */
+  create(workspace_path: string, title: string, body: string, labels: string[]): Promise<{ number: number }>;
 }
 
 interface GHIssueManagerOptions {
@@ -68,5 +72,30 @@ export class GHIssueManager implements IssueManager {
     const issue_number = parseInt(match[1], 10);
     this.logger.info({ event: 'issue.created', issue_number }, 'Issue created');
     return issue_number;
+  }
+
+  async create(workspace_path: string, title: string, body: string, labels: string[]): Promise<{ number: number }> {
+    const labelArgs = labels.flatMap(l => ['--label', l]);
+    let stdout: string;
+    try {
+      ({ stdout } = await this.execFn(
+        'gh',
+        ['issue', 'create', '--title', title, '--body', body, ...labelArgs],
+        { cwd: workspace_path },
+      ));
+    } catch (err) {
+      this.logger.error(
+        { event: 'issue.create_failed', error: String(err) },
+        'Failed to create issue',
+      );
+      throw new Error(`gh issue create failed: ${String(err)}`);
+    }
+    const match = stdout.trim().match(/\/issues\/(\d+)$/);
+    if (!match) {
+      throw new Error(`Unexpected gh issue create output: "${stdout.trim()}"`);
+    }
+    const number = parseInt(match[1], 10);
+    this.logger.info({ event: 'issue.created', issue_number: number }, 'Issue created');
+    return { number };
   }
 }
