@@ -594,7 +594,7 @@ The filing pipeline destroys the workspace before posting the summary, so a fail
 			- [x] `onProgress` forwarding, absent, and throwing cases all pass
 			- [x] All tests pass
 		- **Dependencies**: Task: Create `issue-filer.ts` — types, interface, and `AgentSDKIssueFiler`
-- [ ] **Story: Add filing pipeline to orchestrator**
+- [x] **Story: Add filing pipeline to orchestrator**
 	- [x] **Task: Add ****`issueFiler`**** to ****`OrchestratorDeps`**** and implement ****`_startFilingPipeline`**
 		- **Description**: In `src/core/orchestrator.ts`: (1) import `IssueFiler` and `FilingResult` from `issue-filer.js`; (2) add `issueFiler?: IssueFiler` to `OrchestratorDeps`; (3) implement private method `_startFilingPipeline(run: Run, request: Request): Promise` following section 3. The method: transitions to `speccing`; emits `filing.started`; creates workspace (on failure: `failRun`, return); posts acknowledgment as best-effort; calls `this.deps.issueFiler!.file(request, workspace_path, onProgress)` (on throw: destroy workspace, `failRun`, return); after `file()` returns, loops over `result.filed_issues` emitting `filing.issue_filed` (fields: `run_id`, `request_id`, `issue_number`, `issue_title`) for `action: 'filed'` entries and `filing.duplicate_detected` (fields: `run_id`, `request_id`, `existing_issue_number`, `existing_issue_title`) for `action: 'duplicate'` entries; destroys workspace (best-effort); if `result.status === 'failed'`: `failRun` with `result.error`, return; posts `result.summary` as best-effort; emits `filing.complete` with `filed_count` and `duplicate_count`; transitions to `done`.
 		- **Acceptance criteria**:
@@ -629,14 +629,14 @@ The filing pipeline destroys the workspace before posting the summary, so a fail
 			- [x] `issueFiler` passed in orchestrator deps
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Wire `file_issues` intent routing in `_handleRequest`
-	- [ ] **Task: Update orchestrator unit tests for ****`file_issues`**
+	- [x] **Task: Update orchestrator unit tests for ****`file_issues`**
 		- **Description**: In `tests/core/orchestrator.test.ts`, add test cases as specified in section 6. *Routing*: `new_request` + classifier returns `'file_issues'` → `_startFilingPipeline` called; `run.intent = 'file_issues'`; run reaches `done`. *Error paths*: (1) workspace creation failure → `failRun`; `issueFiler.file()` not called; (2) `issueFiler.file()` throws (enrichment failure) → workspace destroyed; `failRun`; (3) `issueFiler.file()` throws (creation phase — `IssueManager.create()` failure) → workspace destroyed; `failRun`; (4) `result.status === 'failed'` → workspace destroyed; `failRun` with `result.error`. *Success path*: (5) mixed result (1 filed + 1 duplicate) → `filing.issue_filed` emitted with correct `issue_number`/`issue_title`, `filing.duplicate_detected` emitted with correct `existing_issue_number`/`existing_issue_title`, workspace destroyed, summary posted, `filing.complete` with `filed_count: 1`/`duplicate_count: 1`, run `done`; (6) all new → only `filing.issue_filed` events; no `filing.duplicate_detected`; (7) all duplicates → only `filing.duplicate_detected`; `IssueManager.create()` never called; (8) acknowledgment post fails → pipeline continues; (9) summary post fails → run transitions to `done`. *Existing routing*: `idea`, `bug`, `chore`, `question` routing unaffected.
 		- **Acceptance criteria**:
-			- [ ] Routing test: `run.intent = 'file_issues'`; run reaches `done`
-			- [ ] All four error path tests pass
-			- [ ] Mixed-result success path asserts per-issue event fields, workspace destroyed, summary posted, `filing.complete` fields, `done` transition
-			- [ ] All-new and all-duplicate scenarios assert correct event emission and `IssueManager.create()` call count
-			- [ ] Acknowledgment and summary post failure tests pass
-			- [ ] Existing `idea`, `bug`, `chore`, `question` routing tests unchanged and passing
-			- [ ] All tests pass
+			- [x] Routing test: `run.intent = 'file_issues'`; run reaches `done`
+			- [x] All four error path tests pass
+			- [x] Mixed-result success path asserts per-issue event fields, workspace destroyed, summary posted, `filing.complete` fields, `done` transition
+			- [x] All-new and all-duplicate scenarios assert correct event emission and `IssueManager.create()` call count
+			- [x] Acknowledgment and summary post failure tests pass
+			- [x] Existing `idea`, `bug`, `chore`, `question` routing tests unchanged and passing
+			- [x] All tests pass
 		- **Dependencies**: Task: Wire `file_issues` intent routing in `_handleRequest`
