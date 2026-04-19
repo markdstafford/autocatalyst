@@ -1,10 +1,10 @@
 ---
 created: 2026-04-19
 last_updated: 2026-04-19
-status: approved
+status: complete
 issue: 62
 specced_by: markdstafford
-implemented_by: null
+implemented_by: markdstafford
 superseded_by: null
 ---
 # Enhancement: Issue filing
