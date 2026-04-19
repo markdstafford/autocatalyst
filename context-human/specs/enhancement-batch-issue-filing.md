@@ -539,7 +539,7 @@ If the creation phase fails mid-loop (e.g., `IssueManager.create()` throws on th
 The filing pipeline destroys the workspace before posting the summary, so a failed summary post cannot be retried by re-running the pipeline (the workspace no longer exists). Mitigation: workspace destruction is done before the summary post; if the summary post fails, the `run.notify_failed` event is logged — the issues are still filed in GitHub and the run transitions to `done`; the human can check GitHub directly. This matches the best-effort notification pattern used elsewhere in the orchestrator.
 ## Task list
 
-- [ ] **Story: Add ****`file_issues`**** to the intent taxonomy**
+- [x] **Story: Add ****`file_issues`**** to the intent taxonomy**
 	- [x] **Task: Add ****`file_issues`**** to ****`RequestIntent`**
 		- **Description**: In `src/types/runs.ts`, extend `RequestIntent` from `'idea' | 'bug' | 'chore' | 'question'` to `'idea' | 'bug' | 'chore' | 'file_issues' | 'question'`.
 		- **Acceptance criteria**:
@@ -557,16 +557,16 @@ The filing pipeline destroys the workspace before posting the summary, so a fail
 			- [x] `CONSERVATIVE_FALLBACK` for `new_thread` and `intake` remains `'idea'` (unchanged)
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `file_issues` to `RequestIntent`
-	- [ ] **Task: Update intent classifier tests for ****`file_issues`**
+	- [x] **Task: Update intent classifier tests for ****`file_issues`**
 		- **Description**: In `tests/adapters/agent/intent-classifier.test.ts`, add cases: (1) `new_thread` context → valid intents include `'file_issues'`; (2) `intake` context → valid intents include `'file_issues'`; (3) a list-of-items message (e.g., "please file these: ...") classifies as `'file_issues'`; (4) a single-item explicit filing message (e.g., "please file an issue for X") classifies as `'file_issues'`; (5) `'file_issues'` in a `reviewing_spec` context → conservative fallback (`'feedback'`) asserted; (6) `ALL_INTENTS` snapshot test includes `'file_issues'` (guards against accidental removal).
 		- **Acceptance criteria**:
-			- [ ] `new_thread` valid intents test includes `'file_issues'`
-			- [ ] `intake` valid intents test includes `'file_issues'`
-			- [ ] List-of-items message example classifies as `'file_issues'`
-			- [ ] Single-item explicit filing message classifies as `'file_issues'`
-			- [ ] Out-of-context `'file_issues'` → fallback asserted
-			- [ ] `ALL_INTENTS` snapshot test includes `'file_issues'`
-			- [ ] All tests pass
+			- [x] `new_thread` valid intents test includes `'file_issues'`
+			- [x] `intake` valid intents test includes `'file_issues'`
+			- [x] List-of-items message example classifies as `'file_issues'`
+			- [x] Single-item explicit filing message classifies as `'file_issues'`
+			- [x] Out-of-context `'file_issues'` → fallback asserted
+			- [x] `ALL_INTENTS` snapshot test includes `'file_issues'`
+			- [x] All tests pass
 		- **Dependencies**: Task: Add `file_issues` to `Intent` type and classifier
 - [ ] **Story: Implement the filing agent**
 	- [ ] **Task: Create ****`issue-filer.ts`**** — types, interface, and ****`AgentSDKIssueFiler`**
