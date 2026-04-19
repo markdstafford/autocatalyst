@@ -569,20 +569,20 @@ The filing pipeline destroys the workspace before posting the summary, so a fail
 			- [x] All tests pass
 		- **Dependencies**: Task: Add `file_issues` to `Intent` type and classifier
 - [ ] **Story: Implement the filing agent**
-	- [ ] **Task: Create ****`issue-filer.ts`**** — types, interface, and ****`AgentSDKIssueFiler`**
+	- [x] **Task: Create ****`issue-filer.ts`**** — types, interface, and ****`AgentSDKIssueFiler`**
 		- **Description**: Create `src/adapters/agent/issue-filer.ts`. (1) Define and export `FiledIssue` (`{ number: number; title: string; action: 'filed' | 'duplicate' }`), `FilingResult` (`{ status: 'complete' | 'failed'; summary: string; filed_issues: FiledIssue[]; error?: string }`), and `IssueFiler` interface (`file(request, workspace_path, onProgress?): Promise`). (2) Define internal (non-exported) `EnrichmentItem` and `EnrichmentResult` types as specified in section 3. (3) Implement `AgentSDKIssueFiler` with `constructor(private readonly issueManager: IssueManager)`. (4) Implement `buildEnrichmentPrompt(request, enrichmentFilePath)` — instructs the agent to invoke `mm:issue-triage` in feedback intake mode for enrichment ONLY (no GitHub issue creation); includes request content in `>>` delimiters; instructs agent to write `enrichment-result.json` with the schema from section 3; includes `CHECKPOINT_INSTRUCTIONS` (copy from `spec-generator.ts`). (5) Implement `readAndValidateEnrichmentResult(filePath)` — reads and parses the JSON file; throws with path context on ENOENT or invalid JSON; validates `status`, `items` array, and per-item field types per the rules in section 3. (6) Implement the enrichment phase in `file()`: invoke agent SDK via `query()`; forward `[Relay]` messages from assistant turns to `onProgress`. (7) Implement the creation phase in `file()`: loop over `enrichmentResult.items`; for non-duplicates call `this.issueManager.create(proposed_title, proposed_body, proposed_labels)` and push `{ number: created.number, title: proposed_title, action: 'filed' }`; for duplicates push `{ number: duplicate_of.number, title: duplicate_of.title, action: 'duplicate' }`. (8) Implement `buildSummary(filedIssues)` — builds the human-readable Slack message from the `filed_issues` array. Follow `AgentSDKSpecGenerator`'s structure for agent invocation and result file handling.
 		- **Acceptance criteria**:
-			- [ ] `FiledIssue`, `FilingResult`, `IssueFiler` exported from `issue-filer.ts`
-			- [ ] `EnrichmentItem` and `EnrichmentResult` defined but not exported
-			- [ ] `AgentSDKIssueFiler` exported and implements `IssueFiler`
-			- [ ] Constructor accepts `IssueManager`
-			- [ ] `buildEnrichmentPrompt` includes `mm:issue-triage` instruction, content in `>>`, explicit "do NOT create GitHub issues" instruction, dedup instructions, enrichment result file path, expected JSON schema, and `CHECKPOINT_INSTRUCTIONS`
-			- [ ] Enrichment result file path is `/.autocatalyst/enrichment-result.json`
-			- [ ] `readAndValidateEnrichmentResult` throws on ENOENT, invalid JSON, invalid `status`, missing `items`, and per-item field type violations
-			- [ ] `[Relay]` messages forwarded to `onProgress`; absent `onProgress` does not throw
-			- [ ] Creation phase calls `IssueManager.create(title, body, labels)` exactly once per non-duplicate item
-			- [ ] `FilingResult.summary` built by `buildSummary` (not written by the agent)
-			- [ ] `tsc --noEmit` passes
+			- [x] `FiledIssue`, `FilingResult`, `IssueFiler` exported from `issue-filer.ts`
+			- [x] `EnrichmentItem` and `EnrichmentResult` defined but not exported
+			- [x] `AgentSDKIssueFiler` exported and implements `IssueFiler`
+			- [x] Constructor accepts `IssueManager`
+			- [x] `buildEnrichmentPrompt` includes `mm:issue-triage` instruction, content in `>>`, explicit "do NOT create GitHub issues" instruction, dedup instructions, enrichment result file path, expected JSON schema, and `CHECKPOINT_INSTRUCTIONS`
+			- [x] Enrichment result file path is `/.autocatalyst/enrichment-result.json`
+			- [x] `readAndValidateEnrichmentResult` throws on ENOENT, invalid JSON, invalid `status`, missing `items`, and per-item field type violations
+			- [x] `[Relay]` messages forwarded to `onProgress`; absent `onProgress` does not throw
+			- [x] Creation phase calls `IssueManager.create(title, body, labels)` exactly once per non-duplicate item
+			- [x] `FilingResult.summary` built by `buildSummary` (not written by the agent)
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `file_issues` to `RequestIntent`
 	- [ ] **Task: Write unit tests for ****`AgentSDKIssueFiler`**
 		- **Description**: Create `tests/adapters/agent/issue-filer.test.ts`. Use a mock `queryFn` and mock `IssueManager` (same injection pattern as `spec-generator.test.ts`). Test cases — *Prompt structure*: (1) prompt contains `mm:issue-triage` instruction; (2) request content present in `>>` delimiters; (3) prompt contains explicit "do NOT create GitHub issues" instruction; (4) prompt contains dedup instructions; (5) prompt contains enrichment result file path and schema. *Enrichment result validation*: (6) missing file → throws with path; (7) invalid JSON → throws with path; (8) invalid `status` → throws; (9) missing `items` → throws; (10) non-duplicate item missing `proposed_title` → throws; (11) invalid `duplicate_of` structure → throws. *Creation phase*: (12) single new item → `IssueManager.create()` called once with exact title/body/labels from enrichment; returned number in `filed_issues` with `action: 'filed'`; (13) single duplicate → `IssueManager.create()` not called; `duplicate_of` values in `filed_issues` with `action: 'duplicate'`; (14) mixed batch (2 new + 1 duplicate) → `IssueManager.create()` called exactly twice; `filed_issues` has 3 entries with correct actions; (15) all duplicates → `IssueManager.create()` never called; (16) empty `items` array → `IssueManager.create()` never called, `filed_issues` empty; (17) `IssueManager.create()` throws → error propagates from `file()`. *Summary building*: (18) all new → summary contains filed count; no duplicate language; (19) all duplicates → summary contains existing count; no "filed" language; (20) mixed → both sections present. *Progress*: (21) `[Relay]` messages forwarded to `onProgress`; (22) no `onProgress` → no error; (23) `onProgress` throws → swallowed, does not abort enrichment.
