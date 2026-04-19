@@ -18,6 +18,7 @@ import type { Implementer } from '../adapters/agent/implementer.js';
 import type { ImplementationFeedbackPage, FeedbackItem } from '../adapters/notion/implementation-feedback-page.js';
 import type { PRCreator } from '../adapters/agent/pr-creator.js';
 import type { IssueManager } from '../adapters/agent/issue-manager.js';
+import type { IssueFiler, FilingResult } from '../adapters/agent/issue-filer.js';
 import { RunStore, FileRunStore } from './run-store.js';
 import type { ThreadRegistry } from '../adapters/slack/thread-registry.js';
 
@@ -52,6 +53,7 @@ interface OrchestratorDeps {
   implFeedbackPage?: ImplementationFeedbackPage;
   prCreator?: PRCreator;
   issueManager?: IssueManager;
+  issueFiler?: IssueFiler;
   runStore?: RunStore;
   threadRegistry?: ThreadRegistry;
   postError: (channel_id: string, thread_ts: string, text: string) => Promise<void>;
@@ -795,6 +797,91 @@ export class OrchestratorImpl implements Orchestrator {
         'Failed to update triage document status',
       ),
     );
+  }
+
+  private async _startFilingPipeline(run: Run, request: Request): Promise<void> {
+    this.transition(run, 'speccing');
+    this.logger.info(
+      { event: 'filing.started', run_id: run.id, request_id: run.request_id },
+      'Filing pipeline started',
+    );
+
+    // Step 1: Create workspace
+    let workspace_path: string;
+    let branch: string;
+    try {
+      ({ workspace_path, branch } = await this.deps.workspaceManager.create(request.id, this.deps.repo_url));
+      run.workspace_path = workspace_path;
+      run.branch = branch;
+    } catch (err) {
+      await this.failRun(run, request.channel_id, request.thread_ts, err);
+      return;
+    }
+
+    // Step 2: Acknowledge (best-effort)
+    try {
+      await this.deps.postMessage(request.channel_id, request.thread_ts, 'On it — investigating and filing issues...');
+    } catch (err) {
+      this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post acknowledgment');
+    }
+
+    // Step 3: File issues (enrichment + creation)
+    const onProgress = (message: string): Promise<void> =>
+      this.deps.postMessage(request.channel_id, request.thread_ts, message).catch(err => {
+        this.logger.warn(
+          { event: 'progress_failed', phase: 'filing', run_id: run.id, error: String(err) },
+          'Failed to post progress update',
+        );
+      });
+
+    let result: FilingResult;
+    try {
+      result = await this.deps.issueFiler!.file(request, workspace_path, onProgress);
+    } catch (err) {
+      await this.deps.workspaceManager.destroy(workspace_path);
+      await this.failRun(run, request.channel_id, request.thread_ts, err);
+      return;
+    }
+
+    // Step 4: Emit per-issue events
+    for (const issue of result.filed_issues) {
+      if (issue.action === 'filed') {
+        this.logger.info(
+          { event: 'filing.issue_filed', run_id: run.id, request_id: run.request_id, issue_number: issue.number, issue_title: issue.title },
+          'Issue filed',
+        );
+      } else {
+        this.logger.info(
+          { event: 'filing.duplicate_detected', run_id: run.id, request_id: run.request_id, existing_issue_number: issue.number, existing_issue_title: issue.title },
+          'Duplicate issue detected',
+        );
+      }
+    }
+
+    // Step 5: Destroy workspace (no implementation follows)
+    await this.deps.workspaceManager.destroy(workspace_path).catch(err =>
+      this.logger.warn({ event: 'workspace.destroy_failed', run_id: run.id, error: String(err) }, 'Failed to destroy workspace after filing'),
+    );
+
+    if (result.status === 'failed') {
+      await this.failRun(run, request.channel_id, request.thread_ts, new Error(result.error ?? 'Filing failed'));
+      return;
+    }
+
+    // Step 6: Post summary
+    try {
+      await this.deps.postMessage(request.channel_id, request.thread_ts, result.summary);
+    } catch (err) {
+      this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post filing summary');
+    }
+
+    const filed_count = result.filed_issues.filter(i => i.action === 'filed').length;
+    const duplicate_count = result.filed_issues.filter(i => i.action === 'duplicate').length;
+    this.logger.info(
+      { event: 'filing.complete', run_id: run.id, request_id: run.request_id, filed_count, duplicate_count },
+      'Filing pipeline complete',
+    );
+    this.transition(run, 'done');
   }
 
   private async _handleSpecFeedback(feedback: ThreadMessage): Promise<void> {

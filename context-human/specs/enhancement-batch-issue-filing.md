@@ -595,22 +595,22 @@ The filing pipeline destroys the workspace before posting the summary, so a fail
 			- [x] All tests pass
 		- **Dependencies**: Task: Create `issue-filer.ts` — types, interface, and `AgentSDKIssueFiler`
 - [ ] **Story: Add filing pipeline to orchestrator**
-	- [ ] **Task: Add ****`issueFiler`**** to ****`OrchestratorDeps`**** and implement ****`_startFilingPipeline`**
+	- [x] **Task: Add ****`issueFiler`**** to ****`OrchestratorDeps`**** and implement ****`_startFilingPipeline`**
 		- **Description**: In `src/core/orchestrator.ts`: (1) import `IssueFiler` and `FilingResult` from `issue-filer.js`; (2) add `issueFiler?: IssueFiler` to `OrchestratorDeps`; (3) implement private method `_startFilingPipeline(run: Run, request: Request): Promise` following section 3. The method: transitions to `speccing`; emits `filing.started`; creates workspace (on failure: `failRun`, return); posts acknowledgment as best-effort; calls `this.deps.issueFiler!.file(request, workspace_path, onProgress)` (on throw: destroy workspace, `failRun`, return); after `file()` returns, loops over `result.filed_issues` emitting `filing.issue_filed` (fields: `run_id`, `request_id`, `issue_number`, `issue_title`) for `action: 'filed'` entries and `filing.duplicate_detected` (fields: `run_id`, `request_id`, `existing_issue_number`, `existing_issue_title`) for `action: 'duplicate'` entries; destroys workspace (best-effort); if `result.status === 'failed'`: `failRun` with `result.error`, return; posts `result.summary` as best-effort; emits `filing.complete` with `filed_count` and `duplicate_count`; transitions to `done`.
 		- **Acceptance criteria**:
-			- [ ] `issueFiler` added to `OrchestratorDeps` as optional
-			- [ ] `_startFilingPipeline` is private
-			- [ ] `filing.started` emitted at the start of the pipeline
-			- [ ] On success: run transitions `intake → speccing → done`
-			- [ ] On workspace creation failure: `failRun` called; `issueFiler.file()` not called
-			- [ ] On `issueFiler.file()` throwing: workspace destroyed; `failRun` called
-			- [ ] On `result.status === 'failed'`: workspace destroyed; `failRun` called with `result.error`
-			- [ ] `filing.issue_filed` emitted for each `action: 'filed'` entry (with `issue_number` and `issue_title`)
-			- [ ] `filing.duplicate_detected` emitted for each `action: 'duplicate'` entry (with `existing_issue_number` and `existing_issue_title`)
-			- [ ] Workspace destroyed in success path after per-issue events
-			- [ ] `result.summary` posted to Slack on success (best-effort)
-			- [ ] `filing.complete` emitted with `run_id`, `request_id`, `filed_count`, `duplicate_count`
-			- [ ] `tsc --noEmit` passes
+			- [x] `issueFiler` added to `OrchestratorDeps` as optional
+			- [x] `_startFilingPipeline` is private
+			- [x] `filing.started` emitted at the start of the pipeline
+			- [x] On success: run transitions `intake → speccing → done`
+			- [x] On workspace creation failure: `failRun` called; `issueFiler.file()` not called
+			- [x] On `issueFiler.file()` throwing: workspace destroyed; `failRun` called
+			- [x] On `result.status === 'failed'`: workspace destroyed; `failRun` called with `result.error`
+			- [x] `filing.issue_filed` emitted for each `action: 'filed'` entry (with `issue_number` and `issue_title`)
+			- [x] `filing.duplicate_detected` emitted for each `action: 'duplicate'` entry (with `existing_issue_number` and `existing_issue_title`)
+			- [x] Workspace destroyed in success path after per-issue events
+			- [x] `result.summary` posted to Slack on success (best-effort)
+			- [x] `filing.complete` emitted with `run_id`, `request_id`, `filed_count`, `duplicate_count`
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Create `issue-filer.ts` — types, interface, and `AgentSDKIssueFiler`
 	- [ ] **Task: Wire ****`file_issues`**** intent routing in ****`_handleRequest`**
 		- **Description**: In `src/core/orchestrator.ts`, `_handleRequest`: add a `file_issues` branch after the `chore` branch — `run.intent = 'file_issues'; this._persistRuns(); await this._startFilingPipeline(run, request);`. Verify existing `idea`, `bug`, `chore`, and `question` branches are unmodified.
