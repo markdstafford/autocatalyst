@@ -540,11 +540,11 @@ The filing pipeline destroys the workspace before posting the summary, so a fail
 ## Task list
 
 - [ ] **Story: Add ****`file_issues`**** to the intent taxonomy**
-	- [ ] **Task: Add ****`file_issues`**** to ****`RequestIntent`**
+	- [x] **Task: Add ****`file_issues`**** to ****`RequestIntent`**
 		- **Description**: In `src/types/runs.ts`, extend `RequestIntent` from `'idea' | 'bug' | 'chore' | 'question'` to `'idea' | 'bug' | 'chore' | 'file_issues' | 'question'`.
 		- **Acceptance criteria**:
-			- [ ] `RequestIntent` type includes `'file_issues'`
-			- [ ] `tsc --noEmit` passes (downstream errors expected until `Intent` type is updated)
+			- [x] `RequestIntent` type includes `'file_issues'`
+			- [x] `tsc --noEmit` passes (downstream errors expected until `Intent` type is updated)
 		- **Dependencies**: None
 	- [ ] **Task: Add ****`file_issues`**** to ****`Intent`**** type and classifier**
 		- **Description**: In `src/adapters/agent/intent-classifier.ts`: (1) add `'file_issues'` to the `Intent` union type; (2) add `'file_issues'` to `ALL_INTENTS`; (3) add `'file_issues'` to `VALID_INTENTS_BY_CONTEXT` for `new_thread` and `intake` contexts; (4) add `'file_issues'` to `intentDescriptions` with description `'the human is explicitly requesting that one or more items be filed as GitHub issues'`; (5) confirm `CONSERVATIVE_FALLBACK` for `new_thread` and `intake` remains `'idea'` (no change needed). Run `grep -r "ALL_INTENTS" src/` to verify no other call site needs updating.

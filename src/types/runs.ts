@@ -10,7 +10,7 @@ export type RunStage =
   | 'done'
   | 'failed';
 
-export type RequestIntent = 'idea' | 'bug' | 'chore' | 'question';
+export type RequestIntent = 'idea' | 'bug' | 'chore' | 'file_issues' | 'question';
 
 export interface Run {
   id: string;
