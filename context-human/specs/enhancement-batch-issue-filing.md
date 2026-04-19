@@ -546,16 +546,16 @@ The filing pipeline destroys the workspace before posting the summary, so a fail
 			- [x] `RequestIntent` type includes `'file_issues'`
 			- [x] `tsc --noEmit` passes (downstream errors expected until `Intent` type is updated)
 		- **Dependencies**: None
-	- [ ] **Task: Add ****`file_issues`**** to ****`Intent`**** type and classifier**
+	- [x] **Task: Add ****`file_issues`**** to ****`Intent`**** type and classifier**
 		- **Description**: In `src/adapters/agent/intent-classifier.ts`: (1) add `'file_issues'` to the `Intent` union type; (2) add `'file_issues'` to `ALL_INTENTS`; (3) add `'file_issues'` to `VALID_INTENTS_BY_CONTEXT` for `new_thread` and `intake` contexts; (4) add `'file_issues'` to `intentDescriptions` with description `'the human is explicitly requesting that one or more items be filed as GitHub issues'`; (5) confirm `CONSERVATIVE_FALLBACK` for `new_thread` and `intake` remains `'idea'` (no change needed). Run `grep -r "ALL_INTENTS" src/` to verify no other call site needs updating.
 		- **Acceptance criteria**:
-			- [ ] `Intent` type includes `'file_issues'`
-			- [ ] `ALL_INTENTS` includes `'file_issues'`
-			- [ ] `VALID_INTENTS_BY_CONTEXT.new_thread` includes `'file_issues'`
-			- [ ] `VALID_INTENTS_BY_CONTEXT.intake` includes `'file_issues'`
-			- [ ] `intentDescriptions` entry for `'file_issues'` is present and accurate
-			- [ ] `CONSERVATIVE_FALLBACK` for `new_thread` and `intake` remains `'idea'` (unchanged)
-			- [ ] `tsc --noEmit` passes
+			- [x] `Intent` type includes `'file_issues'`
+			- [x] `ALL_INTENTS` includes `'file_issues'`
+			- [x] `VALID_INTENTS_BY_CONTEXT.new_thread` includes `'file_issues'`
+			- [x] `VALID_INTENTS_BY_CONTEXT.intake` includes `'file_issues'`
+			- [x] `intentDescriptions` entry for `'file_issues'` is present and accurate
+			- [x] `CONSERVATIVE_FALLBACK` for `new_thread` and `intake` remains `'idea'` (unchanged)
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `file_issues` to `RequestIntent`
 	- [ ] **Task: Update intent classifier tests for ****`file_issues`**
 		- **Description**: In `tests/adapters/agent/intent-classifier.test.ts`, add cases: (1) `new_thread` context → valid intents include `'file_issues'`; (2) `intake` context → valid intents include `'file_issues'`; (3) a list-of-items message (e.g., "please file these: ...") classifies as `'file_issues'`; (4) a single-item explicit filing message (e.g., "please file an issue for X") classifies as `'file_issues'`; (5) `'file_issues'` in a `reviewing_spec` context → conservative fallback (`'feedback'`) asserted; (6) `ALL_INTENTS` snapshot test includes `'file_issues'` (guards against accidental removal).

@@ -7,6 +7,7 @@ export type Intent =
   | 'idea'
   | 'bug'
   | 'chore'
+  | 'file_issues'
   | 'question'
   | 'feedback'
   | 'approval'
@@ -14,11 +15,11 @@ export type Intent =
 
 export type ClassificationContext = 'new_thread' | RunStage;
 
-const ALL_INTENTS: Intent[] = ['idea', 'bug', 'chore', 'question', 'feedback', 'approval', 'ignore'];
+const ALL_INTENTS: Intent[] = ['idea', 'bug', 'chore', 'file_issues', 'question', 'feedback', 'approval', 'ignore'];
 
 export const VALID_INTENTS_BY_CONTEXT: Partial<Record<ClassificationContext, Intent[]>> = {
-  new_thread:               ['idea', 'bug', 'chore', 'question', 'ignore'],
-  intake:                   ['idea', 'bug', 'chore', 'question', 'ignore'],
+  new_thread:               ['idea', 'bug', 'chore', 'file_issues', 'question', 'ignore'],
+  intake:                   ['idea', 'bug', 'chore', 'file_issues', 'question', 'ignore'],
   reviewing_spec:           ['feedback', 'approval', 'question', 'ignore'],
   reviewing_implementation: ['feedback', 'approval', 'question', 'ignore'],
   awaiting_impl_input:      ['feedback', 'question', 'ignore'],
@@ -95,6 +96,7 @@ export class AnthropicIntentClassifier implements IntentClassifier {
       idea:     'the human wants to build a new feature or improvement',
       bug:      'the human is reporting a bug or something broken',
       chore:    'the human is requesting maintenance work — a refactor, cleanup, dependency update, or other non-feature, non-bug task',
+      file_issues: 'the human is explicitly requesting that one or more items be filed as GitHub issues',
       question: 'the human is asking a question',
       feedback: 'the human is providing feedback, a revision request, or answering a question about the current work',
       approval: 'the human is approving the current work and wants to proceed',
