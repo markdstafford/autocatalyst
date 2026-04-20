@@ -3,7 +3,8 @@ import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { rmSync } from 'node:fs';
-import { configExists, isSecret, findMissingRequired, writeToEnv, writeInlineToWorkflow, propertyPathToEnvKey } from '../../src/core/init.js';
+import { PassThrough } from 'node:stream';
+import { configExists, isSecret, findMissingRequired, writeToEnv, writeInlineToWorkflow, propertyPathToEnvKey, runInit } from '../../src/core/init.js';
 import { parseWorkflow } from '../../src/core/config.js';
 
 // ─── isSecret ───────────────────────────────────────────────────────────────
@@ -216,5 +217,244 @@ describe('writeInlineToWorkflow', () => {
     const content = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
     expect(content).toContain('workspace');
     expect(content).toContain('slack');
+  });
+});
+
+// ─── runInit integration ──────────────────────────────────────────────────
+
+describe('runInit — decline branch', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'init-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('creates no files when user declines initialization', async () => {
+    await runInit(tempDir, { promptFn: async () => 'n' });
+    expect(existsSync(join(tempDir, 'WORKFLOW.md'))).toBe(false);
+  });
+
+  it('emits init.creation_declined log event', async () => {
+    const stream = new PassThrough();
+    const events: Record<string, unknown>[] = [];
+    stream.on('data', (chunk: Buffer) => {
+      try { events.push(JSON.parse(chunk.toString())); } catch {}
+    });
+    await runInit(tempDir, { promptFn: async () => 'n', logDestination: stream });
+    stream.end();
+    await new Promise<void>((resolve) => stream.on('finish', resolve));
+    expect(events.some((e) => e['event'] === 'init.creation_declined')).toBe(true);
+  });
+});
+
+describe('runInit — complete config branch', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'init-test-'));
+    writeFileSync(
+      join(tempDir, 'WORKFLOW.md'),
+      '---\nworkspace:\n  root: /tmp/ws\nslack:\n  bot_token: xoxb-abc\n  app_token: xapp-abc\n  channel_name: my-channel\n---\n\nTemplate\n',
+      'utf-8',
+    );
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('makes no file writes when config is already complete', async () => {
+    const before = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
+    await runInit(tempDir, { promptFn: async () => { throw new Error('should not prompt'); } });
+    const after = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
+    expect(after).toBe(before);
+    expect(existsSync(join(tempDir, '.env'))).toBe(false);
+  });
+
+  it('emits init.completed with missing_count: 0', async () => {
+    const stream = new PassThrough();
+    const events: Record<string, unknown>[] = [];
+    stream.on('data', (chunk: Buffer) => {
+      try { events.push(JSON.parse(chunk.toString())); } catch {}
+    });
+    await runInit(tempDir, { promptFn: async () => '', logDestination: stream });
+    stream.end();
+    await new Promise<void>((resolve) => stream.on('finish', resolve));
+    const completed = events.find((e) => e['event'] === 'init.completed');
+    expect(completed).toBeDefined();
+    expect(completed?.['missing_count']).toBe(0);
+  });
+
+  it('emits init.validation_passed', async () => {
+    const stream = new PassThrough();
+    const events: Record<string, unknown>[] = [];
+    stream.on('data', (chunk: Buffer) => {
+      try { events.push(JSON.parse(chunk.toString())); } catch {}
+    });
+    await runInit(tempDir, { promptFn: async () => '', logDestination: stream });
+    stream.end();
+    await new Promise<void>((resolve) => stream.on('finish', resolve));
+    expect(events.some((e) => e['event'] === 'init.validation_passed')).toBe(true);
+  });
+});
+
+describe('runInit — incomplete config branch', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'init-test-'));
+    // workspace.root populated; slack fields empty
+    writeFileSync(
+      join(tempDir, 'WORKFLOW.md'),
+      "---\nworkspace:\n  root: /tmp/ws\nslack:\n  bot_token: ''\n  app_token: ''\n  channel_name: ''\n---\n\nTemplate\n",
+      'utf-8',
+    );
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('writes secret properties to .env and inserts ${VAR} reference in WORKFLOW.md', async () => {
+    await runInit(tempDir, {
+      promptFn: async (question) => {
+        if (question.includes('slack.bot_token')) return 'xoxb-real-token';
+        if (question.includes('slack.app_token')) return 'xapp-real-token';
+        if (question.includes('channel_name')) return 'my-channel';
+        return '';
+      },
+    });
+
+    const envContent = readFileSync(join(tempDir, '.env'), 'utf-8');
+    expect(envContent).toContain('AC_SLACK_BOT_TOKEN=xoxb-real-token');
+    expect(envContent).toContain('AC_SLACK_APP_TOKEN=xapp-real-token');
+
+    const wfContent = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
+    expect(wfContent).toContain('${AC_SLACK_BOT_TOKEN}');
+    expect(wfContent).toContain('${AC_SLACK_APP_TOKEN}');
+  });
+
+  it('writes non-secret properties inline to WORKFLOW.md', async () => {
+    await runInit(tempDir, {
+      promptFn: async (question) => {
+        if (question.includes('channel_name')) return 'general';
+        return 'some-value';
+      },
+    });
+
+    const wfContent = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
+    expect(wfContent).toContain('general');
+  });
+
+  it('emits init.missing_detected with correct properties and count', async () => {
+    const stream = new PassThrough();
+    const events: Record<string, unknown>[] = [];
+    stream.on('data', (chunk: Buffer) => {
+      try { events.push(JSON.parse(chunk.toString())); } catch {}
+    });
+    await runInit(tempDir, {
+      promptFn: async () => 'some-value',
+      logDestination: stream,
+    });
+    stream.end();
+    await new Promise<void>((resolve) => stream.on('finish', resolve));
+    const detected = events.find((e) => e['event'] === 'init.missing_detected');
+    expect(detected).toBeDefined();
+    expect(detected?.['count']).toBe(3); // bot_token, app_token, channel_name
+    expect((detected?.['properties'] as string[])).toContain('slack.bot_token');
+  });
+
+  it('emits init.value_written for each written value with correct destination', async () => {
+    const stream = new PassThrough();
+    const events: Record<string, unknown>[] = [];
+    stream.on('data', (chunk: Buffer) => {
+      try { events.push(JSON.parse(chunk.toString())); } catch {}
+    });
+    await runInit(tempDir, {
+      promptFn: async () => 'some-value',
+      logDestination: stream,
+    });
+    stream.end();
+    await new Promise<void>((resolve) => stream.on('finish', resolve));
+    const written = events.filter((e) => e['event'] === 'init.value_written');
+    expect(written.length).toBe(3);
+    // bot_token and app_token are secrets → env; channel_name → inline
+    expect(written.filter((e) => e['destination'] === 'env').length).toBe(2);
+    expect(written.filter((e) => e['destination'] === 'inline').length).toBe(1);
+  });
+
+  it('config passes findMissingRequired after all values are written', async () => {
+    await runInit(tempDir, { promptFn: async () => 'filled-value' });
+    expect(findMissingRequired(tempDir)).toEqual([]);
+  });
+});
+
+describe('runInit — no config + confirm branch', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'init-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('creates skeleton, prompts for all required values, writes them', async () => {
+    let promptCount = 0;
+    // First prompt is Y/n, then one per required property
+    const answers = ['Y', '/my/workspace', 'xoxb-bot', 'xapp-app', 'general'];
+    await runInit(tempDir, {
+      promptFn: async () => answers[promptCount++] ?? '',
+    });
+
+    expect(existsSync(join(tempDir, 'WORKFLOW.md'))).toBe(true);
+    expect(findMissingRequired(tempDir)).toEqual([]);
+  });
+
+  it('emits init.config_created after skeleton creation', async () => {
+    const stream = new PassThrough();
+    const events: Record<string, unknown>[] = [];
+    stream.on('data', (chunk: Buffer) => {
+      try { events.push(JSON.parse(chunk.toString())); } catch {}
+    });
+    let promptCount = 0;
+    const answers = ['Y', '/my/workspace', 'xoxb-bot', 'xapp-app', 'general'];
+    await runInit(tempDir, {
+      promptFn: async () => answers[promptCount++] ?? '',
+      logDestination: stream,
+    });
+    stream.end();
+    await new Promise<void>((resolve) => stream.on('finish', resolve));
+    expect(events.some((e) => e['event'] === 'init.config_created')).toBe(true);
+  });
+
+  it('emits all expected log events', async () => {
+    const stream = new PassThrough();
+    const events: Record<string, unknown>[] = [];
+    stream.on('data', (chunk: Buffer) => {
+      try { events.push(JSON.parse(chunk.toString())); } catch {}
+    });
+    let promptCount = 0;
+    const answers = ['Y', '/my/workspace', 'xoxb-bot', 'xapp-app', 'general'];
+    await runInit(tempDir, {
+      promptFn: async () => answers[promptCount++] ?? '',
+      logDestination: stream,
+    });
+    stream.end();
+    await new Promise<void>((resolve) => stream.on('finish', resolve));
+
+    const eventNames = events.map((e) => e['event']);
+    expect(eventNames).toContain('init.started');
+    expect(eventNames).toContain('init.config_not_found');
+    expect(eventNames).toContain('init.config_created');
+    expect(eventNames).toContain('init.missing_detected');
+    expect(eventNames).toContain('init.value_written');
+    expect(eventNames).toContain('init.validation_passed');
+    expect(eventNames).toContain('init.completed');
   });
 });

@@ -249,7 +249,7 @@ Verify that each event in the log events table is emitted under its expected con
 			- [ ] Service does not start if init exits without a complete config
 			- [ ] `autocatalyst init --help` prints usage and exits 0
 		- **Dependencies**: Task: Add subcommand detection to `parseArgs`, Task: Config existence check and skeleton creation, Task: Interactive prompting and value storage, Task: Config summary output
-- [ ] **Story: Tests**
+- [x] **Story: Tests**
 	- [x] **Task: Unit tests for ****`parseArgs`**** with subcommands**
 		- **Description**: Add unit tests to `tests/core/cli.test.ts` (or equivalent) covering all new subcommand cases enumerated in the subcommand detection acceptance criteria.
 		- **Acceptance criteria**:
@@ -263,12 +263,12 @@ Verify that each event in the log events table is emitted under its expected con
 			- [x] `channel_name`, `interval_ms`, `profile` → `false`
 			- [x] Keyword matching is case-insensitive (e.g., `BotToken` → `true`)
 		- **Dependencies**: Task: Interactive prompting and value storage
-	- [ ] **Task: Integration tests for ****`runInit`**
+	- [x] **Task: Integration tests for ****`runInit`**
 		- **Description**: Add integration tests in `tests/core/init.test.ts` using a temporary directory per test. Stub interactive prompts via stdin injection or a mock `promptForValue`. Cover the three main branches: no config (creation + prompting flow), complete config (summary only, no writes), and incomplete config (prompting and value storage).
 		- **Acceptance criteria**:
-			- [ ] No-config branch: creates skeleton, prompts for values, writes to correct locations (`.env` vs. inline)
-			- [ ] Complete-config branch: prints summary, makes no file writes, emits `init.completed` with `missing_count: 0`
-			- [ ] Incomplete-config branch: prompts for missing values, writes to `.env` or inline as appropriate
-			- [ ] Decline-to-create branch: no files created, resolves without error
-			- [ ] Each log event in the log events table is emitted under its expected conditions (verified via pino transport mock)
+			- [x] No-config branch: creates skeleton, prompts for values, writes to correct locations (`.env` vs. inline)
+			- [x] Complete-config branch: prints summary, makes no file writes, emits `init.completed` with `missing_count: 0`
+			- [x] Incomplete-config branch: prompts for missing values, writes to `.env` or inline as appropriate
+			- [x] Decline-to-create branch: no files created, resolves without error
+			- [x] Each log event in the log events table is emitted under its expected conditions (verified via pino transport mock)
 		- **Dependencies**: Task: Config existence check and skeleton creation, Task: Missing required property detection, Task: Interactive prompting and value storage, Task: Config summary output
