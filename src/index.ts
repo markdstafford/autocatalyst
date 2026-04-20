@@ -15,7 +15,7 @@ import { ThreadRegistry } from './adapters/slack/thread-registry.js';
 import { WorkspaceManagerImpl } from './core/workspace-manager.js';
 import { AgentSDKSpecGenerator } from './adapters/agent/spec-generator.js';
 import { SlackCanvasPublisher } from './adapters/slack/canvas-publisher.js';
-import type { SpecPublisher } from './adapters/slack/canvas-publisher.js';
+import type { SpecPublisher } from './types/publisher.js';
 import { OrchestratorImpl } from './core/orchestrator.js';
 import { FileRunStore } from './core/run-store.js';
 import { NotionClientImpl } from './adapters/notion/notion-client.js';

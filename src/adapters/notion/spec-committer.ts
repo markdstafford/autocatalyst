@@ -4,7 +4,7 @@ import { writeFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
-import type { SpecPublisher } from '../slack/canvas-publisher.js';
+import type { SpecPublisher } from '../../types/publisher.js';
 import { stripCommentSpans, prettifyMarkdown } from './markdown-diff.js';
 
 const defaultExecFile = promisify(_execFile);

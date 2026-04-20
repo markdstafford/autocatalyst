@@ -6,8 +6,8 @@ import type { App } from '@slack/bolt';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 import type { NotionClient } from './notion-client.js';
-import { titleFromPath } from '../slack/canvas-publisher.js';
-import type { SpecPublisher, SpecEntryStatus } from '../slack/canvas-publisher.js';
+import { titleFromPath } from '../../types/publisher.js';
+import type { SpecPublisher, SpecEntryStatus } from '../../types/publisher.js';
 import { stripAllHtml } from './markdown-diff.js';
 
 interface NotionPublisherOptions {
