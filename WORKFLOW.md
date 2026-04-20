@@ -7,10 +7,11 @@ workspace:
 slack:
   bot_token: ${AC_SLACK_BOT_TOKEN}
   app_token: ${AC_SLACK_APP_TOKEN}
-  channel_name: ac-recursive
+  channel_name: ac-autocatalyst
 notion:
-  parent_page_id: 33e4409428b780a2a9cfd3e38f06b8e4
-# Note: Set AC_NOTION_INTEGRATION_TOKEN as an environment variable (not in this file)
+  integration_token: ${AC_NOTION_INTEGRATION_TOKEN}
+  specs_database_id: 09be47fc-74c3-42f0-b85a-fb5bdf7ed6c4
+  testing_guides_database_id: 59def47e-1412-4c6c-b747-8302f2ae07a5
 ---
 
 You are working on an idea for the autocatalyst project.

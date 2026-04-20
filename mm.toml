@@ -1,2 +1,3 @@
 docs_root = "context-human"
 issue_tracker = "github"
+waitForApprovalBefore = ["tech", "taskList"]
