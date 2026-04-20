@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
+import { vi } from 'vitest';
 import { parseArgs } from '../../src/core/cli.js';
+import { printUsage } from '../../src/core/cli.js';
 import { mkdtempSync } from 'node:fs';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -49,5 +51,62 @@ describe('parseArgs', () => {
   it('returns help flag when -h is passed', () => {
     const result = parseArgs(['-h']);
     expect(result.help).toBe(true);
+  });
+});
+
+describe('parseArgs subcommand routing', () => {
+  it('parses init with no --repo', () => {
+    const result = parseArgs(['init']);
+    expect(result.command).toBe('init');
+    expect(result.repoPath).toBe('');
+    expect(result.help).toBe(false);
+  });
+
+  it('parses init with --repo', () => {
+    const result = parseArgs(['init', '--repo', '/p']);
+    expect(result.command).toBe('init');
+    expect(result.repoPath).toBe('/p');
+    expect(result.help).toBe(false);
+  });
+
+  it('preserves run command behavior with --repo (backward compat)', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'cli-test-'));
+    try {
+      const result = parseArgs(['--repo', tempDir]);
+      expect(result.command).toBe('run');
+      expect(result.repoPath).toBe(tempDir);
+      expect(result.help).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('returns command: run with --help', () => {
+    const result = parseArgs(['--help']);
+    expect(result.command).toBe('run');
+    expect(result.repoPath).toBe('');
+    expect(result.help).toBe(true);
+  });
+
+  it('returns command: init with init --help', () => {
+    const result = parseArgs(['init', '--help']);
+    expect(result.command).toBe('init');
+    expect(result.repoPath).toBe('');
+    expect(result.help).toBe(true);
+  });
+
+  it('still throws when no subcommand and no --repo', () => {
+    expect(() => parseArgs([])).toThrow(/--repo/);
+  });
+});
+
+describe('printUsage', () => {
+  it('documents both command forms', () => {
+    const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    printUsage();
+    const output = spy.mock.calls[0]?.[0] as string;
+    spy.mockRestore();
+    expect(output).toContain('autocatalyst --repo');
+    expect(output).toContain('autocatalyst init');
   });
 });
