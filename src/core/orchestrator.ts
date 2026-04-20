@@ -4,7 +4,7 @@ import type pino from 'pino';
 import { createLogger } from './logger.js';
 import type { SlackAdapter } from '../adapters/slack/slack-adapter.js';
 import type { WorkspaceManager } from './workspace-manager.js';
-import type { SpecGenerator, ReviseResult } from '../adapters/agent/spec-generator.js';
+import type { SpecGenerator, CreateResult, ReviseResult } from '../adapters/agent/spec-generator.js';
 import { titleFromPath } from '../types/publisher.js';
 import type { SpecPublisher } from '../types/publisher.js';
 import type { Run, RunStage, RequestIntent } from '../types/runs.js';
@@ -25,6 +25,10 @@ import type { ThreadRegistry } from '../adapters/slack/thread-registry.js';
 function extractH1(content: string): string | undefined {
   const match = content.match(/^#\s+(.+)$/m);
   return match ? match[1].trim() : undefined;
+}
+
+function stripFrontmatter(content: string): string {
+  return content.replace(/^---\n[\s\S]*?\n---\n?/, '');
 }
 
 /** Maps an actionable review stage to the in-progress stage that prevents duplicate dispatch. */
@@ -370,14 +374,15 @@ export class OrchestratorImpl implements Orchestrator {
       }
 
       // Step 3: Write to GitHub issue (create new if none associated with this run)
+      const issueBody = stripFrontmatter(triageContent);
       let issue_number: number;
       try {
         if (run.issue) {
-          await this.deps.issueManager!.writeIssue(run.workspace_path, run.issue, triageContent);
+          await this.deps.issueManager!.writeIssue(run.workspace_path, run.issue, issueBody);
           issue_number = run.issue;
         } else {
-          const title = extractH1(triageContent) ?? `${run.intent} triage`;
-          issue_number = await this.deps.issueManager!.createIssue(run.workspace_path, title, triageContent);
+          const title = extractH1(issueBody) ?? `${run.intent} triage`;
+          issue_number = await this.deps.issueManager!.createIssue(run.workspace_path, title, issueBody);
           run.issue = issue_number;
           this._persistRuns();
         }
@@ -713,7 +718,7 @@ export class OrchestratorImpl implements Orchestrator {
 
     let spec_path: string;
     try {
-      spec_path = await this.deps.specGenerator.create(request, workspace_path, specCreateProgress);
+      ({ spec_path } = await this.deps.specGenerator.create(request, workspace_path, specCreateProgress));
       run.spec_path = spec_path;
     } catch (err) {
       await this.deps.workspaceManager.destroy(workspace_path);
@@ -771,8 +776,12 @@ export class OrchestratorImpl implements Orchestrator {
 
     let spec_path: string;
     try {
-      spec_path = await this.deps.specGenerator.create(request, workspace_path, onProgress, intent);
+      const result = await this.deps.specGenerator.create(request, workspace_path, onProgress, intent);
+      spec_path = result.spec_path;
       run.spec_path = spec_path;
+      if (result.existing_issue !== undefined) {
+        run.issue = result.existing_issue;
+      }
     } catch (err) {
       await this.deps.workspaceManager.destroy(workspace_path);
       await this.failRun(run, request.channel_id, request.thread_ts, err);
