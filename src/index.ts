@@ -2,7 +2,7 @@
 
 import { parseArgs, printUsage } from './core/cli.js';
 import { loadConfig, redactConfig, resolveEnvVars, resolveAwsProfile, repoNameFromUrl } from './core/config.js';
-import { runInit } from './core/init.js';
+import { runInit, configExists } from './core/init.js';
 import { ConfigWatcher } from './core/config-watcher.js';
 import { Service } from './core/service.js';
 import { registerSignalHandlers } from './core/signals.js';
@@ -57,6 +57,14 @@ try {
 
   // Init always runs before service startup
   await runInit(repoPath);
+
+  if (!configExists(repoPath)) {
+    logger.error(
+      { event: 'service.init_incomplete' },
+      'Config is not set up. Run `autocatalyst init --repo <path>` to initialize.',
+    );
+    process.exit(1);
+  }
 
   const workflowPath = join(repoPath, 'WORKFLOW.md');
   let currentConfig = loadConfig(workflowPath, process.env as Record<string, string>);
