@@ -508,37 +508,37 @@ If a user opens a PR but never sends a merge signal, the run stays in `pr_open` 
 			- [x] `feedback` is not a valid intent for `pr_open` (classifier retries and falls back to `ignore`)
 			- [x] TypeScript compiles with no errors
 		- **Dependencies**: Task: Add `pr_open` to `RunStage` and new fields to `Run`
-- [ ] **Story: Orchestrator lifecycle wiring**
-	- [ ] **Task: Store ****`last_impl_result`**** after implementation completes**
+- [x] **Story: Orchestrator lifecycle wiring**
+	- [x] **Task: Store ****`last_impl_result`**** after implementation completes**
 		- **Description**: In `src/core/orchestrator.ts`, in both `_handleSpecApproval` and `_handleImplementationFeedback`, after `Implementer.implement` returns `{ status: 'complete', summary, testing_instructions }`, assign `run.last_impl_result = { summary, testing_instructions }`.
 		- **Acceptance criteria**:
-			- [ ] `run.last_impl_result` is set in `_handleSpecApproval` when implementation returns `complete`
-			- [ ] `run.last_impl_result` is updated (not accumulated) in `_handleImplementationFeedback` when implementation returns `complete`
-			- [ ] `run.last_impl_result` remains `undefined` when implementation does not return `complete`
+			- [x] `run.last_impl_result` is set in `_handleSpecApproval` when implementation returns `complete`
+			- [x] `run.last_impl_result` is updated (not accumulated) in `_handleImplementationFeedback` when implementation returns `complete`
+			- [x] `run.last_impl_result` remains `undefined` when implementation does not return `complete`
 		- **Dependencies**: Task: Add `pr_open` to `RunStage` and new fields to `Run`
-	- [ ] **Task: Update ****`_handleImplementationApproval`**** for full lifecycle**
+	- [x] **Task: Update ****`_handleImplementationApproval`**** for full lifecycle**
 		- **Description**: In `src/core/orchestrator.ts`, update `_handleImplementationApproval` to: (1) call `specCommitter.updateStatus(workspace_path, spec_path, { status: 'complete', last_updated: today })` — non-fatal on rejection, log `spec.status_update_failed`; (2) call `specPublisher.updateStatus(run.publisher_ref, 'Complete')` when `publisher_ref` is set — non-fatal on rejection, log `spec.publisher_update_failed`; (3) call `prManager.createPR(workspace_path, branch, spec_path, { impl_result: run.last_impl_result, run_intent: run.intent })`; (4) store `run.pr_url = pr_url`; (5) post "PR opened: \" to Slack; (6) transition to `pr_open`.
 		- **Acceptance criteria**:
-			- [ ] `specCommitter.updateStatus` called with `{ status: 'complete', last_updated: today }` before `createPR`
-			- [ ] `updateStatus` rejection → error logged; PR creation still proceeds
-			- [ ] `specPublisher.updateStatus` called when `publisher_ref` is set; skipped when null/undefined
-			- [ ] `specPublisher.updateStatus` rejection → error logged; PR creation still proceeds
-			- [ ] `prManager.createPR` receives `{ impl_result: run.last_impl_result, run_intent: run.intent }`
-			- [ ] `run.pr_url` set after successful PR creation
-			- [ ] Run transitions to `pr_open` (not `done`)
-			- [ ] "PR opened: \" posted to Slack
+			- [x] `specCommitter.updateStatus` called with `{ status: 'complete', last_updated: today }` before `createPR`
+			- [x] `updateStatus` rejection → error logged; PR creation still proceeds
+			- [x] `specPublisher.updateStatus` called when `publisher_ref` is set; skipped when null/undefined
+			- [x] `specPublisher.updateStatus` rejection → error logged; PR creation still proceeds
+			- [x] `prManager.createPR` receives `{ impl_result: run.last_impl_result, run_intent: run.intent }`
+			- [x] `run.pr_url` set after successful PR creation
+			- [x] Run transitions to `pr_open` (not `done`)
+			- [x] "PR opened: \" posted to Slack
 		- **Dependencies**: Task: Implement `updateStatus()` method, Task: Rename `pr-creator.ts` to `pr-manager.ts` and update `createPR()`, Task: Store `last_impl_result` after implementation completes
-	- [ ] **Task: Implement ****`_handlePrMerge`**** and ****`pr_open`**** stage routing**
+	- [x] **Task: Implement ****`_handlePrMerge`**** and ****`pr_open`**** stage routing**
 		- **Description**: In `src/core/orchestrator.ts`, add `_handlePrMerge()` that: calls `prManager.mergePR(workspace_path, run.pr_url)`; posts "PR merged." to Slack; transitions to `done`. On rejection: posts the error to Slack and transitions to `failed`. If `run.pr_url` is undefined, log a warning and post an error to Slack without calling `mergePR`. Update `_handleRequest` to route `pr_open` messages: `approval` → `_handlePrMerge`; `question` → answer, no stage change; `feedback` → post "A PR is already open — merge it or close it first."; `ignore` → discard.
 		- **Acceptance criteria**:
-			- [ ] `_handlePrMerge` calls `prManager.mergePR` with `workspace_path` and `run.pr_url`
-			- [ ] "PR merged." posted to Slack on success; run transitions to `done`
-			- [ ] `mergePR` rejection → error posted to Slack; run transitions to `failed`
-			- [ ] `run.pr_url` undefined → warning logged; error posted to Slack; no `mergePR` call
-			- [ ] `approval` + `pr_open` → `_handlePrMerge` called
-			- [ ] `question` + `pr_open` → question answered; stage unchanged
-			- [ ] `feedback` + `pr_open` → "A PR is already open — merge it or close it first." posted; stage unchanged
-			- [ ] `ignore` + `pr_open` → discarded
+			- [x] `_handlePrMerge` calls `prManager.mergePR` with `workspace_path` and `run.pr_url`
+			- [x] "PR merged." posted to Slack on success; run transitions to `done`
+			- [x] `mergePR` rejection → error posted to Slack; run transitions to `failed`
+			- [x] `run.pr_url` undefined → warning logged; error posted to Slack; no `mergePR` call
+			- [x] `approval` + `pr_open` → `_handlePrMerge` called
+			- [x] `question` + `pr_open` → question answered; stage unchanged
+			- [x] `feedback` + `pr_open` → "A PR is already open — merge it or close it first." posted; stage unchanged
+			- [x] `ignore` + `pr_open` → discarded
 		- **Dependencies**: Task: Implement `mergePR()` on `PRManager`, Task: Add `pr_open` context to `VALID_INTENTS_BY_CONTEXT`, Task: Update `_handleImplementationApproval` for full lifecycle
 - [ ] **Story: Tests**
 	- [ ] **Task: Update ****`spec-committer.test.ts`**
