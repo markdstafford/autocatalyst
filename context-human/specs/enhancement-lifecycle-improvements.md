@@ -550,14 +550,14 @@ If a user opens a PR but never sends a merge signal, the run stays in `pr_open` 
 			- [x] All `updateStatus()` cases from section 6 of the testing plan have passing tests
 			- [x] No tests removed without replacement
 		- **Dependencies**: Task: Update `commit()` to set `status: implementing` and `implemented_by`, Task: Implement `updateStatus()` method
-	- [ ] **Task: Update ****`pr-manager.test.ts`**
+	- [x] **Task: Update ****`pr-manager.test.ts`**
 		- **Description**: In `tests/adapters/agent/pr-manager.test.ts`, update the import to reference `pr-manager`. Add or update tests for all four `run_intent` title derivations; PR body with and without `impl_result`; `Closes #` present and absent based on `issue` frontmatter. Add `mergePR()` tests: happy path resolves; non-zero exit throws with stderr; `gh` not found throws; `pr.merged` and `pr.merge_failed` log events.
 		- **Acceptance criteria**:
-			- [ ] Tests import from `pr-manager` (not `pr-creator`)
-			- [ ] All four title derivation cases covered and passing
-			- [ ] PR body tests for with/without `impl_result` passing
-			- [ ] `Closes #` presence/absence tests passing
-			- [ ] All `mergePR()` cases from section 6 of the testing plan have passing tests
+			- [x] Tests import from `pr-manager` (not `pr-creator`)
+			- [x] All four title derivation cases covered and passing
+			- [x] PR body tests for with/without `impl_result` passing
+			- [x] `Closes #` presence/absence tests passing
+			- [x] All `mergePR()` cases from section 6 of the testing plan have passing tests
 		- **Dependencies**: Task: Rename `pr-creator.ts` to `pr-manager.ts` and update `createPR()`, Task: Implement `mergePR()` on `PRManager`
 	- [ ] **Task: Update ****`orchestrator.test.ts`**
 		- **Description**: In `tests/core/orchestrator.test.ts`, add tests for: `run.last_impl_result` set after `implement()` returns `complete` in `_handleSpecApproval` and updated in `_handleImplementationFeedback`; all updated `_handleImplementationApproval` behaviors including ordered calls, non-fatal failures for `updateStatus` and `specPublisher`, `pr_url` stored, transition to `pr_open`; `_handlePrMerge` happy path and failure path; all four `pr_open` routing guards.
