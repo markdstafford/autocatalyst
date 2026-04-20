@@ -3,7 +3,8 @@ import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { rmSync } from 'node:fs';
-import { configExists, isSecret, findMissingRequired } from '../../src/core/init.js';
+import { configExists, isSecret, findMissingRequired, writeToEnv, writeInlineToWorkflow, propertyPathToEnvKey } from '../../src/core/init.js';
+import { parseWorkflow } from '../../src/core/config.js';
 
 // ─── isSecret ───────────────────────────────────────────────────────────────
 
@@ -130,5 +131,90 @@ describe('findMissingRequired', () => {
       "workspace:\n  root: /tmp/ws\nslack:\n  bot_token: ${AC_SLACK_BOT_TOKEN}\n  app_token: ${AC_SLACK_APP_TOKEN}\n  channel_name: my-channel"
     );
     expect(findMissingRequired(tempDir)).toEqual([]);
+  });
+});
+
+// ─── writeToEnv ──────────────────────────────────────────────────────────
+
+describe('writeToEnv', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'init-test-'));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('creates .env with key=value when file does not exist', () => {
+    writeToEnv('AC_SLACK_BOT_TOKEN', 'xoxb-test', tempDir);
+    const content = readFileSync(join(tempDir, '.env'), 'utf-8');
+    expect(content).toContain('AC_SLACK_BOT_TOKEN=xoxb-test');
+  });
+
+  it('appends key=value when .env exists but key is absent', () => {
+    writeFileSync(join(tempDir, '.env'), 'EXISTING_VAR=existing\n', 'utf-8');
+    writeToEnv('AC_SLACK_BOT_TOKEN', 'xoxb-new', tempDir);
+    const content = readFileSync(join(tempDir, '.env'), 'utf-8');
+    expect(content).toContain('EXISTING_VAR=existing');
+    expect(content).toContain('AC_SLACK_BOT_TOKEN=xoxb-new');
+  });
+
+  it('replaces in-place when key already exists in .env', () => {
+    writeFileSync(join(tempDir, '.env'), 'AC_SLACK_BOT_TOKEN=old-value\n', 'utf-8');
+    writeToEnv('AC_SLACK_BOT_TOKEN', 'new-value', tempDir);
+    const content = readFileSync(join(tempDir, '.env'), 'utf-8');
+    expect(content).toContain('AC_SLACK_BOT_TOKEN=new-value');
+    expect(content).not.toContain('old-value');
+    // Should not duplicate the key
+    expect(content.split('AC_SLACK_BOT_TOKEN=').length - 1).toBe(1);
+  });
+});
+
+// ─── writeInlineToWorkflow ────────────────────────────────────────────────
+
+describe('writeInlineToWorkflow', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'init-test-'));
+    writeFileSync(
+      join(tempDir, 'WORKFLOW.md'),
+      "---\nworkspace:\n  root: ''\nslack:\n  bot_token: ''\n  app_token: ''\n  channel_name: ''\n---\n\nTemplate body\n",
+      'utf-8',
+    );
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('sets an existing nested property inline', () => {
+    writeInlineToWorkflow('slack.channel_name', 'my-channel', tempDir);
+    const content = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
+    expect(content).toContain('my-channel');
+  });
+
+  it('sets a property to a ${VAR} env reference', () => {
+    writeInlineToWorkflow('slack.bot_token', '${AC_SLACK_BOT_TOKEN}', tempDir);
+    const content = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
+    expect(content).toContain('${AC_SLACK_BOT_TOKEN}');
+  });
+
+  it('produces output that parses back correctly via parseWorkflow', () => {
+    writeInlineToWorkflow('workspace.root', '/my/workspace', tempDir);
+    const content = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
+    const { config, promptTemplate } = parseWorkflow(content);
+    expect((config as Record<string, unknown>)?.['workspace']?.['root']).toBe('/my/workspace');
+    expect(promptTemplate).toContain('Template body');
+  });
+
+  it('preserves other properties when setting one value', () => {
+    writeInlineToWorkflow('slack.channel_name', 'general', tempDir);
+    // workspace.root should still be present (empty string) not deleted
+    const content = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
+    expect(content).toContain('workspace');
+    expect(content).toContain('slack');
   });
 });
