@@ -25,6 +25,7 @@ export const VALID_INTENTS_BY_CONTEXT: Partial<Record<ClassificationContext, Int
   awaiting_impl_input:      ['feedback', 'question', 'ignore'],
   speccing:                 ['feedback', 'question', 'ignore'],
   implementing:             ['feedback', 'question', 'ignore'],
+  pr_open:                  ['approval', 'question', 'ignore'],
   done:                     ['ignore'],
   failed:                   ['ignore'],
 };
@@ -37,6 +38,7 @@ const CONSERVATIVE_FALLBACK: Partial<Record<ClassificationContext, Intent>> = {
   awaiting_impl_input:      'feedback',
   speccing:                 'feedback',
   implementing:             'feedback',
+  pr_open:                  'ignore',
   done:                     'ignore',
   failed:                   'ignore',
 };
