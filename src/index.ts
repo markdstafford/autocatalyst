@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { parseArgs, printUsage } from './core/cli.js';
-import { bootstrapWorkflow, loadConfig, redactConfig, resolveEnvVars, resolveAwsProfile, repoNameFromUrl } from './core/config.js';
+import { loadConfig, redactConfig, resolveEnvVars, resolveAwsProfile, repoNameFromUrl } from './core/config.js';
+import { runInit } from './core/init.js';
 import { ConfigWatcher } from './core/config-watcher.js';
 import { Service } from './core/service.js';
 import { registerSignalHandlers } from './core/signals.js';
@@ -43,14 +44,21 @@ try {
     process.exit(0);
   }
 
-  logger.info({ event: 'service.starting' }, 'Starting Autocatalyst');
-
-  const bootstrapped = bootstrapWorkflow(args.repoPath);
-  if (bootstrapped) {
-    logger.info({ event: 'config.bootstrapped', repoPath: args.repoPath }, 'Created default WORKFLOW.md');
+  if (args.command === 'init') {
+    const repoPath = args.repoPath || process.cwd();
+    await runInit(repoPath);
+    process.exit(0);
   }
 
-  const workflowPath = join(args.repoPath, 'WORKFLOW.md');
+  // run command — repoPath is validated by parseArgs
+  const repoPath = args.repoPath;
+
+  logger.info({ event: 'service.starting' }, 'Starting Autocatalyst');
+
+  // Init always runs before service startup
+  await runInit(repoPath);
+
+  const workflowPath = join(repoPath, 'WORKFLOW.md');
   let currentConfig = loadConfig(workflowPath, process.env as Record<string, string>);
 
   const { resolved: _resolved, missing } = resolveEnvVars(
@@ -84,7 +92,7 @@ try {
   // Resolve repo_url from git origin
   let repo_url: string;
   try {
-    repo_url = execSync('git remote get-url origin', { cwd: args.repoPath }).toString().trim();
+    repo_url = execSync('git remote get-url origin', { cwd: repoPath }).toString().trim();
     if (!repo_url) throw new Error('git remote get-url origin returned empty string');
   } catch (err) {
     logger.error({ event: 'config.parse_error', error: String(err) }, 'Could not resolve git origin URL. Run: git remote add origin <url>');
@@ -153,7 +161,7 @@ try {
   }
 
   // Build question answerer — always uses Agent SDK with repo path as cwd (no Bedrock variant needed)
-  const questionAnswerer = new AgentSDKQuestionAnswerer(args.repoPath);
+  const questionAnswerer = new AgentSDKQuestionAnswerer(repoPath);
 
   // Build adapter, components, orchestrator
   const threadRegistry = new ThreadRegistry();

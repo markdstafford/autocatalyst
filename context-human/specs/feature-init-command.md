@@ -240,14 +240,14 @@ Verify that each event in the log events table is emitted under its expected con
 			- [x] Secret property values are masked (e.g., `***`)
 			- [x] Summary includes all required config properties
 		- **Dependencies**: Task: Missing required property detection
-- [ ] **Story: Entry point wiring**
-	- [ ] **Task: Wire init into run path and init subcommand**
+- [x] **Story: Entry point wiring**
+	- [x] **Task: Wire init into run path and init subcommand**
 		- **Description**: Update `src/index.ts` to call `runInit` on every service startup before any other initialization. Route `parsed.command === 'init'` to `runInit` and `process.exit(0)`. If init does not complete successfully (e.g., user declined), the service must not start.
 		- **Acceptance criteria**:
-			- [ ] Init runs on every `autocatalyst --repo ` invocation before service initialization
-			- [ ] `autocatalyst init [--repo ]` triggers init and exits 0
-			- [ ] Service does not start if init exits without a complete config
-			- [ ] `autocatalyst init --help` prints usage and exits 0
+			- [x] Init runs on every `autocatalyst --repo ` invocation before service initialization
+			- [x] `autocatalyst init [--repo ]` triggers init and exits 0
+			- [x] Service does not start if init exits without a complete config
+			- [x] `autocatalyst init --help` prints usage and exits 0
 		- **Dependencies**: Task: Add subcommand detection to `parseArgs`, Task: Config existence check and skeleton creation, Task: Interactive prompting and value storage, Task: Config summary output
 - [x] **Story: Tests**
 	- [x] **Task: Unit tests for ****`parseArgs`**** with subcommands**
