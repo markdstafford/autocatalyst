@@ -446,13 +446,13 @@ If a user opens a PR but never sends a merge signal, the run stays in `pr_open` 
 ## Task list
 
 - [ ] **Story: Type system updates**
-	- [ ] **Task: Add ****`pr_open`**** to ****`RunStage`**** and new fields to ****`Run`**
+	- [x] **Task: Add ****`pr_open`**** to ****`RunStage`**** and new fields to ****`Run`**
 		- **Description**: In `src/types/runs.ts`, add `'pr_open'` to the `RunStage` union type between `reviewing_implementation` and `done`, and add `pr_url: string | undefined` and `last_impl_result: { summary: string; testing_instructions: string } | undefined` to the `Run` interface.
 		- **Acceptance criteria**:
-			- [ ] `pr_open` is present in `RunStage` between `reviewing_implementation` and `done`
-			- [ ] `Run` interface includes `pr_url: string | undefined`
-			- [ ] `Run` interface includes `last_impl_result: { summary: string; testing_instructions: string } | undefined`
-			- [ ] TypeScript compiles with no errors
+			- [x] `pr_open` is present in `RunStage` between `reviewing_implementation` and `done`
+			- [x] `Run` interface includes `pr_url: string | undefined`
+			- [x] `Run` interface includes `last_impl_result: { summary: string; testing_instructions: string } | undefined`
+			- [x] TypeScript compiles with no errors
 		- **Dependencies**: None
 - [ ] **Story: SpecCommitter lifecycle tracking**
 	- [ ] **Task: Update ****`commit()`**** to set ****`status: implementing`**** and ****`implemented_by`**
