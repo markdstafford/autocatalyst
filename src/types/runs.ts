@@ -7,6 +7,7 @@ export type RunStage =
   | 'implementing'
   | 'awaiting_impl_input'
   | 'reviewing_implementation'
+  | 'pr_open'              // new: PR created, awaiting merge signal
   | 'done'
   | 'failed';
 
@@ -26,6 +27,11 @@ export interface Run {
   attempt: number;
   channel_id: string;
   thread_ts: string;
+  pr_url: string | undefined;          // new: PR URL set after PR creation
+  last_impl_result: {                  // new: set after implementation completes
+    summary: string;
+    testing_instructions: string;
+  } | undefined;
   created_at: string; // ISO 8601
   updated_at: string; // ISO 8601
 }
