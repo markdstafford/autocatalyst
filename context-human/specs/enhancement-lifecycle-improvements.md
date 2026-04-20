@@ -445,4 +445,132 @@ Adding `pr_url`, `last_impl_result`, and `pr_open` to the `Run` interface and `R
 If a user opens a PR but never sends a merge signal, the run stays in `pr_open` indefinitely. The run store will accumulate such entries over time. Mitigation: out of scope for this enhancement; run expiry and cleanup are deferred to a future enhancement.
 ## Task list
 
-*(Added by task decomposition stage)*
+- [ ] **Story: Type system updates**
+	- [ ] **Task: Add ****`pr_open`**** to ****`RunStage`**** and new fields to ****`Run`**
+		- **Description**: In `src/types/runs.ts`, add `'pr_open'` to the `RunStage` union type between `reviewing_implementation` and `done`, and add `pr_url: string | undefined` and `last_impl_result: { summary: string; testing_instructions: string } | undefined` to the `Run` interface.
+		- **Acceptance criteria**:
+			- [ ] `pr_open` is present in `RunStage` between `reviewing_implementation` and `done`
+			- [ ] `Run` interface includes `pr_url: string | undefined`
+			- [ ] `Run` interface includes `last_impl_result: { summary: string; testing_instructions: string } | undefined`
+			- [ ] TypeScript compiles with no errors
+		- **Dependencies**: None
+- [ ] **Story: SpecCommitter lifecycle tracking**
+	- [ ] **Task: Update ****`commit()`**** to set ****`status: implementing`**** and ****`implemented_by`**
+		- **Description**: In `src/adapters/notion/spec-committer.ts`, update the frontmatter normalization in `commit()` to: set `status` to `implementing` instead of `approved`; run `gh api user -q .login` to get the current GitHub username and set `implemented_by`; if that command fails, log `spec.implemented_by_fetch_failed` at warn level and set `implemented_by: null` without aborting.
+		- **Acceptance criteria**:
+			- [ ] Committed spec file has `status: implementing`
+			- [ ] Committed spec has `implemented_by` set to the output of `gh api user -q .login`
+			- [ ] When `gh api user -q .login` fails: `implemented_by: null`, commit still completes, `spec.implemented_by_fetch_failed` warn log emitted
+			- [ ] `last_updated` and `created` are unchanged from prior behavior
+			- [ ] All existing `commit()` tests updated to expect `status: implementing`
+		- **Dependencies**: Task: Add `pr_open` to `RunStage` and new fields to `Run`
+	- [ ] **Task: Implement ****`updateStatus()`**** method**
+		- **Description**: Add `updateStatus(workspace_path, spec_path, { status, last_updated })` to `SpecCommitter`. The method reads the spec at `/`, parses the YAML frontmatter, updates `status` and `last_updated`, writes the file back, then runs `git add ` and `git commit -m "docs: update spec status —  ()"` where `` comes from the spec's `# Title` heading. Export `SpecLifecycleStatus = 'implementing' | 'complete'`. Log `spec.status_updated` on success (including `workspace_path`, `spec_path`, `status`, `last_updated`); log `spec.status_update_failed` on failure.
+		- **Acceptance criteria**:
+			- [ ] `updateStatus()` exists on `SpecCommitter` with the correct signature
+			- [ ] Frontmatter `status` and `last_updated` updated; all other fields preserved
+			- [ ] Correct commit message format: `"docs: update spec status —  ()"`
+			- [ ] File-not-found → throws with descriptive error; no git commands called
+			- [ ] `git add` or `git commit` failure → throws
+			- [ ] `spec.status_updated` logged on success; `spec.status_update_failed` logged on failure
+			- [ ] `SpecLifecycleStatus` type exported from the module
+		- **Dependencies**: Task: Add `pr_open` to `RunStage` and new fields to `Run`
+- [ ] **Story: PRManager — structured PR creation and merge**
+	- [ ] **Task: Rename ****`pr-creator.ts`**** to ****`pr-manager.ts`**** and update ****`createPR()`**
+		- **Description**: Rename `src/adapters/agent/pr-creator.ts` to `src/adapters/agent/pr-manager.ts` and update all import references. Update `createPR()` to accept optional `PRManagerOptions` (`impl_result`, `run_intent`). Derive PR title from `run_intent` (`feat:`/`fix:`/`chore:` prefix + lowercased spec title; default `feat:`). Build structured PR body: summary from `impl_result.summary` (or placeholder), `## Testing` section with `impl_result.testing_instructions` (or placeholder), `---`, `Spec: `, and `Closes #` only when the `issue` frontmatter field is non-null and non-zero. Read the spec file to extract the title and `issue` frontmatter.
+		- **Acceptance criteria**:
+			- [ ] File renamed; all imports updated; TypeScript compiles
+			- [ ] `PRManagerOptions` interface exported from the module
+			- [ ] `run_intent = 'idea'` (or undefined): title is `feat: `
+			- [ ] `run_intent = 'bug'`: title is `fix: `
+			- [ ] `run_intent = 'chore'`: title is `chore: `
+			- [ ] PR body contains summary and `## Testing` section when `impl_result` provided
+			- [ ] PR body contains placeholder text when `impl_result` not provided
+			- [ ] `Closes #` present when `issue` is a positive integer; absent when `issue` is null or 0
+		- **Dependencies**: Task: Add `pr_open` to `RunStage` and new fields to `Run`
+	- [ ] **Task: Implement ****`mergePR()`**** on ****`PRManager`**
+		- **Description**: Add `mergePR(workspace_path, pr_url): Promise` to `PRManager`. Run `gh pr merge  --squash --delete-branch` with `cwd: workspace_path`. Resolve when the command exits zero; throw with stderr content when non-zero. Log `pr.merged` on success (including `pr_url`, `workspace_path`); log `pr.merge_failed` on failure.
+		- **Acceptance criteria**:
+			- [ ] `mergePR()` exists on `PRManager` with the correct signature
+			- [ ] `gh pr merge  --squash --delete-branch` invoked with correct `cwd`
+			- [ ] Exits zero → resolves
+			- [ ] Exits non-zero → throws with stderr content
+			- [ ] `gh` not found → throws with descriptive error
+			- [ ] `pr.merged` logged on success; `pr.merge_failed` logged on failure
+		- **Dependencies**: Task: Rename `pr-creator.ts` to `pr-manager.ts` and update `createPR()`
+- [ ] **Story: Intent classifier update**
+	- [ ] **Task: Add ****`pr_open`**** context to ****`VALID_INTENTS_BY_CONTEXT`**
+		- **Description**: In `src/adapters/agent/intent-classifier.ts`, add `pr_open` as a new entry in `VALID_INTENTS_BY_CONTEXT` with valid intents `['approval', 'question', 'ignore']` and conservative fallback `ignore`. This enables the classifier to accept and route messages in the `pr_open` stage.
+		- **Acceptance criteria**:
+			- [ ] `pr_open` present in `VALID_INTENTS_BY_CONTEXT`
+			- [ ] Valid intents for `pr_open`: `approval`, `question`, `ignore`
+			- [ ] Conservative fallback for `pr_open`: `ignore`
+			- [ ] `feedback` is not a valid intent for `pr_open` (classifier retries and falls back to `ignore`)
+			- [ ] TypeScript compiles with no errors
+		- **Dependencies**: Task: Add `pr_open` to `RunStage` and new fields to `Run`
+- [ ] **Story: Orchestrator lifecycle wiring**
+	- [ ] **Task: Store ****`last_impl_result`**** after implementation completes**
+		- **Description**: In `src/core/orchestrator.ts`, in both `_handleSpecApproval` and `_handleImplementationFeedback`, after `Implementer.implement` returns `{ status: 'complete', summary, testing_instructions }`, assign `run.last_impl_result = { summary, testing_instructions }`.
+		- **Acceptance criteria**:
+			- [ ] `run.last_impl_result` is set in `_handleSpecApproval` when implementation returns `complete`
+			- [ ] `run.last_impl_result` is updated (not accumulated) in `_handleImplementationFeedback` when implementation returns `complete`
+			- [ ] `run.last_impl_result` remains `undefined` when implementation does not return `complete`
+		- **Dependencies**: Task: Add `pr_open` to `RunStage` and new fields to `Run`
+	- [ ] **Task: Update ****`_handleImplementationApproval`**** for full lifecycle**
+		- **Description**: In `src/core/orchestrator.ts`, update `_handleImplementationApproval` to: (1) call `specCommitter.updateStatus(workspace_path, spec_path, { status: 'complete', last_updated: today })` — non-fatal on rejection, log `spec.status_update_failed`; (2) call `specPublisher.updateStatus(run.publisher_ref, 'Complete')` when `publisher_ref` is set — non-fatal on rejection, log `spec.publisher_update_failed`; (3) call `prManager.createPR(workspace_path, branch, spec_path, { impl_result: run.last_impl_result, run_intent: run.intent })`; (4) store `run.pr_url = pr_url`; (5) post "PR opened: \" to Slack; (6) transition to `pr_open`.
+		- **Acceptance criteria**:
+			- [ ] `specCommitter.updateStatus` called with `{ status: 'complete', last_updated: today }` before `createPR`
+			- [ ] `updateStatus` rejection → error logged; PR creation still proceeds
+			- [ ] `specPublisher.updateStatus` called when `publisher_ref` is set; skipped when null/undefined
+			- [ ] `specPublisher.updateStatus` rejection → error logged; PR creation still proceeds
+			- [ ] `prManager.createPR` receives `{ impl_result: run.last_impl_result, run_intent: run.intent }`
+			- [ ] `run.pr_url` set after successful PR creation
+			- [ ] Run transitions to `pr_open` (not `done`)
+			- [ ] "PR opened: \" posted to Slack
+		- **Dependencies**: Task: Implement `updateStatus()` method, Task: Rename `pr-creator.ts` to `pr-manager.ts` and update `createPR()`, Task: Store `last_impl_result` after implementation completes
+	- [ ] **Task: Implement ****`_handlePrMerge`**** and ****`pr_open`**** stage routing**
+		- **Description**: In `src/core/orchestrator.ts`, add `_handlePrMerge()` that: calls `prManager.mergePR(workspace_path, run.pr_url)`; posts "PR merged." to Slack; transitions to `done`. On rejection: posts the error to Slack and transitions to `failed`. If `run.pr_url` is undefined, log a warning and post an error to Slack without calling `mergePR`. Update `_handleRequest` to route `pr_open` messages: `approval` → `_handlePrMerge`; `question` → answer, no stage change; `feedback` → post "A PR is already open — merge it or close it first."; `ignore` → discard.
+		- **Acceptance criteria**:
+			- [ ] `_handlePrMerge` calls `prManager.mergePR` with `workspace_path` and `run.pr_url`
+			- [ ] "PR merged." posted to Slack on success; run transitions to `done`
+			- [ ] `mergePR` rejection → error posted to Slack; run transitions to `failed`
+			- [ ] `run.pr_url` undefined → warning logged; error posted to Slack; no `mergePR` call
+			- [ ] `approval` + `pr_open` → `_handlePrMerge` called
+			- [ ] `question` + `pr_open` → question answered; stage unchanged
+			- [ ] `feedback` + `pr_open` → "A PR is already open — merge it or close it first." posted; stage unchanged
+			- [ ] `ignore` + `pr_open` → discarded
+		- **Dependencies**: Task: Implement `mergePR()` on `PRManager`, Task: Add `pr_open` context to `VALID_INTENTS_BY_CONTEXT`, Task: Update `_handleImplementationApproval` for full lifecycle
+- [ ] **Story: Tests**
+	- [ ] **Task: Update ****`spec-committer.test.ts`**
+		- **Description**: In `tests/adapters/notion/spec-committer.test.ts`, update all existing `commit()` tests to assert `status: implementing`. Add tests for: `implemented_by` set from mocked `gh api` output; `gh api` failure → `implemented_by: null` + warn log + commit still proceeds. Add `updateStatus()` tests covering: both `implementing` and `complete` statuses update correctly; correct commit message format; other frontmatter fields preserved; file-not-found throws without calling git; `git add`/`git commit` failure throws; `spec.status_updated` and `spec.status_update_failed` log events.
+		- **Acceptance criteria**:
+			- [ ] All `commit()` tests updated to expect `status: implementing`
+			- [ ] `implemented_by` happy-path test passes (mocked subprocess returns `testuser`)
+			- [ ] `implemented_by` failure-path test passes (non-zero exit → null + warn log + commit proceeds)
+			- [ ] All `updateStatus()` cases from section 6 of the testing plan have passing tests
+			- [ ] No tests removed without replacement
+		- **Dependencies**: Task: Update `commit()` to set `status: implementing` and `implemented_by`, Task: Implement `updateStatus()` method
+	- [ ] **Task: Update ****`pr-manager.test.ts`**
+		- **Description**: In `tests/adapters/agent/pr-manager.test.ts`, update the import to reference `pr-manager`. Add or update tests for all four `run_intent` title derivations; PR body with and without `impl_result`; `Closes #` present and absent based on `issue` frontmatter. Add `mergePR()` tests: happy path resolves; non-zero exit throws with stderr; `gh` not found throws; `pr.merged` and `pr.merge_failed` log events.
+		- **Acceptance criteria**:
+			- [ ] Tests import from `pr-manager` (not `pr-creator`)
+			- [ ] All four title derivation cases covered and passing
+			- [ ] PR body tests for with/without `impl_result` passing
+			- [ ] `Closes #` presence/absence tests passing
+			- [ ] All `mergePR()` cases from section 6 of the testing plan have passing tests
+		- **Dependencies**: Task: Rename `pr-creator.ts` to `pr-manager.ts` and update `createPR()`, Task: Implement `mergePR()` on `PRManager`
+	- [ ] **Task: Update ****`orchestrator.test.ts`**
+		- **Description**: In `tests/core/orchestrator.test.ts`, add tests for: `run.last_impl_result` set after `implement()` returns `complete` in `_handleSpecApproval` and updated in `_handleImplementationFeedback`; all updated `_handleImplementationApproval` behaviors including ordered calls, non-fatal failures for `updateStatus` and `specPublisher`, `pr_url` stored, transition to `pr_open`; `_handlePrMerge` happy path and failure path; all four `pr_open` routing guards.
+		- **Acceptance criteria**:
+			- [ ] `last_impl_result` storage tests pass in both handler contexts
+			- [ ] `_handleImplementationApproval` updated tests pass including non-fatal failure paths
+			- [ ] `_handlePrMerge` tests pass for success, failure, and missing `pr_url`
+			- [ ] All four routing guard cases (`approval`, `question`, `feedback`, `ignore`) covered and passing
+		- **Dependencies**: Task: Update `_handleImplementationApproval` for full lifecycle, Task: Implement `_handlePrMerge` and `pr_open` stage routing
+	- [ ] **Task: Update ****`intent-classifier.test.ts`**
+		- **Description**: In `tests/adapters/agent/intent-classifier.test.ts`, add tests for the `pr_open` context: valid intents `approval`, `question`, `ignore` are accepted; conservative fallback is `ignore`; model returning `feedback` triggers retry and falls back to `ignore`.
+		- **Acceptance criteria**:
+			- [ ] `pr_open` context tests for all three valid intents pass
+			- [ ] Fallback to `ignore` for `feedback` response tested and passing
+			- [ ] No existing classifier tests broken
+		- **Dependencies**: Task: Add `pr_open` context to `VALID_INTENTS_BY_CONTEXT`
