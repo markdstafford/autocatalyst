@@ -24,7 +24,7 @@ interface NotionSpecCommitterOptions {
   logDestination?: pino.DestinationStream;
 }
 
-function normalizeFrontmatter(markdown: string): string {
+function normalizeFrontmatter(markdown: string, implementedBy: string | null): string {
   const delim = '---';
   const start = markdown.indexOf(delim);
   if (start === -1) throw new Error('Spec has no YAML frontmatter (missing --- delimiters)');
@@ -39,8 +39,11 @@ function normalizeFrontmatter(markdown: string): string {
   // Update fields line-by-line to preserve all other fields
   const lines = frontmatterRaw.split('\n');
   const normalized = lines.map(line => {
-    if (/^status\s*:/.test(line)) return `status: approved`;
+    if (/^status\s*:/.test(line)) return `status: implementing`;
     if (/^last_updated\s*:/.test(line)) return `last_updated: ${today}`;
+    if (/^implemented_by\s*:/.test(line)) {
+      return implementedBy !== null ? `implemented_by: ${implementedBy}` : `implemented_by: null`;
+    }
     return line;
   });
 
@@ -98,12 +101,33 @@ export class NotionSpecCommitter implements SpecCommitter {
     try {
       // Strip comment spans, remove orphaned comments, prettify
       processed = prettifyMarkdown(stripCommentSpans(raw));
-      // Normalize frontmatter
-      processed = normalizeFrontmatter(processed);
     } catch (err) {
       this.logger.error(
         { event: 'spec.commit_failed', error: String(err), publisher_ref, step: 'transform' },
         'Failed to transform spec markdown',
+      );
+      throw err;
+    }
+
+    // Fetch GitHub username for implemented_by
+    let implementedBy: string | null = null;
+    try {
+      const { stdout } = await this.execFn('gh', ['api', 'user', '-q', '.login'], { cwd: workspace_path });
+      implementedBy = stdout.trim() || null;
+    } catch (err) {
+      this.logger.warn(
+        { event: 'spec.implemented_by_fetch_failed', error: String(err), publisher_ref },
+        'Failed to fetch GitHub username for implemented_by; setting to null',
+      );
+    }
+
+    // Normalize frontmatter (status: implementing, implemented_by, last_updated)
+    try {
+      processed = normalizeFrontmatter(processed, implementedBy);
+    } catch (err) {
+      this.logger.error(
+        { event: 'spec.commit_failed', error: String(err), publisher_ref, step: 'transform' },
+        'Failed to normalize spec frontmatter',
       );
       throw err;
     }

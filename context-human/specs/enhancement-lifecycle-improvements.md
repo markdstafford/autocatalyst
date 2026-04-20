@@ -455,13 +455,13 @@ If a user opens a PR but never sends a merge signal, the run stays in `pr_open` 
 			- [x] TypeScript compiles with no errors
 		- **Dependencies**: None
 - [ ] **Story: SpecCommitter lifecycle tracking**
-	- [ ] **Task: Update ****`commit()`**** to set ****`status: implementing`**** and ****`implemented_by`**
+	- [x] **Task: Update ****`commit()`**** to set ****`status: implementing`**** and ****`implemented_by`**
 		- **Description**: In `src/adapters/notion/spec-committer.ts`, update the frontmatter normalization in `commit()` to: set `status` to `implementing` instead of `approved`; run `gh api user -q .login` to get the current GitHub username and set `implemented_by`; if that command fails, log `spec.implemented_by_fetch_failed` at warn level and set `implemented_by: null` without aborting.
 		- **Acceptance criteria**:
-			- [ ] Committed spec file has `status: implementing`
-			- [ ] Committed spec has `implemented_by` set to the output of `gh api user -q .login`
-			- [ ] When `gh api user -q .login` fails: `implemented_by: null`, commit still completes, `spec.implemented_by_fetch_failed` warn log emitted
-			- [ ] `last_updated` and `created` are unchanged from prior behavior
+			- [x] Committed spec file has `status: implementing`
+			- [x] Committed spec has `implemented_by` set to the output of `gh api user -q .login`
+			- [x] When `gh api user -q .login` fails: `implemented_by: null`, commit still completes, `spec.implemented_by_fetch_failed` warn log emitted
+			- [x] `last_updated` and `created` are unchanged from prior behavior
 			- [ ] All existing `commit()` tests updated to expect `status: implementing`
 		- **Dependencies**: Task: Add `pr_open` to `RunStage` and new fields to `Run`
 	- [ ] **Task: Implement ****`updateStatus()`**** method**
