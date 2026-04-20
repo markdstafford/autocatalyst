@@ -499,14 +499,14 @@ If a user opens a PR but never sends a merge signal, the run stays in `pr_open` 
 			- [x] `pr.merged` logged on success; `pr.merge_failed` logged on failure
 		- **Dependencies**: Task: Rename `pr-creator.ts` to `pr-manager.ts` and update `createPR()`
 - [ ] **Story: Intent classifier update**
-	- [ ] **Task: Add ****`pr_open`**** context to ****`VALID_INTENTS_BY_CONTEXT`**
+	- [x] **Task: Add ****`pr_open`**** context to ****`VALID_INTENTS_BY_CONTEXT`**
 		- **Description**: In `src/adapters/agent/intent-classifier.ts`, add `pr_open` as a new entry in `VALID_INTENTS_BY_CONTEXT` with valid intents `['approval', 'question', 'ignore']` and conservative fallback `ignore`. This enables the classifier to accept and route messages in the `pr_open` stage.
 		- **Acceptance criteria**:
-			- [ ] `pr_open` present in `VALID_INTENTS_BY_CONTEXT`
-			- [ ] Valid intents for `pr_open`: `approval`, `question`, `ignore`
-			- [ ] Conservative fallback for `pr_open`: `ignore`
-			- [ ] `feedback` is not a valid intent for `pr_open` (classifier retries and falls back to `ignore`)
-			- [ ] TypeScript compiles with no errors
+			- [x] `pr_open` present in `VALID_INTENTS_BY_CONTEXT`
+			- [x] Valid intents for `pr_open`: `approval`, `question`, `ignore`
+			- [x] Conservative fallback for `pr_open`: `ignore`
+			- [x] `feedback` is not a valid intent for `pr_open` (classifier retries and falls back to `ignore`)
+			- [x] TypeScript compiles with no errors
 		- **Dependencies**: Task: Add `pr_open` to `RunStage` and new fields to `Run`
 - [ ] **Story: Orchestrator lifecycle wiring**
 	- [ ] **Task: Store ****`last_impl_result`**** after implementation completes**
