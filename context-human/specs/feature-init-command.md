@@ -1,10 +1,10 @@
 ---
 created: 2026-04-19
 last_updated: 2026-04-19
-status: approved
+status: complete
 issue: 40
 specced_by: markdstafford
-implemented_by: null
+implemented_by: markdstafford
 superseded_by: null
 ---
 # Init command
