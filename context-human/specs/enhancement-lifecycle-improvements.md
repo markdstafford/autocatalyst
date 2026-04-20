@@ -464,39 +464,39 @@ If a user opens a PR but never sends a merge signal, the run stays in `pr_open` 
 			- [x] `last_updated` and `created` are unchanged from prior behavior
 			- [ ] All existing `commit()` tests updated to expect `status: implementing`
 		- **Dependencies**: Task: Add `pr_open` to `RunStage` and new fields to `Run`
-	- [ ] **Task: Implement ****`updateStatus()`**** method**
+	- [x] **Task: Implement ****`updateStatus()`**** method**
 		- **Description**: Add `updateStatus(workspace_path, spec_path, { status, last_updated })` to `SpecCommitter`. The method reads the spec at `/`, parses the YAML frontmatter, updates `status` and `last_updated`, writes the file back, then runs `git add ` and `git commit -m "docs: update spec status —  ()"` where `` comes from the spec's `# Title` heading. Export `SpecLifecycleStatus = 'implementing' | 'complete'`. Log `spec.status_updated` on success (including `workspace_path`, `spec_path`, `status`, `last_updated`); log `spec.status_update_failed` on failure.
 		- **Acceptance criteria**:
-			- [ ] `updateStatus()` exists on `SpecCommitter` with the correct signature
-			- [ ] Frontmatter `status` and `last_updated` updated; all other fields preserved
-			- [ ] Correct commit message format: `"docs: update spec status —  ()"`
-			- [ ] File-not-found → throws with descriptive error; no git commands called
-			- [ ] `git add` or `git commit` failure → throws
-			- [ ] `spec.status_updated` logged on success; `spec.status_update_failed` logged on failure
-			- [ ] `SpecLifecycleStatus` type exported from the module
+			- [x] `updateStatus()` exists on `SpecCommitter` with the correct signature
+			- [x] Frontmatter `status` and `last_updated` updated; all other fields preserved
+			- [x] Correct commit message format: `"docs: update spec status —  ()"`
+			- [x] File-not-found → throws with descriptive error; no git commands called
+			- [x] `git add` or `git commit` failure → throws
+			- [x] `spec.status_updated` logged on success; `spec.status_update_failed` logged on failure
+			- [x] `SpecLifecycleStatus` type exported from the module
 		- **Dependencies**: Task: Add `pr_open` to `RunStage` and new fields to `Run`
 - [ ] **Story: PRManager — structured PR creation and merge**
-	- [ ] **Task: Rename ****`pr-creator.ts`**** to ****`pr-manager.ts`**** and update ****`createPR()`**
+	- [x] **Task: Rename ****`pr-creator.ts`**** to ****`pr-manager.ts`**** and update ****`createPR()`**
 		- **Description**: Rename `src/adapters/agent/pr-creator.ts` to `src/adapters/agent/pr-manager.ts` and update all import references. Update `createPR()` to accept optional `PRManagerOptions` (`impl_result`, `run_intent`). Derive PR title from `run_intent` (`feat:`/`fix:`/`chore:` prefix + lowercased spec title; default `feat:`). Build structured PR body: summary from `impl_result.summary` (or placeholder), `## Testing` section with `impl_result.testing_instructions` (or placeholder), `---`, `Spec: `, and `Closes #` only when the `issue` frontmatter field is non-null and non-zero. Read the spec file to extract the title and `issue` frontmatter.
 		- **Acceptance criteria**:
-			- [ ] File renamed; all imports updated; TypeScript compiles
-			- [ ] `PRManagerOptions` interface exported from the module
-			- [ ] `run_intent = 'idea'` (or undefined): title is `feat: `
-			- [ ] `run_intent = 'bug'`: title is `fix: `
-			- [ ] `run_intent = 'chore'`: title is `chore: `
-			- [ ] PR body contains summary and `## Testing` section when `impl_result` provided
-			- [ ] PR body contains placeholder text when `impl_result` not provided
-			- [ ] `Closes #` present when `issue` is a positive integer; absent when `issue` is null or 0
+			- [x] File renamed; all imports updated; TypeScript compiles
+			- [x] `PRManagerOptions` interface exported from the module
+			- [x] `run_intent = 'idea'` (or undefined): title is `feat: `
+			- [x] `run_intent = 'bug'`: title is `fix: `
+			- [x] `run_intent = 'chore'`: title is `chore: `
+			- [x] PR body contains summary and `## Testing` section when `impl_result` provided
+			- [x] PR body contains placeholder text when `impl_result` not provided
+			- [x] `Closes #` present when `issue` is a positive integer; absent when `issue` is null or 0
 		- **Dependencies**: Task: Add `pr_open` to `RunStage` and new fields to `Run`
-	- [ ] **Task: Implement ****`mergePR()`**** on ****`PRManager`**
+	- [x] **Task: Implement ****`mergePR()`**** on ****`PRManager`**
 		- **Description**: Add `mergePR(workspace_path, pr_url): Promise` to `PRManager`. Run `gh pr merge  --squash --delete-branch` with `cwd: workspace_path`. Resolve when the command exits zero; throw with stderr content when non-zero. Log `pr.merged` on success (including `pr_url`, `workspace_path`); log `pr.merge_failed` on failure.
 		- **Acceptance criteria**:
-			- [ ] `mergePR()` exists on `PRManager` with the correct signature
-			- [ ] `gh pr merge  --squash --delete-branch` invoked with correct `cwd`
-			- [ ] Exits zero → resolves
-			- [ ] Exits non-zero → throws with stderr content
-			- [ ] `gh` not found → throws with descriptive error
-			- [ ] `pr.merged` logged on success; `pr.merge_failed` logged on failure
+			- [x] `mergePR()` exists on `PRManager` with the correct signature
+			- [x] `gh pr merge  --squash --delete-branch` invoked with correct `cwd`
+			- [x] Exits zero → resolves
+			- [x] Exits non-zero → throws with stderr content
+			- [x] `gh` not found → throws with descriptive error
+			- [x] `pr.merged` logged on success; `pr.merge_failed` logged on failure
 		- **Dependencies**: Task: Rename `pr-creator.ts` to `pr-manager.ts` and update `createPR()`
 - [ ] **Story: Intent classifier update**
 	- [ ] **Task: Add ****`pr_open`**** context to ****`VALID_INTENTS_BY_CONTEXT`**
