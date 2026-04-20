@@ -29,7 +29,7 @@ import { AgentSDKQuestionAnswerer } from './adapters/agent/question-answerer.js'
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { AgentSDKImplementer } from './adapters/agent/implementer.js';
-import { GHPRCreator } from './adapters/agent/pr-creator.js';
+import { GHPRManager } from './adapters/agent/pr-manager.js';
 import { GHIssueManager } from './adapters/agent/issue-manager.js';
 import { AgentSDKIssueFiler } from './adapters/agent/issue-filer.js';
 import { NotionSpecCommitter } from './adapters/notion/spec-committer.js';
@@ -186,7 +186,7 @@ try {
   const runStore = new FileRunStore(workspaceRoot);
   const specGenerator = new AgentSDKSpecGenerator();
   const implementer = new AgentSDKImplementer();
-  const prCreator = new GHPRCreator();
+  const prManager = new GHPRManager();
   const issueManager = new GHIssueManager();
   const issueFiler = new AgentSDKIssueFiler(issueManager);
 
@@ -242,7 +242,7 @@ try {
     specCommitter,
     implementer,
     implFeedbackPage,
-    prCreator,
+    prManager,
     issueManager,
     issueFiler,
     runStore,
