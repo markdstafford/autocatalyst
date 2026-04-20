@@ -209,36 +209,36 @@ Verify that each event in the log events table is emitted under its expected con
 			- [x] Output contains both command forms with descriptions
 			- [x] Any existing help output tests are updated to match
 		- **Dependencies**: Task: Add subcommand detection to `parseArgs`
-- [ ] **Story: Init flow logic**
-	- [ ] **Task: Config existence check and skeleton creation**
+- [x] **Story: Init flow logic**
+	- [x] **Task: Config existence check and skeleton creation**
 		- **Description**: Implement the first branch of the init flow in `src/core/init.ts`. If no `WORKFLOW.md` exists, emit `init.config_not_found` and prompt the user (default Y). If confirmed, create a minimal skeleton `WORKFLOW.md` with the correct YAML structure and emit `init.config_created`. If declined, emit `init.creation_declined`, print a manual setup instruction, and return without creating any files.
 		- **Acceptance criteria**:
-			- [ ] Running `runInit` on an empty directory emits `init.config_not_found` and prompts the user (default Y)
-			- [ ] Confirming creates a parseable `WORKFLOW.md` skeleton and emits `init.config_created`
-			- [ ] Declining creates no files and resolves cleanly
+			- [x] Running `runInit` on an empty directory emits `init.config_not_found` and prompts the user (default Y)
+			- [x] Confirming creates a parseable `WORKFLOW.md` skeleton and emits `init.config_created`
+			- [x] Declining creates no files and resolves cleanly
 		- **Dependencies**: None
-	- [ ] **Task: Missing required property detection**
+	- [x] **Task: Missing required property detection**
 		- **Description**: Implement `findMissingRequired` in `src/core/init.ts`. Load and parse `WORKFLOW.md`, then use the schema from `src/core/config.ts` to identify required properties that are unpopulated (empty, null, missing, or a recognizable placeholder value). Emit `init.missing_detected` with the property list and count.
 		- **Acceptance criteria**:
-			- [ ] Returns the correct list of missing property paths for a variety of partial configs
-			- [ ] Returns an empty list for a fully populated config
-			- [ ] Treats empty strings, `null`, and placeholder values (e.g., ``) as unpopulated
-			- [ ] Emits `init.missing_detected` with `properties` and `count` fields
+			- [x] Returns the correct list of missing property paths for a variety of partial configs
+			- [x] Returns an empty list for a fully populated config
+			- [x] Treats empty strings, `null`, and placeholder values (e.g., ``) as unpopulated
+			- [x] Emits `init.missing_detected` with `properties` and `count` fields
 		- **Dependencies**: Task: Config existence check and skeleton creation
-	- [ ] **Task: Interactive prompting and value storage**
+	- [x] **Task: Interactive prompting and value storage**
 		- **Description**: For each missing required property, prompt the user for a value using `promptForValue`. Apply `isSecret` to decide storage destination: write to `.env` and insert a `${VAR_NAME}` reference in `WORKFLOW.md`, or write inline. After all values are written, reload the config and verify it passes schema validation; emit `init.validation_passed`. Emit `init.value_written` after each write.
 		- **Acceptance criteria**:
-			- [ ] Secret-heuristic properties: value written to `.env`, `${VAR_NAME}` reference inserted in `WORKFLOW.md`, `init.value_written` emitted with `destination: "env"`
-			- [ ] Non-secret properties: value written inline to `WORKFLOW.md`, `init.value_written` emitted with `destination: "inline"`
-			- [ ] Config passes schema validation after all values are written
-			- [ ] `init.validation_passed` emitted with `property_count` equal to total required properties
+			- [x] Secret-heuristic properties: value written to `.env`, `${VAR_NAME}` reference inserted in `WORKFLOW.md`, `init.value_written` emitted with `destination: "env"`
+			- [x] Non-secret properties: value written inline to `WORKFLOW.md`, `init.value_written` emitted with `destination: "inline"`
+			- [x] Config passes schema validation after all values are written
+			- [x] `init.validation_passed` emitted with `property_count` equal to total required properties
 		- **Dependencies**: Task: Missing required property detection
-	- [ ] **Task: Config summary output**
+	- [x] **Task: Config summary output**
 		- **Description**: Implement `printConfigSummary` in `src/core/init.ts`. After all required properties are confirmed present, print a summary of all required config values to stdout. Mask values for properties where `isSecret` returns true.
 		- **Acceptance criteria**:
-			- [ ] Summary is printed on every `runInit` call when config is complete
-			- [ ] Secret property values are masked (e.g., `***`)
-			- [ ] Summary includes all required config properties
+			- [x] Summary is printed on every `runInit` call when config is complete
+			- [x] Secret property values are masked (e.g., `***`)
+			- [x] Summary includes all required config properties
 		- **Dependencies**: Task: Missing required property detection
 - [ ] **Story: Entry point wiring**
 	- [ ] **Task: Wire init into run path and init subcommand**
@@ -256,12 +256,12 @@ Verify that each event in the log events table is emitted under its expected con
 			- [x] All cases from the subcommand detection acceptance criteria have corresponding passing tests
 			- [x] Existing passing tests remain passing
 		- **Dependencies**: Task: Add subcommand detection to `parseArgs`
-	- [ ] **Task: Unit tests for secret heuristic**
+	- [x] **Task: Unit tests for secret heuristic**
 		- **Description**: Add unit tests for `isSecret` in `tests/core/init.test.ts` covering property names that should and should not trigger `.env` storage.
 		- **Acceptance criteria**:
-			- [ ] `bot_token`, `api_key`, `database_id`, `password` → `true`
-			- [ ] `channel_name`, `interval_ms`, `profile` → `false`
-			- [ ] Keyword matching is case-insensitive (e.g., `BotToken` → `true`)
+			- [x] `bot_token`, `api_key`, `database_id`, `password` → `true`
+			- [x] `channel_name`, `interval_ms`, `profile` → `false`
+			- [x] Keyword matching is case-insensitive (e.g., `BotToken` → `true`)
 		- **Dependencies**: Task: Interactive prompting and value storage
 	- [ ] **Task: Integration tests for ****`runInit`**
 		- **Description**: Add integration tests in `tests/core/init.test.ts` using a temporary directory per test. Stub interactive prompts via stdin injection or a mock `promptForValue`. Cover the three main branches: no config (creation + prompting flow), complete config (summary only, no writes), and incomplete config (prompting and value storage).
