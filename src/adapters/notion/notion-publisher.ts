@@ -6,8 +6,8 @@ import type { App } from '@slack/bolt';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 import type { NotionClient } from './notion-client.js';
-import { titleFromPath } from '../slack/canvas-publisher.js';
-import type { SpecPublisher, SpecEntryStatus } from '../slack/canvas-publisher.js';
+import { titleFromPath } from '../../types/publisher.js';
+import type { SpecPublisher, SpecEntryStatus } from '../../types/publisher.js';
 import { stripAllHtml } from './markdown-diff.js';
 
 interface NotionPublisherOptions {
@@ -56,7 +56,7 @@ export class NotionPublisher implements SpecPublisher {
       'Specced by': {
         rich_text: [{ type: 'text', text: { content: String(frontmatter['specced_by'] ?? '') } }],
       },
-      'Last updated': { date: { start: String(frontmatter['last_updated'] ?? '') } },
+      'Last updated': { date: { start: String(frontmatter['last_updated'] ?? new Date().toISOString().slice(0, 10)) } },
     };
 
     if (this.options?.repo_name) {
@@ -118,7 +118,7 @@ export class NotionPublisher implements SpecPublisher {
     const frontmatter = this.parseFrontmatter(spec_path);
 
     const propertiesToUpdate: Record<string, unknown> = {
-      'Last updated': { date: { start: String(frontmatter['last_updated'] ?? '') } },
+      'Last updated': { date: { start: String(frontmatter['last_updated'] ?? new Date().toISOString().slice(0, 10)) } },
     };
 
     if (frontmatter['implemented_by'] != null) {

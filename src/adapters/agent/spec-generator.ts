@@ -27,13 +27,18 @@ export interface ReviseResult {
   page_content?: string;
 }
 
+export interface CreateResult {
+  spec_path: string;
+  existing_issue?: number;
+}
+
 export interface SpecGenerator {
   create(
     request: Request,
     workspace_path: string,
     onProgress?: (message: string) => Promise<void>,
     intent?: 'idea' | 'bug' | 'chore',
-  ): Promise<string>;
+  ): Promise<CreateResult>;
   revise(
     feedback: ThreadMessage,
     notion_comments: NotionComment[],
@@ -98,9 +103,11 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
     workspace_path: string,
     onProgress?: (message: string) => Promise<void>,
     intent?: 'idea' | 'bug' | 'chore',
-  ): Promise<string> {
+  ): Promise<CreateResult> {
     const createResultPath = join(workspace_path, '.autocatalyst', 'spec-create-result.json');
-    const specDir = join(workspace_path, 'context-human', 'specs');
+    const specDir = (intent === 'bug' || intent === 'chore')
+      ? join(workspace_path, '.autocatalyst', 'triage')
+      : join(workspace_path, 'context-human', 'specs');
     const prompt = buildCreatePrompt(request, specDir, createResultPath, intent);
 
     this.logger.debug({ event: 'spec.agent_invoked', request_id: request.id }, 'Invoking Agent SDK for spec creation');
@@ -169,10 +176,11 @@ export class AgentSDKSpecGenerator implements SpecGenerator {
       throw new Error(`Spec creation: result file missing "spec_path" string`);
     }
     const spec_path = obj['spec_path'];
+    const existing_issue = typeof obj['existing_issue'] === 'number' ? obj['existing_issue'] : undefined;
 
     this.logger.debug({ event: 'spec.agent_completed', request_id: request.id }, 'Agent SDK spec creation completed');
-    this.logger.info({ event: 'spec.generated', request_id: request.id, spec_path }, 'Spec generated');
-    return spec_path;
+    this.logger.info({ event: 'spec.generated', request_id: request.id, spec_path, existing_issue }, 'Spec generated');
+    return { spec_path, existing_issue };
   }
 
   async revise(
@@ -318,7 +326,7 @@ function buildCreatePrompt(
       `- Write the triage file to: ${specDir}`,
       `  Use "triage-bug-<slug>.md" as the filename.`,
       `- Write the result to: ${createResultPath}`,
-      `  Content must be: { "spec_path": "<absolute path to the triage file you wrote>" }`,
+      `  Content must be: { "spec_path": "<absolute path to the triage file you wrote>", "existing_issue": <issue number if this work appears to be captured in an existing GitHub issue, otherwise omit the field> }`,
       ``,
       `Do not signal completion until both files have been written.`,
       ``,
@@ -339,7 +347,7 @@ function buildCreatePrompt(
       `- Write the spec file to: ${specDir}`,
       `  Use "triage-chore-<slug>.md" as the filename.`,
       `- Write the result to: ${createResultPath}`,
-      `  Content must be: { "spec_path": "<absolute path to the spec file you wrote>" }`,
+      `  Content must be: { "spec_path": "<absolute path to the spec file you wrote>", "existing_issue": <issue number if this work appears to be captured in an existing GitHub issue, otherwise omit the field> }`,
       ``,
       `Do not signal completion until both files have been written.`,
       ``,
