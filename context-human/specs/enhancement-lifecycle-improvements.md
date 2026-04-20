@@ -462,7 +462,7 @@ If a user opens a PR but never sends a merge signal, the run stays in `pr_open` 
 			- [x] Committed spec has `implemented_by` set to the output of `gh api user -q .login`
 			- [x] When `gh api user -q .login` fails: `implemented_by: null`, commit still completes, `spec.implemented_by_fetch_failed` warn log emitted
 			- [x] `last_updated` and `created` are unchanged from prior behavior
-			- [ ] All existing `commit()` tests updated to expect `status: implementing`
+			- [x] All existing `commit()` tests updated to expect `status: implementing`
 		- **Dependencies**: Task: Add `pr_open` to `RunStage` and new fields to `Run`
 	- [x] **Task: Implement ****`updateStatus()`**** method**
 		- **Description**: Add `updateStatus(workspace_path, spec_path, { status, last_updated })` to `SpecCommitter`. The method reads the spec at `/`, parses the YAML frontmatter, updates `status` and `last_updated`, writes the file back, then runs `git add ` and `git commit -m "docs: update spec status —  ()"` where `` comes from the spec's `# Title` heading. Export `SpecLifecycleStatus = 'implementing' | 'complete'`. Log `spec.status_updated` on success (including `workspace_path`, `spec_path`, `status`, `last_updated`); log `spec.status_update_failed` on failure.
