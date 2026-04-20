@@ -541,14 +541,14 @@ If a user opens a PR but never sends a merge signal, the run stays in `pr_open` 
 			- [x] `ignore` + `pr_open` → discarded
 		- **Dependencies**: Task: Implement `mergePR()` on `PRManager`, Task: Add `pr_open` context to `VALID_INTENTS_BY_CONTEXT`, Task: Update `_handleImplementationApproval` for full lifecycle
 - [ ] **Story: Tests**
-	- [ ] **Task: Update ****`spec-committer.test.ts`**
+	- [x] **Task: Update ****`spec-committer.test.ts`**
 		- **Description**: In `tests/adapters/notion/spec-committer.test.ts`, update all existing `commit()` tests to assert `status: implementing`. Add tests for: `implemented_by` set from mocked `gh api` output; `gh api` failure → `implemented_by: null` + warn log + commit still proceeds. Add `updateStatus()` tests covering: both `implementing` and `complete` statuses update correctly; correct commit message format; other frontmatter fields preserved; file-not-found throws without calling git; `git add`/`git commit` failure throws; `spec.status_updated` and `spec.status_update_failed` log events.
 		- **Acceptance criteria**:
-			- [ ] All `commit()` tests updated to expect `status: implementing`
-			- [ ] `implemented_by` happy-path test passes (mocked subprocess returns `testuser`)
-			- [ ] `implemented_by` failure-path test passes (non-zero exit → null + warn log + commit proceeds)
-			- [ ] All `updateStatus()` cases from section 6 of the testing plan have passing tests
-			- [ ] No tests removed without replacement
+			- [x] All `commit()` tests updated to expect `status: implementing`
+			- [x] `implemented_by` happy-path test passes (mocked subprocess returns `testuser`)
+			- [x] `implemented_by` failure-path test passes (non-zero exit → null + warn log + commit proceeds)
+			- [x] All `updateStatus()` cases from section 6 of the testing plan have passing tests
+			- [x] No tests removed without replacement
 		- **Dependencies**: Task: Update `commit()` to set `status: implementing` and `implemented_by`, Task: Implement `updateStatus()` method
 	- [ ] **Task: Update ****`pr-manager.test.ts`**
 		- **Description**: In `tests/adapters/agent/pr-manager.test.ts`, update the import to reference `pr-manager`. Add or update tests for all four `run_intent` title derivations; PR body with and without `impl_result`; `Closes #` present and absent based on `issue` frontmatter. Add `mergePR()` tests: happy path resolves; non-zero exit throws with stderr; `gh` not found throws; `pr.merged` and `pr.merge_failed` log events.

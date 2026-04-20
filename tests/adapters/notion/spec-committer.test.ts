@@ -13,6 +13,7 @@ const SAMPLE_MARKDOWN = [
   'last_updated: 2026-04-01',
   'status: draft',
   'specced_by: alice',
+  'implemented_by: null',
   'issue: null',
   'superseded_by: null',
   '---',
@@ -36,12 +37,16 @@ function makePublisher(
   } as unknown as SpecPublisher;
 }
 
-function makeExecFn(exitCode = 0) {
+function makeExecFn(exitCode = 0, ghLoginResult = 'testuser') {
   const fn = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
-    if (exitCode !== 0) throw Object.assign(new Error('git failed'), { code: exitCode });
+    if (exitCode !== 0) throw Object.assign(new Error('command failed'), { code: exitCode });
     // Simulate staged changes present by default: diff --cached --quiet exits non-zero
     if ((args as string[]).includes('diff') && (args as string[]).includes('--cached')) {
       throw Object.assign(new Error('staged changes present'), { code: 1 });
+    }
+    // Mock gh api user -q .login
+    if ((args as string[]).includes('api') && (args as string[]).includes('user')) {
+      return { stdout: `${ghLoginResult}\n`, stderr: '' };
     }
     return { stdout: '', stderr: '' };
   });
@@ -197,7 +202,7 @@ describe('NotionSpecCommitter — frontmatter normalization', () => {
   beforeEach(() => { tmpDir = mkdtempSync(join(tmpdir(), 'spec-committer-')); });
   afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
 
-  it('sets status to approved', async () => {
+  it('sets status to implementing', async () => {
     const publisher = makePublisher(SAMPLE_MARKDOWN);
     const execFn = makeExecFn();
     const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: nullDest });
@@ -206,7 +211,7 @@ describe('NotionSpecCommitter — frontmatter normalization', () => {
     await committer.commit(tmpDir, 'page-id', specPath);
 
     const written = readFileSync(specPath, 'utf-8');
-    expect(written).toContain('status: approved');
+    expect(written).toContain('status: implementing');
     expect(written).not.toContain('status: draft');
   });
 
@@ -261,6 +266,211 @@ describe('NotionSpecCommitter — frontmatter normalization', () => {
     expect(written.startsWith('---\n')).toBe(true);
     const secondDelimiter = written.indexOf('---', 3);
     expect(secondDelimiter).toBeGreaterThan(3);
+  });
+});
+
+describe('NotionSpecCommitter — commit() implemented_by', () => {
+  let tmpDir: string;
+  beforeEach(() => { tmpDir = mkdtempSync(join(tmpdir(), 'spec-committer-')); });
+  afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
+
+  it('sets implemented_by to the output of gh api user -q .login', async () => {
+    const publisher = makePublisher();
+    const execFn = makeExecFn(0, 'testuser');
+    const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: nullDest });
+
+    const specPath = join(tmpDir, 'context-human', 'specs', 'feature-my-feature.md');
+    await committer.commit(tmpDir, 'page-id-123', specPath);
+
+    const written = readFileSync(specPath, 'utf-8');
+    expect(written).toMatch(/^implemented_by: testuser$/m);
+  });
+
+  it('sets implemented_by to null and emits spec.implemented_by_fetch_failed warn when gh api fails', async () => {
+    const logs: unknown[] = [];
+    const dest = { write: (line: string) => logs.push(JSON.parse(line)) };
+
+    const publisher = makePublisher();
+    const execFn = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
+      if ((args as string[]).includes('api')) {
+        throw new Error('gh: command failed');
+      }
+      if ((args as string[]).includes('diff') && (args as string[]).includes('--cached')) {
+        throw Object.assign(new Error('staged changes'), { code: 1 });
+      }
+      return { stdout: '', stderr: '' };
+    });
+    const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: dest });
+
+    const specPath = join(tmpDir, 'context-human', 'specs', 'feature-my-feature.md');
+    await committer.commit(tmpDir, 'page-id-123', specPath);
+
+    const written = readFileSync(specPath, 'utf-8');
+    expect(written).toMatch(/^implemented_by: null$/m);
+
+    const warnLog = (logs as Array<Record<string, unknown>>).find(
+      l => l['event'] === 'spec.implemented_by_fetch_failed',
+    );
+    expect(warnLog).toBeDefined();
+  });
+
+  it('commit still completes when gh api fails (non-fatal)', async () => {
+    const publisher = makePublisher();
+    const execFn = vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
+      if ((args as string[]).includes('api')) throw new Error('gh failed');
+      if ((args as string[]).includes('diff') && (args as string[]).includes('--cached')) {
+        throw Object.assign(new Error('staged'), { code: 1 });
+      }
+      return { stdout: '', stderr: '' };
+    });
+    const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: nullDest });
+
+    const specPath = join(tmpDir, 'context-human', 'specs', 'feature-my-feature.md');
+    await expect(committer.commit(tmpDir, 'page-id-123', specPath)).resolves.toBeUndefined();
+  });
+});
+
+describe('NotionSpecCommitter — updateStatus()', () => {
+  let tmpDir: string;
+  let specPath: string;
+  const SPEC_WITH_STATUS = [
+    '---',
+    'created: 2026-01-01',
+    'last_updated: 2026-01-01',
+    'status: implementing',
+    'specced_by: alice',
+    'implemented_by: alice',
+    'issue: null',
+    'superseded_by: null',
+    '---',
+    '',
+    '# My Feature',
+    '',
+    'Body.',
+  ].join('\n');
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'spec-committer-'));
+    mkdirSync(join(tmpDir, 'context-human', 'specs'), { recursive: true });
+    specPath = join(tmpDir, 'context-human', 'specs', 'feature-my-feature.md');
+    writeFileSync(specPath, SPEC_WITH_STATUS, 'utf-8');
+  });
+  afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
+
+  function makeUpdateExecFn(failGitAdd = false, failGitCommit = false) {
+    return vi.fn().mockImplementation(async (_cmd: string, args: string[]) => {
+      if ((args as string[]).includes('add') && failGitAdd) throw new Error('git add failed');
+      if ((args as string[]).includes('commit') && failGitCommit) throw new Error('git commit failed');
+      return { stdout: '', stderr: '' };
+    });
+  }
+
+  it('updates status and last_updated in frontmatter; leaves other fields unchanged', async () => {
+    const execFn = makeUpdateExecFn();
+    const publisher = makePublisher();
+    const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: nullDest });
+
+    await committer.updateStatus(tmpDir, specPath, { status: 'complete', last_updated: '2026-04-20' });
+
+    const written = readFileSync(specPath, 'utf-8');
+    expect(written).toMatch(/^status: complete$/m);
+    expect(written).toMatch(/^last_updated: 2026-04-20$/m);
+    expect(written).toMatch(/^created: 2026-01-01$/m);
+    expect(written).toMatch(/^specced_by: alice$/m);
+    expect(written).toMatch(/^implemented_by: alice$/m);
+  });
+
+  it('commit message for status: implementing is correct format', async () => {
+    const execFn = makeUpdateExecFn();
+    const publisher = makePublisher();
+    const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: nullDest });
+
+    await committer.updateStatus(tmpDir, specPath, { status: 'implementing', last_updated: '2026-04-20' });
+
+    const commitCall = execFn.mock.calls.find((c: unknown[]) =>
+      (c[1] as string[]).includes('commit'),
+    ) as [string, string[], unknown] | undefined;
+    expect(commitCall).toBeDefined();
+    expect(commitCall![1]).toContain('docs: update spec status — My Feature (implementing)');
+  });
+
+  it('commit message for status: complete is correct format', async () => {
+    const execFn = makeUpdateExecFn();
+    const publisher = makePublisher();
+    const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: nullDest });
+
+    await committer.updateStatus(tmpDir, specPath, { status: 'complete', last_updated: '2026-04-20' });
+
+    const commitCall = execFn.mock.calls.find((c: unknown[]) =>
+      (c[1] as string[]).includes('commit'),
+    ) as [string, string[], unknown] | undefined;
+    expect(commitCall).toBeDefined();
+    expect(commitCall![1]).toContain('docs: update spec status — My Feature (complete)');
+  });
+
+  it('throws with descriptive error when spec file not found; no git commands called', async () => {
+    const execFn = makeUpdateExecFn();
+    const publisher = makePublisher();
+    const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: nullDest });
+
+    const missingPath = join(tmpDir, 'does-not-exist.md');
+    await expect(
+      committer.updateStatus(tmpDir, missingPath, { status: 'complete', last_updated: '2026-04-20' }),
+    ).rejects.toThrow(/not found/i);
+    expect(execFn).not.toHaveBeenCalled();
+  });
+
+  it('throws when git add fails', async () => {
+    const execFn = makeUpdateExecFn(true, false);
+    const publisher = makePublisher();
+    const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: nullDest });
+
+    await expect(
+      committer.updateStatus(tmpDir, specPath, { status: 'complete', last_updated: '2026-04-20' }),
+    ).rejects.toThrow();
+  });
+
+  it('throws when git commit fails', async () => {
+    const execFn = makeUpdateExecFn(false, true);
+    const publisher = makePublisher();
+    const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: nullDest });
+
+    await expect(
+      committer.updateStatus(tmpDir, specPath, { status: 'complete', last_updated: '2026-04-20' }),
+    ).rejects.toThrow();
+  });
+
+  it('emits spec.status_updated on success with status, spec_path, workspace_path, last_updated', async () => {
+    const logs: unknown[] = [];
+    const dest = { write: (line: string) => logs.push(JSON.parse(line)) };
+    const execFn = makeUpdateExecFn();
+    const publisher = makePublisher();
+    const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: dest });
+
+    await committer.updateStatus(tmpDir, specPath, { status: 'complete', last_updated: '2026-04-20' });
+
+    const log = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'spec.status_updated');
+    expect(log).toBeDefined();
+    expect(log!['status']).toBe('complete');
+    expect(log!['spec_path']).toBe(specPath);
+    expect(log!['workspace_path']).toBe(tmpDir);
+    expect(log!['last_updated']).toBe('2026-04-20');
+  });
+
+  it('emits spec.status_update_failed on file not found', async () => {
+    const logs: unknown[] = [];
+    const dest = { write: (line: string) => logs.push(JSON.parse(line)) };
+    const execFn = makeUpdateExecFn();
+    const publisher = makePublisher();
+    const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: dest });
+
+    const missingPath = join(tmpDir, 'nope.md');
+    await expect(
+      committer.updateStatus(tmpDir, missingPath, { status: 'complete', last_updated: '2026-04-20' }),
+    ).rejects.toThrow();
+
+    const log = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'spec.status_update_failed');
+    expect(log).toBeDefined();
   });
 });
 
