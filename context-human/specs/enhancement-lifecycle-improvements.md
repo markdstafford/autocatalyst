@@ -445,7 +445,7 @@ Adding `pr_url`, `last_impl_result`, and `pr_open` to the `Run` interface and `R
 If a user opens a PR but never sends a merge signal, the run stays in `pr_open` indefinitely. The run store will accumulate such entries over time. Mitigation: out of scope for this enhancement; run expiry and cleanup are deferred to a future enhancement.
 ## Task list
 
-- [ ] **Story: Type system updates**
+- [x] **Story: Type system updates**
 	- [x] **Task: Add ****`pr_open`**** to ****`RunStage`**** and new fields to ****`Run`**
 		- **Description**: In `src/types/runs.ts`, add `'pr_open'` to the `RunStage` union type between `reviewing_implementation` and `done`, and add `pr_url: string | undefined` and `last_impl_result: { summary: string; testing_instructions: string } | undefined` to the `Run` interface.
 		- **Acceptance criteria**:
@@ -454,7 +454,7 @@ If a user opens a PR but never sends a merge signal, the run stays in `pr_open` 
 			- [x] `Run` interface includes `last_impl_result: { summary: string; testing_instructions: string } | undefined`
 			- [x] TypeScript compiles with no errors
 		- **Dependencies**: None
-- [ ] **Story: SpecCommitter lifecycle tracking**
+- [x] **Story: SpecCommitter lifecycle tracking**
 	- [x] **Task: Update ****`commit()`**** to set ****`status: implementing`**** and ****`implemented_by`**
 		- **Description**: In `src/adapters/notion/spec-committer.ts`, update the frontmatter normalization in `commit()` to: set `status` to `implementing` instead of `approved`; run `gh api user -q .login` to get the current GitHub username and set `implemented_by`; if that command fails, log `spec.implemented_by_fetch_failed` at warn level and set `implemented_by: null` without aborting.
 		- **Acceptance criteria**:
@@ -475,7 +475,7 @@ If a user opens a PR but never sends a merge signal, the run stays in `pr_open` 
 			- [x] `spec.status_updated` logged on success; `spec.status_update_failed` logged on failure
 			- [x] `SpecLifecycleStatus` type exported from the module
 		- **Dependencies**: Task: Add `pr_open` to `RunStage` and new fields to `Run`
-- [ ] **Story: PRManager — structured PR creation and merge**
+- [x] **Story: PRManager — structured PR creation and merge**
 	- [x] **Task: Rename ****`pr-creator.ts`**** to ****`pr-manager.ts`**** and update ****`createPR()`**
 		- **Description**: Rename `src/adapters/agent/pr-creator.ts` to `src/adapters/agent/pr-manager.ts` and update all import references. Update `createPR()` to accept optional `PRManagerOptions` (`impl_result`, `run_intent`). Derive PR title from `run_intent` (`feat:`/`fix:`/`chore:` prefix + lowercased spec title; default `feat:`). Build structured PR body: summary from `impl_result.summary` (or placeholder), `## Testing` section with `impl_result.testing_instructions` (or placeholder), `---`, `Spec: `, and `Closes #` only when the `issue` frontmatter field is non-null and non-zero. Read the spec file to extract the title and `issue` frontmatter.
 		- **Acceptance criteria**:
@@ -498,7 +498,7 @@ If a user opens a PR but never sends a merge signal, the run stays in `pr_open` 
 			- [x] `gh` not found → throws with descriptive error
 			- [x] `pr.merged` logged on success; `pr.merge_failed` logged on failure
 		- **Dependencies**: Task: Rename `pr-creator.ts` to `pr-manager.ts` and update `createPR()`
-- [ ] **Story: Intent classifier update**
+- [x] **Story: Intent classifier update**
 	- [x] **Task: Add ****`pr_open`**** context to ****`VALID_INTENTS_BY_CONTEXT`**
 		- **Description**: In `src/adapters/agent/intent-classifier.ts`, add `pr_open` as a new entry in `VALID_INTENTS_BY_CONTEXT` with valid intents `['approval', 'question', 'ignore']` and conservative fallback `ignore`. This enables the classifier to accept and route messages in the `pr_open` stage.
 		- **Acceptance criteria**:
@@ -540,7 +540,7 @@ If a user opens a PR but never sends a merge signal, the run stays in `pr_open` 
 			- [x] `feedback` + `pr_open` → "A PR is already open — merge it or close it first." posted; stage unchanged
 			- [x] `ignore` + `pr_open` → discarded
 		- **Dependencies**: Task: Implement `mergePR()` on `PRManager`, Task: Add `pr_open` context to `VALID_INTENTS_BY_CONTEXT`, Task: Update `_handleImplementationApproval` for full lifecycle
-- [ ] **Story: Tests**
+- [x] **Story: Tests**
 	- [x] **Task: Update ****`spec-committer.test.ts`**
 		- **Description**: In `tests/adapters/notion/spec-committer.test.ts`, update all existing `commit()` tests to assert `status: implementing`. Add tests for: `implemented_by` set from mocked `gh api` output; `gh api` failure → `implemented_by: null` + warn log + commit still proceeds. Add `updateStatus()` tests covering: both `implementing` and `complete` statuses update correctly; correct commit message format; other frontmatter fields preserved; file-not-found throws without calling git; `git add`/`git commit` failure throws; `spec.status_updated` and `spec.status_update_failed` log events.
 		- **Acceptance criteria**:
