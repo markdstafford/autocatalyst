@@ -559,18 +559,18 @@ If a user opens a PR but never sends a merge signal, the run stays in `pr_open` 
 			- [x] `Closes #` presence/absence tests passing
 			- [x] All `mergePR()` cases from section 6 of the testing plan have passing tests
 		- **Dependencies**: Task: Rename `pr-creator.ts` to `pr-manager.ts` and update `createPR()`, Task: Implement `mergePR()` on `PRManager`
-	- [ ] **Task: Update ****`orchestrator.test.ts`**
+	- [x] **Task: Update ****`orchestrator.test.ts`**
 		- **Description**: In `tests/core/orchestrator.test.ts`, add tests for: `run.last_impl_result` set after `implement()` returns `complete` in `_handleSpecApproval` and updated in `_handleImplementationFeedback`; all updated `_handleImplementationApproval` behaviors including ordered calls, non-fatal failures for `updateStatus` and `specPublisher`, `pr_url` stored, transition to `pr_open`; `_handlePrMerge` happy path and failure path; all four `pr_open` routing guards.
 		- **Acceptance criteria**:
-			- [ ] `last_impl_result` storage tests pass in both handler contexts
-			- [ ] `_handleImplementationApproval` updated tests pass including non-fatal failure paths
-			- [ ] `_handlePrMerge` tests pass for success, failure, and missing `pr_url`
-			- [ ] All four routing guard cases (`approval`, `question`, `feedback`, `ignore`) covered and passing
+			- [x] `last_impl_result` storage tests pass in both handler contexts
+			- [x] `_handleImplementationApproval` updated tests pass including non-fatal failure paths
+			- [x] `_handlePrMerge` tests pass for success, failure, and missing `pr_url`
+			- [x] All four routing guard cases (`approval`, `question`, `feedback`, `ignore`) covered and passing
 		- **Dependencies**: Task: Update `_handleImplementationApproval` for full lifecycle, Task: Implement `_handlePrMerge` and `pr_open` stage routing
-	- [ ] **Task: Update ****`intent-classifier.test.ts`**
+	- [x] **Task: Update ****`intent-classifier.test.ts`**
 		- **Description**: In `tests/adapters/agent/intent-classifier.test.ts`, add tests for the `pr_open` context: valid intents `approval`, `question`, `ignore` are accepted; conservative fallback is `ignore`; model returning `feedback` triggers retry and falls back to `ignore`.
 		- **Acceptance criteria**:
-			- [ ] `pr_open` context tests for all three valid intents pass
-			- [ ] Fallback to `ignore` for `feedback` response tested and passing
-			- [ ] No existing classifier tests broken
+			- [x] `pr_open` context tests for all three valid intents pass
+			- [x] Fallback to `ignore` for `feedback` response tested and passing
+			- [x] No existing classifier tests broken
 		- **Dependencies**: Task: Add `pr_open` context to `VALID_INTENTS_BY_CONTEXT`

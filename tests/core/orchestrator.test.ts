@@ -117,7 +117,7 @@ function makeWorkspaceManager(overrides: Partial<WorkspaceManager> = {}): Worksp
 
 function makeSpecGenerator(overrides: Partial<SpecGenerator> = {}): SpecGenerator {
   return {
-    create: vi.fn().mockResolvedValue('/ws/request-001/context-human/specs/feature-test.md'),
+    create: vi.fn().mockResolvedValue({ spec_path: '/ws/request-001/context-human/specs/feature-test.md' }),
     revise: vi.fn().mockResolvedValue({ comment_responses: [] }),
     ...overrides,
   };
@@ -190,6 +190,8 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     impl_feedback_ref: undefined,
     issue: undefined,
     attempt: 0,
+    pr_url: undefined,
+    last_impl_result: undefined,
     channel_id: 'C001',
     thread_ts: '1000.0000',
     created_at: new Date().toISOString(),
@@ -201,6 +203,7 @@ function makeRun(overrides: Partial<Run> = {}): Run {
 function makeSpecCommitter(overrides: Partial<SpecCommitter> = {}): SpecCommitter {
   return {
     commit: vi.fn().mockResolvedValue(undefined),
+    updateStatus: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
@@ -1622,17 +1625,19 @@ describe('Orchestrator — _handleImplementationFeedback failure paths', () => {
 // Implementation approval handler tests
 // ──────────────────────────────────────────────────────────────────────────────
 
-import type { PRCreator } from '../../src/adapters/agent/pr-creator.js';
+import type { PRManager } from '../../src/adapters/agent/pr-manager.js';
 
-function makePRCreator(overrides: Partial<PRCreator> = {}): PRCreator {
+function makePRManager(overrides: Partial<PRManager> = {}): PRManager {
   return {
     createPR: vi.fn().mockResolvedValue('https://github.com/org/repo/pull/42'),
+    mergePR: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
 }
 
 function makeApprovalOrch2(opts: {
-  prCreator?: PRCreator;
+  prManager?: PRManager;
+  specCommitter?: SpecCommitter;
   postMessage?: ReturnType<typeof vi.fn>;
   postError?: ReturnType<typeof vi.fn>;
   adapter: ReturnType<typeof makeMockAdapter>;
@@ -1644,10 +1649,10 @@ function makeApprovalOrch2(opts: {
       specGenerator: makeSpecGenerator(),
       specPublisher: makeSpecPublisher(),
       intentClassifier: makeIntentClassifier('approval'),
-      specCommitter: makeSpecCommitter(),
+      specCommitter: opts.specCommitter ?? makeSpecCommitter(),
       implementer: makeImplementer(),
       implFeedbackPage: makeImplFeedbackPage(),
-      prCreator: opts.prCreator ?? makePRCreator(),
+      prManager: opts.prManager ?? makePRManager(),
       postError: opts.postError ?? vi.fn().mockResolvedValue(undefined),
       postMessage: opts.postMessage ?? vi.fn().mockResolvedValue(undefined),
       repo_url: 'https://github.com/org/repo',
@@ -1666,36 +1671,55 @@ async function sendImplApproval(
   await vi.waitUntil(
     () => {
       const r = runs.get('request-001');
-      return r?.stage === 'done' || r?.stage === 'failed';
+      return r?.stage === 'pr_open' || r?.stage === 'failed';
+    },
+    { timeout: 3000 },
+  );
+}
+
+// Helper: drive a run to pr_open stage by doing a full impl approval cycle
+async function driveRunToPrOpen(
+  orch: OrchestratorImpl,
+  adapter: ReturnType<typeof makeMockAdapter>,
+  runOverrides: Partial<Run> = {},
+): Promise<void> {
+  const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+  runs.set('request-001', makeRun({ stage: 'reviewing_implementation', branch: 'spec/request-001', ...runOverrides }));
+  adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+  await vi.waitUntil(
+    () => {
+      const r = runs.get('request-001');
+      return r?.stage === 'pr_open' || r?.stage === 'failed';
     },
     { timeout: 3000 },
   );
 }
 
 describe('Orchestrator — _handleImplementationApproval happy path', () => {
-  it('calls PRCreator.createPR with workspace_path and branch', async () => {
+  it('calls PRManager.createPR with workspace_path and branch', async () => {
     const adapter = makeMockAdapter();
-    const prCreator = makePRCreator();
-    const orch = makeApprovalOrch2({ adapter, prCreator });
+    const prManager = makePRManager();
+    const orch = makeApprovalOrch2({ adapter, prManager });
     await orch.start();
     await sendImplApproval(orch, adapter);
     await orch.stop();
 
-    expect(prCreator.createPR).toHaveBeenCalledOnce();
-    expect(prCreator.createPR).toHaveBeenCalledWith(
+    expect(prManager.createPR).toHaveBeenCalledOnce();
+    expect(prManager.createPR).toHaveBeenCalledWith(
       '/ws/request-001',
       'spec/request-001',
       expect.any(String),
+      expect.any(Object),
     );
   });
 
   it('posts PR link to Slack after creation', async () => {
     const adapter = makeMockAdapter();
     const postMessage = vi.fn().mockResolvedValue(undefined);
-    const prCreator = makePRCreator({
+    const prManager = makePRManager({
       createPR: vi.fn().mockResolvedValue('https://github.com/org/repo/pull/99'),
     });
-    const orch = makeApprovalOrch2({ adapter, prCreator, postMessage });
+    const orch = makeApprovalOrch2({ adapter, prManager, postMessage });
     await orch.start();
     await sendImplApproval(orch, adapter);
     await orch.stop();
@@ -1704,7 +1728,7 @@ describe('Orchestrator — _handleImplementationApproval happy path', () => {
     expect(messages.some(m => m.includes('https://github.com/org/repo/pull/99'))).toBe(true);
   });
 
-  it('run transitions to done after PR is created', async () => {
+  it('run transitions to pr_open after PR is created', async () => {
     const adapter = makeMockAdapter();
     const orch = makeApprovalOrch2({ adapter });
     await orch.start();
@@ -1712,18 +1736,107 @@ describe('Orchestrator — _handleImplementationApproval happy path', () => {
     await orch.stop();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    expect(runs.get('request-001')!.stage).toBe('done');
+    expect(runs.get('request-001')!.stage).toBe('pr_open');
+  });
+
+  it('run.pr_url set after successful PR creation', async () => {
+    const adapter = makeMockAdapter();
+    const prManager = makePRManager({
+      createPR: vi.fn().mockResolvedValue('https://github.com/org/repo/pull/77'),
+    });
+    const orch = makeApprovalOrch2({ adapter, prManager });
+    await orch.start();
+    await sendImplApproval(orch, adapter);
+    await orch.stop();
+
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    expect(runs.get('request-001')!.pr_url).toBe('https://github.com/org/repo/pull/77');
+  });
+
+  it('specCommitter.updateStatus called with {status: complete, last_updated: today} before createPR', async () => {
+    const adapter = makeMockAdapter();
+    const callOrder: string[] = [];
+    const sc = makeSpecCommitter({
+      updateStatus: vi.fn().mockImplementation(async () => { callOrder.push('updateStatus'); }),
+    });
+    const prManager = makePRManager({
+      createPR: vi.fn().mockImplementation(async () => { callOrder.push('createPR'); return 'https://github.com/org/repo/pull/1'; }),
+    });
+    const orch = makeApprovalOrch2({ adapter, prManager, specCommitter: sc });
+    await orch.start();
+    await sendImplApproval(orch, adapter);
+    await orch.stop();
+
+    expect(sc.updateStatus).toHaveBeenCalledOnce();
+    const updateStatusArgs = (sc.updateStatus as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(updateStatusArgs[0]).toBe('/ws/request-001');
+    expect(updateStatusArgs[1]).toBe('/ws/request-001/context-human/specs/feature-test.md');
+    expect(updateStatusArgs[2]).toMatchObject({ status: 'complete' });
+    expect(callOrder.indexOf('updateStatus')).toBeLessThan(callOrder.indexOf('createPR'));
+  });
+
+  it('updateStatus rejection is non-fatal: createPR still called', async () => {
+    const adapter = makeMockAdapter();
+    const sc = makeSpecCommitter({
+      updateStatus: vi.fn().mockRejectedValue(new Error('file not found')),
+    });
+    const prManager = makePRManager();
+    const orch = makeApprovalOrch2({ adapter, prManager, specCommitter: sc });
+    await orch.start();
+    await sendImplApproval(orch, adapter);
+    await orch.stop();
+
+    expect(prManager.createPR).toHaveBeenCalledOnce();
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    expect(runs.get('request-001')!.stage).toBe('pr_open');
+  });
+
+  it('specPublisher.updateStatus called with "Complete" when publisher_ref is set', async () => {
+    const adapter = makeMockAdapter();
+    const updateStatus = vi.fn().mockResolvedValue(undefined);
+    const specPublisher = makeSpecPublisher({ updateStatus });
+    // Use OrchestratorImpl directly to inject the custom specPublisher
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher,
+        intentClassifier: makeIntentClassifier('approval'),
+        specCommitter: makeSpecCommitter(),
+        implementer: makeImplementer(),
+        implFeedbackPage: makeImplFeedbackPage(),
+        prManager: makePRManager(),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        repo_url: 'https://github.com/org/repo',
+      } as never,
+      { logDestination: nullDest },
+    );
+    await orch.start();
+    // Inject run with publisher_ref set
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    runs.set('request-001', makeRun({ stage: 'reviewing_implementation', publisher_ref: 'CANVAS001' }));
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await vi.waitUntil(() => {
+      const r = runs.get('request-001');
+      return r?.stage === 'pr_open' || r?.stage === 'failed';
+    }, { timeout: 3000 });
+    await orch.stop();
+
+    const statusCalls = (updateStatus as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1]);
+    expect(statusCalls).toContain('Complete');
   });
 });
 
 describe('Orchestrator — _handleImplementationApproval failure paths', () => {
-  it('PRCreator.createPR rejects: error posted to Slack; run transitions to failed', async () => {
+  it('PRManager.createPR rejects: error posted to Slack; run transitions to failed', async () => {
     const adapter = makeMockAdapter();
     const postError = vi.fn().mockResolvedValue(undefined);
-    const prCreator = makePRCreator({
+    const prManager = makePRManager({
       createPR: vi.fn().mockRejectedValue(new Error('gh pr create failed')),
     });
-    const orch = makeApprovalOrch2({ adapter, prCreator, postError });
+    const orch = makeApprovalOrch2({ adapter, prManager, postError });
     await orch.start();
     await sendImplApproval(orch, adapter);
     await orch.stop();
@@ -1733,7 +1846,7 @@ describe('Orchestrator — _handleImplementationApproval failure paths', () => {
     expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('gh pr create failed'));
   });
 
-  it('postMessage for PR link rejects: run still transitions to done (PR was created)', async () => {
+  it('postMessage for PR link rejects: run still transitions to pr_open (PR was created)', async () => {
     const adapter = makeMockAdapter();
     const postMessage = vi.fn().mockRejectedValue(new Error('Slack error'));
     const postError = vi.fn().mockResolvedValue(undefined);
@@ -1743,8 +1856,214 @@ describe('Orchestrator — _handleImplementationApproval failure paths', () => {
     await orch.stop();
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
-    expect(runs.get('request-001')!.stage).toBe('done');
+    expect(runs.get('request-001')!.stage).toBe('pr_open');
     expect(postError).not.toHaveBeenCalled();
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// _handlePrMerge tests
+// ──────────────────────────────────────────────────────────────────────────────
+
+function makeApprovalOrch3(opts: {
+  prManager?: PRManager;
+  postMessage?: ReturnType<typeof vi.fn>;
+  postError?: ReturnType<typeof vi.fn>;
+  adapter: ReturnType<typeof makeMockAdapter>;
+}) {
+  return new OrchestratorImpl(
+    {
+      adapter: opts.adapter as never,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      intentClassifier: makeIntentClassifier('approval'),
+      specCommitter: makeSpecCommitter(),
+      implementer: makeImplementer(),
+      implFeedbackPage: makeImplFeedbackPage(),
+      prManager: opts.prManager ?? makePRManager(),
+      postError: opts.postError ?? vi.fn().mockResolvedValue(undefined),
+      postMessage: opts.postMessage ?? vi.fn().mockResolvedValue(undefined),
+      repo_url: 'https://github.com/org/repo',
+    } as never,
+    { logDestination: nullDest },
+  );
+}
+
+describe('Orchestrator — _handlePrMerge happy path', () => {
+  it('approval + pr_open: mergePR called with workspace_path and pr_url; run transitions to done; "PR merged." posted', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const prManager = makePRManager();
+    const orch = makeApprovalOrch3({ adapter, prManager, postMessage });
+    await orch.start();
+
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    runs.set('request-001', makeRun({ stage: 'pr_open', pr_url: 'https://github.com/org/repo/pull/42' }));
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await vi.waitUntil(
+      () => {
+        const r = runs.get('request-001');
+        return r?.stage === 'done' || r?.stage === 'failed';
+      },
+      { timeout: 3000 },
+    );
+    await orch.stop();
+
+    expect(prManager.mergePR).toHaveBeenCalledOnce();
+    expect(prManager.mergePR).toHaveBeenCalledWith('/ws/request-001', 'https://github.com/org/repo/pull/42');
+    expect(runs.get('request-001')!.stage).toBe('done');
+    const messages = (postMessage as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[2] as string);
+    expect(messages.some(m => m === 'PR merged.')).toBe(true);
+  });
+});
+
+describe('Orchestrator — _handlePrMerge failure paths', () => {
+  it('mergePR rejection: postError called; run transitions to failed', async () => {
+    const adapter = makeMockAdapter();
+    const postError = vi.fn().mockResolvedValue(undefined);
+    const prManager = makePRManager({
+      mergePR: vi.fn().mockRejectedValue(new Error('merge conflict')),
+    });
+    const orch = makeApprovalOrch3({ adapter, prManager, postError });
+    await orch.start();
+
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    runs.set('request-001', makeRun({ stage: 'pr_open', pr_url: 'https://github.com/org/repo/pull/42' }));
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await vi.waitUntil(() => runs.get('request-001')?.stage === 'failed', { timeout: 3000 });
+    await orch.stop();
+
+    expect(runs.get('request-001')!.stage).toBe('failed');
+    expect(postError).toHaveBeenCalledWith('C123', '100.0', expect.stringContaining('merge conflict'));
+  });
+
+  it('run.pr_url undefined: mergePR NOT called; error message posted', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const prManager = makePRManager();
+    const orch = makeApprovalOrch3({ adapter, prManager, postMessage });
+    await orch.start();
+
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    // pr_url is undefined (no PR created yet)
+    runs.set('request-001', makeRun({ stage: 'pr_open', pr_url: undefined }));
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await new Promise(r => setTimeout(r, 100));
+    await orch.stop();
+
+    expect(prManager.mergePR).not.toHaveBeenCalled();
+    const messages = (postMessage as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[2] as string);
+    expect(messages.some(m => m.includes('no PR URL'))).toBe(true);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// pr_open routing guard tests
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('Orchestrator — pr_open routing guards', () => {
+  it('question + pr_open: questionAnswerer.answer called; run stage stays pr_open', async () => {
+    const adapter = makeMockAdapter();
+    const qa = makeQuestionAnswerer('Here is the answer.');
+    const ic = makeIntentClassifier('question');
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: ic,
+        questionAnswerer: qa,
+        specCommitter: makeSpecCommitter(),
+        implementer: makeImplementer(),
+        implFeedbackPage: makeImplFeedbackPage(),
+        prManager: makePRManager(),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage: vi.fn().mockResolvedValue(undefined),
+        repo_url: 'https://github.com/org/repo',
+      } as never,
+      { logDestination: nullDest },
+    );
+    await orch.start();
+
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    runs.set('request-001', makeRun({ stage: 'pr_open', pr_url: 'https://github.com/org/repo/pull/42' }));
+    adapter._emit({ type: 'thread_message', payload: makeFeedback({ content: 'What does this PR do?' }) });
+    await new Promise(r => setTimeout(r, 100));
+    await orch.stop();
+
+    expect(qa.answer).toHaveBeenCalledWith('What does this PR do?');
+    expect(runs.get('request-001')!.stage).toBe('pr_open');
+  });
+
+  it('feedback + pr_open: postMessage called with "A PR is already open"; run stage stays pr_open', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const ic = makeIntentClassifier('feedback');
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: ic,
+        specCommitter: makeSpecCommitter(),
+        implementer: makeImplementer(),
+        implFeedbackPage: makeImplFeedbackPage(),
+        prManager: makePRManager(),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+        repo_url: 'https://github.com/org/repo',
+      } as never,
+      { logDestination: nullDest },
+    );
+    await orch.start();
+
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    runs.set('request-001', makeRun({ stage: 'pr_open', pr_url: 'https://github.com/org/repo/pull/42' }));
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await new Promise(r => setTimeout(r, 100));
+    await orch.stop();
+
+    const messages = (postMessage as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[2] as string);
+    expect(messages.some(m => m.includes('A PR is already open'))).toBe(true);
+    expect(runs.get('request-001')!.stage).toBe('pr_open');
+  });
+
+  it('ignore + pr_open: no handlers called; run stage stays pr_open', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const ic = makeIntentClassifier('ignore');
+    const prManager = makePRManager();
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as never,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: makeSpecPublisher(),
+        intentClassifier: ic,
+        specCommitter: makeSpecCommitter(),
+        implementer: makeImplementer(),
+        implFeedbackPage: makeImplFeedbackPage(),
+        prManager,
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+        repo_url: 'https://github.com/org/repo',
+      } as never,
+      { logDestination: nullDest },
+    );
+    await orch.start();
+
+    const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
+    runs.set('request-001', makeRun({ stage: 'pr_open', pr_url: 'https://github.com/org/repo/pull/42' }));
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await new Promise(r => setTimeout(r, 100));
+    await orch.stop();
+
+    expect(prManager.mergePR).not.toHaveBeenCalled();
+    expect(postMessage).not.toHaveBeenCalled();
+    expect(runs.get('request-001')!.stage).toBe('pr_open');
   });
 });
 
@@ -2019,6 +2338,8 @@ describe('Orchestrator — run persistence', () => {
       publisher_ref: undefined,
       impl_feedback_ref: undefined,
       attempt: 1,
+      pr_url: undefined,
+      last_impl_result: undefined,
       channel_id: 'C999',
       thread_ts: '9999.0000',
       created_at: new Date().toISOString(),
@@ -2238,7 +2559,8 @@ describe('_classify — serial classification gate', () => {
     const run: Run = {
       id: 'run-1', request_id: 'req-speccing', intent: 'idea', stage: 'speccing',
       workspace_path: '/ws', branch: 'b', spec_path: undefined, publisher_ref: undefined,
-      impl_feedback_ref: undefined, attempt: 0, channel_id: 'C1', thread_ts: '100.0',
+      impl_feedback_ref: undefined, attempt: 0, pr_url: undefined, last_impl_result: undefined,
+      channel_id: 'C1', thread_ts: '100.0',
       created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     };
     (orch as unknown as { runs: Map<string, Run> }).runs.set('req-speccing', run);
@@ -2270,7 +2592,8 @@ describe('_classify — serial classification gate', () => {
     const run: Run = {
       id: 'run-1', request_id: 'req-impl', intent: 'idea', stage: 'implementing',
       workspace_path: '/ws', branch: 'b', spec_path: '/spec.md', publisher_ref: 'PAGE1',
-      impl_feedback_ref: undefined, attempt: 1, channel_id: 'C1', thread_ts: '100.0',
+      impl_feedback_ref: undefined, attempt: 1, pr_url: undefined, last_impl_result: undefined,
+      channel_id: 'C1', thread_ts: '100.0',
       created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     };
     (orch as unknown as { runs: Map<string, Run> }).runs.set('req-impl', run);
@@ -2300,7 +2623,8 @@ describe('_classify — serial classification gate', () => {
     const run: Run = {
       id: 'run-1', request_id: 'req-review', intent: 'idea', stage: 'reviewing_spec',
       workspace_path: '/ws', branch: 'b', spec_path: '/spec.md', publisher_ref: 'PAGE1',
-      impl_feedback_ref: undefined, attempt: 0, channel_id: 'C1', thread_ts: '100.0',
+      impl_feedback_ref: undefined, attempt: 0, pr_url: undefined, last_impl_result: undefined,
+      channel_id: 'C1', thread_ts: '100.0',
       created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     };
     (orch as unknown as { runs: Map<string, Run> }).runs.set('req-review', run);
@@ -2330,7 +2654,8 @@ describe('_classify — serial classification gate', () => {
     const run: Run = {
       id: 'run-1', request_id: 'req-dup', intent: 'idea', stage: 'reviewing_spec',
       workspace_path: '/ws', branch: 'b', spec_path: '/spec.md', publisher_ref: 'PAGE1',
-      impl_feedback_ref: undefined, attempt: 0, channel_id: 'C1', thread_ts: '100.0',
+      impl_feedback_ref: undefined, attempt: 0, pr_url: undefined, last_impl_result: undefined,
+      channel_id: 'C1', thread_ts: '100.0',
       created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     };
     (orch as unknown as { runs: Map<string, Run> }).runs.set('req-dup', run);
@@ -2833,13 +3158,15 @@ describe('concurrent dispatch — additional coverage', () => {
     const runA: Run = {
       id: 'run-a', request_id: 'req-a', intent: 'idea', stage: 'reviewing_spec',
       workspace_path: '/ws/a', branch: 'ba', spec_path: '/spec-a.md', publisher_ref: 'PAGE-A',
-      impl_feedback_ref: undefined, attempt: 0, channel_id: 'CA', thread_ts: 'A.0',
+      impl_feedback_ref: undefined, attempt: 0, pr_url: undefined, last_impl_result: undefined,
+      channel_id: 'CA', thread_ts: 'A.0',
       created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     };
     const runB: Run = {
       id: 'run-b', request_id: 'req-b', intent: 'idea', stage: 'reviewing_spec',
       workspace_path: '/ws/b', branch: 'bb', spec_path: '/spec-b.md', publisher_ref: 'PAGE-B',
-      impl_feedback_ref: undefined, attempt: 0, channel_id: 'CB', thread_ts: 'B.0',
+      impl_feedback_ref: undefined, attempt: 0, pr_url: undefined, last_impl_result: undefined,
+      channel_id: 'CB', thread_ts: 'B.0',
       created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     };
     (orch as unknown as { runs: Map<string, Run> }).runs.set('req-a', runA);
@@ -3292,7 +3619,8 @@ describe('observability — log field correctness', () => {
     const run: Run = {
       id: 'x', request_id: 'req-done', intent: 'idea', stage: 'done',
       workspace_path: '', branch: '', spec_path: undefined, publisher_ref: undefined,
-      impl_feedback_ref: undefined, attempt: 0, channel_id: 'C', thread_ts: 'T',
+      impl_feedback_ref: undefined, attempt: 0, pr_url: undefined, last_impl_result: undefined,
+      channel_id: 'C', thread_ts: 'T',
       created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     };
     (orch as unknown as { runs: Map<string, Run> }).runs.set('req-done', run);
@@ -3319,7 +3647,8 @@ describe('observability — log field correctness', () => {
     const run: Run = {
       id: 'x', request_id: 'req-rev', intent: 'idea', stage: 'reviewing_spec',
       workspace_path: '', branch: '', spec_path: '/s.md', publisher_ref: 'P',
-      impl_feedback_ref: undefined, attempt: 0, channel_id: 'C', thread_ts: 'T',
+      impl_feedback_ref: undefined, attempt: 0, pr_url: undefined, last_impl_result: undefined,
+      channel_id: 'C', thread_ts: 'T',
       created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
     };
     (orch as unknown as { runs: Map<string, Run> }).runs.set('req-rev', run);
@@ -3702,9 +4031,9 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
       updateStatus: implFbUpdateStatus,
       setPRLink: implFbSetPRLink,
     });
-    const prCreator = { createPR: vi.fn().mockResolvedValue('https://github.com/org/repo/pull/1') };
+    const prManager = makePRManager();
     return {
-      adapter, wm, sg, cp, sc, impl, implFb, prCreator,
+      adapter, wm, sg, cp, sc, impl, implFb, prManager,
       specPublisherUpdateStatus: updateStatus,
       implFeedbackPageUpdateStatus: implFbUpdateStatus,
       implFeedbackPageSetPRLink: implFbSetPRLink,
@@ -3729,7 +4058,7 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
         specCommitter: deps.sc,
         implementer: deps.impl,
         implFeedbackPage: deps.implFb,
-        prCreator: deps.prCreator as never,
+        prManager: deps.prManager,
       } as never,
       { logDestination: nullDest },
     );
@@ -3767,7 +4096,7 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
         specCommitter: deps.sc,
         implementer: deps.impl,
         implFeedbackPage: deps.implFb,
-        prCreator: deps.prCreator as never,
+        prManager: deps.prManager,
       } as never,
       { logDestination: nullDest },
     );
@@ -3778,7 +4107,7 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
     runs.set('request-001', makeRun({ stage: 'reviewing_implementation', impl_feedback_ref: 'feedback-page-id', publisher_ref: 'CANVAS001' }));
     deps.adapter._emit({ type: 'thread_message', payload: makeFeedback() });
     await vi.waitUntil(
-      () => runs.get('request-001')?.stage === 'done' || runs.get('request-001')?.stage === 'failed',
+      () => runs.get('request-001')?.stage === 'pr_open' || runs.get('request-001')?.stage === 'failed',
       { timeout: 3000 },
     );
     await orch.stop();
@@ -3787,7 +4116,7 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
     expect(implStatusCalls).toContain('Approved');
     const specStatusCalls = (deps.specPublisherUpdateStatus as ReturnType<typeof vi.fn>).mock.calls.map((c: unknown[]) => c[1]);
     expect(specStatusCalls).toContain('Complete');
-    expect(deps.implFeedbackPageSetPRLink).toHaveBeenCalledWith('feedback-page-id', 'https://github.com/org/repo/pull/1');
+    expect(deps.implFeedbackPageSetPRLink).toHaveBeenCalledWith('feedback-page-id', 'https://github.com/org/repo/pull/42');
   });
 
   it('implFeedbackPage.create() called with spec_title derived from spec_path', async () => {
@@ -3848,7 +4177,7 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
         specCommitter: deps.sc,
         implementer: deps.impl,
         implFeedbackPage: deps.implFb,
-        prCreator: deps.prCreator as never,
+        prManager: deps.prManager,
       } as never,
       { logDestination: nullDest },
     );
@@ -3858,7 +4187,7 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
     runs.set('request-001', makeRun({ stage: 'reviewing_implementation', impl_feedback_ref: 'feedback-page-id', publisher_ref: 'CANVAS001' }));
     deps.adapter._emit({ type: 'thread_message', payload: makeFeedback() });
     await vi.waitUntil(
-      () => runs.get('request-001')?.stage === 'done' || runs.get('request-001')?.stage === 'failed',
+      () => runs.get('request-001')?.stage === 'pr_open' || runs.get('request-001')?.stage === 'failed',
       { timeout: 3000 },
     );
     await orch.stop();
@@ -3866,8 +4195,8 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
     // setPRLink and specPublisher.updateStatus('Complete') still called despite implFb.updateStatus rejection
     expect(deps.implFeedbackPageSetPRLink).toHaveBeenCalled();
     expect(deps.specPublisherUpdateStatus).toHaveBeenCalledWith(expect.any(String), 'Complete');
-    // Run reaches 'done' despite the rejection
-    expect(runs.get('request-001')!.stage).toBe('done');
+    // Run reaches 'pr_open' despite the rejection
+    expect(runs.get('request-001')!.stage).toBe('pr_open');
   });
 });
 
