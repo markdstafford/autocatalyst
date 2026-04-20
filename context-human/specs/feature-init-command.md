@@ -192,22 +192,22 @@ Run against a temporary directory created per test. Stub interactive prompts usi
 Verify that each event in the log events table is emitted under its expected conditions. Use a pino transport mock to capture events during integration tests.
 ## Task list
 
-- [ ] **Story: Subcommand routing in CLI**
-	- [ ] **Task: Add subcommand detection to ****`parseArgs`**
+- [x] **Story: Subcommand routing in CLI**
+	- [x] **Task: Add subcommand detection to ****`parseArgs`**
 		- **Description**: Update `parseArgs` in `src/core/cli.ts` to detect a leading `init` positional argument. Add `command: 'run' | 'init'` to the `ParsedArgs` interface, defaulting to `'run'`. When `init` is present, parse remaining args for an optional `--repo ` (defaults to `''` if omitted); existing `--repo ` required behavior is preserved when no subcommand is present.
 		- **Acceptance criteria**:
-			- [ ] `parseArgs(['init'])` → `{ command: 'init', repoPath: '', help: false }`
-			- [ ] `parseArgs(['init', '--repo', '/p'])` → `{ command: 'init', repoPath: '/p', help: false }`
-			- [ ] `parseArgs(['--repo', '/p'])` → `{ command: 'run', repoPath: '/p', help: false }` (backward compat)
-			- [ ] `parseArgs(['--help'])` → `{ command: 'run', repoPath: '', help: true }`
-			- [ ] `parseArgs(['init', '--help'])` → `{ command: 'init', repoPath: '', help: true }`
-			- [ ] `parseArgs([])` throws with missing `--repo` message
+			- [x] `parseArgs(['init'])` → `{ command: 'init', repoPath: '', help: false }`
+			- [x] `parseArgs(['init', '--repo', '/p'])` → `{ command: 'init', repoPath: '/p', help: false }`
+			- [x] `parseArgs(['--repo', '/p'])` → `{ command: 'run', repoPath: '/p', help: false }` (backward compat)
+			- [x] `parseArgs(['--help'])` → `{ command: 'run', repoPath: '', help: true }`
+			- [x] `parseArgs(['init', '--help'])` → `{ command: 'init', repoPath: '', help: true }`
+			- [x] `parseArgs([])` throws with missing `--repo` message
 		- **Dependencies**: None
-	- [ ] **Task: Update ****`printUsage`**** to document both commands**
+	- [x] **Task: Update ****`printUsage`**** to document both commands**
 		- **Description**: Update `printUsage()` in `src/core/cli.ts` to show both invocation forms with one-line descriptions: `autocatalyst --repo ` (start the service) and `autocatalyst init [--repo ]` (initialize and validate configuration).
 		- **Acceptance criteria**:
-			- [ ] Output contains both command forms with descriptions
-			- [ ] Any existing help output tests are updated to match
+			- [x] Output contains both command forms with descriptions
+			- [x] Any existing help output tests are updated to match
 		- **Dependencies**: Task: Add subcommand detection to `parseArgs`
 - [ ] **Story: Init flow logic**
 	- [ ] **Task: Config existence check and skeleton creation**
@@ -250,11 +250,11 @@ Verify that each event in the log events table is emitted under its expected con
 			- [ ] `autocatalyst init --help` prints usage and exits 0
 		- **Dependencies**: Task: Add subcommand detection to `parseArgs`, Task: Config existence check and skeleton creation, Task: Interactive prompting and value storage, Task: Config summary output
 - [ ] **Story: Tests**
-	- [ ] **Task: Unit tests for ****`parseArgs`**** with subcommands**
+	- [x] **Task: Unit tests for ****`parseArgs`**** with subcommands**
 		- **Description**: Add unit tests to `tests/core/cli.test.ts` (or equivalent) covering all new subcommand cases enumerated in the subcommand detection acceptance criteria.
 		- **Acceptance criteria**:
-			- [ ] All cases from the subcommand detection acceptance criteria have corresponding passing tests
-			- [ ] Existing passing tests remain passing
+			- [x] All cases from the subcommand detection acceptance criteria have corresponding passing tests
+			- [x] Existing passing tests remain passing
 		- **Dependencies**: Task: Add subcommand detection to `parseArgs`
 	- [ ] **Task: Unit tests for secret heuristic**
 		- **Description**: Add unit tests for `isSecret` in `tests/core/init.test.ts` covering property names that should and should not trigger `.env` storage.
