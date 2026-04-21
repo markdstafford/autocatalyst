@@ -59,3 +59,33 @@ export function makeRunListHandler(runs: Map<string, Run>): CommandHandler {
     await reply(`*Active runs (${active.length}):*\n${lines.join('\n')}`);
   };
 }
+
+export function makeRunCancelHandler(
+  runs: Map<string, Run>,
+  cancelRun: (requestId: string) => 'cancelled' | 'already_terminal' | 'not_found',
+): CommandHandler {
+  return async (event, reply) => {
+    const requestId = event.inferred_context?.request_id;
+    const idArg = event.args[0];
+
+    if (!requestId && !idArg) {
+      await reply('No run found in this thread. Provide a run ID as an argument or use this command inside a run thread.');
+      return;
+    }
+
+    const run = findRun(runs, requestId, idArg);
+    if (!run) {
+      await reply('no active run found with that ID. Use `:ac-run-list:` to see active runs.');
+      return;
+    }
+
+    const result = cancelRun(run.request_id);
+    if (result === 'cancelled') {
+      await reply(`Run \`${run.id}\` has been cancelled.`);
+    } else if (result === 'already_terminal') {
+      await reply(`Run \`${run.id}\` is no longer active (current stage: \`${run.stage}\`).`);
+    } else {
+      await reply('No active run found. Use `:ac-run-list:` to see active runs.');
+    }
+  };
+}

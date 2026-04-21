@@ -668,17 +668,17 @@ If `config.set` is registered as a handler, it writes to the workspace config. A
 			- [x] All unit tests pass
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `_handleCommand` dispatch branch to orchestrator
-	- [ ] **Task: Implement ****`run.cancel`**** handler**
+	- [x] **Task: Implement ****`run.cancel`**** handler**
 		- **Description**: Add `run.cancel` to `src/core/commands/run-commands.ts`. Resolves the target run from `inferred_context.request_id` or first arg as request ID. Calls the orchestrator's run cancellation mechanism (cancel the in-flight promise and mark the run as cancelled). Replies with a confirmation message on success. Handles already-terminal runs (done/failed/cancelled) by replying with a descriptive message rather than erroring. If no run is found, replies with "no active run found". Register with a usage string in `src/index.ts`. Write unit tests covering all cases in the testing plan's `run.cancel` section.
 		- **Acceptance criteria**:
-			- [ ] With inferred `request_id` → cancels the run; replies with confirmation
-			- [ ] With explicit run ID arg → cancels by ID; replies with confirmation
-			- [ ] Run ID not found → replies "no active run found"
-			- [ ] No inferred context, no args → replies "no run found in this thread"
-			- [ ] Run already in terminal state → replies with descriptive message; no error thrown
-			- [ ] Handler registered with usage string in `src/index.ts`
-			- [ ] All unit tests pass
-			- [ ] `tsc --noEmit` passes
+			- [x] With inferred `request_id` → cancels the run; replies with confirmation
+			- [x] With explicit run ID arg → cancels by ID; replies with confirmation
+			- [x] Run ID not found → replies "no active run found"
+			- [x] No inferred context, no args → replies "no run found in this thread"
+			- [x] Run already in terminal state → replies with descriptive message; no error thrown
+			- [x] Handler registered with usage string in `src/index.ts`
+			- [x] All unit tests pass
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `_handleCommand` dispatch branch to orchestrator
 	- [ ] **Task: Implement ****`run.logs`**** handler**
 		- **Description**: Add `run.logs` to `src/core/commands/run-commands.ts`. Resolves the target run from `inferred_context.request_id` or first arg as request ID. Retrieves the last 20 log lines for that run from wherever run logs are stored (align with the existing logging infrastructure). Formats the log tail as a code block in the reply. If no run is found, replies with "no active run found". If the log tail is empty, replies with "no log entries found for this run". Register with a usage string in `src/index.ts`. Write unit tests covering all cases in the testing plan's `run.logs` section.

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { makeRunStatusHandler, makeRunListHandler } from '../../../src/core/commands/run-commands.js';
+import { makeRunStatusHandler, makeRunListHandler, makeRunCancelHandler } from '../../../src/core/commands/run-commands.js';
 import type { CommandEvent } from '../../../src/types/commands.js';
 import type { Run } from '../../../src/types/runs.js';
 
@@ -176,5 +176,67 @@ describe('run.list handler', () => {
     const msg = reply.mock.calls[0][0] as string;
     expect(msg).toContain('run-001');
     expect(msg).toContain('run-002');
+  });
+});
+
+describe('run.cancel handler', () => {
+  it('with inferred_context.request_id → cancels run; replies with confirmation', async () => {
+    const runs = new Map<string, Run>();
+    runs.set('req-001', makeRun({ request_id: 'req-001', stage: 'speccing' }));
+    const cancelRun = vi.fn().mockReturnValue('cancelled');
+    const handler = makeRunCancelHandler(runs, cancelRun);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handler(makeEvent({ command: 'run.cancel', inferred_context: { request_id: 'req-001' } }), reply);
+
+    expect(cancelRun).toHaveBeenCalledWith('req-001');
+    expect(reply).toHaveBeenCalledWith(expect.stringMatching(/cancel/i));
+  });
+
+  it('with explicit ID arg → cancels by that ID; replies with confirmation', async () => {
+    const runs = new Map<string, Run>();
+    runs.set('req-001', makeRun({ request_id: 'req-001', stage: 'speccing' }));
+    const cancelRun = vi.fn().mockReturnValue('cancelled');
+    const handler = makeRunCancelHandler(runs, cancelRun);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handler(makeEvent({ command: 'run.cancel', args: ['req-001'] }), reply);
+
+    expect(cancelRun).toHaveBeenCalledWith('req-001');
+  });
+
+  it('run ID not found → replies "no active run found"', async () => {
+    const runs = new Map<string, Run>();
+    const cancelRun = vi.fn().mockReturnValue('not_found');
+    const handler = makeRunCancelHandler(runs, cancelRun);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handler(makeEvent({ command: 'run.cancel', args: ['nonexistent'] }), reply);
+
+    expect(reply).toHaveBeenCalledWith(expect.stringContaining('no active run'));
+  });
+
+  it('no inferred context, no args → replies "no run found in this thread"', async () => {
+    const runs = new Map<string, Run>();
+    const cancelRun = vi.fn().mockReturnValue('not_found');
+    const handler = makeRunCancelHandler(runs, cancelRun);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handler(makeEvent({ command: 'run.cancel' }), reply);
+
+    expect(reply).toHaveBeenCalledWith(expect.stringMatching(/no run found/i));
+  });
+
+  it('run already in terminal state → replies descriptively; no error thrown', async () => {
+    const runs = new Map<string, Run>();
+    runs.set('req-001', makeRun({ request_id: 'req-001', stage: 'done' }));
+    const cancelRun = vi.fn().mockReturnValue('already_terminal');
+    const handler = makeRunCancelHandler(runs, cancelRun);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await expect(
+      handler(makeEvent({ command: 'run.cancel', inferred_context: { request_id: 'req-001' } }), reply),
+    ).resolves.not.toThrow();
+    expect(reply).toHaveBeenCalledWith(expect.stringMatching(/no longer active|already complete|already finished/i));
   });
 });
