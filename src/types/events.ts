@@ -1,3 +1,5 @@
+import type { CommandEvent } from './commands.js';
+
 export interface Request {
   id: string;
   source: 'slack';
@@ -19,4 +21,5 @@ export interface ThreadMessage {
 
 export type InboundEvent =
   | { type: 'new_request'; payload: Request }
-  | { type: 'thread_message'; payload: ThreadMessage };
+  | { type: 'thread_message'; payload: ThreadMessage }
+  | { type: 'command'; payload: CommandEvent };

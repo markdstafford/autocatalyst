@@ -584,7 +584,7 @@ A user could include an `:ac-*:` emoji in a message without intending a command.
 If `config.set` is registered as a handler, it writes to the workspace config. An accidentally sent command could misconfigure the system. The mitigation is: reject writes to sensitive fields, log all config changes, and defer `config.set` until there is a clear need and explicit scope definition.
 ## Task list
 
-- [ ] **Story: Types and event extension**
+- [x] **Story: Types and event extension**
 	- [x] **Task: Define command types**
 		- **Description**: Create `src/types/commands.ts` with `CommandEvent`, `CommandHandler`, and `CommandRegistry` as specified in the tech spec's detailed design section. The `CommandRegistry` interface must include `register(command, handler, usage?)`, `dispatch`, `has`, `list`, and `getUsage(command)` to support the `help` handler's per-command usage strings.
 		- **Acceptance criteria**:
@@ -593,12 +593,12 @@ If `config.set` is registered as a handler, it writes to the workspace config. A
 			- [x] `CommandRegistry` interface has `register` (with optional `usage` param), `dispatch`, `has`, `list`, and `getUsage` methods
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: None
-	- [ ] **Task: Add ****`command`**** variant to ****`InboundEvent`**
+	- [x] **Task: Add ****`command`**** variant to ****`InboundEvent`**
 		- **Description**: Extend the `InboundEvent` union in `src/types/events.ts` to include `{ type: 'command'; payload: CommandEvent }`. Import `CommandEvent` from `src/types/commands.ts`.
 		- **Acceptance criteria**:
-			- [ ] `InboundEvent` union includes `command` variant
-			- [ ] Existing `new_request` and `thread_message` variants unchanged
-			- [ ] `tsc --noEmit` passes
+			- [x] `InboundEvent` union includes `command` variant
+			- [x] Existing `new_request` and `thread_message` variants unchanged
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Define command types
 - [ ] **Story: Command registry**
 	- [ ] **Task: Implement ****`CommandRegistry`**
