@@ -120,7 +120,7 @@ export class SlackAdapter implements HumanInterfaceAdapter {
           },
         };
         this.logger.info(
-          { event: 'slack.command.received', author: msg.user, channel_id: this.channelId, command: result.command },
+          { event: 'slack.command.received', author: msg.user, channel_id: this.channelId, command: result.command, thread_ts: msg.thread_ts ?? msg.ts },
           'Command received',
         );
         this.emit({ type: 'command', payload: commandEvent });
@@ -211,7 +211,7 @@ export class SlackAdapter implements HumanInterfaceAdapter {
         },
       };
       this.logger.info(
-        { event: 'slack.command.received', author: reaction.user, channel_id: reaction.item.channel, command: commandName },
+        { event: 'slack.command.received', author: reaction.user, channel_id: reaction.item.channel, command: commandName, thread_ts: reactedThreadTs },
         'Reaction command received',
       );
       this.emit({ type: 'command', payload: commandEvent });
