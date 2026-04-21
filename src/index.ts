@@ -19,6 +19,7 @@ import type { SpecPublisher } from './types/publisher.js';
 import { OrchestratorImpl } from './core/orchestrator.js';
 import { CommandRegistryImpl } from './core/command-registry.js';
 import { makeRunStatusHandler, makeRunListHandler, makeRunCancelHandler, makeRunLogsHandler } from './core/commands/run-commands.js';
+import { makeHealthHandler, makeHelpHandler } from './core/commands/meta-commands.js';
 import { FileRunStore } from './core/run-store.js';
 import { NotionClientImpl } from './adapters/notion/notion-client.js';
 import { NotionPublisher } from './adapters/notion/notion-publisher.js';
@@ -282,6 +283,20 @@ try {
       (requestId) => orchestrator.getRunLogs(requestId),
     ),
     'Show the log tail for a run. Usage: `:ac-run-logs:` (in thread) or `:ac-run-logs: <run-id>`',
+  );
+
+  commandRegistry.register(
+    'health',
+    makeHealthHandler(
+      () => adapter.isConnected(),
+      () => orchestrator.getActiveRunCount(),
+    ),
+    'Check system health and active run count. Usage: `:ac-health:`',
+  );
+  commandRegistry.register(
+    'help',
+    makeHelpHandler(commandRegistry),
+    'Show available commands. Usage: `:ac-help:` or `:ac-help: <command>`',
   );
 
   const service = new Service(currentConfig, { orchestrator });

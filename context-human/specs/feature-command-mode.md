@@ -655,7 +655,7 @@ If `config.set` is registered as a handler, it writes to the workspace config. A
 			- [x] All existing orchestrator tests still pass
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement `CommandRegistry`, Task: Emit command events in `SlackAdapter`
-- [ ] **Story: Initial command handlers**
+- [x] **Story: Initial command handlers**
 	- [x] **Task: Implement ****`run.status`**** and ****`run.list`**** handlers**
 		- **Description**: Create `src/core/commands/run-commands.ts`. `run.status`: looks up run by `inferred_context.request_id`, or by first arg as request ID if no inferred context. Formats and replies with stage, intent, and time in current stage. If no run found, replies with a clear message. `run.list`: formats a summary of all non-done/non-failed runs; replies "no active runs" if none exist. Register both handlers with usage strings in `src/index.ts`. Write unit tests covering all cases in the testing plan's `run.status` and `run.list` sections.
 		- **Acceptance criteria**:
@@ -692,16 +692,16 @@ If `config.set` is registered as a handler, it writes to the workspace config. A
 			- [x] All unit tests pass
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `_handleCommand` dispatch branch to orchestrator
-	- [ ] **Task: Implement ****`health`**** and ****`help`**** handlers**
+	- [x] **Task: Implement ****`health`**** and ****`help`**** handlers**
 		- **Description**: Create `src/core/commands/meta-commands.ts`. `health`: checks adapter connection state and replies with a brief status (connected/disconnected, number of active runs, queue depth). `help` with no args: calls `commandRegistry.list()` and for each command calls `commandRegistry.getUsage()` to format a list of commands with their usage strings. `help` with one arg: looks up the command name and replies with its usage string. `help` with an unknown arg: replies "unknown command: \[name\]". `help` is also invoked by the orchestrator when an unrecognized command is received — its output should be identical to a direct `:ac-help:` invocation. Register both with usage strings in `src/index.ts`. Write unit tests covering all cases in the testing plan's `health` and `help` sections.
 		- **Acceptance criteria**:
-			- [ ] `health` connected with runs in flight → posts connected status and correct run count
-			- [ ] `health` disconnected → posts disconnected status
-			- [ ] `help` with no args → lists all registered commands with usage strings (at minimum all six initial handlers)
-			- [ ] `help` with known command arg → posts usage string for that command
-			- [ ] `help` with unknown command arg → replies "unknown command: \[name\]"
-			- [ ] `help` invoked via unrecognized-command fallback → same output as direct `:ac-help:`
-			- [ ] Both handlers registered with usage strings in `src/index.ts`
-			- [ ] All unit tests pass
-			- [ ] `tsc --noEmit` passes
+			- [x] `health` connected with runs in flight → posts connected status and correct run count
+			- [x] `health` disconnected → posts disconnected status
+			- [x] `help` with no args → lists all registered commands with usage strings (at minimum all six initial handlers)
+			- [x] `help` with known command arg → posts usage string for that command
+			- [x] `help` with unknown command arg → replies "unknown command: \[name\]"
+			- [x] `help` invoked via unrecognized-command fallback → same output as direct `:ac-help:`
+			- [x] Both handlers registered with usage strings in `src/index.ts`
+			- [x] All unit tests pass
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `_handleCommand` dispatch branch to orchestrator
