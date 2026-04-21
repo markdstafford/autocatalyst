@@ -600,18 +600,18 @@ If `config.set` is registered as a handler, it writes to the workspace config. A
 			- [x] Existing `new_request` and `thread_message` variants unchanged
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Define command types
-- [ ] **Story: Command registry**
-	- [ ] **Task: Implement ****`CommandRegistry`**
+- [x] **Story: Command registry**
+	- [x] **Task: Implement ****`CommandRegistry`**
 		- **Description**: Create `src/core/command-registry.ts` with a `CommandRegistryImpl` class backed by a `Map`. `register()` stores the handler and optional usage string. `dispatch()` calls the handler if found; throws with a descriptive message if not. `getUsage()` returns the stored usage string or `undefined`. Write unit tests in `tests/core/command-registry.test.ts` covering: register + dispatch, register with usage string + getUsage, dispatch on unknown command, `has` for registered and unregistered, `list` returns all registered names, `list` returns empty array when empty, re-registering a command name.
 		- **Acceptance criteria**:
-			- [ ] `register` then `dispatch` invokes the handler with correct args
-			- [ ] `register` with usage string → `getUsage` returns that string
-			- [ ] `getUsage` on unregistered command returns `undefined`
-			- [ ] `dispatch` on unregistered command throws with descriptive message
-			- [ ] `has` returns `true` for registered commands, `false` otherwise
-			- [ ] `list` returns all registered command names
-			- [ ] All unit tests pass
-			- [ ] `tsc --noEmit` passes
+			- [x] `register` then `dispatch` invokes the handler with correct args
+			- [x] `register` with usage string → `getUsage` returns that string
+			- [x] `getUsage` on unregistered command returns `undefined`
+			- [x] `dispatch` on unregistered command throws with descriptive message
+			- [x] `has` returns `true` for registered commands, `false` otherwise
+			- [x] `list` returns all registered command names
+			- [x] All unit tests pass
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Define command types
 - [ ] **Story: Slack command detection**
 	- [ ] **Task: Add command classification to ****`classifyMessage`**
