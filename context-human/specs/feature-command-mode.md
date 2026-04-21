@@ -680,17 +680,17 @@ If `config.set` is registered as a handler, it writes to the workspace config. A
 			- [x] All unit tests pass
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `_handleCommand` dispatch branch to orchestrator
-	- [ ] **Task: Implement ****`run.logs`**** handler**
+	- [x] **Task: Implement ****`run.logs`**** handler**
 		- **Description**: Add `run.logs` to `src/core/commands/run-commands.ts`. Resolves the target run from `inferred_context.request_id` or first arg as request ID. Retrieves the last 20 log lines for that run from wherever run logs are stored (align with the existing logging infrastructure). Formats the log tail as a code block in the reply. If no run is found, replies with "no active run found". If the log tail is empty, replies with "no log entries found for this run". Register with a usage string in `src/index.ts`. Write unit tests covering all cases in the testing plan's `run.logs` section.
 		- **Acceptance criteria**:
-			- [ ] With inferred `request_id` → replies with last 20 log lines formatted as code block
-			- [ ] With explicit run ID arg → retrieves logs by ID; replies correctly
-			- [ ] Run ID not found → replies "no active run found"
-			- [ ] No inferred context, no args → replies "no run found in this thread"
-			- [ ] Empty log tail → replies "no log entries found for this run"
-			- [ ] Handler registered with usage string in `src/index.ts`
-			- [ ] All unit tests pass
-			- [ ] `tsc --noEmit` passes
+			- [x] With inferred `request_id` → replies with last 20 log lines formatted as code block
+			- [x] With explicit run ID arg → retrieves logs by ID; replies correctly
+			- [x] Run ID not found → replies "no active run found"
+			- [x] No inferred context, no args → replies "no run found in this thread"
+			- [x] Empty log tail → replies "no log entries found for this run"
+			- [x] Handler registered with usage string in `src/index.ts`
+			- [x] All unit tests pass
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `_handleCommand` dispatch branch to orchestrator
 	- [ ] **Task: Implement ****`health`**** and ****`help`**** handlers**
 		- **Description**: Create `src/core/commands/meta-commands.ts`. `health`: checks adapter connection state and replies with a brief status (connected/disconnected, number of active runs, queue depth). `help` with no args: calls `commandRegistry.list()` and for each command calls `commandRegistry.getUsage()` to format a list of commands with their usage strings. `help` with one arg: looks up the command name and replies with its usage string. `help` with an unknown arg: replies "unknown command: \[name\]". `help` is also invoked by the orchestrator when an unrecognized command is received — its output should be identical to a direct `:ac-help:` invocation. Register both with usage strings in `src/index.ts`. Write unit tests covering all cases in the testing plan's `health` and `help` sections.

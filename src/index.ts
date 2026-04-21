@@ -18,7 +18,7 @@ import { SlackCanvasPublisher } from './adapters/slack/canvas-publisher.js';
 import type { SpecPublisher } from './types/publisher.js';
 import { OrchestratorImpl } from './core/orchestrator.js';
 import { CommandRegistryImpl } from './core/command-registry.js';
-import { makeRunStatusHandler, makeRunListHandler, makeRunCancelHandler } from './core/commands/run-commands.js';
+import { makeRunStatusHandler, makeRunListHandler, makeRunCancelHandler, makeRunLogsHandler } from './core/commands/run-commands.js';
 import { FileRunStore } from './core/run-store.js';
 import { NotionClientImpl } from './adapters/notion/notion-client.js';
 import { NotionPublisher } from './adapters/notion/notion-publisher.js';
@@ -274,6 +274,14 @@ try {
       (requestId) => orchestrator.cancelRun(requestId),
     ),
     'Cancel an active run. Usage: `:ac-run-cancel:` (in thread) or `:ac-run-cancel: <run-id>`',
+  );
+  commandRegistry.register(
+    'run.logs',
+    makeRunLogsHandler(
+      orchestrator.getRuns(),
+      (requestId) => orchestrator.getRunLogs(requestId),
+    ),
+    'Show the log tail for a run. Usage: `:ac-run-logs:` (in thread) or `:ac-run-logs: <run-id>`',
   );
 
   const service = new Service(currentConfig, { orchestrator });

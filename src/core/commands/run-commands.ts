@@ -89,3 +89,33 @@ export function makeRunCancelHandler(
     }
   };
 }
+
+export function makeRunLogsHandler(
+  runs: Map<string, Run>,
+  getRunLogs: (requestId: string) => string[],
+): CommandHandler {
+  return async (event, reply) => {
+    const requestId = event.inferred_context?.request_id;
+    const idArg = event.args[0];
+
+    if (!requestId && !idArg) {
+      await reply('No run found in this thread. Provide a run ID as an argument or use this command inside a run thread.');
+      return;
+    }
+
+    const run = findRun(runs, requestId, idArg);
+    if (!run) {
+      await reply('no active run found with that ID. Use `:ac-run-list:` to see active runs.');
+      return;
+    }
+
+    const logs = getRunLogs(run.request_id);
+    if (logs.length === 0) {
+      await reply(`No log entries found for run \`${run.id}\`.`);
+      return;
+    }
+
+    const tail = logs.slice(-20);
+    await reply(`*Log tail for run \`${run.id}\`:*\n\`\`\`\n${tail.join('\n')}\n\`\`\``);
+  };
+}

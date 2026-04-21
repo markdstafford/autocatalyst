@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { makeRunStatusHandler, makeRunListHandler, makeRunCancelHandler } from '../../../src/core/commands/run-commands.js';
+import { makeRunStatusHandler, makeRunListHandler, makeRunCancelHandler, makeRunLogsHandler } from '../../../src/core/commands/run-commands.js';
 import type { CommandEvent } from '../../../src/types/commands.js';
 import type { Run } from '../../../src/types/runs.js';
 
@@ -238,5 +238,71 @@ describe('run.cancel handler', () => {
       handler(makeEvent({ command: 'run.cancel', inferred_context: { request_id: 'req-001' } }), reply),
     ).resolves.not.toThrow();
     expect(reply).toHaveBeenCalledWith(expect.stringMatching(/no longer active|already complete|already finished/i));
+  });
+});
+
+describe('run.logs handler', () => {
+  it('with inferred_context.request_id → replies with last 20 log lines in a code block', async () => {
+    const runs = new Map<string, Run>();
+    runs.set('req-001', makeRun({ request_id: 'req-001' }));
+    const getRunLogs = vi.fn().mockReturnValue([
+      '[2026-04-21T00:00:00Z] Stage: intake → speccing',
+      '[2026-04-21T00:00:01Z] Stage: speccing → reviewing_spec',
+    ]);
+    const handler = makeRunLogsHandler(runs, getRunLogs);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handler(makeEvent({ command: 'run.logs', inferred_context: { request_id: 'req-001' } }), reply);
+
+    expect(getRunLogs).toHaveBeenCalledWith('req-001');
+    const msg = reply.mock.calls[0][0] as string;
+    expect(msg).toContain('speccing');
+    expect(msg).toContain('```');
+  });
+
+  it('with explicit run ID arg → retrieves logs by request_id; replies correctly', async () => {
+    const runs = new Map<string, Run>();
+    runs.set('req-001', makeRun({ request_id: 'req-001' }));
+    const getRunLogs = vi.fn().mockReturnValue(['log line 1']);
+    const handler = makeRunLogsHandler(runs, getRunLogs);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handler(makeEvent({ command: 'run.logs', args: ['req-001'] }), reply);
+
+    expect(getRunLogs).toHaveBeenCalledWith('req-001');
+  });
+
+  it('run ID not found → replies "no active run found"', async () => {
+    const runs = new Map<string, Run>();
+    const getRunLogs = vi.fn().mockReturnValue([]);
+    const handler = makeRunLogsHandler(runs, getRunLogs);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handler(makeEvent({ command: 'run.logs', args: ['nonexistent'] }), reply);
+
+    expect(reply).toHaveBeenCalledWith(expect.stringContaining('no active run'));
+  });
+
+  it('no inferred context, no args → replies "no run found in this thread"', async () => {
+    const runs = new Map<string, Run>();
+    const getRunLogs = vi.fn().mockReturnValue([]);
+    const handler = makeRunLogsHandler(runs, getRunLogs);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handler(makeEvent({ command: 'run.logs' }), reply);
+
+    expect(reply).toHaveBeenCalledWith(expect.stringMatching(/no run found/i));
+  });
+
+  it('empty log tail → replies "no log entries found for this run"', async () => {
+    const runs = new Map<string, Run>();
+    runs.set('req-001', makeRun({ request_id: 'req-001' }));
+    const getRunLogs = vi.fn().mockReturnValue([]);
+    const handler = makeRunLogsHandler(runs, getRunLogs);
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handler(makeEvent({ command: 'run.logs', inferred_context: { request_id: 'req-001' } }), reply);
+
+    expect(reply).toHaveBeenCalledWith(expect.stringMatching(/no log entries/i));
   });
 });
