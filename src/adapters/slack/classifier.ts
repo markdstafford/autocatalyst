@@ -10,7 +10,17 @@ export interface MessageInput {
 export type MessageClassification =
   | { intent: 'new_request' }
   | { intent: 'thread_message'; request_id: string }
+  | { intent: 'command'; command: string; args: string[] }
   | { intent: 'ignore' };
+
+export const EMOJI_COMMAND_TABLE: Record<string, string> = {
+  'ac-run-status': 'run.status',
+  'ac-run-list': 'run.list',
+  'ac-run-cancel': 'run.cancel',
+  'ac-run-logs': 'run.logs',
+  'ac-health': 'health',
+  'ac-help': 'help',
+};
 
 export function classifyMessage(
   message: MessageInput,
@@ -19,6 +29,19 @@ export function classifyMessage(
 ): MessageClassification {
   // Suppress bot's own messages (prevents response loops)
   if (message.user === botUserId) return { intent: 'ignore' };
+
+  // Command detection: scan for :ac-*: pattern before @mention check (first match only)
+  const commandMatch = message.text?.match(/:ac-([a-z0-9_-]+):/);
+  if (commandMatch) {
+    const emojiKey = `ac-${commandMatch[1]}`;
+    const commandName = EMOJI_COMMAND_TABLE[emojiKey];
+    if (commandName) {
+      const stripped = (message.text ?? '').replace(/:ac-[a-z0-9_-]+:/, '').trim();
+      const args = stripped ? stripped.split(/\s+/) : [];
+      return { intent: 'command', command: commandName, args };
+    }
+    // Unrecognized :ac-*: emoji — fall through to @mention logic
+  }
 
   // Thread reply: thread_ts exists and differs from ts
   const isReply = message.thread_ts !== undefined && message.thread_ts !== message.ts;

@@ -614,17 +614,17 @@ If `config.set` is registered as a handler, it writes to the workspace config. A
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Define command types
 - [ ] **Story: Slack command detection**
-	- [ ] **Task: Add command classification to ****`classifyMessage`**
+	- [x] **Task: Add command classification to ****`classifyMessage`**
 		- **Description**: Extend `classifyMessage` in `src/adapters/slack/classifier.ts` to detect `:ac-*:` patterns (using `[a-z0-9_-]+`) before the `@mention` check. Add the `EMOJI_COMMAND_TABLE` const (exported for tests) with all six initial commands. Only the first command token in a message is matched. If a recognized emoji is found, return `{ intent: 'command', command, args }` with the emoji token stripped and remaining text split on whitespace. Unrecognized `:ac-*:` emojis fall through to the existing `@mention` logic. Add the new `command` variant to `MessageClassification`. Write unit tests covering all cases in the testing plan's classifier section.
 		- **Acceptance criteria**:
-			- [ ] `:ac-run-status:` with no other text → `{ intent: 'command', command: 'run.status', args: [] }`
-			- [ ] `:ac-help: run.status` → `{ intent: 'command', command: 'help', args: ['run.status'] }`
-			- [ ] `:ac-*:` + `@mention` in same message → command classification wins
-			- [ ] Multiple command emojis → only first matched
-			- [ ] Unrecognized `:ac-foo:` falls through to `@mention` logic
-			- [ ] No `:ac-*:` pattern falls through to `@mention` logic unchanged
-			- [ ] All existing `classifyMessage` tests still pass
-			- [ ] `tsc --noEmit` passes
+			- [x] `:ac-run-status:` with no other text → `{ intent: 'command', command: 'run.status', args: [] }`
+			- [x] `:ac-help: run.status` → `{ intent: 'command', command: 'help', args: ['run.status'] }`
+			- [x] `:ac-*:` + `@mention` in same message → command classification wins
+			- [x] Multiple command emojis → only first matched
+			- [x] Unrecognized `:ac-foo:` falls through to `@mention` logic
+			- [x] No `:ac-*:` pattern falls through to `@mention` logic unchanged
+			- [x] All existing `classifyMessage` tests still pass
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Define command types
 	- [ ] **Task: Emit command events in ****`SlackAdapter`**
 		- **Description**: In `src/adapters/slack/slack-adapter.ts`, add a `command` branch in the message handler for `result.intent === 'command'`. Build a `CommandEvent` using `msg.thread_ts ?? msg.ts` for thread context; resolve `inferred_context.request_id` from `ThreadRegistry`. No acknowledgement is posted before emission. Add a `reaction_added` handler that checks the emoji against `EMOJI_COMMAND_TABLE`, fetches the reacted-to message via `conversations.history` for `thread_ts` inference, and emits a `CommandEvent`. On `conversations.history` failure, fall back to `item.ts` and log a warning. Ignore reactions from other channels. Log `slack.command.received` at info and `slack.reaction.ignored` at debug. Write integration tests covering all cases in the testing plan's adapter section.

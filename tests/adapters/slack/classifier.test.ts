@@ -96,3 +96,143 @@ describe('classifyMessage', () => {
     if (result.intent === 'thread_message') expect(result.request_id).toBe('request-xyz');
   });
 });
+
+describe('classifyMessage — command detection', () => {
+  it(':ac-run-status: with no other text → command run.status with empty args', () => {
+    const result = classifyMessage(
+      { text: ':ac-run-status:', user: 'U999', ts: '100.0' },
+      BOT_ID,
+      makeRegistry(),
+    );
+    expect(result.intent).toBe('command');
+    if (result.intent === 'command') {
+      expect(result.command).toBe('run.status');
+      expect(result.args).toEqual([]);
+    }
+  });
+
+  it(':ac-run-list: with no other text → command run.list with empty args', () => {
+    const result = classifyMessage(
+      { text: ':ac-run-list:', user: 'U999', ts: '100.0' },
+      BOT_ID,
+      makeRegistry(),
+    );
+    expect(result.intent).toBe('command');
+    if (result.intent === 'command') {
+      expect(result.command).toBe('run.list');
+      expect(result.args).toEqual([]);
+    }
+  });
+
+  it(':ac-help: run.status → command help with args [run.status]', () => {
+    const result = classifyMessage(
+      { text: ':ac-help: run.status', user: 'U999', ts: '100.0' },
+      BOT_ID,
+      makeRegistry(),
+    );
+    expect(result.intent).toBe('command');
+    if (result.intent === 'command') {
+      expect(result.command).toBe('help');
+      expect(result.args).toEqual(['run.status']);
+    }
+  });
+
+  it('emoji followed by multiple whitespace-separated tokens → args split on whitespace', () => {
+    const result = classifyMessage(
+      { text: ':ac-help: a b c', user: 'U999', ts: '100.0' },
+      BOT_ID,
+      makeRegistry(),
+    );
+    expect(result.intent).toBe('command');
+    if (result.intent === 'command') expect(result.args).toEqual(['a', 'b', 'c']);
+  });
+
+  it('emoji followed by leading/trailing whitespace → args trimmed; no empty strings', () => {
+    const result = classifyMessage(
+      { text: '  :ac-help:   run.status  ', user: 'U999', ts: '100.0' },
+      BOT_ID,
+      makeRegistry(),
+    );
+    expect(result.intent).toBe('command');
+    if (result.intent === 'command') expect(result.args).toEqual(['run.status']);
+  });
+
+  it('emoji only → args is []', () => {
+    const result = classifyMessage(
+      { text: ':ac-health:', user: 'U999', ts: '100.0' },
+      BOT_ID,
+      makeRegistry(),
+    );
+    expect(result.intent).toBe('command');
+    if (result.intent === 'command') expect(result.args).toEqual([]);
+  });
+
+  it('emoji followed only by whitespace → args is []', () => {
+    const result = classifyMessage(
+      { text: ':ac-health:   ', user: 'U999', ts: '100.0' },
+      BOT_ID,
+      makeRegistry(),
+    );
+    expect(result.intent).toBe('command');
+    if (result.intent === 'command') expect(result.args).toEqual([]);
+  });
+
+  it('two recognized command emojis → only first dispatched; second appears in args', () => {
+    const result = classifyMessage(
+      { text: ':ac-run-list: :ac-run-status:', user: 'U999', ts: '100.0' },
+      BOT_ID,
+      makeRegistry(),
+    );
+    expect(result.intent).toBe('command');
+    if (result.intent === 'command') {
+      expect(result.command).toBe('run.list');
+      expect(result.args).toEqual([':ac-run-status:']);
+    }
+  });
+
+  it(':ac-* + @mention in same message → command classification wins; @mention ignored', () => {
+    const result = classifyMessage(
+      { text: `:ac-run-status: <@${BOT_ID}>`, user: 'U999', ts: '100.0' },
+      BOT_ID,
+      makeRegistry(),
+    );
+    expect(result.intent).toBe('command');
+    if (result.intent === 'command') expect(result.command).toBe('run.status');
+  });
+
+  it('unrecognized :ac-foo: with @mention → falls through to new_request (command ignored)', () => {
+    const result = classifyMessage(
+      { text: `:ac-foo: <@${BOT_ID}> some text`, user: 'U999', ts: '100.0' },
+      BOT_ID,
+      makeRegistry(),
+    );
+    expect(result.intent).toBe('new_request');
+  });
+
+  it('unrecognized :ac-foo: with no @mention → falls through to ignore', () => {
+    const result = classifyMessage(
+      { text: ':ac-foo: some text', user: 'U999', ts: '100.0' },
+      BOT_ID,
+      makeRegistry(),
+    );
+    expect(result.intent).toBe('ignore');
+  });
+
+  it('message with no :ac-*: pattern → falls through to @mention logic unchanged', () => {
+    const result = classifyMessage(
+      { text: `<@${BOT_ID}> hello`, user: 'U999', ts: '100.0' },
+      BOT_ID,
+      makeRegistry(),
+    );
+    expect(result.intent).toBe('new_request');
+  });
+
+  it('bot own message with command emoji → still ignored', () => {
+    const result = classifyMessage(
+      { text: ':ac-run-status:', user: BOT_ID, ts: '100.0' },
+      BOT_ID,
+      makeRegistry(),
+    );
+    expect(result.intent).toBe('ignore');
+  });
+});
