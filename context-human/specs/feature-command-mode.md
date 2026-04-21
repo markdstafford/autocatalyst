@@ -585,13 +585,13 @@ If `config.set` is registered as a handler, it writes to the workspace config. A
 ## Task list
 
 - [ ] **Story: Types and event extension**
-	- [ ] **Task: Define command types**
+	- [x] **Task: Define command types**
 		- **Description**: Create `src/types/commands.ts` with `CommandEvent`, `CommandHandler`, and `CommandRegistry` as specified in the tech spec's detailed design section. The `CommandRegistry` interface must include `register(command, handler, usage?)`, `dispatch`, `has`, `list`, and `getUsage(command)` to support the `help` handler's per-command usage strings.
 		- **Acceptance criteria**:
-			- [ ] `CommandEvent` has `command`, `args`, `source`, `channel_id`, `thread_ts`, `author`, `received_at`, and optional `inferred_context.request_id`
-			- [ ] `CommandHandler` type matches `(event: CommandEvent, reply: (text: string) => Promise) => Promise`
-			- [ ] `CommandRegistry` interface has `register` (with optional `usage` param), `dispatch`, `has`, `list`, and `getUsage` methods
-			- [ ] `tsc --noEmit` passes
+			- [x] `CommandEvent` has `command`, `args`, `source`, `channel_id`, `thread_ts`, `author`, `received_at`, and optional `inferred_context.request_id`
+			- [x] `CommandHandler` type matches `(event: CommandEvent, reply: (text: string) => Promise) => Promise`
+			- [x] `CommandRegistry` interface has `register` (with optional `usage` param), `dispatch`, `has`, `list`, and `getUsage` methods
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: None
 	- [ ] **Task: Add ****`command`**** variant to ****`InboundEvent`**
 		- **Description**: Extend the `InboundEvent` union in `src/types/events.ts` to include `{ type: 'command'; payload: CommandEvent }`. Import `CommandEvent` from `src/types/commands.ts`.
