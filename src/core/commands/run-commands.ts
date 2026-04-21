@@ -15,7 +15,7 @@ function findRun(runs: Map<string, Run>, requestId: string | undefined, idArg: s
 }
 
 function formatTimeSince(isoDate: string): string {
-  const ms = Date.now() - new Date(isoDate).getTime();
+  const ms = Math.max(0, Date.now() - new Date(isoDate).getTime());
   const seconds = Math.floor(ms / 1000);
   if (seconds < 60) return `${seconds}s`;
   const minutes = Math.floor(seconds / 60);
