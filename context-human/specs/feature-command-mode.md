@@ -656,17 +656,17 @@ If `config.set` is registered as a handler, it writes to the workspace config. A
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement `CommandRegistry`, Task: Emit command events in `SlackAdapter`
 - [ ] **Story: Initial command handlers**
-	- [ ] **Task: Implement ****`run.status`**** and ****`run.list`**** handlers**
+	- [x] **Task: Implement ****`run.status`**** and ****`run.list`**** handlers**
 		- **Description**: Create `src/core/commands/run-commands.ts`. `run.status`: looks up run by `inferred_context.request_id`, or by first arg as request ID if no inferred context. Formats and replies with stage, intent, and time in current stage. If no run found, replies with a clear message. `run.list`: formats a summary of all non-done/non-failed runs; replies "no active runs" if none exist. Register both handlers with usage strings in `src/index.ts`. Write unit tests covering all cases in the testing plan's `run.status` and `run.list` sections.
 		- **Acceptance criteria**:
-			- [ ] `run.status` with inferred `request_id` → posts stage, intent, time in stage
-			- [ ] `run.status` with explicit ID arg → looks up by ID; replies correctly
-			- [ ] `run.status` with no context and no args → posts "no run found in this thread"
-			- [ ] `run.status` for terminal run (done/failed) → reply shows final stage and status
-			- [ ] `run.list` → posts summary of active runs; "no active runs" if empty; done/failed runs excluded
-			- [ ] Both handlers registered with usage strings in `src/index.ts`
-			- [ ] All unit tests pass
-			- [ ] `tsc --noEmit` passes
+			- [x] `run.status` with inferred `request_id` → posts stage, intent, time in stage
+			- [x] `run.status` with explicit ID arg → looks up by ID; replies correctly
+			- [x] `run.status` with no context and no args → posts "no run found in this thread"
+			- [x] `run.status` for terminal run (done/failed) → reply shows final stage and status
+			- [x] `run.list` → posts summary of active runs; "no active runs" if empty; done/failed runs excluded
+			- [x] Both handlers registered with usage strings in `src/index.ts`
+			- [x] All unit tests pass
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `_handleCommand` dispatch branch to orchestrator
 	- [ ] **Task: Implement ****`run.cancel`**** handler**
 		- **Description**: Add `run.cancel` to `src/core/commands/run-commands.ts`. Resolves the target run from `inferred_context.request_id` or first arg as request ID. Calls the orchestrator's run cancellation mechanism (cancel the in-flight promise and mark the run as cancelled). Replies with a confirmation message on success. Handles already-terminal runs (done/failed/cancelled) by replying with a descriptive message rather than erroring. If no run is found, replies with "no active run found". Register with a usage string in `src/index.ts`. Write unit tests covering all cases in the testing plan's `run.cancel` section.

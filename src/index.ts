@@ -18,6 +18,7 @@ import { SlackCanvasPublisher } from './adapters/slack/canvas-publisher.js';
 import type { SpecPublisher } from './types/publisher.js';
 import { OrchestratorImpl } from './core/orchestrator.js';
 import { CommandRegistryImpl } from './core/command-registry.js';
+import { makeRunStatusHandler, makeRunListHandler } from './core/commands/run-commands.js';
 import { FileRunStore } from './core/run-store.js';
 import { NotionClientImpl } from './adapters/notion/notion-client.js';
 import { NotionPublisher } from './adapters/notion/notion-publisher.js';
@@ -254,6 +255,18 @@ try {
     },
     repo_url,
   });
+
+  // Register command handlers
+  commandRegistry.register(
+    'run.status',
+    makeRunStatusHandler(orchestrator.getRuns()),
+    'Show the current stage, intent, and time in stage for a run. Usage: `:ac-run-status:` (in thread) or `:ac-run-status: <run-id>`',
+  );
+  commandRegistry.register(
+    'run.list',
+    makeRunListHandler(orchestrator.getRuns()),
+    'List all active runs. Usage: `:ac-run-list:`',
+  );
 
   const service = new Service(currentConfig, { orchestrator });
 
