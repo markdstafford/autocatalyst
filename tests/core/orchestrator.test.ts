@@ -15,6 +15,7 @@ import type { Implementer, ImplementationResult } from '../../src/adapters/agent
 import type { ImplementationFeedbackPage } from '../../src/adapters/notion/implementation-feedback-page.js';
 import type { IssueManager } from '../../src/adapters/agent/issue-manager.js';
 import type { IssueFiler, FilingResult } from '../../src/adapters/agent/issue-filer.js';
+import type { CommandEvent, CommandRegistry } from '../../src/types/commands.js';
 
 const nullDest = { write: () => {} };
 
@@ -244,6 +245,33 @@ function makeImplFeedbackPage(overrides: Partial<ImplementationFeedbackPage> & {
     create: vi.fn().mockResolvedValue('feedback-page-id'),
     readFeedback: vi.fn().mockResolvedValue([]),
     update: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+}
+
+function makeCommandEvent(overrides: Partial<CommandEvent> = {}): { type: 'command'; payload: CommandEvent } {
+  return {
+    type: 'command',
+    payload: {
+      command: 'test.cmd',
+      args: [],
+      source: 'slack',
+      channel_id: 'C001',
+      thread_ts: '1000.0',
+      author: 'U001',
+      received_at: new Date().toISOString(),
+      ...overrides,
+    },
+  };
+}
+
+function makeCommandRegistry(overrides: Partial<CommandRegistry> = {}): CommandRegistry {
+  return {
+    register: vi.fn(),
+    dispatch: vi.fn().mockResolvedValue(undefined),
+    has: vi.fn().mockReturnValue(true),
+    list: vi.fn().mockReturnValue([]),
+    getUsage: vi.fn().mockReturnValue(undefined),
     ...overrides,
   };
 }
@@ -4810,5 +4838,197 @@ describe('Orchestrator — existing routing unaffected by file_issues', () => {
 
     expect(sg.create).toHaveBeenCalled();
     expect(cp.create).toHaveBeenCalled();
+  });
+});
+
+describe('OrchestratorImpl — command dispatch', () => {
+  let adapter: ReturnType<typeof makeMockAdapter>;
+  let postMessage: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    adapter = makeMockAdapter();
+    postMessage = vi.fn().mockResolvedValue(undefined);
+    _fixtureSeq = 0;
+  });
+
+  function makeOrch(registryOverrides: Partial<CommandRegistry> = {}) {
+    const commandRegistry = makeCommandRegistry(registryOverrides);
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as unknown as import('../../src/adapters/slack/slack-adapter.js').SlackAdapter,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: makeSpecPublisher(),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+        repo_url: 'https://github.com/test/repo',
+        commandRegistry,
+      },
+      { logDestination: nullDest as unknown as import('pino').DestinationStream },
+    );
+    return { orch, commandRegistry };
+  }
+
+  it('command event → handler dispatched; no run created', async () => {
+    const { orch, commandRegistry } = makeOrch();
+    await orch.start();
+
+    adapter._emit(makeCommandEvent({ command: 'test.cmd' }));
+    await adapter.stop();
+    await orch.stop();
+
+    expect(commandRegistry.dispatch).toHaveBeenCalledWith('test.cmd', expect.objectContaining({ command: 'test.cmd' }), expect.any(Function));
+    expect(orch.getRuns().size).toBe(0);
+  });
+
+  it('command handler reply function posts to correct channel and thread', async () => {
+    const { orch } = makeOrch({
+      dispatch: vi.fn().mockImplementation(async (_cmd, _event, reply) => {
+        await reply('hello from handler');
+      }),
+    });
+    await orch.start();
+
+    adapter._emit(makeCommandEvent({ command: 'test.cmd', channel_id: 'C001', thread_ts: '1000.0' }));
+    await adapter.stop();
+    await orch.stop();
+
+    expect(postMessage).toHaveBeenCalledWith('C001', '1000.0', 'hello from handler');
+  });
+
+  it('handler succeeds → command.succeeded logged at info', async () => {
+    const { records, destination } = makeLogCapture();
+    const commandRegistry = makeCommandRegistry();
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as unknown as import('../../src/adapters/slack/slack-adapter.js').SlackAdapter,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: makeSpecPublisher(),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+        repo_url: 'https://github.com/test/repo',
+        commandRegistry,
+      },
+      { logDestination: destination },
+    );
+    await orch.start();
+    adapter._emit(makeCommandEvent({ command: 'test.cmd' }));
+    await adapter.stop();
+    await orch.stop();
+
+    const log = records.find(r => r['event'] === 'command.succeeded');
+    expect(log).toBeDefined();
+    expect(log?.['command']).toBe('test.cmd');
+  });
+
+  it('unregistered command → help handler invoked; command.unknown metric logged', async () => {
+    const { records, destination } = makeLogCapture();
+    const helpDispatch = vi.fn().mockResolvedValue(undefined);
+    const commandRegistry = makeCommandRegistry({
+      has: vi.fn().mockImplementation((cmd: string) => cmd === 'help'),
+      dispatch: vi.fn().mockImplementation(async (cmd: string) => {
+        if (cmd === 'help') return helpDispatch(cmd);
+      }),
+    });
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as unknown as import('../../src/adapters/slack/slack-adapter.js').SlackAdapter,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: makeSpecPublisher(),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+        repo_url: 'https://github.com/test/repo',
+        commandRegistry,
+      },
+      { logDestination: destination },
+    );
+    await orch.start();
+    adapter._emit(makeCommandEvent({ command: 'unknown.cmd' }));
+    await adapter.stop();
+    await orch.stop();
+
+    expect(helpDispatch).toHaveBeenCalled();
+    expect(records.find(r => r['event'] === 'command.unknown')).toBeDefined();
+  });
+
+  it('unregistered command when help also not registered → raw fallback reply posted', async () => {
+    const { orch } = makeOrch({ has: vi.fn().mockReturnValue(false) });
+    await orch.start();
+
+    adapter._emit(makeCommandEvent({ command: 'unknown.cmd', channel_id: 'C001', thread_ts: '1000.0' }));
+    await adapter.stop();
+    await orch.stop();
+
+    expect(postMessage).toHaveBeenCalledWith('C001', '1000.0', expect.stringContaining('ac-help'));
+  });
+
+  it('handler throws → command.failed logged; fallback reply posted', async () => {
+    const { records, destination } = makeLogCapture();
+    const commandRegistry = makeCommandRegistry({
+      dispatch: vi.fn().mockRejectedValue(new Error('handler exploded')),
+    });
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as unknown as import('../../src/adapters/slack/slack-adapter.js').SlackAdapter,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: makeSpecPublisher(),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage,
+        repo_url: 'https://github.com/test/repo',
+        commandRegistry,
+      },
+      { logDestination: destination },
+    );
+    await orch.start();
+    adapter._emit(makeCommandEvent({ command: 'test.cmd', channel_id: 'C001', thread_ts: '1000.0' }));
+    await adapter.stop();
+    await orch.stop();
+
+    expect(records.find(r => r['event'] === 'command.failed')).toBeDefined();
+    expect(postMessage).toHaveBeenCalledWith('C001', '1000.0', expect.stringContaining('check logs'));
+  });
+
+  it('reply function fails → command.reply_failed logged; no exception propagates', async () => {
+    const { records, destination } = makeLogCapture();
+    const commandRegistry = makeCommandRegistry({
+      dispatch: vi.fn().mockImplementation(async (_cmd, _event, reply) => {
+        await reply('test');
+      }),
+    });
+    const failingPost = vi.fn().mockRejectedValue(new Error('network error'));
+    const orch = new OrchestratorImpl(
+      {
+        adapter: adapter as unknown as import('../../src/adapters/slack/slack-adapter.js').SlackAdapter,
+        workspaceManager: makeWorkspaceManager(),
+        specGenerator: makeSpecGenerator(),
+        specPublisher: makeSpecPublisher(),
+        postError: vi.fn().mockResolvedValue(undefined),
+        postMessage: failingPost,
+        repo_url: 'https://github.com/test/repo',
+        commandRegistry,
+      },
+      { logDestination: destination },
+    );
+    await orch.start();
+    adapter._emit(makeCommandEvent({ command: 'test.cmd' }));
+    await adapter.stop();
+    await orch.stop();
+
+    expect(records.find(r => r['event'] === 'command.reply_failed')).toBeDefined();
+  });
+
+  it('two command events → both dispatched', async () => {
+    const { orch, commandRegistry } = makeOrch();
+    await orch.start();
+
+    adapter._emit(makeCommandEvent({ command: 'test.cmd' }));
+    adapter._emit(makeCommandEvent({ command: 'test.cmd' }));
+    await adapter.stop();
+    await orch.stop();
+
+    expect(commandRegistry.dispatch).toHaveBeenCalledTimes(2);
   });
 });

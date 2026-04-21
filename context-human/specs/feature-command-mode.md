@@ -639,21 +639,21 @@ If `config.set` is registered as a handler, it writes to the workspace config. A
 			- [x] All existing `SlackAdapter` tests still pass
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add command classification to `classifyMessage`
-- [ ] **Story: Orchestrator command dispatch**
-	- [ ] **Task: Add ****`_handleCommand`**** dispatch branch to orchestrator**
+- [x] **Story: Orchestrator command dispatch**
+	- [x] **Task: Add ****`_handleCommand`**** dispatch branch to orchestrator**
 		- **Description**: In `src/core/orchestrator.ts`, add `commandRegistry?: CommandRegistry` to `OrchestratorDeps`. In `_runLoop`, detect `command` events before `_classify` and dispatch them via `_launchCommand`. Implement `_launchCommand` as described in the tech spec: build a `reply` closure, call `commandRegistry.dispatch`, invoke the `help` handler for unknown commands (falling back to a raw reply if `help` is also not registered), log and increment metrics at each outcome (`command.received`, `command.succeeded`, `command.failed`, `command.unknown`), log and post fallback on handler errors. Command events do not create runs and are not subject to concurrency limiting via `_queue`. Write unit tests covering all cases in the testing plan's orchestrator section.
 		- **Acceptance criteria**:
-			- [ ] `command` event → `_launchCommand` called; `_classify` not called; no run created
-			- [ ] Registered handler invoked with correct event and reply function
-			- [ ] Handler succeeds → `command.succeeded` logged at info; `command.succeeded` metric incremented with `command` label
-			- [ ] Unregistered command → `help` handler invoked (or raw fallback); no error thrown; `command.unknown` metric incremented
-			- [ ] Handler throws → `command.failed` logged; `command.failed` metric incremented; fallback reply posted; subsequent events processed normally
-			- [ ] Reply function fails (network error) → `command.reply_failed` logged; no exception propagates to run loop
-			- [ ] `command.received` metric incremented on every dispatched command event
-			- [ ] Multiple commands dispatched concurrently without blocking run loop
-			- [ ] `new_request` and `thread_message` events continue through existing `_classify` path unchanged
-			- [ ] All existing orchestrator tests still pass
-			- [ ] `tsc --noEmit` passes
+			- [x] `command` event → `_launchCommand` called; `_classify` not called; no run created
+			- [x] Registered handler invoked with correct event and reply function
+			- [x] Handler succeeds → `command.succeeded` logged at info; `command.succeeded` metric incremented with `command` label
+			- [x] Unregistered command → `help` handler invoked (or raw fallback); no error thrown; `command.unknown` metric incremented
+			- [x] Handler throws → `command.failed` logged; `command.failed` metric incremented; fallback reply posted; subsequent events processed normally
+			- [x] Reply function fails (network error) → `command.reply_failed` logged; no exception propagates to run loop
+			- [x] `command.received` metric incremented on every dispatched command event
+			- [x] Multiple commands dispatched concurrently without blocking run loop
+			- [x] `new_request` and `thread_message` events continue through existing `_classify` path unchanged
+			- [x] All existing orchestrator tests still pass
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement `CommandRegistry`, Task: Emit command events in `SlackAdapter`
 - [ ] **Story: Initial command handlers**
 	- [ ] **Task: Implement ****`run.status`**** and ****`run.list`**** handlers**

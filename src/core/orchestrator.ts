@@ -21,6 +21,7 @@ import type { IssueManager } from '../adapters/agent/issue-manager.js';
 import type { IssueFiler, FilingResult } from '../adapters/agent/issue-filer.js';
 import { RunStore, FileRunStore } from './run-store.js';
 import type { ThreadRegistry } from '../adapters/slack/thread-registry.js';
+import type { CommandRegistry, CommandEvent } from '../types/commands.js';
 
 function extractH1(content: string): string | undefined {
   const match = content.match(/^#\s+(.+)$/m);
@@ -63,6 +64,7 @@ interface OrchestratorDeps {
   postError: (channel_id: string, thread_ts: string, text: string) => Promise<void>;
   postMessage: (channel_id: string, thread_ts: string, text: string) => Promise<void>;
   repo_url: string;
+  commandRegistry?: CommandRegistry;
 }
 
 interface OrchestratorOptions {
@@ -84,6 +86,7 @@ export class OrchestratorImpl implements Orchestrator {
   private _pendingStage = new Map<string, RunStage>();
   /** Maps queued InboundEvent reference → enqueue timestamp (ms) for queue_wait_ms metric. */
   private _queueTimestamps = new Map<InboundEvent, number>();
+  private readonly _runLogs = new Map<string, string[]>();
 
   constructor(deps: OrchestratorDeps, options?: OrchestratorOptions) {
     this.deps = deps;
@@ -130,12 +133,16 @@ export class OrchestratorImpl implements Orchestrator {
   private async _runLoop(): Promise<void> {
     for await (const event of this.deps.adapter.receive()) {
       if (this._stopping) break;
+      if (event.type === 'command') {
+        this._launchCommand(event.payload);
+        continue;
+      }
       // Classification is serial and awaited: advances run state and commits the
       // dispatch decision before the next event is processed. Prevents duplicate
       // or conflicting dispatches for the same run (e.g., double-approval).
-      const action = await this._classify(event as InboundEvent);
+      const action = await this._classify(event as Exclude<InboundEvent, { type: 'command' }>);
       if (action === 'dispatch') {
-        this._dispatchOrEnqueue(event as InboundEvent);
+        this._dispatchOrEnqueue(event as Exclude<InboundEvent, { type: 'command' }>);
       }
     }
     // Drain all in-flight handlers before resolving (including those promoted from queue)
@@ -154,7 +161,7 @@ export class OrchestratorImpl implements Orchestrator {
    * advances the stage atomically before returning 'dispatch' so that a concurrent
    * duplicate message sees the updated stage and is discarded.
    */
-  private async _classify(event: InboundEvent): Promise<'dispatch' | 'discard'> {
+  private async _classify(event: Exclude<InboundEvent, { type: 'command' }>): Promise<'dispatch' | 'discard'> {
     if (event.type === 'new_request') {
       return 'dispatch';
     }
@@ -221,6 +228,43 @@ export class OrchestratorImpl implements Orchestrator {
     this._inFlight.add(p);
     this.logger.debug({ event: 'run.dispatched', in_flight: this._inFlight.size }, 'Handler dispatched');
     this.logger.info({ metric: 'orchestrator.in_flight', value: this._inFlight.size }, 'in_flight gauge (dispatch)');
+  }
+
+  private _launchCommand(event: CommandEvent): void {
+    const reply = (text: string): Promise<void> =>
+      this.deps.postMessage(event.channel_id, event.thread_ts, text).catch(err => {
+        this.logger.error(
+          { event: 'command.reply_failed', command: event.command, error: String(err) },
+          'Failed to post command reply',
+        );
+      });
+
+    const p: Promise<void> = (async () => {
+      this.logger.info({ event: 'command.dispatched', command: event.command, author: event.author }, 'Command dispatched');
+      this.logger.info({ metric: 'command.received', command: event.command }, 'command.received counter');
+      if (!this.deps.commandRegistry?.has(event.command)) {
+        this.logger.warn({ event: 'command.unknown', command: event.command }, 'Unknown command');
+        this.logger.info({ metric: 'command.unknown' }, 'command.unknown counter');
+        if (this.deps.commandRegistry?.has('help')) {
+          await this.deps.commandRegistry.dispatch('help', event, reply);
+        } else {
+          await reply(`Unknown command \`:${event.command}:\` — use \`:ac-help:\` to see available commands.`);
+        }
+        return;
+      }
+      try {
+        await this.deps.commandRegistry!.dispatch(event.command, event, reply);
+        this.logger.info({ event: 'command.succeeded', command: event.command, author: event.author }, 'Command succeeded');
+        this.logger.info({ metric: 'command.succeeded', command: event.command }, 'command.succeeded counter');
+      } catch (err) {
+        this.logger.error({ event: 'command.failed', command: event.command, error: String(err) }, 'Command handler failed');
+        this.logger.info({ metric: 'command.failed', command: event.command }, 'command.failed counter');
+        await reply(`Something went wrong running \`${event.command}\` — check logs.`);
+      }
+    })().finally(() => {
+      this._inFlight.delete(p);
+    });
+    this._inFlight.add(p);
   }
 
   private async _handleRequest(event: InboundEvent): Promise<void> {
@@ -643,11 +687,19 @@ export class OrchestratorImpl implements Orchestrator {
     run.stage = stage;
     run.updated_at = new Date().toISOString();
     this.logger.info({ event: 'run.stage_transition', run_id: run.id, request_id: run.request_id, from_stage: from, to_stage: stage }, 'Stage transition');
+    this._appendRunLog(run.request_id, `[${new Date().toISOString()}] Stage: ${from} → ${stage}`);
     this._persistRuns();
   }
 
   private _persistRuns(): void {
     this.deps.runStore?.save(this.runs);
+  }
+
+  private _appendRunLog(requestId: string, message: string): void {
+    const logs = this._runLogs.get(requestId) ?? [];
+    logs.push(message);
+    if (logs.length > 20) logs.shift();
+    this._runLogs.set(requestId, logs);
   }
 
   private _notifyRestartFailures(runs: Run[]): void {
@@ -996,5 +1048,26 @@ export class OrchestratorImpl implements Orchestrator {
     }
 
     this.transition(run, 'reviewing_spec');
+  }
+
+  getRuns(): Map<string, Run> {
+    return this.runs;
+  }
+
+  getRunLogs(requestId: string): string[] {
+    return this._runLogs.get(requestId) ?? [];
+  }
+
+  getActiveRunCount(): number {
+    return [...this.runs.values()].filter(r => r.stage !== 'done' && r.stage !== 'failed').length;
+  }
+
+  cancelRun(requestId: string): 'cancelled' | 'already_terminal' | 'not_found' {
+    const run = this.runs.get(requestId);
+    if (!run) return 'not_found';
+    if (run.stage === 'done' || run.stage === 'failed') return 'already_terminal';
+    this.transition(run, 'failed');
+    this.logger.info({ event: 'run.cancelled', run_id: run.id, request_id: requestId }, 'Run cancelled via command');
+    return 'cancelled';
   }
 }

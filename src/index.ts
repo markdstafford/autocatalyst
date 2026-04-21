@@ -17,6 +17,7 @@ import { AgentSDKSpecGenerator } from './adapters/agent/spec-generator.js';
 import { SlackCanvasPublisher } from './adapters/slack/canvas-publisher.js';
 import type { SpecPublisher } from './types/publisher.js';
 import { OrchestratorImpl } from './core/orchestrator.js';
+import { CommandRegistryImpl } from './core/command-registry.js';
 import { FileRunStore } from './core/run-store.js';
 import { NotionClientImpl } from './adapters/notion/notion-client.js';
 import { NotionPublisher } from './adapters/notion/notion-publisher.js';
@@ -226,6 +227,8 @@ try {
     logger.info({ event: 'service.config', publisher: 'slack-canvas' }, 'Using Slack canvas publisher');
   }
 
+  const commandRegistry = new CommandRegistryImpl();
+
   const orchestrator = new OrchestratorImpl({
     adapter,
     workspaceManager,
@@ -242,6 +245,7 @@ try {
     issueFiler,
     runStore,
     threadRegistry,
+    commandRegistry,
     postError: async (channel_id, thread_ts, text) => {
       await boltApp.client.chat.postMessage({ channel: channel_id, thread_ts, text });
     },
