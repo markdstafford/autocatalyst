@@ -613,7 +613,7 @@ If `config.set` is registered as a handler, it writes to the workspace config. A
 			- [x] All unit tests pass
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Define command types
-- [ ] **Story: Slack command detection**
+- [x] **Story: Slack command detection**
 	- [x] **Task: Add command classification to ****`classifyMessage`**
 		- **Description**: Extend `classifyMessage` in `src/adapters/slack/classifier.ts` to detect `:ac-*:` patterns (using `[a-z0-9_-]+`) before the `@mention` check. Add the `EMOJI_COMMAND_TABLE` const (exported for tests) with all six initial commands. Only the first command token in a message is matched. If a recognized emoji is found, return `{ intent: 'command', command, args }` with the emoji token stripped and remaining text split on whitespace. Unrecognized `:ac-*:` emojis fall through to the existing `@mention` logic. Add the new `command` variant to `MessageClassification`. Write unit tests covering all cases in the testing plan's classifier section.
 		- **Acceptance criteria**:
@@ -626,18 +626,18 @@ If `config.set` is registered as a handler, it writes to the workspace config. A
 			- [x] All existing `classifyMessage` tests still pass
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Define command types
-	- [ ] **Task: Emit command events in ****`SlackAdapter`**
+	- [x] **Task: Emit command events in ****`SlackAdapter`**
 		- **Description**: In `src/adapters/slack/slack-adapter.ts`, add a `command` branch in the message handler for `result.intent === 'command'`. Build a `CommandEvent` using `msg.thread_ts ?? msg.ts` for thread context; resolve `inferred_context.request_id` from `ThreadRegistry`. No acknowledgement is posted before emission. Add a `reaction_added` handler that checks the emoji against `EMOJI_COMMAND_TABLE`, fetches the reacted-to message via `conversations.history` for `thread_ts` inference, and emits a `CommandEvent`. On `conversations.history` failure, fall back to `item.ts` and log a warning. Ignore reactions from other channels. Log `slack.command.received` at info and `slack.reaction.ignored` at debug. Write integration tests covering all cases in the testing plan's adapter section.
 		- **Acceptance criteria**:
-			- [ ] Message command in root message → event with `thread_ts = msg.ts`; no `chat.postMessage`
-			- [ ] Message command in thread reply → event with `thread_ts = msg.thread_ts`
-			- [ ] `inferred_context.request_id` populated when `thread_ts` is in registry; `undefined` when not
-			- [ ] `reaction_added` with recognized emoji → `conversations.history` called; event emitted with correct `thread_ts`
-			- [ ] `reaction_added`, `conversations.history` fails → event emitted with `item.ts` fallback; warning logged
-			- [ ] `reaction_added` with unrecognized emoji → no event; `slack.reaction.ignored` logged
-			- [ ] `reaction_added` from different channel → ignored
-			- [ ] All existing `SlackAdapter` tests still pass
-			- [ ] `tsc --noEmit` passes
+			- [x] Message command in root message → event with `thread_ts = msg.ts`; no `chat.postMessage`
+			- [x] Message command in thread reply → event with `thread_ts = msg.thread_ts`
+			- [x] `inferred_context.request_id` populated when `thread_ts` is in registry; `undefined` when not
+			- [x] `reaction_added` with recognized emoji → `conversations.history` called; event emitted with correct `thread_ts`
+			- [x] `reaction_added`, `conversations.history` fails → event emitted with `item.ts` fallback; warning logged
+			- [x] `reaction_added` with unrecognized emoji → no event; `slack.reaction.ignored` logged
+			- [x] `reaction_added` from different channel → ignored
+			- [x] All existing `SlackAdapter` tests still pass
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add command classification to `classifyMessage`
 - [ ] **Story: Orchestrator command dispatch**
 	- [ ] **Task: Add ****`_handleCommand`**** dispatch branch to orchestrator**

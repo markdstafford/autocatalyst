@@ -5,6 +5,8 @@ import { createLogger } from '../../core/logger.js';
 import type { HumanInterfaceAdapter } from '../human-interface-adapter.js';
 import type { InboundEvent, Request, ThreadMessage } from '../../types/events.js';
 import { classifyMessage } from './classifier.js';
+import { EMOJI_COMMAND_TABLE } from './classifier.js';
+import type { CommandEvent } from '../../types/commands.js';
 import { ThreadRegistry } from './thread-registry.js';
 
 interface SlackAdapterConfig {
@@ -104,6 +106,27 @@ export class SlackAdapter implements HumanInterfaceAdapter {
         return;
       }
 
+      if (result.intent === 'command') {
+        const commandEvent: CommandEvent = {
+          command: result.command,
+          args: result.args,
+          source: 'slack',
+          channel_id: this.channelId!,
+          thread_ts: msg.thread_ts ?? msg.ts,
+          author: msg.user,
+          received_at: new Date().toISOString(),
+          inferred_context: {
+            request_id: this.registry.resolve(msg.thread_ts ?? msg.ts),
+          },
+        };
+        this.logger.info(
+          { event: 'slack.command.received', author: msg.user, channel_id: this.channelId, command: result.command },
+          'Command received',
+        );
+        this.emit({ type: 'command', payload: commandEvent });
+        return;
+      }
+
       this.logger.info(
         { event: 'slack.message.classified', author: msg.user, channel_id: this.channelId, intent: result.intent, thread_ts: msg.ts },
         'Message classified',
@@ -138,6 +161,60 @@ export class SlackAdapter implements HumanInterfaceAdapter {
         await this.postMessage(this.channelId!, msg.thread_ts!, "Thanks — I'll incorporate that feedback.");
         this.emit({ type: 'thread_message', payload: message });
       }
+    });
+
+    // Register reaction_added handler for command-via-reaction
+    this.app.event('reaction_added', async ({ event: reactionEvent }) => {
+      const reaction = reactionEvent as {
+        reaction: string;
+        user: string;
+        item: { type: string; channel?: string; ts: string };
+      };
+      if (reaction.item.type !== 'message') return;
+      if (reaction.item.channel !== this.channelId) return;
+
+      const commandName = EMOJI_COMMAND_TABLE[reaction.reaction];
+      if (!commandName) {
+        this.logger.debug({ event: 'slack.reaction.ignored', emoji: reaction.reaction }, 'Reaction ignored');
+        return;
+      }
+
+      let reactedThreadTs: string = reaction.item.ts;
+      try {
+        const historyResult = await this.app.client.conversations.history({
+          channel: reaction.item.channel!,
+          latest: reaction.item.ts,
+          limit: 1,
+          inclusive: true,
+        });
+        const reactedMessage = historyResult.messages?.[0];
+        if (reactedMessage?.thread_ts) {
+          reactedThreadTs = reactedMessage.thread_ts as string;
+        }
+      } catch (err) {
+        this.logger.warn(
+          { event: 'slack.error', error: String(err) },
+          'Failed to fetch reacted-to message; using item.ts as thread_ts',
+        );
+      }
+
+      const commandEvent: CommandEvent = {
+        command: commandName,
+        args: [],
+        source: 'slack',
+        channel_id: reaction.item.channel!,
+        thread_ts: reactedThreadTs,
+        author: reaction.user,
+        received_at: new Date().toISOString(),
+        inferred_context: {
+          request_id: this.registry.resolve(reactedThreadTs),
+        },
+      };
+      this.logger.info(
+        { event: 'slack.command.received', author: reaction.user, channel_id: reaction.item.channel, command: commandName },
+        'Reaction command received',
+      );
+      this.emit({ type: 'command', payload: commandEvent });
     });
 
     // Start Bolt (opens Socket Mode WebSocket)
@@ -198,5 +275,9 @@ export class SlackAdapter implements HumanInterfaceAdapter {
         'Failed to post message',
       );
     }
+  }
+
+  isConnected(): boolean {
+    return !this.closed;
   }
 }
