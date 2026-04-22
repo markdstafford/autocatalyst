@@ -214,7 +214,7 @@ Like all `:ac-*:` commands, `:ac-classify-intent:` requires a custom emoji to be
 The handler accepts `IntentClassifier`, not `IntentClassifier | undefined`. In `src/index.ts`, `intentClassifier` is always constructed before command registration, so this is not a runtime risk. Tests that construct the handler must supply a mock; the non-optional type signature enforces this at compile time.
 ## Task list
 
-- [ ] **Story: Wire ****`:ac-classify-intent:`**** into the command table and register the handler**
+- [x] **Story: Wire ****`:ac-classify-intent:`**** into the command table and register the handler**
 	- [x] **Task: Add ****`:ac-classify-intent:`**** to ****`EMOJI_COMMAND_TABLE`**** in ****`classifier.ts`**
 		- **Description**: Add `'ac-classify-intent': 'classify-intent'` to the `EMOJI_COMMAND_TABLE` record in `src/adapters/slack/classifier.ts`. No other changes to the module.
 		- **Acceptance criteria**:
@@ -234,11 +234,11 @@ The handler accepts `IntentClassifier`, not `IntentClassifier | undefined`. In `
 			- [x] All unit tests pass
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `:ac-classify-intent:` to `EMOJI_COMMAND_TABLE`
-	- [ ] **Task: Register ****`classify-intent`**** command in ****`src/index.ts`**
+	- [x] **Task: Register ****`classify-intent`**** command in ****`src/index.ts`**
 		- **Description**: Import `makeClassifyIntentHandler` from `./core/commands/classify-intent-command.js`. After the existing command registrations, call `commandRegistry.register('classify-intent', makeClassifyIntentHandler(intentClassifier), '')`. Use usage string: `Test how a message would be classified. Usage: \`:ac-classify-intent: \\` or \`:ac-classify-intent: \ \\`\`.
 		- **Acceptance criteria**:
-			- [ ] `commandRegistry.has('classify-intent')` returns `true` at startup
-			- [ ] `commandRegistry.getUsage('classify-intent')` returns a non-empty string
-			- [ ] `:ac-help:` lists `classify-intent` in its output
-			- [ ] `tsc --noEmit` passes
+			- [x] `commandRegistry.has('classify-intent')` returns `true` at startup
+			- [x] `commandRegistry.getUsage('classify-intent')` returns a non-empty string
+			- [x] `:ac-help:` lists `classify-intent` in its output
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement `makeClassifyIntentHandler` in `classify-intent-command.ts`
