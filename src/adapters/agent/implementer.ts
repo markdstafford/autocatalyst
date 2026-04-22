@@ -34,6 +34,45 @@ interface AgentSDKImplementerOptions {
   queryFn?: QueryFn;
 }
 
+const STATUS_SYNONYMS: Record<string, ImplementationStatus> = {
+  // → 'complete'
+  done: 'complete',
+  finished: 'complete',
+  success: 'complete',
+  successful: 'complete',
+  succeeded: 'complete',
+  ok: 'complete',
+  okay: 'complete',
+  passed: 'complete',
+  resolved: 'complete',
+  accomplished: 'complete',
+  completed: 'complete',
+
+  // → 'failed'
+  error: 'failed',
+  failure: 'failed',
+  err: 'failed',
+  crashed: 'failed',
+  broken: 'failed',
+  unsuccessful: 'failed',
+  aborted: 'failed',
+  terminated: 'failed',
+  exception: 'failed',
+
+  // → 'needs_input'
+  waiting: 'needs_input',
+  pending: 'needs_input',
+  blocked: 'needs_input',
+  needs_information: 'needs_input',
+  needs_clarification: 'needs_input',
+  requires_input: 'needs_input',
+  input_needed: 'needs_input',
+  awaiting: 'needs_input',
+  paused: 'needs_input',
+  stalled: 'needs_input',
+  incomplete: 'needs_input',
+};
+
 function parseResultFile(content: string, path: string): ImplementationResult {
   let data: unknown;
   try {
@@ -47,9 +86,12 @@ function parseResultFile(content: string, path: string): ImplementationResult {
   }
 
   const obj = data as Record<string, unknown>;
-  const status = obj['status'];
+  const rawStatus = obj['status'];
+  const status = typeof rawStatus === 'string'
+    ? (STATUS_SYNONYMS[rawStatus] ?? rawStatus)
+    : rawStatus;
   if (status !== 'complete' && status !== 'needs_input' && status !== 'failed') {
-    throw new Error(`Implementation: invalid STATUS value "${String(status)}" in result file`);
+    throw new Error(`Implementation: invalid STATUS value "${String(rawStatus)}" in result file`);
   }
 
   return {
@@ -206,6 +248,10 @@ function buildPrompt(spec_path: string, result_file_path: string, additionalCont
   lines.push('Create the directory if it does not exist. The JSON must have this structure:');
   lines.push('{');
   lines.push('  "status": "complete" | "needs_input" | "failed",');
+  lines.push('Do NOT use synonyms such as "done", "finished", "success", "ok", "passed" (use "complete"),');
+  lines.push('"error", "failure", "crashed", "aborted" (use "failed"),');
+  lines.push('or "waiting", "pending", "blocked", "incomplete" (use "needs_input").');
+  lines.push('Use only the exact canonical values: "complete", "needs_input", or "failed".');
   lines.push('  "summary": "what was built",');
   lines.push('  "testing_instructions": "Branch: <branch-name>\\nSetup: <install/build commands>\\nTest: <specific steps to exercise the feature>",');
   lines.push('  "question": "the decision needed from the human (only when needs_input)",');
