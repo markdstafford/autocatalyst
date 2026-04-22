@@ -248,6 +248,10 @@ function buildPrompt(spec_path: string, result_file_path: string, additionalCont
   lines.push('Create the directory if it does not exist. The JSON must have this structure:');
   lines.push('{');
   lines.push('  "status": "complete" | "needs_input" | "failed",');
+  lines.push('Do NOT use synonyms such as "done", "finished", "success", "ok", "passed" (use "complete"),');
+  lines.push('"error", "failure", "crashed", "aborted" (use "failed"),');
+  lines.push('or "waiting", "pending", "blocked", "incomplete" (use "needs_input").');
+  lines.push('Use only the exact canonical values: "complete", "needs_input", or "failed".');
   lines.push('  "summary": "what was built",');
   lines.push('  "testing_instructions": "Branch: <branch-name>\\nSetup: <install/build commands>\\nTest: <specific steps to exercise the feature>",');
   lines.push('  "question": "the decision needed from the human (only when needs_input)",');
