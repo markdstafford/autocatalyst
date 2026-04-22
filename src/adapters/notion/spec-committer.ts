@@ -1,6 +1,6 @@
 import { promisify } from 'node:util';
 import { execFile as _execFile } from 'node:child_process';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
@@ -11,11 +11,19 @@ const defaultExecFile = promisify(_execFile);
 
 type ExecFn = (cmd: string, args: string[], opts?: { cwd?: string }) => Promise<{ stdout: string; stderr: string }>;
 
+export type SpecLifecycleStatus = 'implementing' | 'complete';
+
 export interface SpecCommitter {
   commit(
     workspace_path: string,
     publisher_ref: string,
     spec_path: string,
+  ): Promise<void>;
+
+  updateStatus(
+    workspace_path: string,
+    spec_path: string,
+    update: { status: SpecLifecycleStatus; last_updated: string },
   ): Promise<void>;
 }
 
@@ -24,7 +32,7 @@ interface NotionSpecCommitterOptions {
   logDestination?: pino.DestinationStream;
 }
 
-function normalizeFrontmatter(markdown: string): string {
+function normalizeFrontmatter(markdown: string, implementedBy: string | null): string {
   const delim = '---';
   const start = markdown.indexOf(delim);
   if (start === -1) throw new Error('Spec has no YAML frontmatter (missing --- delimiters)');
@@ -39,8 +47,11 @@ function normalizeFrontmatter(markdown: string): string {
   // Update fields line-by-line to preserve all other fields
   const lines = frontmatterRaw.split('\n');
   const normalized = lines.map(line => {
-    if (/^status\s*:/.test(line)) return `status: approved`;
+    if (/^status\s*:/.test(line)) return `status: implementing`;
     if (/^last_updated\s*:/.test(line)) return `last_updated: ${today}`;
+    if (/^implemented_by\s*:/.test(line)) {
+      return implementedBy !== null ? `implemented_by: ${implementedBy}` : `implemented_by: null`;
+    }
     return line;
   });
 
@@ -98,12 +109,33 @@ export class NotionSpecCommitter implements SpecCommitter {
     try {
       // Strip comment spans, remove orphaned comments, prettify
       processed = prettifyMarkdown(stripCommentSpans(raw));
-      // Normalize frontmatter
-      processed = normalizeFrontmatter(processed);
     } catch (err) {
       this.logger.error(
         { event: 'spec.commit_failed', error: String(err), publisher_ref, step: 'transform' },
         'Failed to transform spec markdown',
+      );
+      throw err;
+    }
+
+    // Fetch GitHub username for implemented_by
+    let implementedBy: string | null = null;
+    try {
+      const { stdout } = await this.execFn('gh', ['api', 'user', '-q', '.login'], { cwd: workspace_path });
+      implementedBy = stdout.trim() || null;
+    } catch (err) {
+      this.logger.warn(
+        { event: 'spec.implemented_by_fetch_failed', error: String(err), publisher_ref },
+        'Failed to fetch GitHub username for implemented_by; setting to null',
+      );
+    }
+
+    // Normalize frontmatter (status: implementing, implemented_by, last_updated)
+    try {
+      processed = normalizeFrontmatter(processed, implementedBy);
+    } catch (err) {
+      this.logger.error(
+        { event: 'spec.commit_failed', error: String(err), publisher_ref, step: 'transform' },
+        'Failed to normalize spec frontmatter',
       );
       throw err;
     }
@@ -149,6 +181,81 @@ export class NotionSpecCommitter implements SpecCommitter {
     this.logger.info(
       { event: 'spec.committed', publisher_ref, spec_path, workspace_path },
       'Spec committed to workspace',
+    );
+  }
+
+  async updateStatus(
+    workspace_path: string,
+    spec_path: string,
+    update: { status: SpecLifecycleStatus; last_updated: string },
+  ): Promise<void> {
+    let content: string;
+    try {
+      content = readFileSync(spec_path, 'utf-8');
+    } catch (err) {
+      const msg = `Spec file not found: ${spec_path}`;
+      this.logger.error(
+        { event: 'spec.status_update_failed', error: msg, spec_path, workspace_path },
+        msg,
+      );
+      throw new Error(msg);
+    }
+
+    // Patch frontmatter: update status and last_updated, preserve all other fields
+    const delim = '---';
+    const start = content.indexOf(delim);
+    const end = content.indexOf(delim, start + 3);
+    if (start === -1 || end === -1) {
+      const msg = `Spec has no YAML frontmatter: ${spec_path}`;
+      this.logger.error(
+        { event: 'spec.status_update_failed', error: msg, spec_path, workspace_path },
+        msg,
+      );
+      throw new Error(msg);
+    }
+
+    const frontmatterRaw = content.slice(start + 3, end);
+    const body = content.slice(end + 3);
+
+    const lines = frontmatterRaw.split('\n');
+    const patched = lines.map(line => {
+      if (/^status\s*:/.test(line)) return `status: ${update.status}`;
+      if (/^last_updated\s*:/.test(line)) return `last_updated: ${update.last_updated}`;
+      return line;
+    });
+    const newContent = `---${patched.join('\n')}---${body}`;
+
+    writeFileSync(spec_path, newContent, 'utf-8');
+
+    const title = extractTitle(newContent);
+
+    try {
+      await this.execFn('git', ['add', spec_path], { cwd: workspace_path });
+    } catch (err) {
+      this.logger.error(
+        { event: 'spec.status_update_failed', error: String(err), spec_path, workspace_path, step: 'git_add' },
+        'git add failed in updateStatus',
+      );
+      throw err;
+    }
+
+    try {
+      await this.execFn(
+        'git',
+        ['commit', '-m', `docs: update spec status — ${title} (${update.status})`],
+        { cwd: workspace_path },
+      );
+    } catch (err) {
+      this.logger.error(
+        { event: 'spec.status_update_failed', error: String(err), spec_path, workspace_path, step: 'git_commit' },
+        'git commit failed in updateStatus',
+      );
+      throw err;
+    }
+
+    this.logger.info(
+      { event: 'spec.status_updated', spec_path, workspace_path, status: update.status, last_updated: update.last_updated },
+      'Spec status updated',
     );
   }
 }

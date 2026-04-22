@@ -16,7 +16,7 @@ import type { QuestionAnswerer } from '../adapters/agent/question-answerer.js';
 import type { SpecCommitter } from '../adapters/notion/spec-committer.js';
 import type { Implementer } from '../adapters/agent/implementer.js';
 import type { ImplementationFeedbackPage, FeedbackItem } from '../adapters/notion/implementation-feedback-page.js';
-import type { PRCreator } from '../adapters/agent/pr-creator.js';
+import type { PRManager, PRManagerOptions } from '../adapters/agent/pr-manager.js';
 import type { IssueManager } from '../adapters/agent/issue-manager.js';
 import type { IssueFiler, FilingResult } from '../adapters/agent/issue-filer.js';
 import { RunStore, FileRunStore } from './run-store.js';
@@ -56,7 +56,7 @@ interface OrchestratorDeps {
   specCommitter?: SpecCommitter;
   implementer?: Implementer;
   implFeedbackPage?: ImplementationFeedbackPage;
-  prCreator?: PRCreator;
+  prManager?: PRManager;
   issueManager?: IssueManager;
   issueFiler?: IssueFiler;
   runStore?: RunStore;
@@ -171,7 +171,7 @@ export class OrchestratorImpl implements Orchestrator {
       this.logger.debug({ event: 'classify.run_not_found', request_id: event.payload.request_id }, 'No run found; discarding');
       return 'discard';
     }
-    const actionableStages: RunStage[] = ['reviewing_spec', 'reviewing_implementation', 'awaiting_impl_input'];
+    const actionableStages: RunStage[] = ['reviewing_spec', 'reviewing_implementation', 'awaiting_impl_input', 'pr_open'];
     if (!actionableStages.includes(run.stage)) {
       this.logger.debug({ event: 'classify.stage_blocked', stage: run.stage }, 'Stage blocked: discarding thread_message');
       return 'discard';
@@ -348,14 +348,34 @@ export class OrchestratorImpl implements Orchestrator {
           await this._handleSpecFeedback(feedback);
         } else if (routingStage === 'reviewing_implementation' || routingStage === 'awaiting_impl_input') {
           await this._handleImplementationFeedback(feedback, run, routingStage);
+        } else if (routingStage === 'pr_open') {
+          try {
+            await this.deps.postMessage(
+              feedback.channel_id,
+              feedback.thread_ts,
+              'A PR is already open \u2014 merge it or close it first.',
+            );
+          } catch (err) {
+            this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post pr_open feedback message');
+          }
+          // Restore stage: _classify advanced it, but feedback doesn't change stage
+          run.stage = 'pr_open';
+          this._persistRuns();
         }
       } else if (intent === 'approval') {
         if (routingStage === 'reviewing_spec') {
           await this._handleSpecApproval(feedback, run);
         } else if (routingStage === 'reviewing_implementation') {
           await this._handleImplementationApproval(feedback, run);
+        } else if (routingStage === 'pr_open') {
+          await this._handlePrMerge(feedback, run);
         }
       } else if (intent === 'question') {
+        if (routingStage === 'pr_open') {
+          // Restore stage for question in pr_open: no stage change
+          run.stage = 'pr_open';
+          this._persistRuns();
+        }
         await this._handleQuestion(feedback.content, feedback.channel_id, feedback.thread_ts, run);
       }
       // 'ignore' and other intents: silently discard
@@ -530,6 +550,13 @@ export class OrchestratorImpl implements Orchestrator {
     // status === 'complete'
     this.logger.info({ event: 'implementation.complete', run_id: run.id, request_id: run.request_id, attempt: run.attempt }, 'Implementation complete');
 
+    // Store impl result for PR body construction
+    run.last_impl_result = {
+      summary: result.summary ?? '',
+      testing_instructions: result.testing_instructions ?? '',
+    };
+    this._persistRuns();
+
     // Create implementation feedback page (degraded if it fails -- don't abort)
     let feedbackPageUrl: string | undefined;
     try {
@@ -626,6 +653,13 @@ export class OrchestratorImpl implements Orchestrator {
     // status === 'complete'
     this.logger.info({ event: 'implementation.complete', run_id: run.id, request_id: run.request_id, attempt: run.attempt }, 'Implementation complete');
 
+    // Update last_impl_result with the latest implementation result
+    run.last_impl_result = {
+      summary: result.summary ?? '',
+      testing_instructions: result.testing_instructions ?? '',
+    };
+    this._persistRuns();
+
     // Step 3: Update feedback page (degraded if fails -- don't abort)
     if (run.impl_feedback_ref) {
       try {
@@ -645,38 +679,114 @@ export class OrchestratorImpl implements Orchestrator {
   }
 
   private async _handleImplementationApproval(feedback: ThreadMessage, run: Run): Promise<void> {
-    // Step 1: Create PR
+    const today = new Date().toISOString().slice(0, 10);
+
+    // Step 1: Update spec status to complete (non-fatal)
+    if (run.spec_path) {
+      try {
+        await this.deps.specCommitter!.updateStatus(run.workspace_path, run.spec_path, {
+          status: 'complete',
+          last_updated: today,
+        });
+      } catch (err) {
+        this.logger.error(
+          { event: 'spec.status_update_failed', run_id: run.id, error: String(err) },
+          'Failed to update spec status to complete; continuing',
+        );
+      }
+    }
+
+    // Step 2: Update spec publisher status to Complete (non-fatal)
+    if (run.publisher_ref) {
+      try {
+        await this.deps.specPublisher.updateStatus?.(run.publisher_ref, 'Complete');
+      } catch (err) {
+        this.logger.error(
+          { event: 'spec.publisher_update_failed', run_id: run.id, error: String(err) },
+          'Failed to update spec publisher status to Complete; continuing',
+        );
+      }
+    }
+
+    // Step 3: Create PR
+    const prOptions: PRManagerOptions = {
+      impl_result: run.last_impl_result,
+      run_intent: run.intent,
+    };
     let prUrl: string;
     try {
-      prUrl = await this.deps.prCreator!.createPR(run.workspace_path, run.branch, run.spec_path ?? '');
+      prUrl = await this.deps.prManager!.createPR(
+        run.workspace_path,
+        run.branch,
+        run.spec_path ?? '',
+        prOptions,
+      );
     } catch (err) {
       await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
       return;
     }
 
-    // Step 2: Post PR link (best-effort)
+    // Step 4: Store PR URL
+    run.pr_url = prUrl;
+    this._persistRuns();
+
+    // Step 5: Post PR link (best-effort)
     try {
       await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, `PR opened: ${prUrl}`);
     } catch (err) {
       this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post PR link');
     }
 
-    // Step 3: Update statuses (best-effort, all in parallel)
+    // Step 6: Update impl feedback page statuses (best-effort, non-blocking)
     if (run.impl_feedback_ref) {
       await Promise.allSettled([
         this.deps.implFeedbackPage?.setPRLink?.(run.impl_feedback_ref, prUrl),
         this.deps.implFeedbackPage?.updateStatus?.(run.impl_feedback_ref, 'Approved'),
-        this.deps.specPublisher.updateStatus?.(run.publisher_ref!, 'Complete'),
       ]).then(results => {
         for (const r of results) {
           if (r.status === 'rejected') {
             this.logger.error(
               { event: 'run.status_update_failed', run_id: run.id, error: String(r.reason) },
-              'Failed to update status on implementation approval',
+              'Failed to update impl feedback page on implementation approval',
             );
           }
         }
       });
+    }
+
+    // Step 7: Transition to pr_open
+    this.transition(run, 'pr_open');
+  }
+
+  private async _handlePrMerge(feedback: ThreadMessage, run: Run): Promise<void> {
+    if (!run.pr_url) {
+      this.logger.warn(
+        { event: 'pr.merge_missing_url', run_id: run.id, request_id: run.request_id },
+        'pr_url is undefined on run; cannot merge',
+      );
+      try {
+        await this.deps.postMessage(
+          feedback.channel_id,
+          feedback.thread_ts,
+          'Cannot merge: no PR URL is associated with this run.',
+        );
+      } catch (notifyErr) {
+        this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(notifyErr) }, 'Failed to post PR URL missing error');
+      }
+      return;
+    }
+
+    try {
+      await this.deps.prManager!.mergePR(run.workspace_path, run.pr_url);
+    } catch (err) {
+      await this.failRun(run, feedback.channel_id, feedback.thread_ts, err);
+      return;
+    }
+
+    try {
+      await this.deps.postMessage(feedback.channel_id, feedback.thread_ts, 'PR merged.');
+    } catch (err) {
+      this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post PR merged notification');
     }
 
     this.transition(run, 'done');
@@ -724,6 +834,8 @@ export class OrchestratorImpl implements Orchestrator {
       impl_feedback_ref: undefined,
       issue: undefined,
       attempt: 0,
+      pr_url: undefined,
+      last_impl_result: undefined,
       channel_id: request.channel_id,
       thread_ts: request.thread_ts,
       created_at: new Date().toISOString(),

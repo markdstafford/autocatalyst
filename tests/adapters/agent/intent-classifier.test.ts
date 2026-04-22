@@ -344,3 +344,36 @@ describe('AnthropicIntentClassifier — ALL_INTENTS snapshot', () => {
     expect(result).toBe('file_issues');
   });
 });
+
+describe('AnthropicIntentClassifier — pr_open context', () => {
+  it('classifies approval message as approval in pr_open context', async () => {
+    const cf = vi.fn().mockResolvedValue(makeApiResponse('approval'));
+    expect(await makeClassifier(cf).classify('looks good, merge it', 'pr_open')).toBe('approval');
+  });
+
+  it('classifies question message as question in pr_open context', async () => {
+    const cf = vi.fn().mockResolvedValue(makeApiResponse('question'));
+    expect(await makeClassifier(cf).classify('what branch was used?', 'pr_open')).toBe('question');
+  });
+
+  it('classifies ignore message as ignore in pr_open context', async () => {
+    const cf = vi.fn().mockResolvedValue(makeApiResponse('ignore'));
+    expect(await makeClassifier(cf).classify('ignore this', 'pr_open')).toBe('ignore');
+  });
+
+  it('falls back to ignore when model returns feedback (invalid for pr_open) after two retries', async () => {
+    // feedback is not valid for pr_open context; classifier retries and falls back to ignore
+    const cf = vi.fn().mockResolvedValue(makeApiResponse('feedback'));
+    const classifier = new AnthropicIntentClassifier('key', { createFn: cf, logDestination: nullDest });
+    const result = await classifier.classify('please update the tests', 'pr_open');
+    expect(result).toBe('ignore'); // conservative fallback for pr_open
+    expect(cf).toHaveBeenCalledTimes(2); // two attempts before fallback
+  });
+
+  it('conservative fallback for pr_open is ignore when API always fails', async () => {
+    const cf = vi.fn().mockRejectedValue(new Error('API error'));
+    const classifier = new AnthropicIntentClassifier('key', { createFn: cf, logDestination: nullDest });
+    const result = await classifier.classify('some message', 'pr_open');
+    expect(result).toBe('ignore');
+  });
+});
