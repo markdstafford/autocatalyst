@@ -20,6 +20,7 @@ export const EMOJI_COMMAND_TABLE: Record<string, string> = {
   'ac-run-logs': 'run.logs',
   'ac-health': 'health',
   'ac-help': 'help',
+  'ac-classify-intent': 'classify-intent',
 };
 
 export function classifyMessage(

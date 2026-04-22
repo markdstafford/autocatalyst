@@ -215,13 +215,13 @@ The handler accepts `IntentClassifier`, not `IntentClassifier | undefined`. In `
 ## Task list
 
 - [ ] **Story: Wire ****`:ac-classify-intent:`**** into the command table and register the handler**
-	- [ ] **Task: Add ****`:ac-classify-intent:`**** to ****`EMOJI_COMMAND_TABLE`**** in ****`classifier.ts`**
+	- [x] **Task: Add ****`:ac-classify-intent:`**** to ****`EMOJI_COMMAND_TABLE`**** in ****`classifier.ts`**
 		- **Description**: Add `'ac-classify-intent': 'classify-intent'` to the `EMOJI_COMMAND_TABLE` record in `src/adapters/slack/classifier.ts`. No other changes to the module.
 		- **Acceptance criteria**:
-			- [ ] `EMOJI_COMMAND_TABLE['ac-classify-intent']` equals `'classify-intent'`
-			- [ ] `:ac-classify-intent: hello world` passes through `classifyMessage()` as `{ intent: 'command', command: 'classify-intent', args: ['hello', 'world'] }`
-			- [ ] All existing `classifyMessage` tests pass
-			- [ ] `tsc --noEmit` passes
+			- [x] `EMOJI_COMMAND_TABLE['ac-classify-intent']` equals `'classify-intent'`
+			- [x] `:ac-classify-intent: hello world` passes through `classifyMessage()` as `{ intent: 'command', command: 'classify-intent', args: ['hello', 'world'] }`
+			- [x] All existing `classifyMessage` tests pass
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: None
 	- [ ] **Task: Implement ****`makeClassifyIntentHandler`**** in ****`classify-intent-command.ts`**
 		- **Description**: Create `src/core/commands/classify-intent-command.ts`. Export `makeClassifyIntentHandler(intentClassifier: IntentClassifier): CommandHandler`. The handler: (1) returns usage message if args is empty; (2) checks if `args[0]` is a key in `VALID_INTENTS_BY_CONTEXT` — if so, uses it as the context override and joins the remaining args as message text; otherwise joins all args as message text with context defaulting to `new_thread`; (3) returns usage message if text is empty after context extraction; (4) calls `intentClassifier.classify(text, context)`; (5) posts the formatted reply as specified in §2. Write unit tests in `tests/core/commands/classify-intent-command.test.ts` covering all cases in §6.
