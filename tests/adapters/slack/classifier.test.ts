@@ -236,3 +236,44 @@ describe('classifyMessage — command detection', () => {
     expect(result.intent).toBe('ignore');
   });
 });
+
+describe('classifyMessage — classify-intent command', () => {
+  it(':ac-classify-intent: hello world → command classify-intent with args [hello, world]', () => {
+    const result = classifyMessage(
+      { text: ':ac-classify-intent: hello world', user: 'U999', ts: '100.0' },
+      BOT_ID,
+      makeRegistry(),
+    );
+    expect(result.intent).toBe('command');
+    if (result.intent === 'command') {
+      expect(result.command).toBe('classify-intent');
+      expect(result.args).toEqual(['hello', 'world']);
+    }
+  });
+
+  it(':ac-classify-intent: with no trailing text → command classify-intent with empty args', () => {
+    const result = classifyMessage(
+      { text: ':ac-classify-intent:', user: 'U999', ts: '100.0' },
+      BOT_ID,
+      makeRegistry(),
+    );
+    expect(result.intent).toBe('command');
+    if (result.intent === 'command') {
+      expect(result.command).toBe('classify-intent');
+      expect(result.args).toEqual([]);
+    }
+  });
+
+  it(':ac-classify-intent: reviewing_spec looks good → args include context and message tokens', () => {
+    const result = classifyMessage(
+      { text: ':ac-classify-intent: reviewing_spec looks good', user: 'U999', ts: '100.0' },
+      BOT_ID,
+      makeRegistry(),
+    );
+    expect(result.intent).toBe('command');
+    if (result.intent === 'command') {
+      expect(result.command).toBe('classify-intent');
+      expect(result.args).toEqual(['reviewing_spec', 'looks', 'good']);
+    }
+  });
+});

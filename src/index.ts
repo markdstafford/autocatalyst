@@ -20,6 +20,7 @@ import { OrchestratorImpl } from './core/orchestrator.js';
 import { CommandRegistryImpl } from './core/command-registry.js';
 import { makeRunStatusHandler, makeRunListHandler, makeRunCancelHandler, makeRunLogsHandler } from './core/commands/run-commands.js';
 import { makeHealthHandler, makeHelpHandler } from './core/commands/meta-commands.js';
+import { makeClassifyIntentHandler } from './core/commands/classify-intent-command.js';
 import { FileRunStore } from './core/run-store.js';
 import { NotionClientImpl } from './adapters/notion/notion-client.js';
 import { NotionPublisher } from './adapters/notion/notion-publisher.js';
@@ -297,6 +298,11 @@ try {
     'help',
     makeHelpHandler(commandRegistry),
     'Show available commands. Usage: `:ac-help:` or `:ac-help: <command>`',
+  );
+  commandRegistry.register(
+    'classify-intent',
+    makeClassifyIntentHandler(intentClassifier),
+    'Test how a message would be classified. Usage: `:ac-classify-intent: <message>` or `:ac-classify-intent: <context> <message>`',
   );
 
   const service = new Service(currentConfig, { orchestrator });
