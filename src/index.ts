@@ -17,6 +17,9 @@ import { AgentSDKSpecGenerator } from './adapters/agent/spec-generator.js';
 import { SlackCanvasPublisher } from './adapters/slack/canvas-publisher.js';
 import type { SpecPublisher } from './types/publisher.js';
 import { OrchestratorImpl } from './core/orchestrator.js';
+import { CommandRegistryImpl } from './core/command-registry.js';
+import { makeRunStatusHandler, makeRunListHandler, makeRunCancelHandler, makeRunLogsHandler } from './core/commands/run-commands.js';
+import { makeHealthHandler, makeHelpHandler } from './core/commands/meta-commands.js';
 import { FileRunStore } from './core/run-store.js';
 import { NotionClientImpl } from './adapters/notion/notion-client.js';
 import { NotionPublisher } from './adapters/notion/notion-publisher.js';
@@ -226,6 +229,8 @@ try {
     logger.info({ event: 'service.config', publisher: 'slack-canvas' }, 'Using Slack canvas publisher');
   }
 
+  const commandRegistry = new CommandRegistryImpl();
+
   const orchestrator = new OrchestratorImpl({
     adapter,
     workspaceManager,
@@ -242,6 +247,7 @@ try {
     issueFiler,
     runStore,
     threadRegistry,
+    commandRegistry,
     postError: async (channel_id, thread_ts, text) => {
       await boltApp.client.chat.postMessage({ channel: channel_id, thread_ts, text });
     },
@@ -250,6 +256,48 @@ try {
     },
     repo_url,
   });
+
+  // Register command handlers
+  commandRegistry.register(
+    'run.status',
+    makeRunStatusHandler(orchestrator.getRuns()),
+    'Show the current stage, intent, and time in stage for a run. Usage: `:ac-run-status:` (in thread) or `:ac-run-status: <run-id>`',
+  );
+  commandRegistry.register(
+    'run.list',
+    makeRunListHandler(orchestrator.getRuns()),
+    'List all active runs. Usage: `:ac-run-list:`',
+  );
+  commandRegistry.register(
+    'run.cancel',
+    makeRunCancelHandler(
+      orchestrator.getRuns(),
+      (requestId) => orchestrator.cancelRun(requestId),
+    ),
+    'Cancel an active run. Usage: `:ac-run-cancel:` (in thread) or `:ac-run-cancel: <run-id>`',
+  );
+  commandRegistry.register(
+    'run.logs',
+    makeRunLogsHandler(
+      orchestrator.getRuns(),
+      (requestId) => orchestrator.getRunLogs(requestId),
+    ),
+    'Show the log tail for a run. Usage: `:ac-run-logs:` (in thread) or `:ac-run-logs: <run-id>`',
+  );
+
+  commandRegistry.register(
+    'health',
+    makeHealthHandler(
+      () => adapter.isConnected(),
+      () => orchestrator.getActiveRunCount(),
+    ),
+    'Check system health and active run count. Usage: `:ac-health:`',
+  );
+  commandRegistry.register(
+    'help',
+    makeHelpHandler(commandRegistry),
+    'Show available commands. Usage: `:ac-help:` or `:ac-help: <command>`',
+  );
 
   const service = new Service(currentConfig, { orchestrator });
 

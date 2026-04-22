@@ -14,8 +14,10 @@ const nullDest = { write: () => {} };
 function makeMockApp(opts: {
   botUserId?: string;
   channels?: Array<{ name: string; id: string }>;
+  historyMessages?: Array<{ ts: string; thread_ts?: string }>;
 }) {
   const messageHandlers: Array<(args: { message: unknown }) => Promise<void>> = [];
+  const eventHandlers = new Map<string, Array<(args: { event: unknown }) => Promise<void>>>();
 
   const app = {
     client: {
@@ -26,6 +28,9 @@ function makeMockApp(opts: {
         list: vi.fn().mockResolvedValue({
           channels: opts.channels ?? [{ name: 'my-channel', id: 'C123' }],
         }),
+        history: vi.fn().mockResolvedValue({
+          messages: opts.historyMessages ?? [],
+        }),
       },
       chat: {
         postMessage: vi.fn().mockResolvedValue({}),
@@ -34,11 +39,18 @@ function makeMockApp(opts: {
     message: vi.fn((handler: (args: { message: unknown }) => Promise<void>) => {
       messageHandlers.push(handler);
     }),
+    event: vi.fn((eventName: string, handler: (args: { event: unknown }) => Promise<void>) => {
+      if (!eventHandlers.has(eventName)) eventHandlers.set(eventName, []);
+      eventHandlers.get(eventName)!.push(handler);
+    }),
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
-    // Test helper — not part of the real App API
     _triggerMessage: async (msg: unknown) => {
       for (const h of messageHandlers) await h({ message: msg });
+    },
+    _triggerReaction: async (reactionEvent: unknown) => {
+      const handlers = eventHandlers.get('reaction_added') ?? [];
+      for (const h of handlers) await h({ event: reactionEvent });
     },
   };
   return app;
@@ -283,5 +295,242 @@ describe('SlackAdapter — service lifecycle', () => {
     expect(mock.start).toHaveBeenCalledTimes(1);
     await adapter.stop();
     expect(mock.stop).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('SlackAdapter — command events (message-based)', () => {
+  const BOT_ID = 'UBOT001';
+  const CHANNEL_ID = 'C123';
+  const CHANNEL_NAME = 'my-channel';
+
+  it('recognized command emoji in root message → command event with thread_ts = msg.ts; no postMessage', async () => {
+    const mock = makeMockApp({ botUserId: BOT_ID });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME }, { logDestination: nullDest });
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    await mock._triggerMessage({
+      text: ':ac-run-status:',
+      user: 'U123',
+      ts: '100.0',
+      channel: CHANNEL_ID,
+    });
+
+    const event = await eventPromise;
+    await adapter.stop();
+
+    expect(event.type).toBe('command');
+    if (event.type === 'command') {
+      expect(event.payload.command).toBe('run.status');
+      expect(event.payload.args).toEqual([]);
+      expect(event.payload.thread_ts).toBe('100.0');
+      expect(event.payload.author).toBe('U123');
+      expect(event.payload.channel_id).toBe(CHANNEL_ID);
+    }
+    expect(mock.client.chat.postMessage).not.toHaveBeenCalled();
+  });
+
+  it('recognized command emoji inside thread reply → event with thread_ts = msg.thread_ts', async () => {
+    const mock = makeMockApp({ botUserId: BOT_ID });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME }, { logDestination: nullDest });
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    await mock._triggerMessage({
+      text: ':ac-run-status:',
+      user: 'U123',
+      ts: '200.0',
+      thread_ts: '100.0',
+      channel: CHANNEL_ID,
+    });
+
+    const event = await eventPromise;
+    await adapter.stop();
+
+    expect(event.type).toBe('command');
+    if (event.type === 'command') {
+      expect(event.payload.thread_ts).toBe('100.0');
+    }
+  });
+
+  it('inferred_context.request_id populated when thread_ts is in registry', async () => {
+    const { ThreadRegistry } = await import('../../../src/adapters/slack/thread-registry.js');
+    const registry = new ThreadRegistry();
+    registry.register('100.0', 'req-abc');
+    const mock = makeMockApp({ botUserId: BOT_ID });
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { channelName: CHANNEL_NAME },
+      { logDestination: nullDest, registry },
+    );
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    await mock._triggerMessage({
+      text: ':ac-run-status:',
+      user: 'U123',
+      ts: '200.0',
+      thread_ts: '100.0',
+      channel: CHANNEL_ID,
+    });
+
+    const event = await eventPromise;
+    await adapter.stop();
+
+    expect(event.type).toBe('command');
+    if (event.type === 'command') {
+      expect(event.payload.inferred_context?.request_id).toBe('req-abc');
+    }
+  });
+
+  it('inferred_context.request_id is undefined when thread not registered', async () => {
+    const mock = makeMockApp({ botUserId: BOT_ID });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME }, { logDestination: nullDest });
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    await mock._triggerMessage({
+      text: ':ac-run-status:',
+      user: 'U123',
+      ts: '100.0',
+      channel: CHANNEL_ID,
+    });
+
+    const event = await eventPromise;
+    await adapter.stop();
+
+    expect(event.type).toBe('command');
+    if (event.type === 'command') {
+      expect(event.payload.inferred_context?.request_id).toBeUndefined();
+    }
+  });
+});
+
+describe('SlackAdapter — command events (reaction-based)', () => {
+  const BOT_ID = 'UBOT001';
+  const CHANNEL_ID = 'C123';
+  const CHANNEL_NAME = 'my-channel';
+
+  it('reaction_added with recognized emoji on root message → conversations.history called; event emitted with correct thread_ts', async () => {
+    const mock = makeMockApp({
+      botUserId: BOT_ID,
+      historyMessages: [{ ts: '100.0' }],
+    });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME }, { logDestination: nullDest });
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    await mock._triggerReaction({
+      type: 'reaction_added',
+      reaction: 'ac-run-status',
+      user: 'U123',
+      item: { type: 'message', channel: CHANNEL_ID, ts: '100.0' },
+    });
+
+    const event = await eventPromise;
+    await adapter.stop();
+
+    expect(mock.client.conversations.history).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: CHANNEL_ID, latest: '100.0' }),
+    );
+    expect(event.type).toBe('command');
+    if (event.type === 'command') {
+      expect(event.payload.command).toBe('run.status');
+      expect(event.payload.thread_ts).toBe('100.0');
+    }
+  });
+
+  it('reaction_added on thread reply → command event with thread_ts = reactedMessage.thread_ts', async () => {
+    const mock = makeMockApp({
+      botUserId: BOT_ID,
+      historyMessages: [{ ts: '200.0', thread_ts: '100.0' }],
+    });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME }, { logDestination: nullDest });
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    await mock._triggerReaction({
+      type: 'reaction_added',
+      reaction: 'ac-run-status',
+      user: 'U123',
+      item: { type: 'message', channel: CHANNEL_ID, ts: '200.0' },
+    });
+
+    const event = await eventPromise;
+    await adapter.stop();
+
+    expect(event.type).toBe('command');
+    if (event.type === 'command') {
+      expect(event.payload.thread_ts).toBe('100.0');
+    }
+  });
+
+  it('reaction_added, conversations.history fails → event emitted with item.ts as fallback thread_ts', async () => {
+    const mock = makeMockApp({ botUserId: BOT_ID });
+    mock.client.conversations.history.mockRejectedValueOnce(new Error('network error'));
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME }, { logDestination: nullDest });
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    await mock._triggerReaction({
+      type: 'reaction_added',
+      reaction: 'ac-run-status',
+      user: 'U123',
+      item: { type: 'message', channel: CHANNEL_ID, ts: '100.0' },
+    });
+
+    const event = await eventPromise;
+    await adapter.stop();
+
+    expect(event.type).toBe('command');
+    if (event.type === 'command') {
+      expect(event.payload.thread_ts).toBe('100.0');
+    }
+  });
+
+  it('reaction_added with unrecognized emoji → no event emitted', async () => {
+    const mock = makeMockApp({ botUserId: BOT_ID });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME }, { logDestination: nullDest });
+    await adapter.start();
+
+    let emitted = false;
+    const racePromise = Promise.race([
+      takeOne(adapter.receive()).then(() => { emitted = true; }),
+      new Promise<void>(res => setTimeout(res, 30)),
+    ]);
+
+    await mock._triggerReaction({
+      type: 'reaction_added',
+      reaction: 'thumbsup',
+      user: 'U123',
+      item: { type: 'message', channel: CHANNEL_ID, ts: '100.0' },
+    });
+
+    await racePromise;
+    await adapter.stop();
+    expect(emitted).toBe(false);
+  });
+
+  it('reaction_added from different channel → ignored; no event emitted', async () => {
+    const mock = makeMockApp({ botUserId: BOT_ID });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME }, { logDestination: nullDest });
+    await adapter.start();
+
+    let emitted = false;
+    const racePromise = Promise.race([
+      takeOne(adapter.receive()).then(() => { emitted = true; }),
+      new Promise<void>(res => setTimeout(res, 30)),
+    ]);
+
+    await mock._triggerReaction({
+      type: 'reaction_added',
+      reaction: 'ac-run-status',
+      user: 'U123',
+      item: { type: 'message', channel: 'C_OTHER', ts: '100.0' },
+    });
+
+    await racePromise;
+    await adapter.stop();
+    expect(emitted).toBe(false);
   });
 });
