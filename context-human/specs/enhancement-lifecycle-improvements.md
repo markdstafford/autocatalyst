@@ -1,10 +1,10 @@
 ---
 created: 2026-04-20
-last_updated: 2026-04-20
-status: approved
-issue: null
+last_updated: 2026-04-21
+status: complete
+issue: 76
 specced_by: markdstafford
-implemented_by: null
+implemented_by: markdstafford
 superseded_by: null
 ---
 # Enhancement: Lifecycle improvements
