@@ -223,16 +223,16 @@ The handler accepts `IntentClassifier`, not `IntentClassifier | undefined`. In `
 			- [x] All existing `classifyMessage` tests pass
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: None
-	- [ ] **Task: Implement ****`makeClassifyIntentHandler`**** in ****`classify-intent-command.ts`**
+	- [x] **Task: Implement ****`makeClassifyIntentHandler`**** in ****`classify-intent-command.ts`**
 		- **Description**: Create `src/core/commands/classify-intent-command.ts`. Export `makeClassifyIntentHandler(intentClassifier: IntentClassifier): CommandHandler`. The handler: (1) returns usage message if args is empty; (2) checks if `args[0]` is a key in `VALID_INTENTS_BY_CONTEXT` — if so, uses it as the context override and joins the remaining args as message text; otherwise joins all args as message text with context defaulting to `new_thread`; (3) returns usage message if text is empty after context extraction; (4) calls `intentClassifier.classify(text, context)`; (5) posts the formatted reply as specified in §2. Write unit tests in `tests/core/commands/classify-intent-command.test.ts` covering all cases in §6.
 		- **Acceptance criteria**:
-			- [ ] Empty args → usage message posted; `classify()` not called
-			- [ ] `['reviewing_spec', 'is', 'this', 'right?']` → `classify('is this right?', 'reviewing_spec')` called; reply includes `Context: \`reviewing_spec\`\`
-			- [ ] `['reviewing_spec']` only → usage message posted; `classify()` not called
-			- [ ] `['hello', 'world']` (no valid context as first arg) → `classify('hello world', 'new_thread')` called
-			- [ ] Reply format matches spec
-			- [ ] All unit tests pass
-			- [ ] `tsc --noEmit` passes
+			- [x] Empty args → usage message posted; `classify()` not called
+			- [x] `['reviewing_spec', 'is', 'this', 'right?']` → `classify('is this right?', 'reviewing_spec')` called; reply includes `Context: \`reviewing_spec\`\`
+			- [x] `['reviewing_spec']` only → usage message posted; `classify()` not called
+			- [x] `['hello', 'world']` (no valid context as first arg) → `classify('hello world', 'new_thread')` called
+			- [x] Reply format matches spec
+			- [x] All unit tests pass
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `:ac-classify-intent:` to `EMOJI_COMMAND_TABLE`
 	- [ ] **Task: Register ****`classify-intent`**** command in ****`src/index.ts`**
 		- **Description**: Import `makeClassifyIntentHandler` from `./core/commands/classify-intent-command.js`. After the existing command registrations, call `commandRegistry.register('classify-intent', makeClassifyIntentHandler(intentClassifier), '')`. Use usage string: `Test how a message would be classified. Usage: \`:ac-classify-intent: \\` or \`:ac-classify-intent: \ \\`\`.
