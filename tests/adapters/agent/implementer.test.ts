@@ -552,32 +552,18 @@ describe('AgentSDKImplementer — status synonym normalization', () => {
 
   // Truly invalid values still throw
   it('"unknown" still throws STATUS error — normalization does not obscure truly invalid values', async () => {
-    const queryFn = makeQueryFn();
-    const readFile = vi.fn().mockResolvedValue(JSON.stringify({ status: 'unknown' }));
-    const impl = new AgentSDKImplementer({ logDestination: nullDest, queryFn, readFile });
+    const { impl } = makeImpl({ status: 'unknown' });
     await expect(impl.implement(specPath, tmpDir)).rejects.toThrow(/STATUS|invalid/i);
   });
 });
 
 describe('AgentSDKImplementer — prompt negative example', () => {
-  it('prompt contains negative example forbidding "done" synonym', async () => {
+  it('prompt contains negative-example instruction forbidding status synonyms', async () => {
     const { impl, queryFn } = makeImpl({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' });
     await impl.implement(specPath, tmpDir);
     const call = queryFn.mock.calls[0][0] as { prompt: string };
     expect(call.prompt).toMatch(/do not use synonyms/i);
-  });
-
-  it('prompt contains negative example forbidding "error" synonym', async () => {
-    const { impl, queryFn } = makeImpl({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' });
-    await impl.implement(specPath, tmpDir);
-    const call = queryFn.mock.calls[0][0] as { prompt: string };
     expect(call.prompt).toContain('"error"');
-  });
-
-  it('prompt contains negative example forbidding "pending" synonym', async () => {
-    const { impl, queryFn } = makeImpl({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' });
-    await impl.implement(specPath, tmpDir);
-    const call = queryFn.mock.calls[0][0] as { prompt: string };
     expect(call.prompt).toContain('"pending"');
   });
 });
