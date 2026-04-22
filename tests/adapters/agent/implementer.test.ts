@@ -485,3 +485,99 @@ describe('AgentSDKImplementer — drain loop relay detection', () => {
     expect(onProgress).toHaveBeenNthCalledWith(2, 'Second message');
   });
 });
+
+describe('AgentSDKImplementer — status synonym normalization', () => {
+  // → complete
+  it('"done" normalizes to "complete" — implement resolves with status: complete', async () => {
+    const { impl } = makeImpl({ status: 'done', summary: 'Done.', testing_instructions: 'Run tests' });
+    const result = await impl.implement(specPath, tmpDir);
+    expect(result.status).toBe('complete');
+  });
+
+  it('"finished" normalizes to "complete"', async () => {
+    const { impl } = makeImpl({ status: 'finished', summary: 'Done.', testing_instructions: 'Run tests' });
+    const result = await impl.implement(specPath, tmpDir);
+    expect(result.status).toBe('complete');
+  });
+
+  it('"success" normalizes to "complete"', async () => {
+    const { impl } = makeImpl({ status: 'success', summary: 'Done.', testing_instructions: 'Run tests' });
+    const result = await impl.implement(specPath, tmpDir);
+    expect(result.status).toBe('complete');
+  });
+
+  it('"ok" normalizes to "complete"', async () => {
+    const { impl } = makeImpl({ status: 'ok', summary: 'Done.', testing_instructions: 'Run tests' });
+    const result = await impl.implement(specPath, tmpDir);
+    expect(result.status).toBe('complete');
+  });
+
+  // → failed
+  it('"error" normalizes to "failed" — implement resolves with status: failed', async () => {
+    const { impl } = makeImpl({ status: 'error', error: 'Something went wrong.' });
+    const result = await impl.implement(specPath, tmpDir);
+    expect(result.status).toBe('failed');
+  });
+
+  it('"failure" normalizes to "failed"', async () => {
+    const { impl } = makeImpl({ status: 'failure', error: 'Something went wrong.' });
+    const result = await impl.implement(specPath, tmpDir);
+    expect(result.status).toBe('failed');
+  });
+
+  it('"crashed" normalizes to "failed"', async () => {
+    const { impl } = makeImpl({ status: 'crashed', error: 'Something went wrong.' });
+    const result = await impl.implement(specPath, tmpDir);
+    expect(result.status).toBe('failed');
+  });
+
+  // → needs_input
+  it('"pending" normalizes to "needs_input" — implement resolves with status: needs_input', async () => {
+    const { impl } = makeImpl({ status: 'pending', question: 'Which approach?' });
+    const result = await impl.implement(specPath, tmpDir);
+    expect(result.status).toBe('needs_input');
+  });
+
+  it('"blocked" normalizes to "needs_input"', async () => {
+    const { impl } = makeImpl({ status: 'blocked', question: 'Which approach?' });
+    const result = await impl.implement(specPath, tmpDir);
+    expect(result.status).toBe('needs_input');
+  });
+
+  it('"waiting" normalizes to "needs_input"', async () => {
+    const { impl } = makeImpl({ status: 'waiting', question: 'Which approach?' });
+    const result = await impl.implement(specPath, tmpDir);
+    expect(result.status).toBe('needs_input');
+  });
+
+  // Truly invalid values still throw
+  it('"unknown" still throws STATUS error — normalization does not obscure truly invalid values', async () => {
+    const queryFn = makeQueryFn();
+    const readFile = vi.fn().mockResolvedValue(JSON.stringify({ status: 'unknown' }));
+    const impl = new AgentSDKImplementer({ logDestination: nullDest, queryFn, readFile });
+    await expect(impl.implement(specPath, tmpDir)).rejects.toThrow(/STATUS|invalid/i);
+  });
+});
+
+describe('AgentSDKImplementer — prompt negative example', () => {
+  it('prompt contains negative example forbidding "done" synonym', async () => {
+    const { impl, queryFn } = makeImpl({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' });
+    await impl.implement(specPath, tmpDir);
+    const call = queryFn.mock.calls[0][0] as { prompt: string };
+    expect(call.prompt).toMatch(/do not use synonyms/i);
+  });
+
+  it('prompt contains negative example forbidding "error" synonym', async () => {
+    const { impl, queryFn } = makeImpl({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' });
+    await impl.implement(specPath, tmpDir);
+    const call = queryFn.mock.calls[0][0] as { prompt: string };
+    expect(call.prompt).toContain('"error"');
+  });
+
+  it('prompt contains negative example forbidding "pending" synonym', async () => {
+    const { impl, queryFn } = makeImpl({ status: 'complete', summary: 'Done.', testing_instructions: 'Run tests' });
+    await impl.implement(specPath, tmpDir);
+    const call = queryFn.mock.calls[0][0] as { prompt: string };
+    expect(call.prompt).toContain('"pending"');
+  });
+});
