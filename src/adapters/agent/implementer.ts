@@ -46,10 +46,52 @@ function parseResultFile(content: string, path: string): ImplementationResult {
     throw new Error(`Implementation: result file at "${path}" is not a JSON object`);
   }
 
+  const STATUS_SYNONYMS: Record<string, ImplementationStatus> = {
+    // → 'complete'
+    done: 'complete',
+    finished: 'complete',
+    success: 'complete',
+    successful: 'complete',
+    succeeded: 'complete',
+    ok: 'complete',
+    okay: 'complete',
+    passed: 'complete',
+    resolved: 'complete',
+    accomplished: 'complete',
+    completed: 'complete',
+
+    // → 'failed'
+    error: 'failed',
+    failure: 'failed',
+    err: 'failed',
+    crashed: 'failed',
+    broken: 'failed',
+    unsuccessful: 'failed',
+    aborted: 'failed',
+    terminated: 'failed',
+    exception: 'failed',
+
+    // → 'needs_input'
+    waiting: 'needs_input',
+    pending: 'needs_input',
+    blocked: 'needs_input',
+    needs_information: 'needs_input',
+    needs_clarification: 'needs_input',
+    requires_input: 'needs_input',
+    input_needed: 'needs_input',
+    awaiting: 'needs_input',
+    paused: 'needs_input',
+    stalled: 'needs_input',
+    incomplete: 'needs_input',
+  };
+
   const obj = data as Record<string, unknown>;
-  const status = obj['status'];
+  const rawStatus = obj['status'];
+  const status = typeof rawStatus === 'string'
+    ? (STATUS_SYNONYMS[rawStatus] ?? rawStatus)
+    : rawStatus;
   if (status !== 'complete' && status !== 'needs_input' && status !== 'failed') {
-    throw new Error(`Implementation: invalid STATUS value "${String(status)}" in result file`);
+    throw new Error(`Implementation: invalid STATUS value "${String(rawStatus)}" in result file`);
   }
 
   return {
