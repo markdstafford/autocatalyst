@@ -520,3 +520,52 @@ describe('FileRunStore.demotedIds', () => {
     expect(store.demotedIds.size).toBe(0);
   });
 });
+
+// ─────────────────────────────────────────────
+// constructor — tilde expansion
+// ─────────────────────────────────────────────
+
+describe('FileRunStore constructor — tilde expansion', () => {
+  it('expands ~/some/path to $HOME/some/path/.autocatalyst/runs.json', () => {
+    const { dest } = makeLogCapture();
+    const store = new FileRunStore('~/some/path', { logDestination: dest });
+    const expected = path.join(os.homedir(), 'some', 'path', '.autocatalyst', 'runs.json');
+    // Access the private filePath via type assertion for testing
+    expect((store as unknown as { filePath: string }).filePath).toBe(expected);
+  });
+
+  it('absolute path is unchanged', () => {
+    const { dest } = makeLogCapture();
+    const store = new FileRunStore('/absolute/path', { logDestination: dest });
+    const expected = path.join('/absolute/path', '.autocatalyst', 'runs.json');
+    expect((store as unknown as { filePath: string }).filePath).toBe(expected);
+  });
+
+  it('~/path and equivalent $HOME/path produce identical filePath', () => {
+    const { dest } = makeLogCapture();
+    const tildeStore = new FileRunStore('~/myroot', { logDestination: dest });
+    const absStore = new FileRunStore(path.join(os.homedir(), 'myroot'), { logDestination: dest });
+    expect(
+      (tildeStore as unknown as { filePath: string }).filePath
+    ).toBe(
+      (absStore as unknown as { filePath: string }).filePath
+    );
+  });
+
+  it('FileRunStore with tilde root saves to expanded path (integration)', () => {
+    const tildeEquivalent = path.join(os.tmpdir(), `tilde-test-${randomUUID()}`);
+    fs.mkdirSync(tildeEquivalent, { recursive: true });
+
+    try {
+      const { dest } = makeLogCapture();
+      const store = new FileRunStore(tildeEquivalent, { logDestination: dest });
+      const run = makeRun({ workspace_path: tildeEquivalent, stage: 'reviewing_spec' });
+      store.save(new Map([[run.request_id, run]]));
+      const loaded = store.load();
+      expect(loaded).toHaveLength(1);
+      expect(loaded[0].request_id).toBe(run.request_id);
+    } finally {
+      fs.rmSync(tildeEquivalent, { recursive: true, force: true });
+    }
+  });
+});

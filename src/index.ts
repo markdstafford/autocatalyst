@@ -8,6 +8,7 @@ import { Service } from './core/service.js';
 import { registerSignalHandlers } from './core/signals.js';
 import { createLogger } from './core/logger.js';
 import { execSync } from 'node:child_process';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { App } from '@slack/bolt';
 import { SlackAdapter } from './adapters/slack/slack-adapter.js';
@@ -113,11 +114,12 @@ try {
   const repo_name = repoNameFromUrl(repo_url);
 
   // Validate workspace.root
-  const workspaceRoot = currentConfig.config.workspace?.root;
-  if (!workspaceRoot || typeof workspaceRoot !== 'string' || workspaceRoot.trim() === '') {
+  const rawWorkspaceRoot = currentConfig.config.workspace?.root;
+  if (!rawWorkspaceRoot || typeof rawWorkspaceRoot !== 'string' || rawWorkspaceRoot.trim() === '') {
     logger.error({ event: 'config.parse_error', error: 'workspace.root is not set in WORKFLOW.md' }, 'workspace.root is required');
     process.exit(1);
   }
+  const workspaceRoot = rawWorkspaceRoot.replace(/^~/, homedir());
 
   // Validate Slack tokens
   const botToken = currentConfig.config.slack?.bot_token;
