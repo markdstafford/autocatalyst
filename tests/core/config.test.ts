@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { parseWorkflow, resolveEnvVars, validateConfig, redactConfig, resolveAwsProfile, repoNameFromUrl } from '../../src/core/config.js';
+import { tmpdir } from 'node:os';
+import { parseWorkflow, resolveEnvVars, validateConfig, redactConfig, resolveAwsProfile, repoNameFromUrl, loadConfigFromPath, loadConfig } from '../../src/core/config.js';
 import type { WorkflowConfig } from '../../src/types/config.js';
 
 const fixture = (name: string) =>
@@ -314,5 +315,51 @@ describe('repoNameFromUrl', () => {
   it('URL with only one path segment falls back gracefully', () => {
     const result = repoNameFromUrl('https://selfhosted/repo');
     expect(result).toMatch(/repo/);
+  });
+});
+
+describe('loadConfigFromPath', () => {
+  it('returns parsed LoadedConfig for a valid repo path', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'lcp-test-'));
+    try {
+      const content = readFileSync(join(import.meta.dirname, '../fixtures', 'valid-workflow.md'), 'utf-8');
+      writeFileSync(join(tempDir, 'WORKFLOW.md'), content, 'utf-8');
+      const result = loadConfigFromPath(tempDir, {});
+      expect(result.config.polling?.interval_ms).toBe(5000);
+      expect(result.filePath).toBe(join(tempDir, 'WORKFLOW.md'));
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('throws with path in message when WORKFLOW.md is missing', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'lcp-test-'));
+    rmSync(tempDir, { recursive: true, force: true }); // ensure directory doesn't exist
+    expect(() => loadConfigFromPath(tempDir, {})).toThrow(tempDir);
+  });
+
+  it('throws with validation details when schema is invalid', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'lcp-test-'));
+    try {
+      writeFileSync(join(tempDir, 'WORKFLOW.md'), '---\npolling:\n  interval_ms: -1\n---\nprompt\n', 'utf-8');
+      expect(() => loadConfigFromPath(tempDir, {})).toThrow(/interval_ms/);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('loadConfig backward compatibility: same result as loadConfigFromPath', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'lcp-test-'));
+    try {
+      const content = readFileSync(join(import.meta.dirname, '../fixtures', 'valid-workflow.md'), 'utf-8');
+      writeFileSync(join(tempDir, 'WORKFLOW.md'), content, 'utf-8');
+      const filePath = join(tempDir, 'WORKFLOW.md');
+      const result1 = loadConfig(filePath, {});
+      const result2 = loadConfigFromPath(tempDir, {});
+      expect(result1.config).toEqual(result2.config);
+      expect(result1.promptTemplate).toBe(result2.promptTemplate);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
