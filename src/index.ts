@@ -234,6 +234,12 @@ try {
 
   const commandRegistry = new CommandRegistryImpl();
 
+  // TODO: build ChannelRepoMap properly in Task 11 - placeholder for compilation
+  const channelRepoMap: import('./types/config.js').ChannelRepoMap = new Map([[
+    'PLACEHOLDER',
+    { channel_id: 'PLACEHOLDER', repo_url, workspace_root: workspaceRoot },
+  ]]);
+
   const orchestrator = new OrchestratorImpl({
     adapter,
     workspaceManager,
@@ -257,7 +263,7 @@ try {
     postMessage: async (channel_id, thread_ts, text) => {
       await boltApp.client.chat.postMessage({ channel: channel_id, thread_ts, text });
     },
-    repo_url,
+    channelRepoMap,
   });
 
   // Register command handlers
