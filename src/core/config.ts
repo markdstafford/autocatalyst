@@ -151,10 +151,16 @@ export function redactConfig(
   return redactObject(config);
 }
 
-export function loadConfig(
-  filePath: string,
+export function loadConfigFromPath(
+  repoPath: string,
   env: Record<string, string | undefined>,
 ): LoadedConfig {
+  const filePath = join(resolve(repoPath), 'WORKFLOW.md');
+
+  if (!existsSync(filePath)) {
+    throw new Error('WORKFLOW.md not found at ' + filePath);
+  }
+
   const content = readFileSync(filePath, 'utf-8');
   const { config, promptTemplate } = parseWorkflow(content);
   const { resolved } = resolveEnvVars(config as Record<string, unknown>, env);
@@ -165,6 +171,15 @@ export function loadConfig(
     promptTemplate,
     filePath,
   };
+}
+
+export function loadConfig(
+  filePath: string,
+  env: Record<string, string | undefined>,
+): LoadedConfig {
+  // Derive repoPath from filePath by stripping the filename
+  const repoPath = filePath.replace(/\/WORKFLOW\.md$/, '') || '.';
+  return loadConfigFromPath(repoPath, env);
 }
 
 export function bootstrapWorkflow(repoPath: string): boolean {
