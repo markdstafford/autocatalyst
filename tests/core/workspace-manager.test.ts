@@ -19,9 +19,9 @@ afterEach(() => {
 describe('WorkspaceManager.create', () => {
   it('runs git clone with --depth=1 and correct path', async () => {
     const execFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
-    const wm = new WorkspaceManagerImpl(tempRoot, { execFn, logDestination: nullDest });
+    const wm = new WorkspaceManagerImpl({ execFn, logDestination: nullDest });
 
-    await wm.create('idea-abc', 'https://github.com/org/repo.git');
+    await wm.create('idea-abc', 'https://github.com/org/repo.git', tempRoot);
 
     expect(execFn).toHaveBeenCalledWith(
       expect.stringContaining('git clone --depth=1'),
@@ -35,9 +35,9 @@ describe('WorkspaceManager.create', () => {
 
   it('runs git checkout -b after clone with correct branch and cwd', async () => {
     const execFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
-    const wm = new WorkspaceManagerImpl(tempRoot, { execFn, logDestination: nullDest });
+    const wm = new WorkspaceManagerImpl({ execFn, logDestination: nullDest });
 
-    await wm.create('idea-abc', 'https://github.com/org/repo.git');
+    await wm.create('idea-abc', 'https://github.com/org/repo.git', tempRoot);
 
     expect(execFn).toHaveBeenCalledTimes(2);
     const checkoutCall = execFn.mock.calls[1];
@@ -47,9 +47,9 @@ describe('WorkspaceManager.create', () => {
 
   it('returns workspace_path and branch', async () => {
     const execFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
-    const wm = new WorkspaceManagerImpl(tempRoot, { execFn, logDestination: nullDest });
+    const wm = new WorkspaceManagerImpl({ execFn, logDestination: nullDest });
 
-    const result = await wm.create('idea-abc', 'https://github.com/org/repo.git');
+    const result = await wm.create('idea-abc', 'https://github.com/org/repo.git', tempRoot);
 
     expect(result.workspace_path).toBe(join(tempRoot, 'idea-abc'));
     expect(result.branch).toMatch(/^spec\//);
@@ -62,11 +62,11 @@ describe('WorkspaceManager.create', () => {
     // Pre-create the directory to simulate partial clone
     mkdirSync(join(tempRoot, 'idea-fail'), { recursive: true });
 
-    const wm = new WorkspaceManagerImpl(tempRoot, { execFn, logDestination: nullDest });
+    const wm = new WorkspaceManagerImpl({ execFn, logDestination: nullDest });
 
     const { existsSync } = await import('node:fs');
     expect(existsSync(join(tempRoot, 'idea-fail'))).toBe(true); // confirm dir exists before create
-    await expect(wm.create('idea-fail', 'https://github.com/org/repo.git')).rejects.toThrow('git clone failed');
+    await expect(wm.create('idea-fail', 'https://github.com/org/repo.git', tempRoot)).rejects.toThrow('git clone failed');
 
     // Verify cleanup occurred
     expect(existsSync(join(tempRoot, 'idea-fail'))).toBe(false);
@@ -79,46 +79,64 @@ describe('WorkspaceManager.create', () => {
     // Pre-create directory to simulate what clone would have done
     mkdirSync(join(tempRoot, 'idea-xyz'), { recursive: true });
 
-    const wm = new WorkspaceManagerImpl(tempRoot, { execFn, logDestination: nullDest });
+    const wm = new WorkspaceManagerImpl({ execFn, logDestination: nullDest });
 
     const { existsSync } = await import('node:fs');
     expect(existsSync(join(tempRoot, 'idea-xyz'))).toBe(true); // confirm dir exists before create
-    await expect(wm.create('idea-xyz', 'https://github.com/org/repo.git')).rejects.toThrow('git checkout -b failed');
+    await expect(wm.create('idea-xyz', 'https://github.com/org/repo.git', tempRoot)).rejects.toThrow('git checkout -b failed');
 
     expect(existsSync(join(tempRoot, 'idea-xyz'))).toBe(false);
   });
 
   it('two requests with different request_ids produce non-overlapping paths', async () => {
     const execFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
-    const wm = new WorkspaceManagerImpl(tempRoot, { execFn, logDestination: nullDest });
+    const wm = new WorkspaceManagerImpl({ execFn, logDestination: nullDest });
 
-    const r1 = await wm.create('idea-111', 'https://github.com/org/repo.git');
-    const r2 = await wm.create('idea-222', 'https://github.com/org/repo.git');
+    const r1 = await wm.create('idea-111', 'https://github.com/org/repo.git', tempRoot);
+    const r2 = await wm.create('idea-222', 'https://github.com/org/repo.git', tempRoot);
 
     expect(r1.workspace_path).not.toBe(r2.workspace_path);
   });
 
   it('throws on invalid request_id containing path separator', async () => {
     const execFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
-    const wm = new WorkspaceManagerImpl(tempRoot, { execFn, logDestination: nullDest });
+    const wm = new WorkspaceManagerImpl({ execFn, logDestination: nullDest });
 
-    await expect(wm.create('req/evil', 'https://github.com/org/repo.git')).rejects.toThrow(/Invalid request_id/);
+    await expect(wm.create('req/evil', 'https://github.com/org/repo.git', tempRoot)).rejects.toThrow(/Invalid request_id/);
     expect(execFn).not.toHaveBeenCalled();
   });
 
   it('throws on invalid request_id containing dot-dot traversal', async () => {
     const execFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
-    const wm = new WorkspaceManagerImpl(tempRoot, { execFn, logDestination: nullDest });
+    const wm = new WorkspaceManagerImpl({ execFn, logDestination: nullDest });
 
-    await expect(wm.create('req..evil', 'https://github.com/org/repo.git')).rejects.toThrow(/Invalid request_id/);
+    await expect(wm.create('req..evil', 'https://github.com/org/repo.git', tempRoot)).rejects.toThrow(/Invalid request_id/);
     expect(execFn).not.toHaveBeenCalled();
+  });
+
+  it('two calls with different workspace_root values produce non-overlapping paths', async () => {
+    const execFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
+    const wm = new WorkspaceManagerImpl({ execFn, logDestination: nullDest });
+
+    const root1 = mkdtempSync(join(tmpdir(), 'wm-root1-'));
+    const root2 = mkdtempSync(join(tmpdir(), 'wm-root2-'));
+    try {
+      const r1 = await wm.create('idea-same', 'https://github.com/org/repo.git', root1);
+      const r2 = await wm.create('idea-same', 'https://github.com/org/repo.git', root2);
+      expect(r1.workspace_path).not.toBe(r2.workspace_path);
+      expect(r1.workspace_path).toContain(root1);
+      expect(r2.workspace_path).toContain(root2);
+    } finally {
+      rmSync(root1, { recursive: true, force: true });
+      rmSync(root2, { recursive: true, force: true });
+    }
   });
 });
 
 describe('WorkspaceManager.destroy', () => {
   it('removes the workspace directory recursively', async () => {
     const execFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
-    const wm = new WorkspaceManagerImpl(tempRoot, { execFn, logDestination: nullDest });
+    const wm = new WorkspaceManagerImpl({ execFn, logDestination: nullDest });
 
     // Create a real directory to destroy
     const wsPath = join(tempRoot, 'to-destroy');
