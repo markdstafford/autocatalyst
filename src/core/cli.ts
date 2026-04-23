@@ -3,7 +3,8 @@ import { resolve } from 'node:path';
 
 export interface ParsedArgs {
   command: 'run' | 'init';
-  repoPath: string;
+  repoPath: string;      // first path (backward compat)
+  repoPaths: string[];   // all paths; length >= 1 when --repo is provided
   help: boolean;
 }
 
@@ -13,7 +14,7 @@ export function parseArgs(args: string[]): ParsedArgs {
     const remaining = args.slice(1);
 
     if (remaining.includes('--help') || remaining.includes('-h')) {
-      return { command: 'init', repoPath: '', help: true };
+      return { command: 'init', repoPath: '', repoPaths: [], help: true };
     }
 
     const repoIndex = remaining.indexOf('--repo');
@@ -22,12 +23,12 @@ export function parseArgs(args: string[]): ParsedArgs {
         ? remaining[repoIndex + 1]
         : '';
 
-    return { command: 'init', repoPath, help: false };
+    return { command: 'init', repoPath, repoPaths: repoPath ? [repoPath] : [], help: false };
   }
 
   // --help / -h (run command)
   if (args.includes('--help') || args.includes('-h')) {
-    return { command: 'run', repoPath: '', help: true };
+    return { command: 'run', repoPath: '', repoPaths: [], help: true };
   }
 
   // run command — --repo is required and validated
@@ -36,27 +37,40 @@ export function parseArgs(args: string[]): ParsedArgs {
     throw new Error('Missing required argument: --repo <path>');
   }
 
-  const rawPath = args[repoIndex + 1];
-  const repoPath = resolve(rawPath);
-
-  if (!existsSync(repoPath)) {
-    throw new Error(`--repo path does not exist: ${repoPath}`);
+  // Collect all paths after --repo (until next flag or end)
+  const rawPaths: string[] = [];
+  let i = repoIndex + 1;
+  while (i < args.length && !args[i].startsWith('-')) {
+    rawPaths.push(args[i]);
+    i++;
   }
 
-  if (!statSync(repoPath).isDirectory()) {
-    throw new Error(`--repo path is not a directory: ${repoPath}`);
+  if (rawPaths.length === 0) {
+    throw new Error('Missing required argument: --repo <path>');
   }
 
-  return { command: 'run', repoPath, help: false };
+  const repoPaths = rawPaths.map(p => {
+    const resolved = resolve(p);
+    if (!existsSync(resolved)) {
+      throw new Error(`--repo path does not exist: ${resolved}`);
+    }
+    if (!statSync(resolved).isDirectory()) {
+      throw new Error(`--repo path is not a directory: ${resolved}`);
+    }
+    return resolved;
+  });
+
+  return { command: 'run', repoPath: repoPaths[0], repoPaths, help: false };
 }
 
 export function printUsage(): void {
   console.log(`Usage:
-  autocatalyst --repo <path>           Start the service for a repository
-  autocatalyst init [--repo <path>]    Initialize and validate configuration
+  autocatalyst --repo <path>                    Start the service for a single repository
+  autocatalyst --repo <path1> <path2> ...       Start the service for multiple repositories
+  autocatalyst init [--repo <path>]             Initialize and validate configuration
 
 Options:
-  --repo <path>   Path to the target repository
-  --help          Show this help message
+  --repo <path> [<path2>...]   Path(s) to target repository/repositories
+  --help                       Show this help message
 `);
 }
