@@ -185,7 +185,7 @@ try {
     registry: threadRegistry,
   });
 
-  const workspaceManager = new WorkspaceManagerImpl(workspaceRoot);
+  const workspaceManager = new WorkspaceManagerImpl();
   const runStore = new FileRunStore(workspaceRoot);
   const specGenerator = new AgentSDKSpecGenerator();
   const implementer = new AgentSDKImplementer();
