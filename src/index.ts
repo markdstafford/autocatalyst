@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 import { parseArgs, printUsage } from './core/cli.js';
-import { loadConfig, redactConfig, resolveEnvVars, resolveAwsProfile, repoNameFromUrl } from './core/config.js';
+import { loadConfig, loadConfigFromPath, redactConfig, resolveEnvVars, resolveAwsProfile, repoNameFromUrl } from './core/config.js';
+import type { ChannelRepoMap } from './types/config.js';
 import { runInit, configExists } from './core/init.js';
 import { ConfigWatcher } from './core/config-watcher.js';
 import { Service } from './core/service.js';
@@ -55,10 +56,15 @@ try {
     process.exit(0);
   }
 
-  // run command — repoPath is validated by parseArgs
-  const repoPath = args.repoPath;
+  // run command — repoPath(s) validated by parseArgs
+  const repoPaths = args.repoPaths;
+  const repoPath = repoPaths[0];
+  const isMultiRepo = repoPaths.length > 1;
 
-  logger.info({ event: 'service.starting' }, 'Starting Autocatalyst');
+  logger.info(
+    { event: 'service.starting', mode: isMultiRepo ? 'multi-repo' : 'single-repo', ...(isMultiRepo ? { channel_count: repoPaths.length } : {}) },
+    'Starting Autocatalyst',
+  );
 
   // Init always runs before service startup
   await runInit(repoPath);
@@ -177,13 +183,64 @@ try {
   // Build question answerer — always uses Agent SDK with repo path as cwd (no Bedrock variant needed)
   const questionAnswerer = new AgentSDKQuestionAnswerer(repoPath);
 
+  // Multi-repo: load config for each additional repo path and build PreRepoEntry list
+  type PreEntryLocal = { channel_name: string; repo_url: string; workspace_root: string };
+  const preRepoEntries: PreEntryLocal[] = [];
+
+  if (isMultiRepo) {
+    for (const rp of repoPaths) {
+      await runInit(rp);
+      if (!configExists(rp)) {
+        logger.error({ event: 'service.init_incomplete', repo_path: rp }, `Config is not set up for ${rp}. Run autocatalyst init --repo ${rp}`);
+        process.exit(1);
+      }
+      const rpLoaded = loadConfigFromPath(rp, process.env as Record<string, string>);
+      const { resolved: rpResolved, missing: rpMissing } = resolveEnvVars(rpLoaded.config as Record<string, unknown>, process.env as Record<string, string>);
+      if (rpMissing.length > 0) {
+        logger.warn({ event: 'config.env_missing', repo_path: rp, missing: rpMissing }, `Missing env vars for ${rp}: ${rpMissing.join(', ')}`);
+        process.exit(1);
+      }
+      const rpFinalConfig = rpResolved as import('./types/config.js').WorkflowConfig;
+
+      let rpRepoUrl: string;
+      try {
+        rpRepoUrl = execSync('git remote get-url origin', { cwd: rp }).toString().trim();
+        if (!rpRepoUrl) throw new Error('git remote get-url origin returned empty string');
+      } catch (err) {
+        logger.error({ event: 'config.parse_error', repo_path: rp, error: String(err) }, `Could not resolve git origin URL for ${rp}`);
+        process.exit(1);
+      }
+
+      const rpChannelName = rpFinalConfig.slack?.channel_name;
+      if (!rpChannelName) {
+        logger.error({ event: 'config.parse_error', repo_path: rp }, `slack.channel_name is required in ${rp}/WORKFLOW.md`);
+        process.exit(1);
+      }
+
+      const rpWorkspaceRoot = rpFinalConfig.workspace?.root ?? '~/.autocatalyst/workspaces';
+      preRepoEntries.push({ channel_name: rpChannelName, repo_url: rpRepoUrl!, workspace_root: rpWorkspaceRoot });
+    }
+  }
+
   // Build adapter, components, orchestrator
   const threadRegistry = new ThreadRegistry();
-  const adapter = new SlackAdapter(boltApp, {
-    channelName,
-  }, {
-    registry: threadRegistry,
-  });
+  const adapter = new SlackAdapter(
+    boltApp,
+    isMultiRepo ? { repoEntries: preRepoEntries } : { channelName: channelName! },
+    { registry: threadRegistry },
+  );
+
+  // Resolve channels before building orchestrator (idempotent — start() will be a no-op)
+  await adapter.resolveChannels();
+
+  // Build ChannelRepoMap
+  const channelRepoMap: ChannelRepoMap = isMultiRepo
+    ? adapter.getChannelRepoMap()
+    : (() => {
+        const channelId = adapter.getChannelId();
+        const map: ChannelRepoMap = new Map([[channelId, { channel_id: channelId, repo_url, workspace_root: workspaceRoot }]]);
+        return map;
+      })();
 
   const workspaceManager = new WorkspaceManagerImpl();
   const runStore = new FileRunStore(workspaceRoot);
@@ -233,12 +290,6 @@ try {
   }
 
   const commandRegistry = new CommandRegistryImpl();
-
-  // TODO: build ChannelRepoMap properly in Task 11 - placeholder for compilation
-  const channelRepoMap: import('./types/config.js').ChannelRepoMap = new Map([[
-    'PLACEHOLDER',
-    { channel_id: 'PLACEHOLDER', repo_url, workspace_root: workspaceRoot },
-  ]]);
 
   const orchestrator = new OrchestratorImpl({
     adapter,
