@@ -24,3 +24,20 @@ export interface LoadedConfig {
   promptTemplate: string;
   filePath: string;
 }
+
+/** A single repository entry resolved at startup for multi-repo routing. Internal use only. */
+export interface RepoEntry {
+  channel_id: string;      // resolved from WorkflowConfig.slack.channel_name at startup
+  repo_url: string;        // from git remote get-url origin in the repo directory
+  workspace_root: string;  // from WorkflowConfig or default (~/.autocatalyst/workspaces/)
+}
+
+/** Maps Slack channel_id → RepoEntry. Keyed by resolved channel_id. */
+export type ChannelRepoMap = Map<string, RepoEntry>;
+
+/** A pre-resolved entry used to configure multi-repo mode in SlackAdapter before channel IDs are known. */
+export interface PreRepoEntry {
+  channel_name: string;
+  repo_url: string;
+  workspace_root: string;
+}
