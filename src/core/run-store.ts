@@ -1,6 +1,7 @@
 // src/core/run-store.ts
 import * as fs from 'fs';
 import * as path from 'path';
+import { homedir } from 'node:os';
 import type pino from 'pino';
 import { createLogger } from './logger.js';
 import type { Run } from '../types/runs.js';
@@ -22,7 +23,7 @@ export class FileRunStore implements RunStore {
   public demotedIds: Set<string> = new Set();
 
   constructor(workspaceRoot: string, options?: FileRunStoreOptions) {
-    this.filePath = path.join(workspaceRoot, '.autocatalyst', 'runs.json');
+    this.filePath = path.join(workspaceRoot.replace(/^~/, homedir()), '.autocatalyst', 'runs.json');
     this.logger = createLogger('run-store', { destination: options?.logDestination });
   }
 
