@@ -16,6 +16,7 @@ import type { ImplementationFeedbackPage } from '../../src/adapters/notion/imple
 import type { IssueManager } from '../../src/adapters/agent/issue-manager.js';
 import type { IssueFiler, FilingResult } from '../../src/adapters/agent/issue-filer.js';
 import type { CommandEvent, CommandRegistry } from '../../src/types/commands.js';
+import type { ChannelRepoMap, RepoEntry } from '../../src/types/config.js';
 
 const nullDest = { write: () => {} };
 
@@ -113,6 +114,36 @@ function makeWorkspaceManager(overrides: Partial<WorkspaceManager> = {}): Worksp
     destroy: vi.fn().mockResolvedValue(undefined),
     ...overrides,
   };
+}
+
+/** A Map subclass that returns a default RepoEntry for any channel_id not explicitly set.
+ *  This allows existing tests to work without knowing the exact channel_id in advance. */
+class _UniversalChannelRepoMap extends Map<string, RepoEntry> {
+  private readonly _defaultEntry: RepoEntry;
+  constructor(defaultEntry: RepoEntry, explicitEntries: [string, RepoEntry][] = []) {
+    super([[defaultEntry.channel_id, defaultEntry], ...explicitEntries]);
+    this._defaultEntry = defaultEntry;
+  }
+  override has(_key: string): boolean { return true; }
+  override get(key: string): RepoEntry { return super.get(key) ?? this._defaultEntry; }
+}
+
+function makeChannelRepoMap(entries: Record<string, Partial<RepoEntry>> = {}): ChannelRepoMap {
+  const defaultEntry: RepoEntry = {
+    channel_id: 'C1',
+    repo_url: 'https://github.com/org/repo.git',
+    workspace_root: '~/.autocatalyst/workspaces',
+  };
+  const map = new _UniversalChannelRepoMap(defaultEntry);
+  for (const [channelId, partial] of Object.entries(entries)) {
+    map.set(channelId, {
+      channel_id: channelId,
+      repo_url: 'https://github.com/org/repo.git',
+      workspace_root: '~/.autocatalyst/workspaces',
+      ...partial,
+    });
+  }
+  return map;
 }
 
 function makeSpecGenerator(overrides: Partial<SpecGenerator> = {}): SpecGenerator {
@@ -287,7 +318,7 @@ describe('Orchestrator — new_request happy path', () => {
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
     await orch.start();
 
     const request = makeRequest();
@@ -297,7 +328,7 @@ describe('Orchestrator — new_request happy path', () => {
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
-    expect(wm.create).toHaveBeenCalledWith('request-001', 'https://github.com/org/repo');
+    expect(wm.create).toHaveBeenCalledWith('request-001', 'https://github.com/org/repo.git', '~/.autocatalyst/workspaces');
     expect(sg.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function));
     expect(cp.create).toHaveBeenCalledWith('C123', '100.0', '/ws/request-001/context-human/specs/feature-test.md');
   });
@@ -309,7 +340,7 @@ describe('Orchestrator — new_request happy path', () => {
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
     await orch.start();
 
     adapter._emit({ type: 'new_request', payload: makeRequest() });
@@ -335,7 +366,7 @@ describe('Orchestrator — new_request failure paths', () => {
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
     await orch.start();
     adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50));
@@ -356,7 +387,7 @@ describe('Orchestrator — new_request failure paths', () => {
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
     await orch.start();
     adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50));
@@ -377,7 +408,7 @@ describe('Orchestrator — new_request failure paths', () => {
     const cp = makeSpecPublisher({ create: vi.fn().mockRejectedValue(new Error('canvas error')) });
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
     await orch.start();
     adapter._emit({ type: 'new_request', payload: makeRequest() });
     await new Promise(r => setTimeout(r, 50));
@@ -403,7 +434,7 @@ describe('Orchestrator — feedback happy path', () => {
     const ic = makeIntentClassifier('idea');
     (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: ic }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: ic }, { logDestination: nullDest });
     await orch.start();
 
     // First seed the request to get a run in review
@@ -441,7 +472,7 @@ describe('Orchestrator — feedback guard conditions', () => {
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('feedback') }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: makeIntentClassifier('feedback') }, { logDestination: nullDest });
     await orch.start();
 
     adapter._emit({ type: 'thread_message', payload: makeFeedback({ request_id: 'unknown-request' }) });
@@ -466,7 +497,7 @@ describe('Orchestrator — feedback guard conditions', () => {
     const ic = makeIntentClassifier('idea');
     (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: ic }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: ic }, { logDestination: nullDest });
     await orch.start();
 
     adapter._emit({ type: 'new_request', payload: makeRequest() });
@@ -493,7 +524,7 @@ describe('Orchestrator — feedback guard conditions', () => {
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
     await orch.start();
 
     adapter._emit({ type: 'new_request', payload: makeRequest() });
@@ -520,7 +551,7 @@ describe('Orchestrator — feedback failure paths', () => {
     const ic = makeIntentClassifier('idea');
     (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: ic }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: ic }, { logDestination: nullDest });
     await orch.start();
 
     adapter._emit({ type: 'new_request', payload: makeRequest() });
@@ -546,7 +577,7 @@ describe('Orchestrator — feedback failure paths', () => {
     const ic = makeIntentClassifier('idea');
     (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: ic }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: ic }, { logDestination: nullDest });
     await orch.start();
 
     adapter._emit({ type: 'new_request', payload: makeRequest() });
@@ -583,7 +614,7 @@ describe('Orchestrator — concurrency', () => {
     const cp = makeSpecPublisher();
     const postError = vi.fn().mockResolvedValue(undefined);
 
-    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
+    const orch = new OrchestratorImpl({ adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: makeIntentClassifier('idea') }, { logDestination: nullDest });
     await orch.start();
 
     adapter._emit({ type: 'new_request', payload: makeRequest({ id: 'request-A', thread_ts: 'A.0' }) });
@@ -642,7 +673,7 @@ describe('Orchestrator — feedback with feedbackSource', () => {
     (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: sp, feedbackSource: fs, postError, postMessage, repo_url: 'https://github.com/org/repo', intentClassifier: ic } as never,
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: sp, feedbackSource: fs, postError, postMessage, channelRepoMap: makeChannelRepoMap(), intentClassifier: ic } as never,
       { logDestination: nullDest },
     );
     await orch.start();
@@ -676,7 +707,7 @@ describe('Orchestrator — feedback with feedbackSource', () => {
     (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), feedbackSource: fs, postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic } as never,
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), feedbackSource: fs, postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: ic } as never,
       { logDestination: nullDest },
     );
     await orch.start();
@@ -702,7 +733,7 @@ describe('Orchestrator — feedback with feedbackSource', () => {
     (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic },
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: ic },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -729,7 +760,7 @@ describe('Orchestrator — feedback with feedbackSource', () => {
     (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), feedbackSource: fs, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic } as never,
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), feedbackSource: fs, postError, postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: ic } as never,
       { logDestination: nullDest },
     );
     await orch.start();
@@ -765,7 +796,7 @@ describe('Orchestrator — feedback with feedbackSource', () => {
     (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), feedbackSource: fs, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic } as never,
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), feedbackSource: fs, postError, postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: ic } as never,
       { logDestination: nullDest },
     );
     await orch.start();
@@ -793,7 +824,7 @@ describe('Orchestrator — feedback completion notification', () => {
     (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), feedbackSource: fs, postError: vi.fn().mockResolvedValue(undefined), postMessage, repo_url: 'r', intentClassifier: ic } as never,
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), feedbackSource: fs, postError: vi.fn().mockResolvedValue(undefined), postMessage, channelRepoMap: makeChannelRepoMap(), intentClassifier: ic } as never,
       { logDestination: nullDest },
     );
     await orch.start();
@@ -812,7 +843,7 @@ describe('Orchestrator — feedback completion notification', () => {
     (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage, repo_url: 'r', intentClassifier: ic } as never,
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage, channelRepoMap: makeChannelRepoMap(), intentClassifier: ic } as never,
       { logDestination: nullDest },
     );
     await orch.start();
@@ -832,7 +863,7 @@ describe('Orchestrator — feedback completion notification', () => {
     (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError, postMessage, repo_url: 'r', intentClassifier: ic } as never,
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError, postMessage, channelRepoMap: makeChannelRepoMap(), intentClassifier: ic } as never,
       { logDestination: nullDest },
     );
     await orch.start();
@@ -851,7 +882,7 @@ describe('Orchestrator — intent classification routing', () => {
     const ic = makeIntentClassifier('idea');
     (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: makeSpecGenerator(), specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic },
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: makeSpecGenerator(), specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: ic },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -871,7 +902,7 @@ describe('Orchestrator — intent classification routing', () => {
     const ic = makeIntentClassifier('idea');
     (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic },
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: ic },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -886,7 +917,7 @@ describe('Orchestrator — intent classification routing', () => {
     const sg = makeSpecGenerator();
     const ic = makeIntentClassifier('approval');
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic },
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: ic },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -907,7 +938,7 @@ describe('Orchestrator — intent classification routing', () => {
     const sg = makeSpecGenerator();
     const ic = makeIntentClassifier('feedback');
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic },
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: ic },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -927,7 +958,7 @@ describe('Orchestrator — intent classification routing', () => {
     const sg = makeSpecGenerator();
     const ic = makeIntentClassifier('approval');
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic },
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: ic },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -950,7 +981,7 @@ describe('Orchestrator — implementing stage guard', () => {
     const ic = makeIntentClassifier('feedback');
     const postMessage = vi.fn().mockResolvedValue(undefined);
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage, repo_url: 'r', intentClassifier: ic },
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage, channelRepoMap: makeChannelRepoMap(), intentClassifier: ic },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -976,7 +1007,7 @@ describe('Orchestrator — done stage guard', () => {
     const ic = makeIntentClassifier('feedback');
     const postError = vi.fn().mockResolvedValue(undefined);
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'r', intentClassifier: ic },
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError, postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: ic },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -1018,7 +1049,7 @@ function makeApprovalOrch(opts: {
       implFeedbackPage: opts.implFeedbackPage ?? makeImplFeedbackPage(),
       postError: opts.postError ?? vi.fn().mockResolvedValue(undefined),
       postMessage: opts.postMessage ?? vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     } as never,
     { logDestination: nullDest },
   );
@@ -1260,7 +1291,7 @@ describe('Orchestrator — _runImplementation onProgress wiring', () => {
         implFeedbackPage: makeImplFeedbackPage(),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage,
-        repo_url: 'https://github.com/org/repo',
+        channelRepoMap: makeChannelRepoMap(),
       } as never,
       { logDestination: destination },
     );
@@ -1403,7 +1434,7 @@ function makeImplFeedbackOrch(opts: {
       implFeedbackPage: opts.implFeedbackPage ?? makeImplFeedbackPage(),
       postError: opts.postError ?? vi.fn().mockResolvedValue(undefined),
       postMessage: opts.postMessage ?? vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     } as never,
     { logDestination: nullDest },
   );
@@ -1655,7 +1686,7 @@ function makeApprovalOrch2(opts: {
       prManager: opts.prManager ?? makePRManager(),
       postError: opts.postError ?? vi.fn().mockResolvedValue(undefined),
       postMessage: opts.postMessage ?? vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     } as never,
     { logDestination: nullDest },
   );
@@ -1809,7 +1840,7 @@ describe('Orchestrator — _handleImplementationApproval happy path', () => {
         prManager: makePRManager(),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'https://github.com/org/repo',
+        channelRepoMap: makeChannelRepoMap(),
       } as never,
       { logDestination: nullDest },
     );
@@ -1884,7 +1915,7 @@ function makeApprovalOrch3(opts: {
       prManager: opts.prManager ?? makePRManager(),
       postError: opts.postError ?? vi.fn().mockResolvedValue(undefined),
       postMessage: opts.postMessage ?? vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     } as never,
     { logDestination: nullDest },
   );
@@ -1981,7 +2012,7 @@ describe('Orchestrator — pr_open routing guards', () => {
         prManager: makePRManager(),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'https://github.com/org/repo',
+        channelRepoMap: makeChannelRepoMap(),
       } as never,
       { logDestination: nullDest },
     );
@@ -2014,7 +2045,7 @@ describe('Orchestrator — pr_open routing guards', () => {
         prManager: makePRManager(),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage,
-        repo_url: 'https://github.com/org/repo',
+        channelRepoMap: makeChannelRepoMap(),
       } as never,
       { logDestination: nullDest },
     );
@@ -2049,7 +2080,7 @@ describe('Orchestrator — pr_open routing guards', () => {
         prManager,
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage,
-        repo_url: 'https://github.com/org/repo',
+        channelRepoMap: makeChannelRepoMap(),
       } as never,
       { logDestination: nullDest },
     );
@@ -2092,7 +2123,7 @@ describe('Orchestrator — run persistence', () => {
         intentClassifier: makeIntentClassifier('feedback'),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'r',
+        channelRepoMap: makeChannelRepoMap(),
         runStore: mockRunStore,
       } as never,
       { logDestination: nullDest },
@@ -2122,7 +2153,7 @@ describe('Orchestrator — run persistence', () => {
         intentClassifier: makeIntentClassifier('idea'),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'r',
+        channelRepoMap: makeChannelRepoMap(),
         runStore: mockRunStore,
       } as never,
       { logDestination: nullDest },
@@ -2155,7 +2186,7 @@ describe('Orchestrator — run persistence', () => {
         intentClassifier: ic,
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'r',
+        channelRepoMap: makeChannelRepoMap(),
         runStore: mockRunStore,
       } as never,
       { logDestination: nullDest },
@@ -2191,7 +2222,7 @@ describe('Orchestrator — run persistence', () => {
         implFeedbackPage: makeImplFeedbackPage(),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'r',
+        channelRepoMap: makeChannelRepoMap(),
         runStore: mockRunStore,
       } as never,
       { logDestination: nullDest },
@@ -2231,7 +2262,7 @@ describe('Orchestrator — run persistence', () => {
         implFeedbackPage: makeImplFeedbackPage(),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'r',
+        channelRepoMap: makeChannelRepoMap(),
         runStore: mockRunStore,
       } as never,
       { logDestination: nullDest },
@@ -2272,7 +2303,7 @@ describe('Orchestrator — run persistence', () => {
         implFeedbackPage,
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'r',
+        channelRepoMap: makeChannelRepoMap(),
         runStore: mockRunStore,
       } as never,
       { logDestination: nullDest },
@@ -2303,7 +2334,7 @@ describe('Orchestrator — run persistence', () => {
         intentClassifier: makeIntentClassifier('idea'),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'r',
+        channelRepoMap: makeChannelRepoMap(),
       },
       { logDestination: nullDest },
     );
@@ -2361,7 +2392,7 @@ describe('Orchestrator — run persistence', () => {
         intentClassifier: makeIntentClassifier('feedback'),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage,
-        repo_url: 'r',
+        channelRepoMap: makeChannelRepoMap(),
         runStore: fileRunStore,
       } as never,
       { logDestination: nullDest },
@@ -2393,7 +2424,7 @@ describe('Orchestrator — question intent', () => {
         questionAnswerer: qa,
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage,
-        repo_url: 'r',
+        channelRepoMap: makeChannelRepoMap(),
       },
       { logDestination: nullDest },
     );
@@ -2423,7 +2454,7 @@ describe('Orchestrator — question intent', () => {
         questionAnswerer: qa,
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage,
-        repo_url: 'r',
+        channelRepoMap: makeChannelRepoMap(),
       },
       { logDestination: nullDest },
     );
@@ -2455,7 +2486,7 @@ describe('Orchestrator — question intent', () => {
         questionAnswerer: qa,
         postError,
         postMessage,
-        repo_url: 'r',
+        channelRepoMap: makeChannelRepoMap(),
       },
       { logDestination: nullDest },
     );
@@ -2481,7 +2512,7 @@ describe('Orchestrator — question intent', () => {
         intentClassifier: makeIntentClassifier('question'),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage,
-        repo_url: 'r',
+        channelRepoMap: makeChannelRepoMap(),
       },
       { logDestination: nullDest },
     );
@@ -2507,7 +2538,7 @@ describe('_classify — serial classification gate', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     });
     await orch.start();
 
@@ -2528,7 +2559,7 @@ describe('_classify — serial classification gate', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: destination });
     await orch.start();
 
@@ -2552,7 +2583,7 @@ describe('_classify — serial classification gate', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: destination });
     await orch.start();
 
@@ -2585,7 +2616,7 @@ describe('_classify — serial classification gate', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: destination });
     await orch.start();
 
@@ -2616,7 +2647,7 @@ describe('_classify — serial classification gate', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: destination });
     await orch.start();
 
@@ -2648,7 +2679,7 @@ describe('_classify — serial classification gate', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 10 });
 
     const run: Run = {
@@ -2689,7 +2720,7 @@ describe('_dispatchOrEnqueue and _launch', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 2 });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -2723,7 +2754,7 @@ describe('_dispatchOrEnqueue and _launch', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage,
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 2, logDestination: destination });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -2767,7 +2798,7 @@ describe('_dispatchOrEnqueue and _launch', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 5 });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -2798,7 +2829,7 @@ describe('_dispatchOrEnqueue and _launch', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: destination });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -2838,7 +2869,7 @@ describe('_runLoop — classify-dispatch integration', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 2 });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
 
@@ -2873,7 +2904,7 @@ describe('_runLoop — classify-dispatch integration', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -2908,7 +2939,7 @@ describe('_runLoop — classify-dispatch integration', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 1 });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -2950,7 +2981,7 @@ describe('metrics instrumentation', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: destination });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -2989,7 +3020,7 @@ describe('metrics instrumentation', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 1, logDestination: destination });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -3030,7 +3061,7 @@ describe('metrics instrumentation', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 1, logDestination: destination });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -3067,7 +3098,7 @@ describe('serial classification — additional coverage', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 10 });
 
     const origClassify = (orch as unknown as { _classify: (e: unknown) => Promise<string> })._classify.bind(orch);
@@ -3114,7 +3145,7 @@ describe('serial classification — additional coverage', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 5 });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -3151,7 +3182,7 @@ describe('concurrent dispatch — additional coverage', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 2 });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
 
@@ -3210,7 +3241,7 @@ describe('concurrent dispatch — additional coverage', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 2 });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -3256,7 +3287,7 @@ describe('failure isolation', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 2, logDestination: destination });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -3291,7 +3322,7 @@ describe('failure isolation', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -3326,7 +3357,7 @@ describe('failure isolation', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 1, logDestination: destination });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -3373,7 +3404,7 @@ describe('concurrency limit and queue', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 1 });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -3419,7 +3450,7 @@ describe('concurrency limit and queue', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 1 });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -3455,7 +3486,7 @@ describe('concurrency limit and queue', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 3 });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -3491,7 +3522,7 @@ describe('concurrency limit and queue', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 2 });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -3525,7 +3556,7 @@ describe('stop drain — remaining cases', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: destination });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -3561,7 +3592,7 @@ describe('stop drain — remaining cases', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -3593,7 +3624,7 @@ describe('observability — log field correctness', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: destination });
     await orch.start();
     const e = makeEventFixture('thread_message', { request_id: 'no-such-run' });
@@ -3613,7 +3644,7 @@ describe('observability — log field correctness', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: destination });
     await orch.start();
     const run: Run = {
@@ -3641,7 +3672,7 @@ describe('observability — log field correctness', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: destination });
     await orch.start();
     const run: Run = {
@@ -3670,7 +3701,7 @@ describe('observability — log field correctness', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: destination });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -3693,7 +3724,7 @@ describe('observability — log field correctness', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 1, logDestination: destination });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -3723,7 +3754,7 @@ describe('observability — log field correctness', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { maxConcurrentRuns: 1, logDestination: destination });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -3749,7 +3780,7 @@ describe('observability — log field correctness', () => {
       specPublisher: makeSpecPublisher(),
       postError: vi.fn(),
       postMessage: vi.fn(),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: destination });
     (orch as unknown as { _handleRequest: typeof handleReq })._handleRequest = handleReq;
     await orch.start();
@@ -3780,7 +3811,7 @@ describe('Orchestrator — _startSpecPipeline onProgress wiring', () => {
         intentClassifier: makeIntentClassifier('idea'),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'r',
+        channelRepoMap: makeChannelRepoMap(),
       } as never,
       { logDestination: nullDest },
     );
@@ -3816,7 +3847,7 @@ describe('Orchestrator — _startSpecPipeline onProgress wiring', () => {
         intentClassifier: makeIntentClassifier('idea'),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage,
-        repo_url: 'r',
+        channelRepoMap: makeChannelRepoMap(),
       } as never,
       { logDestination: nullDest },
     );
@@ -3859,7 +3890,7 @@ describe('Orchestrator — _startSpecPipeline onProgress wiring', () => {
         intentClassifier: makeIntentClassifier('idea'),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage,
-        repo_url: 'r',
+        channelRepoMap: makeChannelRepoMap(),
       } as never,
       { logDestination: destination },
     );
@@ -3902,7 +3933,7 @@ describe('Orchestrator — _handleSpecFeedback onProgress wiring', () => {
         intentClassifier: ic,
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'r',
+        channelRepoMap: makeChannelRepoMap(),
       } as never,
       { logDestination: nullDest },
     );
@@ -3939,7 +3970,7 @@ describe('Orchestrator — _handleSpecFeedback onProgress wiring', () => {
         intentClassifier: ic,
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage,
-        repo_url: 'r',
+        channelRepoMap: makeChannelRepoMap(),
       } as never,
       { logDestination: nullDest },
     );
@@ -3984,7 +4015,7 @@ describe('Orchestrator — _handleSpecFeedback onProgress wiring', () => {
         intentClassifier: ic,
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage,
-        repo_url: 'r',
+        channelRepoMap: makeChannelRepoMap(),
       } as never,
       { logDestination: destination },
     );
@@ -4053,7 +4084,7 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
         specPublisher: deps.cp,
         postError: vi.fn(),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'https://github.com/org/repo',
+        channelRepoMap: makeChannelRepoMap(),
         intentClassifier: ic,
         specCommitter: deps.sc,
         implementer: deps.impl,
@@ -4091,7 +4122,7 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
         specPublisher: deps.cp,
         postError: vi.fn(),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'https://github.com/org/repo',
+        channelRepoMap: makeChannelRepoMap(),
         intentClassifier: ic,
         specCommitter: deps.sc,
         implementer: deps.impl,
@@ -4131,7 +4162,7 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
         specPublisher: deps.cp,
         postError: vi.fn(),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'https://github.com/org/repo',
+        channelRepoMap: makeChannelRepoMap(),
         intentClassifier: ic,
         specCommitter: deps.sc,
         implementer: deps.impl,
@@ -4172,7 +4203,7 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
         specPublisher: deps.cp,
         postError: vi.fn(),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'https://github.com/org/repo',
+        channelRepoMap: makeChannelRepoMap(),
         intentClassifier: ic,
         specCommitter: deps.sc,
         implementer: deps.impl,
@@ -4210,7 +4241,7 @@ describe('Orchestrator — spec lifecycle status updates', () => {
     const ic = makeIntentClassifier('idea');
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError: vi.fn(), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: ic },
+      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError: vi.fn(), postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: ic },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -4230,7 +4261,7 @@ describe('Orchestrator — spec lifecycle status updates', () => {
     const ic = makeIntentClassifier('idea');
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError: vi.fn(), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: ic },
+      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError: vi.fn(), postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: ic },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -4252,7 +4283,7 @@ describe('Orchestrator — spec lifecycle status updates', () => {
     (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError: vi.fn(), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: ic },
+      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError: vi.fn(), postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: ic },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -4276,7 +4307,7 @@ describe('Orchestrator — spec lifecycle status updates', () => {
     const ic = makeIntentClassifier('idea');
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError: vi.fn(), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: ic },
+      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError: vi.fn(), postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: ic },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -4297,7 +4328,7 @@ describe('Orchestrator — bug and chore routing', () => {
     const cp = makeSpecPublisher();
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('bug') },
+      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: makeIntentClassifier('bug') },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -4318,7 +4349,7 @@ describe('Orchestrator — bug and chore routing', () => {
     const cp = makeSpecPublisher();
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('chore') },
+      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: cp, postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: makeIntentClassifier('chore') },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -4337,7 +4368,7 @@ describe('Orchestrator — bug and chore routing', () => {
     const sg = makeSpecGenerator();
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('bug') },
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: makeIntentClassifier('bug') },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -4354,7 +4385,7 @@ describe('Orchestrator — bug and chore routing', () => {
     const sg = makeSpecGenerator();
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('chore') },
+      { adapter: adapter as never, workspaceManager: makeWorkspaceManager(), specGenerator: sg, specPublisher: makeSpecPublisher(), postError: vi.fn().mockResolvedValue(undefined), postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: makeIntentClassifier('chore') },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -4374,7 +4405,7 @@ describe('Orchestrator — triage pipeline error paths', () => {
     const postError = vi.fn().mockResolvedValue(undefined);
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: wm, specGenerator: makeSpecGenerator(), specPublisher: makeSpecPublisher(), postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('bug') },
+      { adapter: adapter as never, workspaceManager: wm, specGenerator: makeSpecGenerator(), specPublisher: makeSpecPublisher(), postError, postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: makeIntentClassifier('bug') },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -4394,7 +4425,7 @@ describe('Orchestrator — triage pipeline error paths', () => {
     const postError = vi.fn().mockResolvedValue(undefined);
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: makeSpecPublisher(), postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('chore') },
+      { adapter: adapter as never, workspaceManager: wm, specGenerator: sg, specPublisher: makeSpecPublisher(), postError, postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: makeIntentClassifier('chore') },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -4415,7 +4446,7 @@ describe('Orchestrator — triage pipeline error paths', () => {
     const postError = vi.fn().mockResolvedValue(undefined);
 
     const orch = new OrchestratorImpl(
-      { adapter: adapter as never, workspaceManager: wm, specGenerator: makeSpecGenerator(), specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), repo_url: 'https://github.com/org/repo', intentClassifier: makeIntentClassifier('bug') },
+      { adapter: adapter as never, workspaceManager: wm, specGenerator: makeSpecGenerator(), specPublisher: cp, postError, postMessage: vi.fn().mockResolvedValue(undefined), channelRepoMap: makeChannelRepoMap(), intentClassifier: makeIntentClassifier('bug') },
       { logDestination: nullDest },
     );
     await orch.start();
@@ -4456,7 +4487,7 @@ describe('Orchestrator — bug/chore approval paths', () => {
         issueManager: im,
         postError,
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'https://github.com/org/repo',
+        channelRepoMap: makeChannelRepoMap(),
         intentClassifier: ic,
       },
       { logDestination: nullDest },
@@ -4504,7 +4535,7 @@ describe('Orchestrator — bug/chore approval paths', () => {
         issueManager: im,
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'https://github.com/org/repo',
+        channelRepoMap: makeChannelRepoMap(),
         intentClassifier: ic,
       },
       { logDestination: nullDest },
@@ -4556,7 +4587,7 @@ describe('Orchestrator — bug/chore approval paths', () => {
         issueManager: im,
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'https://github.com/org/repo',
+        channelRepoMap: makeChannelRepoMap(),
         intentClassifier: ic,
       },
       { logDestination: nullDest },
@@ -4574,7 +4605,7 @@ describe('Orchestrator — bug/chore approval paths', () => {
     }, { timeout: 2000 });
     await adapter.stop();
 
-    expect(setIssueLink).toHaveBeenCalledWith('CANVAS001', 'https://github.com/org/repo/issues/77');
+    expect(setIssueLink).toHaveBeenCalledWith('CANVAS001', 'https://github.com/org/repo.git/issues/77');
     expect(updateStatus).toHaveBeenCalledWith('CANVAS001', 'Approved');
   });
 
@@ -4612,7 +4643,7 @@ describe('Orchestrator — bug/chore approval paths', () => {
         issueManager: im,
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'https://github.com/org/repo',
+        channelRepoMap: makeChannelRepoMap(),
         intentClassifier: ic,
       },
       { logDestination: dest as import('pino').DestinationStream },
@@ -4661,7 +4692,7 @@ describe('Orchestrator — bug/chore approval paths', () => {
         issueManager: im,
         postError,
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'https://github.com/org/repo',
+        channelRepoMap: makeChannelRepoMap(),
         intentClassifier: ic,
       },
       { logDestination: nullDest },
@@ -4707,7 +4738,7 @@ describe('Orchestrator — bug/chore approval paths', () => {
         issueManager: im,
         postError,
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'https://github.com/org/repo',
+        channelRepoMap: makeChannelRepoMap(),
         intentClassifier: ic,
       },
       { logDestination: nullDest },
@@ -4750,7 +4781,7 @@ describe('Orchestrator — bug/chore approval paths', () => {
         issueManager: im,
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'https://github.com/org/repo',
+        channelRepoMap: makeChannelRepoMap(),
         intentClassifier: ic,
       },
       { logDestination: nullDest },
@@ -4804,7 +4835,7 @@ describe('Orchestrator — bug/chore approval paths', () => {
         issueManager: im,
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
-        repo_url: 'https://github.com/org/repo',
+        channelRepoMap: makeChannelRepoMap(),
         intentClassifier: ic,
       },
       { logDestination: dest as import('pino').DestinationStream },
@@ -4845,7 +4876,7 @@ describe('Orchestrator — file_issues routing', () => {
       issueFiler,
       postError: vi.fn().mockResolvedValue(undefined),
       postMessage,
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: nullDest });
 
     await orch.start();
@@ -4877,7 +4908,7 @@ describe('Orchestrator — _startFilingPipeline error paths', () => {
       issueFiler,
       postError,
       postMessage: vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: nullDest });
 
     await orch.start();
@@ -4907,7 +4938,7 @@ describe('Orchestrator — _startFilingPipeline error paths', () => {
       issueFiler,
       postError,
       postMessage: vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: nullDest });
 
     await orch.start();
@@ -4941,7 +4972,7 @@ describe('Orchestrator — _startFilingPipeline error paths', () => {
       issueFiler,
       postError,
       postMessage: vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: nullDest });
 
     await orch.start();
@@ -4981,7 +5012,7 @@ describe('Orchestrator — _startFilingPipeline success paths', () => {
       issueFiler,
       postError: vi.fn().mockResolvedValue(undefined),
       postMessage,
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: logDest });
 
     await orch.start();
@@ -5037,7 +5068,7 @@ describe('Orchestrator — _startFilingPipeline success paths', () => {
       issueFiler,
       postError: vi.fn().mockResolvedValue(undefined),
       postMessage: vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: logDest });
 
     await orch.start();
@@ -5072,7 +5103,7 @@ describe('Orchestrator — _startFilingPipeline success paths', () => {
       issueFiler,
       postError: vi.fn().mockResolvedValue(undefined),
       postMessage: vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: logDest });
 
     await orch.start();
@@ -5102,7 +5133,7 @@ describe('Orchestrator — _startFilingPipeline success paths', () => {
       issueFiler,
       postError: vi.fn().mockResolvedValue(undefined),
       postMessage,
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: nullDest });
 
     await orch.start();
@@ -5130,7 +5161,7 @@ describe('Orchestrator — _startFilingPipeline success paths', () => {
       issueFiler,
       postError: vi.fn().mockResolvedValue(undefined),
       postMessage,
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: nullDest });
 
     await orch.start();
@@ -5157,7 +5188,7 @@ describe('Orchestrator — existing routing unaffected by file_issues', () => {
       intentClassifier: makeIntentClassifier('idea'),
       postError: vi.fn().mockResolvedValue(undefined),
       postMessage: vi.fn().mockResolvedValue(undefined),
-      repo_url: 'https://github.com/org/repo',
+      channelRepoMap: makeChannelRepoMap(),
     }, { logDestination: nullDest });
 
     await orch.start();
@@ -5190,7 +5221,7 @@ describe('OrchestratorImpl — command dispatch', () => {
         specPublisher: makeSpecPublisher(),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage,
-        repo_url: 'https://github.com/test/repo',
+        channelRepoMap: makeChannelRepoMap(),
         commandRegistry,
       },
       { logDestination: nullDest as unknown as import('pino').DestinationStream },
@@ -5236,7 +5267,7 @@ describe('OrchestratorImpl — command dispatch', () => {
         specPublisher: makeSpecPublisher(),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage,
-        repo_url: 'https://github.com/test/repo',
+        channelRepoMap: makeChannelRepoMap(),
         commandRegistry,
       },
       { logDestination: destination },
@@ -5268,7 +5299,7 @@ describe('OrchestratorImpl — command dispatch', () => {
         specPublisher: makeSpecPublisher(),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage,
-        repo_url: 'https://github.com/test/repo',
+        channelRepoMap: makeChannelRepoMap(),
         commandRegistry,
       },
       { logDestination: destination },
@@ -5306,7 +5337,7 @@ describe('OrchestratorImpl — command dispatch', () => {
         specPublisher: makeSpecPublisher(),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage,
-        repo_url: 'https://github.com/test/repo',
+        channelRepoMap: makeChannelRepoMap(),
         commandRegistry,
       },
       { logDestination: destination },
@@ -5336,7 +5367,7 @@ describe('OrchestratorImpl — command dispatch', () => {
         specPublisher: makeSpecPublisher(),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: failingPost,
-        repo_url: 'https://github.com/test/repo',
+        channelRepoMap: makeChannelRepoMap(),
         commandRegistry,
       },
       { logDestination: destination },
@@ -5359,5 +5390,155 @@ describe('OrchestratorImpl — command dispatch', () => {
     await orch.stop();
 
     expect(commandRegistry.dispatch).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('OrchestratorImpl — multi-repo dispatch', () => {
+  it('new_request from mapped channel A uses channel A repo_url and workspace_root', async () => {
+    const { records, destination } = makeLogCapture();
+    const adapter = makeMockAdapter();
+    const workspaceManager = makeWorkspaceManager();
+    const channelRepoMap: ChannelRepoMap = new Map([
+      ['CA', { channel_id: 'CA', repo_url: 'https://github.com/org/repo-a.git', workspace_root: '/roots/a' }],
+      ['CB', { channel_id: 'CB', repo_url: 'https://github.com/org/repo-b.git', workspace_root: '/roots/b' }],
+    ]);
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as unknown as import('../../src/adapters/slack/slack-adapter.js').SlackAdapter,
+      workspaceManager,
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      channelRepoMap,
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage: vi.fn().mockResolvedValue(undefined),
+    }, { logDestination: destination });
+
+    await orch.start();
+
+    const reqId = 'req-mr-1';
+    adapter._emit({
+      type: 'new_request',
+      payload: { id: reqId, source: 'slack' as const, content: 'idea', author: 'U1', received_at: new Date().toISOString(), thread_ts: '1.0', channel_id: 'CA' },
+    });
+
+    await vi.waitUntil(() => {
+      const run = [...orch.getRuns().values()].find(r => r.request_id === reqId);
+      return run?.stage === 'reviewing_spec';
+    }, { timeout: 3000 });
+
+    expect(workspaceManager.create).toHaveBeenCalledWith(reqId, 'https://github.com/org/repo-a.git', '/roots/a');
+    await orch.stop();
+  });
+
+  it('new_request from mapped channel B uses channel B repo_url and workspace_root', async () => {
+    const { records, destination } = makeLogCapture();
+    const adapter = makeMockAdapter();
+    const workspaceManager = makeWorkspaceManager();
+    const channelRepoMap: ChannelRepoMap = new Map([
+      ['CA', { channel_id: 'CA', repo_url: 'https://github.com/org/repo-a.git', workspace_root: '/roots/a' }],
+      ['CB', { channel_id: 'CB', repo_url: 'https://github.com/org/repo-b.git', workspace_root: '/roots/b' }],
+    ]);
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as unknown as import('../../src/adapters/slack/slack-adapter.js').SlackAdapter,
+      workspaceManager,
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      channelRepoMap,
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage: vi.fn().mockResolvedValue(undefined),
+    }, { logDestination: destination });
+
+    await orch.start();
+
+    const reqId = 'req-mr-2';
+    adapter._emit({
+      type: 'new_request',
+      payload: { id: reqId, source: 'slack' as const, content: 'idea', author: 'U1', received_at: new Date().toISOString(), thread_ts: '2.0', channel_id: 'CB' },
+    });
+
+    await vi.waitUntil(() => {
+      const run = [...orch.getRuns().values()].find(r => r.request_id === reqId);
+      return run?.stage === 'reviewing_spec';
+    }, { timeout: 3000 });
+
+    expect(workspaceManager.create).toHaveBeenCalledWith(reqId, 'https://github.com/org/repo-b.git', '/roots/b');
+    await orch.stop();
+  });
+
+  it('new_request from unmapped channel: run.channel_unmapped warn logged, no run created', async () => {
+    const { records, destination } = makeLogCapture();
+    const adapter = makeMockAdapter();
+    const workspaceManager = makeWorkspaceManager();
+    const channelRepoMap: ChannelRepoMap = new Map([
+      ['CA', { channel_id: 'CA', repo_url: 'https://github.com/org/repo-a.git', workspace_root: '/roots/a' }],
+    ]);
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as unknown as import('../../src/adapters/slack/slack-adapter.js').SlackAdapter,
+      workspaceManager,
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      channelRepoMap,
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage: vi.fn().mockResolvedValue(undefined),
+    }, { logDestination: destination });
+
+    await orch.start();
+
+    const reqId = 'req-mr-3';
+    adapter._emit({
+      type: 'new_request',
+      payload: { id: reqId, source: 'slack' as const, content: 'idea', author: 'U1', received_at: new Date().toISOString(), thread_ts: '3.0', channel_id: 'CUNMAPPED' },
+    });
+
+    await new Promise(r => setTimeout(r, 200));
+
+    expect(orch.getRuns().size).toBe(0);
+    expect(workspaceManager.create).not.toHaveBeenCalled();
+    const warnLog = records.find(r => r['event'] === 'run.channel_unmapped');
+    expect(warnLog).toBeDefined();
+    expect(warnLog!['channel_id']).toBe('CUNMAPPED');
+
+    await orch.stop();
+  });
+
+  it('single-entry ChannelRepoMap matches existing single-repo behavior', async () => {
+    const { records, destination } = makeLogCapture();
+    const adapter = makeMockAdapter();
+    const workspaceManager = makeWorkspaceManager();
+    const channelRepoMap: ChannelRepoMap = new Map([
+      ['C1', { channel_id: 'C1', repo_url: 'https://github.com/org/repo.git', workspace_root: '~/.autocatalyst/workspaces' }],
+    ]);
+
+    const orch = new OrchestratorImpl({
+      adapter: adapter as unknown as import('../../src/adapters/slack/slack-adapter.js').SlackAdapter,
+      workspaceManager,
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      channelRepoMap,
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage: vi.fn().mockResolvedValue(undefined),
+    }, { logDestination: destination });
+
+    await orch.start();
+
+    const reqId = 'req-mr-4';
+    adapter._emit({
+      type: 'new_request',
+      payload: { id: reqId, source: 'slack' as const, content: 'idea', author: 'U1', received_at: new Date().toISOString(), thread_ts: '4.0', channel_id: 'C1' },
+    });
+
+    await vi.waitUntil(() => {
+      const run = [...orch.getRuns().values()].find(r => r.request_id === reqId);
+      return run?.stage === 'reviewing_spec';
+    }, { timeout: 3000 });
+
+    expect(workspaceManager.create).toHaveBeenCalledWith(
+      reqId,
+      'https://github.com/org/repo.git',
+      '~/.autocatalyst/workspaces',
+    );
+    await orch.stop();
   });
 });
