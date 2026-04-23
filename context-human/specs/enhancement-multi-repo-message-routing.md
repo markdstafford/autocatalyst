@@ -1,7 +1,7 @@
 ---
 created: 2026-04-23
 last_updated: 2026-04-23
-status: implementing
+status: implemented
 issue: 33
 specced_by: markdstafford
 implemented_by: markdstafford
@@ -163,112 +163,112 @@ Integration
 ## Task list
 
 *(Added by task decomposition stage)*
-- [ ] **Story: CLI — multi-repo startup via ****`--repo`**** flag**
-	- [ ] **Task: Extend ****`--repo`**** to accept multiple space-separated paths**
+- [x] **Story: CLI — multi-repo startup via ****`--repo`**** flag**
+	- [x] **Task: Extend ****`--repo`**** to accept multiple space-separated paths**
 		- **Description**: Update argument parsing in `src/index.ts` to allow `--repo` to accept multiple space-separated paths. When multiple paths are provided, collect them as an array. Single `--repo /path` or no flag preserves existing behavior.
 		- **Acceptance criteria**:
-			- [ ] `--repo /a /b` parsed as `["/a", "/b"]`
-			- [ ] Single `--repo /a` or no flag → existing parse result unchanged
-			- [ ] `tsc --noEmit` passes
+			- [x] `--repo /a /b` parsed as `["/a", "/b"]`
+			- [x] Single `--repo /a` or no flag → existing parse result unchanged
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: None
-	- [ ] **Task: Add ****`loadConfigFromPath()`**** to ****`src/core/config.ts`**
+	- [x] **Task: Add ****`loadConfigFromPath()`**** to ****`src/core/config.ts`**
 		- **Description**: Add `loadConfigFromPath(repoPath: string): WorkflowConfig` that reads and validates [WORKFLOW.md](http://WORKFLOW.md) from the given directory path. Update the existing `loadConfig()` to delegate to this with `process.cwd()`. Update `src/index.ts` multi-repo startup to call `loadConfigFromPath()` for each path in `--repo`.
 		- **Acceptance criteria**:
-			- [ ] Valid [WORKFLOW.md](http://WORKFLOW.md) at given path → returns parsed `WorkflowConfig`
-			- [ ] Missing or invalid [WORKFLOW.md](http://WORKFLOW.md) → descriptive error including the path
-			- [ ] Existing `loadConfig()` behavior unchanged
-			- [ ] All config tests pass: `npm test`
+			- [x] Valid [WORKFLOW.md](http://WORKFLOW.md) at given path → returns parsed `WorkflowConfig`
+			- [x] Missing or invalid [WORKFLOW.md](http://WORKFLOW.md) → descriptive error including the path
+			- [x] Existing `loadConfig()` behavior unchanged
+			- [x] All config tests pass: `npm test`
 		- **Dependencies**: Task: Extend `--repo` to accept multiple space-separated paths
-	- [ ] **Task: Resolve repo URLs and build ****`ChannelRepoMap`**** at startup**
+	- [x] **Task: Resolve repo URLs and build ****`ChannelRepoMap`**** at startup**
 		- **Description**: For each repo path in multi-repo mode, run `git remote get-url origin` from that directory to get `repo_url`. Combine with `channel_name` and `workspace_root` from the repo's [WORKFLOW.md](http://WORKFLOW.md). Pass the full entry list to `SlackAdapter` for channel ID resolution. Log `service.starting` with mode and channel count.
 		- **Acceptance criteria**:
-			- [ ] Each repo's `repo_url` resolved via `git remote` in its directory
-			- [ ] `workspace_root` defaults to `~/.autocatalyst/workspaces/` when absent from [WORKFLOW.md](http://WORKFLOW.md)
-			- [ ] `service.starting` logged with `mode: "multi-repo"` and correct `channel_count`
-			- [ ] Single-repo startup logs `mode: "single-repo"` unchanged
-			- [ ] `tsc --noEmit` passes
+			- [x] Each repo's `repo_url` resolved via `git remote` in its directory
+			- [x] `workspace_root` defaults to `~/.autocatalyst/workspaces/` when absent from [WORKFLOW.md](http://WORKFLOW.md)
+			- [x] `service.starting` logged with `mode: "multi-repo"` and correct `channel_count`
+			- [x] Single-repo startup logs `mode: "single-repo"` unchanged
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `loadConfigFromPath()`
-	- [ ] **Task: Tests for conditional startup modes**
+	- [x] **Task: Tests for conditional startup modes**
 		- **Description**: Extend entry point startup helper tests: multi-repo mode reads each repo's [WORKFLOW.md](http://WORKFLOW.md) and runs `git remote` per repo; single-repo mode unchanged; missing [WORKFLOW.md](http://WORKFLOW.md) at a `--repo` path exits with code 1 and descriptive message.
 		- **Acceptance criteria**:
-			- [ ] Multi-repo mode: `loadConfigFromPath()` called once per repo path
-			- [ ] Multi-repo mode: `git remote get-url origin` called once per repo directory
-			- [ ] Multi-repo mode: `service.starting` logged with `mode: "multi-repo"`
-			- [ ] Single-repo mode: all existing startup tests pass unchanged
-			- [ ] Missing [WORKFLOW.md](http://WORKFLOW.md): exits code 1 with path in error message
-			- [ ] `npm test` passes
+			- [x] Multi-repo mode: `loadConfigFromPath()` called once per repo path
+			- [x] Multi-repo mode: `git remote get-url origin` called once per repo directory
+			- [x] Multi-repo mode: `service.starting` logged with `mode: "multi-repo"`
+			- [x] Single-repo mode: all existing startup tests pass unchanged
+			- [x] Missing [WORKFLOW.md](http://WORKFLOW.md): exits code 1 with path in error message
+			- [x] `npm test` passes
 		- **Dependencies**: Task: Resolve repo URLs and build ChannelRepoMap
-- [ ] **Story: Config — internal ****`RepoEntry`**** type**
-	- [ ] **Task: Add ****`RepoEntry`**** internal type**
+- [x] **Story: Config — internal ****`RepoEntry`**** type**
+	- [x] **Task: Add ****`RepoEntry`**** internal type**
 		- **Description**: Add `RepoEntry` interface to `src/types/config.ts` for internal `ChannelRepoMap` use. No changes to `WorkflowConfig`.
 		- **Acceptance criteria**:
-			- [ ] `RepoEntry` has `channel_id: string`, `repo_url: string`, `workspace_root: string`
-			- [ ] `WorkflowConfig` schema unchanged
-			- [ ] `tsc --noEmit` passes
+			- [x] `RepoEntry` has `channel_id: string`, `repo_url: string`, `workspace_root: string`
+			- [x] `WorkflowConfig` schema unchanged
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: None
-	- [ ] **Task: Unit tests for ****`loadConfigFromPath()`**
+	- [x] **Task: Unit tests for ****`loadConfigFromPath()`**
 		- **Description**: Extend `tests/core/config.test.ts`: valid path → parsed config; missing file → error with path; invalid [WORKFLOW.md](http://WORKFLOW.md) → validation error; existing `loadConfig()` tests unchanged.
 		- **Acceptance criteria**:
-			- [ ] All cases pass
-			- [ ] No existing config tests broken
-			- [ ] `npm test` passes
+			- [x] All cases pass
+			- [x] No existing config tests broken
+			- [x] `npm test` passes
 		- **Dependencies**: Task: Add `loadConfigFromPath()`
-- [ ] **Story: SlackAdapter — multi-channel startup**
-	- [ ] **Task: Resolve multiple channel IDs at startup**
+- [x] **Story: SlackAdapter — multi-channel startup**
+	- [x] **Task: Resolve multiple channel IDs at startup**
 		- **Description**: Update `SlackAdapter.start()` to accept repo entries in multi-repo mode. Resolve each channel name to its ID via `conversations.list`. Store as `Map`. Log `slack.startup.channels_resolved`. If any channel cannot be resolved, log `slack.startup.channel_resolution_failed` at error and fail startup. Preserve the existing single-channel path in single-repo mode.
 		- **Acceptance criteria**:
-			- [ ] All channel names resolved before any event handler is registered
-			- [ ] `slack.startup.channels_resolved` logged with `channels` array
-			- [ ] One unresolvable channel → `slack.startup.channel_resolution_failed` logged at error; startup fails with descriptive error
-			- [ ] Single-repo mode → existing `channel_name` resolution unchanged
-			- [ ] `tsc --noEmit` passes
+			- [x] All channel names resolved before any event handler is registered
+			- [x] `slack.startup.channels_resolved` logged with `channels` array
+			- [x] One unresolvable channel → `slack.startup.channel_resolution_failed` logged at error; startup fails with descriptive error
+			- [x] Single-repo mode → existing `channel_name` resolution unchanged
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Resolve repo URLs and build ChannelRepoMap
-	- [ ] **Task: Scope event handlers to configured channels**
+	- [x] **Task: Scope event handlers to configured channels**
 		- **Description**: Update `SlackAdapter` message and reaction handlers to drop events from channel IDs not in the resolved `ChannelRepoMap`. This check happens before the classifier is called. Dropped events are logged at debug level as `slack.event.channel_filtered`.
 		- **Acceptance criteria**:
-			- [ ] Message in unconfigured channel → `slack.event.channel_filtered` logged at debug; no classifier call, no event emitted
-			- [ ] Reaction in unconfigured channel → no event emitted
-			- [ ] Message in configured channel → existing classify+emit behavior unchanged
-			- [ ] All existing `SlackAdapter` integration tests pass: `npm test`
+			- [x] Message in unconfigured channel → `slack.event.channel_filtered` logged at debug; no classifier call, no event emitted
+			- [x] Reaction in unconfigured channel → no event emitted
+			- [x] Message in configured channel → existing classify+emit behavior unchanged
+			- [x] All existing `SlackAdapter` integration tests pass: `npm test`
 		- **Dependencies**: Task: Resolve multiple channel IDs at startup
-	- [ ] **Task: Integration tests for multi-channel adapter**
+	- [x] **Task: Integration tests for multi-channel adapter**
 		- **Description**: Extend `tests/adapters/slack/slack-adapter.test.ts` with multi-channel scenarios: two channels resolved at startup, ideas from each channel dispatched with correct `channel_id`, event from unconfigured channel logged as `slack.event.channel_filtered` and silently dropped, one unresolvable channel logs `slack.startup.channel_resolution_failed` and causes startup failure.
 		- **Acceptance criteria**:
-			- [ ] Two configured channels: each `new_idea` emits with the correct `channel_id`
-			- [ ] Event from unconfigured channel: `slack.event.channel_filtered` logged at debug; no event emitted
-			- [ ] Unknown channel at startup: `slack.startup.channel_resolution_failed` logged at error; startup throws
-			- [ ] All tests pass: `npm test`
+			- [x] Two configured channels: each `new_idea` emits with the correct `channel_id`
+			- [x] Event from unconfigured channel: `slack.event.channel_filtered` logged at debug; no event emitted
+			- [x] Unknown channel at startup: `slack.startup.channel_resolution_failed` logged at error; startup throws
+			- [x] All tests pass: `npm test`
 		- **Dependencies**: Task: Scope event handlers
-- [ ] **Story: WorkspaceManager — explicit workspace root**
-	- [ ] **Task: Add ****`workspace_root`**** parameter to ****`WorkspaceManager.create()`**
+- [x] **Story: WorkspaceManager — explicit workspace root**
+	- [x] **Task: Add ****`workspace_root`**** parameter to ****`WorkspaceManager.create()`**
 		- **Description**: Update `WorkspaceManager` interface and implementation to accept `workspace_root` as a third parameter to `create()`. Remove reliance on service-level config. Update `Orchestrator` and `src/index.ts` callers to pass the correct `workspace_root` from `ChannelRepoMap`.
 		- **Acceptance criteria**:
-			- [ ] `create(idea_id, repo_url, workspace_root)` compiles and routes workspace creation to the provided root
-			- [ ] Orchestrator passes per-channel `workspace_root` from `ChannelRepoMap`
-			- [ ] `src/index.ts` single-repo path passes `workspace_root` from config (unchanged behavior)
-			- [ ] All existing workspace manager tests pass: `npm test`
+			- [x] `create(idea_id, repo_url, workspace_root)` compiles and routes workspace creation to the provided root
+			- [x] Orchestrator passes per-channel `workspace_root` from `ChannelRepoMap`
+			- [x] `src/index.ts` single-repo path passes `workspace_root` from config (unchanged behavior)
+			- [x] All existing workspace manager tests pass: `npm test`
 		- **Dependencies**: None
-	- [ ] **Task: Unit tests for updated ****`WorkspaceManager`**
+	- [x] **Task: Unit tests for updated ****`WorkspaceManager`**
 		- **Description**: Update `tests/core/workspace-manager.test.ts` to pass `workspace_root` explicitly. Add a case verifying two calls with different roots produce non-overlapping paths.
 		- **Acceptance criteria**:
-			- [ ] All existing tests updated and passing
-			- [ ] Two distinct `workspace_root` values → non-overlapping `workspace_path`s
-			- [ ] `npm test` passes
+			- [x] All existing tests updated and passing
+			- [x] Two distinct `workspace_root` values → non-overlapping `workspace_path`s
+			- [x] `npm test` passes
 		- **Dependencies**: Task: Add `workspace_root` parameter
-- [ ] **Story: Orchestrator — per-channel repo resolution**
-	- [ ] **Task: Replace single ****`repo_url`**** with ****`ChannelRepoMap`**
+- [x] **Story: Orchestrator — per-channel repo resolution**
+	- [x] **Task: Replace single ****`repo_url`**** with ****`ChannelRepoMap`**
 		- **Description**: Update `OrchestratorImpl` constructor to accept `ChannelRepoMap` instead of `repo_url: string`. On `new_idea` and `spec_feedback`: look up `channel_id`; if not found, log `run.channel_unmapped` at warn and discard; if found, pass `repo_url` and `workspace_root` to the pipeline.
 		- **Acceptance criteria**:
-			- [ ] `new_idea` with mapped `channel_id` → `WorkspaceManager.create()` called with correct `repo_url` and `workspace_root`
-			- [ ] `new_idea` with unmapped `channel_id` → `run.channel_unmapped` logged at warn, no run created
-			- [ ] `spec_feedback` with unmapped `channel_id` → silently discarded
-			- [ ] All existing orchestrator tests updated and passing: `npm test`
+			- [x] `new_idea` with mapped `channel_id` → `WorkspaceManager.create()` called with correct `repo_url` and `workspace_root`
+			- [x] `new_idea` with unmapped `channel_id` → `run.channel_unmapped` logged at warn, no run created
+			- [x] `spec_feedback` with unmapped `channel_id` → silently discarded
+			- [x] All existing orchestrator tests updated and passing: `npm test`
 		- **Dependencies**: Task: Add `workspace_root` parameter
-	- [ ] **Task: Unit tests for multi-repo orchestrator dispatch**
+	- [x] **Task: Unit tests for multi-repo orchestrator dispatch**
 		- **Description**: Extend `tests/core/orchestrator.test.ts` with multi-repo cases: ideas from two different channels routed to different `repo_url`s, event from unmapped channel discarded, single-entry `ChannelRepoMap` matches existing behavior.
 		- **Acceptance criteria**:
-			- [ ] Channel A idea → channel A's `repo_url` and `workspace_root` passed to pipeline
-			- [ ] Channel B idea → channel B's values; no interference with A
-			- [ ] Unmapped channel → `run.channel_unmapped` warn log; no WorkspaceManager, SpecGenerator, or CanvasPublisher calls
-			- [ ] All tests pass: `npm test`
+			- [x] Channel A idea → channel A's `repo_url` and `workspace_root` passed to pipeline
+			- [x] Channel B idea → channel B's values; no interference with A
+			- [x] Unmapped channel → `run.channel_unmapped` warn log; no WorkspaceManager, SpecGenerator, or CanvasPublisher calls
+			- [x] All tests pass: `npm test`
 		- **Dependencies**: Task: Replace single `repo_url`
