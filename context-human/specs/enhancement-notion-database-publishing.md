@@ -313,7 +313,7 @@ export interface NotionClient {
 }
 ```
 `pages.updateProperties` sends `PATCH /v1/pages/{page_id}` with `{ properties }`. Implemented via the Notion SDK's `pages.update()` method.
-`databases.query` sends `POST /v1/databases/{database_id}/query` with an optional filter body. Implemented via the SDK's `databases.query()` method.
+`dataSources.query` sends `POST /v1/databases/{database_id}/query` with an optional filter body. Implemented via the SDK's `dataSources.query()` method.
 **SpecPublisher interface extension**
 ```typescript
 // src/adapters/slack/canvas-publisher.ts
@@ -562,8 +562,8 @@ All tests use Vitest. `NotionClient` is injectable and mocked with `vi.fn()`. Ex
 **`NotionClient`**** additions**
 - `pages.updateProperties` calls `pages.update()` with the page_id and properties payload; the exact payload is passed through unchanged
 - `pages.updateProperties` propagates rejection from the SDK `pages.update()` call
-- `databases.query` calls `databases.query()` with the database_id and filter; returns the `results` array from the SDK response
-- `databases.query` called without a filter: passes an empty or absent body (does not error)
+- `dataSources.query` calls `dataSources.query()` with the data_source_id and filter; returns the `results` array from the SDK response
+- `dataSources.query` called without a filter: passes an empty or absent body (does not error)
 - `databases.query` propagates rejection from the SDK
 ---
 **`NotionPublisher`**
@@ -708,7 +708,7 @@ These tests live in the `src/index.ts` config block or a dedicated unit for the 
 			- [x] Unit tests added to `tests/adapters/notion/notion-client.test.ts`
 		- **Dependencies**: None
 	- [x] **Task: Add ****`databases.query()`**** to ****`NotionClient`**
-		- **Description**: Add a `databases` namespace to `NotionClient` with `query(database_id: string, filter?: unknown): Promise<{ results: Array<{ id: string; properties: Record<string, unknown> }> }>`. Implement in `NotionClientImpl` via the Notion SDK's `databases.query()` method. Calling without a filter must not error.
+		- **Description**: Add a `dataSources` namespace to `NotionClient` with `query(data_source_id: string, filter?: unknown): Promise<{ results: Array<{ id: string; properties: Record<string, unknown> }> }>`. Implement in `NotionClientImpl` via the Notion SDK's `dataSources.query()` method. Calling without a filter must not error.
 		- **Acceptance criteria**:
 			- [x] Method added to `NotionClient` interface
 			- [x] `NotionClientImpl.databases.query` calls the SDK and returns the `results` array shaped as specified
