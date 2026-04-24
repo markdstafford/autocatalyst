@@ -54,7 +54,7 @@ function makeMockNotionClient(pageId = 'page-abc123'): NotionClient {
       create: vi.fn().mockResolvedValue({}),
     },
     users: { me: vi.fn() },
-    databases: {
+    dataSources: {
       query: vi.fn().mockResolvedValue({ results: [] }),
     },
   };
@@ -405,7 +405,7 @@ describe('NotionPublisher — resolveFilenameToPageId behavior (via create)', ()
   it('supersedes set and found: relation property included in create call', async () => {
     const client = makeMockNotionClient();
     const app = makeMockApp();
-    (client.databases.query as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (client.dataSources.query as ReturnType<typeof vi.fn>).mockResolvedValue({
       results: [{ id: 'old-spec-page-id', properties: {} }],
     });
     const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
@@ -414,7 +414,7 @@ describe('NotionPublisher — resolveFilenameToPageId behavior (via create)', ()
       'feature-new-spec.md',
     );
     await publisher.create('C123', '100.0', specPath);
-    expect(client.databases.query).toHaveBeenCalledWith('db-specs-id', {
+    expect(client.dataSources.query).toHaveBeenCalledWith('db-specs-id', {
       filter: { property: 'Filename', rich_text: { equals: 'feature-old-spec.md' } },
     });
     const createCall = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -425,7 +425,7 @@ describe('NotionPublisher — resolveFilenameToPageId behavior (via create)', ()
     const { records, destination } = makeLogCapture();
     const client = makeMockNotionClient();
     const app = makeMockApp();
-    (client.databases.query as ReturnType<typeof vi.fn>).mockResolvedValue({ results: [] });
+    (client.dataSources.query as ReturnType<typeof vi.fn>).mockResolvedValue({ results: [] });
     const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: destination });
     const specPath = makeSpecFile(
       '---\nspecced_by: alice\nlast_updated: 2026-04-16\nsupersedes: feature-missing.md\n---\n# Spec',
@@ -441,7 +441,7 @@ describe('NotionPublisher — resolveFilenameToPageId behavior (via create)', ()
   it('multiple results: returns first result id', async () => {
     const client = makeMockNotionClient();
     const app = makeMockApp();
-    (client.databases.query as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (client.dataSources.query as ReturnType<typeof vi.fn>).mockResolvedValue({
       results: [
         { id: 'first-page-id', properties: {} },
         { id: 'second-page-id', properties: {} },
@@ -565,7 +565,7 @@ describe('NotionPublisher.update — property sync', () => {
   it('superseded_by set and resolves: Status=Superseded and relation set', async () => {
     const client = makeMockNotionClient();
     const app = makeMockApp();
-    (client.databases.query as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (client.dataSources.query as ReturnType<typeof vi.fn>).mockResolvedValue({
       results: [{ id: 'superseding-page-id', properties: {} }],
     });
     const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
@@ -583,7 +583,7 @@ describe('NotionPublisher.update — property sync', () => {
     const { records, destination } = makeLogCapture();
     const client = makeMockNotionClient();
     const app = makeMockApp();
-    (client.databases.query as ReturnType<typeof vi.fn>).mockResolvedValue({ results: [] });
+    (client.dataSources.query as ReturnType<typeof vi.fn>).mockResolvedValue({ results: [] });
     const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: destination });
     const specPath = makeSpecFile(
       '---\nlast_updated: 2026-04-16\nsuperseded_by: feature-missing.md\n---\n# Spec',
