@@ -175,7 +175,7 @@ export class NotionPublisher implements SpecPublisher {
   }
 
   private async resolveFilenameToPageId(filename: string): Promise<string | undefined> {
-    const result = await this.client.databases.query(this.specs_database_id, {
+    const result = await this.client.dataSources.query(this.specs_database_id, {
       filter: { property: 'Filename', rich_text: { equals: filename } },
     });
     if (result.results.length === 0) {
