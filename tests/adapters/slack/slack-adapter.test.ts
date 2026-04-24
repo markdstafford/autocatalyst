@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { App } from '@slack/bolt';
 import { SlackAdapter } from '../../../src/adapters/slack/slack-adapter.js';
 import type { Request, ThreadMessage } from '../../../src/types/events.js';
+import type { PreRepoEntry } from '../../../src/types/config.js';
 
 // Captures one event from the AsyncIterable then stops
 async function takeOne<T>(iterable: AsyncIterable<T>): Promise<T> {
@@ -10,6 +11,16 @@ async function takeOne<T>(iterable: AsyncIterable<T>): Promise<T> {
 }
 
 const nullDest = { write: () => {} };
+
+function makeLogCapture() {
+  const records: Record<string, unknown>[] = [];
+  const destination = {
+    write(msg: string) {
+      try { records.push(JSON.parse(msg) as Record<string, unknown>); } catch { /* ignore */ }
+    },
+  };
+  return { records, destination: destination as unknown as import('pino').DestinationStream };
+}
 
 function makeMockApp(opts: {
   botUserId?: string;
@@ -55,6 +66,150 @@ function makeMockApp(opts: {
   };
   return app;
 }
+
+describe('SlackAdapter — multi-channel startup', () => {
+  it('resolves two channels and logs slack.startup.channels_resolved', async () => {
+    const { records, destination } = makeLogCapture();
+    const mock = makeMockApp({ channels: [{ name: 'ch-a', id: 'CA1' }, { name: 'ch-b', id: 'CB1' }] });
+    const repoEntries: PreRepoEntry[] = [
+      { channel_name: 'ch-a', repo_url: 'https://github.com/org/repo-a.git', workspace_root: '/roots/a' },
+      { channel_name: 'ch-b', repo_url: 'https://github.com/org/repo-b.git', workspace_root: '/roots/b' },
+    ];
+    const adapter = new SlackAdapter(mock as unknown as App, { repoEntries }, { logDestination: destination });
+
+    await adapter.resolveChannels();
+    await adapter.start();
+    await adapter.stop();
+
+    const resolvedLog = records.find(r => r['event'] === 'slack.startup.channels_resolved');
+    expect(resolvedLog).toBeDefined();
+    const channels = resolvedLog!['channels'] as Array<{ channel_id: string }>;
+    expect(channels).toHaveLength(2);
+    expect(channels.map(c => c.channel_id)).toContain('CA1');
+    expect(channels.map(c => c.channel_id)).toContain('CB1');
+  });
+
+  it('throws and logs slack.startup.channel_resolution_failed when a channel is not found', async () => {
+    const { records, destination } = makeLogCapture();
+    const mock = makeMockApp({ channels: [{ name: 'ch-a', id: 'CA1' }] });
+    const repoEntries: PreRepoEntry[] = [
+      { channel_name: 'ch-a', repo_url: 'https://github.com/org/repo-a.git', workspace_root: '/roots/a' },
+      { channel_name: 'missing-channel', repo_url: 'https://github.com/org/repo-b.git', workspace_root: '/roots/b' },
+    ];
+    const adapter = new SlackAdapter(mock as unknown as App, { repoEntries }, { logDestination: destination });
+
+    await expect(adapter.resolveChannels()).rejects.toThrow(/missing-channel/);
+
+    const failLog = records.find(r => r['event'] === 'slack.startup.channel_resolution_failed');
+    expect(failLog).toBeDefined();
+    expect(failLog!['channel_name']).toBe('missing-channel');
+  });
+
+  it('resolveChannels() is idempotent — conversations.list called once even if called twice', async () => {
+    const mock = makeMockApp({ channels: [{ name: 'ch-a', id: 'CA1' }, { name: 'ch-b', id: 'CB1' }] });
+    const repoEntries: PreRepoEntry[] = [
+      { channel_name: 'ch-a', repo_url: 'url-a', workspace_root: '/roots/a' },
+      { channel_name: 'ch-b', repo_url: 'url-b', workspace_root: '/roots/b' },
+    ];
+    const adapter = new SlackAdapter(mock as unknown as App, { repoEntries }, { logDestination: nullDest });
+
+    await adapter.resolveChannels();
+    await adapter.resolveChannels(); // second call is a no-op
+
+    expect(mock.client.conversations.list).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('SlackAdapter — multi-channel event filtering', () => {
+  const BOT_ID = 'UBOT001';
+
+  it('message in unconfigured channel logs slack.event.channel_filtered at debug and emits no event', async () => {
+    const { records, destination } = makeLogCapture();
+    const mock = makeMockApp({
+      botUserId: BOT_ID,
+      channels: [{ name: 'ch-a', id: 'CA1' }, { name: 'ch-b', id: 'CB1' }],
+    });
+    const repoEntries: PreRepoEntry[] = [
+      { channel_name: 'ch-a', repo_url: 'url-a', workspace_root: '/roots/a' },
+    ]; // only ch-a configured
+
+    const adapter = new SlackAdapter(mock as unknown as App, { repoEntries }, { logDestination: destination });
+    await adapter.resolveChannels();
+    await adapter.start();
+
+    // Send a message from ch-b (not configured)
+    await mock._triggerMessage({
+      text: `<@${BOT_ID}> idea from unconfigured channel`,
+      user: 'U123',
+      ts: '100.0',
+      channel: 'CB1', // CB1 is not in repoEntries
+    });
+
+    await adapter.stop();
+
+    const filterLog = records.find(r => r['event'] === 'slack.event.channel_filtered');
+    expect(filterLog).toBeDefined();
+    expect(filterLog!['channel_id']).toBe('CB1');
+    expect(mock.client.chat.postMessage).not.toHaveBeenCalled();
+  });
+
+  it('ideas from two configured channels are dispatched with correct channel_id', async () => {
+    const mock = makeMockApp({
+      botUserId: BOT_ID,
+      channels: [{ name: 'ch-a', id: 'CA1' }, { name: 'ch-b', id: 'CB1' }],
+    });
+    const repoEntries: PreRepoEntry[] = [
+      { channel_name: 'ch-a', repo_url: 'url-a', workspace_root: '/roots/a' },
+      { channel_name: 'ch-b', repo_url: 'url-b', workspace_root: '/roots/b' },
+    ];
+
+    const adapter = new SlackAdapter(mock as unknown as App, { repoEntries }, { logDestination: nullDest });
+    await adapter.resolveChannels();
+    await adapter.start();
+
+    // Emit idea from ch-a
+    const eventA = takeOne(adapter.receive());
+    await mock._triggerMessage({ text: `<@${BOT_ID}> idea from A`, user: 'U1', ts: '1.0', channel: 'CA1' });
+    const a = await eventA;
+
+    // Emit idea from ch-b
+    const eventB = takeOne(adapter.receive());
+    await mock._triggerMessage({ text: `<@${BOT_ID}> idea from B`, user: 'U2', ts: '2.0', channel: 'CB1' });
+    const b = await eventB;
+
+    await adapter.stop();
+
+    expect(a.type).toBe('new_request');
+    expect((a.payload as Request).channel_id).toBe('CA1');
+
+    expect(b.type).toBe('new_request');
+    expect((b.payload as Request).channel_id).toBe('CB1');
+  });
+
+  it('reaction from unconfigured channel is silently dropped', async () => {
+    const mock = makeMockApp({
+      botUserId: BOT_ID,
+      channels: [{ name: 'ch-a', id: 'CA1' }],
+    });
+    const repoEntries: PreRepoEntry[] = [
+      { channel_name: 'ch-a', repo_url: 'url-a', workspace_root: '/roots/a' },
+    ];
+
+    const adapter = new SlackAdapter(mock as unknown as App, { repoEntries }, { logDestination: nullDest });
+    await adapter.resolveChannels();
+    await adapter.start();
+
+    // Trigger reaction from an unconfigured channel (CB1)
+    await mock._triggerReaction({
+      reaction: 'ac-run-status',
+      user: 'U1',
+      item: { type: 'message', channel: 'CB1', ts: '100.0' },
+    });
+
+    await adapter.stop();
+    expect(mock.client.chat.postMessage).not.toHaveBeenCalled();
+  });
+});
 
 describe('SlackAdapter — startup', () => {
   it('resolves channel name to ID and logs slack.startup.channel_resolved', async () => {

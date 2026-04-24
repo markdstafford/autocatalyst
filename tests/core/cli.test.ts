@@ -14,6 +14,7 @@ describe('parseArgs', () => {
     try {
       const result = parseArgs(['--repo', tempDir]);
       expect(result.repoPath).toBe(tempDir);
+      expect(result.repoPaths).toEqual([tempDir]);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -97,6 +98,33 @@ describe('parseArgs subcommand routing', () => {
 
   it('still throws when no subcommand and no --repo', () => {
     expect(() => parseArgs([])).toThrow(/--repo/);
+  });
+});
+
+describe('parseArgs — multi-repo', () => {
+  it('parses --repo with two valid directories', () => {
+    const dir1 = mkdtempSync(join(tmpdir(), 'cli-test-'));
+    const dir2 = mkdtempSync(join(tmpdir(), 'cli-test-'));
+    try {
+      const result = parseArgs(['--repo', dir1, dir2]);
+      expect(result.repoPaths).toHaveLength(2);
+      expect(result.repoPaths[0]).toBe(dir1);
+      expect(result.repoPaths[1]).toBe(dir2);
+      expect(result.repoPath).toBe(dir1); // backward compat: first path
+    } finally {
+      rmSync(dir1, { recursive: true, force: true });
+      rmSync(dir2, { recursive: true, force: true });
+    }
+  });
+
+  it('single --repo path returns repoPaths with one element', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'cli-test-'));
+    try {
+      const result = parseArgs(['--repo', tempDir]);
+      expect(result.repoPaths).toEqual([tempDir]);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
 

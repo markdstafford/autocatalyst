@@ -22,6 +22,7 @@ import type { IssueFiler, FilingResult } from '../adapters/agent/issue-filer.js'
 import { RunStore, FileRunStore } from './run-store.js';
 import type { ThreadRegistry } from '../adapters/slack/thread-registry.js';
 import type { CommandRegistry, CommandEvent } from '../types/commands.js';
+import type { ChannelRepoMap } from '../types/config.js';
 
 function extractH1(content: string): string | undefined {
   const match = content.match(/^#\s+(.+)$/m);
@@ -63,7 +64,7 @@ interface OrchestratorDeps {
   threadRegistry?: ThreadRegistry;
   postError: (channel_id: string, thread_ts: string, text: string) => Promise<void>;
   postMessage: (channel_id: string, thread_ts: string, text: string) => Promise<void>;
-  repo_url: string;
+  channelRepoMap: ChannelRepoMap;
   commandRegistry?: CommandRegistry;
 }
 
@@ -270,6 +271,11 @@ export class OrchestratorImpl implements Orchestrator {
   private async _handleRequest(event: InboundEvent): Promise<void> {
     if (event.type === 'new_request') {
       const request = event.payload;
+      // Secondary defense-in-depth check: discard if channel not in map
+      if (!this.deps.channelRepoMap.has(request.channel_id)) {
+        this.logger.warn({ event: 'run.channel_unmapped', channel_id: request.channel_id }, 'No repo configured for channel; discarding new_request');
+        return;
+      }
       const run = this.createRun(request);
 
       // Classify intent for new request
@@ -460,7 +466,8 @@ export class OrchestratorImpl implements Orchestrator {
         'Triage approved',
       );
 
-      const issue_url = `${this.deps.repo_url}/issues/${issue_number}`;
+      const repoEntry = this.deps.channelRepoMap.get(run.channel_id)!;
+      const issue_url = `${repoEntry.repo_url}/issues/${issue_number}`;
 
       // Step 4: Update Notion page properties (best-effort — non-blocking)
       await Promise.allSettled([
@@ -863,7 +870,8 @@ export class OrchestratorImpl implements Orchestrator {
     let workspace_path: string;
     let branch: string;
     try {
-      ({ workspace_path, branch } = await this.deps.workspaceManager.create(request.id, this.deps.repo_url));
+      const repoEntry = this.deps.channelRepoMap.get(request.channel_id)!;
+      ({ workspace_path, branch } = await this.deps.workspaceManager.create(request.id, repoEntry.repo_url, repoEntry.workspace_root));
       run.workspace_path = workspace_path;
       run.branch = branch;
     } catch (err) {
@@ -921,7 +929,8 @@ export class OrchestratorImpl implements Orchestrator {
     let workspace_path: string;
     let branch: string;
     try {
-      ({ workspace_path, branch } = await this.deps.workspaceManager.create(request.id, this.deps.repo_url));
+      const repoEntry = this.deps.channelRepoMap.get(request.channel_id)!;
+      ({ workspace_path, branch } = await this.deps.workspaceManager.create(request.id, repoEntry.repo_url, repoEntry.workspace_root));
       run.workspace_path = workspace_path;
       run.branch = branch;
     } catch (err) {
@@ -987,7 +996,8 @@ export class OrchestratorImpl implements Orchestrator {
     let workspace_path: string;
     let branch: string;
     try {
-      ({ workspace_path, branch } = await this.deps.workspaceManager.create(request.id, this.deps.repo_url));
+      const repoEntry = this.deps.channelRepoMap.get(request.channel_id)!;
+      ({ workspace_path, branch } = await this.deps.workspaceManager.create(request.id, repoEntry.repo_url, repoEntry.workspace_root));
       run.workspace_path = workspace_path;
       run.branch = branch;
     } catch (err) {
