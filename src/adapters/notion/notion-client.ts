@@ -33,9 +33,9 @@ export interface NotionClient {
   users: {
     me(): Promise<{ id: string }>;
   };
-  databases: {
+  dataSources: {
     query(
-      database_id: string,
+      data_source_id: string,
       filter?: unknown,
     ): Promise<{ results: Array<{ id: string; properties: Record<string, unknown> }> }>;
   };
@@ -105,17 +105,17 @@ export class NotionClientImpl implements NotionClient {
     },
   };
 
-  readonly databases = {
+  readonly dataSources = {
     query: async (
-      database_id: string,
+      data_source_id: string,
       filter?: unknown,
     ): Promise<{ results: Array<{ id: string; properties: Record<string, unknown> }> }> => {
       const response = await (this.client as unknown as {
-        databases: {
-          query: (args: { database_id: string; filter?: unknown }) => Promise<{ results: unknown[] }>;
+        dataSources: {
+          query: (args: { data_source_id: string; filter?: unknown }) => Promise<{ results: unknown[] }>;
         };
-      }).databases.query({
-        database_id,
+      }).dataSources.query({
+        data_source_id,
         ...(filter !== undefined ? { filter } : {}),
       });
       return {
