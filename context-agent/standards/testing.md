@@ -30,7 +30,7 @@ tests/
   core/              ← mirrors src/core/
   adapters/
     slack/           ← mirrors src/adapters/slack/
-    agent/           ← mirrors src/adapters/agent/
+    anthropic/       ← mirrors src/adapters/anthropic/
   fixtures/          ← shared test data
 ```
 

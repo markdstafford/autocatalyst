@@ -1,22 +1,24 @@
 import type { CommandEvent } from './commands.js';
+import type { ChannelRef, ConversationRef, MessageRef } from './channel.js';
 
 export interface Request {
   id: string;
-  source: 'slack';
+  channel: ChannelRef;
+  conversation: ConversationRef;
+  origin: MessageRef;
   content: string;
   author: string;
-  received_at: string; // ISO 8601
-  thread_ts: string;   // Slack thread identifier; used to post replies
-  channel_id: string;
+  received_at: string;
 }
 
 export interface ThreadMessage {
   request_id: string;
+  channel: ChannelRef;
+  conversation: ConversationRef;
+  origin: MessageRef;
   content: string;
   author: string;
-  received_at: string; // ISO 8601
-  thread_ts: string;   // Slack thread identifier; used to post replies
-  channel_id: string;
+  received_at: string;
 }
 
 export type InboundEvent =

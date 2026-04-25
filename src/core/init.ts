@@ -10,12 +10,11 @@ import type { DestinationStream } from 'pino';
 
 export const REQUIRED_PROPERTIES = [
   'workspace.root',
-  'slack.bot_token',
-  'slack.app_token',
-  'slack.channel_name',
+  'channels.0.provider',
+  'channels.0.name',
 ] as const;
 
-const SECRET_KEYWORDS = ['token', 'key', 'secret', 'id', 'password'];
+const SECRET_KEYWORDS = new Set(['token', 'key', 'secret', 'id', 'password']);
 
 // ─── Public types ─────────────────────────────────────────────────────────
 
@@ -32,8 +31,11 @@ export function configExists(repoPath: string): boolean {
 }
 
 export function isSecret(propertyPath: string): boolean {
-  const lower = propertyPath.toLowerCase();
-  return SECRET_KEYWORDS.some((kw) => lower.includes(kw));
+  return propertyPath
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .toLowerCase()
+    .split(/[._-]/)
+    .some((part) => SECRET_KEYWORDS.has(part));
 }
 
 export function findMissingRequired(repoPath: string): string[] {
@@ -209,10 +211,15 @@ function createSkeleton(repoPath: string): void {
   const content = `---
 workspace:
   root: ''
-slack:
-  bot_token: ''
-  app_token: ''
-  channel_name: ''
+channels:
+  - provider: ''
+    name: ''
+    config: {}
+publishers:
+  - provider: ''
+    artifacts:
+      - artifact
+    config: {}
 ---
 
 You are working on an idea for the ${name} project.

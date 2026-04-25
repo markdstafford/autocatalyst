@@ -104,11 +104,12 @@ describe('resolveEnvVars', () => {
 
   it('resolves nested objects recursively', () => {
     const result = resolveEnvVars(
-      { slack: { token: '$TOKEN', channel: 'general' } },
-      { TOKEN: 'xoxb-123' },
+      { channels: [{ provider: 'chat', config: { token: '$TOKEN', channel: 'general' } }] },
+      { TOKEN: 'secret-123' },
     );
-    expect((result.resolved.slack as Record<string, string>).token).toBe('xoxb-123');
-    expect((result.resolved.slack as Record<string, string>).channel).toBe('general');
+    const channels = result.resolved.channels as Array<{ config: Record<string, string> }>;
+    expect(channels[0].config.token).toBe('secret-123');
+    expect(channels[0].config.channel).toBe('general');
   });
 });
 
@@ -117,90 +118,59 @@ describe('validateConfig', () => {
     expect(() => validateConfig({})).not.toThrow();
   });
 
-  describe('slack.reacjis', () => {
-    it('passes when slack.reacjis is absent', () => {
-      const config: WorkflowConfig = {
-        slack: { bot_token: 'xoxb-token', app_token: 'xapp-token', channel_name: 'my-channel' },
-      };
-      expect(() => validateConfig(config)).not.toThrow();
-    });
-
-    it('passes when reacjis.ack is a non-empty string', () => {
-      const config: WorkflowConfig = {
-        slack: {
-          bot_token: 'xoxb-token', app_token: 'xapp-token', channel_name: 'my-channel',
-          reacjis: { ack: 'eyes' },
-        },
-      };
-      expect(() => validateConfig(config)).not.toThrow();
-    });
-
-    it('throws when reacjis.ack is missing', () => {
-      const config = {
-        slack: {
-          bot_token: 'xoxb-token', app_token: 'xapp-token', channel_name: 'my-channel',
-          reacjis: {},
-        },
-      } as unknown as WorkflowConfig;
-      expect(() => validateConfig(config)).toThrow('slack.reacjis.ack');
-    });
-
-    it('throws when reacjis.ack is an empty string', () => {
-      const config = {
-        slack: {
-          bot_token: 'xoxb-token', app_token: 'xapp-token', channel_name: 'my-channel',
-          reacjis: { ack: '' },
-        },
-      } as unknown as WorkflowConfig;
-      expect(() => validateConfig(config)).toThrow('slack.reacjis.ack');
-    });
-
-    it('passes when reacjis.complete is a string', () => {
-      const config: WorkflowConfig = {
-        slack: {
-          bot_token: 'xoxb-token', app_token: 'xapp-token', channel_name: 'my-channel',
-          reacjis: { ack: 'eyes', complete: 'white_check_mark' },
-        },
-      };
-      expect(() => validateConfig(config)).not.toThrow();
-    });
-
-    it('passes when reacjis.complete is null', () => {
-      const config: WorkflowConfig = {
-        slack: {
-          bot_token: 'xoxb-token', app_token: 'xapp-token', channel_name: 'my-channel',
-          reacjis: { ack: 'eyes', complete: null },
-        },
-      };
-      expect(() => validateConfig(config)).not.toThrow();
-    });
-
-    it('passes when reacjis.complete is omitted', () => {
-      const config: WorkflowConfig = {
-        slack: {
-          bot_token: 'xoxb-token', app_token: 'xapp-token', channel_name: 'my-channel',
-          reacjis: { ack: 'eyes' },
-        },
-      };
-      expect(() => validateConfig(config)).not.toThrow();
-    });
-
-    it('throws when reacjis.complete is a non-null non-string', () => {
-      const config = {
-        slack: {
-          bot_token: 'xoxb-token', app_token: 'xapp-token', channel_name: 'my-channel',
-          reacjis: { ack: 'eyes', complete: 42 },
-        },
-      } as unknown as WorkflowConfig;
-      expect(() => validateConfig(config)).toThrow('slack.reacjis.complete');
-    });
-  });
-
   it('passes for valid config with explicit values', () => {
     expect(() => validateConfig({
       polling: { interval_ms: 5000 },
       workspace: { root: '/tmp/workspaces' },
+      channels: [
+        { provider: 'chat', name: 'product', workspace_root: '/tmp/product', config: { token: '$CHAT_TOKEN' } },
+      ],
+      publishers: [
+        { provider: 'documents', artifacts: ['artifact'], config: { database_id: 'db-1' } },
+      ],
     })).not.toThrow();
+  });
+
+  it('throws when channels is not an array', () => {
+    expect(() => validateConfig({
+      channels: { provider: 'chat' } as unknown as WorkflowConfig['channels'],
+    })).toThrow(/channels must be an array/);
+  });
+
+  it('throws when channel provider is missing', () => {
+    expect(() => validateConfig({
+      channels: [{ provider: '', name: 'product' }],
+    })).toThrow(/channels\[0\]\.provider/);
+  });
+
+  it('throws when channel name is missing', () => {
+    expect(() => validateConfig({
+      channels: [{ provider: 'chat', name: '' }],
+    })).toThrow(/channels\[0\]\.name/);
+  });
+
+  it('throws when channel config is not an object', () => {
+    expect(() => validateConfig({
+      channels: [{ provider: 'chat', name: 'product', config: [] as unknown as Record<string, unknown> }],
+    })).toThrow(/channels\[0\]\.config/);
+  });
+
+  it('throws when publishers is not an array', () => {
+    expect(() => validateConfig({
+      publishers: { provider: 'documents' } as unknown as WorkflowConfig['publishers'],
+    })).toThrow(/publishers must be an array/);
+  });
+
+  it('throws when publisher provider is missing', () => {
+    expect(() => validateConfig({
+      publishers: [{ provider: '', artifacts: ['artifact'] }],
+    })).toThrow(/publishers\[0\]\.provider/);
+  });
+
+  it('throws when publisher artifacts is not an array', () => {
+    expect(() => validateConfig({
+      publishers: [{ provider: 'documents', artifacts: 'artifact' as unknown as string[] }],
+    })).toThrow(/publishers\[0\]\.artifacts/);
   });
 
   it('throws for negative interval_ms', () => {
@@ -237,10 +207,11 @@ describe('validateConfig', () => {
 
 describe('redactConfig', () => {
   it('replaces resolved env var values with [from env]', () => {
-    const config = { slack: { token: 'xoxb-secret-123' }, polling: { interval_ms: 5000 } };
-    const varValues = { SLACK_BOT_TOKEN: 'xoxb-secret-123' };
+    const config = { channels: [{ provider: 'chat', config: { token: 'secret-123' } }], polling: { interval_ms: 5000 } };
+    const varValues = { CHAT_TOKEN: 'secret-123' };
     const redacted = redactConfig(config, varValues);
-    expect((redacted.slack as Record<string, string>).token).toBe('[from env]');
+    const channels = redacted.channels as Array<{ config: Record<string, string> }>;
+    expect(channels[0].config.token).toBe('[from env]');
     expect((redacted.polling as Record<string, number>).interval_ms).toBe(5000);
   });
 
@@ -255,85 +226,6 @@ describe('redactConfig', () => {
     const config = { outer: { inner: 'secret-value' } };
     const redacted = redactConfig(config, { SECRET: 'secret-value' });
     expect((redacted.outer as Record<string, string>).inner).toBe('[from env]');
-  });
-});
-
-describe('validateConfig — slack', () => {
-  it('passes when slack section is absent', () => {
-    expect(() => validateConfig({})).not.toThrow();
-  });
-
-  it('passes with all required slack fields present', () => {
-    expect(() => validateConfig({
-      slack: { bot_token: 'xoxb-test', app_token: 'xapp-test', channel_name: 'my-channel' },
-    })).not.toThrow();
-  });
-
-  it('throws when bot_token is missing', () => {
-    expect(() => validateConfig({
-      slack: { app_token: 'xapp-test', channel_name: 'my-channel' },
-    })).toThrow(/slack\.bot_token/);
-  });
-
-  it('throws when bot_token is empty', () => {
-    expect(() => validateConfig({
-      slack: { bot_token: '', app_token: 'xapp-test', channel_name: 'my-channel' },
-    })).toThrow(/slack\.bot_token/);
-  });
-
-  it('throws when app_token is missing', () => {
-    expect(() => validateConfig({
-      slack: { bot_token: 'xoxb-test', channel_name: 'my-channel' },
-    })).toThrow(/slack\.app_token/);
-  });
-
-  it('throws when app_token is empty', () => {
-    expect(() => validateConfig({
-      slack: { bot_token: 'xoxb-test', app_token: '', channel_name: 'my-channel' },
-    })).toThrow(/slack\.app_token/);
-  });
-
-  it('throws when channel_name is missing', () => {
-    expect(() => validateConfig({
-      slack: { bot_token: 'xoxb-test', app_token: 'xapp-test' },
-    })).toThrow(/slack\.channel_name/);
-  });
-
-  it('throws when channel_name is empty', () => {
-    expect(() => validateConfig({
-      slack: { bot_token: 'xoxb-test', app_token: 'xapp-test', channel_name: '' },
-    })).toThrow(/slack\.channel_name/);
-  });
-
-  it('$VAR references in bot_token and app_token are resolved before validation', () => {
-    const raw = {
-      slack: { bot_token: '$AC_SLACK_BOT_TOKEN', app_token: '$AC_SLACK_APP_TOKEN', channel_name: 'ch' },
-    };
-    const { resolved } = resolveEnvVars(raw, {
-      AC_SLACK_BOT_TOKEN: 'xoxb-real',
-      AC_SLACK_APP_TOKEN: 'xapp-real',
-    });
-    // After resolution the values are real tokens; validateConfig should pass
-    expect(() => validateConfig(resolved as WorkflowConfig)).not.toThrow();
-    expect((resolved as WorkflowConfig).slack?.bot_token).toBe('xoxb-real');
-    expect((resolved as WorkflowConfig).slack?.app_token).toBe('xapp-real');
-  });
-
-});
-
-describe('redactConfig — slack tokens', () => {
-  it('redacts bot_token and app_token values resolved from env', () => {
-    const config = {
-      slack: { bot_token: 'xoxb-secret', app_token: 'xapp-secret', channel_name: 'ch' },
-    };
-    const redacted = redactConfig(config, {
-      AC_SLACK_BOT_TOKEN: 'xoxb-secret',
-      AC_SLACK_APP_TOKEN: 'xapp-secret',
-    });
-    const slack = redacted.slack as Record<string, string>;
-    expect(slack.bot_token).toBe('[from env]');
-    expect(slack.app_token).toBe('[from env]');
-    expect(slack.channel_name).toBe('ch');
   });
 });
 
@@ -376,19 +268,19 @@ describe('resolveAwsProfile', () => {
 
 describe('repoNameFromUrl', () => {
   it('HTTPS URL without .git', () => {
-    expect(repoNameFromUrl('https://github.com/acme-org/autocatalyst')).toBe('acme-org/autocatalyst');
+    expect(repoNameFromUrl('https://example.test/acme-org/autocatalyst')).toBe('acme-org/autocatalyst');
   });
 
   it('HTTPS URL with .git', () => {
-    expect(repoNameFromUrl('https://github.com/acme-org/autocatalyst.git')).toBe('acme-org/autocatalyst');
+    expect(repoNameFromUrl('https://example.test/acme-org/autocatalyst.git')).toBe('acme-org/autocatalyst');
   });
 
   it('SSH URL with .git', () => {
-    expect(repoNameFromUrl('git@github.com:acme-org/autocatalyst.git')).toBe('acme-org/autocatalyst');
+    expect(repoNameFromUrl('git@example.test:acme-org/autocatalyst.git')).toBe('acme-org/autocatalyst');
   });
 
   it('SSH URL without .git', () => {
-    expect(repoNameFromUrl('git@github.com:acme-org/autocatalyst')).toBe('acme-org/autocatalyst');
+    expect(repoNameFromUrl('git@example.test:acme-org/autocatalyst')).toBe('acme-org/autocatalyst');
   });
 
   it('URL with only one path segment falls back gracefully', () => {

@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, mkdirSync } from 'nod
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { NotionSpecCommitter } from '../../../src/adapters/notion/spec-committer.js';
-import type { SpecPublisher } from '../../../src/adapters/slack/canvas-publisher.js';
+import type { ArtifactContentSource } from '../../../src/types/publisher.js';
 
 const nullDest = { write: () => {} };
 
@@ -26,15 +26,15 @@ const SAMPLE_MARKDOWN = [
 function makePublisher(
   markdown: string = SAMPLE_MARKDOWN,
   strippedMarkdown?: string,
-): SpecPublisher {
+): ArtifactContentSource {
   return {
     publish: vi.fn(),
     postMessage: vi.fn(),
-    getPageMarkdown: vi.fn().mockImplementation((_ref: string, stripHtml?: boolean) =>
+    getContent: vi.fn().mockImplementation((_ref: string, stripHtml?: boolean) =>
       Promise.resolve(stripHtml && strippedMarkdown !== undefined ? strippedMarkdown : markdown)
     ),
     updatePage: vi.fn(),
-  } as unknown as SpecPublisher;
+  } as unknown as ArtifactContentSource;
 }
 
 function makeExecFn(exitCode = 0, ghLoginResult = 'testuser') {
@@ -58,7 +58,7 @@ describe('NotionSpecCommitter — markdown fetching', () => {
   beforeEach(() => { tmpDir = mkdtempSync(join(tmpdir(), 'spec-committer-')); });
   afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
 
-  it('calls getPageMarkdown with the provided publisher_ref and stripHtml=true', async () => {
+  it('calls getContent with the provided publisher_ref and stripHtml=true', async () => {
     const publisher = makePublisher();
     const execFn = makeExecFn();
     const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: nullDest });
@@ -66,7 +66,7 @@ describe('NotionSpecCommitter — markdown fetching', () => {
     const specPath = join(tmpDir, 'context-human', 'specs', 'feature-my-feature.md');
     await committer.commit(tmpDir, 'page-id-123', specPath);
 
-    expect(publisher.getPageMarkdown).toHaveBeenCalledWith('page-id-123', true);
+    expect(publisher.getContent).toHaveBeenCalledWith('page-id-123', true);
   });
 
   it('strips Notion HTML table tags from the written spec file', async () => {
@@ -452,7 +452,7 @@ describe('NotionSpecCommitter — updateStatus()', () => {
     const log = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'spec.status_updated');
     expect(log).toBeDefined();
     expect(log!['status']).toBe('complete');
-    expect(log!['spec_path']).toBe(specPath);
+    expect(log!['artifact_path']).toBe(specPath);
     expect(log!['workspace_path']).toBe(tmpDir);
     expect(log!['last_updated']).toBe('2026-04-20');
   });
@@ -600,9 +600,9 @@ describe('NotionSpecCommitter — error handling', () => {
   beforeEach(() => { tmpDir = mkdtempSync(join(tmpdir(), 'spec-committer-')); });
   afterEach(() => { rmSync(tmpDir, { recursive: true, force: true }); });
 
-  it('throws when getPageMarkdown rejects; no file written', async () => {
+  it('throws when getContent rejects; no file written', async () => {
     const publisher = makePublisher();
-    (publisher.getPageMarkdown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('notion error'));
+    (publisher.getContent as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('notion error'));
     const execFn = makeExecFn();
     const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: nullDest });
 
@@ -671,8 +671,8 @@ describe('NotionSpecCommitter — logging', () => {
 
     const committed = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'spec.committed');
     expect(committed).toBeDefined();
-    expect(committed!['publisher_ref']).toBe('page-abc');
-    expect(committed!['spec_path']).toBe(specPath);
+    expect(committed!['publication_ref']).toBe('page-abc');
+    expect(committed!['artifact_path']).toBe(specPath);
     expect(committed!['workspace_path']).toBe(tmpDir);
   });
 
@@ -680,7 +680,7 @@ describe('NotionSpecCommitter — logging', () => {
     const logs: unknown[] = [];
     const dest = { write: (line: string) => logs.push(JSON.parse(line)) };
     const publisher = makePublisher();
-    (publisher.getPageMarkdown as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('notion error'));
+    (publisher.getContent as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('notion error'));
     const execFn = makeExecFn();
     const committer = new NotionSpecCommitter(publisher, execFn, { logDestination: dest });
 

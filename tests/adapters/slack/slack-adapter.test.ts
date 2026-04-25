@@ -86,10 +86,28 @@ describe('SlackAdapter — multi-channel startup', () => {
 
     const resolvedLog = records.find(r => r['event'] === 'slack.startup.channels_resolved');
     expect(resolvedLog).toBeDefined();
-    const channels = resolvedLog!['channels'] as Array<{ channel_id: string }>;
+    const channels = resolvedLog!['channels'] as Array<{ channel_ref: string }>;
     expect(channels).toHaveLength(2);
-    expect(channels.map(c => c.channel_id)).toContain('CA1');
-    expect(channels.map(c => c.channel_id)).toContain('CB1');
+    expect(channels.map(c => c.channel_ref)).toContain('slack:CA1');
+    expect(channels.map(c => c.channel_ref)).toContain('slack:CB1');
+  });
+
+  it('multi-repo resolveChannels returns provider-qualified registry keys without losing channel IDs', async () => {
+    const mock = makeMockApp({ channels: [{ name: 'ch-a', id: 'CA1' }] });
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { repoEntries: [{ channel_name: 'ch-a', repo_url: 'url-a', workspace_root: '/roots/a' }] },
+      { logDestination: nullDest },
+    );
+
+    const registry = await adapter.resolveChannels();
+
+    expect([...registry.keys()]).toEqual(['slack:CA1']);
+    expect(registry.get('slack:CA1')).toEqual({
+      channel: { provider: 'slack', id: 'CA1', name: 'ch-a' },
+      repo_url: 'url-a',
+      workspace_root: '/roots/a',
+    });
   });
 
   it('throws and logs slack.startup.channel_resolution_failed when a channel is not found', async () => {
@@ -156,7 +174,7 @@ describe('SlackAdapter — multi-channel event filtering', () => {
     expect(mock.client.chat.postMessage).not.toHaveBeenCalled();
   });
 
-  it('ideas from two configured channels are dispatched with correct channel_id', async () => {
+  it('ideas from two configured channels are dispatched with correct channel refs', async () => {
     const mock = makeMockApp({
       botUserId: BOT_ID,
       channels: [{ name: 'ch-a', id: 'CA1' }, { name: 'ch-b', id: 'CB1' }],
@@ -183,10 +201,12 @@ describe('SlackAdapter — multi-channel event filtering', () => {
     await adapter.stop();
 
     expect(a.type).toBe('new_request');
-    expect((a.payload as Request).channel_id).toBe('CA1');
+    expect((a.payload as Request).channel.id).toBe('CA1');
+    expect((a.payload as Request).conversation.channel_id).toBe('CA1');
 
     expect(b.type).toBe('new_request');
-    expect((b.payload as Request).channel_id).toBe('CB1');
+    expect((b.payload as Request).channel.id).toBe('CB1');
+    expect((b.payload as Request).conversation.channel_id).toBe('CB1');
   });
 
   it('reaction from unconfigured channel is silently dropped', async () => {
@@ -215,6 +235,27 @@ describe('SlackAdapter — multi-channel event filtering', () => {
 });
 
 describe('SlackAdapter — startup', () => {
+  it('single-repo resolveChannels returns a registry with repo binding data', async () => {
+    const mock = makeMockApp({ channels: [{ name: 'my-channel', id: 'C123' }] });
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      {
+        channelName: 'my-channel',
+        repo_url: 'https://github.com/org/repo.git',
+        workspace_root: '/workspaces',
+      },
+      { logDestination: nullDest },
+    );
+
+    const registry = await adapter.resolveChannels();
+
+    expect(registry.get('slack:C123')).toEqual({
+      channel: { provider: 'slack', id: 'C123', name: 'my-channel' },
+      repo_url: 'https://github.com/org/repo.git',
+      workspace_root: '/workspaces',
+    });
+  });
+
   it('resolves channel name to ID and logs slack.startup.channel_resolved', async () => {
     const mock = makeMockApp({ channels: [{ name: 'my-channel', id: 'C123' }] });
     const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel', }, { logDestination: nullDest });
@@ -269,11 +310,13 @@ describe('SlackAdapter — new request pipeline', () => {
     await adapter.stop();
     expect(event.type).toBe('new_request');
     const request = event.payload as Request;
-    expect(request.source).toBe('slack');
+    expect(request.channel.provider).toBe('slack');
     expect(request.author).toBe('U123');
     expect(request.content).toBe(`<@${BOT_ID}> add a setup wizard`);
-    expect(request.thread_ts).toBe('100.0');
-    expect(request.channel_id).toBe(CHANNEL_ID);
+    expect(request.conversation.conversation_id).toBe('100.0');
+    expect(request.origin.message_id).toBe('100.0');
+    expect(request.channel.id).toBe(CHANNEL_ID);
+    expect(request.conversation.channel_id).toBe(CHANNEL_ID);
     expect(request.received_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(typeof request.id).toBe('string');
   });
@@ -363,9 +406,11 @@ describe('SlackAdapter — spec feedback pipeline', () => {
     const feedback = feedbackEvent.payload as ThreadMessage;
     expect(feedback.request_id).toBe((ideaEvent.payload as Request).id);
     expect(feedback.author).toBe('U456');
-    expect(feedback.thread_ts).toBe('100.0');
+    expect(feedback.conversation.conversation_id).toBe('100.0');
+    expect(feedback.origin.message_id).toBe('200.0');
     expect(feedback.content).toBe(`<@${BOT_ID}> the field is confusing`);
-    expect(feedback.channel_id).toBe(CHANNEL_ID);
+    expect(feedback.channel.id).toBe(CHANNEL_ID);
+    expect(feedback.conversation.channel_id).toBe(CHANNEL_ID);
     expect(feedback.received_at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
 
     // Ack reaction applied to the reply's own ts (200.0), not thread root (100.0)
@@ -458,7 +503,7 @@ describe('SlackAdapter — command events (message-based)', () => {
   const CHANNEL_ID = 'C123';
   const CHANNEL_NAME = 'my-channel';
 
-  it('recognized command emoji in root message → command event with thread_ts = msg.ts; no postMessage', async () => {
+  it('recognized command emoji in root message emits command event with root conversation ref; no postMessage', async () => {
     const mock = makeMockApp({ botUserId: BOT_ID });
     const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME }, { logDestination: nullDest });
     await adapter.start();
@@ -478,14 +523,16 @@ describe('SlackAdapter — command events (message-based)', () => {
     if (event.type === 'command') {
       expect(event.payload.command).toBe('run.status');
       expect(event.payload.args).toEqual([]);
-      expect(event.payload.thread_ts).toBe('100.0');
+      expect(event.payload.conversation.conversation_id).toBe('100.0');
+      expect(event.payload.origin.message_id).toBe('100.0');
       expect(event.payload.author).toBe('U123');
-      expect(event.payload.channel_id).toBe(CHANNEL_ID);
+      expect(event.payload.channel.id).toBe(CHANNEL_ID);
+      expect(event.payload.conversation.channel_id).toBe(CHANNEL_ID);
     }
     expect(mock.client.chat.postMessage).not.toHaveBeenCalled();
   });
 
-  it('recognized command emoji inside thread reply → event with thread_ts = msg.thread_ts', async () => {
+  it('recognized command emoji inside thread reply emits command event with parent conversation ref', async () => {
     const mock = makeMockApp({ botUserId: BOT_ID });
     const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME }, { logDestination: nullDest });
     await adapter.start();
@@ -504,7 +551,8 @@ describe('SlackAdapter — command events (message-based)', () => {
 
     expect(event.type).toBe('command');
     if (event.type === 'command') {
-      expect(event.payload.thread_ts).toBe('100.0');
+      expect(event.payload.conversation.conversation_id).toBe('100.0');
+      expect(event.payload.origin.message_id).toBe('200.0');
     }
   });
 
@@ -566,7 +614,7 @@ describe('SlackAdapter — command events (reaction-based)', () => {
   const CHANNEL_ID = 'C123';
   const CHANNEL_NAME = 'my-channel';
 
-  it('reaction_added with recognized emoji on root message → conversations.history called; event emitted with correct thread_ts', async () => {
+  it('reaction_added with recognized emoji on root message uses the root conversation ref', async () => {
     const mock = makeMockApp({
       botUserId: BOT_ID,
       historyMessages: [{ ts: '100.0' }],
@@ -591,11 +639,12 @@ describe('SlackAdapter — command events (reaction-based)', () => {
     expect(event.type).toBe('command');
     if (event.type === 'command') {
       expect(event.payload.command).toBe('run.status');
-      expect(event.payload.thread_ts).toBe('100.0');
+      expect(event.payload.conversation.conversation_id).toBe('100.0');
+      expect(event.payload.origin.message_id).toBe('100.0');
     }
   });
 
-  it('reaction_added on thread reply → command event with thread_ts = reactedMessage.thread_ts', async () => {
+  it('reaction_added on thread reply emits command event with reacted message parent conversation ref', async () => {
     const mock = makeMockApp({
       botUserId: BOT_ID,
       historyMessages: [{ ts: '200.0', thread_ts: '100.0' }],
@@ -616,11 +665,12 @@ describe('SlackAdapter — command events (reaction-based)', () => {
 
     expect(event.type).toBe('command');
     if (event.type === 'command') {
-      expect(event.payload.thread_ts).toBe('100.0');
+      expect(event.payload.conversation.conversation_id).toBe('100.0');
+      expect(event.payload.origin.message_id).toBe('200.0');
     }
   });
 
-  it('reaction_added, conversations.history fails → event emitted with item.ts as fallback thread_ts', async () => {
+  it('reaction_added, conversations.history fails emits event with item timestamp as fallback conversation ref', async () => {
     const mock = makeMockApp({ botUserId: BOT_ID });
     mock.client.conversations.history.mockRejectedValueOnce(new Error('network error'));
     const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME }, { logDestination: nullDest });
@@ -639,7 +689,8 @@ describe('SlackAdapter — command events (reaction-based)', () => {
 
     expect(event.type).toBe('command');
     if (event.type === 'command') {
-      expect(event.payload.thread_ts).toBe('100.0');
+      expect(event.payload.conversation.conversation_id).toBe('100.0');
+      expect(event.payload.origin.message_id).toBe('100.0');
     }
   });
 

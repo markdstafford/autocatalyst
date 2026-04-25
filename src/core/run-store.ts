@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import type pino from 'pino';
 import { createLogger } from './logger.js';
 import type { Run } from '../types/runs.js';
+import { artifactKindForIntent } from '../types/artifact.js';
 
 export interface RunStore {
   load(): Run[];
@@ -15,16 +16,30 @@ const STALE_STAGES = new Set(['intake', 'speccing', 'implementing']);
 
 interface FileRunStoreOptions {
   logDestination?: pino.DestinationStream;
+  legacyConversationFields?: LegacyConversationFields | LegacyConversationFields[];
+}
+
+interface LegacyConversationFields {
+  provider: string;
+  channelField: string;
+  conversationField: string;
+  messageField?: string;
 }
 
 export class FileRunStore implements RunStore {
   private readonly filePath: string;
   private readonly logger: pino.Logger;
+  private readonly legacyConversationFields: LegacyConversationFields[];
   public demotedIds: Set<string> = new Set();
 
   constructor(workspaceRoot: string, options?: FileRunStoreOptions) {
     this.filePath = path.join(workspaceRoot.replace(/^~/, homedir()), '.autocatalyst', 'runs.json');
     this.logger = createLogger('run-store', { destination: options?.logDestination });
+    this.legacyConversationFields = Array.isArray(options?.legacyConversationFields)
+      ? options.legacyConversationFields
+      : options?.legacyConversationFields
+        ? [options.legacyConversationFields]
+        : [];
   }
 
   load(): Run[] {
@@ -52,7 +67,7 @@ export class FileRunStore implements RunStore {
       return [];
     }
 
-    const runs = raw as Run[];
+    const runs = raw.map(run => migrateRun(run, this.legacyConversationFields)) as Run[];
     const kept: Run[] = [];
     let droppedCount = 0;
     let demotedCount = 0;
@@ -94,4 +109,60 @@ export class FileRunStore implements RunStore {
       // non-fatal — do not throw
     }
   }
+}
+
+function migrateRun(raw: unknown, legacyConversationFields: LegacyConversationFields[]): Run {
+  const run = raw as Run & {
+    review_artifact?: Run['artifact'];
+    spec_path?: string;
+    publisher_ref?: string;
+  } & Record<string, unknown>;
+
+  if (!run.artifact && run.review_artifact) {
+    run.artifact = run.review_artifact;
+  }
+
+  if (!run.artifact && typeof run.spec_path === 'string') {
+    const kind = artifactKindForIntent(run.intent) ?? 'feature_spec';
+    run.artifact = {
+      kind,
+      local_path: run.spec_path,
+      // Pre-refactor persisted refs had no provider metadata. Use an explicit
+      // placeholder so migrated runs remain readable without guessing.
+      published_ref: typeof run.publisher_ref === 'string'
+        ? { provider: 'artifact_publisher', id: run.publisher_ref }
+        : undefined,
+      status: 'waiting_on_feedback',
+    };
+  }
+
+  delete run.review_artifact;
+  delete run.spec_path;
+  delete run.publisher_ref;
+
+  for (const fields of legacyConversationFields) {
+    if (run.channel && run.conversation && run.origin) break;
+
+    const channelId = stringField(run, fields.channelField);
+    const conversationId = stringField(run, fields.conversationField);
+    const messageId = stringField(run, fields.messageField ?? fields.conversationField);
+    if (channelId && conversationId && messageId) {
+      run.channel ??= { provider: fields.provider, id: channelId };
+      run.conversation ??= { provider: fields.provider, channel_id: channelId, conversation_id: conversationId };
+      run.origin ??= { provider: fields.provider, channel_id: channelId, conversation_id: conversationId, message_id: messageId };
+    }
+  }
+
+  for (const fields of legacyConversationFields) {
+    delete run[fields.channelField];
+    delete run[fields.conversationField];
+    if (fields.messageField) delete run[fields.messageField];
+  }
+
+  return run;
+}
+
+function stringField(record: Record<string, unknown>, field: string): string | undefined {
+  const value = record[field];
+  return typeof value === 'string' ? value : undefined;
 }

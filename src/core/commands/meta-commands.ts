@@ -8,7 +8,7 @@ export function makeHealthHandler(
     const connected = isConnected();
     const activeRuns = getActiveRunCount();
     const status = connected ? '✓ Connected' : '✗ Disconnected';
-    await reply(`*Autocatalyst health*\nSlack: ${status}\nActive runs: ${activeRuns}`);
+    await reply(`*Autocatalyst health*\nChannel: ${status}\nActive runs: ${activeRuns}`);
   };
 }
 

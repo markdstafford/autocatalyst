@@ -2,12 +2,8 @@
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 import type { NotionClient } from './notion-client.js';
-import type { NotionComment } from '../agent/spec-generator.js';
-
-export interface FeedbackSource {
-  fetch(publisher_ref: string): Promise<NotionComment[]>;
-  reply(publisher_ref: string, comment_id: string, response: string): Promise<void>;
-}
+import type { FeedbackComment, FeedbackSource } from '../../types/feedback-source.js';
+export type { FeedbackComment, FeedbackSource } from '../../types/feedback-source.js';
 
 interface NotionFeedbackSourceOptions {
   bot_user_id?: string;
@@ -33,7 +29,7 @@ export class NotionFeedbackSource implements FeedbackSource {
     this.logger = createLogger('notion-feedback-source', { destination: options?.logDestination });
   }
 
-  async fetch(publisher_ref: string): Promise<NotionComment[]> {
+  async fetch(publisher_ref: string): Promise<FeedbackComment[]> {
     // Collect all raw comment records from the page and every direct child block.
     // The Notion API only returns comments for the specific block_id supplied — there
     // is no recursive or "all comments on page" endpoint — so we must enumerate child
@@ -84,7 +80,7 @@ export class NotionFeedbackSource implements FeedbackSource {
       }
     }
 
-    const result: NotionComment[] = [];
+    const result: FeedbackComment[] = [];
     for (const [discussion_id, threadComments] of threadMap) {
       const body = threadComments
         .map(c => {

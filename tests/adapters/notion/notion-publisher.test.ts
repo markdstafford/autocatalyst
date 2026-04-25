@@ -3,9 +3,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import type { App } from '@slack/bolt';
 import type { NotionClient } from '../../../src/adapters/notion/notion-client.js';
 import { NotionPublisher } from '../../../src/adapters/notion/notion-publisher.js';
+import type { ConversationRef } from '../../../src/types/channel.js';
+import type { Artifact } from '../../../src/types/artifact.js';
 
 const nullDest = { write: () => {} };
 
@@ -36,6 +37,14 @@ function makeSpecFile(content = '# My Spec\n\ncontent', filename = 'feature-setu
   return path;
 }
 
+function makeConversation(): ConversationRef {
+  return { provider: 'slack', channel_id: 'C123', conversation_id: '100.0' };
+}
+
+function makeArtifact(localPath: string): Artifact {
+  return { kind: 'feature_spec', local_path: localPath, status: 'drafting' };
+}
+
 function makeMockNotionClient(pageId = 'page-abc123'): NotionClient {
   return {
     pages: {
@@ -60,24 +69,13 @@ function makeMockNotionClient(pageId = 'page-abc123'): NotionClient {
   };
 }
 
-function makeMockApp() {
-  return {
-    client: {
-      chat: {
-        postMessage: vi.fn().mockResolvedValue({}),
-      },
-    },
-  };
-}
-
-describe('NotionPublisher.create', () => {
+describe('NotionPublisher.createArtifact', () => {
   it('calls pages.create with correct parent_page_id and title only (no children)', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile();
 
-    await publisher.create('C123', '100.0', specPath);
+    await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
 
     expect(client.pages.create).toHaveBeenCalledWith(
       expect.objectContaining({ parent: expect.objectContaining({ database_id: 'db-specs-id' }) }),
@@ -89,11 +87,10 @@ describe('NotionPublisher.create', () => {
 
   it('derives title from filename slug — feature-setup-wizard.md → "Setup wizard"', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile('# spec', 'feature-setup-wizard.md');
 
-    await publisher.create('C123', '100.0', specPath);
+    await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
 
     expect(client.pages.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -110,11 +107,10 @@ describe('NotionPublisher.create', () => {
 
   it('derives title from enhancement slug — enhancement-notion-publisher.md → "Notion publisher"', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile('# spec', 'enhancement-notion-publisher.md');
 
-    await publisher.create('C123', '100.0', specPath);
+    await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
 
     expect(client.pages.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -131,8 +127,7 @@ describe('NotionPublisher.create', () => {
 
   it('calls pages.updateMarkdown with replace_content after pages.create', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile('# My Spec\n\ncontent');
 
     const callOrder: string[] = [];
@@ -144,7 +139,7 @@ describe('NotionPublisher.create', () => {
       callOrder.push('pages.updateMarkdown');
     });
 
-    await publisher.create('C123', '100.0', specPath);
+    await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
 
     expect(callOrder).toEqual(['pages.create', 'pages.updateMarkdown']);
     expect(client.pages.updateMarkdown).toHaveBeenCalledWith(
@@ -153,10 +148,9 @@ describe('NotionPublisher.create', () => {
     );
   });
 
-  it('calls postMessage after pages.create with Notion page URL', async () => {
+  it('returns a Notion publication url without posting to the channel', async () => {
     const client = makeMockNotionClient('page-abc-123-xyz');
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile();
 
     const callOrder: string[] = [];
@@ -167,71 +161,50 @@ describe('NotionPublisher.create', () => {
     (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
       callOrder.push('pages.updateMarkdown');
     });
-    (app.client.chat.postMessage as ReturnType<typeof vi.fn>).mockImplementationOnce(async () => {
-      callOrder.push('postMessage');
-      return {};
-    });
 
-    await publisher.create('C123', '100.0', specPath);
+    const result = await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
 
-    expect(callOrder).toEqual(['pages.create', 'pages.updateMarkdown', 'postMessage']);
-    expect(app.client.chat.postMessage).toHaveBeenCalledWith(
-      expect.objectContaining({
-        channel: 'C123',
-        thread_ts: '100.0',
-        text: expect.stringContaining('pageabc123xyz'),
-      }),
-    );
+    expect(callOrder).toEqual(['pages.create', 'pages.updateMarkdown']);
+    expect(result).toEqual({ id: 'page-abc-123-xyz', url: 'https://notion.so/pageabc123xyz' });
   });
 
-  it('returns page_id', async () => {
+  it('returns publication metadata', async () => {
     const client = makeMockNotionClient('returned-page-id');
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
 
-    const result = await publisher.create('C123', '100.0', makeSpecFile());
+    const specPath = makeSpecFile();
+    const result = await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
 
-    expect(result).toBe('returned-page-id');
+    expect(result).toEqual({ id: 'returned-page-id', url: 'https://notion.so/returnedpageid' });
   });
 
-  it('throws if pages.create rejects; updateMarkdown and postMessage never called', async () => {
+  it('throws if pages.create rejects; updateMarkdown is never called', async () => {
     const client = makeMockNotionClient();
     (client.pages.create as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('API error'));
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
 
-    await expect(publisher.create('C123', '100.0', makeSpecFile())).rejects.toThrow('API error');
+    const specPath = makeSpecFile();
+    await expect(publisher.createArtifact(makeConversation(), makeArtifact(specPath))).rejects.toThrow('API error');
     expect(client.pages.updateMarkdown).not.toHaveBeenCalled();
-    expect(app.client.chat.postMessage).not.toHaveBeenCalled();
   });
 
-  it('throws if pages.updateMarkdown rejects; postMessage never called', async () => {
+  it('throws if pages.updateMarkdown rejects without posting to the channel', async () => {
     const client = makeMockNotionClient();
     (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('Markdown error'));
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
 
-    await expect(publisher.create('C123', '100.0', makeSpecFile())).rejects.toThrow('Markdown error');
-    expect(app.client.chat.postMessage).not.toHaveBeenCalled();
-  });
-
-  it('throws if postMessage rejects after successful create and updateMarkdown', async () => {
-    const client = makeMockNotionClient();
-    const app = makeMockApp();
-    (app.client.chat.postMessage as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('Slack error'));
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
-
-    await expect(publisher.create('C123', '100.0', makeSpecFile())).rejects.toThrow('Slack error');
+    const specPath = makeSpecFile();
+    await expect(publisher.createArtifact(makeConversation(), makeArtifact(specPath))).rejects.toThrow('Markdown error');
   });
 });
 
-describe('NotionPublisher.update', () => {
+describe('NotionPublisher.updateArtifact', () => {
   it('reads spec from disk and calls replace_content when no page_content provided', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
 
-    await publisher.update('page-xyz', makeSpecFile('# My Spec\n\ncontent'));
+    const specPath = makeSpecFile('# My Spec\n\ncontent');
+    await publisher.updateArtifact('page-xyz', makeArtifact(specPath));
 
     expect(client.pages.updateMarkdown).toHaveBeenCalledWith(
       'page-xyz',
@@ -241,11 +214,11 @@ describe('NotionPublisher.update', () => {
 
   it('uses page_content directly when provided (span-bearing)', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
 
     const spanContent = '# Spec\n\n<span discussion-urls="discussion://abc">text</span>';
-    await publisher.update('page-xyz', makeSpecFile('# Spec\n\ntext'), spanContent);
+    const specPath = makeSpecFile('# Spec\n\ntext');
+    await publisher.updateArtifact('page-xyz', makeArtifact(specPath), spanContent);
 
     expect(client.pages.updateMarkdown).toHaveBeenCalledWith(
       'page-xyz',
@@ -255,10 +228,10 @@ describe('NotionPublisher.update', () => {
 
   it('does not call getMarkdown (no diff needed)', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
 
-    await publisher.update('page-xyz', makeSpecFile('# Spec'));
+    const specPath = makeSpecFile('# Spec');
+    await publisher.updateArtifact('page-xyz', makeArtifact(specPath));
 
     expect(client.pages.getMarkdown).not.toHaveBeenCalled();
   });
@@ -266,33 +239,23 @@ describe('NotionPublisher.update', () => {
   it('throws if pages.updateMarkdown rejects', async () => {
     const client = makeMockNotionClient();
     (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('patch error'));
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
 
-    await expect(publisher.update('page-xyz', makeSpecFile('# New'))).rejects.toThrow('patch error');
+    const specPath = makeSpecFile('# New');
+    await expect(publisher.updateArtifact('page-xyz', makeArtifact(specPath))).rejects.toThrow('patch error');
   });
 
-  it('never calls postMessage during update', async () => {
-    const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
-
-    await publisher.update('page-xyz', makeSpecFile('# New'));
-
-    expect(app.client.chat.postMessage).not.toHaveBeenCalled();
-  });
 });
 
-describe('NotionPublisher.getPageMarkdown', () => {
+describe('NotionPublisher.getContent', () => {
   it('returns page markdown from client', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
 
     const markdown = '# Spec\n\n<span discussion-urls="discussion://abc">text</span>';
     (client.pages.getMarkdown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(markdown);
 
-    const result = await publisher.getPageMarkdown('page-xyz');
+    const result = await publisher.getContent('page-xyz');
 
     expect(client.pages.getMarkdown).toHaveBeenCalledWith('page-xyz');
     expect(result).toBe(markdown);
@@ -300,12 +263,11 @@ describe('NotionPublisher.getPageMarkdown', () => {
 
   it('returns empty string when page has no content', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
 
     (client.pages.getMarkdown as ReturnType<typeof vi.fn>).mockResolvedValueOnce('');
 
-    const result = await publisher.getPageMarkdown('page-xyz');
+    const result = await publisher.getContent('page-xyz');
 
     expect(result).toBe('');
   });
@@ -313,21 +275,19 @@ describe('NotionPublisher.getPageMarkdown', () => {
   it('throws if client rejects', async () => {
     const client = makeMockNotionClient();
     (client.pages.getMarkdown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('API error'));
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
 
-    await expect(publisher.getPageMarkdown('page-xyz')).rejects.toThrow('API error');
+    await expect(publisher.getContent('page-xyz')).rejects.toThrow('API error');
   });
 
   it('strips all HTML when stripHtml=true', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
 
     const rawMarkdown = '# Spec\n\n<table header-row="true"><tr><td>Cell</td></tr></table>\n\n<span discussion-urls="discussion://abc">text</span>';
     (client.pages.getMarkdown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(rawMarkdown);
 
-    const result = await publisher.getPageMarkdown('page-xyz', true);
+    const result = await publisher.getContent('page-xyz', true);
 
     expect(result).not.toContain('<');
     expect(result).not.toContain('>');
@@ -337,29 +297,27 @@ describe('NotionPublisher.getPageMarkdown', () => {
 
   it('returns raw HTML when stripHtml=false (default)', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
 
     const rawMarkdown = '# Spec\n\n<table header-row="true"><tr><td>Cell</td></tr></table>';
     (client.pages.getMarkdown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(rawMarkdown);
 
-    const result = await publisher.getPageMarkdown('page-xyz');
+    const result = await publisher.getContent('page-xyz');
 
     expect(result).toContain('<table');
     expect(result).toContain('<td>Cell</td>');
   });
 });
 
-describe('NotionPublisher — parseFrontmatter behavior (via create)', () => {
+describe('NotionPublisher — parseFrontmatter behavior (via createArtifact)', () => {
   it('returns all frontmatter fields — create sets Specced by from frontmatter', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile(
       '---\nspecced_by: alice\nlast_updated: 2026-04-16\n---\n# Spec\ncontent',
       'feature-setup-wizard.md',
     );
-    await publisher.create('C123', '100.0', specPath);
+    await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
     const createCall = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(createCall.properties['Specced by'].rich_text[0].text.content).toBe('alice');
     expect(createCall.properties['Last updated'].date.start).toBe('2026-04-16');
@@ -367,53 +325,49 @@ describe('NotionPublisher — parseFrontmatter behavior (via create)', () => {
 
   it('no frontmatter: create still works without crashing', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile('# Spec with no frontmatter\ncontent', 'feature-no-fm.md');
-    await publisher.create('C123', '100.0', specPath);
+    await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
     expect(client.pages.create).toHaveBeenCalledOnce();
   });
 
   it('issue: null in frontmatter — Issue # omitted from properties', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile(
       '---\nspecced_by: bob\nlast_updated: 2026-04-16\nissue: null\n---\n# Spec',
       'feature-null-issue.md',
     );
-    await publisher.create('C123', '100.0', specPath);
+    await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
     const createCall = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(createCall.properties['Issue #']).toBeUndefined();
   });
 
   it('issue: 42 in frontmatter — Issue # number property included', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile(
       '---\nspecced_by: bob\nlast_updated: 2026-04-16\nissue: 42\n---\n# Spec',
       'feature-with-issue.md',
     );
-    await publisher.create('C123', '100.0', specPath);
+    await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
     const createCall = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(createCall.properties['Issue #'].number).toBe(42);
   });
 });
 
-describe('NotionPublisher — resolveFilenameToPageId behavior (via create)', () => {
+describe('NotionPublisher — resolveFilenameToPageId behavior (via createArtifact)', () => {
   it('supersedes set and found: relation property included in create call', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
     (client.dataSources.query as ReturnType<typeof vi.fn>).mockResolvedValue({
       results: [{ id: 'old-spec-page-id', properties: {} }],
     });
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile(
       '---\nspecced_by: alice\nlast_updated: 2026-04-16\nsupersedes: feature-old-spec.md\n---\n# Spec',
       'feature-new-spec.md',
     );
-    await publisher.create('C123', '100.0', specPath);
+    await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
     expect(client.dataSources.query).toHaveBeenCalledWith('db-specs-id', {
       filter: { property: 'Filename', rich_text: { equals: 'feature-old-spec.md' } },
     });
@@ -424,14 +378,13 @@ describe('NotionPublisher — resolveFilenameToPageId behavior (via create)', ()
   it('supersedes filename not found: warn logged, relation omitted, create still called', async () => {
     const { records, destination } = makeLogCapture();
     const client = makeMockNotionClient();
-    const app = makeMockApp();
     (client.dataSources.query as ReturnType<typeof vi.fn>).mockResolvedValue({ results: [] });
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: destination });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: destination });
     const specPath = makeSpecFile(
       '---\nspecced_by: alice\nlast_updated: 2026-04-16\nsupersedes: feature-missing.md\n---\n# Spec',
       'feature-new-spec.md',
     );
-    await publisher.create('C123', '100.0', specPath);
+    await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
     expect(client.pages.create).toHaveBeenCalledOnce();
     const createCall = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(createCall.properties['Superseded by / Supersedes']).toBeUndefined();
@@ -440,31 +393,29 @@ describe('NotionPublisher — resolveFilenameToPageId behavior (via create)', ()
 
   it('multiple results: returns first result id', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
     (client.dataSources.query as ReturnType<typeof vi.fn>).mockResolvedValue({
       results: [
         { id: 'first-page-id', properties: {} },
         { id: 'second-page-id', properties: {} },
       ],
     });
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile(
       '---\nspecced_by: alice\nlast_updated: 2026-04-16\nsupersedes: feature-old.md\n---\n# Spec',
       'feature-new.md',
     );
-    await publisher.create('C123', '100.0', specPath);
+    await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
     const createCall = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(createCall.properties['Superseded by / Supersedes'].relation).toEqual([{ id: 'first-page-id' }]);
   });
 });
 
-describe('NotionPublisher.create — database entry with typed properties', () => {
+describe('NotionPublisher.createArtifact — database entry with typed properties', () => {
   it('calls pages.create with database_id parent (not page_id)', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile('---\nspecced_by: alice\nlast_updated: 2026-04-16\n---\n# Spec', 'feature-setup-wizard.md');
-    await publisher.create('C123', '100.0', specPath);
+    await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
     const createCall = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(createCall.parent).toEqual(expect.objectContaining({ database_id: 'db-specs-id' }));
     expect(createCall.parent.page_id).toBeUndefined();
@@ -472,8 +423,7 @@ describe('NotionPublisher.create — database entry with typed properties', () =
 
   it('sets all required typed properties', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', {
+    const publisher = new NotionPublisher(client, 'db-specs-id', {
       logDestination: nullDest,
       repo_name: 'acme-org/autocatalyst',
     });
@@ -481,7 +431,7 @@ describe('NotionPublisher.create — database entry with typed properties', () =
       '---\nspecced_by: alice\nlast_updated: 2026-04-16\nissue: 7\nimplemented_by: bob\n---\n# Spec',
       'feature-setup-wizard.md',
     );
-    await publisher.create('C123', '100.0', specPath);
+    await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
     const p = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0].properties;
     expect(p['Title'].title[0].text.content).toBe('Setup wizard');
     expect(p['Filename'].rich_text[0].text.content).toBe('feature-setup-wizard.md');
@@ -495,20 +445,18 @@ describe('NotionPublisher.create — database entry with typed properties', () =
 
   it('omits Repo/Codebase when repo_name absent from options', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile('---\nspecced_by: alice\nlast_updated: 2026-04-16\n---\n# Spec', 'feature-no-repo.md');
-    await publisher.create('C123', '100.0', specPath);
+    await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
     const p = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0].properties;
     expect(p['Repo / Codebase']).toBeUndefined();
   });
 
   it('omits Implemented by when null/absent in frontmatter', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile('---\nspecced_by: alice\nlast_updated: 2026-04-16\nimplemented_by: null\n---\n# Spec', 'feature-no-impl.md');
-    await publisher.create('C123', '100.0', specPath);
+    await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
     const p = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0].properties;
     expect(p['Implemented by']).toBeUndefined();
   });
@@ -516,24 +464,22 @@ describe('NotionPublisher.create — database entry with typed properties', () =
   it('logs notion_spec.properties_created event', async () => {
     const { records, destination } = makeLogCapture();
     const client = makeMockNotionClient('page-xyz');
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: destination });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: destination });
     const specPath = makeSpecFile('---\nspecced_by: alice\nlast_updated: 2026-04-16\n---\n# Spec', 'feature-log-test.md');
-    await publisher.create('C123', '100.0', specPath);
+    await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
     expect(records.find(r => r['event'] === 'notion_spec.properties_created')).toBeDefined();
   });
 });
 
-describe('NotionPublisher.update — property sync', () => {
+describe('NotionPublisher.updateArtifact — property sync', () => {
   it('calls pages.updateProperties after Markdown write with last_updated and implemented_by', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile(
       '---\nspecced_by: alice\nlast_updated: 2026-04-17\nimplemented_by: bob\n---\n# Spec',
       'feature-update-test.md',
     );
-    await publisher.update('page-abc', specPath);
+    await publisher.updateArtifact('page-abc', makeArtifact(specPath));
     expect(client.pages.updateMarkdown).toHaveBeenCalledWith('page-abc', expect.any(Object));
     expect(client.pages.updateProperties).toHaveBeenCalledWith('page-abc', expect.objectContaining({
       'Last updated': { date: { start: '2026-04-17' } },
@@ -543,10 +489,9 @@ describe('NotionPublisher.update — property sync', () => {
 
   it('omits Implemented by when absent from frontmatter on update', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile('---\nspecced_by: alice\nlast_updated: 2026-04-17\n---\n# Spec', 'feature-no-impl.md');
-    await publisher.update('page-abc', specPath);
+    await publisher.updateArtifact('page-abc', makeArtifact(specPath));
     const call = (client.pages.updateProperties as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(call[1]['Implemented by']).toBeUndefined();
     expect(call[1]['Last updated']).toBeDefined();
@@ -554,26 +499,24 @@ describe('NotionPublisher.update — property sync', () => {
 
   it('always calls updateProperties even when called twice (no diffing)', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile('---\nlast_updated: 2026-04-16\n---\n# Spec', 'feature-nodiff.md');
-    await publisher.update('page-abc', specPath);
-    await publisher.update('page-abc', specPath);
+    await publisher.updateArtifact('page-abc', makeArtifact(specPath));
+    await publisher.updateArtifact('page-abc', makeArtifact(specPath));
     expect(client.pages.updateProperties).toHaveBeenCalledTimes(2);
   });
 
   it('superseded_by set and resolves: Status=Superseded and relation set', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
     (client.dataSources.query as ReturnType<typeof vi.fn>).mockResolvedValue({
       results: [{ id: 'superseding-page-id', properties: {} }],
     });
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile(
       '---\nlast_updated: 2026-04-16\nsuperseded_by: feature-new-spec.md\n---\n# Spec',
       'feature-old-spec.md',
     );
-    await publisher.update('page-abc', specPath);
+    await publisher.updateArtifact('page-abc', makeArtifact(specPath));
     const call = (client.pages.updateProperties as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(call[1]['Status'].status.name).toBe('Superseded');
     expect(call[1]['Superseded by / Supersedes'].relation).toEqual([{ id: 'superseding-page-id' }]);
@@ -582,14 +525,13 @@ describe('NotionPublisher.update — property sync', () => {
   it('superseded_by set but not found: last_updated synced, Status NOT changed', async () => {
     const { records, destination } = makeLogCapture();
     const client = makeMockNotionClient();
-    const app = makeMockApp();
     (client.dataSources.query as ReturnType<typeof vi.fn>).mockResolvedValue({ results: [] });
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: destination });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: destination });
     const specPath = makeSpecFile(
       '---\nlast_updated: 2026-04-16\nsuperseded_by: feature-missing.md\n---\n# Spec',
       'feature-old-spec.md',
     );
-    await publisher.update('page-abc', specPath);
+    await publisher.updateArtifact('page-abc', makeArtifact(specPath));
     const call = (client.pages.updateProperties as ReturnType<typeof vi.fn>).mock.calls[0];
     expect(call[1]['Last updated']).toBeDefined();
     expect(call[1]['Status']).toBeUndefined();
@@ -599,54 +541,49 @@ describe('NotionPublisher.update — property sync', () => {
   it('logs notion_spec.properties_updated event', async () => {
     const { records, destination } = makeLogCapture();
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: destination });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: destination });
     const specPath = makeSpecFile('---\nlast_updated: 2026-04-16\n---\n# Spec', 'feature-logtest.md');
-    await publisher.update('page-abc', specPath);
+    await publisher.updateArtifact('page-abc', makeArtifact(specPath));
     expect(records.find(r => r['event'] === 'notion_spec.properties_updated')).toBeDefined();
   });
 });
 
-describe('NotionPublisher.updateStatus', () => {
+describe('NotionPublisher.updateArtifactStatus', () => {
   it('calls pages.updateProperties with Status payload', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
-    await publisher.updateStatus!('page-abc', 'Approved');
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
+    await publisher.updateStatus!('page-abc', 'approved');
     expect(client.pages.updateProperties).toHaveBeenCalledWith('page-abc', {
       Status: { status: { name: 'Approved' } },
     });
   });
 
   it.each([
-    ['Speccing'],
-    ['Waiting on feedback'],
-    ['Approved'],
-    ['Complete'],
-    ['Superseded'],
-  ] as const)('passes status "%s" through correctly', async (status) => {
+    ['drafting', 'Speccing'],
+    ['waiting_on_feedback', 'Waiting on feedback'],
+    ['approved', 'Approved'],
+    ['complete', 'Complete'],
+    ['superseded', 'Superseded'],
+  ] as const)('maps status "%s" to Notion label "%s"', async (status, notionLabel) => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     await publisher.updateStatus!('page-abc', status);
     const call = (client.pages.updateProperties as ReturnType<typeof vi.fn>).mock.calls[0];
-    expect(call[1]['Status'].status.name).toBe(status);
+    expect(call[1]['Status'].status.name).toBe(notionLabel);
   });
 
   it('throws if pages.updateProperties rejects', async () => {
     const client = makeMockNotionClient();
-    const app = makeMockApp();
     (client.pages.updateProperties as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Notion API error'));
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: nullDest });
-    await expect(publisher.updateStatus!('page-abc', 'Approved')).rejects.toThrow('Notion API error');
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
+    await expect(publisher.updateStatus!('page-abc', 'approved')).rejects.toThrow('Notion API error');
   });
 
   it('logs notion_spec.status_updated event on success', async () => {
     const { records, destination } = makeLogCapture();
     const client = makeMockNotionClient();
-    const app = makeMockApp();
-    const publisher = new NotionPublisher(client, app as unknown as App, 'db-specs-id', { logDestination: destination });
-    await publisher.updateStatus!('page-abc', 'Complete');
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: destination });
+    await publisher.updateStatus!('page-abc', 'complete');
     expect(records.find(r => r['event'] === 'notion_spec.status_updated')).toBeDefined();
   });
 });

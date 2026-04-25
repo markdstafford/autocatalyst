@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { CommandEvent } from '../../../src/types/commands.js';
-import type { IntentClassifier } from '../../../src/adapters/agent/intent-classifier.js';
+import type { IntentClassifier } from '../../../src/types/intent.js';
 import { makeClassifyIntentHandler } from '../../../src/core/commands/classify-intent-command.js';
 
 function makeEvent(overrides: Partial<CommandEvent> = {}): CommandEvent {

@@ -11,7 +11,7 @@ import { parseWorkflow } from '../../src/core/config.js';
 
 describe('isSecret', () => {
   it('returns true for property names containing "token"', () => {
-    expect(isSecret('slack.bot_token')).toBe(true);
+    expect(isSecret('channels.0.config.bot_token')).toBe(true);
     expect(isSecret('app_token')).toBe(true);
   });
 
@@ -26,7 +26,7 @@ describe('isSecret', () => {
 
   it('returns true for property names containing "id"', () => {
     expect(isSecret('database_id')).toBe(true);
-    expect(isSecret('notion.specs_database_id')).toBe(true);
+    expect(isSecret('publishers.0.config.review_database_id')).toBe(true);
   });
 
   it('returns true for property names containing "password"', () => {
@@ -40,7 +40,8 @@ describe('isSecret', () => {
   });
 
   it('returns false for non-secret property names', () => {
-    expect(isSecret('channel_name')).toBe(false);
+    expect(isSecret('channels.0.provider')).toBe(false);
+    expect(isSecret('channels.0.name')).toBe(false);
     expect(isSecret('interval_ms')).toBe(false);
     expect(isSecret('aws_profile')).toBe(false);
     expect(isSecret('workspace.root')).toBe(false);
@@ -91,45 +92,43 @@ describe('findMissingRequired', () => {
     writeWorkflow('');
     const missing = findMissingRequired(tempDir);
     expect(missing).toContain('workspace.root');
-    expect(missing).toContain('slack.bot_token');
-    expect(missing).toContain('slack.app_token');
-    expect(missing).toContain('slack.channel_name');
+    expect(missing).toContain('channels.0.provider');
+    expect(missing).toContain('channels.0.name');
   });
 
   it('returns empty list when all required properties are populated', () => {
     writeWorkflow(
-      "workspace:\n  root: /tmp/ws\nslack:\n  bot_token: xoxb-abc\n  app_token: xapp-abc\n  channel_name: my-channel"
+      "workspace:\n  root: /tmp/ws\nchannels:\n  - provider: chat\n    name: product"
     );
     expect(findMissingRequired(tempDir)).toEqual([]);
   });
 
   it('returns only the missing properties for a partial config', () => {
-    writeWorkflow("workspace:\n  root: /tmp/ws\nslack:\n  bot_token: xoxb-abc\n  app_token: ''\n  channel_name: ''");
+    writeWorkflow("workspace:\n  root: /tmp/ws\nchannels:\n  - provider: chat\n    name: ''");
     const missing = findMissingRequired(tempDir);
     expect(missing).not.toContain('workspace.root');
-    expect(missing).not.toContain('slack.bot_token');
-    expect(missing).toContain('slack.app_token');
-    expect(missing).toContain('slack.channel_name');
+    expect(missing).not.toContain('channels.0.provider');
+    expect(missing).toContain('channels.0.name');
   });
 
   it('treats null as unpopulated', () => {
-    writeWorkflow("workspace:\n  root: ~\nslack:\n  bot_token: xoxb\n  app_token: xapp\n  channel_name: ch");
+    writeWorkflow("workspace:\n  root: ~\nchannels:\n  - provider: chat\n    name: product");
     expect(findMissingRequired(tempDir)).toContain('workspace.root');
   });
 
   it('treats placeholder values as unpopulated', () => {
-    writeWorkflow("workspace:\n  root: <your-workspace-root>\nslack:\n  bot_token: xoxb\n  app_token: xapp\n  channel_name: ch");
+    writeWorkflow("workspace:\n  root: <your-workspace-root>\nchannels:\n  - provider: chat\n    name: product");
     expect(findMissingRequired(tempDir)).toContain('workspace.root');
   });
 
   it('treats TODO as unpopulated', () => {
-    writeWorkflow("workspace:\n  root: TODO\nslack:\n  bot_token: xoxb\n  app_token: xapp\n  channel_name: ch");
+    writeWorkflow("workspace:\n  root: TODO\nchannels:\n  - provider: chat\n    name: product");
     expect(findMissingRequired(tempDir)).toContain('workspace.root');
   });
 
   it('treats ${VAR} references as populated', () => {
     writeWorkflow(
-      "workspace:\n  root: /tmp/ws\nslack:\n  bot_token: ${AC_SLACK_BOT_TOKEN}\n  app_token: ${AC_SLACK_APP_TOKEN}\n  channel_name: my-channel"
+      "workspace:\n  root: /tmp/ws\nchannels:\n  - provider: ${AC_CHANNEL_PROVIDER}\n    name: product"
     );
     expect(findMissingRequired(tempDir)).toEqual([]);
   });
@@ -149,27 +148,27 @@ describe('writeToEnv', () => {
   });
 
   it('creates .env with key=value when file does not exist', () => {
-    writeToEnv('AC_SLACK_BOT_TOKEN', 'xoxb-test', tempDir);
+    writeToEnv('AC_PROVIDER_TOKEN', 'secret-value', tempDir);
     const content = readFileSync(join(tempDir, '.env'), 'utf-8');
-    expect(content).toContain('AC_SLACK_BOT_TOKEN=xoxb-test');
+    expect(content).toContain('AC_PROVIDER_TOKEN=secret-value');
   });
 
   it('appends key=value when .env exists but key is absent', () => {
     writeFileSync(join(tempDir, '.env'), 'EXISTING_VAR=existing\n', 'utf-8');
-    writeToEnv('AC_SLACK_BOT_TOKEN', 'xoxb-new', tempDir);
+    writeToEnv('AC_PROVIDER_TOKEN', 'new-secret', tempDir);
     const content = readFileSync(join(tempDir, '.env'), 'utf-8');
     expect(content).toContain('EXISTING_VAR=existing');
-    expect(content).toContain('AC_SLACK_BOT_TOKEN=xoxb-new');
+    expect(content).toContain('AC_PROVIDER_TOKEN=new-secret');
   });
 
   it('replaces in-place when key already exists in .env', () => {
-    writeFileSync(join(tempDir, '.env'), 'AC_SLACK_BOT_TOKEN=old-value\n', 'utf-8');
-    writeToEnv('AC_SLACK_BOT_TOKEN', 'new-value', tempDir);
+    writeFileSync(join(tempDir, '.env'), 'AC_PROVIDER_TOKEN=old-value\n', 'utf-8');
+    writeToEnv('AC_PROVIDER_TOKEN', 'new-value', tempDir);
     const content = readFileSync(join(tempDir, '.env'), 'utf-8');
-    expect(content).toContain('AC_SLACK_BOT_TOKEN=new-value');
+    expect(content).toContain('AC_PROVIDER_TOKEN=new-value');
     expect(content).not.toContain('old-value');
     // Should not duplicate the key
-    expect(content.split('AC_SLACK_BOT_TOKEN=').length - 1).toBe(1);
+    expect(content.split('AC_PROVIDER_TOKEN=').length - 1).toBe(1);
   });
 });
 
@@ -182,7 +181,7 @@ describe('writeInlineToWorkflow', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'init-test-'));
     writeFileSync(
       join(tempDir, 'WORKFLOW.md'),
-      "---\nworkspace:\n  root: ''\nslack:\n  bot_token: ''\n  app_token: ''\n  channel_name: ''\n---\n\nTemplate body\n",
+      "---\nworkspace:\n  root: ''\nchannels:\n  - provider: ''\n    name: ''\n---\n\nTemplate body\n",
       'utf-8',
     );
   });
@@ -192,15 +191,15 @@ describe('writeInlineToWorkflow', () => {
   });
 
   it('sets an existing nested property inline', () => {
-    writeInlineToWorkflow('slack.channel_name', 'my-channel', tempDir);
+    writeInlineToWorkflow('channels.0.name', 'product', tempDir);
     const content = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
-    expect(content).toContain('my-channel');
+    expect(content).toContain('product');
   });
 
   it('sets a property to a ${VAR} env reference', () => {
-    writeInlineToWorkflow('slack.bot_token', '${AC_SLACK_BOT_TOKEN}', tempDir);
+    writeInlineToWorkflow('channels.0.provider', '${AC_CHANNEL_PROVIDER}', tempDir);
     const content = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
-    expect(content).toContain('${AC_SLACK_BOT_TOKEN}');
+    expect(content).toContain('${AC_CHANNEL_PROVIDER}');
   });
 
   it('produces output that parses back correctly via parseWorkflow', () => {
@@ -212,11 +211,11 @@ describe('writeInlineToWorkflow', () => {
   });
 
   it('preserves other properties when setting one value', () => {
-    writeInlineToWorkflow('slack.channel_name', 'general', tempDir);
+    writeInlineToWorkflow('channels.0.name', 'product', tempDir);
     // workspace.root should still be present (empty string) not deleted
     const content = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
     expect(content).toContain('workspace');
-    expect(content).toContain('slack');
+    expect(content).toContain('channels');
   });
 });
 
@@ -258,7 +257,7 @@ describe('runInit — complete config branch', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'init-test-'));
     writeFileSync(
       join(tempDir, 'WORKFLOW.md'),
-      '---\nworkspace:\n  root: /tmp/ws\nslack:\n  bot_token: xoxb-abc\n  app_token: xapp-abc\n  channel_name: my-channel\n---\n\nTemplate\n',
+      '---\nworkspace:\n  root: /tmp/ws\nchannels:\n  - provider: chat\n    name: product\n---\n\nTemplate\n',
       'utf-8',
     );
   });
@@ -307,10 +306,9 @@ describe('runInit — incomplete config branch', () => {
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'init-test-'));
-    // workspace.root populated; slack fields empty
     writeFileSync(
       join(tempDir, 'WORKFLOW.md'),
-      "---\nworkspace:\n  root: /tmp/ws\nslack:\n  bot_token: ''\n  app_token: ''\n  channel_name: ''\n---\n\nTemplate\n",
+      "---\nworkspace:\n  root: /tmp/ws\nchannels:\n  - provider: ''\n    name: ''\n---\n\nTemplate\n",
       'utf-8',
     );
   });
@@ -319,29 +317,26 @@ describe('runInit — incomplete config branch', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('writes secret properties to .env and inserts ${VAR} reference in WORKFLOW.md', async () => {
+  it('writes missing required properties inline', async () => {
     await runInit(tempDir, {
       promptFn: async (question) => {
-        if (question.includes('slack.bot_token')) return 'xoxb-real-token';
-        if (question.includes('slack.app_token')) return 'xapp-real-token';
-        if (question.includes('channel_name')) return 'my-channel';
+        if (question.includes('channels.0.provider')) return 'chat';
+        if (question.includes('channels.0.name')) return 'product';
         return '';
       },
     });
 
-    const envContent = readFileSync(join(tempDir, '.env'), 'utf-8');
-    expect(envContent).toContain('AC_SLACK_BOT_TOKEN=xoxb-real-token');
-    expect(envContent).toContain('AC_SLACK_APP_TOKEN=xapp-real-token');
-
     const wfContent = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
-    expect(wfContent).toContain('${AC_SLACK_BOT_TOKEN}');
-    expect(wfContent).toContain('${AC_SLACK_APP_TOKEN}');
+    expect(wfContent).toContain('chat');
+    expect(wfContent).toContain('product');
+    expect(existsSync(join(tempDir, '.env'))).toBe(false);
   });
 
   it('writes non-secret properties inline to WORKFLOW.md', async () => {
     await runInit(tempDir, {
       promptFn: async (question) => {
-        if (question.includes('channel_name')) return 'general';
+        if (question.includes('channels.0.provider')) return 'chat';
+        if (question.includes('channels.0.name')) return 'general';
         return 'some-value';
       },
     });
@@ -364,8 +359,9 @@ describe('runInit — incomplete config branch', () => {
     await new Promise<void>((resolve) => stream.on('finish', resolve));
     const detected = events.find((e) => e['event'] === 'init.missing_detected');
     expect(detected).toBeDefined();
-    expect(detected?.['count']).toBe(3); // bot_token, app_token, channel_name
-    expect((detected?.['properties'] as string[])).toContain('slack.bot_token');
+    expect(detected?.['count']).toBe(2);
+    expect((detected?.['properties'] as string[])).toContain('channels.0.provider');
+    expect((detected?.['properties'] as string[])).toContain('channels.0.name');
   });
 
   it('emits init.value_written for each written value with correct destination', async () => {
@@ -381,10 +377,9 @@ describe('runInit — incomplete config branch', () => {
     stream.end();
     await new Promise<void>((resolve) => stream.on('finish', resolve));
     const written = events.filter((e) => e['event'] === 'init.value_written');
-    expect(written.length).toBe(3);
-    // bot_token and app_token are secrets → env; channel_name → inline
-    expect(written.filter((e) => e['destination'] === 'env').length).toBe(2);
-    expect(written.filter((e) => e['destination'] === 'inline').length).toBe(1);
+    expect(written.length).toBe(2);
+    expect(written.filter((e) => e['destination'] === 'env').length).toBe(0);
+    expect(written.filter((e) => e['destination'] === 'inline').length).toBe(2);
   });
 
   it('config passes findMissingRequired after all values are written', async () => {
@@ -407,7 +402,7 @@ describe('runInit — no config + confirm branch', () => {
   it('creates skeleton, prompts for all required values, writes them', async () => {
     let promptCount = 0;
     // First prompt is Y/n, then one per required property
-    const answers = ['Y', '/my/workspace', 'xoxb-bot', 'xapp-app', 'general'];
+    const answers = ['Y', '/my/workspace', 'chat', 'product'];
     await runInit(tempDir, {
       promptFn: async () => answers[promptCount++] ?? '',
     });
@@ -423,7 +418,7 @@ describe('runInit — no config + confirm branch', () => {
       try { events.push(JSON.parse(chunk.toString())); } catch {}
     });
     let promptCount = 0;
-    const answers = ['Y', '/my/workspace', 'xoxb-bot', 'xapp-app', 'general'];
+    const answers = ['Y', '/my/workspace', 'chat', 'product'];
     await runInit(tempDir, {
       promptFn: async () => answers[promptCount++] ?? '',
       logDestination: stream,
@@ -440,7 +435,7 @@ describe('runInit — no config + confirm branch', () => {
       try { events.push(JSON.parse(chunk.toString())); } catch {}
     });
     let promptCount = 0;
-    const answers = ['Y', '/my/workspace', 'xoxb-bot', 'xapp-app', 'general'];
+    const answers = ['Y', '/my/workspace', 'chat', 'product'];
     await runInit(tempDir, {
       promptFn: async () => answers[promptCount++] ?? '',
       logDestination: stream,

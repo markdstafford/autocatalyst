@@ -1,0 +1,143 @@
+import { describe, expect, it, vi } from 'vitest';
+import { ArtifactCreationHandler } from '../../../src/core/handlers/artifact-creation-handler.js';
+import type { Request } from '../../../src/types/events.js';
+import type { Run } from '../../../src/types/runs.js';
+import { TEST_CHANNEL, TEST_CONVERSATION, TEST_ORIGIN, testChannelBinding } from '../../helpers/channel-refs.js';
+
+function makeRequest(overrides: Partial<Request> = {}): Request {
+  return {
+    id: 'request-001',
+    channel: TEST_CHANNEL,
+    conversation: TEST_CONVERSATION,
+    origin: TEST_ORIGIN,
+    content: 'add a setup wizard',
+    author: 'U123',
+    received_at: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+function makeRun(overrides: Partial<Run> = {}): Run {
+  return {
+    id: 'run-001',
+    request_id: 'request-001',
+    intent: 'idea',
+    stage: 'intake',
+    workspace_path: '',
+    branch: '',
+    spec_path: undefined,
+    publisher_ref: undefined,
+    artifact: undefined,
+    impl_feedback_ref: undefined,
+    issue: undefined,
+    attempt: 0,
+    channel: TEST_CHANNEL,
+    conversation: TEST_CONVERSATION,
+    origin: TEST_ORIGIN,
+    pr_url: undefined,
+    last_impl_result: undefined,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+function makeHandler(overrides: Partial<ConstructorParameters<typeof ArtifactCreationHandler>[0]> = {}) {
+  const deps = {
+    workspaceManager: {
+      create: vi.fn().mockResolvedValue({ workspace_path: '/ws/request-001', branch: 'spec/request-001' }),
+      destroy: vi.fn().mockResolvedValue(undefined),
+    },
+    artifactAuthoringAgent: {
+      create: vi.fn().mockResolvedValue({ artifact_path: '/ws/request-001/context-human/specs/feature-test.md' }),
+    },
+    artifactPublisher: {
+      createArtifact: vi.fn().mockResolvedValue({ id: 'CANVAS001', url: 'https://artifact.example.test/CANVAS001' }),
+      updateStatus: vi.fn().mockResolvedValue(undefined),
+    },
+    channelRepoMap: new Map([
+      testChannelBinding('C123'),
+    ]),
+    postMessage: vi.fn().mockResolvedValue(undefined),
+    transition: vi.fn((run: Run, stage: Run['stage']) => { run.stage = stage; }),
+    failRun: vi.fn().mockResolvedValue(undefined),
+    logger: {
+      warn: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+    },
+    persist: vi.fn(),
+    ...overrides,
+  };
+
+  return { handler: new ArtifactCreationHandler(deps), deps };
+}
+
+describe('ArtifactCreationHandler', () => {
+  it('creates, publishes, and stores a feature_spec artifact for idea requests', async () => {
+    const { handler, deps } = makeHandler();
+    const run = makeRun({ intent: 'idea' });
+    const request = makeRequest();
+
+    await handler.handle(run, request, 'idea');
+
+    expect(deps.workspaceManager.create).toHaveBeenCalledWith('request-001', 'https://example.test/org/repo.git', '/tmp/workspaces');
+    expect(deps.artifactAuthoringAgent.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function));
+    expect(deps.artifactPublisher.createArtifact).toHaveBeenCalledWith(
+      TEST_CONVERSATION,
+      expect.objectContaining({
+        kind: 'feature_spec',
+        local_path: '/ws/request-001/context-human/specs/feature-test.md',
+        status: 'drafting',
+      }),
+    );
+    expect(run.artifact).toEqual({
+      kind: 'feature_spec',
+      local_path: '/ws/request-001/context-human/specs/feature-test.md',
+      published_ref: { provider: 'artifact_publisher', id: 'CANVAS001', url: 'https://artifact.example.test/CANVAS001' },
+      status: 'waiting_on_feedback',
+    });
+    expect(deps.postMessage).toHaveBeenCalledWith(TEST_CONVERSATION, expect.stringContaining('https://artifact.example.test/CANVAS001'));
+    expect(run.stage).toBe('reviewing_spec');
+  });
+
+  it('passes bug intent to generation and records existing issues on bug triage artifacts', async () => {
+    const { handler, deps } = makeHandler({
+      artifactAuthoringAgent: {
+        create: vi.fn().mockResolvedValue({
+          artifact_path: '/ws/request-001/context-human/specs/bug-login.md',
+          existing_issue: 42,
+        }),
+      },
+    });
+    const run = makeRun({ intent: 'bug' });
+    const request = makeRequest();
+
+    await handler.handle(run, request, 'bug');
+
+    expect(deps.artifactAuthoringAgent.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), 'bug');
+    expect(run.issue).toBe(42);
+    expect(run.artifact).toMatchObject({
+      kind: 'bug_triage',
+      local_path: '/ws/request-001/context-human/specs/bug-login.md',
+      status: 'waiting_on_feedback',
+    });
+  });
+
+  it('destroys the workspace and fails the run when generation fails', async () => {
+    const error = new Error('generation failed');
+    const { handler, deps } = makeHandler({
+      artifactAuthoringAgent: {
+        create: vi.fn().mockRejectedValue(error),
+      },
+    });
+    const run = makeRun();
+    const request = makeRequest();
+
+    await handler.handle(run, request, 'idea');
+
+    expect(deps.workspaceManager.destroy).toHaveBeenCalledWith('/ws/request-001');
+    expect(deps.failRun).toHaveBeenCalledWith(run, TEST_CONVERSATION, error);
+    expect(deps.artifactPublisher.createArtifact).not.toHaveBeenCalled();
+  });
+});

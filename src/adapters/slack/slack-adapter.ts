@@ -2,7 +2,8 @@ import { randomUUID } from 'node:crypto';
 import type { App } from '@slack/bolt';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
-import type { HumanInterfaceAdapter } from '../human-interface-adapter.js';
+import type { ChannelAdapter } from '../channel-adapter.js';
+import type { ChannelRegistry, ConversationRef, MessageRef } from '../../types/channel.js';
 import type { InboundEvent, Request, ThreadMessage } from '../../types/events.js';
 import { classifyMessage } from './classifier.js';
 import { EMOJI_COMMAND_TABLE } from './classifier.js';
@@ -11,7 +12,7 @@ import { ThreadRegistry } from './thread-registry.js';
 import type { RepoEntry, ChannelRepoMap, PreRepoEntry } from '../../types/config.js';
 
 type SlackAdapterConfig =
-  | { channelName: string }
+  | { channelName: string; repo_url?: string; workspace_root?: string }
   | { repoEntries: PreRepoEntry[] };
 
 interface SlackAdapterOptions {
@@ -20,7 +21,7 @@ interface SlackAdapterOptions {
   ackEmoji?: string;
 }
 
-export class SlackAdapter implements HumanInterfaceAdapter {
+export class SlackAdapter implements ChannelAdapter {
   private readonly app: App;
   private readonly config: SlackAdapterConfig;
   private readonly registry: ThreadRegistry;
@@ -30,6 +31,7 @@ export class SlackAdapter implements HumanInterfaceAdapter {
   private botUserId: string | undefined;
   private _resolvedChannelId: string | undefined;
   private _resolvedChannelRepoMap: ChannelRepoMap | null = null;
+  private readonly _resolvedChannelNames = new Map<string, string>();
   private _channelsResolved = false;
 
   // AsyncIterable queue
@@ -52,8 +54,8 @@ export class SlackAdapter implements HumanInterfaceAdapter {
    * Multi-repo: builds ChannelRepoMap; logs slack.startup.channels_resolved.
    * Throws (logging slack.startup.channel_resolution_failed) if any channel can't be resolved.
    */
-  async resolveChannels(): Promise<void> {
-    if (this._channelsResolved) return;
+  async resolveChannels(): Promise<ChannelRegistry> {
+    if (this._channelsResolved) return this.toChannelRegistry();
 
     const listResult = await this.app.client.conversations.list({
       types: 'public_channel',
@@ -80,6 +82,7 @@ export class SlackAdapter implements HumanInterfaceAdapter {
         throw new Error(`Slack channel not found: ${channelName}`);
       }
       this._resolvedChannelId = channel.id;
+      this._resolvedChannelNames.set(channel.id, channelName);
       this.logger.info(
         { event: 'slack.startup.channel_resolved', channel_name: channelName, channel_id: this._resolvedChannelId },
         'Channel resolved',
@@ -99,17 +102,18 @@ export class SlackAdapter implements HumanInterfaceAdapter {
           throw new Error(`Slack channel not found: ${entry.channel_name}`);
         }
         channelRepoMap.set(channel.id, {
-          channel_id: channel.id,
+          channel_ref: `slack:${channel.id}`,
           repo_url: entry.repo_url,
           workspace_root: entry.workspace_root,
         });
+        this._resolvedChannelNames.set(channel.id, entry.channel_name);
       }
       this._resolvedChannelRepoMap = channelRepoMap;
       this.logger.info(
         {
           event: 'slack.startup.channels_resolved',
           channels: [...channelRepoMap.values()].map(e => ({
-            channel_id: e.channel_id,
+            channel_ref: e.channel_ref,
             repo_url: e.repo_url,
           })),
         },
@@ -118,6 +122,7 @@ export class SlackAdapter implements HumanInterfaceAdapter {
     }
 
     this._channelsResolved = true;
+    return this.toChannelRegistry();
   }
 
   /** Returns the resolved channel ID for single-repo mode. Valid after resolveChannels() or start(). */
@@ -198,9 +203,14 @@ export class SlackAdapter implements HumanInterfaceAdapter {
         const commandEvent: CommandEvent = {
           command: result.command,
           args: result.args,
-          source: 'slack',
-          channel_id: channelId,
-          thread_ts: msg.thread_ts ?? msg.ts,
+          channel: { provider: 'slack', id: channelId },
+          conversation: { provider: 'slack', channel_id: channelId, conversation_id: msg.thread_ts ?? msg.ts },
+          origin: {
+            provider: 'slack',
+            channel_id: channelId,
+            conversation_id: msg.thread_ts ?? msg.ts,
+            message_id: msg.ts,
+          },
           author: msg.user,
           received_at: new Date().toISOString(),
           inferred_context: {
@@ -223,12 +233,17 @@ export class SlackAdapter implements HumanInterfaceAdapter {
       if (result.intent === 'new_request') {
         const request: Request = {
           id: randomUUID(),
-          source: 'slack',
+          channel: { provider: 'slack', id: channelId },
+          conversation: { provider: 'slack', channel_id: channelId, conversation_id: msg.ts },
+          origin: {
+            provider: 'slack',
+            channel_id: channelId,
+            conversation_id: msg.ts,
+            message_id: msg.ts,
+          },
           content: msg.text ?? '',
           author: msg.user,
           received_at: new Date().toISOString(),
-          thread_ts: msg.ts,
-          channel_id: channelId,
         };
 
         // Apply ack reaction and register thread before emitting
@@ -239,11 +254,17 @@ export class SlackAdapter implements HumanInterfaceAdapter {
       } else if (result.intent === 'thread_message') {
         const message: ThreadMessage = {
           request_id: result.request_id,
+          channel: { provider: 'slack', id: channelId },
+          conversation: { provider: 'slack', channel_id: channelId, conversation_id: msg.thread_ts! },
+          origin: {
+            provider: 'slack',
+            channel_id: channelId,
+            conversation_id: msg.thread_ts!,
+            message_id: msg.ts,
+          },
           content: msg.text ?? '',
           author: msg.user,
           received_at: new Date().toISOString(),
-          thread_ts: msg.thread_ts!,
-          channel_id: channelId,
         };
 
         await this.reactToMessage(channelId, msg.ts, this.ackEmoji);
@@ -295,9 +316,14 @@ export class SlackAdapter implements HumanInterfaceAdapter {
       const commandEvent: CommandEvent = {
         command: commandName,
         args: [],
-        source: 'slack',
-        channel_id: reaction.item.channel!,
-        thread_ts: reactedThreadTs,
+        channel: { provider: 'slack', id: reaction.item.channel! },
+        conversation: { provider: 'slack', channel_id: reaction.item.channel!, conversation_id: reactedThreadTs },
+        origin: {
+          provider: 'slack',
+          channel_id: reaction.item.channel!,
+          conversation_id: reactedThreadTs,
+          message_id: reaction.item.ts,
+        },
         author: reaction.user,
         received_at: new Date().toISOString(),
         inferred_context: {
@@ -347,6 +373,24 @@ export class SlackAdapter implements HumanInterfaceAdapter {
     }
   }
 
+  async reply(ref: ConversationRef, text: string): Promise<MessageRef> {
+    const result = await this.app.client.chat.postMessage({
+      channel: ref.channel_id,
+      thread_ts: ref.conversation_id,
+      text,
+    });
+    return {
+      provider: 'slack',
+      channel_id: ref.channel_id,
+      conversation_id: ref.conversation_id,
+      message_id: typeof result.ts === 'string' ? result.ts : ref.conversation_id,
+    };
+  }
+
+  async replyError(ref: ConversationRef, text: string): Promise<MessageRef> {
+    return this.reply(ref, text);
+  }
+
   private emit(event: InboundEvent): void {
     this.eventQueue.push(event);
     if (this.waiter) {
@@ -371,7 +415,39 @@ export class SlackAdapter implements HumanInterfaceAdapter {
     }
   }
 
+  async react(ref: MessageRef, reaction: string): Promise<void> {
+    await this.reactToMessage(ref.channel_id, ref.message_id, reaction);
+  }
+
+  registerConversation(ref: ConversationRef, request_id: string): void {
+    this.registry.register(ref.conversation_id, request_id);
+  }
+
   isConnected(): boolean {
     return !this.closed;
   }
+
+  private toChannelRegistry(): ChannelRegistry {
+    const registry: ChannelRegistry = new Map();
+    if (this._resolvedChannelRepoMap) {
+      for (const [channelId, entry] of this._resolvedChannelRepoMap) {
+        registry.set(entry.channel_ref, {
+          channel: { provider: 'slack', id: channelId, name: this._resolvedChannelNames.get(channelId) },
+          repo_url: entry.repo_url,
+          workspace_root: entry.workspace_root,
+        });
+      }
+      return registry;
+    }
+    if (this._resolvedChannelId && 'channelName' in this.config && this.config.repo_url && this.config.workspace_root) {
+      const channel_ref = `slack:${this._resolvedChannelId}`;
+      registry.set(channel_ref, {
+        channel: { provider: 'slack', id: this._resolvedChannelId, name: this.config.channelName },
+        repo_url: this.config.repo_url,
+        workspace_root: this.config.workspace_root,
+      });
+    }
+    return registry;
+  }
+
 }

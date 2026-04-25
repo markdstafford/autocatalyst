@@ -1,4 +1,6 @@
 // src/types/runs.ts
+import type { ChannelRef, ConversationRef, MessageRef } from './channel.js';
+import type { Artifact } from './artifact.js';
 
 export type RunStage =
   | 'intake'
@@ -13,6 +15,11 @@ export type RunStage =
 
 export type RequestIntent = 'idea' | 'bug' | 'chore' | 'file_issues' | 'question';
 
+export interface LastImplementationResult {
+  summary: string;
+  testing_instructions: string;
+}
+
 export interface Run {
   id: string;
   request_id: string;
@@ -20,18 +27,15 @@ export interface Run {
   stage: RunStage;
   workspace_path: string;
   branch: string;
-  spec_path: string | undefined;
-  publisher_ref: string | undefined; // Notion page ID or Slack canvas ID
-  impl_feedback_ref: string | undefined; // Notion page ID for implementation feedback
-  issue: number | undefined; // GitHub issue number (bug and chore runs)
+  artifact?: Artifact;
+  impl_feedback_ref: string | undefined;
+  issue: number | undefined;
   attempt: number;
-  channel_id: string;
-  thread_ts: string;
-  pr_url: string | undefined;          // new: PR URL set after PR creation
-  last_impl_result: {                  // new: set after implementation completes
-    summary: string;
-    testing_instructions: string;
-  } | undefined;
-  created_at: string; // ISO 8601
-  updated_at: string; // ISO 8601
+  channel?: ChannelRef;
+  conversation?: ConversationRef;
+  origin?: MessageRef;
+  pr_url: string | undefined;
+  last_impl_result: LastImplementationResult | undefined;
+  created_at: string;
+  updated_at: string;
 }
