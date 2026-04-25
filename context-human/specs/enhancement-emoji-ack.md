@@ -252,13 +252,13 @@ All tests not listed above must continue to pass without modification. `tsc --no
 			- [x] Logs `slack.error` (error) on failure; method resolves without throwing
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `slack.reacjis` to config schema and defaults
-	- [ ] **Task: Apply ack reaction in ****`SlackAdapter`**** inbound handlers; remove text acks**
+	- [x] **Task: Apply ack reaction in ****`SlackAdapter`**** inbound handlers; remove text acks**
 		- **Files**: `src/adapters/slack/slack-adapter.ts`
 		- **Description**: In the `new_request` and `thread_message` handlers, call `this.reactToMessage(channelId, msg.ts, config.slack.reacjis.ack)`. Remove the existing `chat.postMessage` ack calls from both handlers (the generic new-request ack and "Thanks — I'll incorporate that feedback.").
 		- **Acceptance criteria**:
-			- [ ] `reactToMessage` called with `msg.ts` (not `thread_ts`) in both handlers
-			- [ ] No `chat.postMessage` call remains in either handler
-			- [ ] `tsc --noEmit` passes
+			- [x] `reactToMessage` called with `msg.ts` (not `thread_ts`) in both handlers
+			- [x] No `chat.postMessage` call remains in either handler
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement `reactToMessage` on `SlackAdapter`
 	- [ ] **Task: Post intent-specific messages in ****`Orchestrator`**** after classification**
 		- **Files**: `src/core/orchestrator.ts`
@@ -289,16 +289,16 @@ All tests not listed above must continue to pass without modification. `tsc --no
 			- [x] All previously passing tests continue to pass
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement `reactToMessage` on `SlackAdapter`
-	- [ ] **Task: Test ****`SlackAdapter`**** inbound-handler ack behavior**
+	- [x] **Task: Test ****`SlackAdapter`**** inbound-handler ack behavior**
 		- **Files**: `tests/adapters/slack/slack-adapter.test.ts`
 		- **Description**: Add tests asserting the updated inbound-handler behavior: `reactions.add` called with `msg.ts` for both event types; `chat.postMessage` not called from either handler. These are tests 3–6 in the test plan.
 		- **Acceptance criteria**:
-			- [ ] Test 3: `new_request` → `reactions.add` called with `msg.ts` and ack emoji
-			- [ ] Test 4: `thread_message` → `reactions.add` called with `msg.ts` and ack emoji
-			- [ ] Test 5: `new_request` → `chat.postMessage` not called from adapter
-			- [ ] Test 6: `thread_message` → `chat.postMessage` not called from adapter
-			- [ ] All previously passing tests continue to pass
-			- [ ] `tsc --noEmit` passes
+			- [x] Test 3: `new_request` → `reactions.add` called with `msg.ts` and ack emoji
+			- [x] Test 4: `thread_message` → `reactions.add` called with `msg.ts` and ack emoji
+			- [x] Test 5: `new_request` → `chat.postMessage` not called from adapter
+			- [x] Test 6: `thread_message` → `chat.postMessage` not called from adapter
+			- [x] All previously passing tests continue to pass
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Apply ack reaction in `SlackAdapter` inbound handlers; remove text acks
 	- [ ] **Task: Test orchestrator intent-specific messages**
 		- **Files**: `tests/core/orchestrator.test.ts`

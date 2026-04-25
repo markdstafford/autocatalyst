@@ -231,9 +231,9 @@ export class SlackAdapter implements HumanInterfaceAdapter {
           channel_id: channelId,
         };
 
-        // Post acknowledgement and register thread before emitting
+        // Apply ack reaction and register thread before emitting
         this.registry.register(msg.ts, request.id);
-        await this.postMessage(channelId, msg.ts, "Got it — I'll work on a spec and post it here.");
+        await this.reactToMessage(channelId, msg.ts, this.ackEmoji);
         this.emit({ type: 'new_request', payload: request });
 
       } else if (result.intent === 'thread_message') {
@@ -246,7 +246,7 @@ export class SlackAdapter implements HumanInterfaceAdapter {
           channel_id: channelId,
         };
 
-        await this.postMessage(channelId, msg.thread_ts!, "Thanks — I'll incorporate that feedback.");
+        await this.reactToMessage(channelId, msg.ts, this.ackEmoji);
         this.emit({ type: 'thread_message', payload: message });
       }
     });
