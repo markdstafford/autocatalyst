@@ -233,14 +233,14 @@ All tests not listed above must continue to pass without modification. `tsc --no
 ## Task list
 
 - [ ] **Story: Emoji-reaction acknowledgements**
-	- [ ] **Task: Add ****`slack.reacjis`**** to config schema and defaults**
+	- [x] **Task: Add ****`slack.reacjis`**** to config schema and defaults**
 		- **Files**: `config/` schema file, `config/` defaults file
 		- **Description**: Define `slack.reacjis.ack` (required string, default `'eyes'`) and `slack.reacjis.complete` (string \| null, default `'white_check_mark'`) in the config schema and default config.
 		- **Acceptance criteria**:
-			- [ ] `slack.reacjis.ack` validates as a required string; missing value fails schema validation
-			- [ ] `slack.reacjis.complete` validates as string \| null; omitting it passes schema validation
-			- [ ] Default config sets `ack: 'eyes'` and `complete: 'white_check_mark'`
-			- [ ] `tsc --noEmit` passes
+			- [x] `slack.reacjis.ack` validates as a required string; missing value fails schema validation
+			- [x] `slack.reacjis.complete` validates as string \| null; omitting it passes schema validation
+			- [x] Default config sets `ack: 'eyes'` and `complete: 'white_check_mark'`
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: None
 	- [ ] **Task: Implement ****`reactToMessage`**** on ****`SlackAdapter`**
 		- **Files**: `src/adapters/slack/slack-adapter.ts`

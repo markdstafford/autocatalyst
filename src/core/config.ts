@@ -118,6 +118,17 @@ export function validateConfig(config: WorkflowConfig): void {
     if (typeof slack.channel_name !== 'string' || slack.channel_name.trim() === '') {
       throw new Error('slack.channel_name must be a non-empty string');
     }
+
+    const reacjis = (slack as { reacjis?: unknown }).reacjis;
+    if (reacjis !== undefined) {
+      const r = reacjis as { ack?: unknown; complete?: unknown };
+      if (typeof r.ack !== 'string' || (r.ack as string).trim() === '') {
+        throw new Error('slack.reacjis.ack must be a non-empty string when reacjis is configured');
+      }
+      if (r.complete !== undefined && r.complete !== null && typeof r.complete !== 'string') {
+        throw new Error('slack.reacjis.complete must be a string or null');
+      }
+    }
   }
 }
 
