@@ -5677,3 +5677,50 @@ describe('Orchestrator — intent-specific acknowledgements', () => {
     }
   });
 });
+
+describe('Orchestrator — completion reaction', () => {
+  async function runToCompletion(reacjiComplete: string | null | undefined) {
+    const adapter = makeMockAdapter();
+    const issueFiler = makeIssueFiler();
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage: vi.fn().mockResolvedValue(undefined),
+      channelRepoMap: makeChannelRepoMap(),
+      intentClassifier: makeIntentClassifier('file_issues'),
+      issueFiler,
+      reacjiComplete,
+    }, { logDestination: nullDest });
+    await orch.start();
+    const request = makeRequest();
+    adapter._emit({ type: 'new_request', payload: request });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+    return { adapter, request };
+  }
+
+  it('test 13: completion + complete configured — reactToMessage called with originalRequestTs and emoji', async () => {
+    const { adapter, request } = await runToCompletion('white_check_mark');
+
+    expect(adapter.reactToMessage).toHaveBeenCalledWith(
+      request.channel_id,
+      request.thread_ts,
+      'white_check_mark',
+    );
+  });
+
+  it('test 14: completion + complete is null — reactToMessage NOT called for completion', async () => {
+    const { adapter } = await runToCompletion(null);
+
+    expect(adapter.reactToMessage).not.toHaveBeenCalled();
+  });
+
+  it('test 15: completion + complete omitted — reactToMessage NOT called for completion', async () => {
+    const { adapter } = await runToCompletion(undefined);
+
+    expect(adapter.reactToMessage).not.toHaveBeenCalled();
+  });
+});

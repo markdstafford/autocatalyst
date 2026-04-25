@@ -232,7 +232,7 @@ Work item completes; `config.slack.reacjis` has no `complete` key
 All tests not listed above must continue to pass without modification. `tsc --noEmit` passes across the entire project.
 ## Task list
 
-- [ ] **Story: Emoji-reaction acknowledgements**
+- [x] **Story: Emoji-reaction acknowledgements**
 	- [x] **Task: Add ****`slack.reacjis`**** to config schema and defaults**
 		- **Files**: `config/` schema file, `config/` defaults file
 		- **Description**: Define `slack.reacjis.ack` (required string, default `'eyes'`) and `slack.reacjis.complete` (string \| null, default `'white_check_mark'`) in the config schema and default config.
@@ -270,15 +270,15 @@ All tests not listed above must continue to pass without modification. `tsc --no
 			- [x] No intent-specific message posted for `thread_message` events
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Apply ack reaction in `SlackAdapter` inbound handlers; remove text acks
-	- [ ] **Task: Post completion reaction in ****`Orchestrator`**
+	- [x] **Task: Post completion reaction in ****`Orchestrator`**
 		- **Files**: `src/core/orchestrator.ts`
 		- **Description**: When a work item reaches terminal completion, call `slackAdapter.reactToMessage(channelId, originalRequestTs, config.slack.reacjis.complete)` if `config.slack.reacjis.complete` is non-null. `originalRequestTs` is the `ts` of the root thread message.
 		- **Acceptance criteria**:
-			- [ ] Completion reaction is posted with `config.slack.reacjis.complete` as the emoji
-			- [ ] No reaction is posted when `config.slack.reacjis.complete` is null
-			- [ ] No reaction is posted when `config.slack.reacjis.complete` is omitted from config
-			- [ ] Reaction targets `originalRequestTs`, not a reply `ts`
-			- [ ] `tsc --noEmit` passes
+			- [x] Completion reaction is posted with `config.slack.reacjis.complete` as the emoji
+			- [x] No reaction is posted when `config.slack.reacjis.complete` is null
+			- [x] No reaction is posted when `config.slack.reacjis.complete` is omitted from config
+			- [x] Reaction targets `originalRequestTs`, not a reply `ts`
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement `reactToMessage` on `SlackAdapter`; Task: Add `slack.reacjis` to config schema and defaults
 	- [x] **Task: Unit-test ****`reactToMessage`**
 		- **Files**: `tests/adapters/slack/slack-adapter.test.ts`
@@ -313,13 +313,13 @@ All tests not listed above must continue to pass without modification. `tsc --no
 			- [x] All previously passing tests continue to pass
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Post intent-specific messages in `Orchestrator` after classification
-	- [ ] **Task: Test orchestrator completion reaction**
+	- [x] **Task: Test orchestrator completion reaction**
 		- **Files**: `tests/core/orchestrator.test.ts`
 		- **Description**: Add tests for the completion reaction: posted when configured, skipped when `complete` is null or omitted. These are tests 13–15 in the test plan.
 		- **Acceptance criteria**:
-			- [ ] Test 13: completion + `complete` configured → `reactions.add` called with `originalRequestTs` and `complete` emoji
-			- [ ] Test 14: completion + `complete` is null → `reactions.add` not called
-			- [ ] Test 15: completion + `complete` omitted → `reactions.add` not called
-			- [ ] All previously passing tests continue to pass
-			- [ ] `tsc --noEmit` passes
+			- [x] Test 13: completion + `complete` configured → `reactions.add` called with `originalRequestTs` and `complete` emoji
+			- [x] Test 14: completion + `complete` is null → `reactions.add` not called
+			- [x] Test 15: completion + `complete` omitted → `reactions.add` not called
+			- [x] All previously passing tests continue to pass
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Post completion reaction in `Orchestrator`

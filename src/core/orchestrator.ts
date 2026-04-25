@@ -66,6 +66,7 @@ interface OrchestratorDeps {
   postMessage: (channel_id: string, thread_ts: string, text: string) => Promise<void>;
   channelRepoMap: ChannelRepoMap;
   commandRegistry?: CommandRegistry;
+  reacjiComplete?: string | null;
 }
 
 interface OrchestratorOptions {
@@ -813,6 +814,11 @@ export class OrchestratorImpl implements Orchestrator {
     }
 
     this.transition(run, 'done');
+    if (this.deps.reacjiComplete) {
+      this.deps.adapter.reactToMessage(run.channel_id, run.thread_ts, this.deps.reacjiComplete).catch(err => {
+        this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post completion reaction');
+      });
+    }
   }
 
   private transition(run: Run, stage: RunStage): void {
@@ -1085,6 +1091,11 @@ export class OrchestratorImpl implements Orchestrator {
       'Filing pipeline complete',
     );
     this.transition(run, 'done');
+    if (this.deps.reacjiComplete) {
+      this.deps.adapter.reactToMessage(run.channel_id, run.thread_ts, this.deps.reacjiComplete).catch(err => {
+        this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post completion reaction');
+      });
+    }
   }
 
   private async _handleSpecFeedback(feedback: ThreadMessage): Promise<void> {
