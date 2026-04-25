@@ -117,6 +117,85 @@ describe('validateConfig', () => {
     expect(() => validateConfig({})).not.toThrow();
   });
 
+  describe('slack.reacjis', () => {
+    it('passes when slack.reacjis is absent', () => {
+      const config: WorkflowConfig = {
+        slack: { bot_token: 'xoxb-token', app_token: 'xapp-token', channel_name: 'my-channel' },
+      };
+      expect(() => validateConfig(config)).not.toThrow();
+    });
+
+    it('passes when reacjis.ack is a non-empty string', () => {
+      const config: WorkflowConfig = {
+        slack: {
+          bot_token: 'xoxb-token', app_token: 'xapp-token', channel_name: 'my-channel',
+          reacjis: { ack: 'eyes' },
+        },
+      };
+      expect(() => validateConfig(config)).not.toThrow();
+    });
+
+    it('throws when reacjis.ack is missing', () => {
+      const config = {
+        slack: {
+          bot_token: 'xoxb-token', app_token: 'xapp-token', channel_name: 'my-channel',
+          reacjis: {},
+        },
+      } as unknown as WorkflowConfig;
+      expect(() => validateConfig(config)).toThrow('slack.reacjis.ack');
+    });
+
+    it('throws when reacjis.ack is an empty string', () => {
+      const config = {
+        slack: {
+          bot_token: 'xoxb-token', app_token: 'xapp-token', channel_name: 'my-channel',
+          reacjis: { ack: '' },
+        },
+      } as unknown as WorkflowConfig;
+      expect(() => validateConfig(config)).toThrow('slack.reacjis.ack');
+    });
+
+    it('passes when reacjis.complete is a string', () => {
+      const config: WorkflowConfig = {
+        slack: {
+          bot_token: 'xoxb-token', app_token: 'xapp-token', channel_name: 'my-channel',
+          reacjis: { ack: 'eyes', complete: 'white_check_mark' },
+        },
+      };
+      expect(() => validateConfig(config)).not.toThrow();
+    });
+
+    it('passes when reacjis.complete is null', () => {
+      const config: WorkflowConfig = {
+        slack: {
+          bot_token: 'xoxb-token', app_token: 'xapp-token', channel_name: 'my-channel',
+          reacjis: { ack: 'eyes', complete: null },
+        },
+      };
+      expect(() => validateConfig(config)).not.toThrow();
+    });
+
+    it('passes when reacjis.complete is omitted', () => {
+      const config: WorkflowConfig = {
+        slack: {
+          bot_token: 'xoxb-token', app_token: 'xapp-token', channel_name: 'my-channel',
+          reacjis: { ack: 'eyes' },
+        },
+      };
+      expect(() => validateConfig(config)).not.toThrow();
+    });
+
+    it('throws when reacjis.complete is a non-null non-string', () => {
+      const config = {
+        slack: {
+          bot_token: 'xoxb-token', app_token: 'xapp-token', channel_name: 'my-channel',
+          reacjis: { ack: 'eyes', complete: 42 },
+        },
+      } as unknown as WorkflowConfig;
+      expect(() => validateConfig(config)).toThrow('slack.reacjis.complete');
+    });
+  });
+
   it('passes for valid config with explicit values', () => {
     expect(() => validateConfig({
       polling: { interval_ms: 5000 },

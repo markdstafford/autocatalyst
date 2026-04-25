@@ -17,6 +17,7 @@ type SlackAdapterConfig =
 interface SlackAdapterOptions {
   registry?: ThreadRegistry;
   logDestination?: pino.DestinationStream;
+  ackEmoji?: string;
 }
 
 export class SlackAdapter implements HumanInterfaceAdapter {
@@ -24,6 +25,7 @@ export class SlackAdapter implements HumanInterfaceAdapter {
   private readonly config: SlackAdapterConfig;
   private readonly registry: ThreadRegistry;
   private readonly logger: pino.Logger;
+  private readonly ackEmoji: string;
 
   private botUserId: string | undefined;
   private _resolvedChannelId: string | undefined;
@@ -40,6 +42,7 @@ export class SlackAdapter implements HumanInterfaceAdapter {
     this.config = config;
     this.registry = options?.registry ?? new ThreadRegistry();
     this.logger = createLogger('slack-adapter', { destination: options?.logDestination });
+    this.ackEmoji = options?.ackEmoji ?? 'eyes';
   }
 
   /**
@@ -228,9 +231,9 @@ export class SlackAdapter implements HumanInterfaceAdapter {
           channel_id: channelId,
         };
 
-        // Post acknowledgement and register thread before emitting
+        // Apply ack reaction and register thread before emitting
         this.registry.register(msg.ts, request.id);
-        await this.postMessage(channelId, msg.ts, "Got it — I'll work on a spec and post it here.");
+        await this.reactToMessage(channelId, msg.ts, this.ackEmoji);
         this.emit({ type: 'new_request', payload: request });
 
       } else if (result.intent === 'thread_message') {
@@ -243,7 +246,7 @@ export class SlackAdapter implements HumanInterfaceAdapter {
           channel_id: channelId,
         };
 
-        await this.postMessage(channelId, msg.thread_ts!, "Thanks — I'll incorporate that feedback.");
+        await this.reactToMessage(channelId, msg.ts, this.ackEmoji);
         this.emit({ type: 'thread_message', payload: message });
       }
     });
@@ -353,17 +356,17 @@ export class SlackAdapter implements HumanInterfaceAdapter {
     }
   }
 
-  private async postMessage(channel: string, thread_ts: string, text: string): Promise<void> {
+  async reactToMessage(channel: string, ts: string, emoji: string): Promise<void> {
     try {
-      await this.app.client.chat.postMessage({ channel, thread_ts, text });
+      await this.app.client.reactions.add({ channel, timestamp: ts, name: emoji });
       this.logger.info(
-        { event: 'slack.post.sent', channel_id: channel, thread_ts, intent: 'ack' },
-        'Acknowledgement posted',
+        { event: 'slack.reaction.sent', channel_id: channel, ts, emoji },
+        'Reaction posted',
       );
     } catch (err) {
       this.logger.error(
         { event: 'slack.error', error: String(err) },
-        'Failed to post message',
+        'Failed to post reaction',
       );
     }
   }

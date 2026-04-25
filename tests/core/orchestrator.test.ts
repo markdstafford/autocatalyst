@@ -101,6 +101,7 @@ function makeMockAdapter() {
         }
       }
     },
+    reactToMessage: vi.fn().mockResolvedValue(undefined),
     _emit: (event: unknown) => {
       eventQueue.push(event);
       if (waiter) { waiter(); waiter = null; }
@@ -682,7 +683,7 @@ describe('Orchestrator — feedback with feedbackSource', () => {
 
     const runs = (orch as unknown as { runs: Map<string, Run> }).runs;
     expect(runs.get('request-001')?.stage).toBe('reviewing_spec');
-    expect(callOrder).toEqual(['fetch', 'getPageMarkdown', 'revise', 'update', 'reply', 'reply', 'postMessage']);
+    expect(callOrder).toEqual(['postMessage', 'fetch', 'getPageMarkdown', 'revise', 'update', 'reply', 'reply', 'postMessage']);
     expect(sp.getPageMarkdown).toHaveBeenCalledWith('CANVAS001');
     expect(fs.fetch).toHaveBeenCalledWith('CANVAS001');
     expect(sg.revise).toHaveBeenCalledWith(
@@ -5540,5 +5541,186 @@ describe('OrchestratorImpl — multi-repo dispatch', () => {
       '~/.autocatalyst/workspaces',
     );
     await orch.stop();
+  });
+});
+
+describe('Orchestrator — intent-specific acknowledgements', () => {
+  function makeOrch(intent: string) {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage,
+      channelRepoMap: makeChannelRepoMap(),
+      intentClassifier: makeIntentClassifier(intent),
+    }, { logDestination: nullDest });
+    return { adapter, orch, postMessage };
+  }
+
+  it("test 7: idea intent — posts 'Writing a spec — will post it here when I'm done.'", async () => {
+    const { adapter, orch, postMessage } = makeOrch('idea');
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(postMessage).toHaveBeenCalledWith(
+      'C123', '100.0', "Writing a spec — will post it here when I'm done.",
+    );
+  });
+
+  it("test 8: bug intent — posts 'Working on a plan — will post it here when I'm done.'", async () => {
+    const { adapter, orch, postMessage } = makeOrch('bug');
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(postMessage).toHaveBeenCalledWith(
+      'C123', '100.0', "Working on a plan — will post it here when I'm done.",
+    );
+  });
+
+  it("test 9: chore intent — posts 'Working on a plan — will post it here when I'm done.'", async () => {
+    const { adapter, orch, postMessage } = makeOrch('chore');
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(postMessage).toHaveBeenCalledWith(
+      'C123', '100.0', "Working on a plan — will post it here when I'm done.",
+    );
+  });
+
+  it("test 10: file_issues intent — posts 'Filing this — will confirm here when I'm done.'", async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const issueFiler = makeIssueFiler();
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage,
+      channelRepoMap: makeChannelRepoMap(),
+      intentClassifier: makeIntentClassifier('file_issues'),
+      issueFiler,
+    }, { logDestination: nullDest });
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(postMessage).toHaveBeenCalledWith(
+      'C123', '100.0', "Filing this — will confirm here when I'm done.",
+    );
+  });
+
+  it("test 11: question intent — posts 'On it — looking that up now.'", async () => {
+    const { adapter, orch, postMessage } = makeOrch('question');
+    await orch.start();
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    expect(postMessage).toHaveBeenCalledWith(
+      'C123', '100.0', "On it — looking that up now.",
+    );
+  });
+
+  it('test 12: thread_message event — no intent-specific message from orchestrator', async () => {
+    const adapter = makeMockAdapter();
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    // First call: classify new_request as 'idea'; subsequent: classify thread_message as 'feedback'
+    const ic = makeIntentClassifier('idea');
+    (ic.classify as ReturnType<typeof vi.fn>).mockResolvedValueOnce('idea').mockResolvedValue('feedback');
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage,
+      channelRepoMap: makeChannelRepoMap(),
+      intentClassifier: ic,
+    }, { logDestination: nullDest });
+    await orch.start();
+
+    // Seed new_request to create a run in reviewing_spec
+    adapter._emit({ type: 'new_request', payload: makeRequest() });
+    await new Promise(r => setTimeout(r, 50));
+    postMessage.mockClear(); // clear calls from new_request processing
+
+    // Send thread_message
+    adapter._emit({ type: 'thread_message', payload: makeFeedback() });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+
+    // No intent-specific message should be posted for thread_message
+    const intentPhrases = [
+      "Writing a spec",
+      "Working on a plan",
+      "Filing this",
+      "On it — looking that up",
+      "On it — will update",
+    ];
+    for (const phrase of intentPhrases) {
+      expect(postMessage).not.toHaveBeenCalledWith(
+        expect.any(String), expect.any(String), expect.stringContaining(phrase),
+      );
+    }
+  });
+});
+
+describe('Orchestrator — completion reaction', () => {
+  async function runToCompletion(reacjiComplete: string | null | undefined) {
+    const adapter = makeMockAdapter();
+    const issueFiler = makeIssueFiler();
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: makeWorkspaceManager(),
+      specGenerator: makeSpecGenerator(),
+      specPublisher: makeSpecPublisher(),
+      postError: vi.fn().mockResolvedValue(undefined),
+      postMessage: vi.fn().mockResolvedValue(undefined),
+      channelRepoMap: makeChannelRepoMap(),
+      intentClassifier: makeIntentClassifier('file_issues'),
+      issueFiler,
+      reacjiComplete,
+    }, { logDestination: nullDest });
+    await orch.start();
+    const request = makeRequest();
+    adapter._emit({ type: 'new_request', payload: request });
+    await new Promise(r => setTimeout(r, 50));
+    await orch.stop();
+    return { adapter, request };
+  }
+
+  it('test 13: completion + complete configured — reactToMessage called with originalRequestTs and emoji', async () => {
+    const { adapter, request } = await runToCompletion('white_check_mark');
+
+    expect(adapter.reactToMessage).toHaveBeenCalledWith(
+      request.channel_id,
+      request.thread_ts,
+      'white_check_mark',
+    );
+  });
+
+  it('test 14: completion + complete is null — reactToMessage NOT called for completion', async () => {
+    const { adapter } = await runToCompletion(null);
+
+    expect(adapter.reactToMessage).not.toHaveBeenCalled();
+  });
+
+  it('test 15: completion + complete omitted — reactToMessage NOT called for completion', async () => {
+    const { adapter } = await runToCompletion(undefined);
+
+    expect(adapter.reactToMessage).not.toHaveBeenCalled();
   });
 });

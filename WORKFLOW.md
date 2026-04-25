@@ -8,6 +8,8 @@ slack:
   bot_token: ${AC_SLACK_BOT_TOKEN}
   app_token: ${AC_SLACK_APP_TOKEN}
   channel_name: ac-autocatalyst
+  reacjis:
+    ack: eyes
 notion:
   integration_token: ${AC_NOTION_INTEGRATION_TOKEN}
   specs_database_id: 09be47fc-74c3-42f0-b85a-fb5bdf7ed6c4

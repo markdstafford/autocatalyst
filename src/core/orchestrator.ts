@@ -66,6 +66,7 @@ interface OrchestratorDeps {
   postMessage: (channel_id: string, thread_ts: string, text: string) => Promise<void>;
   channelRepoMap: ChannelRepoMap;
   commandRegistry?: CommandRegistry;
+  reacjiComplete?: string | null;
 }
 
 interface OrchestratorOptions {
@@ -288,6 +289,23 @@ export class OrchestratorImpl implements Orchestrator {
           intent = 'idea';
         }
         this.logger.debug({ event: 'intent_classification.result', run_id: run.id, intent }, 'Intent classified for new request');
+      }
+
+      // Post intent-specific acknowledgement (best-effort)
+      if (intent !== 'ignore') {
+        const intentMessages: Partial<Record<string, string>> = {
+          'idea': "Writing a spec — will post it here when I'm done.",
+          'bug': "Working on a plan — will post it here when I'm done.",
+          'chore': "Working on a plan — will post it here when I'm done.",
+          'file_issues': "Filing this — will confirm here when I'm done.",
+          'question': "On it — looking that up now.",
+        };
+        const intentMessage = intentMessages[intent] ?? "On it — will update here when I'm done.";
+        try {
+          await this.deps.postMessage(request.channel_id, request.thread_ts, intentMessage);
+        } catch (err) {
+          this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post intent acknowledgement');
+        }
       }
 
       // Route by intent
@@ -797,6 +815,11 @@ export class OrchestratorImpl implements Orchestrator {
     }
 
     this.transition(run, 'done');
+    if (this.deps.reacjiComplete) {
+      this.deps.adapter.reactToMessage(run.channel_id, run.thread_ts, this.deps.reacjiComplete).catch(err => {
+        this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post completion reaction');
+      });
+    }
   }
 
   private transition(run: Run, stage: RunStage): void {
@@ -1005,14 +1028,7 @@ export class OrchestratorImpl implements Orchestrator {
       return;
     }
 
-    // Step 2: Acknowledge (best-effort)
-    try {
-      await this.deps.postMessage(request.channel_id, request.thread_ts, 'On it — investigating and filing issues...');
-    } catch (err) {
-      this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post acknowledgment');
-    }
-
-    // Step 3: File issues (enrichment + creation)
+    // Step 2: File issues (enrichment + creation)
     const onProgress = (message: string): Promise<void> =>
       this.deps.postMessage(request.channel_id, request.thread_ts, message).catch(err => {
         this.logger.warn(
@@ -1069,6 +1085,11 @@ export class OrchestratorImpl implements Orchestrator {
       'Filing pipeline complete',
     );
     this.transition(run, 'done');
+    if (this.deps.reacjiComplete) {
+      this.deps.adapter.reactToMessage(run.channel_id, run.thread_ts, this.deps.reacjiComplete).catch(err => {
+        this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post completion reaction');
+      });
+    }
   }
 
   private async _handleSpecFeedback(feedback: ThreadMessage): Promise<void> {
