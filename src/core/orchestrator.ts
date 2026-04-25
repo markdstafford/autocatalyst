@@ -290,6 +290,22 @@ export class OrchestratorImpl implements Orchestrator {
         this.logger.debug({ event: 'intent_classification.result', run_id: run.id, intent }, 'Intent classified for new request');
       }
 
+      // Post intent-specific acknowledgement (best-effort)
+      if (intent !== 'ignore') {
+        const intentMessages: Partial<Record<string, string>> = {
+          'idea': "Writing a spec — will post it here when I'm done.",
+          'bug': "Working on a plan — will post it here when I'm done.",
+          'chore': "Working on a plan — will post it here when I'm done.",
+          'file_issues': "Filing this — will confirm here when I'm done.",
+        };
+        const intentMessage = intentMessages[intent] ?? "On it — will update here when I'm done.";
+        try {
+          await this.deps.postMessage(request.channel_id, request.thread_ts, intentMessage);
+        } catch (err) {
+          this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post intent acknowledgement');
+        }
+      }
+
       // Route by intent
       if (intent === 'idea') {
         run.intent = 'idea';

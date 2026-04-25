@@ -260,15 +260,15 @@ All tests not listed above must continue to pass without modification. `tsc --no
 			- [x] No `chat.postMessage` call remains in either handler
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement `reactToMessage` on `SlackAdapter`
-	- [ ] **Task: Post intent-specific messages in ****`Orchestrator`**** after classification**
+	- [x] **Task: Post intent-specific messages in ****`Orchestrator`**** after classification**
 		- **Files**: `src/core/orchestrator.ts`
 		- **Description**: After classifying a new-thread message, post the intent-mapped text to the thread: idea → "Writing a spec — will post it here when I'm done.", bug/chore → "Working on a plan — will post it here when I'm done.", task → "Filing this — will confirm here when I'm done.", fallback → "On it — will update here when I'm done." Do not post for `thread_message` events.
 		- **Acceptance criteria**:
-			- [ ] Each of the four intents (idea, bug, chore, task) maps to the correct message string
-			- [ ] Fallback intent posts "On it — will update here when I'm done."
-			- [ ] Message is posted after classification, not before
-			- [ ] No intent-specific message posted for `thread_message` events
-			- [ ] `tsc --noEmit` passes
+			- [x] Each of the four intents (idea, bug, chore, task) maps to the correct message string
+			- [x] Fallback intent posts "On it — will update here when I'm done."
+			- [x] Message is posted after classification, not before
+			- [x] No intent-specific message posted for `thread_message` events
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Apply ack reaction in `SlackAdapter` inbound handlers; remove text acks
 	- [ ] **Task: Post completion reaction in ****`Orchestrator`**
 		- **Files**: `src/core/orchestrator.ts`
@@ -300,18 +300,18 @@ All tests not listed above must continue to pass without modification. `tsc --no
 			- [x] All previously passing tests continue to pass
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Apply ack reaction in `SlackAdapter` inbound handlers; remove text acks
-	- [ ] **Task: Test orchestrator intent-specific messages**
+	- [x] **Task: Test orchestrator intent-specific messages**
 		- **Files**: `tests/core/orchestrator.test.ts`
 		- **Description**: Add tests for all four intent-to-message mappings and the no-post-for-thread-message rule. These are tests 7–12 in the test plan.
 		- **Acceptance criteria**:
-			- [ ] Test 7: `idea` → correct message posted
-			- [ ] Test 8: `bug` → correct message posted
-			- [ ] Test 9: `chore` → correct message posted
-			- [ ] Test 10: `task` → correct message posted
-			- [ ] Test 11: fallback intent → "On it — will update here when I'm done." posted
-			- [ ] Test 12: `thread_message` → no intent-specific message from orchestrator
-			- [ ] All previously passing tests continue to pass
-			- [ ] `tsc --noEmit` passes
+			- [x] Test 7: `idea` → correct message posted
+			- [x] Test 8: `bug` → correct message posted
+			- [x] Test 9: `chore` → correct message posted
+			- [x] Test 10: `task` → correct message posted
+			- [x] Test 11: fallback intent → "On it — will update here when I'm done." posted
+			- [x] Test 12: `thread_message` → no intent-specific message from orchestrator
+			- [x] All previously passing tests continue to pass
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Post intent-specific messages in `Orchestrator` after classification
 	- [ ] **Task: Test orchestrator completion reaction**
 		- **Files**: `tests/core/orchestrator.test.ts`
