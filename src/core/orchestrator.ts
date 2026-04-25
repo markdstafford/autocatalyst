@@ -298,6 +298,7 @@ export class OrchestratorImpl implements Orchestrator {
           'bug': "Working on a plan — will post it here when I'm done.",
           'chore': "Working on a plan — will post it here when I'm done.",
           'file_issues': "Filing this — will confirm here when I'm done.",
+          'question': "On it — looking that up now.",
         };
         const intentMessage = intentMessages[intent] ?? "On it — will update here when I'm done.";
         try {
@@ -1027,14 +1028,7 @@ export class OrchestratorImpl implements Orchestrator {
       return;
     }
 
-    // Step 2: Acknowledge (best-effort)
-    try {
-      await this.deps.postMessage(request.channel_id, request.thread_ts, 'On it — investigating and filing issues...');
-    } catch (err) {
-      this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post acknowledgment');
-    }
-
-    // Step 3: File issues (enrichment + creation)
+    // Step 2: File issues (enrichment + creation)
     const onProgress = (message: string): Promise<void> =>
       this.deps.postMessage(request.channel_id, request.thread_ts, message).catch(err => {
         this.logger.warn(

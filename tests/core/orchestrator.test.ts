@@ -5622,8 +5622,7 @@ describe('Orchestrator — intent-specific acknowledgements', () => {
     );
   });
 
-  it("test 11: fallback intent — posts 'On it — will update here when I'm done.'", async () => {
-    // 'question' is not in the explicit intent map → fallback message
+  it("test 11: question intent — posts 'On it — looking that up now.'", async () => {
     const { adapter, orch, postMessage } = makeOrch('question');
     await orch.start();
     adapter._emit({ type: 'new_request', payload: makeRequest() });
@@ -5631,7 +5630,7 @@ describe('Orchestrator — intent-specific acknowledgements', () => {
     await orch.stop();
 
     expect(postMessage).toHaveBeenCalledWith(
-      'C123', '100.0', "On it — will update here when I'm done.",
+      'C123', '100.0', "On it — looking that up now.",
     );
   });
 
@@ -5668,6 +5667,7 @@ describe('Orchestrator — intent-specific acknowledgements', () => {
       "Writing a spec",
       "Working on a plan",
       "Filing this",
+      "On it — looking that up",
       "On it — will update",
     ];
     for (const phrase of intentPhrases) {
