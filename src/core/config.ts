@@ -101,32 +101,39 @@ export function validateConfig(config: WorkflowConfig): void {
     }
   }
 
-  if (config.slack !== undefined) {
-    // Re-cast to unknown sub-fields: YAML can deliver null for any optional field
-    const slack = config.slack as {
-      bot_token?: unknown;
-      app_token?: unknown;
-      channel_name?: unknown;
-    };
-
-    if (typeof slack.bot_token !== 'string' || slack.bot_token.trim() === '') {
-      throw new Error('slack.bot_token must be a non-empty string');
+  if (config.channels !== undefined) {
+    if (!Array.isArray(config.channels)) {
+      throw new Error('channels must be an array');
     }
-    if (typeof slack.app_token !== 'string' || slack.app_token.trim() === '') {
-      throw new Error('slack.app_token must be a non-empty string');
-    }
-    if (typeof slack.channel_name !== 'string' || slack.channel_name.trim() === '') {
-      throw new Error('slack.channel_name must be a non-empty string');
-    }
-
-    const reacjis = (slack as { reacjis?: unknown }).reacjis;
-    if (reacjis !== undefined) {
-      const r = reacjis as { ack?: unknown; complete?: unknown };
-      if (typeof r.ack !== 'string' || (r.ack as string).trim() === '') {
-        throw new Error('slack.reacjis.ack must be a non-empty string when reacjis is configured');
+    for (const [index, channel] of config.channels.entries()) {
+      if (typeof channel.provider !== 'string' || channel.provider.trim() === '') {
+        throw new Error(`channels[${index}].provider must be a non-empty string`);
       }
-      if (r.complete !== undefined && r.complete !== null && typeof r.complete !== 'string') {
-        throw new Error('slack.reacjis.complete must be a string or null');
+      if (typeof channel.name !== 'string' || channel.name.trim() === '') {
+        throw new Error(`channels[${index}].name must be a non-empty string`);
+      }
+      if (channel.workspace_root !== undefined && (typeof channel.workspace_root !== 'string' || channel.workspace_root.trim() === '')) {
+        throw new Error(`channels[${index}].workspace_root must be a non-empty string`);
+      }
+      if (channel.config !== undefined && (typeof channel.config !== 'object' || channel.config === null || Array.isArray(channel.config))) {
+        throw new Error(`channels[${index}].config must be an object`);
+      }
+    }
+  }
+
+  if (config.publishers !== undefined) {
+    if (!Array.isArray(config.publishers)) {
+      throw new Error('publishers must be an array');
+    }
+    for (const [index, publisher] of config.publishers.entries()) {
+      if (typeof publisher.provider !== 'string' || publisher.provider.trim() === '') {
+        throw new Error(`publishers[${index}].provider must be a non-empty string`);
+      }
+      if (publisher.artifacts !== undefined && !Array.isArray(publisher.artifacts)) {
+        throw new Error(`publishers[${index}].artifacts must be an array`);
+      }
+      if (publisher.config !== undefined && (typeof publisher.config !== 'object' || publisher.config === null || Array.isArray(publisher.config))) {
+        throw new Error(`publishers[${index}].config must be an object`);
       }
     }
   }

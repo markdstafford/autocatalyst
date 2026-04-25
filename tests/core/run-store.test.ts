@@ -32,12 +32,12 @@ function makeRun(overrides: Partial<Run> = {}): Run {
     stage: 'reviewing_spec',
     workspace_path: '/tmp/placeholder',
     branch: 'spec/test',
-    spec_path: undefined,
-    publisher_ref: undefined,
+    artifact: undefined,
     impl_feedback_ref: undefined,
     attempt: 0,
-    channel_id: 'C123',
-    thread_ts: '100.0',
+    channel: { provider: 'test', id: 'C123' },
+    conversation: { provider: 'test', channel_id: 'C123', conversation_id: '100.0' },
+    origin: { provider: 'test', channel_id: 'C123', conversation_id: '100.0', message_id: '100.0' },
     created_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
     ...overrides,
@@ -274,6 +274,189 @@ describe('FileRunStore.load — stable stages unchanged', () => {
 });
 
 // ─────────────────────────────────────────────
+// load — artifact state
+// ─────────────────────────────────────────────
+
+describe('FileRunStore.load — artifact state', () => {
+  it('loads canonical artifact state without migration', () => {
+    const workspacePath = path.join(tmpDir, 'ws-artifact');
+    fs.mkdirSync(workspacePath, { recursive: true });
+
+    const run = makeRun({
+      intent: 'bug',
+      workspace_path: workspacePath,
+      stage: 'reviewing_spec',
+      artifact: {
+        kind: 'bug_triage',
+        local_path: '/some/bug-triage.md',
+        published_ref: { provider: 'artifact_publisher', id: 'publication-id' },
+        status: 'waiting_on_feedback',
+      },
+    });
+
+    const dir = path.join(tmpDir, '.autocatalyst');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'runs.json'), JSON.stringify([run]));
+
+    const { dest } = makeLogCapture();
+    const store = new FileRunStore(tmpDir, { logDestination: dest });
+    const result = store.load();
+
+    expect(result).toHaveLength(1);
+    expect(result[0].artifact).toEqual({
+      kind: 'bug_triage',
+      local_path: '/some/bug-triage.md',
+      published_ref: { provider: 'artifact_publisher', id: 'publication-id' },
+      status: 'waiting_on_feedback',
+    });
+  });
+
+  it('migrates persisted review_artifact state into artifact', () => {
+    const workspacePath = path.join(tmpDir, 'ws-legacy-review-artifact');
+    fs.mkdirSync(workspacePath, { recursive: true });
+    const run = {
+      ...makeRun({
+        intent: 'chore',
+        workspace_path: workspacePath,
+        stage: 'reviewing_spec',
+      }),
+      artifact: undefined,
+      review_artifact: {
+        kind: 'chore_plan',
+        local_path: '/some/chore-plan.md',
+        published_ref: { provider: 'artifact_publisher', id: 'publication-id' },
+        status: 'waiting_on_feedback',
+      },
+    };
+
+    const dir = path.join(tmpDir, '.autocatalyst');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'runs.json'), JSON.stringify([run]));
+
+    const { dest } = makeLogCapture();
+    const store = new FileRunStore(tmpDir, { logDestination: dest });
+    const result = store.load();
+
+    expect(result[0].artifact).toEqual(run.review_artifact);
+    expect('review_artifact' in result[0]).toBe(false);
+  });
+
+  it('migrates older spec_path and publisher_ref fields into artifact', () => {
+    const workspacePath = path.join(tmpDir, 'ws-legacy-spec-fields');
+    fs.mkdirSync(workspacePath, { recursive: true });
+    const run = {
+      ...makeRun({
+        intent: 'bug',
+        workspace_path: workspacePath,
+        stage: 'reviewing_spec',
+      }),
+      artifact: undefined,
+      spec_path: '/some/bug-triage.md',
+      publisher_ref: 'publication-id',
+    };
+
+    const dir = path.join(tmpDir, '.autocatalyst');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'runs.json'), JSON.stringify([run]));
+
+    const { dest } = makeLogCapture();
+    const store = new FileRunStore(tmpDir, { logDestination: dest });
+    const result = store.load();
+
+    expect(result[0].artifact).toEqual({
+      kind: 'bug_triage',
+      local_path: '/some/bug-triage.md',
+      published_ref: { provider: 'artifact_publisher', id: 'publication-id' },
+      status: 'waiting_on_feedback',
+    });
+    expect('spec_path' in result[0]).toBe(false);
+    expect('publisher_ref' in result[0]).toBe(false);
+  });
+
+  it('migrates older Slack channel_id and thread_ts fields into channel-neutral refs', () => {
+    const workspacePath = path.join(tmpDir, 'ws-legacy-routing-fields');
+    fs.mkdirSync(workspacePath, { recursive: true });
+    const run = {
+      ...makeRun({
+        workspace_path: workspacePath,
+        stage: 'reviewing_spec',
+        channel: undefined,
+        conversation: undefined,
+        origin: undefined,
+      }),
+      channel_id: 'CLEGACY',
+      thread_ts: '123.456',
+    };
+
+    const dir = path.join(tmpDir, '.autocatalyst');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'runs.json'), JSON.stringify([run]));
+
+    const { dest } = makeLogCapture();
+    const store = new FileRunStore(tmpDir, {
+      logDestination: dest,
+      legacyConversationFields: {
+        provider: 'slack',
+        channelField: 'channel_id',
+        conversationField: 'thread_ts',
+      },
+    });
+    const result = store.load();
+
+    expect(result[0].channel).toEqual({ provider: 'slack', id: 'CLEGACY' });
+    expect(result[0].conversation).toEqual({ provider: 'slack', channel_id: 'CLEGACY', conversation_id: '123.456' });
+    expect(result[0].origin).toEqual({ provider: 'slack', channel_id: 'CLEGACY', conversation_id: '123.456', message_id: '123.456' });
+    expect('channel_id' in result[0]).toBe(false);
+    expect('thread_ts' in result[0]).toBe(false);
+  });
+
+  it('tries each configured legacy conversation shape when loading old runs', () => {
+    const workspacePath = path.join(tmpDir, 'ws-legacy-routing-array');
+    fs.mkdirSync(workspacePath, { recursive: true });
+    const run = {
+      ...makeRun({
+        workspace_path: workspacePath,
+        stage: 'reviewing_spec',
+        channel: undefined,
+        conversation: undefined,
+        origin: undefined,
+      }),
+      room_id: 'ROOM-1',
+      topic_id: 'TOPIC-2',
+      event_id: 'EVENT-3',
+    };
+
+    const dir = path.join(tmpDir, '.autocatalyst');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'runs.json'), JSON.stringify([run]));
+
+    const store = new FileRunStore(tmpDir, {
+      legacyConversationFields: [
+        {
+          provider: 'first-provider',
+          channelField: 'missing_channel',
+          conversationField: 'missing_conversation',
+        },
+        {
+          provider: 'second-provider',
+          channelField: 'room_id',
+          conversationField: 'topic_id',
+          messageField: 'event_id',
+        },
+      ],
+    });
+    const result = store.load();
+
+    expect(result[0].channel).toEqual({ provider: 'second-provider', id: 'ROOM-1' });
+    expect(result[0].conversation).toEqual({ provider: 'second-provider', channel_id: 'ROOM-1', conversation_id: 'TOPIC-2' });
+    expect(result[0].origin).toEqual({ provider: 'second-provider', channel_id: 'ROOM-1', conversation_id: 'TOPIC-2', message_id: 'EVENT-3' });
+    expect('room_id' in result[0]).toBe(false);
+    expect('topic_id' in result[0]).toBe(false);
+    expect('event_id' in result[0]).toBe(false);
+  });
+});
+
+// ─────────────────────────────────────────────
 // load — mixed
 // ─────────────────────────────────────────────
 
@@ -373,17 +556,22 @@ describe('FileRunStore.save — creates directory', () => {
 // ─────────────────────────────────────────────
 
 describe('FileRunStore.save — round-trip', () => {
-  it('save then load returns the same run with all fields intact including channel_id and thread_ts', () => {
+  it('save then load returns the same run with refs and artifact intact', () => {
     const { dest } = makeLogCapture();
     const store = new FileRunStore(tmpDir, { logDestination: dest });
 
     const run = makeRun({
       workspace_path: tmpDir,
       stage: 'reviewing_spec',
-      channel_id: 'C_TEST',
-      thread_ts: '123.456',
-      spec_path: '/some/spec.md',
-      publisher_ref: 'notion-page-id',
+      channel: { provider: 'test', id: 'C_TEST' },
+      conversation: { provider: 'test', channel_id: 'C_TEST', conversation_id: '123.456' },
+      origin: { provider: 'test', channel_id: 'C_TEST', conversation_id: '123.456', message_id: '123.456' },
+      artifact: {
+        kind: 'feature_spec',
+        local_path: '/some/spec.md',
+        published_ref: { provider: 'artifact_publisher', id: 'publication-id' },
+        status: 'waiting_on_feedback',
+      },
       impl_feedback_ref: 'feedback-page-id',
       attempt: 3,
     });
@@ -402,12 +590,12 @@ describe('FileRunStore.save — round-trip', () => {
     expect(loaded0.stage).toBe(run.stage);
     expect(loaded0.workspace_path).toBe(run.workspace_path);
     expect(loaded0.branch).toBe(run.branch);
-    expect(loaded0.spec_path).toBe(run.spec_path);
-    expect(loaded0.publisher_ref).toBe(run.publisher_ref);
+    expect(loaded0.artifact).toEqual(run.artifact);
     expect(loaded0.impl_feedback_ref).toBe(run.impl_feedback_ref);
     expect(loaded0.attempt).toBe(run.attempt);
-    expect(loaded0.channel_id).toBe(run.channel_id);
-    expect(loaded0.thread_ts).toBe(run.thread_ts);
+    expect(loaded0.channel).toEqual(run.channel);
+    expect(loaded0.conversation).toEqual(run.conversation);
+    expect(loaded0.origin).toEqual(run.origin);
     expect(loaded0.created_at).toBe(run.created_at);
     expect(loaded0.updated_at).toBe(run.updated_at);
   });

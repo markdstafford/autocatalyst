@@ -14,9 +14,9 @@ describe('WorkflowConfig type', () => {
   it('accepts unknown keys via index signature', () => {
     const config: WorkflowConfig = {
       polling: { interval_ms: 30000 },
-      slack: { channel: 'my-channel', bot_token: '$SLACK_BOT_TOKEN' },
+      custom_provider: { channel: 'my-channel', token: '$CUSTOM_TOKEN' },
     };
-    expect(config['slack']).toBeDefined();
+    expect(config['custom_provider']).toBeDefined();
   });
 
   it('accepts aws_profile field', () => {
@@ -33,19 +33,17 @@ describe('WorkflowConfig type', () => {
     expect(config.aws_profile).toBeUndefined();
   });
 
-  it('notion block has specs_database_id and testing_guides_database_id (no parent_page_id)', () => {
+  it('accepts provider-owned channel and publisher config blocks', () => {
     const config: WorkflowConfig = {
-      notion: {
-        integration_token: 'tok_abc',
-        specs_database_id: 'db-specs-id',
-        testing_guides_database_id: 'db-tg-id',
-      },
+      channels: [
+        { provider: 'chat', name: 'product', config: { token: '$CHAT_TOKEN' } },
+      ],
+      publishers: [
+        { provider: 'documents', artifacts: ['artifact'], config: { database_id: 'db-review' } },
+      ],
     };
-    expect(config.notion?.specs_database_id).toBe('db-specs-id');
-    expect(config.notion?.testing_guides_database_id).toBe('db-tg-id');
-    expect(config.notion?.integration_token).toBe('tok_abc');
-    // @ts-expect-error parent_page_id should not exist
-    expect(config.notion?.parent_page_id).toBeUndefined();
+    expect(config.channels?.[0]?.config?.token).toBe('$CHAT_TOKEN');
+    expect(config.publishers?.[0]?.config?.database_id).toBe('db-review');
   });
 });
 

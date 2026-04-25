@@ -1,13 +1,15 @@
+import type { ChannelRef, ConversationRef, MessageRef } from './channel.js';
+
 export interface CommandEvent {
   command: string;              // normalized command name: 'run.status', 'health', etc.
   args: string[];               // text after the emoji token, split on whitespace
-  source: 'slack';
-  channel_id: string;
-  thread_ts: string;
+  channel: ChannelRef;
+  conversation: ConversationRef;
+  origin: MessageRef;
   author: string;
-  received_at: string;          // ISO 8601
+  received_at: string;
   inferred_context?: {
-    request_id?: string;        // resolved from ThreadRegistry using thread_ts
+    request_id?: string;
   };
 }
 

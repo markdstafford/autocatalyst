@@ -1,0 +1,437 @@
+import { execSync } from 'node:child_process';
+import { homedir } from 'node:os';
+import type pino from 'pino';
+import { App } from '@slack/bolt';
+import AnthropicBedrock from '@anthropic-ai/bedrock-sdk';
+import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
+import { loadConfigFromPath, repoNameFromUrl, resolveEnvVars } from '../core/config.js';
+import { bootstrapWorkflowRuntime } from '../core/bootstrap.js';
+import { normalizeWorkflowConfig } from '../core/config-normalizer.js';
+import { configExists, runInit } from '../core/init.js';
+import { channelRegistryToRepoMap, type LoadedConfig, type PreRepoEntry, type WorkflowConfig } from '../types/config.js';
+import { SlackAdapter } from './slack/slack-adapter.js';
+import { ThreadRegistry } from './slack/thread-registry.js';
+import { WorkspaceManagerImpl } from '../core/workspace-manager.js';
+import { SlackCanvasPublisher } from './slack/canvas-publisher.js';
+import type { ArtifactCommentAnchorCodec, ArtifactContentSource, ArtifactPublisher } from '../types/publisher.js';
+import { FileRunStore } from '../core/run-store.js';
+import { NotionClientImpl } from './notion/notion-client.js';
+import { NotionPublisher } from './notion/notion-publisher.js';
+import { NotionCommentAnchorCodec } from './notion/markdown-diff.js';
+import { NotionFeedbackSource } from './notion/notion-feedback-source.js';
+import type { FeedbackSource } from '../types/feedback-source.js';
+import { GHPRManager } from './github/pr-manager.js';
+import { GHIssueManager } from './github/issue-manager.js';
+import { NotionSpecCommitter } from './notion/spec-committer.js';
+import type { SpecCommitter } from '../core/spec-committer.js';
+import { NotionImplementationFeedbackPage } from './notion/implementation-feedback-page.js';
+import type { ImplementationReviewPublisher } from '../types/impl-feedback-page.js';
+import { createBuiltInExtensionRegistry } from './built-in-extensions.js';
+import type { BuiltInExtensionKind, BuiltInExtensionRegistry } from '../core/extensions/built-ins.js';
+import { DefaultAgentRoutingPolicy } from '../core/ai/routing-policy.js';
+import { ModelIntentClassifier } from '../core/ai/model-intent-classifier.js';
+import {
+  AgentRunnerArtifactAuthoringAgent,
+  AgentRunnerImplementationAgent,
+  AgentRunnerIssueTriageAgent,
+  AgentRunnerQuestionAnsweringAgent,
+  IssueFilingService,
+} from '../core/ai/agent-services.js';
+import { AnthropicDirectModelRunner, type AnthropicCreateFn } from './anthropic/direct-model-runner.js';
+import { ClaudeAgentSdkAgentRunner } from './anthropic/claude-agent-sdk-agent-runner.js';
+import { resolveClaudeCodePlugins, type ClaudeCodePluginId } from './anthropic/claude-plugin-resolver.js';
+import type { AgentPluginConfig } from '../types/ai.js';
+
+type RuntimeLogger = Pick<pino.Logger, 'debug' | 'error' | 'info' | 'warn'>;
+
+export interface ComposeWorkflowRuntimeOptions {
+  currentConfig: LoadedConfig;
+  repoPath: string;
+  repoPaths: string[];
+  env: Record<string, string | undefined>;
+  logger: RuntimeLogger;
+}
+
+export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRuntimeOptions): Promise<ReturnType<typeof bootstrapWorkflowRuntime>> {
+  const { currentConfig, env, logger, repoPath, repoPaths } = options;
+  const isMultiRepo = repoPaths.length > 1;
+  const normalizedConfig = normalizeWorkflowConfig(currentConfig.config);
+  const builtInExtensions = createBuiltInExtensionRegistry();
+  logger.info(
+    {
+      event: 'extensions.loaded',
+      built_in_extensions: builtInExtensions.entries().map(extension => `${extension.kind}:${extension.provider}`),
+    },
+    'Built-in extensions loaded',
+  );
+
+  logger.info(
+    {
+      event: 'config.normalized',
+      channel_count: normalizedConfig.channels.length,
+      publisher_count: normalizedConfig.publishers.length,
+    },
+    'Configuration normalized',
+  );
+
+  const resolvedAwsProfile = normalizedConfig.aws_profile ?? env['AWS_PROFILE'];
+  if (resolvedAwsProfile !== undefined) {
+    logger.info({ event: 'service.config', aws_profile: resolvedAwsProfile }, 'Using AWS profile');
+  }
+
+  const repo_url = resolveRepoUrl(repoPath, logger);
+  const repo_name = repoNameFromUrl(repo_url);
+  const slackChannelConfig = findConfiguredProvider(normalizedConfig.channels, builtInExtensions, 'channel', 'slack');
+  const workspaceRoot = workspaceRootFromConfig(slackChannelConfig?.workspace_root ?? normalizedConfig.workspace_root);
+
+  const botToken = stringConfig(slackChannelConfig?.config, 'bot_token');
+  const appToken = stringConfig(slackChannelConfig?.config, 'app_token');
+  if (!botToken || !appToken) {
+    throw new Error('channels[] provider "slack" requires config.bot_token and config.app_token');
+  }
+
+  const channelName = slackChannelConfig?.name;
+  if (!channelName) {
+    throw new Error('channels[] provider "slack" requires name');
+  }
+  const slackReacjisConfig = recordConfig(slackChannelConfig?.config, 'reacjis');
+  const ackEmoji = stringConfig(slackReacjisConfig, 'ack');
+  const reacjiComplete = stringConfig(slackReacjisConfig, 'complete');
+
+  const boltApp = new App({
+    token: botToken,
+    appToken,
+    socketMode: true,
+  });
+
+  const aiRoutingPolicy = buildAgentRoutingPolicy();
+  const directModelRunner = buildDirectModelRunner(env, logger, resolvedAwsProfile);
+  const agentRunner = new ClaudeAgentSdkAgentRunner();
+  const intentClassifier = new ModelIntentClassifier(directModelRunner, { routingPolicy: aiRoutingPolicy });
+  const questionAnswerer = new AgentRunnerQuestionAnsweringAgent(agentRunner, aiRoutingPolicy, repoPath);
+  const preRepoEntries = isMultiRepo
+    ? await resolvePreRepoEntries(repoPaths, env, logger)
+    : [];
+
+  const threadRegistry = new ThreadRegistry();
+  const adapter = new SlackAdapter(
+    boltApp,
+    isMultiRepo
+      ? { repoEntries: preRepoEntries }
+      : { channelName, repo_url, workspace_root: workspaceRoot },
+    ackEmoji
+      ? { registry: threadRegistry, ackEmoji }
+      : { registry: threadRegistry },
+  );
+
+  const channelRegistry = await adapter.resolveChannels();
+  const channelRepoMap = channelRegistryToRepoMap(channelRegistry);
+
+  const workspaceManager = new WorkspaceManagerImpl();
+  const runStore = new FileRunStore(workspaceRoot, {
+    legacyConversationFields: {
+      provider: 'slack',
+      channelField: 'channel_id',
+      conversationField: 'thread_ts',
+    },
+  });
+  const implementer = new AgentRunnerImplementationAgent(agentRunner, aiRoutingPolicy);
+  const prManager = new GHPRManager();
+  const issueManager = new GHIssueManager();
+  const issueTriageAgent = new AgentRunnerIssueTriageAgent(agentRunner, aiRoutingPolicy);
+  const issueFiler = new IssueFilingService(issueManager, issueTriageAgent);
+
+  const artifactDeps = await buildArtifactDeps({
+    app: boltApp,
+    currentConfig,
+    logger,
+    normalizedConfig,
+    builtInExtensions,
+    repo_name,
+    env,
+  });
+  const artifactAuthoringAgent = new AgentRunnerArtifactAuthoringAgent(agentRunner, aiRoutingPolicy, {
+    commentAnchorCodec: artifactDeps.commentAnchorCodec,
+  });
+
+  return bootstrapWorkflowRuntime(currentConfig, {
+    adapter,
+    workspaceManager,
+    artifactAuthoringAgent,
+    artifactPublisher: artifactDeps.artifactPublisher,
+    artifactContentSource: artifactDeps.artifactContentSource,
+    artifactPolicies: normalizedConfig.artifact_policies,
+    feedbackSource: artifactDeps.feedbackSource,
+    intentClassifier,
+    questionAnswerer,
+    specCommitter: artifactDeps.specCommitter,
+    implementer,
+    implFeedbackPage: artifactDeps.implFeedbackPage,
+    prManager,
+    issueManager,
+    issueFiler,
+    runStore,
+    channelRepoMap,
+    reacjiComplete,
+    isConnected: () => adapter.isConnected(),
+  });
+}
+
+function resolveRepoUrl(repoPath: string, logger: RuntimeLogger): string {
+  try {
+    const repoUrl = execSync('git remote get-url origin', { cwd: repoPath }).toString().trim();
+    if (!repoUrl) throw new Error('git remote get-url origin returned empty string');
+    return repoUrl;
+  } catch (err) {
+    logger.error({ event: 'config.parse_error', error: String(err) }, 'Could not resolve git origin URL. Run: git remote add origin <url>');
+    throw err;
+  }
+}
+
+function workspaceRootFromConfig(rawWorkspaceRoot: string | undefined): string {
+  if (!rawWorkspaceRoot || rawWorkspaceRoot.trim() === '') {
+    throw new Error('workspace.root is required');
+  }
+  return rawWorkspaceRoot.replace(/^~/, homedir());
+}
+
+function stringConfig(config: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = config?.[key];
+  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
+}
+
+function recordConfig(config: Record<string, unknown> | undefined, key: string): Record<string, unknown> | undefined {
+  const value = config?.[key];
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  return value as Record<string, unknown>;
+}
+
+interface BuildAgentRoutingPolicyOptions {
+  resolvePlugins?: (ids: ClaudeCodePluginId[]) => AgentPluginConfig[];
+}
+
+export function buildAgentRoutingPolicy(options?: BuildAgentRoutingPolicyOptions): DefaultAgentRoutingPolicy {
+  const resolvePlugins = options?.resolvePlugins ?? resolveClaudeCodePlugins;
+
+  return new DefaultAgentRoutingPolicy({
+    defaults: {
+      direct: {
+        id: 'intent-default',
+        provider: 'anthropic',
+        model: 'claude-haiku-4-5-20251001',
+        effort: 'low',
+        load_user_settings: false,
+      },
+      agent: {
+        id: 'agent-default',
+        provider: 'claude_agent_sdk',
+        effort: 'high',
+        thinking: 'adaptive',
+        setting_sources: ['project'],
+        load_user_settings: false,
+      },
+    },
+    routes: [
+      {
+        match: { task: 'artifact.create' },
+        profile: {
+          id: 'artifact-authoring',
+          provider: 'claude_agent_sdk',
+          effort: 'high',
+          thinking: 'adaptive',
+          setting_sources: ['project'],
+          load_user_settings: false,
+          plugins: resolvePlugins(['mm']),
+        },
+      },
+      {
+        match: { task: 'question.answer' },
+        profile: {
+          id: 'repo-question',
+          provider: 'claude_agent_sdk',
+          effort: 'low',
+          thinking: 'adaptive',
+          setting_sources: [],
+          load_user_settings: false,
+        },
+      },
+      {
+        match: { task: 'implementation.run' },
+        profile: {
+          id: 'implementation',
+          provider: 'claude_agent_sdk',
+          effort: 'medium',
+          thinking: 'adaptive',
+          setting_sources: ['project'],
+          load_user_settings: false,
+          plugins: resolvePlugins(['superpowers']),
+        },
+      },
+      {
+        match: { task: 'issue.triage' },
+        profile: {
+          id: 'issue-triage',
+          provider: 'claude_agent_sdk',
+          effort: 'high',
+          thinking: 'adaptive',
+          setting_sources: ['project'],
+          load_user_settings: false,
+          plugins: resolvePlugins(['mm']),
+        },
+      },
+    ],
+  });
+}
+
+function buildDirectModelRunner(
+  env: Record<string, string | undefined>,
+  logger: RuntimeLogger,
+  awsProfile: string | undefined,
+): AnthropicDirectModelRunner {
+  const anthropicApiKey = env['AC_ANTHROPIC_API_KEY'];
+  if (anthropicApiKey) {
+    logger.info({ event: 'service.config', auth: 'anthropic-api-key' }, 'Using Anthropic API key for intent classification');
+    return new AnthropicDirectModelRunner(anthropicApiKey, { defaultModel: 'claude-haiku-4-5-20251001' });
+  }
+
+  const bedrockClient = new AnthropicBedrock({
+    providerChainResolver: () => Promise.resolve(
+      awsProfile ? fromNodeProviderChain({ profile: awsProfile }) : fromNodeProviderChain(),
+    ),
+  });
+  const bedrockCreateFn: AnthropicCreateFn = async (params) => {
+    try {
+      return await bedrockClient.messages.create({
+        ...params,
+        model: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+      }) as unknown as { content: Array<{ type: string; text?: string }> };
+    } catch (err) {
+      const msg = String(err);
+      if (msg.includes('CredentialsProviderError') || msg.includes('Could not load credentials') || msg.includes('sso')) {
+        logger.error(
+            { event: 'bedrock.credentials_expired', aws_profile: awsProfile ?? 'default' },
+            'AWS credentials expired or unavailable. Run: aws sso login --profile <profile>',
+          );
+      }
+      throw err;
+    }
+  };
+  logger.info({ event: 'service.config', auth: 'bedrock', aws_profile: awsProfile ?? 'default' }, 'Using AWS Bedrock for intent classification');
+  return new AnthropicDirectModelRunner('', { createFn: bedrockCreateFn, defaultModel: 'us.anthropic.claude-haiku-4-5-20251001-v1:0' });
+}
+
+function findConfiguredProvider<T extends { provider: string }>(
+  entries: T[],
+  builtInExtensions: BuiltInExtensionRegistry,
+  kind: BuiltInExtensionKind,
+  provider: string,
+): T | undefined {
+  if (!builtInExtensions.has(kind, provider)) {
+    throw new Error(`Built-in extension is not registered: ${kind}:${provider}`);
+  }
+  return entries.find(entry => entry.provider === provider);
+}
+
+async function resolvePreRepoEntries(
+  repoPaths: string[],
+  env: Record<string, string | undefined>,
+  logger: RuntimeLogger,
+): Promise<PreRepoEntry[]> {
+  const preRepoEntries: PreRepoEntry[] = [];
+  for (const repoPath of repoPaths) {
+    await runInit(repoPath);
+    if (!configExists(repoPath)) {
+      throw new Error(`Config is not set up for ${repoPath}. Run autocatalyst init --repo ${repoPath}`);
+    }
+    const loaded = loadConfigFromPath(repoPath, env);
+    const { resolved, missing } = resolveEnvVars(loaded.config as Record<string, unknown>, env);
+    if (missing.length > 0) {
+      logger.warn({ event: 'config.env_missing', repo_path: repoPath, missing }, `Missing env vars for ${repoPath}: ${missing.join(', ')}`);
+      throw new Error(`Missing env vars for ${repoPath}: ${missing.join(', ')}`);
+    }
+    const config = resolved as WorkflowConfig;
+    const normalizedConfig = normalizeWorkflowConfig(config);
+    const slackChannelConfig = findConfiguredProvider(
+      normalizedConfig.channels,
+      createBuiltInExtensionRegistry(),
+      'channel',
+      'slack',
+    );
+    if (!slackChannelConfig?.name) {
+      throw new Error(`channels[] provider "slack" requires name in ${repoPath}/WORKFLOW.md`);
+    }
+    preRepoEntries.push({
+      channel_name: slackChannelConfig.name,
+      repo_url: resolveRepoUrl(repoPath, logger),
+      workspace_root: slackChannelConfig.workspace_root ?? normalizedConfig.workspace_root ?? '~/.autocatalyst/workspaces',
+    });
+  }
+  return preRepoEntries;
+}
+
+async function buildArtifactDeps(options: {
+  app: App;
+  currentConfig: LoadedConfig;
+  env: Record<string, string | undefined>;
+  logger: RuntimeLogger;
+  normalizedConfig: ReturnType<typeof normalizeWorkflowConfig>;
+  builtInExtensions: BuiltInExtensionRegistry;
+  repo_name: string;
+}): Promise<{
+  artifactPublisher: ArtifactPublisher;
+  artifactContentSource?: ArtifactContentSource;
+  feedbackSource?: FeedbackSource;
+  specCommitter?: SpecCommitter;
+  implFeedbackPage?: ImplementationReviewPublisher;
+  commentAnchorCodec?: ArtifactCommentAnchorCodec;
+}> {
+  const { app, env, logger, normalizedConfig, builtInExtensions, repo_name } = options;
+  const notionPublisherConfig = findConfiguredProvider(
+    normalizedConfig.publishers,
+    builtInExtensions,
+    'publisher',
+    'notion',
+  );
+  const notionArtifactConfig = notionPublisherConfig?.artifacts.includes('artifact')
+    ? notionPublisherConfig
+    : undefined;
+
+  if (!notionArtifactConfig) {
+    if (!builtInExtensions.has('publisher', 'slack_canvas')) {
+      throw new Error('Built-in extension is not registered: publisher:slack_canvas');
+    }
+    logger.info({ event: 'service.config', publisher: 'slack-canvas' }, 'Using Slack canvas publisher');
+    return { artifactPublisher: new SlackCanvasPublisher(app) };
+  }
+
+  const notionToken = stringConfig(notionArtifactConfig.config, 'integration_token') ?? env['AC_NOTION_INTEGRATION_TOKEN'];
+  if (!notionToken) {
+    throw new Error('publishers[] provider "notion" requires config.integration_token or AC_NOTION_INTEGRATION_TOKEN');
+  }
+  const specsDatabaseId = stringConfig(notionArtifactConfig.config, 'specs_database_id');
+  const testingGuidesDatabaseId = stringConfig(notionArtifactConfig.config, 'testing_guides_database_id');
+  if (!specsDatabaseId || !testingGuidesDatabaseId) {
+    throw new Error('publishers[] provider "notion" requires config.specs_database_id and config.testing_guides_database_id');
+  }
+
+  const notionClient = new NotionClientImpl({ integration_token: notionToken });
+  let botUser: { id: string };
+  try {
+    botUser = await notionClient.users.me();
+  } catch (err) {
+    logger.error({ event: 'notion.auth_failed', error: String(err) }, 'Failed to detect Notion bot user. Check AC_NOTION_INTEGRATION_TOKEN permissions.');
+    throw err;
+  }
+
+  logger.info({ event: 'service.config', bot_user_id: botUser.id }, 'Detected Notion bot user ID');
+  const notionPublisher = new NotionPublisher(notionClient, specsDatabaseId, { repo_name });
+  logger.info({ event: 'service.config', publisher: 'notion' }, 'Using Notion publisher');
+  return {
+    artifactPublisher: notionPublisher,
+    artifactContentSource: notionPublisher,
+    feedbackSource: new NotionFeedbackSource(notionClient, { bot_user_id: botUser.id }),
+    specCommitter: new NotionSpecCommitter(notionPublisher),
+    implFeedbackPage: new NotionImplementationFeedbackPage(notionClient, testingGuidesDatabaseId),
+    commentAnchorCodec: new NotionCommentAnchorCodec(),
+  };
+}

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NotionImplementationFeedbackPage } from '../../../src/adapters/notion/implementation-feedback-page.js';
 import type { NotionClient } from '../../../src/adapters/notion/notion-client.js';
+import type { ImplementationReviewInput } from '../../../src/types/impl-feedback-page.js';
 
 const nullDest = { write: () => {} };
 
@@ -34,6 +35,17 @@ function makeNotionClient(overrides: Partial<{
       query: vi.fn().mockResolvedValue({ results: [] }),
     },
   } as unknown as NotionClient;
+}
+
+function makeReviewInput(overrides: Partial<ImplementationReviewInput> = {}): ImplementationReviewInput {
+  return {
+    artifact_ref: 'spec-page-id',
+    artifact_url: 'https://notion.so/spec',
+    title: 'Setup wizard',
+    summary: 'sum',
+    testing_instructions: 'test',
+    ...overrides,
+  };
 }
 
 // Helper: build a Notion to-do block
@@ -80,7 +92,7 @@ describe('NotionImplementationFeedbackPage — create', () => {
     const client = makeNotionClient({ pagesCreate });
     const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
 
-    await page.create('spec-page-id', 'https://notion.so/spec', 'Setup wizard', 'the summary', 'run npm test');
+    await page.create(makeReviewInput({ summary: 'the summary', testing_instructions: 'run npm test' }));
 
     const createCall = pagesCreate.mock.calls[0][0];
     expect(createCall.parent).toEqual(
@@ -94,9 +106,9 @@ describe('NotionImplementationFeedbackPage — create', () => {
     const client = makeNotionClient({ pagesCreate });
     const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
 
-    const result = await page.create('spec-page-id', 'https://notion.so/spec', 'Setup wizard', 'sum', 'test');
+    const result = await page.create(makeReviewInput());
 
-    expect(result).toBe('new-page-id');
+    expect(result).toEqual({ id: 'new-page-id', url: 'https://notion.so/newpageid' });
   });
 
   it('sets Title to "Testing guide: {spec_title}"', async () => {
@@ -104,7 +116,7 @@ describe('NotionImplementationFeedbackPage — create', () => {
     const client = makeNotionClient({ pagesCreate });
     const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
 
-    await page.create('spec-page-id', 'https://notion.so/spec', 'Setup wizard', 'sum', 'test');
+    await page.create(makeReviewInput());
 
     const createCall = pagesCreate.mock.calls[0][0];
     expect(createCall.properties['Title'].title[0].text.content).toBe('Testing guide: Setup wizard');
@@ -115,7 +127,7 @@ describe('NotionImplementationFeedbackPage — create', () => {
     const client = makeNotionClient({ pagesCreate });
     const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
 
-    await page.create('spec-page-abc', 'https://notion.so/spec', 'Setup wizard', 'sum', 'test');
+    await page.create(makeReviewInput({ artifact_ref: 'spec-page-abc' }));
 
     const createCall = pagesCreate.mock.calls[0][0];
     expect(createCall.properties['Spec'].relation).toEqual([{ id: 'spec-page-abc' }]);
@@ -126,7 +138,7 @@ describe('NotionImplementationFeedbackPage — create', () => {
     const client = makeNotionClient({ pagesCreate });
     const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
 
-    await page.create('spec-page-id', 'https://notion.so/spec', 'Setup wizard', 'sum', 'test');
+    await page.create(makeReviewInput());
 
     const createCall = pagesCreate.mock.calls[0][0];
     expect(createCall.properties['Status'].status.name).toBe('Not started');
@@ -137,7 +149,7 @@ describe('NotionImplementationFeedbackPage — create', () => {
     const client = makeNotionClient({ pagesCreate });
     const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
 
-    await page.create('spec-page-id', 'https://notion.so/spec-url', 'Setup wizard', 'sum', 'test');
+    await page.create(makeReviewInput({ artifact_url: 'https://notion.so/spec-url' }));
 
     const createCall = pagesCreate.mock.calls[0][0];
     const bookmarkBlock = createCall.children.find(
@@ -151,7 +163,7 @@ describe('NotionImplementationFeedbackPage — create', () => {
     const client = makeNotionClient({ pagesCreate });
     const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
 
-    await page.create('spec-page-id', 'https://notion.so/spec', 'API: v2/beta', 'sum', 'test');
+    await page.create(makeReviewInput({ title: 'API: v2/beta' }));
 
     const createCall = pagesCreate.mock.calls[0][0];
     expect(createCall.properties['Title'].title[0].text.content).toBe('Testing guide: API: v2/beta');
@@ -163,7 +175,7 @@ describe('NotionImplementationFeedbackPage — create', () => {
     const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
 
     await expect(
-      page.create('spec-page-id', 'https://notion.so/spec', 'Setup wizard', 'sum', 'test'),
+      page.create(makeReviewInput()),
     ).rejects.toThrow('Notion error');
   });
 
@@ -179,7 +191,7 @@ describe('NotionImplementationFeedbackPage — create', () => {
       logDestination: logDest as unknown as import('pino').DestinationStream,
     });
 
-    await page.create('spec-page-id', 'https://notion.so/spec', 'Setup wizard', 'sum', 'test');
+    await page.create(makeReviewInput());
 
     expect(records.find(r => r['event'] === 'notion_testing_guide.created')).toBeDefined();
   });
@@ -380,7 +392,7 @@ describe('NotionImplementationFeedbackPage — logging', () => {
     const client = makeNotionClient();
     const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: dest });
 
-    await page.create('spec-page-id', 'https://url', 'Test title', 'Summary', 'Test');
+    await page.create(makeReviewInput({ artifact_url: 'https://url', title: 'Test title', summary: 'Summary', testing_instructions: 'Test' }));
 
     const created = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'notion_testing_guide.created');
     expect(created).toBeDefined();
@@ -422,7 +434,7 @@ describe('NotionImplementationFeedbackPage — updateStatus', () => {
     const client = makeNotionClient({ pagesUpdateProperties });
     const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
 
-    await page.updateStatus!('page-tg-id', 'In progress');
+    await page.updateStatus!('page-tg-id', 'in_progress');
 
     expect(pagesUpdateProperties).toHaveBeenCalledWith('page-tg-id', {
       Status: { status: { name: 'In progress' } },
@@ -430,18 +442,18 @@ describe('NotionImplementationFeedbackPage — updateStatus', () => {
   });
 
   it.each([
-    ['Not started'],
-    ['In progress'],
-    ['Waiting on feedback'],
-    ['Approved'],
-  ] as const)('passes status "%s" through correctly', async (status) => {
+    ['not_started', 'Not started'],
+    ['in_progress', 'In progress'],
+    ['waiting_on_feedback', 'Waiting on feedback'],
+    ['approved', 'Approved'],
+  ] as const)('maps status "%s" to Notion label "%s"', async (status, notionLabel) => {
     const pagesUpdateProperties = vi.fn().mockResolvedValue(undefined);
     const client = makeNotionClient({ pagesUpdateProperties });
     const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
 
     await page.updateStatus!('page-id', status);
 
-    expect(pagesUpdateProperties.mock.calls[0][1]['Status'].status.name).toBe(status);
+    expect(pagesUpdateProperties.mock.calls[0][1]['Status'].status.name).toBe(notionLabel);
   });
 
   it('throws if pages.updateProperties rejects', async () => {
@@ -449,7 +461,7 @@ describe('NotionImplementationFeedbackPage — updateStatus', () => {
     const client = makeNotionClient({ pagesUpdateProperties });
     const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
 
-    await expect(page.updateStatus!('page-id', 'Approved')).rejects.toThrow('API error');
+    await expect(page.updateStatus!('page-id', 'approved')).rejects.toThrow('API error');
   });
 
   it('logs notion_testing_guide.status_updated event', async () => {
@@ -465,7 +477,7 @@ describe('NotionImplementationFeedbackPage — updateStatus', () => {
       logDestination: logDest as unknown as import('pino').DestinationStream,
     });
 
-    await page.updateStatus!('page-id', 'Approved');
+    await page.updateStatus!('page-id', 'approved');
 
     expect(records.find(r => r['event'] === 'notion_testing_guide.status_updated')).toBeDefined();
   });
@@ -477,10 +489,10 @@ describe('NotionImplementationFeedbackPage — setPRLink', () => {
     const client = makeNotionClient({ pagesUpdateProperties });
     const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
 
-    await page.setPRLink!('page-tg-id', 'https://github.com/org/repo/pull/42');
+    await page.setPRLink!('page-tg-id', 'https://example.test/org/repo/pull/42');
 
     expect(pagesUpdateProperties).toHaveBeenCalledWith('page-tg-id', {
-      'PR link': { url: 'https://github.com/org/repo/pull/42' },
+      'PR link': { url: 'https://example.test/org/repo/pull/42' },
     });
   });
 
@@ -489,7 +501,7 @@ describe('NotionImplementationFeedbackPage — setPRLink', () => {
     const client = makeNotionClient({ pagesUpdateProperties });
     const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
 
-    const url = 'https://github.com/org/repo/pull/99?special=true&x=1';
+    const url = 'https://example.test/org/repo/pull/99?special=true&x=1';
     await page.setPRLink!('page-id', url);
 
     expect(pagesUpdateProperties.mock.calls[0][1]['PR link'].url).toBe(url);
@@ -516,7 +528,7 @@ describe('NotionImplementationFeedbackPage — setPRLink', () => {
       logDestination: logDest as unknown as import('pino').DestinationStream,
     });
 
-    await page.setPRLink!('page-id', 'https://github.com/org/repo/pull/1');
+    await page.setPRLink!('page-id', 'https://example.test/org/repo/pull/1');
 
     expect(records.find(r => r['event'] === 'notion_testing_guide.pr_link_set')).toBeDefined();
   });

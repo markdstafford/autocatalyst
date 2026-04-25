@@ -1,3 +1,19 @@
+import { channelKey, type ChannelRegistry } from './channel.js';
+import type { ArtifactLifecyclePolicy, ArtifactKind } from './artifact.js';
+
+export interface WorkflowChannelConfig {
+  provider: string;
+  name: string;
+  workspace_root?: string;
+  config?: Record<string, unknown>;
+}
+
+export interface WorkflowPublisherConfig {
+  provider: string;
+  artifacts?: string[];
+  config?: Record<string, unknown>;
+}
+
 export interface WorkflowConfig {
   polling?: {
     interval_ms?: number;
@@ -5,20 +21,9 @@ export interface WorkflowConfig {
   workspace?: {
     root?: string;
   };
-  slack?: {
-    bot_token?: string;
-    app_token?: string;
-    channel_name?: string;
-    reacjis?: {
-      ack?: string;
-      complete?: string | null;
-    };
-  };
-  notion?: {
-    integration_token: string;
-    specs_database_id: string;
-    testing_guides_database_id: string;
-  };
+  channels?: WorkflowChannelConfig[];
+  publishers?: WorkflowPublisherConfig[];
+  artifact_policies?: Partial<Record<ArtifactKind, Partial<ArtifactLifecyclePolicy>>>;
   aws_profile?: string;
   [key: string]: unknown;
 }
@@ -29,17 +34,27 @@ export interface LoadedConfig {
   filePath: string;
 }
 
-/** A single repository entry resolved at startup for multi-repo routing. Internal use only. */
 export interface RepoEntry {
-  channel_id: string;      // resolved from WorkflowConfig.slack.channel_name at startup
-  repo_url: string;        // from git remote get-url origin in the repo directory
-  workspace_root: string;  // from WorkflowConfig or default (~/.autocatalyst/workspaces/)
+  channel_ref: string;
+  repo_url: string;
+  workspace_root: string;
 }
 
-/** Maps Slack channel_id → RepoEntry. Keyed by resolved channel_id. */
 export type ChannelRepoMap = Map<string, RepoEntry>;
 
-/** A pre-resolved entry used to configure multi-repo mode in SlackAdapter before channel IDs are known. */
+export function channelRegistryToRepoMap(registry: ChannelRegistry): ChannelRepoMap {
+  const repoMap: ChannelRepoMap = new Map();
+  for (const binding of registry.values()) {
+    const key = channelKey(binding.channel);
+    repoMap.set(key, {
+      channel_ref: key,
+      repo_url: binding.repo_url,
+      workspace_root: binding.workspace_root,
+    });
+  }
+  return repoMap;
+}
+
 export interface PreRepoEntry {
   channel_name: string;
   repo_url: string;

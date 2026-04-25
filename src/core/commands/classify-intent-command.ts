@@ -1,6 +1,6 @@
 import type { CommandHandler } from '../../types/commands.js';
-import type { IntentClassifier, ClassificationContext } from '../../adapters/agent/intent-classifier.js';
-import { VALID_INTENTS_BY_CONTEXT } from '../../adapters/agent/intent-classifier.js';
+import type { ClassificationContext, IntentClassifier } from '../../types/intent.js';
+import { BUILT_IN_CLASSIFICATION_CONTEXTS } from '../extensions/built-ins.js';
 
 export function makeClassifyIntentHandler(intentClassifier: IntentClassifier): CommandHandler {
   return async (event, reply) => {
@@ -14,7 +14,7 @@ export function makeClassifyIntentHandler(intentClassifier: IntentClassifier): C
     let context: ClassificationContext = 'new_thread';
     let text: string;
 
-    if (args[0] in VALID_INTENTS_BY_CONTEXT) {
+    if (BUILT_IN_CLASSIFICATION_CONTEXTS.includes(args[0] as ClassificationContext)) {
       context = args[0] as ClassificationContext;
       text = args.slice(1).join(' ');
     } else {

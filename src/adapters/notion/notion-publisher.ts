@@ -2,12 +2,18 @@
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import type { App } from '@slack/bolt';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 import type { NotionClient } from './notion-client.js';
-import { titleFromPath } from '../../types/publisher.js';
-import type { SpecPublisher, SpecEntryStatus } from '../../types/publisher.js';
+import { titleFromArtifactPath } from '../../types/publisher.js';
+import type {
+  ArtifactPublication,
+  ArtifactPublicationStatus,
+  ArtifactContentSource,
+  ArtifactPublisher,
+} from '../../types/publisher.js';
+import type { ConversationRef } from '../../types/channel.js';
+import type { Artifact } from '../../types/artifact.js';
 import { stripAllHtml } from './markdown-diff.js';
 
 interface NotionPublisherOptions {
@@ -15,29 +21,27 @@ interface NotionPublisherOptions {
   repo_name?: string;
 }
 
-export class NotionPublisher implements SpecPublisher {
+export class NotionPublisher implements ArtifactPublisher, ArtifactContentSource {
   private readonly client: NotionClient;
-  private readonly app: App;
   private readonly specs_database_id: string;
   private readonly options?: NotionPublisherOptions;
   private readonly logger: pino.Logger;
 
   constructor(
     client: NotionClient,
-    app: App,
     specs_database_id: string,
     options?: NotionPublisherOptions,
   ) {
     this.client = client;
-    this.app = app;
     this.specs_database_id = specs_database_id;
     this.options = options;
-    this.logger = createLogger('notion-publisher', { destination: options?.logDestination });
+    this.logger = createLogger('notion-publisher', { destination: this.options?.logDestination });
   }
 
-  async create(channel_id: string, thread_ts: string, spec_path: string): Promise<string> {
+  async createArtifact(_conversation: ConversationRef, artifact: Artifact): Promise<ArtifactPublication> {
+    const spec_path = artifact.local_path;
     const content = readFileSync(spec_path, 'utf-8');
-    const title = titleFromPath(spec_path);
+    const title = titleFromArtifactPath(spec_path);
     const filename = basename(spec_path);
     const frontmatter = this.parseFrontmatter(spec_path);
 
@@ -52,7 +56,7 @@ export class NotionPublisher implements SpecPublisher {
     const properties: Record<string, unknown> = {
       Title: { title: [{ type: 'text', text: { content: title } }] },
       Filename: { rich_text: [{ type: 'text', text: { content: filename } }] },
-      Status: { status: { name: 'Speccing' } },
+      Status: { status: { name: publicationStatusName('drafting') } },
       'Specced by': {
         rich_text: [{ type: 'text', text: { content: String(frontmatter['specced_by'] ?? '') } }],
       },
@@ -88,25 +92,20 @@ export class NotionPublisher implements SpecPublisher {
 
     const pageUrl = `https://notion.so/${pageId.replace(/-/g, '')}`;
 
-    await this.app.client.chat.postMessage({
-      channel: channel_id,
-      thread_ts,
-      text: `Here's the spec: <${pageUrl}|View spec in Notion>`,
-    });
-
     this.logger.info(
-      { event: 'notion_spec.properties_created', channel_id, thread_ts, page_id: pageId },
+      { event: 'notion_spec.properties_created', page_id: pageId },
       'Spec database entry created',
     );
-    return pageId;
+    return { id: pageId, url: pageUrl };
   }
 
-  async getPageMarkdown(publisher_ref: string, stripHtml = false): Promise<string> {
+  async getContent(publisher_ref: string, stripHtml = false): Promise<string> {
     const raw = await this.client.pages.getMarkdown(publisher_ref);
     return stripHtml ? stripAllHtml(raw) : raw;
   }
 
-  async update(publisher_ref: string, spec_path: string, page_content?: string): Promise<void> {
+  async updateArtifact(publisher_ref: string, artifact: Artifact, page_content?: string): Promise<void> {
+    const spec_path = artifact.local_path;
     const content = page_content ?? readFileSync(spec_path, 'utf-8');
 
     await this.client.pages.updateMarkdown(publisher_ref, {
@@ -144,9 +143,9 @@ export class NotionPublisher implements SpecPublisher {
     );
   }
 
-  async updateStatus(publisher_ref: string, status: SpecEntryStatus): Promise<void> {
+  async updateStatus(publisher_ref: string, status: ArtifactPublicationStatus): Promise<void> {
     await this.client.pages.updateProperties(publisher_ref, {
-      Status: { status: { name: status } },
+      Status: { status: { name: publicationStatusName(status) } },
     });
     this.logger.info(
       { event: 'notion_spec.status_updated', page_id: publisher_ref, status },
@@ -187,4 +186,15 @@ export class NotionPublisher implements SpecPublisher {
     }
     return result.results[0].id;
   }
+}
+
+function publicationStatusName(status: ArtifactPublicationStatus): string {
+  const labels: Record<ArtifactPublicationStatus, string> = {
+    drafting: 'Speccing',
+    waiting_on_feedback: 'Waiting on feedback',
+    approved: 'Approved',
+    complete: 'Complete',
+    superseded: 'Superseded',
+  };
+  return labels[status];
 }

@@ -1,4 +1,5 @@
 // src/adapters/notion/markdown-diff.ts
+import type { ArtifactCommentAnchor, ArtifactCommentAnchorCodec } from '../../types/publisher.js';
 
 /**
  * Strip Notion inline comment span tags, preserving the inner text.
@@ -102,4 +103,31 @@ export function prettifyMarkdown(raw: string): string {
  */
 export function stripAllHtml(raw: string): string {
   return raw.replace(/<[^>]*>/g, '');
+}
+
+export class NotionCommentAnchorCodec implements ArtifactCommentAnchorCodec {
+  extract(content: string): ArtifactCommentAnchor[] {
+    return extractCommentSpans(content).map(span => ({
+      id: span.uuid,
+      text: span.inner_text,
+    }));
+  }
+
+  promptInstructions(_anchors: ArtifactCommentAnchor[]): string[] {
+    return [
+      'CRITICAL: The artifact contains publisher inline comment anchors.',
+      'Every anchor in the input MUST appear somewhere in your output. If text is removed, add an "## Orphaned comments" section at the end.',
+    ];
+  }
+
+  preserve(revisedContent: string, anchors: ArtifactCommentAnchor[]): string {
+    return ensureSpansPreserved(
+      revisedContent,
+      anchors.map(anchor => ({ uuid: anchor.id, inner_text: anchor.text })),
+    );
+  }
+
+  strip(content: string): string {
+    return stripCommentSpans(content);
+  }
 }

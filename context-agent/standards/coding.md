@@ -13,7 +13,7 @@ src/
   core/              ← orchestrator, state, reconciliation, loop logic
   adapters/
     slack/           ← Slack human interface adapter
-    agent/           ← Agent SDK agent runtime adapter
+    anthropic/       ← Anthropic direct model and Claude Agent SDK adapters
   types/             ← shared type definitions
   config/            ← configuration loading, WORKFLOW.md parsing
   index.ts           ← CLI entry point
@@ -29,11 +29,11 @@ src/
 - Types/interfaces: `PascalCase`
 - Functions/variables: `camelCase`
 - Constants: `UPPER_SNAKE_CASE`
-- Adapter directories: lowercase, match the platform name (`slack`, `agent`)
+- Adapter directories: lowercase, match the provider or platform name (`slack`, `anthropic`, `notion`)
 
 ## Interfaces
 
-- Every adapter defines its interface in a `.ts` file at the adapter root (`src/adapters/human-interface.ts`, `src/adapters/agent-runtime.ts`)
+- Adapter interfaces that cross provider boundaries live in `src/types/` or `src/adapters/<capability>-adapter.ts`
 - Implementations import and satisfy the interface
 - The orchestrator depends only on the interface, never on a specific adapter
 

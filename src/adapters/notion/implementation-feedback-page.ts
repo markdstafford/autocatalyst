@@ -1,51 +1,26 @@
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 import type { NotionClient } from './notion-client.js';
-
-export type TestingGuideStatus =
-  | 'Not started'
-  | 'In progress'
-  | 'Waiting on feedback'
-  | 'Approved';
-
-export interface FeedbackItem {
-  id: string;
-  text: string;
-  resolved: boolean;
-  conversation: string[];
-}
-
-export interface ImplementationFeedbackPage {
-  create(
-    spec_page_id: string,
-    spec_page_url: string,
-    spec_title: string,
-    summary: string,
-    testing_instructions: string,
-  ): Promise<string>;
-
-  readFeedback(page_id: string): Promise<FeedbackItem[]>;
-
-  update(
-    page_id: string,
-    options: {
-      summary?: string;
-      resolved_items?: Array<{
-        id: string;
-        resolution_comment: string;
-      }>;
-    },
-  ): Promise<void>;
-
-  updateStatus?(page_id: string, status: TestingGuideStatus): Promise<void>;
-  setPRLink?(page_id: string, pr_url: string): Promise<void>;
-}
+import type {
+  FeedbackItem,
+  ImplementationReviewInput,
+  ImplementationReviewPublisher,
+  ImplementationReviewStatus,
+  PublishedImplementationReview,
+} from '../../types/impl-feedback-page.js';
+export type {
+  FeedbackItem,
+  ImplementationReviewInput,
+  ImplementationReviewPublisher,
+  ImplementationReviewStatus,
+  PublishedImplementationReview,
+} from '../../types/impl-feedback-page.js';
 
 interface NotionImplementationFeedbackPageOptions {
   logDestination?: pino.DestinationStream;
 }
 
-export class NotionImplementationFeedbackPage implements ImplementationFeedbackPage {
+export class NotionImplementationFeedbackPage implements ImplementationReviewPublisher {
   private readonly client: NotionClient;
   private readonly testing_guides_database_id: string;
   private readonly logger: pino.Logger;
@@ -60,32 +35,27 @@ export class NotionImplementationFeedbackPage implements ImplementationFeedbackP
     this.logger = createLogger('implementation-feedback-page', { destination: options?.logDestination });
   }
 
-  async create(
-    spec_page_id: string,
-    spec_page_url: string,
-    spec_title: string,
-    summary: string,
-    testing_instructions: string,
-  ): Promise<string> {
+  async create(input: ImplementationReviewInput): Promise<PublishedImplementationReview> {
     const response = await this.client.pages.create({
       parent: { type: 'database_id', database_id: this.testing_guides_database_id } as never,
       properties: {
         Title: {
-          title: [{ text: { content: `Testing guide: ${spec_title}` } }],
+          title: [{ text: { content: `Testing guide: ${input.title}` } }],
         },
         Spec: {
-          relation: [{ id: spec_page_id }],
+          relation: [{ id: input.artifact_ref }],
         },
         Status: {
           status: { name: 'Not started' },
         },
       } as never,
       children: [
-        // Spec link bookmark
-        {
-          type: 'bookmark',
-          bookmark: { url: spec_page_url },
-        } as never,
+        ...(input.artifact_url
+          ? [{
+              type: 'bookmark',
+              bookmark: { url: input.artifact_url },
+            } as never]
+          : []),
         // Summary section
         {
           type: 'heading_2',
@@ -93,7 +63,7 @@ export class NotionImplementationFeedbackPage implements ImplementationFeedbackP
         } as never,
         {
           type: 'paragraph',
-          paragraph: { rich_text: [{ text: { content: summary } }] },
+          paragraph: { rich_text: [{ text: { content: input.summary } }] },
         } as never,
         // Testing instructions section
         {
@@ -102,7 +72,7 @@ export class NotionImplementationFeedbackPage implements ImplementationFeedbackP
         } as never,
         {
           type: 'paragraph',
-          paragraph: { rich_text: [{ text: { content: testing_instructions } }] },
+          paragraph: { rich_text: [{ text: { content: input.testing_instructions } }] },
         } as never,
         // Feedback section
         {
@@ -114,10 +84,13 @@ export class NotionImplementationFeedbackPage implements ImplementationFeedbackP
 
     const page_id = (response as { id: string }).id;
     this.logger.info(
-      { event: 'notion_testing_guide.created', page_id, spec_page_id },
+      { event: 'notion_testing_guide.created', page_id, spec_page_id: input.artifact_ref },
       'Testing guide database entry created',
     );
-    return page_id;
+    return {
+      id: page_id,
+      url: `https://notion.so/${page_id.replace(/-/g, '')}`,
+    };
   }
 
   async readFeedback(page_id: string): Promise<FeedbackItem[]> {
@@ -229,9 +202,9 @@ export class NotionImplementationFeedbackPage implements ImplementationFeedbackP
     );
   }
 
-  async updateStatus(page_id: string, status: TestingGuideStatus): Promise<void> {
+  async updateStatus(page_id: string, status: ImplementationReviewStatus): Promise<void> {
     await this.client.pages.updateProperties(page_id, {
-      Status: { status: { name: status } },
+      Status: { status: { name: testingGuideStatusName(status) } },
     });
     this.logger.info(
       { event: 'notion_testing_guide.status_updated', page_id, status },
@@ -248,6 +221,16 @@ export class NotionImplementationFeedbackPage implements ImplementationFeedbackP
       'Testing guide PR link set',
     );
   }
+}
+
+function testingGuideStatusName(status: ImplementationReviewStatus): string {
+  const labels: Record<ImplementationReviewStatus, string> = {
+    not_started: 'Not started',
+    in_progress: 'In progress',
+    waiting_on_feedback: 'Waiting on feedback',
+    approved: 'Approved',
+  };
+  return labels[status];
 }
 
 function escapeRegex(str: string): string {

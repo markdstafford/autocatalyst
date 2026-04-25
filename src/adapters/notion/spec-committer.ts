@@ -4,28 +4,13 @@ import { writeFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
-import type { SpecPublisher } from '../../types/publisher.js';
+import type { SpecCommitter, SpecLifecycleStatus } from '../../core/spec-committer.js';
+import type { ArtifactContentSource } from '../../types/publisher.js';
 import { stripCommentSpans, prettifyMarkdown } from './markdown-diff.js';
 
 const defaultExecFile = promisify(_execFile);
 
 type ExecFn = (cmd: string, args: string[], opts?: { cwd?: string }) => Promise<{ stdout: string; stderr: string }>;
-
-export type SpecLifecycleStatus = 'implementing' | 'complete';
-
-export interface SpecCommitter {
-  commit(
-    workspace_path: string,
-    publisher_ref: string,
-    spec_path: string,
-  ): Promise<void>;
-
-  updateStatus(
-    workspace_path: string,
-    spec_path: string,
-    update: { status: SpecLifecycleStatus; last_updated: string },
-  ): Promise<void>;
-}
 
 interface NotionSpecCommitterOptions {
   execFn?: ExecFn;
@@ -64,23 +49,23 @@ function extractTitle(markdown: string): string {
 }
 
 export class NotionSpecCommitter implements SpecCommitter {
-  private readonly publisher: SpecPublisher;
+  private readonly contentSource: ArtifactContentSource;
   private readonly execFn: ExecFn;
   private readonly logger: pino.Logger;
 
-  constructor(publisher: SpecPublisher, execFn?: ExecFn, options?: NotionSpecCommitterOptions) {
-    this.publisher = publisher;
+  constructor(contentSource: ArtifactContentSource, execFn?: ExecFn, options?: NotionSpecCommitterOptions) {
+    this.contentSource = contentSource;
     this.execFn = execFn ?? defaultExecFile;
     this.logger = createLogger('spec-committer', { destination: options?.logDestination });
   }
 
-  async commit(workspace_path: string, publisher_ref: string, spec_path: string): Promise<void> {
+  async commit(workspace_path: string, publication_ref: string, artifact_path: string): Promise<void> {
     let raw: string;
     try {
-      raw = await this.publisher.getPageMarkdown(publisher_ref, true);
+      raw = await this.contentSource.getContent(publication_ref, true);
     } catch (err) {
       this.logger.error(
-        { event: 'spec.commit_failed', error: String(err), publisher_ref, step: 'fetch' },
+        { event: 'spec.commit_failed', error: String(err), publication_ref, step: 'fetch' },
         'Failed to fetch markdown from Notion',
       );
       throw err;
@@ -89,7 +74,7 @@ export class NotionSpecCommitter implements SpecCommitter {
     if (!raw || !raw.trim()) {
       const error = 'Notion page has no content';
       this.logger.error(
-        { event: 'spec.commit_failed', error, publisher_ref, step: 'validate' },
+        { event: 'spec.commit_failed', error, publication_ref, step: 'validate' },
         error,
       );
       throw new Error(error);
@@ -99,7 +84,7 @@ export class NotionSpecCommitter implements SpecCommitter {
     if (!raw.trimStart().startsWith('---')) {
       const error = 'Spec has no YAML frontmatter (missing --- delimiters)';
       this.logger.error(
-        { event: 'spec.commit_failed', error, publisher_ref, step: 'validate' },
+        { event: 'spec.commit_failed', error, publication_ref, step: 'validate' },
         error,
       );
       throw new Error(error);
@@ -111,7 +96,7 @@ export class NotionSpecCommitter implements SpecCommitter {
       processed = prettifyMarkdown(stripCommentSpans(raw));
     } catch (err) {
       this.logger.error(
-        { event: 'spec.commit_failed', error: String(err), publisher_ref, step: 'transform' },
+        { event: 'spec.commit_failed', error: String(err), publication_ref, step: 'transform' },
         'Failed to transform spec markdown',
       );
       throw err;
@@ -124,7 +109,7 @@ export class NotionSpecCommitter implements SpecCommitter {
       implementedBy = stdout.trim() || null;
     } catch (err) {
       this.logger.warn(
-        { event: 'spec.implemented_by_fetch_failed', error: String(err), publisher_ref },
+        { event: 'spec.implemented_by_fetch_failed', error: String(err), publication_ref },
         'Failed to fetch GitHub username for implemented_by; setting to null',
       );
     }
@@ -134,23 +119,23 @@ export class NotionSpecCommitter implements SpecCommitter {
       processed = normalizeFrontmatter(processed, implementedBy);
     } catch (err) {
       this.logger.error(
-        { event: 'spec.commit_failed', error: String(err), publisher_ref, step: 'transform' },
+        { event: 'spec.commit_failed', error: String(err), publication_ref, step: 'transform' },
         'Failed to normalize spec frontmatter',
       );
       throw err;
     }
 
     // Write file — create parent dirs if needed
-    mkdirSync(dirname(spec_path), { recursive: true });
-    writeFileSync(spec_path, processed, 'utf-8');
+    mkdirSync(dirname(artifact_path), { recursive: true });
+    writeFileSync(artifact_path, processed, 'utf-8');
 
     const title = extractTitle(processed);
 
     try {
-      await this.execFn('git', ['add', spec_path], { cwd: workspace_path });
+      await this.execFn('git', ['add', artifact_path], { cwd: workspace_path });
     } catch (err) {
       this.logger.error(
-        { event: 'spec.commit_failed', error: String(err), publisher_ref, step: 'git_add' },
+        { event: 'spec.commit_failed', error: String(err), publication_ref, step: 'git_add' },
         'git add failed',
       );
       throw err;
@@ -160,7 +145,7 @@ export class NotionSpecCommitter implements SpecCommitter {
     try {
       await this.execFn('git', ['diff', '--cached', '--quiet'], { cwd: workspace_path });
       this.logger.info(
-        { event: 'spec.committed', publisher_ref, spec_path, workspace_path, skipped: true },
+        { event: 'spec.committed', publication_ref, artifact_path, workspace_path, skipped: true },
         'Spec already committed — skipping git commit',
       );
       return;
@@ -172,30 +157,30 @@ export class NotionSpecCommitter implements SpecCommitter {
       await this.execFn('git', ['commit', '-m', `docs: commit approved spec — ${title}`], { cwd: workspace_path });
     } catch (err) {
       this.logger.error(
-        { event: 'spec.commit_failed', error: String(err), publisher_ref, step: 'git_commit' },
+        { event: 'spec.commit_failed', error: String(err), publication_ref, step: 'git_commit' },
         'git commit failed',
       );
       throw err;
     }
 
     this.logger.info(
-      { event: 'spec.committed', publisher_ref, spec_path, workspace_path },
+      { event: 'spec.committed', publication_ref, artifact_path, workspace_path },
       'Spec committed to workspace',
     );
   }
 
   async updateStatus(
     workspace_path: string,
-    spec_path: string,
+    artifact_path: string,
     update: { status: SpecLifecycleStatus; last_updated: string },
   ): Promise<void> {
     let content: string;
     try {
-      content = readFileSync(spec_path, 'utf-8');
+      content = readFileSync(artifact_path, 'utf-8');
     } catch (err) {
-      const msg = `Spec file not found: ${spec_path}`;
+      const msg = `Spec file not found: ${artifact_path}`;
       this.logger.error(
-        { event: 'spec.status_update_failed', error: msg, spec_path, workspace_path },
+        { event: 'spec.status_update_failed', error: msg, artifact_path, workspace_path },
         msg,
       );
       throw new Error(msg);
@@ -206,9 +191,9 @@ export class NotionSpecCommitter implements SpecCommitter {
     const start = content.indexOf(delim);
     const end = content.indexOf(delim, start + 3);
     if (start === -1 || end === -1) {
-      const msg = `Spec has no YAML frontmatter: ${spec_path}`;
+      const msg = `Spec has no YAML frontmatter: ${artifact_path}`;
       this.logger.error(
-        { event: 'spec.status_update_failed', error: msg, spec_path, workspace_path },
+        { event: 'spec.status_update_failed', error: msg, artifact_path, workspace_path },
         msg,
       );
       throw new Error(msg);
@@ -225,15 +210,15 @@ export class NotionSpecCommitter implements SpecCommitter {
     });
     const newContent = `---${patched.join('\n')}---${body}`;
 
-    writeFileSync(spec_path, newContent, 'utf-8');
+    writeFileSync(artifact_path, newContent, 'utf-8');
 
     const title = extractTitle(newContent);
 
     try {
-      await this.execFn('git', ['add', spec_path], { cwd: workspace_path });
+      await this.execFn('git', ['add', artifact_path], { cwd: workspace_path });
     } catch (err) {
       this.logger.error(
-        { event: 'spec.status_update_failed', error: String(err), spec_path, workspace_path, step: 'git_add' },
+        { event: 'spec.status_update_failed', error: String(err), artifact_path, workspace_path, step: 'git_add' },
         'git add failed in updateStatus',
       );
       throw err;
@@ -247,14 +232,14 @@ export class NotionSpecCommitter implements SpecCommitter {
       );
     } catch (err) {
       this.logger.error(
-        { event: 'spec.status_update_failed', error: String(err), spec_path, workspace_path, step: 'git_commit' },
+        { event: 'spec.status_update_failed', error: String(err), artifact_path, workspace_path, step: 'git_commit' },
         'git commit failed in updateStatus',
       );
       throw err;
     }
 
     this.logger.info(
-      { event: 'spec.status_updated', spec_path, workspace_path, status: update.status, last_updated: update.last_updated },
+      { event: 'spec.status_updated', artifact_path, workspace_path, status: update.status, last_updated: update.last_updated },
       'Spec status updated',
     );
   }

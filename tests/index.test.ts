@@ -82,6 +82,17 @@ describe('src/index.ts — startup modes', () => {
         repoNameFromUrl: vi.fn().mockReturnValue('org/repo'),
       }));
 
+      vi.doMock('../src/core/runtime-composition.js', () => ({
+        composeWorkflowRuntime: vi.fn().mockResolvedValue({
+          service: {
+            start: vi.fn(),
+            stop: vi.fn().mockResolvedValue(undefined),
+            stopped: new Promise(() => {}),
+            updateConfig: vi.fn(),
+          },
+        }),
+      }));
+
       const fakeAdapter = {
         resolveChannels: vi.fn().mockResolvedValue(undefined),
         getChannelId: vi.fn().mockReturnValue('C123'),
@@ -145,10 +156,6 @@ describe('src/index.ts — startup modes', () => {
         makeClassifyIntentHandler: vi.fn().mockReturnValue(vi.fn()),
       }));
 
-      vi.doMock('../src/adapters/agent/spec-generator.js', () => ({
-        AgentSDKSpecGenerator: vi.fn().mockImplementation(() => ({})),
-      }));
-
       vi.doMock('../src/adapters/slack/canvas-publisher.js', () => ({
         SlackCanvasPublisher: vi.fn().mockImplementation(() => ({})),
       }));
@@ -178,28 +185,12 @@ describe('src/index.ts — startup modes', () => {
         fromNodeProviderChain: vi.fn().mockReturnValue(vi.fn()),
       }));
 
-      vi.doMock('../src/adapters/agent/intent-classifier.js', () => ({
-        AnthropicIntentClassifier: vi.fn().mockImplementation(() => ({})),
-      }));
-
-      vi.doMock('../src/adapters/agent/question-answerer.js', () => ({
-        AgentSDKQuestionAnswerer: vi.fn().mockImplementation(() => ({})),
-      }));
-
-      vi.doMock('../src/adapters/agent/implementer.js', () => ({
-        AgentSDKImplementer: vi.fn().mockImplementation(() => ({})),
-      }));
-
-      vi.doMock('../src/adapters/agent/pr-manager.js', () => ({
+      vi.doMock('../src/adapters/github/pr-manager.js', () => ({
         GHPRManager: vi.fn().mockImplementation(() => ({})),
       }));
 
-      vi.doMock('../src/adapters/agent/issue-manager.js', () => ({
+      vi.doMock('../src/adapters/github/issue-manager.js', () => ({
         GHIssueManager: vi.fn().mockImplementation(() => ({})),
-      }));
-
-      vi.doMock('../src/adapters/agent/issue-filer.js', () => ({
-        AgentSDKIssueFiler: vi.fn().mockImplementation(() => ({})),
       }));
 
       vi.doMock('../src/adapters/notion/notion-client.js', () => ({
@@ -234,7 +225,7 @@ describe('src/index.ts — startup modes', () => {
     }
   });
 
-  it('multi --repo: loadConfigFromPath called once per repo path', async () => {
+  it('multi --repo: composition receives all repo paths', async () => {
     const dir1 = makeTempRepo('ch-a');
     const dir2 = makeTempRepo('ch-b');
 
@@ -273,6 +264,18 @@ describe('src/index.ts — startup modes', () => {
         redactConfig: vi.fn().mockReturnValue({}),
         resolveAwsProfile: vi.fn().mockReturnValue(undefined),
         repoNameFromUrl: vi.fn().mockReturnValue('org/repo'),
+      }));
+
+      const composeWorkflowRuntimeSpy = vi.fn().mockResolvedValue({
+        service: {
+          start: vi.fn(),
+          stop: vi.fn().mockResolvedValue(undefined),
+          stopped: new Promise(() => {}),
+          updateConfig: vi.fn(),
+        },
+      });
+      vi.doMock('../src/core/runtime-composition.js', () => ({
+        composeWorkflowRuntime: composeWorkflowRuntimeSpy,
       }));
 
       const fakeAdapter = {
@@ -339,10 +342,6 @@ describe('src/index.ts — startup modes', () => {
         makeClassifyIntentHandler: vi.fn().mockReturnValue(vi.fn()),
       }));
 
-      vi.doMock('../src/adapters/agent/spec-generator.js', () => ({
-        AgentSDKSpecGenerator: vi.fn().mockImplementation(() => ({})),
-      }));
-
       vi.doMock('../src/adapters/slack/canvas-publisher.js', () => ({
         SlackCanvasPublisher: vi.fn().mockImplementation(() => ({})),
       }));
@@ -372,28 +371,12 @@ describe('src/index.ts — startup modes', () => {
         fromNodeProviderChain: vi.fn().mockReturnValue(vi.fn()),
       }));
 
-      vi.doMock('../src/adapters/agent/intent-classifier.js', () => ({
-        AnthropicIntentClassifier: vi.fn().mockImplementation(() => ({})),
-      }));
-
-      vi.doMock('../src/adapters/agent/question-answerer.js', () => ({
-        AgentSDKQuestionAnswerer: vi.fn().mockImplementation(() => ({})),
-      }));
-
-      vi.doMock('../src/adapters/agent/implementer.js', () => ({
-        AgentSDKImplementer: vi.fn().mockImplementation(() => ({})),
-      }));
-
-      vi.doMock('../src/adapters/agent/pr-manager.js', () => ({
+      vi.doMock('../src/adapters/github/pr-manager.js', () => ({
         GHPRManager: vi.fn().mockImplementation(() => ({})),
       }));
 
-      vi.doMock('../src/adapters/agent/issue-manager.js', () => ({
+      vi.doMock('../src/adapters/github/issue-manager.js', () => ({
         GHIssueManager: vi.fn().mockImplementation(() => ({})),
-      }));
-
-      vi.doMock('../src/adapters/agent/issue-filer.js', () => ({
-        AgentSDKIssueFiler: vi.fn().mockImplementation(() => ({})),
       }));
 
       vi.doMock('../src/adapters/notion/notion-client.js', () => ({
@@ -420,9 +403,13 @@ describe('src/index.ts — startup modes', () => {
 
       await import('../src/index.js').catch(() => {});
 
-      expect(loadConfigFromPathSpy).toHaveBeenCalledTimes(2);
-      expect(loadConfigFromPathSpy).toHaveBeenCalledWith(dir1, expect.any(Object));
-      expect(loadConfigFromPathSpy).toHaveBeenCalledWith(dir2, expect.any(Object));
+      expect(composeWorkflowRuntimeSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          repoPath: dir1,
+          repoPaths: [dir1, dir2],
+        }),
+      );
+      expect(loadConfigFromPathSpy).not.toHaveBeenCalled();
     } finally {
       rmSync(dir1, { recursive: true, force: true });
       rmSync(dir2, { recursive: true, force: true });
