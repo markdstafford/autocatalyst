@@ -46,6 +46,9 @@ function makeMockApp(opts: {
       chat: {
         postMessage: vi.fn().mockResolvedValue({}),
       },
+      reactions: {
+        add: vi.fn().mockResolvedValue({}),
+      },
     },
     message: vi.fn((handler: (args: { message: unknown }) => Promise<void>) => {
       messageHandlers.push(handler);
@@ -687,5 +690,49 @@ describe('SlackAdapter — command events (reaction-based)', () => {
     await racePromise;
     await adapter.stop();
     expect(emitted).toBe(false);
+  });
+});
+
+describe('SlackAdapter — reactToMessage', () => {
+  const BOT_ID = 'UBOT001';
+  const CHANNEL_ID = 'C123';
+
+  it('test 1: success path — logs slack.reaction.sent with channel_id, ts, and emoji', async () => {
+    const { records, destination } = makeLogCapture();
+    const mock = makeMockApp({ botUserId: BOT_ID });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel' }, { logDestination: destination });
+    await adapter.start();
+
+    await adapter.reactToMessage(CHANNEL_ID, '100.0', 'eyes');
+
+    await adapter.stop();
+
+    const log = records.find(r => r['event'] === 'slack.reaction.sent');
+    expect(log).toBeDefined();
+    expect(log!['channel_id']).toBe(CHANNEL_ID);
+    expect(log!['ts']).toBe('100.0');
+    expect(log!['emoji']).toBe('eyes');
+    expect(mock.client.reactions.add).toHaveBeenCalledWith({
+      channel: CHANNEL_ID,
+      timestamp: '100.0',
+      name: 'eyes',
+    });
+  });
+
+  it('test 2: API error — logs slack.error with error field; method resolves without throwing', async () => {
+    const { records, destination } = makeLogCapture();
+    const mock = makeMockApp({ botUserId: BOT_ID });
+    mock.client.reactions.add.mockRejectedValueOnce(new Error('already_reacted'));
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: 'my-channel' }, { logDestination: destination });
+    await adapter.start();
+
+    await expect(adapter.reactToMessage(CHANNEL_ID, '100.0', 'eyes')).resolves.toBeUndefined();
+
+    await adapter.stop();
+
+    const errorLog = records.find(r => r['event'] === 'slack.error');
+    expect(errorLog).toBeDefined();
+    expect(typeof errorLog!['error']).toBe('string');
+    expect((errorLog!['error'] as string)).toContain('already_reacted');
   });
 });

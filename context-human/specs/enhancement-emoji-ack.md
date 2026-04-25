@@ -242,15 +242,15 @@ All tests not listed above must continue to pass without modification. `tsc --no
 			- [x] Default config sets `ack: 'eyes'` and `complete: 'white_check_mark'`
 			- [x] `tsc --noEmit` passes
 		- **Dependencies**: None
-	- [ ] **Task: Implement ****`reactToMessage`**** on ****`SlackAdapter`**
+	- [x] **Task: Implement ****`reactToMessage`**** on ****`SlackAdapter`**
 		- **Files**: `src/adapters/slack/slack-adapter.ts`
 		- **Description**: Add `public async reactToMessage(channel: string, ts: string, emoji: string): Promise`. Calls `app.client.reactions.add({ channel, timestamp: ts, name: emoji })`. Logs `{ event: 'slack.reaction.sent', channel_id: channel, ts, emoji }` at info on success. Logs `{ event: 'slack.error', error: String(err) }` at error on failure and does not rethrow.
 		- **Acceptance criteria**:
-			- [ ] Method is public (accessible to orchestrator)
-			- [ ] Calls `reactions.add` with `channel`, `timestamp: ts`, and `name: emoji`
-			- [ ] Logs `slack.reaction.sent` (info) with `channel_id`, `ts`, `emoji` on success
-			- [ ] Logs `slack.error` (error) on failure; method resolves without throwing
-			- [ ] `tsc --noEmit` passes
+			- [x] Method is public (accessible to orchestrator)
+			- [x] Calls `reactions.add` with `channel`, `timestamp: ts`, and `name: emoji`
+			- [x] Logs `slack.reaction.sent` (info) with `channel_id`, `ts`, `emoji` on success
+			- [x] Logs `slack.error` (error) on failure; method resolves without throwing
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Add `slack.reacjis` to config schema and defaults
 	- [ ] **Task: Apply ack reaction in ****`SlackAdapter`**** inbound handlers; remove text acks**
 		- **Files**: `src/adapters/slack/slack-adapter.ts`
@@ -280,14 +280,14 @@ All tests not listed above must continue to pass without modification. `tsc --no
 			- [ ] Reaction targets `originalRequestTs`, not a reply `ts`
 			- [ ] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement `reactToMessage` on `SlackAdapter`; Task: Add `slack.reacjis` to config schema and defaults
-	- [ ] **Task: Unit-test ****`reactToMessage`**
+	- [x] **Task: Unit-test ****`reactToMessage`**
 		- **Files**: `tests/adapters/slack/slack-adapter.test.ts`
 		- **Description**: Add unit tests for the `reactToMessage` method covering the success path (logs `slack.reaction.sent`) and failure path (`reactions.add` throws → logs `slack.error`, method resolves). These are tests 1–2 in the test plan.
 		- **Acceptance criteria**:
-			- [ ] Test 1: success → `slack.reaction.sent` logged with `channel_id`, `ts`, `emoji`
-			- [ ] Test 2: `reactions.add` throws → `slack.error` logged; method resolves without throwing
-			- [ ] All previously passing tests continue to pass
-			- [ ] `tsc --noEmit` passes
+			- [x] Test 1: success → `slack.reaction.sent` logged with `channel_id`, `ts`, `emoji`
+			- [x] Test 2: `reactions.add` throws → `slack.error` logged; method resolves without throwing
+			- [x] All previously passing tests continue to pass
+			- [x] `tsc --noEmit` passes
 		- **Dependencies**: Task: Implement `reactToMessage` on `SlackAdapter`
 	- [ ] **Task: Test ****`SlackAdapter`**** inbound-handler ack behavior**
 		- **Files**: `tests/adapters/slack/slack-adapter.test.ts`

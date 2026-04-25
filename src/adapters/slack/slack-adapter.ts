@@ -17,6 +17,7 @@ type SlackAdapterConfig =
 interface SlackAdapterOptions {
   registry?: ThreadRegistry;
   logDestination?: pino.DestinationStream;
+  ackEmoji?: string;
 }
 
 export class SlackAdapter implements HumanInterfaceAdapter {
@@ -24,6 +25,7 @@ export class SlackAdapter implements HumanInterfaceAdapter {
   private readonly config: SlackAdapterConfig;
   private readonly registry: ThreadRegistry;
   private readonly logger: pino.Logger;
+  private readonly ackEmoji: string;
 
   private botUserId: string | undefined;
   private _resolvedChannelId: string | undefined;
@@ -40,6 +42,7 @@ export class SlackAdapter implements HumanInterfaceAdapter {
     this.config = config;
     this.registry = options?.registry ?? new ThreadRegistry();
     this.logger = createLogger('slack-adapter', { destination: options?.logDestination });
+    this.ackEmoji = options?.ackEmoji ?? 'eyes';
   }
 
   /**
@@ -364,6 +367,21 @@ export class SlackAdapter implements HumanInterfaceAdapter {
       this.logger.error(
         { event: 'slack.error', error: String(err) },
         'Failed to post message',
+      );
+    }
+  }
+
+  async reactToMessage(channel: string, ts: string, emoji: string): Promise<void> {
+    try {
+      await this.app.client.reactions.add({ channel, timestamp: ts, name: emoji });
+      this.logger.info(
+        { event: 'slack.reaction.sent', channel_id: channel, ts, emoji },
+        'Reaction posted',
+      );
+    } catch (err) {
+      this.logger.error(
+        { event: 'slack.error', error: String(err) },
+        'Failed to post reaction',
       );
     }
   }
