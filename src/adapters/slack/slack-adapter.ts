@@ -356,21 +356,6 @@ export class SlackAdapter implements HumanInterfaceAdapter {
     }
   }
 
-  private async postMessage(channel: string, thread_ts: string, text: string): Promise<void> {
-    try {
-      await this.app.client.chat.postMessage({ channel, thread_ts, text });
-      this.logger.info(
-        { event: 'slack.post.sent', channel_id: channel, thread_ts, intent: 'ack' },
-        'Acknowledgement posted',
-      );
-    } catch (err) {
-      this.logger.error(
-        { event: 'slack.error', error: String(err) },
-        'Failed to post message',
-      );
-    }
-  }
-
   async reactToMessage(channel: string, ts: string, emoji: string): Promise<void> {
     try {
       await this.app.client.reactions.add({ channel, timestamp: ts, name: emoji });
