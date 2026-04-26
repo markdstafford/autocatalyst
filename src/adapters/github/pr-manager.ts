@@ -77,12 +77,15 @@ export class GHPRManager implements PRManager {
     options?: PRManagerOptions,
   ): Promise<string> {
     const specContent = readFileSync(spec_path, 'utf-8');
-    const specTitle = extractSpecTitle(specContent);
-    const prTitle = derivePrTitle(options?.run_intent, specTitle);
+    const rawTitle = options?.title ?? extractSpecTitle(specContent);
+    const prTitle = derivePrTitle(options?.run_intent, rawTitle);
 
+    const issueFromOptions = options?.issue_number ?? null;
     const issueRaw = extractFrontmatterField(specContent, 'issue');
-    const issueNumber = issueRaw !== null ? parseInt(issueRaw, 10) : null;
-    const issueForBody = issueNumber !== null && !isNaN(issueNumber) ? issueNumber : null;
+    const issueFromFrontmatter = issueRaw !== null ? parseInt(issueRaw, 10) : null;
+    const issueForBody = issueFromOptions !== null
+      ? issueFromOptions
+      : (issueFromFrontmatter !== null && !isNaN(issueFromFrontmatter) ? issueFromFrontmatter : null);
 
     const prBody = buildPrBody(spec_path, issueForBody, options);
 
@@ -115,7 +118,7 @@ export class GHPRManager implements PRManager {
     }
 
     this.logger.info(
-      { event: 'pr.created', pr_url: prUrl, branch, spec_title: specTitle },
+      { event: 'pr.created', pr_url: prUrl, branch, spec_title: rawTitle },
       'PR created',
     );
     return prUrl;
