@@ -771,8 +771,11 @@ function buildImplementationPrompt(artifact_path: string, result_file_path: stri
 
   lines.push('/superpowers:subagent-driven-development');
   lines.push('');
-  lines.push('Step 3 - Commit all remaining changes');
-  lines.push('Run `git status` and commit anything uncommitted before proceeding.');
+  lines.push('Step 3 - Commit all remaining source changes');
+  lines.push('Run `git status`. Stage and commit only source files that belong in the repository.');
+  lines.push('Never use `git add --force` or `git add -f`.');
+  lines.push('Never stage files under `.autocatalyst/` — that directory is gitignored and contains');
+  lines.push('internal pipeline state, not repository artifacts.');
   lines.push('');
   lines.push(`Step 4 - Write the result to: ${result_file_path}`);
   lines.push('Create the directory if it does not exist. The JSON must have this structure:');
