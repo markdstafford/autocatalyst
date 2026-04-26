@@ -1,3 +1,4 @@
+import { rm } from 'node:fs/promises';
 import type pino from 'pino';
 import type { IssueFiler } from '../types/issue-filing.js';
 import type { IssueManager, PRManager } from '../types/issue-tracker.js';
@@ -139,6 +140,7 @@ async function approveArtifact(
     failRun: deps.failRun,
     persist: deps.persist,
     logger: deps.logger,
+    deleteFile: (path) => rm(path, { force: true }),
   });
   return handler.handle(run, feedback);
 }
