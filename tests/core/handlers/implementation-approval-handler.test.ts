@@ -132,6 +132,7 @@ describe('ImplementationApprovalHandler', () => {
       {
         impl_result: { summary: 'Implemented it.', testing_instructions: 'npm test' },
         run_intent: 'idea',
+        title: 'Implemented it.',
       },
     );
     expect(run.artifact?.status).toBe('complete');
@@ -205,5 +206,47 @@ describe('ImplementationApprovalHandler', () => {
       expect.objectContaining({ event: 'run.status_update_failed', run_id: 'run-001' }),
       'Failed to update impl feedback page on implementation approval',
     );
+  });
+
+  it('passes run.issue as issue_number to createPR when run.issue is set', async () => {
+    const { handler, deps } = makeHandler();
+    const run = makeRun({ intent: 'bug', issue: 54 });
+
+    await handler.handle(run, makeFeedback());
+
+    expect(deps.prManager.createPR).toHaveBeenCalledWith(
+      '/ws/request-001',
+      'spec/request-001',
+      expect.any(String),
+      expect.objectContaining({ issue_number: 54 }),
+    );
+  });
+
+  it('passes impl_result.summary as title to createPR', async () => {
+    const { handler, deps } = makeHandler();
+    const run = makeRun({
+      intent: 'bug',
+      issue: 54,
+      last_impl_result: { summary: 'Fixed the widget crash.', testing_instructions: 'npm test' },
+    });
+
+    await handler.handle(run, makeFeedback());
+
+    expect(deps.prManager.createPR).toHaveBeenCalledWith(
+      '/ws/request-001',
+      'spec/request-001',
+      expect.any(String),
+      expect.objectContaining({ title: 'Fixed the widget crash.' }),
+    );
+  });
+
+  it('does not pass issue_number to createPR when run.issue is undefined', async () => {
+    const { handler, deps } = makeHandler();
+    const run = makeRun({ intent: 'idea', issue: undefined });
+
+    await handler.handle(run, makeFeedback());
+
+    const callArg = (deps.prManager.createPR as ReturnType<typeof vi.fn>).mock.calls[0][3] as Record<string, unknown>;
+    expect(callArg['issue_number']).toBeUndefined();
   });
 });

@@ -60,6 +60,8 @@ export class ImplementationApprovalHandler {
     const prOptions: PRManagerOptions = {
       impl_result: run.last_impl_result,
       run_intent: run.intent,
+      ...(run.issue !== undefined ? { issue_number: run.issue } : {}),
+      ...(run.last_impl_result?.summary ? { title: run.last_impl_result.summary } : {}),
     };
     let prUrl: string;
     try {
