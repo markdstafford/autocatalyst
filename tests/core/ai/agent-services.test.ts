@@ -195,6 +195,31 @@ describe('AgentRunner-backed core AI services', () => {
     }
   });
 
+  test('implementation prompt forbids force-adding and staging .autocatalyst files', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-impl-prompt-'));
+    try {
+      const calls: AgentRunRequest[] = [];
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ status: 'complete', summary: 'Done', testing_instructions: 'Run tests' }), 'utf8');
+      });
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+
+      await service.implement('/tmp/spec.md', workspace);
+
+      expect(calls[0].prompt).not.toMatch(/commit anything uncommitted/i);
+      expect(calls[0].prompt).toMatch(/never use `git add --force`|never.*git add.*--force/i);
+      expect(calls[0].prompt).toMatch(/never stage.*\.autocatalyst|do not stage.*\.autocatalyst/i);
+      expect(calls[0].prompt).toContain('.autocatalyst/');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   test('uses issue triage agent output before creating issues through IssueManager', async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'ac-issue-'));
     try {
