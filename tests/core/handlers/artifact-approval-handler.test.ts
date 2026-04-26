@@ -288,4 +288,37 @@ describe('ArtifactApprovalHandler', () => {
       expect.any(String),
     );
   });
+
+  it('deletes the triage artifact from disk after syncing it to an issue', async () => {
+    const deleteFile = vi.fn().mockResolvedValue(undefined);
+    const { handler, deps } = makeHandler({
+      artifactContentSource: {
+        getContent: vi.fn().mockResolvedValue('---\nstatus: triaged\n---\n# Bug: login broken\n\nDetails here.'),
+      },
+      deleteFile,
+    } as Partial<ConstructorParameters<typeof ArtifactApprovalHandler>[0]>);
+    const run = makeRun({
+      intent: 'bug',
+      artifact: {
+        kind: 'bug_triage',
+        local_path: '/ws/request-001/.autocatalyst/triage/triage-bug-login.md',
+        published_ref: { provider: 'artifact_publisher', id: 'CANVAS001' },
+        status: 'waiting_on_feedback',
+      },
+    });
+
+    await handler.handle(run, makeFeedback());
+
+    expect(deleteFile).toHaveBeenCalledWith('/ws/request-001/.autocatalyst/triage/triage-bug-login.md');
+  });
+
+  it('does not delete artifacts for kinds that are committed rather than synced', async () => {
+    const deleteFile = vi.fn().mockResolvedValue(undefined);
+    const { handler } = makeHandler({ deleteFile } as Partial<ConstructorParameters<typeof ArtifactApprovalHandler>[0]>);
+    const run = makeRun(); // intent: 'idea', kind: 'feature_spec' — uses commit_on_approval
+
+    await handler.handle(run, makeFeedback());
+
+    expect(deleteFile).not.toHaveBeenCalled();
+  });
 });
