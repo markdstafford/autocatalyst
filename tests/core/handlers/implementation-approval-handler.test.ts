@@ -249,4 +249,14 @@ describe('ImplementationApprovalHandler', () => {
     const callArg = (deps.prManager.createPR as ReturnType<typeof vi.fn>).mock.calls[0][3] as Record<string, unknown>;
     expect(callArg['issue_number']).toBeUndefined();
   });
+
+  it('does not pass title to createPR when last_impl_result has no summary', async () => {
+    const { handler, deps } = makeHandler();
+    const run = makeRun({ last_impl_result: undefined });
+
+    await handler.handle(run, makeFeedback());
+
+    const callArg = (deps.prManager.createPR as ReturnType<typeof vi.fn>).mock.calls[0][3] as Record<string, unknown>;
+    expect(callArg['title']).toBeUndefined();
+  });
 });
