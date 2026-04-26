@@ -23,6 +23,7 @@ export interface ArtifactApprovalDeps {
   failRun: (run: Run, conversation: ConversationRef, error: unknown) => Promise<void>;
   persist: () => void;
   logger: Pick<pino.Logger, 'info' | 'error'>;
+  deleteFile?: (path: string) => Promise<void>;
 }
 
 export type ArtifactApprovalResult =
@@ -113,6 +114,16 @@ export class ArtifactApprovalHandler {
     } catch (err) {
       await this.deps.failRun(run, feedback.conversation, err);
       return false;
+    }
+
+    // Remove the triage file from disk now that its content lives in the issue tracker.
+    if (this.deps.deleteFile) {
+      await this.deps.deleteFile(refs.local_path).catch(err =>
+        this.deps.logger.error(
+          { event: 'triage.delete_failed', run_id: run.id, path: refs.local_path, error: String(err) },
+          'Failed to delete triage artifact from disk; continuing',
+        ),
+      );
     }
 
     this.markArtifactApproved(run, issue_number);
