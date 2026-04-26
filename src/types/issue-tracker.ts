@@ -11,6 +11,8 @@ export interface PRManagerOptions {
     testing_instructions: string;
   };
   run_intent?: RequestIntent;
+  issue_number?: number;
+  title?: string;
 }
 
 export interface PRManager {
