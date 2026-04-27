@@ -18,6 +18,13 @@ function fakeRunner(
   return { runner, requests };
 }
 
+function extractArtifactSection(prompt: string): string {
+  const marker = 'Artifact:\n<<<\n';
+  const start = prompt.indexOf(marker) + marker.length;
+  const end = prompt.indexOf('\n>>>', start);
+  return prompt.slice(start, end);
+}
+
 async function withSpec(content: string, run: (path: string) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), 'pr-title-'));
   const path = join(dir, 'spec.md');
@@ -45,5 +52,36 @@ describe('ModelPRTitleGenerator', () => {
     expect(requests[0].route).toEqual({ task: 'pr.title_generate', intent: 'bug' });
     expect(requests[0].messages[0].content).toContain('Bug: login crash');
     expect(requests[0].messages[0].content).toContain('switched to dataSources.query');
+  });
+
+  test('truncates the artifact at the first implementation-heavy heading', async () => {
+    const { runner, requests } = fakeRunner('title ok');
+    const gen = new ModelPRTitleGenerator(runner);
+    const body = [
+      '# Enhancement: @-reference files',
+      '',
+      '## What',
+      'allow @foo references',
+      '',
+      '## Design changes',
+      'INCLUDE-NOTHING-AFTER-THIS',
+    ].join('\n');
+    await withSpec(body, async (path) => {
+      await gen.generate({ intent: 'idea', spec_path: path, impl_summary: undefined });
+    });
+    const promptContent = requests[0].messages[0].content;
+    expect(promptContent).toContain('## What');
+    expect(promptContent).not.toContain('INCLUDE-NOTHING-AFTER-THIS');
+  });
+
+  test('falls back to a character cap when no implementation heading is present', async () => {
+    const { runner, requests } = fakeRunner('title ok');
+    const gen = new ModelPRTitleGenerator(runner);
+    const long = 'x'.repeat(5000);
+    await withSpec(long, async (path) => {
+      await gen.generate({ intent: 'bug', spec_path: path, impl_summary: undefined });
+    });
+    const artifactSection = extractArtifactSection(requests[0].messages[0].content);
+    expect(artifactSection.length).toBeLessThanOrEqual(3000);
   });
 });

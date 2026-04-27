@@ -36,7 +36,8 @@ export class ModelPRTitleGenerator implements PRTitleGenerator {
 
   async generate(input: PRTitleInput): Promise<string | null> {
     const content = await readFile(input.spec_path, 'utf8');
-    const prompt = buildPrompt(input.intent, content, input.impl_summary);
+    const truncated = truncateArtifact(content);
+    const prompt = buildPrompt(input.intent, truncated, input.impl_summary);
     const route = { task: 'pr.title_generate' as const, intent: input.intent };
     const response = await this.runner.run({
       route,
@@ -47,6 +48,24 @@ export class ModelPRTitleGenerator implements PRTitleGenerator {
     });
     return response.text.trim() || null;
   }
+}
+
+const IMPL_HEADINGS = [
+  '## Design changes',
+  '## Technical changes',
+  '## Task list',
+  '## Implementation',
+];
+const MAX_ARTIFACT_CHARS = 3000;
+
+function truncateArtifact(content: string): string {
+  let earliest = -1;
+  for (const heading of IMPL_HEADINGS) {
+    const idx = content.indexOf(`\n${heading}`);
+    if (idx !== -1 && (earliest === -1 || idx < earliest)) earliest = idx;
+  }
+  if (earliest !== -1) return content.slice(0, earliest).trimEnd();
+  return content.length > MAX_ARTIFACT_CHARS ? content.slice(0, MAX_ARTIFACT_CHARS) : content;
 }
 
 function buildPrompt(intent: RequestIntent, artifact: string, implSummary: string | undefined): string {
