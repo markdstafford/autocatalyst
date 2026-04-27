@@ -54,7 +54,9 @@ function defaultProfileForTask(
   task: AgentTaskKind,
   defaults: DefaultAgentRoutingPolicyOptions['defaults'],
 ): AgentProfile {
-  if (task === 'intent.classify') return defaults.direct;
+  if (task === 'intent.classify' || task === 'pr.title_generate') {
+    return defaults.direct;
+  }
   return defaults.agent;
 }
 

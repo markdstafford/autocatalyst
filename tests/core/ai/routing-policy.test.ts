@@ -67,4 +67,12 @@ describe('DefaultAgentRoutingPolicy', () => {
     expect(policy.resolve({ task: 'intent.classify' })).toMatchObject({ id: 'direct', provider: 'anthropic' });
     expect(policy.resolve({ task: 'question.answer' })).toMatchObject({ id: 'agent', provider: 'claude_agent_sdk' });
   });
+
+  test('routes pr.title_generate to the direct defaults', () => {
+    const policy = new DefaultAgentRoutingPolicy({ defaults });
+    expect(policy.resolve({ task: 'pr.title_generate' })).toMatchObject({
+      id: 'direct',
+      provider: 'anthropic',
+    });
+  });
 });
