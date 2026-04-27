@@ -1913,11 +1913,19 @@ describe('Orchestrator — _handleImplementationFeedback failure paths', () => {
 // ──────────────────────────────────────────────────────────────────────────────
 
 import type { PRManager } from '../../src/types/issue-tracker.js';
+import type { PRTitleGenerator } from '../../src/core/ai/pr-title-generator.js';
 
 function makePRManager(overrides: Partial<PRManager> = {}): PRManager {
   return {
     createPR: vi.fn().mockResolvedValue('https://github.com/org/repo/pull/42'),
     mergePR: vi.fn().mockResolvedValue(undefined),
+    ...overrides,
+  };
+}
+
+function makePRTitleGenerator(overrides: Partial<PRTitleGenerator> = {}): PRTitleGenerator {
+  return {
+    generate: vi.fn().mockResolvedValue('generated title'),
     ...overrides,
   };
 }
@@ -1940,6 +1948,7 @@ function makeApprovalOrch2(opts: {
       implementer: makeImplementationAgent(),
       implFeedbackPage: makeImplFeedbackPage(),
       prManager: opts.prManager ?? makePRManager(),
+      prTitleGenerator: makePRTitleGenerator(),
       postError: opts.postError ?? vi.fn().mockResolvedValue(undefined),
       postMessage: opts.postMessage ?? vi.fn().mockResolvedValue(undefined),
       channelRepoMap: makeChannelRepoMap(),
@@ -2179,6 +2188,7 @@ function makeApprovalOrch3(opts: {
       implementer: makeImplementationAgent(),
       implFeedbackPage: makeImplFeedbackPage(),
       prManager: opts.prManager ?? makePRManager(),
+      prTitleGenerator: makePRTitleGenerator(),
       postError: opts.postError ?? vi.fn().mockResolvedValue(undefined),
       postMessage: opts.postMessage ?? vi.fn().mockResolvedValue(undefined),
       channelRepoMap: makeChannelRepoMap(),
@@ -4386,6 +4396,7 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
         implementer: deps.impl,
         implFeedbackPage: deps.implFb,
         prManager: deps.prManager,
+        prTitleGenerator: makePRTitleGenerator(),
       } as never,
       { logDestination: nullDest },
     );
@@ -4424,6 +4435,7 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
         implementer: deps.impl,
         implFeedbackPage: deps.implFb,
         prManager: deps.prManager,
+        prTitleGenerator: makePRTitleGenerator(),
       } as never,
       { logDestination: nullDest },
     );
@@ -4505,6 +4517,7 @@ describe('Orchestrator — implementation lifecycle status updates', () => {
         implementer: deps.impl,
         implFeedbackPage: deps.implFb,
         prManager: deps.prManager,
+        prTitleGenerator: makePRTitleGenerator(),
       } as never,
       { logDestination: nullDest },
     );
