@@ -2,6 +2,7 @@ import { rm } from 'node:fs/promises';
 import type pino from 'pino';
 import type { IssueFiler } from '../types/issue-filing.js';
 import type { IssueManager, PRManager } from '../types/issue-tracker.js';
+import type { PRTitleGenerator } from './ai/pr-title-generator.js';
 import type { ArtifactAuthoringAgent, ImplementationAgent, QuestionAnsweringAgent } from '../types/ai.js';
 import type { Request, ThreadMessage } from '../types/events.js';
 import type { ConversationRef } from '../types/channel.js';
@@ -39,6 +40,7 @@ export interface DefaultHandlerRegistryDeps {
   implementer?: ImplementationAgent;
   implFeedbackPage?: ImplementationReviewPublisher;
   prManager?: PRManager;
+  prTitleGenerator?: PRTitleGenerator;
   issueManager?: IssueManager;
   issueFiler?: IssueFiler;
   channelRepoMap: ChannelRepoMap;
@@ -208,6 +210,7 @@ async function handleImplementationApproval(
     specCommitter: deps.specCommitter,
     artifactPublisher: deps.artifactPublisher,
     prManager: deps.prManager!,
+    prTitleGenerator: deps.prTitleGenerator!,
     implFeedbackPage: deps.implFeedbackPage,
     postMessage: deps.postMessage,
     transition: deps.transition,

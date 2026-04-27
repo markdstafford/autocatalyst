@@ -2103,6 +2103,7 @@ describe('Orchestrator — _handleImplementationApproval happy path', () => {
         implementer: makeImplementationAgent(),
         implFeedbackPage: makeImplFeedbackPage(),
         prManager: makePRManager(),
+        prTitleGenerator: makePRTitleGenerator(),
         postError: vi.fn().mockResolvedValue(undefined),
         postMessage: vi.fn().mockResolvedValue(undefined),
         channelRepoMap: makeChannelRepoMap(),

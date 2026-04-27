@@ -30,6 +30,7 @@ import { createBuiltInExtensionRegistry } from './built-in-extensions.js';
 import type { BuiltInExtensionKind, BuiltInExtensionRegistry } from '../core/extensions/built-ins.js';
 import { DefaultAgentRoutingPolicy } from '../core/ai/routing-policy.js';
 import { ModelIntentClassifier } from '../core/ai/model-intent-classifier.js';
+import { ModelPRTitleGenerator } from '../core/ai/pr-title-generator.js';
 import {
   AgentRunnerArtifactAuthoringAgent,
   AgentRunnerImplementationAgent,
@@ -108,6 +109,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
   const directModelRunner = buildDirectModelRunner(env, logger, resolvedAwsProfile);
   const agentRunner = new ClaudeAgentSdkAgentRunner();
   const intentClassifier = new ModelIntentClassifier(directModelRunner, { routingPolicy: aiRoutingPolicy });
+  const prTitleGenerator = new ModelPRTitleGenerator(directModelRunner, { routingPolicy: aiRoutingPolicy });
   const questionAnswerer = new AgentRunnerQuestionAnsweringAgent(agentRunner, aiRoutingPolicy, repoPath);
   const preRepoEntries = isMultiRepo
     ? await resolvePreRepoEntries(repoPaths, env, logger)
@@ -168,6 +170,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     implementer,
     implFeedbackPage: artifactDeps.implFeedbackPage,
     prManager,
+    prTitleGenerator,
     issueManager,
     issueFiler,
     runStore,

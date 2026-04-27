@@ -15,6 +15,7 @@ import type { ArtifactLifecyclePolicy, ArtifactKind } from '../types/artifact.js
 import type { SpecCommitter } from './spec-committer.js';
 import type { ImplementationReviewPublisher } from '../types/impl-feedback-page.js';
 import type { PRManager, IssueManager } from '../types/issue-tracker.js';
+import type { PRTitleGenerator } from './ai/pr-title-generator.js';
 import type { IssueFiler } from '../types/issue-filing.js';
 import { RunStore, FileRunStore } from './run-store.js';
 import type { CommandRegistry, CommandEvent } from '../types/commands.js';
@@ -59,6 +60,7 @@ export interface OrchestratorDeps {
   implementer?: ImplementationAgent;
   implFeedbackPage?: ImplementationReviewPublisher;
   prManager?: PRManager;
+  prTitleGenerator?: PRTitleGenerator;
   issueManager?: IssueManager;
   issueFiler?: IssueFiler;
   runStore?: RunStore;
@@ -389,6 +391,7 @@ export class OrchestratorImpl implements Orchestrator {
       implementer: this.deps.implementer,
       implFeedbackPage: this.deps.implFeedbackPage,
       prManager: this.deps.prManager,
+      prTitleGenerator: this.deps.prTitleGenerator,
       issueManager: this.deps.issueManager,
       issueFiler: this.deps.issueFiler,
       channelRepoMap: this.deps.channelRepoMap,
