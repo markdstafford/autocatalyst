@@ -115,4 +115,44 @@ describe('ModelPRTitleGenerator', () => {
       });
     }
   });
+
+  test('returns null when the spec file cannot be read', async () => {
+    const { runner } = fakeRunner('unused');
+    const gen = new ModelPRTitleGenerator(runner);
+    const title = await gen.generate({ intent: 'bug', spec_path: '/nonexistent/spec.md', impl_summary: undefined });
+    expect(title).toBeNull();
+  });
+
+  test('retries once on runner failure then returns null', async () => {
+    let calls = 0;
+    const runner: DirectModelRunner = {
+      async run() {
+        calls += 1;
+        throw new Error('upstream down');
+      },
+    };
+    const gen = new ModelPRTitleGenerator(runner);
+    await withSpec('# x', async (path) => {
+      const title = await gen.generate({ intent: 'bug', spec_path: path, impl_summary: undefined });
+      expect(title).toBeNull();
+    });
+    expect(calls).toBe(2);
+  });
+
+  test('retries once on runner failure and returns success from the second call', async () => {
+    let calls = 0;
+    const runner: DirectModelRunner = {
+      async run() {
+        calls += 1;
+        if (calls === 1) throw new Error('transient');
+        return { text: 'recovered title' };
+      },
+    };
+    const gen = new ModelPRTitleGenerator(runner);
+    await withSpec('# x', async (path) => {
+      const title = await gen.generate({ intent: 'bug', spec_path: path, impl_summary: undefined });
+      expect(title).toBe('recovered title');
+    });
+    expect(calls).toBe(2);
+  });
 });

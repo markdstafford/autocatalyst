@@ -35,30 +35,56 @@ export class ModelPRTitleGenerator implements PRTitleGenerator {
   }
 
   async generate(input: PRTitleInput): Promise<string | null> {
-    const content = await readFile(input.spec_path, 'utf8');
-    const truncated = truncateArtifact(content);
-    const prompt = buildPrompt(input.intent, truncated, input.impl_summary);
-    const route = { task: 'pr.title_generate' as const, intent: input.intent };
-    const response = await this.runner.run({
-      route,
-      profile: this.options.routingPolicy?.resolve(route),
-      model: this.options.model,
-      max_tokens: this.options.max_tokens ?? 60,
-      messages: [{ role: 'user', content: prompt }],
-    });
-    const title = postProcess(response.text);
-    if (title === null) {
+    let content: string;
+    try {
+      content = await readFile(input.spec_path, 'utf8');
+    } catch (err) {
       this.logger.warn(
-        { event: 'pr_title.invalid_output', raw: response.text },
-        'Title post-processing rejected model output',
+        { event: 'pr_title.spec_read_failed', spec_path: input.spec_path, error: String(err) },
+        'Failed to read spec for PR title generation',
       );
       return null;
     }
-    this.logger.info(
-      { event: 'pr_title.generated', intent: input.intent, spec_path: input.spec_path, length: title.length },
-      'Generated PR title',
+
+    const truncated = truncateArtifact(content);
+    const prompt = buildPrompt(input.intent, truncated, input.impl_summary);
+    const route = { task: 'pr.title_generate' as const, intent: input.intent };
+
+    let attempt = 0;
+    let lastError: unknown;
+    while (attempt < 2) {
+      try {
+        const response = await this.runner.run({
+          route,
+          profile: this.options.routingPolicy?.resolve(route),
+          model: this.options.model,
+          max_tokens: this.options.max_tokens ?? 60,
+          messages: [{ role: 'user', content: prompt }],
+        });
+        const title = postProcess(response.text);
+        if (title === null) {
+          this.logger.warn(
+            { event: 'pr_title.invalid_output', raw: response.text },
+            'Title post-processing rejected model output',
+          );
+          return null;
+        }
+        this.logger.info(
+          { event: 'pr_title.generated', intent: input.intent, spec_path: input.spec_path, length: title.length },
+          'Generated PR title',
+        );
+        return title;
+      } catch (err) {
+        lastError = err;
+        attempt += 1;
+      }
+    }
+
+    this.logger.warn(
+      { event: 'pr_title.model_failed', spec_path: input.spec_path, error: String(lastError) },
+      'PR title generation failed after retry',
     );
-    return title;
+    return null;
   }
 }
 
