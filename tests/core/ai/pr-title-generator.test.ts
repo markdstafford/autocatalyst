@@ -84,4 +84,35 @@ describe('ModelPRTitleGenerator', () => {
     const artifactSection = extractArtifactSection(requests[0].messages[0].content);
     expect(artifactSection.length).toBeLessThanOrEqual(3000);
   });
+
+  test('strips surrounding quotes, backticks, and trailing period', async () => {
+    for (const raw of ['"fix the thing"', "'fix the thing'", '`fix the thing`', 'fix the thing.', '   fix the thing   ']) {
+      const { runner } = fakeRunner(raw);
+      const gen = new ModelPRTitleGenerator(runner);
+      await withSpec('# x', async (path) => {
+        const title = await gen.generate({ intent: 'bug', spec_path: path, impl_summary: undefined });
+        expect(title).toBe('fix the thing');
+      });
+    }
+  });
+
+  test('takes only the first line if model returns multiple lines', async () => {
+    const { runner } = fakeRunner('fix the thing\nextra commentary');
+    const gen = new ModelPRTitleGenerator(runner);
+    await withSpec('# x', async (path) => {
+      const title = await gen.generate({ intent: 'bug', spec_path: path, impl_summary: undefined });
+      expect(title).toBe('fix the thing');
+    });
+  });
+
+  test('rejects empty, whitespace-only, or over-length titles', async () => {
+    for (const raw of ['', '   ', 'x'.repeat(101)]) {
+      const { runner } = fakeRunner(raw);
+      const gen = new ModelPRTitleGenerator(runner);
+      await withSpec('# x', async (path) => {
+        const title = await gen.generate({ intent: 'bug', spec_path: path, impl_summary: undefined });
+        expect(title).toBeNull();
+      });
+    }
+  });
 });

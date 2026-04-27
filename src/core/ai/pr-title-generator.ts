@@ -46,8 +46,41 @@ export class ModelPRTitleGenerator implements PRTitleGenerator {
       max_tokens: this.options.max_tokens ?? 60,
       messages: [{ role: 'user', content: prompt }],
     });
-    return response.text.trim() || null;
+    const title = postProcess(response.text);
+    if (title === null) {
+      this.logger.warn(
+        { event: 'pr_title.invalid_output', raw: response.text },
+        'Title post-processing rejected model output',
+      );
+      return null;
+    }
+    this.logger.info(
+      { event: 'pr_title.generated', intent: input.intent, spec_path: input.spec_path, length: title.length },
+      'Generated PR title',
+    );
+    return title;
   }
+}
+
+const MAX_TITLE_LEN = 100;
+
+function postProcess(raw: string): string | null {
+  let title = raw.trim();
+  if (!title) return null;
+  const firstNewline = title.indexOf('\n');
+  if (firstNewline !== -1) title = title.slice(0, firstNewline).trim();
+  if (
+    (title.startsWith('"') && title.endsWith('"')) ||
+    (title.startsWith("'") && title.endsWith("'")) ||
+    (title.startsWith('`') && title.endsWith('`'))
+  ) {
+    title = title.slice(1, -1).trim();
+  }
+  if (title.endsWith('.')) title = title.slice(0, -1).trim();
+  if (!title) return null;
+  if (title.length > MAX_TITLE_LEN) return null;
+  if (title.includes('\n')) return null;
+  return title;
 }
 
 const IMPL_HEADINGS = [
