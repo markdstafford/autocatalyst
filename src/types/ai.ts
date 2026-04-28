@@ -9,7 +9,8 @@ export type AgentTaskKind =
   | 'artifact.revise'
   | 'implementation.run'
   | 'question.answer'
-  | 'issue.triage';
+  | 'issue.triage'
+  | 'pr.title_generate';
 
 export interface AgentRoute {
   task: AgentTaskKind;

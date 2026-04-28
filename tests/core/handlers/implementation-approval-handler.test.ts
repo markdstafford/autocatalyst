@@ -61,6 +61,9 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof Implementat
     prManager: {
       createPR: vi.fn().mockResolvedValue('https://example.test/org/repo/pull/42'),
     },
+    prTitleGenerator: {
+      generate: vi.fn().mockResolvedValue('generated title'),
+    },
     implFeedbackPage: {
       setPRLink: vi.fn().mockResolvedValue(undefined),
       updateStatus: vi.fn().mockResolvedValue(undefined),
@@ -132,6 +135,7 @@ describe('ImplementationApprovalHandler', () => {
       {
         impl_result: { summary: 'Implemented it.', testing_instructions: 'npm test' },
         run_intent: 'idea',
+        title: 'generated title',
       },
     );
     expect(run.artifact?.status).toBe('complete');
@@ -205,5 +209,61 @@ describe('ImplementationApprovalHandler', () => {
       expect.objectContaining({ event: 'run.status_update_failed', run_id: 'run-001' }),
       'Failed to update impl feedback page on implementation approval',
     );
+  });
+
+  it('passes run.issue as issue_number to createPR when run.issue is set', async () => {
+    const { handler, deps } = makeHandler();
+    const run = makeRun({ intent: 'bug', issue: 54 });
+
+    await handler.handle(run, makeFeedback());
+
+    expect(deps.prManager.createPR).toHaveBeenCalledWith(
+      '/ws/request-001',
+      'spec/request-001',
+      expect.any(String),
+      expect.objectContaining({ issue_number: 54 }),
+    );
+  });
+
+  it('uses the generator-produced title when non-null', async () => {
+    const { handler, deps } = makeHandler({
+      prTitleGenerator: { generate: vi.fn().mockResolvedValue('short descriptive title') },
+    });
+    const run = makeRun({ intent: 'bug', issue: 54 });
+
+    await handler.handle(run, makeFeedback());
+
+    expect(deps.prTitleGenerator.generate).toHaveBeenCalledWith({
+      intent: 'bug',
+      spec_path: '/ws/request-001/context-human/specs/feature-test.md',
+      impl_summary: 'Implemented it.',
+    });
+    expect(deps.prManager.createPR).toHaveBeenCalledWith(
+      '/ws/request-001',
+      'spec/request-001',
+      expect.any(String),
+      expect.objectContaining({ title: 'short descriptive title' }),
+    );
+  });
+
+  it('omits title when the generator returns null', async () => {
+    const { handler, deps } = makeHandler({
+      prTitleGenerator: { generate: vi.fn().mockResolvedValue(null) },
+    });
+
+    await handler.handle(makeRun({ intent: 'bug' }), makeFeedback());
+
+    const callArg = (deps.prManager.createPR as ReturnType<typeof vi.fn>).mock.calls[0][3] as Record<string, unknown>;
+    expect(callArg['title']).toBeUndefined();
+  });
+
+  it('does not pass issue_number to createPR when run.issue is undefined', async () => {
+    const { handler, deps } = makeHandler();
+    const run = makeRun({ intent: 'idea', issue: undefined });
+
+    await handler.handle(run, makeFeedback());
+
+    const callArg = (deps.prManager.createPR as ReturnType<typeof vi.fn>).mock.calls[0][3] as Record<string, unknown>;
+    expect(callArg['issue_number']).toBeUndefined();
   });
 });

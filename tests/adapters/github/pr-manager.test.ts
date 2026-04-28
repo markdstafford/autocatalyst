@@ -39,6 +39,16 @@ const SPEC_NO_ISSUE = [
   'This is the spec.',
 ].join('\n');
 
+const TRIAGE_DOC_NO_H1 = [
+  '## Summary',
+  '',
+  'The widget blows up when you click it.',
+  '',
+  '## Steps to reproduce',
+  '',
+  '1. Click the widget',
+].join('\n');
+
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), 'pr-manager-'));
   mkdirSync(join(tmpDir, 'context-human', 'specs'), { recursive: true });
@@ -261,5 +271,60 @@ describe('GHPRManager — mergePR()', () => {
     await expect(manager.mergePR(tmpDir, 'https://github.com/org/repo/pull/1')).rejects.toThrow();
     const failed = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'pr.merge_failed');
     expect(failed).toBeDefined();
+  });
+});
+
+// ---- createPR: options.title and options.issue_number ----
+
+describe('GHPRManager — createPR() with options.title and options.issue_number', () => {
+  it('uses options.title instead of spec H1 when provided', async () => {
+    writeFileSync(specPath, TRIAGE_DOC_NO_H1, 'utf-8');
+    const execFn = makeExecFn();
+    const manager = new GHPRManager(execFn, { logDestination: nullDest });
+    await manager.createPR(tmpDir, 'branch', specPath, {
+      run_intent: 'bug',
+      title: 'Replace databases.query with dataSources.query',
+    });
+    const prArgs = (execFn.mock.calls[1] as [string, string[], unknown])[1];
+    expect(prArgs[prArgs.indexOf('--title') + 1]).toBe('fix: replace databases.query with datasources.query');
+  });
+
+  it('falls back to spec H1 when options.title is not provided', async () => {
+    const execFn = makeExecFn();
+    const manager = new GHPRManager(execFn, { logDestination: nullDest });
+    await manager.createPR(tmpDir, 'branch', specPath, { run_intent: 'idea' });
+    const prArgs = (execFn.mock.calls[1] as [string, string[], unknown])[1];
+    expect(prArgs[prArgs.indexOf('--title') + 1]).toBe('feat: my feature');
+  });
+
+  it('body contains "Closes #54" when options.issue_number is 54 and spec has no issue frontmatter', async () => {
+    writeFileSync(specPath, TRIAGE_DOC_NO_H1, 'utf-8');
+    const execFn = makeExecFn();
+    const manager = new GHPRManager(execFn, { logDestination: nullDest });
+    await manager.createPR(tmpDir, 'branch', specPath, { issue_number: 54 });
+    const prArgs = (execFn.mock.calls[1] as [string, string[], unknown])[1];
+    const body = prArgs[prArgs.indexOf('--body') + 1] as string;
+    expect(body).toContain('Closes #54');
+  });
+
+  it('options.issue_number takes precedence over spec frontmatter issue', async () => {
+    writeFileSync(specPath, SPEC_WITH_ISSUE, 'utf-8'); // frontmatter has issue: 42
+    const execFn = makeExecFn();
+    const manager = new GHPRManager(execFn, { logDestination: nullDest });
+    await manager.createPR(tmpDir, 'branch', specPath, { issue_number: 99 });
+    const prArgs = (execFn.mock.calls[1] as [string, string[], unknown])[1];
+    const body = prArgs[prArgs.indexOf('--body') + 1] as string;
+    expect(body).toContain('Closes #99');
+    expect(body).not.toContain('Closes #42');
+  });
+
+  it('body does NOT contain "Closes #" when no issue_number in options and spec has no issue frontmatter', async () => {
+    writeFileSync(specPath, TRIAGE_DOC_NO_H1, 'utf-8');
+    const execFn = makeExecFn();
+    const manager = new GHPRManager(execFn, { logDestination: nullDest });
+    await manager.createPR(tmpDir, 'branch', specPath);
+    const prArgs = (execFn.mock.calls[1] as [string, string[], unknown])[1];
+    const body = prArgs[prArgs.indexOf('--body') + 1] as string;
+    expect(body).not.toContain('Closes #');
   });
 });

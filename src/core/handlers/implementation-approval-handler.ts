@@ -1,5 +1,6 @@
 import type pino from 'pino';
 import type { PRManager, PRManagerOptions } from '../../types/issue-tracker.js';
+import type { PRTitleGenerator } from '../ai/pr-title-generator.js';
 import type { SpecCommitter } from '../spec-committer.js';
 import type { ThreadMessage } from '../../types/events.js';
 import type { ImplementationReviewPublisher } from '../../types/impl-feedback-page.js';
@@ -12,6 +13,7 @@ export interface ImplementationApprovalDeps {
   specCommitter?: Pick<SpecCommitter, 'updateStatus'>;
   artifactPublisher: Pick<ArtifactPublisher, 'updateStatus'>;
   prManager: Pick<PRManager, 'createPR'>;
+  prTitleGenerator: PRTitleGenerator;
   implFeedbackPage?: Pick<ImplementationReviewPublisher, 'setPRLink' | 'updateStatus'>;
   postMessage: (conversation: ConversationRef, text: string) => Promise<void>;
   transition: (run: Run, stage: RunStage) => void;
@@ -57,9 +59,17 @@ export class ImplementationApprovalHandler {
     }
     this.markArtifactComplete(run);
 
+    const generatedTitle = await this.deps.prTitleGenerator.generate({
+      intent: run.intent,
+      spec_path: localPath ?? '',
+      impl_summary: run.last_impl_result?.summary,
+    });
+
     const prOptions: PRManagerOptions = {
       impl_result: run.last_impl_result,
       run_intent: run.intent,
+      ...(run.issue !== undefined ? { issue_number: run.issue } : {}),
+      ...(generatedTitle !== null ? { title: generatedTitle } : {}),
     };
     let prUrl: string;
     try {
