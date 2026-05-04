@@ -1,8 +1,24 @@
 import { parse as parseYaml } from 'yaml';
 import { existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, basename, resolve } from 'node:path';
-import type { WorkflowConfig, LoadedConfig } from '../types/config.js';
+import type { WorkflowConfig, LoadedConfig, ModelProvider, AnthropicAuthMethod } from '../types/config.js';
 import { generateDefaultWorkflow } from '../config/defaults.js';
+
+export interface ResolvedLlmSettings {
+  provider: ModelProvider;
+  auth: 'api_key' | 'sso' | 'iam';
+  /** Set when provider=anthropic and auth=api_key */
+  apiKey?: string;
+  /** Set when provider=anthropic and auth=sso and a token was available at resolve time */
+  ssoToken?: string;
+  /**
+   * True when provider=anthropic, auth=sso, and no token was present in the environment.
+   * buildDirectModelRunner will call triggerSsoFlow before the first request.
+   */
+  requiresSsoFlow?: boolean;
+  /** Set when provider=bedrock and llm_settings.aws_profile is configured */
+  awsProfile?: string;
+}
 
 interface ResolveResult {
   resolved: Record<string, unknown>;
@@ -241,4 +257,65 @@ export function resolveAwsProfile(
     return envProfile.trim();
   }
   return undefined;
+}
+
+/**
+ * Resolves the effective LLM settings from WORKFLOW.md config and env vars.
+ *
+ * llm_settings is required in config. Throws with a clear error message if absent.
+ *
+ * For SSO with no token: returns { provider: 'anthropic', auth: 'sso', requiresSsoFlow: true }
+ * rather than throwing. The SSO flow is triggered lazily in buildDirectModelRunner.
+ *
+ * Throws for structurally invalid combinations (wrong auth method for provider,
+ * unknown provider/auth values, api_key auth with no key, absent llm_settings).
+ */
+export function resolveLlmSettings(
+  config: WorkflowConfig,
+  env: Record<string, string | undefined>,
+): ResolvedLlmSettings {
+  if (!config.llm_settings) {
+    throw new Error(
+      'llm_settings is required in WORKFLOW.md. Add a provider and auth block to configure the AI provider.',
+    );
+  }
+
+  const { provider, auth: rawAuth, aws_profile } = config.llm_settings;
+
+  if (provider === 'anthropic') {
+    const auth: AnthropicAuthMethod = (rawAuth as AnthropicAuthMethod) ?? 'api_key';
+    if (auth === 'api_key') {
+      const apiKey = env['AC_ANTHROPIC_API_KEY']?.trim() || undefined;
+      if (!apiKey) {
+        throw new Error(
+          'llm_settings.auth is "api_key" but AC_ANTHROPIC_API_KEY is not set or is empty',
+        );
+      }
+      return { provider, auth, apiKey };
+    }
+    if (auth === 'sso') {
+      const ssoToken = env['AC_ANTHROPIC_SSO_TOKEN']?.trim() || undefined;
+      if (!ssoToken) {
+        return { provider, auth, requiresSsoFlow: true };
+      }
+      return { provider, auth, ssoToken };
+    }
+    throw new Error(
+      `Invalid auth method for provider "anthropic": "${rawAuth}". Valid values: api_key, sso`,
+    );
+  }
+
+  if (provider === 'bedrock') {
+    if (rawAuth !== undefined && rawAuth !== 'iam') {
+      throw new Error(
+        `Invalid auth method for provider "bedrock": "${rawAuth}". Only "iam" is valid (or omit to use the default credential chain)`,
+      );
+    }
+    const awsProfile = aws_profile?.trim() || undefined;
+    return { provider, auth: 'iam', awsProfile };
+  }
+
+  throw new Error(
+    `Unknown llm_settings.provider: "${provider}". Valid values: anthropic, bedrock`,
+  );
 }
