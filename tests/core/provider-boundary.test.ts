@@ -19,7 +19,14 @@ const FORBIDDEN_TERMS = [
   /discussion-urls/i,
 ];
 
-const ALLOWLIST = new Set<string>();
+// config.ts, sso.ts, and types/config.ts define the LLM provider configuration
+// contract and legitimately reference provider names (anthropic, bedrock) as
+// enumerated values in the public API — they are not adapter implementations.
+const ALLOWLIST = new Set<string>([
+  'src/core/config.ts',
+  'src/core/sso.ts',
+  'src/types/config.ts',
+]);
 
 function sourceFiles(): string[] {
   return SCANNED_DIRS.flatMap(dir =>

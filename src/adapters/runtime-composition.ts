@@ -81,10 +81,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     'Configuration normalized',
   );
 
-  const resolvedAwsProfile = normalizedConfig.aws_profile ?? env['AWS_PROFILE'];
-  if (resolvedAwsProfile !== undefined) {
-    logger.info({ event: 'service.config', aws_profile: resolvedAwsProfile }, 'Using AWS profile');
-  }
+  const resolvedLlm = resolveLlmSettings(currentConfig.config, env);
 
   const repo_url = resolveRepoUrl(repoPath, logger);
   const repo_name = repoNameFromUrl(repo_url);
@@ -112,7 +109,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
   });
 
   const aiRoutingPolicy = buildAgentRoutingPolicy();
-  const directModelRunner = buildDirectModelRunner(env, logger, resolvedAwsProfile);
+  const directModelRunner = buildDirectModelRunner(resolvedLlm, logger);
   const agentRunner = new ClaudeAgentSdkAgentRunner();
   const intentClassifier = new ModelIntentClassifier(directModelRunner, { routingPolicy: aiRoutingPolicy });
   const prTitleGenerator = new ModelPRTitleGenerator(directModelRunner, { routingPolicy: aiRoutingPolicy });
