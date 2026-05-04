@@ -20,7 +20,6 @@ export interface NormalizedPublisherConfig {
 
 export interface NormalizedWorkflowConfig {
   workspace_root?: string;
-  aws_profile?: string;
   channels: NormalizedChannelConfig[];
   publishers: NormalizedPublisherConfig[];
   artifact_policies: Record<ArtifactKind, ArtifactLifecyclePolicy>;
@@ -32,7 +31,6 @@ export function normalizeWorkflowConfig(config: WorkflowConfig): NormalizedWorkf
 
   return {
     workspace_root: config.workspace?.root,
-    aws_profile: typeof config.aws_profile === 'string' ? config.aws_profile : undefined,
     channels,
     publishers,
     artifact_policies: normalizeArtifactPolicies(config.artifact_policies),
