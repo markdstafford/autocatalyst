@@ -1,6 +1,35 @@
 import { channelKey, type ChannelRegistry } from './channel.js';
 import type { ArtifactLifecyclePolicy, ArtifactKind } from './artifact.js';
 
+export type ModelProvider = 'anthropic' | 'bedrock';
+export type AnthropicAuthMethod = 'api_key' | 'sso';
+export type BedrockAuthMethod = 'iam';
+export type AuthMethod = AnthropicAuthMethod | BedrockAuthMethod;
+
+/**
+ * Identifies which SSO provider's OAuth flow to initiate when auth=sso.
+ * Distinct from ModelProvider — the SSO provider is the identity/credential source,
+ * not necessarily the model inference backend.
+ * Extend this union as additional SSO providers are supported (e.g. 'codex').
+ */
+export type SsoProvider = 'anthropic';
+
+export interface LlmSettings {
+  provider: ModelProvider;
+  /**
+   * Authentication method.
+   * - For provider "anthropic": "api_key" (default) or "sso"
+   * - For provider "bedrock": "iam" (default, only valid value)
+   * Optional — defaults are applied in resolveLlmSettings.
+   */
+  auth?: AuthMethod;
+  /**
+   * AWS named profile to use for Bedrock authentication.
+   * Ignored when provider is not "bedrock".
+   */
+  aws_profile?: string;
+}
+
 export interface WorkflowChannelConfig {
   provider: string;
   name: string;
@@ -24,7 +53,8 @@ export interface WorkflowConfig {
   channels?: WorkflowChannelConfig[];
   publishers?: WorkflowPublisherConfig[];
   artifact_policies?: Partial<Record<ArtifactKind, Partial<ArtifactLifecyclePolicy>>>;
-  aws_profile?: string;
+  /** Required — declares the AI provider and authentication method. */
+  llm_settings: LlmSettings;
   [key: string]: unknown;
 }
 

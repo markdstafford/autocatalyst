@@ -46,14 +46,12 @@ describe('normalizeWorkflowConfig', () => {
     });
   });
 
-  it('normalizes workspace root and AWS profile into the runtime config contract', () => {
+  it('normalizes workspace root into the runtime config contract', () => {
     const normalized = normalizeWorkflowConfig({
       workspace: { root: '/tmp/workspaces' },
-      aws_profile: 'dev',
     });
 
     expect(normalized.workspace_root).toBe('/tmp/workspaces');
-    expect(normalized.aws_profile).toBe('dev');
   });
 
   it('preserves channel and publisher config in provider-owned config blocks', () => {

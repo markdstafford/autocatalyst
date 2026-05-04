@@ -103,6 +103,7 @@ function makeConfig(overrides: Partial<LoadedConfig['config']> = {}): LoadedConf
           },
         },
       ],
+      llm_settings: { provider: 'anthropic', auth: 'api_key' },
       ...overrides,
     },
     promptTemplate: 'Prompt',
@@ -127,7 +128,7 @@ describe('composeWorkflowRuntime', () => {
       currentConfig: config,
       repoPath: '/tmp/repo',
       repoPaths: ['/tmp/repo'],
-      env: {},
+      env: { AC_ANTHROPIC_API_KEY: 'test-key' },
       logger,
     });
 
@@ -160,7 +161,7 @@ describe('composeWorkflowRuntime', () => {
     const { composeWorkflowRuntime } = await import('../../src/core/runtime-composition.js');
     const { default: AnthropicBedrock } = await import('@anthropic-ai/bedrock-sdk');
     const { fromNodeProviderChain } = await import('@aws-sdk/credential-providers');
-    const config = makeConfig({ aws_profile: 'ai-prod-llm' });
+    const config = makeConfig({ llm_settings: { provider: 'bedrock', aws_profile: 'ai-prod-llm' } });
     const env: Record<string, string | undefined> = {};
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 
