@@ -22,6 +22,11 @@ vi.mock('@anthropic-ai/sdk', () => {
   const AnthropicMock = vi.fn().mockImplementation(() => ({
     messages: { create: mockCreate },
   }));
+  // Attach MockAuthError as a static property on the mock constructor.
+  // isAnthropicAuthError in runtime-composition.ts checks:
+  //   err instanceof Anthropic.AuthenticationError
+  // After mocking, `Anthropic` in that file resolves to AnthropicMock (this mock's default export).
+  // So `Anthropic.AuthenticationError` is this MockAuthError class, making `instanceof` work correctly.
   (AnthropicMock as Record<string, unknown>)['AuthenticationError'] = MockAuthError;
   return { default: AnthropicMock };
 });
@@ -79,7 +84,10 @@ describe('SSO flow initiation', () => {
 
     await runner.run(dummyRequest);
 
-    // The Anthropic SDK mock constructor should have been called with the fresh token
+    // S2 verifies the Anthropic constructor is called with the fresh token.
+    // This is coupled to the per-request client construction in buildDirectModelRunner's SSO branch.
+    // If that branch is refactored to cache the client, update this assertion to verify
+    // the correct token is used via a different observable (e.g., mock call args or response routing).
     const AnthropicMock = (await import('@anthropic-ai/sdk')).default;
     expect(AnthropicMock).toHaveBeenCalledWith({ authToken: 'fresh-token-xyz' });
   });
@@ -129,7 +137,7 @@ describe('401 retry behavior', () => {
     mockCreate.mockRejectedValue(new MockAuthError());
 
     const runner = buildDirectModelRunner(resolved, logger);
-    await expect(runner.run(dummyRequest)).rejects.toThrow();
+    await expect(runner.run(dummyRequest)).rejects.toThrow('Authentication error');
 
     expect(mockTriggerSsoFlow).toHaveBeenCalledTimes(1);
     expect(mockCreate).toHaveBeenCalledTimes(2);
