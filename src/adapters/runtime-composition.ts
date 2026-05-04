@@ -298,9 +298,10 @@ export function buildDirectModelRunner(
 ): AnthropicDirectModelRunner {
   if (resolved.provider === 'anthropic') {
     if (resolved.auth === 'sso') {
+      const ssoStatus = resolved.ssoToken ? 'token pre-loaded' : 'SSO flow deferred to first request';
       logger.info(
         { event: 'service.config', provider: 'anthropic', auth: 'sso' },
-        'Using Anthropic direct API with SSO token',
+        `Using Anthropic direct API with SSO authentication (${ssoStatus})`,
       );
 
       let currentToken = resolved.ssoToken;
