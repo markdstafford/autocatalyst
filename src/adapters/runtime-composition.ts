@@ -2,9 +2,11 @@ import { execSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import type pino from 'pino';
 import { App } from '@slack/bolt';
+import Anthropic from '@anthropic-ai/sdk';
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
-import { loadConfigFromPath, repoNameFromUrl, resolveEnvVars } from '../core/config.js';
+import { loadConfigFromPath, repoNameFromUrl, resolveEnvVars, resolveLlmSettings, type ResolvedLlmSettings } from '../core/config.js';
+import { triggerSsoFlow } from '../core/sso.js';
 import { bootstrapWorkflowRuntime } from '../core/bootstrap.js';
 import { normalizeWorkflowConfig } from '../core/config-normalizer.js';
 import { configExists, runInit } from '../core/init.js';
@@ -43,7 +45,11 @@ import { ClaudeAgentSdkAgentRunner } from './anthropic/claude-agent-sdk-agent-ru
 import { resolveClaudeCodePlugins, type ClaudeCodePluginId } from './anthropic/claude-plugin-resolver.js';
 import type { AgentPluginConfig } from '../types/ai.js';
 
-type RuntimeLogger = Pick<pino.Logger, 'debug' | 'error' | 'info' | 'warn'>;
+export type RuntimeLogger = Pick<pino.Logger, 'debug' | 'error' | 'info' | 'warn'>;
+
+function isAnthropicAuthError(err: unknown): err is Anthropic.AuthenticationError {
+  return err instanceof Anthropic.AuthenticationError;
+}
 
 export interface ComposeWorkflowRuntimeOptions {
   currentConfig: LoadedConfig;
@@ -286,20 +292,61 @@ export function buildAgentRoutingPolicy(options?: BuildAgentRoutingPolicyOptions
   });
 }
 
-function buildDirectModelRunner(
-  env: Record<string, string | undefined>,
+export function buildDirectModelRunner(
+  resolved: ResolvedLlmSettings,
   logger: RuntimeLogger,
-  awsProfile: string | undefined,
 ): AnthropicDirectModelRunner {
-  const anthropicApiKey = env['AC_ANTHROPIC_API_KEY'];
-  if (anthropicApiKey) {
-    logger.info({ event: 'service.config', auth: 'anthropic-api-key' }, 'Using Anthropic API key for intent classification');
-    return new AnthropicDirectModelRunner(anthropicApiKey, { defaultModel: 'claude-haiku-4-5-20251001' });
+  if (resolved.provider === 'anthropic') {
+    if (resolved.auth === 'sso') {
+      logger.info(
+        { event: 'service.config', provider: 'anthropic', auth: 'sso' },
+        'Using Anthropic direct API with SSO token',
+      );
+
+      let currentToken = resolved.ssoToken;
+      const getClient = (token: string) => new Anthropic({ authToken: token });
+
+      return new AnthropicDirectModelRunner('', {
+        createFn: async (params) => {
+          if (!currentToken) {
+            currentToken = await triggerSsoFlow('anthropic', logger);
+          }
+          let client = getClient(currentToken);
+          try {
+            return await client.messages.create(params) as unknown as { content: Array<{ type: string; text?: string }> };
+          } catch (err) {
+            if (isAnthropicAuthError(err)) {
+              logger.warn(
+                { event: 'sso.token.expired', provider: 'anthropic' },
+                'SSO token expired — re-authenticating',
+              );
+              currentToken = await triggerSsoFlow('anthropic', logger);
+              client = getClient(currentToken);
+              return await client.messages.create(params) as unknown as { content: Array<{ type: string; text?: string }> };
+            }
+            throw err;
+          }
+        },
+        defaultModel: 'claude-haiku-4-5-20251001',
+      });
+    }
+
+    // auth === 'api_key'
+    logger.info(
+      { event: 'service.config', provider: 'anthropic', auth: 'api_key' },
+      'Using Anthropic direct API with API key',
+    );
+    return new AnthropicDirectModelRunner(resolved.apiKey!, {
+      defaultModel: 'claude-haiku-4-5-20251001',
+    });
   }
 
+  // provider === 'bedrock'
   const bedrockClient = new AnthropicBedrock({
     providerChainResolver: () => Promise.resolve(
-      awsProfile ? fromNodeProviderChain({ profile: awsProfile }) : fromNodeProviderChain(),
+      resolved.awsProfile
+        ? fromNodeProviderChain({ profile: resolved.awsProfile })
+        : fromNodeProviderChain(),
     ),
   });
   const bedrockCreateFn: AnthropicCreateFn = async (params) => {
@@ -312,15 +359,21 @@ function buildDirectModelRunner(
       const msg = String(err);
       if (msg.includes('CredentialsProviderError') || msg.includes('Could not load credentials') || msg.includes('sso')) {
         logger.error(
-            { event: 'bedrock.credentials_expired', aws_profile: awsProfile ?? 'default' },
-            'AWS credentials expired or unavailable. Run: aws sso login --profile <profile>',
-          );
+          { event: 'bedrock.credentials_expired', aws_profile: resolved.awsProfile ?? 'default' },
+          'AWS credentials expired or unavailable. Run: aws sso login --profile <profile>',
+        );
       }
       throw err;
     }
   };
-  logger.info({ event: 'service.config', auth: 'bedrock', aws_profile: awsProfile ?? 'default' }, 'Using AWS Bedrock for intent classification');
-  return new AnthropicDirectModelRunner('', { createFn: bedrockCreateFn, defaultModel: 'us.anthropic.claude-haiku-4-5-20251001-v1:0' });
+  logger.info(
+    { event: 'service.config', provider: 'bedrock', auth: 'iam', aws_profile: resolved.awsProfile ?? 'default' },
+    'Using Amazon Bedrock',
+  );
+  return new AnthropicDirectModelRunner('', {
+    createFn: bedrockCreateFn,
+    defaultModel: 'us.anthropic.claude-haiku-4-5-20251001-v1:0',
+  });
 }
 
 function findConfiguredProvider<T extends { provider: string }>(
