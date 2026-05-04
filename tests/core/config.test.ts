@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { parseWorkflow, resolveEnvVars, validateConfig, redactConfig, resolveAwsProfile, repoNameFromUrl, loadConfigFromPath, loadConfig } from '../../src/core/config.js';
+import { parseWorkflow, resolveEnvVars, validateConfig, redactConfig, resolveAwsProfile, repoNameFromUrl, loadConfigFromPath, loadConfig, resolveLlmSettings } from '../../src/core/config.js';
 import type { WorkflowConfig } from '../../src/types/config.js';
 
 const fixture = (name: string) =>
@@ -332,5 +332,135 @@ describe('loadConfigFromPath', () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('resolveLlmSettings', () => {
+  // --- Error cases ---
+
+  it('E1: throws when llm_settings is absent', () => {
+    const config = {} as WorkflowConfig;
+    expect(() => resolveLlmSettings(config, {})).toThrow('llm_settings is required');
+  });
+
+  it('E2: throws when auth is api_key and AC_ANTHROPIC_API_KEY is absent', () => {
+    const config = { llm_settings: { provider: 'anthropic', auth: 'api_key' } } as WorkflowConfig;
+    expect(() => resolveLlmSettings(config, {})).toThrow('AC_ANTHROPIC_API_KEY');
+  });
+
+  it('E3: throws when AC_ANTHROPIC_API_KEY is an empty string', () => {
+    const config = { llm_settings: { provider: 'anthropic', auth: 'api_key' } } as WorkflowConfig;
+    expect(() => resolveLlmSettings(config, { AC_ANTHROPIC_API_KEY: '' })).toThrow('AC_ANTHROPIC_API_KEY');
+  });
+
+  it('E4: throws when AC_ANTHROPIC_API_KEY is whitespace only', () => {
+    const config = { llm_settings: { provider: 'anthropic', auth: 'api_key' } } as WorkflowConfig;
+    expect(() => resolveLlmSettings(config, { AC_ANTHROPIC_API_KEY: '   ' })).toThrow('AC_ANTHROPIC_API_KEY');
+  });
+
+  it('E5: throws for unknown provider, names the invalid value', () => {
+    const config = { llm_settings: { provider: 'openai' } } as unknown as WorkflowConfig;
+    expect(() => resolveLlmSettings(config, {})).toThrow('"openai"');
+  });
+
+  it('E6: throws for unknown auth method on anthropic, names the invalid value', () => {
+    const config = { llm_settings: { provider: 'anthropic', auth: 'oauth' } } as unknown as WorkflowConfig;
+    expect(() => resolveLlmSettings(config, { AC_ANTHROPIC_API_KEY: 'sk-test' })).toThrow('"oauth"');
+  });
+
+  it('E7: throws for provider bedrock with auth sso (invalid combination)', () => {
+    const config = { llm_settings: { provider: 'bedrock', auth: 'sso' } } as unknown as WorkflowConfig;
+    expect(() => resolveLlmSettings(config, {})).toThrow('"sso"');
+  });
+
+  it('E8: throws for provider anthropic with auth iam (invalid combination)', () => {
+    const config = { llm_settings: { provider: 'anthropic', auth: 'iam' } } as unknown as WorkflowConfig;
+    expect(() => resolveLlmSettings(config, { AC_ANTHROPIC_API_KEY: 'sk-test' })).toThrow('"iam"');
+  });
+
+  // --- Valid cases ---
+
+  it('V1: resolves anthropic api_key with apiKey field set', () => {
+    const config = { llm_settings: { provider: 'anthropic', auth: 'api_key' } } as WorkflowConfig;
+    const result = resolveLlmSettings(config, { AC_ANTHROPIC_API_KEY: 'sk-ant-test' });
+    expect(result).toEqual({ provider: 'anthropic', auth: 'api_key', apiKey: 'sk-ant-test' });
+  });
+
+  it('V2: resolves anthropic sso with pre-loaded token; requiresSsoFlow is falsy', () => {
+    const config = { llm_settings: { provider: 'anthropic', auth: 'sso' } } as WorkflowConfig;
+    const result = resolveLlmSettings(config, { AC_ANTHROPIC_SSO_TOKEN: 'tok-abc' });
+    expect(result.provider).toBe('anthropic');
+    expect(result.auth).toBe('sso');
+    expect(result.ssoToken).toBe('tok-abc');
+    expect(result.requiresSsoFlow).toBeFalsy();
+  });
+
+  it('V3: returns requiresSsoFlow:true when AC_ANTHROPIC_SSO_TOKEN is absent; does not throw', () => {
+    const config = { llm_settings: { provider: 'anthropic', auth: 'sso' } } as WorkflowConfig;
+    const result = resolveLlmSettings(config, {});
+    expect(result.requiresSsoFlow).toBe(true);
+    expect(result.ssoToken).toBeUndefined();
+  });
+
+  it('V4: treats whitespace-only AC_ANTHROPIC_SSO_TOKEN as absent', () => {
+    const config = { llm_settings: { provider: 'anthropic', auth: 'sso' } } as WorkflowConfig;
+    const result = resolveLlmSettings(config, { AC_ANTHROPIC_SSO_TOKEN: '   ' });
+    expect(result.requiresSsoFlow).toBe(true);
+    expect(result.ssoToken).toBeUndefined();
+  });
+
+  it('V5: omitted auth for anthropic defaults to api_key', () => {
+    const config = { llm_settings: { provider: 'anthropic' } } as WorkflowConfig;
+    const result = resolveLlmSettings(config, { AC_ANTHROPIC_API_KEY: 'sk-ant-test' });
+    expect(result.auth).toBe('api_key');
+    expect(result.apiKey).toBe('sk-ant-test');
+  });
+
+  it('V6: omitted auth for bedrock defaults to iam with no awsProfile', () => {
+    const config = { llm_settings: { provider: 'bedrock' } } as WorkflowConfig;
+    const result = resolveLlmSettings(config, {});
+    expect(result.provider).toBe('bedrock');
+    expect(result.auth).toBe('iam');
+    expect(result.awsProfile).toBeUndefined();
+  });
+
+  it('V7: resolves aws_profile for bedrock', () => {
+    const config = { llm_settings: { provider: 'bedrock', aws_profile: 'my-profile' } } as WorkflowConfig;
+    const result = resolveLlmSettings(config, {});
+    expect(result.awsProfile).toBe('my-profile');
+  });
+
+  it('V8: awsProfile is undefined when aws_profile is absent', () => {
+    const config = { llm_settings: { provider: 'bedrock' } } as WorkflowConfig;
+    const result = resolveLlmSettings(config, {});
+    expect(result.awsProfile).toBeUndefined();
+  });
+
+  it('V9: treats whitespace-only aws_profile as absent', () => {
+    const config = { llm_settings: { provider: 'bedrock', aws_profile: '   ' } } as WorkflowConfig;
+    const result = resolveLlmSettings(config, {});
+    expect(result.awsProfile).toBeUndefined();
+  });
+
+  it('V10: SSO path with token does not set apiKey', () => {
+    const config = { llm_settings: { provider: 'anthropic', auth: 'sso' } } as WorkflowConfig;
+    const result = resolveLlmSettings(config, { AC_ANTHROPIC_SSO_TOKEN: 'tok' });
+    expect(result.ssoToken).toBe('tok');
+    expect(result.apiKey).toBeUndefined();
+  });
+
+  it('V11: api_key path does not set ssoToken or requiresSsoFlow', () => {
+    const config = { llm_settings: { provider: 'anthropic', auth: 'api_key' } } as WorkflowConfig;
+    const result = resolveLlmSettings(config, { AC_ANTHROPIC_API_KEY: 'sk-ant' });
+    expect(result.apiKey).toBe('sk-ant');
+    expect(result.ssoToken).toBeUndefined();
+    expect(result.requiresSsoFlow).toBeUndefined();
+  });
+
+  it('V12: bedrock path does not set apiKey or ssoToken', () => {
+    const config = { llm_settings: { provider: 'bedrock' } } as WorkflowConfig;
+    const result = resolveLlmSettings(config, {});
+    expect(result.apiKey).toBeUndefined();
+    expect(result.ssoToken).toBeUndefined();
   });
 });
