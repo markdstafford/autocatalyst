@@ -369,7 +369,7 @@ describe('NotionPublisher — resolveFilenameToPageId behavior (via createArtifa
     );
     await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
     expect(client.dataSources.query).toHaveBeenCalledWith('db-specs-id', {
-      filter: { property: 'Filename', rich_text: { equals: 'feature-old-spec.md' } },
+      property: 'Filename', rich_text: { equals: 'feature-old-spec.md' },
     });
     const createCall = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
     expect(createCall.properties['Superseded by / Supersedes'].relation).toEqual([{ id: 'old-spec-page-id' }]);
