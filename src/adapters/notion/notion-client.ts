@@ -33,6 +33,9 @@ export interface NotionClient {
   users: {
     me(): Promise<{ id: string }>;
   };
+  databases: {
+    retrieve(database_id: string): Promise<{ data_sources: Array<{ id: string; name: string }> }>;
+  };
   dataSources: {
     query(
       data_source_id: string,
@@ -45,7 +48,7 @@ export class NotionClientImpl implements NotionClient {
   private readonly client: Client;
 
   constructor({ integration_token }: { integration_token: string }) {
-    this.client = new Client({ auth: integration_token });
+    this.client = new Client({ auth: integration_token, notionVersion: '2026-03-11' });
   }
 
   readonly pages = {
@@ -54,22 +57,20 @@ export class NotionClientImpl implements NotionClient {
 
     getMarkdown: async (page_id: string): Promise<string> => {
       const response = await (this.client as unknown as {
-        request: (args: { path: string; method: string; headers?: Record<string, string> }) => Promise<unknown>;
+        request: (args: { path: string; method: string }) => Promise<unknown>;
       }).request({
         path: `pages/${page_id}/markdown`,
         method: 'GET',
-        headers: { 'Notion-Version': '2026-03-11' },
       });
       return (response as { markdown: string }).markdown;
     },
 
     updateMarkdown: async (page_id: string, operation: MarkdownOperation): Promise<void> => {
       await (this.client as unknown as {
-        request: (args: { path: string; method: string; body: unknown; headers?: Record<string, string> }) => Promise<unknown>;
+        request: (args: { path: string; method: string; body: unknown }) => Promise<unknown>;
       }).request({
         path: `pages/${page_id}/markdown`,
         method: 'PATCH',
-        headers: { 'Notion-Version': '2026-03-11' },
         body: operation,
       });
     },
@@ -102,6 +103,13 @@ export class NotionClientImpl implements NotionClient {
         method: 'GET',
       });
       return { id: (response as { id: string }).id };
+    },
+  };
+
+  readonly databases = {
+    retrieve: async (database_id: string): Promise<{ data_sources: Array<{ id: string; name: string }> }> => {
+      const response = await this.client.databases.retrieve({ database_id });
+      return { data_sources: (response as unknown as { data_sources: Array<{ id: string; name: string }> }).data_sources };
     },
   };
 

@@ -26,6 +26,7 @@ export class NotionPublisher implements ArtifactPublisher, ArtifactContentSource
   private readonly specs_database_id: string;
   private readonly options?: NotionPublisherOptions;
   private readonly logger: pino.Logger;
+  private specsDataSourceIdPromise: Promise<string> | undefined;
 
   constructor(
     client: NotionClient,
@@ -36,6 +37,15 @@ export class NotionPublisher implements ArtifactPublisher, ArtifactContentSource
     this.specs_database_id = specs_database_id;
     this.options = options;
     this.logger = createLogger('notion-publisher', { destination: this.options?.logDestination });
+  }
+
+  private getSpecsDataSourceId(): Promise<string> {
+    if (!this.specsDataSourceIdPromise) {
+      this.specsDataSourceIdPromise = this.client.databases
+        .retrieve(this.specs_database_id)
+        .then(db => db.data_sources[0].id);
+    }
+    return this.specsDataSourceIdPromise;
   }
 
   async createArtifact(_conversation: ConversationRef, artifact: Artifact): Promise<ArtifactPublication> {
@@ -78,8 +88,9 @@ export class NotionPublisher implements ArtifactPublisher, ArtifactContentSource
       properties['Superseded by / Supersedes'] = { relation: [{ id: supersedingPageId }] };
     }
 
+    const dataSourceId = await this.getSpecsDataSourceId();
     const page = await this.client.pages.create({
-      parent: { database_id: this.specs_database_id } as unknown as Parameters<NotionClient['pages']['create']>[0]['parent'],
+      parent: { type: 'data_source_id', data_source_id: dataSourceId } as unknown as Parameters<NotionClient['pages']['create']>[0]['parent'],
       properties: properties as unknown as Parameters<NotionClient['pages']['create']>[0]['properties'],
     });
 
@@ -174,7 +185,8 @@ export class NotionPublisher implements ArtifactPublisher, ArtifactContentSource
   }
 
   private async resolveFilenameToPageId(filename: string): Promise<string | undefined> {
-    const result = await this.client.dataSources.query(this.specs_database_id, {
+    const dataSourceId = await this.getSpecsDataSourceId();
+    const result = await this.client.dataSources.query(dataSourceId, {
       property: 'Filename', rich_text: { equals: filename },
     });
     if (result.results.length === 0) {
