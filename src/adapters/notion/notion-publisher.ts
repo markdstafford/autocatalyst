@@ -175,7 +175,7 @@ export class NotionPublisher implements ArtifactPublisher, ArtifactContentSource
 
   private async resolveFilenameToPageId(filename: string): Promise<string | undefined> {
     const result = await this.client.dataSources.query(this.specs_database_id, {
-      filter: { property: 'Filename', rich_text: { equals: filename } },
+      property: 'Filename', rich_text: { equals: filename },
     });
     if (result.results.length === 0) {
       this.logger.warn(
