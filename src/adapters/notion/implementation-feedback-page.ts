@@ -24,6 +24,7 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
   private readonly client: NotionClient;
   private readonly testing_guides_database_id: string;
   private readonly logger: pino.Logger;
+  private testingGuidesDataSourceIdPromise: Promise<string> | undefined;
 
   constructor(
     client: NotionClient,
@@ -35,9 +36,19 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
     this.logger = createLogger('implementation-feedback-page', { destination: options?.logDestination });
   }
 
+  private getTestingGuidesDataSourceId(): Promise<string> {
+    if (!this.testingGuidesDataSourceIdPromise) {
+      this.testingGuidesDataSourceIdPromise = this.client.databases
+        .retrieve(this.testing_guides_database_id)
+        .then(db => db.data_sources[0].id);
+    }
+    return this.testingGuidesDataSourceIdPromise;
+  }
+
   async create(input: ImplementationReviewInput): Promise<PublishedImplementationReview> {
+    const dataSourceId = await this.getTestingGuidesDataSourceId();
     const response = await this.client.pages.create({
-      parent: { type: 'database_id', database_id: this.testing_guides_database_id } as never,
+      parent: { type: 'data_source_id', data_source_id: dataSourceId } as never,
       properties: {
         Title: {
           title: [{ text: { content: `Testing guide: ${input.title}` } }],

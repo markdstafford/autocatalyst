@@ -4,8 +4,10 @@ import { NotionClientImpl } from '../../../src/adapters/notion/notion-client.js'
 
 // Mock the Notion SDK Client so we can inspect what NotionClientImpl passes to it
 const mockSdkQuery = vi.fn();
+const mockSdkDbRetrieve = vi.fn();
 vi.mock('@notionhq/client', () => ({
   Client: vi.fn(() => ({
+    databases: { retrieve: mockSdkDbRetrieve },
     dataSources: { query: mockSdkQuery },
   })),
 }));
@@ -22,6 +24,7 @@ describe('NotionClient interface', () => {
       blocks: { children: { list: async () => ({}) as never } },
       comments: { list: async () => ({}) as never, create: async () => ({}) as never },
       users: { me: async () => ({ id: 'test' }) },
+      databases: { retrieve: async () => ({ data_sources: [] }) },
       dataSources: { query: async () => ({ results: [] }) },
     };
     expect(typeof client.users.me).toBe('function');
@@ -38,6 +41,7 @@ describe('NotionClient interface', () => {
       blocks: { children: { list: async () => ({}) as never } },
       comments: { list: async () => ({}) as never, create: async () => ({}) as never },
       users: { me: async () => ({ id: 'test' }) },
+      databases: { retrieve: async () => ({ data_sources: [] }) },
       dataSources: { query: async () => ({ results: [] }) },
     };
     expect(typeof client.pages.updateProperties).toBe('function');
@@ -55,6 +59,7 @@ describe('NotionClient interface', () => {
       blocks: { children: { list: async () => ({}) as never } },
       comments: { list: async () => ({}) as never, create: async () => ({}) as never },
       users: { me: async () => ({ id: 'test' }) },
+      databases: { retrieve: async () => ({ data_sources: [] }) },
       dataSources: { query: mockQuery },
     };
     expect(typeof client.dataSources.query).toBe('function');
@@ -72,9 +77,26 @@ describe('NotionClient interface', () => {
       blocks: { children: { list: async () => ({}) as never } },
       comments: { list: async () => ({}) as never, create: async () => ({}) as never },
       users: { me: async () => ({ id: 'test' }) },
+      databases: { retrieve: async () => ({ data_sources: [] }) },
       dataSources: { query: mockQuery },
     };
     await expect(client.dataSources.query('db-id')).resolves.toEqual({ results: [] });
+  });
+});
+
+describe('NotionClientImpl.databases.retrieve', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('calls SDK databases.retrieve with database_id and returns data_sources', async () => {
+    mockSdkDbRetrieve.mockResolvedValue({ data_sources: [{ id: 'ds-xyz', name: 'My DB' }] });
+    const impl = new NotionClientImpl({ integration_token: 'test-token' });
+
+    const result = await impl.databases.retrieve('db-abc');
+
+    expect(mockSdkDbRetrieve).toHaveBeenCalledWith({ database_id: 'db-abc' });
+    expect(result).toEqual({ data_sources: [{ id: 'ds-xyz', name: 'My DB' }] });
   });
 });
 

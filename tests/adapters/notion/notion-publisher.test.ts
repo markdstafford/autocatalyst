@@ -63,6 +63,9 @@ function makeMockNotionClient(pageId = 'page-abc123'): NotionClient {
       create: vi.fn().mockResolvedValue({}),
     },
     users: { me: vi.fn() },
+    databases: {
+      retrieve: vi.fn().mockResolvedValue({ data_sources: [{ id: 'ds-specs-id', name: 'Specs' }] }),
+    },
     dataSources: {
       query: vi.fn().mockResolvedValue({ results: [] }),
     },
@@ -78,7 +81,7 @@ describe('NotionPublisher.createArtifact', () => {
     await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
 
     expect(client.pages.create).toHaveBeenCalledWith(
-      expect.objectContaining({ parent: expect.objectContaining({ database_id: 'db-specs-id' }) }),
+      expect.objectContaining({ parent: expect.objectContaining({ data_source_id: 'ds-specs-id' }) }),
     );
     // No children in pages.create — content set via markdown API
     const createCall = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -368,7 +371,7 @@ describe('NotionPublisher — resolveFilenameToPageId behavior (via createArtifa
       'feature-new-spec.md',
     );
     await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
-    expect(client.dataSources.query).toHaveBeenCalledWith('db-specs-id', {
+    expect(client.dataSources.query).toHaveBeenCalledWith('ds-specs-id', {
       property: 'Filename', rich_text: { equals: 'feature-old-spec.md' },
     });
     const createCall = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
@@ -411,14 +414,15 @@ describe('NotionPublisher — resolveFilenameToPageId behavior (via createArtifa
 });
 
 describe('NotionPublisher.createArtifact — database entry with typed properties', () => {
-  it('calls pages.create with database_id parent (not page_id)', async () => {
+  it('calls pages.create with data_source_id parent (not database_id or page_id)', async () => {
     const client = makeMockNotionClient();
     const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: nullDest });
     const specPath = makeSpecFile('---\nspecced_by: alice\nlast_updated: 2026-04-16\n---\n# Spec', 'feature-setup-wizard.md');
     await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
     const createCall = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    expect(createCall.parent).toEqual(expect.objectContaining({ database_id: 'db-specs-id' }));
+    expect(createCall.parent).toEqual({ type: 'data_source_id', data_source_id: 'ds-specs-id' });
     expect(createCall.parent.page_id).toBeUndefined();
+    expect(createCall.parent.database_id).toBeUndefined();
   });
 
   it('sets all required typed properties', async () => {

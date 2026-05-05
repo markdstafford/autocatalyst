@@ -32,7 +32,7 @@ function makeNotionClient(overrides: Partial<{
       me: vi.fn().mockResolvedValue({ id: 'bot-id' }),
     },
     databases: {
-      query: vi.fn().mockResolvedValue({ results: [] }),
+      retrieve: vi.fn().mockResolvedValue({ data_sources: [{ id: 'ds-testing-guides-id', name: 'Testing Guides' }] }),
     },
   } as unknown as NotionClient;
 }
@@ -87,7 +87,7 @@ function makeBlocksChildrenListFn(
 }
 
 describe('NotionImplementationFeedbackPage — create', () => {
-  it('creates a page in the testing_guides_database_id (not under a parent page)', async () => {
+  it('creates a page with data_source_id parent (not database_id or page_id)', async () => {
     const pagesCreate = vi.fn().mockResolvedValue({ id: 'new-page-id' });
     const client = makeNotionClient({ pagesCreate });
     const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
@@ -95,10 +95,9 @@ describe('NotionImplementationFeedbackPage — create', () => {
     await page.create(makeReviewInput({ summary: 'the summary', testing_instructions: 'run npm test' }));
 
     const createCall = pagesCreate.mock.calls[0][0];
-    expect(createCall.parent).toEqual(
-      expect.objectContaining({ database_id: 'db-testing-guides-id' }),
-    );
+    expect(createCall.parent).toEqual({ type: 'data_source_id', data_source_id: 'ds-testing-guides-id' });
     expect(createCall.parent.page_id).toBeUndefined();
+    expect(createCall.parent.database_id).toBeUndefined();
   });
 
   it('returns the page_id', async () => {
