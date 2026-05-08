@@ -45,11 +45,17 @@ Every log entry is a JSON object with these fields:
 - `warn`: recoverable issues (retry scheduled, config reload failed with fallback)
 - `error`: unrecoverable issues (run failed, adapter crashed)
 
-## OpenTelemetry
+## OpenTelemetry export
 
-Traces and metrics use OpenTelemetry SDK. Spans wrap:
-- Each orchestrator tick
-- Each adapter call (Slack API, Agent SDK)
-- Each stage transition within a run
+Two environment variables control OTLP export. Both default to unset.
 
-Trace context propagates from orchestrator → adapter → agent subprocess where possible.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OTEL_EXPORTER_OTLP_METRICS_ENDPOINT` | unset | OTLP/HTTP endpoint for metrics (e.g. `http://localhost:4318`). When unset, no metrics are exported and no network connections are made. |
+| `OTEL_EXPORTER_OTLP_LOGS_ENDPOINT` | unset | OTLP/HTTP endpoint for logs (e.g. `http://localhost:9428`). When unset, pino writes to stderr only — identical to pre-feature behavior. |
+
+When both variables are unset the service is **behaviorally identical** to its pre-feature state: pino writes to stderr, no network connections are attempted.
+
+Export errors (network unreachable, bad endpoint) are caught internally and logged at `warn` level with `event: "telemetry.export_failed"`. They do not propagate to the run loop.
+
+See `context-human/wiki/observability.md` for setup instructions and `src/core/telemetry.ts` for implementation details.

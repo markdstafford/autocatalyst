@@ -1,0 +1,59 @@
+{
+  "title": "Autocatalyst Operational Dashboard",
+  "rows": [
+    {
+      "panels": [
+        {
+          "title": "Run Throughput (runs/sec)",
+          "description": "Rate of completed runs over time",
+          "expr": "rate(autocatalyst_run_completed_total[5m])",
+          "type": "chart",
+          "unit": "runs/s"
+        },
+        {
+          "title": "Error Rate (%)",
+          "description": "Percentage of runs that failed",
+          "expr": "100 * (rate(autocatalyst_run_completed_total{terminal_reason=\"failed\"}[5m]) or vector(0)) / (rate(autocatalyst_run_completed_total[5m]) > 0)",
+          "type": "chart",
+          "unit": "%"
+        }
+      ]
+    },
+    {
+      "panels": [
+        {
+          "title": "Stage Duration p50 (ms)",
+          "description": "Median stage duration by stage name",
+          "expr": "histogram_quantile(0.5, sum(rate(autocatalyst_stage_duration_ms_bucket[5m])) by (le, stage))",
+          "type": "chart",
+          "unit": "ms"
+        },
+        {
+          "title": "Stage Duration p95 (ms)",
+          "description": "95th percentile stage duration by stage name",
+          "expr": "histogram_quantile(0.95, sum(rate(autocatalyst_stage_duration_ms_bucket[5m])) by (le, stage))",
+          "type": "chart",
+          "unit": "ms"
+        }
+      ]
+    },
+    {
+      "panels": [
+        {
+          "title": "Adapter Latency p95 (ms)",
+          "description": "95th percentile adapter operation latency by adapter",
+          "expr": "histogram_quantile(0.95, sum(rate(autocatalyst_adapter_latency_ms_bucket[5m])) by (le, adapter))",
+          "type": "chart",
+          "unit": "ms"
+        },
+        {
+          "title": "Agent Turn Rate",
+          "description": "Agent turns per second by component",
+          "expr": "sum(rate(autocatalyst_agent_turns_total[5m])) by (component)",
+          "type": "chart",
+          "unit": "turns/s"
+        }
+      ]
+    }
+  ]
+}

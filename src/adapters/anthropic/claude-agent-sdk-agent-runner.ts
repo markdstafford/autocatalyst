@@ -8,6 +8,9 @@ import type {
   SettingSource,
   ThinkingConfig,
 } from '@anthropic-ai/claude-agent-sdk';
+import type { Meter, Counter, Histogram } from '@opentelemetry/api';
+import { metrics } from '@opentelemetry/api';
+import { performance } from 'node:perf_hooks';
 import type {
   AgentProfile,
   AgentPluginConfig,
@@ -56,27 +59,46 @@ const AUTOMATED_PERMISSION_RULES = [
 export interface ClaudeAgentSdkAgentRunnerOptions {
   queryFn?: QueryFn;
   materializeRuntimeSkills?: (refs: AgentSkillRef[]) => Promise<AgentPluginConfig[]>;
+  meter?: Meter;
 }
 
 export class ClaudeAgentSdkAgentRunner implements AgentRunner {
   private readonly queryFn: QueryFn;
   private readonly materializeRuntimeSkills: (refs: AgentSkillRef[]) => Promise<AgentPluginConfig[]>;
+  private readonly _agentTurns: Counter;
+  private readonly _adapterLatency: Histogram;
 
   constructor(options?: ClaudeAgentSdkAgentRunnerOptions) {
     this.queryFn = options?.queryFn ?? _query;
     this.materializeRuntimeSkills = options?.materializeRuntimeSkills ?? materializeClaudeRuntimeSkillPlugins;
+    const meter = options?.meter ?? metrics.getMeter('autocatalyst');
+    this._agentTurns = meter.createCounter('autocatalyst.agent.turns', {
+      unit: '{turn}',
+      description: 'Agent turns yielded',
+    });
+    this._adapterLatency = meter.createHistogram('autocatalyst.adapter.latency', {
+      unit: 'ms',
+      description: 'Latency of adapter operations',
+    });
   }
 
   async *run(request: AgentRunRequest): AsyncIterable<AgentRunEvent> {
     const profile = await this.profileWithRuntimeSkillPlugins(request.profile);
-    // query() yields structured SDKMessage objects via async iterator.
-    // It does not spawn a subprocess and does not write to process.stdout or process.stderr.
+    const startMs = performance.now();
     for await (const message of this.queryFn({
       prompt: request.prompt,
       options: makeClaudeAgentSdkOptions(request.working_directory, profile),
     })) {
-      yield normalizeSdkMessage(message as SDKMessage);
+      const event = normalizeSdkMessage(message as SDKMessage);
+      if (event.type === 'assistant') {
+        this._agentTurns.add(1, { component: 'claude-agent-sdk' });
+      }
+      yield event;
     }
+    this._adapterLatency.record(performance.now() - startMs, {
+      adapter: 'agent-sdk',
+      operation: 'query',
+    });
   }
 
   private async profileWithRuntimeSkillPlugins(profile: AgentProfile | undefined): Promise<AgentProfile | undefined> {

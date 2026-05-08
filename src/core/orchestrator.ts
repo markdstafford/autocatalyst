@@ -1,6 +1,9 @@
 // src/core/orchestrator.ts
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import type pino from 'pino';
+import type { Meter, Counter, Histogram } from '@opentelemetry/api';
+import { metrics } from '@opentelemetry/api';
 import { createLogger } from './logger.js';
 import type { ChannelAdapter } from '../adapters/channel-adapter.js';
 import { channelKey, type ConversationRef, type MessageRef } from '../types/channel.js';
@@ -75,6 +78,7 @@ export interface OrchestratorDeps {
 interface OrchestratorOptions {
   logDestination?: pino.DestinationStream;
   maxConcurrentRuns?: number; // default: 5
+  meter?: Meter;
 }
 
 export class OrchestratorImpl implements Orchestrator {
@@ -93,11 +97,28 @@ export class OrchestratorImpl implements Orchestrator {
   private _queueTimestamps = new Map<InboundEvent, number>();
   private readonly _runLogs = new Map<string, string[]>();
   private readonly handlerRegistry: HandlerRegistry;
+  private readonly _runStarted: Counter;
+  private readonly _runCompleted: Counter;
+  private readonly _stageDuration: Histogram;
+  private readonly _stageStartTimes = new Map<string, number>();
 
   constructor(deps: OrchestratorDeps, options?: OrchestratorOptions) {
     this.deps = deps;
     this.logger = createLogger('orchestrator', { destination: options?.logDestination });
     this._maxConcurrentRuns = options?.maxConcurrentRuns ?? 5;
+    const meter = options?.meter ?? metrics.getMeter('autocatalyst');
+    this._runStarted = meter.createCounter('autocatalyst.run.started', {
+      unit: '{run}',
+      description: 'Number of runs started',
+    });
+    this._runCompleted = meter.createCounter('autocatalyst.run.completed', {
+      unit: '{run}',
+      description: 'Number of runs completed',
+    });
+    this._stageDuration = meter.createHistogram('autocatalyst.stage.duration', {
+      unit: 'ms',
+      description: 'Duration of each stage transition',
+    });
     this.handlerRegistry = deps.handlerRegistry ?? this.buildDefaultHandlerRegistry();
     if (deps.runStore) {
       const loaded = deps.runStore.load();
@@ -323,6 +344,8 @@ export class OrchestratorImpl implements Orchestrator {
       }
 
       run.intent = requestIntent;
+      this._runStarted.add(1, { intent: requestIntent });
+      this._stageStartTimes.set(run.id, performance.now());
       this._persistRuns();
       const handler = this.handlerRegistry.resolve({
         event_type: 'new_request',
@@ -408,11 +431,26 @@ export class OrchestratorImpl implements Orchestrator {
 
   private transition(run: Run, stage: RunStage): void {
     const from = run.stage;
+    const endMs = performance.now();
+    const startMs = this._stageStartTimes.get(run.id);
+    if (startMs !== undefined) {
+      this._stageDuration.record(endMs - startMs, {
+        stage: from,
+        outcome: stage === 'failed' ? 'failed' : 'success',
+      });
+    }
+    this._stageStartTimes.set(run.id, endMs);
+
     run.stage = stage;
     run.updated_at = new Date().toISOString();
     this.logger.info({ event: 'run.stage_transition', run_id: run.id, request_id: run.request_id, from_stage: from, to_stage: stage }, 'Stage transition');
     this._appendRunLog(run.request_id, `[${new Date().toISOString()}] Stage: ${from} → ${stage}`);
     this._persistRuns();
+
+    if (stage === 'done' || stage === 'failed') {
+      this._runCompleted.add(1, { terminal_reason: stage });
+      this._stageStartTimes.delete(run.id);
+    }
   }
 
   private _persistRuns(): void {

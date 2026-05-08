@@ -1,0 +1,22 @@
+sources:
+  docker_logs:
+    type: docker_logs
+    include_labels:
+      com.docker.compose.project: autocatalyst
+
+transforms:
+  parse_json:
+    type: remap
+    inputs: [docker_logs]
+    source: |
+      . = parse_json!(.message) ?? .
+
+sinks:
+  victorialogs:
+    type: http
+    inputs: [parse_json]
+    uri: "http://victorialogs:9428/insert/jsonline?_stream_fields=component,level"
+    encoding:
+      codec: json
+    framing:
+      method: newline_delimited
