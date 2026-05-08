@@ -7,21 +7,25 @@ import { ConfigWatcher } from './core/config-watcher.js';
 import { registerSignalHandlers } from './core/signals.js';
 import { createLogger } from './core/logger.js';
 import { composeWorkflowRuntime } from './core/runtime-composition.js';
+import { initTelemetry } from './core/telemetry.js';
 import { join } from 'node:path';
 
-const logger = createLogger('cli');
+const telemetry = initTelemetry();
+const logger = createLogger('cli', { loggerProvider: telemetry.loggerProvider });
 
 try {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.help) {
     printUsage();
+    await telemetry.shutdown();
     process.exit(0);
   }
 
   if (args.command === 'init') {
     const repoPath = args.repoPath || process.cwd();
     await runInit(repoPath);
+    await telemetry.shutdown();
     process.exit(0);
   }
 
@@ -43,6 +47,7 @@ try {
       { event: 'service.init_incomplete' },
       'Config is not set up. Run `autocatalyst init --repo <path>` to initialize.',
     );
+    await telemetry.shutdown();
     process.exit(1);
   }
 
@@ -56,6 +61,7 @@ try {
 
   if (missing.length > 0) {
     logger.warn({ event: 'config.env_missing', missing }, `Missing environment variables: ${missing.join(', ')}`);
+    await telemetry.shutdown();
     process.exit(1);
   }
 
@@ -72,6 +78,7 @@ try {
     repoPaths,
     env: process.env as Record<string, string | undefined>,
     logger,
+    meter: telemetry.meter,
   });
 
   const cleanupSignals = registerSignalHandlers(service);
@@ -95,12 +102,14 @@ try {
 
   service.start();
 
-  service.stopped.then(() => {
+  service.stopped.then(async () => {
     watcher.stop();
     cleanupSignals();
+    await telemetry.shutdown();
     process.exit(0);
   });
 } catch (err) {
   logger.error({ event: 'config.parse_error', error: String(err) }, String(err));
+  await telemetry.shutdown();
   process.exit(1);
 }
