@@ -266,10 +266,17 @@ export function buildDirectModelRunner(
 
   if (credential.type === 'api_key') {
     logger.info(
-      { event: 'service.config', provider: 'anthropic', auth: 'api_key' },
+      { event: 'service.config', provider: 'anthropic', auth: 'api_key', base_url: endpoint.base_url ?? 'default' },
       'Using Anthropic direct API with API key',
     );
+    const clientOptions: ConstructorParameters<typeof Anthropic>[0] = { apiKey: credential.resolvedValue! };
+    if (endpoint.base_url) {
+      clientOptions.baseURL = endpoint.base_url;
+      clientOptions.defaultHeaders = { 'api-key': credential.resolvedValue! };
+    }
+    const client = new Anthropic(clientOptions);
     return new AnthropicDirectModelRunner(credential.resolvedValue!, {
+      createFn: params => client.messages.create(params) as Promise<{ content: Array<{ type: string; text?: string }> }>,
       defaultModel: directProfile.model,
     });
   }
