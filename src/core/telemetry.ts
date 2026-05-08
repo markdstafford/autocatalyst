@@ -16,7 +16,8 @@ export interface TelemetryHandles {
 export function initTelemetry(): TelemetryHandles {
   const metricsEndpoint = process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT;
   const logsEndpoint = process.env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT;
-  const exportInterval = parseInt(process.env.OTEL_EXPORT_INTERVAL_MS ?? '30000', 10);
+  const rawInterval = parseInt(process.env.OTEL_EXPORT_INTERVAL_MS ?? '30000', 10);
+  const exportIntervalMs = Number.isFinite(rawInterval) && rawInterval > 0 ? rawInterval : 30000;
 
   if (!metricsEndpoint && !logsEndpoint) {
     // No-op path: use global no-op providers; zero network connections
@@ -31,51 +32,68 @@ export function initTelemetry(): TelemetryHandles {
     };
   }
 
-  // Live OTLP path
-  const metricExporter = new OTLPMetricExporter({
-    url: metricsEndpoint,
-  });
+  // Live OTLP path — gate each provider independently
+  let sdkMeterProvider: MeterProvider | undefined;
+  if (metricsEndpoint) {
+    const metricExporter = new OTLPMetricExporter({
+      url: metricsEndpoint,
+    });
 
-  const sdkMeterProvider = new MeterProvider({
-    readers: [
-      new PeriodicExportingMetricReader({
-        exporter: metricExporter,
-        exportIntervalMillis: exportInterval,
-      }),
-    ],
-  });
+    sdkMeterProvider = new MeterProvider({
+      readers: [
+        new PeriodicExportingMetricReader({
+          exporter: metricExporter,
+          exportIntervalMillis: exportIntervalMs,
+        }),
+      ],
+    });
 
-  const logExporter = new OTLPLogExporter({
-    url: logsEndpoint,
-  });
+    metrics.setGlobalMeterProvider(sdkMeterProvider);
+  }
 
-  const sdkLoggerProvider = new SdkLoggerProvider({
-    processors: [new BatchLogRecordProcessor(logExporter)],
-  });
+  let sdkLoggerProvider: SdkLoggerProvider | undefined;
+  if (logsEndpoint) {
+    const logExporter = new OTLPLogExporter({
+      url: logsEndpoint,
+    });
 
-  const meter = sdkMeterProvider.getMeter('autocatalyst');
-  const loggerProvider: LoggerProvider = sdkLoggerProvider;
+    sdkLoggerProvider = new SdkLoggerProvider({
+      processors: [new BatchLogRecordProcessor(logExporter)],
+    });
+
+    logs.setGlobalLoggerProvider(sdkLoggerProvider);
+  }
+
+  const meter = sdkMeterProvider
+    ? sdkMeterProvider.getMeter('autocatalyst')
+    : metrics.getMeter('autocatalyst');
+
+  const loggerProvider: LoggerProvider = sdkLoggerProvider ?? logs.getLoggerProvider();
 
   const shutdown = async (): Promise<void> => {
-    try {
-      await sdkMeterProvider.forceFlush();
-    } catch {
-      // swallow export errors
+    if (sdkMeterProvider) {
+      try {
+        await sdkMeterProvider.forceFlush();
+      } catch (err) {
+        console.warn('telemetry shutdown flush error (ignored):', err);
+      }
+      try {
+        await sdkMeterProvider.shutdown();
+      } catch (err) {
+        console.warn('telemetry shutdown flush error (ignored):', err);
+      }
     }
-    try {
-      await sdkMeterProvider.shutdown();
-    } catch {
-      // swallow shutdown errors
-    }
-    try {
-      await sdkLoggerProvider.forceFlush();
-    } catch {
-      // swallow export errors
-    }
-    try {
-      await sdkLoggerProvider.shutdown();
-    } catch {
-      // swallow shutdown errors
+    if (sdkLoggerProvider) {
+      try {
+        await sdkLoggerProvider.forceFlush();
+      } catch (err) {
+        console.warn('telemetry shutdown flush error (ignored):', err);
+      }
+      try {
+        await sdkLoggerProvider.shutdown();
+      } catch (err) {
+        console.warn('telemetry shutdown flush error (ignored):', err);
+      }
     }
   };
 

@@ -32,9 +32,9 @@ describe('initTelemetry()', () => {
     process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT = 'http://127.0.0.1:1';
     process.env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT = 'http://127.0.0.1:1';
     const { initTelemetry } = await import('../../src/core/telemetry.js');
-    expect(() => initTelemetry()).not.toThrow();
-    const handles = initTelemetry();
-    await expect(handles.shutdown()).resolves.not.toThrow();
+    let handles: Awaited<ReturnType<typeof initTelemetry>>;
+    expect(() => { handles = initTelemetry(); }).not.toThrow();
+    await expect(handles!.shutdown()).resolves.not.toThrow();
   });
 
   it('returns a loggerProvider that does not throw when emitting', async () => {
