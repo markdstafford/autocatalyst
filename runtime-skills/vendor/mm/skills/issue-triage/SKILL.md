@@ -1,0 +1,534 @@
+---
+name: issue-triage
+description: >
+  Run an issue triage session for the current repository. Use this skill whenever the user says
+  "triage", "triage issues", "let's triage", "do a triage run", "triage GitHub issues", "triage my issues",
+  or anything suggesting they want to go through open issues and classify/prioritize them. The skill finds
+  all unlabeled issues, enriches each one with code context, rewrites the title and body in detail,
+  classifies by type and priority, gets human approval, then writes the result back to GitHub. Issues
+  that are too vague get a "needs-info" comment tagging the reporter. After triaging, offers to fix
+  the issue immediately by routing bugs to superpowers:writing-plans, features to mm:planning, and
+  enhancements to mm:planning.
+  Also use when the user provides a list of feedback, notes, screenshots, or observations about the
+  app — this skill will tease apart the items, classify them, create GitHub issues for each, and offer
+  to route into the appropriate planning workflow. Use this skill even if the user only says
+  "let's triage" or "can we go through the issues" — don't try to do this ad-hoc without the skill.
+---
+
+# Issue triage
+
+You are running a structured triage session. Work through unlabeled issues one at a time — enrich each
+with real code context, present a proposed triage for human approval, then write it back to GitHub.
+Nothing gets written to GitHub without explicit approval.
+
+## Mode detection
+
+At the start of every session, determine which mode applies:
+
+**Repo triage mode** — activate when the user says "triage", "triage issues", "let's go through
+the issues", or similar. Proceed to Phase 1 below.
+
+**Feedback intake mode** — activate when the user provides a list of notes, observations,
+bullets, or verbal feedback about the app (not a request to triage GitHub issues). Proceed to
+the Feedback Intake section below.
+
+**If ambiguous** — ask: "Do you want to triage existing GitHub issues in the repo, or process
+a list of feedback into tracked items?"
+
+---
+
+## Phase 1: Setup
+
+### 1. Verify prerequisites
+```bash
+gh auth status
+```
+If `gh` is not authenticated or not installed, stop and tell the user.
+
+mm config is resolved at session start by the mm hook and available in session context:
+- `docs_root` — base directory for friction logs and spec paths
+- `issue_tracker` — issue tracking integration (`github` or `jira`)
+
+Additionally, read the following directly from config at session start:
+- `labels.type` — type label definitions (default: built-in taxonomy from `references/labels.md`)
+- `labels.priority` — priority label definitions (default: built-in taxonomy from `references/labels.md`)
+- `labels.meta` — meta label definitions (default: built-in taxonomy from `references/labels.md`)
+
+For each label category, if present in config use it as the complete list for that category; if absent fall back to the built-in defaults in `references/labels.md`. Store the fully resolved taxonomy — all three categories — in session context for use throughout this session.
+
+If `issue_tracker` is `jira`, all issue creation steps below should output: *"Jira integration not yet implemented — skipping issue creation for this item."* and continue to the next item.
+
+### 2. Ask about analysis depth
+Before fetching issues, ask once:
+
+> "How thorough should the code analysis be for each issue?
+> - **Quick** — keyword grep + read 2-3 relevant files (~1 min per issue)
+> - **Thorough** — explore the full affected module, trace call chains, check test coverage (~3-5 min per issue)"
+
+Remember the choice for the entire session.
+
+### 3. Ensure required labels exist
+Run `gh label list` and compare against the resolved taxonomy (from config if present, otherwise the built-in defaults in `references/labels.md`). Create any missing labels using `gh label create "<name>" --color "<hex>" --description "<desc>"` with the `name`, `color`, and `description` values from the resolved taxonomy.
+
+### 4. Load writing guidelines
+
+Load `mm:writing-guidelines` before generating any issue content. Apply the following
+throughout all issue titles and bodies:
+
+- Sentence case for all headings (e.g. "Steps to reproduce", not "Steps to Reproduce")
+- Active voice ("the skill asks" not "the user is asked")
+- Specific, concrete language — no vague terms like "robust" or "seamless"
+- No unnecessary jargon; define technical terms on first use if needed
+
+---
+
+## Phase 2: Fetch untriaged issues
+
+```bash
+gh issue list --state open --json number,title,body,author,labels,createdAt \
+  --jq '[.[] | select(.labels | length == 0)] | sort_by(.createdAt)'
+```
+
+- If there are **no untriaged issues**: tell the user and stop.
+- If there are issues: tell the user how many were found (e.g. "Found 7 untriaged issues. Starting from oldest.") and begin.
+
+---
+
+## Phase 3: Process each issue
+
+Work through issues sequentially. For each one:
+
+### Step 1: Read the issue
+Note the title, full body, and `author.login`.
+
+### Step 2: Is this issue clear enough to triage?
+
+An issue is **too unclear** if:
+- The body is empty, a single line, or contains nothing actionable (e.g. "it broke", "doesn't work")
+- There's not enough context to identify what part of the codebase is involved
+- The expected vs. actual behavior is impossible to infer
+
+If unclear → go to the **Unclear issue path** below.
+
+### Step 3: Explore the codebase
+
+**Quick mode:**
+- Extract key terms from the issue title and body
+- `grep -r` for those terms across the source tree
+- Read the 2-3 most relevant files
+
+**Thorough mode:**
+- Map the relevant feature area by reading the directory structure
+- Read source files, existing tests, and any related configuration
+- Trace data flows or function call chains where helpful
+
+Your goal: understand which specific files would need to change, and why.
+
+### Step 4: Classify
+
+Use the label names and descriptions from the resolved taxonomy (stored in session context) when classifying. The tables below show the built-in defaults — if a custom taxonomy is configured, apply its label names and descriptions instead of those in the tables; the classification heuristics and decision rules within the tables still apply.
+
+Assign the following:
+
+**One type label** (required):
+| Label | When to use |
+|-------|-------------|
+| `bug` | Something is broken — behavior doesn't match intent |
+| `feature-request` | Net-new capability with no existing equivalent, OR a significant modification that changes a feature's fundamental behavior or scope. Ask: "Is there anything like this in the app already?" — if no, it's a `feature-request`. Examples: building a settings dialog where none exists; rewriting a renderer to support a plugin architecture. |
+| `enhancement` | Extends or improves something that already exists without significantly changing what it is. Heuristic: ask "does something like this already exist, and is the change purely additive rather than transformative?" — if yes to both, it's an `enhancement`. Examples: adding Mermaid support to an existing markdown renderer; adding keyboard shortcuts to an existing action. |
+| `documentation` | Docs are missing, wrong, or unclear |
+| `question` | User needs clarification, not a code change |
+
+**One priority label** (required):
+
+| Label | When to use |
+|-------|-------------|
+| `P0: critical` | Data loss, security vulnerability, or complete service outage |
+| `P1: high` | Core purpose of the app is blocked with no workaround. Decision rule: ask "does a reasonable workaround exist within the app?" — if no, use P1. |
+| `P2: medium` | Workaround exists but requires leaving the app entirely, or significant degradation of the core flow. High-value feature request. Rule: if the only workaround requires leaving the app → P2 minimum. |
+| `P3: low` | Purely cosmetic with no functional impact, or low-value nice-to-have |
+
+**Zero or more meta labels** (optional):
+
+| Label | When to apply |
+|-------|---------------|
+| `usability` | UX issue affecting discoverability, orientation, or ease of use — even if technically functional |
+| `performance` | Noticeably slow, high memory, or resource-intensive behavior |
+| `security` | Any potential for data exposure, injection, or unauthorized access |
+| `good-first-issue` | Well-scoped, self-contained, low-risk change suitable for a new contributor |
+
+### Step 5: Write the enriched title and body
+
+**Title:** Always rewrite for precision. For bugs: describe what fails and when. For features: describe the capability being added.
+
+**Body:** Use this template exactly:
+
+```markdown
+## Summary
+[1-2 sentences. Clear, specific, no jargon unless necessary.]
+
+## [Steps to reproduce | Proposed behavior]
+[For bugs: numbered steps to trigger the issue.
+For features: describe the desired behavior and why it's valuable.]
+
+## Expected behavior
+[What should happen.]
+
+## Actual behavior
+[For bugs only: what currently happens.]
+
+## Affected files
+[Files likely requiring changes, based on code analysis.]
+- `path/to/file.ext` — [reason this file is involved]
+
+## Suggested approach
+[High-level implementation notes. What would need to change and roughly how.]
+
+## Testing requirements
+[Specific tests that would verify the fix or feature is complete.]
+- [ ] [test case description]
+- [ ] [test case description]
+
+---
+*Original report by @[author.login]*
+> [original title]
+>
+> [original body, quoted verbatim]
+```
+
+### Step 6: Present for approval
+
+Show the proposed triage before touching anything:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PROPOSED TRIAGE — Issue #[number]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TITLE WAS:  [original title]
+TITLE NOW:  [new title]
+
+LABELS:     [type label] · [priority label] · [meta labels if any]
+
+[full new body]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Approve this triage? (yes / no / edit)
+```
+
+- **yes** → run dedup check (Step 6a below), then proceed to Step 7
+- **no** → skip Step 6a; drop this issue and move to the next
+- **edit** → incorporate the user's feedback and re-present; don't write until approved
+
+### Step 6a: Check for duplicates
+
+Extract 3–5 meaningful nouns or verbs from the proposed title (skip stop words like "the", "is", "not"). Space-separate terms for a GitHub AND search — if the first search returns no results, retry with a subset of 2–3 terms. Search for existing labeled issues:
+
+```bash
+gh issue list --search "KEYWORDS" --state open --json number,title,labels \
+  --jq '[.[] | select(.number != CURRENT_NUMBER)] | .[] | "#\(.number): \(.title) [\(.labels | map(.name) | join(", "))]"'
+```
+
+Replace KEYWORDS with extracted terms and CURRENT_NUMBER with the number of the issue being triaged. Always report the result to the user:
+
+- *"No duplicates found."* → proceed to Step 7
+- If matches found, present them:
+  ```
+  Possible duplicate: #N "[title]" [labels]
+  Close as duplicate, or proceed with triage? (close / proceed)
+  ```
+  - **close** → post a comment referencing the duplicate, then close:
+    ```bash
+    gh issue comment [number] --body "Closing as duplicate of #[match-number]."
+    gh issue close [number] --reason "not planned"
+    ```
+    Move to the next issue. Do not proceed to Step 7.
+  - **proceed** → continue to Step 7 as normal
+
+### Step 7: Write back to GitHub
+
+Every issue **must** have exactly one type label and exactly one priority label in `--add-label`. Double-check before running.
+
+Use the label names from the resolved taxonomy — if a custom taxonomy is configured, the names applied here must match the names defined in config, not the built-in defaults.
+
+Use `--body-file` to avoid shell-escaping of backticks and code fences in the issue body:
+
+```bash
+body_file=$(mktemp)
+printf '%s' '[new body]' > "$body_file"
+gh issue edit [number] \
+  --title "[new title]" \
+  --add-label "[type-label],[priority-label]" \
+  --body-file "$body_file"
+rm "$body_file"
+```
+
+Replace `[new body]` with the enriched body content. Replace `[type-label]` with the assigned type (e.g. `bug`, `enhancement`) and `[priority-label]` with the assigned priority (e.g. `P1: high`, `P2: medium`). Include any meta labels as additional comma-separated entries.
+
+### Step 8: Offer to fix it now
+
+After a successful write, prompt based on the type label:
+
+- **Bug**: "Issue #[number] is triaged. Want to fix it now, or move to the next issue?"
+- **Feature or Enhancement**: "Issue #[number] is triaged. Want to start planning this now, or move to the next issue?"
+- **Documentation or Question**: "Issue #[number] is triaged. Moving to the next issue."
+  *(No fix-now path for these types — continue automatically.)*
+
+**Fix now — route based on type label:**
+
+- **Bug** → Follow the `mm:planning` implementation handoff stage using issue `#[number]`
+  as the task list location.
+- **Feature (`feature-request`)** → Invoke `mm:planning` to start the feature requirements stage.
+- **Enhancement** → Invoke `mm:planning` to start the enhancement stage.
+- **Documentation** → Open the relevant documentation file and proceed directly.
+- **Question** → No "fix now" path; move to the next issue.
+
+**Later (Bug/Feature/Enhancement):** Continue to the next untriaged issue.
+
+---
+
+## Unclear issue path
+
+When an issue is too vague to triage:
+
+1. Post a comment tagging the reporter:
+```bash
+gh issue comment [number] --body "@[author.login] Thanks for filing this! To help us triage and prioritize it, could you share:
+
+- A clear description of what's happening or what you'd like to see
+- Steps to reproduce the issue (if it's a bug)
+- What you expected vs. what actually happened
+
+We'll hold off on triaging until we have a bit more context."
+```
+
+2. Add the `needs-info` label:
+```bash
+gh issue edit [number] --add-label "needs-info"
+```
+
+3. Tell the user: "Issue #[number] is unclear — tagged @[author.login] and added `needs-info`. Moving on."
+
+4. Continue to the next issue.
+
+---
+
+## Phase 4: Session summary
+
+After all issues are processed:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TRIAGE SESSION COMPLETE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Triaged:      [n] issues
+Needs info:   [n] issues (tagged for follow-up)
+Fixing now:   [list issue numbers, or "none"]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+```
+
+---
+
+## Reference files
+
+- `references/labels.md` — built-in default label taxonomy with hex colors and descriptions; overridden per-category by `labels.*` config keys
+
+---
+
+## Feedback intake mode
+
+Use this mode when the user provides free-form feedback — bullet lists, verbal notes,
+screenshots, or any mix of observations about the app.
+
+Load `mm:writing-guidelines` before generating any issue content. Apply sentence case
+to all headings, active voice throughout, specific language, no unnecessary jargon.
+
+### Step 1: Accept the input
+
+Receive the feedback. It may arrive as:
+- Pasted bullet points
+- A verbal description in the conversation
+- A mix of screenshots and notes
+- A single GitHub issue that contains multiple conflated items
+- A friction log file path (e.g. `{docs_root}/.friction-logs/2026-03-07-143022-episteme.md`)
+
+If the input is a GitHub issue body, treat it the same as free-form text — the goal is
+to tease apart what's inside it.
+
+**If the input is a friction log file path or matches the friction log format** (presence
+of `## Item N:` headings and `**Status:**` fields), activate **Friction Log Mode**:
+
+1. Read the file
+2. Count items with `Status: untracked` vs `Status: triaged → #N`
+3. Report: *"Found N items, M already triaged. Processing X untracked items."*
+4. Skip any item where `Status` is `triaged → #N` — do not re-process it
+5. For each untracked item, skip Step 2 (items are already identified) and proceed through Steps 3–4 as normal, with these additions:
+   - Use the item's **severity** as a prior for priority:
+     🔴 → lean P1, 🟡 → lean P2, 🟢 → lean P3 (triage judgment still overrides)
+   - The item's **"Trying to"** field provides the user intent context — use it when
+     writing the GitHub issue Summary and Expected Behavior sections
+   - After writing the item to GitHub (Step 4), update the `Status` field in the
+     friction log file from `untracked` to `triaged → #N`:
+     ```bash
+     # Capture the issue number when creating the issue:
+     issue_number=$(gh issue create \
+       --title "..." --label "..." --body-file "$body_file" \
+       --json number -q .number)
+     rm "$body_file"
+     # Update the first untracked Status field in the friction log:
+     python3 -c "
+path='path/to/friction-log.md'
+content=open(path).read()
+content=content.replace('**Status:** untracked','**Status:** triaged → #${issue_number}',1)
+open(path,'w').write(content)
+"
+     ```
+     Note: Capture the issue number directly from `gh issue create --json number -q .number` — do not use `gh issue view`. The `replace(..., 1)` call updates only the first match. Process items in order and update the file immediately after each create so you always target the correct item. Read the file after each update to verify.
+
+### Step 2: Tease apart the items
+
+Read through the input and identify each distinct item. A single bullet or sentence may
+contain multiple items (e.g., "the sidebar is slow and the icons are wrong" = two items).
+
+Present the items as a numbered list:
+
+```
+Here's what I found in your feedback — [N] distinct items:
+
+1. [Item description — one sentence, specific]
+2. [Item description]
+...
+
+Does this look right? Anything to merge, split, or add?
+```
+
+Wait for the human to confirm, adjust, or expand the list before proceeding.
+
+### Step 3: Classify each item
+
+For each confirmed item, assign:
+- **Type**: bug / feature-request / enhancement / documentation / question
+- **Priority**: P0 / P1 / P2 / P3 (use the same criteria as repo triage mode)
+- **One-line rationale** for the type classification
+
+Present all classifications at once:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PROPOSED CLASSIFICATIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. [Item] → bug · P2: medium
+   The sidebar renders slowly on large repos — existing functionality that's broken.
+
+2. [Item] → enhancement · P3: low
+   Adding keyboard shortcut to existing action — improvement to what's already there.
+
+3. [Item] → feature-request · P2: medium
+   New capability with no existing equivalent.
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Do these classifications look right?
+```
+
+Wait for approval. Incorporate any corrections before proceeding.
+
+### Step 4: Create GitHub issues
+
+For each approved item, run a dedup check before creating the issue.
+
+**Dedup check:**
+
+Extract 3–5 meaningful nouns or verbs from the proposed issue title (skip stop words like "the", "is", "not"). Space-separate terms for a GitHub AND search — if the first search returns no results, retry with a subset of 2–3 terms. Search for existing issues:
+
+```bash
+gh issue list --search "KEYWORDS" --state open --json number,title,labels \
+  --jq '.[] | "#\(.number): \(.title) [\(.labels | map(.name) | join(", "))]"'
+```
+
+Replace `KEYWORDS` with the extracted terms. Always report the result:
+
+- *"No duplicates found."* → create the issue (see Issue creation below)
+- If matches found:
+  ```
+  Possible duplicate: #N "[title]" [labels]
+  Append evidence to #N, or create a new issue? (append / new)
+  ```
+  - **append** → post a comment on the existing issue:
+    ```bash
+    gh issue comment [match-number] --body "## Additional observation
+
+[Summary of the current item]
+
+**Context:** [source — e.g. \"friction log 2026-03-07, Item 3\" or \"feedback intake 2026-03-07\"]
+**Suggested approach:** [from current item's Suggested Approach section]"
+    ```
+    Confirm: *"Evidence appended to #[match-number]."* Skip issue creation.
+    If processing a friction log, update the item's `Status` field to `triaged → #[match-number]` using the same python3 approach from Friction Log Mode in Step 1.
+  - **new** → create the issue (see Issue creation below)
+
+**Issue creation:**
+
+The process differs by type:
+
+**Bugs, documentation, questions** — create the issue directly using the enriched body
+template from Phase 3 Step 5 (Summary, Steps to reproduce, Expected behavior, Actual
+behavior, Affected files, Suggested approach, Testing requirements).
+
+**Features and enhancements** — run dedup check first, then write the spec and create the issue:
+
+1. **Run dedup check** — as described above. If a duplicate is found and the user
+   chooses `append`, append evidence to the existing issue and stop — do not write
+   a spec or create a new issue.
+
+2. **Write the spec** — invoke `mm:planning` (feature requirements stage for features,
+   enhancement stage for enhancements) to write the spec file to `{docs_root}/specs/`.
+
+3. **Commit and push the spec** — commit and push the spec file so the link in the
+   issue body is valid immediately:
+   ```bash
+   git add {docs_root}/specs/[filename].md
+   git commit -m "feat(specs): add [type] spec for [name]"
+   git push
+   ```
+   If the push fails, stop and surface the error. Do not create the issue until the
+   file is confirmed on the remote.
+
+4. **Create the issue** — use a summary + spec pointer body (not the full enriched
+   template). Task decompositions belong in the spec, not the issue:
+   ```markdown
+   ## Summary
+   [1-2 sentences: what this feature/enhancement does and why it matters.]
+
+   ## Spec
+   `{docs_root}/specs/[filename].md`
+   ```
+
+After creating each issue, confirm: *"Issue #[number] created for [item]."*
+
+Note: GitHub issues are created for all types — bugs, features, enhancements, documentation, and questions alike.
+The issue is the tracking artifact. The mm planning spec is the planning artifact.
+The issue links to the spec; the spec's frontmatter records the issue number.
+
+### Step 5: Offer to start planning
+
+After all issues are created, present a summary and offer to start planning:
+
+```
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+INTAKE COMPLETE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Created:   [N] issues
+  Bugs:          #[n], #[n]
+  Features:      #[n]
+  Enhancements:  #[n], #[n]
+  Documentation: #[n]
+  Questions:     #[n]
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Want to start planning any of these now?
+```
+
+**If yes** — route based on type:
+- Bug → Follow the `mm:planning` implementation handoff stage using the issue number as the task list location.
+- Feature → `mm:planning` to start the feature requirements stage
+- Enhancement → `mm:planning` to start the enhancement stage
+- Documentation → open the relevant file and proceed directly
+- Question → no planning path; the issue stands as a tracking item
+
+**If no** — session complete.

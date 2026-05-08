@@ -1,13 +1,7 @@
 import { describe, expect, test } from 'vitest';
 import { buildAgentRoutingPolicy } from '../../src/adapters/runtime-composition.js';
-import type { AgentPluginConfig } from '../../src/types/ai.js';
 import type { AiConfig } from '../../src/types/config.js';
 import type { ResolvedAiConfig } from '../../src/core/config.js';
-
-const pluginPaths: Record<string, AgentPluginConfig> = {
-  mm: { type: 'local', path: '/plugins/mm' },
-  superpowers: { type: 'local', path: '/plugins/superpowers' },
-};
 
 function buildTestAiConfig(): ResolvedAiConfig {
   const config: AiConfig = {
@@ -27,7 +21,6 @@ function buildTestAiConfig(): ResolvedAiConfig {
         model: 'claude-sonnet-4-6',
         runner: 'claude_agent_sdk',
         anthropic: { effort: 'high', thinking: 'adaptive' },
-        plugins: [pluginPaths.mm],
       },
       {
         name: 'implementation',
@@ -35,7 +28,6 @@ function buildTestAiConfig(): ResolvedAiConfig {
         model: 'claude-sonnet-4-6',
         runner: 'claude_agent_sdk',
         anthropic: { effort: 'medium', thinking: 'adaptive' },
-        plugins: [pluginPaths.superpowers],
       },
       {
         name: 'repo-question',
@@ -50,7 +42,6 @@ function buildTestAiConfig(): ResolvedAiConfig {
         model: 'claude-sonnet-4-6',
         runner: 'claude_agent_sdk',
         anthropic: { effort: 'high', thinking: 'adaptive' },
-        plugins: [pluginPaths.mm],
       },
     ],
     routing: {
@@ -78,30 +69,33 @@ describe('runtime AI routing policy', () => {
     });
   });
 
-  test('artifact creation loads mm plugin', () => {
+  test('artifact creation requires mm planning skill without configured plugins', () => {
     const policy = buildAgentRoutingPolicy(buildTestAiConfig());
-    expect(policy.resolve({ task: 'artifact.create' })).toMatchObject({
+    expect(policy.resolve({ task: 'artifact.create', intent: 'idea' })).toMatchObject({
       id: 'artifact-authoring',
       provider: 'claude_agent_sdk',
-      plugins: [pluginPaths.mm],
+      required_skills: ['mm:planning'],
+      plugins: undefined,
     });
   });
 
-  test('implementation loads superpowers plugin', () => {
+  test('implementation requires superpowers skills without configured plugins', () => {
     const policy = buildAgentRoutingPolicy(buildTestAiConfig());
     expect(policy.resolve({ task: 'implementation.run' })).toMatchObject({
       id: 'implementation',
       provider: 'claude_agent_sdk',
-      plugins: [pluginPaths.superpowers],
+      required_skills: ['superpowers:writing-plans', 'superpowers:subagent-driven-development'],
+      plugins: undefined,
     });
   });
 
-  test('issue triage loads mm plugin', () => {
+  test('issue triage requires mm issue triage skill without configured plugins', () => {
     const policy = buildAgentRoutingPolicy(buildTestAiConfig());
     expect(policy.resolve({ task: 'issue.triage' })).toMatchObject({
       id: 'issue-triage',
       provider: 'claude_agent_sdk',
-      plugins: [pluginPaths.mm],
+      required_skills: ['mm:issue-triage'],
+      plugins: undefined,
     });
   });
 });

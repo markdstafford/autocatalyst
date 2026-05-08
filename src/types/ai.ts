@@ -32,6 +32,9 @@ export interface AgentPluginConfig {
   path: string;
 }
 
+export type AgentSkillNamespace = 'mm' | 'superpowers';
+export type AgentSkillRef = `${AgentSkillNamespace}:${string}`;
+
 export interface AgentProfile {
   id: string;
   provider: string;
@@ -40,6 +43,7 @@ export interface AgentProfile {
   thinking?: AgentThinking;
   setting_sources?: AgentSettingSource[];
   load_user_settings?: boolean;
+  required_skills?: AgentSkillRef[];
   plugins?: AgentPluginConfig[];
 }
 
