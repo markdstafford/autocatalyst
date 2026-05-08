@@ -84,6 +84,32 @@ vi.mock('@aws-sdk/credential-providers', () => ({
   fromNodeProviderChain: vi.fn().mockReturnValue(vi.fn()),
 }));
 
+const BASE_AI_CONFIG = {
+  credentials: [
+    { name: 'anthropic-default', type: 'api_key' as const, value: 'test-key' },
+  ],
+  endpoints: [
+    { name: 'anthropic-direct', protocol: 'anthropic' as const, credential: 'anthropic-default' },
+  ],
+  profiles: [
+    { name: 'default', endpoint: 'anthropic-direct', model: 'claude-sonnet-4-5', runner: 'anthropic_direct' as const },
+  ],
+  routing: { default_profile: 'default' },
+};
+
+const BEDROCK_AI_CONFIG = {
+  credentials: [
+    { name: 'bedrock-iam', type: 'iam' as const, aws_profile: 'ai-prod-llm' },
+  ],
+  endpoints: [
+    { name: 'bedrock-direct', protocol: 'anthropic' as const, credential: 'bedrock-iam' },
+  ],
+  profiles: [
+    { name: 'default', endpoint: 'bedrock-direct', model: 'claude-sonnet-4-5', runner: 'anthropic_direct' as const },
+  ],
+  routing: { default_profile: 'default' },
+};
+
 function makeConfig(overrides: Partial<LoadedConfig['config']> = {}): LoadedConfig {
   return {
     config: {
@@ -103,11 +129,10 @@ function makeConfig(overrides: Partial<LoadedConfig['config']> = {}): LoadedConf
           },
         },
       ],
-      llm_settings: { provider: 'anthropic', auth: 'api_key' },
+      ai: BASE_AI_CONFIG,
       ...overrides,
     },
-    promptTemplate: 'Prompt',
-    filePath: '/tmp/repo/WORKFLOW.md',
+    filePath: '/tmp/repo/autocatalyst.yaml',
   };
 }
 
@@ -161,7 +186,7 @@ describe('composeWorkflowRuntime', () => {
     const { composeWorkflowRuntime } = await import('../../src/core/runtime-composition.js');
     const { default: AnthropicBedrock } = await import('@anthropic-ai/bedrock-sdk');
     const { fromNodeProviderChain } = await import('@aws-sdk/credential-providers');
-    const config = makeConfig({ llm_settings: { provider: 'bedrock', aws_profile: 'ai-prod-llm' } });
+    const config = makeConfig({ ai: BEDROCK_AI_CONFIG });
     const env: Record<string, string | undefined> = {};
     const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() };
 

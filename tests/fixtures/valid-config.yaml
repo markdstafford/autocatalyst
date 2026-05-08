@@ -1,0 +1,31 @@
+polling:
+  interval_ms: 5000
+
+workspace:
+  root: /tmp/workspaces
+
+channels:
+  - provider: chat
+    name: product
+
+publishers:
+  - provider: documents
+    artifacts:
+      - artifact
+
+ai:
+  credentials:
+    - name: test-key
+      type: api_key
+      value: ${TEST_API_KEY}
+  endpoints:
+    - name: test-endpoint
+      protocol: anthropic
+      credential: test-key
+  profiles:
+    - name: test-profile
+      endpoint: test-endpoint
+      model: claude-haiku-4-5
+      runner: anthropic_direct
+  routing:
+    intent.classify: test-profile

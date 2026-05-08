@@ -46,8 +46,8 @@ try {
     process.exit(1);
   }
 
-  const workflowPath = join(repoPath, 'WORKFLOW.md');
-  let currentConfig = loadConfig(workflowPath, process.env as Record<string, string>);
+  const configPath = join(repoPath, 'autocatalyst.yaml');
+  let currentConfig = loadConfig(configPath, process.env as Record<string, string>);
 
   const { resolved: _resolved, missing } = resolveEnvVars(
     currentConfig.config as Record<string, unknown>,
@@ -76,10 +76,10 @@ try {
 
   const cleanupSignals = registerSignalHandlers(service);
 
-  const watcher = new ConfigWatcher(workflowPath, {
+  const watcher = new ConfigWatcher(configPath, {
     onReload: () => {
       try {
-        const newConfig = loadConfig(workflowPath, process.env as Record<string, string>);
+        const newConfig = loadConfig(configPath, process.env as Record<string, string>);
         const changedKeys = Object.keys(newConfig.config).filter(
           k => JSON.stringify(newConfig.config[k]) !== JSON.stringify(currentConfig.config[k]),
         );

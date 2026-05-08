@@ -45,9 +45,23 @@ function makeFeedback(content = 'Please revise this'): ThreadMessage {
 
 function makePolicy(): DefaultAgentRoutingPolicy {
   return new DefaultAgentRoutingPolicy({
-    defaults: {
-      direct: { id: 'direct', provider: 'anthropic', model: 'claude-haiku-4-5', effort: 'low' },
-      agent: { id: 'agent', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-5', effort: 'medium' },
+    credentials: [
+      { name: 'api-key', type: 'api_key', value: 'test-key' },
+    ],
+    endpoints: [
+      { name: 'direct-ep', protocol: 'anthropic', credential: 'api-key' },
+      { name: 'agent-ep', protocol: 'anthropic', credential: 'api-key' },
+    ],
+    profiles: [
+      { name: 'direct', endpoint: 'direct-ep', model: 'claude-haiku-4-5', runner: 'anthropic_direct' },
+      { name: 'agent', endpoint: 'agent-ep', model: 'claude-sonnet-4-5', runner: 'claude_agent_sdk' },
+    ],
+    routing: {
+      'artifact.create': 'agent',
+      'artifact.revise': 'agent',
+      'question.answer': 'agent',
+      'implementation.run': 'agent',
+      'issue.triage': 'agent',
     },
   });
 }

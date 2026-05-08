@@ -1,78 +1,97 @@
 import { describe, expect, test } from 'vitest';
 import { DefaultAgentRoutingPolicy } from '../../../src/core/ai/routing-policy.js';
-import type { AgentProfile } from '../../../src/types/ai.js';
+import type { AiConfig } from '../../../src/types/config.js';
+
+function makeAiConfig(overrides?: Partial<AiConfig>): AiConfig {
+  return {
+    credentials: [{ name: 'my-key', type: 'api_key', value: 'sk-test' }],
+    endpoints: [{ name: 'ep', protocol: 'anthropic', credential: 'my-key' }],
+    profiles: [
+      {
+        name: 'direct-default',
+        endpoint: 'ep',
+        model: 'claude-haiku-4-5',
+        runner: 'anthropic_direct',
+        anthropic: { effort: 'low' },
+      },
+      {
+        name: 'agent-default',
+        endpoint: 'ep',
+        model: 'claude-sonnet-4-5',
+        runner: 'claude_agent_sdk',
+        anthropic: { effort: 'medium', thinking: 'adaptive' },
+      },
+    ],
+    routing: {
+      'intent.classify': 'direct-default',
+      'pr.title_generate': 'direct-default',
+      'artifact.create': 'agent-default',
+      'artifact.revise': 'agent-default',
+      'implementation.run': 'agent-default',
+      'question.answer': 'agent-default',
+      'issue.triage': 'agent-default',
+    },
+    ...overrides,
+  };
+}
 
 describe('DefaultAgentRoutingPolicy', () => {
-  const defaults: Record<string, AgentProfile> = {
-    direct: { id: 'direct', provider: 'anthropic', model: 'claude-haiku-4-5', effort: 'low' },
-    agent: { id: 'agent', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-5', effort: 'medium' },
-  };
-
-  test('resolves exact task routes before provider defaults', () => {
-    const policy = new DefaultAgentRoutingPolicy({
-      defaults,
-      routes: [
-        {
-          match: { task: 'implementation.run' },
-          profile: { id: 'impl', provider: 'claude_agent_sdk', model: 'claude-opus-4-1', effort: 'high' },
-        },
-      ],
+  test('resolves intent.classify to the direct profile', () => {
+    const policy = new DefaultAgentRoutingPolicy(makeAiConfig());
+    expect(policy.resolve({ task: 'intent.classify' })).toMatchObject({
+      id: 'direct-default',
+      provider: 'anthropic',
+      effort: 'low',
     });
+  });
 
+  test('resolves pr.title_generate to the direct profile', () => {
+    const policy = new DefaultAgentRoutingPolicy(makeAiConfig());
+    expect(policy.resolve({ task: 'pr.title_generate' })).toMatchObject({
+      id: 'direct-default',
+      provider: 'anthropic',
+    });
+  });
+
+  test('resolves implementation.run to the agent profile', () => {
+    const policy = new DefaultAgentRoutingPolicy(makeAiConfig());
     expect(policy.resolve({ task: 'implementation.run' })).toMatchObject({
-      id: 'impl',
-      provider: 'claude_agent_sdk',
-      effort: 'high',
-    });
-    expect(policy.resolve({ task: 'artifact.create' })).toMatchObject({
-      id: 'agent',
+      id: 'agent-default',
       provider: 'claude_agent_sdk',
       effort: 'medium',
+      thinking: 'adaptive',
     });
   });
 
-  test('accepts stage intent and artifact kind metadata when matching routes', () => {
-    const policy = new DefaultAgentRoutingPolicy({
-      defaults,
-      routes: [
-        {
-          match: {
-            task: 'artifact.create',
-            stage: 'new_thread',
-            intent: 'bug',
-            artifact_kind: 'bug_triage',
-          },
-          profile: { id: 'triage', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-5', effort: 'high' },
-        },
-      ],
+  test('resolves artifact.create to the agent profile', () => {
+    const policy = new DefaultAgentRoutingPolicy(makeAiConfig());
+    expect(policy.resolve({ task: 'artifact.create' })).toMatchObject({
+      id: 'agent-default',
+      provider: 'claude_agent_sdk',
     });
-
-    expect(policy.resolve({
-      task: 'artifact.create',
-      stage: 'new_thread',
-      intent: 'bug',
-      artifact_kind: 'bug_triage',
-    })).toMatchObject({ id: 'triage', effort: 'high' });
-    expect(policy.resolve({
-      task: 'artifact.create',
-      stage: 'new_thread',
-      intent: 'idea',
-      artifact_kind: 'feature_spec',
-    })).toMatchObject({ id: 'agent', effort: 'medium' });
   });
 
-  test('falls back predictably by task class', () => {
-    const policy = new DefaultAgentRoutingPolicy({ defaults });
-
-    expect(policy.resolve({ task: 'intent.classify' })).toMatchObject({ id: 'direct', provider: 'anthropic' });
-    expect(policy.resolve({ task: 'question.answer' })).toMatchObject({ id: 'agent', provider: 'claude_agent_sdk' });
+  test('throws for a task not in routing', () => {
+    const config = makeAiConfig();
+    // Remove one routing entry to simulate missing task
+    delete config.routing['question.answer'];
+    const policy = new DefaultAgentRoutingPolicy(config);
+    expect(() => policy.resolve({ task: 'question.answer' })).toThrow("No routing entry for task 'question.answer'");
   });
 
-  test('routes pr.title_generate to the direct defaults', () => {
-    const policy = new DefaultAgentRoutingPolicy({ defaults });
-    expect(policy.resolve({ task: 'pr.title_generate' })).toMatchObject({
-      id: 'direct',
-      provider: 'anthropic',
+  test('returned AgentProfile has correct model from ProfileConfig', () => {
+    const policy = new DefaultAgentRoutingPolicy(makeAiConfig());
+    const profile = policy.resolve({ task: 'intent.classify' });
+    expect(profile.model).toBe('claude-haiku-4-5');
+  });
+
+  test('returned AgentProfile includes plugins when ProfileConfig has plugins', () => {
+    const pluginPath = { type: 'local' as const, path: '/plugins/mm' };
+    const config = makeAiConfig();
+    config.profiles[1].plugins = [pluginPath];
+    const policy = new DefaultAgentRoutingPolicy(config);
+    expect(policy.resolve({ task: 'artifact.create' })).toMatchObject({
+      plugins: [pluginPath],
     });
   });
 });

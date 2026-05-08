@@ -4,8 +4,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { rmSync } from 'node:fs';
 import { PassThrough } from 'node:stream';
-import { configExists, isSecret, findMissingRequired, writeToEnv, writeInlineToWorkflow, propertyPathToEnvKey, runInit } from '../../src/core/init.js';
-import { parseWorkflow } from '../../src/core/config.js';
+import { configExists, isSecret, findMissingRequired, writeToEnv, writeInlineToConfig, propertyPathToEnvKey, runInit } from '../../src/core/init.js';
+import { parseAutocatalystConfig } from '../../src/core/config.js';
 
 // ─── isSecret ───────────────────────────────────────────────────────────────
 
@@ -46,6 +46,15 @@ describe('isSecret', () => {
     expect(isSecret('aws_profile')).toBe(false);
     expect(isSecret('workspace.root')).toBe(false);
   });
+
+  it('returns true for ai.credentials.*.value paths', () => {
+    expect(isSecret('ai.credentials.0.value')).toBe(true);
+    expect(isSecret('ai.credentials.5.value')).toBe(true);
+  });
+
+  it('returns false for ai.credentials.*.name paths', () => {
+    expect(isSecret('ai.credentials.0.name')).toBe(false);
+  });
 });
 
 // ─── configExists ─────────────────────────────────────────────────────────
@@ -61,12 +70,12 @@ describe('configExists', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('returns false when WORKFLOW.md does not exist', () => {
+  it('returns false when autocatalyst.yaml does not exist', () => {
     expect(configExists(tempDir)).toBe(false);
   });
 
-  it('returns true when WORKFLOW.md exists', () => {
-    writeFileSync(join(tempDir, 'WORKFLOW.md'), '---\n---\n', 'utf-8');
+  it('returns true when autocatalyst.yaml exists', () => {
+    writeFileSync(join(tempDir, 'autocatalyst.yaml'), 'polling:\n  interval_ms: 5000\n', 'utf-8');
     expect(configExists(tempDir)).toBe(true);
   });
 });
@@ -84,27 +93,30 @@ describe('findMissingRequired', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  function writeWorkflow(yaml: string): void {
-    writeFileSync(join(tempDir, 'WORKFLOW.md'), `---\n${yaml}\n---\n\nTemplate\n`, 'utf-8');
+  function writeConfig(yaml: string): void {
+    writeFileSync(join(tempDir, 'autocatalyst.yaml'), yaml, 'utf-8');
   }
 
   it('returns all required properties for an empty config', () => {
-    writeWorkflow('');
+    writeConfig('');
     const missing = findMissingRequired(tempDir);
     expect(missing).toContain('workspace.root');
     expect(missing).toContain('channels.0.provider');
     expect(missing).toContain('channels.0.name');
+    expect(missing).toContain('ai.credentials.0.name');
+    expect(missing).toContain('ai.endpoints.0.name');
+    expect(missing).toContain('ai.profiles.0.name');
   });
 
   it('returns empty list when all required properties are populated', () => {
-    writeWorkflow(
-      "workspace:\n  root: /tmp/ws\nchannels:\n  - provider: chat\n    name: product"
+    writeConfig(
+      "workspace:\n  root: /tmp/ws\nchannels:\n  - provider: chat\n    name: product\nai:\n  credentials:\n    - name: my-key\n      type: api_key\n      value: sk-test\n  endpoints:\n    - name: my-ep\n      protocol: anthropic\n      credential: my-key\n  profiles:\n    - name: my-profile\n      endpoint: my-ep\n      model: haiku\n      runner: anthropic_direct\n  routing: {}\n"
     );
     expect(findMissingRequired(tempDir)).toEqual([]);
   });
 
   it('returns only the missing properties for a partial config', () => {
-    writeWorkflow("workspace:\n  root: /tmp/ws\nchannels:\n  - provider: chat\n    name: ''");
+    writeConfig("workspace:\n  root: /tmp/ws\nchannels:\n  - provider: chat\n    name: ''");
     const missing = findMissingRequired(tempDir);
     expect(missing).not.toContain('workspace.root');
     expect(missing).not.toContain('channels.0.provider');
@@ -112,23 +124,23 @@ describe('findMissingRequired', () => {
   });
 
   it('treats null as unpopulated', () => {
-    writeWorkflow("workspace:\n  root: ~\nchannels:\n  - provider: chat\n    name: product");
+    writeConfig("workspace:\n  root: ~\nchannels:\n  - provider: chat\n    name: product");
     expect(findMissingRequired(tempDir)).toContain('workspace.root');
   });
 
   it('treats placeholder values as unpopulated', () => {
-    writeWorkflow("workspace:\n  root: <your-workspace-root>\nchannels:\n  - provider: chat\n    name: product");
+    writeConfig("workspace:\n  root: <your-workspace-root>\nchannels:\n  - provider: chat\n    name: product");
     expect(findMissingRequired(tempDir)).toContain('workspace.root');
   });
 
   it('treats TODO as unpopulated', () => {
-    writeWorkflow("workspace:\n  root: TODO\nchannels:\n  - provider: chat\n    name: product");
+    writeConfig("workspace:\n  root: TODO\nchannels:\n  - provider: chat\n    name: product");
     expect(findMissingRequired(tempDir)).toContain('workspace.root');
   });
 
   it('treats ${VAR} references as populated', () => {
-    writeWorkflow(
-      "workspace:\n  root: /tmp/ws\nchannels:\n  - provider: ${AC_CHANNEL_PROVIDER}\n    name: product"
+    writeConfig(
+      "workspace:\n  root: /tmp/ws\nchannels:\n  - provider: \${AC_CHANNEL_PROVIDER}\n    name: product\nai:\n  credentials:\n    - name: my-key\n      type: api_key\n      value: sk-test\n  endpoints:\n    - name: my-ep\n      protocol: anthropic\n      credential: my-key\n  profiles:\n    - name: my-profile\n      endpoint: my-ep\n      model: haiku\n      runner: anthropic_direct\n  routing: {}\n"
     );
     expect(findMissingRequired(tempDir)).toEqual([]);
   });
@@ -172,16 +184,16 @@ describe('writeToEnv', () => {
   });
 });
 
-// ─── writeInlineToWorkflow ────────────────────────────────────────────────
+// ─── writeInlineToConfig ─────────────────────────────────────────────────
 
-describe('writeInlineToWorkflow', () => {
+describe('writeInlineToConfig', () => {
   let tempDir: string;
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'init-test-'));
     writeFileSync(
-      join(tempDir, 'WORKFLOW.md'),
-      "---\nworkspace:\n  root: ''\nchannels:\n  - provider: ''\n    name: ''\n---\n\nTemplate body\n",
+      join(tempDir, 'autocatalyst.yaml'),
+      "workspace:\n  root: ''\nchannels:\n  - provider: ''\n    name: ''\n",
       'utf-8',
     );
   });
@@ -191,29 +203,28 @@ describe('writeInlineToWorkflow', () => {
   });
 
   it('sets an existing nested property inline', () => {
-    writeInlineToWorkflow('channels.0.name', 'product', tempDir);
-    const content = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
+    writeInlineToConfig('channels.0.name', 'product', tempDir);
+    const content = readFileSync(join(tempDir, 'autocatalyst.yaml'), 'utf-8');
     expect(content).toContain('product');
   });
 
   it('sets a property to a ${VAR} env reference', () => {
-    writeInlineToWorkflow('channels.0.provider', '${AC_CHANNEL_PROVIDER}', tempDir);
-    const content = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
+    writeInlineToConfig('channels.0.provider', '${AC_CHANNEL_PROVIDER}', tempDir);
+    const content = readFileSync(join(tempDir, 'autocatalyst.yaml'), 'utf-8');
     expect(content).toContain('${AC_CHANNEL_PROVIDER}');
   });
 
-  it('produces output that parses back correctly via parseWorkflow', () => {
-    writeInlineToWorkflow('workspace.root', '/my/workspace', tempDir);
-    const content = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
-    const { config, promptTemplate } = parseWorkflow(content);
+  it('produces output that parses back correctly via parseAutocatalystConfig', () => {
+    writeInlineToConfig('workspace.root', '/my/workspace', tempDir);
+    const content = readFileSync(join(tempDir, 'autocatalyst.yaml'), 'utf-8');
+    const config = parseAutocatalystConfig(content);
     expect((config as Record<string, unknown>)?.['workspace']?.['root']).toBe('/my/workspace');
-    expect(promptTemplate).toContain('Template body');
   });
 
   it('preserves other properties when setting one value', () => {
-    writeInlineToWorkflow('channels.0.name', 'product', tempDir);
+    writeInlineToConfig('channels.0.name', 'product', tempDir);
     // workspace.root should still be present (empty string) not deleted
-    const content = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
+    const content = readFileSync(join(tempDir, 'autocatalyst.yaml'), 'utf-8');
     expect(content).toContain('workspace');
     expect(content).toContain('channels');
   });
@@ -234,7 +245,7 @@ describe('runInit — decline branch', () => {
 
   it('creates no files when user declines initialization', async () => {
     await runInit(tempDir, { promptFn: async () => 'n' });
-    expect(existsSync(join(tempDir, 'WORKFLOW.md'))).toBe(false);
+    expect(existsSync(join(tempDir, 'autocatalyst.yaml'))).toBe(false);
   });
 
   it('emits init.creation_declined log event', async () => {
@@ -256,8 +267,8 @@ describe('runInit — complete config branch', () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'init-test-'));
     writeFileSync(
-      join(tempDir, 'WORKFLOW.md'),
-      '---\nworkspace:\n  root: /tmp/ws\nchannels:\n  - provider: chat\n    name: product\n---\n\nTemplate\n',
+      join(tempDir, 'autocatalyst.yaml'),
+      'workspace:\n  root: /tmp/ws\nchannels:\n  - provider: chat\n    name: product\nai:\n  credentials:\n    - name: my-key\n      type: api_key\n      value: sk-test\n  endpoints:\n    - name: my-ep\n      protocol: anthropic\n      credential: my-key\n  profiles:\n    - name: my-profile\n      endpoint: my-ep\n      model: haiku\n      runner: anthropic_direct\n  routing: {}\n',
       'utf-8',
     );
   });
@@ -267,9 +278,9 @@ describe('runInit — complete config branch', () => {
   });
 
   it('makes no file writes when config is already complete', async () => {
-    const before = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
+    const before = readFileSync(join(tempDir, 'autocatalyst.yaml'), 'utf-8');
     await runInit(tempDir, { promptFn: async () => { throw new Error('should not prompt'); } });
-    const after = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
+    const after = readFileSync(join(tempDir, 'autocatalyst.yaml'), 'utf-8');
     expect(after).toBe(before);
     expect(existsSync(join(tempDir, '.env'))).toBe(false);
   });
@@ -307,8 +318,8 @@ describe('runInit — incomplete config branch', () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'init-test-'));
     writeFileSync(
-      join(tempDir, 'WORKFLOW.md'),
-      "---\nworkspace:\n  root: /tmp/ws\nchannels:\n  - provider: ''\n    name: ''\n---\n\nTemplate\n",
+      join(tempDir, 'autocatalyst.yaml'),
+      "workspace:\n  root: /tmp/ws\nchannels:\n  - provider: ''\n    name: ''\nai:\n  credentials:\n    - name: my-key\n      type: api_key\n      value: sk-test\n  endpoints:\n    - name: my-ep\n      protocol: anthropic\n      credential: my-key\n  profiles:\n    - name: my-profile\n      endpoint: my-ep\n      model: haiku\n      runner: anthropic_direct\n  routing: {}\n",
       'utf-8',
     );
   });
@@ -326,13 +337,13 @@ describe('runInit — incomplete config branch', () => {
       },
     });
 
-    const wfContent = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
+    const wfContent = readFileSync(join(tempDir, 'autocatalyst.yaml'), 'utf-8');
     expect(wfContent).toContain('chat');
     expect(wfContent).toContain('product');
     expect(existsSync(join(tempDir, '.env'))).toBe(false);
   });
 
-  it('writes non-secret properties inline to WORKFLOW.md', async () => {
+  it('writes non-secret properties inline to autocatalyst.yaml', async () => {
     await runInit(tempDir, {
       promptFn: async (question) => {
         if (question.includes('channels.0.provider')) return 'chat';
@@ -341,7 +352,7 @@ describe('runInit — incomplete config branch', () => {
       },
     });
 
-    const wfContent = readFileSync(join(tempDir, 'WORKFLOW.md'), 'utf-8');
+    const wfContent = readFileSync(join(tempDir, 'autocatalyst.yaml'), 'utf-8');
     expect(wfContent).toContain('general');
   });
 
@@ -402,12 +413,12 @@ describe('runInit — no config + confirm branch', () => {
   it('creates skeleton, prompts for all required values, writes them', async () => {
     let promptCount = 0;
     // First prompt is Y/n, then one per required property
-    const answers = ['Y', '/my/workspace', 'chat', 'product'];
+    const answers = ['Y', '/my/workspace', 'chat', 'product', 'my-key', 'my-ep', 'my-profile'];
     await runInit(tempDir, {
       promptFn: async () => answers[promptCount++] ?? '',
     });
 
-    expect(existsSync(join(tempDir, 'WORKFLOW.md'))).toBe(true);
+    expect(existsSync(join(tempDir, 'autocatalyst.yaml'))).toBe(true);
     expect(findMissingRequired(tempDir)).toEqual([]);
   });
 
@@ -418,7 +429,7 @@ describe('runInit — no config + confirm branch', () => {
       try { events.push(JSON.parse(chunk.toString())); } catch {}
     });
     let promptCount = 0;
-    const answers = ['Y', '/my/workspace', 'chat', 'product'];
+    const answers = ['Y', '/my/workspace', 'chat', 'product', 'my-key', 'my-ep', 'my-profile'];
     await runInit(tempDir, {
       promptFn: async () => answers[promptCount++] ?? '',
       logDestination: stream,
@@ -428,6 +439,25 @@ describe('runInit — no config + confirm branch', () => {
     expect(events.some((e) => e['event'] === 'init.config_created')).toBe(true);
   });
 
+  it('init.config_created path points to autocatalyst.yaml', async () => {
+    const stream = new PassThrough();
+    const events: Record<string, unknown>[] = [];
+    stream.on('data', (chunk: Buffer) => {
+      try { events.push(JSON.parse(chunk.toString())); } catch {}
+    });
+    let promptCount = 0;
+    const answers = ['Y', '/my/workspace', 'chat', 'product', 'my-key', 'my-ep', 'my-profile'];
+    await runInit(tempDir, {
+      promptFn: async () => answers[promptCount++] ?? '',
+      logDestination: stream,
+    });
+    stream.end();
+    await new Promise<void>((resolve) => stream.on('finish', resolve));
+    const created = events.find((e) => e['event'] === 'init.config_created');
+    expect(created).toBeDefined();
+    expect(String(created?.['path'])).toContain('autocatalyst.yaml');
+  });
+
   it('emits all expected log events', async () => {
     const stream = new PassThrough();
     const events: Record<string, unknown>[] = [];
@@ -435,7 +465,7 @@ describe('runInit — no config + confirm branch', () => {
       try { events.push(JSON.parse(chunk.toString())); } catch {}
     });
     let promptCount = 0;
-    const answers = ['Y', '/my/workspace', 'chat', 'product'];
+    const answers = ['Y', '/my/workspace', 'chat', 'product', 'my-key', 'my-ep', 'my-profile'];
     await runInit(tempDir, {
       promptFn: async () => answers[promptCount++] ?? '',
       logDestination: stream,

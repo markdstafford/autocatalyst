@@ -1,24 +1,30 @@
 import { parse as parseYaml } from 'yaml';
 import { existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, basename, resolve } from 'node:path';
-import type { WorkflowConfig, LoadedConfig, ModelProvider, AnthropicAuthMethod } from '../types/config.js';
-import { generateDefaultWorkflow } from '../config/defaults.js';
+import type { WorkflowConfig, LoadedConfig, AiConfig, CredentialConfig, EndpointConfig, ProfileConfig, RoutingConfig } from '../types/config.js';
+import { generateDefaultConfig } from '../config/defaults.js';
 
-export interface ResolvedLlmSettings {
-  provider: ModelProvider;
-  auth: 'api_key' | 'sso' | 'iam';
-  /** Set when provider=anthropic and auth=api_key */
-  apiKey?: string;
-  /** Set when provider=anthropic and auth=sso and a token was available at resolve time */
-  ssoToken?: string;
-  /**
-   * True when provider=anthropic, auth=sso, and no token was present in the environment.
-   * buildDirectModelRunner will call triggerSsoFlow before the first request.
-   */
-  requiresSsoFlow?: boolean;
-  /** Set when provider=bedrock and llm_settings.aws_profile is configured */
-  awsProfile?: string;
+// ─── Resolved AI config types ─────────────────────────────────────────────────
+
+export interface ResolvedCredential {
+  name: string;
+  type: CredentialConfig['type'];
+  /** Resolved value for api_key and bearer_token credentials */
+  resolvedValue?: string;
+  aws_profile?: string;
+  federation_rule_id?: string;
+  organization_id?: string;
+  service_account_id?: string;
 }
+
+export interface ResolvedAiConfig {
+  credentials: ResolvedCredential[];
+  endpoints: EndpointConfig[];
+  profiles: ProfileConfig[];
+  routing: RoutingConfig;
+}
+
+// ─── Env var resolution ───────────────────────────────────────────────────────
 
 interface ResolveResult {
   resolved: Record<string, unknown>;
@@ -33,76 +39,37 @@ export function resolveEnvVars(
 
   function resolveValue(value: unknown): unknown {
     if (typeof value === 'string') {
-      // First replace $$ with a placeholder
       const placeholder = '\x00DOLLAR\x00';
       let result = value.replace(/\$\$/g, placeholder);
-
-      // Replace ${VAR} and $VAR patterns
       result = result.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g,
         (_match, braced: string | undefined, bare: string | undefined) => {
           const varName = braced ?? bare!;
           const envValue = env[varName];
           if (envValue === undefined || envValue === '') {
-            if (!missing.includes(varName)) {
-              missing.push(varName);
-            }
+            if (!missing.includes(varName)) missing.push(varName);
             return _match;
           }
           return envValue;
         },
       );
-
-      // Restore literal $
       result = result.replace(new RegExp(placeholder, 'g'), '$');
       return result;
     }
-
-    if (Array.isArray(value)) {
-      return value.map(resolveValue);
-    }
-
-    if (value !== null && typeof value === 'object') {
-      return resolveObject(value as Record<string, unknown>);
-    }
-
+    if (Array.isArray(value)) return value.map(resolveValue);
+    if (value !== null && typeof value === 'object') return resolveObject(value as Record<string, unknown>);
     return value;
   }
 
   function resolveObject(obj: Record<string, unknown>): Record<string, unknown> {
     const result: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(obj)) {
-      result[key] = resolveValue(val);
-    }
+    for (const [key, val] of Object.entries(obj)) result[key] = resolveValue(val);
     return result;
   }
 
   return { resolved: resolveObject(obj), missing };
 }
 
-interface ParseResult {
-  config: WorkflowConfig;
-  promptTemplate: string;
-}
-
-export function parseWorkflow(content: string): ParseResult {
-  const fencePattern = /^---\s*\n([\s\S]*?)---\s*\n([\s\S]*)$/;
-  const match = content.match(fencePattern);
-
-  if (!match) {
-    throw new Error('WORKFLOW.md must contain YAML frontmatter delimited by ---');
-  }
-
-  const [, yamlContent, markdownBody] = match;
-
-  const config = yamlContent.trim() === ''
-    ? {} as WorkflowConfig
-    : parseYaml(yamlContent, { uniqueKeys: true, strict: true }) as WorkflowConfig ?? {};
-
-  return {
-    config,
-    promptTemplate: markdownBody.trimStart(),
-  };
-}
+// ─── Config validation ────────────────────────────────────────────────────────
 
 export function validateConfig(config: WorkflowConfig): void {
   if (config.polling?.interval_ms !== undefined) {
@@ -118,9 +85,7 @@ export function validateConfig(config: WorkflowConfig): void {
   }
 
   if (config.channels !== undefined) {
-    if (!Array.isArray(config.channels)) {
-      throw new Error('channels must be an array');
-    }
+    if (!Array.isArray(config.channels)) throw new Error('channels must be an array');
     for (const [index, channel] of config.channels.entries()) {
       if (typeof channel.provider !== 'string' || channel.provider.trim() === '') {
         throw new Error(`channels[${index}].provider must be a non-empty string`);
@@ -138,9 +103,7 @@ export function validateConfig(config: WorkflowConfig): void {
   }
 
   if (config.publishers !== undefined) {
-    if (!Array.isArray(config.publishers)) {
-      throw new Error('publishers must be an array');
-    }
+    if (!Array.isArray(config.publishers)) throw new Error('publishers must be an array');
     for (const [index, publisher] of config.publishers.entries()) {
       if (typeof publisher.provider !== 'string' || publisher.provider.trim() === '') {
         throw new Error(`publishers[${index}].provider must be a non-empty string`);
@@ -162,47 +125,156 @@ export function redactConfig(
   const secretValues = new Set(Object.values(resolvedValues).filter(v => v.length > 0));
 
   function redactValue(value: unknown): unknown {
-    if (typeof value === 'string' && secretValues.has(value)) {
-      return '[from env]';
-    }
-    if (Array.isArray(value)) {
-      return value.map(redactValue);
-    }
-    if (value !== null && typeof value === 'object') {
-      return redactObject(value as Record<string, unknown>);
-    }
+    if (typeof value === 'string' && secretValues.has(value)) return '[from env]';
+    if (Array.isArray(value)) return value.map(redactValue);
+    if (value !== null && typeof value === 'object') return redactObject(value as Record<string, unknown>);
     return value;
   }
 
   function redactObject(obj: Record<string, unknown>): Record<string, unknown> {
     const result: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(obj)) {
-      result[key] = redactValue(val);
-    }
+    for (const [key, val] of Object.entries(obj)) result[key] = redactValue(val);
     return result;
   }
 
   return redactObject(config);
 }
 
+// ─── Config parsing ───────────────────────────────────────────────────────────
+
+/**
+ * Parses the content of an autocatalyst.yaml file into a WorkflowConfig.
+ * Performs plain YAML parsing — no frontmatter or markdown body.
+ * Does not throw when the `ai:` key is absent; that is resolveAiConfig's responsibility.
+ */
+export function parseAutocatalystConfig(content: string): WorkflowConfig {
+  if (!content || !content.trim()) return {} as WorkflowConfig;
+  const parsed = parseYaml(content, { uniqueKeys: true, strict: true }) as WorkflowConfig | null;
+  return parsed ?? ({} as WorkflowConfig);
+}
+
+// ─── AI config resolution ─────────────────────────────────────────────────────
+
+/**
+ * Resolves and validates the `ai:` section of an autocatalyst.yaml config.
+ *
+ * Validation checks (all run at startup before any agent work):
+ * - Endpoint references unknown credential → throws
+ * - Profile references unknown endpoint → throws
+ * - Routing value references unknown profile → throws
+ * - runner:claude_agent_sdk + protocol:openai → throws
+ * - workload_identity missing required fields → throws
+ * - api_key/bearer_token value resolves to empty after env substitution → throws
+ *
+ * Returns ResolvedAiConfig with credential values substituted from env.
+ */
+export function resolveAiConfig(
+  config: WorkflowConfig,
+  env: Record<string, string | undefined>,
+): ResolvedAiConfig {
+  const ai = config.ai;
+  if (!ai) {
+    throw new Error('ai: section is required in autocatalyst.yaml');
+  }
+
+  const credentials: CredentialConfig[] = ai.credentials ?? [];
+  const endpoints: EndpointConfig[] = ai.endpoints ?? [];
+  const profiles: ProfileConfig[] = ai.profiles ?? [];
+  const routing: RoutingConfig = ai.routing ?? {};
+
+  const credentialNames = new Set(credentials.map(c => c.name));
+  const endpointNames = new Set(endpoints.map(e => e.name));
+  const profileNames = new Set(profiles.map(p => p.name));
+
+  // Validate endpoint → credential cross-references
+  for (const endpoint of endpoints) {
+    if (!credentialNames.has(endpoint.credential)) {
+      throw new Error(`Endpoint '${endpoint.name}' references unknown credential '${endpoint.credential}'`);
+    }
+  }
+
+  // Validate profile → endpoint cross-references
+  for (const profile of profiles) {
+    if (!endpointNames.has(profile.endpoint)) {
+      throw new Error(`Profile '${profile.name}' references unknown endpoint '${profile.endpoint}'`);
+    }
+  }
+
+  // Validate routing → profile cross-references
+  for (const [task, profileName] of Object.entries(routing)) {
+    if (!profileNames.has(profileName)) {
+      throw new Error(`Routing '${task}' references unknown profile '${profileName}'`);
+    }
+  }
+
+  // Validate runner/protocol compatibility
+  for (const profile of profiles) {
+    const endpoint = endpoints.find(e => e.name === profile.endpoint)!;
+    if (profile.runner === 'claude_agent_sdk' && endpoint.protocol === 'openai') {
+      throw new Error(
+        `Profile '${profile.name}': runner 'claude_agent_sdk' is incompatible with protocol 'openai'`,
+      );
+    }
+  }
+
+  // Resolve and validate credentials
+  const resolvedCredentials: ResolvedCredential[] = credentials.map(cred => {
+    if (cred.type === 'workload_identity') {
+      if (!cred.federation_rule_id || !cred.organization_id || !cred.service_account_id) {
+        throw new Error(
+          `Credential '${cred.name}': workload_identity requires federation_rule_id, organization_id, service_account_id`,
+        );
+      }
+      return {
+        name: cred.name,
+        type: cred.type,
+        federation_rule_id: cred.federation_rule_id,
+        organization_id: cred.organization_id,
+        service_account_id: cred.service_account_id,
+      };
+    }
+
+    if (cred.type === 'api_key' || cred.type === 'bearer_token') {
+      if (!cred.value) {
+        throw new Error(`Credential '${cred.name}': env var '' is not set`);
+      }
+      const { resolved, missing } = resolveEnvVars({ value: cred.value }, env);
+      if (missing.length > 0) {
+        throw new Error(`Credential '${cred.name}': env var '${missing[0]}' is not set`);
+      }
+      const resolvedValue = (resolved as { value: string }).value;
+      if (!resolvedValue || resolvedValue.trim() === '') {
+        throw new Error(`Credential '${cred.name}': env var '${cred.value}' is not set`);
+      }
+      return { name: cred.name, type: cred.type, resolvedValue };
+    }
+
+    // iam
+    return { name: cred.name, type: cred.type, aws_profile: cred.aws_profile?.trim() || undefined };
+  });
+
+  return { credentials: resolvedCredentials, endpoints, profiles, routing };
+}
+
+// ─── Config loading ───────────────────────────────────────────────────────────
+
 export function loadConfigFromPath(
   repoPath: string,
   env: Record<string, string | undefined>,
 ): LoadedConfig {
-  const filePath = join(resolve(repoPath), 'WORKFLOW.md');
+  const filePath = join(resolve(repoPath), 'autocatalyst.yaml');
 
   if (!existsSync(filePath)) {
-    throw new Error('WORKFLOW.md not found at ' + filePath);
+    throw new Error('autocatalyst.yaml not found at ' + filePath);
   }
 
   const content = readFileSync(filePath, 'utf-8');
-  const { config, promptTemplate } = parseWorkflow(content);
+  const config = parseAutocatalystConfig(content);
   const { resolved } = resolveEnvVars(config as Record<string, unknown>, env);
   validateConfig(resolved as WorkflowConfig);
 
   return {
     config: resolved as WorkflowConfig,
-    promptTemplate,
     filePath,
   };
 }
@@ -211,111 +283,26 @@ export function loadConfig(
   filePath: string,
   env: Record<string, string | undefined>,
 ): LoadedConfig {
-  // Derive repoPath from filePath by stripping the filename
-  const repoPath = filePath.replace(/\/WORKFLOW\.md$/, '') || '.';
+  const repoPath = filePath.replace(/\/autocatalyst\.yaml$/, '') || '.';
   return loadConfigFromPath(repoPath, env);
 }
 
-export function bootstrapWorkflow(repoPath: string): boolean {
+export function bootstrapConfig(repoPath: string): boolean {
   const normalizedPath = resolve(repoPath);
-  const workflowPath = join(normalizedPath, 'WORKFLOW.md');
+  const configPath = join(normalizedPath, 'autocatalyst.yaml');
 
-  if (existsSync(workflowPath)) {
+  if (existsSync(configPath)) {
     return false; // already exists
   }
 
   const repoName = basename(normalizedPath);
-  const content = generateDefaultWorkflow(repoName);
-
-  writeFileSync(workflowPath, content, 'utf-8');
+  const content = generateDefaultConfig(repoName);
+  writeFileSync(configPath, content, 'utf-8');
   return true; // created
 }
 
 export function repoNameFromUrl(repo_url: string): string {
-  // Strip trailing .git, then normalize SSH colon separator to slash
   const normalized = repo_url.replace(/\.git$/, '').replace(/^[^@]+@[^:]+:/, '/');
   const segments = normalized.split('/').filter(Boolean);
   return segments.slice(-2).join('/') || 'unknown';
-}
-
-/**
- * Resolves the effective AWS profile to use, applying config-level override
- * precedence over the environment variable.
- *
- * Returns undefined when neither source provides a value, leaving existing
- * process.env['AWS_PROFILE'] (if any) unchanged.
- */
-export function resolveAwsProfile(
-  config: WorkflowConfig,
-  env: Record<string, string | undefined>,
-): string | undefined {
-  if (typeof config.aws_profile === 'string' && config.aws_profile.trim() !== '') {
-    return config.aws_profile.trim();
-  }
-  const envProfile = env['AWS_PROFILE'];
-  if (typeof envProfile === 'string' && envProfile.trim() !== '') {
-    return envProfile.trim();
-  }
-  return undefined;
-}
-
-/**
- * Resolves the effective LLM settings from WORKFLOW.md config and env vars.
- *
- * llm_settings is required in config. Throws with a clear error message if absent.
- *
- * For SSO with no token: returns { provider: 'anthropic', auth: 'sso', requiresSsoFlow: true }
- * rather than throwing. The SSO flow is triggered lazily in buildDirectModelRunner.
- *
- * Throws for structurally invalid combinations (wrong auth method for provider,
- * unknown provider/auth values, api_key auth with no key, absent llm_settings).
- */
-export function resolveLlmSettings(
-  config: WorkflowConfig,
-  env: Record<string, string | undefined>,
-): ResolvedLlmSettings {
-  if (!config.llm_settings) {
-    throw new Error(
-      'llm_settings is required in WORKFLOW.md. Add a provider and auth block to configure the AI provider.',
-    );
-  }
-
-  const { provider, auth: rawAuth, aws_profile } = config.llm_settings;
-
-  if (provider === 'anthropic') {
-    const auth: AnthropicAuthMethod = (rawAuth as AnthropicAuthMethod) ?? 'api_key';
-    if (auth === 'api_key') {
-      const apiKey = env['AC_ANTHROPIC_API_KEY']?.trim() || undefined;
-      if (!apiKey) {
-        throw new Error(
-          'llm_settings.auth is "api_key" but AC_ANTHROPIC_API_KEY is not set or is empty',
-        );
-      }
-      return { provider, auth, apiKey };
-    }
-    if (auth === 'sso') {
-      const ssoToken = env['AC_ANTHROPIC_SSO_TOKEN']?.trim() || undefined;
-      if (!ssoToken) {
-        return { provider, auth, requiresSsoFlow: true };
-      }
-      return { provider, auth, ssoToken };
-    }
-    throw new Error(
-      `Invalid auth method for provider "anthropic": "${rawAuth}". Valid values: api_key, sso`,
-    );
-  }
-
-  if (provider === 'bedrock') {
-    if (rawAuth !== undefined && rawAuth !== 'iam') {
-      throw new Error(
-        `Invalid auth method for provider "bedrock": "${rawAuth}". Only "iam" is valid (or omit to use the default credential chain)`,
-      );
-    }
-    const awsProfile = aws_profile?.trim() || undefined;
-    return { provider, auth: 'iam', awsProfile };
-  }
-
-  throw new Error(
-    `Unknown llm_settings.provider: "${provider}". Valid values: anthropic, bedrock`,
-  );
 }
