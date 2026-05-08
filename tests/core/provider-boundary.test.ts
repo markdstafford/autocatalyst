@@ -19,13 +19,18 @@ const FORBIDDEN_TERMS = [
   /discussion-urls/i,
 ];
 
-// config.ts, sso.ts, and types/config.ts define the LLM provider configuration
-// contract and legitimately reference provider names (anthropic, bedrock) as
-// enumerated values in the public API — they are not adapter implementations.
+// config.ts, sso.ts, types/config.ts, routing-policy.ts, init.ts, and
+// config/defaults.ts define or reference the LLM provider configuration
+// contract and legitimately reference provider names (anthropic, bedrock,
+// slack, notion) as enumerated values or default config templates —
+// they are not adapter implementations.
 const ALLOWLIST = new Set<string>([
   'src/core/config.ts',
   'src/core/sso.ts',
+  'src/core/init.ts',
+  'src/core/ai/routing-policy.ts',
   'src/types/config.ts',
+  'src/config/defaults.ts',
 ]);
 
 function sourceFiles(): string[] {

@@ -1,22 +1,88 @@
-export function generateDefaultWorkflow(repoName: string): string {
-  return `---
+export function generateDefaultConfig(repoName: string): string {
+  return `# Autocatalyst configuration for ${repoName}
+# All sections previously in WORKFLOW.md are now here.
+
 polling:
   interval_ms: 30000
+
 workspace:
   root: ~/.autocatalyst/workspaces/${repoName}
+
 channels:
-  - provider: your-channel-provider
-    name: my-channel
-    config: {}
+  - provider: slack
+    name: <your-slack-channel>
+    config:
+      bot_token: \${AC_SLACK_BOT_TOKEN}
+      app_token: \${AC_SLACK_APP_TOKEN}
+
 publishers:
-  - provider: your-artifact-publisher
+  - provider: notion
     artifacts:
       - artifact
-    config: {}
----
+      - implementation_feedback
+    config:
+      integration_token: \${AC_NOTION_INTEGRATION_TOKEN}
+      specs_database_id: <your-specs-database-id>
+      testing_guides_database_id: <your-testing-guides-database-id>
 
-You are working on an idea for the ${repoName} project.
+ai:
+  credentials:
+    - name: anthropic-default
+      type: api_key
+      value: \${ANTHROPIC_API_KEY}
 
-{{ idea.content }}
+  endpoints:
+    - name: anthropic-direct
+      protocol: anthropic
+      credential: anthropic-default
+
+  profiles:
+    - name: classify-haiku
+      endpoint: anthropic-direct
+      model: claude-haiku-4-5-20251001
+      runner: anthropic_direct
+      anthropic:
+        effort: low
+
+    - name: impl-agent
+      endpoint: anthropic-direct
+      model: claude-sonnet-4-6
+      runner: claude_agent_sdk
+      anthropic:
+        effort: high
+        thinking: adaptive
+
+    - name: artifact-agent
+      endpoint: anthropic-direct
+      model: claude-sonnet-4-6
+      runner: claude_agent_sdk
+      anthropic:
+        effort: high
+        thinking: adaptive
+
+    - name: question-agent
+      endpoint: anthropic-direct
+      model: claude-sonnet-4-6
+      runner: claude_agent_sdk
+      anthropic:
+        effort: low
+        thinking: adaptive
+
+    - name: triage-agent
+      endpoint: anthropic-direct
+      model: claude-sonnet-4-6
+      runner: claude_agent_sdk
+      anthropic:
+        effort: high
+        thinking: adaptive
+
+  routing:
+    intent.classify: classify-haiku
+    pr.title_generate: classify-haiku
+    artifact.create: artifact-agent
+    artifact.revise: artifact-agent
+    implementation.run: impl-agent
+    question.answer: question-agent
+    issue.triage: triage-agent
 `;
 }

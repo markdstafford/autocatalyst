@@ -1,34 +1,67 @@
 import { channelKey, type ChannelRegistry } from './channel.js';
 import type { ArtifactLifecyclePolicy, ArtifactKind } from './artifact.js';
+import type { AgentPluginConfig } from './ai.js';
 
-export type ModelProvider = 'anthropic' | 'bedrock';
-export type AnthropicAuthMethod = 'api_key' | 'sso';
-export type BedrockAuthMethod = 'iam';
-export type AuthMethod = AnthropicAuthMethod | BedrockAuthMethod;
+// ─── AI config types ──────────────────────────────────────────────────────────
 
-/**
- * Identifies which SSO provider's OAuth flow to initiate when auth=sso.
- * Distinct from ModelProvider — the SSO provider is the identity/credential source,
- * not necessarily the model inference backend.
- * Extend this union as additional SSO providers are supported (e.g. 'codex').
- */
-export type SsoProvider = 'anthropic';
+export type CredentialType = 'api_key' | 'iam' | 'workload_identity' | 'bearer_token';
+export type EndpointProtocol = 'anthropic' | 'openai';
+export type RunnerKind = 'anthropic_direct' | 'openai_direct' | 'claude_agent_sdk' | 'openai_agents';
 
-export interface LlmSettings {
-  provider: ModelProvider;
-  /**
-   * Authentication method.
-   * - For provider "anthropic": "api_key" (default) or "sso"
-   * - For provider "bedrock": "iam" (default, only valid value)
-   * Optional — defaults are applied in resolveLlmSettings.
-   */
-  auth?: AuthMethod;
-  /**
-   * AWS named profile to use for Bedrock authentication.
-   * Ignored when provider is not "bedrock".
-   */
+export interface CredentialConfig {
+  name: string;
+  type: CredentialType;
+  /** Value template with optional ${ENV_VAR} substitution. Used for api_key and bearer_token. */
+  value?: string;
+  /** Named AWS profile for IAM credentials. */
   aws_profile?: string;
+  /** Workload identity federation fields. */
+  federation_rule_id?: string;
+  organization_id?: string;
+  service_account_id?: string;
 }
+
+export interface EndpointConfig {
+  name: string;
+  protocol: EndpointProtocol;
+  /** Reference to a CredentialConfig.name */
+  credential: string;
+  /** Optional base URL override */
+  base_url?: string;
+  /** Bedrock-specific region */
+  region?: string;
+}
+
+export interface ProfileConfig {
+  name: string;
+  /** Reference to an EndpointConfig.name */
+  endpoint: string;
+  model: string;
+  runner: RunnerKind;
+  /** Anthropic-specific inference settings */
+  anthropic?: {
+    thinking?: 'adaptive' | 'disabled' | { type: 'enabled'; budget_tokens?: number };
+    effort?: 'low' | 'medium' | 'high' | 'max';
+  };
+  /** OpenAI-specific inference settings */
+  openai?: {
+    reasoning_effort?: 'low' | 'medium' | 'high';
+  };
+  /** Optional plugins for agent runners */
+  plugins?: AgentPluginConfig[];
+}
+
+/** Maps AgentTaskKind string keys to ProfileConfig.name values. */
+export type RoutingConfig = Record<string, string>;
+
+export interface AiConfig {
+  credentials: CredentialConfig[];
+  endpoints: EndpointConfig[];
+  profiles: ProfileConfig[];
+  routing: RoutingConfig;
+}
+
+// ─── Workflow config ──────────────────────────────────────────────────────────
 
 export interface WorkflowChannelConfig {
   provider: string;
@@ -53,16 +86,17 @@ export interface WorkflowConfig {
   channels?: WorkflowChannelConfig[];
   publishers?: WorkflowPublisherConfig[];
   artifact_policies?: Partial<Record<ArtifactKind, Partial<ArtifactLifecyclePolicy>>>;
-  /** Required — declares the AI provider and authentication method. */
-  llm_settings: LlmSettings;
+  /** Required — declares all AI provider configuration. */
+  ai: AiConfig;
   [key: string]: unknown;
 }
 
 export interface LoadedConfig {
   config: WorkflowConfig;
-  promptTemplate: string;
   filePath: string;
 }
+
+// ─── Repo map types ───────────────────────────────────────────────────────────
 
 export interface RepoEntry {
   channel_ref: string;
