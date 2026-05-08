@@ -1,0 +1,36 @@
+version: "3.9"
+
+services:
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:v1.111.0
+    ports:
+      - "127.0.0.1:8428:8428"
+      - "127.0.0.1:4318:4318"
+    volumes:
+      - vm-data:/victoria-metrics-data
+    command:
+      - -retentionPeriod=1
+    restart: unless-stopped
+
+  victorialogs:
+    image: victoriametrics/victoria-logs:v1.14.0
+    ports:
+      - "127.0.0.1:9428:9428"
+    volumes:
+      - vl-data:/vlogs-data
+    command:
+      - -retentionPeriod=1w
+    restart: unless-stopped
+
+  vector:
+    image: timberio/vector:0.43.0-alpine
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./vector.yaml:/etc/vector/vector.yaml:ro
+    depends_on:
+      - victorialogs
+    restart: unless-stopped
+
+volumes:
+  vm-data:
+  vl-data:
