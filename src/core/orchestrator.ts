@@ -344,6 +344,8 @@ export class OrchestratorImpl implements Orchestrator {
       }
 
       run.intent = requestIntent;
+      this._runStarted.add(1, { intent: requestIntent });
+      this._stageStartTimes.set(run.id, performance.now());
       this._persistRuns();
       const handler = this.handlerRegistry.resolve({
         event_type: 'new_request',
@@ -516,9 +518,7 @@ export class OrchestratorImpl implements Orchestrator {
     // Keyed by request_id: at most one active run per request is the design invariant.
     // The event loop is sequential, so a second new_request for the same request_id
     // would not arrive until the first is fully processed.
-    this._stageStartTimes.set(run.id, performance.now());
     this.runs.set(request.id, run);
-    this._runStarted.add(1, { intent: run.intent });
     this._persistRuns();
     this.logger.info({ event: 'run.created', run_id: run.id, request_id: request.id }, 'Run created');
     return run;
