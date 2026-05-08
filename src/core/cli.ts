@@ -64,6 +64,7 @@ export function parseArgs(args: string[]): ParsedArgs {
 }
 
 export function printUsage(): void {
+  // Help text intentionally writes to stdout (not the logger) so shell wrappers can capture it.
   console.log(`Usage:
   autocatalyst --repo <path>                    Start the service for a single repository
   autocatalyst --repo <path1> <path2> ...       Start the service for multiple repositories
