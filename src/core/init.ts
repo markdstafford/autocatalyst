@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as readline from 'node:readline';
 import { stringify } from 'yaml';
-import { parseWorkflow } from './config.js';
+import { parseAutocatalystConfig } from './config.js';
 import { createLogger } from './logger.js';
 import type { DestinationStream } from 'pino';
 
@@ -12,6 +12,9 @@ export const REQUIRED_PROPERTIES = [
   'workspace.root',
   'channels.0.provider',
   'channels.0.name',
+  'ai.credentials.0.name',
+  'ai.endpoints.0.name',
+  'ai.profiles.0.name',
 ] as const;
 
 const SECRET_KEYWORDS = new Set(['token', 'key', 'secret', 'id', 'password']);
@@ -27,21 +30,26 @@ export interface InitOptions {
 // ─── Exported helpers ─────────────────────────────────────────────────────
 
 export function configExists(repoPath: string): boolean {
-  return existsSync(join(repoPath, 'WORKFLOW.md'));
+  return existsSync(join(repoPath, 'autocatalyst.yaml'));
 }
 
 export function isSecret(propertyPath: string): boolean {
-  return propertyPath
+  // Standard keyword check
+  if (propertyPath
     .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
     .toLowerCase()
     .split(/[._-]/)
-    .some((part) => SECRET_KEYWORDS.has(part));
+    .some((part) => SECRET_KEYWORDS.has(part))
+  ) return true;
+  // Credential value paths are always secret
+  if (/^ai\.credentials\.\d+\.value$/.test(propertyPath)) return true;
+  return false;
 }
 
 export function findMissingRequired(repoPath: string): string[] {
-  const workflowPath = join(repoPath, 'WORKFLOW.md');
-  const content = readFileSync(workflowPath, 'utf-8');
-  const { config } = parseWorkflow(content);
+  const configPath = join(repoPath, 'autocatalyst.yaml');
+  const content = readFileSync(configPath, 'utf-8');
+  const config = parseAutocatalystConfig(content);
   const raw = config as Record<string, unknown>;
   return REQUIRED_PROPERTIES.filter((prop) => isUnpopulated(getByPath(raw, prop)));
 }
@@ -69,20 +77,20 @@ export function writeToEnv(key: string, value: string, repoPath: string): void {
   }
 }
 
-export function writeInlineToWorkflow(propertyPath: string, value: string, repoPath: string): void {
-  const workflowPath = join(repoPath, 'WORKFLOW.md');
-  const content = readFileSync(workflowPath, 'utf-8');
-  const { config, promptTemplate } = parseWorkflow(content);
+export function writeInlineToConfig(propertyPath: string, value: string, repoPath: string): void {
+  const configPath = join(repoPath, 'autocatalyst.yaml');
+  const content = readFileSync(configPath, 'utf-8');
+  const config = parseAutocatalystConfig(content);
   const raw = config as Record<string, unknown>;
   setByPath(raw, propertyPath, value);
   const newYaml = stringify(raw);
-  writeFileSync(workflowPath, `---\n${newYaml}---\n\n${promptTemplate}`, 'utf-8');
+  writeFileSync(configPath, newYaml, 'utf-8');
 }
 
 export function printConfigSummary(repoPath: string): void {
-  const workflowPath = join(repoPath, 'WORKFLOW.md');
-  const content = readFileSync(workflowPath, 'utf-8');
-  const { config } = parseWorkflow(content);
+  const configPath = join(repoPath, 'autocatalyst.yaml');
+  const content = readFileSync(configPath, 'utf-8');
+  const config = parseAutocatalystConfig(content);
   const raw = config as Record<string, unknown>;
   console.log('\nConfiguration summary:');
   for (const prop of REQUIRED_PROPERTIES) {
@@ -102,18 +110,18 @@ export async function runInit(repoPath: string, options?: InitOptions): Promise<
   logger.info({ event: 'init.started', repo_path: repoPath }, 'Init started');
 
   if (!configExists(repoPath)) {
-    logger.info({ event: 'init.config_not_found', repo_path: repoPath }, 'No WORKFLOW.md found');
+    logger.info({ event: 'init.config_not_found', repo_path: repoPath }, 'No autocatalyst.yaml found');
     const answer = await prompt('No config found. Initialize this repository for Autocatalyst? [Y/n]: ');
     const confirmed = answer === '' || answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes';
 
     if (!confirmed) {
       logger.info({ event: 'init.creation_declined' }, 'Init declined');
-      console.log('To set up manually, create WORKFLOW.md with the required configuration fields.');
+      console.log('To set up manually, create autocatalyst.yaml with the required configuration fields.');
       return;
     }
 
     createSkeleton(repoPath);
-    logger.info({ event: 'init.config_created', path: join(repoPath, 'WORKFLOW.md') }, 'Config skeleton created');
+    logger.info({ event: 'init.config_created', path: join(repoPath, 'autocatalyst.yaml') }, 'Config skeleton created');
   }
 
   const missing = findMissingRequired(repoPath);
@@ -134,10 +142,10 @@ export async function runInit(repoPath: string, options?: InitOptions): Promise<
 
     if (secret) {
       writeToEnv(envKey, value, repoPath);
-      writeInlineToWorkflow(prop, `\${${envKey}}`, repoPath);
+      writeInlineToConfig(prop, `\${${envKey}}`, repoPath);
       logger.info({ event: 'init.value_written', property: prop, destination: 'env' }, `Wrote ${prop} to .env`);
     } else {
-      writeInlineToWorkflow(prop, value, repoPath);
+      writeInlineToConfig(prop, value, repoPath);
       logger.info(
         { event: 'init.value_written', property: prop, destination: 'inline' },
         `Wrote ${prop} inline`,
@@ -184,7 +192,13 @@ function getByPath(obj: Record<string, unknown>, path: string): unknown {
   let current: unknown = obj;
   for (const part of path.split('.')) {
     if (current === null || current === undefined || typeof current !== 'object') return undefined;
-    current = (current as Record<string, unknown>)[part];
+    const key = part;
+    if (Array.isArray(current)) {
+      const idx = Number(key);
+      current = isNaN(idx) ? undefined : (current as unknown[])[idx];
+    } else {
+      current = (current as Record<string, unknown>)[key];
+    }
   }
   return current;
 }
@@ -208,8 +222,7 @@ function setByPath(obj: Record<string, unknown>, path: string, value: unknown): 
 
 function createSkeleton(repoPath: string): void {
   const name = repoPath.split('/').filter(Boolean).pop() ?? 'project';
-  const content = `---
-workspace:
+  const content = `workspace:
   root: ''
 channels:
   - provider: ''
@@ -220,13 +233,23 @@ publishers:
     artifacts:
       - artifact
     config: {}
----
-
-You are working on an idea for the ${name} project.
-
-{{ idea.content }}
+ai:
+  credentials:
+    - name: ''
+      type: api_key
+      value: ''
+  endpoints:
+    - name: ''
+      protocol: anthropic
+      credential: ''
+  profiles:
+    - name: ''
+      endpoint: ''
+      model: ''
+      runner: anthropic_direct
+  routing: {}
 `;
-  writeFileSync(join(repoPath, 'WORKFLOW.md'), content, 'utf-8');
+  writeFileSync(join(repoPath, 'autocatalyst.yaml'), content, 'utf-8');
 }
 
 function defaultPromptFn(question: string): Promise<string> {
