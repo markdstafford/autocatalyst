@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -481,5 +481,75 @@ describe('runInit — no config + confirm branch', () => {
     expect(eventNames).toContain('init.value_written');
     expect(eventNames).toContain('init.validation_passed');
     expect(eventNames).toContain('init.completed');
+  });
+});
+
+// ─── console.log elimination ──────────────────────────────────────────────
+
+describe('init.ts has no console.log calls in the run path', () => {
+  let tempDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'init-consolelog-'));
+  });
+
+  afterEach(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it('does not call console.log during decline branch', async () => {
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await runInit(tempDir, { promptFn: async () => 'n' });
+    } finally {
+      consoleSpy.mockRestore();
+    }
+    expect(consoleSpy).not.toHaveBeenCalled();
+  });
+
+  it('does not call console.log during complete config branch', async () => {
+    writeFileSync(
+      join(tempDir, 'autocatalyst.yaml'),
+      'workspace:\n  root: /tmp/ws\nchannels:\n  - provider: chat\n    name: product\nai:\n  credentials:\n    - name: my-key\n      type: api_key\n      value: sk-test\n  endpoints:\n    - name: my-ep\n      protocol: anthropic\n      credential: my-key\n  profiles:\n    - name: my-profile\n      endpoint: my-ep\n      model: haiku\n      runner: anthropic_direct\n  routing: {}\n',
+      'utf-8',
+    );
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      await runInit(tempDir, { promptFn: async () => { throw new Error('no prompt expected'); } });
+    } finally {
+      consoleSpy.mockRestore();
+    }
+    expect(consoleSpy).not.toHaveBeenCalled();
+  });
+
+  it('emits init.config_summary log event with summary object', async () => {
+    writeFileSync(
+      join(tempDir, 'autocatalyst.yaml'),
+      'workspace:\n  root: /tmp/ws\nchannels:\n  - provider: chat\n    name: product\nai:\n  credentials:\n    - name: my-key\n      type: api_key\n      value: sk-test\n  endpoints:\n    - name: my-ep\n      protocol: anthropic\n      credential: my-key\n  profiles:\n    - name: my-profile\n      endpoint: my-ep\n      model: haiku\n      runner: anthropic_direct\n  routing: {}\n',
+      'utf-8',
+    );
+    const stream = new PassThrough();
+    const events: Record<string, unknown>[] = [];
+    stream.on('data', (chunk: Buffer) => {
+      try { events.push(JSON.parse(chunk.toString())); } catch {}
+    });
+    await runInit(tempDir, { promptFn: async () => '', logDestination: stream });
+    stream.end();
+    await new Promise<void>((resolve) => stream.on('finish', resolve));
+    const summaryEvent = events.find((e) => e['event'] === 'init.config_summary');
+    expect(summaryEvent).toBeDefined();
+    expect(typeof summaryEvent?.['summary']).toBe('object');
+  });
+
+  it('emits init.manual_setup_hint when user declines', async () => {
+    const stream = new PassThrough();
+    const events: Record<string, unknown>[] = [];
+    stream.on('data', (chunk: Buffer) => {
+      try { events.push(JSON.parse(chunk.toString())); } catch {}
+    });
+    await runInit(tempDir, { promptFn: async () => 'n', logDestination: stream });
+    stream.end();
+    await new Promise<void>((resolve) => stream.on('finish', resolve));
+    expect(events.some((e) => e['event'] === 'init.manual_setup_hint')).toBe(true);
   });
 });

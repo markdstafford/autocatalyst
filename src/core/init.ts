@@ -4,7 +4,7 @@ import * as readline from 'node:readline';
 import { stringify } from 'yaml';
 import { parseAutocatalystConfig } from './config.js';
 import { createLogger } from './logger.js';
-import type { DestinationStream } from 'pino';
+import type { DestinationStream, Logger } from 'pino';
 
 // ─── Constants ────────────────────────────────────────────────────────────
 
@@ -87,18 +87,17 @@ export function writeInlineToConfig(propertyPath: string, value: string, repoPat
   writeFileSync(configPath, newYaml, 'utf-8');
 }
 
-export function printConfigSummary(repoPath: string): void {
+export function printConfigSummary(repoPath: string, logger: Logger): void {
   const configPath = join(repoPath, 'autocatalyst.yaml');
   const content = readFileSync(configPath, 'utf-8');
   const config = parseAutocatalystConfig(content);
   const raw = config as Record<string, unknown>;
-  console.log('\nConfiguration summary:');
+  const summary: Record<string, string> = {};
   for (const prop of REQUIRED_PROPERTIES) {
     const value = getByPath(raw, prop);
-    const display = isSecret(prop) ? '***' : String(value ?? '(not set)');
-    console.log(`  ${prop}: ${display}`);
+    summary[prop] = isSecret(prop) ? '***' : String(value ?? '(not set)');
   }
-  console.log('');
+  logger.info({ event: 'init.config_summary', summary }, 'Configuration summary');
 }
 
 // ─── Main entry point ─────────────────────────────────────────────────────
@@ -116,7 +115,7 @@ export async function runInit(repoPath: string, options?: InitOptions): Promise<
 
     if (!confirmed) {
       logger.info({ event: 'init.creation_declined' }, 'Init declined');
-      console.log('To set up manually, create autocatalyst.yaml with the required configuration fields.');
+      logger.info({ event: 'init.manual_setup_hint' }, 'To set up manually, create autocatalyst.yaml with the required configuration fields.');
       return;
     }
 
@@ -160,7 +159,6 @@ export async function runInit(repoPath: string, options?: InitOptions): Promise<
       { event: 'init.validation_failed', properties: stillMissing },
       `Validation failed: ${stillMissing.join(', ')} still missing`,
     );
-    console.log(`Warning: the following properties are still missing: ${stillMissing.join(', ')}`);
   } else {
     logger.info(
       { event: 'init.validation_passed', property_count: REQUIRED_PROPERTIES.length },
@@ -168,7 +166,7 @@ export async function runInit(repoPath: string, options?: InitOptions): Promise<
     );
   }
 
-  printConfigSummary(repoPath);
+  printConfigSummary(repoPath, logger);
   logger.info(
     { event: 'init.completed', missing_count: missing.length, written_count: writtenCount },
     'Init completed',
