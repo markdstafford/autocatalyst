@@ -5,7 +5,15 @@ interface LoggerOptions {
 }
 
 export function createLogger(component: string, options?: LoggerOptions): pino.Logger {
-  const dest = options?.destination ?? pino.destination(1);
+  let dest: pino.DestinationStream | ReturnType<typeof pino.transport>;
+
+  if (options?.destination) {
+    dest = options.destination;
+  } else if (process.env.LOG_PRETTY === 'true') {
+    dest = pino.transport({ target: 'pino-pretty', options: { destination: 2 } });
+  } else {
+    dest = pino.destination(2);
+  }
 
   return pino(
     {

@@ -62,6 +62,8 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
   }
 
   async *run(request: AgentRunRequest): AsyncIterable<AgentRunEvent> {
+    // query() yields structured SDKMessage objects via async iterator.
+    // It does not spawn a subprocess and does not write to process.stdout or process.stderr.
     for await (const message of this.queryFn({
       prompt: request.prompt,
       options: makeClaudeAgentSdkOptions(request.working_directory, request.profile),

@@ -2,7 +2,19 @@
 
 ## Library
 
-pino. Structured JSON to stdout. No custom formatters.
+pino. Structured JSON to **stderr** (fd 2). No custom formatters.
+
+## Stdout/stderr split
+
+| Stream | Content |
+|--------|---------|
+| stdout | Operator-facing output only: `--help` text, interactive prompts (readline) |
+| stderr | All pino structured JSON log lines |
+
+Set `LOG_PRETTY=true` to pipe pino output through `pino-pretty` for local development.
+
+The SDK agent runner (`ClaudeAgentSdkAgentRunner`) yields structured objects via async iterator;
+it does not write to the process stream.
 
 ## Format
 
