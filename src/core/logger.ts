@@ -5,7 +5,7 @@ interface LoggerOptions {
 }
 
 export function createLogger(component: string, options?: LoggerOptions): pino.Logger {
-  const dest = options?.destination ?? pino.destination(1);
+  const dest = options?.destination ?? pino.destination(2);
 
   return pino(
     {

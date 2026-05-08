@@ -39,4 +39,21 @@ describe('createLogger', () => {
     expect(() => new Date(parsed.timestamp)).not.toThrow();
     expect(new Date(parsed.timestamp).toISOString()).toBe(parsed.timestamp);
   });
+
+  it('default destination writes to fd 2 (stderr), not fd 1 (stdout)', () => {
+    const stdoutWrites: string[] = [];
+    const origWrite = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (chunk: string | Uint8Array) => {
+      stdoutWrites.push(typeof chunk === 'string' ? chunk : chunk.toString());
+      return true;
+    };
+    try {
+      const logger = createLogger('default-dest-test');
+      logger.info({ event: 'test.default_dest' }, 'probe');
+      (logger as unknown as { flush?: () => void }).flush?.();
+    } finally {
+      process.stdout.write = origWrite;
+    }
+    expect(stdoutWrites.filter(s => s.includes('test.default_dest'))).toHaveLength(0);
+  });
 });
