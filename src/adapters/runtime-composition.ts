@@ -1,6 +1,7 @@
 import { execSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import type pino from 'pino';
+import type { Meter } from '@opentelemetry/api';
 import { App } from '@slack/bolt';
 import Anthropic from '@anthropic-ai/sdk';
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk';
@@ -50,6 +51,7 @@ export interface ComposeWorkflowRuntimeOptions {
   repoPaths: string[];
   env: Record<string, string | undefined>;
   logger: RuntimeLogger;
+  meter?: Meter;
 }
 
 export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRuntimeOptions): Promise<ReturnType<typeof bootstrapWorkflowRuntime>> {
@@ -110,7 +112,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
 
   const aiRoutingPolicy = buildAgentRoutingPolicy(resolvedAi);
   const directModelRunner = buildDirectModelRunner(resolvedAi, logger);
-  const agentRunner = new ClaudeAgentSdkAgentRunner();
+  const agentRunner = new ClaudeAgentSdkAgentRunner({ meter: options.meter });
   const intentClassifier = new ModelIntentClassifier(directModelRunner, { routingPolicy: aiRoutingPolicy });
   const prTitleGenerator = new ModelPRTitleGenerator(directModelRunner, { routingPolicy: aiRoutingPolicy });
   const questionAnswerer = new AgentRunnerQuestionAnsweringAgent(agentRunner, aiRoutingPolicy, repoPath);
@@ -180,6 +182,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     channelRepoMap,
     reacjiComplete,
     isConnected: () => adapter.isConnected(),
+    meter: options.meter,
   });
 }
 

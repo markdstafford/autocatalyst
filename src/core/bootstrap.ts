@@ -1,3 +1,4 @@
+import type { Meter } from '@opentelemetry/api';
 import type { LoadedConfig } from '../types/config.js';
 import type { CommandRegistry } from '../types/commands.js';
 import type { IntentClassifier } from '../types/intent.js';
@@ -10,6 +11,7 @@ export interface BootstrapWorkflowRuntimeDeps extends Omit<OrchestratorDeps, 'co
   commandRegistry?: OrchestratorDeps['commandRegistry'];
   intentClassifier: IntentClassifier;
   isConnected: () => boolean;
+  meter?: Meter;
 }
 
 export function bootstrapWorkflowRuntime(
@@ -21,10 +23,13 @@ export function bootstrapWorkflowRuntime(
   service: Service;
 } {
   const commandRegistry = deps.commandRegistry ?? new CommandRegistryImpl();
-  const orchestrator = new OrchestratorImpl({
-    ...deps,
-    commandRegistry,
-  });
+  const orchestrator = new OrchestratorImpl(
+    {
+      ...deps,
+      commandRegistry,
+    },
+    { meter: deps.meter },
+  );
 
   registerDefaultCommands(commandRegistry, {
     runs: orchestrator.getRuns(),
