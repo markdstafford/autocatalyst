@@ -1,0 +1,38 @@
+providers:
+  mm:
+    source: vendor/mm
+    plugin_manifest: .claude-plugin/plugin.json
+    extra_files:
+      - hooks/session-start.sh
+    skills:
+      planning:
+        path: skills/planning
+        dependencies:
+          - mm:writing-guidelines
+      issue-triage:
+        path: skills/issue-triage
+        dependencies:
+          - mm:writing-guidelines
+      writing-guidelines:
+        path: skills/writing-guidelines
+
+  superpowers:
+    source: vendor/superpowers
+    plugin_manifest: .claude-plugin/plugin.json
+    extra_files:
+      - LICENSE
+    skills:
+      writing-plans:
+        path: skills/writing-plans
+      subagent-driven-development:
+        path: skills/subagent-driven-development
+        dependencies:
+          - superpowers:requesting-code-review
+          - superpowers:finishing-a-development-branch
+          - superpowers:test-driven-development
+      requesting-code-review:
+        path: skills/requesting-code-review
+      finishing-a-development-branch:
+        path: skills/finishing-a-development-branch
+      test-driven-development:
+        path: skills/test-driven-development

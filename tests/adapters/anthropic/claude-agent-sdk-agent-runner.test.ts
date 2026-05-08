@@ -52,11 +52,12 @@ describe('ClaudeAgentSdkAgentRunner', () => {
     });
   });
 
-  test('passes explicit plugins for plugin-dependent tasks without user settings', async () => {
+  test('materializes required skills as explicit plugins without user settings', async () => {
     const queryFn = vi.fn().mockImplementation(async function* () {
       yield { type: 'result', subtype: 'success' };
     });
-    const runner = new ClaudeAgentSdkAgentRunner({ queryFn });
+    const materializeRuntimeSkills = vi.fn().mockResolvedValue([{ type: 'local' as const, path: '/plugins/mm-runtime' }]);
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn, materializeRuntimeSkills });
 
     await collect(runner.run({
       route: { task: 'artifact.create', stage: 'new_thread', intent: 'idea', artifact_kind: 'feature_spec' },
@@ -67,17 +68,16 @@ describe('ClaudeAgentSdkAgentRunner', () => {
         provider: 'claude_agent_sdk',
         model: 'claude-sonnet-4-5',
         effort: 'high',
-        setting_sources: ['project'],
-        load_user_settings: false,
-        plugins: [{ type: 'local', path: '/plugins/mm' }],
+        required_skills: ['mm:planning'],
       },
     }));
 
+    expect(materializeRuntimeSkills).toHaveBeenCalledWith(['mm:planning']);
     expect(queryFn).toHaveBeenCalledWith({
       prompt: '/mm:planning',
       options: expect.objectContaining({
         settingSources: ['project'],
-        plugins: [{ type: 'local', path: '/plugins/mm' }],
+        plugins: [{ type: 'local', path: '/plugins/mm-runtime' }],
         thinking: { type: 'adaptive' },
         effort: 'high',
         settings: expect.objectContaining({
@@ -87,5 +87,31 @@ describe('ClaudeAgentSdkAgentRunner', () => {
         }),
       }),
     });
+  });
+
+  test('does not pass plugins or load user settings when no skills are required', async () => {
+    const queryFn = vi.fn().mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success' };
+    });
+    const materializeRuntimeSkills = vi.fn();
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn, materializeRuntimeSkills });
+
+    await collect(runner.run({
+      route: { task: 'question.answer' },
+      working_directory: '/tmp/workspace',
+      prompt: 'answer',
+      profile: {
+        id: 'question',
+        provider: 'claude_agent_sdk',
+        model: 'claude-sonnet-4-5',
+        effort: 'low',
+        required_skills: [],
+      },
+    }));
+
+    expect(materializeRuntimeSkills).not.toHaveBeenCalled();
+    const call = queryFn.mock.calls[0][0];
+    expect(call.options.settingSources).toEqual(['project']);
+    expect(call.options).not.toHaveProperty('plugins');
   });
 });

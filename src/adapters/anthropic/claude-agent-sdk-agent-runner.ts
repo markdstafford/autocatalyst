@@ -10,13 +10,16 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import type {
   AgentProfile,
+  AgentPluginConfig,
   AgentRunContentBlock,
   AgentRunEvent,
   AgentRunRequest,
   AgentRunner,
   AgentSettingSource,
+  AgentSkillRef,
   AgentThinking,
 } from '../../types/ai.js';
+import { materializeClaudeRuntimeSkillPlugins } from './claude-runtime-skill-materializer.js';
 
 type QueryFn = typeof _query;
 
@@ -52,24 +55,42 @@ const AUTOMATED_PERMISSION_RULES = [
 
 export interface ClaudeAgentSdkAgentRunnerOptions {
   queryFn?: QueryFn;
+  materializeRuntimeSkills?: (refs: AgentSkillRef[]) => Promise<AgentPluginConfig[]>;
 }
 
 export class ClaudeAgentSdkAgentRunner implements AgentRunner {
   private readonly queryFn: QueryFn;
+  private readonly materializeRuntimeSkills: (refs: AgentSkillRef[]) => Promise<AgentPluginConfig[]>;
 
   constructor(options?: ClaudeAgentSdkAgentRunnerOptions) {
     this.queryFn = options?.queryFn ?? _query;
+    this.materializeRuntimeSkills = options?.materializeRuntimeSkills ?? materializeClaudeRuntimeSkillPlugins;
   }
 
   async *run(request: AgentRunRequest): AsyncIterable<AgentRunEvent> {
+    const profile = await this.profileWithRuntimeSkillPlugins(request.profile);
     // query() yields structured SDKMessage objects via async iterator.
     // It does not spawn a subprocess and does not write to process.stdout or process.stderr.
     for await (const message of this.queryFn({
       prompt: request.prompt,
-      options: makeClaudeAgentSdkOptions(request.working_directory, request.profile),
+      options: makeClaudeAgentSdkOptions(request.working_directory, profile),
     })) {
       yield normalizeSdkMessage(message as SDKMessage);
     }
+  }
+
+  private async profileWithRuntimeSkillPlugins(profile: AgentProfile | undefined): Promise<AgentProfile | undefined> {
+    if (!profile) return undefined;
+    const requiredSkills = profile.required_skills ?? [];
+    if (requiredSkills.length === 0) return profile;
+    const runtimeSkillPlugins = await this.materializeRuntimeSkills(requiredSkills);
+    return {
+      ...profile,
+      plugins: [
+        ...(profile?.plugins ?? []),
+        ...runtimeSkillPlugins,
+      ],
+    };
   }
 }
 
@@ -125,6 +146,6 @@ function thinkingForProfile(thinking: AgentThinking | undefined): ThinkingConfig
 
 function settingSourcesForProfile(profile: AgentProfile | undefined): AgentSettingSource[] {
   if (profile?.setting_sources) return [...profile.setting_sources];
-  if (profile?.load_user_settings === false) return ['project'];
-  return ['user', 'project'];
+  if (profile?.load_user_settings === true) return ['user', 'project'];
+  return ['project'];
 }

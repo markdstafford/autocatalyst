@@ -64,10 +64,6 @@ vi.mock('../../src/adapters/anthropic/claude-agent-sdk-agent-runner.js', () => (
   ClaudeAgentSdkAgentRunner: vi.fn().mockImplementation(() => ({})),
 }));
 
-vi.mock('../../src/adapters/anthropic/claude-plugin-resolver.js', () => ({
-  resolveClaudeCodePlugins: vi.fn().mockImplementation((ids: string[]) => ids.map(id => ({ type: 'local', path: `/plugins/${id}` }))),
-}));
-
 vi.mock('../../src/core/bootstrap.js', () => ({
   bootstrapWorkflowRuntime: vi.fn().mockReturnValue({
     service: { start: vi.fn(), stopped: new Promise(() => {}), updateConfig: vi.fn() },

@@ -1,6 +1,7 @@
 import type { AgentProfile, AgentRoute, AgentRoutingPolicy, AgentEffort, AgentThinking } from '../../types/ai.js';
 import type { AiConfig, ProfileConfig, EndpointConfig, RunnerKind } from '../../types/config.js';
 import type { ResolvedCredential } from '../config.js';
+import { requiredSkillsForRoute } from './route-skills.js';
 
 export class DefaultAgentRoutingPolicy implements AgentRoutingPolicy {
   private readonly config: AiConfig;
@@ -17,7 +18,7 @@ export class DefaultAgentRoutingPolicy implements AgentRoutingPolicy {
     const profile = this.config.profiles.find(p => p.name === profileName)!;
     const endpoint = this.config.endpoints.find(e => e.name === profile.endpoint)!;
     const credential = this.config.credentials.find(c => c.name === endpoint.credential) as ResolvedCredential | undefined;
-    return buildAgentProfile(profile, endpoint, credential);
+    return buildAgentProfile(profile, endpoint, credential, route);
   }
 }
 
@@ -25,6 +26,7 @@ function buildAgentProfile(
   profile: ProfileConfig,
   _endpoint: EndpointConfig,
   _credential: ResolvedCredential | undefined,
+  route: AgentRoute,
 ): AgentProfile {
   return {
     id: profile.name,
@@ -32,6 +34,7 @@ function buildAgentProfile(
     model: profile.model,
     effort: profile.anthropic?.effort as AgentEffort | undefined,
     thinking: profile.anthropic?.thinking as AgentThinking | undefined,
+    required_skills: requiredSkillsForRoute(route),
     plugins: profile.plugins,
   };
 }

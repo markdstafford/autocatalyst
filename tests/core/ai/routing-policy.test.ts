@@ -94,4 +94,21 @@ describe('DefaultAgentRoutingPolicy', () => {
       plugins: [pluginPath],
     });
   });
+
+  test('returned AgentProfile includes route-derived required skills', () => {
+    const policy = new DefaultAgentRoutingPolicy(makeAiConfig());
+
+    expect(policy.resolve({ task: 'artifact.create', intent: 'idea' })).toMatchObject({
+      required_skills: ['mm:planning'],
+    });
+    expect(policy.resolve({ task: 'artifact.create', intent: 'bug' })).toMatchObject({
+      required_skills: ['mm:issue-triage'],
+    });
+    expect(policy.resolve({ task: 'implementation.run' })).toMatchObject({
+      required_skills: ['superpowers:writing-plans', 'superpowers:subagent-driven-development'],
+    });
+    expect(policy.resolve({ task: 'question.answer' })).toMatchObject({
+      required_skills: [],
+    });
+  });
 });
