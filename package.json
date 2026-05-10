@@ -31,6 +31,7 @@
     "@opentelemetry/sdk-logs": "^0.217.0",
     "@opentelemetry/sdk-metrics": "^2.7.1",
     "@slack/bolt": "^4.7.0",
+    "openai": "^6.37.0",
     "pino": "9.6.0",
     "yaml": "2.7.1"
   },

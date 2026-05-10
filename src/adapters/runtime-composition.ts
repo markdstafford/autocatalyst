@@ -10,7 +10,7 @@ import { loadConfigFromPath, repoNameFromUrl, resolveEnvVars, resolveAiConfig, t
 import { bootstrapWorkflowRuntime } from '../core/bootstrap.js';
 import { normalizeWorkflowConfig } from '../core/config-normalizer.js';
 import { configExists, runInit } from '../core/init.js';
-import { channelRegistryToRepoMap, type LoadedConfig, type PreRepoEntry, type WorkflowConfig } from '../types/config.js';
+import { channelRegistryToRepoMap, type LoadedConfig, type PreRepoEntry, type ProfileConfig, type WorkflowConfig } from '../types/config.js';
 import { SlackAdapter } from './slack/slack-adapter.js';
 import { ThreadRegistry } from './slack/thread-registry.js';
 import { WorkspaceManagerImpl } from '../core/workspace-manager.js';
@@ -41,6 +41,8 @@ import {
   IssueFilingService,
 } from '../core/ai/agent-services.js';
 import { AnthropicDirectModelRunner, type AnthropicCreateFn } from './anthropic/direct-model-runner.js';
+import { OpenAIDirectModelRunner } from './openai/direct-model-runner.js';
+import type { DirectModelRunRequest, DirectModelRunResult, DirectModelRunner } from '../types/ai.js';
 import { ClaudeAgentSdkAgentRunner } from './anthropic/claude-agent-sdk-agent-runner.js';
 
 export type RuntimeLogger = Pick<pino.Logger, 'debug' | 'error' | 'info' | 'warn'>;
@@ -219,20 +221,47 @@ export function buildAgentRoutingPolicy(resolvedAi: ResolvedAiConfig): DefaultAg
   return new DefaultAgentRoutingPolicy(resolvedAi);
 }
 
-export function buildDirectModelRunner(
+/**
+ * Dispatches `run()` calls to the runner registered for the resolved profile.
+ * Used when the routing table maps different tasks to profiles with different runner kinds
+ * (e.g. intent classification → openai_direct, PR title → anthropic_direct).
+ */
+export class RoutingAwareDirectModelRunner implements DirectModelRunner {
+  constructor(
+    private readonly runners: Map<string, DirectModelRunner>,
+    private readonly fallback: DirectModelRunner,
+  ) {}
+
+  run(request: DirectModelRunRequest): Promise<DirectModelRunResult> {
+    const profileId = request.profile?.id;
+    const runner = (profileId !== undefined && this.runners.get(profileId)) || this.fallback;
+    return runner.run(request);
+  }
+}
+
+function buildRunnerForProfile(
+  profile: ProfileConfig,
   resolvedAi: ResolvedAiConfig,
   logger: RuntimeLogger,
-): AnthropicDirectModelRunner {
-  // Find the first anthropic_direct profile and its credential chain
-  const directProfile = resolvedAi.profiles.find(p => p.runner === 'anthropic_direct');
-  if (!directProfile) {
-    throw new Error('No profile with runner "anthropic_direct" found in autocatalyst.yaml ai.profiles');
-  }
-  const endpoint = resolvedAi.endpoints.find(e => e.name === directProfile.endpoint)!;
+): DirectModelRunner {
+  const endpoint = resolvedAi.endpoints.find(e => e.name === profile.endpoint)!;
   const credential = resolvedAi.credentials.find(c => c.name === endpoint.credential)!;
 
+  if (profile.runner === 'openai_direct') {
+    if (credential.type !== 'api_key') {
+      throw new Error(`Credential type '${credential.type}' is not supported for openai_direct runner`);
+    }
+    logger.info(
+      { event: 'service.config', provider: 'openai', auth: 'api_key', base_url: endpoint.base_url ?? 'default' },
+      'Using OpenAI direct API',
+    );
+    return new OpenAIDirectModelRunner(credential.resolvedValue!, endpoint.base_url, {
+      defaultModel: profile.model,
+    });
+  }
+
+  // anthropic_direct paths
   if (credential.type === 'iam') {
-    // Bedrock path
     const bedrockClient = new AnthropicBedrock({
       providerChainResolver: () => Promise.resolve(
         credential.aws_profile
@@ -263,7 +292,7 @@ export function buildDirectModelRunner(
     );
     return new AnthropicDirectModelRunner('', {
       createFn: bedrockCreateFn,
-      defaultModel: directProfile.model,
+      defaultModel: profile.model,
     });
   }
 
@@ -280,7 +309,7 @@ export function buildDirectModelRunner(
     const client = new Anthropic(clientOptions);
     return new AnthropicDirectModelRunner(credential.resolvedValue!, {
       createFn: params => client.messages.create(params) as Promise<{ content: Array<{ type: string; text?: string }> }>,
-      defaultModel: directProfile.model,
+      defaultModel: profile.model,
     });
   }
 
@@ -294,11 +323,38 @@ export function buildDirectModelRunner(
         const client = new Anthropic({ authToken: credential.resolvedValue! });
         return await client.messages.create(params) as unknown as { content: Array<{ type: string; text?: string }> };
       },
-      defaultModel: directProfile.model,
+      defaultModel: profile.model,
     });
   }
 
   throw new Error(`Credential type '${credential.type}' is not supported for anthropic_direct runner`);
+}
+
+export function buildDirectModelRunner(
+  resolvedAi: ResolvedAiConfig,
+  logger: RuntimeLogger,
+): DirectModelRunner {
+  const directProfiles = resolvedAi.profiles.filter(
+    p => p.runner === 'openai_direct' || p.runner === 'anthropic_direct',
+  );
+
+  if (directProfiles.length === 0) {
+    throw new Error(
+      'No profile with runner "openai_direct" or "anthropic_direct" found in autocatalyst.yaml ai.profiles',
+    );
+  }
+
+  if (directProfiles.length === 1) {
+    return buildRunnerForProfile(directProfiles[0], resolvedAi, logger);
+  }
+
+  // Multiple direct profiles — build one runner per profile and wire up routing dispatch.
+  const runners = new Map<string, DirectModelRunner>();
+  for (const profile of directProfiles) {
+    runners.set(profile.name, buildRunnerForProfile(profile, resolvedAi, logger));
+  }
+  const fallback = runners.get(directProfiles[0].name)!;
+  return new RoutingAwareDirectModelRunner(runners, fallback);
 }
 
 function findConfiguredProvider<T extends { provider: string }>(
