@@ -4,8 +4,11 @@ import { logs } from '@opentelemetry/api-logs';
 import type { LoggerProvider } from '@opentelemetry/api-logs';
 import { MeterProvider, PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics';
 import { LoggerProvider as SdkLoggerProvider, BatchLogRecordProcessor } from '@opentelemetry/sdk-logs';
-import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
-import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-http';
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-proto';
+import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-proto';
+import { resourceFromAttributes } from '@opentelemetry/resources';
+import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions';
+import type { TelemetryConfig } from '../types/config.js';
 
 export interface TelemetryHandles {
   meter: Meter;
@@ -13,10 +16,11 @@ export interface TelemetryHandles {
   shutdown: () => Promise<void>;
 }
 
-export function initTelemetry(): TelemetryHandles {
-  const metricsEndpoint = process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT;
-  const logsEndpoint = process.env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT;
-  const rawInterval = parseInt(process.env.OTEL_EXPORT_INTERVAL_MS ?? '30000', 10);
+export function initTelemetry(config?: TelemetryConfig): TelemetryHandles {
+  // Config takes precedence over env vars
+  const metricsEndpoint = config?.metrics_endpoint ?? process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT;
+  const logsEndpoint = config?.logs_endpoint ?? process.env.OTEL_EXPORTER_OTLP_LOGS_ENDPOINT;
+  const rawInterval = config?.export_interval_ms ?? parseInt(process.env.OTEL_EXPORT_INTERVAL_MS ?? '30000', 10);
   const exportIntervalMs = Number.isFinite(rawInterval) && rawInterval > 0 ? rawInterval : 30000;
 
   if (!metricsEndpoint && !logsEndpoint) {
@@ -32,6 +36,8 @@ export function initTelemetry(): TelemetryHandles {
     };
   }
 
+  const resource = resourceFromAttributes({ [ATTR_SERVICE_NAME]: 'autocatalyst' });
+
   // Live OTLP path — gate each provider independently
   let sdkMeterProvider: MeterProvider | undefined;
   if (metricsEndpoint) {
@@ -40,6 +46,7 @@ export function initTelemetry(): TelemetryHandles {
     });
 
     sdkMeterProvider = new MeterProvider({
+      resource,
       readers: [
         new PeriodicExportingMetricReader({
           exporter: metricExporter,
@@ -58,6 +65,7 @@ export function initTelemetry(): TelemetryHandles {
     });
 
     sdkLoggerProvider = new SdkLoggerProvider({
+      resource,
       processors: [new BatchLogRecordProcessor(logExporter)],
     });
 

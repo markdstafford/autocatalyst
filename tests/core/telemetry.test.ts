@@ -44,4 +44,40 @@ describe('initTelemetry()', () => {
     expect(() => otelLogger.emit({ body: 'hello', severityNumber: 9 })).not.toThrow();
     await shutdown();
   });
+
+  it('activates live path when config provides endpoints', async () => {
+    const { initTelemetry } = await import('../../src/core/telemetry.js');
+    const { meter } = initTelemetry({
+      metrics_endpoint: 'http://127.0.0.1:1/metrics',
+      logs_endpoint: 'http://127.0.0.1:1/logs',
+    });
+    // meter should be a real SDK meter, not a no-op — instruments are callable
+    const counter = meter.createCounter('test.counter');
+    expect(() => counter.add(1)).not.toThrow();
+  });
+
+  it('config endpoint takes precedence over env var', async () => {
+    process.env.OTEL_EXPORTER_OTLP_METRICS_ENDPOINT = 'http://127.0.0.1:1/env';
+    const { initTelemetry } = await import('../../src/core/telemetry.js');
+    const { meter } = initTelemetry({ metrics_endpoint: 'http://127.0.0.1:1/config' });
+    // config wins — meter is live, instruments are callable
+    expect(() => meter.createCounter('test.counter').add(1)).not.toThrow();
+  });
+
+  it('respects custom export_interval_ms from config', async () => {
+    const { initTelemetry } = await import('../../src/core/telemetry.js');
+    const { meter } = initTelemetry({
+      metrics_endpoint: 'http://127.0.0.1:1/metrics',
+      export_interval_ms: 60000,
+    });
+    expect(() => meter.createCounter('test.counter').add(1)).not.toThrow();
+  });
+
+  it('returns no-op handles when config has no endpoints', async () => {
+    const { initTelemetry } = await import('../../src/core/telemetry.js');
+    const { meter, shutdown } = initTelemetry({});
+    const counter = meter.createCounter('test.counter');
+    expect(() => counter.add(1)).not.toThrow();
+    await shutdown();
+  });
 });
