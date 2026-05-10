@@ -21,7 +21,7 @@ describe('OpenAIDirectModelRunner', () => {
     expect(result).toEqual({ text: 'question', raw: makeResponse('question') });
     expect(createFn).toHaveBeenCalledWith({
       model: 'gpt-4o-mini',
-      max_tokens: 20,
+      max_completion_tokens: 20,
       messages: [{ role: 'user', content: 'classify this' }],
     });
   });
@@ -74,7 +74,7 @@ describe('OpenAIDirectModelRunner', () => {
       messages: [{ role: 'user', content: 'classify' }],
     });
 
-    expect(createFn).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 1024 }));
+    expect(createFn).toHaveBeenCalledWith(expect.objectContaining({ max_completion_tokens: 1024 }));
   });
 
   test('runner with baseUrl uses the provided createFn and returns correct result', async () => {
@@ -93,7 +93,7 @@ describe('OpenAIDirectModelRunner', () => {
     expect(result.text).toBe('grove-response');
     expect(createFn).toHaveBeenCalledWith({
       model: 'gpt-4o-mini',
-      max_tokens: 1024,
+      max_completion_tokens: 1024,
       messages: [{ role: 'user', content: 'classify' }],
     });
   });

@@ -1,11 +1,12 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { resolveAiConfig } from '../../src/core/config.js';
 import type { WorkflowConfig, AiConfig } from '../../src/types/config.js';
-import { buildDirectModelRunner } from '../../src/adapters/runtime-composition.js';
+import { buildDirectModelRunner, RoutingAwareDirectModelRunner } from '../../src/adapters/runtime-composition.js';
 import { OpenAIDirectModelRunner } from '../../src/adapters/openai/direct-model-runner.js';
 import { AnthropicDirectModelRunner } from '../../src/adapters/anthropic/direct-model-runner.js';
 import type { ResolvedAiConfig } from '../../src/core/config.js';
 import type { RuntimeLogger } from '../../src/adapters/runtime-composition.js';
+import type { DirectModelRunner, DirectModelRunRequest } from '../../src/types/ai.js';
 
 function makeWorkflowConfig(ai: Partial<AiConfig>): WorkflowConfig {
   return { ai } as unknown as WorkflowConfig;
@@ -120,5 +121,71 @@ describe('buildDirectModelRunner dispatch', () => {
     expect(() => buildDirectModelRunner(resolvedAi, noopLogger)).toThrow(
       'No profile with runner "openai_direct" or "anthropic_direct" found',
     );
+  });
+
+  it('returns RoutingAwareDirectModelRunner when both openai_direct and anthropic_direct profiles exist', () => {
+    const resolvedAi: ResolvedAiConfig = {
+      credentials: [{ name: 'cred', type: 'api_key', resolvedValue: 'sk-test' }],
+      endpoints: [{ name: 'ep', protocol: 'openai', credential: 'cred' }],
+      profiles: [
+        { name: 'oai', endpoint: 'ep', runner: 'openai_direct', model: 'gpt-4o-mini' },
+        { name: 'ant', endpoint: 'ep', runner: 'anthropic_direct', model: 'claude-haiku-4-5' },
+      ],
+      routing: { 'intent.classify': 'oai', 'pr.title_generate': 'ant' },
+    } as unknown as ResolvedAiConfig;
+    const runner = buildDirectModelRunner(resolvedAi, noopLogger);
+    expect(runner).toBeInstanceOf(RoutingAwareDirectModelRunner);
+  });
+});
+
+describe('RoutingAwareDirectModelRunner dispatch', () => {
+  function makeRunner(result: string): DirectModelRunner {
+    return { run: vi.fn().mockResolvedValue({ text: result, raw: {} }) };
+  }
+
+  it('dispatches to the runner registered for request.profile.id', async () => {
+    const openaiRunner = makeRunner('openai-result');
+    const anthropicRunner = makeRunner('anthropic-result');
+    const runners = new Map<string, DirectModelRunner>([
+      ['oai-profile', openaiRunner],
+      ['ant-profile', anthropicRunner],
+    ]);
+    const wrapper = new RoutingAwareDirectModelRunner(runners, openaiRunner);
+
+    const req: DirectModelRunRequest = {
+      route: { task: 'pr.title_generate' },
+      profile: { id: 'ant-profile', provider: 'anthropic', model: 'claude-haiku-4-5' },
+      messages: [{ role: 'user', content: 'title' }],
+    };
+    const result = await wrapper.run(req);
+    expect(result.text).toBe('anthropic-result');
+    expect(anthropicRunner.run).toHaveBeenCalledWith(req);
+    expect(openaiRunner.run).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the default runner when profile.id is not in the map', async () => {
+    const defaultRunner = makeRunner('default-result');
+    const runners = new Map<string, DirectModelRunner>([['some-profile', makeRunner('other')]]);
+    const wrapper = new RoutingAwareDirectModelRunner(runners, defaultRunner);
+
+    const req: DirectModelRunRequest = {
+      route: { task: 'intent.classify' },
+      profile: { id: 'unknown-profile', provider: 'openai', model: 'gpt-4o' },
+      messages: [{ role: 'user', content: 'classify' }],
+    };
+    const result = await wrapper.run(req);
+    expect(result.text).toBe('default-result');
+  });
+
+  it('falls back to the default runner when no profile is present in the request', async () => {
+    const defaultRunner = makeRunner('fallback');
+    const wrapper = new RoutingAwareDirectModelRunner(new Map(), defaultRunner);
+
+    const req: DirectModelRunRequest = {
+      route: { task: 'intent.classify' },
+      messages: [{ role: 'user', content: 'classify' }],
+    };
+    const result = await wrapper.run(req);
+    expect(result.text).toBe('fallback');
   });
 });

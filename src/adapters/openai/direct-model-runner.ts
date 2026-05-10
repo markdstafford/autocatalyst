@@ -3,7 +3,7 @@ import type { DirectModelRunRequest, DirectModelRunResult, DirectModelRunner } f
 
 export type OpenAIChatCompletionFn = (params: {
   model: string;
-  max_tokens: number;
+  max_completion_tokens: number;
   messages: Array<{ role: 'user'; content: string }>;
 }) => Promise<{ choices: Array<{ message: { content: string | null } }> }>;
 
@@ -42,7 +42,7 @@ export class OpenAIDirectModelRunner implements DirectModelRunner {
 
     const raw = await this.createFn({
       model,
-      max_tokens: request.max_tokens ?? 1024,
+      max_completion_tokens: request.max_tokens ?? 1024,
       messages: request.messages,
     });
 
