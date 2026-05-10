@@ -22,6 +22,8 @@ export class OpenAIDirectModelRunner implements DirectModelRunner {
     } else {
       const clientOptions: ConstructorParameters<typeof OpenAI>[0] = { apiKey };
       if (baseUrl) {
+        // Azure APIM / Grove gateways require 'api-key' instead of 'Authorization: Bearer'.
+        // Setting defaultHeaders here ensures any request to a custom base URL uses it.
         clientOptions.baseURL = baseUrl;
         clientOptions.defaultHeaders = { 'api-key': apiKey };
       }

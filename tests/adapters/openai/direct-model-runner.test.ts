@@ -77,11 +77,24 @@ describe('OpenAIDirectModelRunner', () => {
     expect(createFn).toHaveBeenCalledWith(expect.objectContaining({ max_tokens: 1024 }));
   });
 
-  test('constructor with baseUrl passes api-key header in defaultHeaders', () => {
+  test('runner with baseUrl uses the provided createFn and returns correct result', async () => {
+    // Note: this test uses the createFn injection path. The defaultHeaders: { 'api-key': apiKey }
+    // behavior (for Azure APIM / Grove gateway compatibility) is applied in the real-client
+    // branch (when no createFn is provided) and is verified by integration/manual testing only.
     const createFn = vi.fn().mockResolvedValue(makeResponse('grove-response'));
     const runner = new OpenAIDirectModelRunner('grove-key', 'https://grove.internal/openai', { createFn });
 
-    expect(runner).toBeDefined();
-    // The createFn override is still used — confirming the baseUrl branch selects it correctly.
+    const result = await runner.run({
+      route: { task: 'intent.classify' },
+      messages: [{ role: 'user', content: 'classify' }],
+      model: 'gpt-4o-mini',
+    });
+
+    expect(result.text).toBe('grove-response');
+    expect(createFn).toHaveBeenCalledWith({
+      model: 'gpt-4o-mini',
+      max_tokens: 1024,
+      messages: [{ role: 'user', content: 'classify' }],
+    });
   });
 });
