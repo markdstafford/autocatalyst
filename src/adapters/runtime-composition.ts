@@ -41,6 +41,8 @@ import {
   IssueFilingService,
 } from '../core/ai/agent-services.js';
 import { AnthropicDirectModelRunner, type AnthropicCreateFn } from './anthropic/direct-model-runner.js';
+import { OpenAIDirectModelRunner } from './openai/direct-model-runner.js';
+import type { DirectModelRunner } from '../types/ai.js';
 import { ClaudeAgentSdkAgentRunner } from './anthropic/claude-agent-sdk-agent-runner.js';
 
 export type RuntimeLogger = Pick<pino.Logger, 'debug' | 'error' | 'info' | 'warn'>;
@@ -222,14 +224,31 @@ export function buildAgentRoutingPolicy(resolvedAi: ResolvedAiConfig): DefaultAg
 export function buildDirectModelRunner(
   resolvedAi: ResolvedAiConfig,
   logger: RuntimeLogger,
-): AnthropicDirectModelRunner {
-  // Find the first anthropic_direct profile and its credential chain
-  const directProfile = resolvedAi.profiles.find(p => p.runner === 'anthropic_direct');
+): DirectModelRunner {
+  // Prefer openai_direct; fall back to anthropic_direct
+  const directProfile =
+    resolvedAi.profiles.find(p => p.runner === 'openai_direct') ??
+    resolvedAi.profiles.find(p => p.runner === 'anthropic_direct');
   if (!directProfile) {
-    throw new Error('No profile with runner "anthropic_direct" found in autocatalyst.yaml ai.profiles');
+    throw new Error(
+      'No profile with runner "openai_direct" or "anthropic_direct" found in autocatalyst.yaml ai.profiles',
+    );
   }
   const endpoint = resolvedAi.endpoints.find(e => e.name === directProfile.endpoint)!;
   const credential = resolvedAi.credentials.find(c => c.name === endpoint.credential)!;
+
+  if (directProfile.runner === 'openai_direct') {
+    if (credential.type !== 'api_key') {
+      throw new Error(`Credential type '${credential.type}' is not supported for openai_direct runner`);
+    }
+    logger.info(
+      { event: 'service.config', provider: 'openai', auth: 'api_key', base_url: endpoint.base_url ?? 'default' },
+      'Using OpenAI direct API',
+    );
+    return new OpenAIDirectModelRunner(credential.resolvedValue!, endpoint.base_url, {
+      defaultModel: directProfile.model,
+    });
+  }
 
   if (credential.type === 'iam') {
     // Bedrock path
