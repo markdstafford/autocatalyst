@@ -79,6 +79,7 @@ try {
     env: process.env as Record<string, string | undefined>,
     logger,
     meter: telemetry.meter,
+    loggerProvider: telemetry.loggerProvider,
   });
 
   const cleanupSignals = registerSignalHandlers(service);
