@@ -76,6 +76,12 @@ export interface WorkflowPublisherConfig {
   config?: Record<string, unknown>;
 }
 
+export interface TelemetryConfig {
+  metrics_endpoint?: string;
+  logs_endpoint?: string;
+  export_interval_ms?: number;
+}
+
 export interface WorkflowConfig {
   polling?: {
     interval_ms?: number;
@@ -83,6 +89,7 @@ export interface WorkflowConfig {
   workspace?: {
     root?: string;
   };
+  telemetry?: TelemetryConfig;
   channels?: WorkflowChannelConfig[];
   publishers?: WorkflowPublisherConfig[];
   artifact_policies?: Partial<Record<ArtifactKind, Partial<ArtifactLifecyclePolicy>>>;

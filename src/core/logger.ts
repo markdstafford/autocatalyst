@@ -1,5 +1,6 @@
 import { pino } from 'pino';
 import { Writable } from 'node:stream';
+import { logs } from '@opentelemetry/api-logs';
 import type { LoggerProvider } from '@opentelemetry/api-logs';
 import { SeverityNumber } from '@opentelemetry/api-logs';
 
@@ -42,8 +43,14 @@ export function createLogger(component: string, options?: LoggerOptions): pino.L
     },
   };
 
-  const loggerProvider = options?.loggerProvider;
-  if (!loggerProvider) {
+  // Use explicit provider if given, otherwise fall back to the global (set by initTelemetry when active).
+  const loggerProvider: LoggerProvider = options?.loggerProvider ?? logs.getLoggerProvider();
+
+  // The global provider starts as a ProxyLoggerProvider (no-op delegate). Only set up the OTel
+  // bridge when a real SDK provider has been registered — avoids multistream overhead in tests.
+  const providerName = (loggerProvider as unknown as { constructor?: { name?: string } })?.constructor?.name;
+  const isNoOp = !options?.loggerProvider && providerName === 'ProxyLoggerProvider';
+  if (isNoOp) {
     return pino(pinoConfig, primaryDest);
   }
 

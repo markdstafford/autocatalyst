@@ -1,9 +1,25 @@
 // tests/adapters/openai/direct-model-runner.test.ts
+import { PassThrough } from 'node:stream';
 import { describe, expect, test, vi } from 'vitest';
 import { OpenAIDirectModelRunner } from '../../../src/adapters/openai/direct-model-runner.js';
 
 function makeResponse(content: string) {
   return { choices: [{ message: { content } }] };
+}
+
+/** Collect pino log lines written to a PassThrough stream into parsed objects. */
+function makeLogCapture(): { dest: import('pino').DestinationStream; getLogs: () => Record<string, unknown>[] } {
+  const stream = new PassThrough();
+  const logs: Record<string, unknown>[] = [];
+  stream.on('data', (chunk: Buffer) => {
+    for (const line of chunk.toString().split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed) {
+        try { logs.push(JSON.parse(trimmed)); } catch { /* skip non-JSON */ }
+      }
+    }
+  });
+  return { dest: stream as unknown as import('pino').DestinationStream, getLogs: () => logs };
 }
 
 describe('OpenAIDirectModelRunner', () => {
@@ -96,5 +112,71 @@ describe('OpenAIDirectModelRunner', () => {
       max_completion_tokens: 1024,
       messages: [{ role: 'user', content: 'classify' }],
     });
+  });
+
+  test('emits model.run log event with all fields on success', async () => {
+    const createFn = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: 'answer' } }],
+      usage: { prompt_tokens: 8, completion_tokens: 3 },
+    });
+    const { dest, getLogs } = makeLogCapture();
+
+    const runner = new OpenAIDirectModelRunner('test-key', undefined, { createFn, logDestination: dest });
+    await runner.run({
+      route: { task: 'intent.classify', stage: 'new_thread' },
+      profile: { id: 'gpt', provider: 'openai', model: 'gpt-4o-mini', effort: 'low' },
+      messages: [{ role: 'user', content: 'classify this' }],
+    });
+    await new Promise(resolve => setImmediate(resolve));
+
+    const runLog = getLogs().find(l => l['event'] === 'model.run');
+    expect(runLog).toBeDefined();
+    expect(runLog!['model']).toBe('gpt-4o-mini');
+    expect(runLog!['task']).toBe('intent.classify');
+    expect(runLog!['input_tokens']).toBe(8);
+    expect(runLog!['output_tokens']).toBe(3);
+    expect(typeof runLog!['latency_ms']).toBe('number');
+    expect(runLog!['latency_ms'] as number).toBeGreaterThanOrEqual(0);
+  });
+
+  test('emits model.run_failed log event on error and re-throws the original error', async () => {
+    const originalError = new Error('API timeout');
+    const createFn = vi.fn().mockRejectedValue(originalError);
+    const { dest, getLogs } = makeLogCapture();
+
+    const runner = new OpenAIDirectModelRunner('test-key', undefined, { createFn, logDestination: dest });
+    await expect(runner.run({
+      route: { task: 'intent.classify', stage: 'new_thread' },
+      profile: { id: 'gpt', provider: 'openai', model: 'gpt-4o-mini', effort: 'low' },
+      messages: [{ role: 'user', content: 'classify this' }],
+    })).rejects.toThrow('API timeout');
+    await new Promise(resolve => setImmediate(resolve));
+
+    const failLog = getLogs().find(l => l['event'] === 'model.run_failed');
+    expect(failLog).toBeDefined();
+    expect(failLog!['model']).toBe('gpt-4o-mini');
+    expect(failLog!['task']).toBe('intent.classify');
+    expect(typeof failLog!['error']).toBe('string');
+    expect(failLog!['error'] as string).toContain('API timeout');
+  });
+
+  test('logs null for input_tokens and output_tokens when usage is absent', async () => {
+    const createFn = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: 'answer' } }],
+    });
+    const { dest, getLogs } = makeLogCapture();
+
+    const runner = new OpenAIDirectModelRunner('test-key', undefined, { createFn, logDestination: dest });
+    await runner.run({
+      route: { task: 'intent.classify', stage: 'new_thread' },
+      profile: { id: 'gpt', provider: 'openai', model: 'gpt-4o-mini', effort: 'low' },
+      messages: [{ role: 'user', content: 'classify this' }],
+    });
+    await new Promise(resolve => setImmediate(resolve));
+
+    const runLog = getLogs().find(l => l['event'] === 'model.run');
+    expect(runLog).toBeDefined();
+    expect(runLog!['input_tokens']).toBeNull();
+    expect(runLog!['output_tokens']).toBeNull();
   });
 });

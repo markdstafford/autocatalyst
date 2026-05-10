@@ -10,7 +10,7 @@ import { composeWorkflowRuntime } from './core/runtime-composition.js';
 import { initTelemetry } from './core/telemetry.js';
 import { join } from 'node:path';
 
-const telemetry = initTelemetry();
+let telemetry = initTelemetry();
 const logger = createLogger('cli', { loggerProvider: telemetry.loggerProvider });
 
 try {
@@ -72,6 +72,13 @@ try {
     ),
   );
   logger.info({ event: 'config.loaded', config: redacted }, 'Configuration loaded');
+
+  // Re-init telemetry now that config is available; config values take precedence over env vars
+  if (currentConfig.config.telemetry) {
+    await telemetry.shutdown();
+    telemetry = initTelemetry(currentConfig.config.telemetry);
+  }
+
   const { service } = await composeWorkflowRuntime({
     currentConfig,
     repoPath,
@@ -79,6 +86,7 @@ try {
     env: process.env as Record<string, string | undefined>,
     logger,
     meter: telemetry.meter,
+    loggerProvider: telemetry.loggerProvider,
   });
 
   const cleanupSignals = registerSignalHandlers(service);

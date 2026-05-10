@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import type pino from 'pino';
 import type { Meter } from '@opentelemetry/api';
+import type { LoggerProvider } from '@opentelemetry/api-logs';
 import { App } from '@slack/bolt';
 import Anthropic from '@anthropic-ai/sdk';
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk';
@@ -54,6 +55,7 @@ export interface ComposeWorkflowRuntimeOptions {
   env: Record<string, string | undefined>;
   logger: RuntimeLogger;
   meter?: Meter;
+  loggerProvider?: LoggerProvider;
 }
 
 export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRuntimeOptions): Promise<ReturnType<typeof bootstrapWorkflowRuntime>> {
@@ -113,7 +115,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
   });
 
   const aiRoutingPolicy = buildAgentRoutingPolicy(resolvedAi);
-  const directModelRunner = buildDirectModelRunner(resolvedAi, logger);
+  const directModelRunner = buildDirectModelRunner(resolvedAi, logger, options.loggerProvider);
   const agentRunner = new ClaudeAgentSdkAgentRunner({ meter: options.meter });
   const intentClassifier = new ModelIntentClassifier(directModelRunner, { routingPolicy: aiRoutingPolicy });
   const prTitleGenerator = new ModelPRTitleGenerator(directModelRunner, { routingPolicy: aiRoutingPolicy });
@@ -243,6 +245,7 @@ function buildRunnerForProfile(
   profile: ProfileConfig,
   resolvedAi: ResolvedAiConfig,
   logger: RuntimeLogger,
+  loggerProvider?: LoggerProvider,
 ): DirectModelRunner {
   const endpoint = resolvedAi.endpoints.find(e => e.name === profile.endpoint)!;
   const credential = resolvedAi.credentials.find(c => c.name === endpoint.credential)!;
@@ -257,6 +260,7 @@ function buildRunnerForProfile(
     );
     return new OpenAIDirectModelRunner(credential.resolvedValue!, endpoint.base_url, {
       defaultModel: profile.model,
+      loggerProvider,
     });
   }
 
@@ -274,7 +278,7 @@ function buildRunnerForProfile(
         return await bedrockClient.messages.create({
           ...params,
           model: `us.${params.model.replace(/^us\./, '')}`,
-        }) as unknown as { content: Array<{ type: string; text?: string }> };
+        }) as unknown as { content: Array<{ type: string; text?: string }>; usage?: { input_tokens?: number; output_tokens?: number } };
       } catch (err) {
         const msg = String(err);
         if (msg.includes('CredentialsProviderError') || msg.includes('Could not load credentials') || msg.includes('sso')) {
@@ -293,6 +297,7 @@ function buildRunnerForProfile(
     return new AnthropicDirectModelRunner('', {
       createFn: bedrockCreateFn,
       defaultModel: profile.model,
+      loggerProvider,
     });
   }
 
@@ -308,8 +313,9 @@ function buildRunnerForProfile(
     }
     const client = new Anthropic(clientOptions);
     return new AnthropicDirectModelRunner(credential.resolvedValue!, {
-      createFn: params => client.messages.create(params) as Promise<{ content: Array<{ type: string; text?: string }> }>,
+      createFn: params => client.messages.create(params) as Promise<{ content: Array<{ type: string; text?: string }>; usage?: { input_tokens?: number; output_tokens?: number } }>,
       defaultModel: profile.model,
+      loggerProvider,
     });
   }
 
@@ -321,9 +327,10 @@ function buildRunnerForProfile(
     return new AnthropicDirectModelRunner('', {
       createFn: async (params) => {
         const client = new Anthropic({ authToken: credential.resolvedValue! });
-        return await client.messages.create(params) as unknown as { content: Array<{ type: string; text?: string }> };
+        return await client.messages.create(params) as unknown as { content: Array<{ type: string; text?: string }>; usage?: { input_tokens?: number; output_tokens?: number } };
       },
       defaultModel: profile.model,
+      loggerProvider,
     });
   }
 
@@ -333,6 +340,7 @@ function buildRunnerForProfile(
 export function buildDirectModelRunner(
   resolvedAi: ResolvedAiConfig,
   logger: RuntimeLogger,
+  loggerProvider?: LoggerProvider,
 ): DirectModelRunner {
   const directProfiles = resolvedAi.profiles.filter(
     p => p.runner === 'openai_direct' || p.runner === 'anthropic_direct',
@@ -345,13 +353,13 @@ export function buildDirectModelRunner(
   }
 
   if (directProfiles.length === 1) {
-    return buildRunnerForProfile(directProfiles[0], resolvedAi, logger);
+    return buildRunnerForProfile(directProfiles[0], resolvedAi, logger, loggerProvider);
   }
 
   // Multiple direct profiles — build one runner per profile and wire up routing dispatch.
   const runners = new Map<string, DirectModelRunner>();
   for (const profile of directProfiles) {
-    runners.set(profile.name, buildRunnerForProfile(profile, resolvedAi, logger));
+    runners.set(profile.name, buildRunnerForProfile(profile, resolvedAi, logger, loggerProvider));
   }
   const fallback = runners.get(directProfiles[0].name)!;
   return new RoutingAwareDirectModelRunner(runners, fallback);

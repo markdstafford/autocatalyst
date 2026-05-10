@@ -3,6 +3,7 @@ import type {
   EffortLevel,
   Options,
   SDKMessage,
+  SDKResultMessage,
   SdkPluginConfig,
   Settings,
   SettingSource,
@@ -67,6 +68,8 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
   private readonly materializeRuntimeSkills: (refs: AgentSkillRef[]) => Promise<AgentPluginConfig[]>;
   private readonly _agentTurns: Counter;
   private readonly _adapterLatency: Histogram;
+  private readonly _agentRunOutcome: Counter;
+  private readonly _agentTokenUsage: Histogram;
 
   constructor(options?: ClaudeAgentSdkAgentRunnerOptions) {
     this.queryFn = options?.queryFn ?? _query;
@@ -80,24 +83,45 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
       unit: 'ms',
       description: 'Latency of adapter operations',
     });
+    this._agentRunOutcome = meter.createCounter('autocatalyst.agent.runs', {
+      unit: '{run}',
+      description: 'Agent runs completed, by outcome',
+    });
+    this._agentTokenUsage = meter.createHistogram('autocatalyst.agent.token_usage', {
+      unit: '{token}',
+      description: 'Token usage per agent run',
+    });
   }
 
   async *run(request: AgentRunRequest): AsyncIterable<AgentRunEvent> {
+    const model = request.profile?.model ?? 'unknown';
     const profile = await this.profileWithRuntimeSkillPlugins(request.profile);
     const startMs = performance.now();
     for await (const message of this.queryFn({
       prompt: request.prompt,
       options: makeClaudeAgentSdkOptions(request.working_directory, profile),
     })) {
+      if ((message as SDKMessage).type === 'result') {
+        const result = message as unknown as SDKResultMessage;
+        const outcome = result.is_error ? 'error' : 'success';
+        this._agentRunOutcome.add(1, { component: 'claude-agent-sdk', model, outcome });
+        this._agentTokenUsage.record(result.usage.input_tokens, {
+          component: 'claude-agent-sdk', model, token_type: 'input',
+        });
+        this._agentTokenUsage.record(result.usage.output_tokens, {
+          component: 'claude-agent-sdk', model, token_type: 'output',
+        });
+      }
       const event = normalizeSdkMessage(message as SDKMessage);
       if (event.type === 'assistant') {
-        this._agentTurns.add(1, { component: 'claude-agent-sdk' });
+        this._agentTurns.add(1, { component: 'claude-agent-sdk', model });
       }
       yield event;
     }
     this._adapterLatency.record(performance.now() - startMs, {
       adapter: 'agent-sdk',
       operation: 'query',
+      model,
     });
   }
 
