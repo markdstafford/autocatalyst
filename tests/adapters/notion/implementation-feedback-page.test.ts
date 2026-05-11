@@ -338,9 +338,10 @@ describe('NotionImplementationFeedbackPage — readFeedback', () => {
   });
 
   it('returns unchecked to-do item with resolved: false', async () => {
+    const feedbackHeading = { id: 'h-feedback', type: 'heading_2', heading_2: { rich_text: [{ plain_text: 'Feedback' }] } };
     const todoBlock = makeTodoBlock('block-1', 'Fix the bug', false);
     const client = makeNotionClient({
-      blocksChildrenList: makeBlocksChildrenListFn([todoBlock]),
+      blocksChildrenList: makeBlocksChildrenListFn([feedbackHeading, todoBlock]),
     });
     const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
 
@@ -352,9 +353,10 @@ describe('NotionImplementationFeedbackPage — readFeedback', () => {
   });
 
   it('returns checked to-do item with resolved: true', async () => {
+    const feedbackHeading = { id: 'h-feedback', type: 'heading_2', heading_2: { rich_text: [{ plain_text: 'Feedback' }] } };
     const todoBlock = makeTodoBlock('block-2', 'Already done', true);
     const client = makeNotionClient({
-      blocksChildrenList: makeBlocksChildrenListFn([todoBlock]),
+      blocksChildrenList: makeBlocksChildrenListFn([feedbackHeading, todoBlock]),
     });
     const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
 
@@ -366,9 +368,10 @@ describe('NotionImplementationFeedbackPage — readFeedback', () => {
     const para1 = makeParagraphBlock('Comment A');
     const para2 = makeParagraphBlock('Comment B');
     const todoBlock = makeTodoBlock('block-3', 'The item', false, [para1, para2]);
+    const feedbackHeading = { id: 'h-feedback', type: 'heading_2', heading_2: { rich_text: [{ plain_text: 'Feedback' }] } };
 
     const blocksChildrenList = vi.fn().mockImplementation(async ({ block_id }: { block_id: string }) => {
-      if (block_id === 'page-id') return { results: [todoBlock] };
+      if (block_id === 'page-id') return { results: [feedbackHeading, todoBlock] };
       if (block_id === 'block-3') return { results: [para1, para2] };
       return { results: [] };
     });
@@ -381,11 +384,12 @@ describe('NotionImplementationFeedbackPage — readFeedback', () => {
   });
 
   it('returns multiple to-do items in document order', async () => {
+    const feedbackHeading = { id: 'h-feedback', type: 'heading_2', heading_2: { rich_text: [{ plain_text: 'Feedback' }] } };
     const block1 = makeTodoBlock('b1', 'First', false);
     const block2 = makeTodoBlock('b2', 'Second', true);
     const block3 = makeTodoBlock('b3', 'Third', false);
     const client = makeNotionClient({
-      blocksChildrenList: makeBlocksChildrenListFn([block1, block2, block3]),
+      blocksChildrenList: makeBlocksChildrenListFn([feedbackHeading, block1, block2, block3]),
     });
     const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
 
@@ -408,6 +412,64 @@ describe('NotionImplementationFeedbackPage — readFeedback', () => {
     const result = await page.readFeedback('page-id');
     expect(result).toHaveLength(1);
     expect(result[0].text).toBe('Actual feedback');
+  });
+
+  it('ignores to_do blocks under Testing instructions heading', async () => {
+    const blocks = [
+      { id: 'h-testing', type: 'heading_2', heading_2: { rich_text: [{ plain_text: 'Testing instructions' }] } },
+      makeTodoBlock('t-testing-1', 'npm install', false),
+      makeTodoBlock('t-testing-2', 'npm test', false),
+      { id: 'h-feedback', type: 'heading_2', heading_2: { rich_text: [{ plain_text: 'Feedback' }] } },
+      makeTodoBlock('f-1', 'Real feedback item', false),
+    ];
+    const client = makeNotionClient({
+      blocksChildrenList: makeBlocksChildrenListFn(blocks),
+    });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
+
+    const result = await page.readFeedback('page-id');
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('f-1');
+    expect(result[0].text).toBe('Real feedback item');
+  });
+
+  it('ignores to_do blocks under Additional steps heading', async () => {
+    const blocks = [
+      { id: 'h-add', type: 'heading_2', heading_2: { rich_text: [{ plain_text: 'Additional steps' }] } },
+      makeTodoBlock('a-1', 'Reviewer step', false),
+      { id: 'h-feedback', type: 'heading_2', heading_2: { rich_text: [{ plain_text: 'Feedback' }] } },
+      makeTodoBlock('f-1', 'Real feedback', false),
+    ];
+    const client = makeNotionClient({
+      blocksChildrenList: makeBlocksChildrenListFn(blocks),
+    });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
+
+    const result = await page.readFeedback('page-id');
+
+    expect(result).toHaveLength(1);
+    expect(result[0].text).toBe('Real feedback');
+  });
+
+  it('returns all to_do blocks in Feedback section with correct resolved values', async () => {
+    const blocks = [
+      { id: 'h-testing', type: 'heading_2', heading_2: { rich_text: [{ plain_text: 'Testing instructions' }] } },
+      makeTodoBlock('t-1', 'Testing step', true),
+      { id: 'h-feedback', type: 'heading_2', heading_2: { rich_text: [{ plain_text: 'Feedback' }] } },
+      makeTodoBlock('f-1', 'Unchecked feedback', false),
+      makeTodoBlock('f-2', 'Checked feedback', true),
+    ];
+    const client = makeNotionClient({
+      blocksChildrenList: makeBlocksChildrenListFn(blocks),
+    });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
+
+    const result = await page.readFeedback('page-id');
+
+    expect(result).toHaveLength(2);
+    expect(result[0]).toMatchObject({ id: 'f-1', resolved: false });
+    expect(result[1]).toMatchObject({ id: 'f-2', resolved: true });
   });
 });
 

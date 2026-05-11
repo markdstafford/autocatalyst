@@ -163,13 +163,24 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
       id: string;
       type: string;
       has_children?: boolean;
+      heading_2?: { rich_text: Array<{ plain_text: string }> };
       to_do?: { rich_text: Array<{ plain_text: string }>; checked: boolean };
-      _children?: unknown[]; // test helper only
+      _children?: unknown[];
     }>;
 
     const feedbackItems: FeedbackItem[] = [];
+    let inFeedbackSection = false;
 
     for (const block of blocks) {
+      // Track which section we are in based on heading_2 blocks
+      if (block.type === 'heading_2' && block.heading_2) {
+        const headingText = block.heading_2.rich_text.map(r => r.plain_text).join('');
+        inFeedbackSection = headingText === 'Feedback';
+        continue;
+      }
+
+      // Only collect to_do blocks inside the Feedback section
+      if (!inFeedbackSection) continue;
       if (block.type !== 'to_do' || !block.to_do) continue;
 
       const text = block.to_do.rich_text.map((r: { plain_text: string }) => r.plain_text).join('');
