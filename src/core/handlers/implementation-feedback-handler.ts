@@ -147,7 +147,7 @@ export class ImplementationFeedbackHandler {
     if (unresolved.length === 0) {
       this.deps.logger.info(
         { event: 'implementation.feedback_empty', run_id: run.id },
-        'No unresolved feedback items found; using Slack message as context',
+        'No unresolved feedback items found; using inbound message as context',
       );
       return { status: 'ok', value: feedback.content };
     }
