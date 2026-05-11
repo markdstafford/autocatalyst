@@ -6105,3 +6105,76 @@ describe('Orchestrator — completion reaction', () => {
     expect(adapter.react).not.toHaveBeenCalled();
   });
 });
+
+describe('Orchestrator — overrideRunStage', () => {
+  it('updates stage, sets updated_at, persists, and returns "updated" on valid input', async () => {
+    const adapter = makeMockAdapter();
+    const runStore = { save: vi.fn(), load: vi.fn().mockReturnValue([]) };
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: makeWorkspaceManager(),
+      artifactAuthoringAgent: makeArtifactAuthoringAgent(),
+      artifactPublisher: makeArtifactPublisher(),
+      channelRepoMap: makeChannelRepoMap(),
+      runStore,
+    }, { logDestination: nullDest });
+
+    const run = makeRun({ stage: 'implementing', request_id: 'req-001' });
+    run.updated_at = '2020-01-01T00:00:00.000Z';
+    const before = run.updated_at;
+    (orch as unknown as { runs: Map<string, Run> }).runs.set('req-001', run);
+
+    const result = orch.overrideRunStage('req-001', 'reviewing_implementation');
+
+    expect(result).toBe('updated');
+    expect(run.stage).toBe('reviewing_implementation');
+    expect(run.updated_at).not.toBe(before);
+    expect(runStore.save).toHaveBeenCalled();
+
+    await orch.stop();
+  });
+
+  it('returns "not_found" without mutating state when requestId is unknown', async () => {
+    const adapter = makeMockAdapter();
+    const runStore = { save: vi.fn(), load: vi.fn().mockReturnValue([]) };
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: makeWorkspaceManager(),
+      artifactAuthoringAgent: makeArtifactAuthoringAgent(),
+      artifactPublisher: makeArtifactPublisher(),
+      channelRepoMap: makeChannelRepoMap(),
+      runStore,
+    }, { logDestination: nullDest });
+
+    const result = orch.overrideRunStage('nonexistent', 'implementing');
+
+    expect(result).toBe('not_found');
+    expect(runStore.save).not.toHaveBeenCalled();
+
+    await orch.stop();
+  });
+
+  it('returns "invalid_stage" without mutating state when stage string is not in VALID_RUN_STAGES', async () => {
+    const adapter = makeMockAdapter();
+    const runStore = { save: vi.fn(), load: vi.fn().mockReturnValue([]) };
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: makeWorkspaceManager(),
+      artifactAuthoringAgent: makeArtifactAuthoringAgent(),
+      artifactPublisher: makeArtifactPublisher(),
+      channelRepoMap: makeChannelRepoMap(),
+      runStore,
+    }, { logDestination: nullDest });
+
+    const run = makeRun({ stage: 'implementing', request_id: 'req-001' });
+    (orch as unknown as { runs: Map<string, Run> }).runs.set('req-001', run);
+
+    const result = orch.overrideRunStage('req-001', 'bogus_stage' as import('../../src/types/runs.js').RunStage);
+
+    expect(result).toBe('invalid_stage');
+    expect(run.stage).toBe('implementing');
+    expect(runStore.save).not.toHaveBeenCalled();
+
+    await orch.stop();
+  });
+});
