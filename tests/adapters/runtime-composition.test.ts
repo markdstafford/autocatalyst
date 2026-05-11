@@ -1,9 +1,11 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, test } from 'vitest';
 import { resolveAiConfig } from '../../src/core/config.js';
 import type { WorkflowConfig, AiConfig } from '../../src/types/config.js';
-import { buildDirectModelRunner, RoutingAwareDirectModelRunner } from '../../src/adapters/runtime-composition.js';
+import { buildDirectModelRunner, buildAgentRunner, RoutingAwareDirectModelRunner } from '../../src/adapters/runtime-composition.js';
 import { OpenAIDirectModelRunner } from '../../src/adapters/openai/direct-model-runner.js';
 import { AnthropicDirectModelRunner } from '../../src/adapters/anthropic/direct-model-runner.js';
+import { OpenAIAgentSdkAgentRunner } from '../../src/adapters/openai/agent-sdk-agent-runner.js';
+import { ClaudeAgentSdkAgentRunner } from '../../src/adapters/anthropic/claude-agent-sdk-agent-runner.js';
 import type { ResolvedAiConfig } from '../../src/core/config.js';
 import type { RuntimeLogger } from '../../src/adapters/runtime-composition.js';
 import type { DirectModelRunner, DirectModelRunRequest } from '../../src/types/ai.js';
@@ -187,5 +189,65 @@ describe('RoutingAwareDirectModelRunner dispatch', () => {
     };
     const result = await wrapper.run(req);
     expect(result.text).toBe('fallback');
+  });
+});
+
+function makeAgentResolvedAi(runner: 'claude_agent_sdk' | 'openai_agents', credentialType: string = 'api_key'): ResolvedAiConfig {
+  return {
+    credentials: [{ name: 'cred', type: credentialType, resolvedValue: 'sk-test' }],
+    endpoints: [{ name: 'ep', protocol: 'openai', credential: 'cred' }],
+    profiles: [{ name: 'p', endpoint: 'ep', runner, model: 'gpt-4o' }],
+    routing: { 'implementation.run': 'p' },
+  } as unknown as ResolvedAiConfig;
+}
+
+describe('buildAgentRunner dispatch', () => {
+  test('returns ClaudeAgentSdkAgentRunner when profile runner is claude_agent_sdk', () => {
+    const runner = buildAgentRunner(makeAgentResolvedAi('claude_agent_sdk'), noopLogger);
+    expect(runner).toBeInstanceOf(ClaudeAgentSdkAgentRunner);
+  });
+
+  test('returns OpenAIAgentSdkAgentRunner when profile runner is openai_agents', () => {
+    const runner = buildAgentRunner(makeAgentResolvedAi('openai_agents'), noopLogger);
+    expect(runner).toBeInstanceOf(OpenAIAgentSdkAgentRunner);
+  });
+
+  test('throws a clear startup error when no recognized runner kind is configured', () => {
+    const resolvedAi: ResolvedAiConfig = {
+      credentials: [{ name: 'cred', type: 'api_key', resolvedValue: 'sk' }],
+      endpoints: [{ name: 'ep', protocol: 'openai', credential: 'cred' }],
+      profiles: [{ name: 'p', endpoint: 'ep', runner: 'openai_direct', model: 'gpt-4o' }],
+      routing: {},
+    } as unknown as ResolvedAiConfig;
+
+    expect(() => buildAgentRunner(resolvedAi, noopLogger)).toThrow(
+      /No recognized agent runner configured/,
+    );
+  });
+
+  test('throws a clear startup error when openai_agents profile uses non-api_key credential', () => {
+    expect(() =>
+      buildAgentRunner(makeAgentResolvedAi('openai_agents', 'bearer_token'), noopLogger),
+    ).toThrow(/not supported for openai_agents runner/);
+  });
+
+  test('logs service.config event with correct fields when openai_agents profile is used', () => {
+    const loggedInfoCalls: unknown[] = [];
+    const capturingLogger: RuntimeLogger = {
+      debug: () => {},
+      error: () => {},
+      warn: () => {},
+      info: (obj: unknown) => { loggedInfoCalls.push(obj); },
+    };
+
+    buildAgentRunner(makeAgentResolvedAi('openai_agents'), capturingLogger);
+
+    const serviceConfigEvent = loggedInfoCalls.find(
+      (c): c is Record<string, unknown> =>
+        typeof c === 'object' && c !== null && (c as Record<string, unknown>)['event'] === 'service.config',
+    );
+    expect(serviceConfigEvent).toBeDefined();
+    expect(serviceConfigEvent?.['provider']).toBe('openai');
+    expect(serviceConfigEvent?.['runner']).toBe('openai_agents');
   });
 });

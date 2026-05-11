@@ -89,6 +89,7 @@ const BASE_AI_CONFIG = {
   ],
   profiles: [
     { name: 'default', endpoint: 'anthropic-direct', model: 'claude-sonnet-4-5', runner: 'anthropic_direct' as const },
+    { name: 'agent', endpoint: 'anthropic-direct', model: 'claude-sonnet-4-5', runner: 'claude_agent_sdk' as const },
   ],
   routing: { default_profile: 'default' },
 };
@@ -102,6 +103,7 @@ const BEDROCK_AI_CONFIG = {
   ],
   profiles: [
     { name: 'default', endpoint: 'bedrock-direct', model: 'claude-sonnet-4-5', runner: 'anthropic_direct' as const },
+    { name: 'agent', endpoint: 'bedrock-direct', model: 'claude-sonnet-4-5', runner: 'claude_agent_sdk' as const },
   ],
   routing: { default_profile: 'default' },
 };

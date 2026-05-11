@@ -43,8 +43,9 @@ import {
 } from '../core/ai/agent-services.js';
 import { AnthropicDirectModelRunner, type AnthropicCreateFn } from './anthropic/direct-model-runner.js';
 import { OpenAIDirectModelRunner } from './openai/direct-model-runner.js';
-import type { DirectModelRunRequest, DirectModelRunResult, DirectModelRunner } from '../types/ai.js';
+import type { DirectModelRunRequest, DirectModelRunResult, DirectModelRunner, AgentRunner } from '../types/ai.js';
 import { ClaudeAgentSdkAgentRunner } from './anthropic/claude-agent-sdk-agent-runner.js';
+import { OpenAIAgentSdkAgentRunner } from './openai/agent-sdk-agent-runner.js';
 
 export type RuntimeLogger = Pick<pino.Logger, 'debug' | 'error' | 'info' | 'warn'>;
 
@@ -116,7 +117,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
 
   const aiRoutingPolicy = buildAgentRoutingPolicy(resolvedAi);
   const directModelRunner = buildDirectModelRunner(resolvedAi, logger, options.loggerProvider);
-  const agentRunner = new ClaudeAgentSdkAgentRunner({ meter: options.meter });
+  const agentRunner = buildAgentRunner(resolvedAi, logger, options.meter);
   const intentClassifier = new ModelIntentClassifier(directModelRunner, { routingPolicy: aiRoutingPolicy });
   const prTitleGenerator = new ModelPRTitleGenerator(directModelRunner, { routingPolicy: aiRoutingPolicy });
   const questionAnswerer = new AgentRunnerQuestionAnsweringAgent(agentRunner, aiRoutingPolicy, repoPath);
@@ -221,6 +222,52 @@ function recordConfig(config: Record<string, unknown> | undefined, key: string):
 
 export function buildAgentRoutingPolicy(resolvedAi: ResolvedAiConfig): DefaultAgentRoutingPolicy {
   return new DefaultAgentRoutingPolicy(resolvedAi);
+}
+
+export function buildAgentRunner(
+  resolvedAi: ResolvedAiConfig,
+  logger: RuntimeLogger,
+  meter?: Meter,
+): AgentRunner {
+  const claudeProfile = resolvedAi.profiles.find(p => p.runner === 'claude_agent_sdk');
+  if (claudeProfile) {
+    return new ClaudeAgentSdkAgentRunner({ meter });
+  }
+
+  const openAiAgentProfile = resolvedAi.profiles.find(p => p.runner === 'openai_agents');
+  if (openAiAgentProfile) {
+    const endpoint = resolvedAi.endpoints.find(e => e.name === openAiAgentProfile.endpoint)!;
+    const credential = resolvedAi.credentials.find(c => c.name === endpoint.credential)!;
+
+    if (credential.type !== 'api_key') {
+      throw new Error(
+        `Credential type '${credential.type}' is not supported for openai_agents runner`,
+      );
+    }
+
+    logger.info(
+      {
+        event: 'service.config',
+        provider: 'openai',
+        runner: 'openai_agents',
+        model: openAiAgentProfile.model ?? 'default',
+        base_url: endpoint.base_url ?? 'default',
+      },
+      'Using OpenAI Agents SDK',
+    );
+
+    return new OpenAIAgentSdkAgentRunner(
+      credential.resolvedValue!,
+      endpoint.base_url,
+      openAiAgentProfile.model,
+      { meter },
+    );
+  }
+
+  const runnerKinds = resolvedAi.profiles.map(p => p.runner).join(', ') || 'none';
+  throw new Error(
+    `No recognized agent runner configured. Expected a profile with runner: claude_agent_sdk or openai_agents. Found: ${runnerKinds}`,
+  );
 }
 
 /**
