@@ -47,6 +47,28 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
 
   async create(input: ImplementationReviewInput): Promise<PublishedImplementationReview> {
     const dataSourceId = await this.getTestingGuidesDataSourceId();
+
+    // Build Changes bullets (structured or legacy fallback)
+    const changesBullets: string[] = input.review_summary?.changes?.length
+      ? input.review_summary.changes
+      : [input.summary || 'See implementation details.'];
+
+    // Build Confirm bullets (structured or legacy fallback)
+    const confirmBullets: string[] = input.review_summary?.confirm?.length
+      ? input.review_summary.confirm
+      : ['Confirm the implemented behavior matches the approved spec.'];
+
+    // Build testing steps (structured or split from legacy testing_instructions)
+    const rawSteps: string[] = input.testing_steps?.length
+      ? input.testing_steps
+      : (input.testing_instructions || '').split('\n').filter(s => s.trim());
+
+    // Prepend cd step if workspace_path is available and no step starts with 'cd '
+    const hasWorkspaceStep = rawSteps.some(s => s.trim().startsWith('cd '));
+    const testingSteps: string[] = !hasWorkspaceStep && input.workspace_path
+      ? [`cd ${input.workspace_path}`, ...rawSteps]
+      : rawSteps;
+
     const response = await this.client.pages.create({
       parent: { type: 'data_source_id', data_source_id: dataSourceId } as never,
       properties: {
@@ -62,28 +84,59 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
       } as never,
       children: [
         ...(input.artifact_url
-          ? [{
-              type: 'bookmark',
-              bookmark: { url: input.artifact_url },
-            } as never]
+          ? [{ type: 'bookmark', bookmark: { url: input.artifact_url } } as never]
           : []),
+        // Workspace section
+        {
+          type: 'heading_2',
+          heading_2: { rich_text: [{ text: { content: 'Workspace' } }] },
+        } as never,
+        {
+          type: 'paragraph',
+          paragraph: { rich_text: [{ text: { content: `Workspace: \`${input.workspace_path}\`` } }] },
+        } as never,
+        {
+          type: 'paragraph',
+          paragraph: { rich_text: [{ text: { content: `Branch: \`${input.branch}\`` } }] },
+        } as never,
         // Summary section
         {
           type: 'heading_2',
           heading_2: { rich_text: [{ text: { content: 'Summary' } }] },
         } as never,
         {
-          type: 'paragraph',
-          paragraph: { rich_text: [{ text: { content: input.summary } }] },
+          type: 'heading_3',
+          heading_3: { rich_text: [{ text: { content: 'Changes' } }] },
         } as never,
+        ...changesBullets.map(text => ({
+          type: 'bulleted_list_item',
+          bulleted_list_item: { rich_text: [{ text: { content: text } }] },
+        } as never)),
+        {
+          type: 'heading_3',
+          heading_3: { rich_text: [{ text: { content: 'Confirm' } }] },
+        } as never,
+        ...confirmBullets.map(text => ({
+          type: 'bulleted_list_item',
+          bulleted_list_item: { rich_text: [{ text: { content: text } }] },
+        } as never)),
         // Testing instructions section
         {
           type: 'heading_2',
           heading_2: { rich_text: [{ text: { content: 'Testing instructions' } }] },
         } as never,
+        ...testingSteps.map(text => ({
+          type: 'to_do',
+          to_do: { rich_text: [{ text: { content: text } }], checked: false },
+        } as never)),
+        // Additional steps section
         {
-          type: 'paragraph',
-          paragraph: { rich_text: [{ text: { content: input.testing_instructions } }] },
+          type: 'heading_2',
+          heading_2: { rich_text: [{ text: { content: 'Additional steps' } }] },
+        } as never,
+        {
+          type: 'to_do',
+          to_do: { rich_text: [{ text: { content: 'Add any extra testing steps here.' } }], checked: false },
         } as never,
         // Feedback section
         {

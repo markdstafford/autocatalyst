@@ -196,6 +196,134 @@ describe('NotionImplementationFeedbackPage — create', () => {
 
     expect(records.find(r => r['event'] === 'notion_testing_guide.created')).toBeDefined();
   });
+
+  it('writes Workspace heading before Summary heading', async () => {
+    const pagesCreate = vi.fn().mockResolvedValue({ id: 'new-page-id' });
+    const client = makeNotionClient({ pagesCreate });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    await page.create(makeReviewInput());
+
+    const children: Array<{ type: string; heading_2?: { rich_text: Array<{ text: { content: string } }> } }> =
+      pagesCreate.mock.calls[0][0].children;
+    const headingTexts = children
+      .filter(b => b.type === 'heading_2')
+      .map(b => b.heading_2!.rich_text[0].text.content);
+    const workspaceIdx = headingTexts.indexOf('Workspace');
+    const summaryIdx = headingTexts.indexOf('Summary');
+    expect(workspaceIdx).toBeGreaterThanOrEqual(0);
+    expect(summaryIdx).toBeGreaterThan(workspaceIdx);
+  });
+
+  it('writes workspace_path and branch in that order after Workspace heading', async () => {
+    const pagesCreate = vi.fn().mockResolvedValue({ id: 'new-page-id' });
+    const client = makeNotionClient({ pagesCreate });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    await page.create(makeReviewInput({
+      workspace_path: '/my/workspace',
+      branch: 'spec/abc123',
+    }));
+
+    const children: Array<{ type: string; heading_2?: { rich_text: Array<{ text: { content: string } }> }; paragraph?: { rich_text: Array<{ text: { content: string } }> } }> =
+      pagesCreate.mock.calls[0][0].children;
+    const workspaceHeadingIdx = children.findIndex(
+      b => b.type === 'heading_2' && b.heading_2!.rich_text[0].text.content === 'Workspace',
+    );
+    const workspaceParagraph = children[workspaceHeadingIdx + 1];
+    const branchParagraph = children[workspaceHeadingIdx + 2];
+    expect(workspaceParagraph?.paragraph?.rich_text[0].text.content).toContain('/my/workspace');
+    expect(branchParagraph?.paragraph?.rich_text[0].text.content).toContain('spec/abc123');
+  });
+
+  it('renders Changes and Confirm as bulleted_list_item blocks from review_summary', async () => {
+    const pagesCreate = vi.fn().mockResolvedValue({ id: 'new-page-id' });
+    const client = makeNotionClient({ pagesCreate });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    await page.create(makeReviewInput({
+      review_summary: {
+        changes: ['Added config loader', 'Wired provider'],
+        confirm: ['Provider is used', 'Old runs work'],
+      },
+    }));
+
+    const children: Array<{ type: string; bulleted_list_item?: { rich_text: Array<{ text: { content: string } }> } }> =
+      pagesCreate.mock.calls[0][0].children;
+    const bulletTexts = children
+      .filter(b => b.type === 'bulleted_list_item')
+      .map(b => b.bulleted_list_item!.rich_text[0].text.content);
+    expect(bulletTexts).toContain('Added config loader');
+    expect(bulletTexts).toContain('Wired provider');
+    expect(bulletTexts).toContain('Provider is used');
+    expect(bulletTexts).toContain('Old runs work');
+  });
+
+  it('renders testing_steps as Notion to_do blocks', async () => {
+    const pagesCreate = vi.fn().mockResolvedValue({ id: 'new-page-id' });
+    const client = makeNotionClient({ pagesCreate });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    await page.create(makeReviewInput({
+      testing_steps: ['cd /workspace', 'npm install', 'npm test'],
+    }));
+
+    const children: Array<{ type: string; to_do?: { rich_text: Array<{ text: { content: string } }>; checked: boolean } }> =
+      pagesCreate.mock.calls[0][0].children;
+    const allTodos = children.filter(b => b.type === 'to_do');
+    const todoTexts = allTodos.map(b => b.to_do!.rich_text[0].text.content);
+    expect(todoTexts).toContain('cd /workspace');
+    expect(todoTexts).toContain('npm install');
+    expect(todoTexts).toContain('npm test');
+    allTodos.filter(b => ['cd /workspace', 'npm install', 'npm test'].includes(b.to_do!.rich_text[0].text.content))
+      .forEach(b => expect(b.to_do!.checked).toBe(false));
+  });
+
+  it('renders an Additional steps heading with a placeholder to_do item', async () => {
+    const pagesCreate = vi.fn().mockResolvedValue({ id: 'new-page-id' });
+    const client = makeNotionClient({ pagesCreate });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    await page.create(makeReviewInput());
+
+    const children: Array<{ type: string; heading_2?: { rich_text: Array<{ text: { content: string } }> }; to_do?: { rich_text: Array<{ text: { content: string } }>; checked: boolean } }> =
+      pagesCreate.mock.calls[0][0].children;
+    const additionalStepsIdx = children.findIndex(
+      b => b.type === 'heading_2' && b.heading_2!.rich_text[0].text.content === 'Additional steps',
+    );
+    expect(additionalStepsIdx).toBeGreaterThanOrEqual(0);
+    const placeholder = children[additionalStepsIdx + 1];
+    expect(placeholder?.type).toBe('to_do');
+    expect(placeholder?.to_do!.rich_text[0].text.content).toBe('Add any extra testing steps here.');
+    expect(placeholder?.to_do!.checked).toBe(false);
+  });
+
+  it('falls back to legacy summary as single Changes bullet and fixed Confirm bullet', async () => {
+    const pagesCreate = vi.fn().mockResolvedValue({ id: 'new-page-id' });
+    const client = makeNotionClient({ pagesCreate });
+    const page = new NotionImplementationFeedbackPage(client, 'db-tg-id', { logDestination: nullDest });
+
+    await page.create(makeReviewInput({
+      review_summary: undefined,
+      summary: 'Legacy summary text',
+      testing_steps: undefined,
+      testing_instructions: 'Step one\nStep two',
+    }));
+
+    const children: Array<{ type: string; bulleted_list_item?: { rich_text: Array<{ text: { content: string } }> }; to_do?: { rich_text: Array<{ text: { content: string } }>; checked: boolean } }> =
+      pagesCreate.mock.calls[0][0].children;
+    const bulletTexts = children
+      .filter(b => b.type === 'bulleted_list_item')
+      .map(b => b.bulleted_list_item!.rich_text[0].text.content);
+    expect(bulletTexts).toContain('Legacy summary text');
+    expect(bulletTexts).toContain('Confirm the implemented behavior matches the approved spec.');
+
+    const todoTexts = children
+      .filter(b => b.type === 'to_do')
+      .map(b => b.to_do!.rich_text[0].text.content);
+    expect(todoTexts).toContain('Step one');
+    expect(todoTexts).toContain('Step two');
+  });
 });
 
 describe('NotionImplementationFeedbackPage — readFeedback', () => {
