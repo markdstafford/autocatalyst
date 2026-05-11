@@ -4,6 +4,7 @@ import type { LoadedConfig } from '../../src/types/config.js';
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:child_process')>()),
   execSync: vi.fn().mockReturnValue('https://example.test/org/repo.git\n'),
+  execFileSync: vi.fn().mockReturnValue('https://example.test/org/repo.git\n'),
 }));
 
 vi.mock('@slack/bolt', () => ({

@@ -1,14 +1,19 @@
-import { promisify } from 'node:util';
-import { exec as _exec } from 'node:child_process';
+import { execFile as _execFile } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
 import type pino from 'pino';
 import { createLogger } from './logger.js';
 
-const defaultExec = promisify(_exec);
+function defaultExec(cmd: string, args: string[], opts?: { cwd?: string }): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    _execFile(cmd, args, opts ?? {}, (err, stdout, stderr) => {
+      if (err) { reject(err); } else { resolve({ stdout, stderr }); }
+    });
+  });
+}
 
-type ExecFn = (cmd: string, opts?: { cwd?: string }) => Promise<{ stdout: string; stderr: string }>;
+type ExecFn = (cmd: string, args: string[], opts?: { cwd?: string }) => Promise<{ stdout: string; stderr: string }>;
 
 export interface WorkspaceManager {
   create(request_id: string, repo_url: string, workspace_root: string): Promise<{ workspace_path: string; branch: string }>;
@@ -41,7 +46,7 @@ export class WorkspaceManagerImpl implements WorkspaceManager {
 
     // Clone
     try {
-      await this.execFn(`git clone --depth=1 "${repo_url}" "${workspace_path}"`);
+      await this.execFn('git', ['clone', '--depth=1', repo_url, workspace_path]);
     } catch (err) {
       // Clean up partially-created directory if present
       try { rmSync(workspace_path, { recursive: true, force: true }); } catch { /* ignore */ }
@@ -50,7 +55,7 @@ export class WorkspaceManagerImpl implements WorkspaceManager {
 
     // Create branch
     try {
-      await this.execFn(`git checkout -b "${branch}"`, { cwd: workspace_path });
+      await this.execFn('git', ['checkout', '-b', branch], { cwd: workspace_path });
     } catch (err) {
       // Clean up cloned directory if present
       try { rmSync(workspace_path, { recursive: true, force: true }); } catch { /* ignore */ }
