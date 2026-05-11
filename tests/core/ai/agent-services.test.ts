@@ -110,6 +110,29 @@ describe('AgentRunner-backed core AI services', () => {
     }
   });
 
+  test('artifact creation prompt uses provider-neutral skill wording', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-artifact-prompt-'));
+    try {
+      const calls: AgentRunRequest[] = [];
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ artifact_path: join(workspace, 'context-human', 'specs', 'feature-test.md') }), 'utf8');
+      });
+      const service = new AgentRunnerArtifactAuthoringAgent(runner, makePolicy());
+
+      await service.create(makeRequest(), workspace);
+
+      expect(calls[0].prompt).toContain('Use the `mm:planning` skill');
+      expect(calls[0].prompt).not.toContain('/mm:planning');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   test('answers questions in the provided repo directory without creating a cloned workspace', async () => {
     const repo = await mkdtemp(join(tmpdir(), 'ac-question-'));
     try {
@@ -204,6 +227,30 @@ describe('AgentRunner-backed core AI services', () => {
       });
       expect(calls[0].route).toEqual({ task: 'implementation.run' });
       expect(calls[0].working_directory).toBe(workspace);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('implementation prompt names skills without slash commands', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-impl-provider-neutral-prompt-'));
+    try {
+      const calls: AgentRunRequest[] = [];
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ status: 'complete', summary: 'Done', testing_instructions: 'Run tests' }), 'utf8');
+      });
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+
+      await service.implement('/tmp/spec.md', workspace);
+
+      expect(calls[0].prompt).toContain('superpowers:writing-plans');
+      expect(calls[0].prompt).toContain('superpowers:subagent-driven-development');
+      expect(calls[0].prompt).not.toContain('/superpowers:');
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
