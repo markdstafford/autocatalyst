@@ -26,6 +26,7 @@ function makeMockApp(opts: {
   botUserId?: string;
   channels?: Array<{ name: string; id: string }>;
   historyMessages?: Array<{ ts: string; thread_ts?: string; text?: string }>;
+  repliesMessages?: Array<{ ts: string; text?: string }>;
 }) {
   const messageHandlers: Array<(args: { message: unknown }) => Promise<void>> = [];
   const eventHandlers = new Map<string, Array<(args: { event: unknown }) => Promise<void>>>();
@@ -41,6 +42,9 @@ function makeMockApp(opts: {
         }),
         history: vi.fn().mockResolvedValue({
           messages: opts.historyMessages ?? [],
+        }),
+        replies: vi.fn().mockResolvedValue({
+          messages: opts.repliesMessages ?? [],
         }),
       },
       chat: {
@@ -692,6 +696,54 @@ describe('SlackAdapter — command events (reaction-based)', () => {
       expect(event.payload.conversation.conversation_id).toBe('100.0');
       expect(event.payload.origin.message_id).toBe('100.0');
     }
+  });
+
+  it('reaction on thread reply when history returns a different message → falls back to conversations.replies to find root ts and message text', async () => {
+    // history returns the root message (ts='100.0'), not the reply (ts='200.0')
+    const mock = makeMockApp({
+      botUserId: BOT_ID,
+      historyMessages: [{ ts: '100.0', thread_ts: '100.0', text: 'original request' }],
+      repliesMessages: [{ ts: '100.0', text: 'original request' }, { ts: '200.0', text: 'reviewing_implementation' }],
+    });
+    const { ThreadRegistry } = await import('../../../src/adapters/slack/thread-registry.js');
+    const registry = new ThreadRegistry();
+    registry.register('100.0', 'req-001'); // root ts registered as known run
+
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { channelName: CHANNEL_NAME },
+      { logDestination: nullDest, registry },
+    );
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    // User reacts to the reply at ts='200.0' (not the root at '100.0')
+    await mock._triggerReaction({
+      type: 'reaction_added',
+      reaction: 'ac-set-status',
+      user: 'U123',
+      item: { type: 'message', channel: CHANNEL_ID, ts: '200.0' },
+    });
+
+    const event = await eventPromise;
+    await adapter.stop();
+
+    expect(event.type).toBe('command');
+    if (event.type === 'command') {
+      // Thread root (100.0) is used, not the reply ts (200.0)
+      expect(event.payload.conversation.conversation_id).toBe('100.0');
+      expect(event.payload.origin.message_id).toBe('200.0');
+      // Message text comes from the reply, not the root
+      expect(event.payload.messageText).toBe('reviewing_implementation');
+      // request_id resolved from thread root in registry
+      expect(event.payload.inferred_context?.request_id).toBe('req-001');
+    }
+
+    // Should have called history AND replies
+    expect(mock.client.conversations.history).toHaveBeenCalled();
+    expect(mock.client.conversations.replies).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: CHANNEL_ID, ts: '100.0', latest: '200.0', inclusive: true, limit: 1 }),
+    );
   });
 
   it('reaction_added with unrecognized emoji → no event emitted', async () => {

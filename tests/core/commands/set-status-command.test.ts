@@ -147,6 +147,50 @@ describe('createSetStatusHandler', () => {
     expect(msg).toContain('persisted');
   });
 
+  it('run in terminal stage (done) can be updated to any valid stage', async () => {
+    const run = makeRun({ stage: 'done', id: 'run-uuid-001', request_id: 'req-001' });
+    const findRunById = vi.fn().mockReturnValue(run);
+    const overrideRunStage = vi.fn().mockReturnValue('updated');
+    const handler = createSetStatusHandler({ findRunById, overrideRunStage });
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handler(
+      makeEvent({
+        messageText: 'implementing',
+        inferred_context: { request_id: 'req-001' },
+      }),
+      reply,
+    );
+
+    expect(overrideRunStage).toHaveBeenCalledWith('req-001', 'implementing');
+    expect(reply).toHaveBeenCalledOnce();
+    const msg = reply.mock.calls[0][0] as string;
+    expect(msg).toContain('done');
+    expect(msg).toContain('implementing');
+    expect(msg).toContain('persisted');
+  });
+
+  it('run in terminal stage (failed) can be updated to any valid stage', async () => {
+    const run = makeRun({ stage: 'failed', id: 'run-uuid-001', request_id: 'req-001' });
+    const findRunById = vi.fn().mockReturnValue(run);
+    const overrideRunStage = vi.fn().mockReturnValue('updated');
+    const handler = createSetStatusHandler({ findRunById, overrideRunStage });
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handler(
+      makeEvent({
+        args: ['reviewing_implementation'],
+        inferred_context: { request_id: 'req-001' },
+      }),
+      reply,
+    );
+
+    expect(overrideRunStage).toHaveBeenCalledWith('req-001', 'reviewing_implementation');
+    const msg = reply.mock.calls[0][0] as string;
+    expect(msg).toContain('failed');
+    expect(msg).toContain('reviewing_implementation');
+  });
+
   it('args take precedence over messageText', async () => {
     const run = makeRun({ stage: 'implementing', request_id: 'req-001' });
     const findRunById = vi.fn().mockReturnValue(run);

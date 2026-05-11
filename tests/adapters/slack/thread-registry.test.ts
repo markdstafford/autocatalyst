@@ -33,4 +33,19 @@ describe('ThreadRegistry', () => {
     expect(registry.resolve('ts-one')).toBe('request-one');
     expect(registry.resolve('ts-two')).toBe('request-two');
   });
+
+  it('rootTimestamps() returns empty array when nothing registered', () => {
+    const registry = new ThreadRegistry();
+    expect(registry.rootTimestamps()).toEqual([]);
+  });
+
+  it('rootTimestamps() returns all registered timestamps', () => {
+    const registry = new ThreadRegistry();
+    registry.register('ts-one', 'request-one');
+    registry.register('ts-two', 'request-two');
+    const timestamps = registry.rootTimestamps();
+    expect(timestamps).toHaveLength(2);
+    expect(timestamps).toContain('ts-one');
+    expect(timestamps).toContain('ts-two');
+  });
 });
