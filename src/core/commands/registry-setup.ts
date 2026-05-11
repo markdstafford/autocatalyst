@@ -1,5 +1,5 @@
 import type { CommandRegistry } from '../../types/commands.js';
-import type { Run } from '../../types/runs.js';
+import type { Run, RunStage } from '../../types/runs.js';
 import type { IntentClassifier } from '../../types/intent.js';
 import { makeClassifyIntentHandler } from './classify-intent-command.js';
 import { makeHealthHandler, makeHelpHandler } from './meta-commands.js';
@@ -9,6 +9,7 @@ import {
   makeRunLogsHandler,
   makeRunStatusHandler,
 } from './run-commands.js';
+import { createSetStatusHandler } from './set-status-command.js';
 
 export interface DefaultCommandDeps {
   runs: Map<string, Run>;
@@ -17,6 +18,7 @@ export interface DefaultCommandDeps {
   isConnected: () => boolean;
   getActiveRunCount: () => number;
   intentClassifier: IntentClassifier;
+  overrideRunStage: (requestId: string, stage: RunStage) => 'updated' | 'not_found' | 'invalid_stage';
 }
 
 export function registerDefaultCommands(registry: CommandRegistry, deps: DefaultCommandDeps): void {
@@ -54,5 +56,13 @@ export function registerDefaultCommands(registry: CommandRegistry, deps: Default
     'classify-intent',
     makeClassifyIntentHandler(deps.intentClassifier),
     'Test how a message would be classified. Usage: `:ac-classify-intent: <message>` or `:ac-classify-intent: <context> <message>`',
+  );
+  registry.register(
+    'run.set-status',
+    createSetStatusHandler({
+      findRunById: (requestId: string) => deps.runs.get(requestId),
+      overrideRunStage: deps.overrideRunStage,
+    }),
+    "Override a stuck run's stage. Usage: post the target stage name in a run thread, then react with `:ac-set-status:`",
   );
 }

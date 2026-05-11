@@ -38,6 +38,7 @@ export function bootstrapWorkflowRuntime(
     isConnected: deps.isConnected,
     getActiveRunCount: () => orchestrator.getActiveRunCount(),
     intentClassifier: deps.intentClassifier,
+    overrideRunStage: (requestId, stage) => orchestrator.overrideRunStage(requestId, stage),
   });
 
   const service = new Service(config, { orchestrator });
