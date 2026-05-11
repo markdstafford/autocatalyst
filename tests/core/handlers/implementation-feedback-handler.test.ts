@@ -67,8 +67,9 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof Implementat
     persist: vi.fn(),
     logger: {
       info: vi.fn(),
-      warn: vi.fn(),   // <-- added
+      warn: vi.fn(),
       error: vi.fn(),
+      debug: vi.fn(),
     },
     ...overrides,
   };

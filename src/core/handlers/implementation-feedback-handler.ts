@@ -13,7 +13,7 @@ export interface ImplementationFeedbackDeps {
   transition: (run: Run, stage: RunStage) => void;
   failRun: (run: Run, conversation: ConversationRef, error: unknown) => Promise<void>;
   persist: () => void;
-  logger: Pick<pino.Logger, 'info' | 'warn' | 'error'>;
+  logger: Pick<pino.Logger, 'info' | 'warn' | 'error' | 'debug'>;
 }
 
 export type ImplementationFeedbackResult =
@@ -166,6 +166,11 @@ export class ImplementationFeedbackHandler {
         return lines.join('\n');
       }),
     ].join('\n\n');
+
+    this.deps.logger.debug(
+      { event: 'implementation.feedback_context_built', run_id: run.id, unresolved_count: unresolved.length },
+      'Serialized unresolved feedback for implementer',
+    );
 
     return { status: 'ok', value: serialized };
   }
