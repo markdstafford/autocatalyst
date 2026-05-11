@@ -54,6 +54,11 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof Implementat
         status: 'complete',
         summary: 'Implemented the feature successfully.',
         testing_instructions: 'npm test',
+        review_summary: {
+          changes: ['Added feature X', 'Wired config loader'],
+          confirm: ['Feature X works', 'Config loads correctly'],
+        },
+        testing_steps: ['cd /ws/request-001', 'npm install', 'npm test'],
       }),
     },
     implFeedbackPage: {
@@ -102,8 +107,15 @@ describe('ImplementationStartHandler', () => {
       artifact_ref: 'CANVAS-TYPED',
       artifact_url: undefined,
       title: 'Typed feature',
+      workspace_path: '/ws/request-001',
+      branch: 'spec/request-001',
       summary: 'Implemented the feature successfully.',
       testing_instructions: 'npm test',
+      review_summary: {
+        changes: ['Added feature X', 'Wired config loader'],
+        confirm: ['Feature X works', 'Config loads correctly'],
+      },
+      testing_steps: ['cd /ws/request-001', 'npm install', 'npm test'],
     });
     expect(deps.failRun).not.toHaveBeenCalled();
   });
@@ -126,8 +138,15 @@ describe('ImplementationStartHandler', () => {
       artifact_ref: 'CANVAS001',
       artifact_url: undefined,
       title: 'Test',
+      workspace_path: '/ws/request-001',
+      branch: 'spec/request-001',
       summary: 'Implemented the feature successfully.',
       testing_instructions: 'npm test',
+      review_summary: {
+        changes: ['Added feature X', 'Wired config loader'],
+        confirm: ['Feature X works', 'Config loads correctly'],
+      },
+      testing_steps: ['cd /ws/request-001', 'npm install', 'npm test'],
     });
     expect(run.impl_feedback_ref).toBe('feedback-page-id');
     expect(run.last_impl_result).toEqual({
@@ -197,6 +216,65 @@ describe('ImplementationStartHandler', () => {
     expect(result).toEqual({ status: 'failed' });
     expect(deps.failRun).toHaveBeenCalledWith(run, TEST_CONVERSATION, expect.any(Error));
     expect(deps.implFeedbackPage?.create).not.toHaveBeenCalled();
+  });
+
+  it('passes workspace_path and branch to implFeedbackPage.create()', async () => {
+    const { handler, deps } = makeHandler();
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback());
+
+    expect(deps.implFeedbackPage?.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspace_path: '/ws/request-001',
+        branch: 'spec/request-001',
+      }),
+    );
+  });
+
+  it('maps review_summary and testing_steps from result into ImplementationReviewInput', async () => {
+    const { handler, deps } = makeHandler();
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback());
+
+    expect(deps.implFeedbackPage?.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        review_summary: {
+          changes: ['Added feature X', 'Wired config loader'],
+          confirm: ['Feature X works', 'Config loads correctly'],
+        },
+        testing_steps: ['cd /ws/request-001', 'npm install', 'npm test'],
+      }),
+    );
+  });
+
+  it('falls back to legacy fields when structured fields are omitted and logs review_contract_legacy', async () => {
+    const { handler, deps } = makeHandler({
+      implementer: {
+        implement: vi.fn().mockResolvedValue({
+          status: 'complete',
+          summary: 'Legacy summary.',
+          testing_instructions: 'Legacy instructions.',
+        }),
+      },
+    });
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback());
+
+    expect(deps.implFeedbackPage?.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        summary: 'Legacy summary.',
+        testing_instructions: 'Legacy instructions.',
+        review_summary: undefined,
+        testing_steps: undefined,
+      }),
+    );
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'implementation.review_contract_legacy', run_id: 'run-001' }),
+      expect.any(String),
+    );
   });
 
   it('continues in degraded mode when feedback page creation or completion notification fails', async () => {

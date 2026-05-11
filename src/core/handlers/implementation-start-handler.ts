@@ -87,12 +87,23 @@ export class ImplementationStartHandler {
 
     let feedbackPageUrl: string | undefined;
     try {
+      // Log legacy warning if structured output is missing
+      if (!result.review_summary || !result.testing_steps) {
+        this.deps.logger.warn(
+          { event: 'implementation.review_contract_legacy', run_id: run.id },
+          'Implementation result missing structured review_summary or testing_steps; using legacy fields',
+        );
+      }
       const publishedReview = await this.deps.implFeedbackPage!.create({
         artifact_ref: refs.publication_ref,
         artifact_url: artifactPublishedUrl(run),
         title: titleFromArtifactPath(refs.local_path),
+        workspace_path: run.workspace_path,
+        branch: run.branch,
         summary: result.summary ?? '',
         testing_instructions: result.testing_instructions ?? '',
+        review_summary: result.review_summary,
+        testing_steps: result.testing_steps,
       });
       run.impl_feedback_ref = publishedReview.id;
       this.deps.persist();
