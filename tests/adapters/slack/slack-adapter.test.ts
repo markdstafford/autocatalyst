@@ -25,7 +25,7 @@ function makeLogCapture() {
 function makeMockApp(opts: {
   botUserId?: string;
   channels?: Array<{ name: string; id: string }>;
-  historyMessages?: Array<{ ts: string; thread_ts?: string }>;
+  historyMessages?: Array<{ ts: string; thread_ts?: string; text?: string }>;
 }) {
   const messageHandlers: Array<(args: { message: unknown }) => Promise<void>> = [];
   const eventHandlers = new Map<string, Array<(args: { event: unknown }) => Promise<void>>>();
@@ -915,6 +915,65 @@ describe('SlackAdapter — ignored message reaction', () => {
   });
 });
 
+describe('SlackAdapter — reaction command messageText', () => {
+  it('populates messageText on CommandEvent from the text of the reacted-to message', async () => {
+    const mock = makeMockApp({
+      botUserId: 'UBOT',
+      channels: [{ name: 'ch', id: 'C1' }],
+      historyMessages: [{ ts: '111.0', thread_ts: '111.0', text: 'reviewing_implementation' }],
+    });
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { channelName: 'ch' },
+      { logDestination: nullDest },
+    );
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    await mock._triggerReaction({
+      reaction: 'ac-set-status',
+      user: 'U1',
+      item: { type: 'message', channel: 'C1', ts: '111.0' },
+    });
+    const event = await eventPromise;
+
+    expect(event.type).toBe('command');
+    const cmd = event.payload as import('../../../src/types/commands.js').CommandEvent;
+    expect(cmd.command).toBe('run.set-status');
+    expect(cmd.messageText).toBe('reviewing_implementation');
+
+    await adapter.stop();
+  });
+
+  it('sets messageText to undefined when reacted-to message has no text', async () => {
+    const mock = makeMockApp({
+      botUserId: 'UBOT',
+      channels: [{ name: 'ch', id: 'C1' }],
+      historyMessages: [{ ts: '111.0' }],
+    });
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { channelName: 'ch' },
+      { logDestination: nullDest },
+    );
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    await mock._triggerReaction({
+      reaction: 'ac-run-status',
+      user: 'U1',
+      item: { type: 'message', channel: 'C1', ts: '111.0' },
+    });
+    const event = await eventPromise;
+
+    expect(event.type).toBe('command');
+    const cmd = event.payload as import('../../../src/types/commands.js').CommandEvent;
+    expect(cmd.messageText).toBeUndefined();
+
+    await adapter.stop();
+  });
+});
+
 describe('SlackAdapter — reactToMessage', () => {
   const BOT_ID = 'UBOT001';
   const CHANNEL_ID = 'C123';
@@ -956,5 +1015,64 @@ describe('SlackAdapter — reactToMessage', () => {
     expect(errorLog).toBeDefined();
     expect(typeof errorLog!['error']).toBe('string');
     expect((errorLog!['error'] as string)).toContain('already_reacted');
+  });
+});
+
+describe('SlackAdapter — reaction command messageText', () => {
+  it('populates messageText on CommandEvent from the text of the reacted-to message', async () => {
+    const mock = makeMockApp({
+      botUserId: 'UBOT',
+      channels: [{ name: 'ch', id: 'C1' }],
+      historyMessages: [{ ts: '111.0', thread_ts: '111.0', text: 'reviewing_implementation' }],
+    });
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { channelName: 'ch' },
+      { logDestination: nullDest },
+    );
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    await mock._triggerReaction({
+      reaction: 'ac-set-status',
+      user: 'U1',
+      item: { type: 'message', channel: 'C1', ts: '111.0' },
+    });
+    const event = await eventPromise;
+
+    expect(event.type).toBe('command');
+    const cmd = event.payload as import('../../../src/types/commands.js').CommandEvent;
+    expect(cmd.command).toBe('run.set-status');
+    expect(cmd.messageText).toBe('reviewing_implementation');
+
+    await adapter.stop();
+  });
+
+  it('sets messageText to undefined when reacted-to message has no text', async () => {
+    const mock = makeMockApp({
+      botUserId: 'UBOT',
+      channels: [{ name: 'ch', id: 'C1' }],
+      historyMessages: [{ ts: '111.0' }],
+    });
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { channelName: 'ch' },
+      { logDestination: nullDest },
+    );
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    await mock._triggerReaction({
+      reaction: 'ac-run-status',
+      user: 'U1',
+      item: { type: 'message', channel: 'C1', ts: '111.0' },
+    });
+    const event = await eventPromise;
+
+    expect(event.type).toBe('command');
+    const cmd = event.payload as import('../../../src/types/commands.js').CommandEvent;
+    expect(cmd.messageText).toBeUndefined();
+
+    await adapter.stop();
   });
 });

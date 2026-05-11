@@ -21,6 +21,7 @@ export const EMOJI_COMMAND_TABLE: Record<string, string> = {
   'ac-health': 'health',
   'ac-help': 'help',
   'ac-classify-intent': 'classify-intent',
+  'ac-set-status': 'run.set-status',
 };
 
 export function classifyMessage(

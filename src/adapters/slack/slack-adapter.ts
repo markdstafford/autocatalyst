@@ -296,6 +296,7 @@ export class SlackAdapter implements ChannelAdapter {
       }
 
       let reactedThreadTs: string = reaction.item.ts;
+      let reactedMessageText: string | undefined;
       try {
         const historyResult = await this.app.client.conversations.history({
           channel: reaction.item.channel!,
@@ -307,6 +308,7 @@ export class SlackAdapter implements ChannelAdapter {
         if (reactedMessage?.thread_ts) {
           reactedThreadTs = reactedMessage.thread_ts as string;
         }
+        reactedMessageText = typeof reactedMessage?.text === 'string' ? reactedMessage.text : undefined;
       } catch (err) {
         this.logger.warn(
           { event: 'slack.error', error: String(err) },
@@ -327,6 +329,7 @@ export class SlackAdapter implements ChannelAdapter {
         },
         author: reaction.user,
         received_at: new Date().toISOString(),
+        messageText: reactedMessageText,
         inferred_context: {
           request_id: this.registry.resolve(reactedThreadTs),
         },
