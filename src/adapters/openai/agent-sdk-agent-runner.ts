@@ -1,4 +1,4 @@
-import { Agent, run as _run } from '@openai/agents';
+import { Agent, run as _run, OpenAIResponsesModel } from '@openai/agents';
 import { SandboxAgent, type Capability } from '@openai/agents/sandbox';
 import OpenAI from 'openai';
 import { performance } from 'node:perf_hooks';
@@ -64,10 +64,20 @@ export class OpenAIAgentSdkAgentRunner implements AgentRunner {
     const refs = skillRefsForRoute(request.route);
     const skillCapabilities = await this.materializeSkillsFn(refs);
 
-    const clientOptions: ConstructorParameters<typeof OpenAI>[0] = { apiKey: this.apiKey };
+    // For Grove/Azure APIM: create a configured OpenAI client with api-key header and wrap it
+    // in OpenAIResponsesModel so the custom base URL is applied to every agent HTTP request.
+    // For standard OpenAI endpoints: pass the model string and let the SDK use its default client.
+    let agentModel: string | OpenAIResponsesModel;
     if (this.baseUrl) {
-      clientOptions.baseURL = this.baseUrl;
-      clientOptions.defaultHeaders = { 'api-key': this.apiKey };
+      const client = new OpenAI({
+        apiKey: this.apiKey,
+        baseURL: this.baseUrl,
+        defaultHeaders: { 'api-key': this.apiKey },
+      });
+      // Cast required: resolution-mode difference between our OpenAI import and @openai/agents-openai's import
+      agentModel = new OpenAIResponsesModel(client as never, model);
+    } else {
+      agentModel = model;
     }
 
     const baseInstructions = [
@@ -79,13 +89,13 @@ export class OpenAIAgentSdkAgentRunner implements AgentRunner {
     const agent = skillCapabilities.length > 0
       ? new SandboxAgent({
           name: 'autocatalyst-agent',
-          model,
+          model: agentModel,
           instructions: baseInstructions,
           capabilities: skillCapabilities as Capability[],
         })
       : new Agent({
           name: 'autocatalyst-agent',
-          model,
+          model: agentModel,
           instructions: baseInstructions,
         });
 
