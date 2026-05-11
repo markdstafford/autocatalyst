@@ -495,10 +495,54 @@ function parseImplementationResult(content: string, path: string): Implementatio
   if (status !== 'complete' && status !== 'needs_input' && status !== 'failed') {
     throw new Error(`Implementation: invalid STATUS value "${String(rawStatus)}" in result file`);
   }
+
+  // Parse optional review_summary
+  let review_summary: ImplementationResult['review_summary'];
+  const rawReviewSummary = obj['review_summary'];
+  if (rawReviewSummary !== undefined && rawReviewSummary !== null) {
+    if (typeof rawReviewSummary !== 'object') {
+      throw new Error(`Implementation: review_summary must be an object`);
+    }
+    const rs = rawReviewSummary as Record<string, unknown>;
+    review_summary = {
+      changes: Array.isArray(rs['changes']) ? (rs['changes'] as unknown[]).filter((s): s is string => typeof s === 'string') : [],
+      confirm: Array.isArray(rs['confirm']) ? (rs['confirm'] as unknown[]).filter((s): s is string => typeof s === 'string') : [],
+    };
+  }
+
+  // Parse optional testing_steps
+  let testing_steps: string[] | undefined;
+  const rawSteps = obj['testing_steps'];
+  if (Array.isArray(rawSteps)) {
+    testing_steps = (rawSteps as unknown[]).filter((s): s is string => typeof s === 'string');
+  }
+
+  // Parse optional resolved_feedback_items
+  let resolved_feedback_items: Array<{ id: string; resolution_comment: string }> | undefined;
+  const rawResolved = obj['resolved_feedback_items'];
+  if (Array.isArray(rawResolved)) {
+    resolved_feedback_items = (rawResolved as unknown[]).map((item, index) => {
+      if (typeof item !== 'object' || item === null) {
+        throw new Error(`Implementation: resolved_feedback_items[${index}] is not an object`);
+      }
+      const entry = item as Record<string, unknown>;
+      if (typeof entry['id'] !== 'string') {
+        throw new Error(`Implementation: resolved_feedback_items[${index}] missing string "id"`);
+      }
+      if (typeof entry['resolution_comment'] !== 'string') {
+        throw new Error(`Implementation: resolved_feedback_items[${index}] missing string "resolution_comment"`);
+      }
+      return { id: entry['id'], resolution_comment: entry['resolution_comment'] };
+    });
+  }
+
   return {
     status,
     summary: typeof obj['summary'] === 'string' ? obj['summary'] : undefined,
     testing_instructions: typeof obj['testing_instructions'] === 'string' ? obj['testing_instructions'] : undefined,
+    review_summary,
+    testing_steps,
+    resolved_feedback_items,
     question: typeof obj['question'] === 'string' ? obj['question'] : undefined,
     error: typeof obj['error'] === 'string' ? obj['error'] : undefined,
   };
