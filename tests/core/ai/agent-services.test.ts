@@ -393,6 +393,58 @@ describe('AgentRunner-backed core AI services', () => {
     }
   });
 
+  test('implementation prompt requests review_summary, testing_steps, and resolved_feedback_items', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-impl-prompt-structured-'));
+    try {
+      const calls: AgentRunRequest[] = [];
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ status: 'complete', summary: 'Done' }), 'utf8');
+      });
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+
+      await service.implement('/tmp/spec.md', workspace);
+
+      expect(calls[0].prompt).toContain('review_summary');
+      expect(calls[0].prompt).toContain('testing_steps');
+      expect(calls[0].prompt).toContain('resolved_feedback_items');
+      expect(calls[0].prompt).toContain('changes');
+      expect(calls[0].prompt).toContain('confirm');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('feedback implementation prompt instructs agent to preserve feedback IDs exactly', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-impl-feedback-prompt-'));
+    try {
+      const calls: AgentRunRequest[] = [];
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ status: 'complete', summary: 'Done' }), 'utf8');
+      });
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+      const feedbackContext = '[FEEDBACK_ID: block-1]\nFix the crash\n[FEEDBACK_ID: block-2]\nUpdate config example';
+
+      await service.implement('/tmp/spec.md', workspace, feedbackContext);
+
+      // The prompt should instruct the agent to use IDs exactly as given
+      expect(calls[0].prompt).toContain('FEEDBACK_ID');
+      expect(calls[0].prompt).toContain('resolved_feedback_items');
+      expect(calls[0].prompt).toMatch(/id.*exactly|use.*id.*as.*provided|preserve.*id/i);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   test('uses issue triage agent output before creating issues through IssueManager', async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'ac-issue-'));
     try {

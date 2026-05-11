@@ -785,16 +785,27 @@ function buildArtifactRevisePrompt(
 
 function buildImplementationPrompt(artifact_path: string, result_file_path: string, additionalContext?: string): string {
   const lines: string[] = [];
+  const hasFeedbackContext = Boolean(additionalContext) && additionalContext!.includes('[FEEDBACK_ID:');
 
   if (additionalContext) {
     lines.push('The working directory already contains partial implementation from a previous attempt.');
     lines.push('Skip Step 1 (the plan exists) - go directly to Step 2.');
     lines.push('');
-    lines.push('Additional context from the human:');
+    if (hasFeedbackContext) {
+      lines.push('Implementation feedback from the testing guide (address each item):');
+    } else {
+      lines.push('Additional context from the human:');
+    }
     lines.push('<<<');
     lines.push(additionalContext);
     lines.push('>>>');
     lines.push('');
+    if (hasFeedbackContext) {
+      lines.push('For each [FEEDBACK_ID: ...] item you address, include it in resolved_feedback_items');
+      lines.push('using the exact ID string as provided — do not modify or guess IDs.');
+      lines.push('Only include an item in resolved_feedback_items when you actually fixed that specific issue.');
+      lines.push('');
+    }
   }
 
   lines.push(`Read the approved artifact at: ${artifact_path}`);
@@ -823,14 +834,27 @@ function buildImplementationPrompt(artifact_path: string, result_file_path: stri
   lines.push('Create the directory if it does not exist. The JSON must have this structure:');
   lines.push('{');
   lines.push('  "status": "complete" | "needs_input" | "failed",');
-  lines.push('  "summary": "what was built",');
-  lines.push('  "testing_instructions": "Branch: <branch-name>\\nSetup: <install/build commands>\\nTest: <specific steps to exercise the feature>",');
-  lines.push('  "question": "the decision needed from the human (only when needs_input)",');
-  lines.push('  "error": "what went wrong (only when failed)"');
+  lines.push('  "summary": "short fallback summary",');
+  lines.push('  "review_summary": {');
+  lines.push('    "changes": ["2-5 bullets describing what changed (user-visible or reviewer-relevant)"],');
+  lines.push('    "confirm": ["2-5 bullets describing what the human should verify"]');
+  lines.push('  },');
+  lines.push('  "testing_instructions": "legacy fallback — use testing_steps instead",');
+  lines.push('  "testing_steps": ["cd /path/to/workspace", "npm install", "concrete step 3"],');
+  lines.push('  "resolved_feedback_items": [');
+  lines.push('    { "id": "<exact FEEDBACK_ID value>", "resolution_comment": "1-2 sentences: what changed" }');
+  lines.push('  ],');
+  lines.push('  "question": "only when needs_input",');
+  lines.push('  "error": "only when failed"');
   lines.push('}');
   lines.push('');
-  lines.push('Use only the exact canonical status values: "complete", "needs_input", or "failed".');
-  lines.push('Do not signal completion until the result file has been written.');
+  lines.push('Rules:');
+  lines.push('- review_summary.changes and review_summary.confirm must each contain 2-5 bullets when status is "complete".');
+  lines.push('- testing_steps must start with a `cd ` step when a workspace path is available.');
+  lines.push('- resolved_feedback_items: include [] on initial implementation; on feedback runs, only include items you actually fixed.');
+  lines.push('- Use IDs exactly as provided — do not modify or guess IDs.');
+  lines.push('- Use only the exact canonical status values: "complete", "needs_input", or "failed".');
+  lines.push('- Do not signal completion until the result file has been written.');
   lines.push('');
   lines.push(CHECKPOINT_INSTRUCTIONS);
 
