@@ -1,12 +1,14 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, test } from 'vitest';
 import { resolveAiConfig } from '../../src/core/config.js';
 import type { WorkflowConfig, AiConfig } from '../../src/types/config.js';
-import { buildDirectModelRunner, RoutingAwareDirectModelRunner } from '../../src/adapters/runtime-composition.js';
+import { buildDirectModelRunner, buildAgentRunner, RoutingAwareDirectModelRunner, RoutingAwareAgentRunner } from '../../src/adapters/runtime-composition.js';
 import { OpenAIDirectModelRunner } from '../../src/adapters/openai/direct-model-runner.js';
 import { AnthropicDirectModelRunner } from '../../src/adapters/anthropic/direct-model-runner.js';
+import { OpenAIAgentSdkAgentRunner } from '../../src/adapters/openai/agent-sdk-agent-runner.js';
+import { ClaudeAgentSdkAgentRunner } from '../../src/adapters/anthropic/claude-agent-sdk-agent-runner.js';
 import type { ResolvedAiConfig } from '../../src/core/config.js';
 import type { RuntimeLogger } from '../../src/adapters/runtime-composition.js';
-import type { DirectModelRunner, DirectModelRunRequest } from '../../src/types/ai.js';
+import type { DirectModelRunner, DirectModelRunRequest, AgentRunner, AgentRunRequest } from '../../src/types/ai.js';
 
 function makeWorkflowConfig(ai: Partial<AiConfig>): WorkflowConfig {
   return { ai } as unknown as WorkflowConfig;
@@ -187,5 +189,146 @@ describe('RoutingAwareDirectModelRunner dispatch', () => {
     };
     const result = await wrapper.run(req);
     expect(result.text).toBe('fallback');
+  });
+});
+
+function makeAgentResolvedAi(runner: 'claude_agent_sdk' | 'openai_agent_sdk', credentialType: string = 'api_key'): ResolvedAiConfig {
+  return {
+    credentials: [{ name: 'cred', type: credentialType, resolvedValue: 'sk-test' }],
+    endpoints: [{ name: 'ep', protocol: 'openai', credential: 'cred' }],
+    profiles: [{ name: 'p', endpoint: 'ep', runner, model: 'gpt-4o' }],
+    routing: { 'implementation.run': 'p' },
+  } as unknown as ResolvedAiConfig;
+}
+
+function makeMixedAgentResolvedAi(): ResolvedAiConfig {
+  return {
+    credentials: [{ name: 'cred', type: 'api_key', resolvedValue: 'sk-test' }],
+    endpoints: [{ name: 'ep', protocol: 'openai', credential: 'cred' }],
+    profiles: [
+      { name: 'claude-p', endpoint: 'ep', runner: 'claude_agent_sdk', model: 'claude-sonnet-4-6' },
+      { name: 'openai-p', endpoint: 'ep', runner: 'openai_agent_sdk', model: 'gpt-4o' },
+    ],
+    routing: { 'artifact.create': 'claude-p', 'implementation.run': 'openai-p' },
+  } as unknown as ResolvedAiConfig;
+}
+
+describe('buildAgentRunner dispatch', () => {
+  test('returns ClaudeAgentSdkAgentRunner when profile runner is claude_agent_sdk', () => {
+    const runner = buildAgentRunner(makeAgentResolvedAi('claude_agent_sdk'), noopLogger);
+    expect(runner).toBeInstanceOf(ClaudeAgentSdkAgentRunner);
+  });
+
+  test('returns OpenAIAgentSdkAgentRunner when profile runner is openai_agent_sdk', () => {
+    const runner = buildAgentRunner(makeAgentResolvedAi('openai_agent_sdk'), noopLogger);
+    expect(runner).toBeInstanceOf(OpenAIAgentSdkAgentRunner);
+  });
+
+  test('throws a clear startup error when no recognized runner kind is configured', () => {
+    const resolvedAi: ResolvedAiConfig = {
+      credentials: [{ name: 'cred', type: 'api_key', resolvedValue: 'sk' }],
+      endpoints: [{ name: 'ep', protocol: 'openai', credential: 'cred' }],
+      profiles: [{ name: 'p', endpoint: 'ep', runner: 'openai_direct', model: 'gpt-4o' }],
+      routing: {},
+    } as unknown as ResolvedAiConfig;
+
+    expect(() => buildAgentRunner(resolvedAi, noopLogger)).toThrow(
+      /No recognized agent runner configured/,
+    );
+  });
+
+  test('throws a clear startup error when openai_agent_sdk profile uses non-api_key credential', () => {
+    expect(() =>
+      buildAgentRunner(makeAgentResolvedAi('openai_agent_sdk', 'bearer_token'), noopLogger),
+    ).toThrow(/not supported for openai_agent_sdk runner/);
+  });
+
+  test('logs service.config event with correct fields when openai_agent_sdk profile is used', () => {
+    const loggedInfoCalls: unknown[] = [];
+    const capturingLogger: RuntimeLogger = {
+      debug: () => {},
+      error: () => {},
+      warn: () => {},
+      info: (obj: unknown) => { loggedInfoCalls.push(obj); },
+    };
+
+    buildAgentRunner(makeAgentResolvedAi('openai_agent_sdk'), capturingLogger);
+
+    const serviceConfigEvent = loggedInfoCalls.find(
+      (c): c is Record<string, unknown> =>
+        typeof c === 'object' && c !== null && (c as Record<string, unknown>)['event'] === 'service.config',
+    );
+    expect(serviceConfigEvent).toBeDefined();
+    expect(serviceConfigEvent?.['provider']).toBe('openai');
+    expect(serviceConfigEvent?.['runner']).toBe('openai_agent_sdk');
+  });
+
+  test('returns RoutingAwareAgentRunner when both claude_agent_sdk and openai_agent_sdk profiles exist', () => {
+    const runner = buildAgentRunner(makeMixedAgentResolvedAi(), noopLogger);
+    expect(runner).toBeInstanceOf(RoutingAwareAgentRunner);
+  });
+});
+
+describe('RoutingAwareAgentRunner dispatch', () => {
+  function makeAgentRunnerMock(): AgentRunner {
+    return {
+      run: vi.fn().mockImplementation(async function* () {
+        yield { type: 'assistant', content: [{ type: 'text', text: 'ok' }] };
+      }),
+    };
+  }
+
+  it('dispatches to openAiRunner when request.profile.provider is openai_agent_sdk', async () => {
+    const claudeRunner = makeAgentRunnerMock();
+    const openAiRunner = makeAgentRunnerMock();
+    const wrapper = new RoutingAwareAgentRunner(claudeRunner, openAiRunner);
+
+    const req: AgentRunRequest = {
+      route: { task: 'implementation.run' },
+      profile: { id: 'openai-p', provider: 'openai_agent_sdk', model: 'gpt-4o' },
+      working_directory: '/tmp',
+      prompt: 'do it',
+    };
+    const events = [];
+    for await (const event of wrapper.run(req)) {
+      events.push(event);
+    }
+    expect(openAiRunner.run).toHaveBeenCalledWith(req);
+    expect(claudeRunner.run).not.toHaveBeenCalled();
+    expect(events).toHaveLength(1);
+  });
+
+  it('dispatches to claudeRunner when request.profile.provider is claude_agent_sdk', async () => {
+    const claudeRunner = makeAgentRunnerMock();
+    const openAiRunner = makeAgentRunnerMock();
+    const wrapper = new RoutingAwareAgentRunner(claudeRunner, openAiRunner);
+
+    const req: AgentRunRequest = {
+      route: { task: 'artifact.create' },
+      profile: { id: 'claude-p', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-6' },
+      working_directory: '/tmp',
+      prompt: 'write a spec',
+    };
+    const events = [];
+    for await (const event of wrapper.run(req)) {
+      events.push(event);
+    }
+    expect(claudeRunner.run).toHaveBeenCalledWith(req);
+    expect(openAiRunner.run).not.toHaveBeenCalled();
+  });
+
+  it('falls back to claudeRunner when no profile is present', async () => {
+    const claudeRunner = makeAgentRunnerMock();
+    const openAiRunner = makeAgentRunnerMock();
+    const wrapper = new RoutingAwareAgentRunner(claudeRunner, openAiRunner);
+
+    const req: AgentRunRequest = {
+      route: { task: 'question.answer' },
+      working_directory: '/tmp',
+      prompt: 'what is this?',
+    };
+    for await (const _ of wrapper.run(req)) { /* drain */ }
+    expect(claudeRunner.run).toHaveBeenCalledWith(req);
+    expect(openAiRunner.run).not.toHaveBeenCalled();
   });
 });

@@ -628,7 +628,7 @@ function buildArtifactCreatePrompt(
       ``,
       request.content,
       ``,
-      `Invoke the \`mm:issue-triage\` skill to perform a thorough investigation of this bug.`,
+      `Use the \`mm:issue-triage\` skill to perform a thorough investigation of this bug.`,
       `Examine relevant source files, recent commits, and related issue-tracker records to understand the`,
       `root cause before forming conclusions. The investigation must be thorough - do not`,
       `skip the codebase inspection step.`,
@@ -651,7 +651,7 @@ function buildArtifactCreatePrompt(
       ``,
       request.content,
       ``,
-      `Invoke the \`mm:issue-triage\` skill to investigate the current state of the relevant`,
+      `Use the \`mm:issue-triage\` skill to investigate the current state of the relevant`,
       `code and understand why this work is needed now. Use thorough investigation.`,
       ``,
       `When the chore plan is complete:`,
@@ -667,9 +667,7 @@ function buildArtifactCreatePrompt(
   }
 
   return [
-    `Use the /mm:planning skill to create a complete product spec for the following request.`,
-    ``,
-    `/mm:planning`,
+    `Use the \`mm:planning\` skill to create a complete product spec for the following request.`,
     ``,
     `Request:`,
     `<<<`,
@@ -760,7 +758,7 @@ function buildImplementationPrompt(artifact_path: string, result_file_path: stri
 
   if (!additionalContext) {
     lines.push('Step 1 - Create an implementation plan');
-    lines.push('/superpowers:writing-plans');
+    lines.push('Use the `superpowers:writing-plans` skill.');
     lines.push('');
     lines.push('Use the artifact as the authoritative baseline, especially its task list.');
     lines.push('');
@@ -769,7 +767,7 @@ function buildImplementationPrompt(artifact_path: string, result_file_path: stri
     lines.push('Step 2 - Execute the plan in subagent mode');
   }
 
-  lines.push('/superpowers:subagent-driven-development');
+  lines.push('Use the `superpowers:subagent-driven-development` skill.');
   lines.push('');
   lines.push('Step 3 - Commit all remaining source changes');
   lines.push('Run `git status`. Stage and commit only source files that belong in the repository.');
@@ -816,7 +814,7 @@ export function buildIssueTriagePrompt(request: Request, resultPath: string): st
   return [
     `You are enriching a list of items to be filed in the issue tracker.`,
     ``,
-    `Invoke the \`mm:issue-triage\` skill in feedback intake mode to:`,
+    `Use the \`mm:issue-triage\` skill in feedback intake mode to:`,
     `1. Identify each distinct issue in the list below`,
     `2. Investigate each item against the codebase (thorough mode)`,
     `3. For each item:`,

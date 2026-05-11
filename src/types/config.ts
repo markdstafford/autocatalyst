@@ -6,7 +6,7 @@ import type { AgentPluginConfig } from './ai.js';
 
 export type CredentialType = 'api_key' | 'iam' | 'workload_identity' | 'bearer_token';
 export type EndpointProtocol = 'anthropic' | 'openai';
-export type RunnerKind = 'anthropic_direct' | 'openai_direct' | 'claude_agent_sdk' | 'openai_agents';
+export type RunnerKind = 'anthropic_direct' | 'openai_direct' | 'claude_agent_sdk' | 'openai_agent_sdk';
 
 export interface CredentialConfig {
   name: string;
