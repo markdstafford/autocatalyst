@@ -1,4 +1,4 @@
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import type pino from 'pino';
 import type { Meter } from '@opentelemetry/api';
@@ -193,7 +193,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
 
 function resolveRepoUrl(repoPath: string, logger: RuntimeLogger): string {
   try {
-    const repoUrl = execSync('git remote get-url origin', { cwd: repoPath }).toString().trim();
+    const repoUrl = execFileSync('git', ['remote', 'get-url', 'origin'], { cwd: repoPath }).toString().trim();
     if (!repoUrl) throw new Error('git remote get-url origin returned empty string');
     return repoUrl;
   } catch (err) {

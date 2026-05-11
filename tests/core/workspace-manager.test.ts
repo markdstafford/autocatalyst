@@ -23,14 +23,25 @@ describe('WorkspaceManager.create', () => {
 
     await wm.create('idea-abc', 'https://github.com/org/repo.git', tempRoot);
 
-    expect(execFn).toHaveBeenCalledWith(
-      expect.stringContaining('git clone --depth=1'),
-    );
-    expect(execFn).toHaveBeenCalledWith(
-      expect.stringContaining('https://github.com/org/repo.git'),
-    );
-    const cloneCall = execFn.mock.calls[0][0] as string;
-    expect(cloneCall).toContain(join(tempRoot, 'idea-abc'));
+    const cloneCall = execFn.mock.calls[0];
+    expect(cloneCall[0]).toBe('git');
+    expect(cloneCall[1]).toContain('clone');
+    expect(cloneCall[1]).toContain('--depth=1');
+    expect(cloneCall[1]).toContain('https://github.com/org/repo.git');
+    expect(cloneCall[1]).toContain(join(tempRoot, 'idea-abc'));
+  });
+
+  it('passes workspace_path as a single argument (not embedded in a shell string)', async () => {
+    const execFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
+    const wm = new WorkspaceManagerImpl({ execFn, logDestination: nullDest });
+
+    await wm.create('idea-abc', 'https://github.com/org/repo.git', tempRoot);
+
+    const cloneArgs: string[] = execFn.mock.calls[0][1];
+    // The workspace path must appear as its own element, never concatenated with quotes or other text
+    const workspacePath = join(tempRoot, 'idea-abc');
+    expect(cloneArgs).toContain(workspacePath);
+    expect(cloneArgs.some(a => a.includes('"') && a.includes(workspacePath))).toBe(false);
   });
 
   it('runs git checkout -b after clone with correct branch and cwd', async () => {
@@ -41,8 +52,9 @@ describe('WorkspaceManager.create', () => {
 
     expect(execFn).toHaveBeenCalledTimes(2);
     const checkoutCall = execFn.mock.calls[1];
-    expect(checkoutCall[0]).toMatch(/^git checkout -b "?spec\//);
-    expect(checkoutCall[1]).toEqual({ cwd: join(tempRoot, 'idea-abc') });
+    expect(checkoutCall[0]).toBe('git');
+    expect(checkoutCall[1]).toEqual(['checkout', '-b', expect.stringMatching(/^spec\//)]);
+    expect(checkoutCall[2]).toEqual({ cwd: join(tempRoot, 'idea-abc') });
   });
 
   it('returns workspace_path and branch', async () => {
@@ -130,6 +142,24 @@ describe('WorkspaceManager.create', () => {
       rmSync(root1, { recursive: true, force: true });
       rmSync(root2, { recursive: true, force: true });
     }
+  });
+
+  it('preserves a Windows-style workspace root as a single argument without shell quoting', async () => {
+    const execFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
+    const wm = new WorkspaceManagerImpl({ execFn, logDestination: nullDest });
+
+    // Simulate a Windows-style path by passing it as workspace_root.
+    // The ~ expansion won't apply because the path doesn't start with ~.
+    // We call create directly so we can inspect the args without running real git.
+    const windowsRoot = 'C:\\Users\\mark\\.autocatalyst\\workspaces';
+    await wm.create('idea-win', 'https://github.com/org/repo.git', windowsRoot);
+
+    const cloneArgs: string[] = execFn.mock.calls[0][1];
+    // workspace_path should be the last arg and must be a plain string (no embedded quotes)
+    const workspacePath = cloneArgs[cloneArgs.length - 1];
+    expect(workspacePath).toContain('idea-win');
+    expect(workspacePath).not.toMatch(/^".*"$/); // not wrapped in double-quotes
+    expect(cloneArgs.some(a => a.startsWith('"') || a.endsWith('"'))).toBe(false);
   });
 });
 

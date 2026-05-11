@@ -55,4 +55,22 @@ describe('loadConfig', () => {
     );
     expect(() => loadConfig(join(tempDir, 'autocatalyst.yaml'), {})).toThrow(/interval_ms/);
   });
+
+  it('handles a Windows-style file path using dirname rather than POSIX regex', () => {
+    // Simulate the path that node:path.win32 would produce on Windows.
+    // On POSIX the path separators won't actually be backslashes, but we can
+    // test the cross-platform logic by constructing a path where basename() is
+    // 'autocatalyst.yaml' and dirname() returns the real temp dir.
+    // That is exactly what join(tempDir, 'autocatalyst.yaml') already gives us
+    // on every platform — we rely on the implementation using dirname() rather
+    // than a regex that only strips the POSIX '/autocatalyst.yaml' suffix.
+    writeFileSync(
+      join(tempDir, 'autocatalyst.yaml'),
+      `polling:\n  interval_ms: 3000\n${MINIMAL_AI_CONFIG}`,
+    );
+    // Pass the full file path; loadConfig must correctly resolve the repo dir.
+    const result = loadConfig(join(tempDir, 'autocatalyst.yaml'), {});
+    expect(result.config.polling?.interval_ms).toBe(3000);
+    expect(result.filePath).toContain('autocatalyst.yaml');
+  });
 });

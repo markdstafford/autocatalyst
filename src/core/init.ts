@@ -1,5 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, basename, resolve } from 'node:path';
 import * as readline from 'node:readline';
 import { stringify } from 'yaml';
 import { parseAutocatalystConfig } from './config.js';
@@ -219,7 +219,7 @@ function setByPath(obj: Record<string, unknown>, path: string, value: unknown): 
 }
 
 function createSkeleton(repoPath: string): void {
-  const name = repoPath.split('/').filter(Boolean).pop() ?? 'project';
+  const name = basename(resolve(repoPath)) || 'project';
   const content = `workspace:
   root: ''
 channels:

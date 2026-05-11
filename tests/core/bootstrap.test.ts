@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { rmSync } from 'node:fs';
 import { bootstrapConfig } from '../../src/core/config.js';
@@ -31,14 +31,14 @@ describe('bootstrapWorkflow', () => {
   it('derives repo name from directory path', () => {
     bootstrapConfig(tempDir);
     const content = readFileSync(join(tempDir, 'autocatalyst.yaml'), 'utf-8');
-    const dirName = tempDir.split('/').pop()!;
+    const dirName = basename(tempDir);
     expect(content).toContain(dirName);
   });
 
   it('derives repo name from path with trailing slash', () => {
     bootstrapConfig(tempDir + '/');
     const content = readFileSync(join(tempDir, 'autocatalyst.yaml'), 'utf-8');
-    const dirName = tempDir.split('/').pop()!;
+    const dirName = basename(tempDir);
     expect(content).toContain(dirName);
   });
 

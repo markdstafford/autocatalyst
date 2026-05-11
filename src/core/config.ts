@@ -1,6 +1,6 @@
 import { parse as parseYaml } from 'yaml';
 import { existsSync, writeFileSync, readFileSync } from 'node:fs';
-import { join, basename, resolve } from 'node:path';
+import { join, basename, dirname, resolve } from 'node:path';
 import type { WorkflowConfig, LoadedConfig, AiConfig, CredentialConfig, EndpointConfig, ProfileConfig, RoutingConfig } from '../types/config.js';
 import { generateDefaultConfig } from '../config/defaults.js';
 
@@ -283,8 +283,8 @@ export function loadConfig(
   filePath: string,
   env: Record<string, string | undefined>,
 ): LoadedConfig {
-  const repoPath = filePath.replace(/\/autocatalyst\.yaml$/, '') || '.';
-  return loadConfigFromPath(repoPath, env);
+  const repoPath = basename(filePath) === 'autocatalyst.yaml' ? dirname(filePath) : filePath;
+  return loadConfigFromPath(repoPath || '.', env);
 }
 
 export function bootstrapConfig(repoPath: string): boolean {
