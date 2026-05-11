@@ -67,6 +67,7 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof Implementat
     persist: vi.fn(),
     logger: {
       info: vi.fn(),
+      warn: vi.fn(),   // <-- added
       error: vi.fn(),
     },
     ...overrides,
@@ -95,6 +96,8 @@ describe('ImplementationFeedbackHandler', () => {
     expect(deps.implementer.implement).toHaveBeenCalledWith(
       '/ws/request-001/context-human/specs/typed-feature.md',
       '/ws/request-001',
+      expect.any(String),     // additionalContext
+      expect.any(Function),   // onProgress
     );
     expect(deps.failRun).not.toHaveBeenCalled();
   });
@@ -120,6 +123,7 @@ describe('ImplementationFeedbackHandler', () => {
       '/ws/request-001/context-human/specs/feature-test.md',
       '/ws/request-001',
       expect.stringContaining('Fix the bug'),
+      expect.any(Function),   // onProgress
     );
     const context = (deps.implementer.implement as ReturnType<typeof vi.fn>).mock.calls[0][2] as string;
     expect(context).toContain('Some context');
@@ -142,6 +146,7 @@ describe('ImplementationFeedbackHandler', () => {
       '/ws/request-001/context-human/specs/feature-test.md',
       '/ws/request-001',
       'use adapter composition',
+      expect.any(Function),   // onProgress
     );
   });
 
@@ -214,6 +219,191 @@ describe('ImplementationFeedbackHandler', () => {
     expect(deps.logger.error).toHaveBeenCalledWith(
       expect.objectContaining({ event: 'run.notify_failed', run_id: 'run-001' }),
       'Failed to post completion notification',
+    );
+  });
+
+  it('serializes unresolved feedback with [FEEDBACK_ID: ...] markers', async () => {
+    const feedbackItems: FeedbackItem[] = [
+      { id: 'block-id-1', text: 'Custom transform swallowed on add', resolved: false, conversation: ['I tested and it disappears'] },
+      { id: 'block-id-2', text: 'Config example missing provider field', resolved: false, conversation: [] },
+      { id: 'block-id-3', text: 'Already resolved', resolved: true, conversation: [] },
+    ];
+    const { handler, deps } = makeHandler({
+      implFeedbackPage: {
+        readFeedback: vi.fn().mockResolvedValue(feedbackItems),
+        update: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback(), 'reviewing_implementation');
+
+    const context = (deps.implementer.implement as ReturnType<typeof vi.fn>).mock.calls[0][2] as string;
+    expect(context).toContain('[FEEDBACK_ID: block-id-1]');
+    expect(context).toContain('Custom transform swallowed on add');
+    expect(context).toContain('I tested and it disappears');
+    expect(context).toContain('[FEEDBACK_ID: block-id-2]');
+    expect(context).toContain('Config example missing provider field');
+    expect(context).not.toContain('block-id-3');
+    expect(context).not.toContain('Already resolved');
+  });
+
+  it('uses Slack message content when no unresolved feedback exists and logs feedback_empty', async () => {
+    const { handler, deps } = makeHandler({
+      implFeedbackPage: {
+        readFeedback: vi.fn().mockResolvedValue([
+          { id: 'block-1', text: 'Already done', resolved: true, conversation: [] },
+        ]),
+        update: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+    const run = makeRun();
+    const feedback = makeFeedback({ content: 'please check the edge case' });
+
+    await handler.handle(run, feedback, 'reviewing_implementation');
+
+    const context = (deps.implementer.implement as ReturnType<typeof vi.fn>).mock.calls[0][2] as string;
+    expect(context).toBe('please check the edge case');
+    expect(deps.logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'implementation.feedback_empty', run_id: 'run-001' }),
+      expect.any(String),
+    );
+  });
+
+  it('passes onProgress callback to implementer.implement() during feedback', async () => {
+    const { handler, deps } = makeHandler();
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback(), 'reviewing_implementation');
+
+    expect(deps.implementer.implement).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.any(String),
+      expect.any(String),
+      expect.any(Function),
+    );
+  });
+
+  it('onProgress posts to Slack with the original conversation ref', async () => {
+    let capturedOnProgress: ((msg: string) => Promise<void>) | undefined;
+    const { handler, deps } = makeHandler({
+      implementer: {
+        implement: vi.fn().mockImplementation(async (_spec, _workspace, _ctx, onProgress: (msg: string) => Promise<void>) => {
+          capturedOnProgress = onProgress;
+          return { status: 'complete', summary: 'Done', testing_instructions: 'npm test' };
+        }),
+      },
+    });
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback(), 'reviewing_implementation');
+    await capturedOnProgress!('Reviewing 2 feedback items');
+
+    expect(deps.postMessage).toHaveBeenCalledWith(TEST_CONVERSATION, 'Reviewing 2 feedback items');
+  });
+
+  it('onProgress postMessage failure logs progress_failed and does not fail the run', async () => {
+    let capturedOnProgress: ((msg: string) => Promise<void>) | undefined;
+    const { handler, deps } = makeHandler({
+      implementer: {
+        implement: vi.fn().mockImplementation(async (_spec, _workspace, _ctx, onProgress: (msg: string) => Promise<void>) => {
+          capturedOnProgress = onProgress;
+          return { status: 'complete', summary: 'Done', testing_instructions: 'npm test' };
+        }),
+      },
+      postMessage: vi.fn().mockRejectedValue(new Error('Slack timeout')),
+    });
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback(), 'reviewing_implementation');
+    // Should not throw
+    await expect(capturedOnProgress!('Progress message')).resolves.toBeUndefined();
+
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'progress_failed', phase: 'implementation_feedback', run_id: 'run-001' }),
+      expect.any(String),
+    );
+  });
+
+  it('calls implFeedbackPage.update() with resolved_items from the implementation result', async () => {
+    const { handler, deps } = makeHandler({
+      implementer: {
+        implement: vi.fn().mockResolvedValue({
+          status: 'complete',
+          summary: 'Fixed',
+          resolved_feedback_items: [
+            { id: 'block-id-1', resolution_comment: 'Fixed by wiring persistence' },
+          ],
+        }),
+      },
+      implFeedbackPage: {
+        readFeedback: vi.fn().mockResolvedValue([
+          { id: 'block-id-1', text: 'Persistence broken', resolved: false, conversation: [] },
+        ]),
+        update: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback(), 'reviewing_implementation');
+
+    expect(deps.implFeedbackPage?.update).toHaveBeenCalledWith(
+      'feedback-page-id',
+      expect.objectContaining({
+        resolved_items: [{ id: 'block-id-1', resolution_comment: 'Fixed by wiring persistence' }],
+      }),
+    );
+  });
+
+  it('calls implFeedbackPage.update() with review_summary and testing_steps when present', async () => {
+    const { handler, deps } = makeHandler({
+      implementer: {
+        implement: vi.fn().mockResolvedValue({
+          status: 'complete',
+          summary: 'Done',
+          review_summary: {
+            changes: ['Added config', 'Updated tests'],
+            confirm: ['Config loads', 'Tests pass'],
+          },
+          testing_steps: ['cd /workspace', 'npm test'],
+          resolved_feedback_items: [],
+        }),
+      },
+    });
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback(), 'reviewing_implementation');
+
+    expect(deps.implFeedbackPage?.update).toHaveBeenCalledWith(
+      'feedback-page-id',
+      expect.objectContaining({
+        review_summary: {
+          changes: ['Added config', 'Updated tests'],
+          confirm: ['Config loads', 'Tests pass'],
+        },
+        testing_steps: ['cd /workspace', 'npm test'],
+      }),
+    );
+  });
+
+  it('logs review_contract_legacy warning when structured fields are absent from feedback result', async () => {
+    const { handler, deps } = makeHandler({
+      implementer: {
+        implement: vi.fn().mockResolvedValue({
+          status: 'complete',
+          summary: 'Legacy only',
+          testing_instructions: 'npm test',
+          // no review_summary or testing_steps
+        }),
+      },
+    });
+    const run = makeRun();
+
+    await handler.handle(run, makeFeedback(), 'reviewing_implementation');
+
+    expect(deps.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'implementation.review_contract_legacy', run_id: 'run-001' }),
+      expect.any(String),
     );
   });
 });

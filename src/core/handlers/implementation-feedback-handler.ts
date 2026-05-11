@@ -13,7 +13,7 @@ export interface ImplementationFeedbackDeps {
   transition: (run: Run, stage: RunStage) => void;
   failRun: (run: Run, conversation: ConversationRef, error: unknown) => Promise<void>;
   persist: () => void;
-  logger: Pick<pino.Logger, 'info' | 'error'>;
+  logger: Pick<pino.Logger, 'info' | 'warn' | 'error'>;
 }
 
 export type ImplementationFeedbackResult =
@@ -34,15 +34,26 @@ export class ImplementationFeedbackHandler {
     const additionalContext = await this.additionalContext(run, feedback, routingStage);
     if (additionalContext.status === 'failed') return { status: 'failed' };
 
+    const onProgress = (message: string): Promise<void> =>
+      this.deps.postMessage(feedback.conversation, message).catch(err => {
+        this.deps.logger.warn(
+          { event: 'progress_failed', phase: 'implementation_feedback', run_id: run.id, error: String(err) },
+          'Failed to post progress update',
+        );
+      });
+
     this.deps.transition(run, 'implementing');
     run.attempt += 1;
     this.deps.persist();
 
     let result;
     try {
-      result = additionalContext.value
-        ? await this.deps.implementer.implement(localPath, run.workspace_path, additionalContext.value)
-        : await this.deps.implementer.implement(localPath, run.workspace_path);
+      result = await this.deps.implementer.implement(
+        localPath,
+        run.workspace_path,
+        additionalContext.value,
+        onProgress,
+      );
     } catch (err) {
       await this.deps.failRun(run, feedback.conversation, err);
       return { status: 'failed' };
@@ -72,6 +83,14 @@ export class ImplementationFeedbackHandler {
       'Implementation complete',
     );
 
+    // Log legacy warning if structured output is missing
+    if (!result.review_summary || !result.testing_steps) {
+      this.deps.logger.warn(
+        { event: 'implementation.review_contract_legacy', run_id: run.id },
+        'Implementation result missing structured review_summary or testing_steps; using legacy fields',
+      );
+    }
+
     run.last_impl_result = {
       summary: result.summary ?? '',
       testing_instructions: result.testing_instructions ?? '',
@@ -80,7 +99,12 @@ export class ImplementationFeedbackHandler {
 
     if (run.impl_feedback_ref) {
       try {
-        await this.deps.implFeedbackPage!.update(run.impl_feedback_ref, { summary: result.summary });
+        await this.deps.implFeedbackPage!.update(run.impl_feedback_ref, {
+          summary: result.summary,
+          review_summary: result.review_summary,
+          testing_steps: result.testing_steps,
+          resolved_items: result.resolved_feedback_items ?? [],
+        });
       } catch (err) {
         this.deps.logger.error(
           { event: 'run.feedback_page_update_failed', run_id: run.id, error: String(err) },
@@ -119,13 +143,30 @@ export class ImplementationFeedbackHandler {
     }
 
     const unresolved = feedbackItems.filter(item => !item.resolved);
-    return {
-      status: 'ok',
-      value: unresolved
-        .map(item =>
-          `- ${item.text}${item.conversation.length > 0 ? '\n  ' + item.conversation.join('\n  ') : ''}`,
-        )
-        .join('\n'),
-    };
+
+    if (unresolved.length === 0) {
+      this.deps.logger.info(
+        { event: 'implementation.feedback_empty', run_id: run.id },
+        'No unresolved feedback items found; using Slack message as context',
+      );
+      return { status: 'ok', value: feedback.content };
+    }
+
+    const serialized = [
+      'Unresolved implementation feedback from the testing guide:',
+      '',
+      ...unresolved.map(item => {
+        const lines = [`[FEEDBACK_ID: ${item.id}]`, item.text];
+        if (item.conversation.length > 0) {
+          lines.push('Conversation:');
+          for (const line of item.conversation) {
+            lines.push(`- ${line}`);
+          }
+        }
+        return lines.join('\n');
+      }),
+    ].join('\n\n');
+
+    return { status: 'ok', value: serialized };
   }
 }
