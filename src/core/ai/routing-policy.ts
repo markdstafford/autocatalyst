@@ -44,6 +44,6 @@ function runnerToProvider(runner: RunnerKind): string {
     case 'anthropic_direct': return 'anthropic';
     case 'openai_direct': return 'openai';
     case 'claude_agent_sdk': return 'claude_agent_sdk';
-    case 'openai_agents': return 'openai_agents';
+    case 'openai_agent_sdk': return 'openai_agent_sdk';
   }
 }

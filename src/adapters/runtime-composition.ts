@@ -43,7 +43,7 @@ import {
 } from '../core/ai/agent-services.js';
 import { AnthropicDirectModelRunner, type AnthropicCreateFn } from './anthropic/direct-model-runner.js';
 import { OpenAIDirectModelRunner } from './openai/direct-model-runner.js';
-import type { DirectModelRunRequest, DirectModelRunResult, DirectModelRunner, AgentRunner } from '../types/ai.js';
+import type { DirectModelRunRequest, DirectModelRunResult, DirectModelRunner, AgentRunner, AgentRunRequest, AgentRunEvent } from '../types/ai.js';
 import { ClaudeAgentSdkAgentRunner } from './anthropic/claude-agent-sdk-agent-runner.js';
 import { OpenAIAgentSdkAgentRunner } from './openai/agent-sdk-agent-runner.js';
 
@@ -230,18 +230,25 @@ export function buildAgentRunner(
   meter?: Meter,
 ): AgentRunner {
   const claudeProfile = resolvedAi.profiles.find(p => p.runner === 'claude_agent_sdk');
-  if (claudeProfile) {
-    return new ClaudeAgentSdkAgentRunner({ meter });
+  const openAiAgentProfile = resolvedAi.profiles.find(p => p.runner === 'openai_agent_sdk');
+
+  if (!claudeProfile && !openAiAgentProfile) {
+    const runnerKinds = resolvedAi.profiles.map(p => p.runner).join(', ') || 'none';
+    throw new Error(
+      `No recognized agent runner configured. Expected a profile with runner: claude_agent_sdk or openai_agent_sdk. Found: ${runnerKinds}`,
+    );
   }
 
-  const openAiAgentProfile = resolvedAi.profiles.find(p => p.runner === 'openai_agents');
+  const claudeRunner = claudeProfile ? new ClaudeAgentSdkAgentRunner({ meter }) : null;
+
+  let openAiRunner: AgentRunner | null = null;
   if (openAiAgentProfile) {
     const endpoint = resolvedAi.endpoints.find(e => e.name === openAiAgentProfile.endpoint)!;
     const credential = resolvedAi.credentials.find(c => c.name === endpoint.credential)!;
 
     if (credential.type !== 'api_key') {
       throw new Error(
-        `Credential type '${credential.type}' is not supported for openai_agents runner`,
+        `Credential type '${credential.type}' is not supported for openai_agent_sdk runner`,
       );
     }
 
@@ -249,14 +256,14 @@ export function buildAgentRunner(
       {
         event: 'service.config',
         provider: 'openai',
-        runner: 'openai_agents',
+        runner: 'openai_agent_sdk',
         model: openAiAgentProfile.model ?? 'default',
         base_url: endpoint.base_url ?? 'default',
       },
       'Using OpenAI Agents SDK',
     );
 
-    return new OpenAIAgentSdkAgentRunner(
+    openAiRunner = new OpenAIAgentSdkAgentRunner(
       credential.resolvedValue!,
       endpoint.base_url,
       openAiAgentProfile.model,
@@ -264,10 +271,13 @@ export function buildAgentRunner(
     );
   }
 
-  const runnerKinds = resolvedAi.profiles.map(p => p.runner).join(', ') || 'none';
-  throw new Error(
-    `No recognized agent runner configured. Expected a profile with runner: claude_agent_sdk or openai_agents. Found: ${runnerKinds}`,
-  );
+  // Only one runner kind present — return directly (no routing overhead)
+  if (claudeRunner && !openAiRunner) return claudeRunner;
+  if (openAiRunner && !claudeRunner) return openAiRunner;
+
+  // Both runner kinds present — wrap in a routing-aware runner that dispatches
+  // on request.profile?.provider at call time.
+  return new RoutingAwareAgentRunner(claudeRunner!, openAiRunner!);
 }
 
 /**
@@ -285,6 +295,25 @@ export class RoutingAwareDirectModelRunner implements DirectModelRunner {
     const profileId = request.profile?.id;
     const runner = (profileId !== undefined && this.runners.get(profileId)) || this.fallback;
     return runner.run(request);
+  }
+}
+
+/**
+ * Dispatches `run()` calls to the agent runner registered for the resolved profile's provider.
+ * Used when the routing table maps different tasks to profiles with different agent runner kinds
+ * (e.g. artifact.create → claude_agent_sdk, implementation.run → openai_agent_sdk).
+ */
+export class RoutingAwareAgentRunner implements AgentRunner {
+  constructor(
+    private readonly claudeRunner: AgentRunner,
+    private readonly openAiRunner: AgentRunner,
+  ) {}
+
+  run(request: AgentRunRequest): AsyncIterable<AgentRunEvent> {
+    if (request.profile?.provider === 'openai_agent_sdk') {
+      return this.openAiRunner.run(request);
+    }
+    return this.claudeRunner.run(request);
   }
 }
 
