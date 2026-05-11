@@ -126,43 +126,83 @@ describe('createSetStatusHandler', () => {
     expect(msg).toContain('thread linked to an active run');
   });
 
-  it('empty messageText → replies with usage error and valid stage list', async () => {
+  it('stage provided via args (text command path) → updates stage', async () => {
+    const run = makeRun({ stage: 'implementing', id: 'run-uuid-001', request_id: 'req-001' });
+    const findRunById = vi.fn().mockReturnValue(run);
+    const overrideRunStage = vi.fn().mockReturnValue('updated');
+    const handler = createSetStatusHandler({ findRunById, overrideRunStage });
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handler(
+      makeEvent({
+        args: ['reviewing_implementation'],
+        inferred_context: { request_id: 'req-001' },
+      }),
+      reply,
+    );
+
+    expect(overrideRunStage).toHaveBeenCalledWith('req-001', 'reviewing_implementation');
+    const msg = reply.mock.calls[0][0] as string;
+    expect(msg).toContain('reviewing_implementation');
+    expect(msg).toContain('persisted');
+  });
+
+  it('args take precedence over messageText', async () => {
+    const run = makeRun({ stage: 'implementing', request_id: 'req-001' });
+    const findRunById = vi.fn().mockReturnValue(run);
+    const overrideRunStage = vi.fn().mockReturnValue('updated');
+    const handler = createSetStatusHandler({ findRunById, overrideRunStage });
+    const reply = vi.fn().mockResolvedValue(undefined);
+
+    await handler(
+      makeEvent({
+        args: ['reviewing_implementation'],
+        messageText: 'speccing',
+        inferred_context: { request_id: 'req-001' },
+      }),
+      reply,
+    );
+
+    expect(overrideRunStage).toHaveBeenCalledWith('req-001', 'reviewing_implementation');
+  });
+
+  it('empty args and empty messageText → replies with usage error and valid stage list', async () => {
     const findRunById = vi.fn();
     const overrideRunStage = vi.fn();
     const handler = createSetStatusHandler({ findRunById, overrideRunStage });
     const reply = vi.fn().mockResolvedValue(undefined);
 
-    await handler(makeEvent({ messageText: '' }), reply);
+    await handler(makeEvent({ args: [], messageText: '' }), reply);
 
     expect(overrideRunStage).not.toHaveBeenCalled();
     const msg = reply.mock.calls[0][0] as string;
-    expect(msg).toContain('React to a message');
+    expect(msg).toContain('ac-set-status:');
     expect(msg).toContain('Valid stages');
   });
 
-  it('whitespace-only messageText → replies with usage error', async () => {
+  it('whitespace-only messageText with no args → replies with usage error', async () => {
     const findRunById = vi.fn();
     const overrideRunStage = vi.fn();
     const handler = createSetStatusHandler({ findRunById, overrideRunStage });
     const reply = vi.fn().mockResolvedValue(undefined);
 
-    await handler(makeEvent({ messageText: '   ' }), reply);
+    await handler(makeEvent({ args: [], messageText: '   ' }), reply);
 
     expect(overrideRunStage).not.toHaveBeenCalled();
     const msg = reply.mock.calls[0][0] as string;
-    expect(msg).toContain('React to a message');
+    expect(msg).toContain('ac-set-status:');
   });
 
-  it('undefined messageText → replies with usage error', async () => {
+  it('undefined messageText with no args → replies with usage error', async () => {
     const findRunById = vi.fn();
     const overrideRunStage = vi.fn();
     const handler = createSetStatusHandler({ findRunById, overrideRunStage });
     const reply = vi.fn().mockResolvedValue(undefined);
 
-    await handler(makeEvent({ messageText: undefined }), reply);
+    await handler(makeEvent({ args: [], messageText: undefined }), reply);
 
     expect(overrideRunStage).not.toHaveBeenCalled();
     const msg = reply.mock.calls[0][0] as string;
-    expect(msg).toContain('React to a message');
+    expect(msg).toContain('ac-set-status:');
   });
 });

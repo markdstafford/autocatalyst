@@ -63,6 +63,6 @@ export function registerDefaultCommands(registry: CommandRegistry, deps: Default
       findRunById: (requestId: string) => deps.runs.get(requestId),
       overrideRunStage: deps.overrideRunStage,
     }),
-    "Override a stuck run's stage. Usage: post the target stage name in a run thread, then react with `:ac-set-status:`",
+    "Override a stuck run's stage. Usage: reply with `:ac-set-status: <stage>` in a run thread. E.g. `:ac-set-status: reviewing_implementation`",
   );
 }

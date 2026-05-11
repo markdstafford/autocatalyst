@@ -12,11 +12,14 @@ const VALID_STAGES_LIST = VALID_RUN_STAGES.join(', ');
 
 export function createSetStatusHandler(deps: SetStatusCommandDeps): CommandHandler {
   return async (event, reply) => {
-    const stage = (event.messageText ?? '').trim().toLowerCase();
+    // Read stage from args (text command: :ac-set-status: <stage>)
+    // or messageText (emoji reaction on a message containing the stage name)
+    const stageInput = event.args.length > 0 ? event.args.join(' ') : (event.messageText ?? '');
+    const stage = stageInput.trim().toLowerCase();
 
     if (!stage) {
       await reply(
-        `React to a message containing the target stage name. Valid stages: ${VALID_STAGES_LIST}.`,
+        `Usage: reply with \`:ac-set-status: <stage>\` in a run thread. Valid stages: ${VALID_STAGES_LIST}.`,
       );
       return;
     }
