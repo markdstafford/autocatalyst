@@ -370,6 +370,29 @@ describe('AgentRunner-backed core AI services', () => {
     }
   });
 
+  test('parseImplementationResult rejects review_summary that is not an object', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-impl-invalid-summary-'));
+    try {
+      const runner = fakeAgentRunner(async request => {
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({
+          status: 'complete',
+          review_summary: 'not an object',
+        }), 'utf8');
+      });
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+
+      await expect(service.implement('/tmp/spec.md', workspace)).rejects.toThrow(
+        /review_summary must be an object/i,
+      );
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   test('uses issue triage agent output before creating issues through IssueManager', async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'ac-issue-'));
     try {
