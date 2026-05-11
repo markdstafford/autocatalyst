@@ -6177,4 +6177,31 @@ describe('Orchestrator — overrideRunStage', () => {
 
     await orch.stop();
   });
+
+  it('updates a done (terminal) run to a new stage successfully', async () => {
+    const adapter = makeMockAdapter();
+    const runStore = { save: vi.fn(), load: vi.fn().mockReturnValue([]) };
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: makeWorkspaceManager(),
+      artifactAuthoringAgent: makeArtifactAuthoringAgent(),
+      artifactPublisher: makeArtifactPublisher(),
+      channelRepoMap: makeChannelRepoMap(),
+      runStore,
+    }, { logDestination: nullDest });
+
+    const run = makeRun({ stage: 'done', request_id: 'req-terminal' });
+    run.updated_at = '2020-01-01T00:00:00.000Z';
+    const before = run.updated_at;
+    (orch as unknown as { runs: Map<string, Run> }).runs.set('req-terminal', run);
+
+    const result = orch.overrideRunStage('req-terminal', 'reviewing_implementation');
+
+    expect(result).toBe('updated');
+    expect(run.stage).toBe('reviewing_implementation');
+    expect(run.updated_at).not.toBe(before);
+    expect(runStore.save).toHaveBeenCalled();
+
+    await orch.stop();
+  });
 });
