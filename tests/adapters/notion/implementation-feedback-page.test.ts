@@ -42,6 +42,8 @@ function makeReviewInput(overrides: Partial<ImplementationReviewInput> = {}): Im
     artifact_ref: 'spec-page-id',
     artifact_url: 'https://notion.so/spec',
     title: 'Setup wizard',
+    workspace_path: '/ws/test-workspace',
+    branch: 'spec/test-branch',
     summary: 'sum',
     testing_instructions: 'test',
     ...overrides,
