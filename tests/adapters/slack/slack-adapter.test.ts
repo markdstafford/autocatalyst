@@ -853,6 +853,68 @@ describe('SlackAdapter — inbound handler ack behavior (emoji, no text)', () =>
   });
 });
 
+describe('SlackAdapter — ignored message reaction', () => {
+  it('adds ac-message-ignored reaction when message has no bot mention (root message)', async () => {
+    const mock = makeMockApp({ botUserId: 'UBOT', channels: [{ name: 'ch', id: 'C1' }] });
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { channelName: 'ch' },
+      { logDestination: nullDest },
+    );
+    await adapter.start();
+
+    // A root message with no @bot mention — will be classified as 'ignore'
+    await mock._triggerMessage({ user: 'U1', ts: '111.0', channel: 'C1', text: 'hello world' });
+
+    expect(mock.client.reactions.add).toHaveBeenCalledWith({
+      channel: 'C1',
+      timestamp: '111.0',
+      name: 'ac-message-ignored',
+    });
+
+    await adapter.stop();
+  });
+
+  it('adds ac-message-ignored reaction when thread reply has no bot mention', async () => {
+    const mock = makeMockApp({ botUserId: 'UBOT', channels: [{ name: 'ch', id: 'C1' }] });
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { channelName: 'ch' },
+      { logDestination: nullDest },
+    );
+    await adapter.start();
+
+    // A thread reply with no @bot mention — classified as 'ignore'
+    await mock._triggerMessage({ user: 'U1', ts: '222.0', thread_ts: '111.0', channel: 'C1', text: 'no mention here' });
+
+    expect(mock.client.reactions.add).toHaveBeenCalledWith({
+      channel: 'C1',
+      timestamp: '222.0',
+      name: 'ac-message-ignored',
+    });
+
+    await adapter.stop();
+  });
+
+  it('does not throw when reaction call fails', async () => {
+    const mock = makeMockApp({ botUserId: 'UBOT', channels: [{ name: 'ch', id: 'C1' }] });
+    mock.client.reactions.add.mockRejectedValueOnce(new Error('Slack API down'));
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { channelName: 'ch' },
+      { logDestination: nullDest },
+    );
+    await adapter.start();
+
+    // Should not throw even when reactions.add fails
+    await expect(
+      mock._triggerMessage({ user: 'U1', ts: '111.0', channel: 'C1', text: 'no mention' }),
+    ).resolves.not.toThrow();
+
+    await adapter.stop();
+  });
+});
+
 describe('SlackAdapter — reactToMessage', () => {
   const BOT_ID = 'UBOT001';
   const CHANNEL_ID = 'C123';

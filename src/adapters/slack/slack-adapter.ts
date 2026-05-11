@@ -196,6 +196,7 @@ export class SlackAdapter implements ChannelAdapter {
           { event: 'slack.message.ignored', author: msg.user, channel_id: channelId },
           'Message ignored',
         );
+        await this.reactToMessage(channelId, msg.ts, 'ac-message-ignored');
         return;
       }
 
