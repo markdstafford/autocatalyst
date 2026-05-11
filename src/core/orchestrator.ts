@@ -204,6 +204,12 @@ export class OrchestratorImpl implements Orchestrator {
     const actionableStages: RunStage[] = ['reviewing_spec', 'reviewing_implementation', 'awaiting_impl_input', 'pr_open'];
     if (!actionableStages.includes(run.stage)) {
       this.logger.debug({ event: 'classify.stage_blocked', stage: run.stage }, 'Stage blocked: discarding thread_message');
+      this.deps.adapter.react?.(event.payload.origin, 'ac-message-discarded').catch((err: unknown) => {
+        this.logger.error(
+          { event: 'adapter.react_error', error: String(err) },
+          'Failed to post ac-message-discarded reaction',
+        );
+      });
       return 'discard';
     }
     // Store original stage for routing in _handleRequest before advancing

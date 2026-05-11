@@ -2946,6 +2946,34 @@ describe('_classify — serial classification gate', () => {
     await orch.stop();
   });
 
+  it('calls adapter.react with ac-message-discarded when thread_message is in a blocked stage', async () => {
+    const adapter = makeMockAdapter();
+    const orch = new OrchestratorImpl({
+      adapter: adapter as never,
+      workspaceManager: makeWorkspaceManager(),
+      artifactAuthoringAgent: makeArtifactAuthoringAgent(),
+      artifactPublisher: makeArtifactPublisher(),
+      channelRepoMap: makeChannelRepoMap(),
+    }, { logDestination: nullDest });
+
+    // Inject a run in 'implementing' stage (blocked)
+    const run = makeRun({ stage: 'implementing', request_id: 'req-blocked' });
+    (orch as unknown as { runs: Map<string, Run> }).runs.set('req-blocked', run);
+
+    const event = makeEventFixture('thread_message', { request_id: 'req-blocked' });
+    await (orch as unknown as { _classify(e: unknown): Promise<string> })._classify(event);
+
+    // Give the async react call a moment to complete
+    await new Promise(r => setTimeout(r, 10));
+
+    expect(adapter.react).toHaveBeenCalledWith(
+      event.payload.origin,
+      'ac-message-discarded',
+    );
+
+    await orch.stop();
+  });
+
   it('thread_message in reviewing_spec advances stage to implementing and returns dispatch', async () => {
     const { records, destination } = makeLogCapture();
     const adapter = makeMockAdapter();
