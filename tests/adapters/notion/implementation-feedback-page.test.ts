@@ -574,6 +574,241 @@ describe('NotionImplementationFeedbackPage — update', () => {
 
     await expect(page.update('page-id', { summary: 'New summary' })).rejects.toThrow();
   });
+
+  it('replaces Summary with structured Changes and Confirm when review_summary is provided', async () => {
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const pagesGetMarkdown = vi.fn().mockResolvedValue([
+      '## Workspace',
+      '',
+      'Workspace: `/ws`',
+      '',
+      '## Summary',
+      '',
+      '### Changes',
+      '',
+      '- Old change',
+      '',
+      '### Confirm',
+      '',
+      '- Old confirm',
+      '',
+      '## Testing instructions',
+      '',
+      '- [ ] npm test',
+      '',
+      '## Feedback',
+      '',
+    ].join('\n'));
+    const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList: vi.fn().mockResolvedValue({ results: [] }) });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
+
+    await page.update('page-id', {
+      review_summary: {
+        changes: ['New change A', 'New change B'],
+        confirm: ['Confirm X', 'Confirm Y'],
+      },
+    });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    expect(updated).toContain('New change A');
+    expect(updated).toContain('New change B');
+    expect(updated).toContain('Confirm X');
+    expect(updated).toContain('Confirm Y');
+    expect(updated).not.toContain('Old change');
+    expect(updated).not.toContain('Old confirm');
+    expect(updated).toContain('## Testing instructions');
+    expect(updated).toContain('npm test');
+    expect(updated).toContain('## Feedback');
+  });
+
+  it('appends new testing steps without removing or unchecking existing items', async () => {
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const pagesGetMarkdown = vi.fn().mockResolvedValue([
+      '## Testing instructions',
+      '',
+      '- [x] cd /workspace',
+      '- [ ] npm install',
+      '',
+      '## Additional steps',
+      '',
+      '- [ ] Add any extra testing steps here.',
+      '',
+      '## Feedback',
+      '',
+    ].join('\n'));
+    const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList: vi.fn().mockResolvedValue({ results: [] }) });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
+
+    await page.update('page-id', {
+      testing_steps: ['npm test', 'Check the logs'],
+    });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    expect(updated).toContain('- [x] cd /workspace');
+    expect(updated).toContain('- [ ] npm install');
+    expect(updated).toContain('npm test');
+    expect(updated).toContain('Check the logs');
+    expect(updated).toContain('## Additional steps');
+    expect(updated).toContain('Add any extra testing steps here.');
+    expect(updated).toContain('## Feedback');
+  });
+
+  it('does not append a testing step whose text matches an existing step (case-insensitive)', async () => {
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const pagesGetMarkdown = vi.fn().mockResolvedValue([
+      '## Testing instructions',
+      '',
+      '- [ ] npm install',
+      '- [x] npm test',
+      '',
+      '## Feedback',
+      '',
+    ].join('\n'));
+    const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList: vi.fn().mockResolvedValue({ results: [] }) });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
+
+    await page.update('page-id', {
+      testing_steps: ['npm install', 'NPM TEST', 'New unique step'],
+    });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    expect((updated.match(/npm install/gi) ?? []).length).toBe(1);
+    expect((updated.match(/npm test/gi) ?? []).length).toBe(1);
+    expect(updated).toContain('New unique step');
+  });
+
+  it('does not modify Additional steps section when appending testing steps', async () => {
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const pagesGetMarkdown = vi.fn().mockResolvedValue([
+      '## Testing instructions',
+      '',
+      '- [ ] npm test',
+      '',
+      '## Additional steps',
+      '',
+      '- [ ] My custom step',
+      '',
+      '## Feedback',
+      '',
+    ].join('\n'));
+    const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList: vi.fn().mockResolvedValue({ results: [] }) });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
+
+    await page.update('page-id', {
+      testing_steps: ['New step'],
+    });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    expect(updated).toContain('## Additional steps');
+    expect(updated).toContain('My custom step');
+    const newStepIdx = updated.indexOf('New step');
+    const additionalStepsIdx = updated.indexOf('## Additional steps');
+    expect(newStepIdx).toBeLessThan(additionalStepsIdx);
+  });
+
+  it('resolves feedback items only within the Feedback section (not testing instructions)', async () => {
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const pagesGetMarkdown = vi.fn().mockResolvedValue([
+      '## Testing instructions',
+      '',
+      '- [ ] Run the feature',
+      '',
+      '## Feedback',
+      '',
+      '- [ ] Run the feature',
+      '',
+    ].join('\n'));
+    const blocksChildrenList = vi.fn().mockImplementation(async ({ block_id }: { block_id: string }) => {
+      if (block_id === 'page-id') {
+        return {
+          results: [
+            makeTodoBlock('feedback-todo-id', 'Run the feature', false),
+          ],
+        };
+      }
+      return { results: [] };
+    });
+    const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
+
+    await page.update('page-id', {
+      resolved_items: [{ id: 'feedback-todo-id', resolution_comment: 'Fixed' }],
+    });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    const checkedCount = (updated.match(/- \[x\] Run the feature/g) ?? []).length;
+    const uncheckedCount = (updated.match(/- \[ \] Run the feature/g) ?? []).length;
+    expect(checkedCount).toBe(1);
+    expect(uncheckedCount).toBe(1);
+  });
+
+  it('does not duplicate resolution comment when called twice with same item', async () => {
+    const pageMarkdownAfterFirst = [
+      '## Feedback',
+      '',
+      '- [x] Fix the bug',
+      '  - ✓ Fixed via config',
+      '',
+    ].join('\n');
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const pagesGetMarkdown = vi.fn().mockResolvedValue(pageMarkdownAfterFirst);
+    const blocksChildrenList = vi.fn().mockImplementation(async ({ block_id }: { block_id: string }) => {
+      if (block_id === 'page-id') {
+        return { results: [makeTodoBlock('todo-1', 'Fix the bug', true)] };
+      }
+      return { results: [] };
+    });
+    const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: nullDest });
+
+    await page.update('page-id', {
+      resolved_items: [{ id: 'todo-1', resolution_comment: 'Fixed via config' }],
+    });
+
+    if (pagesUpdateMarkdown.mock.calls.length > 0) {
+      const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+      expect((updated.match(/✓ Fixed via config/g) ?? []).length).toBe(1);
+    }
+  });
+
+  it('emits implementation.feedback_resolved log after resolving items', async () => {
+    const logs: unknown[] = [];
+    const dest = { write: (line: string) => { try { logs.push(JSON.parse(line)); } catch { /* ignore */ } } };
+    const pagesGetMarkdown = vi.fn().mockResolvedValue('## Feedback\n\n- [ ] Fix it\n');
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const blocksChildrenList = vi.fn().mockImplementation(async ({ block_id }: { block_id: string }) => {
+      if (block_id === 'page-id') {
+        return { results: [makeTodoBlock('t1', 'Fix it', false)] };
+      }
+      return { results: [] };
+    });
+    const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: dest });
+
+    await page.update('page-id', { resolved_items: [{ id: 't1', resolution_comment: 'Done' }] });
+
+    expect((logs as Array<Record<string, unknown>>).find(l => l['event'] === 'implementation.feedback_resolved')).toBeDefined();
+  });
+
+  it('emits implementation.testing_steps_appended log when new steps are added', async () => {
+    const logs: unknown[] = [];
+    const dest = { write: (line: string) => { try { logs.push(JSON.parse(line)); } catch { /* ignore */ } } };
+    const pagesGetMarkdown = vi.fn().mockResolvedValue('## Testing instructions\n\n- [ ] Step 1\n\n## Feedback\n\n');
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const client = makeNotionClient({
+      pagesGetMarkdown,
+      pagesUpdateMarkdown,
+      blocksChildrenList: vi.fn().mockResolvedValue({ results: [] }),
+    });
+    const page = new NotionImplementationFeedbackPage(client, 'db-testing-guides-id', { logDestination: dest });
+
+    await page.update('page-id', { testing_steps: ['Step 2', 'Step 1'] }); // Step 1 is duplicate
+
+    const appended = (logs as Array<Record<string, unknown>>).find(l => l['event'] === 'implementation.testing_steps_appended');
+    expect(appended).toBeDefined();
+    expect(appended?.['appended_count']).toBe(1);
+    expect(appended?.['skipped_count']).toBe(1);
+  });
 });
 
 describe('NotionImplementationFeedbackPage — logging', () => {
