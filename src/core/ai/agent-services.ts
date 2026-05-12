@@ -660,6 +660,18 @@ milestone - emit it on its own line using this exact format:
 The goal is to keep a human informed at intervals they'd find interesting. You decide what's
 worth reporting and when.`;
 
+const BRANCH_OWNERSHIP_POLICY = `\
+Autocatalyst owns git branch and PR management for this run.
+The workspace is already checked out on the correct run branch.
+Do not create branches, switch branches, or create worktrees.
+Do not push, merge, or open PRs — Autocatalyst handles those steps.
+If a skill includes branch setup, worktree creation, push, merge, or PR steps, skip those parts and follow the rest of the skill normally.
+All files and commits must stay on the current branch.`;
+
+const MM_PLANNING_BRANCH_OVERRIDE = `\
+When using mm:planning, treat its Branch setup section as already complete.
+Do not run git checkout -b feat/..., enhancement/..., or fix/....`;
+
 function buildArtifactCreatePrompt(
   request: Request,
   artifactDir: string,
@@ -671,6 +683,8 @@ function buildArtifactCreatePrompt(
       `You are producing a bug triage document for the following report:`,
       ``,
       request.content,
+      ``,
+      BRANCH_OWNERSHIP_POLICY,
       ``,
       `Use the \`mm:issue-triage\` skill to perform a thorough investigation of this bug.`,
       `Examine relevant source files, recent commits, and related issue-tracker records to understand the`,
@@ -695,6 +709,8 @@ function buildArtifactCreatePrompt(
       ``,
       request.content,
       ``,
+      BRANCH_OWNERSHIP_POLICY,
+      ``,
       `Use the \`mm:issue-triage\` skill to investigate the current state of the relevant`,
       `code and understand why this work is needed now. Use thorough investigation.`,
       ``,
@@ -712,6 +728,10 @@ function buildArtifactCreatePrompt(
 
   return [
     `Use the \`mm:planning\` skill to create a complete product spec for the following request.`,
+    ``,
+    BRANCH_OWNERSHIP_POLICY,
+    ``,
+    MM_PLANNING_BRANCH_OVERRIDE,
     ``,
     `Request:`,
     `<<<`,
@@ -758,6 +778,8 @@ function buildArtifactRevisePrompt(
   return [
     `Revise the artifact below based on the following feedback.`,
     ``,
+    BRANCH_OWNERSHIP_POLICY,
+    ``,
     `Write the revised artifact to: ${artifact_path}`,
     `Write the result to: ${reviseResultPath}`,
     `Content must be:`,
@@ -785,6 +807,8 @@ function buildArtifactRevisePrompt(
 
 function buildImplementationPrompt(artifact_path: string, result_file_path: string, additionalContext?: string): string {
   const lines: string[] = [];
+  lines.push(BRANCH_OWNERSHIP_POLICY);
+  lines.push('');
   const hasFeedbackContext = Boolean(additionalContext) && additionalContext!.includes('[FEEDBACK_ID:');
 
   if (additionalContext) {

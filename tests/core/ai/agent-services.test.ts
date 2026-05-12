@@ -133,6 +133,111 @@ describe('AgentRunner-backed core AI services', () => {
     }
   });
 
+  test('artifact creation prompt for idea includes Autocatalyst branch ownership policy and mm:planning override', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-branch-policy-idea-'));
+    try {
+      const calls: AgentRunRequest[] = [];
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ artifact_path: join(workspace, 'context-human', 'specs', 'feature-test.md') }), 'utf8');
+      });
+      const service = new AgentRunnerArtifactAuthoringAgent(runner, makePolicy());
+
+      await service.create(makeRequest(), workspace);
+
+      expect(calls[0].prompt).toContain('Autocatalyst owns git branch and PR management for this run.');
+      expect(calls[0].prompt).toContain('Do not create branches, switch branches, or create worktrees.');
+      expect(calls[0].prompt).toContain('When using mm:planning, treat its Branch setup section as already complete.');
+      expect(calls[0].prompt).toContain('Do not run git checkout -b feat/..., enhancement/..., or fix/...');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('artifact creation prompt for bug intent includes branch ownership policy', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-branch-policy-bug-'));
+    try {
+      const calls: AgentRunRequest[] = [];
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ artifact_path: join(workspace, '.autocatalyst', 'triage', 'triage-bug-test.md') }), 'utf8');
+      });
+      const service = new AgentRunnerArtifactAuthoringAgent(runner, makePolicy());
+
+      await service.create(makeRequest(), workspace, undefined, 'bug');
+
+      expect(calls[0].prompt).toContain('Autocatalyst owns git branch and PR management for this run.');
+      expect(calls[0].prompt).toContain('Do not create branches, switch branches, or create worktrees.');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('artifact revision prompt includes branch ownership policy', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-branch-policy-revise-'));
+    try {
+      const artifactFilePath = join(workspace, 'context-human', 'specs', 'feature-test.md');
+      await mkdir(dirname(artifactFilePath), { recursive: true });
+      await writeFile(artifactFilePath, 'original content', 'utf8');
+      const calls: AgentRunRequest[] = [];
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(artifactFilePath, 'revised content', 'utf8');
+        await writeFile(resultPath, JSON.stringify({ comment_responses: [] }), 'utf8');
+      });
+      const service = new AgentRunnerArtifactAuthoringAgent(runner, makePolicy());
+
+      await service.revise(makeFeedback(), [], artifactFilePath, workspace);
+
+      expect(calls[0].prompt).toContain('Autocatalyst owns git branch and PR management for this run.');
+      expect(calls[0].prompt).toContain('Do not create branches, switch branches, or create worktrees.');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('implementation prompt includes branch ownership policy', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-branch-policy-impl-'));
+    try {
+      const specPath = join(workspace, 'context-human', 'specs', 'feature-test.md');
+      const calls: AgentRunRequest[] = [];
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({
+          status: 'complete',
+          summary: 'done',
+          review_summary: { changes: ['a'], confirm: ['b'] },
+          testing_steps: [`cd ${workspace}`],
+          resolved_feedback_items: [],
+        }), 'utf8');
+      });
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+
+      await service.implement(specPath, workspace);
+
+      expect(calls[0].prompt).toContain('Autocatalyst owns git branch and PR management for this run.');
+      expect(calls[0].prompt).toContain('Do not create branches, switch branches, or create worktrees.');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   test('answers questions in the provided repo directory without creating a cloned workspace', async () => {
     const repo = await mkdtemp(join(tmpdir(), 'ac-question-'));
     try {
