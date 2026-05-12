@@ -59,6 +59,16 @@ export class ImplementationApprovalHandler {
         );
       }
     }
+    // Guard: fail early if run.branch has drifted — avoids a confusing PR creation error
+    if (this.deps.branchGuard) {
+      try {
+        await this.deps.branchGuard.check(run.workspace_path, run.branch);
+      } catch (err) {
+        await this.deps.failRun(run, feedback.conversation, err);
+        return { status: 'failed' };
+      }
+    }
+
     this.markArtifactComplete(run);
 
     const generatedTitle = await this.deps.prTitleGenerator.generate({
@@ -73,16 +83,6 @@ export class ImplementationApprovalHandler {
       ...(run.issue !== undefined ? { issue_number: run.issue } : {}),
       ...(generatedTitle !== null ? { title: generatedTitle } : {}),
     };
-
-    // Guard: fail early if run.branch has drifted — avoids a confusing PR creation error
-    if (this.deps.branchGuard) {
-      try {
-        await this.deps.branchGuard.check(run.workspace_path, run.branch);
-      } catch (err) {
-        await this.deps.failRun(run, feedback.conversation, err);
-        return { status: 'failed' };
-      }
-    }
 
     let prUrl: string;
     try {

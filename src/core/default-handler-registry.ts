@@ -16,6 +16,7 @@ import type { ChannelRepoMap } from '../types/config.js';
 import type { WorkspaceManager } from './workspace-manager.js';
 import type { SpecCommitter } from './spec-committer.js';
 import { HandlerRegistryImpl, type HandlerRegistry } from './handler-registry.js';
+import { GitBranchGuard, type BranchGuard } from './git-branch-guard.js';
 import { ArtifactCreationHandler } from './handlers/artifact-creation-handler.js';
 import { ArtifactApprovalHandler, type ArtifactApprovalResult } from './handlers/artifact-approval-handler.js';
 import { ArtifactFeedbackHandler } from './handlers/artifact-feedback-handler.js';
@@ -52,10 +53,12 @@ export interface DefaultHandlerRegistryDeps {
   persist: () => void;
   reactToRunMessage: (run: Run, reaction: string) => Promise<void>;
   logger: Pick<pino.Logger, 'debug' | 'info' | 'warn' | 'error'>;
+  branchGuard?: BranchGuard;
 }
 
 export function buildDefaultHandlerRegistry(deps: DefaultHandlerRegistryDeps): HandlerRegistry {
   const registry = new HandlerRegistryImpl();
+  const branchGuard: BranchGuard = deps.branchGuard ?? new GitBranchGuard();
   const registerNewRequest = (
     intent: RequestIntent,
     handler: (request: Request, run: Run) => Promise<void>,
@@ -76,26 +79,26 @@ export function buildDefaultHandlerRegistry(deps: DefaultHandlerRegistryDeps): H
     });
   };
 
-  registerNewRequest('idea', (request, run) => startArtifactCreation(deps, run, request, 'idea'));
-  registerNewRequest('bug', (request, run) => startArtifactCreation(deps, run, request, 'bug'));
-  registerNewRequest('chore', (request, run) => startArtifactCreation(deps, run, request, 'chore'));
+  registerNewRequest('idea', (request, run) => startArtifactCreation(deps, branchGuard, run, request, 'idea'));
+  registerNewRequest('bug', (request, run) => startArtifactCreation(deps, branchGuard, run, request, 'bug'));
+  registerNewRequest('chore', (request, run) => startArtifactCreation(deps, branchGuard, run, request, 'chore'));
   registerNewRequest('file_issues', (request, run) => startFilingPipeline(deps, run, request));
   registerNewRequest('question', async (request, run) => {
     const result = await handleQuestion(deps, request.content, request.conversation, run);
     deps.transition(run, result.status === 'unavailable' ? 'failed' : 'done');
   });
 
-  registerThreadMessage('reviewing_spec', 'feedback', (feedback, run) => handleArtifactFeedback(deps, feedback, run));
-  registerThreadMessage('reviewing_implementation', 'feedback', (feedback, run) => handleImplementationFeedback(deps, feedback, run, 'reviewing_implementation'));
-  registerThreadMessage('awaiting_impl_input', 'feedback', (feedback, run) => handleImplementationFeedback(deps, feedback, run, 'awaiting_impl_input'));
+  registerThreadMessage('reviewing_spec', 'feedback', (feedback, run) => handleArtifactFeedback(deps, branchGuard, feedback, run));
+  registerThreadMessage('reviewing_implementation', 'feedback', (feedback, run) => handleImplementationFeedback(deps, branchGuard, feedback, run, 'reviewing_implementation'));
+  registerThreadMessage('awaiting_impl_input', 'feedback', (feedback, run) => handleImplementationFeedback(deps, branchGuard, feedback, run, 'awaiting_impl_input'));
   registerThreadMessage('pr_open', 'feedback', (feedback, run) => handlePrOpenFeedback(deps, feedback, run));
   registerThreadMessage('reviewing_spec', 'approval', async (feedback, run) => {
-    const result = await approveArtifact(deps, run, feedback);
+    const result = await approveArtifact(deps, branchGuard, run, feedback);
     if (result.status === 'failed') return;
     if (!result.implementation_required) return;
-    await runImplementation(deps, feedback, run);
+    await runImplementation(deps, branchGuard, feedback, run);
   });
-  registerThreadMessage('reviewing_implementation', 'approval', (feedback, run) => handleImplementationApproval(deps, feedback, run));
+  registerThreadMessage('reviewing_implementation', 'approval', (feedback, run) => handleImplementationApproval(deps, branchGuard, feedback, run));
   registerThreadMessage('pr_open', 'approval', (feedback, run) => handlePrMerge(deps, feedback, run));
   registerThreadMessage('reviewing_spec', 'question', (feedback, run) => answerQuestionAndRestoreStage(deps, feedback, run, 'reviewing_spec'));
   registerThreadMessage('reviewing_implementation', 'question', (feedback, run) => answerQuestionAndRestoreStage(deps, feedback, run, 'reviewing_implementation'));
@@ -107,6 +110,7 @@ export function buildDefaultHandlerRegistry(deps: DefaultHandlerRegistryDeps): H
 
 async function startArtifactCreation(
   deps: DefaultHandlerRegistryDeps,
+  branchGuard: BranchGuard,
   run: Run,
   request: Request,
   intent: ArtifactCreationIntent,
@@ -121,12 +125,14 @@ async function startArtifactCreation(
     failRun: deps.failRun,
     persist: deps.persist,
     logger: deps.logger,
+    branchGuard,
   });
   await handler.handle(run, request, intent);
 }
 
 async function approveArtifact(
   deps: DefaultHandlerRegistryDeps,
+  branchGuard: BranchGuard,
   run: Run,
   feedback: ThreadMessage,
 ): Promise<ArtifactApprovalResult> {
@@ -143,12 +149,14 @@ async function approveArtifact(
     persist: deps.persist,
     logger: deps.logger,
     deleteFile: (path) => rm(path, { force: true }),
+    branchGuard,
   });
   return handler.handle(run, feedback);
 }
 
 async function handleArtifactFeedback(
   deps: DefaultHandlerRegistryDeps,
+  branchGuard: BranchGuard,
   feedback: ThreadMessage,
   run: Run,
 ): Promise<void> {
@@ -161,12 +169,14 @@ async function handleArtifactFeedback(
     transition: deps.transition,
     failRun: deps.failRun,
     logger: deps.logger,
+    branchGuard,
   });
   await handler.handle(run, feedback);
 }
 
 async function runImplementation(
   deps: DefaultHandlerRegistryDeps,
+  branchGuard: BranchGuard,
   feedback: ThreadMessage,
   run: Run,
   additionalContext?: string,
@@ -179,12 +189,14 @@ async function runImplementation(
     failRun: deps.failRun,
     persist: deps.persist,
     logger: deps.logger,
+    branchGuard,
   });
   await handler.handle(run, feedback, additionalContext);
 }
 
 async function handleImplementationFeedback(
   deps: DefaultHandlerRegistryDeps,
+  branchGuard: BranchGuard,
   feedback: ThreadMessage,
   run: Run,
   routingStage: RunStage,
@@ -197,12 +209,14 @@ async function handleImplementationFeedback(
     failRun: deps.failRun,
     persist: deps.persist,
     logger: deps.logger,
+    branchGuard,
   });
   await handler.handle(run, feedback, routingStage);
 }
 
 async function handleImplementationApproval(
   deps: DefaultHandlerRegistryDeps,
+  branchGuard: BranchGuard,
   feedback: ThreadMessage,
   run: Run,
 ): Promise<void> {
@@ -217,6 +231,7 @@ async function handleImplementationApproval(
     failRun: deps.failRun,
     persist: deps.persist,
     logger: deps.logger,
+    branchGuard,
   });
   await handler.handle(run, feedback);
 }

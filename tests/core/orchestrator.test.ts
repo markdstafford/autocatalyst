@@ -1,5 +1,11 @@
 // tests/core/orchestrator.test.ts
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+vi.mock('../../src/core/git-branch-guard.js', () => ({
+  GitBranchGuard: vi.fn().mockImplementation(() => ({
+    check: vi.fn().mockResolvedValue(undefined),
+  })),
+}));
 import { OrchestratorImpl } from '../../src/core/orchestrator.js';
 import type { WorkspaceManager } from '../../src/core/workspace-manager.js';
 import type { ArtifactAuthoringAgent } from '../../src/types/ai.js';

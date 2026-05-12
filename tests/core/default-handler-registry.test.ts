@@ -107,6 +107,7 @@ function makeDeps() {
       warn: vi.fn(),
       error: vi.fn(),
     },
+    branchGuard: { check: vi.fn().mockResolvedValue(undefined) },
   };
 }
 

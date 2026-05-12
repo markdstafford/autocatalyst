@@ -340,4 +340,34 @@ describe('ArtifactApprovalHandler', () => {
     expect(deps.failRun).toHaveBeenCalledWith(run, expect.anything(), branchDriftError);
     expect(deps.specCommitter?.commit).not.toHaveBeenCalled();
   });
+
+  it('fails the run before issue sync when the workspace branch has drifted', async () => {
+    const branchDriftError = new Error(
+      'Agent changed branches from spec/request-001 to feat/something. Autocatalyst owns run branches; this run cannot continue safely.',
+    );
+    const { handler, deps } = makeHandler({
+      branchGuard: {
+        check: vi.fn().mockRejectedValue(branchDriftError),
+      },
+      artifactContentSource: {
+        getContent: vi.fn().mockResolvedValue('# Bug: login broken\n\nDetails here.'),
+      },
+    });
+    const run = makeRun({
+      intent: 'bug',
+      artifact: {
+        kind: 'bug_triage',
+        local_path: '/ws/request-001/context-human/specs/bug-login.md',
+        published_ref: { provider: 'artifact_publisher', id: 'CANVAS001' },
+        status: 'waiting_on_feedback',
+      },
+    });
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'failed' });
+    expect(deps.failRun).toHaveBeenCalledWith(run, expect.anything(), branchDriftError);
+    expect(deps.issueManager?.create).not.toHaveBeenCalled();
+    expect(deps.issueManager?.writeIssue).not.toHaveBeenCalled();
+  });
 });

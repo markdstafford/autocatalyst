@@ -85,6 +85,16 @@ export class ArtifactApprovalHandler {
   }
 
   private async syncIssueOnApproval(run: Run, feedback: ThreadMessage, refs: ArtifactRefs): Promise<boolean> {
+    // Guard: fail if the workspace branch has drifted from run.branch
+    if (this.deps.branchGuard) {
+      try {
+        await this.deps.branchGuard.check(run.workspace_path, run.branch);
+      } catch (err) {
+        await this.deps.failRun(run, feedback.conversation, err);
+        return false;
+      }
+    }
+
     if (!this.deps.issueManager) {
       await this.deps.failRun(run, feedback.conversation, new Error('Issue manager is required for artifact issue sync'));
       return false;
