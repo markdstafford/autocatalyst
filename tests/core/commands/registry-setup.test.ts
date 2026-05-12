@@ -13,6 +13,7 @@ describe('registerDefaultCommands', () => {
       isConnected: vi.fn().mockReturnValue(true),
       getActiveRunCount: vi.fn().mockReturnValue(0),
       intentClassifier: { classify: vi.fn().mockResolvedValue('idea') },
+      overrideRunStage: vi.fn(),
     });
 
     expect(registry.list()).toEqual(expect.arrayContaining([
@@ -23,6 +24,7 @@ describe('registerDefaultCommands', () => {
       'health',
       'help',
       'classify-intent',
+      'run.set-status',
     ]));
   });
 });

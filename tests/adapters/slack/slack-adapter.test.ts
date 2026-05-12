@@ -25,7 +25,8 @@ function makeLogCapture() {
 function makeMockApp(opts: {
   botUserId?: string;
   channels?: Array<{ name: string; id: string }>;
-  historyMessages?: Array<{ ts: string; thread_ts?: string }>;
+  historyMessages?: Array<{ ts: string; thread_ts?: string; text?: string }>;
+  repliesMessages?: Array<{ ts: string; text?: string }>;
 }) {
   const messageHandlers: Array<(args: { message: unknown }) => Promise<void>> = [];
   const eventHandlers = new Map<string, Array<(args: { event: unknown }) => Promise<void>>>();
@@ -41,6 +42,9 @@ function makeMockApp(opts: {
         }),
         history: vi.fn().mockResolvedValue({
           messages: opts.historyMessages ?? [],
+        }),
+        replies: vi.fn().mockResolvedValue({
+          messages: opts.repliesMessages ?? [],
         }),
       },
       chat: {
@@ -694,6 +698,54 @@ describe('SlackAdapter — command events (reaction-based)', () => {
     }
   });
 
+  it('reaction on thread reply when history returns a different message → falls back to conversations.replies to find root ts and message text', async () => {
+    // history returns the root message (ts='100.0'), not the reply (ts='200.0')
+    const mock = makeMockApp({
+      botUserId: BOT_ID,
+      historyMessages: [{ ts: '100.0', thread_ts: '100.0', text: 'original request' }],
+      repliesMessages: [{ ts: '100.0', text: 'original request' }, { ts: '200.0', text: 'reviewing_implementation' }],
+    });
+    const { ThreadRegistry } = await import('../../../src/adapters/slack/thread-registry.js');
+    const registry = new ThreadRegistry();
+    registry.register('100.0', 'req-001'); // root ts registered as known run
+
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { channelName: CHANNEL_NAME },
+      { logDestination: nullDest, registry },
+    );
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    // User reacts to the reply at ts='200.0' (not the root at '100.0')
+    await mock._triggerReaction({
+      type: 'reaction_added',
+      reaction: 'ac-set-status',
+      user: 'U123',
+      item: { type: 'message', channel: CHANNEL_ID, ts: '200.0' },
+    });
+
+    const event = await eventPromise;
+    await adapter.stop();
+
+    expect(event.type).toBe('command');
+    if (event.type === 'command') {
+      // Thread root (100.0) is used, not the reply ts (200.0)
+      expect(event.payload.conversation.conversation_id).toBe('100.0');
+      expect(event.payload.origin.message_id).toBe('200.0');
+      // Message text comes from the reply, not the root
+      expect(event.payload.messageText).toBe('reviewing_implementation');
+      // request_id resolved from thread root in registry
+      expect(event.payload.inferred_context?.request_id).toBe('req-001');
+    }
+
+    // Should have called history AND replies
+    expect(mock.client.conversations.history).toHaveBeenCalled();
+    expect(mock.client.conversations.replies).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: CHANNEL_ID, ts: '100.0', latest: '200.0', inclusive: true, limit: 1 }),
+    );
+  });
+
   it('reaction_added with unrecognized emoji → no event emitted', async () => {
     const mock = makeMockApp({ botUserId: BOT_ID });
     const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME }, { logDestination: nullDest });
@@ -853,6 +905,127 @@ describe('SlackAdapter — inbound handler ack behavior (emoji, no text)', () =>
   });
 });
 
+describe('SlackAdapter — ignored message reaction', () => {
+  it('adds ac-message-ignored reaction when message has no bot mention (root message)', async () => {
+    const mock = makeMockApp({ botUserId: 'UBOT', channels: [{ name: 'ch', id: 'C1' }] });
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { channelName: 'ch' },
+      { logDestination: nullDest },
+    );
+    await adapter.start();
+
+    // A root message with no @bot mention — will be classified as 'ignore'
+    await mock._triggerMessage({ user: 'U1', ts: '111.0', channel: 'C1', text: 'hello world' });
+
+    expect(mock.client.reactions.add).toHaveBeenCalledWith({
+      channel: 'C1',
+      timestamp: '111.0',
+      name: 'ac-message-ignored',
+    });
+
+    await adapter.stop();
+  });
+
+  it('adds ac-message-ignored reaction when thread reply has no bot mention', async () => {
+    const mock = makeMockApp({ botUserId: 'UBOT', channels: [{ name: 'ch', id: 'C1' }] });
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { channelName: 'ch' },
+      { logDestination: nullDest },
+    );
+    await adapter.start();
+
+    // A thread reply with no @bot mention — classified as 'ignore'
+    await mock._triggerMessage({ user: 'U1', ts: '222.0', thread_ts: '111.0', channel: 'C1', text: 'no mention here' });
+
+    expect(mock.client.reactions.add).toHaveBeenCalledWith({
+      channel: 'C1',
+      timestamp: '222.0',
+      name: 'ac-message-ignored',
+    });
+
+    await adapter.stop();
+  });
+
+  it('does not throw when reaction call fails', async () => {
+    const mock = makeMockApp({ botUserId: 'UBOT', channels: [{ name: 'ch', id: 'C1' }] });
+    mock.client.reactions.add.mockRejectedValueOnce(new Error('Slack API down'));
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { channelName: 'ch' },
+      { logDestination: nullDest },
+    );
+    await adapter.start();
+
+    // Should not throw even when reactions.add fails
+    await expect(
+      mock._triggerMessage({ user: 'U1', ts: '111.0', channel: 'C1', text: 'no mention' }),
+    ).resolves.not.toThrow();
+
+    await adapter.stop();
+  });
+});
+
+describe('SlackAdapter — reaction command messageText', () => {
+  it('populates messageText on CommandEvent from the text of the reacted-to message', async () => {
+    const mock = makeMockApp({
+      botUserId: 'UBOT',
+      channels: [{ name: 'ch', id: 'C1' }],
+      historyMessages: [{ ts: '111.0', thread_ts: '111.0', text: 'reviewing_implementation' }],
+    });
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { channelName: 'ch' },
+      { logDestination: nullDest },
+    );
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    await mock._triggerReaction({
+      reaction: 'ac-set-status',
+      user: 'U1',
+      item: { type: 'message', channel: 'C1', ts: '111.0' },
+    });
+    const event = await eventPromise;
+
+    expect(event.type).toBe('command');
+    const cmd = event.payload as import('../../../src/types/commands.js').CommandEvent;
+    expect(cmd.command).toBe('run.set-status');
+    expect(cmd.messageText).toBe('reviewing_implementation');
+
+    await adapter.stop();
+  });
+
+  it('sets messageText to undefined when reacted-to message has no text', async () => {
+    const mock = makeMockApp({
+      botUserId: 'UBOT',
+      channels: [{ name: 'ch', id: 'C1' }],
+      historyMessages: [{ ts: '111.0' }],
+    });
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { channelName: 'ch' },
+      { logDestination: nullDest },
+    );
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    await mock._triggerReaction({
+      reaction: 'ac-run-status',
+      user: 'U1',
+      item: { type: 'message', channel: 'C1', ts: '111.0' },
+    });
+    const event = await eventPromise;
+
+    expect(event.type).toBe('command');
+    const cmd = event.payload as import('../../../src/types/commands.js').CommandEvent;
+    expect(cmd.messageText).toBeUndefined();
+
+    await adapter.stop();
+  });
+});
+
 describe('SlackAdapter — reactToMessage', () => {
   const BOT_ID = 'UBOT001';
   const CHANNEL_ID = 'C123';
@@ -894,5 +1067,64 @@ describe('SlackAdapter — reactToMessage', () => {
     expect(errorLog).toBeDefined();
     expect(typeof errorLog!['error']).toBe('string');
     expect((errorLog!['error'] as string)).toContain('already_reacted');
+  });
+});
+
+describe('SlackAdapter — reaction command messageText', () => {
+  it('populates messageText on CommandEvent from the text of the reacted-to message', async () => {
+    const mock = makeMockApp({
+      botUserId: 'UBOT',
+      channels: [{ name: 'ch', id: 'C1' }],
+      historyMessages: [{ ts: '111.0', thread_ts: '111.0', text: 'reviewing_implementation' }],
+    });
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { channelName: 'ch' },
+      { logDestination: nullDest },
+    );
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    await mock._triggerReaction({
+      reaction: 'ac-set-status',
+      user: 'U1',
+      item: { type: 'message', channel: 'C1', ts: '111.0' },
+    });
+    const event = await eventPromise;
+
+    expect(event.type).toBe('command');
+    const cmd = event.payload as import('../../../src/types/commands.js').CommandEvent;
+    expect(cmd.command).toBe('run.set-status');
+    expect(cmd.messageText).toBe('reviewing_implementation');
+
+    await adapter.stop();
+  });
+
+  it('sets messageText to undefined when reacted-to message has no text', async () => {
+    const mock = makeMockApp({
+      botUserId: 'UBOT',
+      channels: [{ name: 'ch', id: 'C1' }],
+      historyMessages: [{ ts: '111.0' }],
+    });
+    const adapter = new SlackAdapter(
+      mock as unknown as App,
+      { channelName: 'ch' },
+      { logDestination: nullDest },
+    );
+    await adapter.start();
+
+    const eventPromise = takeOne(adapter.receive());
+    await mock._triggerReaction({
+      reaction: 'ac-run-status',
+      user: 'U1',
+      item: { type: 'message', channel: 'C1', ts: '111.0' },
+    });
+    const event = await eventPromise;
+
+    expect(event.type).toBe('command');
+    const cmd = event.payload as import('../../../src/types/commands.js').CommandEvent;
+    expect(cmd.messageText).toBeUndefined();
+
+    await adapter.stop();
   });
 });

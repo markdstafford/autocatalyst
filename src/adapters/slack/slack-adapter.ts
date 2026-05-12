@@ -196,6 +196,7 @@ export class SlackAdapter implements ChannelAdapter {
           { event: 'slack.message.ignored', author: msg.user, channel_id: channelId },
           'Message ignored',
         );
+        await this.reactToMessage(channelId, msg.ts, 'ac-message-ignored');
         return;
       }
 
@@ -295,6 +296,7 @@ export class SlackAdapter implements ChannelAdapter {
       }
 
       let reactedThreadTs: string = reaction.item.ts;
+      let reactedMessageText: string | undefined;
       try {
         const historyResult = await this.app.client.conversations.history({
           channel: reaction.item.channel!,
@@ -303,8 +305,47 @@ export class SlackAdapter implements ChannelAdapter {
           inclusive: true,
         });
         const reactedMessage = historyResult.messages?.[0];
-        if (reactedMessage?.thread_ts) {
-          reactedThreadTs = reactedMessage.thread_ts as string;
+
+        if (reactedMessage?.ts === reaction.item.ts) {
+          // Exact match: the reacted message is a top-level channel message.
+          if (reactedMessage.thread_ts) {
+            reactedThreadTs = reactedMessage.thread_ts as string;
+          }
+          reactedMessageText = typeof reactedMessage.text === 'string' ? reactedMessage.text : undefined;
+        } else {
+          // conversations.history only returns top-level messages. The reacted message
+          // is a thread reply — search each registered thread for the exact reply.
+          const reactionTs = parseFloat(reaction.item.ts);
+          const candidates = this.registry.rootTimestamps()
+            .filter(rootTs => parseFloat(rootTs) < reactionTs)
+            .sort((a, b) => parseFloat(b) - parseFloat(a)); // most recent first
+
+          for (const rootTs of candidates) {
+            try {
+              const repliesResult = await this.app.client.conversations.replies({
+                channel: reaction.item.channel!,
+                ts: rootTs,
+                latest: reaction.item.ts,
+                limit: 1,
+                inclusive: true,
+              });
+              const replyMsg = (repliesResult.messages ?? []).find(
+                (m: { ts?: string }) => m.ts === reaction.item.ts,
+              );
+              if (replyMsg) {
+                reactedThreadTs = rootTs;
+                reactedMessageText = typeof (replyMsg as { text?: string }).text === 'string'
+                  ? (replyMsg as { text?: string }).text
+                  : undefined;
+                break;
+              }
+            } catch (replyErr) {
+              this.logger.debug(
+                { event: 'slack.error', error: String(replyErr) },
+                'Failed to fetch replies for thread root during reaction lookup',
+              );
+            }
+          }
         }
       } catch (err) {
         this.logger.warn(
@@ -326,6 +367,7 @@ export class SlackAdapter implements ChannelAdapter {
         },
         author: reaction.user,
         received_at: new Date().toISOString(),
+        messageText: reactedMessageText,
         inferred_context: {
           request_id: this.registry.resolve(reactedThreadTs),
         },

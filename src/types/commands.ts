@@ -8,6 +8,7 @@ export interface CommandEvent {
   origin: MessageRef;
   author: string;
   received_at: string;
+  messageText?: string;
   inferred_context?: {
     request_id?: string;
   };

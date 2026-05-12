@@ -8,4 +8,12 @@ export class ThreadRegistry {
   resolve(thread_ts: string): string | undefined {
     return this.map.get(thread_ts);
   }
+
+  /**
+   * Returns all registered root timestamps. Used by the Slack adapter to search
+   * for thread replies when conversations.history cannot locate the exact message.
+   */
+  rootTimestamps(): string[] {
+    return [...this.map.keys()];
+  }
 }

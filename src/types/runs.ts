@@ -13,6 +13,18 @@ export type RunStage =
   | 'done'
   | 'failed';
 
+export const VALID_RUN_STAGES: RunStage[] = [
+  'intake',
+  'speccing',
+  'reviewing_spec',
+  'implementing',
+  'awaiting_impl_input',
+  'reviewing_implementation',
+  'pr_open',
+  'done',
+  'failed',
+];
+
 export type RequestIntent = 'idea' | 'bug' | 'chore' | 'file_issues' | 'question';
 
 export interface LastImplementationResult {

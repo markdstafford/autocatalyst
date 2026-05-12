@@ -11,6 +11,7 @@ import type { WorkspaceManager } from './workspace-manager.js';
 import type { ArtifactAuthoringAgent, ImplementationAgent, QuestionAnsweringAgent } from '../types/ai.js';
 import type { ArtifactContentSource, ArtifactPublisher } from '../types/publisher.js';
 import type { Run, RunStage, RequestIntent } from '../types/runs.js';
+import { VALID_RUN_STAGES } from '../types/runs.js';
 import type { Request, InboundEvent } from '../types/events.js';
 import type { FeedbackSource } from '../types/feedback-source.js';
 import type { IntentClassifier, ClassificationContext, Intent } from '../types/intent.js';
@@ -204,6 +205,12 @@ export class OrchestratorImpl implements Orchestrator {
     const actionableStages: RunStage[] = ['reviewing_spec', 'reviewing_implementation', 'awaiting_impl_input', 'pr_open'];
     if (!actionableStages.includes(run.stage)) {
       this.logger.debug({ event: 'classify.stage_blocked', stage: run.stage }, 'Stage blocked: discarding thread_message');
+      this.deps.adapter.react?.(event.payload.origin, 'ac-message-discarded').catch((err: unknown) => {
+        this.logger.error(
+          { event: 'adapter.react_error', error: String(err) },
+          'Failed to post ac-message-discarded reaction',
+        );
+      });
       return 'discard';
     }
     // Store original stage for routing in _handleRequest before advancing
@@ -565,6 +572,20 @@ export class OrchestratorImpl implements Orchestrator {
     this.transition(run, 'failed');
     this.logger.info({ event: 'run.cancelled', run_id: run.id, request_id: requestId }, 'Run cancelled via command');
     return 'cancelled';
+  }
+
+  overrideRunStage(requestId: string, stage: RunStage): 'updated' | 'not_found' | 'invalid_stage' {
+    if (!VALID_RUN_STAGES.includes(stage)) return 'invalid_stage';
+    const run = this.runs.get(requestId);
+    if (!run) return 'not_found';
+    run.stage = stage;
+    run.updated_at = new Date().toISOString();
+    this._persistRuns();
+    this.logger.info(
+      { event: 'run.stage_override', run_id: run.id, request_id: requestId, stage },
+      'Run stage overridden via operator command',
+    );
+    return 'updated';
   }
 
   private async reactToRunMessage(run: Run, reaction: string): Promise<void> {

@@ -130,6 +130,7 @@ describe('src/index.ts — startup modes', () => {
         getActiveRunCount: vi.fn().mockReturnValue(0),
         cancelRun: vi.fn(),
         getRunLogs: vi.fn(),
+        overrideRunStage: vi.fn(),
       };
 
       vi.doMock('../src/core/orchestrator.js', () => ({
@@ -154,6 +155,10 @@ describe('src/index.ts — startup modes', () => {
 
       vi.doMock('../src/core/commands/classify-intent-command.js', () => ({
         makeClassifyIntentHandler: vi.fn().mockReturnValue(vi.fn()),
+      }));
+
+      vi.doMock('../src/core/commands/set-status-command.js', () => ({
+        createSetStatusHandler: vi.fn().mockReturnValue(vi.fn()),
       }));
 
       vi.doMock('../src/adapters/slack/canvas-publisher.js', () => ({
@@ -319,6 +324,7 @@ describe('src/index.ts — startup modes', () => {
           getActiveRunCount: vi.fn().mockReturnValue(0),
           cancelRun: vi.fn(),
           getRunLogs: vi.fn(),
+          overrideRunStage: vi.fn(),
         })),
       }));
 
@@ -340,6 +346,10 @@ describe('src/index.ts — startup modes', () => {
 
       vi.doMock('../src/core/commands/classify-intent-command.js', () => ({
         makeClassifyIntentHandler: vi.fn().mockReturnValue(vi.fn()),
+      }));
+
+      vi.doMock('../src/core/commands/set-status-command.js', () => ({
+        createSetStatusHandler: vi.fn().mockReturnValue(vi.fn()),
       }));
 
       vi.doMock('../src/adapters/slack/canvas-publisher.js', () => ({

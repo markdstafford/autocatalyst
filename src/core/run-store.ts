@@ -13,6 +13,7 @@ export interface RunStore {
 }
 
 const STALE_STAGES = new Set(['intake', 'speccing', 'implementing']);
+const TERMINAL_STAGES = new Set(['done', 'failed']);
 
 interface FileRunStoreOptions {
   logDestination?: pino.DestinationStream;
@@ -73,8 +74,8 @@ export class FileRunStore implements RunStore {
     let demotedCount = 0;
 
     for (const run of runs) {
-      // 4. Drop runs with missing workspace
-      if (!run.workspace_path || !fs.existsSync(run.workspace_path)) {
+      // 4. Drop runs with missing workspace (terminal runs are exempt — their workspace may be cleaned up)
+      if (!TERMINAL_STAGES.has(run.stage) && (!run.workspace_path || !fs.existsSync(run.workspace_path))) {
         this.logger.warn({ event: 'run_store.run_dropped', request_id: run.request_id, workspace_path: run.workspace_path }, 'Dropping run with missing workspace_path');
         droppedCount++;
         continue;

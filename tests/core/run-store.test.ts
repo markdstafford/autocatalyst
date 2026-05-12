@@ -146,6 +146,100 @@ describe('FileRunStore.load — workspace_path missing', () => {
 });
 
 // ─────────────────────────────────────────────
+// load — terminal runs kept despite missing workspace
+// ─────────────────────────────────────────────
+
+describe('FileRunStore.load — terminal runs with missing workspace', () => {
+  it('keeps a done run even when workspace_path does not exist', () => {
+    const run = makeRun({
+      stage: 'done',
+      workspace_path: path.join(tmpDir, 'nonexistent-done-workspace'),
+    });
+
+    const dir = path.join(tmpDir, '.autocatalyst');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'runs.json'), JSON.stringify([run]));
+
+    const { lines, dest } = makeLogCapture();
+    const store = new FileRunStore(tmpDir, { logDestination: dest });
+    const result = store.load();
+
+    expect(result).toHaveLength(1);
+    expect(result[0].request_id).toBe(run.request_id);
+    expect(result[0].stage).toBe('done');
+
+    const logs = parseLogs(lines);
+    expect(logs.find(l => l['event'] === 'run_store.run_dropped')).toBeUndefined();
+  });
+
+  it('keeps a failed run even when workspace_path does not exist', () => {
+    const run = makeRun({
+      stage: 'failed',
+      workspace_path: path.join(tmpDir, 'nonexistent-failed-workspace'),
+    });
+
+    const dir = path.join(tmpDir, '.autocatalyst');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'runs.json'), JSON.stringify([run]));
+
+    const { lines, dest } = makeLogCapture();
+    const store = new FileRunStore(tmpDir, { logDestination: dest });
+    const result = store.load();
+
+    expect(result).toHaveLength(1);
+    expect(result[0].request_id).toBe(run.request_id);
+    expect(result[0].stage).toBe('failed');
+
+    const logs = parseLogs(lines);
+    expect(logs.find(l => l['event'] === 'run_store.run_dropped')).toBeUndefined();
+  });
+
+  it('still drops an active stage run (reviewing_implementation) with missing workspace', () => {
+    const run = makeRun({
+      stage: 'reviewing_implementation',
+      workspace_path: path.join(tmpDir, 'nonexistent-active-workspace'),
+    });
+
+    const dir = path.join(tmpDir, '.autocatalyst');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'runs.json'), JSON.stringify([run]));
+
+    const { lines, dest } = makeLogCapture();
+    const store = new FileRunStore(tmpDir, { logDestination: dest });
+    const result = store.load();
+
+    expect(result).toHaveLength(0);
+
+    const logs = parseLogs(lines);
+    const dropped = logs.find(l => l['event'] === 'run_store.run_dropped');
+    expect(dropped).toBeDefined();
+    expect(dropped!['request_id']).toBe(run.request_id);
+  });
+
+  it('both done and failed runs are retained when workspaces are missing', () => {
+    const doneRun = makeRun({
+      stage: 'done',
+      workspace_path: path.join(tmpDir, 'gone-done'),
+    });
+    const failedRun = makeRun({
+      stage: 'failed',
+      workspace_path: path.join(tmpDir, 'gone-failed'),
+    });
+
+    const dir = path.join(tmpDir, '.autocatalyst');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'runs.json'), JSON.stringify([doneRun, failedRun]));
+
+    const store = new FileRunStore(tmpDir);
+    const result = store.load();
+
+    expect(result).toHaveLength(2);
+    expect(result.find(r => r.request_id === doneRun.request_id)).toBeDefined();
+    expect(result.find(r => r.request_id === failedRun.request_id)).toBeDefined();
+  });
+});
+
+// ─────────────────────────────────────────────
 // load — stale stage demotion
 // ─────────────────────────────────────────────
 
