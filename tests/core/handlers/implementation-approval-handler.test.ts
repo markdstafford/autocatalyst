@@ -299,4 +299,82 @@ describe('ImplementationApprovalHandler', () => {
     expect(result).toEqual({ status: 'pr_open' });
     expect(deps.prManager.createPR).toHaveBeenCalled();
   });
+
+  it('skips specCommitter.updateStatus for bug_triage artifacts but still creates a PR and marks artifact complete', async () => {
+    const { handler, deps } = makeHandler();
+    const run = makeRun({
+      spec_path: undefined,
+      publisher_ref: undefined,
+      issue: 77,
+      artifact: {
+        kind: 'bug_triage',
+        local_path: '/ws/request-001/.autocatalyst/triage/triage-bug-77.md',
+        published_ref: { provider: 'artifact_publisher', id: 'CANVAS-BUG' },
+        status: 'approved',
+      },
+    });
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'pr_open' });
+    expect(deps.specCommitter?.updateStatus).not.toHaveBeenCalled();
+    expect(deps.artifactPublisher.updateStatus).toHaveBeenCalledWith('CANVAS-BUG', 'complete');
+    expect(deps.prManager.createPR).toHaveBeenCalledWith(
+      '/ws/request-001',
+      'spec/request-001',
+      '/ws/request-001/.autocatalyst/triage/triage-bug-77.md',
+      expect.objectContaining({ issue_number: 77 }),
+    );
+    expect(run.artifact?.status).toBe('complete');
+    expect(run.stage).toBe('pr_open');
+  });
+
+  it('skips specCommitter.updateStatus for chore_plan artifacts but still creates a PR and marks artifact complete', async () => {
+    const { handler, deps } = makeHandler();
+    const run = makeRun({
+      spec_path: undefined,
+      publisher_ref: undefined,
+      issue: 88,
+      artifact: {
+        kind: 'chore_plan',
+        local_path: '/ws/request-001/.autocatalyst/triage/triage-chore-88.md',
+        published_ref: { provider: 'artifact_publisher', id: 'CANVAS-CHORE' },
+        status: 'approved',
+      },
+    });
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'pr_open' });
+    expect(deps.specCommitter?.updateStatus).not.toHaveBeenCalled();
+    expect(deps.artifactPublisher.updateStatus).toHaveBeenCalledWith('CANVAS-CHORE', 'complete');
+    expect(deps.prManager.createPR).toHaveBeenCalledWith(
+      '/ws/request-001',
+      'spec/request-001',
+      '/ws/request-001/.autocatalyst/triage/triage-chore-88.md',
+      expect.objectContaining({ issue_number: 88 }),
+    );
+    expect(run.artifact?.status).toBe('complete');
+    expect(run.stage).toBe('pr_open');
+  });
+
+  it('still calls specCommitter.updateStatus for feature_spec artifacts', async () => {
+    const { handler, deps } = makeHandler();
+    const run = makeRun({
+      artifact: {
+        kind: 'feature_spec',
+        local_path: '/ws/request-001/context-human/specs/feature-test.md',
+        published_ref: { provider: 'artifact_publisher', id: 'CANVAS001' },
+        status: 'approved',
+      },
+    });
+
+    await handler.handle(run, makeFeedback());
+
+    expect(deps.specCommitter?.updateStatus).toHaveBeenCalledWith(
+      '/ws/request-001',
+      '/ws/request-001/context-human/specs/feature-test.md',
+      { status: 'complete', last_updated: '2026-04-25' },
+    );
+  });
 });

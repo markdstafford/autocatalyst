@@ -8,6 +8,7 @@ import type { ArtifactPublisher } from '../../types/publisher.js';
 import type { Run, RunStage } from '../../types/runs.js';
 import type { ConversationRef } from '../../types/channel.js';
 import { markArtifactStatus, artifactPath, artifactPublisherId } from '../run-refs.js';
+import { getArtifactLifecyclePolicy } from '../../types/artifact.js';
 import type { BranchGuard } from '../git-branch-guard.js';
 
 export interface ImplementationApprovalDeps {
@@ -35,7 +36,11 @@ export class ImplementationApprovalHandler {
     const localPath = artifactPath(run);
     const publisherRef = artifactPublisherId(run);
 
-    if (localPath) {
+    const shouldCommitArtifactStatus = run.artifact
+      ? getArtifactLifecyclePolicy(run.artifact.kind).commit_on_approval
+      : Boolean(localPath);
+
+    if (localPath && shouldCommitArtifactStatus) {
       try {
         await this.deps.specCommitter!.updateStatus(run.workspace_path, localPath, {
           status: 'complete',
