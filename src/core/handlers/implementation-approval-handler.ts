@@ -74,7 +74,7 @@ export class ImplementationApprovalHandler {
       ...(generatedTitle !== null ? { title: generatedTitle } : {}),
     };
 
-    // Guard: fail early if run.branch has drifted — avoids a confusing GitHub error
+    // Guard: fail early if run.branch has drifted — avoids a confusing PR creation error
     if (this.deps.branchGuard) {
       try {
         await this.deps.branchGuard.check(run.workspace_path, run.branch);
