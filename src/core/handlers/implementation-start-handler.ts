@@ -6,6 +6,7 @@ import { titleFromArtifactPath } from '../../types/publisher.js';
 import type { Run, RunStage } from '../../types/runs.js';
 import type { ConversationRef } from '../../types/channel.js';
 import { requireArtifactRefs, artifactPublishedUrl } from '../run-refs.js';
+import type { BranchGuard } from '../git-branch-guard.js';
 
 export interface ImplementationStartDeps {
   implementer: Pick<ImplementationAgent, 'implement'>;
@@ -15,6 +16,7 @@ export interface ImplementationStartDeps {
   failRun: (run: Run, conversation: ConversationRef, error: unknown) => Promise<void>;
   persist: () => void;
   logger: Pick<pino.Logger, 'info' | 'warn' | 'error'>;
+  branchGuard?: BranchGuard;
 }
 
 export type ImplementationStartResult =
@@ -60,6 +62,16 @@ export class ImplementationStartHandler {
     } catch (err) {
       await this.deps.failRun(run, feedback.conversation, err);
       return { status: 'failed' };
+    }
+
+    // Guard: fail if the agent drifted to another branch
+    if (this.deps.branchGuard) {
+      try {
+        await this.deps.branchGuard.check(run.workspace_path, run.branch);
+      } catch (err) {
+        await this.deps.failRun(run, feedback.conversation, err);
+        return { status: 'failed' };
+      }
     }
 
     if (result.status === 'needs_input') {
