@@ -195,4 +195,45 @@ describe('buildDefaultHandlerRegistry', () => {
     expect(deps.persist).not.toHaveBeenCalled();
     expect(run.stage).toBe('pr_open');
   });
+
+  it('passes the artifact local_path to the implementer after bug triage approval without deleting it', async () => {
+    const bugLocalPath = '/ws/request-001/.autocatalyst/triage/triage-bug-login.md';
+    const deps = {
+      ...makeDeps(),
+      artifactContentSource: {
+        getContent: vi.fn().mockResolvedValue('# Bug: login broken\n\nDetails here.'),
+      },
+    };
+    (deps.issueManager.create as ReturnType<typeof vi.fn>).mockResolvedValue({ number: 42 });
+
+    const registry = buildDefaultHandlerRegistry(deps);
+    const run = makeRun({
+      intent: 'bug',
+      artifact: {
+        kind: 'bug_triage',
+        local_path: bugLocalPath,
+        published_ref: { provider: 'artifact_publisher', id: 'CANVAS-BUG' },
+        status: 'waiting_on_feedback',
+      },
+    });
+    const feedback = makeFeedback();
+    const event: InboundEvent = { type: 'thread_message', payload: feedback };
+
+    const handler = registry.resolve({
+      event_type: 'thread_message',
+      stage: 'reviewing_spec',
+      intent: 'approval',
+    });
+
+    expect(handler).toBeDefined();
+    await handler?.(event, run);
+
+    expect(deps.implementer.implement).toHaveBeenCalledWith(
+      bugLocalPath,
+      '/ws/request-001',
+      undefined,
+      expect.any(Function),
+    );
+    expect(run.stage).toBe('reviewing_implementation');
+  });
 });
