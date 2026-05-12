@@ -10,6 +10,7 @@ import type { ChannelRepoMap } from '../../types/config.js';
 import type { ConversationRef } from '../../types/channel.js';
 import type { ArtifactRefs } from '../run-refs.js';
 import { markArtifactStatus, requireArtifactRefs, runChannelKey } from '../run-refs.js';
+import type { BranchGuard } from '../git-branch-guard.js';
 
 export interface ArtifactApprovalDeps {
   artifactPublisher: Pick<ArtifactPublisher, 'updateStatus' | 'setIssueLink'>;
@@ -24,6 +25,7 @@ export interface ArtifactApprovalDeps {
   persist: () => void;
   logger: Pick<pino.Logger, 'info' | 'error'>;
   deleteFile?: (path: string) => Promise<void>;
+  branchGuard?: BranchGuard;
 }
 
 export type ArtifactApprovalResult =
@@ -83,6 +85,16 @@ export class ArtifactApprovalHandler {
   }
 
   private async syncIssueOnApproval(run: Run, feedback: ThreadMessage, refs: ArtifactRefs): Promise<boolean> {
+    // Guard: fail if the workspace branch has drifted from run.branch
+    if (this.deps.branchGuard) {
+      try {
+        await this.deps.branchGuard.check(run.workspace_path, run.branch);
+      } catch (err) {
+        await this.deps.failRun(run, feedback.conversation, err);
+        return false;
+      }
+    }
+
     if (!this.deps.issueManager) {
       await this.deps.failRun(run, feedback.conversation, new Error('Issue manager is required for artifact issue sync'));
       return false;
@@ -154,6 +166,16 @@ export class ArtifactApprovalHandler {
     if (!this.deps.specCommitter) {
       await this.deps.failRun(run, feedback.conversation, new Error('Spec committer is required for artifact commit'));
       return false;
+    }
+
+    // Guard: fail if the workspace branch has drifted from run.branch
+    if (this.deps.branchGuard) {
+      try {
+        await this.deps.branchGuard.check(run.workspace_path, run.branch);
+      } catch (err) {
+        await this.deps.failRun(run, feedback.conversation, err);
+        return false;
+      }
     }
 
     try {

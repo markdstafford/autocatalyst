@@ -8,6 +8,7 @@ import type { Run, RunStage, RequestIntent } from '../../types/runs.js';
 import type { ChannelRepoMap } from '../../types/config.js';
 import type { WorkspaceManager } from '../workspace-manager.js';
 import { channelKey, type ConversationRef } from '../../types/channel.js';
+import type { BranchGuard } from '../git-branch-guard.js';
 
 type ArtifactCreationIntent = Extract<RequestIntent, 'idea' | 'bug' | 'chore'>;
 
@@ -21,6 +22,7 @@ export interface ArtifactCreationDeps {
   failRun: (run: Run, conversation: ConversationRef, error: unknown) => Promise<void>;
   persist: () => void;
   logger: Pick<pino.Logger, 'warn' | 'error' | 'info'>;
+  branchGuard?: BranchGuard;
 }
 
 export class ArtifactCreationHandler {
@@ -72,6 +74,17 @@ export class ArtifactCreationHandler {
       await this.deps.workspaceManager.destroy(workspace_path);
       await this.deps.failRun(run, request.conversation, err);
       return;
+    }
+
+    // Guard: fail if the agent drifted to another branch
+    if (this.deps.branchGuard) {
+      try {
+        await this.deps.branchGuard.check(workspace_path, branch);
+      } catch (err) {
+        await this.deps.workspaceManager.destroy(workspace_path);
+        await this.deps.failRun(run, request.conversation, err);
+        return;
+      }
     }
 
     let publication: ArtifactPublication;

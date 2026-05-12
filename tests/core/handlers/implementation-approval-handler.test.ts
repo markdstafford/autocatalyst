@@ -76,6 +76,7 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof Implementat
       error: vi.fn(),
     },
     now: () => new Date('2026-04-25T00:00:00.000Z'),
+    branchGuard: { check: vi.fn().mockResolvedValue(undefined) },
     ...overrides,
   };
 
@@ -265,5 +266,37 @@ describe('ImplementationApprovalHandler', () => {
 
     const callArg = (deps.prManager.createPR as ReturnType<typeof vi.fn>).mock.calls[0][3] as Record<string, unknown>;
     expect(callArg['issue_number']).toBeUndefined();
+  });
+
+  it('fails the run with a branch drift error before calling createPR', async () => {
+    const branchDriftError = new Error(
+      'Agent changed branches from spec/request-001 to feat/debug-mode-slack. Autocatalyst owns run branches; this run cannot continue safely.',
+    );
+    const { handler, deps } = makeHandler({
+      branchGuard: {
+        check: vi.fn().mockRejectedValue(branchDriftError),
+      },
+    });
+    const run = makeRun();
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'failed' });
+    expect(deps.failRun).toHaveBeenCalledWith(run, TEST_CONVERSATION, branchDriftError);
+    expect(deps.prManager.createPR).not.toHaveBeenCalled();
+  });
+
+  it('succeeds normally when the branch guard confirms no drift', async () => {
+    const { handler, deps } = makeHandler({
+      branchGuard: {
+        check: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+    const run = makeRun();
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'pr_open' });
+    expect(deps.prManager.createPR).toHaveBeenCalled();
   });
 });

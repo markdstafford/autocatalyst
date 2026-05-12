@@ -8,6 +8,7 @@ import type { ArtifactPublisher } from '../../types/publisher.js';
 import type { Run, RunStage } from '../../types/runs.js';
 import type { ConversationRef } from '../../types/channel.js';
 import { markArtifactStatus, artifactPath, artifactPublisherId } from '../run-refs.js';
+import type { BranchGuard } from '../git-branch-guard.js';
 
 export interface ImplementationApprovalDeps {
   specCommitter?: Pick<SpecCommitter, 'updateStatus'>;
@@ -21,6 +22,7 @@ export interface ImplementationApprovalDeps {
   persist: () => void;
   logger: Pick<pino.Logger, 'error'>;
   now?: () => Date;
+  branchGuard?: BranchGuard;
 }
 
 export type ImplementationApprovalResult = { status: 'pr_open' } | { status: 'failed' };
@@ -57,6 +59,16 @@ export class ImplementationApprovalHandler {
         );
       }
     }
+    // Guard: fail early if run.branch has drifted — avoids a confusing PR creation error
+    if (this.deps.branchGuard) {
+      try {
+        await this.deps.branchGuard.check(run.workspace_path, run.branch);
+      } catch (err) {
+        await this.deps.failRun(run, feedback.conversation, err);
+        return { status: 'failed' };
+      }
+    }
+
     this.markArtifactComplete(run);
 
     const generatedTitle = await this.deps.prTitleGenerator.generate({
@@ -71,6 +83,7 @@ export class ImplementationApprovalHandler {
       ...(run.issue !== undefined ? { issue_number: run.issue } : {}),
       ...(generatedTitle !== null ? { title: generatedTitle } : {}),
     };
+
     let prUrl: string;
     try {
       prUrl = await this.deps.prManager.createPR(

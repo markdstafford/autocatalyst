@@ -71,6 +71,7 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof Implementat
       error: vi.fn(),
       debug: vi.fn(),
     },
+    branchGuard: { check: vi.fn().mockResolvedValue(undefined) },
     ...overrides,
   };
 
@@ -385,6 +386,24 @@ describe('ImplementationFeedbackHandler', () => {
         testing_steps: ['cd /workspace', 'npm test'],
       }),
     );
+  });
+
+  it('fails the run when the feedback implementation agent changes branches', async () => {
+    const branchDriftError = new Error(
+      'Agent changed branches from spec/request-001 to feat/something. Autocatalyst owns run branches; this run cannot continue safely.',
+    );
+    const { handler, deps } = makeHandler({
+      branchGuard: {
+        check: vi.fn().mockRejectedValue(branchDriftError),
+      },
+    });
+    const run = makeRun();
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'failed' });
+    expect(deps.failRun).toHaveBeenCalledWith(run, expect.anything(), branchDriftError);
+    expect(deps.implFeedbackPage?.update).not.toHaveBeenCalled();
   });
 
   it('logs review_contract_legacy warning when structured fields are absent from feedback result', async () => {

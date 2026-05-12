@@ -67,6 +67,7 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof ArtifactCre
       info: vi.fn(),
     },
     persist: vi.fn(),
+    branchGuard: { check: vi.fn().mockResolvedValue(undefined) },
     ...overrides,
   };
 
@@ -139,5 +140,38 @@ describe('ArtifactCreationHandler', () => {
     expect(deps.workspaceManager.destroy).toHaveBeenCalledWith('/ws/request-001');
     expect(deps.failRun).toHaveBeenCalledWith(run, TEST_CONVERSATION, error);
     expect(deps.artifactPublisher.createArtifact).not.toHaveBeenCalled();
+  });
+
+  it('destroys the workspace and fails the run when the agent changes branches after creation', async () => {
+    const branchDriftError = new Error(
+      'Agent changed branches from spec/request-001 to feat/something. Autocatalyst owns run branches; this run cannot continue safely.',
+    );
+    const { handler, deps } = makeHandler({
+      branchGuard: {
+        check: vi.fn().mockRejectedValue(branchDriftError),
+      },
+    });
+    const run = makeRun({ intent: 'idea' });
+    const request = makeRequest();
+
+    await handler.handle(run, request, 'idea');
+
+    expect(deps.workspaceManager.destroy).toHaveBeenCalledWith('/ws/request-001');
+    expect(deps.failRun).toHaveBeenCalledWith(run, TEST_CONVERSATION, branchDriftError);
+    expect(deps.artifactPublisher.createArtifact).not.toHaveBeenCalled();
+  });
+
+  it('proceeds normally when the branch guard confirms no drift', async () => {
+    const { handler, deps } = makeHandler({
+      branchGuard: {
+        check: vi.fn().mockResolvedValue(undefined),
+      },
+    });
+    const run = makeRun({ intent: 'idea' });
+
+    await handler.handle(run, makeRequest(), 'idea');
+
+    expect(deps.artifactPublisher.createArtifact).toHaveBeenCalled();
+    expect(deps.failRun).not.toHaveBeenCalled();
   });
 });

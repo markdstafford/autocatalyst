@@ -26,6 +26,7 @@ import type { CommandRegistry, CommandEvent } from '../types/commands.js';
 import type { ChannelRepoMap } from '../types/config.js';
 import type { HandlerRegistry } from './handler-registry.js';
 import { buildDefaultHandlerRegistry as buildDefaultHandlers } from './default-handler-registry.js';
+import type { BranchGuard } from './git-branch-guard.js';
 
 /** Maps an actionable review stage to the in-progress stage that prevents duplicate dispatch. */
 function stageAfterApproval(stage: RunStage): RunStage {
@@ -74,6 +75,7 @@ export interface OrchestratorDeps {
   commandRegistry?: CommandRegistry;
   reacjiComplete?: string | null;
   handlerRegistry?: HandlerRegistry;
+  branchGuard?: BranchGuard;
 }
 
 interface OrchestratorOptions {
@@ -433,6 +435,7 @@ export class OrchestratorImpl implements Orchestrator {
       persist: () => this._persistRuns(),
       reactToRunMessage: (targetRun, reaction) => this.reactToRunMessage(targetRun, reaction),
       logger: this.logger,
+      branchGuard: this.deps.branchGuard,
     });
   }
 
