@@ -137,6 +137,12 @@ export interface ImplementationResult {
   status: ImplementationStatus;
   summary?: string;
   testing_instructions?: string;
+  review_summary?: {
+    changes: string[];
+    confirm: string[];
+  };
+  testing_steps?: string[];
+  resolved_feedback_items?: Array<{ id: string; resolution_comment: string }>;
   question?: string;
   error?: string;
 }

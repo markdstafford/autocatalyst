@@ -47,6 +47,28 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
 
   async create(input: ImplementationReviewInput): Promise<PublishedImplementationReview> {
     const dataSourceId = await this.getTestingGuidesDataSourceId();
+
+    // Build Changes bullets (structured or legacy fallback)
+    const changesBullets: string[] = input.review_summary?.changes?.length
+      ? input.review_summary.changes
+      : [input.summary || 'See implementation details.'];
+
+    // Build Confirm bullets (structured or legacy fallback)
+    const confirmBullets: string[] = input.review_summary?.confirm?.length
+      ? input.review_summary.confirm
+      : ['Confirm the implemented behavior matches the approved spec.'];
+
+    // Build testing steps (structured or split from legacy testing_instructions)
+    const rawSteps: string[] = input.testing_steps?.length
+      ? input.testing_steps
+      : (input.testing_instructions || '').split('\n').filter(s => s.trim());
+
+    // Prepend cd step if workspace_path is available and no step starts with 'cd '
+    const hasWorkspaceStep = rawSteps.some(s => s.trim().startsWith('cd '));
+    const testingSteps: string[] = !hasWorkspaceStep && input.workspace_path
+      ? [`cd ${input.workspace_path}`, ...rawSteps]
+      : rawSteps;
+
     const response = await this.client.pages.create({
       parent: { type: 'data_source_id', data_source_id: dataSourceId } as never,
       properties: {
@@ -62,28 +84,59 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
       } as never,
       children: [
         ...(input.artifact_url
-          ? [{
-              type: 'bookmark',
-              bookmark: { url: input.artifact_url },
-            } as never]
+          ? [{ type: 'bookmark', bookmark: { url: input.artifact_url } } as never]
           : []),
+        // Workspace section
+        {
+          type: 'heading_2',
+          heading_2: { rich_text: [{ text: { content: 'Workspace' } }] },
+        } as never,
+        {
+          type: 'paragraph',
+          paragraph: { rich_text: [{ text: { content: `Workspace: \`${input.workspace_path}\`` } }] },
+        } as never,
+        {
+          type: 'paragraph',
+          paragraph: { rich_text: [{ text: { content: `Branch: \`${input.branch}\`` } }] },
+        } as never,
         // Summary section
         {
           type: 'heading_2',
           heading_2: { rich_text: [{ text: { content: 'Summary' } }] },
         } as never,
         {
-          type: 'paragraph',
-          paragraph: { rich_text: [{ text: { content: input.summary } }] },
+          type: 'heading_3',
+          heading_3: { rich_text: [{ text: { content: 'Changes' } }] },
         } as never,
+        ...changesBullets.map(text => ({
+          type: 'bulleted_list_item',
+          bulleted_list_item: { rich_text: [{ text: { content: text } }] },
+        } as never)),
+        {
+          type: 'heading_3',
+          heading_3: { rich_text: [{ text: { content: 'Confirm' } }] },
+        } as never,
+        ...confirmBullets.map(text => ({
+          type: 'bulleted_list_item',
+          bulleted_list_item: { rich_text: [{ text: { content: text } }] },
+        } as never)),
         // Testing instructions section
         {
           type: 'heading_2',
           heading_2: { rich_text: [{ text: { content: 'Testing instructions' } }] },
         } as never,
+        ...testingSteps.map(text => ({
+          type: 'to_do',
+          to_do: { rich_text: [{ text: { content: text } }], checked: false },
+        } as never)),
+        // Additional steps section
         {
-          type: 'paragraph',
-          paragraph: { rich_text: [{ text: { content: input.testing_instructions } }] },
+          type: 'heading_2',
+          heading_2: { rich_text: [{ text: { content: 'Additional steps' } }] },
+        } as never,
+        {
+          type: 'to_do',
+          to_do: { rich_text: [{ text: { content: 'Add any extra testing steps here.' } }], checked: false },
         } as never,
         // Feedback section
         {
@@ -110,13 +163,24 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
       id: string;
       type: string;
       has_children?: boolean;
+      heading_2?: { rich_text: Array<{ plain_text: string }> };
       to_do?: { rich_text: Array<{ plain_text: string }>; checked: boolean };
-      _children?: unknown[]; // test helper only
+      _children?: unknown[];
     }>;
 
     const feedbackItems: FeedbackItem[] = [];
+    let inFeedbackSection = false;
 
     for (const block of blocks) {
+      // Track which section we are in based on heading_2 blocks
+      if (block.type === 'heading_2' && block.heading_2) {
+        const headingText = block.heading_2.rich_text.map(r => r.plain_text).join('');
+        inFeedbackSection = headingText === 'Feedback';
+        continue;
+      }
+
+      // Only collect to_do blocks inside the Feedback section
+      if (!inFeedbackSection) continue;
       if (block.type !== 'to_do' || !block.to_do) continue;
 
       const text = block.to_do.rich_text.map((r: { plain_text: string }) => r.plain_text).join('');
@@ -151,24 +215,26 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
     page_id: string,
     options: {
       summary?: string;
+      review_summary?: {
+        changes: string[];
+        confirm: string[];
+      };
+      testing_steps?: string[];
       resolved_items?: Array<{
         id: string;
         resolution_comment: string;
       }>;
     },
   ): Promise<void> {
-    // Fetch current markdown content
     let markdown = await this.client.pages.getMarkdown(page_id);
 
-    // If resolved items provided, build a map of block id → resolution info
-    // We need to read current blocks to find which to-do items match by ID
-    const resolvedMap = new Map<string, string>();
+    // --- Resolve feedback items (scoped to Feedback section) ---
     if (options.resolved_items && options.resolved_items.length > 0) {
+      const resolvedMap = new Map<string, string>();
       for (const item of options.resolved_items) {
         resolvedMap.set(item.id, item.resolution_comment);
       }
 
-      // Read current blocks to get the to-do item text for each resolved ID
       const blocksResponse = await this.client.blocks.children.list({ block_id: page_id });
       const blocks = blocksResponse.results as Array<{
         id: string;
@@ -176,30 +242,94 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
         to_do?: { rich_text: Array<{ plain_text: string }>; checked: boolean };
       }>;
 
-      // Apply resolutions to markdown: find `- [ ] <text>` lines and check them, add sub-bullet
+      // Split markdown at Feedback heading to scope replacements
+      const feedbackSplit = '\n## Feedback\n';
+      const feedbackStartIdx = markdown.indexOf(feedbackSplit);
+      let beforeFeedback = feedbackStartIdx === -1
+        ? markdown
+        : markdown.substring(0, feedbackStartIdx + feedbackSplit.length);
+      let feedbackContent = feedbackStartIdx === -1
+        ? ''
+        : markdown.substring(feedbackStartIdx + feedbackSplit.length);
+
+      if (feedbackStartIdx === -1) {
+        this.logger.warn(
+          { event: 'implementation.legacy_page_structure', page_id },
+          'Page missing Feedback heading; applying resolved items globally',
+        );
+      }
+
       for (const block of blocks) {
         if (block.type !== 'to_do' || !block.to_do) continue;
         const resolutionComment = resolvedMap.get(block.id);
         if (!resolutionComment) continue;
 
         const itemText = block.to_do.rich_text.map((r: { plain_text: string }) => r.plain_text).join('');
-        // Replace `- [ ] <text>` with `- [x] <text>\n  - ✓ <resolutionComment>`
-        const uncheckedPattern = new RegExp(
-          `(^- \\[ \\] ${escapeRegex(itemText)})`,
-          'm',
-        );
-        markdown = markdown.replace(
-          uncheckedPattern,
-          `- [x] ${itemText}\n  - ✓ ${resolutionComment}`,
-        );
+        const alreadyCheckedRegex = new RegExp(`^- \\[x\\] ${escapeRegex(itemText)}`, 'm');
+        const uncheckedPattern = new RegExp(`(^- \\[ \\] ${escapeRegex(itemText)})`, 'm');
+        const targetContent = feedbackStartIdx !== -1 ? feedbackContent : markdown;
+
+        if (!alreadyCheckedRegex.test(targetContent)) {
+          const replacement = `- [x] ${itemText}\n  - ✓ ${resolutionComment}`;
+          if (feedbackStartIdx !== -1) {
+            feedbackContent = feedbackContent.replace(uncheckedPattern, replacement);
+          } else {
+            markdown = markdown.replace(uncheckedPattern, replacement);
+          }
+        }
       }
+
+      if (feedbackStartIdx !== -1) {
+        markdown = beforeFeedback + feedbackContent;
+      }
+
+      this.logger.info(
+        { event: 'implementation.feedback_resolved', page_id, resolved_count: options.resolved_items.length },
+        'Testing guide checked off resolved feedback items',
+      );
     }
 
-    // Replace summary if provided
-    if (options.summary !== undefined) {
-      // Replace content between ## Summary heading and next ## heading or EOF
-      const summaryPattern = /(## Summary\n\n)[\s\S]*?(?=\n## |\n*$)/;
+    // --- Replace Summary with review_summary or legacy summary ---
+    if (options.review_summary) {
+      const changesMarkdown = options.review_summary.changes.map(c => `- ${c}`).join('\n');
+      const confirmMarkdown = options.review_summary.confirm.map(c => `- ${c}`).join('\n');
+      const newSummaryContent = `### Changes\n\n${changesMarkdown}\n\n### Confirm\n\n${confirmMarkdown}\n`;
+      const summaryPattern = /(## Summary\n\n?)[\s\S]*?(?=\n## |\n*$)/;
+      markdown = markdown.replace(summaryPattern, `$1${newSummaryContent}`);
+    } else if (options.summary !== undefined) {
+      const summaryPattern = /(## Summary\n\n?)[\s\S]*?(?=\n## |\n*$)/;
       markdown = markdown.replace(summaryPattern, `$1${options.summary}\n`);
+    }
+
+    // --- Append new testing steps (deduplicating, before Additional steps / Feedback) ---
+    if (options.testing_steps && options.testing_steps.length > 0) {
+      const testingInstructionsPattern = /## Testing instructions\n\n([\s\S]*?)(?=\n## (?:Additional steps|Feedback)|$)/;
+      const testingMatch = markdown.match(testingInstructionsPattern);
+      const existingItemsText = testingMatch
+        ? (testingMatch[1].match(/^- \[[ x]\] .+/gm) ?? []).map(item => item.replace(/^- \[[ x]\] /, '').toLowerCase())
+        : [];
+      const existingSet = new Set(existingItemsText);
+
+      const newSteps = options.testing_steps.filter(step => !existingSet.has(step.toLowerCase()));
+      const skippedCount = options.testing_steps.length - newSteps.length;
+
+      if (newSteps.length > 0) {
+        const newStepsMarkdown = newSteps.map(s => `- [ ] ${s}`).join('\n');
+        // Insert just before ## Additional steps or ## Feedback (whichever comes first after testing instructions)
+        const insertBefore = /(\n## (?:Additional steps|Feedback))/;
+        const match = markdown.match(insertBefore);
+        if (match && match.index !== undefined) {
+          const insertIdx = match.index;
+          markdown = markdown.substring(0, insertIdx) + '\n' + newStepsMarkdown + markdown.substring(insertIdx);
+        } else {
+          markdown += '\n' + newStepsMarkdown;
+        }
+      }
+
+      this.logger.debug(
+        { event: 'implementation.testing_steps_appended', page_id, appended_count: newSteps.length, skipped_count: skippedCount },
+        'New testing steps appended to existing Testing instructions list',
+      );
     }
 
     await this.client.pages.updateMarkdown(page_id, {

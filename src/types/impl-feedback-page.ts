@@ -20,8 +20,15 @@ export interface ImplementationReviewInput {
   artifact_ref: string;
   artifact_url?: string;
   title: string;
+  workspace_path: string;
+  branch: string;
   summary: string;
   testing_instructions: string;
+  review_summary?: {
+    changes: string[];
+    confirm: string[];
+  };
+  testing_steps?: string[];
 }
 
 export interface ImplementationReviewPublisher {
@@ -33,6 +40,11 @@ export interface ImplementationReviewPublisher {
     review_ref: string,
     options: {
       summary?: string;
+      review_summary?: {
+        changes: string[];
+        confirm: string[];
+      };
+      testing_steps?: string[];
       resolved_items?: Array<{
         id: string;
         resolution_comment: string;

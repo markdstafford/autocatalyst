@@ -281,6 +281,170 @@ describe('AgentRunner-backed core AI services', () => {
     }
   });
 
+  test('parseImplementationResult accepts structured review_summary, testing_steps, and resolved_feedback_items', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-impl-structured-'));
+    try {
+      const runner = fakeAgentRunner(async request => {
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({
+          status: 'complete',
+          summary: 'short fallback',
+          review_summary: {
+            changes: ['Added provider config', 'Wired runtime loader'],
+            confirm: ['Provider is used for new runs', 'Old runs unaffected'],
+          },
+          testing_steps: ['cd /workspace', 'npm install', 'npm test'],
+          resolved_feedback_items: [
+            { id: 'block-abc', resolution_comment: 'Fixed via config loader' },
+          ],
+        }), 'utf8');
+      });
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+
+      const result = await service.implement('/tmp/spec.md', workspace);
+
+      expect(result.review_summary).toEqual({
+        changes: ['Added provider config', 'Wired runtime loader'],
+        confirm: ['Provider is used for new runs', 'Old runs unaffected'],
+      });
+      expect(result.testing_steps).toEqual(['cd /workspace', 'npm install', 'npm test']);
+      expect(result.resolved_feedback_items).toEqual([
+        { id: 'block-abc', resolution_comment: 'Fixed via config loader' },
+      ]);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('parseImplementationResult tolerates omitted structured fields for backward compatibility', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-impl-legacy-'));
+    try {
+      const runner = fakeAgentRunner(async request => {
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({
+          status: 'complete',
+          summary: 'Done',
+          testing_instructions: 'npm test',
+        }), 'utf8');
+      });
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+
+      const result = await service.implement('/tmp/spec.md', workspace);
+
+      expect(result.review_summary).toBeUndefined();
+      expect(result.testing_steps).toBeUndefined();
+      expect(result.resolved_feedback_items).toBeUndefined();
+      expect(result.summary).toBe('Done');
+      expect(result.testing_instructions).toBe('npm test');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('parseImplementationResult rejects resolved_feedback_items entries missing id or resolution_comment', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-impl-invalid-resolved-'));
+    try {
+      const runner = fakeAgentRunner(async request => {
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({
+          status: 'complete',
+          resolved_feedback_items: [{ id: 'block-1' }], // missing resolution_comment
+        }), 'utf8');
+      });
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+
+      await expect(service.implement('/tmp/spec.md', workspace)).rejects.toThrow(
+        /resolved_feedback_items.*resolution_comment/i,
+      );
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('parseImplementationResult rejects review_summary that is not an object', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-impl-invalid-summary-'));
+    try {
+      const runner = fakeAgentRunner(async request => {
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({
+          status: 'complete',
+          review_summary: 'not an object',
+        }), 'utf8');
+      });
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+
+      await expect(service.implement('/tmp/spec.md', workspace)).rejects.toThrow(
+        /review_summary must be an object/i,
+      );
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('implementation prompt requests review_summary, testing_steps, and resolved_feedback_items', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-impl-prompt-structured-'));
+    try {
+      const calls: AgentRunRequest[] = [];
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ status: 'complete', summary: 'Done' }), 'utf8');
+      });
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+
+      await service.implement('/tmp/spec.md', workspace);
+
+      expect(calls[0].prompt).toContain('review_summary');
+      expect(calls[0].prompt).toContain('testing_steps');
+      expect(calls[0].prompt).toContain('resolved_feedback_items');
+      expect(calls[0].prompt).toContain('changes');
+      expect(calls[0].prompt).toContain('confirm');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('feedback implementation prompt instructs agent to preserve feedback IDs exactly', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-impl-feedback-prompt-'));
+    try {
+      const calls: AgentRunRequest[] = [];
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ status: 'complete', summary: 'Done' }), 'utf8');
+      });
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+      const feedbackContext = '[FEEDBACK_ID: block-1]\nFix the crash\n[FEEDBACK_ID: block-2]\nUpdate config example';
+
+      await service.implement('/tmp/spec.md', workspace, feedbackContext);
+
+      // The prompt should instruct the agent to use IDs exactly as given
+      expect(calls[0].prompt).toContain('FEEDBACK_ID');
+      expect(calls[0].prompt).toContain('resolved_feedback_items');
+      expect(calls[0].prompt).toMatch(/id.*exactly|use.*id.*as.*provided|preserve.*id/i);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   test('uses issue triage agent output before creating issues through IssueManager', async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'ac-issue-'));
     try {
