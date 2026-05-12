@@ -74,6 +74,7 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof ArtifactApp
       info: vi.fn(),
       error: vi.fn(),
     },
+    branchGuard: { check: vi.fn().mockResolvedValue(undefined) },
     ...overrides,
   };
 
@@ -320,5 +321,23 @@ describe('ArtifactApprovalHandler', () => {
     await handler.handle(run, makeFeedback());
 
     expect(deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('fails the run before commit when the workspace branch does not match run.branch', async () => {
+    const branchDriftError = new Error(
+      'Agent changed branches from spec/request-001 to feat/something. Autocatalyst owns run branches; this run cannot continue safely.',
+    );
+    const { handler, deps } = makeHandler({
+      branchGuard: {
+        check: vi.fn().mockRejectedValue(branchDriftError),
+      },
+    });
+    const run = makeRun();  // uses feature_spec which has commit_on_approval
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'failed' });
+    expect(deps.failRun).toHaveBeenCalledWith(run, expect.anything(), branchDriftError);
+    expect(deps.specCommitter?.commit).not.toHaveBeenCalled();
   });
 });
