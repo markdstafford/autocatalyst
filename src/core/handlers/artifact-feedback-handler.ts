@@ -6,6 +6,7 @@ import type { ArtifactContentSource, ArtifactPublisher } from '../../types/publi
 import type { Run, RunStage } from '../../types/runs.js';
 import type { ConversationRef } from '../../types/channel.js';
 import { requireArtifactRefs } from '../run-refs.js';
+import type { BranchGuard } from '../git-branch-guard.js';
 
 export interface ArtifactFeedbackDeps {
   artifactAuthoringAgent: Pick<ArtifactAuthoringAgent, 'revise'>;
@@ -16,6 +17,7 @@ export interface ArtifactFeedbackDeps {
   transition: (run: Run, stage: RunStage) => void;
   failRun: (run: Run, conversation: ConversationRef, error: unknown) => Promise<void>;
   logger: Pick<pino.Logger, 'debug' | 'warn' | 'error'>;
+  branchGuard?: BranchGuard;
 }
 
 export type ArtifactFeedbackResult = { status: 'revised' } | { status: 'failed' };
@@ -66,6 +68,16 @@ export class ArtifactFeedbackHandler {
     } catch (err) {
       await this.deps.failRun(run, feedback.conversation, err);
       return { status: 'failed' };
+    }
+
+    // Guard: fail if the agent drifted to another branch
+    if (this.deps.branchGuard) {
+      try {
+        await this.deps.branchGuard.check(run.workspace_path, run.branch);
+      } catch (err) {
+        await this.deps.failRun(run, feedback.conversation, err);
+        return { status: 'failed' };
+      }
     }
 
     const { comment_responses: commentResponses, page_content } = result;

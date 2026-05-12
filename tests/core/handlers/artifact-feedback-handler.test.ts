@@ -61,6 +61,7 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof ArtifactFee
       getContent: vi.fn().mockResolvedValue(''),
     },
     feedbackSource: undefined,
+    branchGuard: { check: vi.fn().mockResolvedValue(undefined) },
     postMessage: vi.fn().mockResolvedValue(undefined),
     transition: vi.fn((run: Run, stage: Run['stage']) => { run.stage = stage; }),
     failRun: vi.fn().mockResolvedValue(undefined),
@@ -231,6 +232,24 @@ describe('ArtifactFeedbackHandler', () => {
     expect(result).toEqual({ status: 'failed' });
     expect(deps.failRun).toHaveBeenCalledWith(run, TEST_CONVERSATION, error);
     expect(run.stage).toBe('speccing');
+  });
+
+  it('fails the run when the agent changes branches during revision', async () => {
+    const branchDriftError = new Error(
+      'Agent changed branches from spec/request-001 to feat/something. Autocatalyst owns run branches; this run cannot continue safely.',
+    );
+    const { handler, deps } = makeHandler({
+      branchGuard: {
+        check: vi.fn().mockRejectedValue(branchDriftError),
+      },
+    });
+    const run = makeRun();
+
+    const result = await handler.handle(run, makeFeedback());
+
+    expect(result).toEqual({ status: 'failed' });
+    expect(deps.failRun).toHaveBeenCalledWith(run, expect.anything(), branchDriftError);
+    expect(deps.artifactPublisher.updateArtifact).not.toHaveBeenCalled();
   });
 
   it('does not fail the run when replying to a publisher comment or notifying the channel fails', async () => {
