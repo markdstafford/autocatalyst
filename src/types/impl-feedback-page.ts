@@ -1,3 +1,5 @@
+import type { ImplementationReviewExchange } from './ai.js';
+
 export type ImplementationReviewStatus =
   | 'not_started'
   | 'in_progress'
@@ -29,6 +31,7 @@ export interface ImplementationReviewInput {
     confirm: string[];
   };
   testing_steps?: string[];
+  review_exchanges?: ImplementationReviewExchange[];
 }
 
 export interface ImplementationReviewPublisher {
@@ -49,6 +52,7 @@ export interface ImplementationReviewPublisher {
         id: string;
         resolution_comment: string;
       }>;
+      review_exchanges?: ImplementationReviewExchange[];
     },
   ): Promise<void>;
 

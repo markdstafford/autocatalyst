@@ -1,6 +1,7 @@
 // src/types/runs.ts
 import type { ChannelRef, ConversationRef, MessageRef } from './channel.js';
 import type { Artifact } from './artifact.js';
+import type { ImplementationReviewExchange } from './ai.js';
 
 export type RunStage =
   | 'intake'
@@ -48,6 +49,7 @@ export interface Run {
   origin?: MessageRef;
   pr_url: string | undefined;
   last_impl_result: LastImplementationResult | undefined;
+  review_exchanges?: ImplementationReviewExchange[];
   created_at: string;
   updated_at: string;
 }
