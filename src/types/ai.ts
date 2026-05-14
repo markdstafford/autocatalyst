@@ -108,6 +108,7 @@ export interface ImplementationReviewExchange {
 
 export interface AgentRoutingPolicy {
   resolve(route: AgentRoute): AgentProfile;
+  resolveOptional(route: AgentRoute): AgentProfile | null;
 }
 
 export interface DirectModelMessage {

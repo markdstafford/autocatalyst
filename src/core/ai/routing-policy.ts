@@ -1,4 +1,4 @@
-import type { AgentProfile, AgentRoute, AgentRoutingPolicy, AgentEffort, AgentThinking } from '../../types/ai.js';
+import type { AgentProfile, AgentProfileSummary, AgentRoute, AgentRoutingPolicy, AgentEffort, AgentThinking } from '../../types/ai.js';
 import type { AiConfig, ProfileConfig, EndpointConfig, RunnerKind } from '../../types/config.js';
 import type { ResolvedCredential } from '../config.js';
 import { requiredSkillsForRoute } from './route-skills.js';
@@ -16,6 +16,16 @@ export class DefaultAgentRoutingPolicy implements AgentRoutingPolicy {
       throw new Error(`No routing entry for task '${route.task}'`);
     }
     const profile = this.config.profiles.find(p => p.name === profileName)!;
+    const endpoint = this.config.endpoints.find(e => e.name === profile.endpoint)!;
+    const credential = this.config.credentials.find(c => c.name === endpoint.credential) as ResolvedCredential | undefined;
+    return buildAgentProfile(profile, endpoint, credential, route);
+  }
+
+  resolveOptional(route: AgentRoute): AgentProfile | null {
+    const profileName = this.config.routing[route.task];
+    if (!profileName) return null;
+    const profile = this.config.profiles.find(p => p.name === profileName);
+    if (!profile) return null;
     const endpoint = this.config.endpoints.find(e => e.name === profile.endpoint)!;
     const credential = this.config.credentials.find(c => c.name === endpoint.credential) as ResolvedCredential | undefined;
     return buildAgentProfile(profile, endpoint, credential, route);
@@ -46,4 +56,12 @@ function runnerToProvider(runner: RunnerKind): string {
     case 'claude_agent_sdk': return 'claude_agent_sdk';
     case 'openai_agent_sdk': return 'openai_agent_sdk';
   }
+}
+
+export function agentProfileSummary(profile: Pick<AgentProfile, 'id' | 'provider' | 'model'>): AgentProfileSummary {
+  return {
+    profile: profile.id,
+    provider: profile.provider,
+    ...(profile.model !== undefined ? { model: profile.model } : {}),
+  };
 }
