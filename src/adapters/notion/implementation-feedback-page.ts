@@ -8,6 +8,7 @@ import type {
   ImplementationReviewStatus,
   PublishedImplementationReview,
 } from '../../types/impl-feedback-page.js';
+import type { ImplementationReviewExchange } from '../../types/ai.js';
 export type {
   FeedbackItem,
   ImplementationReviewInput,
@@ -15,6 +16,60 @@ export type {
   ImplementationReviewStatus,
   PublishedImplementationReview,
 } from '../../types/impl-feedback-page.js';
+
+function redactSecrets(text: string): string {
+  // Redact common API key patterns starting with sk-
+  return text.replace(/\bsk-[A-Za-z0-9]{8,}\b/g, '[REDACTED]');
+}
+
+function renderAiReviewMarkdown(exchanges: ImplementationReviewExchange[]): string {
+  const lines: string[] = [];
+  for (const ex of exchanges) {
+    const phaseTitle = ex.phase === 'initial' ? 'Initial review' : 'Final review';
+    lines.push(`### ${phaseTitle}`);
+    lines.push('');
+    lines.push(`Implementation model: \`${ex.implementation_profile.profile}\` (\`${ex.implementation_profile.model ?? ex.implementation_profile.provider}\`, \`${ex.implementation_profile.provider}\`)`);
+    lines.push(`Review model: \`${ex.review_profile.profile}\` (\`${ex.review_profile.model ?? ex.review_profile.provider}\`, \`${ex.review_profile.provider}\`)`);
+    lines.push(`Review status: ${ex.review_status}`);
+    lines.push('');
+    lines.push('#### Review findings');
+    lines.push('');
+    if (ex.findings.length === 0) {
+      lines.push('- No blocking or informational findings.');
+    } else {
+      for (const finding of ex.findings) {
+        const response = ex.responses.find(r => r.id === finding.id);
+        lines.push(`- [x] [${finding.id}] ${redactSecrets(finding.finding)}`);
+        if (response) {
+          const label = response.disposition === 'fixed' ? 'Fixed' : 'Declined';
+          lines.push(`  ${label} — ${redactSecrets(response.response)}`);
+        }
+      }
+    }
+    lines.push('');
+  }
+  return lines.join('\n');
+}
+
+function buildAiReviewBlocks(exchanges: ImplementationReviewExchange[]): unknown[] {
+  const blocks: unknown[] = [];
+  for (const ex of exchanges) {
+    const phaseTitle = ex.phase === 'initial' ? 'Initial review' : 'Final review';
+    blocks.push({ type: 'heading_3', heading_3: { rich_text: [{ text: { content: phaseTitle } }] } });
+    blocks.push({ type: 'paragraph', paragraph: { rich_text: [{ text: { content: `Implementation model: \`${ex.implementation_profile.profile}\`` } }] } });
+    blocks.push({ type: 'paragraph', paragraph: { rich_text: [{ text: { content: `Review model: \`${ex.review_profile.profile}\`` } }] } });
+    blocks.push({ type: 'paragraph', paragraph: { rich_text: [{ text: { content: `Review status: ${ex.review_status}` } }] } });
+    if (ex.findings.length === 0) {
+      blocks.push({ type: 'to_do', to_do: { rich_text: [{ text: { content: 'No blocking or informational findings.' } }], checked: false } });
+    } else {
+      for (const finding of ex.findings) {
+        const response = ex.responses.find(r => r.id === finding.id);
+        blocks.push({ type: 'to_do', to_do: { rich_text: [{ text: { content: `[${finding.id}] ${redactSecrets(finding.finding)}` } }], checked: Boolean(response) } });
+      }
+    }
+  }
+  return blocks;
+}
 
 interface NotionImplementationFeedbackPageOptions {
   logDestination?: pino.DestinationStream;
@@ -138,11 +193,20 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
           type: 'to_do',
           to_do: { rich_text: [{ text: { content: 'Add any extra testing steps here.' } }], checked: false },
         } as never,
-        // Feedback section
+        // Human review section
         {
           type: 'heading_2',
-          heading_2: { rich_text: [{ text: { content: 'Feedback' } }] },
+          heading_2: { rich_text: [{ text: { content: 'Human review' } }] },
         } as never,
+        ...(input.review_exchanges?.length
+          ? [
+              {
+                type: 'heading_2',
+                heading_2: { rich_text: [{ text: { content: 'AI review' } }] },
+              } as never,
+              ...buildAiReviewBlocks(input.review_exchanges) as never[],
+            ]
+          : []),
       ],
     });
 
@@ -175,7 +239,7 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
       // Track which section we are in based on heading_2 blocks
       if (block.type === 'heading_2' && block.heading_2) {
         const headingText = block.heading_2.rich_text.map(r => r.plain_text).join('');
-        inFeedbackSection = headingText === 'Feedback';
+        inFeedbackSection = headingText === 'Human review' || headingText === 'Feedback';
         continue;
       }
 
@@ -224,6 +288,7 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
         id: string;
         resolution_comment: string;
       }>;
+      review_exchanges?: ImplementationReviewExchange[];
     },
   ): Promise<void> {
     let markdown = await this.client.pages.getMarkdown(page_id);
@@ -330,6 +395,21 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
         { event: 'implementation.testing_steps_appended', page_id, appended_count: newSteps.length, skipped_count: skippedCount },
         'New testing steps appended to existing Testing instructions list',
       );
+    }
+
+    // --- Replace or append AI review section ---
+    if (options.review_exchanges !== undefined) {
+      const aiReviewContent = renderAiReviewMarkdown(options.review_exchanges);
+      const aiReviewHeading = '\n## AI review\n';
+      const aiReviewPattern = /\n## AI review\n[\s\S]*$/;
+      if (aiReviewPattern.test(markdown)) {
+        markdown = markdown.replace(aiReviewPattern, `${aiReviewHeading}\n${aiReviewContent}`);
+      } else {
+        if (!markdown.includes('\n## Human review\n') && !markdown.includes('\n## Feedback\n')) {
+          this.logger.warn({ event: 'implementation.missing_human_review', page_id }, 'Page missing Human review section; appending AI review at end');
+        }
+        markdown = markdown.trimEnd() + `\n\n## AI review\n\n${aiReviewContent}`;
+      }
     }
 
     await this.client.pages.updateMarkdown(page_id, {

@@ -2,8 +2,25 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { NotionImplementationFeedbackPage } from '../../../src/adapters/notion/implementation-feedback-page.js';
 import type { NotionClient } from '../../../src/adapters/notion/notion-client.js';
 import type { ImplementationReviewInput } from '../../../src/types/impl-feedback-page.js';
+import type { ImplementationReviewExchange } from '../../../src/types/ai.js';
 
 const nullDest = { write: () => {} };
+
+function makeReviewExchange(overrides: Partial<ImplementationReviewExchange> = {}): ImplementationReviewExchange {
+  return {
+    id: 'ex-1',
+    phase: 'initial',
+    created_at: '2026-05-13T00:00:00Z',
+    implementation_profile: { profile: 'impl-agent', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-6' },
+    review_profile: { profile: 'review-agent', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-6' },
+    review_status: 'no_findings',
+    review_summary: 'All good.',
+    findings: [],
+    responses: [],
+    requires_human_retest: false,
+    ...overrides,
+  };
+}
 
 function makeNotionClient(overrides: Partial<{
   pagesCreate: ReturnType<typeof vi.fn>;
@@ -957,5 +974,104 @@ describe('NotionImplementationFeedbackPage — setPRLink', () => {
     await page.setPRLink!('page-id', 'https://example.test/org/repo/pull/1');
 
     expect(records.find(r => r['event'] === 'notion_testing_guide.pr_link_set')).toBeDefined();
+  });
+});
+
+describe('Human review section naming', () => {
+  it('new testing guides use "Human review" heading instead of "Feedback"', async () => {
+    const client = makeNotionClient();
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+    await page.create(makeReviewInput());
+    const createCall = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0] as { children: Array<{ type: string; heading_2?: { rich_text: Array<{ text: { content: string } }> } }> };
+    const headings = createCall.children.filter(b => b.type === 'heading_2').map(b => b.heading_2!.rich_text[0].text.content);
+    expect(headings).toContain('Human review');
+    expect(headings).not.toContain('Feedback');
+  });
+
+  it('readFeedback recognizes "Human review" heading', async () => {
+    const client = makeNotionClient({
+      blocksChildrenList: vi.fn().mockResolvedValue({
+        results: [
+          { id: 'h1', type: 'heading_2', heading_2: { rich_text: [{ plain_text: 'Human review' }] } },
+          { id: 'todo-1', type: 'to_do', has_children: false, to_do: { rich_text: [{ plain_text: 'Test this.' }], checked: false } },
+        ],
+      }),
+    });
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+    const items = await page.readFeedback('page-id');
+    expect(items).toHaveLength(1);
+    expect(items[0].text).toBe('Test this.');
+  });
+});
+
+describe('AI review section', () => {
+  it('newly created testing guide includes AI review section when review_exchanges provided', async () => {
+    const exchange = makeReviewExchange();
+    const client = makeNotionClient();
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+    await page.create(makeReviewInput({ review_exchanges: [exchange] }));
+    const createCall = (client.pages.create as ReturnType<typeof vi.fn>).mock.calls[0][0] as { children: Array<{ type: string; heading_2?: { rich_text: Array<{ text: { content: string } }> } }> };
+    const headings = createCall.children.filter(b => b.type === 'heading_2').map(b => b.heading_2!.rich_text[0].text.content);
+    expect(headings).toContain('AI review');
+    // AI review appears after Human review
+    const aiIdx = headings.indexOf('AI review');
+    const humanIdx = headings.indexOf('Human review');
+    expect(aiIdx).toBeGreaterThan(humanIdx);
+  });
+
+  it('update replaces only AI review section, leaving Human review content unchanged', async () => {
+    const existingMarkdown = `## Summary\n\nOld summary.\n\n## Testing instructions\n\n- [ ] Run tests.\n\n## Additional steps\n\n- [ ] Check.\n\n## Human review\n\n- [ ] Some feedback.\n\n## AI review\n\n### Initial review\n\nOld review content.`;
+    const client = makeNotionClient({
+      pagesGetMarkdown: vi.fn().mockResolvedValue(existingMarkdown),
+    });
+    const exchange = makeReviewExchange({
+      review_status: 'addressed',
+      review_summary: 'Found 1 issue.',
+      findings: [{ id: 'INIT-1', severity: 'blocker', category: 'test', finding: 'Missing test.' }],
+      responses: [{ id: 'INIT-1', disposition: 'fixed', response: 'Added test file.' }],
+    });
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+    await page.update('page-id', { review_exchanges: [exchange] });
+    const updateCall = (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mock.calls[0];
+    const newMarkdown = updateCall[1].replace_content.new_str as string;
+    expect(newMarkdown).toContain('## Human review');
+    expect(newMarkdown).toContain('Some feedback.');
+    expect(newMarkdown).toContain('INIT-1');
+    expect(newMarkdown).toContain('Added test file.');
+  });
+
+  it('renders no-findings exchange as "No blocking or informational findings."', async () => {
+    const exchange = makeReviewExchange({ review_status: 'no_findings' });
+    const client = makeNotionClient({ pagesGetMarkdown: vi.fn().mockResolvedValue('## Human review\n\n') });
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+    await page.update('page-id', { review_exchanges: [exchange] });
+    const newMarkdown = (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mock.calls[0][1].replace_content.new_str as string;
+    expect(newMarkdown).toContain('No blocking or informational findings.');
+  });
+
+  it('redacts API key values (sk-...) before rendering', async () => {
+    const exchange = makeReviewExchange({
+      review_status: 'addressed',
+      review_summary: 'sk-abcdef1234567890 was found.',
+      findings: [{ id: 'INIT-1', severity: 'warning', category: 'security', finding: 'Log includes sk-abcdef1234567890.' }],
+      responses: [{ id: 'INIT-1', disposition: 'fixed', response: 'Removed sk-abcdef1234567890 from log.' }],
+    });
+    const client = makeNotionClient({ pagesGetMarkdown: vi.fn().mockResolvedValue('## Human review\n\n') });
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+    await page.update('page-id', { review_exchanges: [exchange] });
+    const newMarkdown = (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mock.calls[0][1].replace_content.new_str as string;
+    expect(newMarkdown).not.toContain('sk-abcdef1234567890');
+    expect(newMarkdown).toContain('[REDACTED]');
+  });
+
+  it('appends AI review at end of page when AI review section is absent', async () => {
+    const existingMarkdown = `## Summary\n\nOld summary.\n\n## Human review\n\n- [ ] feedback.\n`;
+    const client = makeNotionClient({ pagesGetMarkdown: vi.fn().mockResolvedValue(existingMarkdown) });
+    const exchange = makeReviewExchange({ phase: 'final' });
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+    await page.update('page-id', { review_exchanges: [exchange] });
+    const newMarkdown = (client.pages.updateMarkdown as ReturnType<typeof vi.fn>).mock.calls[0][1].replace_content.new_str as string;
+    expect(newMarkdown).toContain('## AI review');
+    expect(newMarkdown.indexOf('## AI review')).toBeGreaterThan(newMarkdown.indexOf('## Summary'));
   });
 });
