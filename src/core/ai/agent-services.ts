@@ -216,7 +216,7 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
       if (msg.includes('exceeded') && msg.includes('output token')) {
         throw new Error(
           `Implementation failed: Claude Code hit its output token limit. ` +
-          `Increase CLAUDE_CODE_MAX_OUTPUT_TOKENS (current default: 32000).`,
+          `Increase CLAUDE_CODE_MAX_OUTPUT_TOKENS (Autocatalyst default: 128000).`,
         );
       }
       throw new Error(`Implementation failed: ${msg}`);
