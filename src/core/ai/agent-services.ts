@@ -212,7 +212,14 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
       );
     } catch (err) {
       this.logger.error({ event: 'impl.agent_failed', error: String(err) }, 'Agent exited with error during implementation');
-      throw new Error(`Implementation failed: ${String(err)}`);
+      const msg = String(err);
+      if (msg.includes('exceeded') && msg.includes('output token')) {
+        throw new Error(
+          `Implementation failed: Claude Code hit its output token limit. ` +
+          `Increase CLAUDE_CODE_MAX_OUTPUT_TOKENS (current default: 32000).`,
+        );
+      }
+      throw new Error(`Implementation failed: ${msg}`);
     }
 
     const content = await readRequiredFile(this.readFileFn, resultFilePath, 'Implementation');
