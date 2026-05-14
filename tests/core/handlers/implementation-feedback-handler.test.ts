@@ -4,6 +4,24 @@ import type { ThreadMessage } from '../../../src/types/events.js';
 import type { FeedbackItem } from '../../../src/types/impl-feedback-page.js';
 import type { Run } from '../../../src/types/runs.js';
 import { TEST_CHANNEL, TEST_CONVERSATION, TEST_ORIGIN } from '../../helpers/channel-refs.js';
+import type { ImplementationReviewCoordinator } from '../../../src/core/ai/implementation-review-coordinator.js';
+import type { ImplementationReviewExchange } from '../../../src/types/ai.js';
+
+function makeReviewExchange(overrides: Partial<ImplementationReviewExchange> = {}): ImplementationReviewExchange {
+  return {
+    id: 'exchange-001',
+    phase: 'initial',
+    created_at: new Date().toISOString(),
+    implementation_profile: { profile: 'impl-agent', provider: 'claude_agent_sdk' },
+    review_profile: { profile: 'review-agent', provider: 'claude_agent_sdk' },
+    review_status: 'no_findings',
+    review_summary: 'Looks good.',
+    findings: [],
+    responses: [],
+    requires_human_retest: false,
+    ...overrides,
+  };
+}
 
 function makeFeedback(overrides: Partial<ThreadMessage> = {}): ThreadMessage {
   return {
@@ -425,5 +443,38 @@ describe('ImplementationFeedbackHandler', () => {
       expect.objectContaining({ event: 'implementation.review_contract_legacy', run_id: 'run-001' }),
       expect.any(String),
     );
+  });
+});
+
+describe('ImplementationFeedbackHandler with reviewCoordinator', () => {
+  it('calls coordinator after complete feedback-pass result before updating testing guide', async () => {
+    const exchange = makeReviewExchange({ phase: 'initial' });
+    const coord: Pick<ImplementationReviewCoordinator, 'runInitialReview'> = {
+      runInitialReview: vi.fn().mockImplementation(async ({ run }: { run: Run }) => {
+        run.review_exchanges = [...(run.review_exchanges ?? []), exchange];
+        return {
+          status: 'complete',
+          summary: 'Post-review.',
+          testing_steps: ['npm test'],
+          review_summary: { changes: ['A'], confirm: ['B'] },
+        };
+      }),
+    };
+    const { handler, deps } = makeHandler({ reviewCoordinator: coord });
+    const run = makeRun({ impl_feedback_ref: 'page-id' });
+    await handler.handle(run, makeFeedback());
+    expect(coord.runInitialReview).toHaveBeenCalled();
+    expect(deps.implFeedbackPage?.update).toHaveBeenCalledWith(
+      'page-id',
+      expect.objectContaining({ review_exchanges: [exchange] }),
+    );
+  });
+
+  it('proceeds normally without coordinator when not configured', async () => {
+    const { handler, deps } = makeHandler({ reviewCoordinator: undefined });
+    const run = makeRun({ impl_feedback_ref: 'page-id' });
+    const result = await handler.handle(run, makeFeedback());
+    expect(result).toEqual({ status: 'updated' });
+    expect(deps.implFeedbackPage?.update).toHaveBeenCalled();
   });
 });

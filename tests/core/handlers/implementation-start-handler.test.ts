@@ -3,6 +3,24 @@ import { ImplementationStartHandler } from '../../../src/core/handlers/implement
 import type { ThreadMessage } from '../../../src/types/events.js';
 import type { Run } from '../../../src/types/runs.js';
 import { TEST_CHANNEL, TEST_CONVERSATION, TEST_ORIGIN } from '../../helpers/channel-refs.js';
+import type { ImplementationReviewCoordinator } from '../../../src/core/ai/implementation-review-coordinator.js';
+import type { ImplementationReviewExchange } from '../../../src/types/ai.js';
+
+function makeReviewExchange(overrides: Partial<ImplementationReviewExchange> = {}): ImplementationReviewExchange {
+  return {
+    id: 'exchange-001',
+    phase: 'initial',
+    created_at: new Date().toISOString(),
+    implementation_profile: { profile: 'impl-agent', provider: 'claude_agent_sdk' },
+    review_profile: { profile: 'review-agent', provider: 'claude_agent_sdk' },
+    review_status: 'no_findings',
+    review_summary: 'Looks good.',
+    findings: [],
+    responses: [],
+    requires_human_retest: false,
+    ...overrides,
+  };
+}
 
 function makeFeedback(overrides: Partial<ThreadMessage> = {}): ThreadMessage {
   return {
@@ -319,5 +337,63 @@ describe('ImplementationStartHandler', () => {
       expect.objectContaining({ event: 'run.notify_failed', run_id: 'run-001' }),
       'Failed to post completion notification',
     );
+  });
+});
+
+describe('ImplementationStartHandler with reviewCoordinator', () => {
+  it('calls coordinator after complete implementation before creating testing guide', async () => {
+    const exchange = makeReviewExchange();
+    const coord: Pick<ImplementationReviewCoordinator, 'runInitialReview'> = {
+      runInitialReview: vi.fn().mockImplementation(async ({ run }: { run: Run }) => {
+        run.review_exchanges = [...(run.review_exchanges ?? []), exchange];
+        return {
+          status: 'complete',
+          summary: 'Implemented the feature successfully.',
+          testing_instructions: 'npm test',
+          review_summary: { changes: ['Added feature X', 'Wired config loader'], confirm: ['Feature X works', 'Config loads correctly'] },
+          testing_steps: ['cd /ws/request-001', 'npm install', 'npm test'],
+        };
+      }),
+    };
+    const { handler, deps } = makeHandler({ reviewCoordinator: coord });
+    const run = makeRun();
+    await handler.handle(run, makeFeedback());
+    expect(coord.runInitialReview).toHaveBeenCalledWith(expect.objectContaining({
+      run,
+      artifact_path: '/ws/request-001/context-human/specs/feature-test.md',
+    }));
+    expect(deps.implFeedbackPage?.create).toHaveBeenCalledWith(
+      expect.objectContaining({ review_exchanges: [exchange] }),
+    );
+  });
+
+  it('transitions to awaiting_impl_input when coordinator returns needs_input', async () => {
+    const coord: Pick<ImplementationReviewCoordinator, 'runInitialReview'> = {
+      runInitialReview: vi.fn().mockResolvedValue({ status: 'needs_input', question: 'Which approach?' }),
+    };
+    const { handler, deps } = makeHandler({ reviewCoordinator: coord });
+    const run = makeRun();
+    const result = await handler.handle(run, makeFeedback());
+    expect(result).toEqual({ status: 'needs_input' });
+    expect(deps.implFeedbackPage?.create).not.toHaveBeenCalled();
+  });
+
+  it('fails run when coordinator returns failed', async () => {
+    const coord: Pick<ImplementationReviewCoordinator, 'runInitialReview'> = {
+      runInitialReview: vi.fn().mockResolvedValue({ status: 'failed', error: 'review crashed' }),
+    };
+    const { handler, deps } = makeHandler({ reviewCoordinator: coord });
+    const run = makeRun();
+    const result = await handler.handle(run, makeFeedback());
+    expect(result).toEqual({ status: 'failed' });
+    expect(deps.failRun).toHaveBeenCalled();
+  });
+
+  it('proceeds normally without coordinator when not configured', async () => {
+    const { handler, deps } = makeHandler({ reviewCoordinator: undefined });
+    const run = makeRun();
+    const result = await handler.handle(run, makeFeedback());
+    expect(result).toEqual({ status: 'reviewing_implementation' });
+    expect(deps.implFeedbackPage?.create).toHaveBeenCalled();
   });
 });

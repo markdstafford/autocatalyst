@@ -7,6 +7,7 @@ import type { Run, RunStage } from '../../types/runs.js';
 import type { ConversationRef } from '../../types/channel.js';
 import { requireArtifactRefs, artifactPublishedUrl } from '../run-refs.js';
 import type { BranchGuard } from '../git-branch-guard.js';
+import type { ImplementationReviewCoordinator } from '../ai/implementation-review-coordinator.js';
 
 export interface ImplementationStartDeps {
   implementer: Pick<ImplementationAgent, 'implement'>;
@@ -17,6 +18,7 @@ export interface ImplementationStartDeps {
   persist: () => void;
   logger: Pick<pino.Logger, 'info' | 'warn' | 'error'>;
   branchGuard?: BranchGuard;
+  reviewCoordinator?: Pick<ImplementationReviewCoordinator, 'runInitialReview'>;
 }
 
 export type ImplementationStartResult =
@@ -74,6 +76,32 @@ export class ImplementationStartHandler {
       }
     }
 
+    // Run initial review if coordinator is configured
+    let reviewedResult = result;
+    if (this.deps.reviewCoordinator) {
+      reviewedResult = await this.deps.reviewCoordinator.runInitialReview({
+        run,
+        artifact_path: refs.local_path,
+        implementation_result: result,
+        working_directory: run.workspace_path,
+        onProgress,
+      });
+      if (reviewedResult.status === 'needs_input') {
+        this.deps.logger.info({ event: 'implementation.review.needs_input', run_id: run.id }, 'Review response needs input');
+        try {
+          await this.deps.postMessage(feedback.conversation, `I need input \u2014 ${reviewedResult.question ?? 'please provide more context'}`);
+        } catch (err) {
+          this.deps.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post question');
+        }
+        this.deps.transition(run, 'awaiting_impl_input');
+        return { status: 'needs_input' };
+      }
+      if (reviewedResult.status === 'failed') {
+        await this.deps.failRun(run, feedback.conversation, new Error(reviewedResult.error ?? 'Review failed'));
+        return { status: 'failed' };
+      }
+    }
+
     if (result.status === 'needs_input') {
       this.deps.logger.info({ event: 'implementation.needs_input', run_id: run.id, request_id: run.request_id }, 'Implementation needs input');
       try {
@@ -92,15 +120,15 @@ export class ImplementationStartHandler {
 
     this.deps.logger.info({ event: 'implementation.complete', run_id: run.id, request_id: run.request_id, attempt: run.attempt }, 'Implementation complete');
     run.last_impl_result = {
-      summary: result.summary ?? '',
-      testing_instructions: result.testing_instructions ?? '',
+      summary: reviewedResult.summary ?? '',
+      testing_instructions: reviewedResult.testing_instructions ?? '',
     };
     this.deps.persist();
 
     let feedbackPageUrl: string | undefined;
     try {
       // Log legacy warning if structured output is missing
-      if (!result.review_summary || !result.testing_steps) {
+      if (!reviewedResult.review_summary || !reviewedResult.testing_steps) {
         this.deps.logger.warn(
           { event: 'implementation.review_contract_legacy', run_id: run.id },
           'Implementation result missing structured review_summary or testing_steps; using legacy fields',
@@ -112,10 +140,11 @@ export class ImplementationStartHandler {
         title: titleFromArtifactPath(refs.local_path),
         workspace_path: run.workspace_path,
         branch: run.branch,
-        summary: result.summary ?? '',
-        testing_instructions: result.testing_instructions ?? '',
-        review_summary: result.review_summary,
-        testing_steps: result.testing_steps,
+        summary: reviewedResult.summary ?? '',
+        testing_instructions: reviewedResult.testing_instructions ?? '',
+        review_summary: reviewedResult.review_summary,
+        testing_steps: reviewedResult.testing_steps,
+        review_exchanges: run.review_exchanges,
       });
       run.impl_feedback_ref = publishedReview.id;
       this.deps.persist();
