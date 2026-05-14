@@ -8,6 +8,8 @@ export type AgentTaskKind =
   | 'artifact.create'
   | 'artifact.revise'
   | 'implementation.run'
+  | 'implementation.review.initial'
+  | 'implementation.review.final'
   | 'question.answer'
   | 'issue.triage'
   | 'pr.title_generate';
@@ -45,6 +47,63 @@ export interface AgentProfile {
   load_user_settings?: boolean;
   required_skills?: AgentSkillRef[];
   plugins?: AgentPluginConfig[];
+}
+
+export interface AgentProfileSummary {
+  profile: string;
+  provider: string;
+  model?: string;
+}
+
+export type ImplementationReviewFindingSeverity = 'blocker' | 'warning' | 'info';
+export type ImplementationReviewFindingCategory =
+  | 'correctness'
+  | 'test'
+  | 'security'
+  | 'maintainability'
+  | 'docs'
+  | 'pr_readiness';
+
+export interface ImplementationReviewFinding {
+  id: string;
+  severity: ImplementationReviewFindingSeverity;
+  category: ImplementationReviewFindingCategory;
+  finding: string;
+  suggested_action?: string;
+}
+
+export interface ImplementationReviewResult {
+  status: 'no_findings' | 'findings' | 'failed';
+  summary: string;
+  findings: ImplementationReviewFinding[];
+  requires_human_retest?: boolean;
+  error?: string;
+}
+
+export interface ImplementationReviewResponseItem {
+  id: string;
+  disposition: 'fixed' | 'declined' | 'needs_input';
+  response: string;
+}
+
+export type ImplementationReviewExchangeStatus =
+  | 'no_findings'
+  | 'addressed'
+  | 'degraded'
+  | 'needs_input'
+  | 'failed';
+
+export interface ImplementationReviewExchange {
+  id: string;
+  phase: 'initial' | 'final';
+  created_at: string;
+  implementation_profile: AgentProfileSummary;
+  review_profile: AgentProfileSummary;
+  review_status: ImplementationReviewExchangeStatus;
+  review_summary: string;
+  findings: ImplementationReviewFinding[];
+  responses: ImplementationReviewResponseItem[];
+  requires_human_retest: boolean;
 }
 
 export interface AgentRoutingPolicy {
@@ -143,6 +202,8 @@ export interface ImplementationResult {
   };
   testing_steps?: string[];
   resolved_feedback_items?: Array<{ id: string; resolution_comment: string }>;
+  review_responses?: ImplementationReviewResponseItem[];
+  requires_human_retest?: boolean;
   question?: string;
   error?: string;
 }
