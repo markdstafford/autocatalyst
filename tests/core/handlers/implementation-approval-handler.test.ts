@@ -3,6 +3,8 @@ import { ImplementationApprovalHandler } from '../../../src/core/handlers/implem
 import type { ThreadMessage } from '../../../src/types/events.js';
 import type { Run } from '../../../src/types/runs.js';
 import { TEST_CHANNEL, TEST_CONVERSATION, TEST_ORIGIN } from '../../helpers/channel-refs.js';
+import type { ImplementationReviewCoordinator } from '../../../src/core/ai/implementation-review-coordinator.js';
+import type { ImplementationResult } from '../../../src/types/ai.js';
 
 function makeFeedback(overrides: Partial<ThreadMessage> = {}): ThreadMessage {
   return {
@@ -50,6 +52,18 @@ function makeRun(overrides: Partial<Run> = {}): Run {
   };
 }
 
+function makeReviewCoordinator(resultOverrides: Partial<ImplementationResult> = {}): Pick<ImplementationReviewCoordinator, 'runFinalReview'> {
+  const result: ImplementationResult = {
+    status: 'complete',
+    summary: 'Post-final-review.',
+    requires_human_retest: false,
+    testing_steps: ['npm test'],
+    review_summary: { changes: ['A'], confirm: ['B'] },
+    ...resultOverrides,
+  };
+  return { runFinalReview: vi.fn().mockResolvedValue(result) };
+}
+
 function makeHandler(overrides: Partial<ConstructorParameters<typeof ImplementationApprovalHandler>[0]> = {}) {
   const deps = {
     specCommitter: {
@@ -67,6 +81,7 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof Implementat
     implFeedbackPage: {
       setPRLink: vi.fn().mockResolvedValue(undefined),
       updateStatus: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined),
     },
     postMessage: vi.fn().mockResolvedValue(undefined),
     transition: vi.fn((run: Run, stage: Run['stage']) => { run.stage = stage; }),
@@ -74,6 +89,7 @@ function makeHandler(overrides: Partial<ConstructorParameters<typeof Implementat
     persist: vi.fn(),
     logger: {
       error: vi.fn(),
+      info: vi.fn(),
     },
     now: () => new Date('2026-04-25T00:00:00.000Z'),
     branchGuard: { check: vi.fn().mockResolvedValue(undefined) },
@@ -376,5 +392,57 @@ describe('ImplementationApprovalHandler', () => {
       '/ws/request-001/context-human/specs/feature-test.md',
       { status: 'complete', last_updated: '2026-04-25' },
     );
+  });
+});
+
+describe('ImplementationApprovalHandler with reviewCoordinator', () => {
+  it('runs final review before PR creation', async () => {
+    const coord = makeReviewCoordinator();
+    const { handler, deps } = makeHandler({ reviewCoordinator: coord });
+    await handler.handle(makeRun(), makeFeedback());
+    const reviewCallOrder = (coord.runFinalReview as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    const prCallOrder = (deps.prManager.createPR as ReturnType<typeof vi.fn>).mock.invocationCallOrder[0];
+    expect(reviewCallOrder).toBeLessThan(prCallOrder);
+  });
+
+  it('creates PR when final review returns complete with requires_human_retest false', async () => {
+    const { handler, deps } = makeHandler({ reviewCoordinator: makeReviewCoordinator({ requires_human_retest: false }) });
+    const result = await handler.handle(makeRun(), makeFeedback());
+    expect(result).toEqual({ status: 'pr_open' });
+    expect(deps.prManager.createPR).toHaveBeenCalled();
+  });
+
+  it('returns reviewing_implementation and does not create PR when requires_human_retest is true', async () => {
+    const coord = makeReviewCoordinator({ requires_human_retest: true });
+    const { handler, deps } = makeHandler({ reviewCoordinator: coord });
+    const result = await handler.handle(makeRun(), makeFeedback());
+    expect(result).toEqual({ status: 'reviewing_implementation' });
+    expect(deps.prManager.createPR).not.toHaveBeenCalled();
+    expect(deps.logger.error).not.toHaveBeenCalledWith(
+      expect.objectContaining({ event: 'implementation.review.retest_required' }),
+      expect.any(String),
+    );
+  });
+
+  it('transitions to awaiting_impl_input when final review returns needs_input', async () => {
+    const coord = { runFinalReview: vi.fn().mockResolvedValue({ status: 'needs_input', question: 'Which?' }) };
+    const { handler, deps } = makeHandler({ reviewCoordinator: coord });
+    const result = await handler.handle(makeRun(), makeFeedback());
+    expect(result).toEqual({ status: 'needs_input' });
+    expect(deps.prManager.createPR).not.toHaveBeenCalled();
+  });
+
+  it('fails run when final review returns failed', async () => {
+    const coord = { runFinalReview: vi.fn().mockResolvedValue({ status: 'failed', error: 'review crashed' }) };
+    const { handler, deps } = makeHandler({ reviewCoordinator: coord });
+    const result = await handler.handle(makeRun(), makeFeedback());
+    expect(result).toEqual({ status: 'failed' });
+    expect(deps.failRun).toHaveBeenCalled();
+  });
+
+  it('proceeds to PR creation without coordinator when not configured', async () => {
+    const { handler, deps } = makeHandler({ reviewCoordinator: undefined });
+    const result = await handler.handle(makeRun(), makeFeedback());
+    expect(result).toEqual({ status: 'pr_open' });
   });
 });
