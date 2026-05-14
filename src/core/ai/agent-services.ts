@@ -16,6 +16,8 @@ import type {
   ArtifactRevisionResult,
   ImplementationAgent,
   ImplementationResult,
+  ImplementationReviewFinding,
+  ImplementationReviewResult,
   ImplementationStatus,
   IssueTriageAgent,
   IssueTriageItem,
@@ -536,6 +538,18 @@ function parseImplementationResult(content: string, path: string): Implementatio
     });
   }
 
+  // Parse optional review_responses
+  let review_responses: ImplementationResult['review_responses'];
+  const rawReviewResponses = obj['review_responses'];
+  if (Array.isArray(rawReviewResponses)) {
+    review_responses = (rawReviewResponses as unknown[]).flatMap((item) => {
+      if (typeof item !== 'object' || item === null) return [];
+      const entry = item as Record<string, unknown>;
+      if (typeof entry['id'] !== 'string' || typeof entry['disposition'] !== 'string' || typeof entry['response'] !== 'string') return [];
+      return [{ id: entry['id'], disposition: entry['disposition'] as 'fixed' | 'declined' | 'needs_input', response: entry['response'] }];
+    });
+  }
+
   return {
     status,
     summary: typeof obj['summary'] === 'string' ? obj['summary'] : undefined,
@@ -543,6 +557,8 @@ function parseImplementationResult(content: string, path: string): Implementatio
     review_summary,
     testing_steps,
     resolved_feedback_items,
+    review_responses,
+    requires_human_retest: obj['requires_human_retest'] === true,
     question: typeof obj['question'] === 'string' ? obj['question'] : undefined,
     error: typeof obj['error'] === 'string' ? obj['error'] : undefined,
   };
@@ -939,4 +955,251 @@ export function buildIssueTriagePrompt(request: Request, resultPath: string): st
     ``,
     CHECKPOINT_INSTRUCTIONS,
   ].join('\n');
+}
+
+export function buildInitialReviewPrompt(
+  artifact_path: string,
+  working_directory: string,
+  impl_result: ImplementationResult,
+  diff_context: string,
+  changed_files: string[],
+): string {
+  const reviewResultPath = join(working_directory, '.autocatalyst', 'impl-review-result.json');
+  const summaryLines = [
+    impl_result.summary ? `Summary: ${impl_result.summary}` : '',
+    impl_result.review_summary?.changes?.length
+      ? `Changes:\n${impl_result.review_summary.changes.map(c => `- ${c}`).join('\n')}`
+      : '',
+    impl_result.review_summary?.confirm?.length
+      ? `Confirm:\n${impl_result.review_summary.confirm.map(c => `- ${c}`).join('\n')}`
+      : '',
+    impl_result.testing_instructions ? `Testing instructions: ${impl_result.testing_instructions}` : '',
+  ].filter(Boolean);
+
+  return [
+    `You are an adversarial code reviewer. Your job is to inspect the implementation and find issues.`,
+    `Do NOT edit any files. Read only.`,
+    ``,
+    `Approved artifact (spec): ${artifact_path}`,
+    ``,
+    `Implementation description from implementer:`,
+    `<<<`,
+    summaryLines.join('\n\n'),
+    `>>>`,
+    ``,
+    `Changed files:`,
+    ...changed_files.map(f => `- ${f}`),
+    ``,
+    `Git diff:`,
+    `<<<`,
+    diff_context || '(no diff available)',
+    `>>>`,
+    ``,
+    `Review categories for initial review: correctness, test, security, maintainability, docs.`,
+    `Focus on: correctness issues, missing test coverage, security problems, unmaintainable code, missing docs.`,
+    ``,
+    `Write your result to: ${reviewResultPath}`,
+    `Content must be:`,
+    `{`,
+    `  "status": "no_findings" | "findings" | "failed",`,
+    `  "summary": "1-2 sentence summary of review outcome",`,
+    `  "findings": [`,
+    `    {`,
+    `      "id": "INIT-1",`,
+    `      "severity": "blocker" | "warning" | "info",`,
+    `      "category": "correctness" | "test" | "security" | "maintainability" | "docs",`,
+    `      "finding": "concise description",`,
+    `      "suggested_action": "optional action"`,
+    `    }`,
+    `  ],`,
+    `  "requires_human_retest": false,`,
+    `  "error": "only when status is failed"`,
+    `}`,
+    ``,
+    `Rules:`,
+    `- Do NOT include secrets, API keys, env values, or raw credential values in findings.`,
+    `- Do NOT include your reasoning chain or full prompt in findings.`,
+    `- Do NOT edit any files in the workspace.`,
+    `- Use sequential IDs: INIT-1, INIT-2, etc.`,
+    `- If no issues found, use status: "no_findings" with empty findings array.`,
+    `- Do not signal completion until the result file has been written.`,
+    ``,
+    CHECKPOINT_INSTRUCTIONS,
+  ].join('\n');
+}
+
+export function buildFinalReviewPrompt(
+  artifact_path: string,
+  working_directory: string,
+  impl_result: ImplementationResult,
+  diff_context: string,
+  changed_files: string[],
+): string {
+  const reviewResultPath = join(working_directory, '.autocatalyst', 'impl-review-result.json');
+  const summaryLines = [
+    impl_result.summary ? `Summary: ${impl_result.summary}` : '',
+    impl_result.review_summary?.changes?.length
+      ? `Changes:\n${impl_result.review_summary.changes.map(c => `- ${c}`).join('\n')}`
+      : '',
+  ].filter(Boolean);
+
+  return [
+    `You are an adversarial code reviewer performing a final pre-PR security and readiness check.`,
+    `Do NOT edit any files. Read only.`,
+    ``,
+    `Approved artifact (spec): ${artifact_path}`,
+    ``,
+    `Implementation description from implementer:`,
+    `<<<`,
+    summaryLines.join('\n\n'),
+    `>>>`,
+    ``,
+    `Changed files:`,
+    ...changed_files.map(f => `- ${f}`),
+    ``,
+    `Git diff:`,
+    `<<<`,
+    diff_context || '(no diff available)',
+    `>>>`,
+    ``,
+    `FOCUS for final review: security and pr_readiness.`,
+    `Only include correctness, maintainability, test, or docs findings if the issue is newly discovered`,
+    `and serious enough to block or delay the PR.`,
+    ``,
+    `Write your result to: ${reviewResultPath}`,
+    `Content must be:`,
+    `{`,
+    `  "status": "no_findings" | "findings" | "failed",`,
+    `  "summary": "1-2 sentence summary",`,
+    `  "findings": [`,
+    `    {`,
+    `      "id": "FINAL-1",`,
+    `      "severity": "blocker" | "warning" | "info",`,
+    `      "category": "security" | "pr_readiness" | "correctness" | "test" | "maintainability" | "docs",`,
+    `      "finding": "concise description",`,
+    `      "suggested_action": "optional action"`,
+    `    }`,
+    `  ],`,
+    `  "requires_human_retest": false,`,
+    `  "error": "only when status is failed"`,
+    `}`,
+    ``,
+    `Rules:`,
+    `- Do NOT include secrets, API keys, env values, or raw credential values.`,
+    `- Do NOT edit any files.`,
+    `- Use sequential IDs: FINAL-1, FINAL-2, etc.`,
+    `- Do not signal completion until the result file has been written.`,
+    ``,
+    CHECKPOINT_INSTRUCTIONS,
+  ].join('\n');
+}
+
+export function buildImplementerResponsePrompt(
+  artifact_path: string,
+  working_directory: string,
+  impl_result: ImplementationResult,
+  findings: ImplementationReviewFinding[],
+): string {
+  const resultFilePath = join(working_directory, '.autocatalyst', 'impl-result.json');
+
+  const findingBlocks = findings.map(f => [
+    `[REVIEW_ID: ${f.id}]`,
+    `Severity: ${f.severity}`,
+    `Category: ${f.category}`,
+    `Finding: ${f.finding}`,
+    ...(f.suggested_action ? [`Suggested action: ${f.suggested_action}`] : []),
+  ].join('\n'));
+
+  return [
+    `Review findings require your response.`,
+    ``,
+    BRANCH_OWNERSHIP_POLICY,
+    ``,
+    `Read the approved artifact at: ${artifact_path}`,
+    ``,
+    `Previous implementation summary: ${impl_result.summary ?? '(none)'}`,
+    ``,
+    `Review findings:`,
+    ``,
+    findingBlocks.join('\n\n'),
+    ``,
+    `For each [REVIEW_ID: ...] finding, either fix it or decline it with a concrete reason.`,
+    ``,
+    `Step 1 - Respond to each finding.`,
+    `For blockers: fix the issue in code/tests/docs, or escalate to needs_input with a specific question.`,
+    `For warnings/info: fix, or decline with a concrete reason (not "no action needed").`,
+    ``,
+    `Step 2 - Commit any changes.`,
+    ``,
+    `Step 3 - Write the result to: ${resultFilePath}`,
+    `Content must be:`,
+    `{`,
+    `  "status": "complete" | "needs_input" | "failed",`,
+    `  "summary": "updated summary",`,
+    `  "review_summary": { "changes": [...], "confirm": [...] },`,
+    `  "testing_steps": [...],`,
+    `  "resolved_feedback_items": [],`,
+    `  "review_responses": [`,
+    `    {`,
+    `      "id": "<exact REVIEW_ID value>",`,
+    `      "disposition": "fixed" | "declined" | "needs_input",`,
+    `      "response": "what changed or concrete reason for decline"`,
+    `    }`,
+    `  ],`,
+    `  "requires_human_retest": false`,
+    `}`,
+    ``,
+    `Rules:`,
+    `- Include one review_responses entry per [REVIEW_ID:] finding.`,
+    `- "declined" responses must include a concrete reason, not just "no action needed".`,
+    `- "fixed" responses should mention changed files or behavior.`,
+    `- Use exact ID strings — do not modify or guess IDs.`,
+    `- requires_human_retest: set true only if you changed user-visible behavior or testing steps.`,
+    `- Do not signal completion until the result file has been written.`,
+    ``,
+    CHECKPOINT_INSTRUCTIONS,
+  ].join('\n');
+}
+
+export function parseImplementationReviewResult(content: string, path: string): ImplementationReviewResult {
+  let obj: Record<string, unknown>;
+  try {
+    const data = JSON.parse(content);
+    if (typeof data !== 'object' || data === null) {
+      return { status: 'failed', summary: '', findings: [], error: `Review result at "${path}" is not a JSON object` };
+    }
+    obj = data as Record<string, unknown>;
+  } catch (err) {
+    return { status: 'failed', summary: '', findings: [], error: `Review result at "${path}" is not valid JSON: ${String(err)}` };
+  }
+
+  const rawStatus = obj['status'];
+  if (rawStatus !== 'no_findings' && rawStatus !== 'findings' && rawStatus !== 'failed') {
+    return { status: 'failed', summary: '', findings: [], error: `Review result at "${path}" has invalid status: "${String(rawStatus)}"` };
+  }
+
+  const findings: ImplementationReviewFinding[] = [];
+  if (Array.isArray(obj['findings'])) {
+    for (const raw of obj['findings'] as unknown[]) {
+      if (typeof raw !== 'object' || raw === null) continue;
+      const f = raw as Record<string, unknown>;
+      if (typeof f['id'] === 'string' && typeof f['severity'] === 'string' && typeof f['category'] === 'string' && typeof f['finding'] === 'string') {
+        findings.push({
+          id: f['id'],
+          severity: f['severity'] as ImplementationReviewFinding['severity'],
+          category: f['category'] as ImplementationReviewFinding['category'],
+          finding: f['finding'],
+          ...(typeof f['suggested_action'] === 'string' ? { suggested_action: f['suggested_action'] } : {}),
+        });
+      }
+    }
+  }
+
+  return {
+    status: rawStatus,
+    summary: typeof obj['summary'] === 'string' ? obj['summary'] : '',
+    findings,
+    requires_human_retest: obj['requires_human_retest'] === true,
+    ...(typeof obj['error'] === 'string' ? { error: obj['error'] } : {}),
+  };
 }
