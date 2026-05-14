@@ -256,4 +256,59 @@ describe('ClaudeAgentSdkAgentRunner', () => {
     expect(outcomeAdd).toBeDefined();
     expect(outcomeAdd!.attrs).toMatchObject({ model: 'unknown' });
   });
+
+  test('injects CLAUDE_CODE_MAX_OUTPUT_TOKENS=128000 by default when not set in process.env', async () => {
+    const queryFn = vi.fn().mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+    });
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn });
+
+    const originalEnv = process.env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'];
+    delete process.env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'];
+
+    try {
+      await collect(runner.run({
+        route: { task: 'implementation.run' },
+        working_directory: '/tmp/workspace',
+        prompt: 'implement',
+        profile: { id: 'impl', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-5', effort: 'high' },
+      }));
+    } finally {
+      if (originalEnv !== undefined) {
+        process.env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] = originalEnv;
+      }
+    }
+
+    const call = queryFn.mock.calls[0][0];
+    expect(call.options.env).toBeDefined();
+    expect(call.options.env['CLAUDE_CODE_MAX_OUTPUT_TOKENS']).toBe('128000');
+  });
+
+  test('respects caller-provided CLAUDE_CODE_MAX_OUTPUT_TOKENS in process.env', async () => {
+    const queryFn = vi.fn().mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+    });
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn });
+
+    const originalEnv = process.env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'];
+    process.env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] = '64000';
+
+    try {
+      await collect(runner.run({
+        route: { task: 'implementation.run' },
+        working_directory: '/tmp/workspace',
+        prompt: 'implement',
+        profile: { id: 'impl', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-5', effort: 'high' },
+      }));
+    } finally {
+      if (originalEnv !== undefined) {
+        process.env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] = originalEnv;
+      } else {
+        delete process.env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'];
+      }
+    }
+
+    const call = queryFn.mock.calls[0][0];
+    expect(call.options.env['CLAUDE_CODE_MAX_OUTPUT_TOKENS']).toBe('64000');
+  });
 });
