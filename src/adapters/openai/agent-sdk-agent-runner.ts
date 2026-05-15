@@ -1,4 +1,4 @@
-import { run as _run, OpenAIResponsesModel, type Agent } from '@openai/agents';
+import { run as _run, OpenAIResponsesModel, setTracingDisabled, type Agent } from '@openai/agents';
 import { SandboxAgent, type Capability, filesystem, shell, compaction } from '@openai/agents/sandbox';
 import { UnixLocalSandboxClient, type UnixLocalSandboxSessionState } from '@openai/agents/sandbox/local';
 import { Manifest } from '@openai/agents/sandbox';
@@ -63,6 +63,7 @@ export class OpenAIAgentSdkAgentRunner implements AgentRunner {
     private readonly defaultModel: string | undefined,
     options?: OpenAIAgentSdkAgentRunnerOptions,
   ) {
+    setTracingDisabled(true);
     this.runFn = options?.runFn ?? defaultRunFn;
     this.materializeSkillsFn = options?.materializeSkills ?? materializeOpenAIRuntimeSkills;
     this.logger = createLogger('openai-agent-sdk', {

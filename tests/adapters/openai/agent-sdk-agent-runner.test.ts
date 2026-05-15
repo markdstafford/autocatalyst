@@ -1,6 +1,6 @@
 import { PassThrough } from 'node:stream';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
-import { run as sdkRun } from '@openai/agents';
+import { run as sdkRun, setTracingDisabled } from '@openai/agents';
 import { skillRefsForRoute, OpenAIAgentSdkAgentRunner } from '../../../src/adapters/openai/agent-sdk-agent-runner.js';
 import type { AgentRunEvent } from '../../../src/types/ai.js';
 import type { Counter, Histogram, Meter } from '@opentelemetry/api';
@@ -12,6 +12,7 @@ vi.mock('@openai/agents', async importOriginal => {
   return {
     ...actual,
     run: vi.fn(),
+    setTracingDisabled: vi.fn(),
   };
 });
 
@@ -148,6 +149,7 @@ function makeRunFnYieldingText(text: string) {
 describe('OpenAIAgentSdkAgentRunner', () => {
   beforeEach(() => {
     vi.mocked(sdkRun).mockReset();
+    vi.mocked(setTracingDisabled).mockReset();
   });
 
   test('run() calls materializeSkills with skill refs matching the route', async () => {
@@ -543,5 +545,14 @@ describe('OpenAIAgentSdkAgentRunner', () => {
 
     expect(runFn).toHaveBeenCalled();
     expect(capturedAgent).toBeDefined();
+  });
+
+  test('constructor calls setTracingDisabled(true) to suppress SDK tracing log noise', () => {
+    new OpenAIAgentSdkAgentRunner('sk-test', undefined, 'gpt-4o', {
+      logDestination: nullDest,
+    });
+
+    expect(vi.mocked(setTracingDisabled)).toHaveBeenCalledOnce();
+    expect(vi.mocked(setTracingDisabled)).toHaveBeenCalledWith(true);
   });
 });
