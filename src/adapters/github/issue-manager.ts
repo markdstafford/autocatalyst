@@ -5,7 +5,24 @@ import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 import type { IssueManager, TrackedIssue } from '../../types/issue-tracker.js';
 
-const defaultExecFile = promisify(_execFile);
+const _promisifiedExecFile = promisify(_execFile);
+
+// Augment PATH with common macOS Homebrew paths to ensure `gh` is found when
+// the process is started without a full interactive shell environment.
+const _extraPaths = ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin'];
+async function defaultExecFile(
+  cmd: string,
+  args: string[],
+  opts?: { cwd?: string },
+): Promise<{ stdout: string; stderr: string }> {
+  const currentPath = process.env.PATH ?? '';
+  const currentParts = new Set(currentPath.split(':'));
+  const newParts = _extraPaths.filter(p => !currentParts.has(p));
+  const augmentedPath = newParts.length > 0
+    ? [...newParts, currentPath].filter(Boolean).join(':')
+    : currentPath;
+  return _promisifiedExecFile(cmd, args, { ...opts, env: { ...process.env, PATH: augmentedPath } });
+}
 
 type ExecFn = (cmd: string, args: string[], opts?: { cwd?: string }) => Promise<{ stdout: string; stderr: string }>;
 
