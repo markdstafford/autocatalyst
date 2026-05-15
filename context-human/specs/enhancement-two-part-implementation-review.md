@@ -2,7 +2,7 @@
 created: 2026-05-13
 last_updated: 2026-05-15
 status: complete
-issue: null
+issue: 147
 specced_by: autocatalyst
 implemented_by: markdstafford
 superseded_by: null
