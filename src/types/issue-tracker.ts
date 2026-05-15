@@ -1,6 +1,16 @@
 import type { RequestIntent } from './runs.js';
 
+export interface TrackedIssue {
+  number: number;
+  title: string;
+  body: string;
+  labels: string[];
+  state: 'open' | 'closed' | string;
+  url?: string;
+}
+
 export interface IssueManager {
+  getIssue(workspace_path: string, issue_number: number): Promise<TrackedIssue>;
   writeIssue(workspace_path: string, issue_number: number, body: string): Promise<void>;
   create(workspace_path: string, title: string, body: string, labels?: string[]): Promise<{ number: number }>;
 }
