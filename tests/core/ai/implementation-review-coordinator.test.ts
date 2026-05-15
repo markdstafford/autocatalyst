@@ -1,0 +1,288 @@
+import { describe, it, expect, vi } from 'vitest';
+import { ImplementationReviewCoordinator } from '../../../src/core/ai/implementation-review-coordinator.js';
+import type { AgentRunner, AgentRoutingPolicy, ImplementationAgent, ImplementationResult, ImplementationReviewResult, AgentProfile } from '../../../src/types/ai.js';
+import type { Run } from '../../../src/types/runs.js';
+
+const WORKING_DIR = '/ws/test';
+
+function makeRun(overrides: Partial<Run> = {}): Run {
+  return {
+    id: 'run-001',
+    request_id: 'req-001',
+    intent: 'idea',
+    stage: 'implementing',
+    workspace_path: WORKING_DIR,
+    branch: 'spec/req-001',
+    impl_feedback_ref: undefined,
+    issue: undefined,
+    attempt: 1,
+    pr_url: undefined,
+    last_impl_result: undefined,
+    review_exchanges: [],
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+function makeCompleteResult(overrides: Partial<ImplementationResult> = {}): ImplementationResult {
+  return { status: 'complete', summary: 'Done.', testing_steps: ['npm test'], review_summary: { changes: ['A'], confirm: ['B'] }, ...overrides };
+}
+
+function makeAgentProfile(name = 'review-agent'): AgentProfile {
+  return { id: name, provider: 'claude_agent_sdk', model: 'claude-sonnet-4-6' };
+}
+
+function makeRoutingPolicy(initialProfile: AgentProfile | null = makeAgentProfile(), finalProfile: AgentProfile | null = null): AgentRoutingPolicy {
+  return {
+    resolve: vi.fn().mockImplementation((route: { task: string }) => {
+      if (route.task === 'implementation.run') return makeAgentProfile('impl-agent');
+      throw new Error(`No route for ${route.task}`);
+    }),
+    resolveOptional: vi.fn().mockImplementation((route: { task: string }) => {
+      if (route.task === 'implementation.review.initial') return initialProfile;
+      if (route.task === 'implementation.review.final') return finalProfile;
+      if (route.task === 'implementation.run') return makeAgentProfile('impl-agent');
+      return null;
+    }),
+  };
+}
+
+function makeRunner(): AgentRunner {
+  return {
+    run: vi.fn().mockReturnValue((async function* () {})()),
+  };
+}
+
+function makeImplementer(result: ImplementationResult = makeCompleteResult()): Pick<ImplementationAgent, 'implement'> {
+  return { implement: vi.fn().mockResolvedValue(result) };
+}
+
+function makeDeps(reviewResult: ImplementationReviewResult = { status: 'no_findings', summary: 'Looks good.', findings: [] }, overrides: Record<string, unknown> = {}) {
+  const reviewJson = JSON.stringify(reviewResult);
+  return {
+    runner: makeRunner(),
+    implementer: makeImplementer(),
+    routingPolicy: makeRoutingPolicy(),
+    policy: { max_initial_rounds: 1, max_final_rounds: 1, on_review_failure: 'warn' as const, retest_on_behavior_change: true },
+    branchGuard: { check: vi.fn().mockResolvedValue(undefined) },
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+    readFile: vi.fn().mockResolvedValue(reviewJson),
+    ...overrides,
+  };
+}
+
+describe('ImplementationReviewCoordinator', () => {
+  describe('runInitialReview — no findings', () => {
+    it('appends a no_findings exchange to run.review_exchanges', async () => {
+      const deps = makeDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+      expect(run.review_exchanges).toHaveLength(1);
+      expect(run.review_exchanges![0].review_status).toBe('no_findings');
+      expect(run.review_exchanges![0].phase).toBe('initial');
+    });
+
+    it('returns the original implementation result unchanged', async () => {
+      const deps = makeDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const original = makeCompleteResult();
+      const result = await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: original, working_directory: WORKING_DIR });
+      expect(result).toBe(original);
+    });
+
+    it('does not call the implementation model a second time', async () => {
+      const deps = makeDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+      expect(deps.implementer.implement).not.toHaveBeenCalled();
+    });
+
+    it('does not invoke branch guard (no implementer commits)', async () => {
+      const deps = makeDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+      expect(deps.branchGuard.check).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('runInitialReview — missing route', () => {
+    it('logs implementation.review.skipped at warn level', async () => {
+      const deps = makeDeps({ status: 'no_findings', summary: 'ok', findings: [] } as ImplementationReviewResult, { routingPolicy: makeRoutingPolicy(null, null) });
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+      expect(deps.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'implementation.review.skipped' }),
+        expect.any(String),
+      );
+    });
+
+    it('returns the original result without calling any AI model', async () => {
+      const deps = makeDeps({ status: 'no_findings', summary: 'ok', findings: [] } as ImplementationReviewResult, { routingPolicy: makeRoutingPolicy(null, null) });
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const original = makeCompleteResult();
+      const result = await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: original, working_directory: WORKING_DIR });
+      expect(result).toBe(original);
+      expect(deps.runner.run).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('runInitialReview — findings path (all fixed)', () => {
+    it('calls the implementation model with structured finding context', async () => {
+      const findingsResult: ImplementationReviewResult = {
+        status: 'findings',
+        summary: 'Found 1 issue.',
+        findings: [{ id: 'INIT-1', severity: 'blocker', category: 'test', finding: 'Missing test.' }],
+      };
+      const implResult = makeCompleteResult({ review_responses: [{ id: 'INIT-1', disposition: 'fixed', response: 'Added test.' }] });
+      const deps = makeDeps(findingsResult, { implementer: makeImplementer(implResult) });
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+      expect(deps.implementer.implement).toHaveBeenCalledWith(
+        '/ws/spec.md',
+        WORKING_DIR,
+        expect.stringContaining('[REVIEW_ID: INIT-1]'),
+        expect.any(Function),
+      );
+    });
+
+    it('appends an addressed exchange with findings and responses', async () => {
+      const findingsResult: ImplementationReviewResult = {
+        status: 'findings',
+        summary: 'Found 1 issue.',
+        findings: [{ id: 'INIT-1', severity: 'blocker', category: 'test', finding: 'Missing test.' }],
+      };
+      const implResult = makeCompleteResult({ review_responses: [{ id: 'INIT-1', disposition: 'fixed', response: 'Added test.' }] });
+      const deps = makeDeps(findingsResult, { implementer: makeImplementer(implResult) });
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+      expect(run.review_exchanges).toHaveLength(1);
+      expect(run.review_exchanges![0].review_status).toBe('addressed');
+      expect(run.review_exchanges![0].responses).toHaveLength(1);
+    });
+
+    it('returns the implementer response result as canonical implementation result', async () => {
+      const findingsResult: ImplementationReviewResult = {
+        status: 'findings',
+        summary: 'Found 1 issue.',
+        findings: [{ id: 'INIT-1', severity: 'blocker', category: 'test', finding: 'Missing test.' }],
+      };
+      const implResult = makeCompleteResult({ summary: 'Updated after review.', review_responses: [{ id: 'INIT-1', disposition: 'fixed', response: 'Added test.' }] });
+      const deps = makeDeps(findingsResult, { implementer: makeImplementer(implResult) });
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const result = await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+      expect(result.summary).toBe('Updated after review.');
+    });
+
+    it('invokes branch guard after implementer response', async () => {
+      const findingsResult: ImplementationReviewResult = {
+        status: 'findings',
+        summary: 'Found 1 issue.',
+        findings: [{ id: 'INIT-1', severity: 'blocker', category: 'test', finding: 'Missing test.' }],
+      };
+      const implResult = makeCompleteResult({ review_responses: [{ id: 'INIT-1', disposition: 'fixed', response: 'Fixed.' }] });
+      const deps = makeDeps(findingsResult, { implementer: makeImplementer(implResult) });
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+      expect(deps.branchGuard.check).toHaveBeenCalledWith(WORKING_DIR, run.branch);
+    });
+  });
+
+  describe('runInitialReview — review model failure', () => {
+    it('warn policy: appends degraded exchange, logs failure, returns original result', async () => {
+      const failedReview: ImplementationReviewResult = { status: 'failed', summary: '', findings: [], error: 'model crashed' };
+      const deps = makeDeps(failedReview);
+      deps.policy = { ...deps.policy, on_review_failure: 'warn' };
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const original = makeCompleteResult();
+      const result = await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: original, working_directory: WORKING_DIR });
+      expect(result).toBe(original);
+      expect(run.review_exchanges![0].review_status).toBe('degraded');
+      expect(deps.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'implementation.review.failed' }),
+        expect.any(String),
+      );
+    });
+
+    it('block policy: returns failed result, does not call implementer', async () => {
+      const failedReview: ImplementationReviewResult = { status: 'failed', summary: '', findings: [], error: 'model crashed' };
+      const deps = makeDeps(failedReview);
+      deps.policy = { ...deps.policy, on_review_failure: 'block' };
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const result = await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+      expect(result.status).toBe('failed');
+      expect(deps.implementer.implement).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('runInitialReview — implementer response failure', () => {
+    it('propagates needs_input status from implementer response', async () => {
+      const findingsResult: ImplementationReviewResult = {
+        status: 'findings',
+        summary: 'Found issue.',
+        findings: [{ id: 'INIT-1', severity: 'blocker', category: 'test', finding: 'Missing test.' }],
+      };
+      const deps = makeDeps(findingsResult, { implementer: makeImplementer({ status: 'needs_input', question: 'Which approach?' }) });
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const result = await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+      expect(result.status).toBe('needs_input');
+    });
+  });
+
+  describe('runInitialReview — missing response IDs', () => {
+    it('logs implementation.review.response_invalid for each missing finding ID', async () => {
+      const findingsResult: ImplementationReviewResult = {
+        status: 'findings',
+        summary: 'Found issue.',
+        findings: [{ id: 'INIT-1', severity: 'blocker', category: 'test', finding: 'Missing test.' }],
+      };
+      // Implementer returns review_responses with wrong ID
+      const deps = makeDeps(findingsResult, { implementer: makeImplementer(makeCompleteResult({ review_responses: [{ id: 'WRONG-ID', disposition: 'fixed', response: 'Fixed.' }] })) });
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+      expect(deps.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ event: 'implementation.review.response_invalid' }),
+        expect.any(String),
+      );
+    });
+
+    it('run continues without stopping when responses are incomplete', async () => {
+      const findingsResult: ImplementationReviewResult = {
+        status: 'findings',
+        summary: 'Found issue.',
+        findings: [{ id: 'INIT-1', severity: 'blocker', category: 'test', finding: 'Missing test.' }],
+      };
+      const deps = makeDeps(findingsResult, { implementer: makeImplementer(makeCompleteResult({ review_responses: [] })) });
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      const result = await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+      expect(result.status).toBe('complete');
+    });
+  });
+
+  describe('runFinalReview — final route fallback', () => {
+    it('uses implementation.review.initial when final route is absent', async () => {
+      const deps = makeDeps({ status: 'no_findings', summary: 'ok', findings: [] } as ImplementationReviewResult, { routingPolicy: makeRoutingPolicy(makeAgentProfile('review-agent'), null) });
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runFinalReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+      expect(run.review_exchanges![0].phase).toBe('final');
+      const calls = (deps.routingPolicy.resolveOptional as ReturnType<typeof vi.fn>).mock.calls;
+      expect(calls.some((c: unknown[]) => (c[0] as { task: string }).task === 'implementation.review.final')).toBe(true);
+    });
+  });
+});

@@ -76,12 +76,22 @@ ai:
         effort: high
         thinking: adaptive
 
+    - name: review-agent
+      endpoint: anthropic-direct
+      model: claude-sonnet-4-6
+      runner: claude_agent_sdk
+      anthropic:
+        effort: high
+        thinking: adaptive
+
   routing:
     intent.classify: classify-haiku
     pr.title_generate: classify-haiku
     artifact.create: artifact-agent
     artifact.revise: artifact-agent
     implementation.run: impl-agent
+    implementation.review.initial: review-agent
+    implementation.review.final: review-agent
     question.answer: question-agent
     issue.triage: triage-agent
 `;

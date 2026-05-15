@@ -11,6 +11,7 @@ import {
   loadConfigFromPath,
   loadConfig,
   resolveAiConfig,
+  getImplementationReviewPolicy,
 } from '../../src/core/config.js';
 import type { WorkflowConfig } from '../../src/types/config.js';
 
@@ -263,5 +264,88 @@ describe('loadConfigFromPath', () => {
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
+  });
+});
+
+// ─── validateConfig: implementation_review ───────────────────────────────────
+
+describe('validateConfig: implementation_review', () => {
+  it('passes when implementation_review is absent', () => {
+    expect(() => validateConfig({} as WorkflowConfig)).not.toThrow();
+  });
+
+  it('passes for a valid implementation_review block', () => {
+    expect(() =>
+      validateConfig({ implementation_review: { on_review_failure: 'block', max_initial_rounds: 2, max_final_rounds: 3 } } as unknown as WorkflowConfig),
+    ).not.toThrow();
+  });
+
+  it('throws when implementation_review is not an object', () => {
+    expect(() =>
+      validateConfig({ implementation_review: 'bad' } as unknown as WorkflowConfig),
+    ).toThrow('implementation_review must be an object');
+  });
+
+  it('throws when on_review_failure is an invalid value', () => {
+    expect(() =>
+      validateConfig({ implementation_review: { on_review_failure: 'ignore' } } as unknown as WorkflowConfig),
+    ).toThrow('on_review_failure must be "warn" or "block"');
+  });
+
+  it('throws when max_initial_rounds is zero', () => {
+    expect(() =>
+      validateConfig({ implementation_review: { max_initial_rounds: 0 } } as unknown as WorkflowConfig),
+    ).toThrow('max_initial_rounds must be a positive integer');
+  });
+
+  it('throws when max_initial_rounds is a float', () => {
+    expect(() =>
+      validateConfig({ implementation_review: { max_initial_rounds: 1.5 } } as unknown as WorkflowConfig),
+    ).toThrow('max_initial_rounds must be a positive integer');
+  });
+
+  it('throws when max_final_rounds is negative', () => {
+    expect(() =>
+      validateConfig({ implementation_review: { max_final_rounds: -1 } } as unknown as WorkflowConfig),
+    ).toThrow('max_final_rounds must be a positive integer');
+  });
+});
+
+// ─── getImplementationReviewPolicy ───────────────────────────────────────────
+
+describe('getImplementationReviewPolicy', () => {
+  it('returns defaults when implementation_review is absent', () => {
+    const policy = getImplementationReviewPolicy({} as WorkflowConfig);
+    expect(policy).toEqual({
+      max_initial_rounds: 1,
+      max_final_rounds: 1,
+      on_review_failure: 'warn',
+      retest_on_behavior_change: true,
+    });
+  });
+
+  it('uses provided on_review_failure: block', () => {
+    const policy = getImplementationReviewPolicy({ implementation_review: { on_review_failure: 'block' } } as unknown as WorkflowConfig);
+    expect(policy.on_review_failure).toBe('block');
+  });
+
+  it('uses provided max_initial_rounds', () => {
+    const policy = getImplementationReviewPolicy({ implementation_review: { max_initial_rounds: 3 } } as unknown as WorkflowConfig);
+    expect(policy.max_initial_rounds).toBe(3);
+  });
+
+  it('uses provided max_final_rounds', () => {
+    const policy = getImplementationReviewPolicy({ implementation_review: { max_final_rounds: 2 } } as unknown as WorkflowConfig);
+    expect(policy.max_final_rounds).toBe(2);
+  });
+
+  it('returns retest_on_behavior_change: false when explicitly set to false', () => {
+    const policy = getImplementationReviewPolicy({ implementation_review: { retest_on_behavior_change: false } } as unknown as WorkflowConfig);
+    expect(policy.retest_on_behavior_change).toBe(false);
+  });
+
+  it('defaults on_review_failure to warn when not set', () => {
+    const policy = getImplementationReviewPolicy({ implementation_review: { max_initial_rounds: 2 } } as unknown as WorkflowConfig);
+    expect(policy.on_review_failure).toBe('warn');
   });
 });

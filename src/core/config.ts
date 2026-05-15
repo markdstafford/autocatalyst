@@ -116,6 +116,27 @@ export function validateConfig(config: WorkflowConfig): void {
       }
     }
   }
+
+  const rawReview = (config as Record<string, unknown>)['implementation_review'];
+  if (rawReview !== undefined && rawReview !== null) {
+    if (typeof rawReview !== 'object' || Array.isArray(rawReview)) {
+      throw new Error('implementation_review must be an object');
+    }
+    const rr = rawReview as Record<string, unknown>;
+    if (rr['on_review_failure'] !== undefined && rr['on_review_failure'] !== 'warn' && rr['on_review_failure'] !== 'block') {
+      throw new Error(`implementation_review.on_review_failure must be "warn" or "block", got "${String(rr['on_review_failure'])}"`);
+    }
+    if (rr['max_initial_rounds'] !== undefined) {
+      if (typeof rr['max_initial_rounds'] !== 'number' || !Number.isInteger(rr['max_initial_rounds']) || (rr['max_initial_rounds'] as number) < 1) {
+        throw new Error('implementation_review.max_initial_rounds must be a positive integer');
+      }
+    }
+    if (rr['max_final_rounds'] !== undefined) {
+      if (typeof rr['max_final_rounds'] !== 'number' || !Number.isInteger(rr['max_final_rounds']) || (rr['max_final_rounds'] as number) < 1) {
+        throw new Error('implementation_review.max_final_rounds must be a positive integer');
+      }
+    }
+  }
 }
 
 export function redactConfig(
@@ -305,4 +326,19 @@ export function repoNameFromUrl(repo_url: string): string {
   const normalized = repo_url.replace(/\.git$/, '').replace(/^[^@]+@[^:]+:/, '/');
   const segments = normalized.split('/').filter(Boolean);
   return segments.slice(-2).join('/') || 'unknown';
+}
+
+export function getImplementationReviewPolicy(config: WorkflowConfig): {
+  max_initial_rounds: number;
+  max_final_rounds: number;
+  on_review_failure: 'warn' | 'block';
+  retest_on_behavior_change: boolean;
+} {
+  const raw = (config as Record<string, unknown>)['implementation_review'] as Record<string, unknown> | undefined;
+  return {
+    max_initial_rounds: typeof raw?.['max_initial_rounds'] === 'number' ? raw['max_initial_rounds'] as number : 1,
+    max_final_rounds: typeof raw?.['max_final_rounds'] === 'number' ? raw['max_final_rounds'] as number : 1,
+    on_review_failure: (raw?.['on_review_failure'] === 'block' ? 'block' : 'warn'),
+    retest_on_behavior_change: raw?.['retest_on_behavior_change'] === false ? false : true,
+  };
 }

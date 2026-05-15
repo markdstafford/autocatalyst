@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { DefaultAgentRoutingPolicy } from '../../../src/core/ai/routing-policy.js';
+import { DefaultAgentRoutingPolicy, agentProfileSummary } from '../../../src/core/ai/routing-policy.js';
 import type { AiConfig } from '../../../src/types/config.js';
 
 function makeAiConfig(overrides?: Partial<AiConfig>): AiConfig {
@@ -110,5 +110,60 @@ describe('DefaultAgentRoutingPolicy', () => {
     expect(policy.resolve({ task: 'question.answer' })).toMatchObject({
       required_skills: [],
     });
+  });
+
+  test('resolveOptional returns null when route task is not in routing config', () => {
+    const config = makeAiConfig();
+    delete config.routing['question.answer'];
+    const policy = new DefaultAgentRoutingPolicy(config);
+    expect(policy.resolveOptional({ task: 'question.answer' })).toBeNull();
+  });
+
+  test('resolveOptional returns profile when route is configured', () => {
+    const policy = new DefaultAgentRoutingPolicy(makeAiConfig());
+    const profile = policy.resolveOptional({ task: 'implementation.run' });
+    expect(profile).toMatchObject({ id: 'agent-default', provider: 'claude_agent_sdk' });
+  });
+
+  test('resolveOptional returns null for implementation.review.initial when not configured', () => {
+    const policy = new DefaultAgentRoutingPolicy(makeAiConfig());
+    expect(policy.resolveOptional({ task: 'implementation.review.initial' })).toBeNull();
+  });
+
+  test('resolveOptional resolves implementation.review.initial when configured', () => {
+    const config = makeAiConfig();
+    config.routing['implementation.review.initial'] = 'agent-default';
+    const policy = new DefaultAgentRoutingPolicy(config);
+    expect(policy.resolveOptional({ task: 'implementation.review.initial' })).toMatchObject({
+      id: 'agent-default',
+      provider: 'claude_agent_sdk',
+    });
+  });
+
+  test('resolveOptional resolves implementation.review.final when configured', () => {
+    const config = makeAiConfig();
+    config.routing['implementation.review.final'] = 'direct-default';
+    const policy = new DefaultAgentRoutingPolicy(config);
+    expect(policy.resolveOptional({ task: 'implementation.review.final' })).toMatchObject({
+      id: 'direct-default',
+      provider: 'anthropic',
+    });
+  });
+});
+
+describe('agentProfileSummary', () => {
+  test('maps AgentProfile to AgentProfileSummary', () => {
+    const profile = { id: 'my-profile', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-6' };
+    expect(agentProfileSummary(profile)).toEqual({
+      profile: 'my-profile',
+      provider: 'claude_agent_sdk',
+      model: 'claude-sonnet-4-6',
+    });
+  });
+
+  test('omits model when undefined', () => {
+    const profile = { id: 'my-profile', provider: 'anthropic' };
+    const summary = agentProfileSummary(profile);
+    expect(summary.model).toBeUndefined();
   });
 });

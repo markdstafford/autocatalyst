@@ -1,16 +1,20 @@
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { describe, expect, test, vi } from 'vitest';
+import { describe, expect, it, test, vi } from 'vitest';
 import {
   AgentRunnerArtifactAuthoringAgent,
   AgentRunnerImplementationAgent,
   AgentRunnerIssueTriageAgent,
   AgentRunnerQuestionAnsweringAgent,
   IssueFilingService,
+  buildInitialReviewPrompt,
+  buildFinalReviewPrompt,
+  buildImplementerResponsePrompt,
+  parseImplementationReviewResult,
 } from '../../../src/core/ai/agent-services.js';
 import { DefaultAgentRoutingPolicy } from '../../../src/core/ai/routing-policy.js';
-import type { AgentRunEvent, AgentRunRequest, AgentRunner } from '../../../src/types/ai.js';
+import type { AgentRunEvent, AgentRunRequest, AgentRunner, ImplementationResult } from '../../../src/types/ai.js';
 import type { Request, ThreadMessage } from '../../../src/types/events.js';
 import type { IssueManager } from '../../../src/types/issue-tracker.js';
 import type { ArtifactCommentAnchorCodec } from '../../../src/types/publisher.js';
@@ -607,5 +611,118 @@ describe('AgentRunner-backed core AI services', () => {
     } finally {
       await rm(workspace, { recursive: true, force: true });
     }
+  });
+});
+
+function makeCompleteResult(overrides: Partial<ImplementationResult> = {}): ImplementationResult {
+  return {
+    status: 'complete',
+    summary: 'Added X feature.',
+    testing_instructions: 'npm test',
+    review_summary: {
+      changes: ['Added X', 'Wired Y'],
+      confirm: ['X works', 'Y loads'],
+    },
+    testing_steps: ['cd /ws', 'npm test'],
+    ...overrides,
+  };
+}
+
+describe('buildInitialReviewPrompt', () => {
+  it('includes artifact path', () => {
+    const prompt = buildInitialReviewPrompt('/ws/spec.md', '/ws', makeCompleteResult(), 'diff-content', ['src/foo.ts']);
+    expect(prompt).toContain('/ws/spec.md');
+  });
+
+  it('includes implementation summary from result fields', () => {
+    const prompt = buildInitialReviewPrompt('/ws/spec.md', '/ws', makeCompleteResult(), 'diff-content', ['src/foo.ts']);
+    expect(prompt).toContain('Added X feature.');
+  });
+
+  it('includes changed file list', () => {
+    const prompt = buildInitialReviewPrompt('/ws/spec.md', '/ws', makeCompleteResult(), 'diff-content', ['src/foo.ts', 'src/bar.ts']);
+    expect(prompt).toContain('src/foo.ts');
+    expect(prompt).toContain('src/bar.ts');
+  });
+
+  it('includes diff context', () => {
+    const prompt = buildInitialReviewPrompt('/ws/spec.md', '/ws', makeCompleteResult(), 'my-special-diff', ['src/foo.ts']);
+    expect(prompt).toContain('my-special-diff');
+  });
+
+  it('instructs to write result to the review result path', () => {
+    const prompt = buildInitialReviewPrompt('/ws/spec.md', '/ws', makeCompleteResult(), '', []);
+    expect(prompt).toContain('impl-review-result.json');
+  });
+});
+
+describe('buildFinalReviewPrompt', () => {
+  it('emphasizes security and pr_readiness categories', () => {
+    const prompt = buildFinalReviewPrompt('/ws/spec.md', '/ws', makeCompleteResult(), 'diff', []);
+    expect(prompt).toContain('security');
+    expect(prompt).toContain('pr_readiness');
+  });
+
+  it('includes implementation summary', () => {
+    const prompt = buildFinalReviewPrompt('/ws/spec.md', '/ws', makeCompleteResult(), 'diff', []);
+    expect(prompt).toContain('Added X feature.');
+  });
+});
+
+describe('buildImplementerResponsePrompt', () => {
+  it('lists every finding ID from the review result', () => {
+    const findings = [
+      { id: 'INIT-1', severity: 'blocker' as const, category: 'test' as const, finding: 'Missing test.' },
+      { id: 'INIT-2', severity: 'warning' as const, category: 'security' as const, finding: 'Log may include creds.' },
+    ];
+    const prompt = buildImplementerResponsePrompt('/ws/spec.md', '/ws', makeCompleteResult(), findings);
+    expect(prompt).toContain('[REVIEW_ID: INIT-1]');
+    expect(prompt).toContain('[REVIEW_ID: INIT-2]');
+  });
+
+  it('requires one response per finding ID', () => {
+    const findings = [{ id: 'INIT-1', severity: 'blocker' as const, category: 'correctness' as const, finding: 'Bug.' }];
+    const prompt = buildImplementerResponsePrompt('/ws/spec.md', '/ws', makeCompleteResult(), findings);
+    expect(prompt).toContain('review_responses');
+  });
+});
+
+describe('parseImplementationReviewResult', () => {
+  it('parses a no_findings result', () => {
+    const content = JSON.stringify({ status: 'no_findings', summary: 'All good.', findings: [] });
+    const result = parseImplementationReviewResult(content, '/path/result.json');
+    expect(result.status).toBe('no_findings');
+    expect(result.findings).toHaveLength(0);
+    expect(result.requires_human_retest).toBe(false);
+  });
+
+  it('parses a findings result with all severity and category values', () => {
+    const content = JSON.stringify({
+      status: 'findings',
+      summary: 'Found issues.',
+      findings: [
+        { id: 'INIT-1', severity: 'blocker', category: 'correctness', finding: 'Missing null check.' },
+        { id: 'INIT-2', severity: 'warning', category: 'test', finding: 'No coverage.' },
+        { id: 'INIT-3', severity: 'info', category: 'security', finding: 'Log includes name.' },
+        { id: 'INIT-4', severity: 'info', category: 'maintainability', finding: 'Long function.' },
+        { id: 'INIT-5', severity: 'info', category: 'docs', finding: 'Missing doc.' },
+        { id: 'INIT-6', severity: 'info', category: 'pr_readiness', finding: 'PR size.' },
+      ],
+    });
+    const result = parseImplementationReviewResult(content, '/path/result.json');
+    expect(result.status).toBe('findings');
+    expect(result.findings).toHaveLength(6);
+  });
+
+  it('returns status: failed when content is not valid JSON', () => {
+    const result = parseImplementationReviewResult('not-json', '/path/result.json');
+    expect(result.status).toBe('failed');
+    expect(result.error).toBeDefined();
+  });
+
+  it('propagates requires_human_retest: true when set', () => {
+    const content = JSON.stringify({ status: 'findings', summary: 's', findings: [], requires_human_retest: true });
+    const result = parseImplementationReviewResult(content, '/path/result.json');
+    expect(result.requires_human_retest).toBe(true);
   });
 });

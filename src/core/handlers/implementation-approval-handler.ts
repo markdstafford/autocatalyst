@@ -10,23 +10,30 @@ import type { ConversationRef } from '../../types/channel.js';
 import { markArtifactStatus, artifactPath, artifactPublisherId } from '../run-refs.js';
 import { getArtifactLifecyclePolicy } from '../../types/artifact.js';
 import type { BranchGuard } from '../git-branch-guard.js';
+import type { ImplementationReviewCoordinator } from '../ai/implementation-review-coordinator.js';
+import type { ImplementationResult } from '../../types/ai.js';
 
 export interface ImplementationApprovalDeps {
   specCommitter?: Pick<SpecCommitter, 'updateStatus'>;
   artifactPublisher: Pick<ArtifactPublisher, 'updateStatus'>;
   prManager: Pick<PRManager, 'createPR'>;
   prTitleGenerator: PRTitleGenerator;
-  implFeedbackPage?: Pick<ImplementationReviewPublisher, 'setPRLink' | 'updateStatus'>;
+  implFeedbackPage?: Pick<ImplementationReviewPublisher, 'setPRLink' | 'updateStatus' | 'update'>;
   postMessage: (conversation: ConversationRef, text: string) => Promise<void>;
   transition: (run: Run, stage: RunStage) => void;
   failRun: (run: Run, conversation: ConversationRef, error: unknown) => Promise<void>;
   persist: () => void;
-  logger: Pick<pino.Logger, 'error'>;
+  logger: Pick<pino.Logger, 'error' | 'info'>;
   now?: () => Date;
   branchGuard?: BranchGuard;
+  reviewCoordinator?: Pick<ImplementationReviewCoordinator, 'runFinalReview'>;
 }
 
-export type ImplementationApprovalResult = { status: 'pr_open' } | { status: 'failed' };
+export type ImplementationApprovalResult =
+  | { status: 'pr_open' }
+  | { status: 'reviewing_implementation' }
+  | { status: 'needs_input' }
+  | { status: 'failed' };
 
 export class ImplementationApprovalHandler {
   constructor(private readonly deps: ImplementationApprovalDeps) {}
@@ -71,6 +78,67 @@ export class ImplementationApprovalHandler {
       } catch (err) {
         await this.deps.failRun(run, feedback.conversation, err);
         return { status: 'failed' };
+      }
+    }
+
+    // Run final review before PR creation
+    if (this.deps.reviewCoordinator) {
+      const currentResult: ImplementationResult = {
+        status: 'complete',
+        summary: run.last_impl_result?.summary,
+        testing_instructions: run.last_impl_result?.testing_instructions,
+      };
+      const reviewedResult = await this.deps.reviewCoordinator.runFinalReview({
+        run,
+        artifact_path: localPath ?? '',
+        implementation_result: currentResult,
+        working_directory: run.workspace_path,
+      });
+
+      if (reviewedResult.status === 'needs_input') {
+        try {
+          await this.deps.postMessage(feedback.conversation, `I need input \u2014 ${reviewedResult.question ?? 'please provide more context'}`);
+        } catch (err) {
+          this.deps.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post question');
+        }
+        this.deps.transition(run, 'awaiting_impl_input');
+        return { status: 'needs_input' };
+      }
+
+      if (reviewedResult.status === 'failed') {
+        await this.deps.failRun(run, feedback.conversation, new Error(reviewedResult.error ?? 'Final review failed'));
+        return { status: 'failed' };
+      }
+
+      if (reviewedResult.requires_human_retest) {
+        this.deps.logger.info(
+          { event: 'implementation.review.retest_required', run_id: run.id },
+          'Final review requires human retest — returning to reviewing_implementation',
+        );
+        if (run.impl_feedback_ref) {
+          try {
+            await this.deps.implFeedbackPage?.update?.(run.impl_feedback_ref, {
+              summary: reviewedResult.summary,
+              review_exchanges: run.review_exchanges,
+            });
+          } catch (err) {
+            this.deps.logger.error(
+              { event: 'run.feedback_page_update_failed', run_id: run.id, error: String(err) },
+              'Failed to update testing guide after final review retest requirement',
+            );
+          }
+        }
+        this.deps.transition(run, 'reviewing_implementation');
+        return { status: 'reviewing_implementation' };
+      }
+
+      // Update last_impl_result with reviewed result
+      if (reviewedResult.summary !== undefined || reviewedResult.testing_instructions !== undefined) {
+        run.last_impl_result = {
+          summary: reviewedResult.summary ?? run.last_impl_result?.summary ?? '',
+          testing_instructions: reviewedResult.testing_instructions ?? run.last_impl_result?.testing_instructions ?? '',
+        };
+        this.deps.persist();
       }
     }
 
