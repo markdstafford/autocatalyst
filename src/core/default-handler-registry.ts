@@ -16,6 +16,7 @@ import type { WorkspaceManager } from './workspace-manager.js';
 import type { SpecCommitter } from './spec-committer.js';
 import { HandlerRegistryImpl, type HandlerRegistry } from './handler-registry.js';
 import { GitBranchGuard, type BranchGuard } from './git-branch-guard.js';
+import type { ImplementationReviewCoordinator } from './ai/implementation-review-coordinator.js';
 import { ArtifactCreationHandler } from './handlers/artifact-creation-handler.js';
 import { ArtifactApprovalHandler, type ArtifactApprovalResult } from './handlers/artifact-approval-handler.js';
 import { ArtifactFeedbackHandler } from './handlers/artifact-feedback-handler.js';
@@ -53,6 +54,7 @@ export interface DefaultHandlerRegistryDeps {
   reactToRunMessage: (run: Run, reaction: string) => Promise<void>;
   logger: Pick<pino.Logger, 'debug' | 'info' | 'warn' | 'error'>;
   branchGuard?: BranchGuard;
+  reviewCoordinator?: ImplementationReviewCoordinator;
 }
 
 export function buildDefaultHandlerRegistry(deps: DefaultHandlerRegistryDeps): HandlerRegistry {
@@ -188,6 +190,7 @@ async function runImplementation(
     persist: deps.persist,
     logger: deps.logger,
     branchGuard,
+    reviewCoordinator: deps.reviewCoordinator,
   });
   await handler.handle(run, feedback, additionalContext);
 }
@@ -208,6 +211,7 @@ async function handleImplementationFeedback(
     persist: deps.persist,
     logger: deps.logger,
     branchGuard,
+    reviewCoordinator: deps.reviewCoordinator,
   });
   await handler.handle(run, feedback, routingStage);
 }
@@ -230,6 +234,7 @@ async function handleImplementationApproval(
     persist: deps.persist,
     logger: deps.logger,
     branchGuard,
+    reviewCoordinator: deps.reviewCoordinator,
   });
   await handler.handle(run, feedback);
 }

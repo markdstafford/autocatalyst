@@ -7,7 +7,7 @@ import { App } from '@slack/bolt';
 import Anthropic from '@anthropic-ai/sdk';
 import AnthropicBedrock from '@anthropic-ai/bedrock-sdk';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
-import { loadConfigFromPath, repoNameFromUrl, resolveEnvVars, resolveAiConfig, type ResolvedAiConfig } from '../core/config.js';
+import { loadConfigFromPath, repoNameFromUrl, resolveEnvVars, resolveAiConfig, getImplementationReviewPolicy, type ResolvedAiConfig } from '../core/config.js';
 import { bootstrapWorkflowRuntime } from '../core/bootstrap.js';
 import { normalizeWorkflowConfig } from '../core/config-normalizer.js';
 import { configExists, runInit } from '../core/init.js';
@@ -46,6 +46,7 @@ import { OpenAIDirectModelRunner } from './openai/direct-model-runner.js';
 import type { DirectModelRunRequest, DirectModelRunResult, DirectModelRunner, AgentRunner, AgentRunRequest, AgentRunEvent } from '../types/ai.js';
 import { ClaudeAgentSdkAgentRunner } from './anthropic/claude-agent-sdk-agent-runner.js';
 import { OpenAIAgentSdkAgentRunner } from './openai/agent-sdk-agent-runner.js';
+import { ImplementationReviewCoordinator } from '../core/ai/implementation-review-coordinator.js';
 
 export type RuntimeLogger = Pick<pino.Logger, 'debug' | 'error' | 'info' | 'warn'>;
 
@@ -166,6 +167,14 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     commentAnchorCodec: artifactDeps.commentAnchorCodec,
   });
 
+  const reviewCoordinator = new ImplementationReviewCoordinator({
+    runner: agentRunner,
+    implementer,
+    routingPolicy: aiRoutingPolicy,
+    policy: getImplementationReviewPolicy(currentConfig.config),
+    logger,
+  });
+
   return bootstrapWorkflowRuntime(currentConfig, {
     adapter,
     workspaceManager,
@@ -186,6 +195,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     runStore,
     channelRepoMap,
     reacjiComplete,
+    reviewCoordinator,
     isConnected: () => adapter.isConnected(),
     meter: options.meter,
   });
