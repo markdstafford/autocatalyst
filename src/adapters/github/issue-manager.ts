@@ -1,38 +1,29 @@
 // src/adapters/github/issue-manager.ts
 import { promisify } from 'node:util';
 import { execFile as _execFile } from 'node:child_process';
-import { accessSync, constants } from 'node:fs';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
 import type { IssueManager, TrackedIssue } from '../../types/issue-tracker.js';
 
 const _promisifiedExecFile = promisify(_execFile);
 
-// Resolve the absolute path to the `gh` binary at module load time.
-// This avoids relying on PATH resolution in execFile, which can fail in
-// non-interactive environments (e.g. LaunchAgent, systemd) where PATH is minimal.
-const _ghCandidates = ['/opt/homebrew/bin/gh', '/opt/homebrew/sbin/gh', '/usr/local/bin/gh', '/usr/bin/gh'];
-function _resolveGhBinary(): string {
-  for (const candidate of _ghCandidates) {
-    try {
-      accessSync(candidate, constants.X_OK);
-      return candidate;
-    } catch {
-      // not found or not executable at this path
-    }
-  }
-  return 'gh'; // fallback: rely on PATH
-}
-const GH_BINARY = _resolveGhBinary();
+const _extraPaths = process.platform === 'win32'
+  ? []
+  : ['/opt/homebrew/bin', '/opt/homebrew/sbin', '/usr/local/bin'];
 
 async function defaultExecFile(
   cmd: string,
   args: string[],
   opts?: { cwd?: string },
 ): Promise<{ stdout: string; stderr: string }> {
-  // Resolve gh to its absolute path to avoid PATH lookup failures in headless environments.
-  const resolvedCmd = cmd === 'gh' ? GH_BINARY : cmd;
-  return _promisifiedExecFile(resolvedCmd, args, { ...opts });
+  const sep = process.platform === 'win32' ? ';' : ':';
+  const currentPath = process.env.PATH ?? '';
+  const currentParts = new Set(currentPath.split(sep));
+  const newParts = _extraPaths.filter(p => !currentParts.has(p));
+  const augmentedPath = newParts.length > 0
+    ? [...newParts, currentPath].filter(Boolean).join(sep)
+    : currentPath;
+  return _promisifiedExecFile(cmd, args, { ...opts, env: { ...process.env, PATH: augmentedPath } });
 }
 
 type ExecFn = (cmd: string, args: string[], opts?: { cwd?: string }) => Promise<{ stdout: string; stderr: string }>;
@@ -51,13 +42,13 @@ export class GHIssueManager implements IssueManager {
     this.logger = createLogger('issue-manager', { destination: options?.logDestination });
   }
 
-  async getIssue(workspace_path: string, issue_number: number): Promise<TrackedIssue> {
+  async getIssue(repo_url: string, issue_number: number): Promise<TrackedIssue> {
     let stdout: string;
     try {
       ({ stdout } = await this.execFn(
         'gh',
-        ['issue', 'view', String(issue_number), '--json', 'number,title,body,labels,state,url'],
-        { cwd: workspace_path },
+        ['issue', 'view', String(issue_number), '--repo', repo_url, '--json', 'number,title,body,labels,state,url'],
+        {},
       ));
     } catch (err) {
       this.logger.error(

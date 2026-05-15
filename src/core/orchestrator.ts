@@ -365,8 +365,8 @@ export class OrchestratorImpl implements Orchestrator {
         let issue;
         try {
           const channelEntry = this.deps.channelRepoMap.get(requestChannelKey);
-          const workspacePath = channelEntry?.workspace_root ?? '/';
-          issue = await this.deps.issueManager.getIssue(workspacePath, ref.number);
+          const repoUrl = channelEntry?.repo_url ?? '';
+          issue = await this.deps.issueManager.getIssue(repoUrl, ref.number);
         } catch (err) {
           this.logger.error(
             { event: 'issue_reference.load_failed', request_id: request.id, issue_number: ref.number, error: String(err) },

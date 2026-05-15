@@ -10,7 +10,7 @@ export interface TrackedIssue {
 }
 
 export interface IssueManager {
-  getIssue(workspace_path: string, issue_number: number): Promise<TrackedIssue>;
+  getIssue(repo_url: string, issue_number: number): Promise<TrackedIssue>;
   writeIssue(workspace_path: string, issue_number: number, body: string): Promise<void>;
   create(workspace_path: string, title: string, body: string, labels?: string[]): Promise<{ number: number }>;
 }
