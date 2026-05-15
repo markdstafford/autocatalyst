@@ -44,7 +44,7 @@ describe('GHIssueManager.getIssue', () => {
     const execFn = vi.fn().mockResolvedValue({ stdout: ghResponse, stderr: '' });
     const manager = new GHIssueManager({ execFn, logDestination: nullDest });
 
-    const issue = await manager.getIssue('/repo', 42);
+    const issue = await manager.getIssue('https://github.com/org/repo.git', 42);
 
     expect(issue).toEqual({
       number: 42,
@@ -56,8 +56,8 @@ describe('GHIssueManager.getIssue', () => {
     });
     expect(execFn).toHaveBeenCalledWith(
       'gh',
-      ['issue', 'view', '42', '--json', 'number,title,body,labels,state,url'],
-      { cwd: '/repo' },
+      ['issue', 'view', '42', '--repo', 'https://github.com/org/repo.git', '--json', 'number,title,body,labels,state,url'],
+      {},
     );
   });
 
