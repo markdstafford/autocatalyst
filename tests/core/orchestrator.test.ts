@@ -24,6 +24,7 @@ import type { IntentClassifier } from '../../src/types/intent.js';
 import type { SpecCommitter } from '../../src/core/spec-committer.js';
 import type { ImplementationReviewPublisher } from '../../src/types/impl-feedback-page.js';
 import type { IssueManager } from '../../src/types/issue-tracker.js';
+import type { TrackedIssue } from '../../src/types/issue-tracker.js';
 import type { IssueFiler, FilingResult } from '../../src/types/issue-filing.js';
 import type { CommandEvent, CommandRegistry } from '../../src/types/commands.js';
 import type { ChannelRepoMap, RepoEntry } from '../../src/types/config.js';
@@ -326,6 +327,14 @@ function makeSpecCommitter(overrides: Partial<SpecCommitter> = {}): SpecCommitte
 
 function makeIssueManager(overrides: Partial<IssueManager> = {}): IssueManager {
   return {
+    getIssue: vi.fn().mockResolvedValue({
+      number: 42,
+      title: 'Default mock issue',
+      body: 'Mock body',
+      labels: ['bug'],
+      state: 'OPEN',
+      url: 'https://github.com/org/repo/issues/42',
+    }),
     writeIssue: vi.fn().mockResolvedValue(undefined),
     create: vi.fn().mockResolvedValue({ number: 42 }),
     ...overrides,
@@ -6209,5 +6218,176 @@ describe('Orchestrator — overrideRunStage', () => {
     expect(runStore.save).toHaveBeenCalled();
 
     await orch.stop();
+  });
+});
+
+// ============================================================
+// work_on_issue two-stage classification path
+// ============================================================
+describe('OrchestratorImpl — work_on_issue two-stage classification', () => {
+  beforeEach(() => { _fixtureSeq = 0; });
+
+  type OrchestratorDeps = Parameters<typeof OrchestratorImpl>[0];
+
+  async function runSingleRequest(
+    classifierImpl: (...args: unknown[]) => Promise<string>,
+    issueManagerOverrides?: Partial<IssueManager>,
+    content = "let's work on issue 42",
+    includeIssueManager = true,
+  ) {
+    const adapter = makeMockAdapter();
+    const classifier: IntentClassifier = { classify: vi.fn().mockImplementation(classifierImpl) };
+    const issueManager = makeIssueManager(issueManagerOverrides ?? {});
+    const postMessage = vi.fn().mockResolvedValue(undefined);
+    const postError = vi.fn().mockResolvedValue(undefined);
+
+    const deps: OrchestratorDeps = {
+      adapter,
+      workspaceManager: makeWorkspaceManager(),
+      artifactAuthoringAgent: makeArtifactAuthoringAgent(),
+      artifactPublisher: makeArtifactPublisher(),
+      channelRepoMap: makeChannelRepoMap(),
+      intentClassifier: classifier,
+      postMessage,
+      postError,
+    };
+    if (includeIssueManager) {
+      deps.issueManager = issueManager;
+    }
+
+    const orch = new OrchestratorImpl(deps, { logDestination: nullDest });
+
+    await orch.start();
+    const event = makeEventFixture('new_request', { content, channel_id: DEFAULT_CHANNEL_ID });
+    adapter._emit(event);
+    await adapter.stop();
+
+    return { orch, adapter, classifier, issueManager, postMessage, postError };
+  }
+
+  it('does NOT load issue when Stage 1 returns idea (non-work_on_issue)', async () => {
+    const { issueManager } = await runSingleRequest(async () => 'idea');
+    expect(issueManager.getIssue).not.toHaveBeenCalled();
+  });
+
+  it('does NOT load issue when Stage 1 returns question', async () => {
+    const { issueManager } = await runSingleRequest(async () => 'question', {}, 'tell me about issue 32');
+    expect(issueManager.getIssue).not.toHaveBeenCalled();
+  });
+
+  it('does NOT load issue when Stage 1 returns file_issues', async () => {
+    const { issueManager } = await runSingleRequest(async () => 'file_issues', {}, 'file issues for these findings');
+    expect(issueManager.getIssue).not.toHaveBeenCalled();
+  });
+
+  it('calls getIssue when Stage 1 returns work_on_issue', async () => {
+    let callCount = 0;
+    const { issueManager } = await runSingleRequest(async () => {
+      callCount++;
+      return callCount === 1 ? 'work_on_issue' : 'bug';
+    });
+    expect(issueManager.getIssue).toHaveBeenCalledOnce();
+    expect(issueManager.getIssue).toHaveBeenCalledWith(expect.any(String), 42);
+  });
+
+  it('posts interim "Looking up issue #N…" message before issue load', async () => {
+    let callCount = 0;
+    const { postMessage } = await runSingleRequest(async () => {
+      callCount++;
+      return callCount === 1 ? 'work_on_issue' : 'bug';
+    });
+    const allMessages: string[] = postMessage.mock.calls.map((c: unknown[]) => c[1] as string);
+    expect(allMessages.some(m => m.includes('#42') || m.includes('42'))).toBe(true);
+  });
+
+  it('Stage 2 classify is called with context "existing_issue"', async () => {
+    let callCount = 0;
+    const { classifier } = await runSingleRequest(async () => {
+      callCount++;
+      return callCount === 1 ? 'work_on_issue' : 'idea';
+    });
+    const calls = (classifier.classify as ReturnType<typeof vi.fn>).mock.calls;
+    expect(calls.length).toBeGreaterThanOrEqual(2);
+    expect(calls[1][1]).toBe('existing_issue');
+  });
+
+  it('sets run.issue to the extracted issue number', async () => {
+    let callCount = 0;
+    const { orch } = await runSingleRequest(async () => {
+      callCount++;
+      return callCount === 1 ? 'work_on_issue' : 'idea';
+    });
+    const runs = [...orch.getRuns().values()];
+    expect(runs.length).toBeGreaterThan(0);
+    expect(runs[0].issue).toBe(42);
+  });
+
+  it('fails run if issue state is CLOSED', async () => {
+    let callCount = 0;
+    const { orch, postError } = await runSingleRequest(
+      async () => { callCount++; return callCount === 1 ? 'work_on_issue' : 'bug'; },
+      {
+        getIssue: vi.fn().mockResolvedValue({
+          number: 42, title: 'Closed issue', body: '', labels: [], state: 'CLOSED',
+        }),
+      },
+    );
+    const runs = [...orch.getRuns().values()];
+    expect(runs[0].stage).toBe('failed');
+    expect(postError).toHaveBeenCalled();
+  });
+
+  it('fails run if getIssue() throws', async () => {
+    let callCount = 0;
+    const { orch, postError } = await runSingleRequest(
+      async () => { callCount++; return callCount === 1 ? 'work_on_issue' : 'bug'; },
+      { getIssue: vi.fn().mockRejectedValue(new Error('gh issue view failed: not found')) },
+    );
+    const runs = [...orch.getRuns().values()];
+    expect(runs[0].stage).toBe('failed');
+    expect(postError).toHaveBeenCalled();
+  });
+
+  it('fails run with clear error if issueManager is not configured', async () => {
+    const { orch, postError } = await runSingleRequest(
+      async () => 'work_on_issue',
+      undefined,
+      "let's work on issue 42",
+      false, // no issueManager
+    );
+    const runs = [...orch.getRuns().values()];
+    expect(runs[0].stage).toBe('failed');
+    expect(postError).toHaveBeenCalled();
+  });
+
+  it('fails run if no issue number found in message', async () => {
+    const { orch, postError } = await runSingleRequest(
+      async () => 'work_on_issue',
+      undefined,
+      'work on an issue please', // no number
+    );
+    const runs = [...orch.getRuns().values()];
+    expect(runs[0].stage).toBe('failed');
+    expect(postError).toHaveBeenCalled();
+  });
+
+  it('routes using Stage 2 intent — bug intent sets run.intent to bug', async () => {
+    let callCount = 0;
+    const { orch } = await runSingleRequest(async () => {
+      callCount++;
+      return callCount === 1 ? 'work_on_issue' : 'bug';
+    });
+    const runs = [...orch.getRuns().values()];
+    expect(runs[0].intent).toBe('bug');
+  });
+
+  it('routes using Stage 2 intent — idea intent sets run.intent to idea', async () => {
+    let callCount = 0;
+    const { orch } = await runSingleRequest(async () => {
+      callCount++;
+      return callCount === 1 ? 'work_on_issue' : 'idea';
+    });
+    const runs = [...orch.getRuns().values()];
+    expect(runs[0].intent).toBe('idea');
   });
 });
