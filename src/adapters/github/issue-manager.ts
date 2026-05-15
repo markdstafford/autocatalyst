@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 import { execFile as _execFile } from 'node:child_process';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
-import type { IssueManager } from '../../types/issue-tracker.js';
+import type { IssueManager, TrackedIssue } from '../../types/issue-tracker.js';
 
 const defaultExecFile = promisify(_execFile);
 
@@ -21,6 +21,57 @@ export class GHIssueManager implements IssueManager {
   constructor(options?: GHIssueManagerOptions) {
     this.execFn = options?.execFn ?? defaultExecFile;
     this.logger = createLogger('issue-manager', { destination: options?.logDestination });
+  }
+
+  async getIssue(workspace_path: string, issue_number: number): Promise<TrackedIssue> {
+    let stdout: string;
+    try {
+      ({ stdout } = await this.execFn(
+        'gh',
+        ['issue', 'view', String(issue_number), '--json', 'number,title,body,labels,state,url'],
+        { cwd: workspace_path },
+      ));
+    } catch (err) {
+      this.logger.error(
+        { event: 'issue.read_failed', issue_number, error: String(err) },
+        'Failed to read issue',
+      );
+      throw new Error(`gh issue view failed: ${String(err)}`);
+    }
+
+    let parsed: {
+      number: number;
+      title: string;
+      body: string;
+      labels: Array<{ name: string } | string>;
+      state: string;
+      url?: string;
+    };
+    try {
+      parsed = JSON.parse(stdout) as typeof parsed;
+    } catch (err) {
+      this.logger.error(
+        { event: 'issue.read_failed', issue_number, error: 'malformed JSON' },
+        'Failed to parse gh issue view output',
+      );
+      throw new Error(`gh issue view returned malformed JSON for issue ${issue_number}`);
+    }
+
+    const labels = parsed.labels.map(l => (typeof l === 'string' ? l : l.name));
+
+    this.logger.info(
+      { event: 'issue_reference.loaded', issue_number, labels, state: parsed.state },
+      'Issue loaded',
+    );
+
+    return {
+      number: parsed.number,
+      title: parsed.title,
+      body: parsed.body,
+      labels,
+      state: parsed.state,
+      url: parsed.url,
+    };
   }
 
   async writeIssue(workspace_path: string, issue_number: number, body: string): Promise<void> {
