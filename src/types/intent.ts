@@ -5,13 +5,14 @@ export type Intent =
   | 'bug'
   | 'chore'
   | 'file_issues'
+  | 'work_on_issue'
   | 'question'
   | 'feedback'
   | 'approval'
   | 'ignore'
   | string;
 
-export type ClassificationContext = 'new_thread' | RunStage | string;
+export type ClassificationContext = 'new_thread' | 'existing_issue' | RunStage | string;
 
 export interface IntentClassifier {
   classify(message: string, context: ClassificationContext): Promise<Intent>;

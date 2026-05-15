@@ -27,6 +27,7 @@ import type { ChannelRepoMap } from '../types/config.js';
 import type { HandlerRegistry } from './handler-registry.js';
 import { buildDefaultHandlerRegistry as buildDefaultHandlers } from './default-handler-registry.js';
 import type { BranchGuard } from './git-branch-guard.js';
+import { extractIssueReference, buildEnrichedClassificationMessage } from './issue-reference.js';
 
 /** Maps an actionable review stage to the in-progress stage that prevents duplicate dispatch. */
 function stageAfterApproval(stage: RunStage): RunStage {
@@ -315,17 +316,138 @@ export class OrchestratorImpl implements Orchestrator {
       }
       const run = this.createRun(request);
 
-      // Classify intent for new request
-      let intent: Intent = 'idea';
+      // Stage 1: classify raw message in new_thread context
+      let stage1Intent: Intent = 'idea';
       if (this.deps.intentClassifier) {
         try {
-          intent = await this.deps.intentClassifier.classify(request.content, 'new_thread');
+          stage1Intent = await this.deps.intentClassifier.classify(request.content, 'new_thread');
         } catch (err) {
           await this.handleClassificationUnavailable(run, request.conversation, err);
           return;
         }
-        this.logger.debug({ event: 'intent_classification.result', run_id: run.id, intent }, 'Intent classified for new request');
+        this.logger.debug({ event: 'intent_classification.result', run_id: run.id, intent: stage1Intent }, 'Stage 1 intent classified for new request');
       }
+
+      // Two-stage path: work_on_issue requires issue loading then Stage 2 classification
+      if (stage1Intent === 'work_on_issue') {
+        this.logger.info(
+          { event: 'intent_classification.work_on_issue', request_id: request.id, intent: stage1Intent },
+          'Stage 1 returned work_on_issue — starting two-stage classification',
+        );
+
+        // Extract issue number from message
+        const ref = extractIssueReference(request.content);
+        if (!ref) {
+          await this.failRun(run, request.conversation, new Error('Could not find an issue number in your request. Please include an issue number like "issue 42" or "#42".'));
+          return;
+        }
+        this.logger.info(
+          { event: 'issue_reference.extracted', request_id: request.id, issue_number: ref.number, raw: ref.raw },
+          'Issue reference extracted',
+        );
+
+        // Post interim message immediately
+        try {
+          await this.postMessage(request.conversation, `Looking up issue #${ref.number}…`);
+        } catch (err) {
+          this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post interim issue lookup message');
+        }
+
+        // Check issueManager availability
+        if (!this.deps.issueManager) {
+          await this.failRun(run, request.conversation, new Error('Issue loading is not configured for this workspace. Cannot work on an existing issue.'));
+          return;
+        }
+
+        // Load issue
+        let issue;
+        try {
+          const channelEntry = this.deps.channelRepoMap.get(requestChannelKey);
+          const workspacePath = channelEntry?.workspace_root ?? '/';
+          issue = await this.deps.issueManager.getIssue(workspacePath, ref.number);
+        } catch (err) {
+          this.logger.error(
+            { event: 'issue_reference.load_failed', request_id: request.id, issue_number: ref.number, error: String(err) },
+            'Failed to load issue',
+          );
+          await this.failRun(run, request.conversation, new Error(`Could not load issue #${ref.number}. Please check the issue number and try again.`));
+          return;
+        }
+
+        // Preliminary check: closed issues cannot be worked on
+        const issueStateLower = issue.state.toLowerCase();
+        if (issueStateLower === 'closed') {
+          this.logger.info(
+            { event: 'issue_reference.closed', request_id: request.id, issue_number: ref.number },
+            'Referenced issue is closed',
+          );
+          await this.failRun(run, request.conversation, new Error(`Issue #${ref.number} is already closed and cannot be worked on.`));
+          return;
+        }
+
+        // Link run to issue
+        run.issue = ref.number;
+        this._persistRuns();
+
+        // Stage 2: classify enriched message in existing_issue context
+        const enrichedMessage = buildEnrichedClassificationMessage(request.content, issue);
+        let intent: Intent = 'idea';
+        if (this.deps.intentClassifier) {
+          try {
+            intent = await this.deps.intentClassifier.classify(enrichedMessage, 'existing_issue');
+          } catch (err) {
+            await this.handleClassificationUnavailable(run, request.conversation, err);
+            return;
+          }
+          this.logger.info(
+            { event: 'intent_classification.issue_context', run_id: run.id, issue_number: ref.number, context: 'existing_issue', classified_intent: intent },
+            'Stage 2 intent classified for existing issue',
+          );
+        }
+
+        // Post Stage 2 intent-specific acknowledgement (best-effort) — no file_issues ack here
+        if (intent !== 'ignore') {
+          const intentMessages: Partial<Record<string, string>> = {
+            'idea': "Writing a spec — will post it here when I'm done.",
+            'bug': "Working on a plan — will post it here when I'm done.",
+            'chore': "Working on a plan — will post it here when I'm done.",
+            'question': "On it — looking that up now.",
+          };
+          const intentMessage = intentMessages[intent] ?? "On it — will update here when I'm done.";
+          try {
+            await this.postMessage(request.conversation, intentMessage);
+          } catch (err) {
+            this.logger.error({ event: 'run.notify_failed', run_id: run.id, error: String(err) }, 'Failed to post Stage 2 intent acknowledgement');
+          }
+        }
+
+        const requestIntent = toRequestIntent(intent);
+        if (!requestIntent) {
+          this.runs.delete(request.id);
+          this._persistRuns();
+          this.logger.debug({ event: 'new_request.ignored', request_id: request.id }, 'Existing issue request classified as ignore; discarding');
+          return;
+        }
+
+        run.intent = requestIntent;
+        this._runStarted.add(1, { intent: requestIntent });
+        this._stageStartTimes.set(run.id, performance.now());
+        this._persistRuns();
+        const handler = this.handlerRegistry.resolve({
+          event_type: 'new_request',
+          stage: 'new_thread',
+          intent,
+        });
+        if (!handler) {
+          await this.failRun(run, request.conversation, new Error(`No handler registered for new_request intent ${intent}`));
+          return;
+        }
+        await handler(event, run);
+        return;
+      }
+
+      // Single-stage path: all other intents from Stage 1
+      const intent = stage1Intent;
 
       // Post intent-specific acknowledgement (best-effort)
       if (intent !== 'ignore') {
