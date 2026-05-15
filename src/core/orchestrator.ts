@@ -27,6 +27,7 @@ import type { ChannelRepoMap } from '../types/config.js';
 import type { HandlerRegistry } from './handler-registry.js';
 import { buildDefaultHandlerRegistry as buildDefaultHandlers } from './default-handler-registry.js';
 import type { BranchGuard } from './git-branch-guard.js';
+import type { ImplementationReviewCoordinator } from './ai/implementation-review-coordinator.js';
 import { extractIssueReference, buildEnrichedClassificationMessage } from './issue-reference.js';
 
 /** Maps an actionable review stage to the in-progress stage that prevents duplicate dispatch. */
@@ -77,6 +78,7 @@ export interface OrchestratorDeps {
   reacjiComplete?: string | null;
   handlerRegistry?: HandlerRegistry;
   branchGuard?: BranchGuard;
+  reviewCoordinator?: ImplementationReviewCoordinator;
 }
 
 interface OrchestratorOptions {
@@ -558,6 +560,7 @@ export class OrchestratorImpl implements Orchestrator {
       reactToRunMessage: (targetRun, reaction) => this.reactToRunMessage(targetRun, reaction),
       logger: this.logger,
       branchGuard: this.deps.branchGuard,
+      reviewCoordinator: this.deps.reviewCoordinator,
     });
   }
 
