@@ -153,6 +153,10 @@ export function makeClaudeAgentSdkOptions(cwd: string, profile?: AgentProfile): 
     tools: { type: 'preset', preset: 'claude_code' },
     systemPrompt: { type: 'preset', preset: 'claude_code' },
     settings: automatedSettings(cwd),
+    env: {
+      ...process.env,
+      CLAUDE_CODE_MAX_OUTPUT_TOKENS: process.env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] ?? '128000',
+    },
     ...(profile?.model ? { model: profile.model } : {}),
     thinking: thinkingForProfile(profile?.thinking),
     effort: (profile?.effort ?? 'high') as EffortLevel,
