@@ -466,9 +466,11 @@ function testingGuideStatusName(status: ImplementationReviewStatus): string {
 }
 
 function normalizeStep(step: string): string {
+  // Trim first so surrounding whitespace doesn't prevent backtick stripping at boundaries
+  let s = step.trim();
   // Strip surrounding backticks
-  let s = step.replace(/^`+|`+$/g, '');
-  // Trim and collapse internal whitespace
+  s = s.replace(/^`+|`+$/g, '');
+  // Trim again and collapse internal whitespace
   s = s.trim().replace(/\s+/g, ' ');
   // Remove trailing slash from cd paths
   s = s.replace(/^(cd\s+\S.*?)\/$/, '$1');
@@ -481,7 +483,15 @@ function getBaselineCategory(step: string): BaselineCategory | null {
   const s = normalizeStep(step).toLowerCase();
   if (/^cd\s+/.test(s)) return 'cd';
   if (/^(npm\s+ci|npm\s+install|yarn\s+install|pnpm\s+install)\b/.test(s)) return 'npm_install';
-  if (/^(npm\s+test|npx\s+vitest|npx\s+jest|yarn\s+test)\b/.test(s)) return 'test_command';
+  // npm test / yarn test are always generic baseline commands
+  if (/^(npm\s+test|yarn\s+test)\b/.test(s)) return 'test_command';
+  // npx vitest / npx jest: only singleton when no specific file/path argument is present;
+  // commands like `npx vitest run tests/foo.test.ts` are genuinely distinct steps
+  if (/^(npx\s+vitest|npx\s+jest)\b/.test(s)) {
+    const afterBase = s.replace(/^npx\s+(vitest|jest)\s*(run\s*)?/, '').trim();
+    const hasPathArg = /[/\\]|\.test\.|\.spec\./.test(afterBase);
+    if (!hasPathArg) return 'test_command';
+  }
   return null;
 }
 

@@ -1119,6 +1119,16 @@ describe('normalizeStep (via update deduplication behavior)', () => {
     expect((updated.match(/cd \/workspace/g) ?? []).length).toBe(1);
   });
 
+  it('treats " `cd /workspace` " as duplicate of existing "cd /workspace" (whitespace around backticks)', async () => {
+    const { client, pagesUpdateMarkdown } = makeUpdateClient(['cd /workspace']);
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+
+    await page.update('page-id', { testing_steps: [' `cd /workspace` '] });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    expect((updated.match(/cd \/workspace/g) ?? []).length).toBe(1);
+  });
+
   it('treats "npm test " as duplicate of existing "npm test" (trailing whitespace)', async () => {
     const { client, pagesUpdateMarkdown } = makeUpdateClient(['npm test']);
     const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
@@ -1182,6 +1192,33 @@ describe('normalizeStep (via update deduplication behavior)', () => {
     const todoMatches = updated.match(/^- \[[ x]\] /gm) ?? [];
     // 2 testing instruction todos + 1 Additional steps placeholder
     expect(todoMatches.length).toBe(3);
+  });
+
+  it('appends a file-specific vitest command even when a different file-specific vitest command already exists', async () => {
+    const { client, pagesUpdateMarkdown } = makeUpdateClient([
+      'cd /workspace',
+      'npx vitest run tests/foo.test.ts',
+    ]);
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+
+    await page.update('page-id', { testing_steps: ['npx vitest run tests/bar.test.ts'] });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    expect(updated).toContain('npx vitest run tests/bar.test.ts');
+    // The original file-specific command is still present
+    expect(updated).toContain('npx vitest run tests/foo.test.ts');
+  });
+
+  it('treats generic "npx vitest run" as a singleton (no file-path args)', async () => {
+    const { client, pagesUpdateMarkdown } = makeUpdateClient(['npx vitest run']);
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+
+    await page.update('page-id', { testing_steps: ['npx vitest'] });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    // Both are generic test_command singletons — new one should be suppressed
+    const vitestMatches = updated.match(/npx vitest/g) ?? [];
+    expect(vitestMatches.length).toBe(1);
   });
 
   it('appends one new round-specific test step while preserving existing checked to-dos', async () => {
