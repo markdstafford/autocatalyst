@@ -281,6 +281,22 @@ export function resolveAiConfig(
     }
   }
 
+  // Validate that all claude_agent_sdk profiles share one beta filter config.
+  // The runner uses a single shared proxy — divergent configs would silently misroute.
+  const claudeSdkFilters = profiles
+    .filter(p => p.runner === 'claude_agent_sdk')
+    .map(p => {
+      const ep = endpoints.find(e => e.name === p.endpoint)!;
+      const strip = ep.anthropic_beta_header_filter?.strip ?? [];
+      return { profile: p.name, key: `${ep.base_url ?? ''}::${[...strip].sort().join(',')}` };
+    });
+  const distinctFilterKeys = new Set(claudeSdkFilters.map(f => f.key));
+  if (distinctFilterKeys.size > 1) {
+    throw new Error(
+      `All claude_agent_sdk profiles must share the same endpoint beta filter config. Found divergent configs across: ${claudeSdkFilters.map(f => f.profile).join(', ')}`,
+    );
+  }
+
   // Resolve and validate credentials
   const resolvedCredentials: ResolvedCredential[] = credentials.map(cred => {
     if (cred.type === 'workload_identity') {

@@ -157,6 +157,7 @@ export interface AgentRunRequest {
 
 export interface AgentRunner {
   run(request: AgentRunRequest): AsyncIterable<AgentRunEvent>;
+  close?(): Promise<void>;
 }
 
 export interface ArtifactComment {

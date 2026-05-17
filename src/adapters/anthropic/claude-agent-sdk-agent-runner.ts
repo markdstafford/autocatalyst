@@ -219,7 +219,13 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
     if (stripBetaValues.length === 0) return null;
 
     if (!this._betaFilterProxy) {
-      this._betaFilterProxy = startAnthropicBetaHeaderFilterProxy(profile.base_url, { stripBetaValues });
+      const pending = startAnthropicBetaHeaderFilterProxy(profile.base_url, { stripBetaValues });
+      this._betaFilterProxy = pending;
+      pending.catch(() => {
+        if (this._betaFilterProxy === pending) {
+          this._betaFilterProxy = null;
+        }
+      });
     }
     const proxy = await this._betaFilterProxy;
     return proxy.baseUrl;
@@ -227,8 +233,12 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
 
   async close(): Promise<void> {
     if (this._betaFilterProxy) {
-      const proxy = await this._betaFilterProxy;
-      await proxy.close();
+      try {
+        const proxy = await this._betaFilterProxy;
+        await proxy.close();
+      } catch {
+        // proxy never started successfully — nothing to close
+      }
       this._betaFilterProxy = null;
     }
   }
