@@ -11,10 +11,13 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import type { Meter, Counter, Histogram } from '@opentelemetry/api';
 import { metrics } from '@opentelemetry/api';
+import type { LoggerProvider } from '@opentelemetry/api-logs';
 import { performance } from 'node:perf_hooks';
+import type pino from 'pino';
 import type {
   AgentProfile,
   AgentPluginConfig,
+  AgentRoute,
   AgentRunContentBlock,
   AgentRunEvent,
   AgentRunRequest,
@@ -23,6 +26,7 @@ import type {
   AgentSkillRef,
   AgentThinking,
 } from '../../types/ai.js';
+import { createLogger } from '../../core/logger.js';
 import { materializeClaudeRuntimeSkillPlugins } from './claude-runtime-skill-materializer.js';
 import { buildSandboxEnvironment } from '../sandbox-environment.js';
 
@@ -63,6 +67,8 @@ export interface ClaudeAgentSdkAgentRunnerOptions {
   materializeRuntimeSkills?: (refs: AgentSkillRef[]) => Promise<AgentPluginConfig[]>;
   meter?: Meter;
   sandboxEnvTokens?: string[];
+  logDestination?: pino.DestinationStream;
+  loggerProvider?: LoggerProvider;
 }
 
 export class ClaudeAgentSdkAgentRunner implements AgentRunner {
@@ -73,11 +79,16 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
   private readonly _agentRunOutcome: Counter;
   private readonly _agentTokenUsage: Histogram;
   private readonly sandboxEnvTokens: string[];
+  private readonly logger: pino.Logger;
 
   constructor(options?: ClaudeAgentSdkAgentRunnerOptions) {
     this.queryFn = options?.queryFn ?? _query;
     this.materializeRuntimeSkills = options?.materializeRuntimeSkills ?? materializeClaudeRuntimeSkillPlugins;
     this.sandboxEnvTokens = options?.sandboxEnvTokens ?? [];
+    this.logger = createLogger('claude-agent-sdk', {
+      destination: options?.logDestination,
+      loggerProvider: options?.loggerProvider,
+    });
     const meter = options?.meter ?? metrics.getMeter('autocatalyst');
     this._agentTurns = meter.createCounter('autocatalyst.agent.turns', {
       unit: '{turn}',
@@ -99,6 +110,16 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
 
   async *run(request: AgentRunRequest): AsyncIterable<AgentRunEvent> {
     const model = request.profile?.model ?? 'unknown';
+    const sandboxEnv = buildSandboxEnvironment(this.sandboxEnvTokens);
+    if (isGitHubDependentRoute(request.route) && !sandboxEnv['GH_TOKEN'] && !sandboxEnv['GITHUB_TOKEN']) {
+      this.logger.warn(
+        {
+          event: 'sandbox.no_github_token',
+          route_task: request.route.task,
+        },
+        `Sandbox route ${request.route.task} requires GitHub CLI authentication. Add AC_GH_TOKEN to sandbox.env_tokens in autocatalyst.yaml and set AC_GH_TOKEN before starting Autocatalyst.`,
+      );
+    }
     const profile = await this.profileWithRuntimeSkillPlugins(request.profile);
     const startMs = performance.now();
     for await (const message of this.queryFn({
@@ -159,6 +180,10 @@ export function makeClaudeAgentSdkOptions(cwd: string, profile?: AgentProfile, s
     settings: automatedSettings(cwd),
     env: {
       PATH: process.env['PATH'] ?? '',
+      // HOME is required: Claude Code CLI resolves its own config, plugins, and keybindings
+      // from ~/.claude. Without it the CLI cannot load user-level settings and will fail to
+      // start. This is an explicit, documented exception to the sandbox-token allowlist —
+      // it exposes only Claude Code's own configuration, not general host credential stores.
       HOME: process.env['HOME'] ?? '',
       ...buildSandboxEnvironment(sandboxEnvTokens),
       CLAUDE_CODE_MAX_OUTPUT_TOKENS: process.env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] ?? '128000',
@@ -204,4 +229,10 @@ function settingSourcesForProfile(profile: AgentProfile | undefined): AgentSetti
   if (profile?.setting_sources) return [...profile.setting_sources];
   if (profile?.load_user_settings === true) return ['user', 'project'];
   return ['project'];
+}
+
+function isGitHubDependentRoute(route: AgentRoute): boolean {
+  if (route.task === 'issue.triage') return true;
+  if (route.task === 'artifact.create' && (route.intent === 'bug' || route.intent === 'chore')) return true;
+  return false;
 }
