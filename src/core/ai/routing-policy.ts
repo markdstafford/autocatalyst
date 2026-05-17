@@ -34,10 +34,11 @@ export class DefaultAgentRoutingPolicy implements AgentRoutingPolicy {
 
 function buildAgentProfile(
   profile: ProfileConfig,
-  _endpoint: EndpointConfig,
-  _credential: ResolvedCredential | undefined,
+  endpoint: EndpointConfig,
+  credential: ResolvedCredential | undefined,
   route: AgentRoute,
 ): AgentProfile {
+  const anthropicBetaHeaderFilter = betaHeaderFilterForEndpoint(endpoint);
   return {
     id: profile.name,
     provider: runnerToProvider(profile.runner),
@@ -46,7 +47,17 @@ function buildAgentProfile(
     thinking: profile.anthropic?.thinking as AgentThinking | undefined,
     required_skills: requiredSkillsForRoute(route),
     plugins: profile.plugins,
+    api_key: credential?.resolvedValue,
+    base_url: endpoint.base_url,
+    ...(anthropicBetaHeaderFilter ? { anthropic_beta_header_filter: anthropicBetaHeaderFilter } : {}),
   };
+}
+
+function betaHeaderFilterForEndpoint(endpoint: EndpointConfig): AgentProfile['anthropic_beta_header_filter'] | undefined {
+  const strip = endpoint.anthropic_beta_header_filter?.strip
+    .map(value => value.trim())
+    .filter(value => value.length > 0) ?? [];
+  return strip.length > 0 ? { strip } : undefined;
 }
 
 function runnerToProvider(runner: RunnerKind): string {

@@ -12,6 +12,7 @@ export interface BootstrapWorkflowRuntimeDeps extends Omit<OrchestratorDeps, 'co
   intentClassifier: IntentClassifier;
   isConnected: () => boolean;
   meter?: Meter;
+  onStop?: () => Promise<void>;
 }
 
 export function bootstrapWorkflowRuntime(
@@ -41,6 +42,6 @@ export function bootstrapWorkflowRuntime(
     overrideRunStage: (requestId, stage) => orchestrator.overrideRunStage(requestId, stage),
   });
 
-  const service = new Service(config, { orchestrator });
+  const service = new Service(config, { orchestrator, onStop: deps.onStop });
   return { commandRegistry, orchestrator, service };
 }

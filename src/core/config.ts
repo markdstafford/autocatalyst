@@ -117,6 +117,31 @@ export function validateConfig(config: WorkflowConfig): void {
     }
   }
 
+  const rawAi = (config as Record<string, unknown>)['ai'];
+  if (rawAi !== undefined && rawAi !== null && typeof rawAi === 'object' && !Array.isArray(rawAi)) {
+    const endpoints = (rawAi as Record<string, unknown>)['endpoints'];
+    if (endpoints !== undefined) {
+      if (!Array.isArray(endpoints)) throw new Error('ai.endpoints must be an array');
+      for (const [endpointIndex, rawEndpoint] of endpoints.entries()) {
+        if (typeof rawEndpoint !== 'object' || rawEndpoint === null || Array.isArray(rawEndpoint)) continue;
+        const filter = (rawEndpoint as Record<string, unknown>)['anthropic_beta_header_filter'];
+        if (filter === undefined) continue;
+        if (typeof filter !== 'object' || filter === null || Array.isArray(filter)) {
+          throw new Error(`ai.endpoints[${endpointIndex}].anthropic_beta_header_filter must be an object`);
+        }
+        const strip = (filter as Record<string, unknown>)['strip'];
+        if (!Array.isArray(strip)) {
+          throw new Error(`ai.endpoints[${endpointIndex}].anthropic_beta_header_filter.strip must be an array`);
+        }
+        for (const [stripIndex, value] of strip.entries()) {
+          if (typeof value !== 'string' || value.trim() === '') {
+            throw new Error(`ai.endpoints[${endpointIndex}].anthropic_beta_header_filter.strip[${stripIndex}] must be a non-empty string`);
+          }
+        }
+      }
+    }
+  }
+
   const rawSandbox = (config as Record<string, unknown>)['sandbox'];
   if (rawSandbox !== undefined && rawSandbox !== null) {
     if (typeof rawSandbox !== 'object' || Array.isArray(rawSandbox)) {
@@ -254,6 +279,22 @@ export function resolveAiConfig(
         `Profile '${profile.name}': runner 'claude_agent_sdk' is incompatible with protocol 'openai'`,
       );
     }
+  }
+
+  // Validate that all claude_agent_sdk profiles share one beta filter config.
+  // The runner uses a single shared proxy — divergent configs would silently misroute.
+  const claudeSdkFilters = profiles
+    .filter(p => p.runner === 'claude_agent_sdk')
+    .map(p => {
+      const ep = endpoints.find(e => e.name === p.endpoint)!;
+      const strip = ep.anthropic_beta_header_filter?.strip ?? [];
+      return { profile: p.name, key: `${ep.base_url ?? ''}::${[...strip].sort().join(',')}` };
+    });
+  const distinctFilterKeys = new Set(claudeSdkFilters.map(f => f.key));
+  if (distinctFilterKeys.size > 1) {
+    throw new Error(
+      `All claude_agent_sdk profiles must share the same endpoint beta filter config. Found divergent configs across: ${claudeSdkFilters.map(f => f.profile).join(', ')}`,
+    );
   }
 
   // Resolve and validate credentials

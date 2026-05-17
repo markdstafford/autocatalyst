@@ -47,6 +47,11 @@ export interface AgentProfile {
   load_user_settings?: boolean;
   required_skills?: AgentSkillRef[];
   plugins?: AgentPluginConfig[];
+  api_key?: string;
+  base_url?: string;
+  anthropic_beta_header_filter?: {
+    strip: string[];
+  };
 }
 
 export interface AgentProfileSummary {
@@ -152,6 +157,7 @@ export interface AgentRunRequest {
 
 export interface AgentRunner {
   run(request: AgentRunRequest): AsyncIterable<AgentRunEvent>;
+  close?(): Promise<void>;
 }
 
 export interface ArtifactComment {

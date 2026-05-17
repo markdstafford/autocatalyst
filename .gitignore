@@ -34,10 +34,12 @@ docs/superpowers/
 # Friction logs
 context-human/.friction-logs/
 
-# Claude Code local config
-.claude/settings.local.json
-.claude/skills/
-.claude/CLAUDE.md
+# Claude Code — track shared settings, ignore everything else
+.claude/*
+!.claude/settings.json
+
+# npm cache
+.npm/
 
 # OMC ephemeral state
 .omc/

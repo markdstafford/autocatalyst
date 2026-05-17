@@ -209,6 +209,60 @@ describe('validateConfig', () => {
     expect(() => validateConfig({ polling: { interval_ms: -1 } } as WorkflowConfig))
       .toThrow(/interval_ms/);
   });
+
+  it('passes for endpoint beta header filter strip config', () => {
+    expect(() => validateConfig({
+      ai: {
+        credentials: [],
+        profiles: [],
+        routing: {},
+        endpoints: [{
+          name: 'grove-anthropic',
+          protocol: 'anthropic',
+          credential: 'grove',
+          anthropic_beta_header_filter: {
+            strip: ['advisor-tool-2026-03-01'],
+          },
+        }],
+      },
+    } as unknown as WorkflowConfig)).not.toThrow();
+  });
+
+  it('throws when endpoint beta header filter strip config is not an array', () => {
+    expect(() => validateConfig({
+      ai: {
+        credentials: [],
+        profiles: [],
+        routing: {},
+        endpoints: [{
+          name: 'grove-anthropic',
+          protocol: 'anthropic',
+          credential: 'grove',
+          anthropic_beta_header_filter: {
+            strip: 'advisor-tool-2026-03-01',
+          },
+        }],
+      },
+    } as unknown as WorkflowConfig)).toThrow('ai.endpoints[0].anthropic_beta_header_filter.strip must be an array');
+  });
+
+  it('throws when endpoint beta header filter strip config contains an empty value', () => {
+    expect(() => validateConfig({
+      ai: {
+        credentials: [],
+        profiles: [],
+        routing: {},
+        endpoints: [{
+          name: 'grove-anthropic',
+          protocol: 'anthropic',
+          credential: 'grove',
+          anthropic_beta_header_filter: {
+            strip: ['advisor-tool-2026-03-01', ''],
+          },
+        }],
+      },
+    } as unknown as WorkflowConfig)).toThrow('ai.endpoints[0].anthropic_beta_header_filter.strip[1] must be a non-empty string');
+  });
 });
 
 // ─── redactConfig (unchanged) ────────────────────────────────────────────────

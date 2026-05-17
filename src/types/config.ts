@@ -30,6 +30,11 @@ export interface EndpointConfig {
   base_url?: string;
   /** Bedrock-specific region */
   region?: string;
+  /** Anthropic-specific beta header filter for gateway compatibility. */
+  anthropic_beta_header_filter?: {
+    /** Beta values to remove from the anthropic-beta request header. */
+    strip: string[];
+  };
 }
 
 export interface ProfileConfig {

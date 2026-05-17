@@ -1,0 +1,17 @@
+{
+  "enabledPlugins": {
+    "mm@micromanager": true
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${HOME}/.claude/plugins/marketplaces/micromanager/plugins/mm/hooks/session-start.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

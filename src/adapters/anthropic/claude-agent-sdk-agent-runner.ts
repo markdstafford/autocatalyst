@@ -29,8 +29,26 @@ import type {
 import { createLogger } from '../../core/logger.js';
 import { materializeClaudeRuntimeSkillPlugins } from './claude-runtime-skill-materializer.js';
 import { buildSandboxEnvironment } from '../sandbox-environment.js';
+import { startAnthropicBetaHeaderFilterProxy, type AnthropicBetaHeaderFilterProxy } from './anthropic-beta-header-filter-proxy.js';
 
 type QueryFn = typeof _query;
+
+const MAX_STDERR_LINES = 50;
+
+const SECRET_PATTERNS = [
+  /(?:api[_-]?key|secret|password|credential)\s*[=:]\s*\S+/gi,
+  /ghp_[A-Za-z0-9_]+/g,
+  /sk-[A-Za-z0-9_-]+/g,
+  /xox[bpras]-[A-Za-z0-9-]+/g,
+];
+
+function redactSecrets(text: string): string {
+  let redacted = text;
+  for (const pattern of SECRET_PATTERNS) {
+    redacted = redacted.replace(pattern, '[REDACTED]');
+  }
+  return redacted;
+}
 
 const AUTOMATED_ALLOWED_TOOLS = [
   'Bash',
@@ -80,6 +98,7 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
   private readonly _agentTokenUsage: Histogram;
   private readonly sandboxEnvTokens: string[];
   private readonly logger: pino.Logger;
+  private _betaFilterProxy: Promise<AnthropicBetaHeaderFilterProxy> | null = null;
 
   constructor(options?: ClaudeAgentSdkAgentRunnerOptions) {
     this.queryFn = options?.queryFn ?? _query;
@@ -121,10 +140,29 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
       );
     }
     const profile = await this.profileWithRuntimeSkillPlugins(request.profile);
+    const proxyBaseUrl = await this.betaFilterProxyUrl(profile);
+    const effectiveProfile = proxyBaseUrl && profile
+      ? { ...profile, base_url: proxyBaseUrl }
+      : profile;
+    const stderrLines: string[] = [];
+    const sdkOptions = makeClaudeAgentSdkOptions(request.working_directory, effectiveProfile, this.sandboxEnvTokens);
+    const options = {
+      ...sdkOptions,
+      ...(process.env['AUTOCATALYST_SDK_DEBUG'] ? { debug: true } : {}),
+      stderr: (data: string) => {
+        for (const line of data.split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed) stderrLines.push(trimmed);
+        }
+        if (stderrLines.length > MAX_STDERR_LINES) {
+          stderrLines.splice(0, stderrLines.length - MAX_STDERR_LINES);
+        }
+      },
+    };
     const startMs = performance.now();
     for await (const message of this.queryFn({
       prompt: request.prompt,
-      options: makeClaudeAgentSdkOptions(request.working_directory, profile, this.sandboxEnvTokens),
+      options,
     })) {
       if ((message as SDKMessage).type === 'result') {
         const result = message as unknown as SDKResultMessage;
@@ -136,6 +174,17 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
         this._agentTokenUsage.record(result.usage.output_tokens, {
           component: 'claude-agent-sdk', model, token_type: 'output',
         });
+        if (result.is_error && stderrLines.length > 0) {
+          this.logger.error(
+            {
+              event: 'sdk.stderr_on_error',
+              route_task: request.route.task,
+              model,
+              stderr_excerpt: redactSecrets(stderrLines.join('\n')),
+            },
+            'Claude Code subprocess stderr captured on error exit',
+          );
+        }
       }
       const event = normalizeSdkMessage(message as SDKMessage);
       if (event.type === 'assistant') {
@@ -143,11 +192,55 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
       }
       yield event;
     }
+    if (stderrLines.length > 0) {
+      this.logger.debug(
+        {
+          event: 'sdk.stderr',
+          route_task: request.route.task,
+          model,
+          stderr_line_count: stderrLines.length,
+          stderr_excerpt: redactSecrets(stderrLines.slice(-5).join('\n')),
+        },
+        'Claude Code subprocess stderr',
+      );
+    }
     this._adapterLatency.record(performance.now() - startMs, {
       adapter: 'agent-sdk',
       operation: 'query',
       model,
     });
+  }
+
+  private async betaFilterProxyUrl(profile: AgentProfile | undefined): Promise<string | null> {
+    if (!profile?.base_url) return null;
+    const stripBetaValues = profile.anthropic_beta_header_filter?.strip
+      .map(value => value.trim())
+      .filter(value => value.length > 0) ?? [];
+    if (stripBetaValues.length === 0) return null;
+
+    if (!this._betaFilterProxy) {
+      const pending = startAnthropicBetaHeaderFilterProxy(profile.base_url, { stripBetaValues });
+      this._betaFilterProxy = pending;
+      pending.catch(() => {
+        if (this._betaFilterProxy === pending) {
+          this._betaFilterProxy = null;
+        }
+      });
+    }
+    const proxy = await this._betaFilterProxy;
+    return proxy.baseUrl;
+  }
+
+  async close(): Promise<void> {
+    if (this._betaFilterProxy) {
+      try {
+        const proxy = await this._betaFilterProxy;
+        await proxy.close();
+      } catch {
+        // proxy never started successfully — nothing to close
+      }
+      this._betaFilterProxy = null;
+    }
   }
 
   private async profileWithRuntimeSkillPlugins(profile: AgentProfile | undefined): Promise<AgentProfile | undefined> {
@@ -187,6 +280,9 @@ export function makeClaudeAgentSdkOptions(cwd: string, profile?: AgentProfile, s
       HOME: process.env['HOME'] ?? '',
       ...buildSandboxEnvironment(sandboxEnvTokens),
       CLAUDE_CODE_MAX_OUTPUT_TOKENS: process.env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] ?? '128000',
+      ...(profile?.api_key ? { ANTHROPIC_API_KEY: profile.api_key } : {}),
+      ...(profile?.base_url ? { ANTHROPIC_BASE_URL: profile.base_url } : {}),
+      ...(profile?.api_key && profile?.base_url ? { ANTHROPIC_CUSTOM_HEADERS: `api-key: ${profile.api_key}` } : {}),
     },
     ...(profile?.model ? { model: profile.model } : {}),
     thinking: thinkingForProfile(profile?.thinking),

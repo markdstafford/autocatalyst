@@ -6,6 +6,7 @@ import type { Orchestrator } from './orchestrator.js';
 interface ServiceOptions {
   logDestination?: pino.DestinationStream;
   orchestrator?: Orchestrator;
+  onStop?: () => Promise<void>;
 }
 
 export class Service {
@@ -17,10 +18,12 @@ export class Service {
   private _stopped: Promise<void>;
   private _resolveStopped!: () => void;
   private readonly orchestrator: Orchestrator | undefined;
+  private readonly onStop: (() => Promise<void>) | undefined;
 
   constructor(config: LoadedConfig, options?: ServiceOptions) {
     this.config = config;
     this.orchestrator = options?.orchestrator;
+    this.onStop = options?.onStop;
     this.logger = createLogger('service', { destination: options?.logDestination });
     this._stopped = new Promise(resolve => {
       this._resolveStopped = resolve;
@@ -68,19 +71,25 @@ export class Service {
     this.running = false;
     this.stopping = false;
 
-    if (this.orchestrator) {
-      this.orchestrator.stop()
-        .catch(err => {
+    const cleanup = async () => {
+      if (this.orchestrator) {
+        try {
+          await this.orchestrator.stop();
+        } catch (err) {
           this.logger.error({ event: 'service.orchestrator_stop_failed', error: String(err) }, 'Orchestrator failed to stop');
-        })
-        .finally(() => {
-          this.logger.info({ event: 'service.stopped' }, 'Shutdown complete');
-          this._resolveStopped();
-        });
-    } else {
+        }
+      }
+      if (this.onStop) {
+        try {
+          await this.onStop();
+        } catch (err) {
+          this.logger.error({ event: 'service.onstop_failed', error: String(err) }, 'onStop callback failed');
+        }
+      }
       this.logger.info({ event: 'service.stopped' }, 'Shutdown complete');
       this._resolveStopped();
-    }
+    };
+    cleanup();
   }
 
   private tick(): void {
