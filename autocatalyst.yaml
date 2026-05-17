@@ -48,14 +48,36 @@ ai:
       anthropic:
         effort: low
         thinking: adaptive
+    - name: grove-gpt5.4-nano
+      endpoint: grove-openai
+      model: gpt-5.4-nano
+      runner: openai_direct
+    - name: grove-gpt5.5-low
+      endpoint: grove-openai
+      model: gpt-5.5
+      runner: openai_agent_sdk
+      openai:
+        reasoning_effort: low
+    - name: grove-gpt5.5-medium
+      endpoint: grove-openai
+      model: gpt-5.5
+      runner: openai_agent_sdk
+      openai:
+        reasoning_effort: medium
+    - name: grove-gpt5.5-high
+      endpoint: grove-openai
+      model: gpt-5.5
+      runner: openai_agent_sdk
+      openai:
+        reasoning_effort: high
   routing:
-    intent.classify: grove-haiku-4.5-low
-    pr.title_generate: grove-haiku-4.5-low
-    artifact.create: grove-sonnet-4.6-high
-    artifact.revise: grove-sonnet-4.6-high
+    intent.classify: grove-gpt5.4-nano
+    pr.title_generate: grove-gpt5.4-nano
+    artifact.create: grove-gpt5.5-high
+    artifact.revise: grove-gpt5.5-high
     implementation.run: grove-sonnet-4.6-medium
-    implementation.review.initial: grove-sonnet-4.6-high
-    implementation.review.final: grove-sonnet-4.6-medium
+    implementation.review.initial: grove-gpt5.5-high
+    implementation.review.final: grove-gpt5.5-medium
     question.answer: grove-sonnet-4.6-low
     issue.triage: grove-sonnet-4.6-high
 polling:
