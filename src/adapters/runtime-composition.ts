@@ -118,7 +118,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
 
   const aiRoutingPolicy = buildAgentRoutingPolicy(resolvedAi);
   const directModelRunner = buildDirectModelRunner(resolvedAi, logger, options.loggerProvider);
-  const agentRunner = buildAgentRunner(resolvedAi, logger, options.meter);
+  const agentRunner = buildAgentRunner(resolvedAi, logger, options.meter, currentConfig.config.sandbox?.env_tokens);
   const intentClassifier = new ModelIntentClassifier(directModelRunner, { routingPolicy: aiRoutingPolicy });
   const prTitleGenerator = new ModelPRTitleGenerator(directModelRunner, { routingPolicy: aiRoutingPolicy });
   const questionAnswerer = new AgentRunnerQuestionAnsweringAgent(agentRunner, aiRoutingPolicy, repoPath);
@@ -238,6 +238,7 @@ export function buildAgentRunner(
   resolvedAi: ResolvedAiConfig,
   logger: RuntimeLogger,
   meter?: Meter,
+  sandboxEnvTokens?: string[],
 ): AgentRunner {
   const claudeProfile = resolvedAi.profiles.find(p => p.runner === 'claude_agent_sdk');
   const openAiAgentProfile = resolvedAi.profiles.find(p => p.runner === 'openai_agent_sdk');
@@ -249,7 +250,7 @@ export function buildAgentRunner(
     );
   }
 
-  const claudeRunner = claudeProfile ? new ClaudeAgentSdkAgentRunner({ meter }) : null;
+  const claudeRunner = claudeProfile ? new ClaudeAgentSdkAgentRunner({ meter, sandboxEnvTokens }) : null;
 
   let openAiRunner: AgentRunner | null = null;
   if (openAiAgentProfile) {
@@ -277,7 +278,7 @@ export function buildAgentRunner(
       credential.resolvedValue!,
       endpoint.base_url,
       openAiAgentProfile.model,
-      { meter },
+      { meter, sandboxEnvTokens },
     );
   }
 

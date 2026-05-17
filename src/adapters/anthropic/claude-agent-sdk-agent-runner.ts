@@ -24,6 +24,7 @@ import type {
   AgentThinking,
 } from '../../types/ai.js';
 import { materializeClaudeRuntimeSkillPlugins } from './claude-runtime-skill-materializer.js';
+import { buildSandboxEnvironment } from '../sandbox-environment.js';
 
 type QueryFn = typeof _query;
 
@@ -61,6 +62,7 @@ export interface ClaudeAgentSdkAgentRunnerOptions {
   queryFn?: QueryFn;
   materializeRuntimeSkills?: (refs: AgentSkillRef[]) => Promise<AgentPluginConfig[]>;
   meter?: Meter;
+  sandboxEnvTokens?: string[];
 }
 
 export class ClaudeAgentSdkAgentRunner implements AgentRunner {
@@ -70,10 +72,12 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
   private readonly _adapterLatency: Histogram;
   private readonly _agentRunOutcome: Counter;
   private readonly _agentTokenUsage: Histogram;
+  private readonly sandboxEnvTokens: string[];
 
   constructor(options?: ClaudeAgentSdkAgentRunnerOptions) {
     this.queryFn = options?.queryFn ?? _query;
     this.materializeRuntimeSkills = options?.materializeRuntimeSkills ?? materializeClaudeRuntimeSkillPlugins;
+    this.sandboxEnvTokens = options?.sandboxEnvTokens ?? [];
     const meter = options?.meter ?? metrics.getMeter('autocatalyst');
     this._agentTurns = meter.createCounter('autocatalyst.agent.turns', {
       unit: '{turn}',
@@ -99,7 +103,7 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
     const startMs = performance.now();
     for await (const message of this.queryFn({
       prompt: request.prompt,
-      options: makeClaudeAgentSdkOptions(request.working_directory, profile),
+      options: makeClaudeAgentSdkOptions(request.working_directory, profile, this.sandboxEnvTokens),
     })) {
       if ((message as SDKMessage).type === 'result') {
         const result = message as unknown as SDKResultMessage;
@@ -140,7 +144,7 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
   }
 }
 
-export function makeClaudeAgentSdkOptions(cwd: string, profile?: AgentProfile): Options {
+export function makeClaudeAgentSdkOptions(cwd: string, profile?: AgentProfile, sandboxEnvTokens: string[] = []): Options {
   const settingSources = settingSourcesForProfile(profile);
   return {
     cwd,
@@ -154,7 +158,9 @@ export function makeClaudeAgentSdkOptions(cwd: string, profile?: AgentProfile): 
     systemPrompt: { type: 'preset', preset: 'claude_code' },
     settings: automatedSettings(cwd),
     env: {
-      ...process.env,
+      PATH: process.env['PATH'] ?? '',
+      HOME: process.env['HOME'] ?? '',
+      ...buildSandboxEnvironment(sandboxEnvTokens),
       CLAUDE_CODE_MAX_OUTPUT_TOKENS: process.env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] ?? '128000',
     },
     ...(profile?.model ? { model: profile.model } : {}),

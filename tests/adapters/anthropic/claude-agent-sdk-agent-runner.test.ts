@@ -311,4 +311,66 @@ describe('ClaudeAgentSdkAgentRunner', () => {
     const call = queryFn.mock.calls[0][0];
     expect(call.options.env['CLAUDE_CODE_MAX_OUTPUT_TOKENS']).toBe('64000');
   });
+
+  test('passes config-declared AC_GH_TOKEN as GH_TOKEN in sandbox env', async () => {
+    const queryFn = vi.fn().mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+    });
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn, sandboxEnvTokens: ['AC_GH_TOKEN'] });
+
+    const originalToken = process.env['AC_GH_TOKEN'];
+    process.env['AC_GH_TOKEN'] = 'ghp_claude_test_token';
+    try {
+      await collect(runner.run({
+        route: { task: 'implementation.run' },
+        working_directory: '/tmp/workspace',
+        prompt: 'implement',
+        profile: { id: 'impl', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-5', effort: 'high' },
+      }));
+    } finally {
+      if (originalToken !== undefined) {
+        process.env['AC_GH_TOKEN'] = originalToken;
+      } else {
+        delete process.env['AC_GH_TOKEN'];
+      }
+    }
+
+    const call = queryFn.mock.calls[0][0];
+    expect(call.options.env['GH_TOKEN']).toBe('ghp_claude_test_token');
+  });
+
+  test('does not forward unrelated process env vars to sandbox', async () => {
+    const queryFn = vi.fn().mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+    });
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn, sandboxEnvTokens: ['AC_GH_TOKEN'] });
+
+    const originalToken = process.env['AC_GH_TOKEN'];
+    const originalUnrelated = process.env['UNRELATED_SECRET'];
+    process.env['AC_GH_TOKEN'] = 'ghp_some_token';
+    process.env['UNRELATED_SECRET'] = 'should-not-appear';
+    try {
+      await collect(runner.run({
+        route: { task: 'implementation.run' },
+        working_directory: '/tmp/workspace',
+        prompt: 'implement',
+        profile: { id: 'impl', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-5', effort: 'high' },
+      }));
+    } finally {
+      if (originalToken !== undefined) {
+        process.env['AC_GH_TOKEN'] = originalToken;
+      } else {
+        delete process.env['AC_GH_TOKEN'];
+      }
+      if (originalUnrelated !== undefined) {
+        process.env['UNRELATED_SECRET'] = originalUnrelated;
+      } else {
+        delete process.env['UNRELATED_SECRET'];
+      }
+    }
+
+    const call = queryFn.mock.calls[0][0];
+    expect(call.options.env).not.toHaveProperty('UNRELATED_SECRET');
+    expect(call.options.env).not.toHaveProperty('AC_GH_TOKEN');
+  });
 });
