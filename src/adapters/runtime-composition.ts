@@ -198,6 +198,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
     reviewCoordinator,
     isConnected: () => adapter.isConnected(),
     meter: options.meter,
+    onStop: () => agentRunner.close?.() ?? Promise.resolve(),
   });
 }
 
@@ -325,6 +326,13 @@ export class RoutingAwareAgentRunner implements AgentRunner {
       return this.openAiRunner.run(request);
     }
     return this.claudeRunner.run(request);
+  }
+
+  async close(): Promise<void> {
+    await Promise.all([
+      this.claudeRunner.close?.(),
+      this.openAiRunner.close?.(),
+    ]);
   }
 }
 
