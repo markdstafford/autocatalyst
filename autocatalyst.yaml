@@ -54,6 +54,8 @@ ai:
     artifact.create: grove-sonnet-4.6-high
     artifact.revise: grove-sonnet-4.6-high
     implementation.run: grove-sonnet-4.6-medium
+    implementation.review.initial: grove-sonnet-4.6-high
+    implementation.review.final: grove-sonnet-4.6-medium
     question.answer: grove-sonnet-4.6-low
     issue.triage: grove-sonnet-4.6-high
 polling:

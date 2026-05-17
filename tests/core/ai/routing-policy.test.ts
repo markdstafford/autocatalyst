@@ -112,6 +112,34 @@ describe('DefaultAgentRoutingPolicy', () => {
     });
   });
 
+  test('passes credential and endpoint base_url through to AgentProfile', () => {
+    const config = makeAiConfig({
+      credentials: [{ name: 'my-key', type: 'api_key', value: 'sk-test' }],
+      endpoints: [{ name: 'ep', protocol: 'anthropic', credential: 'my-key', base_url: 'https://custom.endpoint/v1' }],
+    });
+    // Simulate resolved credentials (as runtime-composition would provide)
+    (config.credentials as unknown as Array<{ name: string; type: string; resolvedValue: string }>)[0].resolvedValue = 'sk-resolved';
+    const policy = new DefaultAgentRoutingPolicy(config);
+    const profile = policy.resolve({ task: 'intent.classify' });
+    expect(profile.api_key).toBe('sk-resolved');
+    expect(profile.base_url).toBe('https://custom.endpoint/v1');
+  });
+
+  test('api_key is undefined when credential has no resolvedValue', () => {
+    const policy = new DefaultAgentRoutingPolicy(makeAiConfig());
+    const profile = policy.resolve({ task: 'intent.classify' });
+    expect(profile.api_key).toBeUndefined();
+  });
+
+  test('base_url is undefined when endpoint has no base_url', () => {
+    const config = makeAiConfig({
+      endpoints: [{ name: 'ep', protocol: 'anthropic', credential: 'my-key' }],
+    });
+    const policy = new DefaultAgentRoutingPolicy(config);
+    const profile = policy.resolve({ task: 'intent.classify' });
+    expect(profile.base_url).toBeUndefined();
+  });
+
   test('resolveOptional returns null when route task is not in routing config', () => {
     const config = makeAiConfig();
     delete config.routing['question.answer'];

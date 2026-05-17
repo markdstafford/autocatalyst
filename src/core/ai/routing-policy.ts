@@ -34,8 +34,8 @@ export class DefaultAgentRoutingPolicy implements AgentRoutingPolicy {
 
 function buildAgentProfile(
   profile: ProfileConfig,
-  _endpoint: EndpointConfig,
-  _credential: ResolvedCredential | undefined,
+  endpoint: EndpointConfig,
+  credential: ResolvedCredential | undefined,
   route: AgentRoute,
 ): AgentProfile {
   return {
@@ -46,6 +46,8 @@ function buildAgentProfile(
     thinking: profile.anthropic?.thinking as AgentThinking | undefined,
     required_skills: requiredSkillsForRoute(route),
     plugins: profile.plugins,
+    api_key: credential?.resolvedValue,
+    base_url: endpoint.base_url,
   };
 }
 

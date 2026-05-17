@@ -47,6 +47,8 @@ export interface AgentProfile {
   load_user_settings?: boolean;
   required_skills?: AgentSkillRef[];
   plugins?: AgentPluginConfig[];
+  api_key?: string;
+  base_url?: string;
 }
 
 export interface AgentProfileSummary {

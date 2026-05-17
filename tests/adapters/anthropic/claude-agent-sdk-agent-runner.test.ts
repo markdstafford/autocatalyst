@@ -407,6 +407,54 @@ describe('ClaudeAgentSdkAgentRunner', () => {
     expect(call.options.env).not.toHaveProperty('AC_GH_TOKEN');
   });
 
+  test('injects ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL from profile credentials', async () => {
+    const queryFn = vi.fn().mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+    });
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn });
+
+    await collect(runner.run({
+      route: { task: 'implementation.run' },
+      working_directory: '/tmp/workspace',
+      prompt: 'implement',
+      profile: {
+        id: 'impl',
+        provider: 'claude_agent_sdk',
+        model: 'claude-sonnet-4-6',
+        effort: 'high',
+        api_key: 'sk-grove-test-key',
+        base_url: 'https://grove-gateway-prod.azure-api.net/grove-foundry-prod/anthropic',
+      },
+    }));
+
+    const call = queryFn.mock.calls[0][0];
+    expect(call.options.env['ANTHROPIC_API_KEY']).toBe('sk-grove-test-key');
+    expect(call.options.env['ANTHROPIC_BASE_URL']).toBe('https://grove-gateway-prod.azure-api.net/grove-foundry-prod/anthropic');
+  });
+
+  test('omits ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL when profile has no credentials', async () => {
+    const queryFn = vi.fn().mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+    });
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn });
+
+    await collect(runner.run({
+      route: { task: 'implementation.run' },
+      working_directory: '/tmp/workspace',
+      prompt: 'implement',
+      profile: {
+        id: 'impl',
+        provider: 'claude_agent_sdk',
+        model: 'claude-sonnet-4-6',
+        effort: 'high',
+      },
+    }));
+
+    const call = queryFn.mock.calls[0][0];
+    expect(call.options.env).not.toHaveProperty('ANTHROPIC_API_KEY');
+    expect(call.options.env).not.toHaveProperty('ANTHROPIC_BASE_URL');
+  });
+
   test('logs a warning for issue.triage when no GitHub token is in the sandbox environment', async () => {
     const { dest, getLogs } = makeLogCapture();
     const queryFn = vi.fn().mockImplementation(async function* () {
