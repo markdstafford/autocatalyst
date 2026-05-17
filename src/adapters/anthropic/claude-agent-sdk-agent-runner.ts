@@ -189,6 +189,7 @@ export function makeClaudeAgentSdkOptions(cwd: string, profile?: AgentProfile, s
       CLAUDE_CODE_MAX_OUTPUT_TOKENS: process.env['CLAUDE_CODE_MAX_OUTPUT_TOKENS'] ?? '128000',
       ...(profile?.api_key ? { ANTHROPIC_API_KEY: profile.api_key } : {}),
       ...(profile?.base_url ? { ANTHROPIC_BASE_URL: profile.base_url } : {}),
+      ...(profile?.api_key && profile?.base_url ? { ANTHROPIC_CUSTOM_HEADERS: `api-key: ${profile.api_key}` } : {}),
     },
     ...(profile?.model ? { model: profile.model } : {}),
     thinking: thinkingForProfile(profile?.thinking),

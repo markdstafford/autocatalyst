@@ -430,6 +430,7 @@ describe('ClaudeAgentSdkAgentRunner', () => {
     const call = queryFn.mock.calls[0][0];
     expect(call.options.env['ANTHROPIC_API_KEY']).toBe('sk-grove-test-key');
     expect(call.options.env['ANTHROPIC_BASE_URL']).toBe('https://grove-gateway-prod.azure-api.net/grove-foundry-prod/anthropic');
+    expect(call.options.env['ANTHROPIC_CUSTOM_HEADERS']).toBe('api-key: sk-grove-test-key');
   });
 
   test('omits ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL when profile has no credentials', async () => {
@@ -453,6 +454,7 @@ describe('ClaudeAgentSdkAgentRunner', () => {
     const call = queryFn.mock.calls[0][0];
     expect(call.options.env).not.toHaveProperty('ANTHROPIC_API_KEY');
     expect(call.options.env).not.toHaveProperty('ANTHROPIC_BASE_URL');
+    expect(call.options.env).not.toHaveProperty('ANTHROPIC_CUSTOM_HEADERS');
   });
 
   test('logs a warning for issue.triage when no GitHub token is in the sandbox environment', async () => {
