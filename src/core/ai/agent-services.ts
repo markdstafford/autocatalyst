@@ -897,7 +897,13 @@ function buildImplementationPrompt(artifact_path: string, result_file_path: stri
   lines.push('');
   lines.push('Rules:');
   lines.push('- review_summary.changes and review_summary.confirm must each contain 2-5 bullets when status is "complete".');
-  lines.push('- testing_steps must start with a `cd ` step when a workspace path is available.');
+  if (hasFeedbackContext) {
+    lines.push('- testing_steps should contain only net-new steps introduced by the changes in this feedback cycle.');
+    lines.push('  Omit setup steps such as `cd /workspace` and `npm install` that are already in the testing guide baseline.');
+    lines.push('  Include a baseline step only if the correct setup command has genuinely changed.');
+  } else {
+    lines.push('- testing_steps must start with a `cd ` step when a workspace path is available.');
+  }
   lines.push('- resolved_feedback_items: include [] on initial implementation; on feedback runs, only include items you actually fixed.');
   lines.push('- Use IDs exactly as provided — do not modify or guess IDs.');
   lines.push('- Use only the exact canonical status values: "complete", "needs_input", or "failed".');
