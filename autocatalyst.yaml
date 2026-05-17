@@ -87,6 +87,14 @@ ai:
     implementation.review.final: grove-gpt-5.5-medium
     question.answer: grove-sonnet-4.6-low
     issue.triage: grove-sonnet-4.6-high
+implementation_review:
+  max_initial_rounds: 1
+  max_final_rounds: 1
+  on_review_failure: warn
+telemetry:
+  metrics_endpoint: http://localhost:8428/opentelemetry/v1/metrics
+  logs_endpoint: http://localhost:9428/insert/opentelemetry/v1/logs
+  export_interval_ms: 30000
 polling:
   interval_ms: 30000
 channels:
