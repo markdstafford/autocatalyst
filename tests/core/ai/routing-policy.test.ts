@@ -125,6 +125,45 @@ describe('DefaultAgentRoutingPolicy', () => {
     expect(profile.base_url).toBe('https://custom.endpoint/v1');
   });
 
+  test('passes endpoint beta header filter config through to AgentProfile', () => {
+    const config = makeAiConfig({
+      endpoints: [
+        {
+          name: 'ep',
+          protocol: 'anthropic',
+          credential: 'my-key',
+          base_url: 'https://custom.endpoint',
+          anthropic_beta_header_filter: {
+            strip: ['advisor-tool-2026-03-01', 'context-management-2025-06-27'],
+          },
+        },
+      ],
+    });
+    const policy = new DefaultAgentRoutingPolicy(config);
+    const profile = policy.resolve({ task: 'implementation.run' });
+
+    expect(profile.anthropic_beta_header_filter).toEqual({
+      strip: ['advisor-tool-2026-03-01', 'context-management-2025-06-27'],
+    });
+  });
+
+  test('omits beta header filter config when endpoint strip list is empty', () => {
+    const config = makeAiConfig({
+      endpoints: [
+        {
+          name: 'ep',
+          protocol: 'anthropic',
+          credential: 'my-key',
+          anthropic_beta_header_filter: { strip: [] },
+        },
+      ],
+    });
+    const policy = new DefaultAgentRoutingPolicy(config);
+    const profile = policy.resolve({ task: 'implementation.run' });
+
+    expect(profile.anthropic_beta_header_filter).toBeUndefined();
+  });
+
   test('api_key is undefined when credential has no resolvedValue', () => {
     const policy = new DefaultAgentRoutingPolicy(makeAiConfig());
     const profile = policy.resolve({ task: 'intent.classify' });

@@ -407,7 +407,7 @@ describe('ClaudeAgentSdkAgentRunner', () => {
     expect(call.options.env).not.toHaveProperty('AC_GH_TOKEN');
   });
 
-  test('injects ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL from profile credentials', async () => {
+  test('injects ANTHROPIC_API_KEY and custom headers from profile credentials', async () => {
     const queryFn = vi.fn().mockImplementation(async function* () {
       yield { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
     });
@@ -429,8 +429,66 @@ describe('ClaudeAgentSdkAgentRunner', () => {
 
     const call = queryFn.mock.calls[0][0];
     expect(call.options.env['ANTHROPIC_API_KEY']).toBe('sk-grove-test-key');
-    expect(call.options.env['ANTHROPIC_BASE_URL']).toBe('https://grove-gateway-prod.azure-api.net/grove-foundry-prod/anthropic');
+    expect(call.options.env['ANTHROPIC_BASE_URL']).toBeDefined();
     expect(call.options.env['ANTHROPIC_CUSTOM_HEADERS']).toBe('api-key: sk-grove-test-key');
+  });
+
+  test('passes custom Anthropic base URLs through unchanged without configured beta values to strip', async () => {
+    const queryFn = vi.fn().mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+    });
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn });
+    const groveBaseUrl = 'https://grove-gateway-prod.azure-api.net/grove-foundry-prod/anthropic';
+
+    await collect(runner.run({
+      route: { task: 'implementation.run' },
+      working_directory: '/tmp/workspace',
+      prompt: 'implement',
+      profile: {
+        id: 'impl',
+        provider: 'claude_agent_sdk',
+        model: 'claude-sonnet-4-6',
+        effort: 'high',
+        api_key: 'sk-grove-test-key',
+        base_url: groveBaseUrl,
+      },
+    }));
+
+    const call = queryFn.mock.calls[0][0];
+    expect(call.options.env['ANTHROPIC_API_KEY']).toBe('sk-grove-test-key');
+    expect(call.options.env['ANTHROPIC_CUSTOM_HEADERS']).toBe('api-key: sk-grove-test-key');
+    expect(call.options.env['ANTHROPIC_BASE_URL']).toBe(groveBaseUrl);
+  });
+
+  test('routes custom Anthropic base URLs through a loopback beta-header filter when beta values are configured to strip', async () => {
+    const queryFn = vi.fn().mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+    });
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn });
+    const groveBaseUrl = 'https://grove-gateway-prod.azure-api.net/grove-foundry-prod/anthropic';
+
+    await collect(runner.run({
+      route: { task: 'implementation.run' },
+      working_directory: '/tmp/workspace',
+      prompt: 'implement',
+      profile: {
+        id: 'impl',
+        provider: 'claude_agent_sdk',
+        model: 'claude-sonnet-4-6',
+        effort: 'high',
+        api_key: 'sk-grove-test-key',
+        base_url: groveBaseUrl,
+        anthropic_beta_header_filter: {
+          strip: ['advisor-tool-2026-03-01'],
+        },
+      },
+    }));
+
+    const call = queryFn.mock.calls[0][0];
+    expect(call.options.env['ANTHROPIC_API_KEY']).toBe('sk-grove-test-key');
+    expect(call.options.env['ANTHROPIC_CUSTOM_HEADERS']).toBe('api-key: sk-grove-test-key');
+    expect(call.options.env['ANTHROPIC_BASE_URL']).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+    expect(call.options.env['ANTHROPIC_BASE_URL']).not.toBe(groveBaseUrl);
   });
 
   test('omits ANTHROPIC_API_KEY and ANTHROPIC_BASE_URL when profile has no credentials', async () => {

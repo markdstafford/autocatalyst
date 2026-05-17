@@ -117,6 +117,31 @@ export function validateConfig(config: WorkflowConfig): void {
     }
   }
 
+  const rawAi = (config as Record<string, unknown>)['ai'];
+  if (rawAi !== undefined && rawAi !== null && typeof rawAi === 'object' && !Array.isArray(rawAi)) {
+    const endpoints = (rawAi as Record<string, unknown>)['endpoints'];
+    if (endpoints !== undefined) {
+      if (!Array.isArray(endpoints)) throw new Error('ai.endpoints must be an array');
+      for (const [endpointIndex, rawEndpoint] of endpoints.entries()) {
+        if (typeof rawEndpoint !== 'object' || rawEndpoint === null || Array.isArray(rawEndpoint)) continue;
+        const filter = (rawEndpoint as Record<string, unknown>)['anthropic_beta_header_filter'];
+        if (filter === undefined) continue;
+        if (typeof filter !== 'object' || filter === null || Array.isArray(filter)) {
+          throw new Error(`ai.endpoints[${endpointIndex}].anthropic_beta_header_filter must be an object`);
+        }
+        const strip = (filter as Record<string, unknown>)['strip'];
+        if (!Array.isArray(strip)) {
+          throw new Error(`ai.endpoints[${endpointIndex}].anthropic_beta_header_filter.strip must be an array`);
+        }
+        for (const [stripIndex, value] of strip.entries()) {
+          if (typeof value !== 'string' || value.trim() === '') {
+            throw new Error(`ai.endpoints[${endpointIndex}].anthropic_beta_header_filter.strip[${stripIndex}] must be a non-empty string`);
+          }
+        }
+      }
+    }
+  }
+
   const rawSandbox = (config as Record<string, unknown>)['sandbox'];
   if (rawSandbox !== undefined && rawSandbox !== null) {
     if (typeof rawSandbox !== 'object' || Array.isArray(rawSandbox)) {

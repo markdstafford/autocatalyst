@@ -49,6 +49,9 @@ export interface AgentProfile {
   plugins?: AgentPluginConfig[];
   api_key?: string;
   base_url?: string;
+  anthropic_beta_header_filter?: {
+    strip: string[];
+  };
 }
 
 export interface AgentProfileSummary {
