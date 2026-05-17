@@ -29,6 +29,7 @@ import type {
 import { createLogger } from '../../core/logger.js';
 import { materializeClaudeRuntimeSkillPlugins } from './claude-runtime-skill-materializer.js';
 import { buildSandboxEnvironment } from '../sandbox-environment.js';
+import { startAnthropicBetaHeaderFilterProxy, type AnthropicBetaHeaderFilterProxy } from './anthropic-beta-header-filter-proxy.js';
 
 type QueryFn = typeof _query;
 
@@ -97,6 +98,8 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
   private readonly _agentTokenUsage: Histogram;
   private readonly sandboxEnvTokens: string[];
   private readonly logger: pino.Logger;
+  private _betaFilterProxy: AnthropicBetaHeaderFilterProxy | null = null;
+  private _betaFilterProxyKey: string | null = null;
 
   constructor(options?: ClaudeAgentSdkAgentRunnerOptions) {
     this.queryFn = options?.queryFn ?? _query;
@@ -138,9 +141,15 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
       );
     }
     const profile = await this.profileWithRuntimeSkillPlugins(request.profile);
+    const proxyBaseUrl = await this.betaFilterProxyUrl(profile);
+    const effectiveProfile = proxyBaseUrl && profile
+      ? { ...profile, base_url: proxyBaseUrl }
+      : profile;
     const stderrLines: string[] = [];
+    const sdkOptions = makeClaudeAgentSdkOptions(request.working_directory, effectiveProfile, this.sandboxEnvTokens);
     const options = {
-      ...makeClaudeAgentSdkOptions(request.working_directory, profile, this.sandboxEnvTokens),
+      ...sdkOptions,
+      ...(process.env['AUTOCATALYST_SDK_DEBUG'] ? { debug: true } : {}),
       stderr: (data: string) => {
         for (const line of data.split('\n')) {
           const trimmed = line.trim();
@@ -201,6 +210,26 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
       operation: 'query',
       model,
     });
+  }
+
+  private async betaFilterProxyUrl(profile: AgentProfile | undefined): Promise<string | null> {
+    if (!profile?.base_url) return null;
+    const stripBetaValues = profile.anthropic_beta_header_filter?.strip
+      .map(value => value.trim())
+      .filter(value => value.length > 0) ?? [];
+    if (stripBetaValues.length === 0) return null;
+
+    const cacheKey = `${profile.base_url}::${stripBetaValues.sort().join(',')}`;
+    if (this._betaFilterProxy && this._betaFilterProxyKey === cacheKey) {
+      return this._betaFilterProxy.baseUrl;
+    }
+
+    if (this._betaFilterProxy) {
+      await this._betaFilterProxy.close();
+    }
+    this._betaFilterProxy = await startAnthropicBetaHeaderFilterProxy(profile.base_url, { stripBetaValues });
+    this._betaFilterProxyKey = cacheKey;
+    return this._betaFilterProxy.baseUrl;
   }
 
   private async profileWithRuntimeSkillPlugins(profile: AgentProfile | undefined): Promise<AgentProfile | undefined> {
