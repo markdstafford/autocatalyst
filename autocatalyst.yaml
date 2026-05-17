@@ -78,7 +78,7 @@ ai:
     implementation.run: grove-sonnet-4.6-medium
     implementation.review.initial: grove-gpt5.5-high
     implementation.review.final: grove-gpt5.5-medium
-    question.answer: grove-sonnet-4.6-low
+    question.answer: grove-gpt5.5-low
     issue.triage: grove-sonnet-4.6-high
 polling:
   interval_ms: 30000
