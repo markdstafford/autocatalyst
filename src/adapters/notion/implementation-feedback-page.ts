@@ -370,12 +370,23 @@ export class NotionImplementationFeedbackPage implements ImplementationReviewPub
     if (options.testing_steps && options.testing_steps.length > 0) {
       const testingInstructionsPattern = /## Testing instructions\n\n([\s\S]*?)(?=\n## (?:Additional steps|Feedback)|$)/;
       const testingMatch = markdown.match(testingInstructionsPattern);
-      const existingItemsText = testingMatch
-        ? (testingMatch[1].match(/^- \[[ x]\] .+/gm) ?? []).map(item => item.replace(/^- \[[ x]\] /, '').toLowerCase())
+      const existingItemsRaw = testingMatch
+        ? (testingMatch[1].match(/^- \[[ x]\] .+/gm) ?? []).map(item => item.replace(/^- \[[ x]\] /, ''))
         : [];
-      const existingSet = new Set(existingItemsText);
+      const existingSet = new Set(existingItemsRaw.map(item => normalizeStep(item).toLowerCase()));
+      const existingBaselineCategories = new Set(
+        existingItemsRaw
+          .map(item => getBaselineCategory(item))
+          .filter((c): c is BaselineCategory => c !== null),
+      );
 
-      const newSteps = options.testing_steps.filter(step => !existingSet.has(step.toLowerCase()));
+      const newSteps = options.testing_steps.filter(step => {
+        const normalizedLower = normalizeStep(step).toLowerCase();
+        if (existingSet.has(normalizedLower)) return false;
+        const category = getBaselineCategory(step);
+        if (category !== null && existingBaselineCategories.has(category)) return false;
+        return true;
+      });
       const skippedCount = options.testing_steps.length - newSteps.length;
 
       if (newSteps.length > 0) {
@@ -452,6 +463,36 @@ function testingGuideStatusName(status: ImplementationReviewStatus): string {
     approved: 'Approved',
   };
   return labels[status];
+}
+
+function normalizeStep(step: string): string {
+  // Trim first so surrounding whitespace doesn't prevent backtick stripping at boundaries
+  let s = step.trim();
+  // Strip surrounding backticks
+  s = s.replace(/^`+|`+$/g, '');
+  // Trim again and collapse internal whitespace
+  s = s.trim().replace(/\s+/g, ' ');
+  // Remove trailing slash from cd paths
+  s = s.replace(/^(cd\s+\S.*?)\/$/, '$1');
+  return s;
+}
+
+type BaselineCategory = 'cd' | 'npm_install' | 'test_command';
+
+function getBaselineCategory(step: string): BaselineCategory | null {
+  const s = normalizeStep(step).toLowerCase();
+  if (/^cd\s+/.test(s)) return 'cd';
+  if (/^(npm\s+ci|npm\s+install|yarn\s+install|pnpm\s+install)\b/.test(s)) return 'npm_install';
+  // npm test / yarn test are always generic baseline commands
+  if (/^(npm\s+test|yarn\s+test)\b/.test(s)) return 'test_command';
+  // npx vitest / npx jest: only singleton when no specific file/path argument is present;
+  // commands like `npx vitest run tests/foo.test.ts` are genuinely distinct steps
+  if (/^(npx\s+vitest|npx\s+jest)\b/.test(s)) {
+    const afterBase = s.replace(/^npx\s+(vitest|jest)\s*(run\s*)?/, '').trim();
+    const hasPathArg = /[/\\]|\.test\.|\.spec\./.test(afterBase);
+    if (!hasPathArg) return 'test_command';
+  }
+  return null;
 }
 
 function escapeRegex(str: string): string {

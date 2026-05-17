@@ -1075,3 +1075,187 @@ describe('AI review section', () => {
     expect(newMarkdown.indexOf('## AI review')).toBeGreaterThan(newMarkdown.indexOf('## Summary'));
   });
 });
+
+describe('normalizeStep (via update deduplication behavior)', () => {
+  // We test normalizeStep indirectly by calling update() with variants that should be treated as duplicates
+
+  function makeUpdateClient(existingSteps: string[]) {
+    const existingLines = existingSteps.map(s => `- [ ] ${s}`).join('\n');
+    const markdown = [
+      '## Testing instructions',
+      '',
+      existingLines,
+      '',
+      '## Additional steps',
+      '',
+      '- [ ] Add any extra testing steps here.',
+      '',
+      '## Feedback',
+      '',
+    ].join('\n');
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const pagesGetMarkdown = vi.fn().mockResolvedValue(markdown);
+    const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList: vi.fn().mockResolvedValue({ results: [] }) });
+    return { client, pagesUpdateMarkdown };
+  }
+
+  it('treats "cd /workspace/" as duplicate of existing "cd /workspace" (trailing slash)', async () => {
+    const { client, pagesUpdateMarkdown } = makeUpdateClient(['cd /workspace', 'npm install']);
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+
+    await page.update('page-id', { testing_steps: ['cd /workspace/', 'npm install'] });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    expect((updated.match(/cd \/workspace/g) ?? []).length).toBe(1);
+  });
+
+  it('treats "`cd /workspace`" as duplicate of existing "cd /workspace" (backticks)', async () => {
+    const { client, pagesUpdateMarkdown } = makeUpdateClient(['cd /workspace']);
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+
+    await page.update('page-id', { testing_steps: ['`cd /workspace`'] });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    expect((updated.match(/cd \/workspace/g) ?? []).length).toBe(1);
+  });
+
+  it('treats " `cd /workspace` " as duplicate of existing "cd /workspace" (whitespace around backticks)', async () => {
+    const { client, pagesUpdateMarkdown } = makeUpdateClient(['cd /workspace']);
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+
+    await page.update('page-id', { testing_steps: [' `cd /workspace` '] });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    expect((updated.match(/cd \/workspace/g) ?? []).length).toBe(1);
+  });
+
+  it('treats "npm test " as duplicate of existing "npm test" (trailing whitespace)', async () => {
+    const { client, pagesUpdateMarkdown } = makeUpdateClient(['npm test']);
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+
+    await page.update('page-id', { testing_steps: ['npm test '] });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    expect((updated.match(/npm test/g) ?? []).length).toBe(1);
+  });
+
+  it('skips a new cd step when a different cd step already exists (baseline singleton)', async () => {
+    const { client, pagesUpdateMarkdown } = makeUpdateClient(['cd /workspace/project', 'npm install']);
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+
+    // Agent returns a slightly different path (e.g., trailing slash variant)
+    await page.update('page-id', { testing_steps: ['cd /workspace/project/', 'npm install', 'npm test'] });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    // cd step should appear only once
+    expect((updated.match(/cd\s+\/workspace/g) ?? []).length).toBe(1);
+    // npm install should appear only once
+    expect((updated.match(/npm install/g) ?? []).length).toBe(1);
+    // npm test is new, should be appended
+    expect(updated).toContain('npm test');
+  });
+
+  it('skips npm install when an equivalent npm ci step already exists (same baseline category)', async () => {
+    const { client, pagesUpdateMarkdown } = makeUpdateClient(['cd /workspace', 'npm ci']);
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+
+    await page.update('page-id', { testing_steps: ['cd /workspace', 'npm install', 'npm test'] });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    // Neither npm install nor duplicate npm ci should appear
+    const installCount = (updated.match(/npm\s+(install|ci)/g) ?? []).length;
+    expect(installCount).toBe(1);
+    // npm test is new
+    expect(updated).toContain('npm test');
+  });
+
+  it('feedback update with no genuinely new steps leaves the Testing instructions section unchanged', async () => {
+    const { client, pagesUpdateMarkdown } = makeUpdateClient(['cd /workspace', 'npm install', 'npm test']);
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+
+    await page.update('page-id', { testing_steps: ['cd /workspace', 'npm install', 'npm test'] });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    expect((updated.match(/cd \/workspace/g) ?? []).length).toBe(1);
+    expect((updated.match(/npm install/g) ?? []).length).toBe(1);
+    expect((updated.match(/npm test/g) ?? []).length).toBe(1);
+  });
+
+  it('feedback update with only baseline boilerplate appends nothing new', async () => {
+    const { client, pagesUpdateMarkdown } = makeUpdateClient(['cd /workspace', 'npm install']);
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+
+    await page.update('page-id', { testing_steps: ['cd /workspace/', 'npm install'] });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    // The Testing instructions section should have exactly the original two steps
+    const todoMatches = updated.match(/^- \[[ x]\] /gm) ?? [];
+    // 2 testing instruction todos + 1 Additional steps placeholder
+    expect(todoMatches.length).toBe(3);
+  });
+
+  it('appends a file-specific vitest command even when a different file-specific vitest command already exists', async () => {
+    const { client, pagesUpdateMarkdown } = makeUpdateClient([
+      'cd /workspace',
+      'npx vitest run tests/foo.test.ts',
+    ]);
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+
+    await page.update('page-id', { testing_steps: ['npx vitest run tests/bar.test.ts'] });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    expect(updated).toContain('npx vitest run tests/bar.test.ts');
+    // The original file-specific command is still present
+    expect(updated).toContain('npx vitest run tests/foo.test.ts');
+  });
+
+  it('treats generic "npx vitest run" as a singleton (no file-path args)', async () => {
+    const { client, pagesUpdateMarkdown } = makeUpdateClient(['npx vitest run']);
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+
+    await page.update('page-id', { testing_steps: ['npx vitest'] });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    // Both are generic test_command singletons — new one should be suppressed
+    const vitestMatches = updated.match(/npx vitest/g) ?? [];
+    expect(vitestMatches.length).toBe(1);
+  });
+
+  it('appends one new round-specific test step while preserving existing checked to-dos', async () => {
+    const markdown = [
+      '## Testing instructions',
+      '',
+      '- [x] cd /workspace',
+      '- [x] npm install',
+      '- [ ] npm test',
+      '',
+      '## Additional steps',
+      '',
+      '- [ ] Add any extra testing steps here.',
+      '',
+      '## Feedback',
+      '',
+    ].join('\n');
+    const pagesUpdateMarkdown = vi.fn().mockResolvedValue(undefined);
+    const pagesGetMarkdown = vi.fn().mockResolvedValue(markdown);
+    const client = makeNotionClient({ pagesGetMarkdown, pagesUpdateMarkdown, blocksChildrenList: vi.fn().mockResolvedValue({ results: [] }) });
+    const page = new NotionImplementationFeedbackPage(client, 'db-id', { logDestination: nullDest });
+
+    await page.update('page-id', {
+      testing_steps: ['cd /workspace', 'npm install', 'npm test', 'Open http://localhost:3000 and verify the widget appears'],
+    });
+
+    const updated = pagesUpdateMarkdown.mock.calls[0][1].replace_content.new_str as string;
+    // Checked steps preserved
+    expect(updated).toContain('- [x] cd /workspace');
+    expect(updated).toContain('- [x] npm install');
+    // npm test already present, not duplicated
+    expect((updated.match(/npm test/g) ?? []).length).toBe(1);
+    // New step appended
+    expect(updated).toContain('Open http://localhost:3000 and verify the widget appears');
+    // New step is before Additional steps
+    const newStepIdx = updated.indexOf('Open http://localhost:3000');
+    const additionalIdx = updated.indexOf('## Additional steps');
+    expect(newStepIdx).toBeLessThan(additionalIdx);
+  });
+});

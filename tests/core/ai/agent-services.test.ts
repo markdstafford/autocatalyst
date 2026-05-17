@@ -577,6 +577,55 @@ describe('AgentRunner-backed core AI services', () => {
     }
   });
 
+  test('feedback implementation prompt tells agent to include only net-new testing steps', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-impl-feedback-delta-steps-'));
+    try {
+      const calls: AgentRunRequest[] = [];
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ status: 'complete', summary: 'Done' }), 'utf8');
+      });
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+      const feedbackContext = '[FEEDBACK_ID: block-1]\nFix the crash';
+
+      await service.implement('/tmp/spec.md', workspace, feedbackContext);
+
+      const prompt = calls[0].prompt;
+      // Feedback-pass prompt should NOT say testing_steps must start with cd
+      expect(prompt).not.toMatch(/testing_steps must start with a `cd `/);
+      // Instead it should say to include only net-new steps
+      expect(prompt).toMatch(/net.new|only.*new.*step|omit.*setup|setup.*already/i);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test('initial implementation prompt still instructs testing_steps to start with cd step', async () => {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-impl-initial-cd-step-'));
+    try {
+      const calls: AgentRunRequest[] = [];
+      const runner = fakeAgentRunner(async request => {
+        calls.push(request);
+        const match = request.prompt.match(/Write the result to:\s*(.+)/i);
+        const resultPath = match?.[1]?.trim();
+        if (!resultPath) throw new Error('result path not found');
+        await mkdir(dirname(resultPath), { recursive: true });
+        await writeFile(resultPath, JSON.stringify({ status: 'complete', summary: 'Done' }), 'utf8');
+      });
+      const service = new AgentRunnerImplementationAgent(runner, makePolicy());
+
+      await service.implement('/tmp/spec.md', workspace);
+
+      expect(calls[0].prompt).toContain('testing_steps must start with a `cd `');
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   test('uses issue triage agent output before creating issues through IssueManager', async () => {
     const workspace = await mkdtemp(join(tmpdir(), 'ac-issue-'));
     try {
