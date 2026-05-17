@@ -89,6 +89,10 @@ export interface TelemetryConfig {
   export_interval_ms?: number;
 }
 
+export interface SandboxConfig {
+  env_tokens?: string[];
+}
+
 export interface WorkflowConfig {
   polling?: {
     interval_ms?: number;
@@ -103,6 +107,7 @@ export interface WorkflowConfig {
   /** Required — declares all AI provider configuration. */
   ai: AiConfig;
   implementation_review?: ImplementationReviewPolicy;
+  sandbox?: SandboxConfig;
   [key: string]: unknown;
 }
 

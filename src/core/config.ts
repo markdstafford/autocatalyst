@@ -117,6 +117,24 @@ export function validateConfig(config: WorkflowConfig): void {
     }
   }
 
+  const rawSandbox = (config as Record<string, unknown>)['sandbox'];
+  if (rawSandbox !== undefined && rawSandbox !== null) {
+    if (typeof rawSandbox !== 'object' || Array.isArray(rawSandbox)) {
+      throw new Error('sandbox must be an object');
+    }
+    const sandbox = rawSandbox as Record<string, unknown>;
+    if (sandbox['env_tokens'] !== undefined) {
+      if (!Array.isArray(sandbox['env_tokens'])) {
+        throw new Error('sandbox.env_tokens must be an array');
+      }
+      for (const [i, token] of (sandbox['env_tokens'] as unknown[]).entries()) {
+        if (typeof token !== 'string' || (token as string).trim() === '') {
+          throw new Error(`sandbox.env_tokens[${i}] must be a non-empty string`);
+        }
+      }
+    }
+  }
+
   const rawReview = (config as Record<string, unknown>)['implementation_review'];
   if (rawReview !== undefined && rawReview !== null) {
     if (typeof rawReview !== 'object' || Array.isArray(rawReview)) {

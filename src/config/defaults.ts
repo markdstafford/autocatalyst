@@ -94,5 +94,9 @@ ai:
     implementation.review.final: review-agent
     question.answer: question-agent
     issue.triage: triage-agent
+
+sandbox:
+  env_tokens:
+    - AC_GITHUB_TOKEN
 `;
 }

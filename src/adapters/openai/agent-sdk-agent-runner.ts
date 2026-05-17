@@ -11,11 +11,13 @@ import type { Counter, Histogram, Meter } from '@opentelemetry/api';
 import type { AgentRunEvent, AgentRunRequest, AgentRunner, AgentRoute, AgentSkillRef } from '../../types/ai.js';
 import { createLogger } from '../../core/logger.js';
 import { materializeOpenAIRuntimeSkills } from './openai-runtime-skill-materializer.js';
+import { buildSandboxEnvironment } from '../sandbox-environment.js';
 
 const DEFAULT_OPENAI_AGENT_MAX_TURNS = 50;
 
 interface RunFnOptions {
   maxTurns: number;
+  environment: Record<string, string>;
 }
 
 type RunFn = (
@@ -32,6 +34,7 @@ export interface OpenAIAgentSdkAgentRunnerOptions {
   logDestination?: pino.DestinationStream;
   loggerProvider?: LoggerProvider;
   maxTurns?: number;
+  sandboxEnvTokens?: string[];
 }
 
 export function skillRefsForRoute(route: AgentRoute): AgentSkillRef[] {
@@ -56,6 +59,7 @@ export class OpenAIAgentSdkAgentRunner implements AgentRunner {
   private readonly _agentRunOutcome: Counter;
   private readonly logger: pino.Logger;
   private readonly maxTurns: number;
+  private readonly sandboxEnvTokens: string[];
 
   constructor(
     private readonly apiKey: string,
@@ -71,6 +75,7 @@ export class OpenAIAgentSdkAgentRunner implements AgentRunner {
       loggerProvider: options?.loggerProvider,
     });
     this.maxTurns = options?.maxTurns ?? DEFAULT_OPENAI_AGENT_MAX_TURNS;
+    this.sandboxEnvTokens = options?.sandboxEnvTokens ?? [];
     const meter = options?.meter ?? metrics.getMeter('autocatalyst');
     this._agentTurns = meter.createCounter('autocatalyst.agent.turns', {
       unit: '{turn}',
@@ -126,6 +131,18 @@ export class OpenAIAgentSdkAgentRunner implements AgentRunner {
       capabilities,
     });
 
+    const sandboxEnv = buildSandboxEnvironment(this.sandboxEnvTokens);
+
+    if (isGitHubDependentRoute(request.route) && !sandboxEnv['GH_TOKEN'] && !sandboxEnv['GITHUB_TOKEN']) {
+      this.logger.warn(
+        {
+          event: 'sandbox.no_github_token',
+          route_task: request.route.task,
+        },
+        `Sandbox route ${request.route.task} requires GitHub CLI authentication. Add AC_GH_TOKEN to sandbox.env_tokens in autocatalyst.yaml and set AC_GH_TOKEN before starting Autocatalyst.`,
+      );
+    }
+
     const startMs = performance.now();
     let outcome: 'success' | 'error' = 'success';
 
@@ -143,7 +160,7 @@ export class OpenAIAgentSdkAgentRunner implements AgentRunner {
     );
 
     try {
-      const stream = await Promise.resolve(this.runFn(agent, request.prompt, request.working_directory, { maxTurns: this.maxTurns }));
+      const stream = await Promise.resolve(this.runFn(agent, request.prompt, request.working_directory, { maxTurns: this.maxTurns, environment: sandboxEnv }));
       for await (const event of stream) {
         this.logger.debug(
           {
@@ -207,7 +224,7 @@ async function* defaultRunFn(
     manifest: new Manifest(),
     workspaceRootPath: workingDirectory,
     workspaceRootOwned: false,
-    environment: {},
+    environment: options.environment,
   };
   const session = await client.resume(state);
   const sandbox = { client, session };
@@ -274,6 +291,12 @@ function normalizeOpenAIEvent(event: unknown): AgentRunEvent | null {
     return { type: e['type'], ...e } as AgentRunEvent;
   }
   return null;
+}
+
+function isGitHubDependentRoute(route: AgentRoute): boolean {
+  if (route.task === 'issue.triage') return true;
+  if (route.task === 'artifact.create' && (route.intent === 'bug' || route.intent === 'chore')) return true;
+  return false;
 }
 
 function routeLogAttributes(route: AgentRoute): Record<string, string> {

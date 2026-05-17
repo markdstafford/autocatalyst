@@ -267,6 +267,62 @@ describe('loadConfigFromPath', () => {
   });
 });
 
+// ─── validateConfig: sandbox ─────────────────────────────────────────────────
+
+describe('validateConfig: sandbox', () => {
+  it('passes when sandbox is absent', () => {
+    expect(() => validateConfig({} as WorkflowConfig)).not.toThrow();
+  });
+
+  it('passes for a valid sandbox block with env_tokens array', () => {
+    expect(() =>
+      validateConfig({ sandbox: { env_tokens: ['AC_GH_TOKEN', 'AC_GITHUB_TOKEN'] } } as unknown as WorkflowConfig),
+    ).not.toThrow();
+  });
+
+  it('passes when sandbox.env_tokens is an empty array', () => {
+    expect(() =>
+      validateConfig({ sandbox: { env_tokens: [] } } as unknown as WorkflowConfig),
+    ).not.toThrow();
+  });
+
+  it('throws when sandbox is not an object', () => {
+    expect(() =>
+      validateConfig({ sandbox: 'bad' } as unknown as WorkflowConfig),
+    ).toThrow('sandbox must be an object');
+  });
+
+  it('throws when sandbox is an array', () => {
+    expect(() =>
+      validateConfig({ sandbox: ['AC_GH_TOKEN'] } as unknown as WorkflowConfig),
+    ).toThrow('sandbox must be an object');
+  });
+
+  it('throws when sandbox.env_tokens is not an array', () => {
+    expect(() =>
+      validateConfig({ sandbox: { env_tokens: 'AC_GH_TOKEN' } } as unknown as WorkflowConfig),
+    ).toThrow('sandbox.env_tokens must be an array');
+  });
+
+  it('throws when sandbox.env_tokens contains a non-string entry', () => {
+    expect(() =>
+      validateConfig({ sandbox: { env_tokens: ['AC_GH_TOKEN', 42] } } as unknown as WorkflowConfig),
+    ).toThrow('sandbox.env_tokens[1] must be a non-empty string');
+  });
+
+  it('throws when sandbox.env_tokens contains an empty string', () => {
+    expect(() =>
+      validateConfig({ sandbox: { env_tokens: ['AC_GH_TOKEN', ''] } } as unknown as WorkflowConfig),
+    ).toThrow('sandbox.env_tokens[1] must be a non-empty string');
+  });
+
+  it('throws when sandbox.env_tokens contains a whitespace-only string', () => {
+    expect(() =>
+      validateConfig({ sandbox: { env_tokens: ['   '] } } as unknown as WorkflowConfig),
+    ).toThrow('sandbox.env_tokens[0] must be a non-empty string');
+  });
+});
+
 // ─── validateConfig: implementation_review ───────────────────────────────────
 
 describe('validateConfig: implementation_review', () => {

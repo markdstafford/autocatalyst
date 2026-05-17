@@ -1,3 +1,4 @@
+import { PassThrough } from 'node:stream';
 import { describe, expect, test, vi } from 'vitest';
 import { ClaudeAgentSdkAgentRunner } from '../../../src/adapters/anthropic/claude-agent-sdk-agent-runner.js';
 import type { AgentRunEvent } from '../../../src/types/ai.js';
@@ -7,6 +8,20 @@ async function collect(events: AsyncIterable<AgentRunEvent>): Promise<AgentRunEv
   const collected: AgentRunEvent[] = [];
   for await (const event of events) collected.push(event);
   return collected;
+}
+
+function makeLogCapture(): { dest: import('pino').DestinationStream; getLogs: () => Record<string, unknown>[] } {
+  const stream = new PassThrough();
+  const logs: Record<string, unknown>[] = [];
+  stream.on('data', (chunk: Buffer) => {
+    for (const line of chunk.toString().split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed) {
+        try { logs.push(JSON.parse(trimmed)); } catch { /* skip non-JSON */ }
+      }
+    }
+  });
+  return { dest: stream as unknown as import('pino').DestinationStream, getLogs: () => logs };
 }
 
 /** Build a stub Meter that records all metric calls for assertion. */
@@ -310,5 +325,141 @@ describe('ClaudeAgentSdkAgentRunner', () => {
 
     const call = queryFn.mock.calls[0][0];
     expect(call.options.env['CLAUDE_CODE_MAX_OUTPUT_TOKENS']).toBe('64000');
+  });
+
+  test('passes config-declared AC_GH_TOKEN as GH_TOKEN in sandbox env', async () => {
+    const queryFn = vi.fn().mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+    });
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn, sandboxEnvTokens: ['AC_GH_TOKEN'] });
+
+    const originalToken = process.env['AC_GH_TOKEN'];
+    process.env['AC_GH_TOKEN'] = 'ghp_claude_test_token';
+    try {
+      await collect(runner.run({
+        route: { task: 'implementation.run' },
+        working_directory: '/tmp/workspace',
+        prompt: 'implement',
+        profile: { id: 'impl', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-5', effort: 'high' },
+      }));
+    } finally {
+      if (originalToken !== undefined) {
+        process.env['AC_GH_TOKEN'] = originalToken;
+      } else {
+        delete process.env['AC_GH_TOKEN'];
+      }
+    }
+
+    const call = queryFn.mock.calls[0][0];
+    expect(call.options.env['GH_TOKEN']).toBe('ghp_claude_test_token');
+  });
+
+  test('passes HOME in sandbox env so Claude Code CLI can locate its config', async () => {
+    const queryFn = vi.fn().mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+    });
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn });
+
+    await collect(runner.run({
+      route: { task: 'implementation.run' },
+      working_directory: '/tmp/workspace',
+      prompt: 'implement',
+      profile: { id: 'impl', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-5', effort: 'high' },
+    }));
+
+    const call = queryFn.mock.calls[0][0];
+    // HOME is an explicit documented exception: Claude Code CLI requires it to find ~/.claude config
+    expect(call.options.env).toHaveProperty('HOME');
+  });
+
+  test('does not forward unrelated process env vars to sandbox', async () => {
+    const queryFn = vi.fn().mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+    });
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn, sandboxEnvTokens: ['AC_GH_TOKEN'] });
+
+    const originalToken = process.env['AC_GH_TOKEN'];
+    const originalUnrelated = process.env['UNRELATED_SECRET'];
+    process.env['AC_GH_TOKEN'] = 'ghp_some_token';
+    process.env['UNRELATED_SECRET'] = 'should-not-appear';
+    try {
+      await collect(runner.run({
+        route: { task: 'implementation.run' },
+        working_directory: '/tmp/workspace',
+        prompt: 'implement',
+        profile: { id: 'impl', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-5', effort: 'high' },
+      }));
+    } finally {
+      if (originalToken !== undefined) {
+        process.env['AC_GH_TOKEN'] = originalToken;
+      } else {
+        delete process.env['AC_GH_TOKEN'];
+      }
+      if (originalUnrelated !== undefined) {
+        process.env['UNRELATED_SECRET'] = originalUnrelated;
+      } else {
+        delete process.env['UNRELATED_SECRET'];
+      }
+    }
+
+    const call = queryFn.mock.calls[0][0];
+    expect(call.options.env).not.toHaveProperty('UNRELATED_SECRET');
+    expect(call.options.env).not.toHaveProperty('AC_GH_TOKEN');
+  });
+
+  test('logs a warning for issue.triage when no GitHub token is in the sandbox environment', async () => {
+    const { dest, getLogs } = makeLogCapture();
+    const queryFn = vi.fn().mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+    });
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn, logDestination: dest });
+
+    await collect(runner.run({
+      route: { task: 'issue.triage' },
+      working_directory: '/tmp/workspace',
+      prompt: 'triage issue',
+      profile: { id: 'triage', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-5', effort: 'high' },
+    }));
+
+    const warning = getLogs().find(
+      log => log['level'] === 'warn' && log['event'] === 'sandbox.no_github_token',
+    );
+    expect(warning).toBeDefined();
+    expect(warning?.['route_task']).toBe('issue.triage');
+  });
+
+  test('does not log a GitHub token warning when GH_TOKEN is present in sandbox environment', async () => {
+    const { dest, getLogs } = makeLogCapture();
+    const queryFn = vi.fn().mockImplementation(async function* () {
+      yield { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 1, output_tokens: 1 } };
+    });
+
+    const originalToken = process.env['AC_GH_TOKEN'];
+    process.env['AC_GH_TOKEN'] = 'ghp_present_token';
+    try {
+      const runner = new ClaudeAgentSdkAgentRunner({
+        queryFn,
+        logDestination: dest,
+        sandboxEnvTokens: ['AC_GH_TOKEN'],
+      });
+
+      await collect(runner.run({
+        route: { task: 'issue.triage' },
+        working_directory: '/tmp/workspace',
+        prompt: 'triage issue',
+        profile: { id: 'triage', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-5', effort: 'high' },
+      }));
+    } finally {
+      if (originalToken !== undefined) {
+        process.env['AC_GH_TOKEN'] = originalToken;
+      } else {
+        delete process.env['AC_GH_TOKEN'];
+      }
+    }
+
+    const warning = getLogs().find(
+      log => log['level'] === 'warn' && log['event'] === 'sandbox.no_github_token',
+    );
+    expect(warning).toBeUndefined();
   });
 });

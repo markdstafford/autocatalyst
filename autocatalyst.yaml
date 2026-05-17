@@ -1,5 +1,8 @@
 workspace:
   root: ~/.autocatalyst/workspaces/autocatalyst
+sandbox:
+  env_tokens:
+    - AC_GITHUB_TOKEN
 ai:
   credentials:
     - name: bedrock

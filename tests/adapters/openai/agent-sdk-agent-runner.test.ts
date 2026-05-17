@@ -16,9 +16,14 @@ vi.mock('@openai/agents', async importOriginal => {
   };
 });
 
+let capturedResumeState: unknown;
+
 vi.mock('@openai/agents/sandbox/local', () => ({
   UnixLocalSandboxClient: class {
-    resume = vi.fn().mockResolvedValue({});
+    resume = vi.fn().mockImplementation((state: unknown) => {
+      capturedResumeState = state;
+      return Promise.resolve({});
+    });
   },
 }));
 
@@ -554,5 +559,112 @@ describe('OpenAIAgentSdkAgentRunner', () => {
 
     expect(vi.mocked(setTracingDisabled)).toHaveBeenCalledOnce();
     expect(vi.mocked(setTracingDisabled)).toHaveBeenCalledWith(true);
+  });
+
+  test('default run function passes AC_GH_TOKEN from config into sandbox environment as GH_TOKEN', async () => {
+    capturedResumeState = undefined;
+    vi.mocked(sdkRun).mockResolvedValue({ newItems: [], output: [] } as never);
+
+    const originalToken = process.env['AC_GH_TOKEN'];
+    process.env['AC_GH_TOKEN'] = 'ghp_test_token_123';
+    try {
+      const runner = new OpenAIAgentSdkAgentRunner('sk-test', undefined, 'gpt-4o', {
+        materializeSkills: vi.fn().mockResolvedValue([]),
+        logDestination: nullDest,
+        sandboxEnvTokens: ['AC_GH_TOKEN'],
+      });
+
+      await collect(runner.run({
+        route: { task: 'question.answer' },
+        working_directory: '/tmp/ws',
+        prompt: 'test',
+      }));
+    } finally {
+      if (originalToken !== undefined) {
+        process.env['AC_GH_TOKEN'] = originalToken;
+      } else {
+        delete process.env['AC_GH_TOKEN'];
+      }
+    }
+
+    expect((capturedResumeState as { environment?: Record<string, string> })?.environment).toEqual({
+      GH_TOKEN: 'ghp_test_token_123',
+    });
+  });
+
+  test('default run function produces empty sandbox environment when no tokens configured', async () => {
+    capturedResumeState = undefined;
+    vi.mocked(sdkRun).mockResolvedValue({ newItems: [], output: [] } as never);
+
+    const runner = new OpenAIAgentSdkAgentRunner('sk-test', undefined, 'gpt-4o', {
+      materializeSkills: vi.fn().mockResolvedValue([]),
+      logDestination: nullDest,
+    });
+
+    await collect(runner.run({
+      route: { task: 'question.answer' },
+      working_directory: '/tmp/ws',
+      prompt: 'test',
+    }));
+
+    expect((capturedResumeState as { environment?: Record<string, string> })?.environment).toEqual({});
+  });
+
+  test('run() logs a warning for issue.triage when no GitHub token is in the sandbox environment', async () => {
+    const { dest, getLogs } = makeLogCapture();
+    const materializeSkills = vi.fn().mockResolvedValue([]);
+    const runFn = vi.fn().mockImplementation(async function* () {});
+
+    const runner = new OpenAIAgentSdkAgentRunner('sk-test', undefined, 'gpt-4o', {
+      runFn,
+      materializeSkills,
+      logDestination: dest,
+    });
+
+    await collect(runner.run({
+      route: { task: 'issue.triage' },
+      working_directory: '/tmp/ws',
+      prompt: 'triage issue',
+    }));
+
+    const warning = getLogs().find(
+      log => log['level'] === 'warn' && log['event'] === 'sandbox.no_github_token',
+    );
+    expect(warning).toBeDefined();
+    expect(warning?.['route_task']).toBe('issue.triage');
+  });
+
+  test('run() does not log a GitHub token warning when GH_TOKEN is present in sandbox environment', async () => {
+    const { dest, getLogs } = makeLogCapture();
+    const materializeSkills = vi.fn().mockResolvedValue([]);
+    const runFn = vi.fn().mockImplementation(async function* () {});
+
+    const originalToken = process.env['AC_GH_TOKEN'];
+    process.env['AC_GH_TOKEN'] = 'ghp_present';
+    try {
+      const runner = new OpenAIAgentSdkAgentRunner('sk-test', undefined, 'gpt-4o', {
+        runFn,
+        materializeSkills,
+        logDestination: dest,
+        sandboxEnvTokens: ['AC_GH_TOKEN'],
+      });
+
+      await collect(runner.run({
+        route: { task: 'issue.triage' },
+        working_directory: '/tmp/ws',
+        prompt: 'triage issue',
+      }));
+    } finally {
+      if (originalToken !== undefined) {
+        process.env['AC_GH_TOKEN'] = originalToken;
+      } else {
+        delete process.env['AC_GH_TOKEN'];
+      }
+    }
+
+    const warning = getLogs().find(
+      log => log['level'] === 'warn' && log['event'] === 'sandbox.no_github_token',
+    );
+    expect(warning).toBeUndefined();
   });
 });
