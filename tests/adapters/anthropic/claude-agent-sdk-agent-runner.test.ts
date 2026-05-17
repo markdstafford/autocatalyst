@@ -512,4 +512,81 @@ describe('ClaudeAgentSdkAgentRunner', () => {
     );
     expect(warning).toBeUndefined();
   });
+
+  test('captures stderr and logs it when SDK exits with error', async () => {
+    const { dest, getLogs } = makeLogCapture();
+    const queryFn = vi.fn().mockImplementation(function ({ options }: { options: { stderr?: (data: string) => void } }) {
+      options.stderr?.('Unable to verify organization\n');
+      options.stderr?.('Token may lack user:profile scope\n');
+      return (async function* () {
+        yield { type: 'result', subtype: 'error_max_turns', is_error: true, usage: { input_tokens: 5, output_tokens: 2 } };
+      })();
+    });
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn, logDestination: dest });
+
+    await collect(runner.run({
+      route: { task: 'implementation.run' },
+      working_directory: '/tmp/workspace',
+      prompt: 'implement',
+      profile: { id: 'impl', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-6', effort: 'high' },
+    }));
+
+    const stderrLog = getLogs().find(
+      log => log['event'] === 'sdk.stderr_on_error',
+    );
+    expect(stderrLog).toBeDefined();
+    expect(stderrLog!['stderr_excerpt']).toContain('Unable to verify organization');
+    expect(stderrLog!['stderr_excerpt']).toContain('Token may lack user:profile scope');
+    expect(stderrLog!['route_task']).toBe('implementation.run');
+  });
+
+  test('redacts secrets from stderr output', async () => {
+    const { dest, getLogs } = makeLogCapture();
+    const queryFn = vi.fn().mockImplementation(function ({ options }: { options: { stderr?: (data: string) => void } }) {
+      options.stderr?.('Error: api_key=sk-ant-secret123 is invalid\n');
+      options.stderr?.('Token ghp_R862tsYUn7O33OQqABC leaked\n');
+      return (async function* () {
+        yield { type: 'result', subtype: 'error_max_turns', is_error: true, usage: { input_tokens: 5, output_tokens: 2 } };
+      })();
+    });
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn, logDestination: dest });
+
+    await collect(runner.run({
+      route: { task: 'implementation.run' },
+      working_directory: '/tmp/workspace',
+      prompt: 'implement',
+      profile: { id: 'impl', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-6', effort: 'high' },
+    }));
+
+    const stderrLog = getLogs().find(
+      log => log['event'] === 'sdk.stderr_on_error',
+    );
+    expect(stderrLog).toBeDefined();
+    expect(stderrLog!['stderr_excerpt']).not.toContain('sk-ant-secret123');
+    expect(stderrLog!['stderr_excerpt']).not.toContain('ghp_R862tsYUn7O33OQq');
+    expect(stderrLog!['stderr_excerpt']).toContain('[REDACTED]');
+  });
+
+  test('does not log stderr when SDK exits successfully', async () => {
+    const { dest, getLogs } = makeLogCapture();
+    const queryFn = vi.fn().mockImplementation(function ({ options }: { options: { stderr?: (data: string) => void } }) {
+      options.stderr?.('some debug noise\n');
+      return (async function* () {
+        yield { type: 'result', subtype: 'success', is_error: false, usage: { input_tokens: 5, output_tokens: 2 } };
+      })();
+    });
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn, logDestination: dest });
+
+    await collect(runner.run({
+      route: { task: 'implementation.run' },
+      working_directory: '/tmp/workspace',
+      prompt: 'implement',
+      profile: { id: 'impl', provider: 'claude_agent_sdk', model: 'claude-sonnet-4-6', effort: 'high' },
+    }));
+
+    const errorLog = getLogs().find(
+      log => log['event'] === 'sdk.stderr_on_error',
+    );
+    expect(errorLog).toBeUndefined();
+  });
 });

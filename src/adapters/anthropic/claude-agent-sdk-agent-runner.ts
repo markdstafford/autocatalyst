@@ -32,6 +32,23 @@ import { buildSandboxEnvironment } from '../sandbox-environment.js';
 
 type QueryFn = typeof _query;
 
+const MAX_STDERR_LINES = 50;
+
+const SECRET_PATTERNS = [
+  /(?:api[_-]?key|secret|password|credential)\s*[=:]\s*\S+/gi,
+  /ghp_[A-Za-z0-9_]+/g,
+  /sk-[A-Za-z0-9_-]+/g,
+  /xox[bpras]-[A-Za-z0-9-]+/g,
+];
+
+function redactSecrets(text: string): string {
+  let redacted = text;
+  for (const pattern of SECRET_PATTERNS) {
+    redacted = redacted.replace(pattern, '[REDACTED]');
+  }
+  return redacted;
+}
+
 const AUTOMATED_ALLOWED_TOOLS = [
   'Bash',
   'Edit',
@@ -121,10 +138,23 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
       );
     }
     const profile = await this.profileWithRuntimeSkillPlugins(request.profile);
+    const stderrLines: string[] = [];
+    const options = {
+      ...makeClaudeAgentSdkOptions(request.working_directory, profile, this.sandboxEnvTokens),
+      stderr: (data: string) => {
+        for (const line of data.split('\n')) {
+          const trimmed = line.trim();
+          if (trimmed) stderrLines.push(trimmed);
+        }
+        if (stderrLines.length > MAX_STDERR_LINES) {
+          stderrLines.splice(0, stderrLines.length - MAX_STDERR_LINES);
+        }
+      },
+    };
     const startMs = performance.now();
     for await (const message of this.queryFn({
       prompt: request.prompt,
-      options: makeClaudeAgentSdkOptions(request.working_directory, profile, this.sandboxEnvTokens),
+      options,
     })) {
       if ((message as SDKMessage).type === 'result') {
         const result = message as unknown as SDKResultMessage;
@@ -136,12 +166,35 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
         this._agentTokenUsage.record(result.usage.output_tokens, {
           component: 'claude-agent-sdk', model, token_type: 'output',
         });
+        if (result.is_error && stderrLines.length > 0) {
+          this.logger.error(
+            {
+              event: 'sdk.stderr_on_error',
+              route_task: request.route.task,
+              model,
+              stderr_excerpt: redactSecrets(stderrLines.join('\n')),
+            },
+            'Claude Code subprocess stderr captured on error exit',
+          );
+        }
       }
       const event = normalizeSdkMessage(message as SDKMessage);
       if (event.type === 'assistant') {
         this._agentTurns.add(1, { component: 'claude-agent-sdk', model });
       }
       yield event;
+    }
+    if (stderrLines.length > 0) {
+      this.logger.debug(
+        {
+          event: 'sdk.stderr',
+          route_task: request.route.task,
+          model,
+          stderr_line_count: stderrLines.length,
+          stderr_excerpt: redactSecrets(stderrLines.slice(-5).join('\n')),
+        },
+        'Claude Code subprocess stderr',
+      );
     }
     this._adapterLatency.record(performance.now() - startMs, {
       adapter: 'agent-sdk',
