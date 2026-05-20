@@ -1,4 +1,5 @@
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { PassThrough } from 'node:stream';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it, test, vi } from 'vitest';
@@ -12,8 +13,10 @@ import {
   buildFinalReviewPrompt,
   buildImplementerResponsePrompt,
   parseImplementationReviewResult,
+  drainAgentRunner,
 } from '../../../src/core/ai/agent-services.js';
 import { DefaultAgentRoutingPolicy } from '../../../src/core/ai/routing-policy.js';
+import { createLogger } from '../../../src/core/logger.js';
 import type { AgentRunEvent, AgentRunRequest, AgentRunner, ImplementationResult } from '../../../src/types/ai.js';
 import type { Request, ThreadMessage } from '../../../src/types/events.js';
 import type { IssueManager } from '../../../src/types/issue-tracker.js';
@@ -733,6 +736,53 @@ describe('buildImplementerResponsePrompt', () => {
     const findings = [{ id: 'INIT-1', severity: 'blocker' as const, category: 'correctness' as const, finding: 'Bug.' }];
     const prompt = buildImplementerResponsePrompt('/ws/spec.md', '/ws', makeCompleteResult(), findings);
     expect(prompt).toContain('review_responses');
+  });
+});
+
+describe('drainAgentRunner summary', () => {
+  it('returns counts and elapsed time', async () => {
+    const dest = new PassThrough();
+    const lines: string[] = [];
+    dest.on('data', (c: Buffer) => c.toString().split('\n').filter(Boolean).forEach(l => lines.push(l)));
+
+    async function* fakeEvents(): AsyncIterable<AgentRunEvent> {
+      yield { type: 'assistant', content: [{ type: 'text', text: '[Relay] Planning started.' }] };
+      yield { type: 'assistant', content: [{ type: 'text', text: 'No relay here' }] };
+      yield { type: 'other' } as AgentRunEvent;
+    }
+
+    const logger = createLogger('test', { destination: dest });
+    const summary = await drainAgentRunner(fakeEvents(), undefined, logger, 'test-phase');
+    dest.end();
+    await new Promise(r => dest.on('finish', r));
+
+    expect(summary.event_count).toBe(3);
+    expect(summary.assistant_turn_count).toBe(2);
+    expect(summary.relay_count).toBe(1);
+    expect(summary.elapsed_ms).toBeGreaterThanOrEqual(0);
+
+    const parsed = lines.map(l => JSON.parse(l));
+    expect(parsed.find(l => l.event === 'agent.drain_started')).toBeDefined();
+    expect(parsed.find(l => l.event === 'agent.drain_completed')).toBeDefined();
+  });
+
+  it('logs agent.drain_failed and rethrows on iterator error', async () => {
+    const dest = new PassThrough();
+    const lines: string[] = [];
+    dest.on('data', (c: Buffer) => c.toString().split('\n').filter(Boolean).forEach(l => lines.push(l)));
+
+    async function* failingEvents(): AsyncIterable<AgentRunEvent> {
+      yield { type: 'other' } as AgentRunEvent;
+      throw new Error('runner exploded');
+    }
+
+    const logger = createLogger('test', { destination: dest });
+    await expect(drainAgentRunner(failingEvents(), undefined, logger, 'test-phase')).rejects.toThrow('runner exploded');
+    dest.end();
+    await new Promise(r => dest.on('finish', r));
+
+    const parsed = lines.map(l => JSON.parse(l));
+    expect(parsed.find(l => l.event === 'agent.drain_failed')).toBeDefined();
   });
 });
 

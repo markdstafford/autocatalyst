@@ -2,10 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile as _readFile, unlink } from 'node:fs/promises';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import type pino from 'pino';
 import type { LoggerProvider } from '@opentelemetry/api-logs';
 import { createLogger } from '../logger.js';
 import type {
+  AgentDrainSummary,
   AgentRunContentBlock,
   AgentRunEvent,
   AgentRunner,
@@ -77,7 +79,7 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
 
     try {
       await ensureResultDir(createResultPath);
-      await drainAgentRunner(
+      const _drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
           profile: this.routingPolicy.resolve(route),
@@ -140,7 +142,7 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
 
     try {
       await ensureResultDir(reviseResultPath);
-      await drainAgentRunner(
+      const _drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
           profile: this.routingPolicy.resolve(route),
@@ -203,7 +205,7 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
 
     try {
       await ensureResultDir(resultFilePath);
-      await drainAgentRunner(
+      const _drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
           profile: this.routingPolicy.resolve(route),
@@ -256,7 +258,7 @@ export class AgentRunnerQuestionAnsweringAgent implements QuestionAnsweringAgent
 
     try {
       await ensureResultDir(resultPath);
-      await drainAgentRunner(
+      const _drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
           profile: this.routingPolicy.resolve(route),
@@ -306,7 +308,7 @@ export class AgentRunnerIssueTriageAgent implements IssueTriageAgent {
 
     try {
       await ensureResultDir(resultPath);
-      await drainAgentRunner(
+      const _drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
           profile: this.routingPolicy.resolve(route),
@@ -376,21 +378,70 @@ export class IssueFilingService implements IssueFiler {
 export async function drainAgentRunner(
   events: AsyncIterable<AgentRunEvent>,
   onProgress: ((message: string) => Promise<void> | void) | undefined,
-  logger: Pick<pino.Logger, 'info' | 'warn'>,
+  logger: Pick<pino.Logger, 'info' | 'warn' | 'debug' | 'error'>,
   phase: string,
-): Promise<void> {
-  for await (const event of events) {
-    const content = assistantContent(event);
-    if (!onProgress || !content) continue;
-    const relayMessage = parseRelayMessage(content);
-    if (!relayMessage) continue;
-    try {
-      await onProgress(relayMessage);
-      logger.info({ event: 'progress_update', phase, message: relayMessage }, 'Progress update posted');
-    } catch (err) {
-      logger.warn({ event: 'progress_failed', phase, error: String(err) }, 'Failed to post progress update');
+): Promise<AgentDrainSummary> {
+  const startMs = performance.now();
+  let event_count = 0;
+  let assistant_turn_count = 0;
+  let relay_count = 0;
+  let tool_call_count = 0;
+  let tool_result_count = 0;
+  let latestDiagnostics: AgentDrainSummary['diagnostics'];
+
+  logger.info({ event: 'agent.drain_started', phase }, 'Agent drain started');
+
+  try {
+    for await (const event of events) {
+      event_count++;
+
+      // Capture diagnostics propagated from terminal runner events
+      const eventDiag = (event as { diagnostics?: AgentDrainSummary['diagnostics'] }).diagnostics;
+      if (eventDiag) latestDiagnostics = eventDiag;
+
+      const content = assistantContent(event);
+      if (content) {
+        assistant_turn_count++;
+        const relayMessage = parseRelayMessage(content);
+        if (relayMessage) {
+          relay_count++;
+          if (onProgress) {
+            try {
+              await onProgress(relayMessage);
+              logger.info({ event: 'progress_update', phase, message: relayMessage }, 'Progress update posted');
+            } catch (err) {
+              logger.warn({ event: 'progress_failed', phase, error: String(err) }, 'Failed to post progress update');
+            }
+          }
+        }
+      }
     }
+  } catch (err) {
+    const elapsed_ms = Math.round(performance.now() - startMs);
+    logger.error(
+      { event: 'agent.drain_failed', phase, event_count, assistant_turn_count, relay_count, elapsed_ms, error: String(err) },
+      'Agent drain failed',
+    );
+    throw err;
   }
+
+  const elapsed_ms = Math.round(performance.now() - startMs);
+  const summary: AgentDrainSummary = {
+    event_count,
+    assistant_turn_count,
+    relay_count,
+    tool_call_count,
+    tool_result_count,
+    elapsed_ms,
+    ...(latestDiagnostics ? { diagnostics: latestDiagnostics } : {}),
+  };
+
+  logger.info(
+    { event: 'agent.drain_completed', phase, ...summary },
+    'Agent drain completed',
+  );
+
+  return summary;
 }
 
 function assistantContent(event: AgentRunEvent): AgentRunContentBlock[] | undefined {
