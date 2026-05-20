@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'vitest';
-import { buildSandboxEnvironment } from '../../src/adapters/sandbox-environment.js';
+import { buildSandboxEnvironment, buildSandboxEnvironmentWithSummary } from '../../src/adapters/sandbox-environment.js';
 
 describe('buildSandboxEnvironment', () => {
   test('strips AC_ prefix and maps token value from env', () => {
@@ -62,5 +62,30 @@ describe('buildSandboxEnvironment', () => {
         delete process.env['AC_GH_TOKEN'];
       }
     }
+  });
+});
+
+describe('buildSandboxEnvironmentWithSummary', () => {
+  test('returns exported keys without values', () => {
+    const { environment, summary } = buildSandboxEnvironmentWithSummary(
+      ['AC_GITHUB_TOKEN', 'AC_MISSING'],
+      { AC_GITHUB_TOKEN: 'secret-token' },
+    );
+    expect(environment['GITHUB_TOKEN']).toBe('secret-token');
+    expect(summary.exported_sandbox_keys).toEqual(['GITHUB_TOKEN']);
+    expect(summary.missing_tokens).toEqual(['AC_MISSING']);
+    expect(summary.token_count).toBe(1);
+    expect(JSON.stringify(summary)).not.toContain('secret-token');
+  });
+
+  test('returns all missing when none present', () => {
+    const { environment, summary } = buildSandboxEnvironmentWithSummary(
+      ['AC_GITHUB_TOKEN', 'AC_GH_TOKEN'],
+      {},
+    );
+    expect(environment).toEqual({});
+    expect(summary.token_count).toBe(0);
+    expect(summary.exported_sandbox_keys).toEqual([]);
+    expect(summary.missing_tokens).toEqual(['AC_GITHUB_TOKEN', 'AC_GH_TOKEN']);
   });
 });

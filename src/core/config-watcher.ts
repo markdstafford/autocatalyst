@@ -1,8 +1,11 @@
 import { watch, watchFile, unwatchFile, type FSWatcher } from 'node:fs';
+import type pino from 'pino';
+import { createLogger } from './logger.js';
 
 interface ConfigWatcherOptions {
   onReload: () => void;
   debounceMs?: number;
+  logDestination?: pino.DestinationStream;
 }
 
 export class ConfigWatcher {
@@ -12,17 +15,20 @@ export class ConfigWatcher {
   private watcher: FSWatcher | null = null;
   private debounceTimer: ReturnType<typeof setTimeout> | null = null;
   private watching: boolean = false;
+  private readonly logger: pino.Logger;
 
   constructor(filePath: string, options: ConfigWatcherOptions) {
     this.filePath = filePath;
     this.onReload = options.onReload;
     this.debounceMs = options.debounceMs ?? 200;
+    this.logger = createLogger('config-watcher', { destination: options.logDestination });
   }
 
   start(): void {
     if (this.watching) return;
     this.watching = true;
     this.attachWatcher();
+    this.logger.info({ event: 'config_watcher.started', file_path: this.filePath }, 'Config watcher started');
   }
 
   stop(): void {
@@ -36,6 +42,7 @@ export class ConfigWatcher {
       this.watcher = null;
     }
     unwatchFile(this.filePath);
+    this.logger.info({ event: 'config_watcher.stopped', file_path: this.filePath }, 'Config watcher stopped');
   }
 
   private attachWatcher(): void {
@@ -67,8 +74,10 @@ export class ConfigWatcher {
     if (this.debounceTimer) {
       clearTimeout(this.debounceTimer);
     }
+    this.logger.debug({ event: 'config_watcher.reload_scheduled', file_path: this.filePath }, 'Config reload scheduled');
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
+      this.logger.info({ event: 'config_watcher.reload_fired', file_path: this.filePath }, 'Config reload fired');
       this.onReload();
     }, this.debounceMs);
   }

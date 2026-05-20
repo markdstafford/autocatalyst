@@ -1,6 +1,7 @@
 import { once } from 'node:events';
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http';
-import { afterEach, describe, expect, test } from 'vitest';
+import { PassThrough } from 'node:stream';
+import { afterEach, describe, expect, it, test } from 'vitest';
 import { startAnthropicBetaHeaderFilterProxy } from '../../../src/adapters/anthropic/anthropic-beta-header-filter-proxy.js';
 
 async function listen(server: Server): Promise<number> {
@@ -62,6 +63,39 @@ describe('Anthropic beta header filter proxy', () => {
     expect(received[0].body).toBe(JSON.stringify({ stream: false }));
     expect(received[0].headers['api-key']).toBe('sk-test');
     expect(received[0].headers['anthropic-beta']).toBe('context-1m-2025-08-07, task-budgets-2026-03-13');
+  });
+
+  it('logs proxy.started with port and strip_beta_count', async () => {
+    const upstream = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+    servers.push(upstream);
+    const upstreamPort = await listen(upstream);
+
+    const dest = new PassThrough();
+    const lines: string[] = [];
+    dest.on('data', (c: Buffer) => c.toString().split('\n').filter(Boolean).forEach(l => lines.push(l)));
+
+    const proxy = await startAnthropicBetaHeaderFilterProxy(`http://127.0.0.1:${upstreamPort}`, {
+      stripBetaValues: ['advisor-tool-2026-03-01', 'context-management-2025-06-27'],
+      logDestination: dest,
+    });
+    servers.push(proxy.server);
+
+    await proxy.close();
+    dest.end();
+    await new Promise(r => dest.on('finish', r));
+
+    const parsed = lines.map(l => JSON.parse(l));
+    const started = parsed.find(l => l.event === 'proxy.started');
+    expect(started).toBeDefined();
+    expect(typeof started.port).toBe('number');
+    expect(started.strip_beta_count).toBe(2);
+
+    const stopped = parsed.find(l => l.event === 'proxy.stopped');
+    expect(stopped).toBeDefined();
+    expect(stopped.total_requests).toBe(0);
   });
 
   test('omits anthropic-beta when configured strip values remove all beta values', async () => {

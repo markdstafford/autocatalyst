@@ -1,3 +1,4 @@
+import { PassThrough } from 'node:stream';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -160,6 +161,50 @@ describe('WorkspaceManager.create', () => {
     expect(workspacePath).toContain('idea-win');
     expect(workspacePath).not.toMatch(/^".*"$/); // not wrapped in double-quotes
     expect(cloneArgs.some(a => a.startsWith('"') || a.endsWith('"'))).toBe(false);
+  });
+});
+
+describe('WorkspaceManager telemetry', () => {
+  it('logs workspace.cloned with duration_ms', async () => {
+    const dest = new PassThrough();
+    const lines: string[] = [];
+    dest.on('data', (c: Buffer) => c.toString().split('\n').filter(Boolean).forEach(l => lines.push(l)));
+
+    const execFn = vi.fn().mockResolvedValue({ stdout: '', stderr: '' });
+    const wm = new WorkspaceManagerImpl({ execFn, logDestination: dest });
+
+    await wm.create('idea-telem', 'https://github.com/org/repo.git', tempRoot);
+    dest.end();
+    await new Promise(r => dest.on('finish', r));
+
+    const parsed = lines.map(l => JSON.parse(l));
+    const cloned = parsed.find(l => l.event === 'workspace.cloned');
+    expect(cloned).toBeDefined();
+    expect(typeof cloned.duration_ms).toBe('number');
+    expect(cloned.request_id).toBe('idea-telem');
+
+    const checkedOut = parsed.find(l => l.event === 'workspace.checked_out');
+    expect(checkedOut).toBeDefined();
+    expect(typeof checkedOut.duration_ms).toBe('number');
+  });
+
+  it('logs workspace.clone_failed on git error', async () => {
+    const dest = new PassThrough();
+    const lines: string[] = [];
+    dest.on('data', (c: Buffer) => c.toString().split('\n').filter(Boolean).forEach(l => lines.push(l)));
+
+    const execFn = vi.fn().mockRejectedValueOnce(new Error('clone failed'));
+    const wm = new WorkspaceManagerImpl({ execFn, logDestination: dest });
+
+    await expect(wm.create('idea-fail2', 'https://github.com/org/repo.git', tempRoot)).rejects.toThrow('git clone failed');
+    dest.end();
+    await new Promise(r => dest.on('finish', r));
+
+    const parsed = lines.map(l => JSON.parse(l));
+    const failed = parsed.find(l => l.event === 'workspace.clone_failed');
+    expect(failed).toBeDefined();
+    expect(typeof failed.duration_ms).toBe('number');
+    expect(failed.error).toContain('clone failed');
   });
 });
 
