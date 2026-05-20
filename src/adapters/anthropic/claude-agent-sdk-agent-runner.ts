@@ -38,16 +38,72 @@ const MAX_STDERR_LINES = 50;
 const SECRET_PATTERNS = [
   /(?:api[_-]?key|secret|password|credential)\s*[=:]\s*\S+/gi,
   /ghp_[A-Za-z0-9_]+/g,
+  /github_pat_[A-Za-z0-9_]+/g,
+  /gho_[A-Za-z0-9_]+/g,
+  /ghs_[A-Za-z0-9_]+/g,
   /sk-[A-Za-z0-9_-]+/g,
   /xox[bpras]-[A-Za-z0-9-]+/g,
+  /xapp-[A-Za-z0-9-]+/g,
+  /Authorization:\s*Bearer\s+\S+/gi,
+  /ANTHROPIC_CUSTOM_HEADERS[^=]*=\s*api-key:\s*\S+/gi,
 ];
 
-function redactSecrets(text: string): string {
+export function redactSecrets(text: string): string {
   let redacted = text;
   for (const pattern of SECRET_PATTERNS) {
     redacted = redacted.replace(pattern, '[REDACTED]');
   }
   return redacted;
+}
+
+export interface ClaudeSdkMessageDiagnostic {
+  sdk_message_type: string;
+  sdk_subtype?: string;
+  content_block_types?: string[];
+  tool_call_count?: number;
+  tool_call_names?: string[];
+  tool_result_count?: number;
+  is_error?: boolean;
+  usage_available?: boolean;
+}
+
+export function claudeSdkMessageDiagnostic(message: unknown): ClaudeSdkMessageDiagnostic {
+  const msg = message as Record<string, unknown>;
+  const type = typeof msg['type'] === 'string' ? msg['type'] : 'unknown';
+  const result: ClaudeSdkMessageDiagnostic = { sdk_message_type: type };
+
+  if (typeof msg['subtype'] === 'string') {
+    result.sdk_subtype = msg['subtype'];
+  }
+
+  if (type === 'assistant') {
+    const innerMsg = msg['message'] as Record<string, unknown> | undefined;
+    const content = Array.isArray(innerMsg?.['content']) ? innerMsg!['content'] as unknown[] : [];
+    result.content_block_types = content
+      .filter((b): b is Record<string, unknown> => Boolean(b) && typeof b === 'object')
+      .map(b => typeof (b as Record<string, unknown>)['type'] === 'string' ? (b as Record<string, unknown>)['type'] as string : 'unknown');
+    const toolUseBlocks = content.filter(
+      (b): b is Record<string, unknown> => typeof b === 'object' && Boolean(b) && (b as Record<string, unknown>)['type'] === 'tool_use',
+    );
+    if (toolUseBlocks.length > 0) {
+      result.tool_call_count = toolUseBlocks.length;
+      result.tool_call_names = toolUseBlocks
+        .map(b => typeof (b as Record<string, unknown>)['name'] === 'string' ? (b as Record<string, unknown>)['name'] as string : 'unknown');
+    }
+    const toolResultBlocks = content.filter(
+      (b): b is Record<string, unknown> => typeof b === 'object' && Boolean(b) && (b as Record<string, unknown>)['type'] === 'tool_result',
+    );
+    if (toolResultBlocks.length > 0) {
+      result.tool_result_count = toolResultBlocks.length;
+    }
+  }
+
+  if (type === 'result') {
+    result.is_error = typeof msg['is_error'] === 'boolean' ? msg['is_error'] : undefined;
+    result.usage_available = Boolean(msg['usage']);
+  }
+
+  return result;
 }
 
 const AUTOMATED_ALLOWED_TOOLS = [

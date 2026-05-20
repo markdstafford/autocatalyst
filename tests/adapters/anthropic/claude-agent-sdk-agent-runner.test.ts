@@ -1,6 +1,6 @@
 import { PassThrough } from 'node:stream';
-import { describe, expect, test, vi } from 'vitest';
-import { ClaudeAgentSdkAgentRunner } from '../../../src/adapters/anthropic/claude-agent-sdk-agent-runner.js';
+import { describe, it, expect, test, vi } from 'vitest';
+import { ClaudeAgentSdkAgentRunner, claudeSdkMessageDiagnostic, redactSecrets } from '../../../src/adapters/anthropic/claude-agent-sdk-agent-runner.js';
 import type { AgentRunEvent } from '../../../src/types/ai.js';
 import type { Counter, Histogram, Meter } from '@opentelemetry/api';
 
@@ -646,5 +646,48 @@ describe('ClaudeAgentSdkAgentRunner', () => {
       log => log['event'] === 'sdk.stderr_on_error',
     );
     expect(errorLog).toBeUndefined();
+  });
+});
+
+describe('claudeSdkMessageDiagnostic', () => {
+  it('returns safe summary for assistant message with tool use', () => {
+    const msg = {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'secret content should not appear' },
+          { type: 'tool_use', id: 'tu1', name: 'Bash', input: { command: 'rm -rf' } },
+        ],
+      },
+    };
+    const diag = claudeSdkMessageDiagnostic(msg as any);
+    expect(diag.sdk_message_type).toBe('assistant');
+    expect(diag.content_block_types).toEqual(['text', 'tool_use']);
+    expect(diag.tool_call_count).toBe(1);
+    expect(diag.tool_call_names).toEqual(['Bash']);
+    expect(JSON.stringify(diag)).not.toContain('secret content');
+    expect(JSON.stringify(diag)).not.toContain('rm -rf');
+  });
+
+  it('marks usage_available on result message with usage', () => {
+    const msg = {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    };
+    const diag = claudeSdkMessageDiagnostic(msg as any);
+    expect(diag.sdk_message_type).toBe('result');
+    expect(diag.usage_available).toBe(true);
+    expect(diag.is_error).toBe(false);
+  });
+
+  it('redactSecrets covers GitHub PAT and Slack xapp tokens', () => {
+    const text = 'github_pat_11ABCDEF and xapp-1-abc-123 and Authorization: Bearer tok123';
+    const redacted = redactSecrets(text);
+    expect(redacted).not.toContain('github_pat_11ABCDEF');
+    expect(redacted).not.toContain('xapp-1-abc-123');
+    expect(redacted).not.toContain('tok123');
   });
 });
