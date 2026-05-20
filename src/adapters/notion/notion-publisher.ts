@@ -114,7 +114,13 @@ export class NotionPublisher implements ArtifactPublisher, ArtifactContentSource
   }
 
   async getContent(publisher_ref: string, stripHtml = false): Promise<string> {
+    const fetchStart = performance.now();
     const raw = await this.client.pages.getMarkdown(publisher_ref);
+    const duration_ms = Math.round(performance.now() - fetchStart);
+    this.logger.debug(
+      { event: 'notion_spec.content_fetched', page_id: publisher_ref, duration_ms },
+      'Spec content fetched',
+    );
     return stripHtml ? stripAllHtml(raw) : raw;
   }
 
@@ -193,16 +199,22 @@ export class NotionPublisher implements ArtifactPublisher, ArtifactContentSource
 
   private async resolveFilenameToPageId(filename: string): Promise<string | undefined> {
     const dataSourceId = await this.getSpecsDataSourceId();
+    const lookupStart = performance.now();
     const result = await this.client.dataSources.query(dataSourceId, {
       property: 'Filename', rich_text: { equals: filename },
     });
+    const duration_ms = Math.round(performance.now() - lookupStart);
     if (result.results.length === 0) {
       this.logger.warn(
-        { event: 'notion_spec.filename_lookup_failed', filename },
+        { event: 'notion_spec.filename_lookup_failed', filename, duration_ms },
         'Could not resolve spec filename to page ID',
       );
       return undefined;
     }
+    this.logger.debug(
+      { event: 'notion_spec.filename_resolved', filename, page_id: result.results[0].id, duration_ms },
+      'Spec filename resolved to page ID',
+    );
     return result.results[0].id;
   }
 }

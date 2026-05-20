@@ -28,7 +28,7 @@ import type {
 } from '../../types/ai.js';
 import { createLogger } from '../../core/logger.js';
 import { materializeClaudeRuntimeSkillPlugins } from './claude-runtime-skill-materializer.js';
-import { buildSandboxEnvironment } from '../sandbox-environment.js';
+import { buildSandboxEnvironmentWithSummary, buildSandboxEnvironment } from '../sandbox-environment.js';
 import { startAnthropicBetaHeaderFilterProxy, type AnthropicBetaHeaderFilterProxy } from './anthropic-beta-header-filter-proxy.js';
 
 type QueryFn = typeof _query;
@@ -179,7 +179,16 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
 
   async *run(request: AgentRunRequest): AsyncIterable<AgentRunEvent> {
     const model = request.profile?.model ?? 'unknown';
-    const sandboxEnv = buildSandboxEnvironment(this.sandboxEnvTokens);
+    const { environment: sandboxEnv, summary: sandboxSummary } = buildSandboxEnvironmentWithSummary(this.sandboxEnvTokens);
+    this.logger.debug(
+      {
+        event: 'sandbox.env_resolved',
+        token_count: sandboxSummary.token_count,
+        exported_sandbox_keys: sandboxSummary.exported_sandbox_keys,
+        missing_tokens: sandboxSummary.missing_tokens,
+      },
+      'Sandbox environment resolved',
+    );
     if (isGitHubDependentRoute(request.route) && !sandboxEnv['GH_TOKEN'] && !sandboxEnv['GITHUB_TOKEN']) {
       this.logger.warn(
         {
@@ -217,6 +226,8 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
     let terminalDiagnostics: { stderr_excerpt_redacted?: string } | undefined;
     let terminalUsage: { input_tokens: number; output_tokens: number } | undefined;
 
+    const telemetry = request.telemetry ?? {};
+
     this.logger.info(
       {
         event: 'agent.run_started',
@@ -224,6 +235,10 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
         route_task: request.route.task,
         ...(request.route.stage ? { route_stage: request.route.stage } : {}),
         working_directory: request.working_directory,
+        ...(telemetry.run_id ? { run_id: telemetry.run_id } : {}),
+        ...(telemetry.request_id ? { request_id: telemetry.request_id } : {}),
+        ...(telemetry.phase ? { phase: telemetry.phase } : {}),
+        ...(telemetry.handler ? { handler: telemetry.handler } : {}),
       },
       'Claude Agent SDK run started',
     );
@@ -239,6 +254,7 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
           const result = message as unknown as SDKResultMessage;
           terminalUsage = { input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens };
           const sdkOutcome = result.is_error ? 'error' : 'success';
+          outcome = sdkOutcome;
           this._agentRunOutcome.add(1, { component: 'claude-agent-sdk', model, outcome: sdkOutcome });
           this._agentTokenUsage.record(result.usage.input_tokens, {
             component: 'claude-agent-sdk', model, token_type: 'input',
@@ -270,12 +286,17 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
           },
           'Claude Agent SDK item',
         );
+        const diag = claudeSdkMessageDiagnostic(message as SDKMessage);
         const event = normalizeSdkMessage(message as SDKMessage);
         if (event.type === 'assistant') {
           assistantTurnCount++;
           this._agentTurns.add(1, { component: 'claude-agent-sdk', model });
-        }
-        if ((message as SDKMessage).type === 'result' && terminalDiagnostics) {
+          if (diag.tool_call_count) {
+            yield { ...event, tool_call_count: diag.tool_call_count, tool_call_names: diag.tool_call_names } as AgentRunEvent;
+          } else {
+            yield event;
+          }
+        } else if ((message as SDKMessage).type === 'result' && terminalDiagnostics) {
           yield { ...event, diagnostics: terminalDiagnostics } as AgentRunEvent;
         } else {
           yield event;
@@ -301,6 +322,10 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
           model,
           route_task: request.route.task,
           error: String(err),
+          ...(telemetry.run_id ? { run_id: telemetry.run_id } : {}),
+          ...(telemetry.request_id ? { request_id: telemetry.request_id } : {}),
+          ...(telemetry.phase ? { phase: telemetry.phase } : {}),
+          ...(telemetry.handler ? { handler: telemetry.handler } : {}),
         },
         'Claude Agent SDK run failed',
       );
@@ -325,6 +350,10 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
           sdk_message_count: sdkMessageCount,
           input_tokens: terminalUsage?.input_tokens,
           output_tokens: terminalUsage?.output_tokens,
+          ...(telemetry.run_id ? { run_id: telemetry.run_id } : {}),
+          ...(telemetry.request_id ? { request_id: telemetry.request_id } : {}),
+          ...(telemetry.phase ? { phase: telemetry.phase } : {}),
+          ...(telemetry.handler ? { handler: telemetry.handler } : {}),
         },
         'Claude Agent SDK run completed',
       );

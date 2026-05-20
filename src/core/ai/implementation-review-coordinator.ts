@@ -116,11 +116,13 @@ export class ImplementationReviewCoordinator {
         event: 'implementation.review.round_started',
         phase,
         round,
+        run_id: run.id,
         review_profile: reviewProfile.id,
       },
       'Review round started',
     );
 
+    let reviewResultContent: string;
     try {
       await drainAgentRunner(
         this.deps.runner.run({
@@ -133,15 +135,21 @@ export class ImplementationReviewCoordinator {
         this.deps.logger,
         `implementation_review_${phase}`,
       );
-    } catch (err) {
-      return this.handleReviewFailure(phase, run, implementation_result, implSummary, reviewSummary, String(err));
-    }
 
-    let reviewResultContent: string;
-    try {
       reviewResultContent = await this.readFileFn(reviewResultPath, 'utf-8');
     } catch (err) {
-      return this.handleReviewFailure(phase, run, implementation_result, implSummary, reviewSummary, `Review result file not found: ${String(err)}`);
+      this.deps.logger.error(
+        {
+          event: 'implementation.review.round_failed',
+          phase,
+          round,
+          run_id: run.id,
+          error: String(err),
+          duration_ms: Math.round(performance.now() - roundStart),
+        },
+        'Review round failed',
+      );
+      return this.handleReviewFailure(phase, run, implementation_result, implSummary, reviewSummary, String(err));
     }
 
     const reviewResult = parseImplementationReviewResult(reviewResultContent, reviewResultPath);

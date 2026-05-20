@@ -56,7 +56,9 @@ function wrapHandler<TEvent, TRun>(
     try {
       await fn(event, run);
       const duration_ms = Math.round(performance.now() - startMs);
-      logger.info({ event: 'handler.completed', ...ctx, outcome: 'success', duration_ms }, 'Handler completed');
+      const runStage = (run as { stage?: string }).stage;
+      const outcome = runStage === 'failed' ? 'error' : 'success';
+      logger.info({ event: 'handler.completed', ...ctx, outcome, duration_ms }, 'Handler completed');
     } catch (err) {
       const duration_ms = Math.round(performance.now() - startMs);
       logger.error({ event: 'handler.failed', ...ctx, outcome: 'error', duration_ms, error: String(err) }, 'Handler failed');

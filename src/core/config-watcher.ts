@@ -60,7 +60,11 @@ export class ConfigWatcher {
         this.scheduleReload();
       });
 
-      this.watcher.on('error', () => {
+      this.watcher.on('error', (err) => {
+        this.logger.warn(
+          { event: 'config_watcher.watch_error', file: this.filePath, error: String(err) },
+          'fs.watch error, falling back to polling',
+        );
         this.watcher?.close();
         this.watcher = null;
         // watchFile polling continues as fallback

@@ -86,7 +86,19 @@ export class WorkspaceManagerImpl implements WorkspaceManager {
   }
 
   async destroy(workspace_path: string): Promise<void> {
-    rmSync(workspace_path, { recursive: true, force: true });
-    this.logger.info({ event: 'workspace.destroyed', workspace_path }, 'Workspace destroyed');
+    const start = performance.now();
+    try {
+      rmSync(workspace_path, { recursive: true, force: true });
+      this.logger.info(
+        { event: 'workspace.destroyed', workspace_path, duration_ms: Math.round(performance.now() - start) },
+        'Workspace destroyed',
+      );
+    } catch (err) {
+      this.logger.error(
+        { event: 'workspace.destroy_failed', workspace_path, duration_ms: Math.round(performance.now() - start), error: String(err) },
+        'Workspace destroy failed',
+      );
+      throw err;
+    }
   }
 }

@@ -427,7 +427,7 @@ export class SlackAdapter implements ChannelAdapter {
       });
       const duration_ms = Math.round(performance.now() - callStart);
       this.logger.info(
-        { event: 'slack.message.delivered', channel_id: ref.channel_id, thread_ts: ref.conversation_id, duration_ms },
+        { event: 'slack.message.delivered', channel_id: ref.channel_id, thread_ts: ref.conversation_id, message_ts: result.ts, duration_ms },
         'Slack message delivered',
       );
     } catch (err) {
