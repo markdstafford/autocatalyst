@@ -649,6 +649,71 @@ describe('ClaudeAgentSdkAgentRunner', () => {
   });
 });
 
+describe('ClaudeAgentSdkAgentRunner lifecycle logs', () => {
+  it('emits agent.run_started and agent.run_completed on success', async () => {
+    const dest = new PassThrough();
+    const lines: string[] = [];
+    dest.on('data', (chunk: Buffer) => {
+      chunk.toString().split('\n').filter(Boolean).forEach(l => lines.push(l));
+    });
+
+    const mockQueryFn = async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      };
+    };
+
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn: mockQueryFn as any, logDestination: dest as unknown as import('pino').DestinationStream });
+
+    for await (const _ of runner.run({
+      route: { task: 'implementation.run' },
+      working_directory: '/tmp',
+      prompt: 'test',
+    })) { /* drain */ }
+
+    dest.end();
+    await new Promise(r => dest.on('finish', r));
+
+    const parsed = lines.map(l => JSON.parse(l));
+    const started = parsed.find((l: Record<string, unknown>) => l['event'] === 'agent.run_started');
+    const completed = parsed.find((l: Record<string, unknown>) => l['event'] === 'agent.run_completed');
+
+    expect(started).toBeDefined();
+    expect(started['route_task']).toBe('implementation.run');
+    expect(completed).toBeDefined();
+    expect(completed['outcome']).toBe('success');
+    expect(typeof completed['latency_ms']).toBe('number');
+  });
+
+  it('emits agent.run_failed when queryFn throws', async () => {
+    const dest = new PassThrough();
+    const lines: string[] = [];
+    dest.on('data', (chunk: Buffer) => {
+      chunk.toString().split('\n').filter(Boolean).forEach(l => lines.push(l));
+    });
+
+    const mockQueryFn = async function* (): AsyncGenerator<never> {
+      throw new Error('connection refused');
+    };
+
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn: mockQueryFn as any, logDestination: dest as unknown as import('pino').DestinationStream });
+    await expect(async () => {
+      for await (const _ of runner.run({ route: { task: 'implementation.run' }, working_directory: '/tmp', prompt: 'test' })) {}
+    }).rejects.toThrow('connection refused');
+
+    dest.end();
+    await new Promise(r => dest.on('finish', r));
+
+    const parsed = lines.map(l => JSON.parse(l));
+    const failed = parsed.find((l: Record<string, unknown>) => l['event'] === 'agent.run_failed');
+    expect(failed).toBeDefined();
+    expect(String(failed['error'])).toContain('connection refused');
+  });
+});
+
 describe('claudeSdkMessageDiagnostic', () => {
   it('returns safe summary for assistant message with tool use', () => {
     const msg = {

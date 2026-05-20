@@ -216,55 +216,121 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
       },
     };
     const startMs = performance.now();
-    for await (const message of this.queryFn({
-      prompt: request.prompt,
-      options,
-    })) {
-      if ((message as SDKMessage).type === 'result') {
-        const result = message as unknown as SDKResultMessage;
-        const outcome = result.is_error ? 'error' : 'success';
-        this._agentRunOutcome.add(1, { component: 'claude-agent-sdk', model, outcome });
-        this._agentTokenUsage.record(result.usage.input_tokens, {
-          component: 'claude-agent-sdk', model, token_type: 'input',
-        });
-        this._agentTokenUsage.record(result.usage.output_tokens, {
-          component: 'claude-agent-sdk', model, token_type: 'output',
-        });
-        if (result.is_error && stderrLines.length > 0) {
-          this.logger.error(
-            {
-              event: 'sdk.stderr_on_error',
-              route_task: request.route.task,
-              model,
-              stderr_excerpt: redactSecrets(stderrLines.join('\n')),
-            },
-            'Claude Code subprocess stderr captured on error exit',
-          );
+    let outcome: 'success' | 'error' | 'incomplete' = 'success';
+    let sdkMessageCount = 0;
+    let assistantTurnCount = 0;
+    let seenTerminalResult = false;
+    let terminalDiagnostics: { stderr_excerpt_redacted?: string } | undefined;
+
+    this.logger.info(
+      {
+        event: 'agent.run_started',
+        model,
+        route_task: request.route.task,
+        ...(request.route.stage ? { route_stage: request.route.stage } : {}),
+        working_directory: request.working_directory,
+      },
+      'Claude Agent SDK run started',
+    );
+
+    try {
+      for await (const message of this.queryFn({
+        prompt: request.prompt,
+        options,
+      })) {
+        sdkMessageCount++;
+        if ((message as SDKMessage).type === 'result') {
+          seenTerminalResult = true;
+          const result = message as unknown as SDKResultMessage;
+          const sdkOutcome = result.is_error ? 'error' : 'success';
+          this._agentRunOutcome.add(1, { component: 'claude-agent-sdk', model, outcome: sdkOutcome });
+          this._agentTokenUsage.record(result.usage.input_tokens, {
+            component: 'claude-agent-sdk', model, token_type: 'input',
+          });
+          this._agentTokenUsage.record(result.usage.output_tokens, {
+            component: 'claude-agent-sdk', model, token_type: 'output',
+          });
+          if (result.is_error && stderrLines.length > 0) {
+            this.logger.error(
+              {
+                event: 'sdk.stderr_on_error',
+                route_task: request.route.task,
+                model,
+                stderr_excerpt: redactSecrets(stderrLines.join('\n')),
+              },
+              'Claude Code subprocess stderr captured on error exit',
+            );
+          }
+          if (stderrLines.length > 0) {
+            terminalDiagnostics = { stderr_excerpt_redacted: redactSecrets(stderrLines.slice(-20).join('\n')) };
+          }
+        }
+        this.logger.debug(
+          {
+            event: 'agent.sdk_item',
+            model,
+            route_task: request.route.task,
+            ...claudeSdkMessageDiagnostic(message),
+          },
+          'Claude Agent SDK item',
+        );
+        const event = normalizeSdkMessage(message as SDKMessage);
+        if (event.type === 'assistant') {
+          assistantTurnCount++;
+          this._agentTurns.add(1, { component: 'claude-agent-sdk', model });
+        }
+        if ((message as SDKMessage).type === 'result' && terminalDiagnostics) {
+          yield { ...event, diagnostics: terminalDiagnostics } as AgentRunEvent;
+        } else {
+          yield event;
         }
       }
-      const event = normalizeSdkMessage(message as SDKMessage);
-      if (event.type === 'assistant') {
-        this._agentTurns.add(1, { component: 'claude-agent-sdk', model });
+      if (stderrLines.length > 0) {
+        this.logger.debug(
+          {
+            event: 'sdk.stderr',
+            route_task: request.route.task,
+            model,
+            stderr_line_count: stderrLines.length,
+            stderr_excerpt: redactSecrets(stderrLines.slice(-5).join('\n')),
+          },
+          'Claude Code subprocess stderr',
+        );
       }
-      yield event;
-    }
-    if (stderrLines.length > 0) {
-      this.logger.debug(
+    } catch (err) {
+      outcome = 'error';
+      this.logger.error(
         {
-          event: 'sdk.stderr',
-          route_task: request.route.task,
+          event: 'agent.run_failed',
           model,
-          stderr_line_count: stderrLines.length,
-          stderr_excerpt: redactSecrets(stderrLines.slice(-5).join('\n')),
+          route_task: request.route.task,
+          error: String(err),
         },
-        'Claude Code subprocess stderr',
+        'Claude Agent SDK run failed',
+      );
+      throw err;
+    } finally {
+      if (!seenTerminalResult && outcome !== 'error') {
+        outcome = 'incomplete';
+        this.logger.warn(
+          { event: 'agent.result_missing', model, route_task: request.route.task },
+          'Claude Agent SDK completed without a terminal result message',
+        );
+      }
+      this._adapterLatency.record(performance.now() - startMs, { adapter: 'agent-sdk', operation: 'query', model });
+      this.logger.info(
+        {
+          event: 'agent.run_completed',
+          model,
+          route_task: request.route.task,
+          outcome,
+          latency_ms: Math.round(performance.now() - startMs),
+          assistant_turn_count: assistantTurnCount,
+          sdk_message_count: sdkMessageCount,
+        },
+        'Claude Agent SDK run completed',
       );
     }
-    this._adapterLatency.record(performance.now() - startMs, {
-      adapter: 'agent-sdk',
-      operation: 'query',
-      model,
-    });
   }
 
   private async betaFilterProxyUrl(profile: AgentProfile | undefined): Promise<string | null> {
