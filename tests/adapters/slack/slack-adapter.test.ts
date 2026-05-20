@@ -1026,6 +1026,45 @@ describe('SlackAdapter — reaction command messageText', () => {
   });
 });
 
+describe('SlackAdapter — thread_ts / message_ts logging', () => {
+  const BOT_ID = 'UBOT001';
+  const CHANNEL_ID = 'C123';
+  const CHANNEL_NAME = 'my-channel';
+
+  it('logs root thread_ts and reply message_ts separately for thread messages', async () => {
+    const { records, destination } = makeLogCapture();
+    const mock = makeMockApp({ botUserId: BOT_ID });
+    const adapter = new SlackAdapter(mock as unknown as App, { channelName: CHANNEL_NAME }, { logDestination: destination });
+    await adapter.start();
+
+    // Seed idea to register thread (root message ts = '100.000')
+    const ideaPromise = takeOne(adapter.receive());
+    await mock._triggerMessage({ text: `<@${BOT_ID}> seed idea`, user: 'U123', ts: '100.000', channel: CHANNEL_ID });
+    await ideaPromise;
+
+    // Trigger thread reply: msg.thread_ts = '100.000' (root), msg.ts = '111.000' (this reply)
+    const replyPromise = takeOne(adapter.receive());
+    await mock._triggerMessage({
+      text: `<@${BOT_ID}> follow-up`,
+      user: 'U456',
+      ts: '111.000',
+      thread_ts: '100.000',
+      channel: CHANNEL_ID,
+    });
+    await replyPromise;
+    await adapter.stop();
+
+    const classifiedLog = records.find(
+      r => r['event'] === 'slack.message.classified' && r['intent'] === 'thread_message',
+    );
+    expect(classifiedLog).toBeDefined();
+    // thread_ts must be the root thread (100.000), NOT the reply's own ts (111.000)
+    expect(classifiedLog!['thread_ts']).toBe('100.000');
+    // message_ts must be the reply's own ts
+    expect(classifiedLog!['message_ts']).toBe('111.000');
+  });
+});
+
 describe('SlackAdapter — reactToMessage', () => {
   const BOT_ID = 'UBOT001';
   const CHANNEL_ID = 'C123';
