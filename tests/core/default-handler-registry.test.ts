@@ -136,6 +136,7 @@ describe('buildDefaultHandlerRegistry', () => {
       '/ws/request-001',
       undefined,
       expect.any(Function),
+      { run_id: 'run-001', request_id: 'request-001' },
     );
     expect(run.stage).toBe('reviewing_implementation');
   });
@@ -342,6 +343,7 @@ describe('buildDefaultHandlerRegistry', () => {
       '/ws/request-001',
       undefined,
       expect.any(Function),
+      { run_id: 'run-001', request_id: 'request-001' },
     );
     expect(run.stage).toBe('reviewing_implementation');
   });

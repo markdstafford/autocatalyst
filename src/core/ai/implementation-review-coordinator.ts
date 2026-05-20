@@ -123,6 +123,7 @@ export class ImplementationReviewCoordinator {
     );
 
     let reviewResultContent: string;
+    let reviewResult: ReturnType<typeof parseImplementationReviewResult>;
     try {
       await drainAgentRunner(
         this.deps.runner.run({
@@ -137,6 +138,7 @@ export class ImplementationReviewCoordinator {
       );
 
       reviewResultContent = await this.readFileFn(reviewResultPath, 'utf-8');
+      reviewResult = parseImplementationReviewResult(reviewResultContent, reviewResultPath);
     } catch (err) {
       this.deps.logger.error(
         {
@@ -152,8 +154,20 @@ export class ImplementationReviewCoordinator {
       return this.handleReviewFailure(phase, run, implementation_result, implSummary, reviewSummary, String(err));
     }
 
-    const reviewResult = parseImplementationReviewResult(reviewResultContent, reviewResultPath);
     if (reviewResult.status === 'failed') {
+      const duration_ms = Math.round(performance.now() - roundStart);
+      this.deps.logger.error(
+        {
+          event: 'implementation.review.round_failed',
+          phase,
+          round,
+          run_id: run.id,
+          reason: 'review_agent_status_failed',
+          duration_ms,
+          error: reviewResult.error,
+        },
+        'Review round failed: review agent reported failure',
+      );
       return this.handleReviewFailure(phase, run, implementation_result, implSummary, reviewSummary, reviewResult.error ?? 'Review model reported failure');
     }
 
@@ -210,6 +224,7 @@ export class ImplementationReviewCoordinator {
         working_directory,
         responsePrompt,
         progressFn,
+        { run_id: run.id },
       );
     } catch (err) {
       return { status: 'failed', error: `Implementer response to review failed: ${String(err)}` };

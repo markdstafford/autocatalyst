@@ -225,13 +225,14 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
     working_directory: string,
     additional_context?: string,
     onProgress?: (message: string) => Promise<void>,
+    telemetry?: { run_id?: string; request_id?: string },
   ): Promise<ImplementationResult> {
     const resultFilePath = join(working_directory, '.autocatalyst', 'impl-result.json');
     const prompt = buildImplementationPrompt(artifact_path, resultFilePath, additional_context);
     const route = { task: 'implementation.run' as const };
 
     this.logger.debug(
-      { event: 'impl.agent_invoked', working_directory, has_additional_context: Boolean(additional_context) },
+      { event: 'impl.agent_invoked', working_directory, has_additional_context: Boolean(additional_context), ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}), ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}) },
       'Invoking agent for implementation',
     );
 
@@ -248,6 +249,8 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
             phase: 'implementation',
             route_task: route.task,
             handler: 'AgentRunnerImplementationAgent',
+            ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
+            ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}),
           },
         }),
         onProgress,

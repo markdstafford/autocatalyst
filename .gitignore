@@ -46,3 +46,6 @@ context-human/.friction-logs/
 
 # Autocatalyst ephemeral state
 .autocatalyst/
+
+# OpenAI Agents SDK materialized skill files
+.agents/

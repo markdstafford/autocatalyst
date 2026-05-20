@@ -118,6 +118,7 @@ describe('ImplementationFeedbackHandler', () => {
       '/ws/request-001',
       expect.any(String),     // additionalContext
       expect.any(Function),   // onProgress
+      { run_id: 'run-001', request_id: 'request-001' },
     );
     expect(deps.failRun).not.toHaveBeenCalled();
   });
@@ -144,6 +145,7 @@ describe('ImplementationFeedbackHandler', () => {
       '/ws/request-001',
       expect.stringContaining('Fix the bug'),
       expect.any(Function),   // onProgress
+      { run_id: 'run-001', request_id: 'request-001' },
     );
     const context = (deps.implementer.implement as ReturnType<typeof vi.fn>).mock.calls[0][2] as string;
     expect(context).toContain('Some context');
@@ -167,6 +169,7 @@ describe('ImplementationFeedbackHandler', () => {
       '/ws/request-001',
       'use adapter composition',
       expect.any(Function),   // onProgress
+      { run_id: 'run-001', request_id: 'request-001' },
     );
   });
 
@@ -301,6 +304,7 @@ describe('ImplementationFeedbackHandler', () => {
       expect.any(String),
       expect.any(String),
       expect.any(Function),
+      expect.objectContaining({ run_id: expect.any(String) }),
     );
   });
 

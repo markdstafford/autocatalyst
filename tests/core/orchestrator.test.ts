@@ -1416,6 +1416,7 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
       '/ws/request-001',
       undefined,
       expect.any(Function),
+      { run_id: 'run-001', request_id: 'request-001' },
     );
   });
 

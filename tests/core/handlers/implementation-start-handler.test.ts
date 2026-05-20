@@ -121,6 +121,7 @@ describe('ImplementationStartHandler', () => {
       '/ws/request-001',
       undefined,
       expect.any(Function),
+      { run_id: 'run-001', request_id: 'request-001' },
     );
     expect(deps.implFeedbackPage?.create).toHaveBeenCalledWith({
       artifact_ref: 'CANVAS-TYPED',
@@ -152,6 +153,7 @@ describe('ImplementationStartHandler', () => {
       '/ws/request-001',
       undefined,
       expect.any(Function),
+      { run_id: 'run-001', request_id: 'request-001' },
     );
     expect(deps.implFeedbackPage?.create).toHaveBeenCalledWith({
       artifact_ref: 'CANVAS001',

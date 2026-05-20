@@ -283,6 +283,9 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
             model,
             route_task: request.route.task,
             ...claudeSdkMessageDiagnostic(message),
+            ...(telemetry.run_id ? { run_id: telemetry.run_id } : {}),
+            ...(telemetry.request_id ? { request_id: telemetry.request_id } : {}),
+            ...(telemetry.phase ? { phase: telemetry.phase } : {}),
           },
           'Claude Agent SDK item',
         );
@@ -291,8 +294,12 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
         if (event.type === 'assistant') {
           assistantTurnCount++;
           this._agentTurns.add(1, { component: 'claude-agent-sdk', model });
-          if (diag.tool_call_count) {
-            yield { ...event, tool_call_count: diag.tool_call_count, tool_call_names: diag.tool_call_names } as AgentRunEvent;
+          const diagExtras: Record<string, unknown> = {};
+          if (diag.tool_call_count !== undefined) diagExtras['tool_call_count'] = diag.tool_call_count;
+          if (diag.tool_call_names !== undefined) diagExtras['tool_call_names'] = diag.tool_call_names;
+          if (diag.tool_result_count !== undefined) diagExtras['tool_result_count'] = diag.tool_result_count;
+          if (Object.keys(diagExtras).length > 0) {
+            yield { ...event, ...diagExtras } as AgentRunEvent;
           } else {
             yield event;
           }

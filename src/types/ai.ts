@@ -235,6 +235,7 @@ export interface ImplementationAgent {
     working_directory: string,
     additional_context?: string,
     onProgress?: (message: string) => Promise<void>,
+    telemetry?: { run_id?: string; request_id?: string },
   ): Promise<ImplementationResult>;
 }
 

@@ -150,6 +150,7 @@ describe('ImplementationReviewCoordinator', () => {
         WORKING_DIR,
         expect.stringContaining('[REVIEW_ID: INIT-1]'),
         expect.any(Function),
+        expect.objectContaining({ run_id: expect.any(String) }),
       );
     });
 
