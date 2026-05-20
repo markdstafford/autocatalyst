@@ -3,6 +3,7 @@ import { readFile as _readFile } from 'node:fs/promises';
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import type pino from 'pino';
 import type {
   AgentRunner,
@@ -107,6 +108,18 @@ export class ImplementationReviewCoordinator {
       await mkdir(dirname(reviewResultPath), { recursive: true });
     } catch { /* ignore */ }
 
+    const round = 1;
+    const roundStart = performance.now();
+    this.deps.logger.info(
+      {
+        event: 'implementation.review.round_started',
+        phase,
+        round,
+        review_profile: reviewProfile.id,
+      },
+      'Review round started',
+    );
+
     try {
       await drainAgentRunner(
         this.deps.runner.run({
@@ -134,6 +147,24 @@ export class ImplementationReviewCoordinator {
     if (reviewResult.status === 'failed') {
       return this.handleReviewFailure(phase, run, implementation_result, implSummary, reviewSummary, reviewResult.error ?? 'Review model reported failure');
     }
+
+    const duration_ms = Math.round(performance.now() - roundStart);
+    const blockerCount = reviewResult.findings.filter(f => f.severity === 'blocker').length;
+    const warningCount = reviewResult.findings.filter(f => f.severity === 'warning').length;
+    const infoCount = reviewResult.findings.filter(f => f.severity === 'info').length;
+    this.deps.logger.info(
+      {
+        event: 'implementation.review.round_completed',
+        phase,
+        round,
+        review_profile: reviewProfile.id,
+        duration_ms,
+        blocker_count: blockerCount,
+        warning_count: warningCount,
+        info_count: infoCount,
+      },
+      'Review round completed',
+    );
 
     this.deps.logger.info(
       { event: 'implementation.review.completed', phase, run_id: run.id, status: reviewResult.status, finding_count: reviewResult.findings.length, requires_human_retest: reviewResult.requires_human_retest ?? false },
