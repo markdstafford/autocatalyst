@@ -451,6 +451,20 @@ export async function drainAgentRunner(
       const content = assistantContent(event);
       if (content) {
         assistant_turn_count++;
+        const evtAny = event as Record<string, unknown>;
+        const tc = typeof evtAny['tool_call_count'] === 'number' ? evtAny['tool_call_count'] : 0;
+        const tr = typeof evtAny['tool_result_count'] === 'number' ? evtAny['tool_result_count'] : 0;
+        tool_call_count += tc;
+        tool_result_count += tr;
+
+        if (tc > 0) {
+          const toolNames = Array.isArray(evtAny['tool_call_names']) ? evtAny['tool_call_names'] as string[] : undefined;
+          logger.debug(
+            { event: 'agent.tool_activity', phase, tool_call_count: tc, tool_call_names: toolNames },
+            'Agent tool activity',
+          );
+        }
+
         const relayMessage = parseRelayMessage(content);
         if (relayMessage) {
           relay_count++;

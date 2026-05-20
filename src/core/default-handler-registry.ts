@@ -104,7 +104,7 @@ export function buildDefaultHandlerRegistry(deps: DefaultHandlerRegistryDeps): H
     registry.register({ event_type: 'new_request', stage: 'new_thread', intent }, async (event, run) => {
       if (event.type !== 'new_request' || !run) return;
       await wrapHandler(handlerName, 'new_request', 'new_thread', intent, deps.logger, async (e, r) => {
-        await handler((e as typeof event).payload, r);
+        await handler((e as typeof event).payload, r as Run);
       })(event, run);
     });
   };
@@ -117,7 +117,7 @@ export function buildDefaultHandlerRegistry(deps: DefaultHandlerRegistryDeps): H
     registry.register({ event_type: 'thread_message', stage, intent }, async (event, run) => {
       if (event.type !== 'thread_message' || !run) return;
       await wrapHandler(handlerName, 'thread_message', stage, intent, deps.logger, async (e, r) => {
-        await handler((e as typeof event).payload, r);
+        await handler((e as typeof event).payload, r as Run);
       })(event, run);
     });
   };

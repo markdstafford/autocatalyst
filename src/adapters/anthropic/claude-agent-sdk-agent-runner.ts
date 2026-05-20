@@ -90,12 +90,6 @@ export function claudeSdkMessageDiagnostic(message: unknown): ClaudeSdkMessageDi
       result.tool_call_names = toolUseBlocks
         .map(b => typeof (b as Record<string, unknown>)['name'] === 'string' ? (b as Record<string, unknown>)['name'] as string : 'unknown');
     }
-    const toolResultBlocks = content.filter(
-      (b): b is Record<string, unknown> => typeof b === 'object' && Boolean(b) && (b as Record<string, unknown>)['type'] === 'tool_result',
-    );
-    if (toolResultBlocks.length > 0) {
-      result.tool_result_count = toolResultBlocks.length;
-    }
   }
 
   if (type === 'result') {
@@ -221,6 +215,7 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
     let assistantTurnCount = 0;
     let seenTerminalResult = false;
     let terminalDiagnostics: { stderr_excerpt_redacted?: string } | undefined;
+    let terminalUsage: { input_tokens: number; output_tokens: number } | undefined;
 
     this.logger.info(
       {
@@ -242,6 +237,7 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
         if ((message as SDKMessage).type === 'result') {
           seenTerminalResult = true;
           const result = message as unknown as SDKResultMessage;
+          terminalUsage = { input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens };
           const sdkOutcome = result.is_error ? 'error' : 'success';
           this._agentRunOutcome.add(1, { component: 'claude-agent-sdk', model, outcome: sdkOutcome });
           this._agentTokenUsage.record(result.usage.input_tokens, {
@@ -327,6 +323,8 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
           latency_ms: Math.round(performance.now() - startMs),
           assistant_turn_count: assistantTurnCount,
           sdk_message_count: sdkMessageCount,
+          input_tokens: terminalUsage?.input_tokens,
+          output_tokens: terminalUsage?.output_tokens,
         },
         'Claude Agent SDK run completed',
       );

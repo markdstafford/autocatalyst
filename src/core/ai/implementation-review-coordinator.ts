@@ -39,7 +39,7 @@ export interface ImplementationReviewCoordinatorDeps {
   routingPolicy: AgentRoutingPolicy;
   policy: ImplementationReviewPolicy;
   branchGuard?: BranchGuard;
-  logger: Pick<pino.Logger, 'info' | 'warn' | 'error'>;
+  logger: Pick<pino.Logger, 'info' | 'warn' | 'debug' | 'error'>;
   readFile?: ReadFileFn;
 }
 
@@ -108,7 +108,8 @@ export class ImplementationReviewCoordinator {
       await mkdir(dirname(reviewResultPath), { recursive: true });
     } catch { /* ignore */ }
 
-    const round = 1;
+    let round = 0;
+    round++;
     const roundStart = performance.now();
     this.deps.logger.info(
       {
