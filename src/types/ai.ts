@@ -2,6 +2,7 @@ import type { ClassificationContext, Intent, IntentClassifier } from './intent.j
 import type { Request, ThreadMessage } from './events.js';
 import type { ArtifactKind } from './artifact.js';
 import type { RunStage } from './runs.js';
+import type { TelemetryContext } from '../core/ai/telemetry-context.js';
 
 export type AgentTaskKind =
   | 'intent.classify'
@@ -148,11 +149,24 @@ export type AgentRunEvent =
   | { type: 'assistant'; content: AgentRunContentBlock[] }
   | { type: string; [key: string]: unknown };
 
+export interface AgentDrainSummary {
+  event_count: number;
+  assistant_turn_count: number;
+  relay_count: number;
+  tool_call_count: number;
+  tool_result_count: number;
+  elapsed_ms: number;
+  diagnostics?: {
+    stderr_excerpt_redacted?: string;
+  };
+}
+
 export interface AgentRunRequest {
   route: AgentRoute;
   profile?: AgentProfile;
   working_directory: string;
   prompt: string;
+  telemetry?: TelemetryContext;
 }
 
 export interface AgentRunner {
