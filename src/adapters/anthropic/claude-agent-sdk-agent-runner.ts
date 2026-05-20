@@ -92,6 +92,17 @@ export function claudeSdkMessageDiagnostic(message: unknown): ClaudeSdkMessageDi
     }
   }
 
+  if (type === 'user') {
+    const innerMsg = msg['message'] as Record<string, unknown> | undefined;
+    const content = Array.isArray(innerMsg?.['content']) ? innerMsg!['content'] as unknown[] : [];
+    const toolResultBlocks = content.filter(
+      (b): b is Record<string, unknown> => typeof b === 'object' && Boolean(b) && (b as Record<string, unknown>)['type'] === 'tool_result',
+    );
+    if (toolResultBlocks.length > 0) {
+      result.tool_result_count = toolResultBlocks.length;
+    }
+  }
+
   if (type === 'result') {
     result.is_error = typeof msg['is_error'] === 'boolean' ? msg['is_error'] : undefined;
     result.usage_available = Boolean(msg['usage']);
@@ -225,6 +236,7 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
     let seenTerminalResult = false;
     let terminalDiagnostics: { stderr_excerpt_redacted?: string } | undefined;
     let terminalUsage: { input_tokens: number; output_tokens: number } | undefined;
+    let pendingToolResultCount = 0;
 
     const telemetry = request.telemetry ?? {};
 
@@ -232,8 +244,7 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
       {
         event: 'agent.run_started',
         model,
-        route_task: request.route.task,
-        ...(request.route.stage ? { route_stage: request.route.stage } : {}),
+        ...routeLogAttributes(request.route),
         working_directory: request.working_directory,
         ...(telemetry.run_id ? { run_id: telemetry.run_id } : {}),
         ...(telemetry.request_id ? { request_id: telemetry.request_id } : {}),
@@ -281,7 +292,7 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
           {
             event: 'agent.sdk_item',
             model,
-            route_task: request.route.task,
+            ...routeLogAttributes(request.route),
             ...claudeSdkMessageDiagnostic(message),
             ...(telemetry.run_id ? { run_id: telemetry.run_id } : {}),
             ...(telemetry.request_id ? { request_id: telemetry.request_id } : {}),
@@ -290,6 +301,10 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
           'Claude Agent SDK item',
         );
         const diag = claudeSdkMessageDiagnostic(message as SDKMessage);
+        // Accumulate tool_result_count from user messages (tool results appear in user turns)
+        if (diag.tool_result_count !== undefined) {
+          pendingToolResultCount += diag.tool_result_count;
+        }
         const event = normalizeSdkMessage(message as SDKMessage);
         if (event.type === 'assistant') {
           assistantTurnCount++;
@@ -297,7 +312,10 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
           const diagExtras: Record<string, unknown> = {};
           if (diag.tool_call_count !== undefined) diagExtras['tool_call_count'] = diag.tool_call_count;
           if (diag.tool_call_names !== undefined) diagExtras['tool_call_names'] = diag.tool_call_names;
-          if (diag.tool_result_count !== undefined) diagExtras['tool_result_count'] = diag.tool_result_count;
+          if (pendingToolResultCount > 0) {
+            diagExtras['tool_result_count'] = pendingToolResultCount;
+            pendingToolResultCount = 0;
+          }
           if (Object.keys(diagExtras).length > 0) {
             yield { ...event, ...diagExtras } as AgentRunEvent;
           } else {
@@ -327,7 +345,7 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
         {
           event: 'agent.run_failed',
           model,
-          route_task: request.route.task,
+          ...routeLogAttributes(request.route),
           error: String(err),
           ...(telemetry.run_id ? { run_id: telemetry.run_id } : {}),
           ...(telemetry.request_id ? { request_id: telemetry.request_id } : {}),
@@ -341,7 +359,7 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
       if (!seenTerminalResult && outcome !== 'error') {
         outcome = 'incomplete';
         this.logger.warn(
-          { event: 'agent.result_missing', model, route_task: request.route.task },
+          { event: 'agent.result_missing', model, ...routeLogAttributes(request.route) },
           'Claude Agent SDK completed without a terminal result message',
         );
       }
@@ -350,7 +368,7 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
         {
           event: 'agent.run_completed',
           model,
-          route_task: request.route.task,
+          ...routeLogAttributes(request.route),
           outcome,
           latency_ms: Math.round(performance.now() - startMs),
           assistant_turn_count: assistantTurnCount,
@@ -481,6 +499,15 @@ function settingSourcesForProfile(profile: AgentProfile | undefined): AgentSetti
   if (profile?.setting_sources) return [...profile.setting_sources];
   if (profile?.load_user_settings === true) return ['user', 'project'];
   return ['project'];
+}
+
+function routeLogAttributes(route: AgentRoute): Record<string, string | undefined> {
+  return {
+    route_task: route.task,
+    ...(route.stage ? { route_stage: String(route.stage) } : {}),
+    ...(route.intent ? { route_intent: String(route.intent) } : {}),
+    ...(route.artifact_kind ? { artifact_kind: String(route.artifact_kind) } : {}),
+  };
 }
 
 function isGitHubDependentRoute(route: AgentRoute): boolean {

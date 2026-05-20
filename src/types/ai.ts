@@ -240,7 +240,7 @@ export interface ImplementationAgent {
 }
 
 export interface QuestionAnsweringAgent {
-  answer(question: string): Promise<string>;
+  answer(question: string, telemetry?: { run_id?: string; request_id?: string }): Promise<string>;
 }
 
 export interface IssueTriageAgent {

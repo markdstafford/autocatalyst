@@ -131,10 +131,18 @@ export class ImplementationReviewCoordinator {
           profile: reviewProfile,
           working_directory,
           prompt,
+          telemetry: {
+            run_id: run.id,
+            request_id: run.request_id,
+            phase: `implementation_review_${phase}`,
+            route_task: routeTask,
+            handler: 'ImplementationReviewCoordinator',
+          },
         }),
         onProgress,
         this.deps.logger,
         `implementation_review_${phase}`,
+        { run_id: run.id, request_id: run.request_id },
       );
 
       reviewResultContent = await this.readFileFn(reviewResultPath, 'utf-8');
@@ -180,6 +188,7 @@ export class ImplementationReviewCoordinator {
         event: 'implementation.review.round_completed',
         phase,
         round,
+        run_id: run.id,
         review_profile: reviewProfile.id,
         duration_ms,
         blocker_count: blockerCount,

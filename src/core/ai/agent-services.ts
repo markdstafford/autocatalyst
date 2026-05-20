@@ -256,6 +256,7 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
         onProgress,
         this.logger,
         'implementation',
+        { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
       );
     } catch (err) {
       this.logger.error({ event: 'impl.agent_failed', error: String(err) }, 'Agent exited with error during implementation');
@@ -276,6 +277,8 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
       logger: this.logger,
       phase: 'implementation',
       route_task: 'implementation.run',
+      run_id: telemetry?.run_id,
+      request_id: telemetry?.request_id,
       drainSummary,
     });
     const result = parseImplementationResult(content, resultFilePath);
@@ -298,12 +301,12 @@ export class AgentRunnerQuestionAnsweringAgent implements QuestionAnsweringAgent
     this.readFileFn = options?.readFile ?? ((path, enc) => _readFile(path, enc));
   }
 
-  async answer(question: string): Promise<string> {
+  async answer(question: string, telemetry?: { run_id?: string; request_id?: string }): Promise<string> {
     const resultPath = join(this.repo_path, '.autocatalyst', `question-${randomUUID()}.json`);
     const prompt = buildQuestionPrompt(question, resultPath);
     const route = { task: 'question.answer' as const };
 
-    this.logger.debug({ event: 'question.answering', question_length: question.length }, 'Answering question via agent');
+    this.logger.debug({ event: 'question.answering', question_length: question.length, ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}), ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}) }, 'Answering question via agent');
 
     let drainSummary: AgentDrainSummary | undefined;
     try {
@@ -318,14 +321,17 @@ export class AgentRunnerQuestionAnsweringAgent implements QuestionAnsweringAgent
             phase: 'question_answering',
             route_task: route.task,
             handler: 'AgentRunnerQuestionAnsweringAgent',
+            ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
+            ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}),
           },
         }),
         undefined,
         this.logger,
         'question_answering',
+        { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
       );
     } catch (err) {
-      this.logger.error({ event: 'question.agent_failed', error: String(err) }, 'Agent exited with error during question answering');
+      this.logger.error({ event: 'question.agent_failed', error: String(err), ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}), ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}) }, 'Agent exited with error during question answering');
       throw new Error(`Agent question answering failed: ${String(err)}`);
     }
 
@@ -336,6 +342,8 @@ export class AgentRunnerQuestionAnsweringAgent implements QuestionAnsweringAgent
       logger: this.logger,
       phase: 'question_answering',
       route_task: 'question.answer',
+      run_id: telemetry?.run_id,
+      request_id: telemetry?.request_id,
       drainSummary,
     });
     unlink(resultPath).catch(() => {});
@@ -460,6 +468,7 @@ export async function drainAgentRunner(
   onProgress: ((message: string) => Promise<void> | void) | undefined,
   logger: Pick<pino.Logger, 'info' | 'warn' | 'debug' | 'error'>,
   phase: string,
+  telemetry?: { run_id?: string; request_id?: string },
 ): Promise<AgentDrainSummary> {
   const startMs = performance.now();
   let event_count = 0;
@@ -469,7 +478,12 @@ export async function drainAgentRunner(
   let tool_result_count = 0;
   let latestDiagnostics: AgentDrainSummary['diagnostics'];
 
-  logger.info({ event: 'agent.drain_started', phase }, 'Agent drain started');
+  const telCtx = {
+    ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
+    ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}),
+  };
+
+  logger.info({ event: 'agent.drain_started', phase, ...telCtx }, 'Agent drain started');
 
   try {
     for await (const event of events) {
@@ -491,7 +505,7 @@ export async function drainAgentRunner(
         if (tc > 0) {
           const toolNames = Array.isArray(evtAny['tool_call_names']) ? evtAny['tool_call_names'] as string[] : undefined;
           logger.debug(
-            { event: 'agent.tool_activity', phase, tool_call_count: tc, tool_call_names: toolNames },
+            { event: 'agent.tool_activity', phase, tool_call_count: tc, tool_call_names: toolNames, ...telCtx },
             'Agent tool activity',
           );
         }
@@ -502,9 +516,9 @@ export async function drainAgentRunner(
           if (onProgress) {
             try {
               await onProgress(relayMessage);
-              logger.info({ event: 'progress_update', phase, message: relayMessage }, 'Progress update posted');
+              logger.info({ event: 'progress_update', phase, message: relayMessage, ...telCtx }, 'Progress update posted');
             } catch (err) {
-              logger.warn({ event: 'progress_failed', phase, error: String(err) }, 'Failed to post progress update');
+              logger.warn({ event: 'progress_failed', phase, error: String(err), ...telCtx }, 'Failed to post progress update');
             }
           }
         }
@@ -513,7 +527,7 @@ export async function drainAgentRunner(
   } catch (err) {
     const elapsed_ms = Math.round(performance.now() - startMs);
     logger.error(
-      { event: 'agent.drain_failed', phase, event_count, assistant_turn_count, relay_count, elapsed_ms, error: String(err) },
+      { event: 'agent.drain_failed', phase, event_count, assistant_turn_count, relay_count, elapsed_ms, error: String(err), ...telCtx },
       'Agent drain failed',
     );
     throw err;
@@ -531,7 +545,7 @@ export async function drainAgentRunner(
   };
 
   logger.info(
-    { event: 'agent.drain_completed', phase, ...summary },
+    { event: 'agent.drain_completed', phase, ...summary, ...telCtx },
     'Agent drain completed',
   );
 
@@ -603,7 +617,7 @@ export async function validateRequiredResultFile(options: ValidateResultFileOpti
       throw new Error(`${label}: result file not found at "${path}" after agent completed`);
     }
     logger.error(
-      { event: 'agent.result_file_read_failed', expected_path: path, phase, route_task, error: String(err) },
+      { event: 'agent.result_file_read_failed', expected_path: path, phase, route_task, error: String(err), ...(request_id ? { request_id } : {}), ...(run_id ? { run_id } : {}) },
       `${label}: failed to read result file`,
     );
     throw err;
@@ -616,6 +630,8 @@ export async function validateRequiredResultFile(options: ValidateResultFileOpti
       phase,
       route_task,
       byte_length: content.length,
+      ...(request_id ? { request_id } : {}),
+      ...(run_id ? { run_id } : {}),
     },
     `${label}: result file found`,
   );

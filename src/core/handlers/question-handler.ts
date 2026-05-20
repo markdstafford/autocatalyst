@@ -26,7 +26,7 @@ export class QuestionHandler {
     let response: string;
     if (this.deps.questionAnswerer) {
       try {
-        response = await this.deps.questionAnswerer.answer(content);
+        response = await this.deps.questionAnswerer.answer(content, { run_id: run.id, request_id: run.request_id });
       } catch (err) {
         this.deps.logger.error({ event: 'question.answer_failed', run_id: run.id, error: String(err) }, 'Failed to answer question');
         await this.deps.postError(conversation, QUESTION_UNAVAILABLE_MESSAGE);

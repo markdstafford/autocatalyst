@@ -2317,7 +2317,7 @@ describe('Orchestrator — pr_open routing guards', () => {
     await new Promise(r => setTimeout(r, 100));
     await orch.stop();
 
-    expect(qa.answer).toHaveBeenCalledWith('What does this PR do?');
+    expect(qa.answer).toHaveBeenCalledWith('What does this PR do?', expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }));
     expect(runs.get('request-001')!.stage).toBe('pr_open');
   });
 
@@ -2755,7 +2755,7 @@ describe('Orchestrator — question intent', () => {
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
-    expect(qa.answer).toHaveBeenCalledWith('How do I submit a feature request?');
+    expect(qa.answer).toHaveBeenCalledWith('How do I submit a feature request?', expect.objectContaining({ request_id: 'request-001' }));
     expect(postMessage).toHaveBeenCalledWith(conversationRef('C123', '100.0'), 'You can submit ideas by @mentioning me.');
     expect(orch.getRuns().get('request-001')?.stage).toBe('done');
   });
@@ -2787,7 +2787,7 @@ describe('Orchestrator — question intent', () => {
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
-    expect(qa.answer).toHaveBeenCalledWith('How does auth work?');
+    expect(qa.answer).toHaveBeenCalledWith('How does auth work?', expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }));
     expect(postMessage).toHaveBeenCalledWith(conversationRef(), 'Great question about the auth flow.');
     expect(runs.get('request-001')?.stage).toBe('reviewing_spec');
   });

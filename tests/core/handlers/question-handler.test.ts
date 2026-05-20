@@ -51,7 +51,7 @@ describe('QuestionHandler', () => {
 
     const result = await handler.handle('What changed?', TEST_CONVERSATION, makeRun());
 
-    expect(deps.questionAnswerer?.answer).toHaveBeenCalledWith('What changed?');
+    expect(deps.questionAnswerer?.answer).toHaveBeenCalledWith('What changed?', { run_id: 'run-001', request_id: 'request-001' });
     expect(deps.postMessage).toHaveBeenCalledWith(TEST_CONVERSATION, 'Here is the answer.');
     expect(result.status).toBe('answered');
   });

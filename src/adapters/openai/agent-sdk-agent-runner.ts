@@ -238,6 +238,8 @@ export class OpenAIAgentSdkAgentRunner implements AgentRunner {
           ...routeLogAttributes(request.route),
           outcome,
           latency_ms: Math.round(performance.now() - startMs),
+          ...(pendingToolCallCount > 0 ? { trailing_tool_call_count: pendingToolCallCount } : {}),
+          ...(pendingToolResultCount > 0 ? { trailing_tool_result_count: pendingToolResultCount } : {}),
           ...(telemetry.run_id ? { run_id: telemetry.run_id } : {}),
           ...(telemetry.request_id ? { request_id: telemetry.request_id } : {}),
           ...(telemetry.phase ? { phase: telemetry.phase } : {}),
