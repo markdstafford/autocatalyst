@@ -200,6 +200,7 @@ export interface ArtifactAuthoringAgent {
     workspace_path: string,
     onProgress?: (message: string) => Promise<void>,
     intent?: 'idea' | 'bug' | 'chore',
+    telemetry?: { run_id?: string; request_id?: string },
   ): Promise<ArtifactCreateResult>;
   revise(
     feedback: ThreadMessage,
@@ -208,6 +209,7 @@ export interface ArtifactAuthoringAgent {
     workspace_path: string,
     current_page_markdown?: string,
     onProgress?: (message: string) => Promise<void>,
+    telemetry?: { run_id?: string; request_id?: string },
   ): Promise<ArtifactRevisionResult>;
 }
 
@@ -248,6 +250,7 @@ export interface IssueTriageAgent {
     request: Request,
     working_directory: string,
     onProgress?: (message: string) => Promise<void>,
+    telemetry?: { run_id?: string; request_id?: string },
   ): Promise<IssueTriageResult>;
 }
 

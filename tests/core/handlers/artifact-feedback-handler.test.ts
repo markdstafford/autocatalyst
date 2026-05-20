@@ -102,6 +102,7 @@ describe('ArtifactFeedbackHandler', () => {
       '/ws/request-001',
       undefined,
       expect.any(Function),
+      { run_id: 'run-001', request_id: 'request-001' },
     );
     expect(deps.artifactPublisher.updateArtifact).toHaveBeenCalledWith(
       'CANVAS-TYPED',
@@ -158,6 +159,7 @@ describe('ArtifactFeedbackHandler', () => {
       '/ws/request-001',
       '# Current\n\n<span discussion-urls="discussion://disc-1">text</span>',
       expect.any(Function),
+      { run_id: 'run-001', request_id: 'request-001' },
     );
     expect(deps.artifactPublisher.updateArtifact).toHaveBeenCalledWith(
       'CANVAS001',
@@ -195,6 +197,7 @@ describe('ArtifactFeedbackHandler', () => {
       '/ws/request-001',
       undefined,
       expect.any(Function),
+      { run_id: 'run-001', request_id: 'request-001' },
     );
     expect(deps.failRun).not.toHaveBeenCalled();
     expect(run.stage).toBe('reviewing_spec');

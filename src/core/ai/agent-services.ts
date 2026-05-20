@@ -62,6 +62,7 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
     workspace_path: string,
     onProgress?: (message: string) => Promise<void>,
     intent: 'idea' | 'bug' | 'chore' = 'idea',
+    telemetry?: { run_id?: string; request_id?: string },
   ): Promise<ArtifactCreateResult> {
     const createResultPath = join(workspace_path, '.autocatalyst', 'spec-create-result.json');
     const artifactDir = (intent === 'bug' || intent === 'chore')
@@ -91,11 +92,13 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
             phase: 'artifact_generation',
             route_task: route.task,
             handler: 'AgentRunnerArtifactAuthoringAgent',
+            ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
           },
         }),
         onProgress,
         this.logger,
         'artifact_generation',
+        { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
       );
     } catch (err) {
       this.logger.error(
@@ -113,6 +116,7 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
       phase: 'artifact_generation',
       route_task: 'artifact.create',
       request_id: request.id,
+      run_id: telemetry?.run_id,
       drainSummary,
     });
     const result = parseArtifactCreateResult(content, createResultPath);
@@ -130,6 +134,7 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
     workspace_path: string,
     current_page_markdown?: string,
     onProgress?: (message: string) => Promise<void>,
+    telemetry?: { run_id?: string; request_id?: string },
   ): Promise<ArtifactRevisionResult> {
     const reviseResultPath = join(workspace_path, '.autocatalyst', 'spec-revise-result.json');
     const originalAnchors = current_page_markdown && this.commentAnchorCodec
@@ -170,11 +175,13 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
             phase: 'artifact_generation',
             route_task: route.task,
             handler: 'AgentRunnerArtifactAuthoringAgent',
+            ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
           },
         }),
         onProgress,
         this.logger,
         'artifact_generation',
+        { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
       );
     } catch (err) {
       this.logger.error(
@@ -192,6 +199,7 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
       phase: 'artifact_generation',
       route_task: 'artifact.revise',
       request_id: feedback.request_id,
+      run_id: telemetry?.run_id,
       drainSummary,
     });
     const commentResponses = parseCommentResponses(content, reviseResultPath);
@@ -370,6 +378,7 @@ export class AgentRunnerIssueTriageAgent implements IssueTriageAgent {
     request: Request,
     working_directory: string,
     onProgress?: (message: string) => Promise<void>,
+    telemetry?: { run_id?: string; request_id?: string },
   ): Promise<IssueTriageResult> {
     const resultPath = join(working_directory, '.autocatalyst', 'enrichment-result.json');
     const prompt = buildIssueTriagePrompt(request, resultPath);
@@ -391,11 +400,13 @@ export class AgentRunnerIssueTriageAgent implements IssueTriageAgent {
             phase: 'issue_triage',
             route_task: route.task,
             handler: 'AgentRunnerIssueTriageAgent',
+            ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
           },
         }),
         onProgress,
         this.logger,
         'issue_triage',
+        { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
       );
     } catch (err) {
       this.logger.error(
@@ -413,6 +424,7 @@ export class AgentRunnerIssueTriageAgent implements IssueTriageAgent {
       phase: 'issue_triage',
       route_task: 'issue.triage',
       request_id: request.id,
+      run_id: telemetry?.run_id,
       drainSummary,
     });
     return parseAndValidateIssueTriageResult(content, resultPath);
@@ -429,8 +441,9 @@ export class IssueFilingService implements IssueFiler {
     request: Request,
     workspace_path: string,
     onProgress?: (message: string) => Promise<void>,
+    telemetry?: { run_id?: string; request_id?: string },
   ): Promise<FilingResult> {
-    const triageResult = await this.issueTriageAgent.triage(request, workspace_path, onProgress);
+    const triageResult = await this.issueTriageAgent.triage(request, workspace_path, onProgress, telemetry);
     if (triageResult.status === 'failed') {
       return {
         status: 'failed',
