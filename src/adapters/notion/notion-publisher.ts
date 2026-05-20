@@ -1,6 +1,7 @@
 // src/adapters/notion/notion-publisher.ts
 import { readFileSync } from 'node:fs';
 import { basename } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { parse as parseYaml } from 'yaml';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
@@ -89,10 +90,12 @@ export class NotionPublisher implements ArtifactPublisher, ArtifactContentSource
     }
 
     const dataSourceId = await this.getSpecsDataSourceId();
+    const createStart = performance.now();
     const page = await this.client.pages.create({
       parent: { type: 'data_source_id', data_source_id: dataSourceId } as unknown as Parameters<NotionClient['pages']['create']>[0]['parent'],
       properties: properties as unknown as Parameters<NotionClient['pages']['create']>[0]['properties'],
     });
+    const duration_ms = Math.round(performance.now() - createStart);
 
     const pageId = page.id;
 
@@ -104,7 +107,7 @@ export class NotionPublisher implements ArtifactPublisher, ArtifactContentSource
     const pageUrl = `https://notion.so/${pageId.replace(/-/g, '')}`;
 
     this.logger.info(
-      { event: 'notion_spec.properties_created', page_id: pageId },
+      { event: 'notion_spec.properties_created', page_id: pageId, duration_ms },
       'Spec database entry created',
     );
     return { id: pageId, url: pageUrl };
@@ -119,6 +122,7 @@ export class NotionPublisher implements ArtifactPublisher, ArtifactContentSource
     const spec_path = artifact.local_path;
     const content = page_content ?? readFileSync(spec_path, 'utf-8');
 
+    const updateStart = performance.now();
     await this.client.pages.updateMarkdown(publisher_ref, {
       type: 'replace_content',
       replace_content: { new_str: content },
@@ -147,19 +151,22 @@ export class NotionPublisher implements ArtifactPublisher, ArtifactContentSource
     }
 
     await this.client.pages.updateProperties(publisher_ref, propertiesToUpdate);
+    const duration_ms = Math.round(performance.now() - updateStart);
 
     this.logger.info(
-      { event: 'notion_spec.properties_updated', page_id: publisher_ref },
+      { event: 'notion_spec.properties_updated', page_id: publisher_ref, duration_ms },
       'Spec database entry updated',
     );
   }
 
   async updateStatus(publisher_ref: string, status: ArtifactPublicationStatus): Promise<void> {
+    const statusStart = performance.now();
     await this.client.pages.updateProperties(publisher_ref, {
       Status: { status: { name: publicationStatusName(status) } },
     });
+    const duration_ms = Math.round(performance.now() - statusStart);
     this.logger.info(
-      { event: 'notion_spec.status_updated', page_id: publisher_ref, status },
+      { event: 'notion_spec.status_updated', page_id: publisher_ref, status, duration_ms },
       'Spec status updated',
     );
   }
