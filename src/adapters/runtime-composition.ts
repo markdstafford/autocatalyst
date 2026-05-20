@@ -47,6 +47,7 @@ import type { DirectModelRunRequest, DirectModelRunResult, DirectModelRunner, Ag
 import { ClaudeAgentSdkAgentRunner } from './anthropic/claude-agent-sdk-agent-runner.js';
 import { OpenAIAgentSdkAgentRunner } from './openai/agent-sdk-agent-runner.js';
 import { ImplementationReviewCoordinator } from '../core/ai/implementation-review-coordinator.js';
+import { createLogger } from '../core/logger.js';
 
 export type RuntimeLogger = Pick<pino.Logger, 'debug' | 'error' | 'info' | 'warn'>;
 
@@ -253,7 +254,20 @@ export function buildAgentRunner(
     );
   }
 
-  const claudeRunner = claudeProfile ? new ClaudeAgentSdkAgentRunner({ meter, sandboxEnvTokens, loggerProvider }) : null;
+  const claudeRunner = claudeProfile
+    ? (() => {
+        logger.info(
+          {
+            event: 'service.config',
+            provider: 'anthropic',
+            runner: 'claude_agent_sdk',
+            model: claudeProfile.model ?? 'default',
+          },
+          'Using Claude Agent SDK',
+        );
+        return new ClaudeAgentSdkAgentRunner({ meter, sandboxEnvTokens, loggerProvider });
+      })()
+    : null;
 
   let openAiRunner: AgentRunner | null = null;
   if (openAiAgentProfile) {
@@ -291,7 +305,7 @@ export function buildAgentRunner(
 
   // Both runner kinds present — wrap in a routing-aware runner that dispatches
   // on request.profile?.provider at call time.
-  return new RoutingAwareAgentRunner(claudeRunner!, openAiRunner!);
+  return new RoutingAwareAgentRunner(claudeRunner!, openAiRunner!, { loggerProvider });
 }
 
 /**
@@ -318,12 +332,30 @@ export class RoutingAwareDirectModelRunner implements DirectModelRunner {
  * (e.g. artifact.create → claude_agent_sdk, implementation.run → openai_agent_sdk).
  */
 export class RoutingAwareAgentRunner implements AgentRunner {
+  private readonly logger: RuntimeLogger;
+
   constructor(
     private readonly claudeRunner: AgentRunner,
     private readonly openAiRunner: AgentRunner,
-  ) {}
+    options?: { logDestination?: pino.DestinationStream; loggerProvider?: LoggerProvider },
+  ) {
+    this.logger = createLogger('routing-aware-runner', {
+      destination: options?.logDestination,
+      loggerProvider: options?.loggerProvider,
+    });
+  }
 
   run(request: AgentRunRequest): AsyncIterable<AgentRunEvent> {
+    const selected = request.profile?.provider === 'openai_agent_sdk' ? 'openai_agent_sdk' : 'claude_agent_sdk';
+    this.logger.debug(
+      {
+        event: 'runner.dispatched',
+        runner: selected,
+        route_task: request.route.task,
+        model: request.profile?.model ?? 'unknown',
+      },
+      'Routing-aware runner dispatched',
+    );
     if (request.profile?.provider === 'openai_agent_sdk') {
       return this.openAiRunner.run(request);
     }
