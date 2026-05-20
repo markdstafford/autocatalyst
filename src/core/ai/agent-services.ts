@@ -77,9 +77,10 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
 
     this.logger.debug({ event: 'artifact.agent_invoked', request_id: request.id }, 'Invoking agent for artifact creation');
 
+    let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(createResultPath);
-      const _drainSummary = await drainAgentRunner(
+      drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
           profile: this.routingPolicy.resolve(route),
@@ -98,7 +99,16 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
       throw new Error(`Artifact creation failed: ${String(err)}`);
     }
 
-    const content = await readRequiredFile(this.readFileFn, createResultPath, 'Artifact creation');
+    const content = await validateRequiredResultFile({
+      readFileFn: this.readFileFn,
+      path: createResultPath,
+      label: 'Artifact creation',
+      logger: this.logger,
+      phase: 'artifact_generation',
+      route_task: 'artifact.create',
+      request_id: request.id,
+      drainSummary,
+    });
     const result = parseArtifactCreateResult(content, createResultPath);
     this.logger.info(
       { event: 'artifact.generated', request_id: request.id, artifact_path: result.artifact_path, existing_issue: result.existing_issue },
@@ -140,9 +150,10 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
       'Revise called with publisher comments',
     );
 
+    let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(reviseResultPath);
-      const _drainSummary = await drainAgentRunner(
+      drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
           profile: this.routingPolicy.resolve(route),
@@ -161,7 +172,16 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
       throw new Error(`Artifact revision failed: ${String(err)}`);
     }
 
-    const content = await readRequiredFile(this.readFileFn, reviseResultPath, 'Artifact revision');
+    const content = await validateRequiredResultFile({
+      readFileFn: this.readFileFn,
+      path: reviseResultPath,
+      label: 'Artifact revision',
+      logger: this.logger,
+      phase: 'artifact_generation',
+      route_task: 'artifact.revise',
+      request_id: feedback.request_id,
+      drainSummary,
+    });
     const commentResponses = parseCommentResponses(content, reviseResultPath);
 
     if (hasAnchors && this.commentAnchorCodec) {
@@ -203,9 +223,10 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
       'Invoking agent for implementation',
     );
 
+    let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(resultFilePath);
-      const _drainSummary = await drainAgentRunner(
+      drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
           profile: this.routingPolicy.resolve(route),
@@ -228,7 +249,15 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
       throw new Error(`Implementation failed: ${msg}`);
     }
 
-    const content = await readRequiredFile(this.readFileFn, resultFilePath, 'Implementation');
+    const content = await validateRequiredResultFile({
+      readFileFn: this.readFileFn,
+      path: resultFilePath,
+      label: 'Implementation',
+      logger: this.logger,
+      phase: 'implementation',
+      route_task: 'implementation.run',
+      drainSummary,
+    });
     const result = parseImplementationResult(content, resultFilePath);
     this.logger.debug({ event: 'impl.agent_completed', status: result.status }, 'Agent implementation completed');
     return result;
@@ -256,9 +285,10 @@ export class AgentRunnerQuestionAnsweringAgent implements QuestionAnsweringAgent
 
     this.logger.debug({ event: 'question.answering', question_length: question.length }, 'Answering question via agent');
 
+    let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(resultPath);
-      const _drainSummary = await drainAgentRunner(
+      drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
           profile: this.routingPolicy.resolve(route),
@@ -274,7 +304,15 @@ export class AgentRunnerQuestionAnsweringAgent implements QuestionAnsweringAgent
       throw new Error(`Agent question answering failed: ${String(err)}`);
     }
 
-    const content = await readRequiredFile(this.readFileFn, resultPath, 'Question answering');
+    const content = await validateRequiredResultFile({
+      readFileFn: this.readFileFn,
+      path: resultPath,
+      label: 'Question answering',
+      logger: this.logger,
+      phase: 'question_answering',
+      route_task: 'question.answer',
+      drainSummary,
+    });
     unlink(resultPath).catch(() => {});
     const answer = parseQuestionAnswer(content);
     this.logger.info({ event: 'question.answered', response_length: answer.length }, 'Question answered');
@@ -306,9 +344,10 @@ export class AgentRunnerIssueTriageAgent implements IssueTriageAgent {
 
     this.logger.debug({ event: 'filing.agent_invoked', request_id: request.id }, 'Invoking agent for issue triage');
 
+    let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(resultPath);
-      const _drainSummary = await drainAgentRunner(
+      drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
           profile: this.routingPolicy.resolve(route),
@@ -327,7 +366,17 @@ export class AgentRunnerIssueTriageAgent implements IssueTriageAgent {
       throw new Error(`Issue triage failed: ${String(err)}`);
     }
 
-    return readAndValidateIssueTriageResult(this.readFileFn, resultPath);
+    const content = await validateRequiredResultFile({
+      readFileFn: this.readFileFn,
+      path: resultPath,
+      label: 'Issue triage',
+      logger: this.logger,
+      phase: 'issue_triage',
+      route_task: 'issue.triage',
+      request_id: request.id,
+      drainSummary,
+    });
+    return parseAndValidateIssueTriageResult(content, resultPath);
   }
 }
 
@@ -471,6 +520,61 @@ async function readRequiredFile(readFileFn: ReadFileFn, path: string, label: str
     }
     throw err;
   }
+}
+
+interface ValidateResultFileOptions {
+  readFileFn: ReadFileFn;
+  path: string;
+  label: string;
+  logger: Pick<pino.Logger, 'info' | 'error'>;
+  phase: string;
+  route_task: string;
+  request_id?: string;
+  run_id?: string;
+  drainSummary?: AgentDrainSummary;
+}
+
+export async function validateRequiredResultFile(options: ValidateResultFileOptions): Promise<string> {
+  const { readFileFn, path, label, logger, phase, route_task, request_id, run_id, drainSummary } = options;
+  let content: string;
+  try {
+    content = await readFileFn(path, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      logger.error(
+        {
+          event: 'agent.result_file_missing',
+          expected_path: path,
+          phase,
+          route_task,
+          ...(request_id ? { request_id } : {}),
+          ...(run_id ? { run_id } : {}),
+          ...(drainSummary?.diagnostics?.stderr_excerpt_redacted
+            ? { stderr_excerpt_redacted: drainSummary.diagnostics.stderr_excerpt_redacted }
+            : {}),
+        },
+        `${label}: result file not found after agent completed`,
+      );
+      throw new Error(`${label}: result file not found at "${path}" after agent completed`);
+    }
+    logger.error(
+      { event: 'agent.result_file_read_failed', expected_path: path, phase, route_task, error: String(err) },
+      `${label}: failed to read result file`,
+    );
+    throw err;
+  }
+
+  logger.info(
+    {
+      event: 'agent.result_file_found',
+      expected_path: path,
+      phase,
+      route_task,
+      byte_length: content.length,
+    },
+    `${label}: result file found`,
+  );
+  return content;
 }
 
 async function ensureResultDir(path: string): Promise<void> {
@@ -634,6 +738,10 @@ function parseQuestionAnswer(content: string): string {
 
 export async function readAndValidateIssueTriageResult(readFileFn: ReadFileFn, filePath: string): Promise<IssueTriageResult> {
   const content = await readRequiredFile(readFileFn, filePath, 'Issue filing');
+  return parseAndValidateIssueTriageResult(content, filePath);
+}
+
+function parseAndValidateIssueTriageResult(content: string, filePath: string): IssueTriageResult {
   const obj = parseJsonObject(content, `Issue filing: enrichment result at "${filePath}"`);
 
   if (obj['status'] !== 'complete' && obj['status'] !== 'failed') {

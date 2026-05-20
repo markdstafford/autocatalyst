@@ -14,10 +14,11 @@ import {
   buildImplementerResponsePrompt,
   parseImplementationReviewResult,
   drainAgentRunner,
+  validateRequiredResultFile,
 } from '../../../src/core/ai/agent-services.js';
 import { DefaultAgentRoutingPolicy } from '../../../src/core/ai/routing-policy.js';
 import { createLogger } from '../../../src/core/logger.js';
-import type { AgentRunEvent, AgentRunRequest, AgentRunner, ImplementationResult } from '../../../src/types/ai.js';
+import type { AgentDrainSummary, AgentRunEvent, AgentRunRequest, AgentRunner, ImplementationResult } from '../../../src/types/ai.js';
 import type { Request, ThreadMessage } from '../../../src/types/events.js';
 import type { IssueManager } from '../../../src/types/issue-tracker.js';
 import type { ArtifactCommentAnchorCodec } from '../../../src/types/publisher.js';
@@ -783,6 +784,74 @@ describe('drainAgentRunner summary', () => {
 
     const parsed = lines.map(l => JSON.parse(l));
     expect(parsed.find(l => l.event === 'agent.drain_failed')).toBeDefined();
+  });
+});
+
+describe('validateRequiredResultFile', () => {
+  it('logs agent.result_file_found and returns content on success', async () => {
+    const dest = new PassThrough();
+    const lines: string[] = [];
+    dest.on('data', (c: Buffer) => c.toString().split('\n').filter(Boolean).forEach(l => lines.push(l)));
+    const logger = createLogger('test', { destination: dest });
+
+    const fakeRead = async (path: string, _enc: string) => {
+      if (path === '/workspace/.autocatalyst/result.json') return '{"status":"complete"}';
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    };
+
+    const content = await validateRequiredResultFile({
+      readFileFn: fakeRead,
+      path: '/workspace/.autocatalyst/result.json',
+      label: 'Implementation',
+      logger,
+      phase: 'implementation',
+      route_task: 'implementation.run',
+    });
+    dest.end();
+    await new Promise(r => dest.on('finish', r));
+
+    expect(content).toBe('{"status":"complete"}');
+    const parsed = lines.map(l => JSON.parse(l));
+    expect(parsed.find(l => l.event === 'agent.result_file_found')).toBeDefined();
+  });
+
+  it('logs agent.result_file_missing with stderr excerpt and throws on ENOENT', async () => {
+    const dest = new PassThrough();
+    const lines: string[] = [];
+    dest.on('data', (c: Buffer) => c.toString().split('\n').filter(Boolean).forEach(l => lines.push(l)));
+    const logger = createLogger('test', { destination: dest });
+
+    const fakeRead = async (_path: string, _enc: string): Promise<string> => {
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    };
+
+    const drainSummary: AgentDrainSummary = {
+      event_count: 2,
+      assistant_turn_count: 1,
+      relay_count: 0,
+      tool_call_count: 0,
+      tool_result_count: 0,
+      elapsed_ms: 100,
+      diagnostics: { stderr_excerpt_redacted: 'auth failed' },
+    };
+
+    await expect(validateRequiredResultFile({
+      readFileFn: fakeRead,
+      path: '/workspace/.autocatalyst/result.json',
+      label: 'Implementation',
+      logger,
+      phase: 'implementation',
+      route_task: 'implementation.run',
+      drainSummary,
+    })).rejects.toThrow('result file not found');
+    dest.end();
+    await new Promise(r => dest.on('finish', r));
+
+    const parsed = lines.map(l => JSON.parse(l));
+    const missing = parsed.find(l => l.event === 'agent.result_file_missing');
+    expect(missing).toBeDefined();
+    // Check stderr excerpt is surfaced
+    expect(JSON.stringify(missing)).toContain('auth failed');
   });
 });
 
