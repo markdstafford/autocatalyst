@@ -118,10 +118,10 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
 
   const aiRoutingPolicy = buildAgentRoutingPolicy(resolvedAi);
   const directModelRunner = buildDirectModelRunner(resolvedAi, logger, options.loggerProvider);
-  const agentRunner = buildAgentRunner(resolvedAi, logger, options.meter, currentConfig.config.sandbox?.env_tokens);
+  const agentRunner = buildAgentRunner(resolvedAi, logger, options.meter, currentConfig.config.sandbox?.env_tokens, options.loggerProvider);
   const intentClassifier = new ModelIntentClassifier(directModelRunner, { routingPolicy: aiRoutingPolicy });
   const prTitleGenerator = new ModelPRTitleGenerator(directModelRunner, { routingPolicy: aiRoutingPolicy });
-  const questionAnswerer = new AgentRunnerQuestionAnsweringAgent(agentRunner, aiRoutingPolicy, repoPath);
+  const questionAnswerer = new AgentRunnerQuestionAnsweringAgent(agentRunner, aiRoutingPolicy, repoPath, { loggerProvider: options.loggerProvider });
   const preRepoEntries = isMultiRepo
     ? await resolvePreRepoEntries(repoPaths, env, logger)
     : [];
@@ -148,10 +148,10 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
       conversationField: 'thread_ts',
     },
   });
-  const implementer = new AgentRunnerImplementationAgent(agentRunner, aiRoutingPolicy);
+  const implementer = new AgentRunnerImplementationAgent(agentRunner, aiRoutingPolicy, { loggerProvider: options.loggerProvider });
   const prManager = new GHPRManager();
   const issueManager = new GHIssueManager();
-  const issueTriageAgent = new AgentRunnerIssueTriageAgent(agentRunner, aiRoutingPolicy);
+  const issueTriageAgent = new AgentRunnerIssueTriageAgent(agentRunner, aiRoutingPolicy, { loggerProvider: options.loggerProvider });
   const issueFiler = new IssueFilingService(issueManager, issueTriageAgent);
 
   const artifactDeps = await buildArtifactDeps({
@@ -165,6 +165,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
   });
   const artifactAuthoringAgent = new AgentRunnerArtifactAuthoringAgent(agentRunner, aiRoutingPolicy, {
     commentAnchorCodec: artifactDeps.commentAnchorCodec,
+    loggerProvider: options.loggerProvider,
   });
 
   const reviewCoordinator = new ImplementationReviewCoordinator({
@@ -240,6 +241,7 @@ export function buildAgentRunner(
   logger: RuntimeLogger,
   meter?: Meter,
   sandboxEnvTokens?: string[],
+  loggerProvider?: LoggerProvider,
 ): AgentRunner {
   const claudeProfile = resolvedAi.profiles.find(p => p.runner === 'claude_agent_sdk');
   const openAiAgentProfile = resolvedAi.profiles.find(p => p.runner === 'openai_agent_sdk');
@@ -251,7 +253,7 @@ export function buildAgentRunner(
     );
   }
 
-  const claudeRunner = claudeProfile ? new ClaudeAgentSdkAgentRunner({ meter, sandboxEnvTokens }) : null;
+  const claudeRunner = claudeProfile ? new ClaudeAgentSdkAgentRunner({ meter, sandboxEnvTokens, loggerProvider }) : null;
 
   let openAiRunner: AgentRunner | null = null;
   if (openAiAgentProfile) {

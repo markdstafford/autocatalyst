@@ -3,6 +3,7 @@ import { mkdir, readFile as _readFile, unlink } from 'node:fs/promises';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type pino from 'pino';
+import type { LoggerProvider } from '@opentelemetry/api-logs';
 import { createLogger } from '../logger.js';
 import type {
   AgentRunContentBlock,
@@ -34,6 +35,7 @@ type ReadFileFn = (path: string, encoding: 'utf-8') => Promise<string>;
 
 interface AgentServiceOptions {
   logDestination?: pino.DestinationStream;
+  loggerProvider?: LoggerProvider;
   readFile?: ReadFileFn;
   commentAnchorCodec?: ArtifactCommentAnchorCodec;
 }
@@ -48,7 +50,7 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
     private readonly routingPolicy: AgentRoutingPolicy,
     options?: AgentServiceOptions,
   ) {
-    this.logger = createLogger('artifact-authoring-agent', { destination: options?.logDestination });
+    this.logger = createLogger('artifact-authoring-agent', { destination: options?.logDestination, loggerProvider: options?.loggerProvider });
     this.readFileFn = options?.readFile ?? ((path, enc) => _readFile(path, enc));
     this.commentAnchorCodec = options?.commentAnchorCodec;
   }
@@ -180,7 +182,7 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
     private readonly routingPolicy: AgentRoutingPolicy,
     options?: AgentServiceOptions,
   ) {
-    this.logger = createLogger('implementation-agent', { destination: options?.logDestination });
+    this.logger = createLogger('implementation-agent', { destination: options?.logDestination, loggerProvider: options?.loggerProvider });
     this.readFileFn = options?.readFile ?? ((path, enc) => _readFile(path, enc));
   }
 
@@ -241,7 +243,7 @@ export class AgentRunnerQuestionAnsweringAgent implements QuestionAnsweringAgent
     private readonly repo_path: string,
     options?: AgentServiceOptions,
   ) {
-    this.logger = createLogger('question-answering-agent', { destination: options?.logDestination });
+    this.logger = createLogger('question-answering-agent', { destination: options?.logDestination, loggerProvider: options?.loggerProvider });
     this.readFileFn = options?.readFile ?? ((path, enc) => _readFile(path, enc));
   }
 
@@ -287,7 +289,7 @@ export class AgentRunnerIssueTriageAgent implements IssueTriageAgent {
     private readonly routingPolicy: AgentRoutingPolicy,
     options?: AgentServiceOptions,
   ) {
-    this.logger = createLogger('issue-triage-agent', { destination: options?.logDestination });
+    this.logger = createLogger('issue-triage-agent', { destination: options?.logDestination, loggerProvider: options?.loggerProvider });
     this.readFileFn = options?.readFile ?? ((path, enc) => _readFile(path, enc));
   }
 
