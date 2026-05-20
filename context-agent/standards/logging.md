@@ -59,3 +59,21 @@ When both variables are unset the service is **behaviorally identical** to its p
 Export errors (network unreachable, bad endpoint) are caught internally and logged at `warn` level with `event: "telemetry.export_failed"`. They do not propagate to the run loop.
 
 See `context-human/wiki/observability.md` for setup instructions and `src/core/telemetry.ts` for implementation details.
+
+## Telemetry requirements for new control-flow work
+
+Any PR adding async operations, external calls, decision points, or error paths MUST include structured telemetry following these guidelines:
+
+1. **Async operations**: Log `event: '<component>.<operation>_started'` before the operation and `'<component>.<operation>_completed'` after, including `duration_ms` in the completion log.
+
+2. **Decision points**: Log the decision made and any safe inputs (never log secrets, full prompts, or PII). Example: `{ event: "adapter.selected", adapter: "slack", route_task: "xyz" }`.
+
+3. **External calls**: Log the target identifier, operation name, `duration_ms`, and outcome. Example: `{ event: "anthropic.api_call", operation: "create_message", duration_ms: 245, status: "success" }`.
+
+4. **Error handling**: Log the causal chain or the original error as `error: String(err)` with all available correlation fields (`run_id`, `request_id`, `phase`, `route_task`). Do not swallow errors silently.
+
+5. **Correlation fields**: Include `run_id`, `request_id`, `phase`, and `route_task` in logs when available in the execution context.
+
+6. **Logger provider**: Accept `loggerProvider` in constructor options if the component is constructed by runtime composition. This enables dependency injection of the shared logger.
+
+7. **Output**: All logs are structured JSON to stderr via pino. No stdout logging.

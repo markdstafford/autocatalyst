@@ -426,7 +426,7 @@ describe('Orchestrator — new_request happy path', () => {
     await orch.stop();
 
     expect(wm.create).toHaveBeenCalledWith('request-001', 'https://github.com/org/repo.git', '~/.autocatalyst/workspaces');
-    expect(sg.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function));
+    expect(sg.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), undefined, { run_id: expect.any(String), request_id: 'request-001' });
     expect(cp.createArtifact).toHaveBeenCalledWith(
       expect.objectContaining({ provider: 'slack', channel_id: 'C123', conversation_id: '100.0' }),
       expect.objectContaining({ kind: 'feature_spec', local_path: '/ws/request-001/context-human/specs/feature-test.md' }),
@@ -563,6 +563,7 @@ describe('Orchestrator — feedback happy path', () => {
       '/ws/request-001',
       undefined,
       expect.any(Function),
+      { run_id: expect.any(String), request_id: 'request-001' },
     );
     expect(cp.updateArtifact).toHaveBeenCalledWith(
       'CANVAS001',
@@ -800,6 +801,7 @@ describe('Orchestrator — feedback with feedbackSource', () => {
       expect.any(String),
       undefined,
       expect.any(Function),
+      { run_id: expect.any(String), request_id: 'request-001' },
     );
     expect(fs.reply).toHaveBeenCalledTimes(2);
     expect(fs.reply).toHaveBeenCalledWith('CANVAS001', 'disc-1', 'Updated per Phoebe');
@@ -829,6 +831,7 @@ describe('Orchestrator — feedback with feedbackSource', () => {
       expect.any(String),
       undefined,
       expect.any(Function),
+      { run_id: expect.any(String), request_id: 'request-001' },
     );
     expect(fs.reply).not.toHaveBeenCalled();
   });
@@ -855,6 +858,7 @@ describe('Orchestrator — feedback with feedbackSource', () => {
       expect.any(String),
       undefined,
       expect.any(Function),
+      { run_id: expect.any(String), request_id: 'request-001' },
     );
   });
 
@@ -1416,6 +1420,7 @@ describe('Orchestrator — _handleSpecApproval happy path', () => {
       '/ws/request-001',
       undefined,
       expect.any(Function),
+      { run_id: 'run-001', request_id: 'request-001' },
     );
   });
 
@@ -2316,7 +2321,7 @@ describe('Orchestrator — pr_open routing guards', () => {
     await new Promise(r => setTimeout(r, 100));
     await orch.stop();
 
-    expect(qa.answer).toHaveBeenCalledWith('What does this PR do?');
+    expect(qa.answer).toHaveBeenCalledWith('What does this PR do?', expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }));
     expect(runs.get('request-001')!.stage).toBe('pr_open');
   });
 
@@ -2754,7 +2759,7 @@ describe('Orchestrator — question intent', () => {
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
-    expect(qa.answer).toHaveBeenCalledWith('How do I submit a feature request?');
+    expect(qa.answer).toHaveBeenCalledWith('How do I submit a feature request?', expect.objectContaining({ request_id: 'request-001' }));
     expect(postMessage).toHaveBeenCalledWith(conversationRef('C123', '100.0'), 'You can submit ideas by @mentioning me.');
     expect(orch.getRuns().get('request-001')?.stage).toBe('done');
   });
@@ -2786,7 +2791,7 @@ describe('Orchestrator — question intent', () => {
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
-    expect(qa.answer).toHaveBeenCalledWith('How does auth work?');
+    expect(qa.answer).toHaveBeenCalledWith('How does auth work?', expect.objectContaining({ run_id: 'run-001', request_id: 'request-001' }));
     expect(postMessage).toHaveBeenCalledWith(conversationRef(), 'Great question about the auth flow.');
     expect(runs.get('request-001')?.stage).toBe('reviewing_spec');
   });
@@ -4742,7 +4747,7 @@ describe('Orchestrator — bug and chore routing', () => {
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
-    expect(sg.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), 'bug');
+    expect(sg.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), 'bug', { run_id: expect.any(String), request_id: 'request-001' });
   });
 
   it('chore routing: artifactAuthoringAgent.create called with intent=chore', async () => {
@@ -4759,7 +4764,7 @@ describe('Orchestrator — bug and chore routing', () => {
     await new Promise(r => setTimeout(r, 50));
     await orch.stop();
 
-    expect(sg.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), 'chore');
+    expect(sg.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), 'chore', { run_id: expect.any(String), request_id: 'request-001' });
   });
 });
 

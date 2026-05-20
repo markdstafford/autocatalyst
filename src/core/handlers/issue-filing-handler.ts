@@ -52,7 +52,7 @@ export class IssueFilingHandler {
 
     let result: FilingResult;
     try {
-      result = await this.deps.issueFiler.file(request, workspace_path, onProgress);
+      result = await this.deps.issueFiler.file(request, workspace_path, onProgress, { run_id: run.id, request_id: run.request_id });
     } catch (err) {
       await this.deps.workspaceManager.destroy(workspace_path);
       await this.deps.failRun(run, request.conversation, err);

@@ -6,7 +6,9 @@ superseded_by: null
 
 # Observability stack
 
-**Decision:** OpenTelemetry SDK for instrumentation. Structured JSON logging to stdout initially. Victoria stack (VictoriaLogs, VictoriaMetrics, VictoriaTraces) + Vector as the target backend.
+**Decision:** OpenTelemetry SDK for instrumentation. Structured JSON logging to stderr via pino. Victoria stack (VictoriaLogs, VictoriaMetrics) + Vector as the target backend. Distributed tracing (VictoriaTraces) is out of scope.
+
+> Last updated by enhancement-comprehensive-telemetry-instrumentation. Distributed tracing (VictoriaTraces) is not in scope; observability is limited to logs (VictoriaLogs) and metrics (VictoriaMetrics).
 
 **Rationale:**
 - OpenTelemetry decouples instrumentation from backend — if Victoria doesn't work out, switching is a config change

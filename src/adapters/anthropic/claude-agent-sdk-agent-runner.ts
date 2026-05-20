@@ -28,7 +28,7 @@ import type {
 } from '../../types/ai.js';
 import { createLogger } from '../../core/logger.js';
 import { materializeClaudeRuntimeSkillPlugins } from './claude-runtime-skill-materializer.js';
-import { buildSandboxEnvironment } from '../sandbox-environment.js';
+import { buildSandboxEnvironmentWithSummary, buildSandboxEnvironment } from '../sandbox-environment.js';
 import { startAnthropicBetaHeaderFilterProxy, type AnthropicBetaHeaderFilterProxy } from './anthropic-beta-header-filter-proxy.js';
 
 type QueryFn = typeof _query;
@@ -38,16 +38,77 @@ const MAX_STDERR_LINES = 50;
 const SECRET_PATTERNS = [
   /(?:api[_-]?key|secret|password|credential)\s*[=:]\s*\S+/gi,
   /ghp_[A-Za-z0-9_]+/g,
+  /github_pat_[A-Za-z0-9_]+/g,
+  /gho_[A-Za-z0-9_]+/g,
+  /ghs_[A-Za-z0-9_]+/g,
   /sk-[A-Za-z0-9_-]+/g,
   /xox[bpras]-[A-Za-z0-9-]+/g,
+  /xapp-[A-Za-z0-9-]+/g,
+  /Authorization:\s*Bearer\s+\S+/gi,
+  /ANTHROPIC_CUSTOM_HEADERS[^=]*=\s*api-key:\s*\S+/gi,
 ];
 
-function redactSecrets(text: string): string {
+export function redactSecrets(text: string): string {
   let redacted = text;
   for (const pattern of SECRET_PATTERNS) {
     redacted = redacted.replace(pattern, '[REDACTED]');
   }
   return redacted;
+}
+
+export interface ClaudeSdkMessageDiagnostic {
+  sdk_message_type: string;
+  sdk_subtype?: string;
+  content_block_types?: string[];
+  tool_call_count?: number;
+  tool_call_names?: string[];
+  tool_result_count?: number;
+  is_error?: boolean;
+  usage_available?: boolean;
+}
+
+export function claudeSdkMessageDiagnostic(message: unknown): ClaudeSdkMessageDiagnostic {
+  const msg = message as Record<string, unknown>;
+  const type = typeof msg['type'] === 'string' ? msg['type'] : 'unknown';
+  const result: ClaudeSdkMessageDiagnostic = { sdk_message_type: type };
+
+  if (typeof msg['subtype'] === 'string') {
+    result.sdk_subtype = msg['subtype'];
+  }
+
+  if (type === 'assistant') {
+    const innerMsg = msg['message'] as Record<string, unknown> | undefined;
+    const content = Array.isArray(innerMsg?.['content']) ? innerMsg!['content'] as unknown[] : [];
+    result.content_block_types = content
+      .filter((b): b is Record<string, unknown> => Boolean(b) && typeof b === 'object')
+      .map(b => typeof (b as Record<string, unknown>)['type'] === 'string' ? (b as Record<string, unknown>)['type'] as string : 'unknown');
+    const toolUseBlocks = content.filter(
+      (b): b is Record<string, unknown> => typeof b === 'object' && Boolean(b) && (b as Record<string, unknown>)['type'] === 'tool_use',
+    );
+    if (toolUseBlocks.length > 0) {
+      result.tool_call_count = toolUseBlocks.length;
+      result.tool_call_names = toolUseBlocks
+        .map(b => typeof (b as Record<string, unknown>)['name'] === 'string' ? (b as Record<string, unknown>)['name'] as string : 'unknown');
+    }
+  }
+
+  if (type === 'user') {
+    const innerMsg = msg['message'] as Record<string, unknown> | undefined;
+    const content = Array.isArray(innerMsg?.['content']) ? innerMsg!['content'] as unknown[] : [];
+    const toolResultBlocks = content.filter(
+      (b): b is Record<string, unknown> => typeof b === 'object' && Boolean(b) && (b as Record<string, unknown>)['type'] === 'tool_result',
+    );
+    if (toolResultBlocks.length > 0) {
+      result.tool_result_count = toolResultBlocks.length;
+    }
+  }
+
+  if (type === 'result') {
+    result.is_error = typeof msg['is_error'] === 'boolean' ? msg['is_error'] : undefined;
+    result.usage_available = Boolean(msg['usage']);
+  }
+
+  return result;
 }
 
 const AUTOMATED_ALLOWED_TOOLS = [
@@ -129,7 +190,16 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
 
   async *run(request: AgentRunRequest): AsyncIterable<AgentRunEvent> {
     const model = request.profile?.model ?? 'unknown';
-    const sandboxEnv = buildSandboxEnvironment(this.sandboxEnvTokens);
+    const { environment: sandboxEnv, summary: sandboxSummary } = buildSandboxEnvironmentWithSummary(this.sandboxEnvTokens);
+    this.logger.debug(
+      {
+        event: 'sandbox.env_resolved',
+        token_count: sandboxSummary.token_count,
+        exported_sandbox_keys: sandboxSummary.exported_sandbox_keys,
+        missing_tokens: sandboxSummary.missing_tokens,
+      },
+      'Sandbox environment resolved',
+    );
     if (isGitHubDependentRoute(request.route) && !sandboxEnv['GH_TOKEN'] && !sandboxEnv['GITHUB_TOKEN']) {
       this.logger.warn(
         {
@@ -160,55 +230,159 @@ export class ClaudeAgentSdkAgentRunner implements AgentRunner {
       },
     };
     const startMs = performance.now();
-    for await (const message of this.queryFn({
-      prompt: request.prompt,
-      options,
-    })) {
-      if ((message as SDKMessage).type === 'result') {
-        const result = message as unknown as SDKResultMessage;
-        const outcome = result.is_error ? 'error' : 'success';
-        this._agentRunOutcome.add(1, { component: 'claude-agent-sdk', model, outcome });
-        this._agentTokenUsage.record(result.usage.input_tokens, {
-          component: 'claude-agent-sdk', model, token_type: 'input',
-        });
-        this._agentTokenUsage.record(result.usage.output_tokens, {
-          component: 'claude-agent-sdk', model, token_type: 'output',
-        });
-        if (result.is_error && stderrLines.length > 0) {
-          this.logger.error(
-            {
-              event: 'sdk.stderr_on_error',
-              route_task: request.route.task,
-              model,
-              stderr_excerpt: redactSecrets(stderrLines.join('\n')),
-            },
-            'Claude Code subprocess stderr captured on error exit',
-          );
+    let outcome: 'success' | 'error' | 'incomplete' = 'success';
+    let sdkMessageCount = 0;
+    let assistantTurnCount = 0;
+    let seenTerminalResult = false;
+    let terminalDiagnostics: { stderr_excerpt_redacted?: string } | undefined;
+    let terminalUsage: { input_tokens: number; output_tokens: number } | undefined;
+    let pendingToolResultCount = 0;
+
+    const telemetry = request.telemetry ?? {};
+
+    this.logger.info(
+      {
+        event: 'agent.run_started',
+        model,
+        ...routeLogAttributes(request.route),
+        working_directory: request.working_directory,
+        ...(telemetry.run_id ? { run_id: telemetry.run_id } : {}),
+        ...(telemetry.request_id ? { request_id: telemetry.request_id } : {}),
+        ...(telemetry.phase ? { phase: telemetry.phase } : {}),
+        ...(telemetry.handler ? { handler: telemetry.handler } : {}),
+      },
+      'Claude Agent SDK run started',
+    );
+
+    try {
+      for await (const message of this.queryFn({
+        prompt: request.prompt,
+        options,
+      })) {
+        sdkMessageCount++;
+        if ((message as SDKMessage).type === 'result') {
+          seenTerminalResult = true;
+          const result = message as unknown as SDKResultMessage;
+          terminalUsage = { input_tokens: result.usage.input_tokens, output_tokens: result.usage.output_tokens };
+          const sdkOutcome = result.is_error ? 'error' : 'success';
+          outcome = sdkOutcome;
+          this._agentRunOutcome.add(1, { component: 'claude-agent-sdk', model, outcome: sdkOutcome });
+          this._agentTokenUsage.record(result.usage.input_tokens, {
+            component: 'claude-agent-sdk', model, token_type: 'input',
+          });
+          this._agentTokenUsage.record(result.usage.output_tokens, {
+            component: 'claude-agent-sdk', model, token_type: 'output',
+          });
+          if (result.is_error && stderrLines.length > 0) {
+            this.logger.error(
+              {
+                event: 'sdk.stderr_on_error',
+                route_task: request.route.task,
+                model,
+                stderr_excerpt: redactSecrets(stderrLines.join('\n')),
+              },
+              'Claude Code subprocess stderr captured on error exit',
+            );
+          }
+          if (stderrLines.length > 0) {
+            terminalDiagnostics = { stderr_excerpt_redacted: redactSecrets(stderrLines.slice(-20).join('\n')) };
+          }
+        }
+        this.logger.debug(
+          {
+            event: 'agent.sdk_item',
+            model,
+            ...routeLogAttributes(request.route),
+            ...claudeSdkMessageDiagnostic(message),
+            ...(telemetry.run_id ? { run_id: telemetry.run_id } : {}),
+            ...(telemetry.request_id ? { request_id: telemetry.request_id } : {}),
+            ...(telemetry.phase ? { phase: telemetry.phase } : {}),
+          },
+          'Claude Agent SDK item',
+        );
+        const diag = claudeSdkMessageDiagnostic(message as SDKMessage);
+        // Accumulate tool_result_count from user messages (tool results appear in user turns)
+        if (diag.tool_result_count !== undefined) {
+          pendingToolResultCount += diag.tool_result_count;
+        }
+        const event = normalizeSdkMessage(message as SDKMessage);
+        if (event.type === 'assistant') {
+          assistantTurnCount++;
+          this._agentTurns.add(1, { component: 'claude-agent-sdk', model });
+          const diagExtras: Record<string, unknown> = {};
+          if (diag.tool_call_count !== undefined) diagExtras['tool_call_count'] = diag.tool_call_count;
+          if (diag.tool_call_names !== undefined) diagExtras['tool_call_names'] = diag.tool_call_names;
+          if (pendingToolResultCount > 0) {
+            diagExtras['tool_result_count'] = pendingToolResultCount;
+            pendingToolResultCount = 0;
+          }
+          if (Object.keys(diagExtras).length > 0) {
+            yield { ...event, ...diagExtras } as AgentRunEvent;
+          } else {
+            yield event;
+          }
+        } else if ((message as SDKMessage).type === 'result' && terminalDiagnostics) {
+          yield { ...event, diagnostics: terminalDiagnostics } as AgentRunEvent;
+        } else {
+          yield event;
         }
       }
-      const event = normalizeSdkMessage(message as SDKMessage);
-      if (event.type === 'assistant') {
-        this._agentTurns.add(1, { component: 'claude-agent-sdk', model });
+      if (stderrLines.length > 0) {
+        this.logger.debug(
+          {
+            event: 'sdk.stderr',
+            route_task: request.route.task,
+            model,
+            stderr_line_count: stderrLines.length,
+            stderr_excerpt: redactSecrets(stderrLines.slice(-5).join('\n')),
+          },
+          'Claude Code subprocess stderr',
+        );
       }
-      yield event;
-    }
-    if (stderrLines.length > 0) {
-      this.logger.debug(
+    } catch (err) {
+      outcome = 'error';
+      this.logger.error(
         {
-          event: 'sdk.stderr',
-          route_task: request.route.task,
+          event: 'agent.run_failed',
           model,
-          stderr_line_count: stderrLines.length,
-          stderr_excerpt: redactSecrets(stderrLines.slice(-5).join('\n')),
+          ...routeLogAttributes(request.route),
+          error: String(err),
+          ...(telemetry.run_id ? { run_id: telemetry.run_id } : {}),
+          ...(telemetry.request_id ? { request_id: telemetry.request_id } : {}),
+          ...(telemetry.phase ? { phase: telemetry.phase } : {}),
+          ...(telemetry.handler ? { handler: telemetry.handler } : {}),
         },
-        'Claude Code subprocess stderr',
+        'Claude Agent SDK run failed',
+      );
+      throw err;
+    } finally {
+      if (!seenTerminalResult && outcome !== 'error') {
+        outcome = 'incomplete';
+        this.logger.warn(
+          { event: 'agent.result_missing', model, ...routeLogAttributes(request.route) },
+          'Claude Agent SDK completed without a terminal result message',
+        );
+      }
+      this._adapterLatency.record(performance.now() - startMs, { adapter: 'agent-sdk', operation: 'query', model });
+      this.logger.info(
+        {
+          event: 'agent.run_completed',
+          model,
+          ...routeLogAttributes(request.route),
+          outcome,
+          latency_ms: Math.round(performance.now() - startMs),
+          assistant_turn_count: assistantTurnCount,
+          sdk_message_count: sdkMessageCount,
+          input_tokens: terminalUsage?.input_tokens,
+          output_tokens: terminalUsage?.output_tokens,
+          ...(telemetry.run_id ? { run_id: telemetry.run_id } : {}),
+          ...(telemetry.request_id ? { request_id: telemetry.request_id } : {}),
+          ...(telemetry.phase ? { phase: telemetry.phase } : {}),
+          ...(telemetry.handler ? { handler: telemetry.handler } : {}),
+        },
+        'Claude Agent SDK run completed',
       );
     }
-    this._adapterLatency.record(performance.now() - startMs, {
-      adapter: 'agent-sdk',
-      operation: 'query',
-      model,
-    });
   }
 
   private async betaFilterProxyUrl(profile: AgentProfile | undefined): Promise<string | null> {
@@ -325,6 +499,15 @@ function settingSourcesForProfile(profile: AgentProfile | undefined): AgentSetti
   if (profile?.setting_sources) return [...profile.setting_sources];
   if (profile?.load_user_settings === true) return ['user', 'project'];
   return ['project'];
+}
+
+function routeLogAttributes(route: AgentRoute): Record<string, string | undefined> {
+  return {
+    route_task: route.task,
+    ...(route.stage ? { route_stage: String(route.stage) } : {}),
+    ...(route.intent ? { route_intent: String(route.intent) } : {}),
+    ...(route.artifact_kind ? { artifact_kind: String(route.artifact_kind) } : {}),
+  };
 }
 
 function isGitHubDependentRoute(route: AgentRoute): boolean {

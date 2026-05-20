@@ -145,6 +145,7 @@ export class OpenAIAgentSdkAgentRunner implements AgentRunner {
 
     const startMs = performance.now();
     let outcome: 'success' | 'error' = 'success';
+    const telemetry = request.telemetry ?? {};
 
     this.logger.info(
       {
@@ -155,28 +156,56 @@ export class OpenAIAgentSdkAgentRunner implements AgentRunner {
         skill_refs: refs,
         capability_types: capabilities.map(c => c.type),
         max_turns: this.maxTurns,
+        ...(telemetry.run_id ? { run_id: telemetry.run_id } : {}),
+        ...(telemetry.request_id ? { request_id: telemetry.request_id } : {}),
+        ...(telemetry.phase ? { phase: telemetry.phase } : {}),
       },
       'OpenAI Agents SDK run started',
     );
 
+    let pendingToolCallCount = 0;
+    let pendingToolResultCount = 0;
     try {
       const stream = await Promise.resolve(this.runFn(agent, request.prompt, request.working_directory, { maxTurns: this.maxTurns, environment: sandboxEnv }));
       for await (const event of stream) {
+        const diag = openAIEventDiagnostic(event);
         this.logger.debug(
           {
             event: 'agent.sdk_item',
             model,
             ...routeLogAttributes(request.route),
-            ...openAIEventDiagnostic(event),
+            ...diag,
+            ...(telemetry.run_id ? { run_id: telemetry.run_id } : {}),
+            ...(telemetry.request_id ? { request_id: telemetry.request_id } : {}),
+            ...(telemetry.phase ? { phase: telemetry.phase } : {}),
           },
           'OpenAI Agents SDK item',
         );
+        // Accumulate tool counts from individual tool call/result events
+        const itemType = diag['item_type'];
+        if (itemType === 'tool_call_item') pendingToolCallCount++;
+        else if (itemType === 'tool_call_output_item') pendingToolResultCount++;
         const normalized = normalizeOpenAIEvent(event);
         if (normalized) {
           if (normalized.type === 'assistant') {
             this._agentTurns.add(1, { component: 'openai-agent-sdk', model });
+            const diagExtras: Record<string, unknown> = {};
+            if (pendingToolCallCount > 0) {
+              diagExtras['tool_call_count'] = pendingToolCallCount;
+              pendingToolCallCount = 0;
+            }
+            if (pendingToolResultCount > 0) {
+              diagExtras['tool_result_count'] = pendingToolResultCount;
+              pendingToolResultCount = 0;
+            }
+            if (Object.keys(diagExtras).length > 0) {
+              yield { ...normalized, ...diagExtras } as AgentRunEvent;
+            } else {
+              yield normalized;
+            }
+          } else {
+            yield normalized;
           }
-          yield normalized;
         }
       }
     } catch (err) {
@@ -188,6 +217,9 @@ export class OpenAIAgentSdkAgentRunner implements AgentRunner {
           ...routeLogAttributes(request.route),
           error: String(err),
           generated_item_count: generatedItemsFromError(err).length,
+          ...(telemetry.run_id ? { run_id: telemetry.run_id } : {}),
+          ...(telemetry.request_id ? { request_id: telemetry.request_id } : {}),
+          ...(telemetry.phase ? { phase: telemetry.phase } : {}),
         },
         'OpenAI Agents SDK run failed',
       );
@@ -206,6 +238,11 @@ export class OpenAIAgentSdkAgentRunner implements AgentRunner {
           ...routeLogAttributes(request.route),
           outcome,
           latency_ms: Math.round(performance.now() - startMs),
+          ...(pendingToolCallCount > 0 ? { trailing_tool_call_count: pendingToolCallCount } : {}),
+          ...(pendingToolResultCount > 0 ? { trailing_tool_result_count: pendingToolResultCount } : {}),
+          ...(telemetry.run_id ? { run_id: telemetry.run_id } : {}),
+          ...(telemetry.request_id ? { request_id: telemetry.request_id } : {}),
+          ...(telemetry.phase ? { phase: telemetry.phase } : {}),
         },
         'OpenAI Agents SDK run completed',
       );

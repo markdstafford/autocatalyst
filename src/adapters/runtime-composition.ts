@@ -47,6 +47,7 @@ import type { DirectModelRunRequest, DirectModelRunResult, DirectModelRunner, Ag
 import { ClaudeAgentSdkAgentRunner } from './anthropic/claude-agent-sdk-agent-runner.js';
 import { OpenAIAgentSdkAgentRunner } from './openai/agent-sdk-agent-runner.js';
 import { ImplementationReviewCoordinator } from '../core/ai/implementation-review-coordinator.js';
+import { createLogger } from '../core/logger.js';
 
 export type RuntimeLogger = Pick<pino.Logger, 'debug' | 'error' | 'info' | 'warn'>;
 
@@ -118,10 +119,10 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
 
   const aiRoutingPolicy = buildAgentRoutingPolicy(resolvedAi);
   const directModelRunner = buildDirectModelRunner(resolvedAi, logger, options.loggerProvider);
-  const agentRunner = buildAgentRunner(resolvedAi, logger, options.meter, currentConfig.config.sandbox?.env_tokens);
+  const agentRunner = buildAgentRunner(resolvedAi, logger, options.meter, currentConfig.config.sandbox?.env_tokens, options.loggerProvider);
   const intentClassifier = new ModelIntentClassifier(directModelRunner, { routingPolicy: aiRoutingPolicy });
   const prTitleGenerator = new ModelPRTitleGenerator(directModelRunner, { routingPolicy: aiRoutingPolicy });
-  const questionAnswerer = new AgentRunnerQuestionAnsweringAgent(agentRunner, aiRoutingPolicy, repoPath);
+  const questionAnswerer = new AgentRunnerQuestionAnsweringAgent(agentRunner, aiRoutingPolicy, repoPath, { loggerProvider: options.loggerProvider });
   const preRepoEntries = isMultiRepo
     ? await resolvePreRepoEntries(repoPaths, env, logger)
     : [];
@@ -148,10 +149,10 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
       conversationField: 'thread_ts',
     },
   });
-  const implementer = new AgentRunnerImplementationAgent(agentRunner, aiRoutingPolicy);
+  const implementer = new AgentRunnerImplementationAgent(agentRunner, aiRoutingPolicy, { loggerProvider: options.loggerProvider });
   const prManager = new GHPRManager();
   const issueManager = new GHIssueManager();
-  const issueTriageAgent = new AgentRunnerIssueTriageAgent(agentRunner, aiRoutingPolicy);
+  const issueTriageAgent = new AgentRunnerIssueTriageAgent(agentRunner, aiRoutingPolicy, { loggerProvider: options.loggerProvider });
   const issueFiler = new IssueFilingService(issueManager, issueTriageAgent);
 
   const artifactDeps = await buildArtifactDeps({
@@ -165,6 +166,7 @@ export async function composeBuiltInWorkflowRuntime(options: ComposeWorkflowRunt
   });
   const artifactAuthoringAgent = new AgentRunnerArtifactAuthoringAgent(agentRunner, aiRoutingPolicy, {
     commentAnchorCodec: artifactDeps.commentAnchorCodec,
+    loggerProvider: options.loggerProvider,
   });
 
   const reviewCoordinator = new ImplementationReviewCoordinator({
@@ -240,6 +242,7 @@ export function buildAgentRunner(
   logger: RuntimeLogger,
   meter?: Meter,
   sandboxEnvTokens?: string[],
+  loggerProvider?: LoggerProvider,
 ): AgentRunner {
   const claudeProfile = resolvedAi.profiles.find(p => p.runner === 'claude_agent_sdk');
   const openAiAgentProfile = resolvedAi.profiles.find(p => p.runner === 'openai_agent_sdk');
@@ -251,7 +254,20 @@ export function buildAgentRunner(
     );
   }
 
-  const claudeRunner = claudeProfile ? new ClaudeAgentSdkAgentRunner({ meter, sandboxEnvTokens }) : null;
+  const claudeRunner = claudeProfile
+    ? (() => {
+        logger.info(
+          {
+            event: 'service.config',
+            provider: 'anthropic',
+            runner: 'claude_agent_sdk',
+            model: claudeProfile.model ?? 'default',
+          },
+          'Using Claude Agent SDK',
+        );
+        return new ClaudeAgentSdkAgentRunner({ meter, sandboxEnvTokens, loggerProvider });
+      })()
+    : null;
 
   let openAiRunner: AgentRunner | null = null;
   if (openAiAgentProfile) {
@@ -289,7 +305,7 @@ export function buildAgentRunner(
 
   // Both runner kinds present — wrap in a routing-aware runner that dispatches
   // on request.profile?.provider at call time.
-  return new RoutingAwareAgentRunner(claudeRunner!, openAiRunner!);
+  return new RoutingAwareAgentRunner(claudeRunner!, openAiRunner!, { loggerProvider });
 }
 
 /**
@@ -316,12 +332,30 @@ export class RoutingAwareDirectModelRunner implements DirectModelRunner {
  * (e.g. artifact.create → claude_agent_sdk, implementation.run → openai_agent_sdk).
  */
 export class RoutingAwareAgentRunner implements AgentRunner {
+  private readonly logger: RuntimeLogger;
+
   constructor(
     private readonly claudeRunner: AgentRunner,
     private readonly openAiRunner: AgentRunner,
-  ) {}
+    options?: { logDestination?: pino.DestinationStream; loggerProvider?: LoggerProvider },
+  ) {
+    this.logger = createLogger('routing-aware-runner', {
+      destination: options?.logDestination,
+      loggerProvider: options?.loggerProvider,
+    });
+  }
 
   run(request: AgentRunRequest): AsyncIterable<AgentRunEvent> {
+    const selected = request.profile?.provider === 'openai_agent_sdk' ? 'openai_agent_sdk' : 'claude_agent_sdk';
+    this.logger.debug(
+      {
+        event: 'runner.dispatched',
+        runner: selected,
+        route_task: request.route.task,
+        model: request.profile?.model ?? 'unknown',
+      },
+      'Routing-aware runner dispatched',
+    );
     if (request.profile?.provider === 'openai_agent_sdk') {
       return this.openAiRunner.run(request);
     }

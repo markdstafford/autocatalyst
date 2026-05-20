@@ -62,8 +62,8 @@ export class ArtifactCreationHandler {
     let local_path: string;
     try {
       const result = intent === 'idea'
-        ? await this.deps.artifactAuthoringAgent.create(request, workspace_path, onProgress)
-        : await this.deps.artifactAuthoringAgent.create(request, workspace_path, onProgress, intent);
+        ? await this.deps.artifactAuthoringAgent.create(request, workspace_path, onProgress, undefined, { run_id: run.id, request_id: run.request_id })
+        : await this.deps.artifactAuthoringAgent.create(request, workspace_path, onProgress, intent, { run_id: run.id, request_id: run.request_id });
       local_path = result.artifact_path;
       this.setArtifactDraft(run, artifactKindForIntent(intent)!, local_path);
       if (intent !== 'idea' && result.existing_issue !== undefined) {

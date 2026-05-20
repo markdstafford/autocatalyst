@@ -1,3 +1,4 @@
+import { PassThrough } from 'node:stream';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
@@ -59,5 +60,31 @@ describe('ConfigWatcher', () => {
   it('stop() before start() does not throw', () => {
     const watcher = new ConfigWatcher(filePath, { onReload: vi.fn(), debounceMs: 50 });
     expect(() => watcher.stop()).not.toThrow();
+  });
+});
+
+describe('ConfigWatcher telemetry', () => {
+  it('logs config_watcher.started and stopped', async () => {
+    const dest = new PassThrough();
+    const lines: string[] = [];
+    dest.on('data', (c: Buffer) => c.toString().split('\n').filter(Boolean).forEach(l => lines.push(l)));
+
+    const dir = mkdtempSync(join(tmpdir(), 'ac-test-'));
+    const fp = join(dir, 'config.yaml');
+    writeFileSync(fp, 'test: true');
+
+    try {
+      const watcher = new ConfigWatcher(fp, { onReload: () => {}, logDestination: dest });
+      watcher.start();
+      watcher.stop();
+      dest.end();
+      await new Promise(r => dest.on('finish', r));
+
+      const parsed = lines.map(l => JSON.parse(l));
+      expect(parsed.find(l => l.event === 'config_watcher.started')).toBeDefined();
+      expect(parsed.find(l => l.event === 'config_watcher.stopped')).toBeDefined();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

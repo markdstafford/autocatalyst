@@ -83,7 +83,7 @@ describe('ArtifactCreationHandler', () => {
     await handler.handle(run, request, 'idea');
 
     expect(deps.workspaceManager.create).toHaveBeenCalledWith('request-001', 'https://example.test/org/repo.git', '/tmp/workspaces');
-    expect(deps.artifactAuthoringAgent.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function));
+    expect(deps.artifactAuthoringAgent.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), undefined, { run_id: 'run-001', request_id: 'request-001' });
     expect(deps.artifactPublisher.createArtifact).toHaveBeenCalledWith(
       TEST_CONVERSATION,
       expect.objectContaining({
@@ -116,7 +116,7 @@ describe('ArtifactCreationHandler', () => {
 
     await handler.handle(run, request, 'bug');
 
-    expect(deps.artifactAuthoringAgent.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), 'bug');
+    expect(deps.artifactAuthoringAgent.create).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), 'bug', { run_id: 'run-001', request_id: 'request-001' });
     expect(run.issue).toBe(42);
     expect(run.artifact).toMatchObject({
       kind: 'bug_triage',

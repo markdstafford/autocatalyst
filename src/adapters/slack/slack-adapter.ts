@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import type { App } from '@slack/bolt';
 import type pino from 'pino';
 import { createLogger } from '../../core/logger.js';
@@ -227,7 +228,7 @@ export class SlackAdapter implements ChannelAdapter {
       }
 
       this.logger.info(
-        { event: 'slack.message.classified', author: msg.user, channel_id: channelId, intent: result.intent, thread_ts: msg.ts },
+        { event: 'slack.message.classified', author: msg.user, channel_id: channelId, intent: result.intent, thread_ts: msg.thread_ts ?? msg.ts, message_ts: msg.ts },
         'Message classified',
       );
 
@@ -416,11 +417,27 @@ export class SlackAdapter implements ChannelAdapter {
   }
 
   async reply(ref: ConversationRef, text: string): Promise<MessageRef> {
-    const result = await this.app.client.chat.postMessage({
-      channel: ref.channel_id,
-      thread_ts: ref.conversation_id,
-      text,
-    });
+    const callStart = performance.now();
+    let result: Awaited<ReturnType<typeof this.app.client.chat.postMessage>>;
+    try {
+      result = await this.app.client.chat.postMessage({
+        channel: ref.channel_id,
+        thread_ts: ref.conversation_id,
+        text,
+      });
+      const duration_ms = Math.round(performance.now() - callStart);
+      this.logger.info(
+        { event: 'slack.message.delivered', channel_id: ref.channel_id, thread_ts: ref.conversation_id, message_ts: result.ts, duration_ms },
+        'Slack message delivered',
+      );
+    } catch (err) {
+      const duration_ms = Math.round(performance.now() - callStart);
+      this.logger.error(
+        { event: 'slack.message.delivery_failed', channel_id: ref.channel_id, thread_ts: ref.conversation_id, duration_ms, error: String(err) },
+        'Slack message delivery failed',
+      );
+      throw err;
+    }
     return {
       provider: 'slack',
       channel_id: ref.channel_id,
@@ -443,15 +460,18 @@ export class SlackAdapter implements ChannelAdapter {
   }
 
   async reactToMessage(channel: string, ts: string, emoji: string): Promise<void> {
+    const callStart = performance.now();
     try {
       await this.app.client.reactions.add({ channel, timestamp: ts, name: emoji });
+      const duration_ms = Math.round(performance.now() - callStart);
       this.logger.info(
-        { event: 'slack.reaction.sent', channel_id: channel, ts, emoji },
+        { event: 'slack.reaction.sent', channel_id: channel, ts, emoji, duration_ms },
         'Reaction posted',
       );
     } catch (err) {
+      const duration_ms = Math.round(performance.now() - callStart);
       this.logger.error(
-        { event: 'slack.error', error: String(err) },
+        { event: 'slack.error', channel_id: channel, ts, emoji, duration_ms, error: String(err) },
         'Failed to post reaction',
       );
     }

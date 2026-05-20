@@ -57,6 +57,7 @@ export class ImplementationFeedbackHandler {
         run.workspace_path,
         additionalContext.value,
         onProgress,
+        { run_id: run.id, request_id: run.request_id },
       );
     } catch (err) {
       await this.deps.failRun(run, feedback.conversation, err);

@@ -1,6 +1,6 @@
 import { PassThrough } from 'node:stream';
-import { describe, expect, test, vi } from 'vitest';
-import { ClaudeAgentSdkAgentRunner } from '../../../src/adapters/anthropic/claude-agent-sdk-agent-runner.js';
+import { describe, it, expect, test, vi } from 'vitest';
+import { ClaudeAgentSdkAgentRunner, claudeSdkMessageDiagnostic, redactSecrets } from '../../../src/adapters/anthropic/claude-agent-sdk-agent-runner.js';
 import type { AgentRunEvent } from '../../../src/types/ai.js';
 import type { Counter, Histogram, Meter } from '@opentelemetry/api';
 
@@ -646,5 +646,113 @@ describe('ClaudeAgentSdkAgentRunner', () => {
       log => log['event'] === 'sdk.stderr_on_error',
     );
     expect(errorLog).toBeUndefined();
+  });
+});
+
+describe('ClaudeAgentSdkAgentRunner lifecycle logs', () => {
+  it('emits agent.run_started and agent.run_completed on success', async () => {
+    const dest = new PassThrough();
+    const lines: string[] = [];
+    dest.on('data', (chunk: Buffer) => {
+      chunk.toString().split('\n').filter(Boolean).forEach(l => lines.push(l));
+    });
+
+    const mockQueryFn = async function* () {
+      yield {
+        type: 'result',
+        subtype: 'success',
+        is_error: false,
+        usage: { input_tokens: 10, output_tokens: 5, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      };
+    };
+
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn: mockQueryFn as any, logDestination: dest as unknown as import('pino').DestinationStream });
+
+    for await (const _ of runner.run({
+      route: { task: 'implementation.run' },
+      working_directory: '/tmp',
+      prompt: 'test',
+    })) { /* drain */ }
+
+    dest.end();
+    await new Promise(r => dest.on('finish', r));
+
+    const parsed = lines.map(l => JSON.parse(l));
+    const started = parsed.find((l: Record<string, unknown>) => l['event'] === 'agent.run_started');
+    const completed = parsed.find((l: Record<string, unknown>) => l['event'] === 'agent.run_completed');
+
+    expect(started).toBeDefined();
+    expect(started['route_task']).toBe('implementation.run');
+    expect(completed).toBeDefined();
+    expect(completed['outcome']).toBe('success');
+    expect(typeof completed['latency_ms']).toBe('number');
+  });
+
+  it('emits agent.run_failed when queryFn throws', async () => {
+    const dest = new PassThrough();
+    const lines: string[] = [];
+    dest.on('data', (chunk: Buffer) => {
+      chunk.toString().split('\n').filter(Boolean).forEach(l => lines.push(l));
+    });
+
+    const mockQueryFn = async function* (): AsyncGenerator<never> {
+      throw new Error('connection refused');
+    };
+
+    const runner = new ClaudeAgentSdkAgentRunner({ queryFn: mockQueryFn as any, logDestination: dest as unknown as import('pino').DestinationStream });
+    await expect(async () => {
+      for await (const _ of runner.run({ route: { task: 'implementation.run' }, working_directory: '/tmp', prompt: 'test' })) {}
+    }).rejects.toThrow('connection refused');
+
+    dest.end();
+    await new Promise(r => dest.on('finish', r));
+
+    const parsed = lines.map(l => JSON.parse(l));
+    const failed = parsed.find((l: Record<string, unknown>) => l['event'] === 'agent.run_failed');
+    expect(failed).toBeDefined();
+    expect(String(failed['error'])).toContain('connection refused');
+  });
+});
+
+describe('claudeSdkMessageDiagnostic', () => {
+  it('returns safe summary for assistant message with tool use', () => {
+    const msg = {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'secret content should not appear' },
+          { type: 'tool_use', id: 'tu1', name: 'Bash', input: { command: 'rm -rf' } },
+        ],
+      },
+    };
+    const diag = claudeSdkMessageDiagnostic(msg as any);
+    expect(diag.sdk_message_type).toBe('assistant');
+    expect(diag.content_block_types).toEqual(['text', 'tool_use']);
+    expect(diag.tool_call_count).toBe(1);
+    expect(diag.tool_call_names).toEqual(['Bash']);
+    expect(JSON.stringify(diag)).not.toContain('secret content');
+    expect(JSON.stringify(diag)).not.toContain('rm -rf');
+  });
+
+  it('marks usage_available on result message with usage', () => {
+    const msg = {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    };
+    const diag = claudeSdkMessageDiagnostic(msg as any);
+    expect(diag.sdk_message_type).toBe('result');
+    expect(diag.usage_available).toBe(true);
+    expect(diag.is_error).toBe(false);
+  });
+
+  it('redactSecrets covers GitHub PAT and Slack xapp tokens', () => {
+    const text = 'github_pat_11ABCDEF and xapp-1-abc-123 and Authorization: Bearer tok123';
+    const redacted = redactSecrets(text);
+    expect(redacted).not.toContain('github_pat_11ABCDEF');
+    expect(redacted).not.toContain('xapp-1-abc-123');
+    expect(redacted).not.toContain('tok123');
   });
 });

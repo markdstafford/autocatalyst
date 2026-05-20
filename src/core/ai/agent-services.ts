@@ -2,9 +2,12 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile as _readFile, unlink } from 'node:fs/promises';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { performance } from 'node:perf_hooks';
 import type pino from 'pino';
+import type { LoggerProvider } from '@opentelemetry/api-logs';
 import { createLogger } from '../logger.js';
 import type {
+  AgentDrainSummary,
   AgentRunContentBlock,
   AgentRunEvent,
   AgentRunner,
@@ -34,6 +37,7 @@ type ReadFileFn = (path: string, encoding: 'utf-8') => Promise<string>;
 
 interface AgentServiceOptions {
   logDestination?: pino.DestinationStream;
+  loggerProvider?: LoggerProvider;
   readFile?: ReadFileFn;
   commentAnchorCodec?: ArtifactCommentAnchorCodec;
 }
@@ -48,7 +52,7 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
     private readonly routingPolicy: AgentRoutingPolicy,
     options?: AgentServiceOptions,
   ) {
-    this.logger = createLogger('artifact-authoring-agent', { destination: options?.logDestination });
+    this.logger = createLogger('artifact-authoring-agent', { destination: options?.logDestination, loggerProvider: options?.loggerProvider });
     this.readFileFn = options?.readFile ?? ((path, enc) => _readFile(path, enc));
     this.commentAnchorCodec = options?.commentAnchorCodec;
   }
@@ -58,6 +62,7 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
     workspace_path: string,
     onProgress?: (message: string) => Promise<void>,
     intent: 'idea' | 'bug' | 'chore' = 'idea',
+    telemetry?: { run_id?: string; request_id?: string },
   ): Promise<ArtifactCreateResult> {
     const createResultPath = join(workspace_path, '.autocatalyst', 'spec-create-result.json');
     const artifactDir = (intent === 'bug' || intent === 'chore')
@@ -73,18 +78,27 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
 
     this.logger.debug({ event: 'artifact.agent_invoked', request_id: request.id }, 'Invoking agent for artifact creation');
 
+    let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(createResultPath);
-      await drainAgentRunner(
+      drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
           profile: this.routingPolicy.resolve(route),
           working_directory: workspace_path,
           prompt,
+          telemetry: {
+            request_id: request.id,
+            phase: 'artifact_generation',
+            route_task: route.task,
+            handler: 'AgentRunnerArtifactAuthoringAgent',
+            ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
+          },
         }),
         onProgress,
         this.logger,
         'artifact_generation',
+        { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
       );
     } catch (err) {
       this.logger.error(
@@ -94,7 +108,17 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
       throw new Error(`Artifact creation failed: ${String(err)}`);
     }
 
-    const content = await readRequiredFile(this.readFileFn, createResultPath, 'Artifact creation');
+    const content = await validateRequiredResultFile({
+      readFileFn: this.readFileFn,
+      path: createResultPath,
+      label: 'Artifact creation',
+      logger: this.logger,
+      phase: 'artifact_generation',
+      route_task: 'artifact.create',
+      request_id: request.id,
+      run_id: telemetry?.run_id,
+      drainSummary,
+    });
     const result = parseArtifactCreateResult(content, createResultPath);
     this.logger.info(
       { event: 'artifact.generated', request_id: request.id, artifact_path: result.artifact_path, existing_issue: result.existing_issue },
@@ -110,6 +134,7 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
     workspace_path: string,
     current_page_markdown?: string,
     onProgress?: (message: string) => Promise<void>,
+    telemetry?: { run_id?: string; request_id?: string },
   ): Promise<ArtifactRevisionResult> {
     const reviseResultPath = join(workspace_path, '.autocatalyst', 'spec-revise-result.json');
     const originalAnchors = current_page_markdown && this.commentAnchorCodec
@@ -136,18 +161,27 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
       'Revise called with publisher comments',
     );
 
+    let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(reviseResultPath);
-      await drainAgentRunner(
+      drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
           profile: this.routingPolicy.resolve(route),
           working_directory: workspace_path,
           prompt,
+          telemetry: {
+            request_id: feedback.request_id,
+            phase: 'artifact_generation',
+            route_task: route.task,
+            handler: 'AgentRunnerArtifactAuthoringAgent',
+            ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
+          },
         }),
         onProgress,
         this.logger,
         'artifact_generation',
+        { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
       );
     } catch (err) {
       this.logger.error(
@@ -157,7 +191,17 @@ export class AgentRunnerArtifactAuthoringAgent implements ArtifactAuthoringAgent
       throw new Error(`Artifact revision failed: ${String(err)}`);
     }
 
-    const content = await readRequiredFile(this.readFileFn, reviseResultPath, 'Artifact revision');
+    const content = await validateRequiredResultFile({
+      readFileFn: this.readFileFn,
+      path: reviseResultPath,
+      label: 'Artifact revision',
+      logger: this.logger,
+      phase: 'artifact_generation',
+      route_task: 'artifact.revise',
+      request_id: feedback.request_id,
+      run_id: telemetry?.run_id,
+      drainSummary,
+    });
     const commentResponses = parseCommentResponses(content, reviseResultPath);
 
     if (hasAnchors && this.commentAnchorCodec) {
@@ -180,7 +224,7 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
     private readonly routingPolicy: AgentRoutingPolicy,
     options?: AgentServiceOptions,
   ) {
-    this.logger = createLogger('implementation-agent', { destination: options?.logDestination });
+    this.logger = createLogger('implementation-agent', { destination: options?.logDestination, loggerProvider: options?.loggerProvider });
     this.readFileFn = options?.readFile ?? ((path, enc) => _readFile(path, enc));
   }
 
@@ -189,28 +233,38 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
     working_directory: string,
     additional_context?: string,
     onProgress?: (message: string) => Promise<void>,
+    telemetry?: { run_id?: string; request_id?: string },
   ): Promise<ImplementationResult> {
     const resultFilePath = join(working_directory, '.autocatalyst', 'impl-result.json');
     const prompt = buildImplementationPrompt(artifact_path, resultFilePath, additional_context);
     const route = { task: 'implementation.run' as const };
 
     this.logger.debug(
-      { event: 'impl.agent_invoked', working_directory, has_additional_context: Boolean(additional_context) },
+      { event: 'impl.agent_invoked', working_directory, has_additional_context: Boolean(additional_context), ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}), ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}) },
       'Invoking agent for implementation',
     );
 
+    let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(resultFilePath);
-      await drainAgentRunner(
+      drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
           profile: this.routingPolicy.resolve(route),
           working_directory,
           prompt,
+          telemetry: {
+            phase: 'implementation',
+            route_task: route.task,
+            handler: 'AgentRunnerImplementationAgent',
+            ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
+            ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}),
+          },
         }),
         onProgress,
         this.logger,
         'implementation',
+        { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
       );
     } catch (err) {
       this.logger.error({ event: 'impl.agent_failed', error: String(err) }, 'Agent exited with error during implementation');
@@ -224,7 +278,17 @@ export class AgentRunnerImplementationAgent implements ImplementationAgent {
       throw new Error(`Implementation failed: ${msg}`);
     }
 
-    const content = await readRequiredFile(this.readFileFn, resultFilePath, 'Implementation');
+    const content = await validateRequiredResultFile({
+      readFileFn: this.readFileFn,
+      path: resultFilePath,
+      label: 'Implementation',
+      logger: this.logger,
+      phase: 'implementation',
+      route_task: 'implementation.run',
+      run_id: telemetry?.run_id,
+      request_id: telemetry?.request_id,
+      drainSummary,
+    });
     const result = parseImplementationResult(content, resultFilePath);
     this.logger.debug({ event: 'impl.agent_completed', status: result.status }, 'Agent implementation completed');
     return result;
@@ -241,36 +305,55 @@ export class AgentRunnerQuestionAnsweringAgent implements QuestionAnsweringAgent
     private readonly repo_path: string,
     options?: AgentServiceOptions,
   ) {
-    this.logger = createLogger('question-answering-agent', { destination: options?.logDestination });
+    this.logger = createLogger('question-answering-agent', { destination: options?.logDestination, loggerProvider: options?.loggerProvider });
     this.readFileFn = options?.readFile ?? ((path, enc) => _readFile(path, enc));
   }
 
-  async answer(question: string): Promise<string> {
+  async answer(question: string, telemetry?: { run_id?: string; request_id?: string }): Promise<string> {
     const resultPath = join(this.repo_path, '.autocatalyst', `question-${randomUUID()}.json`);
     const prompt = buildQuestionPrompt(question, resultPath);
     const route = { task: 'question.answer' as const };
 
-    this.logger.debug({ event: 'question.answering', question_length: question.length }, 'Answering question via agent');
+    this.logger.debug({ event: 'question.answering', question_length: question.length, ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}), ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}) }, 'Answering question via agent');
 
+    let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(resultPath);
-      await drainAgentRunner(
+      drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
           profile: this.routingPolicy.resolve(route),
           working_directory: this.repo_path,
           prompt,
+          telemetry: {
+            phase: 'question_answering',
+            route_task: route.task,
+            handler: 'AgentRunnerQuestionAnsweringAgent',
+            ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
+            ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}),
+          },
         }),
         undefined,
         this.logger,
         'question_answering',
+        { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
       );
     } catch (err) {
-      this.logger.error({ event: 'question.agent_failed', error: String(err) }, 'Agent exited with error during question answering');
+      this.logger.error({ event: 'question.agent_failed', error: String(err), ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}), ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}) }, 'Agent exited with error during question answering');
       throw new Error(`Agent question answering failed: ${String(err)}`);
     }
 
-    const content = await readRequiredFile(this.readFileFn, resultPath, 'Question answering');
+    const content = await validateRequiredResultFile({
+      readFileFn: this.readFileFn,
+      path: resultPath,
+      label: 'Question answering',
+      logger: this.logger,
+      phase: 'question_answering',
+      route_task: 'question.answer',
+      run_id: telemetry?.run_id,
+      request_id: telemetry?.request_id,
+      drainSummary,
+    });
     unlink(resultPath).catch(() => {});
     const answer = parseQuestionAnswer(content);
     this.logger.info({ event: 'question.answered', response_length: answer.length }, 'Question answered');
@@ -287,7 +370,7 @@ export class AgentRunnerIssueTriageAgent implements IssueTriageAgent {
     private readonly routingPolicy: AgentRoutingPolicy,
     options?: AgentServiceOptions,
   ) {
-    this.logger = createLogger('issue-triage-agent', { destination: options?.logDestination });
+    this.logger = createLogger('issue-triage-agent', { destination: options?.logDestination, loggerProvider: options?.loggerProvider });
     this.readFileFn = options?.readFile ?? ((path, enc) => _readFile(path, enc));
   }
 
@@ -295,6 +378,7 @@ export class AgentRunnerIssueTriageAgent implements IssueTriageAgent {
     request: Request,
     working_directory: string,
     onProgress?: (message: string) => Promise<void>,
+    telemetry?: { run_id?: string; request_id?: string },
   ): Promise<IssueTriageResult> {
     const resultPath = join(working_directory, '.autocatalyst', 'enrichment-result.json');
     const prompt = buildIssueTriagePrompt(request, resultPath);
@@ -302,18 +386,27 @@ export class AgentRunnerIssueTriageAgent implements IssueTriageAgent {
 
     this.logger.debug({ event: 'filing.agent_invoked', request_id: request.id }, 'Invoking agent for issue triage');
 
+    let drainSummary: AgentDrainSummary | undefined;
     try {
       await ensureResultDir(resultPath);
-      await drainAgentRunner(
+      drainSummary = await drainAgentRunner(
         this.runner.run({
           route,
           profile: this.routingPolicy.resolve(route),
           working_directory,
           prompt,
+          telemetry: {
+            request_id: request.id,
+            phase: 'issue_triage',
+            route_task: route.task,
+            handler: 'AgentRunnerIssueTriageAgent',
+            ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
+          },
         }),
         onProgress,
         this.logger,
         'issue_triage',
+        { run_id: telemetry?.run_id, request_id: telemetry?.request_id },
       );
     } catch (err) {
       this.logger.error(
@@ -323,7 +416,18 @@ export class AgentRunnerIssueTriageAgent implements IssueTriageAgent {
       throw new Error(`Issue triage failed: ${String(err)}`);
     }
 
-    return readAndValidateIssueTriageResult(this.readFileFn, resultPath);
+    const content = await validateRequiredResultFile({
+      readFileFn: this.readFileFn,
+      path: resultPath,
+      label: 'Issue triage',
+      logger: this.logger,
+      phase: 'issue_triage',
+      route_task: 'issue.triage',
+      request_id: request.id,
+      run_id: telemetry?.run_id,
+      drainSummary,
+    });
+    return parseAndValidateIssueTriageResult(content, resultPath);
   }
 }
 
@@ -337,8 +441,9 @@ export class IssueFilingService implements IssueFiler {
     request: Request,
     workspace_path: string,
     onProgress?: (message: string) => Promise<void>,
+    telemetry?: { run_id?: string; request_id?: string },
   ): Promise<FilingResult> {
-    const triageResult = await this.issueTriageAgent.triage(request, workspace_path, onProgress);
+    const triageResult = await this.issueTriageAgent.triage(request, workspace_path, onProgress, telemetry);
     if (triageResult.status === 'failed') {
       return {
         status: 'failed',
@@ -374,21 +479,90 @@ export class IssueFilingService implements IssueFiler {
 export async function drainAgentRunner(
   events: AsyncIterable<AgentRunEvent>,
   onProgress: ((message: string) => Promise<void> | void) | undefined,
-  logger: Pick<pino.Logger, 'info' | 'warn'>,
+  logger: Pick<pino.Logger, 'info' | 'warn' | 'debug' | 'error'>,
   phase: string,
-): Promise<void> {
-  for await (const event of events) {
-    const content = assistantContent(event);
-    if (!onProgress || !content) continue;
-    const relayMessage = parseRelayMessage(content);
-    if (!relayMessage) continue;
-    try {
-      await onProgress(relayMessage);
-      logger.info({ event: 'progress_update', phase, message: relayMessage }, 'Progress update posted');
-    } catch (err) {
-      logger.warn({ event: 'progress_failed', phase, error: String(err) }, 'Failed to post progress update');
+  telemetry?: { run_id?: string; request_id?: string },
+): Promise<AgentDrainSummary> {
+  const startMs = performance.now();
+  let event_count = 0;
+  let assistant_turn_count = 0;
+  let relay_count = 0;
+  let tool_call_count = 0;
+  let tool_result_count = 0;
+  let latestDiagnostics: AgentDrainSummary['diagnostics'];
+
+  const telCtx = {
+    ...(telemetry?.run_id ? { run_id: telemetry.run_id } : {}),
+    ...(telemetry?.request_id ? { request_id: telemetry.request_id } : {}),
+  };
+
+  logger.info({ event: 'agent.drain_started', phase, ...telCtx }, 'Agent drain started');
+
+  try {
+    for await (const event of events) {
+      event_count++;
+
+      // Capture diagnostics propagated from terminal runner events
+      const eventDiag = (event as { diagnostics?: AgentDrainSummary['diagnostics'] }).diagnostics;
+      if (eventDiag) latestDiagnostics = eventDiag;
+
+      const content = assistantContent(event);
+      if (content) {
+        assistant_turn_count++;
+        const evtAny = event as Record<string, unknown>;
+        const tc = typeof evtAny['tool_call_count'] === 'number' ? evtAny['tool_call_count'] : 0;
+        const tr = typeof evtAny['tool_result_count'] === 'number' ? evtAny['tool_result_count'] : 0;
+        tool_call_count += tc;
+        tool_result_count += tr;
+
+        if (tc > 0) {
+          const toolNames = Array.isArray(evtAny['tool_call_names']) ? evtAny['tool_call_names'] as string[] : undefined;
+          logger.debug(
+            { event: 'agent.tool_activity', phase, tool_call_count: tc, tool_call_names: toolNames, ...telCtx },
+            'Agent tool activity',
+          );
+        }
+
+        const relayMessage = parseRelayMessage(content);
+        if (relayMessage) {
+          relay_count++;
+          if (onProgress) {
+            try {
+              await onProgress(relayMessage);
+              logger.info({ event: 'progress_update', phase, message: relayMessage, ...telCtx }, 'Progress update posted');
+            } catch (err) {
+              logger.warn({ event: 'progress_failed', phase, error: String(err), ...telCtx }, 'Failed to post progress update');
+            }
+          }
+        }
+      }
     }
+  } catch (err) {
+    const elapsed_ms = Math.round(performance.now() - startMs);
+    logger.error(
+      { event: 'agent.drain_failed', phase, event_count, assistant_turn_count, relay_count, elapsed_ms, error: String(err), ...telCtx },
+      'Agent drain failed',
+    );
+    throw err;
   }
+
+  const elapsed_ms = Math.round(performance.now() - startMs);
+  const summary: AgentDrainSummary = {
+    event_count,
+    assistant_turn_count,
+    relay_count,
+    tool_call_count,
+    tool_result_count,
+    elapsed_ms,
+    ...(latestDiagnostics ? { diagnostics: latestDiagnostics } : {}),
+  };
+
+  logger.info(
+    { event: 'agent.drain_completed', phase, ...summary, ...telCtx },
+    'Agent drain completed',
+  );
+
+  return summary;
 }
 
 function assistantContent(event: AgentRunEvent): AgentRunContentBlock[] | undefined {
@@ -418,6 +592,63 @@ async function readRequiredFile(readFileFn: ReadFileFn, path: string, label: str
     }
     throw err;
   }
+}
+
+interface ValidateResultFileOptions {
+  readFileFn: ReadFileFn;
+  path: string;
+  label: string;
+  logger: Pick<pino.Logger, 'info' | 'error'>;
+  phase: string;
+  route_task: string;
+  request_id?: string;
+  run_id?: string;
+  drainSummary?: AgentDrainSummary;
+}
+
+export async function validateRequiredResultFile(options: ValidateResultFileOptions): Promise<string> {
+  const { readFileFn, path, label, logger, phase, route_task, request_id, run_id, drainSummary } = options;
+  let content: string;
+  try {
+    content = await readFileFn(path, 'utf-8');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      logger.error(
+        {
+          event: 'agent.result_file_missing',
+          expected_path: path,
+          phase,
+          route_task,
+          ...(request_id ? { request_id } : {}),
+          ...(run_id ? { run_id } : {}),
+          ...(drainSummary?.diagnostics?.stderr_excerpt_redacted
+            ? { stderr_excerpt_redacted: drainSummary.diagnostics.stderr_excerpt_redacted }
+            : {}),
+        },
+        `${label}: result file not found after agent completed`,
+      );
+      throw new Error(`${label}: result file not found at "${path}" after agent completed`);
+    }
+    logger.error(
+      { event: 'agent.result_file_read_failed', expected_path: path, phase, route_task, error: String(err), ...(request_id ? { request_id } : {}), ...(run_id ? { run_id } : {}) },
+      `${label}: failed to read result file`,
+    );
+    throw err;
+  }
+
+  logger.info(
+    {
+      event: 'agent.result_file_found',
+      expected_path: path,
+      phase,
+      route_task,
+      byte_length: content.length,
+      ...(request_id ? { request_id } : {}),
+      ...(run_id ? { run_id } : {}),
+    },
+    `${label}: result file found`,
+  );
+  return content;
 }
 
 async function ensureResultDir(path: string): Promise<void> {
@@ -581,6 +812,10 @@ function parseQuestionAnswer(content: string): string {
 
 export async function readAndValidateIssueTriageResult(readFileFn: ReadFileFn, filePath: string): Promise<IssueTriageResult> {
   const content = await readRequiredFile(readFileFn, filePath, 'Issue filing');
+  return parseAndValidateIssueTriageResult(content, filePath);
+}
+
+function parseAndValidateIssueTriageResult(content: string, filePath: string): IssueTriageResult {
   const obj = parseJsonObject(content, `Issue filing: enrichment result at "${filePath}"`);
 
   if (obj['status'] !== 'complete' && obj['status'] !== 'failed') {

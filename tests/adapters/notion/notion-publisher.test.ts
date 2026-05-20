@@ -591,3 +591,49 @@ describe('NotionPublisher.updateArtifactStatus', () => {
     expect(records.find(r => r['event'] === 'notion_spec.status_updated')).toBeDefined();
   });
 });
+
+describe('Notion publisher telemetry', () => {
+  it('logs duration_ms and page_id for createArtifact', async () => {
+    const { records, destination } = makeLogCapture();
+    const client = makeMockNotionClient('page-telemetry-123');
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: destination });
+    const specPath = makeSpecFile('# Telemetry Spec\n\ncontent', 'feature-telemetry.md');
+
+    await publisher.createArtifact(makeConversation(), makeArtifact(specPath));
+
+    const createdRecord = records.find(r => r['event'] === 'notion_spec.properties_created');
+    expect(createdRecord).toBeDefined();
+    expect(createdRecord!['page_id']).toBe('page-telemetry-123');
+    expect(typeof createdRecord!['duration_ms']).toBe('number');
+    expect(createdRecord!['duration_ms']).toBeGreaterThanOrEqual(0);
+  });
+
+  it('logs duration_ms and page_id for updateArtifact', async () => {
+    const { records, destination } = makeLogCapture();
+    const client = makeMockNotionClient();
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: destination });
+    const specPath = makeSpecFile('---\nlast_updated: 2026-04-16\n---\n# Spec', 'feature-telemetry-update.md');
+
+    await publisher.updateArtifact('page-update-456', makeArtifact(specPath));
+
+    const updatedRecord = records.find(r => r['event'] === 'notion_spec.properties_updated');
+    expect(updatedRecord).toBeDefined();
+    expect(updatedRecord!['page_id']).toBe('page-update-456');
+    expect(typeof updatedRecord!['duration_ms']).toBe('number');
+    expect(updatedRecord!['duration_ms']).toBeGreaterThanOrEqual(0);
+  });
+
+  it('logs duration_ms and page_id for updateStatus', async () => {
+    const { records, destination } = makeLogCapture();
+    const client = makeMockNotionClient();
+    const publisher = new NotionPublisher(client, 'db-specs-id', { logDestination: destination });
+
+    await publisher.updateStatus!('page-status-789', 'approved');
+
+    const statusRecord = records.find(r => r['event'] === 'notion_spec.status_updated');
+    expect(statusRecord).toBeDefined();
+    expect(statusRecord!['page_id']).toBe('page-status-789');
+    expect(typeof statusRecord!['duration_ms']).toBe('number');
+    expect(statusRecord!['duration_ms']).toBeGreaterThanOrEqual(0);
+  });
+});

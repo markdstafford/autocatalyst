@@ -1,4 +1,6 @@
+import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
+import pino from 'pino';
 import { buildDefaultHandlerRegistry } from '../../src/core/default-handler-registry.js';
 import type { ThreadMessage, InboundEvent } from '../../src/types/events.js';
 import type { Run } from '../../src/types/runs.js';
@@ -134,6 +136,7 @@ describe('buildDefaultHandlerRegistry', () => {
       '/ws/request-001',
       undefined,
       expect.any(Function),
+      { run_id: 'run-001', request_id: 'request-001' },
     );
     expect(run.stage).toBe('reviewing_implementation');
   });
@@ -196,6 +199,113 @@ describe('buildDefaultHandlerRegistry', () => {
     expect(run.stage).toBe('pr_open');
   });
 
+  describe('handler instrumentation', () => {
+    it('logs handler.entered and handler.completed for a successful handler', async () => {
+      const dest = new PassThrough();
+      const lines: string[] = [];
+      dest.on('data', (c: Buffer) => {
+        c.toString().split('\n').filter(Boolean).forEach(l => lines.push(l));
+      });
+      const logger = pino({ level: 'info' }, dest);
+      const deps = { ...makeDeps(), logger };
+      const registry = buildDefaultHandlerRegistry(deps);
+      const run = makeRun({ stage: 'pr_open' });
+      const event: InboundEvent = { type: 'thread_message', payload: makeFeedback({ content: 'some note' }) };
+
+      const handler = registry.resolve({
+        event_type: 'thread_message',
+        stage: 'pr_open',
+        intent: 'feedback',
+      });
+
+      expect(handler).toBeDefined();
+      await handler?.(event, run);
+
+      // Flush the stream
+      await new Promise<void>(resolve => dest.end(resolve));
+
+      const parsed = lines.map(l => JSON.parse(l));
+      expect(parsed.find(l => l.event === 'handler.entered')).toBeDefined();
+      expect(parsed.find(l => l.event === 'handler.completed')).toBeDefined();
+    });
+
+    it('logs handler.failed when handler throws', async () => {
+      const dest = new PassThrough();
+      const lines: string[] = [];
+      dest.on('data', (c: Buffer) => {
+        c.toString().split('\n').filter(Boolean).forEach(l => lines.push(l));
+      });
+      const logger = pino({ level: 'info' }, dest);
+      const deps = makeDeps();
+      // Make workspaceManager.create throw and failRun rethrow so wrapHandler sees the error
+      (deps.workspaceManager.create as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('workspace error'));
+      (deps.failRun as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('workspace error'));
+      const depsWithLogger = { ...deps, logger };
+
+      const registry = buildDefaultHandlerRegistry(depsWithLogger);
+      const run = makeRun({ stage: 'new_thread', intent: 'idea' });
+
+      const newRequestHandler = registry.resolve({
+        event_type: 'new_request',
+        stage: 'new_thread',
+        intent: 'idea',
+      });
+
+      const requestEvent: InboundEvent = {
+        type: 'new_request',
+        payload: {
+          request_id: 'request-001',
+          channel: run.channel,
+          conversation: run.conversation,
+          origin: run.origin,
+          author: 'U123',
+          content: 'Build me a feature',
+          intent: 'idea',
+          received_at: new Date().toISOString(),
+        },
+      };
+
+      try {
+        await newRequestHandler?.(requestEvent, run);
+      } catch {
+        // expected
+      }
+
+      await new Promise<void>(resolve => dest.end(resolve));
+
+      const parsed = lines.map(l => JSON.parse(l));
+      expect(parsed.find(l => l.event === 'handler.entered')).toBeDefined();
+      expect(parsed.find(l => l.event === 'handler.failed')).toBeDefined();
+    });
+
+    it('includes run_id and request_id in log context', async () => {
+      const dest = new PassThrough();
+      const lines: string[] = [];
+      dest.on('data', (c: Buffer) => {
+        c.toString().split('\n').filter(Boolean).forEach(l => lines.push(l));
+      });
+      const logger = pino({ level: 'info' }, dest);
+      const deps = { ...makeDeps(), logger };
+      const registry = buildDefaultHandlerRegistry(deps);
+      const run = makeRun({ stage: 'pr_open', id: 'run-xyz', request_id: 'req-xyz' });
+      const event: InboundEvent = { type: 'thread_message', payload: makeFeedback() };
+
+      const handler = registry.resolve({
+        event_type: 'thread_message',
+        stage: 'pr_open',
+        intent: 'feedback',
+      });
+
+      await handler?.(event, run);
+      await new Promise<void>(resolve => dest.end(resolve));
+
+      const parsed = lines.map(l => JSON.parse(l));
+      const entered = parsed.find(l => l.event === 'handler.entered');
+      expect(entered?.run_id).toBe('run-xyz');
+      expect(entered?.request_id).toBe('req-xyz');
+    });
+  });
+
   it('passes the artifact local_path to the implementer after bug triage approval without deleting it', async () => {
     const bugLocalPath = '/ws/request-001/.autocatalyst/triage/triage-bug-login.md';
     const deps = {
@@ -233,6 +343,7 @@ describe('buildDefaultHandlerRegistry', () => {
       '/ws/request-001',
       undefined,
       expect.any(Function),
+      { run_id: 'run-001', request_id: 'request-001' },
     );
     expect(run.stage).toBe('reviewing_implementation');
   });

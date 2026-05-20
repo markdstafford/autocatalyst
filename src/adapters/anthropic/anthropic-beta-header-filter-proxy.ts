@@ -1,6 +1,8 @@
 import { once } from 'node:events';
 import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
+import type pino from 'pino';
+import { createLogger } from '../../core/logger.js';
 
 const HOP_BY_HOP_REQUEST_HEADERS = new Set([
   'connection',
@@ -34,6 +36,7 @@ export interface AnthropicBetaHeaderFilterProxy {
 
 export interface AnthropicBetaHeaderFilterProxyOptions {
   stripBetaValues: string[];
+  logDestination?: pino.DestinationStream;
 }
 
 /**
@@ -49,8 +52,13 @@ export async function startAnthropicBetaHeaderFilterProxy(
 ): Promise<AnthropicBetaHeaderFilterProxy> {
   const targetBase = new URL(targetBaseUrl);
   const stripBetaValues = normalizedStripBetaValues(options.stripBetaValues);
+  const logger = createLogger('anthropic-beta-header-filter-proxy', { destination: options.logDestination });
+  let totalRequests = 0;
+
   const server = createServer((req, res) => {
-    handleProxyRequest(req, res, targetBase, stripBetaValues).catch(err => {
+    totalRequests++;
+    handleProxyRequest(req, res, targetBase, stripBetaValues, logger).catch(err => {
+      logger.error({ event: 'proxy.request_error', method: req.method, error: String(err) }, 'Proxy request error');
       if (res.headersSent) {
         res.destroy(err);
         return;
@@ -79,10 +87,19 @@ export async function startAnthropicBetaHeaderFilterProxy(
     throw new Error('Anthropic beta header filter proxy did not bind to a TCP port');
   }
 
+  const port = address.port;
+  logger.info(
+    { event: 'proxy.started', port, strip_beta_count: stripBetaValues.size },
+    'Anthropic beta header filter proxy started',
+  );
+
   return {
-    baseUrl: `http://127.0.0.1:${address.port}`,
+    baseUrl: `http://127.0.0.1:${port}`,
     server,
-    close: () => closeServer(server),
+    close: async () => {
+      logger.info({ event: 'proxy.stopped', port, total_requests: totalRequests }, 'Anthropic beta header filter proxy stopped');
+      await closeServer(server);
+    },
   };
 }
 
@@ -91,6 +108,7 @@ async function handleProxyRequest(
   res: ServerResponse,
   targetBase: URL,
   stripBetaValues: ReadonlySet<string>,
+  logger: pino.Logger,
 ): Promise<void> {
   const targetUrl = targetUrlForRequest(targetBase, req.url);
   const response = await fetch(targetUrl, {
@@ -98,6 +116,11 @@ async function handleProxyRequest(
     headers: requestHeaders(req.headers, stripBetaValues),
     body: await requestBody(req),
   });
+
+  logger.debug(
+    { event: 'proxy.request_proxied', method: req.method, upstream_status: response.status },
+    'Proxy request proxied',
+  );
 
   res.writeHead(response.status, response.statusText, responseHeaders(response.headers));
   if (!response.body) {

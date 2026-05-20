@@ -2,6 +2,7 @@ import { execFile as _execFile } from 'node:child_process';
 import { rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import { performance } from 'node:perf_hooks';
 import type pino from 'pino';
 import { createLogger } from './logger.js';
 
@@ -45,18 +46,36 @@ export class WorkspaceManagerImpl implements WorkspaceManager {
     const branch = `spec/${slug}`;
 
     // Clone
+    const cloneStart = performance.now();
     try {
       await this.execFn('git', ['clone', '--depth=1', repo_url, workspace_path]);
+      this.logger.info(
+        { event: 'workspace.cloned', request_id, workspace_path, duration_ms: Math.round(performance.now() - cloneStart) },
+        'Workspace cloned',
+      );
     } catch (err) {
+      this.logger.error(
+        { event: 'workspace.clone_failed', request_id, workspace_path, duration_ms: Math.round(performance.now() - cloneStart), error: String(err) },
+        'Workspace clone failed',
+      );
       // Clean up partially-created directory if present
       try { rmSync(workspace_path, { recursive: true, force: true }); } catch { /* ignore */ }
       throw new Error(`git clone failed`, { cause: err });
     }
 
     // Create branch
+    const checkoutStart = performance.now();
     try {
       await this.execFn('git', ['checkout', '-b', branch], { cwd: workspace_path });
+      this.logger.info(
+        { event: 'workspace.checked_out', request_id, workspace_path, branch, duration_ms: Math.round(performance.now() - checkoutStart) },
+        'Workspace branch checked out',
+      );
     } catch (err) {
+      this.logger.error(
+        { event: 'workspace.checkout_failed', request_id, workspace_path, branch, duration_ms: Math.round(performance.now() - checkoutStart), error: String(err) },
+        'Workspace checkout failed',
+      );
       // Clean up cloned directory if present
       try { rmSync(workspace_path, { recursive: true, force: true }); } catch { /* ignore */ }
       throw new Error(`git checkout -b failed`, { cause: err });
@@ -67,7 +86,19 @@ export class WorkspaceManagerImpl implements WorkspaceManager {
   }
 
   async destroy(workspace_path: string): Promise<void> {
-    rmSync(workspace_path, { recursive: true, force: true });
-    this.logger.info({ event: 'workspace.destroyed', workspace_path }, 'Workspace destroyed');
+    const start = performance.now();
+    try {
+      rmSync(workspace_path, { recursive: true, force: true });
+      this.logger.info(
+        { event: 'workspace.destroyed', workspace_path, duration_ms: Math.round(performance.now() - start) },
+        'Workspace destroyed',
+      );
+    } catch (err) {
+      this.logger.error(
+        { event: 'workspace.destroy_failed', workspace_path, duration_ms: Math.round(performance.now() - start), error: String(err) },
+        'Workspace destroy failed',
+      );
+      throw err;
+    }
   }
 }

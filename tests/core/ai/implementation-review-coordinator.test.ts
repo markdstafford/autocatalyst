@@ -150,6 +150,7 @@ describe('ImplementationReviewCoordinator', () => {
         WORKING_DIR,
         expect.stringContaining('[REVIEW_ID: INIT-1]'),
         expect.any(Function),
+        expect.objectContaining({ run_id: expect.any(String) }),
       );
     });
 
@@ -283,6 +284,65 @@ describe('ImplementationReviewCoordinator', () => {
       expect(run.review_exchanges![0].phase).toBe('final');
       const calls = (deps.routingPolicy.resolveOptional as ReturnType<typeof vi.fn>).mock.calls;
       expect(calls.some((c: unknown[]) => (c[0] as { task: string }).task === 'implementation.review.final')).toBe(true);
+    });
+  });
+
+  describe('review round telemetry', () => {
+    it('logs implementation.review.round_started and round_completed', async () => {
+      const deps = makeDeps();
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+
+      const infoCalls: Array<Record<string, unknown>> = (deps.logger.info as ReturnType<typeof vi.fn>).mock.calls.map(
+        (c: unknown[]) => c[0] as Record<string, unknown>,
+      );
+
+      const started = infoCalls.find(l => l['event'] === 'implementation.review.round_started');
+      const completed = infoCalls.find(l => l['event'] === 'implementation.review.round_completed');
+
+      expect(started).toBeDefined();
+      expect(typeof started!['round']).toBe('number');
+      expect(completed).toBeDefined();
+      expect(typeof completed!['duration_ms']).toBe('number');
+      expect(typeof completed!['blocker_count']).toBe('number');
+      expect(typeof completed!['warning_count']).toBe('number');
+      expect(typeof completed!['info_count']).toBe('number');
+    });
+
+    it('logs correct finding counts by severity', async () => {
+      const findingsResult: ImplementationReviewResult = {
+        status: 'findings',
+        summary: 'Found issues.',
+        findings: [
+          { id: 'F1', severity: 'blocker', category: 'test', finding: 'Blocker.' },
+          { id: 'F2', severity: 'warning', category: 'test', finding: 'Warning.' },
+          { id: 'F3', severity: 'warning', category: 'test', finding: 'Another warning.' },
+          { id: 'F4', severity: 'info', category: 'test', finding: 'Info.' },
+        ],
+      };
+      const implResult = makeCompleteResult({
+        review_responses: [
+          { id: 'F1', disposition: 'fixed', response: 'Fixed.' },
+          { id: 'F2', disposition: 'fixed', response: 'Fixed.' },
+          { id: 'F3', disposition: 'fixed', response: 'Fixed.' },
+          { id: 'F4', disposition: 'fixed', response: 'Fixed.' },
+        ],
+      });
+      const deps = makeDeps(findingsResult, { implementer: makeImplementer(implResult) });
+      const coordinator = new ImplementationReviewCoordinator(deps);
+      const run = makeRun();
+      await coordinator.runInitialReview({ run, artifact_path: '/ws/spec.md', implementation_result: makeCompleteResult(), working_directory: WORKING_DIR });
+
+      const infoCalls: Array<Record<string, unknown>> = (deps.logger.info as ReturnType<typeof vi.fn>).mock.calls.map(
+        (c: unknown[]) => c[0] as Record<string, unknown>,
+      );
+      const completed = infoCalls.find(l => l['event'] === 'implementation.review.round_completed');
+
+      expect(completed).toBeDefined();
+      expect(completed!['blocker_count']).toBe(1);
+      expect(completed!['warning_count']).toBe(2);
+      expect(completed!['info_count']).toBe(1);
     });
   });
 });

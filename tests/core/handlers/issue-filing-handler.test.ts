@@ -89,7 +89,7 @@ describe('IssueFilingHandler', () => {
     expect(deps.workspaceManager.create).toHaveBeenCalledWith('request-001', 'https://example.test/org/repo.git', '/tmp/workspaces');
     expect(run.workspace_path).toBe('/ws/request-001');
     expect(run.branch).toBe('file/request-001');
-    expect(deps.issueFiler.file).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function));
+    expect(deps.issueFiler.file).toHaveBeenCalledWith(request, '/ws/request-001', expect.any(Function), { run_id: 'run-001', request_id: 'request-001' });
     expect(deps.workspaceManager.destroy).toHaveBeenCalledWith('/ws/request-001');
     expect(deps.postMessage).toHaveBeenCalledWith(TEST_CONVERSATION, 'Filed 1 new issue: #10 New issue');
     expect(deps.logger.info).toHaveBeenCalledWith(

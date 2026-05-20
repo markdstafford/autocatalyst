@@ -18,5 +18,6 @@ export interface IssueFiler {
     request: Request,
     workspace_path: string,
     onProgress?: (message: string) => Promise<void>,
+    telemetry?: { run_id?: string; request_id?: string },
   ): Promise<FilingResult>;
 }

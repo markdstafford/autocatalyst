@@ -22,6 +22,10 @@ src/                      ← source code (not yet created)
 2. **Authority split** (ADR-002): `context-human/` = humans decide. `context-agent/` = agents decide. The split is for human legibility — agents read both.
 3. **Spec is canonical** (ADR-003): specs are structured Markdown with YAML frontmatter, committed to `context-human/specs/`. The spec is a living document updated alongside implementation.
 
+## Telemetry
+
+All implementation work that adds new async operations, external calls, decision points, or control-flow changes MUST add structured telemetry following `context-agent/standards/logging.md`. VictoriaLogs is the diagnostic backend; logs go to stderr via pino. Distributed tracing (VictoriaTraces) is not in scope.
+
 ## Working in this repo
 
 - Read `context-agent/standards/` before writing code

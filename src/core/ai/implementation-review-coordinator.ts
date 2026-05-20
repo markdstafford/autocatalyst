@@ -3,6 +3,7 @@ import { readFile as _readFile } from 'node:fs/promises';
 import { mkdir } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import type pino from 'pino';
 import type {
   AgentRunner,
@@ -38,7 +39,7 @@ export interface ImplementationReviewCoordinatorDeps {
   routingPolicy: AgentRoutingPolicy;
   policy: ImplementationReviewPolicy;
   branchGuard?: BranchGuard;
-  logger: Pick<pino.Logger, 'info' | 'warn' | 'error'>;
+  logger: Pick<pino.Logger, 'info' | 'warn' | 'debug' | 'error'>;
   readFile?: ReadFileFn;
 }
 
@@ -107,6 +108,22 @@ export class ImplementationReviewCoordinator {
       await mkdir(dirname(reviewResultPath), { recursive: true });
     } catch { /* ignore */ }
 
+    let round = 0;
+    round++;
+    const roundStart = performance.now();
+    this.deps.logger.info(
+      {
+        event: 'implementation.review.round_started',
+        phase,
+        round,
+        run_id: run.id,
+        review_profile: reviewProfile.id,
+      },
+      'Review round started',
+    );
+
+    let reviewResultContent: string;
+    let reviewResult: ReturnType<typeof parseImplementationReviewResult>;
     try {
       await drainAgentRunner(
         this.deps.runner.run({
@@ -114,26 +131,72 @@ export class ImplementationReviewCoordinator {
           profile: reviewProfile,
           working_directory,
           prompt,
+          telemetry: {
+            run_id: run.id,
+            request_id: run.request_id,
+            phase: `implementation_review_${phase}`,
+            route_task: routeTask,
+            handler: 'ImplementationReviewCoordinator',
+          },
         }),
         onProgress,
         this.deps.logger,
         `implementation_review_${phase}`,
+        { run_id: run.id, request_id: run.request_id },
       );
+
+      reviewResultContent = await this.readFileFn(reviewResultPath, 'utf-8');
+      reviewResult = parseImplementationReviewResult(reviewResultContent, reviewResultPath);
     } catch (err) {
+      this.deps.logger.error(
+        {
+          event: 'implementation.review.round_failed',
+          phase,
+          round,
+          run_id: run.id,
+          error: String(err),
+          duration_ms: Math.round(performance.now() - roundStart),
+        },
+        'Review round failed',
+      );
       return this.handleReviewFailure(phase, run, implementation_result, implSummary, reviewSummary, String(err));
     }
 
-    let reviewResultContent: string;
-    try {
-      reviewResultContent = await this.readFileFn(reviewResultPath, 'utf-8');
-    } catch (err) {
-      return this.handleReviewFailure(phase, run, implementation_result, implSummary, reviewSummary, `Review result file not found: ${String(err)}`);
-    }
-
-    const reviewResult = parseImplementationReviewResult(reviewResultContent, reviewResultPath);
     if (reviewResult.status === 'failed') {
+      const duration_ms = Math.round(performance.now() - roundStart);
+      this.deps.logger.error(
+        {
+          event: 'implementation.review.round_failed',
+          phase,
+          round,
+          run_id: run.id,
+          reason: 'review_agent_status_failed',
+          duration_ms,
+          error: reviewResult.error,
+        },
+        'Review round failed: review agent reported failure',
+      );
       return this.handleReviewFailure(phase, run, implementation_result, implSummary, reviewSummary, reviewResult.error ?? 'Review model reported failure');
     }
+
+    const duration_ms = Math.round(performance.now() - roundStart);
+    const blockerCount = reviewResult.findings.filter(f => f.severity === 'blocker').length;
+    const warningCount = reviewResult.findings.filter(f => f.severity === 'warning').length;
+    const infoCount = reviewResult.findings.filter(f => f.severity === 'info').length;
+    this.deps.logger.info(
+      {
+        event: 'implementation.review.round_completed',
+        phase,
+        round,
+        run_id: run.id,
+        review_profile: reviewProfile.id,
+        duration_ms,
+        blocker_count: blockerCount,
+        warning_count: warningCount,
+        info_count: infoCount,
+      },
+      'Review round completed',
+    );
 
     this.deps.logger.info(
       { event: 'implementation.review.completed', phase, run_id: run.id, status: reviewResult.status, finding_count: reviewResult.findings.length, requires_human_retest: reviewResult.requires_human_retest ?? false },
@@ -170,6 +233,7 @@ export class ImplementationReviewCoordinator {
         working_directory,
         responsePrompt,
         progressFn,
+        { run_id: run.id },
       );
     } catch (err) {
       return { status: 'failed', error: `Implementer response to review failed: ${String(err)}` };
