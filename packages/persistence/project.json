@@ -11,8 +11,7 @@
       "options": {
         "outputPath": "packages/persistence/dist",
         "main": "packages/persistence/src/index.ts",
-        "tsConfig": "packages/persistence/tsconfig.lib.json",
-        "format": ["esm"]
+        "tsConfig": "packages/persistence/tsconfig.lib.json"
       }
     },
     "lint": {

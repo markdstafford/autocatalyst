@@ -11,8 +11,7 @@
       "options": {
         "outputPath": "packages/api-contract/dist",
         "main": "packages/api-contract/src/index.ts",
-        "tsConfig": "packages/api-contract/tsconfig.lib.json",
-        "format": ["esm"]
+        "tsConfig": "packages/api-contract/tsconfig.lib.json"
       }
     },
     "lint": {

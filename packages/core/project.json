@@ -11,8 +11,7 @@
       "options": {
         "outputPath": "packages/core/dist",
         "main": "packages/core/src/index.ts",
-        "tsConfig": "packages/core/tsconfig.lib.json",
-        "format": ["esm"]
+        "tsConfig": "packages/core/tsconfig.lib.json"
       }
     },
     "lint": {
