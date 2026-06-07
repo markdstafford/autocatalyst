@@ -1,4 +1,5 @@
 import js from '@eslint/js';
+import * as jsoncParser from 'jsonc-eslint-parser';
 import nxPlugin from '@nx/eslint-plugin';
 import tseslint from 'typescript-eslint';
 
@@ -53,17 +54,34 @@ export default [
         {
           patterns: [
             {
+              // alias form - catches @autocatalyst/execution/src/...
               group: [
                 '@autocatalyst/execution/src/*',
-                '@autocatalyst/execution/src/**',
-                '../execution/src/*',
-                '../execution/src/**',
-                '../../execution/src/*',
-                '../../execution/src/**'
+                '@autocatalyst/execution/src/**'
               ],
+              message: executionInternalImportMessage
+            },
+            {
+              // relative form - catches any depth of ../...execution/src/...
+              regex: '(\\.\\./)+.*execution/src',
               message: executionInternalImportMessage
             }
           ]
+        }
+      ]
+    }
+  },
+  {
+    files: ['**/project.json', '**/package.json'],
+    languageOptions: {
+      parser: jsoncParser
+    },
+    plugins: { '@nx': nxPlugin },
+    rules: {
+      '@nx/dependency-checks': [
+        'error',
+        {
+          ignoredFiles: ['{projectRoot}/vite.config.ts', '{projectRoot}/vitest.config.ts']
         }
       ]
     }
