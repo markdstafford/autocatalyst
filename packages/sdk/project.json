@@ -1,0 +1,36 @@
+{
+  "name": "sdk",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/sdk/src",
+  "projectType": "library",
+  "tags": ["type:lib", "scope:sdk"],
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "packages/sdk/dist",
+        "main": "packages/sdk/src/index.ts",
+        "tsConfig": "packages/sdk/tsconfig.lib.json"
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "outputs": ["{options.outputFile}"],
+      "options": {
+        "lintFilePatterns": [
+          "packages/sdk/src/**/*.ts",
+          "packages/sdk/project.json",
+          "packages/sdk/package.json"
+        ]
+      }
+    },
+    "test": {
+      "executor": "@nx/vite:test",
+      "outputs": ["{workspaceRoot}/coverage/packages/sdk"],
+      "options": {
+        "config": "packages/sdk/vite.config.ts"
+      }
+    }
+  }
+}

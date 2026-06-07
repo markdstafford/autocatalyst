@@ -1,0 +1,36 @@
+{
+  "name": "execution",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/execution/src",
+  "projectType": "library",
+  "tags": ["type:lib", "scope:execution", "plane:execution"],
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "packages/execution/dist",
+        "main": "packages/execution/src/index.ts",
+        "tsConfig": "packages/execution/tsconfig.lib.json"
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "outputs": ["{options.outputFile}"],
+      "options": {
+        "lintFilePatterns": [
+          "packages/execution/src/**/*.ts",
+          "packages/execution/project.json",
+          "packages/execution/package.json"
+        ]
+      }
+    },
+    "test": {
+      "executor": "@nx/vite:test",
+      "outputs": ["{workspaceRoot}/coverage/packages/execution"],
+      "options": {
+        "config": "packages/execution/vite.config.ts"
+      }
+    }
+  }
+}

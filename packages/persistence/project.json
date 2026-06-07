@@ -1,0 +1,36 @@
+{
+  "name": "persistence",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/persistence/src",
+  "projectType": "library",
+  "tags": ["type:lib", "scope:persistence", "plane:control"],
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "packages/persistence/dist",
+        "main": "packages/persistence/src/index.ts",
+        "tsConfig": "packages/persistence/tsconfig.lib.json"
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "outputs": ["{options.outputFile}"],
+      "options": {
+        "lintFilePatterns": [
+          "packages/persistence/src/**/*.ts",
+          "packages/persistence/project.json",
+          "packages/persistence/package.json"
+        ]
+      }
+    },
+    "test": {
+      "executor": "@nx/vite:test",
+      "outputs": ["{workspaceRoot}/coverage/packages/persistence"],
+      "options": {
+        "config": "packages/persistence/vite.config.ts"
+      }
+    }
+  }
+}

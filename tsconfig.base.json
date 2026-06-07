@@ -1,0 +1,34 @@
+{
+  "compileOnSave": false,
+  "compilerOptions": {
+    "rootDir": ".",
+    "sourceMap": true,
+    "declaration": true,
+    "declarationMap": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "baseUrl": ".",
+    "paths": {
+      "@autocatalyst/api-contract": ["packages/api-contract/src/index.ts"],
+      "@autocatalyst/core": ["packages/core/src/index.ts"],
+      "@autocatalyst/execution": ["packages/execution/src/index.ts"],
+      "@autocatalyst/persistence": ["packages/persistence/src/index.ts"],
+      "@autocatalyst/sdk": ["packages/sdk/src/index.ts"]
+    }
+  },
+  "exclude": ["node_modules", "dist", "coverage"]
+}
