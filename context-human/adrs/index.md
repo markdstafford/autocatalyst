@@ -30,3 +30,5 @@ which changes over time.
 | [ADR-017 — Single Artifact model](adr-017-single-artifact-model.md) | One `Artifact` model, defined by visibility outside Autocatalyst on approval. |
 | [ADR-018 — Feedback first-class](adr-018-feedback-first-class.md) | `Feedback` is a first-class, run-parented, run-gating entity with a per-item thread. |
 | [ADR-019 — Persistence layout](adr-019-persistence-layout.md) | Normalized tables for entities, embedded JSON for value objects. |
+| [ADR-020 — Workspace isolation primitive](adr-020-workspace-isolation-primitive.md) | A per-run workspace is a git worktree of the host repository on a run-owned branch; a clone from `repo_url` is reserved for non-co-located execution workers. |
+| [ADR-021 — Workspace lifecycle and reclamation](adr-021-workspace-lifecycle-reclamation.md) | Workspace created and torn down as a unit keyed to the `Run`; retention per terminal state across worktree/branch axes; a missing workspace re-materialized, never dropped; a scheduled workspace garbage collection. |
