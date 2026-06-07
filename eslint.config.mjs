@@ -23,6 +23,10 @@ export default [
       '@nx': nxPlugin
     },
     rules: {
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }
+      ],
       '@nx/enforce-module-boundaries': [
         'error',
         {
