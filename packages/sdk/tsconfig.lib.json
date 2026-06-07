@@ -1,0 +1,13 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "../../dist/out-tsc/packages/sdk",
+    "rootDir": "src",
+    "types": ["node"],
+    "paths": {
+      "@autocatalyst/api-contract": ["dist/packages/api-contract/src/index.d.ts"]
+    }
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/**/*.spec.ts"]
+}

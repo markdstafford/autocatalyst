@@ -49,6 +49,24 @@ importers:
         specifier: ^3.2.2
         version: 3.2.6(@types/node@22.19.20)(yaml@2.9.0)
 
+  packages/api-contract: {}
+
+  packages/core:
+    dependencies:
+      '@autocatalyst/execution':
+        specifier: workspace:*
+        version: link:../execution
+
+  packages/execution: {}
+
+  packages/persistence: {}
+
+  packages/sdk:
+    dependencies:
+      '@autocatalyst/api-contract':
+        specifier: workspace:*
+        version: link:../api-contract
+
 packages:
 
   '@babel/code-frame@7.29.7':

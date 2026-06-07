@@ -1,0 +1,35 @@
+{
+  "name": "api-contract",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/api-contract/src",
+  "projectType": "library",
+  "tags": ["type:lib", "scope:contract"],
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "dist/packages/api-contract",
+        "main": "packages/api-contract/src/index.ts",
+        "tsConfig": "packages/api-contract/tsconfig.lib.json"
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "outputs": ["{options.outputFile}"],
+      "options": {
+        "lintFilePatterns": [
+          "packages/api-contract/src/**/*.ts",
+          "packages/api-contract/project.json"
+        ]
+      }
+    },
+    "test": {
+      "executor": "@nx/vite:test",
+      "outputs": ["{workspaceRoot}/coverage/packages/api-contract"],
+      "options": {
+        "config": "packages/api-contract/vite.config.ts"
+      }
+    }
+  }
+}
