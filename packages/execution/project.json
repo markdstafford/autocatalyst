@@ -9,9 +9,10 @@
       "executor": "@nx/js:tsc",
       "outputs": ["{options.outputPath}"],
       "options": {
-        "outputPath": "dist/packages/execution",
+        "outputPath": "packages/execution/dist",
         "main": "packages/execution/src/index.ts",
-        "tsConfig": "packages/execution/tsconfig.lib.json"
+        "tsConfig": "packages/execution/tsconfig.lib.json",
+        "format": ["esm"]
       }
     },
     "lint": {

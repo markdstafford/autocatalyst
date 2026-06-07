@@ -9,9 +9,10 @@
       "executor": "@nx/js:tsc",
       "outputs": ["{options.outputPath}"],
       "options": {
-        "outputPath": "dist/packages/persistence",
+        "outputPath": "packages/persistence/dist",
         "main": "packages/persistence/src/index.ts",
-        "tsConfig": "packages/persistence/tsconfig.lib.json"
+        "tsConfig": "packages/persistence/tsconfig.lib.json",
+        "format": ["esm"]
       }
     },
     "lint": {

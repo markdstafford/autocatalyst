@@ -9,9 +9,10 @@
       "executor": "@nx/js:tsc",
       "outputs": ["{options.outputPath}"],
       "options": {
-        "outputPath": "dist/packages/api-contract",
+        "outputPath": "packages/api-contract/dist",
         "main": "packages/api-contract/src/index.ts",
-        "tsConfig": "packages/api-contract/tsconfig.lib.json"
+        "tsConfig": "packages/api-contract/tsconfig.lib.json",
+        "format": ["esm"]
       }
     },
     "lint": {

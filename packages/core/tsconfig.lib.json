@@ -1,11 +1,11 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "outDir": "../../dist/out-tsc/packages/core",
+    "outDir": "./dist",
     "rootDir": "src",
     "types": ["node"],
     "paths": {
-      "@autocatalyst/execution": ["dist/packages/execution/src/index.d.ts"]
+      "@autocatalyst/execution": ["packages/execution/dist/src/index.d.ts"]
     }
   },
   "include": ["src/**/*.ts"],

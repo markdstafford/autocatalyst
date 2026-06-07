@@ -1,7 +1,7 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "outDir": "../../dist/out-tsc/packages/persistence",
+    "outDir": "./dist",
     "rootDir": "src",
     "types": ["node"]
   },
