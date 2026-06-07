@@ -20,7 +20,8 @@
       "options": {
         "lintFilePatterns": [
           "packages/api-contract/src/**/*.ts",
-          "packages/api-contract/project.json"
+          "packages/api-contract/project.json",
+          "packages/api-contract/package.json"
         ]
       }
     },

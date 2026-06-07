@@ -20,7 +20,8 @@
       "options": {
         "lintFilePatterns": [
           "packages/execution/src/**/*.ts",
-          "packages/execution/project.json"
+          "packages/execution/project.json",
+          "packages/execution/package.json"
         ]
       }
     },

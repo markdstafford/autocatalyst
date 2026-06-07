@@ -20,7 +20,8 @@
       "options": {
         "lintFilePatterns": [
           "packages/persistence/src/**/*.ts",
-          "packages/persistence/project.json"
+          "packages/persistence/project.json",
+          "packages/persistence/package.json"
         ]
       }
     },
