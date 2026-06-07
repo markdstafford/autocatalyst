@@ -23,3 +23,10 @@ which changes over time.
 | [ADR-010 — Agent execution context](adr-010-agent-execution-context.md) | A declarative per-run Execution Context; least-privilege hardening sequenced. |
 | [ADR-011 — Extension registry role](adr-011-extension-registry-role.md) | The extension registry is a descriptive catalog, not a gate; a configured provider is valid when its adapter id resolves to code, the registry entry advisory. |
 | [ADR-012 — LLM output tolerance](adr-012-llm-output-tolerance.md) | Treat model output as a soft contract via a tolerance pipeline. |
+| [ADR-013 — Core domain vocabulary](adr-013-core-domain-vocabulary.md) | `Conversation`, `Topic`, `Message`, `Run`, `Project`. |
+| [ADR-014 — Work hierarchy](adr-014-work-hierarchy.md) | The `Conversation -> Topic -> Run` hierarchy; one active run per topic as a durable database invariant. |
+| [ADR-015 — Run lifecycle](adr-015-run-lifecycle.md) | A workflow-driven step machine; phases `spec`/`implementation`/`docs`/`pr`; intrinsic `waiting_on`; cost per session (rolled up through `(step, role)`); a per-state recovery policy owned by `run`. |
+| [ADR-016 — Intent model](adr-016-intent-model.md) | Window-intent is the workflow; `MessageIntent` is transient; no durable `WorkKind`. |
+| [ADR-017 — Single Artifact model](adr-017-single-artifact-model.md) | One `Artifact` model, defined by visibility outside Autocatalyst on approval. |
+| [ADR-018 — Feedback first-class](adr-018-feedback-first-class.md) | `Feedback` is a first-class, run-parented, run-gating entity with a per-item thread. |
+| [ADR-019 — Persistence layout](adr-019-persistence-layout.md) | Normalized tables for entities, embedded JSON for value objects. |
