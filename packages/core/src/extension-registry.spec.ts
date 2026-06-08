@@ -41,6 +41,26 @@ describe('extension registry catalog', () => {
       'Duplicate extension registry entry for providerKind "model_runner" and adapterId "duplicate".'
     );
   });
+
+  it('does not collide when providerKind contains the delimiter character', () => {
+    const entryAB_C = {
+      providerKind: 'a:b',
+      adapterId: 'c',
+      displayName: 'Entry AB+C',
+      capabilities: []
+    };
+    const entryA_BC = {
+      providerKind: 'a',
+      adapterId: 'b:c',
+      displayName: 'Entry A+BC',
+      capabilities: []
+    };
+    const catalog = createExtensionRegistryCatalog([entryAB_C, entryA_BC]);
+
+    expect(catalog.findProvider('a:b', 'c')).toEqual(entryAB_C);
+    expect(catalog.findProvider('a', 'b:c')).toEqual(entryA_BC);
+    expect(catalog.findProvider('a:b', 'c')).not.toEqual(catalog.findProvider('a', 'b:c'));
+  });
 });
 
 function makeProviderRecord(overrides: Partial<ConfigurationRecord> = {}): ConfigurationRecord {

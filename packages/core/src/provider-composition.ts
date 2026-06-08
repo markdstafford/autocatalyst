@@ -46,7 +46,7 @@ export interface ComposeConfiguredProvidersInput {
 }
 
 export function buildProviderAdapterKey(providerKind: string, adapterId: string): string {
-  return `${providerKind}:${adapterId}`;
+  return JSON.stringify([providerKind, adapterId]);
 }
 
 export const emptyProviderAdapterMap: ProviderAdapterMap = new Map<string, ProviderAdapterFactory>();

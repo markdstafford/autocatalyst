@@ -86,5 +86,5 @@ export function validateProviderConfigurationAgainstRegistry(
 }
 
 function buildRegistryKey(providerKind: string, adapterId: string): string {
-  return `${providerKind}:${adapterId}`;
+  return JSON.stringify([providerKind, adapterId]);
 }

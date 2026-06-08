@@ -24,7 +24,7 @@ describe('core barrel', () => {
   });
 
   it('exports provider composition behavior', () => {
-    expect(buildProviderAdapterKey('model_runner', 'fake')).toBe('model_runner:fake');
+    expect(buildProviderAdapterKey('model_runner', 'fake')).toBe(JSON.stringify(['model_runner', 'fake']));
     expect(emptyProviderAdapterMap.size).toBe(0);
     expect(composeConfiguredProviders).toBeTypeOf('function');
   });

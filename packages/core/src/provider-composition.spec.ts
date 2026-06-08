@@ -200,6 +200,28 @@ describe('composeConfiguredProviders', () => {
     expect(result.unresolved.map((diagnostic) => diagnostic.configurationRecordId)).toEqual(['cfg_third']);
   });
 
+  it('does not collide when providerKind or adapterId contains the delimiter character', async () => {
+    const adapterForAB_C = { kind: 'adapter-ab-c' };
+    const adapterForA_BC = { kind: 'adapter-a-bc' };
+    const adapterMap: ProviderAdapterMap = new Map([
+      [buildProviderAdapterKey('a:b', 'c'), () => adapterForAB_C],
+      [buildProviderAdapterKey('a', 'b:c'), () => adapterForA_BC]
+    ]);
+    const result = await composeConfiguredProviders({
+      configurationRecords: [
+        makeProviderRecord({ id: 'cfg_ab_c', providerKind: 'a:b', adapterId: 'c' }),
+        makeProviderRecord({ id: 'cfg_a_bc', providerKind: 'a', adapterId: 'b:c' })
+      ],
+      registry: createExtensionRegistryCatalog(),
+      providerAdapters: adapterMap
+    });
+
+    expect(result.unresolved).toEqual([]);
+    expect(result.composed).toHaveLength(2);
+    expect(result.composed[0]).toMatchObject({ configurationRecordId: 'cfg_ab_c', providerKind: 'a:b', adapterId: 'c', adapter: adapterForAB_C });
+    expect(result.composed[1]).toMatchObject({ configurationRecordId: 'cfg_a_bc', providerKind: 'a', adapterId: 'b:c', adapter: adapterForA_BC });
+  });
+
   it('constructs binding identity from the configuration record instead of adapter output', async () => {
     const result = await composeConfiguredProviders({
       configurationRecords: [makeProviderRecord()],
