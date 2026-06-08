@@ -6,7 +6,11 @@ export {
 export type { DependencyStatus, HealthResponse } from './health.js';
 
 export {
+  activeRunConflictErrorCode,
+  conflictErrorCode,
   errorResponseSchema,
+  forbiddenErrorCode,
+  intakeRoutingErrorCode,
   notFoundErrorCode,
   secretStoreLockedErrorCode,
   unauthorizedErrorCode,
@@ -77,6 +81,7 @@ export type {
 export * from './domain-value-objects.js';
 export * from './project.js';
 export * from './conversation.js';
+export * from './conversation-ingress.js';
 export * from './topic.js';
 export * from './message.js';
 export * from './run.js';
@@ -85,5 +90,6 @@ export * from './feedback.js';
 export * from './publication.js';
 export * from './pull-request.js';
 export * from './run-step.js';
+export * from './run-events.js';
 export * from './session.js';
 export * from './test-result.js';
