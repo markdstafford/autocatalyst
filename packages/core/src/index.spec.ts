@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildProviderAdapterKey,
+  composeConfiguredProviders,
   createExtensionRegistryCatalog,
   createProbeResource,
   defaultExtensionRegistryCatalog,
+  emptyProviderAdapterMap,
   getHealth,
   validateProviderConfigurationAgainstRegistry
 } from './index.js';
@@ -18,5 +21,11 @@ describe('core barrel', () => {
     expect(createExtensionRegistryCatalog).toBeTypeOf('function');
     expect(defaultExtensionRegistryCatalog.list()).toEqual([]);
     expect(validateProviderConfigurationAgainstRegistry).toBeTypeOf('function');
+  });
+
+  it('exports provider composition behavior', () => {
+    expect(buildProviderAdapterKey('model_runner', 'fake')).toBe('model_runner:fake');
+    expect(emptyProviderAdapterMap.size).toBe(0);
+    expect(composeConfiguredProviders).toBeTypeOf('function');
   });
 });

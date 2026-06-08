@@ -31,3 +31,19 @@ export type {
   ProviderConfigurationWarningCode,
   ProviderConfigurationWarning
 } from './extension-registry.js';
+
+export {
+  buildProviderAdapterKey,
+  emptyProviderAdapterMap,
+  composeConfiguredProviders
+} from './provider-composition.js';
+export type {
+  ProviderAdapterFactoryInput,
+  ProviderPortBinding,
+  ProviderAdapterFactory,
+  ProviderAdapterMap,
+  ProviderCompositionUnresolvedReason,
+  ProviderCompositionUnresolved,
+  ProviderCompositionResult,
+  ComposeConfiguredProvidersInput
+} from './provider-composition.js';
