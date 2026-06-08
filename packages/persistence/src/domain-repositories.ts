@@ -546,6 +546,18 @@ export class DrizzleRunRepository implements RunRepository {
     return row === undefined ? null : this.#rowToRun(row);
   }
 
+  async findActiveByTopic(topicId: string): Promise<Run | null> {
+    const rows = this.#database.drizzle
+      .select()
+      .from(runs)
+      .where(and(eq(runs.topicId, topicId), eq(runs.terminal, false)))
+      .orderBy(asc(runs.createdAt), asc(runs.id))
+      .limit(1)
+      .all();
+    const row = rows[0];
+    return row === undefined ? null : this.#rowToRun(row);
+  }
+
   async listByTopic(topicId: string): Promise<readonly Run[]> {
     const rows = this.#database.drizzle
       .select()

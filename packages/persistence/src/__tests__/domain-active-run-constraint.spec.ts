@@ -9,6 +9,39 @@ import {
 
 const owner = { id: 'user_1', kind: 'human', tenantId: 'tenant_1', displayName: 'Ada' } as const;
 
+async function setupProjectConvTopic() {
+  const database = createSqliteDatabase({ path: ':memory:' });
+  await migrateSqliteDatabase(database);
+  const repos = createDrizzleDomainRepositories(database);
+
+  const project = await repos.projects.create({
+    owner,
+    tenant: 'tenant_1',
+    displayName: 'P',
+    repoUrl: 'https://example.test',
+    hostRepository: { provider: 'github', owner: 'test', name: 'repo' },
+    workspaceRootOverride: null,
+    issueTrackerSetting: null,
+    codeHostSetting: null,
+    credentialRefs: []
+  });
+  const conv = await repos.conversations.create({
+    projectId: project.id,
+    owner,
+    tenant: 'tenant_1',
+    identity: 'conv-c',
+    activeTopicId: null
+  });
+  const topic = await repos.topics.create({
+    conversationId: conv.id,
+    owner,
+    tenant: 'tenant_1',
+    title: 'T',
+    kind: 'main'
+  });
+  return { database, repos, topic };
+}
+
 describe('one-active-run-per-topic constraint', () => {
   it('rejects a second non-terminal run for the same topic', async () => {
     await withTempDatabasePath(async (databasePath) => {
@@ -179,5 +212,54 @@ describe('one-active-run-per-topic constraint', () => {
 
       database.close();
     });
+  });
+});
+
+describe('findActiveByTopic', () => {
+  it('returns the active run for a topic', async () => {
+    const { database, repos, topic } = await setupProjectConvTopic();
+
+    const run = await repos.runs.create({
+      topicId: topic.id,
+      owner,
+      tenant: 'tenant_1',
+      workKind: 'feature',
+      currentStep: 'spec.author',
+      terminal: false
+    });
+
+    const found = await repos.runs.findActiveByTopic(topic.id);
+    expect(found).not.toBeNull();
+    expect(found?.id).toBe(run.id);
+    expect(found?.terminal).toBe(false);
+
+    database.close();
+  });
+
+  it('returns null when no run exists for a topic', async () => {
+    const { database, repos, topic } = await setupProjectConvTopic();
+
+    const found = await repos.runs.findActiveByTopic(topic.id);
+    expect(found).toBeNull();
+
+    database.close();
+  });
+
+  it('returns null when only a terminal run exists for the topic', async () => {
+    const { database, repos, topic } = await setupProjectConvTopic();
+
+    await repos.runs.create({
+      topicId: topic.id,
+      owner,
+      tenant: 'tenant_1',
+      workKind: 'feature',
+      currentStep: 'done',
+      terminal: true
+    });
+
+    const found = await repos.runs.findActiveByTopic(topic.id);
+    expect(found).toBeNull();
+
+    database.close();
   });
 });
