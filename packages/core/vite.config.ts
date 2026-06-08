@@ -1,7 +1,13 @@
+import { resolve } from 'node:path';
 import { defineConfig } from 'vite';
 
 export default defineConfig({
   cacheDir: '../../node_modules/.vite/packages/core',
+  resolve: {
+    alias: {
+      '@autocatalyst/api-contract': resolve(__dirname, '../api-contract/src/index.ts')
+    }
+  },
   test: {
     environment: 'node',
     globals: false,

@@ -1,19 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { createCoreScaffold } from './index.js';
-import type { Runner } from '@autocatalyst/execution';
+import { createProbeResource, getHealth } from './index.js';
 
-describe('core scaffold', () => {
-  it('depends on the execution public Runner boundary only', () => {
-    const runner: Runner = {
-      async run(input) {
-        return { runId: input.runId, status: 'accepted' };
-      }
-    };
-
-    expect(createCoreScaffold(runner)).toEqual({
-      packageName: '@autocatalyst/core',
-      acceptsRunnerBoundary: true
-    });
+describe('core barrel', () => {
+  it('exports core service behavior', () => {
+    expect(getHealth).toBeTypeOf('function');
+    expect(createProbeResource).toBeTypeOf('function');
   });
 });

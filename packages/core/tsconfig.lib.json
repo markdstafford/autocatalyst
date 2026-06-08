@@ -5,6 +5,7 @@
     "rootDir": "src",
     "types": ["node"],
     "paths": {
+      "@autocatalyst/api-contract": ["packages/api-contract/dist/index.d.ts"],
       "@autocatalyst/execution": ["packages/execution/dist/src/index.d.ts"]
     }
   },

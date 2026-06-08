@@ -5,7 +5,7 @@
     "rootDir": "src",
     "types": ["node"],
     "paths": {
-      "@autocatalyst/api-contract": ["packages/api-contract/dist/src/index.d.ts"]
+      "@autocatalyst/api-contract": ["packages/api-contract/dist/index.d.ts"]
     }
   },
   "include": ["src/**/*.ts"],

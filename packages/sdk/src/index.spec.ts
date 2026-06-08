@@ -1,12 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { createSdkScaffold } from './index.js';
+import { createControlPlaneClient } from './index.js';
 
-describe('sdk scaffold', () => {
-  it('uses the shared api-contract type', () => {
-    expect(createSdkScaffold()).toEqual({
-      packageName: '@autocatalyst/sdk',
-      exampleHealthResponse: { status: 'ok' }
-    });
+describe('sdk barrel', () => {
+  it('exports the control-plane client factory', () => {
+    expect(createControlPlaneClient).toBeTypeOf('function');
   });
 });

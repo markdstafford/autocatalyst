@@ -1,0 +1,43 @@
+{
+  "name": "control-plane",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "apps/control-plane/src",
+  "projectType": "application",
+  "tags": ["type:app", "scope:control-plane", "plane:control"],
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "apps/control-plane/dist",
+        "main": "apps/control-plane/src/main.ts",
+        "tsConfig": "apps/control-plane/tsconfig.app.json"
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "outputs": ["{options.outputFile}"],
+      "options": {
+        "lintFilePatterns": [
+          "apps/control-plane/src/**/*.ts",
+          "apps/control-plane/project.json",
+          "apps/control-plane/package.json"
+        ]
+      }
+    },
+    "test": {
+      "executor": "@nx/vite:test",
+      "outputs": ["{workspaceRoot}/coverage/apps/control-plane"],
+      "options": {
+        "config": "apps/control-plane/vite.config.ts"
+      }
+    },
+    "serve": {
+      "executor": "@nx/js:node",
+      "dependsOn": ["build"],
+      "options": {
+        "buildTarget": "control-plane:build"
+      }
+    }
+  }
+}

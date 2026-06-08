@@ -7,9 +7,10 @@
   "targets": {
     "build": {
       "executor": "@nx/js:tsc",
-      "outputs": ["{options.outputPath}"],
+      "outputs": ["{options.outputPath}", "{options.outputPath}/index.d.ts"],
       "options": {
         "outputPath": "packages/sdk/dist",
+        "rootDir": "packages/sdk/src",
         "main": "packages/sdk/src/index.ts",
         "tsConfig": "packages/sdk/tsconfig.lib.json"
       }

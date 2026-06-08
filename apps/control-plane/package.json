@@ -1,0 +1,11 @@
+{
+  "name": "@autocatalyst/control-plane",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@autocatalyst/core": "workspace:*",
+    "@autocatalyst/persistence": "workspace:*",
+    "fastify": "^5.8.5"
+  }
+}
