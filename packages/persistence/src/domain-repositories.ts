@@ -154,8 +154,10 @@ function requireParent(rows: unknown[], parentId: string, parentName: string): v
 // Shared transaction helper
 // ---------------------------------------------------------------------------
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function buildRunStepInsideTransaction(tx: any, runId: string, input: LifecycleRunStepInput): RunStep {
+type DrizzleDb = ReturnType<typeof asInternalSqliteDatabase>['drizzle'];
+type DrizzleTx = Parameters<Parameters<DrizzleDb['transaction']>[0]>[0];
+
+function buildRunStepInsideTransaction(tx: DrizzleTx, runId: string, input: LifecycleRunStepInput): RunStep {
   const existingForRun: number = tx.select({ value: count() }).from(runSteps).where(eq(runSteps.runId, runId)).all()[0]?.value ?? 0;
   const existingForStep: number = tx.select({ value: count() }).from(runSteps).where(and(eq(runSteps.runId, runId), eq(runSteps.step, input.step))).all()[0]?.value ?? 0;
   const occurrence = { index: existingForRun, attempt: existingForStep + 1 };
