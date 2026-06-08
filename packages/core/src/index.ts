@@ -18,3 +18,32 @@ export type { ConfigurationRecordRepository, CreateConfigurationRecordInput, Upd
 
 export { createSecret, SecretStoreLockedError } from './secret.js';
 export type { SecretStore, CreateSecretInput } from './secret.js';
+
+export {
+  InMemoryExtensionRegistryCatalog,
+  createExtensionRegistryCatalog,
+  defaultExtensionRegistryCatalog,
+  validateProviderConfigurationAgainstRegistry
+} from './extension-registry.js';
+export type {
+  ExtensionRegistryEntry,
+  ExtensionRegistryCatalog,
+  ProviderConfigurationWarningCode,
+  ProviderConfigurationWarning
+} from './extension-registry.js';
+
+export {
+  buildProviderAdapterKey,
+  emptyProviderAdapterMap,
+  composeConfiguredProviders
+} from './provider-composition.js';
+export type {
+  ProviderAdapterFactoryInput,
+  ProviderPortBinding,
+  ProviderAdapterFactory,
+  ProviderAdapterMap,
+  ProviderCompositionUnresolvedReason,
+  ProviderCompositionUnresolved,
+  ProviderCompositionResult,
+  ComposeConfiguredProvidersInput
+} from './provider-composition.js';
