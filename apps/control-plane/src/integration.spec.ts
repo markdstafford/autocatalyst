@@ -18,6 +18,7 @@ import {
 } from '@autocatalyst/api-contract';
 import { hardcodedDevelopmentPrincipal } from '@autocatalyst/core';
 import type { PolicyDecisionInput } from '@autocatalyst/core';
+import { asInternalSqliteDatabase, createSqliteDatabase } from '@autocatalyst/persistence';
 
 import { createControlPlaneServer, startControlPlaneServer } from './server.js';
 
@@ -318,7 +319,6 @@ describe('secret handle separation integration', () => {
       await app.close();
 
       // Verify secret value is NOT stored plaintext in the database
-      const { createSqliteDatabase, asInternalSqliteDatabase } = await import('@autocatalyst/persistence');
       const db = createSqliteDatabase({ path: databasePath });
       const internal = asInternalSqliteDatabase(db);
 

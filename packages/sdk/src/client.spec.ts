@@ -13,7 +13,7 @@ import { ControlPlaneClientError, createControlPlaneClient } from './client.js';
 
 describe('bearer token auth', () => {
   it('sends authorization header on protected calls when bearerToken is configured', async () => {
-    const mockFetch = vi.fn(async (url: string, init?: RequestInit) => {
+    const mockFetch = vi.fn(async (_url: string, _init?: RequestInit) => {
       return new Response(JSON.stringify({ id: 'probe_1', value: 'x', createdAt: '2026-01-01T00:00:00.000Z' }), {
         status: 201,
         headers: { 'content-type': 'application/json' }

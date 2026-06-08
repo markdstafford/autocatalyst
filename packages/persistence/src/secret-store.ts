@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, randomBytes as nodeRandomBytes, scrypt } from 'node:crypto';
+import type { ScryptOptions } from 'node:crypto';
 import { promisify } from 'node:util';
 
 import { eq } from 'drizzle-orm';
@@ -10,7 +11,12 @@ import type { CreateSecretResponse } from '@autocatalyst/api-contract';
 import { secretStoreMetadata, secrets } from './schema.js';
 import { asInternalSqliteDatabase, type SqliteDatabase } from './sqlite.js';
 
-const scryptAsync = promisify(scrypt);
+const scryptAsync = promisify(scrypt) as (
+  password: string | Buffer,
+  salt: string | Buffer,
+  keylen: number,
+  options: ScryptOptions
+) => Promise<Buffer>;
 
 const ENCRYPTION_VERSION = 'v1';
 const METADATA_ID = 'default';
