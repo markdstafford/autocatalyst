@@ -51,4 +51,22 @@ describe('nextWorkflowStep', () => {
     expect(nextWorkflowStep(runWorkflows.feature, 'intake', 'revise')).toMatchObject({ ok: false, code: 'missing_edge' });
     expect(nextWorkflowStep(runWorkflows.question, 'question.answer', 'needs_input')).toMatchObject({ ok: false, code: 'missing_pause_target' });
   });
+
+  it('returns missing_edge for needs_input when a phase-local pause target exists but the step has no configured edge', () => {
+    // spec.human_review has phase 'spec'; feature workflow owns spec.awaiting_input → missing_edge, not missing_pause_target
+    expect(nextWorkflowStep(runWorkflows.feature, 'spec.human_review', 'needs_input')).toMatchObject({ ok: false, code: 'missing_edge' });
+    // implementation.plan has phase 'implementation'; feature workflow owns implementation.awaiting_input
+    expect(nextWorkflowStep(runWorkflows.feature, 'implementation.plan', 'needs_input')).toMatchObject({ ok: false, code: 'missing_edge' });
+    // bug: implementation.plan also has a phase-local pause target via implementation.awaiting_input
+    expect(nextWorkflowStep(runWorkflows.bug, 'implementation.plan', 'needs_input')).toMatchObject({ ok: false, code: 'missing_edge' });
+    // chore: implementation.plan has a phase-local pause target
+    expect(nextWorkflowStep(runWorkflows.chore, 'implementation.plan', 'needs_input')).toMatchObject({ ok: false, code: 'missing_edge' });
+  });
+
+  it('returns missing_pause_target for needs_input when no phase-local pause target exists', () => {
+    // question.answer has phase null → no phase-local pause target possible
+    expect(nextWorkflowStep(runWorkflows.question, 'question.answer', 'needs_input')).toMatchObject({ ok: false, code: 'missing_pause_target' });
+    // intake has phase null → no phase-local pause target possible
+    expect(nextWorkflowStep(runWorkflows.feature, 'intake', 'needs_input')).toMatchObject({ ok: false, code: 'missing_pause_target' });
+  });
 });

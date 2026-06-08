@@ -1,4 +1,4 @@
-import { getRunStepDefinition, isKnownRunStepId, runStepCatalog, type RunStepId } from './run-step-catalog.js';
+import { getRunStepDefinition, isKnownRunStepId, runStepCatalog, type RunPhase, type RunStepId } from './run-step-catalog.js';
 import { isKnownRunWorkflowId, type RunDirective, type RunWorkflowDefinition, type RunWorkflowId } from './run-workflows.js';
 
 export type TransitionErrorCode =
@@ -18,6 +18,12 @@ const supportedDirectives = new Set<string>(['advance', 'revise', 'needs_input',
 
 function transitionFailure(code: TransitionErrorCode, message: string): TransitionResult {
   return { ok: false, code, message };
+}
+
+function hasPhaseLocalPauseTarget(phase: RunPhase, ownedSteps: ReadonlySet<RunStepId>): boolean {
+  if (phase === null) return false;
+  const pauseId = `${phase}.awaiting_input`;
+  return isKnownRunStepId(pauseId) && ownedSteps.has(pauseId);
 }
 
 function workflowOwnedSteps(workflow: RunWorkflowDefinition): ReadonlySet<RunStepId> {
@@ -70,10 +76,12 @@ export function nextWorkflowStep(workflow: RunWorkflowDefinition, currentStep: s
 
   const nextStep = workflow.transitions[currentStep]?.[directive];
   if (nextStep === undefined) {
-    return transitionFailure(
-      directive === 'needs_input' ? 'missing_pause_target' : 'missing_edge',
-      `Workflow '${workflow.id}' has no '${directive}' edge from '${currentStep}'.`
-    );
+    if (directive === 'needs_input') {
+      const currentPhase = runStepCatalog[currentStep].phase;
+      const code = hasPhaseLocalPauseTarget(currentPhase, ownedSteps) ? 'missing_edge' : 'missing_pause_target';
+      return transitionFailure(code, `Workflow '${workflow.id}' has no '${directive}' edge from '${currentStep}'.`);
+    }
+    return transitionFailure('missing_edge', `Workflow '${workflow.id}' has no '${directive}' edge from '${currentStep}'.`);
   }
   if (!isKnownRunStepId(nextStep)) {
     return transitionFailure('unknown_step', `Transition destination '${nextStep}' is not a known step.`);
