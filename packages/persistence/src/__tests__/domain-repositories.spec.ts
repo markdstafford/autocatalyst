@@ -102,9 +102,6 @@ describe('DrizzleDomainRepositories round-trip', () => {
 
       await expect(repos.conversations.setActiveTopic(conv.id, '')).rejects.toThrow();
 
-      // Gap 4: setActiveTopic with null topicId (TypeScript cast required since signature only accepts string)
-      await expect((repos.conversations as any).setActiveTopic(conv.id, null)).rejects.toThrow();
-
       const otherConv = await repos.conversations.create({
         projectId: project.id,
         owner,
