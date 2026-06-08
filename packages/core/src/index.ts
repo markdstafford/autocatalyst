@@ -47,3 +47,19 @@ export type {
   ProviderCompositionResult,
   ComposeConfiguredProvidersInput
 } from './provider-composition.js';
+
+export type {
+  ArtifactRepository,
+  ConversationRepository,
+  DomainRepositories,
+  FeedbackRepository,
+  MessageRepository,
+  ProjectRepository,
+  PublicationRepository,
+  PullRequestRepository,
+  RunRepository,
+  RunStepRepository,
+  SessionRepository,
+  TestResultRepository,
+  TopicRepository
+} from './domain-repositories.js';
