@@ -10,6 +10,7 @@ import {
   getHealth,
   validateProviderConfigurationAgainstRegistry
 } from './index.js';
+import type { ProjectRepository, RunRepository, PullRequestRepository } from './index.js';
 
 describe('core barrel', () => {
   it('exports core service behavior', () => {
@@ -27,5 +28,14 @@ describe('core barrel', () => {
     expect(buildProviderAdapterKey('model_runner', 'fake')).toBe(JSON.stringify(['model_runner', 'fake']));
     expect(emptyProviderAdapterMap.size).toBe(0);
     expect(composeConfiguredProviders).toBeTypeOf('function');
+  });
+
+  it('exports domain repository interface types for TypeScript consumers', () => {
+    const projectRepository = undefined as unknown as ProjectRepository;
+    const runRepository = undefined as unknown as RunRepository;
+    const pullRequestRepository = undefined as unknown as PullRequestRepository;
+    expect(projectRepository).toBeUndefined();
+    expect(runRepository).toBeUndefined();
+    expect(pullRequestRepository).toBeUndefined();
   });
 });

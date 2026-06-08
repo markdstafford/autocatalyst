@@ -1,0 +1,1134 @@
+import { randomUUID } from 'node:crypto';
+
+import { asc, eq } from 'drizzle-orm';
+import { z } from 'zod';
+
+import type {
+  Artifact,
+  Conversation,
+  CreateArtifactInput,
+  CreateConversationInput,
+  CreateFeedbackInput,
+  CreateMessageInput,
+  CreateProjectInput,
+  CreatePublicationInput,
+  CreatePullRequestInput,
+  CreateRunInput,
+  CreateRunStepInput,
+  CreateSessionInput,
+  CreateTestResultInput,
+  CreateTopicInput,
+  Feedback,
+  Message,
+  Project,
+  Publication,
+  PullRequest,
+  Run,
+  RunStep,
+  Session,
+  TestResult,
+  Topic
+} from '@autocatalyst/api-contract';
+import {
+  artifactSchema,
+  channelReferenceSchema,
+  conversationSchema,
+  costSchema,
+  createArtifactInputSchema,
+  createConversationInputSchema,
+  createFeedbackInputSchema,
+  createMessageInputSchema,
+  createProjectInputSchema,
+  createPublicationInputSchema,
+  createPullRequestInputSchema,
+  createRunInputSchema,
+  createRunStepInputSchema,
+  createSessionInputSchema,
+  createTestResultInputSchema,
+  createTopicInputSchema,
+  credentialReferenceSchema,
+  feedbackAnchorSchema,
+  feedbackSchema,
+  feedbackThreadSchema,
+  frontedResourceSchema,
+  inferenceSettingsSchema,
+  messageSchema,
+  modelIdentitySchema,
+  nonModelPrincipalSchema,
+  principalSchema,
+  projectSchema,
+  publicationSchema,
+  pullRequestSchema,
+  runSchema,
+  runStepSchema,
+  sessionSchema,
+  testResultEvidenceSchema,
+  testResultSchema,
+  testingGuideResultSchema,
+  tokenBreakdownSchema,
+  topicSchema,
+  trackedIssueSchema
+} from '@autocatalyst/api-contract';
+import type {
+  ArtifactRepository,
+  ConversationRepository,
+  DomainRepositories,
+  FeedbackRepository,
+  MessageRepository,
+  ProjectRepository,
+  PublicationRepository,
+  PullRequestRepository,
+  RunRepository,
+  RunStepRepository,
+  SessionRepository,
+  TestResultRepository,
+  TopicRepository
+} from '@autocatalyst/core';
+
+import {
+  nullableJsonForRow,
+  parseJsonValue,
+  parseNullableJsonValue,
+  stringifyJsonValue,
+  validateEntity
+} from './domain-row-mappers.js';
+import {
+  artifacts,
+  conversations,
+  feedback,
+  messages,
+  projects,
+  publications,
+  pullRequests,
+  runSteps,
+  runs,
+  sessions,
+  testResults,
+  topics
+} from './schema.js';
+import type { SqliteDatabase } from './sqlite.js';
+import { asInternalSqliteDatabase } from './sqlite.js';
+
+// Inline schemas shared with persistence layer only
+
+const hostRepositorySchema = z.object({
+  provider: z.string().min(1),
+  owner: z.string().min(1),
+  name: z.string().min(1),
+  url: z.string().url().optional()
+}).strict();
+
+const projectSettingReferenceSchema = z.object({
+  provider: z.string().min(1),
+  projectKey: z.string().min(1).optional(),
+  url: z.string().url().optional(),
+  credentialRef: credentialReferenceSchema.optional()
+}).strict();
+
+const credentialReferenceArraySchema = z.array(credentialReferenceSchema);
+const publicationRefsSchema = z.array(z.string().min(1));
+const feedbackRefsSchema = z.array(z.string().min(1));
+
+const occurrenceSchema = z.object({
+  index: z.number().int().min(0),
+  attempt: z.number().int().min(1),
+  key: z.string().min(1).optional()
+}).strict();
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function requireParent(rows: unknown[], parentId: string, parentName: string): void {
+  if (rows.length === 0) {
+    throw new Error(`${parentName} '${parentId}' does not exist.`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Projects
+// ---------------------------------------------------------------------------
+
+export class DrizzleProjectRepository implements ProjectRepository {
+  readonly #database;
+
+  constructor(database: SqliteDatabase) {
+    this.#database = asInternalSqliteDatabase(database);
+  }
+
+  async create(input: CreateProjectInput): Promise<Project> {
+    const parsed = createProjectInputSchema.parse(input);
+    const now = nowIso();
+    const project: Project = validateEntity(projectSchema, {
+      id: `proj_${randomUUID()}`,
+      owner: parsed.owner,
+      tenant: parsed.tenant,
+      displayName: parsed.displayName,
+      repoUrl: parsed.repoUrl,
+      hostRepository: parsed.hostRepository,
+      workspaceRootOverride: parsed.workspaceRootOverride,
+      issueTrackerSetting: parsed.issueTrackerSetting,
+      codeHostSetting: parsed.codeHostSetting,
+      credentialRefs: parsed.credentialRefs,
+      createdAt: now,
+      updatedAt: now
+    });
+
+    this.#database.drizzle.insert(projects).values({
+      id: project.id,
+      ownerJson: stringifyJsonValue(nonModelPrincipalSchema, project.owner),
+      tenant: project.tenant,
+      displayName: project.displayName,
+      repoUrl: project.repoUrl,
+      hostRepositoryJson: stringifyJsonValue(hostRepositorySchema, project.hostRepository),
+      workspaceRootOverride: project.workspaceRootOverride,
+      issueTrackerSettingJson: nullableJsonForRow(projectSettingReferenceSchema, project.issueTrackerSetting),
+      codeHostSettingJson: nullableJsonForRow(projectSettingReferenceSchema, project.codeHostSetting),
+      credentialRefsJson: stringifyJsonValue(credentialReferenceArraySchema, project.credentialRefs),
+      createdAt: project.createdAt,
+      updatedAt: project.updatedAt
+    }).run();
+
+    return project;
+  }
+
+  async findById(id: string): Promise<Project | null> {
+    const rows = this.#database.drizzle.select().from(projects).where(eq(projects.id, id)).limit(1).all();
+    const row = rows[0];
+    if (row === undefined) {
+      return null;
+    }
+    return this.#rowToProject(row);
+  }
+
+  #rowToProject(row: typeof projects.$inferSelect): Project {
+    return validateEntity(projectSchema, {
+      id: row.id,
+      owner: parseJsonValue(nonModelPrincipalSchema, row.ownerJson),
+      tenant: row.tenant,
+      displayName: row.displayName,
+      repoUrl: row.repoUrl,
+      hostRepository: parseJsonValue(hostRepositorySchema, row.hostRepositoryJson),
+      workspaceRootOverride: row.workspaceRootOverride,
+      issueTrackerSetting: parseNullableJsonValue(projectSettingReferenceSchema, row.issueTrackerSettingJson),
+      codeHostSetting: parseNullableJsonValue(projectSettingReferenceSchema, row.codeHostSettingJson),
+      credentialRefs: parseJsonValue(credentialReferenceArraySchema, row.credentialRefsJson),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Conversations
+// ---------------------------------------------------------------------------
+
+export class DrizzleConversationRepository implements ConversationRepository {
+  readonly #database;
+
+  constructor(database: SqliteDatabase) {
+    this.#database = asInternalSqliteDatabase(database);
+  }
+
+  async create(input: CreateConversationInput): Promise<Conversation> {
+    const parsed = createConversationInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: projects.id }).from(projects).where(eq(projects.id, parsed.projectId)).limit(1).all();
+    requireParent(parentRows, parsed.projectId, 'Project');
+    const now = nowIso();
+    const entity: Conversation = validateEntity(conversationSchema, {
+      id: `conv_${randomUUID()}`,
+      projectId: parsed.projectId,
+      owner: parsed.owner,
+      tenant: parsed.tenant,
+      identity: parsed.identity,
+      ...(parsed.channel === undefined ? {} : { channel: parsed.channel }),
+      activeTopicId: parsed.activeTopicId,
+      createdAt: now,
+      updatedAt: now
+    });
+
+    this.#database.drizzle.insert(conversations).values({
+      id: entity.id,
+      projectId: entity.projectId,
+      ownerJson: stringifyJsonValue(nonModelPrincipalSchema, entity.owner),
+      tenant: entity.tenant,
+      identity: entity.identity,
+      channelJson: nullableJsonForRow(channelReferenceSchema, entity.channel),
+      activeTopicId: entity.activeTopicId,
+      createdAt: entity.createdAt,
+      updatedAt: entity.updatedAt
+    }).run();
+
+    return entity;
+  }
+
+  async findById(id: string): Promise<Conversation | null> {
+    const rows = this.#database.drizzle.select().from(conversations).where(eq(conversations.id, id)).limit(1).all();
+    const row = rows[0];
+    if (row === undefined) {
+      return null;
+    }
+    return this.#rowToConversation(row);
+  }
+
+  async setActiveTopic(conversationId: string, topicId: string): Promise<Conversation> {
+    if (!topicId || topicId.trim().length === 0) {
+      throw new Error('topicId is required.');
+    }
+    const topicRows = this.#database.drizzle.select().from(topics).where(eq(topics.id, topicId)).limit(1).all();
+    if (topicRows[0] === undefined) {
+      throw new Error(`Topic ${topicId} does not exist.`);
+    }
+    if (topicRows[0].conversationId !== conversationId) {
+      throw new Error(`Topic ${topicId} does not belong to conversation ${conversationId}.`);
+    }
+    const updatedAt = nowIso();
+    this.#database.drizzle.update(conversations).set({ activeTopicId: topicId, updatedAt }).where(eq(conversations.id, conversationId)).run();
+    const updated = this.#database.drizzle.select().from(conversations).where(eq(conversations.id, conversationId)).limit(1).all();
+    if (updated[0] === undefined) {
+      throw new Error(`Conversation ${conversationId} does not exist.`);
+    }
+    return this.#rowToConversation(updated[0]);
+  }
+
+  #rowToConversation(row: typeof conversations.$inferSelect): Conversation {
+    const channel = parseNullableJsonValue(channelReferenceSchema, row.channelJson);
+    return validateEntity(conversationSchema, {
+      id: row.id,
+      projectId: row.projectId,
+      owner: parseJsonValue(nonModelPrincipalSchema, row.ownerJson),
+      tenant: row.tenant,
+      identity: row.identity,
+      ...(channel === null ? {} : { channel }),
+      activeTopicId: row.activeTopicId,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Topics
+// ---------------------------------------------------------------------------
+
+export class DrizzleTopicRepository implements TopicRepository {
+  readonly #database;
+
+  constructor(database: SqliteDatabase) {
+    this.#database = asInternalSqliteDatabase(database);
+  }
+
+  async create(input: CreateTopicInput): Promise<Topic> {
+    const parsed = createTopicInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: conversations.id }).from(conversations).where(eq(conversations.id, parsed.conversationId)).limit(1).all();
+    requireParent(parentRows, parsed.conversationId, 'Conversation');
+    const now = nowIso();
+    const entity: Topic = validateEntity(topicSchema, {
+      id: `topic_${randomUUID()}`,
+      conversationId: parsed.conversationId,
+      owner: parsed.owner,
+      tenant: parsed.tenant,
+      title: parsed.title,
+      kind: parsed.kind,
+      createdAt: now,
+      updatedAt: now
+    });
+
+    this.#database.drizzle.insert(topics).values({
+      id: entity.id,
+      conversationId: entity.conversationId,
+      ownerJson: stringifyJsonValue(nonModelPrincipalSchema, entity.owner),
+      tenant: entity.tenant,
+      title: entity.title,
+      kind: entity.kind,
+      createdAt: entity.createdAt,
+      updatedAt: entity.updatedAt
+    }).run();
+
+    return entity;
+  }
+
+  async findById(id: string): Promise<Topic | null> {
+    const rows = this.#database.drizzle.select().from(topics).where(eq(topics.id, id)).limit(1).all();
+    const row = rows[0];
+    return row === undefined ? null : this.#rowToTopic(row);
+  }
+
+  async listByConversation(conversationId: string): Promise<readonly Topic[]> {
+    const rows = this.#database.drizzle
+      .select()
+      .from(topics)
+      .where(eq(topics.conversationId, conversationId))
+      .orderBy(asc(topics.createdAt), asc(topics.id))
+      .all();
+    return rows.map((row) => this.#rowToTopic(row));
+  }
+
+  #rowToTopic(row: typeof topics.$inferSelect): Topic {
+    return validateEntity(topicSchema, {
+      id: row.id,
+      conversationId: row.conversationId,
+      owner: parseJsonValue(nonModelPrincipalSchema, row.ownerJson),
+      tenant: row.tenant,
+      title: row.title,
+      kind: row.kind,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Messages
+// ---------------------------------------------------------------------------
+
+export class DrizzleMessageRepository implements MessageRepository {
+  readonly #database;
+
+  constructor(database: SqliteDatabase) {
+    this.#database = asInternalSqliteDatabase(database);
+  }
+
+  async create(input: CreateMessageInput): Promise<Message> {
+    const parsed = createMessageInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: topics.id }).from(topics).where(eq(topics.id, parsed.topicId)).limit(1).all();
+    requireParent(parentRows, parsed.topicId, 'Topic');
+    const now = nowIso();
+    const entity: Message = validateEntity(messageSchema, {
+      id: `msg_${randomUUID()}`,
+      topicId: parsed.topicId,
+      owner: parsed.owner,
+      tenant: parsed.tenant,
+      author: parsed.author,
+      direction: parsed.direction,
+      body: parsed.body,
+      ...(parsed.intent === undefined ? {} : { intent: parsed.intent }),
+      createdAt: now
+    });
+
+    this.#database.drizzle.insert(messages).values({
+      id: entity.id,
+      topicId: entity.topicId,
+      ownerJson: stringifyJsonValue(nonModelPrincipalSchema, entity.owner),
+      tenant: entity.tenant,
+      authorJson: stringifyJsonValue(principalSchema, entity.author),
+      direction: entity.direction,
+      body: entity.body,
+      intent: entity.intent ?? null,
+      createdAt: entity.createdAt
+    }).run();
+
+    return entity;
+  }
+
+  async findById(id: string): Promise<Message | null> {
+    const rows = this.#database.drizzle.select().from(messages).where(eq(messages.id, id)).limit(1).all();
+    const row = rows[0];
+    return row === undefined ? null : this.#rowToMessage(row);
+  }
+
+  async listByTopic(topicId: string): Promise<readonly Message[]> {
+    const rows = this.#database.drizzle
+      .select()
+      .from(messages)
+      .where(eq(messages.topicId, topicId))
+      .orderBy(asc(messages.createdAt), asc(messages.id))
+      .all();
+    return rows.map((row) => this.#rowToMessage(row));
+  }
+
+  #rowToMessage(row: typeof messages.$inferSelect): Message {
+    return validateEntity(messageSchema, {
+      id: row.id,
+      topicId: row.topicId,
+      owner: parseJsonValue(nonModelPrincipalSchema, row.ownerJson),
+      tenant: row.tenant,
+      author: parseJsonValue(principalSchema, row.authorJson),
+      direction: row.direction,
+      body: row.body,
+      ...(row.intent === null ? {} : { intent: row.intent }),
+      createdAt: row.createdAt
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Runs
+// ---------------------------------------------------------------------------
+
+export class DrizzleRunRepository implements RunRepository {
+  readonly #database;
+
+  constructor(database: SqliteDatabase) {
+    this.#database = asInternalSqliteDatabase(database);
+  }
+
+  async create(input: CreateRunInput): Promise<Run> {
+    const parsed = createRunInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: topics.id }).from(topics).where(eq(topics.id, parsed.topicId)).limit(1).all();
+    requireParent(parentRows, parsed.topicId, 'Topic');
+    const now = nowIso();
+    const entity: Run = validateEntity(runSchema, {
+      id: `run_${randomUUID()}`,
+      topicId: parsed.topicId,
+      owner: parsed.owner,
+      tenant: parsed.tenant,
+      workKind: parsed.workKind,
+      currentStep: parsed.currentStep,
+      terminal: parsed.terminal,
+      ...(parsed.trackedIssue === undefined ? {} : { trackedIssue: parsed.trackedIssue }),
+      ...(parsed.testingGuideResult === undefined ? {} : { testingGuideResult: parsed.testingGuideResult }),
+      createdAt: now,
+      updatedAt: now
+    });
+
+    this.#database.drizzle.insert(runs).values({
+      id: entity.id,
+      topicId: entity.topicId,
+      ownerJson: stringifyJsonValue(nonModelPrincipalSchema, entity.owner),
+      tenant: entity.tenant,
+      workKind: entity.workKind,
+      currentStep: entity.currentStep,
+      terminal: entity.terminal,
+      trackedIssueJson: nullableJsonForRow(trackedIssueSchema, entity.trackedIssue),
+      testingGuideResultJson: nullableJsonForRow(testingGuideResultSchema, entity.testingGuideResult),
+      createdAt: entity.createdAt,
+      updatedAt: entity.updatedAt
+    }).run();
+
+    return entity;
+  }
+
+  async findById(id: string): Promise<Run | null> {
+    const rows = this.#database.drizzle.select().from(runs).where(eq(runs.id, id)).limit(1).all();
+    const row = rows[0];
+    return row === undefined ? null : this.#rowToRun(row);
+  }
+
+  async listByTopic(topicId: string): Promise<readonly Run[]> {
+    const rows = this.#database.drizzle
+      .select()
+      .from(runs)
+      .where(eq(runs.topicId, topicId))
+      .orderBy(asc(runs.createdAt), asc(runs.id))
+      .all();
+    return rows.map((row) => this.#rowToRun(row));
+  }
+
+  #rowToRun(row: typeof runs.$inferSelect): Run {
+    const trackedIssue = parseNullableJsonValue(trackedIssueSchema, row.trackedIssueJson);
+    const testingGuideResult = parseNullableJsonValue(testingGuideResultSchema, row.testingGuideResultJson);
+    return validateEntity(runSchema, {
+      id: row.id,
+      topicId: row.topicId,
+      owner: parseJsonValue(nonModelPrincipalSchema, row.ownerJson),
+      tenant: row.tenant,
+      workKind: row.workKind,
+      currentStep: row.currentStep,
+      terminal: row.terminal,
+      ...(trackedIssue === null ? {} : { trackedIssue }),
+      ...(testingGuideResult === null ? {} : { testingGuideResult }),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Artifacts
+// ---------------------------------------------------------------------------
+
+export class DrizzleArtifactRepository implements ArtifactRepository {
+  readonly #database;
+
+  constructor(database: SqliteDatabase) {
+    this.#database = asInternalSqliteDatabase(database);
+  }
+
+  async create(input: CreateArtifactInput): Promise<Artifact> {
+    const parsed = createArtifactInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
+    requireParent(parentRows, parsed.runId, 'Run');
+    const now = nowIso();
+    const entity: Artifact = validateEntity(artifactSchema, {
+      id: `art_${randomUUID()}`,
+      runId: parsed.runId,
+      owner: parsed.owner,
+      tenant: parsed.tenant,
+      kind: parsed.kind,
+      canonicalRecord: parsed.canonicalRecord,
+      location: parsed.location,
+      cachedStatus: parsed.cachedStatus,
+      ...(parsed.linkedIssue === undefined ? {} : { linkedIssue: parsed.linkedIssue }),
+      publicationRefs: parsed.publicationRefs,
+      createdAt: now,
+      updatedAt: now
+    });
+
+    this.#database.drizzle.insert(artifacts).values({
+      id: entity.id,
+      runId: entity.runId,
+      ownerJson: stringifyJsonValue(nonModelPrincipalSchema, entity.owner),
+      tenant: entity.tenant,
+      kind: entity.kind,
+      canonicalRecord: entity.canonicalRecord,
+      location: entity.location,
+      cachedStatus: entity.cachedStatus,
+      linkedIssueJson: nullableJsonForRow(trackedIssueSchema, entity.linkedIssue),
+      publicationRefsJson: stringifyJsonValue(publicationRefsSchema, entity.publicationRefs),
+      createdAt: entity.createdAt,
+      updatedAt: entity.updatedAt
+    }).run();
+
+    return entity;
+  }
+
+  async findById(id: string): Promise<Artifact | null> {
+    const rows = this.#database.drizzle.select().from(artifacts).where(eq(artifacts.id, id)).limit(1).all();
+    const row = rows[0];
+    return row === undefined ? null : this.#rowToArtifact(row);
+  }
+
+  async listByRun(runId: string): Promise<readonly Artifact[]> {
+    const rows = this.#database.drizzle
+      .select()
+      .from(artifacts)
+      .where(eq(artifacts.runId, runId))
+      .orderBy(asc(artifacts.createdAt), asc(artifacts.id))
+      .all();
+    return rows.map((row) => this.#rowToArtifact(row));
+  }
+
+  #rowToArtifact(row: typeof artifacts.$inferSelect): Artifact {
+    const linkedIssue = parseNullableJsonValue(trackedIssueSchema, row.linkedIssueJson);
+    return validateEntity(artifactSchema, {
+      id: row.id,
+      runId: row.runId,
+      owner: parseJsonValue(nonModelPrincipalSchema, row.ownerJson),
+      tenant: row.tenant,
+      kind: row.kind,
+      canonicalRecord: row.canonicalRecord,
+      location: row.location,
+      cachedStatus: row.cachedStatus,
+      ...(linkedIssue === null ? {} : { linkedIssue }),
+      publicationRefs: parseJsonValue(publicationRefsSchema, row.publicationRefsJson),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Feedback
+// ---------------------------------------------------------------------------
+
+export class DrizzleFeedbackRepository implements FeedbackRepository {
+  readonly #database;
+
+  constructor(database: SqliteDatabase) {
+    this.#database = asInternalSqliteDatabase(database);
+  }
+
+  async create(input: CreateFeedbackInput): Promise<Feedback> {
+    const parsed = createFeedbackInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
+    requireParent(parentRows, parsed.runId, 'Run');
+    const now = nowIso();
+    const entity: Feedback = validateEntity(feedbackSchema, {
+      id: `fb_${randomUUID()}`,
+      runId: parsed.runId,
+      owner: parsed.owner,
+      tenant: parsed.tenant,
+      target: parsed.target,
+      status: parsed.status,
+      title: parsed.title,
+      body: parsed.body,
+      ...(parsed.anchor === undefined ? {} : { anchor: parsed.anchor }),
+      thread: parsed.thread,
+      createdAt: now,
+      updatedAt: now
+    });
+
+    this.#database.drizzle.insert(feedback).values({
+      id: entity.id,
+      runId: entity.runId,
+      ownerJson: stringifyJsonValue(nonModelPrincipalSchema, entity.owner),
+      tenant: entity.tenant,
+      target: entity.target,
+      status: entity.status,
+      title: entity.title,
+      body: entity.body,
+      anchorJson: nullableJsonForRow(feedbackAnchorSchema, entity.anchor),
+      threadJson: stringifyJsonValue(feedbackThreadSchema, entity.thread),
+      createdAt: entity.createdAt,
+      updatedAt: entity.updatedAt
+    }).run();
+
+    return entity;
+  }
+
+  async findById(id: string): Promise<Feedback | null> {
+    const rows = this.#database.drizzle.select().from(feedback).where(eq(feedback.id, id)).limit(1).all();
+    const row = rows[0];
+    return row === undefined ? null : this.#rowToFeedback(row);
+  }
+
+  async listByRun(runId: string): Promise<readonly Feedback[]> {
+    const rows = this.#database.drizzle
+      .select()
+      .from(feedback)
+      .where(eq(feedback.runId, runId))
+      .orderBy(asc(feedback.createdAt), asc(feedback.id))
+      .all();
+    return rows.map((row) => this.#rowToFeedback(row));
+  }
+
+  #rowToFeedback(row: typeof feedback.$inferSelect): Feedback {
+    const anchor = parseNullableJsonValue(feedbackAnchorSchema, row.anchorJson);
+    return validateEntity(feedbackSchema, {
+      id: row.id,
+      runId: row.runId,
+      owner: parseJsonValue(nonModelPrincipalSchema, row.ownerJson),
+      tenant: row.tenant,
+      target: row.target,
+      status: row.status,
+      title: row.title,
+      body: row.body,
+      ...(anchor === null ? {} : { anchor }),
+      thread: parseJsonValue(feedbackThreadSchema, row.threadJson),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Publications
+// ---------------------------------------------------------------------------
+
+export class DrizzlePublicationRepository implements PublicationRepository {
+  readonly #database;
+
+  constructor(database: SqliteDatabase) {
+    this.#database = asInternalSqliteDatabase(database);
+  }
+
+  async create(input: CreatePublicationInput): Promise<Publication> {
+    const parsed = createPublicationInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
+    requireParent(parentRows, parsed.runId, 'Run');
+    const now = nowIso();
+    const entity: Publication = validateEntity(publicationSchema, {
+      id: `pub_${randomUUID()}`,
+      runId: parsed.runId,
+      owner: parsed.owner,
+      tenant: parsed.tenant,
+      provider: parsed.provider,
+      url: parsed.url,
+      label: parsed.label,
+      frontedResource: parsed.frontedResource,
+      createdAt: now,
+      updatedAt: now
+    });
+
+    this.#database.drizzle.insert(publications).values({
+      id: entity.id,
+      runId: entity.runId,
+      ownerJson: stringifyJsonValue(nonModelPrincipalSchema, entity.owner),
+      tenant: entity.tenant,
+      provider: entity.provider,
+      url: entity.url,
+      label: entity.label,
+      frontedResourceJson: stringifyJsonValue(frontedResourceSchema, entity.frontedResource),
+      createdAt: entity.createdAt,
+      updatedAt: entity.updatedAt
+    }).run();
+
+    return entity;
+  }
+
+  async findById(id: string): Promise<Publication | null> {
+    const rows = this.#database.drizzle.select().from(publications).where(eq(publications.id, id)).limit(1).all();
+    const row = rows[0];
+    return row === undefined ? null : this.#rowToPublication(row);
+  }
+
+  async listByRun(runId: string): Promise<readonly Publication[]> {
+    const rows = this.#database.drizzle
+      .select()
+      .from(publications)
+      .where(eq(publications.runId, runId))
+      .orderBy(asc(publications.createdAt), asc(publications.id))
+      .all();
+    return rows.map((row) => this.#rowToPublication(row));
+  }
+
+  #rowToPublication(row: typeof publications.$inferSelect): Publication {
+    return validateEntity(publicationSchema, {
+      id: row.id,
+      runId: row.runId,
+      owner: parseJsonValue(nonModelPrincipalSchema, row.ownerJson),
+      tenant: row.tenant,
+      provider: row.provider,
+      url: row.url,
+      label: row.label,
+      frontedResource: parseJsonValue(frontedResourceSchema, row.frontedResourceJson),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pull Requests
+// ---------------------------------------------------------------------------
+
+export class DrizzlePullRequestRepository implements PullRequestRepository {
+  readonly #database;
+
+  constructor(database: SqliteDatabase) {
+    this.#database = asInternalSqliteDatabase(database);
+  }
+
+  async create(input: CreatePullRequestInput): Promise<PullRequest> {
+    const parsed = createPullRequestInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
+    requireParent(parentRows, parsed.runId, 'Run');
+    const now = nowIso();
+    const entity: PullRequest = validateEntity(pullRequestSchema, {
+      id: `pr_${randomUUID()}`,
+      runId: parsed.runId,
+      owner: parsed.owner,
+      tenant: parsed.tenant,
+      provider: parsed.provider,
+      number: parsed.number,
+      url: parsed.url,
+      state: parsed.state,
+      branch: parsed.branch,
+      createdAt: now,
+      updatedAt: now
+    });
+
+    this.#database.drizzle.insert(pullRequests).values({
+      id: entity.id,
+      runId: entity.runId,
+      ownerJson: stringifyJsonValue(nonModelPrincipalSchema, entity.owner),
+      tenant: entity.tenant,
+      provider: entity.provider,
+      number: entity.number,
+      url: entity.url,
+      state: entity.state,
+      branch: entity.branch,
+      createdAt: entity.createdAt,
+      updatedAt: entity.updatedAt
+    }).run();
+
+    return entity;
+  }
+
+  async findById(id: string): Promise<PullRequest | null> {
+    const rows = this.#database.drizzle.select().from(pullRequests).where(eq(pullRequests.id, id)).limit(1).all();
+    const row = rows[0];
+    return row === undefined ? null : this.#rowToPullRequest(row);
+  }
+
+  async findByRun(runId: string): Promise<PullRequest | null> {
+    const rows = this.#database.drizzle.select().from(pullRequests).where(eq(pullRequests.runId, runId)).limit(1).all();
+    const row = rows[0];
+    return row === undefined ? null : this.#rowToPullRequest(row);
+  }
+
+  #rowToPullRequest(row: typeof pullRequests.$inferSelect): PullRequest {
+    return validateEntity(pullRequestSchema, {
+      id: row.id,
+      runId: row.runId,
+      owner: parseJsonValue(nonModelPrincipalSchema, row.ownerJson),
+      tenant: row.tenant,
+      provider: row.provider,
+      number: row.number,
+      url: row.url,
+      state: row.state,
+      branch: row.branch,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Run Steps
+// ---------------------------------------------------------------------------
+
+export class DrizzleRunStepRepository implements RunStepRepository {
+  readonly #database;
+
+  constructor(database: SqliteDatabase) {
+    this.#database = asInternalSqliteDatabase(database);
+  }
+
+  async create(input: CreateRunStepInput): Promise<RunStep> {
+    const parsed = createRunStepInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
+    requireParent(parentRows, parsed.runId, 'Run');
+    const entity: RunStep = validateEntity(runStepSchema, {
+      id: `step_${randomUUID()}`,
+      runId: parsed.runId,
+      phase: parsed.phase,
+      step: parsed.step,
+      role: parsed.role,
+      startedAt: parsed.startedAt,
+      endedAt: parsed.endedAt,
+      durationMs: parsed.durationMs,
+      occurrence: parsed.occurrence
+    });
+
+    this.#database.drizzle.insert(runSteps).values({
+      id: entity.id,
+      runId: entity.runId,
+      phase: entity.phase,
+      step: entity.step,
+      role: entity.role,
+      startedAt: entity.startedAt,
+      endedAt: entity.endedAt,
+      durationMs: entity.durationMs,
+      occurrenceJson: stringifyJsonValue(occurrenceSchema, entity.occurrence)
+    }).run();
+
+    return entity;
+  }
+
+  async findById(id: string): Promise<RunStep | null> {
+    const rows = this.#database.drizzle.select().from(runSteps).where(eq(runSteps.id, id)).limit(1).all();
+    const row = rows[0];
+    return row === undefined ? null : this.#rowToRunStep(row);
+  }
+
+  async listByRun(runId: string): Promise<readonly RunStep[]> {
+    const rows = this.#database.drizzle
+      .select()
+      .from(runSteps)
+      .where(eq(runSteps.runId, runId))
+      .orderBy(asc(runSteps.startedAt), asc(runSteps.id))
+      .all();
+    return rows.map((row) => this.#rowToRunStep(row));
+  }
+
+  #rowToRunStep(row: typeof runSteps.$inferSelect): RunStep {
+    return validateEntity(runStepSchema, {
+      id: row.id,
+      runId: row.runId,
+      phase: row.phase,
+      step: row.step,
+      role: row.role,
+      startedAt: row.startedAt,
+      endedAt: row.endedAt,
+      durationMs: row.durationMs,
+      occurrence: parseJsonValue(occurrenceSchema, row.occurrenceJson)
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sessions
+// ---------------------------------------------------------------------------
+
+export class DrizzleSessionRepository implements SessionRepository {
+  readonly #database;
+
+  constructor(database: SqliteDatabase) {
+    this.#database = asInternalSqliteDatabase(database);
+  }
+
+  async create(input: CreateSessionInput): Promise<Session> {
+    const parsed = createSessionInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
+    requireParent(parentRows, parsed.runId, 'Run');
+    const entity: Session = validateEntity(sessionSchema, {
+      id: `sess_${randomUUID()}`,
+      runId: parsed.runId,
+      phase: parsed.phase,
+      step: parsed.step,
+      role: parsed.role,
+      round: parsed.round,
+      model: parsed.model,
+      inferenceSettings: parsed.inferenceSettings,
+      startedAt: parsed.startedAt,
+      endedAt: parsed.endedAt,
+      durationMs: parsed.durationMs,
+      tokens: parsed.tokens,
+      usageAvailable: parsed.usageAvailable,
+      assistantTurnCount: parsed.assistantTurnCount,
+      toolCallCount: parsed.toolCallCount,
+      outcome: parsed.outcome,
+      cost: parsed.cost
+    });
+
+    this.#database.drizzle.insert(sessions).values({
+      id: entity.id,
+      runId: entity.runId,
+      phase: entity.phase,
+      step: entity.step,
+      role: entity.role,
+      round: entity.round,
+      modelJson: stringifyJsonValue(modelIdentitySchema, entity.model),
+      inferenceSettingsJson: stringifyJsonValue(inferenceSettingsSchema, entity.inferenceSettings),
+      startedAt: entity.startedAt,
+      endedAt: entity.endedAt,
+      durationMs: entity.durationMs,
+      tokensJson: stringifyJsonValue(tokenBreakdownSchema, entity.tokens),
+      usageAvailable: entity.usageAvailable,
+      assistantTurnCount: entity.assistantTurnCount,
+      toolCallCount: entity.toolCallCount,
+      outcome: entity.outcome,
+      costJson: stringifyJsonValue(costSchema, entity.cost)
+    }).run();
+
+    return entity;
+  }
+
+  async findById(id: string): Promise<Session | null> {
+    const rows = this.#database.drizzle.select().from(sessions).where(eq(sessions.id, id)).limit(1).all();
+    const row = rows[0];
+    return row === undefined ? null : this.#rowToSession(row);
+  }
+
+  async listByRun(runId: string): Promise<readonly Session[]> {
+    const rows = this.#database.drizzle
+      .select()
+      .from(sessions)
+      .where(eq(sessions.runId, runId))
+      .orderBy(asc(sessions.startedAt), asc(sessions.id))
+      .all();
+    return rows.map((row) => this.#rowToSession(row));
+  }
+
+  #rowToSession(row: typeof sessions.$inferSelect): Session {
+    return validateEntity(sessionSchema, {
+      id: row.id,
+      runId: row.runId,
+      phase: row.phase,
+      step: row.step,
+      role: row.role,
+      round: row.round,
+      model: parseJsonValue(modelIdentitySchema, row.modelJson),
+      inferenceSettings: parseJsonValue(inferenceSettingsSchema, row.inferenceSettingsJson),
+      startedAt: row.startedAt,
+      endedAt: row.endedAt,
+      durationMs: row.durationMs,
+      tokens: parseJsonValue(tokenBreakdownSchema, row.tokensJson),
+      usageAvailable: row.usageAvailable,
+      assistantTurnCount: row.assistantTurnCount,
+      toolCallCount: row.toolCallCount,
+      outcome: row.outcome,
+      cost: parseJsonValue(costSchema, row.costJson)
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Test Results
+// ---------------------------------------------------------------------------
+
+export class DrizzleTestResultRepository implements TestResultRepository {
+  readonly #database;
+
+  constructor(database: SqliteDatabase) {
+    this.#database = asInternalSqliteDatabase(database);
+  }
+
+  async create(input: CreateTestResultInput): Promise<TestResult> {
+    const parsed = createTestResultInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
+    requireParent(parentRows, parsed.runId, 'Run');
+    const now = nowIso();
+    const entity: TestResult = validateEntity(testResultSchema, {
+      id: `test_${randomUUID()}`,
+      runId: parsed.runId,
+      tester: parsed.tester,
+      outcome: parsed.outcome,
+      ...(parsed.evidence === undefined ? {} : { evidence: parsed.evidence }),
+      feedbackRefs: parsed.feedbackRefs,
+      createdAt: now,
+      updatedAt: now
+    });
+
+    this.#database.drizzle.insert(testResults).values({
+      id: entity.id,
+      runId: entity.runId,
+      testerJson: stringifyJsonValue(principalSchema, entity.tester),
+      outcome: entity.outcome,
+      evidenceJson: nullableJsonForRow(testResultEvidenceSchema, entity.evidence),
+      feedbackRefsJson: stringifyJsonValue(feedbackRefsSchema, entity.feedbackRefs),
+      createdAt: entity.createdAt,
+      updatedAt: entity.updatedAt
+    }).run();
+
+    return entity;
+  }
+
+  async findById(id: string): Promise<TestResult | null> {
+    const rows = this.#database.drizzle.select().from(testResults).where(eq(testResults.id, id)).limit(1).all();
+    const row = rows[0];
+    return row === undefined ? null : this.#rowToTestResult(row);
+  }
+
+  async listByRun(runId: string): Promise<readonly TestResult[]> {
+    const rows = this.#database.drizzle
+      .select()
+      .from(testResults)
+      .where(eq(testResults.runId, runId))
+      .orderBy(asc(testResults.createdAt), asc(testResults.id))
+      .all();
+    return rows.map((row) => this.#rowToTestResult(row));
+  }
+
+  #rowToTestResult(row: typeof testResults.$inferSelect): TestResult {
+    const evidence = parseNullableJsonValue(testResultEvidenceSchema, row.evidenceJson);
+    return validateEntity(testResultSchema, {
+      id: row.id,
+      runId: row.runId,
+      tester: parseJsonValue(principalSchema, row.testerJson),
+      outcome: row.outcome,
+      ...(evidence === null ? {} : { evidence }),
+      feedbackRefs: parseJsonValue(feedbackRefsSchema, row.feedbackRefsJson),
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Repository collection factory
+// ---------------------------------------------------------------------------
+
+export interface DrizzleDomainRepositories extends DomainRepositories {
+  projects: DrizzleProjectRepository;
+  conversations: DrizzleConversationRepository;
+  topics: DrizzleTopicRepository;
+  messages: DrizzleMessageRepository;
+  runs: DrizzleRunRepository;
+  artifacts: DrizzleArtifactRepository;
+  feedback: DrizzleFeedbackRepository;
+  publications: DrizzlePublicationRepository;
+  pullRequests: DrizzlePullRequestRepository;
+  runSteps: DrizzleRunStepRepository;
+  sessions: DrizzleSessionRepository;
+  testResults: DrizzleTestResultRepository;
+}
+
+export function createDrizzleDomainRepositories(database: SqliteDatabase): DrizzleDomainRepositories {
+  return {
+    projects: new DrizzleProjectRepository(database),
+    conversations: new DrizzleConversationRepository(database),
+    topics: new DrizzleTopicRepository(database),
+    messages: new DrizzleMessageRepository(database),
+    runs: new DrizzleRunRepository(database),
+    artifacts: new DrizzleArtifactRepository(database),
+    feedback: new DrizzleFeedbackRepository(database),
+    publications: new DrizzlePublicationRepository(database),
+    pullRequests: new DrizzlePullRequestRepository(database),
+    runSteps: new DrizzleRunStepRepository(database),
+    sessions: new DrizzleSessionRepository(database),
+    testResults: new DrizzleTestResultRepository(database)
+  };
+}
