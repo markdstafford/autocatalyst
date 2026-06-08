@@ -16,8 +16,13 @@ import {
   probeResourceCollectionPath,
   probeResourceSchema
 } from '@autocatalyst/api-contract';
-import { hardcodedDevelopmentPrincipal } from '@autocatalyst/core';
-import type { PolicyDecisionInput } from '@autocatalyst/core';
+import {
+  buildProviderAdapterKey,
+  createExtensionRegistryCatalog,
+  hardcodedDevelopmentPrincipal,
+  type PolicyDecisionInput,
+  type ProviderCompositionResult
+} from '@autocatalyst/core';
 import { asInternalSqliteDatabase, createSqliteDatabase } from '@autocatalyst/persistence';
 
 import { createControlPlaneServer, startControlPlaneServer } from './server.js';
@@ -336,6 +341,135 @@ describe('secret handle separation integration', () => {
       expect(secretRows[0].ciphertext).not.toContain(secretValue);
 
       db.close();
+    });
+  });
+});
+
+describe('provider startup composition integration', () => {
+  it('composes registered-and-resolvable providers from persisted configuration records', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const first = await createControlPlaneServer({ databasePath, bearerToken: BEARER_TOKEN, masterSecret: MASTER_SECRET });
+      await first.inject({
+        method: 'POST',
+        url: '/v1/configuration-records',
+        headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+        payload: { kind: 'provider_profile', providerKind: 'model_runner', adapterId: 'fake-registered-model', settings: { profileName: 'default' } }
+      });
+      await first.close();
+
+      let result: ProviderCompositionResult | undefined;
+      const second = await createControlPlaneServer({
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET,
+        extensionRegistry: createExtensionRegistryCatalog([
+          { providerKind: 'model_runner', adapterId: 'fake-registered-model', displayName: 'Fake registered model', capabilities: ['agent_session'] }
+        ]),
+        providerAdapters: new Map([
+          [buildProviderAdapterKey('model_runner', 'fake-registered-model'), () => ({ kind: 'fake-adapter' })]
+        ]),
+        onProviderComposition: (compositionResult) => { result = compositionResult; }
+      });
+
+      expect(result?.warnings).toEqual([]);
+      expect(result?.unresolved).toEqual([]);
+      expect(result?.composed).toEqual([
+        expect.objectContaining({ providerKind: 'model_runner', adapterId: 'fake-registered-model' })
+      ]);
+      await second.close();
+    });
+  });
+
+  it('composes unregistered-but-resolvable providers while reporting advisory warnings', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const first = await createControlPlaneServer({ databasePath, bearerToken: BEARER_TOKEN, masterSecret: MASTER_SECRET });
+      await first.inject({
+        method: 'POST',
+        url: '/v1/configuration-records',
+        headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+        payload: { kind: 'provider_profile', providerKind: 'model_runner', adapterId: 'fake-unregistered-model', settings: { profileName: 'default' } }
+      });
+      await first.close();
+
+      let result: ProviderCompositionResult | undefined;
+      const second = await createControlPlaneServer({
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET,
+        extensionRegistry: createExtensionRegistryCatalog(),
+        providerAdapters: new Map([
+          [buildProviderAdapterKey('model_runner', 'fake-unregistered-model'), () => ({ kind: 'fake-adapter' })]
+        ]),
+        onProviderComposition: (compositionResult) => { result = compositionResult; }
+      });
+
+      expect(result?.composed).toHaveLength(1);
+      expect(result?.warnings).toEqual([
+        expect.objectContaining({ code: 'adapter_not_registered', providerKind: 'model_runner', adapterId: 'fake-unregistered-model' })
+      ]);
+      expect(result?.unresolved).toEqual([]);
+      await second.close();
+    });
+  });
+
+  it('reports registry-listed-but-unresolved providers without runnable bindings', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const first = await createControlPlaneServer({ databasePath, bearerToken: BEARER_TOKEN, masterSecret: MASTER_SECRET });
+      await first.inject({
+        method: 'POST',
+        url: '/v1/configuration-records',
+        headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+        payload: { kind: 'provider_profile', providerKind: 'model_runner', adapterId: 'fake-unresolved-model', settings: { profileName: 'default' } }
+      });
+      await first.close();
+
+      let result: ProviderCompositionResult | undefined;
+      const second = await createControlPlaneServer({
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET,
+        extensionRegistry: createExtensionRegistryCatalog([
+          { providerKind: 'model_runner', adapterId: 'fake-unresolved-model', displayName: 'Fake unresolved', capabilities: [] }
+        ]),
+        onProviderComposition: (compositionResult) => { result = compositionResult; }
+      });
+
+      expect(result?.composed).toEqual([]);
+      expect(result?.warnings).toEqual([]);
+      expect(result?.unresolved).toEqual([
+        expect.objectContaining({ providerKind: 'model_runner', adapterId: 'fake-unresolved-model', reason: 'adapter_not_found' })
+      ]);
+      await second.close();
+    });
+  });
+
+  it('returns empty composition arrays when no provider records exist', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      let result: ProviderCompositionResult | undefined;
+      const app = await createControlPlaneServer({
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET,
+        onProviderComposition: (compositionResult) => { result = compositionResult; }
+      });
+
+      expect(result).toEqual({ composed: [], warnings: [], unresolved: [] });
+      await app.close();
+    });
+  });
+
+  it('keeps health public and v1 routes protected after composition is wired', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const app = await createControlPlaneServer({ databasePath, bearerToken: BEARER_TOKEN, masterSecret: MASTER_SECRET });
+
+      const health = await app.inject({ method: 'GET', url: '/health' });
+      expect(health.statusCode).toBe(200);
+
+      const protectedRoute = await app.inject({ method: 'GET', url: '/v1/principal' });
+      expect(protectedRoute.statusCode).toBe(401);
+      expect(errorResponseSchema.parse(protectedRoute.json()).error.code).toBe('unauthorized');
+
+      await app.close();
     });
   });
 });
