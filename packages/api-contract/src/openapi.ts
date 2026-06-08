@@ -116,5 +116,5 @@ export function generateOpenApiDocument(): OpenApiDocument {
       title: 'Autocatalyst Control Plane API',
       version: '1.0.0'
     }
-  }) as OpenApiDocument;
+  }) as unknown as OpenApiDocument;
 }

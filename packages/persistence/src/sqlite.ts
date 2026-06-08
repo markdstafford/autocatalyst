@@ -25,7 +25,7 @@ export function createSqliteDatabase(options: { path: string }): SqliteDatabase 
   const client = new Database(options.path);
   const db = drizzle(client, { schema });
 
-  return {
+  const internal: InternalSqliteDatabase = {
     path: options.path,
     _brand: 'SqliteDatabase',
     client,
@@ -33,7 +33,8 @@ export function createSqliteDatabase(options: { path: string }): SqliteDatabase 
     close() {
       client.close();
     }
-  } satisfies InternalSqliteDatabase;
+  };
+  return internal;
 }
 
 export function asInternalSqliteDatabase(database: SqliteDatabase): InternalSqliteDatabase {

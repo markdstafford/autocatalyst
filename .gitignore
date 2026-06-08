@@ -28,3 +28,9 @@ coverage/
 # Editors
 .vscode/
 .idea/
+
+# SQLite databases
+.data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal

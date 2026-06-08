@@ -7,9 +7,10 @@
   "targets": {
     "build": {
       "executor": "@nx/js:tsc",
-      "outputs": ["{options.outputPath}"],
+      "outputs": ["{options.outputPath}", "{options.outputPath}/index.d.ts"],
       "options": {
         "outputPath": "packages/persistence/dist",
+        "rootDir": "packages/persistence/src",
         "main": "packages/persistence/src/index.ts",
         "tsConfig": "packages/persistence/tsconfig.lib.json"
       }
