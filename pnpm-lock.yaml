@@ -70,6 +70,18 @@ importers:
         specifier: ^3.2.2
         version: 3.2.6(@types/node@22.19.20)(tsx@4.22.4)(yaml@2.9.0)
 
+  apps/control-plane:
+    dependencies:
+      '@autocatalyst/core':
+        specifier: workspace:*
+        version: link:../../packages/core
+      '@autocatalyst/persistence':
+        specifier: workspace:*
+        version: link:../../packages/persistence
+      fastify:
+        specifier: ^5.8.5
+        version: 5.8.5
+
   packages/api-contract:
     dependencies:
       '@asteasolutions/zod-to-openapi':
@@ -81,19 +93,49 @@ importers:
 
   packages/core:
     dependencies:
-      '@autocatalyst/execution':
+      '@autocatalyst/api-contract':
         specifier: workspace:*
-        version: link:../execution
+        version: link:../api-contract
+      fastify:
+        specifier: ^5.0.0
+        version: 5.8.5
 
   packages/execution: {}
 
-  packages/persistence: {}
+  packages/persistence:
+    dependencies:
+      '@autocatalyst/api-contract':
+        specifier: workspace:*
+        version: link:../api-contract
+      '@autocatalyst/core':
+        specifier: workspace:*
+        version: link:../core
+      better-sqlite3:
+        specifier: ^12.10.0
+        version: 12.10.0
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@types/better-sqlite3@7.6.13)(better-sqlite3@12.10.0)
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^7.6.13
+        version: 7.6.13
+      drizzle-kit:
+        specifier: ^0.31.10
+        version: 0.31.10
 
   packages/sdk:
     dependencies:
       '@autocatalyst/api-contract':
         specifier: workspace:*
         version: link:../api-contract
+    devDependencies:
+      '@autocatalyst/core':
+        specifier: workspace:*
+        version: link:../core
+      fastify:
+        specifier: ^5.0.0
+        version: 5.8.5
 
 packages:
 
