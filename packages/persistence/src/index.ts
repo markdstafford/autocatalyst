@@ -2,6 +2,7 @@ export { ActiveRunConflictPersistenceError, isActiveRunConstraintViolation } fro
 export { DrizzleConfigurationRecordRepository } from './configuration-record-repository.js';
 export {
   DrizzleArtifactRepository,
+  DrizzleConversationIngressRepository,
   DrizzleConversationRepository,
   DrizzleFeedbackRepository,
   DrizzleMessageRepository,
