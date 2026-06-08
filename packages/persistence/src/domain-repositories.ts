@@ -139,6 +139,12 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
+function requireParent(rows: unknown[], parentId: string, parentName: string): void {
+  if (rows.length === 0) {
+    throw new Error(`${parentName} '${parentId}' does not exist.`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Projects
 // ---------------------------------------------------------------------------
@@ -226,6 +232,8 @@ export class DrizzleConversationRepository implements ConversationRepository {
 
   async create(input: CreateConversationInput): Promise<Conversation> {
     const parsed = createConversationInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: projects.id }).from(projects).where(eq(projects.id, parsed.projectId)).limit(1).all();
+    requireParent(parentRows, parsed.projectId, 'Project');
     const now = nowIso();
     const entity: Conversation = validateEntity(conversationSchema, {
       id: `conv_${randomUUID()}`,
@@ -312,6 +320,8 @@ export class DrizzleTopicRepository implements TopicRepository {
 
   async create(input: CreateTopicInput): Promise<Topic> {
     const parsed = createTopicInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: conversations.id }).from(conversations).where(eq(conversations.id, parsed.conversationId)).limit(1).all();
+    requireParent(parentRows, parsed.conversationId, 'Conversation');
     const now = nowIso();
     const entity: Topic = validateEntity(topicSchema, {
       id: `topic_${randomUUID()}`,
@@ -381,6 +391,8 @@ export class DrizzleMessageRepository implements MessageRepository {
 
   async create(input: CreateMessageInput): Promise<Message> {
     const parsed = createMessageInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: topics.id }).from(topics).where(eq(topics.id, parsed.topicId)).limit(1).all();
+    requireParent(parentRows, parsed.topicId, 'Topic');
     const now = nowIso();
     const entity: Message = validateEntity(messageSchema, {
       id: `msg_${randomUUID()}`,
@@ -453,6 +465,8 @@ export class DrizzleRunRepository implements RunRepository {
 
   async create(input: CreateRunInput): Promise<Run> {
     const parsed = createRunInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: topics.id }).from(topics).where(eq(topics.id, parsed.topicId)).limit(1).all();
+    requireParent(parentRows, parsed.topicId, 'Topic');
     const now = nowIso();
     const entity: Run = validateEntity(runSchema, {
       id: `run_${randomUUID()}`,
@@ -533,6 +547,8 @@ export class DrizzleArtifactRepository implements ArtifactRepository {
 
   async create(input: CreateArtifactInput): Promise<Artifact> {
     const parsed = createArtifactInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
+    requireParent(parentRows, parsed.runId, 'Run');
     const now = nowIso();
     const entity: Artifact = validateEntity(artifactSchema, {
       id: `art_${randomUUID()}`,
@@ -615,6 +631,8 @@ export class DrizzleFeedbackRepository implements FeedbackRepository {
 
   async create(input: CreateFeedbackInput): Promise<Feedback> {
     const parsed = createFeedbackInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
+    requireParent(parentRows, parsed.runId, 'Run');
     const now = nowIso();
     const entity: Feedback = validateEntity(feedbackSchema, {
       id: `fb_${randomUUID()}`,
@@ -697,6 +715,8 @@ export class DrizzlePublicationRepository implements PublicationRepository {
 
   async create(input: CreatePublicationInput): Promise<Publication> {
     const parsed = createPublicationInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
+    requireParent(parentRows, parsed.runId, 'Run');
     const now = nowIso();
     const entity: Publication = validateEntity(publicationSchema, {
       id: `pub_${randomUUID()}`,
@@ -772,6 +792,8 @@ export class DrizzlePullRequestRepository implements PullRequestRepository {
 
   async create(input: CreatePullRequestInput): Promise<PullRequest> {
     const parsed = createPullRequestInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
+    requireParent(parentRows, parsed.runId, 'Run');
     const now = nowIso();
     const entity: PullRequest = validateEntity(pullRequestSchema, {
       id: `pr_${randomUUID()}`,
@@ -846,6 +868,8 @@ export class DrizzleRunStepRepository implements RunStepRepository {
 
   async create(input: CreateRunStepInput): Promise<RunStep> {
     const parsed = createRunStepInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
+    requireParent(parentRows, parsed.runId, 'Run');
     const entity: RunStep = validateEntity(runStepSchema, {
       id: `step_${randomUUID()}`,
       runId: parsed.runId,
@@ -917,6 +941,8 @@ export class DrizzleSessionRepository implements SessionRepository {
 
   async create(input: CreateSessionInput): Promise<Session> {
     const parsed = createSessionInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
+    requireParent(parentRows, parsed.runId, 'Run');
     const entity: Session = validateEntity(sessionSchema, {
       id: `sess_${randomUUID()}`,
       runId: parsed.runId,
@@ -1012,6 +1038,8 @@ export class DrizzleTestResultRepository implements TestResultRepository {
 
   async create(input: CreateTestResultInput): Promise<TestResult> {
     const parsed = createTestResultInputSchema.parse(input);
+    const parentRows = this.#database.drizzle.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
+    requireParent(parentRows, parsed.runId, 'Run');
     const now = nowIso();
     const entity: TestResult = validateEntity(testResultSchema, {
       id: `test_${randomUUID()}`,
