@@ -1,9 +1,16 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import {
+  composeConfiguredProviders,
+  defaultExtensionRegistryCatalog,
+  emptyProviderAdapterMap,
   permissivePolicyDecisionPoint,
   registerControlPlaneRoutes,
-  type PolicyDecisionPoint
+  type ExtensionRegistryCatalog,
+  type HealthDependencyChecker,
+  type PolicyDecisionPoint,
+  type ProviderAdapterMap,
+  type ProviderCompositionResult
 } from '@autocatalyst/core';
 import {
   DrizzleConfigurationRecordRepository,
@@ -21,13 +28,48 @@ export interface ControlPlaneServerOptions {
   readonly bearerToken: string;
   readonly masterSecret: string;
   readonly policy?: PolicyDecisionPoint;
-  readonly health?: { isDatabaseReachable(): Promise<boolean> };
+  readonly health?: HealthDependencyChecker;
+  readonly extensionRegistry?: ExtensionRegistryCatalog;
+  readonly providerAdapters?: ProviderAdapterMap;
+  readonly onProviderComposition?: (result: ProviderCompositionResult) => void | Promise<void>;
 }
 
 export interface ControlPlaneServerHandle {
   readonly port: number;
   readonly databasePath: string;
   close(): Promise<void>;
+}
+
+export interface ProviderCompositionDiagnosticLogger {
+  info(message: string): void;
+  warn(message: string): void;
+}
+
+export function logProviderCompositionDiagnostics(
+  result: ProviderCompositionResult,
+  logger: ProviderCompositionDiagnosticLogger = console
+): void {
+  logger.info(
+    `Provider composition completed: composed=${result.composed.length} warnings=${result.warnings.length} unresolved=${result.unresolved.length}.`
+  );
+
+  for (const binding of result.composed) {
+    logger.info(
+      `Provider composed: configurationRecordId=${binding.configurationRecordId} providerKind=${binding.providerKind} adapterId=${binding.adapterId}.`
+    );
+  }
+
+  for (const warning of result.warnings) {
+    logger.warn(
+      `Provider composition warning: configurationRecordId=${warning.configurationRecordId} providerKind=${warning.providerKind} adapterId=${warning.adapterId} code=${warning.code}.`
+    );
+  }
+
+  for (const unresolved of result.unresolved) {
+    logger.warn(
+      `Provider unresolved: configurationRecordId=${unresolved.configurationRecordId} providerKind=${unresolved.providerKind} adapterId=${unresolved.adapterId} reason=${unresolved.reason}.`
+    );
+  }
 }
 
 export async function createControlPlaneServer(
@@ -46,6 +88,14 @@ export async function createControlPlaneServer(
   const secretStore = new SqliteSecretStore(database);
   await secretStore.unlock(options.masterSecret);
 
+  const configurationRecords = new DrizzleConfigurationRecordRepository(database);
+  const providerCompositionResult = await composeConfiguredProviders({
+    configurationRecords: await configurationRecords.list(),
+    registry: options.extensionRegistry ?? defaultExtensionRegistryCatalog,
+    providerAdapters: options.providerAdapters ?? emptyProviderAdapterMap
+  });
+  await options.onProviderComposition?.(providerCompositionResult);
+
   const app = Fastify({ logger: false });
 
   await registerControlPlaneRoutes(app, {
@@ -55,7 +105,7 @@ export async function createControlPlaneServer(
     auth: { bearerToken: options.bearerToken },
     policy: options.policy ?? permissivePolicyDecisionPoint,
     probeResources: new DrizzleProbeResourceRepository(database),
-    configurationRecords: new DrizzleConfigurationRecordRepository(database),
+    configurationRecords,
     secrets: secretStore
   });
 
@@ -69,7 +119,12 @@ export async function createControlPlaneServer(
 export async function startControlPlaneServer(
   config: ControlPlaneAppConfig
 ): Promise<ControlPlaneServerHandle> {
-  const app = await createControlPlaneServer(config);
+  const app = await createControlPlaneServer({
+    ...config,
+    onProviderComposition: (result) => {
+      logProviderCompositionDiagnostics(result, console);
+    }
+  });
 
   await app.listen({ port: config.port, host: '127.0.0.1' });
   const address = app.server.address();
