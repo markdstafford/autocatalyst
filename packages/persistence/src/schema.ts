@@ -58,12 +58,12 @@ export const projects = sqliteTable('projects', {
 
 export const conversations = sqliteTable('conversations', {
   id: text('id').primaryKey(),
-  projectId: text('project_id').notNull(),
+  projectId: text('project_id').notNull().references(() => projects.id),
   ownerJson: text('owner_json').notNull(),
   tenant: text('tenant').notNull(),
   identity: text('identity').notNull(),
   channelJson: text('channel_json'),
-  activeTopicId: text('active_topic_id'),
+  activeTopicId: text('active_topic_id').references(() => topics.id),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull()
 }, (table) => [
@@ -72,7 +72,7 @@ export const conversations = sqliteTable('conversations', {
 
 export const topics = sqliteTable('topics', {
   id: text('id').primaryKey(),
-  conversationId: text('conversation_id').notNull(),
+  conversationId: text('conversation_id').notNull().references(() => conversations.id),
   ownerJson: text('owner_json').notNull(),
   tenant: text('tenant').notNull(),
   title: text('title').notNull(),
@@ -86,7 +86,7 @@ export const topics = sqliteTable('topics', {
 
 export const messages = sqliteTable('messages', {
   id: text('id').primaryKey(),
-  topicId: text('topic_id').notNull(),
+  topicId: text('topic_id').notNull().references(() => topics.id),
   ownerJson: text('owner_json').notNull(),
   tenant: text('tenant').notNull(),
   authorJson: text('author_json').notNull(),
@@ -100,7 +100,7 @@ export const messages = sqliteTable('messages', {
 
 export const runs = sqliteTable('runs', {
   id: text('id').primaryKey(),
-  topicId: text('topic_id').notNull(),
+  topicId: text('topic_id').notNull().references(() => topics.id),
   ownerJson: text('owner_json').notNull(),
   tenant: text('tenant').notNull(),
   workKind: text('work_kind').notNull(),
@@ -117,7 +117,7 @@ export const runs = sqliteTable('runs', {
 
 export const artifacts = sqliteTable('artifacts', {
   id: text('id').primaryKey(),
-  runId: text('run_id').notNull(),
+  runId: text('run_id').notNull().references(() => runs.id),
   ownerJson: text('owner_json').notNull(),
   tenant: text('tenant').notNull(),
   kind: text('kind').notNull(),
@@ -134,7 +134,7 @@ export const artifacts = sqliteTable('artifacts', {
 
 export const feedback = sqliteTable('feedback', {
   id: text('id').primaryKey(),
-  runId: text('run_id').notNull(),
+  runId: text('run_id').notNull().references(() => runs.id),
   ownerJson: text('owner_json').notNull(),
   tenant: text('tenant').notNull(),
   target: text('target').notNull(),
@@ -152,7 +152,7 @@ export const feedback = sqliteTable('feedback', {
 
 export const publications = sqliteTable('publications', {
   id: text('id').primaryKey(),
-  runId: text('run_id').notNull(),
+  runId: text('run_id').notNull().references(() => runs.id),
   ownerJson: text('owner_json').notNull(),
   tenant: text('tenant').notNull(),
   provider: text('provider').notNull(),
@@ -167,7 +167,7 @@ export const publications = sqliteTable('publications', {
 
 export const pullRequests = sqliteTable('pull_requests', {
   id: text('id').primaryKey(),
-  runId: text('run_id').notNull(),
+  runId: text('run_id').notNull().references(() => runs.id),
   ownerJson: text('owner_json').notNull(),
   tenant: text('tenant').notNull(),
   provider: text('provider').notNull(),
@@ -183,7 +183,7 @@ export const pullRequests = sqliteTable('pull_requests', {
 
 export const runSteps = sqliteTable('run_steps', {
   id: text('id').primaryKey(),
-  runId: text('run_id').notNull(),
+  runId: text('run_id').notNull().references(() => runs.id),
   phase: text('phase'),
   step: text('step').notNull(),
   role: text('role').notNull(),
@@ -197,7 +197,7 @@ export const runSteps = sqliteTable('run_steps', {
 
 export const sessions = sqliteTable('sessions', {
   id: text('id').primaryKey(),
-  runId: text('run_id').notNull(),
+  runId: text('run_id').notNull().references(() => runs.id),
   phase: text('phase'),
   step: text('step').notNull(),
   role: text('role').notNull(),
@@ -220,7 +220,7 @@ export const sessions = sqliteTable('sessions', {
 
 export const testResults = sqliteTable('test_results', {
   id: text('id').primaryKey(),
-  runId: text('run_id').notNull(),
+  runId: text('run_id').notNull().references(() => runs.id),
   testerJson: text('tester_json').notNull(),
   outcome: text('outcome').notNull(),
   evidenceJson: text('evidence_json'),

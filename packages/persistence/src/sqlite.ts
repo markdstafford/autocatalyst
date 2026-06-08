@@ -26,6 +26,7 @@ export function createSqliteDatabase(options: { path: string }): SqliteDatabase 
   }
 
   const client = new Database(options.path);
+  client.pragma('foreign_keys = ON');
   const db = drizzle(client, { schema });
 
   const internal: InternalSqliteDatabase = {
