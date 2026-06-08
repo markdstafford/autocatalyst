@@ -1,26 +1,50 @@
 import {
+  configurationRecordCollectionPath,
+  configurationRecordListResponseSchema,
+  configurationRecordResponseSchema,
+  createConfigurationRecordRequestSchema,
+  createConfigurationRecordSuccessStatusCode,
   createProbeResourceRequestSchema,
   createProbeResourceSuccessStatusCode,
+  createSecretRequestSchema,
+  createSecretResponseSchema,
+  createSecretSuccessStatusCode,
   degradedHealthStatusCode,
+  deleteConfigurationRecordSuccessStatusCode,
   errorResponseSchema,
   healthResponseSchema,
   probeResourceCollectionPath,
   probeResourceSchema,
+  secretCollectionPath,
+  updateConfigurationRecordRequestSchema,
+  type ConfigurationRecord,
+  type ConfigurationRecordListResponse,
+  type CreateConfigurationRecordRequest,
   type CreateProbeResourceRequest,
+  type CreateSecretRequest,
+  type CreateSecretResponse,
   type ErrorResponse,
   type HealthResponse,
-  type ProbeResource
+  type ProbeResource,
+  type UpdateConfigurationRecordRequest
 } from '@autocatalyst/api-contract';
 
 export interface ControlPlaneClientOptions {
   readonly baseUrl: string | URL;
   readonly fetch?: typeof globalThis.fetch;
+  readonly bearerToken?: string;
 }
 
 export interface ControlPlaneClient {
   getHealth(): Promise<HealthResponse>;
   createProbeResource(request: CreateProbeResourceRequest): Promise<ProbeResource>;
   getProbeResource(id: string): Promise<ProbeResource>;
+  createConfigurationRecord(request: CreateConfigurationRecordRequest): Promise<ConfigurationRecord>;
+  listConfigurationRecords(): Promise<ConfigurationRecordListResponse>;
+  getConfigurationRecord(id: string): Promise<ConfigurationRecord>;
+  updateConfigurationRecord(id: string, patch: UpdateConfigurationRecordRequest): Promise<ConfigurationRecord>;
+  deleteConfigurationRecord(id: string): Promise<void>;
+  createSecret(request: CreateSecretRequest): Promise<CreateSecretResponse>;
 }
 
 export class ControlPlaneClientError extends Error {
@@ -58,9 +82,18 @@ async function throwForError(response: Response): Promise<void> {
   throw new ControlPlaneClientError(response.status, parsed);
 }
 
+function protectedHeaders(bearerToken: string | undefined, extra?: Record<string, string>): Record<string, string> {
+  const headers: Record<string, string> = { ...extra };
+  if (bearerToken !== undefined) {
+    headers['authorization'] = `Bearer ${bearerToken}`;
+  }
+  return headers;
+}
+
 export function createControlPlaneClient(options: ControlPlaneClientOptions): ControlPlaneClient {
   const baseUrl = normalizeBaseUrl(options.baseUrl);
   const fetchImplementation = options.fetch ?? globalThis.fetch;
+  const { bearerToken } = options;
   if (fetchImplementation === undefined) {
     throw new Error('A fetch implementation is required.');
   }
@@ -79,7 +112,7 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
       const body = createProbeResourceRequestSchema.parse(request);
       const response = await fetchImplementation(urlFor(baseUrl, probeResourceCollectionPath), {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: protectedHeaders(bearerToken, { 'content-type': 'application/json' }),
         body: JSON.stringify(body)
       });
       await throwForError(response);
@@ -94,10 +127,87 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
     async getProbeResource(id) {
       const response = await fetchImplementation(
         urlFor(baseUrl, `${probeResourceCollectionPath}/${id}`),
-        { method: 'GET' }
+        { method: 'GET', headers: protectedHeaders(bearerToken) }
       );
       await throwForError(response);
       return probeResourceSchema.parse(await parseJson(response));
+    },
+
+    async createConfigurationRecord(request) {
+      const body = createConfigurationRecordRequestSchema.parse(request);
+      const response = await fetchImplementation(urlFor(baseUrl, configurationRecordCollectionPath), {
+        method: 'POST',
+        headers: protectedHeaders(bearerToken, { 'content-type': 'application/json' }),
+        body: JSON.stringify(body)
+      });
+      await throwForError(response);
+      if (response.status !== createConfigurationRecordSuccessStatusCode) {
+        throw new Error(
+          `Expected ${createConfigurationRecordSuccessStatusCode} from createConfigurationRecord, received ${response.status}.`
+        );
+      }
+      return configurationRecordResponseSchema.parse(await parseJson(response));
+    },
+
+    async listConfigurationRecords() {
+      const response = await fetchImplementation(urlFor(baseUrl, configurationRecordCollectionPath), {
+        method: 'GET',
+        headers: protectedHeaders(bearerToken)
+      });
+      await throwForError(response);
+      return configurationRecordListResponseSchema.parse(await parseJson(response));
+    },
+
+    async getConfigurationRecord(id) {
+      const response = await fetchImplementation(
+        urlFor(baseUrl, `${configurationRecordCollectionPath}/${id}`),
+        { method: 'GET', headers: protectedHeaders(bearerToken) }
+      );
+      await throwForError(response);
+      return configurationRecordResponseSchema.parse(await parseJson(response));
+    },
+
+    async updateConfigurationRecord(id, patch) {
+      const body = updateConfigurationRecordRequestSchema.parse(patch);
+      const response = await fetchImplementation(
+        urlFor(baseUrl, `${configurationRecordCollectionPath}/${id}`),
+        {
+          method: 'PATCH',
+          headers: protectedHeaders(bearerToken, { 'content-type': 'application/json' }),
+          body: JSON.stringify(body)
+        }
+      );
+      await throwForError(response);
+      return configurationRecordResponseSchema.parse(await parseJson(response));
+    },
+
+    async deleteConfigurationRecord(id) {
+      const response = await fetchImplementation(
+        urlFor(baseUrl, `${configurationRecordCollectionPath}/${id}`),
+        { method: 'DELETE', headers: protectedHeaders(bearerToken) }
+      );
+      await throwForError(response);
+      if (response.status !== deleteConfigurationRecordSuccessStatusCode) {
+        throw new Error(
+          `Expected ${deleteConfigurationRecordSuccessStatusCode} from deleteConfigurationRecord, received ${response.status}.`
+        );
+      }
+    },
+
+    async createSecret(request) {
+      const body = createSecretRequestSchema.parse(request);
+      const response = await fetchImplementation(urlFor(baseUrl, secretCollectionPath), {
+        method: 'POST',
+        headers: protectedHeaders(bearerToken, { 'content-type': 'application/json' }),
+        body: JSON.stringify(body)
+      });
+      await throwForError(response);
+      if (response.status !== createSecretSuccessStatusCode) {
+        throw new Error(
+          `Expected ${createSecretSuccessStatusCode} from createSecret, received ${response.status}.`
+        );
+      }
+      return createSecretResponseSchema.parse(await parseJson(response));
     }
   };
 }
