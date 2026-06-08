@@ -99,6 +99,9 @@ importers:
       fastify:
         specifier: ^5.0.0
         version: 5.8.5
+      zod:
+        specifier: ^3.0.0
+        version: 3.25.76
 
   packages/execution: {}
 
