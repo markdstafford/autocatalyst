@@ -18,7 +18,6 @@ CREATE TABLE `__new_artifacts` (
 INSERT INTO `__new_artifacts`("id", "run_id", "owner_json", "tenant", "kind", "canonical_record", "location", "cached_status", "linked_issue_json", "publication_refs_json", "created_at", "updated_at") SELECT "id", "run_id", "owner_json", "tenant", "kind", "canonical_record", "location", "cached_status", "linked_issue_json", "publication_refs_json", "created_at", "updated_at" FROM `artifacts`;--> statement-breakpoint
 DROP TABLE `artifacts`;--> statement-breakpoint
 ALTER TABLE `__new_artifacts` RENAME TO `artifacts`;--> statement-breakpoint
-PRAGMA foreign_keys=ON;--> statement-breakpoint
 CREATE INDEX `artifacts_run_created_idx` ON `artifacts` (`run_id`,`created_at`);--> statement-breakpoint
 CREATE TABLE `__new_conversations` (
 	`id` text PRIMARY KEY NOT NULL,
@@ -208,4 +207,5 @@ INSERT INTO `__new_topics`("id", "conversation_id", "owner_json", "tenant", "tit
 DROP TABLE `topics`;--> statement-breakpoint
 ALTER TABLE `__new_topics` RENAME TO `topics`;--> statement-breakpoint
 CREATE INDEX `topics_conversation_created_idx` ON `topics` (`conversation_id`,`created_at`);--> statement-breakpoint
-CREATE UNIQUE INDEX `topics_one_main_per_conversation` ON `topics` (`conversation_id`) WHERE "topics"."kind" = 'main';
+CREATE UNIQUE INDEX `topics_one_main_per_conversation` ON `topics` (`conversation_id`) WHERE "topics"."kind" = 'main';--> statement-breakpoint
+PRAGMA foreign_keys=ON;
