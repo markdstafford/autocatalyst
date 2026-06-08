@@ -2,15 +2,21 @@ import Fastify from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  configurationRecordListResponseSchema,
+  configurationRecordResponseSchema,
   createProbeResourceSuccessStatusCode,
+  createSecretResponseSchema,
   degradedHealthStatusCode,
   errorResponseSchema,
   eventsStreamPath,
   healthResponseSchema,
+  principalDiagnosticResponseSchema,
   probeResourceCollectionPath,
   probeResourceSchema,
   type ProbeResource
 } from '@autocatalyst/api-contract';
+
+import { SecretStoreLockedError } from './secret.js';
 
 import { hardcodedDevelopmentPrincipal } from './principal.js';
 import { registerControlPlaneRoutes } from './routes.js';
@@ -163,6 +169,155 @@ describe('registerControlPlaneRoutes', () => {
     });
     expect(missing.statusCode).toBe(404);
     expect(errorResponseSchema.parse(missing.json()).error.code).toBe('not_found');
+  });
+
+  it('exposes the protected hardcoded principal diagnostic route', async () => {
+    const { app, authorization, policyCalls } = await buildServer();
+    server = app;
+
+    const response = await app.inject({ method: 'GET', url: '/v1/principal', headers: authorization });
+    expect(response.statusCode).toBe(200);
+    expect(principalDiagnosticResponseSchema.parse(response.json())).toEqual({
+      principal: hardcodedDevelopmentPrincipal
+    });
+    expect(policyCalls).toContainEqual({
+      principal: hardcodedDevelopmentPrincipal,
+      action: 'principal.diagnostic.read',
+      resource: { kind: 'principal_diagnostic', path: '/v1/principal' }
+    });
+  });
+
+  it('creates, lists, reads, updates, and deletes configuration records', async () => {
+    const record = {
+      id: 'cfg_123',
+      kind: 'provider_profile',
+      providerKind: 'model_runner',
+      adapterId: 'openai',
+      settings: { profileName: 'default' },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const configRepo = {
+      create: vi.fn(async () => record),
+      list: vi.fn(async () => [record]),
+      findById: vi.fn(async (id: string) => id === 'cfg_123' ? record : null),
+      update: vi.fn(async (id: string) => id === 'cfg_123' ? { ...record, updatedAt: '2026-06-08T01:00:00.000Z' } : null),
+      delete: vi.fn(async (id: string) => id === 'cfg_123')
+    };
+    const { app, authorization, policyCalls } = await buildServer({ configurationRecords: configRepo });
+    server = app;
+
+    // Create
+    const createResponse = await app.inject({
+      method: 'POST', url: '/v1/configuration-records', headers: authorization,
+      payload: { kind: 'provider_profile', providerKind: 'model_runner', adapterId: 'openai', settings: { profileName: 'default' } }
+    });
+    expect(createResponse.statusCode).toBe(201);
+    expect(configurationRecordResponseSchema.parse(createResponse.json())).toEqual(record);
+    expect(policyCalls).toContainEqual({
+      principal: hardcodedDevelopmentPrincipal,
+      action: 'configuration_record.create',
+      resource: { kind: 'configuration_record_collection', path: '/v1/configuration-records' }
+    });
+
+    // List
+    const listResponse = await app.inject({ method: 'GET', url: '/v1/configuration-records', headers: authorization });
+    expect(listResponse.statusCode).toBe(200);
+    expect(configurationRecordListResponseSchema.parse(listResponse.json())).toEqual({ records: [record] });
+
+    // Read
+    const readResponse = await app.inject({ method: 'GET', url: '/v1/configuration-records/cfg_123', headers: authorization });
+    expect(readResponse.statusCode).toBe(200);
+    expect(configurationRecordResponseSchema.parse(readResponse.json())).toEqual(record);
+
+    // Update
+    const patchResponse = await app.inject({
+      method: 'PATCH', url: '/v1/configuration-records/cfg_123', headers: authorization,
+      payload: { providerKind: 'updated_runner' }
+    });
+    expect(patchResponse.statusCode).toBe(200);
+
+    // Delete
+    const deleteResponse = await app.inject({ method: 'DELETE', url: '/v1/configuration-records/cfg_123', headers: authorization });
+    expect(deleteResponse.statusCode).toBe(204);
+    expect(deleteResponse.body).toBe('');
+  });
+
+  it('returns 404 for missing config records', async () => {
+    const { app, authorization } = await buildServer();
+    server = app;
+    const response = await app.inject({ method: 'GET', url: '/v1/configuration-records/cfg_missing', headers: authorization });
+    expect(response.statusCode).toBe(404);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('not_found');
+  });
+
+  it('returns 400 for invalid config create request', async () => {
+    const { app, authorization } = await buildServer();
+    server = app;
+    const response = await app.inject({
+      method: 'POST', url: '/v1/configuration-records', headers: authorization,
+      payload: { kind: 'provider_profile', providerKind: 'x', adapterId: 'y', settings: { profileName: '' } }
+    });
+    expect(response.statusCode).toBe(400);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('validation_error');
+  });
+
+  it('returns 400 for empty patch body', async () => {
+    const { app, authorization } = await buildServer();
+    server = app;
+    const response = await app.inject({
+      method: 'PATCH', url: '/v1/configuration-records/cfg_123', headers: authorization,
+      payload: {}
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it('returns 404 when deleting a missing config record', async () => {
+    const { app, authorization } = await buildServer();
+    server = app;
+    const response = await app.inject({ method: 'DELETE', url: '/v1/configuration-records/cfg_missing', headers: authorization });
+    expect(response.statusCode).toBe(404);
+  });
+
+  it('creates a secret handle via POST /v1/secrets', async () => {
+    const { app, authorization, policyCalls } = await buildServer();
+    server = app;
+    const response = await app.inject({
+      method: 'POST', url: '/v1/secrets', headers: authorization,
+      payload: { value: 'sk-test-secret' }
+    });
+    expect(response.statusCode).toBe(201);
+    expect(createSecretResponseSchema.parse(response.json())).toEqual({ handle: 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef' });
+    expect(response.body).not.toContain('sk-test-secret');
+    expect(policyCalls).toContainEqual({
+      principal: hardcodedDevelopmentPrincipal,
+      action: 'secret.create',
+      resource: { kind: 'secret_collection', path: '/v1/secrets' }
+    });
+  });
+
+  it('returns 400 for empty secret value', async () => {
+    const { app, authorization } = await buildServer();
+    server = app;
+    const response = await app.inject({
+      method: 'POST', url: '/v1/secrets', headers: authorization,
+      payload: { value: '' }
+    });
+    expect(response.statusCode).toBe(400);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('validation_error');
+  });
+
+  it('maps SecretStoreLockedError to 400 secret_store_locked without echoing value', async () => {
+    const lockedSecrets = { createSecret: vi.fn(async () => { throw new SecretStoreLockedError(); }) };
+    const { app, authorization } = await buildServer({ secrets: lockedSecrets });
+    server = app;
+    const response = await app.inject({
+      method: 'POST', url: '/v1/secrets', headers: authorization,
+      payload: { value: 'my-secret-value' }
+    });
+    expect(response.statusCode).toBe(400);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('secret_store_locked');
+    expect(response.body).not.toContain('my-secret-value');
   });
 
   it('exposes an SSE route with event-stream semantics', async () => {
