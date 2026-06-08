@@ -17,7 +17,7 @@ function parsePort(value: string | undefined): number {
   }
 
   const port = Number(value);
-  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
     throw new Error('Control-plane port must be a number between 1 and 65535.');
   }
 
