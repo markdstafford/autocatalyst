@@ -1,12 +1,6 @@
 import { z } from 'zod';
 
-import { nonModelPrincipalSchema, testingGuideResultSchema, trackedIssueSchema } from './domain-value-objects.js';
-
-function requireTenantMatchesOwner<T extends { owner: { tenantId: string }; tenant: string }>(value: T, context: z.RefinementCtx): void {
-  if (value.tenant !== value.owner.tenantId) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ['tenant'], message: 'Tenant must match owner.tenantId.' });
-  }
-}
+import { nonModelPrincipalSchema, requireTenantMatchesOwner, testingGuideResultSchema, trackedIssueSchema } from './domain-value-objects.js';
 
 export const runWorkKindSchema = z.string().min(1);
 

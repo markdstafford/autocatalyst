@@ -1,12 +1,6 @@
 import { z } from 'zod';
 
-import { nonModelPrincipalSchema, trackedIssueSchema } from './domain-value-objects.js';
-
-function requireTenantMatchesOwner<T extends { owner: { tenantId: string }; tenant: string }>(value: T, context: z.RefinementCtx): void {
-  if (value.tenant !== value.owner.tenantId) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ['tenant'], message: 'Tenant must match owner.tenantId.' });
-  }
-}
+import { nonModelPrincipalSchema, requireTenantMatchesOwner, trackedIssueSchema } from './domain-value-objects.js';
 
 export const artifactKindSchema = z.enum(['feature_spec', 'enhancement_spec', 'bug_triage', 'chore_plan']);
 export const artifactCachedStatusSchema = z.enum(['draft', 'ready_for_review', 'approved', 'published', 'superseded', 'unknown']);

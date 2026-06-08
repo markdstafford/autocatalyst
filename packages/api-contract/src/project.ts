@@ -1,12 +1,6 @@
 import { z } from 'zod';
 
-import { credentialReferenceSchema, nonModelPrincipalSchema } from './domain-value-objects.js';
-
-function requireTenantMatchesOwner<T extends { owner: { tenantId: string }; tenant: string }>(value: T, context: z.RefinementCtx): void {
-  if (value.tenant !== value.owner.tenantId) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ['tenant'], message: 'Tenant must match owner.tenantId.' });
-  }
-}
+import { credentialReferenceSchema, nonModelPrincipalSchema, requireTenantMatchesOwner } from './domain-value-objects.js';
 
 const hostRepositorySchema = z.object({
   provider: z.string().min(1),

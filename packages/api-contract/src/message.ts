@@ -1,13 +1,7 @@
 import { z } from 'zod';
 
-import { nonModelPrincipalSchema } from './domain-value-objects.js';
+import { nonModelPrincipalSchema, requireTenantMatchesOwner } from './domain-value-objects.js';
 import { principalSchema } from './principal.js';
-
-function requireTenantMatchesOwner<T extends { owner: { tenantId: string }; tenant: string }>(value: T, context: z.RefinementCtx): void {
-  if (value.tenant !== value.owner.tenantId) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ['tenant'], message: 'Tenant must match owner.tenantId.' });
-  }
-}
 
 export const messageDirectionSchema = z.enum(['inbound', 'outbound']);
 

@@ -1,12 +1,6 @@
 import { z } from 'zod';
 
-import { feedbackAnchorSchema, feedbackThreadSchema, nonModelPrincipalSchema } from './domain-value-objects.js';
-
-function requireTenantMatchesOwner<T extends { owner: { tenantId: string }; tenant: string }>(value: T, context: z.RefinementCtx): void {
-  if (value.tenant !== value.owner.tenantId) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ['tenant'], message: 'Tenant must match owner.tenantId.' });
-  }
-}
+import { feedbackAnchorSchema, feedbackThreadSchema, nonModelPrincipalSchema, requireTenantMatchesOwner } from './domain-value-objects.js';
 
 export const feedbackStatusSchema = z.enum(['open', 'addressed', 'resolved', 'wont_fix']);
 export const feedbackTargetSchema = z.enum(['artifact', 'implementation', 'docs', 'pr']);

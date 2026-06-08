@@ -137,6 +137,12 @@ export const frontedResourceSchema = z.discriminatedUnion('kind', [
   }
 });
 
+export function requireTenantMatchesOwner<T extends { owner: { tenantId: string }; tenant: string }>(value: T, context: z.RefinementCtx): void {
+  if (value.tenant !== value.owner.tenantId) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['tenant'], message: 'Tenant must match owner.tenantId.' });
+  }
+}
+
 export type JsonValue = z.infer<typeof jsonValueSchema>;
 export type NonModelPrincipal = z.infer<typeof nonModelPrincipalSchema>;
 export type ModelIdentity = z.infer<typeof modelIdentitySchema>;
