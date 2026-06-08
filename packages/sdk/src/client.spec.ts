@@ -196,9 +196,27 @@ describe('control-plane SDK client against a test server', () => {
     testApp = undefined;
   });
 
+  const testBearerToken = 'sdk-server-test-token';
+
+  function baseTestDeps() {
+    return {
+      auth: { bearerToken: testBearerToken },
+      policy: { authorize: async () => ({ allowed: true as const }) },
+      configurationRecords: {
+        create: async () => { throw new Error('not used'); },
+        list: async () => [],
+        findById: async () => null,
+        update: async () => null,
+        delete: async () => false
+      },
+      secrets: { createSecret: async () => { throw new Error('not used'); } }
+    };
+  }
+
   it('returns degraded health when the health checker reports the database is unreachable', async () => {
     testApp = Fastify({ logger: false });
     await registerControlPlaneRoutes(testApp, {
+      ...baseTestDeps(),
       health: { isDatabaseReachable: async () => false },
       probeResources: {
         create: async () => { throw new Error('not used'); },
@@ -223,6 +241,7 @@ describe('control-plane SDK client against a test server', () => {
     const stored = new Map<string, ProbeResource>();
     testApp = Fastify({ logger: false });
     await registerControlPlaneRoutes(testApp, {
+      ...baseTestDeps(),
       health: { isDatabaseReachable: async () => true },
       probeResources: {
         create: async (input) => {
@@ -243,7 +262,10 @@ describe('control-plane SDK client against a test server', () => {
       throw new Error('Expected Fastify to listen on a TCP port.');
     }
 
-    const client = createControlPlaneClient({ baseUrl: `http://127.0.0.1:${address.port}` });
+    const client = createControlPlaneClient({
+      baseUrl: `http://127.0.0.1:${address.port}`,
+      bearerToken: testBearerToken
+    });
 
     await expect(client.getHealth()).resolves.toEqual({
       status: 'ok',
