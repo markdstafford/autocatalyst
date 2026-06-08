@@ -11,6 +11,20 @@ import {
 
 const owner = { id: 'user_1', kind: 'human' as const, tenantId: 'tenant_1', displayName: 'Ada' };
 
+async function createTopicFixture(repos: ReturnType<typeof createDrizzleDomainRepositories>) {
+  const project = await repos.projects.create({
+    owner, tenant: 'tenant_1', displayName: 'P', repoUrl: 'https://example.test',
+    hostRepository: { provider: 'github', owner: 'test', name: 'repo' },
+    workspaceRootOverride: null, issueTrackerSetting: null, codeHostSetting: null, credentialRefs: []
+  });
+  const conv = await repos.conversations.create({
+    projectId: project.id, owner, tenant: 'tenant_1', identity: 'conv-c', activeTopicId: null
+  });
+  return repos.topics.create({
+    conversationId: conv.id, owner, tenant: 'tenant_1', title: 'T', kind: 'main'
+  });
+}
+
 describe('feature run lifecycle integration', () => {
   it('drives a feature run from intake to done with advance and revise', async () => {
     await withTempDatabasePath(async (databasePath) => {
@@ -18,17 +32,7 @@ describe('feature run lifecycle integration', () => {
       await migrateSqliteDatabase(database);
       const repos = createDrizzleDomainRepositories(database);
 
-      const project = await repos.projects.create({
-        owner, tenant: 'tenant_1', displayName: 'P', repoUrl: 'https://example.test',
-        hostRepository: { provider: 'github', owner: 'test', name: 'repo' },
-        workspaceRootOverride: null, issueTrackerSetting: null, codeHostSetting: null, credentialRefs: []
-      });
-      const conv = await repos.conversations.create({
-        projectId: project.id, owner, tenant: 'tenant_1', identity: 'conv-c', activeTopicId: null
-      });
-      const topic = await repos.topics.create({
-        conversationId: conv.id, owner, tenant: 'tenant_1', title: 'T', kind: 'main'
-      });
+      const topic = await createTopicFixture(repos);
 
       let tickMs = 0;
       const clock = () => new Date(Date.UTC(2024, 0, 1, 0, 0, 0, tickMs++)).toISOString();
@@ -97,6 +101,9 @@ describe('feature run lifecycle integration', () => {
 
       expect(stepRows.every((s) => s.role === 'none')).toBe(true);
 
+      const specAuthorStep = stepRows.find((s) => s.step === 'spec.author');
+      expect(specAuthorStep?.phase).toBe('spec');
+
       database.close();
     });
   });
@@ -107,17 +114,7 @@ describe('feature run lifecycle integration', () => {
       await migrateSqliteDatabase(database);
       const repos = createDrizzleDomainRepositories(database);
 
-      const project = await repos.projects.create({
-        owner, tenant: 'tenant_1', displayName: 'P', repoUrl: 'https://example.test',
-        hostRepository: { provider: 'github', owner: 'test', name: 'repo' },
-        workspaceRootOverride: null, issueTrackerSetting: null, codeHostSetting: null, credentialRefs: []
-      });
-      const conv = await repos.conversations.create({
-        projectId: project.id, owner, tenant: 'tenant_1', identity: 'conv-c', activeTopicId: null
-      });
-      const topic = await repos.topics.create({
-        conversationId: conv.id, owner, tenant: 'tenant_1', title: 'T', kind: 'main'
-      });
+      const topic = await createTopicFixture(repos);
 
       let state = await startRunLifecycle({
         runs: repos.runs,
@@ -146,17 +143,7 @@ describe('feature run lifecycle integration', () => {
       await migrateSqliteDatabase(database);
       const repos = createDrizzleDomainRepositories(database);
 
-      const project = await repos.projects.create({
-        owner, tenant: 'tenant_1', displayName: 'P', repoUrl: 'https://example.test',
-        hostRepository: { provider: 'github', owner: 'test', name: 'repo' },
-        workspaceRootOverride: null, issueTrackerSetting: null, codeHostSetting: null, credentialRefs: []
-      });
-      const conv = await repos.conversations.create({
-        projectId: project.id, owner, tenant: 'tenant_1', identity: 'conv-c', activeTopicId: null
-      });
-      const topic = await repos.topics.create({
-        conversationId: conv.id, owner, tenant: 'tenant_1', title: 'T', kind: 'main'
-      });
+      const topic = await createTopicFixture(repos);
 
       const featureStart = await startRunLifecycle({
         runs: repos.runs,
@@ -164,9 +151,10 @@ describe('feature run lifecycle integration', () => {
       });
 
       let state = featureStart;
-      const featurePath = ['advance', 'advance', 'advance', 'advance', 'advance', 'advance', 'advance', 'advance', 'advance', 'advance', 'advance'];
-      for (const directive of featurePath) {
-        state = await applyRunDirective({ runs: repos.runs, runId: state.run.id, directive: directive as 'advance' });
+      // 11 advances: intake→done without any revise
+      const advanceCount = 11;
+      for (let i = 0; i < advanceCount; i++) {
+        state = await applyRunDirective({ runs: repos.runs, runId: state.run.id, directive: 'advance' });
       }
       expect(state.run.currentStep).toBe('done');
       expect(state.run.terminal).toBe(true);
