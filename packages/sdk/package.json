@@ -11,5 +11,9 @@
       "import": "./dist/src/index.js"
     }
   },
-  "dependencies": { "@autocatalyst/api-contract": "workspace:*" }
+  "dependencies": { "@autocatalyst/api-contract": "workspace:*" },
+  "devDependencies": {
+    "@autocatalyst/core": "workspace:*",
+    "fastify": "^5.0.0"
+  }
 }
