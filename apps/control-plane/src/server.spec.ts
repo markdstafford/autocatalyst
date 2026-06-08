@@ -12,7 +12,6 @@ import {
   healthResponseSchema
 } from '@autocatalyst/api-contract';
 import {
-  buildProviderAdapterKey,
   createExtensionRegistryCatalog,
   type ProviderCompositionResult
 } from '@autocatalyst/core';
