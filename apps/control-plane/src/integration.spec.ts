@@ -91,7 +91,8 @@ describe('control-plane integration', () => {
 
       try {
         const response = await fetch(`http://127.0.0.1:${handle.port}/v1/events`, {
-          signal: controller.signal
+          signal: controller.signal,
+          headers: { authorization: `Bearer ${BEARER_TOKEN}` }
         });
 
         expect(response.status).toBe(200);

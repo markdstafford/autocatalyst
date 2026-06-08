@@ -8,6 +8,7 @@ import {
   errorResponseSchema,
   eventsStreamPath,
   healthResponseSchema,
+  notFoundErrorCode,
   probeResourceCollectionPath,
   probeResourceIdParamsSchema,
   probeResourceSchema,
@@ -16,14 +17,20 @@ import {
   type ProbeResourceIdParams
 } from '@autocatalyst/api-contract';
 
+import { registerBearerAuthHook, type BearerAuthOptions } from './auth.js';
 import { getHealth, type HealthDependencyChecker } from './health.js';
+import {
+  authorizeRequest,
+  type PolicyAction,
+  type PolicyDecisionPoint,
+  type PolicyResourceDescriptor
+} from './policy.js';
+import { requirePrincipalFromRequest } from './principal.js';
 import {
   createProbeResource,
   getProbeResource,
   type ProbeResourceRepository
 } from './probe-resource.js';
-import type { BearerAuthOptions } from './auth.js';
-import type { PolicyDecisionPoint } from './policy.js';
 import type { ConfigurationRecordRepository } from './configuration-record.js';
 import type { SecretStore } from './secret.js';
 
@@ -55,63 +62,98 @@ async function sendValidationError(reply: FastifyReply, error: unknown): Promise
   await reply.status(400).send(errorResponse('validation_error', 'Request validation failed.', details));
 }
 
+function authorizePreHandler(
+  policy: PolicyDecisionPoint,
+  action: PolicyAction,
+  resourceFn: (request: FastifyRequest) => PolicyResourceDescriptor
+) {
+  return async (request: FastifyRequest, reply: FastifyReply) => {
+    const principal = requirePrincipalFromRequest(request);
+    const decision = await authorizeRequest(policy, {
+      principal,
+      action,
+      resource: resourceFn(request)
+    });
+    if (!decision.allowed) {
+      await reply.status(403).send(errorResponse('forbidden', 'Forbidden.'));
+    }
+  };
+}
+
 export async function registerControlPlaneRoutes(
   app: FastifyInstance,
   dependencies: ControlPlaneRouteDependencies
 ): Promise<void> {
+  // PUBLIC: Health check (no auth)
   app.get('/health', async (_request, reply) => {
     const health = healthResponseSchema.parse(await getHealth(dependencies.health));
     const statusCode = health.status === 'ok' ? 200 : degradedHealthStatusCode;
     await reply.status(statusCode).send(health);
   });
 
-  app.post(probeResourceCollectionPath, async (request, reply) => {
-    let body: CreateProbeResourceRequest;
-    try {
-      body = parseBody(request);
-    } catch (error) {
-      await sendValidationError(reply, error);
-      return;
-    }
+  // PROTECTED: All /v1 routes
+  await app.register(async (protectedApp) => {
+    await registerBearerAuthHook(protectedApp, dependencies.auth);
 
-    const resource = probeResourceSchema.parse(
-      await createProbeResource(dependencies.probeResources, body)
-    );
-    await reply.status(createProbeResourceSuccessStatusCode).send(resource);
-  });
-
-  app.get(`${probeResourceCollectionPath}/:id`, async (request, reply) => {
-    let params: ProbeResourceIdParams;
-    try {
-      params = parseParams(request);
-    } catch (error) {
-      await sendValidationError(reply, error);
-      return;
-    }
-
-    const resource = await getProbeResource(dependencies.probeResources, params.id);
-    if (resource === null) {
-      await reply.status(404).send(errorResponse('not_found', 'Probe resource not found.'));
-      return;
-    }
-
-    await reply.status(200).send(probeResourceSchema.parse(resource));
-  });
-
-  app.get(eventsStreamPath, async (request, reply) => {
-    reply.raw.writeHead(200, {
-      'content-type': 'text/event-stream; charset=utf-8',
-      'cache-control': 'no-cache, no-transform',
-      connection: 'keep-alive'
-    });
-    reply.raw.write(': connected\n\n');
-
-    await new Promise<void>((resolve) => {
-      request.raw.on('close', resolve);
+    protectedApp.post(probeResourceCollectionPath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'probe_resource.create', () => ({
+        kind: 'probe_resource_collection',
+        path: '/v1/probe-resources'
+      }))
+    }, async (request, reply) => {
+      let body: CreateProbeResourceRequest;
+      try {
+        body = parseBody(request);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const resource = probeResourceSchema.parse(
+        await createProbeResource(dependencies.probeResources, body)
+      );
+      await reply.status(createProbeResourceSuccessStatusCode).send(resource);
     });
 
-    reply.raw.end();
-    return reply;
+    protectedApp.get(`${probeResourceCollectionPath}/:id`, {
+      preHandler: authorizePreHandler(dependencies.policy, 'probe_resource.read', (request) => ({
+        kind: 'probe_resource',
+        id: probeResourceIdParamsSchema.parse(request.params).id,
+        path: '/v1/probe-resources/:id'
+      }))
+    }, async (request, reply) => {
+      let params: ProbeResourceIdParams;
+      try {
+        params = parseParams(request);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const resource = await getProbeResource(dependencies.probeResources, params.id);
+      if (resource === null) {
+        await reply.status(404).send(errorResponse(notFoundErrorCode, 'Probe resource not found.'));
+        return;
+      }
+      await reply.status(200).send(probeResourceSchema.parse(resource));
+    });
+
+    protectedApp.get(eventsStreamPath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'events.stream', () => ({
+        kind: 'event_stream',
+        path: '/v1/events'
+      }))
+    }, async (request, reply) => {
+      reply.raw.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache, no-transform',
+        connection: 'keep-alive'
+      });
+      reply.raw.write(': connected\n\n');
+      await new Promise<void>((resolve) => {
+        request.raw.on('close', resolve);
+      });
+      reply.raw.end();
+      return reply;
+    });
   });
 
   app.setErrorHandler(async (error, _request, reply) => {
