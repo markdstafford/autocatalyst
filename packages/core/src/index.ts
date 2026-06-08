@@ -63,3 +63,39 @@ export type {
   TestResultRepository,
   TopicRepository
 } from './domain-repositories.js';
+
+export type {
+  LifecycleRunStepInput,
+  RecordRunLifecycleStartInput,
+  RecordRunLifecycleStartResult,
+  RecordRunStepTransitionInput,
+  RecordRunStepTransitionResult
+} from './domain-repositories.js';
+
+export {
+  deriveRunTerminal,
+  getRunStepDefinition,
+  isKnownRunStepId,
+  messageAcceptingSteps,
+  modelActiveSteps,
+  runStepCatalog,
+  runStepDefinitions,
+  runStepIds,
+  terminalSteps
+} from './run-step-catalog.js';
+export type { RunPhase, RunStepDefinition, RunStepId, RunStepRole, WaitingOn } from './run-step-catalog.js';
+
+export {
+  getRunWorkflowById,
+  getRunWorkflowForWorkKind,
+  isKnownRunWorkflowId,
+  runWorkflowIds,
+  runWorkflows
+} from './run-workflows.js';
+export type { RunArtifactKind, RunDirective, RunWorkflowDefinition, RunWorkflowId, WorkflowTransitionTable } from './run-workflows.js';
+
+export { nextWorkflowStep } from './run-transition.js';
+export type { TransitionErrorCode, TransitionResult } from './run-transition.js';
+
+export { RunLifecycleError, applyRunDirective, startRunLifecycle } from './run-lifecycle.js';
+export type { ApplyRunDirectiveInput, RunLifecycleErrorCode, RunLifecycleState, StartRunLifecycleInput } from './run-lifecycle.js';

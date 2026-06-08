@@ -48,10 +48,36 @@ export interface MessageRepository {
   listByTopic(topicId: string): Promise<readonly Message[]>;
 }
 
+export type LifecycleRunStepInput = Omit<CreateRunStepInput, 'runId' | 'occurrence'>;
+
+export interface RecordRunLifecycleStartInput {
+  readonly run: CreateRunInput;
+  readonly runStep: LifecycleRunStepInput;
+}
+
+export interface RecordRunLifecycleStartResult {
+  readonly run: Run;
+  readonly runStep: RunStep;
+}
+
+export interface RecordRunStepTransitionInput {
+  readonly runId: string;
+  readonly currentStep: string;
+  readonly terminal: boolean;
+  readonly runStep: LifecycleRunStepInput;
+}
+
+export interface RecordRunStepTransitionResult {
+  readonly run: Run;
+  readonly runStep: RunStep;
+}
+
 export interface RunRepository {
   create(input: CreateRunInput): Promise<Run>;
   findById(id: string): Promise<Run | null>;
   listByTopic(topicId: string): Promise<readonly Run[]>;
+  recordRunLifecycleStart(input: RecordRunLifecycleStartInput): Promise<RecordRunLifecycleStartResult>;
+  recordRunStepTransition(input: RecordRunStepTransitionInput): Promise<RecordRunStepTransitionResult>;
 }
 
 export interface ArtifactRepository {
