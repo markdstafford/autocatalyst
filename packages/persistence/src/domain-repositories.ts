@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { asc, eq } from 'drizzle-orm';
+import { and, asc, count, eq } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type {
@@ -74,10 +74,15 @@ import type {
   ConversationRepository,
   DomainRepositories,
   FeedbackRepository,
+  LifecycleRunStepInput,
   MessageRepository,
   ProjectRepository,
   PublicationRepository,
   PullRequestRepository,
+  RecordRunLifecycleStartInput,
+  RecordRunLifecycleStartResult,
+  RecordRunStepTransitionInput,
+  RecordRunStepTransitionResult,
   RunRepository,
   RunStepRepository,
   SessionRepository,
@@ -143,6 +148,40 @@ function requireParent(rows: unknown[], parentId: string, parentName: string): v
   if (rows.length === 0) {
     throw new Error(`${parentName} '${parentId}' does not exist.`);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Shared transaction helper
+// ---------------------------------------------------------------------------
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function buildRunStepInsideTransaction(tx: any, runId: string, input: LifecycleRunStepInput): RunStep {
+  const existingForRun: number = tx.select({ value: count() }).from(runSteps).where(eq(runSteps.runId, runId)).all()[0]?.value ?? 0;
+  const existingForStep: number = tx.select({ value: count() }).from(runSteps).where(and(eq(runSteps.runId, runId), eq(runSteps.step, input.step))).all()[0]?.value ?? 0;
+  const occurrence = { index: existingForRun, attempt: existingForStep + 1 };
+  const entity = validateEntity(runStepSchema, {
+    id: `step_${randomUUID()}`,
+    runId,
+    phase: input.phase,
+    step: input.step,
+    role: input.role,
+    startedAt: input.startedAt,
+    endedAt: input.endedAt,
+    durationMs: input.durationMs,
+    occurrence
+  });
+  tx.insert(runSteps).values({
+    id: entity.id,
+    runId: entity.runId,
+    phase: entity.phase,
+    step: entity.step,
+    role: entity.role,
+    startedAt: entity.startedAt,
+    endedAt: entity.endedAt,
+    durationMs: entity.durationMs,
+    occurrenceJson: stringifyJsonValue(occurrenceSchema, entity.occurrence)
+  }).run();
+  return entity;
 }
 
 // ---------------------------------------------------------------------------
@@ -530,6 +569,59 @@ export class DrizzleRunRepository implements RunRepository {
       ...(testingGuideResult === null ? {} : { testingGuideResult }),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt
+    });
+  }
+
+  async recordRunLifecycleStart(input: RecordRunLifecycleStartInput): Promise<RecordRunLifecycleStartResult> {
+    const parsedRun = createRunInputSchema.parse(input.run);
+    return this.#database.drizzle.transaction((tx) => {
+      const parentRows = tx.select({ id: topics.id }).from(topics).where(eq(topics.id, parsedRun.topicId)).limit(1).all();
+      requireParent(parentRows, parsedRun.topicId, 'Topic');
+      const now = nowIso();
+      const run = validateEntity(runSchema, {
+        id: `run_${randomUUID()}`,
+        topicId: parsedRun.topicId,
+        owner: parsedRun.owner,
+        tenant: parsedRun.tenant,
+        workKind: parsedRun.workKind,
+        currentStep: parsedRun.currentStep,
+        terminal: parsedRun.terminal,
+        ...(parsedRun.trackedIssue === undefined ? {} : { trackedIssue: parsedRun.trackedIssue }),
+        ...(parsedRun.testingGuideResult === undefined ? {} : { testingGuideResult: parsedRun.testingGuideResult }),
+        createdAt: now,
+        updatedAt: now
+      });
+      tx.insert(runs).values({
+        id: run.id,
+        topicId: run.topicId,
+        ownerJson: stringifyJsonValue(nonModelPrincipalSchema, run.owner),
+        tenant: run.tenant,
+        workKind: run.workKind,
+        currentStep: run.currentStep,
+        terminal: run.terminal,
+        trackedIssueJson: nullableJsonForRow(trackedIssueSchema, run.trackedIssue),
+        testingGuideResultJson: nullableJsonForRow(testingGuideResultSchema, run.testingGuideResult),
+        createdAt: run.createdAt,
+        updatedAt: run.updatedAt
+      }).run();
+      const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep);
+      return { run, runStep };
+    });
+  }
+
+  async recordRunStepTransition(input: RecordRunStepTransitionInput): Promise<RecordRunStepTransitionResult> {
+    return this.#database.drizzle.transaction((tx) => {
+      const updatedRows = tx.update(runs)
+        .set({ currentStep: input.currentStep, terminal: input.terminal, updatedAt: nowIso() })
+        .where(eq(runs.id, input.runId))
+        .returning()
+        .all();
+      if (updatedRows[0] === undefined) {
+        throw new Error(`Run '${input.runId}' does not exist.`);
+      }
+      const run = this.#rowToRun(updatedRows[0]);
+      const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep);
+      return { run, runStep };
     });
   }
 }
