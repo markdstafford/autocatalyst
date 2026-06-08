@@ -1,6 +1,6 @@
 # Code map
 
-Last updated: 2026-06-07
+Last updated: 2026-06-08
 
 > How agents navigate the codebase. Keep this current: whenever you add, move, or significantly
 > change a module, update the relevant section in the same change.
@@ -13,6 +13,7 @@ Last updated: 2026-06-07
   It owns Zod schemas and inferred types; later OpenAPI and SDK generation should derive from this package.
 - `packages/core/` — control-plane core package. Public entry point: `packages/core/src/index.ts`.
   It may import the execution package through `@autocatalyst/execution` but must not import execution internals.
+  Key modules: `health.ts` (getHealth, HealthDependencyChecker), `probe-resource.ts` (ProbeResourceRepository, createProbeResource, getProbeResource), `routes.ts` (registerControlPlaneRoutes, ControlPlaneRouteDependencies — Fastify route registration for /health, probe-resource CRUD, and SSE).
 - `packages/execution/` — execution-plane package. Public entry point: `packages/execution/src/index.ts`.
   Internal files such as `packages/execution/src/internal/workspace-driver.ts` are not importable by control-plane code.
 - `packages/persistence/` — persistence package. Public entry point: `packages/persistence/src/index.ts`.
