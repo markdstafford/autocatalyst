@@ -65,6 +65,9 @@ export type {
 } from './domain-repositories.js';
 
 export type {
+  ConversationIngressRepository,
+  CreateConversationTopicMessageAndRunInput,
+  CreateConversationTopicMessageAndRunResult,
   LifecycleRunStepInput,
   RecordRunLifecycleStartInput,
   RecordRunLifecycleStartResult,

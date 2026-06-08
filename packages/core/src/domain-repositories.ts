@@ -75,6 +75,7 @@ export interface RecordRunStepTransitionResult {
 export interface RunRepository {
   create(input: CreateRunInput): Promise<Run>;
   findById(id: string): Promise<Run | null>;
+  findActiveByTopic(topicId: string): Promise<Run | null>;
   listByTopic(topicId: string): Promise<readonly Run[]>;
   recordRunLifecycleStart(input: RecordRunLifecycleStartInput): Promise<RecordRunLifecycleStartResult>;
   recordRunStepTransition(input: RecordRunStepTransitionInput): Promise<RecordRunStepTransitionResult>;
@@ -135,4 +136,26 @@ export interface DomainRepositories {
   runSteps: RunStepRepository;
   sessions: SessionRepository;
   testResults: TestResultRepository;
+}
+
+export interface CreateConversationTopicMessageAndRunInput {
+  readonly conversation: CreateConversationInput;
+  readonly topic: Omit<CreateTopicInput, 'conversationId'>;
+  readonly message?: Omit<CreateMessageInput, 'topicId'>;
+  readonly run: Omit<CreateRunInput, 'topicId' | 'currentStep' | 'terminal'>;
+  readonly runStep: LifecycleRunStepInput;
+}
+
+export interface CreateConversationTopicMessageAndRunResult {
+  readonly conversation: Conversation;
+  readonly topic: Topic;
+  readonly message?: Message;
+  readonly run: Run;
+  readonly runStep: RunStep;
+}
+
+export interface ConversationIngressRepository {
+  createConversationTopicMessageAndRun(
+    input: CreateConversationTopicMessageAndRunInput
+  ): Promise<CreateConversationTopicMessageAndRunResult>;
 }
