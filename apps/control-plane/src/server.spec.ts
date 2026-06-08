@@ -8,7 +8,6 @@ import {
   configurationRecordCollectionPath,
   createConfigurationRecordSuccessStatusCode,
   degradedHealthStatusCode,
-  errorResponseSchema,
   healthResponseSchema
 } from '@autocatalyst/api-contract';
 import {
