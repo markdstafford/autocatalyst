@@ -11,9 +11,11 @@ import {
   probeResourceCollectionPath,
   probeResourceSchema
 } from '@autocatalyst/api-contract';
-import { createSqliteDatabase, migrateSqliteDatabase } from '@autocatalyst/persistence';
 
 import { createControlPlaneServer, startControlPlaneServer } from './server.js';
+
+const BEARER_TOKEN = 'integration-token';
+const MASTER_SECRET = 'integration-master-secret';
 
 async function withTempDatabasePath(run: (databasePath: string) => Promise<void>): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), 'autocatalyst-integration-'));
@@ -27,7 +29,12 @@ async function withTempDatabasePath(run: (databasePath: string) => Promise<void>
 describe('control-plane integration', () => {
   it('checks health, creates and reads a probe resource, and survives restart', async () => {
     await withTempDatabasePath(async (databasePath) => {
-      const first = await startControlPlaneServer({ port: 0, databasePath });
+      const first = await startControlPlaneServer({
+        port: 0,
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET
+      });
       const baseUrl = `http://127.0.0.1:${first.port}`;
 
       const health = await fetch(`${baseUrl}/health`);
@@ -39,21 +46,32 @@ describe('control-plane integration', () => {
 
       const create = await fetch(`${baseUrl}${probeResourceCollectionPath}`, {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${BEARER_TOKEN}`
+        },
         body: JSON.stringify({ value: 'restart durable' })
       });
       expect(create.status).toBe(createProbeResourceSuccessStatusCode);
       const created = probeResourceSchema.parse(await create.json());
 
-      const read = await fetch(`${baseUrl}${probeResourceCollectionPath}/${created.id}`);
+      const read = await fetch(`${baseUrl}${probeResourceCollectionPath}/${created.id}`, {
+        headers: { authorization: `Bearer ${BEARER_TOKEN}` }
+      });
       expect(read.status).toBe(200);
       expect(probeResourceSchema.parse(await read.json())).toEqual(created);
 
       await first.close();
 
-      const second = await startControlPlaneServer({ port: 0, databasePath });
+      const second = await startControlPlaneServer({
+        port: 0,
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET
+      });
       const restartedRead = await fetch(
-        `http://127.0.0.1:${second.port}${probeResourceCollectionPath}/${created.id}`
+        `http://127.0.0.1:${second.port}${probeResourceCollectionPath}/${created.id}`,
+        { headers: { authorization: `Bearer ${BEARER_TOKEN}` } }
       );
       expect(restartedRead.status).toBe(200);
       expect(probeResourceSchema.parse(await restartedRead.json())).toEqual(created);
@@ -63,7 +81,12 @@ describe('control-plane integration', () => {
 
   it('exposes a real SSE stream that remains open until the test closes it', async () => {
     await withTempDatabasePath(async (databasePath) => {
-      const handle = await startControlPlaneServer({ port: 0, databasePath });
+      const handle = await startControlPlaneServer({
+        port: 0,
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET
+      });
       const controller = new AbortController();
 
       try {
@@ -82,12 +105,14 @@ describe('control-plane integration', () => {
     });
   });
 
-  it('returns degraded health when the caller-owned database has been closed', async () => {
+  it('returns degraded health when injected health checker reports unreachable', async () => {
     await withTempDatabasePath(async (databasePath) => {
-      const database = createSqliteDatabase({ path: databasePath });
-      await migrateSqliteDatabase(database);
-      const app = await createControlPlaneServer(database);
-      database.close();
+      const app = await createControlPlaneServer({
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET,
+        health: { isDatabaseReachable: async () => false }
+      });
 
       const response = await app.inject({ method: 'GET', url: '/health' });
       expect(response.statusCode).toBe(degradedHealthStatusCode);

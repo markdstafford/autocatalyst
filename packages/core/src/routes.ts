@@ -22,10 +22,18 @@ import {
   getProbeResource,
   type ProbeResourceRepository
 } from './probe-resource.js';
+import type { BearerAuthOptions } from './auth.js';
+import type { PolicyDecisionPoint } from './policy.js';
+import type { ConfigurationRecordRepository } from './configuration-record.js';
+import type { SecretStore } from './secret.js';
 
 export interface ControlPlaneRouteDependencies {
   readonly health: HealthDependencyChecker;
+  readonly auth: BearerAuthOptions;
+  readonly policy: PolicyDecisionPoint;
   readonly probeResources: ProbeResourceRepository;
+  readonly configurationRecords: ConfigurationRecordRepository;
+  readonly secrets: SecretStore;
 }
 
 function errorResponse(code: string, message: string, details?: unknown): ErrorResponse {

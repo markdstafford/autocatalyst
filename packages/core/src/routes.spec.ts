@@ -20,6 +20,8 @@ async function buildServer(overrides: Partial<ControlPlaneRouteDependencies> = {
   const app = Fastify({ logger: false });
   const dependencies: ControlPlaneRouteDependencies = {
     health: { isDatabaseReachable: async () => true },
+    auth: { bearerToken: 'test-token' },
+    policy: { authorize: async () => ({ allowed: true }) },
     probeResources: {
       create: async (input) => {
         const resource = {
@@ -31,6 +33,16 @@ async function buildServer(overrides: Partial<ControlPlaneRouteDependencies> = {
         return resource;
       },
       findById: async (id) => stored.get(id) ?? null
+    },
+    configurationRecords: {
+      create: async () => { throw new Error('not implemented'); },
+      list: async () => [],
+      findById: async () => null,
+      update: async () => null,
+      delete: async () => false
+    },
+    secrets: {
+      createSecret: async () => { throw new Error('not implemented'); }
     },
     ...overrides
   };
