@@ -1,3 +1,5 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -50,6 +52,15 @@ export async function migrateSqliteDatabase(database: SqliteDatabase): Promise<v
   const internal = asInternalSqliteDatabase(database);
   const migrationsFolder = join(dirname(fileURLToPath(import.meta.url)), '..', 'drizzle');
   migrate(internal.drizzle, { migrationsFolder });
+}
+
+export async function withTempDatabasePath(run: (databasePath: string) => Promise<void>): Promise<void> {
+  const directory = await mkdtemp(join(tmpdir(), 'autocatalyst-persistence-'));
+  try {
+    await run(join(directory, 'control-plane.sqlite'));
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }
 
 export async function checkSqliteDatabaseReachability(database: SqliteDatabase): Promise<boolean> {

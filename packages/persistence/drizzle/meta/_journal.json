@@ -8,6 +8,13 @@
       "when": 1749322620000,
       "tag": "0000_create_probe_resources",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1749322621000,
+      "tag": "0001_create_configuration_and_secrets",
+      "breakpoints": true
     }
   ]
 }

@@ -5,8 +5,18 @@ import {
 } from '@asteasolutions/zod-to-openapi';
 import { z } from 'zod';
 
+import {
+  configurationRecordCollectionPath,
+  configurationRecordIdParamsSchema,
+  configurationRecordListResponseSchema,
+  configurationRecordResponseSchema,
+  createConfigurationRecordRequestSchema,
+  createConfigurationRecordSuccessStatusCode,
+  updateConfigurationRecordRequestSchema
+} from './configuration-record.js';
 import { errorResponseSchema } from './errors.js';
 import { degradedHealthStatusCode, healthResponseSchema } from './health.js';
+import { principalDiagnosticPath, principalDiagnosticResponseSchema } from './principal.js';
 import {
   createProbeResourceRequestSchema,
   createProbeResourceSuccessStatusCode,
@@ -14,6 +24,12 @@ import {
   probeResourceIdParamsSchema,
   probeResourceSchema
 } from './probe-resource.js';
+import {
+  createSecretRequestSchema,
+  createSecretResponseSchema,
+  createSecretSuccessStatusCode,
+  secretCollectionPath
+} from './secret.js';
 import { eventsStreamPath } from './sse.js';
 
 extendZodWithOpenApi(z);
@@ -47,6 +63,14 @@ export function generateOpenApiDocument(): OpenApiDocument {
   );
   const ProbeResource = registry.register('ProbeResource', probeResourceSchema);
   const ProbeResourceIdParams = registry.register('ProbeResourceIdParams', probeResourceIdParamsSchema);
+  const PrincipalDiagnosticResponse = registry.register('PrincipalDiagnosticResponse', principalDiagnosticResponseSchema);
+  const CreateConfigurationRecordRequest = registry.register('CreateConfigurationRecordRequest', createConfigurationRecordRequestSchema);
+  const UpdateConfigurationRecordRequest = registry.register('UpdateConfigurationRecordRequest', updateConfigurationRecordRequestSchema);
+  const ConfigurationRecord = registry.register('ConfigurationRecord', configurationRecordResponseSchema);
+  const ConfigurationRecordListResponse = registry.register('ConfigurationRecordListResponse', configurationRecordListResponseSchema);
+  const ConfigurationRecordIdParams = registry.register('ConfigurationRecordIdParams', configurationRecordIdParamsSchema);
+  const CreateSecretRequest = registry.register('CreateSecretRequest', createSecretRequestSchema);
+  const CreateSecretResponse = registry.register('CreateSecretResponse', createSecretResponseSchema);
 
   registry.registerPath({
     method: 'get',
@@ -106,6 +130,101 @@ export function generateOpenApiDocument(): OpenApiDocument {
           }
         }
       }
+    }
+  });
+
+  // GET /v1/principal
+  registry.registerPath({
+    method: 'get',
+    path: principalDiagnosticPath,
+    tags: ['principal'],
+    responses: {
+      200: jsonResponse(PrincipalDiagnosticResponse, 'Resolved principal.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.')
+    }
+  });
+
+  // POST /v1/configuration-records
+  registry.registerPath({
+    method: 'post',
+    path: configurationRecordCollectionPath,
+    tags: ['configuration-records'],
+    request: {
+      body: { content: { 'application/json': { schema: CreateConfigurationRecordRequest } } }
+    },
+    responses: {
+      [createConfigurationRecordSuccessStatusCode]: jsonResponse(ConfigurationRecord, 'Created configuration record.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      400: jsonResponse(ErrorResponse, 'Validation error.')
+    }
+  });
+
+  // GET /v1/configuration-records
+  registry.registerPath({
+    method: 'get',
+    path: configurationRecordCollectionPath,
+    tags: ['configuration-records'],
+    responses: {
+      200: jsonResponse(ConfigurationRecordListResponse, 'List of configuration records.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.')
+    }
+  });
+
+  // GET /v1/configuration-records/{id}
+  registry.registerPath({
+    method: 'get',
+    path: `${configurationRecordCollectionPath}/{id}`,
+    tags: ['configuration-records'],
+    request: { params: ConfigurationRecordIdParams },
+    responses: {
+      200: jsonResponse(ConfigurationRecord, 'Configuration record.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      404: jsonResponse(ErrorResponse, 'Configuration record not found.')
+    }
+  });
+
+  // PATCH /v1/configuration-records/{id}
+  registry.registerPath({
+    method: 'patch',
+    path: `${configurationRecordCollectionPath}/{id}`,
+    tags: ['configuration-records'],
+    request: {
+      params: ConfigurationRecordIdParams,
+      body: { content: { 'application/json': { schema: UpdateConfigurationRecordRequest } } }
+    },
+    responses: {
+      200: jsonResponse(ConfigurationRecord, 'Updated configuration record.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      400: jsonResponse(ErrorResponse, 'Validation error.'),
+      404: jsonResponse(ErrorResponse, 'Configuration record not found.')
+    }
+  });
+
+  // DELETE /v1/configuration-records/{id}
+  registry.registerPath({
+    method: 'delete',
+    path: `${configurationRecordCollectionPath}/{id}`,
+    tags: ['configuration-records'],
+    request: { params: ConfigurationRecordIdParams },
+    responses: {
+      204: { description: 'Deleted configuration record.' },
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      404: jsonResponse(ErrorResponse, 'Configuration record not found.')
+    }
+  });
+
+  // POST /v1/secrets
+  registry.registerPath({
+    method: 'post',
+    path: secretCollectionPath,
+    tags: ['secrets'],
+    request: {
+      body: { content: { 'application/json': { schema: CreateSecretRequest } } }
+    },
+    responses: {
+      [createSecretSuccessStatusCode]: jsonResponse(CreateSecretResponse, 'Created secret handle.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      400: jsonResponse(ErrorResponse, 'Validation error or secret store locked.')
     }
   });
 

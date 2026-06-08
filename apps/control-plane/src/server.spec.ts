@@ -4,12 +4,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { healthResponseSchema } from '@autocatalyst/api-contract';
-import {
-  checkSqliteDatabaseReachability,
-  createSqliteDatabase,
-  migrateSqliteDatabase
-} from '@autocatalyst/persistence';
+import { degradedHealthStatusCode, healthResponseSchema } from '@autocatalyst/api-contract';
 
 import { createControlPlaneServer, startControlPlaneServer } from './server.js';
 
@@ -22,12 +17,30 @@ async function withTempDatabasePath(run: (databasePath: string) => Promise<void>
   }
 }
 
-describe('control-plane server lifecycle', () => {
-  it('creates a Fastify server from a caller-owned migrated database', async () => {
+describe('createControlPlaneServer', () => {
+  it('rejects empty bearer token', async () => {
     await withTempDatabasePath(async (databasePath) => {
-      const database = createSqliteDatabase({ path: databasePath });
-      await migrateSqliteDatabase(database);
-      const app = await createControlPlaneServer(database);
+      await expect(
+        createControlPlaneServer({ databasePath, bearerToken: '', masterSecret: 'secret' })
+      ).rejects.toThrow();
+    });
+  });
+
+  it('rejects empty master secret', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      await expect(
+        createControlPlaneServer({ databasePath, bearerToken: 'token', masterSecret: '' })
+      ).rejects.toThrow();
+    });
+  });
+
+  it('creates a Fastify server from options and responds to health', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const app = await createControlPlaneServer({
+        databasePath,
+        bearerToken: 'token',
+        masterSecret: 'correct-master-secret'
+      });
 
       const response = await app.inject({ method: 'GET', url: '/health' });
       expect(response.statusCode).toBe(200);
@@ -37,14 +50,35 @@ describe('control-plane server lifecycle', () => {
       });
 
       await app.close();
-      expect(await checkSqliteDatabaseReachability(database)).toBe(true);
-      database.close();
     });
   });
 
-  it('starts, listens, and closes Fastify before closing the database', async () => {
+  it('uses injected health checker when provided', async () => {
     await withTempDatabasePath(async (databasePath) => {
-      const handle = await startControlPlaneServer({ port: 0, databasePath });
+      const app = await createControlPlaneServer({
+        databasePath,
+        bearerToken: 'token',
+        masterSecret: 'correct-master-secret',
+        health: { isDatabaseReachable: async () => false }
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/health' });
+      expect(response.statusCode).toBe(degradedHealthStatusCode);
+
+      await app.close();
+    });
+  });
+});
+
+describe('startControlPlaneServer', () => {
+  it('starts, listens, and closes with correct handle shape', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const handle = await startControlPlaneServer({
+        port: 0,
+        databasePath,
+        bearerToken: 'token',
+        masterSecret: 'correct-master-secret'
+      });
 
       expect(handle.port).toBeGreaterThan(0);
       expect(handle.databasePath).toBe(databasePath);

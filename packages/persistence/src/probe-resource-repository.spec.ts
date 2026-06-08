@@ -10,6 +10,7 @@ import {
   createSqliteDatabase,
   migrateSqliteDatabase
 } from './index.js';
+import { asInternalSqliteDatabase } from './sqlite.js';
 
 async function withTempDatabasePath(run: (databasePath: string) => Promise<void>): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), 'autocatalyst-persistence-'));
@@ -19,6 +20,27 @@ async function withTempDatabasePath(run: (databasePath: string) => Promise<void>
     await rm(directory, { recursive: true, force: true });
   }
 }
+
+describe('migration smoke test', () => {
+  it('migrates configuration and secret-store tables in an isolated database', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const database = createSqliteDatabase({ path: databasePath });
+      await migrateSqliteDatabase(database);
+
+      const internal = asInternalSqliteDatabase(database);
+      const tables = internal.client
+        .prepare(
+          "select name from sqlite_master where type = 'table' and name in (?, ?, ?)"
+        )
+        .all('configuration_records', 'secret_store_metadata', 'secrets')
+        .map((row: unknown) => (row as { name: string }).name)
+        .sort();
+
+      expect(tables).toEqual(['configuration_records', 'secret_store_metadata', 'secrets']);
+      database.close();
+    });
+  });
+});
 
 describe('sqlite database lifecycle', () => {
   it('opens, migrates, checks reachability, and closes an isolated database', async () => {
