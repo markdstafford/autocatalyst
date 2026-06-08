@@ -1,0 +1,62 @@
+import { readFile } from 'node:fs/promises';
+import { join } from 'node:path';
+
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+
+import * as schema from './schema.js';
+
+export interface SqliteDatabase {
+  readonly path: string;
+  readonly _brand: 'SqliteDatabase';
+  close(): void;
+}
+
+export interface InternalSqliteDatabase extends SqliteDatabase {
+  readonly client: Database.Database;
+  readonly drizzle: ReturnType<typeof drizzle<typeof schema>>;
+}
+
+export function createSqliteDatabase(options: { path: string }): SqliteDatabase {
+  if (options.path.trim().length === 0) {
+    throw new Error('SQLite database path is required.');
+  }
+
+  const client = new Database(options.path);
+  const db = drizzle(client, { schema });
+
+  return {
+    path: options.path,
+    _brand: 'SqliteDatabase',
+    client,
+    drizzle: db,
+    close() {
+      client.close();
+    }
+  } satisfies InternalSqliteDatabase;
+}
+
+export function asInternalSqliteDatabase(database: SqliteDatabase): InternalSqliteDatabase {
+  const candidate = database as Partial<InternalSqliteDatabase>;
+  if (candidate.client === undefined || candidate.drizzle === undefined) {
+    throw new Error('Invalid SQLite database handle.');
+  }
+  return candidate as InternalSqliteDatabase;
+}
+
+export async function migrateSqliteDatabase(database: SqliteDatabase): Promise<void> {
+  const internal = asInternalSqliteDatabase(database);
+  const migrationPath = join(process.cwd(), 'packages', 'persistence', 'drizzle', '0000_create_probe_resources.sql');
+  const sql = await readFile(migrationPath, 'utf8');
+  internal.client.exec(sql);
+}
+
+export async function checkSqliteDatabaseReachability(database: SqliteDatabase): Promise<boolean> {
+  try {
+    const internal = asInternalSqliteDatabase(database);
+    internal.client.prepare('select 1 as reachable').get();
+    return true;
+  } catch {
+    return false;
+  }
+}
