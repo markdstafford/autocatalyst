@@ -30,13 +30,13 @@ describe('readControlPlaneAppConfig', () => {
         CONTROL_PLANE_PORT: 'abc',
         CONTROL_PLANE_DATABASE_PATH: '/tmp/db.sqlite'
       })
-    ).toThrow('Control-plane port must be a number between 1 and 65535.');
+    ).toThrow('Control-plane port must be a number between 0 and 65535.');
     expect(() =>
       readControlPlaneAppConfig([], {
         CONTROL_PLANE_PORT: '70000',
         CONTROL_PLANE_DATABASE_PATH: '/tmp/db.sqlite'
       })
-    ).toThrow('Control-plane port must be a number between 1 and 65535.');
+    ).toThrow('Control-plane port must be a number between 0 and 65535.');
   });
 
   it('throws for missing or empty database paths', () => {

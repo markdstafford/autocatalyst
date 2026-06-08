@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { ZodError } from 'zod';
 
 import {
   createProbeResourceRequestSchema,
@@ -42,7 +43,8 @@ function parseParams(request: FastifyRequest): ProbeResourceIdParams {
 }
 
 async function sendValidationError(reply: FastifyReply, error: unknown): Promise<void> {
-  await reply.status(400).send(errorResponse('validation_error', 'Request validation failed.', error));
+  const details = error instanceof ZodError ? { issues: error.issues } : undefined;
+  await reply.status(400).send(errorResponse('validation_error', 'Request validation failed.', details));
 }
 
 export async function registerControlPlaneRoutes(
@@ -96,19 +98,15 @@ export async function registerControlPlaneRoutes(
     });
     reply.raw.write(': connected\n\n');
 
-    // During testing with fastify.inject() the socket is a MockSocket that never
-    // emits 'close', so we end the response immediately to prevent a hang.
-    const socketName = (request.socket as { constructor?: { name?: string } } | null)?.constructor
-      ?.name;
-    if (socketName === 'MockSocket') {
-      reply.raw.end();
-      return reply;
-    }
-
-    request.raw.on('close', () => {
-      reply.raw.end();
+    await new Promise<void>((resolve) => {
+      request.raw.on('close', resolve);
     });
 
+    reply.raw.end();
     return reply;
+  });
+
+  app.setErrorHandler(async (error, _request, reply) => {
+    await reply.status(500).send(errorResponse('internal_error', 'An internal server error occurred.'));
   });
 }

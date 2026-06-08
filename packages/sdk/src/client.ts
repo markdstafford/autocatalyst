@@ -1,6 +1,7 @@
 import {
   createProbeResourceRequestSchema,
   createProbeResourceSuccessStatusCode,
+  degradedHealthStatusCode,
   errorResponseSchema,
   healthResponseSchema,
   probeResourceCollectionPath,
@@ -67,8 +68,11 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
   return {
     async getHealth() {
       const response = await fetchImplementation(urlFor(baseUrl, '/health'), { method: 'GET' });
-      await throwForError(response);
-      return healthResponseSchema.parse(await parseJson(response));
+      if (response.ok || response.status === degradedHealthStatusCode) {
+        return healthResponseSchema.parse(await parseJson(response));
+      }
+      const parsed = errorResponseSchema.parse(await parseJson(response));
+      throw new ControlPlaneClientError(response.status, parsed);
     },
 
     async createProbeResource(request) {

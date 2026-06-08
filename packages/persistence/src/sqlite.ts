@@ -1,8 +1,9 @@
-import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 
 import * as schema from './schema.js';
 
@@ -47,9 +48,8 @@ export function asInternalSqliteDatabase(database: SqliteDatabase): InternalSqli
 
 export async function migrateSqliteDatabase(database: SqliteDatabase): Promise<void> {
   const internal = asInternalSqliteDatabase(database);
-  const migrationPath = join(process.cwd(), 'packages', 'persistence', 'drizzle', '0000_create_probe_resources.sql');
-  const sql = await readFile(migrationPath, 'utf8');
-  internal.client.exec(sql);
+  const migrationsFolder = join(dirname(fileURLToPath(import.meta.url)), '..', 'drizzle');
+  migrate(internal.drizzle, { migrationsFolder });
 }
 
 export async function checkSqliteDatabaseReachability(database: SqliteDatabase): Promise<boolean> {

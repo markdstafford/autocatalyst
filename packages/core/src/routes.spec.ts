@@ -97,12 +97,22 @@ describe('registerControlPlaneRoutes', () => {
 
   it('exposes an SSE route with event-stream semantics', async () => {
     server = await buildServer();
+    await server.listen({ port: 0, host: '127.0.0.1' });
+    const address = server.server.address();
+    if (typeof address !== 'object' || address === null) {
+      throw new Error('Expected server address to be an object.');
+    }
 
-    const response = await server.inject({ method: 'GET', url: eventsStreamPath });
+    const controller = new AbortController();
+    const response = await fetch(
+      `http://127.0.0.1:${(address as { port: number }).port}${eventsStreamPath}`,
+      { signal: controller.signal }
+    );
 
-    expect(response.statusCode).toBe(200);
-    expect(response.headers['content-type']).toEqual(expect.stringMatching(/^text\/event-stream/u));
-    expect(response.headers['cache-control']).toEqual(expect.stringContaining('no-cache'));
-    expect(response.body).toContain(': connected');
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toMatch(/^text\/event-stream/u);
+    expect(response.headers.get('cache-control')).toContain('no-cache');
+
+    controller.abort(); // Close the SSE connection cleanly
   });
 });

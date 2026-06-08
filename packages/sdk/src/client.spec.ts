@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createProbeResourceSuccessStatusCode,
+  degradedHealthStatusCode,
   probeResourceCollectionPath,
   type ProbeResource
 } from '@autocatalyst/api-contract';
@@ -43,6 +44,16 @@ describe('control-plane SDK client', () => {
     expect(String(fetch.mock.calls[0]?.[0])).toBe(`http://example.test${probeResourceCollectionPath}`);
   });
 
+  it('resolves with degraded health when the server returns 503 with a valid HealthResponse', async () => {
+    const degradedBody = { status: 'degraded', database: { status: 'unreachable' } };
+    const fetch = vi.fn(async () =>
+      new Response(JSON.stringify(degradedBody), { status: degradedHealthStatusCode })
+    );
+    const client = createControlPlaneClient({ baseUrl: 'http://example.test', fetch });
+
+    await expect(client.getHealth()).resolves.toEqual(degradedBody);
+  });
+
   it('throws ControlPlaneClientError for non-2xx error envelopes', async () => {
     const error = { error: { code: 'not_found', message: 'Probe resource not found.' } };
     const fetch = vi.fn(async () => new Response(JSON.stringify(error), { status: 404 }));
@@ -62,6 +73,29 @@ describe('control-plane SDK client against a test server', () => {
   afterEach(async () => {
     await testApp?.close();
     testApp = undefined;
+  });
+
+  it('returns degraded health when the health checker reports the database is unreachable', async () => {
+    testApp = Fastify({ logger: false });
+    await registerControlPlaneRoutes(testApp, {
+      health: { isDatabaseReachable: async () => false },
+      probeResources: {
+        create: async () => { throw new Error('not used'); },
+        findById: async () => null
+      }
+    });
+    await testApp.listen({ port: 0, host: '127.0.0.1' });
+    const address = testApp.server.address();
+    if (typeof address !== 'object' || address === null) {
+      throw new Error('Expected Fastify to listen on a TCP port.');
+    }
+
+    const client = createControlPlaneClient({ baseUrl: `http://127.0.0.1:${address.port}` });
+
+    await expect(client.getHealth()).resolves.toEqual({
+      status: 'degraded',
+      database: { status: 'unreachable' }
+    });
   });
 
   it('calls health, create, read, and 404 paths over HTTP', async () => {
