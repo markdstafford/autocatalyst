@@ -183,7 +183,7 @@ describe('registerControlPlaneRoutes', () => {
     expect(policyCalls).toContainEqual({
       principal: hardcodedDevelopmentPrincipal,
       action: 'principal.diagnostic.read',
-      resource: { kind: 'principal_diagnostic', path: '/v1/principal' }
+      resource: { kind: 'principal_diagnostic', path: '' }
     });
   });
 

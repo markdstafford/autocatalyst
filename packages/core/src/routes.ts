@@ -185,7 +185,7 @@ export async function registerControlPlaneRoutes(
     protectedApp.get(principalDiagnosticPath, {
       preHandler: authorizePreHandler(dependencies.policy, 'principal.diagnostic.read', () => ({
         kind: 'principal_diagnostic' as const,
-        path: '/v1/principal' as const
+        path: '' as const
       }))
     }, async (request, reply) => {
       await reply.status(200).send(principalDiagnosticResponseSchema.parse({

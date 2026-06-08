@@ -4,7 +4,7 @@ export type PolicyResourceDescriptor =
   | { readonly kind: 'probe_resource_collection'; readonly path: '/v1/probe-resources' }
   | { readonly kind: 'probe_resource'; readonly id: string; readonly path: '/v1/probe-resources/:id' }
   | { readonly kind: 'event_stream'; readonly path: '/v1/events' }
-  | { readonly kind: 'principal_diagnostic'; readonly path: '/v1/principal' }
+  | { readonly kind: 'principal_diagnostic'; readonly path: '' }
   | { readonly kind: 'configuration_record_collection'; readonly path: '/v1/configuration-records' }
   | { readonly kind: 'configuration_record'; readonly id: string; readonly path: '/v1/configuration-records/:id' }
   | { readonly kind: 'secret_collection'; readonly path: '/v1/secrets' };
