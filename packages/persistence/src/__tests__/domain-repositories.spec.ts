@@ -102,6 +102,9 @@ describe('DrizzleDomainRepositories round-trip', () => {
 
       await expect(repos.conversations.setActiveTopic(conv.id, '')).rejects.toThrow();
 
+      // Gap 4: setActiveTopic with null topicId (TypeScript cast required since signature only accepts string)
+      await expect((repos.conversations as any).setActiveTopic(conv.id, null)).rejects.toThrow();
+
       const otherConv = await repos.conversations.create({
         projectId: project.id,
         owner,
@@ -218,6 +221,22 @@ describe('DrizzleDomainRepositories round-trip', () => {
       const ids = msgs.map((m) => m.id).sort();
       expect(ids).toEqual([msg1.id, msg2.id].sort());
 
+      // Gap 1: findById assertions for conversation, topic, and message
+      const foundConv = await repos.conversations.findById(conv.id);
+      expect(foundConv?.projectId).toBe(project.id);
+      expect(foundConv?.title).toBe('C');
+      expect(foundConv?.activeTopicId).toBeNull();
+
+      const foundTopic = await repos.topics.findById(topic.id);
+      expect(foundTopic?.conversationId).toBe(conv.id);
+      expect(foundTopic?.title).toBe('T');
+      expect(foundTopic?.kind).toBe('main');
+
+      const foundMsg = await repos.messages.findById(msg1.id);
+      expect(foundMsg?.topicId).toBe(topic.id);
+      expect(foundMsg?.direction).toBe('inbound');
+      expect(foundMsg?.body).toBe('Hello');
+
       const run = await repos.runs.create({
         topicId: topic.id,
         owner,
@@ -276,6 +295,11 @@ describe('DrizzleDomainRepositories round-trip', () => {
         terminal: false
       });
 
+      // Gap 2: owner and tenant verified on readback for run
+      const foundRun = await repos.runs.findById(run.id);
+      expect(foundRun?.owner.kind).toBe('human');
+      expect(foundRun?.tenant).toBe('tenant_1');
+
       const artifact = await repos.artifacts.create({
         runId: run.id,
         owner,
@@ -289,6 +313,11 @@ describe('DrizzleDomainRepositories round-trip', () => {
       });
       expect((await repos.artifacts.findById(artifact.id))?.linkedIssue?.number).toBe(11);
       expect(await repos.artifacts.listByRun(run.id)).toHaveLength(1);
+
+      // Gap 2: owner and tenant verified on readback for artifact
+      const foundArtifact = await repos.artifacts.findById(artifact.id);
+      expect(foundArtifact?.owner.id).toBe('user_1');
+      expect(foundArtifact?.tenant).toBe('tenant_1');
 
       const fb = await repos.feedback.create({
         runId: run.id,
@@ -484,6 +513,82 @@ describe('DrizzleDomainRepositories round-trip', () => {
         .run('{"not_valid_principal": true}', artifact.id);
 
       await expect(repos.artifacts.findById(artifact.id)).rejects.toThrow();
+    });
+  });
+
+  it('stores a conversation with a channel reference and reads it back', async () => {
+    await withRepositories(async (repos) => {
+      const project = await repos.projects.create({
+        owner,
+        tenant: 'tenant_1',
+        displayName: 'P',
+        repoUrl: 'https://example.test',
+        hostRepository: { provider: 'github', owner: 'test', name: 'repo' },
+        workspaceRootOverride: null,
+        issueTrackerSetting: null,
+        codeHostSetting: null,
+        credentialRefs: []
+      });
+
+      // Gap 3: channel reference round-trip
+      const convWithChannel = await repos.conversations.create({
+        projectId: project.id,
+        owner,
+        tenant: 'tenant_1',
+        title: 'Conv with channel',
+        channel: { provider: 'slack', channelId: 'C1', threadId: 'T1' },
+        activeTopicId: null
+      });
+      const foundConv = await repos.conversations.findById(convWithChannel.id);
+      expect(foundConv?.channel?.provider).toBe('slack');
+      expect(foundConv?.channel?.channelId).toBe('C1');
+      expect(foundConv?.channel?.threadId).toBe('T1');
+    });
+  });
+
+  it('accepts an extensible currentStep string and reads it back', async () => {
+    await withRepositories(async (repos) => {
+      const project = await repos.projects.create({
+        owner,
+        tenant: 'tenant_1',
+        displayName: 'P',
+        repoUrl: 'https://example.test',
+        hostRepository: { provider: 'github', owner: 'test', name: 'repo' },
+        workspaceRootOverride: null,
+        issueTrackerSetting: null,
+        codeHostSetting: null,
+        credentialRefs: []
+      });
+      const conv = await repos.conversations.create({
+        projectId: project.id,
+        owner,
+        tenant: 'tenant_1',
+        title: 'C',
+        activeTopicId: null
+      });
+      // Use a separate topic so a second run doesn't violate the one-active-run constraint on
+      // the topic used in other tests.
+      const topic = await repos.topics.create({
+        conversationId: conv.id,
+        owner,
+        tenant: 'tenant_1',
+        title: 'Custom step topic',
+        kind: 'side'
+      });
+
+      // Gap 5: extensible currentStep — a value that is not a predefined step enum member
+      const customRun = await repos.runs.create({
+        topicId: topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'custom_workflow',
+        currentStep: 'my-custom-step-that-is-not-predefined',
+        terminal: false
+      });
+      expect(customRun.currentStep).toBe('my-custom-step-that-is-not-predefined');
+
+      const foundCustomRun = await repos.runs.findById(customRun.id);
+      expect(foundCustomRun?.currentStep).toBe('my-custom-step-that-is-not-predefined');
     });
   });
 
