@@ -23,8 +23,12 @@ export class RunLifecycleError extends Error {
     super(message);
     this.name = 'RunLifecycleError';
     this.code = code;
-    this.transitionCode = options.transitionCode;
-    this.cause = options.cause;
+    if (options.transitionCode !== undefined) {
+      this.transitionCode = options.transitionCode;
+    }
+    if (options.cause !== undefined) {
+      this.cause = options.cause;
+    }
   }
 }
 
@@ -74,7 +78,10 @@ function requireWorkflowForWorkKind(workKind: string): RunWorkflowDefinition {
 
 export async function startRunLifecycle(input: StartRunLifecycleInput): Promise<RunLifecycleState> {
   const workflow = requireWorkflowForWorkKind(input.run.workKind);
-  const firstStep = workflow.steps[0];
+  const firstStep = workflow.steps[0] as string | undefined;
+  if (firstStep === undefined) {
+    throw new RunLifecycleError('unknown_workflow', `Workflow '${workflow.id}' has no steps.`);
+  }
   const step = getRunStepDefinition(firstStep);
   if (step === null) {
     throw new RunLifecycleError('unknown_workflow', `Workflow '${workflow.id}' starts with unknown step '${firstStep}'.`);

@@ -7,7 +7,7 @@ import type {
   RecordRunStepTransitionResult,
   RunRepository
 } from './domain-repositories.js';
-import { RunLifecycleError, applyRunDirective, startRunLifecycle } from './run-lifecycle.js';
+import { applyRunDirective, startRunLifecycle } from './run-lifecycle.js';
 import type { Run, RunStep } from '@autocatalyst/api-contract';
 
 const owner = { id: 'user_1', kind: 'human' as const, tenantId: 'tenant_1', displayName: 'Ada' };

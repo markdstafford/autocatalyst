@@ -55,7 +55,7 @@ export const runStepDefinitions = [
 
 export const runStepCatalog = Object.fromEntries(
   runStepDefinitions.map((definition) => [definition.id, definition])
-) as Readonly<Record<RunStepId, RunStepDefinition>>;
+) as unknown as Readonly<Record<RunStepId, RunStepDefinition>>;
 
 const knownRunStepIds = new Set<string>(runStepIds);
 
