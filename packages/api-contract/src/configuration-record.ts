@@ -26,7 +26,10 @@ export const createConfigurationRecordRequestSchema = z.object({
 export const updateConfigurationRecordSettingsSchema = z.object({
   profileName: z.string().min(1).optional(),
   credentialSecretHandle: secretHandleSchema.nullable().optional()
-}).strict();
+}).strict().refine(
+  (value) => value.profileName !== undefined || value.credentialSecretHandle !== undefined,
+  { message: 'Settings patch must include at least one field.' }
+);
 
 export const updateConfigurationRecordRequestSchema = z.object({
   providerKind: z.string().min(1).optional(),

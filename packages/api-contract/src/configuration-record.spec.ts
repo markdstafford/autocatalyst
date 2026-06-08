@@ -47,6 +47,7 @@ describe('configuration record contract schemas', () => {
       updateConfigurationRecordRequestSchema.parse({ settings: { credentialSecretHandle: null } })
     ).toEqual({ settings: { credentialSecretHandle: null } });
     expect(() => updateConfigurationRecordRequestSchema.parse({ settings: { profileName: '' } })).toThrow();
+    expect(() => updateConfigurationRecordRequestSchema.parse({ settings: {} })).toThrow();
   });
 
   it('validates responses with datetime timestamps and no secret value field', () => {
