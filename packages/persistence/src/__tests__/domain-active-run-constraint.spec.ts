@@ -31,7 +31,7 @@ describe('one-active-run-per-topic constraint', () => {
         projectId: project.id,
         owner,
         tenant: 'tenant_1',
-        title: 'C',
+        identity: 'conv-c',
         activeTopicId: null
       });
       const topic = await repos.topics.create({
@@ -86,7 +86,7 @@ describe('one-active-run-per-topic constraint', () => {
         projectId: project.id,
         owner,
         tenant: 'tenant_1',
-        title: 'C',
+        identity: 'conv-c',
         activeTopicId: null
       });
       const topic = await repos.topics.create({
@@ -140,7 +140,7 @@ describe('one-active-run-per-topic constraint', () => {
         projectId: project.id,
         owner,
         tenant: 'tenant_1',
-        title: 'C',
+        identity: 'conv-c',
         activeTopicId: null
       });
       const topic1 = await repos.topics.create({

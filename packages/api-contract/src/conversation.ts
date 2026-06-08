@@ -7,7 +7,7 @@ export const conversationSchema = z.object({
   projectId: z.string().min(1),
   owner: nonModelPrincipalSchema,
   tenant: z.string().min(1),
-  title: z.string().min(1),
+  identity: z.string().min(1),
   channel: channelReferenceSchema.optional(),
   activeTopicId: z.string().min(1).nullable(),
   createdAt: z.string().datetime(),
@@ -18,7 +18,7 @@ export const createConversationInputSchema = z.object({
   projectId: z.string().min(1),
   owner: nonModelPrincipalSchema,
   tenant: z.string().min(1),
-  title: z.string().min(1),
+  identity: z.string().min(1),
   channel: channelReferenceSchema.optional(),
   activeTopicId: z.string().min(1).nullable()
 }).strict().superRefine(requireTenantMatchesOwner);

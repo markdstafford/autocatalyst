@@ -81,7 +81,7 @@ describe('DrizzleDomainRepositories round-trip', () => {
         projectId: project.id,
         owner,
         tenant: 'tenant_1',
-        title: 'Conv 1',
+        identity: 'conv-1',
         activeTopicId: null
       });
       expect(conv.activeTopicId).toBeNull();
@@ -106,7 +106,7 @@ describe('DrizzleDomainRepositories round-trip', () => {
         projectId: project.id,
         owner,
         tenant: 'tenant_1',
-        title: 'Conv 2',
+        identity: 'conv-2',
         activeTopicId: null
       });
       const otherTopic = await repos.topics.create({
@@ -137,7 +137,7 @@ describe('DrizzleDomainRepositories round-trip', () => {
         projectId: project.id,
         owner,
         tenant: 'tenant_1',
-        title: 'C',
+        identity: 'conv-c',
         activeTopicId: null
       });
       await repos.topics.create({ conversationId: conv.id, owner, tenant: 'tenant_1', title: 'Main', kind: 'main' });
@@ -185,7 +185,7 @@ describe('DrizzleDomainRepositories round-trip', () => {
         projectId: project.id,
         owner,
         tenant: 'tenant_1',
-        title: 'C',
+        identity: 'conv-c',
         activeTopicId: null
       });
       const topic = await repos.topics.create({
@@ -221,7 +221,7 @@ describe('DrizzleDomainRepositories round-trip', () => {
       // Gap 1: findById assertions for conversation, topic, and message
       const foundConv = await repos.conversations.findById(conv.id);
       expect(foundConv?.projectId).toBe(project.id);
-      expect(foundConv?.title).toBe('C');
+      expect(foundConv?.identity).toBe('conv-c');
       expect(foundConv?.activeTopicId).toBeNull();
 
       const foundTopic = await repos.topics.findById(topic.id);
@@ -273,7 +273,7 @@ describe('DrizzleDomainRepositories round-trip', () => {
         projectId: project.id,
         owner,
         tenant: 'tenant_1',
-        title: 'C',
+        identity: 'conv-c',
         activeTopicId: null
       });
       const topic = await repos.topics.create({
@@ -416,7 +416,7 @@ describe('DrizzleDomainRepositories round-trip', () => {
         projectId: project.id,
         owner,
         tenant: 'tenant_1',
-        title: 'C',
+        identity: 'conv-c',
         activeTopicId: null
       });
       const topic = await repos.topics.create({
@@ -475,7 +475,7 @@ describe('DrizzleDomainRepositories round-trip', () => {
         projectId: project.id,
         owner,
         tenant: 'tenant_1',
-        title: 'C',
+        identity: 'conv-c',
         activeTopicId: null
       });
       const topic = await repos.topics.create({
@@ -532,7 +532,7 @@ describe('DrizzleDomainRepositories round-trip', () => {
         projectId: project.id,
         owner,
         tenant: 'tenant_1',
-        title: 'Conv with channel',
+        identity: 'conv-channel',
         channel: { provider: 'slack', channelId: 'C1', threadId: 'T1' },
         activeTopicId: null
       });
@@ -560,7 +560,7 @@ describe('DrizzleDomainRepositories round-trip', () => {
         projectId: project.id,
         owner,
         tenant: 'tenant_1',
-        title: 'C',
+        identity: 'conv-c',
         activeTopicId: null
       });
       // Use a separate topic so a second run doesn't violate the one-active-run constraint on
@@ -606,7 +606,7 @@ describe('DrizzleDomainRepositories round-trip', () => {
         projectId: project.id,
         owner,
         tenant: 'tenant_1',
-        title: 'C',
+        identity: 'conv-c',
         activeTopicId: null
       });
       const topic = await repos.topics.create({

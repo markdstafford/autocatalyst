@@ -36,7 +36,7 @@ describe('domain entity contracts', () => {
   });
 
   it('models conversations with nullable activeTopicId and topics without an active flag', () => {
-    expect(conversationSchema.parse({ id: 'conv_1', projectId: 'proj_1', owner, tenant: 'tenant_1', title: 'Issue 11', channel: { provider: 'slack', channelId: 'C1' }, activeTopicId: null, createdAt: now, updatedAt: now }).activeTopicId).toBeNull();
+    expect(conversationSchema.parse({ id: 'conv_1', projectId: 'proj_1', owner, tenant: 'tenant_1', identity: 'issue-11', channel: { provider: 'slack', channelId: 'C1' }, activeTopicId: null, createdAt: now, updatedAt: now }).activeTopicId).toBeNull();
     expect(topicSchema.parse({ id: 'topic_1', conversationId: 'conv_1', owner, tenant: 'tenant_1', title: 'Main work', kind: 'main', createdAt: now, updatedAt: now }).kind).toBe('main');
     expect(() => topicSchema.parse({ id: 'topic_1', conversationId: 'conv_1', owner, tenant: 'tenant_1', title: 'Main work', kind: 'main', isActive: true, createdAt: now, updatedAt: now })).toThrow();
   });

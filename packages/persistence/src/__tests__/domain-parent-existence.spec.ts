@@ -32,7 +32,7 @@ describe('domain repository parent existence enforcement', () => {
           projectId: 'nonexistent_id',
           owner,
           tenant: 'tenant_1',
-          title: 'Orphan',
+          identity: 'orphan',
           activeTopicId: null
         })
       ).rejects.toThrow("Project 'nonexistent_id' does not exist.");

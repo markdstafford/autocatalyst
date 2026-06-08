@@ -61,7 +61,7 @@ export const conversations = sqliteTable('conversations', {
   projectId: text('project_id').notNull(),
   ownerJson: text('owner_json').notNull(),
   tenant: text('tenant').notNull(),
-  title: text('title').notNull(),
+  identity: text('identity').notNull(),
   channelJson: text('channel_json'),
   activeTopicId: text('active_topic_id'),
   createdAt: text('created_at').notNull(),
