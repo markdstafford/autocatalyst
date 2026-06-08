@@ -9,3 +9,8 @@ export const errorResponseSchema = z.object({
 });
 
 export type ErrorResponse = z.infer<typeof errorResponseSchema>;
+
+export const unauthorizedErrorCode = 'unauthorized' as const;
+export const validationErrorCode = 'validation_error' as const;
+export const notFoundErrorCode = 'not_found' as const;
+export const secretStoreLockedErrorCode = 'secret_store_locked' as const;
