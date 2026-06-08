@@ -1,4 +1,20 @@
 export { DrizzleConfigurationRecordRepository } from './configuration-record-repository.js';
+export {
+  DrizzleArtifactRepository,
+  DrizzleConversationRepository,
+  DrizzleFeedbackRepository,
+  DrizzleMessageRepository,
+  DrizzleProjectRepository,
+  DrizzlePublicationRepository,
+  DrizzlePullRequestRepository,
+  DrizzleRunRepository,
+  DrizzleRunStepRepository,
+  DrizzleSessionRepository,
+  DrizzleTestResultRepository,
+  DrizzleTopicRepository,
+  createDrizzleDomainRepositories
+} from './domain-repositories.js';
+export type { DrizzleDomainRepositories } from './domain-repositories.js';
 export { DrizzleProbeResourceRepository } from './probe-resource-repository.js';
 export { SecretStoreUnlockError, SqliteSecretStore } from './secret-store.js';
 export {
