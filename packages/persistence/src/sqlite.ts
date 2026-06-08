@@ -52,7 +52,13 @@ export function asInternalSqliteDatabase(database: SqliteDatabase): InternalSqli
 export async function migrateSqliteDatabase(database: SqliteDatabase): Promise<void> {
   const internal = asInternalSqliteDatabase(database);
   const migrationsFolder = join(dirname(fileURLToPath(import.meta.url)), '..', 'drizzle');
-  migrate(internal.drizzle, { migrationsFolder });
+  // PRAGMA foreign_keys changes are no-ops inside a transaction; disable/re-enable outside
+  internal.client.pragma('foreign_keys = OFF');
+  try {
+    migrate(internal.drizzle, { migrationsFolder });
+  } finally {
+    internal.client.pragma('foreign_keys = ON');
+  }
 }
 
 export async function withTempDatabasePath(run: (databasePath: string) => Promise<void>): Promise<void> {
