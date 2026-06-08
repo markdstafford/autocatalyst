@@ -81,7 +81,11 @@ export default [
       '@nx/dependency-checks': [
         'error',
         {
-          ignoredFiles: ['{projectRoot}/vite.config.ts', '{projectRoot}/vitest.config.ts']
+          ignoredFiles: [
+            '{projectRoot}/vite.config.ts',
+            '{projectRoot}/vitest.config.ts',
+            '{projectRoot}/drizzle.config.ts'
+          ]
         }
       ]
     }

@@ -1,7 +1,15 @@
+import { resolve } from 'node:path';
+
 import { defineConfig } from 'vite';
 
 export default defineConfig({
   cacheDir: '../../node_modules/.vite/packages/persistence',
+  resolve: {
+    alias: {
+      '@autocatalyst/api-contract': resolve(__dirname, '../api-contract/src/index.ts'),
+      '@autocatalyst/core': resolve(__dirname, '../core/src/index.ts')
+    }
+  },
   test: {
     environment: 'node',
     globals: false,

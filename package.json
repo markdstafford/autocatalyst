@@ -16,10 +16,15 @@
     "validate": "pnpm nx run-many -t build lint test && pnpm test:boundaries"
   },
   "dependencies": {
+    "@asteasolutions/zod-to-openapi": "^7.3.4",
+    "better-sqlite3": "^12.10.0",
+    "drizzle-orm": "^0.45.2",
+    "fastify": "^5.8.5",
     "zod": "^3.25.64"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
+      "better-sqlite3",
       "esbuild",
       "nx"
     ]
@@ -30,7 +35,9 @@
     "@nx/eslint-plugin": "21.1.2",
     "@nx/js": "21.1.2",
     "@nx/vite": "21.1.2",
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.15.29",
+    "drizzle-kit": "^0.31.10",
     "eslint": "^9.28.0",
     "jsonc-eslint-parser": "^3.1.0",
     "nx": "21.1.2",
