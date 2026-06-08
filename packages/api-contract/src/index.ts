@@ -23,3 +23,6 @@ export type {
 
 export { eventsStreamPath, sseHeadersSchema } from './sse.js';
 export type { SseHeaders } from './sse.js';
+
+export { generateOpenApiDocument } from './openapi.js';
+export type { OpenApiDocument } from './openapi.js';

@@ -16,6 +16,7 @@
     "validate": "pnpm nx run-many -t build lint test && pnpm test:boundaries"
   },
   "dependencies": {
+    "@asteasolutions/zod-to-openapi": "^7.3.4",
     "zod": "^3.25.64"
   },
   "pnpm": {
