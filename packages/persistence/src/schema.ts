@@ -1,4 +1,5 @@
 import { sql } from 'drizzle-orm';
+import type { AnySQLiteColumn } from 'drizzle-orm/sqlite-core';
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 export const probeResources = sqliteTable('probe_resources', {
@@ -63,7 +64,7 @@ export const conversations = sqliteTable('conversations', {
   tenant: text('tenant').notNull(),
   identity: text('identity').notNull(),
   channelJson: text('channel_json'),
-  activeTopicId: text('active_topic_id').references(() => topics.id),
+  activeTopicId: text('active_topic_id').references((): AnySQLiteColumn => topics.id),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull()
 }, (table) => [
@@ -72,7 +73,7 @@ export const conversations = sqliteTable('conversations', {
 
 export const topics = sqliteTable('topics', {
   id: text('id').primaryKey(),
-  conversationId: text('conversation_id').notNull().references(() => conversations.id),
+  conversationId: text('conversation_id').notNull().references((): AnySQLiteColumn => conversations.id),
   ownerJson: text('owner_json').notNull(),
   tenant: text('tenant').notNull(),
   title: text('title').notNull(),
