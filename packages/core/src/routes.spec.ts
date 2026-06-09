@@ -18,10 +18,30 @@ import {
 
 import { SecretStoreLockedError } from './secret.js';
 
+import { ControlPlaneServiceError, type ControlPlaneService } from './control-plane-service.js';
 import { hardcodedDevelopmentPrincipal } from './principal.js';
 import { registerControlPlaneRoutes } from './routes.js';
 import type { ControlPlaneRouteDependencies } from './routes.js';
 import type { PolicyDecisionInput } from './policy.js';
+import type { RunEventSubscription } from './run-events.js';
+
+function createFakeControlPlaneService(): ControlPlaneService {
+  return {
+    createConversationWithFirstRun: vi.fn(async () => {
+      throw new Error('controlPlane.createConversationWithFirstRun not stubbed for this test');
+    }),
+    getRun: vi.fn(async () => {
+      throw new Error('controlPlane.getRun not stubbed for this test');
+    }),
+    listRunSteps: vi.fn(async () => {
+      throw new Error('controlPlane.listRunSteps not stubbed for this test');
+    }),
+    subscribeRunEvents: vi.fn(async () => {
+      throw new Error('controlPlane.subscribeRunEvents not stubbed for this test');
+    }),
+    tick: vi.fn(async () => ({ status: 'noop' as const }))
+  };
+}
 
 async function buildServer(overrides?: Partial<ControlPlaneRouteDependencies>) {
   const bearerToken = 'test-token';
@@ -50,6 +70,7 @@ async function buildServer(overrides?: Partial<ControlPlaneRouteDependencies>) {
     secrets: {
       createSecret: vi.fn(async () => ({ handle: 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef' }))
     },
+    controlPlane: createFakeControlPlaneService(),
     ...overrides
   };
 
@@ -318,6 +339,208 @@ describe('registerControlPlaneRoutes', () => {
     expect(response.statusCode).toBe(400);
     expect(errorResponseSchema.parse(response.json()).error.code).toBe('secret_store_locked');
     expect(response.body).not.toContain('my-secret-value');
+  });
+
+  it('POST /v1/conversations returns 201 with the orchestrated result on success', async () => {
+    const orchestratedResult = {
+      conversation: { id: 'conv_1', projectId: 'proj_1', owner: hardcodedDevelopmentPrincipal, tenant: 'tenant_dev', identity: 'I', activeTopicId: 'topic_1', createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' },
+      topic: { id: 'topic_1', conversationId: 'conv_1', owner: hardcodedDevelopmentPrincipal, tenant: 'tenant_dev', title: 'My Topic', kind: 'main', createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' },
+      message: { id: 'msg_1', topicId: 'topic_1', owner: hardcodedDevelopmentPrincipal, tenant: 'tenant_dev', author: hardcodedDevelopmentPrincipal, direction: 'inbound', body: 'hello', createdAt: '2026-06-08T00:00:00.000Z' },
+      run: { id: 'run_1', topicId: 'topic_1', owner: hardcodedDevelopmentPrincipal, tenant: 'tenant_dev', workKind: 'feature', currentStep: 'intake', terminal: false, createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' },
+      runStep: { id: 'step_1', runId: 'run_1', phase: 'intake', step: 'intake', role: 'none', startedAt: '2026-06-08T00:00:00.000Z', endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 } }
+    };
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.createConversationWithFirstRun as ReturnType<typeof vi.fn>).mockResolvedValue(orchestratedResult);
+    const { app, authorization, policyCalls } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/conversations',
+      headers: authorization,
+      payload: {
+        projectId: 'proj_1',
+        identity: 'I',
+        topic: { title: 'My Topic' },
+        submission: { kind: 'free_form', body: 'hello', workKind: 'feature' }
+      }
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toEqual(orchestratedResult);
+    expect(controlPlane.createConversationWithFirstRun).toHaveBeenCalledWith(expect.objectContaining({
+      principal: hardcodedDevelopmentPrincipal,
+      tenant: 'tenant_dev'
+    }));
+    expect(policyCalls).toContainEqual({
+      principal: hardcodedDevelopmentPrincipal,
+      action: 'conversation.create',
+      resource: { kind: 'conversation_collection', path: '/v1/conversations' }
+    });
+  });
+
+  it('POST /v1/conversations returns 400 for invalid bodies', async () => {
+    const { app, authorization } = await buildServer();
+    server = app;
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/conversations',
+      headers: authorization,
+      payload: { projectId: '' }
+    });
+    expect(response.statusCode).toBe(400);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('validation_error');
+  });
+
+  it('POST /v1/conversations maps intake_routing_error to 400 with details', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.createConversationWithFirstRun as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('intake_routing_error', 'Unknown work kind.', { details: { workKind: 'bogus' } })
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/conversations',
+      headers: authorization,
+      payload: {
+        projectId: 'proj_1',
+        identity: 'I',
+        topic: { title: 'My Topic' },
+        submission: { kind: 'free_form', body: 'hello', workKind: 'feature' }
+      }
+    });
+    expect(response.statusCode).toBe(400);
+    const parsed = errorResponseSchema.parse(response.json());
+    expect(parsed.error.code).toBe('intake_routing_error');
+  });
+
+  it('POST /v1/conversations maps active_run_conflict to 409 with details', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.createConversationWithFirstRun as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('active_run_conflict', 'Active run conflict.', {
+        details: { topicId: 'topic_1', existingRunId: 'run_99' }
+      })
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/conversations',
+      headers: authorization,
+      payload: {
+        projectId: 'proj_1',
+        identity: 'I',
+        topic: { title: 'My Topic' },
+        submission: { kind: 'free_form', body: 'hello', workKind: 'feature' }
+      }
+    });
+    expect(response.statusCode).toBe(409);
+    const parsed = errorResponseSchema.parse(response.json());
+    expect(parsed.error.code).toBe('active_run_conflict');
+    expect(parsed.error.details).toEqual({ topicId: 'topic_1', existingRunId: 'run_99' });
+  });
+
+  it('GET /v1/runs/:id returns 200 with the run on success', async () => {
+    const run = { id: 'run_1', topicId: 'topic_1', owner: hardcodedDevelopmentPrincipal, tenant: 'tenant_dev', workKind: 'feature', currentStep: 'intake', terminal: false, createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' };
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.getRun as ReturnType<typeof vi.fn>).mockResolvedValue({ run });
+    const { app, authorization, policyCalls } = await buildServer({ controlPlane });
+    server = app;
+    const response = await app.inject({ method: 'GET', url: '/v1/runs/run_1', headers: authorization });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(run);
+    expect(controlPlane.getRun).toHaveBeenCalledWith({ principal: hardcodedDevelopmentPrincipal, tenant: 'tenant_dev', runId: 'run_1' });
+    expect(policyCalls).toContainEqual({
+      principal: hardcodedDevelopmentPrincipal,
+      action: 'run.read',
+      resource: { kind: 'run', id: 'run_1', path: '/v1/runs/:id' }
+    });
+  });
+
+  it('GET /v1/runs/:id maps not_found to 404', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.getRun as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('not_found', "Run 'missing' not found.")
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+    const response = await app.inject({ method: 'GET', url: '/v1/runs/missing', headers: authorization });
+    expect(response.statusCode).toBe(404);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('not_found');
+  });
+
+  it('GET /v1/runs/:id rejects unauthenticated requests with 401', async () => {
+    const { app } = await buildServer();
+    server = app;
+    const response = await app.inject({ method: 'GET', url: '/v1/runs/run_1' });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('GET /v1/runs/:id/steps returns 200 with the run-step list', async () => {
+    const steps = [
+      { id: 'step_1', runId: 'run_1', phase: 'intake', step: 'intake', role: 'none', startedAt: '2026-06-08T00:00:00.000Z', endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 } }
+    ];
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.listRunSteps as ReturnType<typeof vi.fn>).mockResolvedValue({ steps });
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+    const response = await app.inject({ method: 'GET', url: '/v1/runs/run_1/steps', headers: authorization });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ steps });
+  });
+
+  it('GET /v1/runs/:id/steps maps not_found to 404', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.listRunSteps as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('not_found', "Run 'missing' not found.")
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+    const response = await app.inject({ method: 'GET', url: '/v1/runs/missing/steps', headers: authorization });
+    expect(response.statusCode).toBe(404);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('not_found');
+  });
+
+  it('GET /v1/runs/:id/events maps subscribeRunEvents not_found to 404 before writing SSE headers', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.subscribeRunEvents as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('not_found', "Run 'missing' not found.")
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+    const response = await app.inject({ method: 'GET', url: '/v1/runs/missing/events', headers: authorization });
+    expect(response.statusCode).toBe(404);
+    expect(response.headers['content-type']).not.toMatch(/event-stream/u);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('not_found');
+  });
+
+  it('GET /v1/runs/:id/events forwards last-event-id header to subscribeRunEvents', async () => {
+    const events: AsyncIterable<never> = { async *[Symbol.asyncIterator]() { /* no events */ } };
+    const subscription: RunEventSubscription = { events, close: () => {} };
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.subscribeRunEvents as ReturnType<typeof vi.fn>).mockResolvedValue(subscription);
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const address = app.server.address();
+    if (typeof address !== 'object' || address === null) {
+      throw new Error('Expected server address to be an object.');
+    }
+
+    const controller = new AbortController();
+    const response = await fetch(
+      `http://127.0.0.1:${(address as { port: number }).port}/v1/runs/run_1/events`,
+      { signal: controller.signal, headers: { ...authorization, 'last-event-id': 'evt_42' } }
+    );
+    // Read the body so the server's async iterator can detect end-of-stream
+    await response.text();
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toMatch(/^text\/event-stream/u);
+    expect(controlPlane.subscribeRunEvents).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'run_1', tenant: 'tenant_dev', lastEventId: 'evt_42' })
+    );
+    controller.abort();
   });
 
   it('exposes an SSE route with event-stream semantics', async () => {

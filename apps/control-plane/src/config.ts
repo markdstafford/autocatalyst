@@ -3,7 +3,10 @@ export interface ControlPlaneAppConfig {
   readonly databasePath: string;
   readonly bearerToken: string;
   readonly masterSecret: string;
+  readonly runConcurrency: number;
 }
+
+const DEFAULT_RUN_CONCURRENCY = 2;
 
 function readFlag(argv: readonly string[], name: string): string | undefined {
   const index = argv.indexOf(name);
@@ -43,6 +46,17 @@ function parseMasterSecret(value: string | undefined): string {
   return parseRequiredString(value, 'CONTROL_PLANE_MASTER_SECRET or --master-secret is required.');
 }
 
+function parseRunConcurrency(value: string | undefined): number {
+  if (value === undefined || value.trim().length === 0) {
+    return DEFAULT_RUN_CONCURRENCY;
+  }
+  const concurrency = Number(value);
+  if (!Number.isInteger(concurrency) || concurrency < 1) {
+    throw new Error('Run concurrency must be a positive integer.');
+  }
+  return concurrency;
+}
+
 export function readControlPlaneAppConfig(
   argv: readonly string[] = process.argv.slice(2),
   env: NodeJS.ProcessEnv = process.env
@@ -51,11 +65,13 @@ export function readControlPlaneAppConfig(
   const databasePathValue = readFlag(argv, '--database-path') ?? env['CONTROL_PLANE_DATABASE_PATH'];
   const bearerTokenValue = readFlag(argv, '--bearer-token') ?? env['CONTROL_PLANE_BEARER_TOKEN'];
   const masterSecretValue = readFlag(argv, '--master-secret') ?? env['CONTROL_PLANE_MASTER_SECRET'];
+  const runConcurrencyValue = readFlag(argv, '--run-concurrency') ?? env['AUTOCATALYST_RUN_CONCURRENCY'];
 
   return {
     port: parsePort(portValue),
     databasePath: parseDatabasePath(databasePathValue),
     bearerToken: parseBearerToken(bearerTokenValue),
-    masterSecret: parseMasterSecret(masterSecretValue)
+    masterSecret: parseMasterSecret(masterSecretValue),
+    runConcurrency: parseRunConcurrency(runConcurrencyValue)
   };
 }
