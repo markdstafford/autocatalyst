@@ -115,13 +115,20 @@ describe('workspace provisioning integration', () => {
 
   it('reuses the same host clone for repeated runs and does not push run branches upstream', async () => {
     await provisionWorkspace(makeRequest({ runId: 'run_123', shortRunId: 'Abc123' }));
-    await provisionWorkspace(makeRequest({ runId: 'run_456', shortRunId: 'Def456', topicSlug: 'Second Run' }));
+    const result2 = await provisionWorkspace(makeRequest({ runId: 'run_456', shortRunId: 'Def456', topicSlug: 'Second Run' }));
+
+    expect(result2).toMatchObject({
+      shape: 'two_roots',
+      runId: 'run_456',
+      branchName: 'feature/second-run-Def456'
+    });
+    await expect(fs.stat(path.join(workspacesRoot, 'acme', 'widgets', 'run_456', 'repo'))).resolves.toMatchObject({});
 
     const hostRepositoryPath = path.join(reposRoot, 'acme', 'widgets');
     await expect(fs.stat(hostRepositoryPath)).resolves.toMatchObject({});
     await expect(fs.stat(path.join(reposRoot, 'acme', 'widgets-2'))).rejects.toThrow();
-    const upstreamBranches = await git(['branch', '--list'], upstreamPath);
-    expect(upstreamBranches).not.toContain('feature/second-run-Def456');
+    const upstreamBranchMatch = await git(['branch', '--list', 'feature/second-run-Def456'], upstreamPath);
+    expect(upstreamBranchMatch).toBe('');
   });
 
   it('rejects traversal-bearing run ids before creating run directories', async () => {
