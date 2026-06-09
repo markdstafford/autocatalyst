@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import { StubRunner } from './stub-runner.js';
 import { assertPathWithinWorkspaceRoots } from './internal/workspace-root-guard.js';
 import type { MaterializedExecutionEnvironment } from './materialized-environment.js';
@@ -132,6 +136,75 @@ describe('StubRunner', () => {
       ids.push(event.id);
     }
     expect(ids).toEqual(['test_evt_1', 'test_evt_2', 'test_evt_3', 'test_evt_4']);
+  });
+});
+
+describe('StubRunner — resultFile and correction responses', () => {
+  it('writes JSON result file under scratch root when configured', async () => {
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'stub-rf-'));
+    try {
+      const runner = new StubRunner({
+        resultFile: { relativePath: 'nested/result.json', value: { a: 1, b: 'x' } }
+      });
+      const env = makeEnvironment({
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      });
+      const events = [];
+      for await (const event of runner.run({ environment: env })) {
+        events.push(event);
+      }
+      expect(events).toHaveLength(4);
+      const written = await readFile(path.join(scratchRoot, 'nested/result.json'), 'utf8');
+      expect(JSON.parse(written)).toEqual({ a: 1, b: 'x' });
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('skips writing result file when no scratch root is materialized', async () => {
+    const runner = new StubRunner({
+      resultFile: { relativePath: 'r.json', value: { a: 1 } }
+    });
+    const env = makeEnvironment();
+    const events = [];
+    for await (const event of runner.run({ environment: env })) {
+      events.push(event);
+    }
+    expect(events).toHaveLength(4);
+  });
+
+  it('getCorrectionRequester returns scripted responses in order', async () => {
+    const runner = new StubRunner({
+      correctionResponses: [{ ok: 1 }, { ok: 2 }]
+    });
+    const requester = runner.getCorrectionRequester();
+    const baseRequest = {
+      runId: 'run_1',
+      step: 'implement',
+      schemaId: 'schema',
+      attempt: 1,
+      maxAttempts: 2,
+      issues: [],
+      safeCandidatePreview: null
+    };
+    await expect(requester.requestCorrection(baseRequest)).resolves.toEqual({ ok: 1 });
+    await expect(requester.requestCorrection({ ...baseRequest, attempt: 2 })).resolves.toEqual({ ok: 2 });
+  });
+
+  it('throws when scripted correction responses are exhausted', async () => {
+    const runner = new StubRunner({ correctionResponses: [] });
+    const requester = runner.getCorrectionRequester();
+    await expect(
+      requester.requestCorrection({
+        runId: 'run_1',
+        step: 'implement',
+        schemaId: 'schema',
+        attempt: 1,
+        maxAttempts: 1,
+        issues: [],
+        safeCandidatePreview: null
+      })
+    ).rejects.toThrow(/exhausted/);
   });
 });
 
