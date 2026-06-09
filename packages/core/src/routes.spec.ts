@@ -543,6 +543,71 @@ describe('registerControlPlaneRoutes', () => {
     controller.abort();
   });
 
+  it('GET /v1/runs/:id/events writes event/id/data SSE frames for each published event', async () => {
+    const timestamp = '2026-06-08T00:00:00.000Z';
+    const run = { id: 'run_1', topicId: 'topic_1', owner: hardcodedDevelopmentPrincipal, tenant: 'tenant_dev', workKind: 'feature', currentStep: 'intake', terminal: false, createdAt: timestamp, updatedAt: timestamp };
+    const runStep = { id: 'step_1', runId: 'run_1', phase: 'intake', step: 'intake', role: 'none', startedAt: timestamp, endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 } };
+    const sseEvent = {
+      id: 'evt_abc',
+      type: 'run_state_transition' as const,
+      runId: 'run_1',
+      transition: { directive: 'start' as const, toStep: 'intake' },
+      run,
+      runStep,
+      tenant: 'tenant_dev',
+      createdAt: timestamp
+    };
+
+    async function* generateEvents() { yield sseEvent; }
+    const closeSpy = vi.fn();
+    const subscription: RunEventSubscription = { events: { [Symbol.asyncIterator]: generateEvents }, close: closeSpy };
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.subscribeRunEvents as ReturnType<typeof vi.fn>).mockResolvedValue(subscription);
+
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const address = app.server.address() as { port: number };
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/v1/runs/run_1/events`, {
+      headers: authorization
+    });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toMatch(/^text\/event-stream/u);
+
+    const body = await response.text();
+    expect(body).toContain('event: run_state_transition\n');
+    expect(body).toContain('id: evt_abc\n');
+    expect(body).toContain(`data: ${JSON.stringify(sseEvent)}\n\n`);
+  });
+
+  it('GET /v1/runs/:id/events calls subscription.close() when server closes after stream ends', async () => {
+    // Verify subscription.close() is called when the event stream completes naturally.
+    // (The close() call in the finally block guarantees this.)
+    let closeCalled = false;
+    const events: AsyncIterable<never> = { async *[Symbol.asyncIterator]() { /* yields nothing */ } };
+    const closeSpy = vi.fn(() => { closeCalled = true; });
+    const subscription: RunEventSubscription = { events, close: closeSpy };
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.subscribeRunEvents as ReturnType<typeof vi.fn>).mockResolvedValue(subscription);
+
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const address = app.server.address() as { port: number };
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/v1/runs/run_1/events`, {
+      headers: authorization
+    });
+    expect(response.status).toBe(200);
+
+    // Read body to completion — when the generator ends naturally, finally calls close()
+    await response.text();
+
+    expect(closeSpy).toHaveBeenCalled();
+    expect(closeCalled).toBe(true);
+  });
+
   it('exposes an SSE route with event-stream semantics', async () => {
     const { app, authorization } = await buildServer();
     server = app;
