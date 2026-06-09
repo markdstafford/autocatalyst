@@ -439,4 +439,26 @@ describe('DefaultControlPlaneService.tick', () => {
       service.tick({ principal, tenant: 'tenant_1', runId: 'run_1' })
     ).rejects.toBeInstanceOf(ControlPlaneServiceError);
   });
+
+  it('maps a cross-tenant OrchestratorError to a typed ControlPlaneServiceError forbidden', async () => {
+    const orchestrator = makeFakeOrchestrator({
+      tick: vi.fn().mockRejectedValue(
+        new OrchestratorError('forbidden', "Run 'run_1' is not accessible to tenant 'tenant_1'.")
+      )
+    });
+    const service = makeService({ orchestrator });
+    const error = await service.tick({ principal, tenant: 'tenant_1', runId: 'run_1' }).catch((e) => e);
+    expect(error).toBeInstanceOf(ControlPlaneServiceError);
+    expect((error as ControlPlaneServiceError).code).toBe('forbidden');
+  });
+
+  it('maps a missing-run OrchestratorError from tick to not_found', async () => {
+    const orchestrator = makeFakeOrchestrator({
+      tick: vi.fn().mockRejectedValue(new OrchestratorError('missing_run', "Run 'run_1' does not exist."))
+    });
+    const service = makeService({ orchestrator });
+    const error = await service.tick({ principal, tenant: 'tenant_1', runId: 'run_1' }).catch((e) => e);
+    expect(error).toBeInstanceOf(ControlPlaneServiceError);
+    expect((error as ControlPlaneServiceError).code).toBe('not_found');
+  });
 });

@@ -12,7 +12,8 @@ import type { RunRepository, RunStepRepository } from './domain-repositories.js'
 import {
   OrchestratorError,
   type OrchestratedConversationResult,
-  type Orchestrator
+  type Orchestrator,
+  type OrchestratorErrorCode
 } from './orchestrator.js';
 import type { PolicyDecisionPoint, PolicyResourceDescriptor } from './policy.js';
 import type { RunEventSubscriber, RunEventSubscription } from './run-events.js';
@@ -123,6 +124,19 @@ export interface DefaultControlPlaneServiceOptions {
 }
 
 // --- Implementation ---
+
+function mapOrchestratorErrorCode(code: OrchestratorErrorCode): ControlPlaneServiceErrorCode {
+  switch (code) {
+    case 'forbidden':
+      return 'forbidden';
+    case 'missing_run':
+      return 'not_found';
+    case 'active_run_conflict':
+      return 'active_run_conflict';
+    default:
+      return 'persistence_failed';
+  }
+}
 
 export class DefaultControlPlaneService implements ControlPlaneService {
   readonly #orchestrator: Orchestrator;
@@ -281,10 +295,19 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       throw new ControlPlaneServiceError('forbidden', 'Not authorized to tick.');
     }
 
-    const result = await this.#orchestrator.tick({
-      ...(input.runId !== undefined ? { runId: input.runId } : {}),
-      tenant: input.tenant
-    });
-    return result;
+    try {
+      return await this.#orchestrator.tick({
+        ...(input.runId !== undefined ? { runId: input.runId } : {}),
+        tenant: input.tenant
+      });
+    } catch (error) {
+      if (error instanceof OrchestratorError) {
+        throw new ControlPlaneServiceError(mapOrchestratorErrorCode(error.code), error.message, {
+          ...(error.details !== undefined ? { details: error.details } : {}),
+          cause: error
+        });
+      }
+      throw error;
+    }
   }
 }
