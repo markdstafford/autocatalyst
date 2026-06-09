@@ -46,8 +46,14 @@ export function createNoopResultCorrectionRequester(): ResultCorrectionRequester
 }
 
 function createSafePreview(candidate: unknown, byteLimit: number): unknown {
-  const text = JSON.stringify(candidate, (_key, value) => typeof value === 'bigint' ? value.toString() : value);
-  if (text === undefined) return null;
+  let text: string;
+  try {
+    text = JSON.stringify(candidate, (_key, value) => typeof value === 'bigint' ? value.toString() : value);
+  } catch {
+    return null;
+  }
+  if (typeof text !== 'string') return null;
   if (Buffer.byteLength(text, 'utf8') <= byteLimit) return JSON.parse(text);
-  return { truncated: true, preview: text.slice(0, byteLimit) };
+  const truncated = Buffer.from(text, 'utf8').subarray(0, byteLimit).toString('utf8');
+  return { truncated: true, preview: truncated };
 }

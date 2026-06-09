@@ -46,7 +46,7 @@ export interface ResultNormalizerRegistry {
   };
 }
 
-export function createResultNormalizerRegistry(normalizers: readonly ResultNormalizer[] = []): ResultNormalizerRegistry {
+export function createResultNormalizerRegistry(normalizers: readonly ResultNormalizer[] = defaultResultNormalizers): ResultNormalizerRegistry {
   const items: ResultNormalizer[] = [];
 
   const assertUnique = (normalizer: ResultNormalizer): void => {
@@ -129,6 +129,11 @@ export function createFilenameAliasNormalizer(options: FilenameAliasNormalizerOp
 }
 
 export function createUrlWrappedIdentifierNormalizer(options: UrlWrappedIdentifierNormalizerOptions): ResultNormalizer {
+  // Build the global version of the pattern once at construction time
+  const globalPattern = new RegExp(
+    options.identifierPattern.source,
+    options.identifierPattern.flags.includes('g') ? options.identifierPattern.flags : options.identifierPattern.flags + 'g'
+  );
   return {
     id: options.id,
     description: options.description ?? `URL-wrapped identifier normalizer for field at path '${options.path.join('.')}'.`,
@@ -147,7 +152,9 @@ export function createUrlWrappedIdentifierNormalizer(options: UrlWrappedIdentifi
         return { status: 'unchanged' };
       }
 
-      const matches = [...value.matchAll(new RegExp(options.identifierPattern.source, options.identifierPattern.flags.includes('g') ? options.identifierPattern.flags : options.identifierPattern.flags + 'g'))];
+      // Reset lastIndex for stateful global regexes
+      globalPattern.lastIndex = 0;
+      const matches = [...value.matchAll(globalPattern)];
       if (matches.length !== 1) {
         return { status: 'ambiguous', message: 'URL contains multiple or no matching identifiers.' };
       }
