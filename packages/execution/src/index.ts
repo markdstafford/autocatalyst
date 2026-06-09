@@ -1,6 +1,12 @@
 export const executionPackageName = '@autocatalyst/execution' as const;
 
 export {
+  createExecutionMaterializer,
+  type ExecutionMaterializer,
+  type ExecutionMaterializerOptions
+} from './internal/execution-materializer.js';
+
+export {
   RunnerProtocolError,
   type Runner,
   type RunnerCloseResult,

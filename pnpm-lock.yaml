@@ -99,6 +99,9 @@ importers:
       '@autocatalyst/api-contract':
         specifier: workspace:*
         version: link:../api-contract
+      '@autocatalyst/execution':
+        specifier: workspace:*
+        version: link:../execution
       fastify:
         specifier: ^5.0.0
         version: 5.8.5

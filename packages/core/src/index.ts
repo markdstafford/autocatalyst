@@ -121,3 +121,12 @@ export type {
   WorkspaceResolverInput,
   ExecutionContextResolutionErrorCode
 } from './execution-context-resolver.js';
+
+export { consumeRunnerEventStream } from './runner-event-stream.js';
+export type {
+  ConsumeRunnerEventStreamOptions,
+  ConsumeRunnerEventStreamResult
+} from './runner-event-stream.js';
+
+export { createExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
+export type { ExecutionRunUnitOfWorkOptions } from './execution-run-unit-of-work.js';
