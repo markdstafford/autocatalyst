@@ -104,3 +104,5 @@ export { RunLifecycleError, applyRunDirective, startRunLifecycle } from './run-l
 export type { ApplyRunDirectiveInput, RunLifecycleErrorCode, RunLifecycleState, StartRunLifecycleInput } from './run-lifecycle.js';
 
 export * from './run-events.js';
+
+export * from './run-dispatch-queue.js';
