@@ -78,15 +78,16 @@ importers:
       '@autocatalyst/core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@autocatalyst/execution':
-        specifier: workspace:*
-        version: link:../../packages/execution
       '@autocatalyst/persistence':
         specifier: workspace:*
         version: link:../../packages/persistence
       fastify:
         specifier: ^5.8.5
         version: 5.8.5
+    devDependencies:
+      '@autocatalyst/execution':
+        specifier: workspace:*
+        version: link:../../packages/execution
 
   packages/api-contract:
     dependencies:
