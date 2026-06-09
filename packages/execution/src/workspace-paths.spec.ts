@@ -58,7 +58,7 @@ describe('workspace path helpers', () => {
     expect(validateRunIdSegment(runId)).toBe(runId);
   });
 
-  it.each(['', '.', '..', '../evil', 'evil/child', 'evil\\child', 'has\x00nul', 'abc..def'])(
+  it.each(['', '.', '..', '../evil', 'evil/child', 'evil\\child', 'has\x00nul', 'abc..def', 'has space'])(
     'rejects unsafe run id %s',
     (runId) => {
       expect(() => validateRunIdSegment(runId)).toThrow(WorkspaceProvisioningError);

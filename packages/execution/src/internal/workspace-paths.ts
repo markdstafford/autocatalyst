@@ -65,7 +65,7 @@ function assertSafePathSegment(value: string, code: 'invalid_run_id' | 'invalid_
     value.includes(' ') ||
     value.includes('\x00')
   ) {
-    throw new WorkspaceProvisioningError(code, `Invalid ${label}: value must be one safe path segment`);
+    throw new WorkspaceProvisioningError(code, `Invalid ${label}: must be a single path segment with no separators, control characters, or dot-sequences`);
   }
 
   return value;
