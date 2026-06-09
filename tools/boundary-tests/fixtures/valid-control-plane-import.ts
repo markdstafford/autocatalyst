@@ -1,7 +1,10 @@
-import type { Runner } from '@autocatalyst/execution';
+import type { Runner, RunnerRunInput } from '@autocatalyst/execution';
 
 export const validControlPlaneRunner: Runner = {
-  async run(input) {
-    return { runId: input.runId, status: 'accepted' };
+  async *run(_input: RunnerRunInput) {
+    // new streaming contract
+  },
+  async close() {
+    return { status: 'closed' as const };
   }
 };

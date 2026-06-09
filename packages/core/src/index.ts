@@ -16,8 +16,8 @@ export type { PolicyDecisionPoint, PolicyDecisionInput, PolicyDecision, PolicyAc
 export { createConfigurationRecord, listConfigurationRecords, getConfigurationRecord, updateConfigurationRecord, deleteConfigurationRecord } from './configuration-record.js';
 export type { ConfigurationRecordRepository, CreateConfigurationRecordInput, UpdateConfigurationRecordInput } from './configuration-record.js';
 
-export { createSecret, SecretStoreLockedError } from './secret.js';
-export type { SecretStore, CreateSecretInput } from './secret.js';
+export { createSecret, SecretStoreLockedError, SecretResolutionError } from './secret.js';
+export type { SecretStore, CreateSecretInput, SecretResolver, SecretResolutionErrorCode, SecretResolutionErrorDetails } from './secret.js';
 
 export {
   InMemoryExtensionRegistryCatalog,
@@ -110,3 +110,23 @@ export * from './run-dispatch-queue.js';
 export * from './orchestrator.js';
 
 export * from './control-plane-service.js';
+
+export {
+  createExecutionContextResolver,
+  ExecutionContextResolutionError
+} from './execution-context-resolver.js';
+export type {
+  ExecutionContextResolver,
+  CreateExecutionContextResolverOptions,
+  WorkspaceResolverInput,
+  ExecutionContextResolutionErrorCode
+} from './execution-context-resolver.js';
+
+export { consumeRunnerEventStream } from './runner-event-stream.js';
+export type {
+  ConsumeRunnerEventStreamOptions,
+  ConsumeRunnerEventStreamResult
+} from './runner-event-stream.js';
+
+export { createExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
+export type { ExecutionRunUnitOfWorkOptions } from './execution-run-unit-of-work.js';

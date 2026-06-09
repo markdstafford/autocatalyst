@@ -65,6 +65,58 @@ describe('SqliteSecretStore', () => {
     });
   });
 
+  describe('resolveSecret', () => {
+    it('rejects with locked code before unlock', async () => {
+      const database = createSqliteDatabase({ path: ':memory:' });
+      await migrateSqliteDatabase(database);
+      const store = new SqliteSecretStore(database);
+      await expect(store.resolveSecret('sec_missing')).rejects.toMatchObject({
+        name: 'SecretResolutionError',
+        code: 'locked'
+      });
+      database.close();
+    });
+
+    it('resolves plaintext for a known handle after unlock', async () => {
+      const database = createSqliteDatabase({ path: ':memory:' });
+      await migrateSqliteDatabase(database);
+      const store = new SqliteSecretStore(database);
+      await store.unlock('master-password');
+      const { handle } = await store.createSecret({ value: 'secret-value' });
+      const resolved = await store.resolveSecret(handle);
+      expect(resolved).toBe('secret-value');
+      database.close();
+    });
+
+    it('rejects with missing_secret for unknown handle after unlock', async () => {
+      const database = createSqliteDatabase({ path: ':memory:' });
+      await migrateSqliteDatabase(database);
+      const store = new SqliteSecretStore(database);
+      await store.unlock('master-password');
+      await expect(store.resolveSecret('sec_unknown_handle')).rejects.toMatchObject({
+        name: 'SecretResolutionError',
+        code: 'missing_secret'
+      });
+      database.close();
+    });
+
+    it('never includes secret value in error messages', async () => {
+      const database = createSqliteDatabase({ path: ':memory:' });
+      await migrateSqliteDatabase(database);
+      const store = new SqliteSecretStore(database);
+      await store.unlock('master-password');
+      try {
+        await store.resolveSecret('sec_nonexistent');
+      } catch (error) {
+        expect(error instanceof Error ? error.message : '').not.toContain('secret-value');
+        if (error && typeof error === 'object' && 'details' in error) {
+          expect(JSON.stringify((error as { details?: unknown }).details)).not.toContain('secret-value');
+        }
+      }
+      database.close();
+    });
+  });
+
   it('retries handle generation on collision', async () => {
     await withTempDatabasePath(async (databasePath) => {
       const database = createSqliteDatabase({ path: databasePath });

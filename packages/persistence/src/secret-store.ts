@@ -4,8 +4,8 @@ import { promisify } from 'node:util';
 
 import { eq } from 'drizzle-orm';
 
-import type { CreateSecretInput, SecretStore } from '@autocatalyst/core';
-import { SecretStoreLockedError } from '@autocatalyst/core';
+import type { CreateSecretInput, SecretResolver, SecretStore } from '@autocatalyst/core';
+import { SecretResolutionError, SecretStoreLockedError } from '@autocatalyst/core';
 import type { CreateSecretResponse } from '@autocatalyst/api-contract';
 
 import { secretStoreMetadata, secrets } from './schema.js';
@@ -40,7 +40,7 @@ interface SqliteSecretStoreOptions {
   readonly randomBytes?: RandomBytesProvider;
 }
 
-export class SqliteSecretStore implements SecretStore {
+export class SqliteSecretStore implements SecretStore, SecretResolver {
   readonly #database;
   #encryptionKey: Buffer | null = null;
   readonly #randomBytes: RandomBytesProvider;
@@ -145,6 +145,31 @@ export class SqliteSecretStore implements SecretStore {
     }
 
     throw new Error('Unable to allocate secret handle.');
+  }
+
+  async resolveSecret(handle: string): Promise<string> {
+    if (this.#encryptionKey === null) {
+      throw new SecretResolutionError('locked', `Secret store is locked for handle '${handle}'.`, { handle });
+    }
+    const row = this.#database.drizzle
+      .select()
+      .from(secrets)
+      .where(eq(secrets.handle, handle))
+      .get();
+    if (row === undefined) {
+      throw new SecretResolutionError('missing_secret', `Secret handle '${handle}' was not found.`, { handle });
+    }
+    try {
+      const plaintext = this.#decrypt(
+        this.#encryptionKey,
+        Buffer.from(row.nonce, 'base64'),
+        Buffer.from(row.ciphertext, 'base64'),
+        Buffer.from(row.authTag, 'base64')
+      );
+      return plaintext.toString('utf8');
+    } catch {
+      throw new SecretResolutionError('undecryptable', `Secret handle '${handle}' could not be decrypted.`, { handle });
+    }
   }
 
   async #deriveKey(

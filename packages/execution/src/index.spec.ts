@@ -4,6 +4,7 @@ import {
   WorkspaceProvisioningError,
   WorkspacePruneError,
   WorkspaceTeardownError,
+  RunnerProtocolError,
   executionPackageName,
   provisionWorkspace,
   pruneWorkspacePath,
@@ -18,21 +19,29 @@ import {
   type WorkspaceTeardownResult,
   type ProvisionWorkspaceRequest,
   type ProvisionWorkspaceResult,
-  type Runner
+  type Runner,
+  type RunnerRunInput
 } from './index.js';
 
 describe('execution scaffold', () => {
-  it('exposes the public Runner boundary', async () => {
+  it('exposes the streaming Runner boundary', async () => {
     const runner: Runner = {
-      async run(input) {
-        return { runId: input.runId, status: 'accepted' };
-      }
+      async *run(_input: RunnerRunInput) {
+        yield {
+          id: 'evt_1',
+          type: 'runner_terminal_result' as const,
+          runId: 'run_1',
+          step: 'implement',
+          importance: 'normal' as const,
+          createdAt: '2026-06-09T00:00:00.000Z',
+          result: { directive: 'advance' as const }
+        };
+      },
+      async close() { return { status: 'closed' as const }; }
     };
-
-    await expect(runner.run({ runId: 'run_123' })).resolves.toEqual({
-      runId: 'run_123',
-      status: 'accepted'
-    });
+    expect(runner.run).toBeTypeOf('function');
+    expect(runner.close).toBeTypeOf('function');
+    expect(new RunnerProtocolError('missing_terminal_result', 'Missing terminal result.').code).toBe('missing_terminal_result');
     expect(executionPackageName).toBe('@autocatalyst/execution');
   });
 
