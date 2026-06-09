@@ -13,6 +13,9 @@ import { assertPathInsideRoot } from './workspace-paths.js';
 
 const execFileAsync = promisify(execFile);
 
+/** Typed wrapper to avoid repeating the cast for `fs.realpath` at each call site. */
+const nodeRealpath = (p: string): Promise<string> => fs.realpath(p);
+
 export interface HostRepositoryInput {
   readonly reposRoot: string;
   readonly hostRepositoryPath: string;
@@ -49,6 +52,7 @@ export interface RemoveDirectoryInput {
 export interface WorkspaceDriver {
   ensureHostRepository(input: HostRepositoryInput): Promise<void>;
   fetchHostRepository(input: FetchHostRepositoryInput): Promise<void>;
+  /** Returns the remote-tracking base ref (e.g. 'origin/main') for use as the worktree base. */
   resolveDefaultBranch(input: ResolveDefaultBranchInput): Promise<string>;
   addWorktree(input: AddWorktreeInput): Promise<void>;
   currentBranch(repoRoot: string): Promise<string | null>;
@@ -101,11 +105,11 @@ export function createNodeWorkspaceDriver(): WorkspaceDriver {
     async ensureHostRepository(input) {
       await assertPathInsideRoot(
         { root: input.reposRoot, rootKind: 'repos', targetPath: path.dirname(input.hostRepositoryPath), intent: 'write' },
-        { pathExists: exists, realpath: fs.realpath as (path: string) => Promise<string> }
+        { pathExists: exists, realpath: nodeRealpath }
       );
       await assertPathInsideRoot(
         { root: input.reposRoot, rootKind: 'repos', targetPath: input.hostRepositoryPath, intent: 'git' },
-        { pathExists: exists, realpath: fs.realpath as (path: string) => Promise<string> }
+        { pathExists: exists, realpath: nodeRealpath }
       );
 
       if (await exists(input.hostRepositoryPath)) {
@@ -129,7 +133,7 @@ export function createNodeWorkspaceDriver(): WorkspaceDriver {
     async fetchHostRepository(input) {
       await assertPathInsideRoot(
         { root: input.reposRoot, rootKind: 'repos', targetPath: input.hostRepositoryPath, intent: 'git' },
-        { pathExists: exists, realpath: fs.realpath as (path: string) => Promise<string> }
+        { pathExists: exists, realpath: nodeRealpath }
       );
       await runGit(['fetch', '--prune', 'origin'], {
         cwd: input.hostRepositoryPath,
@@ -139,6 +143,7 @@ export function createNodeWorkspaceDriver(): WorkspaceDriver {
       });
     },
 
+    // Returns the remote-tracking base ref (e.g. 'origin/main') for use as the worktree base.
     async resolveDefaultBranch(input) {
       const symbolicHead = await runGit(
         ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'],
@@ -174,12 +179,14 @@ export function createNodeWorkspaceDriver(): WorkspaceDriver {
 
     async currentBranch(repoRoot) {
       try {
-        return await runGit(['branch', '--show-current'], {
+        const output = await runGit(['branch', '--show-current'], {
           cwd: repoRoot,
           code: 'branch_guard_failed',
           message: 'Failed to read worktree branch',
           targetPath: repoRoot
         });
+        // Empty output means detached HEAD — not on a named branch.
+        return output.length > 0 ? output : null;
       } catch {
         return null;
       }
@@ -209,7 +216,7 @@ export function createNodeWorkspaceDriver(): WorkspaceDriver {
     async removeDirectory(input) {
       const safeTargetPath = await assertPathInsideRoot(
         { root: input.workspaceRoot, rootKind: 'workspace', targetPath: input.targetPath, intent: 'delete' },
-        { pathExists: exists, realpath: fs.realpath as (path: string) => Promise<string> }
+        { pathExists: exists, realpath: nodeRealpath }
       );
       await fs.rm(safeTargetPath, { recursive: true, force: true });
     }
