@@ -78,6 +78,11 @@ export function createExecutionEntryPoint(options: CreateExecutionEntryPointOpti
       let closeProtocolError: RunnerProtocolError | undefined;
       let rawTerminal: RawTerminalEvent | undefined;
 
+      // This entry point validates the raw RunnerEvent stream before result transformation.
+      // validateExecutionBoundaryEventStream in execution-boundary-events.ts validates the
+      // converted ExecutionBoundaryEvent stream consumed by core — both validators enforce
+      // similar ordering rules at different pipeline stages.
+      //
       // Pull the entire stream first (buffering non-terminal events) so that
       // runner.close() can run in the finally before we transform the terminal
       // event using async validation. This preserves the previous semantics
@@ -109,7 +114,7 @@ export function createExecutionEntryPoint(options: CreateExecutionEntryPointOpti
               'Runner emitted an event after the terminal event.'
             );
           }
-          buffered.push(validated as ExecutionBoundaryEvent);
+          buffered.push(validated as Exclude<RunnerEvent, { type: 'runner_terminal_result' }>);
         }
       } catch (error) {
         streamError = error;
@@ -126,7 +131,9 @@ export function createExecutionEntryPoint(options: CreateExecutionEntryPointOpti
         }
       }
 
-      // Flush buffered non-terminal events.
+      // Yield buffered non-terminal events. If close() failed after a complete stream,
+      // these events represent real progress — the close failure is a transport error,
+      // not a run failure, so events are emitted before propagating the protocol error.
       for (const event of buffered) {
         yield event;
       }
@@ -213,7 +220,7 @@ async function buildTerminalBoundaryEvent(input: BuildTerminalInput): Promise<Ex
   }
 
   // scratch_file mode
-  const resolution = resolveScratchFileContract(config);
+  const resolution = resolveScratchFileContract(config, rawTerminal.step);
   if (resolution.kind === 'failed') {
     return makeFailTerminal(rawTerminal, `Execution failed: ${resolution.code}`);
   }
@@ -252,6 +259,7 @@ async function buildTerminalBoundaryEvent(input: BuildTerminalInput): Promise<Ex
     return makeFailTerminal(rawTerminal, `Execution failed: ${validation.code}`);
   }
 
+  // The schema type is erased by the registry's ZodTypeAny bound; validateStepResult has already guaranteed the shape.
   const validatedResult = validation.value as Record<string, unknown>;
 
   return {
@@ -274,7 +282,8 @@ type ContractResolutionOutcome =
   | { readonly kind: 'failed'; readonly code: 'result_contract_missing' | 'result_contract_unknown' };
 
 function resolveScratchFileContract(
-  config: ScratchFileExecutionResultValidationConfig
+  config: ScratchFileExecutionResultValidationConfig,
+  terminalStep: string
 ): ContractResolutionOutcome {
   if (config.contract !== undefined) {
     return { kind: 'resolved', contract: config.contract };
@@ -297,7 +306,7 @@ function resolveScratchFileContract(
     return {
       kind: 'resolved',
       contract: {
-        step: config.step ?? '',
+        step: config.step ?? terminalStep,
         schemaId: config.schemaId,
         schema: config.schema,
         ...(config.resultFile !== undefined ? { resultFile: config.resultFile } : {}),
