@@ -82,7 +82,15 @@ export class InMemoryRunEventBus implements RunEventBus {
     const subs = this.#subscribers.get(key);
     if (subs === undefined) return;
     for (const sub of subs) {
-      sub.push(event);
+      try {
+        sub.push(event);
+      } catch {
+        sub.close();
+        subs.delete(sub);
+        if (subs.size === 0) {
+          this.#subscribers.delete(key);
+        }
+      }
     }
   }
 
@@ -124,8 +132,8 @@ class Subscriber {
       return;
     }
     if (this.#buffer.length >= DEFAULT_BUFFER_SIZE) {
-      this.#closed = true;
-      throw new RunEventSubscriptionOverflowError();
+      this.close();
+      return;
     }
     this.#buffer.push(event);
   }

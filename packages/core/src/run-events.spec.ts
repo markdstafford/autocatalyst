@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { createRunStateTransitionEvent, InMemoryRunEventBus, RunEventSubscriptionOverflowError } from './run-events.js';
+import { createRunStateTransitionEvent, InMemoryRunEventBus } from './run-events.js';
 import { runStateTransitionEventSchema } from '@autocatalyst/api-contract';
 
 const owner = { id: 'user_1', kind: 'human' as const, tenantId: 'tenant_1', displayName: 'Ada' };
@@ -220,9 +220,8 @@ describe('InMemoryRunEventBus', () => {
     expect(() => bus.publish(event)).not.toThrow();
   });
 
-  it('throws RunEventSubscriptionOverflowError when buffer overflows', () => {
+  it('silently closes an overflowing subscriber and does not affect other subscribers', async () => {
     const bus = new InMemoryRunEventBus();
-    const sub = bus.subscribe({ runId: 'run_1', tenant: 'tenant_1' });
 
     const makeEvent = (i: number) => createRunStateTransitionEvent({
       runId: 'run_1',
@@ -236,13 +235,40 @@ describe('InMemoryRunEventBus', () => {
       clock: () => timestamp
     });
 
-    // Fill the buffer (DEFAULT_BUFFER_SIZE = 32)
-    expect(() => {
-      for (let i = 0; i < 33; i++) {
-        bus.publish(makeEvent(i));
-      }
-    }).toThrow(RunEventSubscriptionOverflowError);
+    const sub1 = bus.subscribe({ runId: 'run_1', tenant: 'tenant_1' });
+    const sub2 = bus.subscribe({ runId: 'run_1', tenant: 'tenant_1' });
 
-    sub.close();
+    const iter1 = sub1.events[Symbol.asyncIterator]();
+    const iter2 = sub2.events[Symbol.asyncIterator]();
+
+    // Fill both buffers with 32 events (DEFAULT_BUFFER_SIZE = 32)
+    for (let i = 0; i < 32; i++) {
+      bus.publish(makeEvent(i));
+    }
+
+    // Drain sub2 entirely so its buffer is empty
+    for (let i = 0; i < 32; i++) {
+      const r = await iter2.next();
+      expect(r.done).toBe(false);
+      expect(r.value.id).toBe(`evt_${i}`);
+    }
+
+    // Publishing the 33rd event overflows sub1 (buffer full) but not sub2 (buffer empty,
+    // sub2 receives it immediately via the pending promise resolve path)
+    expect(() => bus.publish(makeEvent(32))).not.toThrow();
+
+    // sub1 should be closed — drain its 32 buffered events then expect done
+    for (let i = 0; i < 32; i++) {
+      await iter1.next();
+    }
+    const overflowResult = await iter1.next();
+    expect(overflowResult.done).toBe(true);
+
+    // sub2 should have received the 33rd event without issue
+    const r33 = await iter2.next();
+    expect(r33.done).toBe(false);
+    expect(r33.value.id).toBe('evt_32');
+
+    sub2.close();
   });
 });
