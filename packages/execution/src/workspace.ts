@@ -4,7 +4,7 @@ import { createNodeWorkspaceDriver } from './internal/workspace-driver.js';
 import { createWorkspaceProvisioner } from './internal/workspace-provisioner.js';
 
 export type WorkspaceRunKind = 'feature' | 'enhancement' | 'bug' | 'chore' | 'file_issue' | 'question';
-export type ImplementingWorkspaceRunKind = 'feature' | 'enhancement' | 'bug' | 'chore';
+export type ImplementingWorkspaceRunKind = Extract<WorkspaceRunKind, 'feature' | 'enhancement' | 'bug' | 'chore'>;
 export type WorkspaceProvisioningShape = 'none' | 'scratch_only' | 'two_roots';
 
 export interface WorkspaceProvisioningRoots {
