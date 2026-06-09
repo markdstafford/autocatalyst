@@ -106,3 +106,5 @@ export type { ApplyRunDirectiveInput, RunLifecycleErrorCode, RunLifecycleState, 
 export * from './run-events.js';
 
 export * from './run-dispatch-queue.js';
+
+export * from './orchestrator.js';
