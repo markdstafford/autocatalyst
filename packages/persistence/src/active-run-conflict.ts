@@ -1,14 +1,18 @@
+function isSqliteUniqueConstraintError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    'code' in error &&
+    (error as { code: string }).code === 'SQLITE_CONSTRAINT_UNIQUE'
+  );
+}
+
 export function isActiveRunConstraintViolation(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  // Exclude other uniqueness failures
-  if (message.includes('topics_one_main_per_conversation') || message.includes('pull_requests')) {
+  if (!isSqliteUniqueConstraintError(error)) {
     return false;
   }
-  // Match the runs_one_active_per_topic partial unique index
-  return (
-    message.includes('runs_one_active_per_topic') ||
-    (message.includes('UNIQUE constraint failed') && message.includes('runs.topic_id'))
-  );
+  const message = error instanceof Error ? error.message : '';
+  // Match only the runs_one_active_per_topic partial unique index
+  return message.includes('runs_one_active_per_topic') || message.includes('runs.topic_id');
 }
 
 export class ActiveRunConflictPersistenceError extends Error {

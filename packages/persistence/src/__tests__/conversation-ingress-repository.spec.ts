@@ -210,12 +210,17 @@ describe('DrizzleConversationIngressRepository', () => {
           .prepare(`DROP TRIGGER abort_run_steps_insert`)
           .run();
 
-        // Verify nothing was persisted
-        const convs = await repos.conversations.findById('non-existent');
-        expect(convs).toBeNull();
-        // No conversations with identity conv-identity-3 should exist
-        const allRuns = await repos.runs.listByTopic('non-existent-topic');
-        expect(allRuns).toHaveLength(0);
+        // Verify nothing was persisted — the transaction should have rolled back entirely.
+        // This is a fresh database (no other tests share it), so total row counts must all be zero.
+        const db = asInternalSqliteDatabase(database).client;
+        const convCount = (db.prepare(`SELECT COUNT(*) as n FROM conversations`).get() as { n: number }).n;
+        expect(convCount).toBe(0);
+        const topicCount = (db.prepare(`SELECT COUNT(*) as n FROM topics`).get() as { n: number }).n;
+        expect(topicCount).toBe(0);
+        const runCount = (db.prepare(`SELECT COUNT(*) as n FROM runs`).get() as { n: number }).n;
+        expect(runCount).toBe(0);
+        const runStepCount = (db.prepare(`SELECT COUNT(*) as n FROM run_steps`).get() as { n: number }).n;
+        expect(runStepCount).toBe(0);
 
         database.close();
       });
