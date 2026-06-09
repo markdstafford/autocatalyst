@@ -151,6 +151,37 @@ export async function assertPathInsideRoot(
   return canonicalTarget;
 }
 
+export async function assertPathInsideRootWithoutFinalSymlinkResolution(
+  input: {
+    readonly root: string;
+    readonly rootKind: 'workspace' | 'repos';
+    readonly targetPath: string;
+    readonly intent: 'write' | 'delete' | 'git';
+  },
+  deps: ContainmentDependencies
+): Promise<string> {
+  const resolvedRoot = fsPath.resolve(input.root);
+  const resolvedTarget = fsPath.resolve(input.targetPath);
+  const canonicalRoot = await deps.realpath(resolvedRoot);
+  const targetParent = fsPath.dirname(resolvedTarget);
+  const targetBase = fsPath.basename(resolvedTarget);
+  const existingParent = await nearestExistingParent(targetParent, deps);
+  const canonicalExistingParent = await deps.realpath(existingParent);
+  const canonicalParent = fsPath.resolve(canonicalExistingParent, fsPath.relative(existingParent, targetParent));
+  const canonicalTarget = fsPath.resolve(canonicalParent, targetBase);
+
+  if (!isPathInsideOrEqual(canonicalRoot, canonicalTarget)) {
+    throw new WorkspaceProvisioningError('out_of_root_path', `${input.intent} path escapes ${input.rootKind} root`, {
+      root: canonicalRoot,
+      rootKind: input.rootKind,
+      targetPath: canonicalTarget,
+      intent: input.intent
+    });
+  }
+
+  return canonicalTarget;
+}
+
 function sanitizeTopicSegment(topicSlug: string): string {
   let segment = topicSlug
     .trim()
