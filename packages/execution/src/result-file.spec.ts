@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -89,6 +89,25 @@ describe('readScratchStepResultFile', () => {
     const result = await readScratchStepResultFile({
       environment: environmentWithScratch(scratchRoot, repoRoot),
       resultFile: '../repo/result.json'
+    });
+
+    expect(result).toMatchObject({ status: 'failed', code: 'result_path_outside_scratch_root' });
+    expect(JSON.stringify(result)).not.toContain(base);
+  });
+
+  it('rejects a symlink inside scratchRoot pointing outside scratchRoot', async () => {
+    const base = await mkdtemp(path.join(os.tmpdir(), 'result-file-'));
+    const scratchRoot = path.join(base, 'scratch');
+    await mkdir(scratchRoot);
+    // Create a real file outside scratchRoot that the symlink will point to
+    const outsideFile = path.join(base, 'secret.json');
+    await writeFile(outsideFile, JSON.stringify({ secret: true }), 'utf8');
+    // Create a symlink inside scratchRoot pointing to the outside file
+    await symlink(outsideFile, path.join(scratchRoot, 'result.json'));
+
+    const result = await readScratchStepResultFile({
+      environment: environmentWithScratch(scratchRoot),
+      resultFile: 'result.json'
     });
 
     expect(result).toMatchObject({ status: 'failed', code: 'result_path_outside_scratch_root' });

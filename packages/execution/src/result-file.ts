@@ -47,8 +47,23 @@ export async function readScratchStepResultFile(input: ReadScratchStepResultFile
     return fileFailure('result_path_outside_scratch_root', 'Result file path escapes the scratch root.');
   }
 
+  // Resolve the final file path itself to catch symlinks pointing outside scratchRoot.
+  let finalPath = resolvedCandidate;
   try {
-    await access(resolvedCandidate, constants.R_OK);
+    const fileRealPath = await realpath(resolvedCandidate);
+    if (!isContainedByRoot(fileRealPath, rootRealPath)) {
+      return fileFailure('result_path_outside_scratch_root', 'Result file path escapes the scratch root.');
+    }
+    finalPath = fileRealPath;
+  } catch (error) {
+    if (!hasNodeCode(error, 'ENOENT')) {
+      return fileFailure('result_file_unreadable', 'Result file is unreadable.');
+    }
+    // ENOENT: file does not exist; access() will surface this below.
+  }
+
+  try {
+    await access(finalPath, constants.R_OK);
   } catch (error) {
     const code = hasNodeCode(error, 'ENOENT') ? 'result_file_missing' : 'result_file_unreadable';
     return fileFailure(code, code === 'result_file_missing' ? 'Result file is missing.' : 'Result file is unreadable.');
@@ -56,7 +71,7 @@ export async function readScratchStepResultFile(input: ReadScratchStepResultFile
 
   let text: string;
   try {
-    text = await readFile(resolvedCandidate, 'utf8');
+    text = await readFile(finalPath, 'utf8');
   } catch {
     return fileFailure('result_file_unreadable', 'Result file is unreadable.');
   }
@@ -65,7 +80,7 @@ export async function readScratchStepResultFile(input: ReadScratchStepResultFile
     return {
       status: 'read',
       value: JSON.parse(text),
-      relativePath: path.relative(rootRealPath, resolvedCandidate)
+      relativePath: path.relative(rootRealPath, finalPath)
     };
   } catch {
     return fileFailure('result_json_invalid', 'Result file does not contain valid JSON.');
