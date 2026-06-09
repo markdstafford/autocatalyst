@@ -4,6 +4,7 @@ import path from 'node:path';
 import type { RunnerEvent } from '@autocatalyst/api-contract';
 
 import type { ResultCorrectionRequester } from './result-correction.js';
+import { resolveScratchRootCandidatePath } from './result-file.js';
 import type { Runner, RunnerCloseResult, RunnerRunInput } from './runner.js';
 
 export interface StubRunnerOptions {
@@ -130,14 +131,14 @@ export class StubRunner implements Runner {
       'scratchRoot' in environment.workspace ? environment.workspace.scratchRoot : undefined;
     if (scratchRoot === undefined) return;
 
-    const candidate = path.resolve(scratchRoot, this.#resultFile.relativePath);
-    const rootResolved = path.resolve(scratchRoot);
-    const rel = path.relative(rootResolved, candidate);
-    if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
+    // Use the same realpath-based containment as readScratchStepResultFile so symlinked
+    // directories inside scratchRoot cannot redirect the write outside it.
+    const resolution = await resolveScratchRootCandidatePath(scratchRoot, this.#resultFile.relativePath);
+    if (resolution === null) {
       throw new Error('StubRunner resultFile path escapes scratch root.');
     }
 
-    await mkdir(path.dirname(candidate), { recursive: true });
-    await writeFile(candidate, JSON.stringify(this.#resultFile.value), 'utf8');
+    await mkdir(path.dirname(resolution.resolvedCandidate), { recursive: true });
+    await writeFile(resolution.resolvedCandidate, JSON.stringify(this.#resultFile.value), 'utf8');
   }
 }

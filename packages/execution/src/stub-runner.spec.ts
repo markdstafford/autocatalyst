@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -189,6 +189,32 @@ describe('StubRunner — resultFile and correction responses', () => {
     };
     await expect(requester.requestCorrection(baseRequest)).resolves.toEqual({ ok: 1 });
     await expect(requester.requestCorrection({ ...baseRequest, attempt: 2 })).resolves.toEqual({ ok: 2 });
+  });
+
+  it('rejects write when a symlinked directory inside scratchRoot points outside it', async () => {
+    const base = await mkdtemp(path.join(tmpdir(), 'stub-symlink-'));
+    try {
+      const scratchRoot = path.join(base, 'scratch');
+      const outsideDir = path.join(base, 'outside');
+      await mkdir(scratchRoot);
+      await mkdir(outsideDir);
+      // Create a symlink inside scratchRoot that points to a directory outside it.
+      await symlink(outsideDir, path.join(scratchRoot, 'symlink'));
+
+      const runner = new StubRunner({
+        resultFile: { relativePath: 'symlink/result.json', value: { escaped: true } }
+      });
+      const env = makeEnvironment({
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      });
+
+      const consume = async (): Promise<void> => {
+        for await (const _ of runner.run({ environment: env })) { /* consume */ }
+      };
+      await expect(consume()).rejects.toThrow(/escapes scratch root/);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
   });
 
   it('throws when scripted correction responses are exhausted', async () => {

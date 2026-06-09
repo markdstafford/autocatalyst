@@ -577,5 +577,112 @@ describe('createExecutionEntryPoint — resultValidation', () => {
       resultValidation: { mode: 'unknown_mode' } as unknown as ExecutionResultValidationConfig
     })).toThrow(TypeError);
   });
+
+  it('scratch_file mode: needs_input terminal passes through without reading result file', async () => {
+    const context = makeContext();
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'ep-ni-test-'));
+    try {
+      const materializedEnv: MaterializedExecutionEnvironment = {
+        ...makeMaterializedEnv(context),
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      };
+      const materialize = vi.fn().mockResolvedValue(materializedEnv);
+      const schema = z.object({ artifact: z.string() }).strict();
+
+      // Runner emits needs_input terminal; no result file is written.
+      const needsInputRunner: Runner = {
+        run(_input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+          return (async function* () {
+            yield {
+              id: 'evt_ni',
+              type: 'runner_terminal_result' as const,
+              runId,
+              step: 'implement',
+              importance: 'high' as const,
+              createdAt: '2026-06-09T00:00:00.000Z',
+              result: { directive: 'needs_input' as const, question: 'What format?' }
+            };
+          })();
+        },
+        close: vi.fn().mockResolvedValue({ status: 'closed' })
+      };
+
+      const entryPoint = createExecutionEntryPoint({
+        runner: needsInputRunner,
+        materialize,
+        resultValidation: {
+          mode: 'scratch_file',
+          contract: { step: 'implement', schemaId: 'terminal-handoff.v1', schema, resultFile: 'result.json' }
+        }
+      });
+
+      const events: ExecutionBoundaryEvent[] = [];
+      for await (const event of entryPoint.execute({ context })) {
+        events.push(event);
+      }
+
+      const terminal = events.find((e) => e.type === 'runner_terminal_result') as ExecutionTerminalResultEvent | undefined;
+      expect(terminal).toBeDefined();
+      expect(terminal?.result.directive).toBe('needs_input');
+      if (terminal?.result.directive === 'needs_input') {
+        expect(terminal.result.question).toBe('What format?');
+      }
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('scratch_file mode: fail terminal passes through without reading result file', async () => {
+    const context = makeContext();
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'ep-fail-test-'));
+    try {
+      const materializedEnv: MaterializedExecutionEnvironment = {
+        ...makeMaterializedEnv(context),
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      };
+      const materialize = vi.fn().mockResolvedValue(materializedEnv);
+      const schema = z.object({ artifact: z.string() }).strict();
+
+      const failRunner: Runner = {
+        run(_input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+          return (async function* () {
+            yield {
+              id: 'evt_fail',
+              type: 'runner_terminal_result' as const,
+              runId,
+              step: 'implement',
+              importance: 'high' as const,
+              createdAt: '2026-06-09T00:00:00.000Z',
+              result: { directive: 'fail' as const, reason: 'Agent crashed.' }
+            };
+          })();
+        },
+        close: vi.fn().mockResolvedValue({ status: 'closed' })
+      };
+
+      const entryPoint = createExecutionEntryPoint({
+        runner: failRunner,
+        materialize,
+        resultValidation: {
+          mode: 'scratch_file',
+          contract: { step: 'implement', schemaId: 'terminal-handoff.v1', schema, resultFile: 'result.json' }
+        }
+      });
+
+      const events: ExecutionBoundaryEvent[] = [];
+      for await (const event of entryPoint.execute({ context })) {
+        events.push(event);
+      }
+
+      const terminal = events.find((e) => e.type === 'runner_terminal_result') as ExecutionTerminalResultEvent | undefined;
+      expect(terminal).toBeDefined();
+      expect(terminal?.result.directive).toBe('fail');
+      if (terminal?.result.directive === 'fail') {
+        expect(terminal.result.reason).toBe('Agent crashed.');
+      }
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
 });
 

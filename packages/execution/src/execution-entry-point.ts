@@ -219,6 +219,20 @@ async function buildTerminalBoundaryEvent(input: BuildTerminalInput): Promise<Ex
     };
   }
 
+  // In scratch_file mode, only validate a result file for advance directives.
+  // needs_input and fail terminals write no result file; pass them through unchanged.
+  if (rawTerminal.result.directive !== 'advance') {
+    return {
+      id: rawTerminal.id,
+      type: 'runner_terminal_result',
+      runId: rawTerminal.runId,
+      step: rawTerminal.step,
+      importance: rawTerminal.importance,
+      createdAt: rawTerminal.createdAt,
+      result: { ...rawTerminal.result }
+    };
+  }
+
   // scratch_file mode
   const resolution = resolveScratchFileContract(config, rawTerminal.step);
   if (resolution.kind === 'failed') {

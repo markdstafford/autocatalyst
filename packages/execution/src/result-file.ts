@@ -31,21 +31,44 @@ export interface StepResultFileReadFailure {
   readonly issues: readonly ResultValidationIssue[];
 }
 
+/**
+ * Resolves a relative path against a scratch root using realpath on the parent directory so
+ * symlinked directories inside the root cannot redirect reads or writes outside it.
+ * Returns `{ resolvedCandidate, rootRealPath }` when the path is contained, or `null` when it escapes.
+ *
+ * Both the result-file reader and the StubRunner writer use this helper so their containment
+ * rules stay in sync.
+ */
+export async function resolveScratchRootCandidatePath(
+  scratchRoot: string,
+  relativePath: string
+): Promise<{ readonly resolvedCandidate: string; readonly rootRealPath: string } | null> {
+  // Resolve rootRealPath first so the candidate is always in the same namespace,
+  // even when scratchRoot itself is a symlink (e.g. /tmp → /private/tmp on macOS).
+  const rootRealPath = await realpath(scratchRoot).catch(() => scratchRoot);
+  const candidate = path.resolve(rootRealPath, relativePath);
+  const candidateParent = path.dirname(candidate);
+  // When the parent directory does not exist yet (write path), realpath falls back
+  // to the lexical path which is already under rootRealPath.
+  const parentRealPath = await realpath(candidateParent).catch(() => candidateParent);
+  const resolvedCandidate = path.join(parentRealPath, path.basename(candidate));
+  if (!isContainedByRoot(resolvedCandidate, rootRealPath)) {
+    return null;
+  }
+  return { resolvedCandidate, rootRealPath };
+}
+
 export async function readScratchStepResultFile(input: ReadScratchStepResultFileInput): Promise<StepResultFileReadOutcome> {
   const scratchRoot = 'scratchRoot' in input.environment.workspace ? input.environment.workspace.scratchRoot : undefined;
   if (scratchRoot === undefined) {
     return fileFailure('result_file_missing', 'No scratch root is available for result-file reading.');
   }
 
-  const candidate = path.resolve(scratchRoot, input.resultFile);
-  const rootRealPath = await realpath(scratchRoot).catch(() => scratchRoot);
-  const candidateParent = path.dirname(candidate);
-  const parentRealPath = await realpath(candidateParent).catch(() => candidateParent);
-  const resolvedCandidate = path.join(parentRealPath, path.basename(candidate));
-
-  if (!isContainedByRoot(resolvedCandidate, rootRealPath)) {
+  const resolution = await resolveScratchRootCandidatePath(scratchRoot, input.resultFile);
+  if (resolution === null) {
     return fileFailure('result_path_outside_scratch_root', 'Result file path escapes the scratch root.');
   }
+  const { resolvedCandidate, rootRealPath } = resolution;
 
   // Resolve the final file path itself to catch symlinks pointing outside scratchRoot.
   let finalPath = resolvedCandidate;
