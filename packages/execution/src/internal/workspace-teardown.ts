@@ -165,7 +165,25 @@ async function teardownCanceled(input: {
   const actualBranch = await driver.currentBranch(context.repoRoot);
 
   if (actualBranch === null) {
-    // Worktree is missing or detached — don't try to re-materialize
+    let repoStat: Awaited<ReturnType<typeof driver.statPath>>;
+    try {
+      repoStat = await driver.statPath(context.repoRoot);
+    } catch {
+      repoStat = 'directory';
+    }
+
+    if (repoStat !== 'missing') {
+      return finishTeardown(logger, {
+        runId: request.runId,
+        runKind: request.runKind,
+        terminalStep: request.terminalStep,
+        outcome: 'failed',
+        prunes: [],
+        branch: { name: context.branchName, action: 'retained' },
+        checkpoint: { action: 'failed', errorCode: 'worktree_branch_mismatch' }
+      });
+    }
+
     const missingPrune = await pruner.pruneWorkspacePath({
       runId: request.runId,
       mode: 'worktree',
@@ -228,6 +246,18 @@ async function teardownCanceled(input: {
     hostRepositoryPath: context.hostRepositoryPath
   });
   prunes.push({ ...worktreePrune, purpose: 'worktree' });
+
+  if (worktreePrune.status === 'failed' || worktreePrune.status === 'rejected') {
+    return finishTeardown(logger, {
+      runId: request.runId,
+      runKind: request.runKind,
+      terminalStep: request.terminalStep,
+      outcome: 'failed',
+      prunes,
+      branch: { name: context.branchName, action: 'retained' },
+      checkpoint
+    });
+  }
 
   const runRootPrune = await pruner.pruneWorkspacePath({
     runId: request.runId,
