@@ -16,8 +16,8 @@ export type { PolicyDecisionPoint, PolicyDecisionInput, PolicyDecision, PolicyAc
 export { createConfigurationRecord, listConfigurationRecords, getConfigurationRecord, updateConfigurationRecord, deleteConfigurationRecord } from './configuration-record.js';
 export type { ConfigurationRecordRepository, CreateConfigurationRecordInput, UpdateConfigurationRecordInput } from './configuration-record.js';
 
-export { createSecret, SecretStoreLockedError } from './secret.js';
-export type { SecretStore, CreateSecretInput } from './secret.js';
+export { createSecret, SecretStoreLockedError, SecretResolutionError } from './secret.js';
+export type { SecretStore, CreateSecretInput, SecretResolver, SecretResolutionErrorCode, SecretResolutionErrorDetails } from './secret.js';
 
 export {
   InMemoryExtensionRegistryCatalog,
