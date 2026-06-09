@@ -210,7 +210,7 @@ export function createNodeWorkspaceDriver(): WorkspaceDriver {
     },
 
     async realpath(targetPath) {
-      return fs.realpath(targetPath);
+      return nodeRealpath(targetPath);
     },
 
     async removeDirectory(input) {
