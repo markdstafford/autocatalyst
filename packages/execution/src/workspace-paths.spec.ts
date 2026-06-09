@@ -58,7 +58,7 @@ describe('workspace path helpers', () => {
     expect(validateRunIdSegment(runId)).toBe(runId);
   });
 
-  it.each(['', '.', '..', '../evil', 'evil/child', 'evil\\child', 'has nul', 'abc..def'])(
+  it.each(['', '.', '..', '../evil', 'evil/child', 'evil\\child', 'has\x00nul', 'abc..def'])(
     'rejects unsafe run id %s',
     (runId) => {
       expect(() => validateRunIdSegment(runId)).toThrow(WorkspaceProvisioningError);
@@ -69,7 +69,7 @@ describe('workspace path helpers', () => {
     expect(validateRepositoryPathSegment(segment, 'owner')).toBe(segment);
   });
 
-  it.each(['', '.', '..', '../acme', 'acme/widgets', 'acme\\widgets', 'has nul', 'acme..widgets'])(
+  it.each(['', '.', '..', '../acme', 'acme/widgets', 'acme\\widgets', 'has\x00nul', 'acme..widgets'])(
     'rejects unsafe repository segment %s',
     (segment) => {
       expect(() => validateRepositoryPathSegment(segment, 'owner')).toThrow(WorkspaceProvisioningError);
