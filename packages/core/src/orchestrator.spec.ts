@@ -437,20 +437,25 @@ describe('DefaultOrchestrator.dispatch', () => {
     expect(events[0]?.transition.directive).toBe('advance');
   });
 
-  it('maps unit-of-work fail result to OrchestratorError (queue slot released)', async () => {
+  it('applies fail directive through lifecycle when unit of work returns fail (queue slot released)', async () => {
     const existing = makeRun();
-    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(existing) });
+    const failed = makeRun({ currentStep: 'failed', terminal: true });
+    const failedStep = makeRunStep({ step: 'failed' });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: vi.fn().mockResolvedValue({ run: failed, runStep: failedStep })
+    });
     const unitOfWork: RunUnitOfWork = {
       run: vi.fn().mockResolvedValue({ directive: 'fail', reason: 'nope' })
     };
     const dispatchQueue = new RunDispatchQueue({ maxConcurrent: 1 });
     const { orchestrator } = makeOrchestrator({ runs, unitOfWork, dispatchQueue });
 
-    await expect(
-      orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' })
-    ).rejects.toMatchObject({ name: 'OrchestratorError' });
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+    expect(result.run.currentStep).toBe('failed');
+    expect(result.run.terminal).toBe(true);
 
-    // Slot was released after the failure
+    // Slot was released after the dispatch
     expect(dispatchQueue.activeCount).toBe(0);
   });
 
@@ -536,13 +541,22 @@ describe('DefaultOrchestrator.dispatch — bounded queue', () => {
     expect(dispatchQueue.activeCount).toBe(0);
   });
 
-  it('failed unit releases capacity so subsequent dispatches can proceed', async () => {
+  it('fail directive releases capacity so subsequent dispatches can proceed', async () => {
     const existing = makeRun({ currentStep: 'intake' });
+    const failed = makeRun({ currentStep: 'failed', terminal: true });
+    const failedStep = makeRunStep({ step: 'failed' });
     const updated = makeRun({ currentStep: 'spec.author' });
     const updatedStep = makeRunStep({ id: 'step_2', step: 'spec.author', phase: 'spec' });
+    let transitionCallCount = 0;
     const runs = makeFakeRunRepo({
       findById: vi.fn().mockResolvedValue(existing),
-      recordRunStepTransition: vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep })
+      recordRunStepTransition: vi.fn().mockImplementation(async () => {
+        transitionCallCount += 1;
+        if (transitionCallCount === 1) {
+          return { run: failed, runStep: failedStep };
+        }
+        return { run: updated, runStep: updatedStep };
+      })
     });
     const dispatchQueue = new RunDispatchQueue({ maxConcurrent: 1 });
     let callCount = 0;
@@ -557,9 +571,8 @@ describe('DefaultOrchestrator.dispatch — bounded queue', () => {
     };
     const { orchestrator } = makeOrchestrator({ runs, unitOfWork, dispatchQueue });
 
-    await expect(
-      orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' })
-    ).rejects.toMatchObject({ name: 'OrchestratorError' });
+    const firstResult = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+    expect(firstResult.run.currentStep).toBe('failed');
 
     expect(dispatchQueue.activeCount).toBe(0);
 
@@ -602,7 +615,7 @@ describe('DefaultOrchestrator.dispatch — tenant enforcement', () => {
 describe('DefaultOrchestrator.tick', () => {
   it('returns { status: "noop" } when no runId is provided', async () => {
     const { orchestrator } = makeOrchestrator();
-    const result = await orchestrator.tick({});
+    const result = await orchestrator.tick({ tenant: 'tenant_1' });
     expect(result).toEqual({ status: 'noop' });
   });
 

@@ -121,7 +121,7 @@ export interface DispatchRunInput {
 
 export interface TickInput {
   readonly runId?: string;
-  readonly tenant?: string;
+  readonly tenant: string;
 }
 
 export type TickResult =
@@ -308,10 +308,19 @@ export class DefaultOrchestrator implements Orchestrator {
           ? unwrapCause(error)
           : undefined;
       if (conflictSource !== undefined) {
-        const conflictError = conflictSource as { topicId?: string; existingRunId?: string | null };
+        const topicId =
+          conflictSource instanceof Error &&
+          'topicId' in conflictSource &&
+          typeof (conflictSource as { topicId: unknown }).topicId === 'string'
+            ? (conflictSource as { topicId: string }).topicId
+            : '';
+        const existingRunId =
+          conflictSource instanceof Error && 'existingRunId' in conflictSource
+            ? ((conflictSource as { existingRunId: unknown }).existingRunId as string | null)
+            : null;
         const details: ActiveRunConflictDetails = {
-          topicId: conflictError.topicId ?? '',
-          existingRunId: conflictError.existingRunId ?? null
+          topicId,
+          existingRunId
         };
         throw new OrchestratorError('active_run_conflict', `Active run conflict.`, {
           details,
@@ -398,10 +407,20 @@ export class DefaultOrchestrator implements Orchestrator {
     return this.#dispatchQueue.enqueue(async () => {
       const result = await unitOfWork.run({ runId: input.runId, run, tenant: input.tenant });
       if (result.directive === 'fail') {
-        throw new OrchestratorError(
-          'persistence_failed',
-          `Unit of work failed: ${result.reason}`
-        );
+        return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant });
+      }
+      if (result.directive === 'needs_input') {
+        const workflow = getRunWorkflowForWorkKind(run.workKind);
+        const hasNeedsInputEdge =
+          workflow !== null &&
+          (workflow.transitions as Record<string, Record<string, string> | undefined>)[run.currentStep]?.['needs_input'] !== undefined;
+        if (!hasNeedsInputEdge) {
+          throw new OrchestratorError(
+            'invalid_transition',
+            `Step '${run.currentStep}' in workflow '${run.workKind}' has no 'needs_input' edge.`
+          );
+        }
+        // result.question is available for future storage; not persisted in this implementation
       }
       const directive: RunDirective = result.directive === 'needs_input' ? 'needs_input' : 'advance';
       return this.applyDirective({ runId: input.runId, directive, tenant: input.tenant });
@@ -412,7 +431,7 @@ export class DefaultOrchestrator implements Orchestrator {
     if (input.runId === undefined) {
       return { status: 'noop' };
     }
-    await this.dispatch({ runId: input.runId, tenant: input.tenant ?? '' });
+    await this.dispatch({ runId: input.runId, tenant: input.tenant });
     return { status: 'dispatched', runId: input.runId };
   }
 
@@ -448,7 +467,14 @@ export class DefaultOrchestrator implements Orchestrator {
       case 'terminal_run':
         return new OrchestratorError('terminal_run', error.message, { cause: error });
       case 'invalid_transition':
-        return new OrchestratorError('invalid_transition', error.message, { cause: error });
+        return new OrchestratorError('invalid_transition', error.message, {
+          cause: error,
+          ...(error.transitionCode !== undefined ? { details: { transitionCode: error.transitionCode } } : {})
+        });
+      case 'unknown_workflow':
+      case 'start_persistence_failed':
+      case 'transition_persistence_failed':
+        return new OrchestratorError('persistence_failed', error.message, { cause: error });
       default:
         return new OrchestratorError('persistence_failed', error.message, { cause: error });
     }
