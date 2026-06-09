@@ -26,26 +26,32 @@ export function createExecutionEntryPoint(options: CreateExecutionEntryPointOpti
         ...(input.correlationId !== undefined ? { correlationId: input.correlationId } : {})
       };
       let streamError: unknown = undefined;
+      let closeProtocolError: RunnerProtocolError | undefined;
       try {
         for await (const event of options.runner.run(runnerInput)) {
           yield event;
         }
       } catch (error) {
         streamError = error;
-        throw error;
       } finally {
         try {
           await options.runner.close();
-        } catch (closeError) {
+        } catch {
           if (streamError === undefined) {
             // Stream succeeded but close failed → runner_close_failed takes precedence
-            throw new RunnerProtocolError(
+            closeProtocolError = new RunnerProtocolError(
               'runner_close_failed',
               'Runner close failed after successful stream completion.'
             );
           }
           // Stream already failed — don't mask the original error with close failure
         }
+      }
+      if (closeProtocolError !== undefined) {
+        throw closeProtocolError;
+      }
+      if (streamError !== undefined) {
+        throw streamError;
       }
     }
   };

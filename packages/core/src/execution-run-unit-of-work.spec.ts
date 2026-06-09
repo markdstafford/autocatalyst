@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ExecutionContext, RunnerEvent } from '@autocatalyst/api-contract';
-import { RunnerProtocolError } from '@autocatalyst/execution';
 import type { ExecutionEntryPoint, ExecutionEntryPointInput } from '@autocatalyst/execution';
 import type { RunWorkInput } from './orchestrator.js';
 import { createExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
@@ -88,8 +87,7 @@ function makeFakeThrowingEntryPoint(error: Error): ExecutionEntryPoint {
     execute(_input: ExecutionEntryPointInput): AsyncIterable<RunnerEvent> {
       return (async function* () {
         throw error;
-        // eslint-disable-next-line @typescript-eslint/no-unreachable
-        yield {} as RunnerEvent; // Satisfy the generator return type
+        yield {} as RunnerEvent; // unreachable — needed to satisfy AsyncGenerator<RunnerEvent> return type
       })();
     }
   };

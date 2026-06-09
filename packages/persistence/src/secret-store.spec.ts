@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { SecretResolutionError, SecretStoreLockedError } from '@autocatalyst/core';
+import { SecretStoreLockedError } from '@autocatalyst/core';
 
 import { createSqliteDatabase, migrateSqliteDatabase, withTempDatabasePath, asInternalSqliteDatabase } from './sqlite.js';
 import { SecretStoreUnlockError, SqliteSecretStore } from './secret-store.js';
@@ -110,7 +110,7 @@ describe('SqliteSecretStore', () => {
       } catch (error) {
         expect(error instanceof Error ? error.message : '').not.toContain('secret-value');
         if (error && typeof error === 'object' && 'details' in error) {
-          expect(JSON.stringify((error as any).details)).not.toContain('secret-value');
+          expect(JSON.stringify((error as { details?: unknown }).details)).not.toContain('secret-value');
         }
       }
       database.close();

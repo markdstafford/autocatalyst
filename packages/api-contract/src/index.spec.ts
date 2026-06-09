@@ -18,9 +18,7 @@ import {
   unauthorizedErrorCode,
   validationErrorCode,
   runnerEventSchema,
-  executionContextSchema,
-  type RunnerEvent,
-  type ExecutionContext
+  executionContextSchema
 } from './index.js';
 
 describe('api-contract barrel', () => {

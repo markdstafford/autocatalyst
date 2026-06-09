@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ExecutionContext } from '@autocatalyst/api-contract';
 import { createExecutionMaterializer } from './internal/execution-materializer.js';
-import { ExecutionMaterializationError } from './materialized-environment.js';
 import { WorkspaceProvisioningError } from './workspace.js';
 
 // Ensure process.env sentinel is not set

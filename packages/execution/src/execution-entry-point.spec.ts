@@ -109,8 +109,7 @@ describe('createExecutionEntryPoint', () => {
       run(_input: RunnerRunInput): AsyncIterable<RunnerEvent> {
         return (async function* () {
           throw runnerError;
-          // eslint-disable-next-line @typescript-eslint/no-unreachable
-          yield {} as RunnerEvent;
+          yield {} as RunnerEvent; // unreachable — needed to satisfy AsyncGenerator<RunnerEvent> return type
         })();
       },
       close: vi.fn().mockResolvedValue({ status: 'closed' })
@@ -153,8 +152,7 @@ describe('createExecutionEntryPoint', () => {
       run(_input: RunnerRunInput): AsyncIterable<RunnerEvent> {
         return (async function* () {
           throw streamError;
-          // eslint-disable-next-line @typescript-eslint/no-unreachable
-          yield {} as RunnerEvent;
+          yield {} as RunnerEvent; // unreachable — needed to satisfy AsyncGenerator<RunnerEvent> return type
         })();
       },
       close: vi.fn().mockRejectedValue(new Error('Also close failed'))

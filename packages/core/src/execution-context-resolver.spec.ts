@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RunWorkInput } from './orchestrator.js';
 import type { Run } from '@autocatalyst/api-contract';
-import { createExecutionContextResolver, ExecutionContextResolutionError } from './execution-context-resolver.js';
+import { createExecutionContextResolver } from './execution-context-resolver.js';
+import type { WorkspaceResolverInput } from './execution-context-resolver.js';
 
 const owner = { id: 'user_1', kind: 'human' as const, tenantId: 'tenant_1' };
 const project = {
@@ -120,7 +121,7 @@ describe('ExecutionContextResolver', () => {
 
     it('rejects two_roots with missing topicSlug with missing_workspace_settings', async () => {
       const resolver = createExecutionContextResolver({
-        workspace: { project, roots, shortRunId: 'abc123' } as any
+        workspace: { project, roots, shortRunId: 'abc123' } as unknown as WorkspaceResolverInput
       });
       const input = makeInput(makeRun({ workKind: 'feature', currentStep: 'implement' }));
       await expect(resolver.resolve(input)).rejects.toMatchObject({
@@ -131,7 +132,7 @@ describe('ExecutionContextResolver', () => {
 
     it('rejects two_roots with missing roots with missing_workspace_settings', async () => {
       const resolver = createExecutionContextResolver({
-        workspace: { project, topicSlug: 'widgets', shortRunId: 'abc123' } as any
+        workspace: { project, topicSlug: 'widgets', shortRunId: 'abc123' } as unknown as WorkspaceResolverInput
       });
       const input = makeInput(makeRun({ workKind: 'feature', currentStep: 'implement' }));
       await expect(resolver.resolve(input)).rejects.toMatchObject({
