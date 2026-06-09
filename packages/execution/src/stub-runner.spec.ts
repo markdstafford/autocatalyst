@@ -109,6 +109,7 @@ describe('StubRunner', () => {
     expect(checkpoint?.type === 'runner_step_checkpoint' && checkpoint.checkpoint.data['workspaceShape']).toBe('two_roots');
     expect(checkpoint?.type === 'runner_step_checkpoint' && checkpoint.checkpoint.data['workspaceRootCount']).toBe(2);
     expect(checkpoint?.type === 'runner_step_checkpoint' && checkpoint.checkpoint.data['shellAvailable']).toBe(true);
+    expect(checkpoint?.type === 'runner_step_checkpoint' && checkpoint.checkpoint.data['lspAvailable']).toBe(false);
   });
 
   it('does not require provider credentials or network access', async () => {
@@ -159,6 +160,10 @@ describe('assertPathWithinWorkspaceRoots', () => {
       expect((error as Error).message).toBe('Path is outside materialized workspace roots.');
       expect((error as Error).message).not.toContain('/etc/sensitive');
     }
+  });
+
+  it('throws for any path when workspace roots are empty', () => {
+    expect(() => assertPathWithinWorkspaceRoots('/tmp/anything', [])).toThrow();
   });
 
 });
