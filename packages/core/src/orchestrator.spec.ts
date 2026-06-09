@@ -463,6 +463,113 @@ describe('DefaultOrchestrator.dispatch', () => {
   });
 });
 
+describe('DefaultOrchestrator.createConversationWithFirstRun — duplicate active run', () => {
+  it('maps ActiveRunConflictPersistenceError-like errors to active_run_conflict', async () => {
+    class ActiveRunConflictPersistenceError extends Error {
+      readonly topicId: string;
+      readonly existingRunId: string | null;
+      constructor(topicId: string, existingRunId: string | null) {
+        super(`Active run conflict for topic '${topicId}'.`);
+        this.name = 'ActiveRunConflictPersistenceError';
+        this.topicId = topicId;
+        this.existingRunId = existingRunId;
+      }
+    }
+    const conversationIngress: ConversationIngressRepository = {
+      createConversationTopicMessageAndRun: vi
+        .fn()
+        .mockRejectedValue(new ActiveRunConflictPersistenceError('topic_existing', 'run_existing'))
+    };
+    const { publisher, events } = makeRecordingPublisher();
+    const { orchestrator } = makeOrchestrator({ conversationIngress, events: publisher });
+
+    try {
+      await orchestrator.createConversationWithFirstRun({
+        projectId: 'proj_1',
+        owner,
+        tenant: 'tenant_1',
+        identity: 'identity_1',
+        topic: { title: 'T' },
+        workKind: 'feature'
+      });
+      throw new Error('expected to throw');
+    } catch (error) {
+      expect(error).toBeInstanceOf(OrchestratorError);
+      const err = error as OrchestratorError;
+      expect(err.code).toBe('active_run_conflict');
+      expect(err.details).toEqual({ topicId: 'topic_existing', existingRunId: 'run_existing' });
+    }
+    expect(events).toHaveLength(0);
+  });
+});
+
+describe('DefaultOrchestrator.dispatch — bounded queue', () => {
+  it('never exceeds cap when multiple units are dispatched concurrently', async () => {
+    const existing = makeRun({ currentStep: 'intake' });
+    const updated = makeRun({ currentStep: 'spec.author' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'spec.author', phase: 'spec' });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep })
+    });
+    const dispatchQueue = new RunDispatchQueue({ maxConcurrent: 2 });
+    let peakActive = 0;
+    const unitOfWork: RunUnitOfWork = {
+      run: vi.fn().mockImplementation(async () => {
+        peakActive = Math.max(peakActive, dispatchQueue.activeCount);
+        // Give other dispatches a chance to start while this one is "active"
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        peakActive = Math.max(peakActive, dispatchQueue.activeCount);
+        return { directive: 'advance' };
+      })
+    };
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork, dispatchQueue });
+
+    await Promise.all([
+      orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' }),
+      orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' }),
+      orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' }),
+      orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' })
+    ]);
+
+    expect(peakActive).toBeLessThanOrEqual(2);
+    expect(dispatchQueue.activeCount).toBe(0);
+  });
+
+  it('failed unit releases capacity so subsequent dispatches can proceed', async () => {
+    const existing = makeRun({ currentStep: 'intake' });
+    const updated = makeRun({ currentStep: 'spec.author' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'spec.author', phase: 'spec' });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep })
+    });
+    const dispatchQueue = new RunDispatchQueue({ maxConcurrent: 1 });
+    let callCount = 0;
+    const unitOfWork: RunUnitOfWork = {
+      run: vi.fn().mockImplementation(async () => {
+        callCount += 1;
+        if (callCount === 1) {
+          return { directive: 'fail', reason: 'boom' };
+        }
+        return { directive: 'advance' };
+      })
+    };
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork, dispatchQueue });
+
+    await expect(
+      orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' })
+    ).rejects.toMatchObject({ name: 'OrchestratorError' });
+
+    expect(dispatchQueue.activeCount).toBe(0);
+
+    // Second dispatch should succeed because capacity was released.
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+    expect(result.run.currentStep).toBe('spec.author');
+    expect(dispatchQueue.activeCount).toBe(0);
+  });
+});
+
 describe('DefaultOrchestrator.tick', () => {
   it('returns { status: "noop" } when no runId is provided', async () => {
     const { orchestrator } = makeOrchestrator();

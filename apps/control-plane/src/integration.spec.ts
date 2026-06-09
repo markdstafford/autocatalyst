@@ -20,10 +20,17 @@ import {
   buildProviderAdapterKey,
   createExtensionRegistryCatalog,
   hardcodedDevelopmentPrincipal,
+  type ControlPlaneService,
   type PolicyDecisionInput,
-  type ProviderCompositionResult
+  type ProviderCompositionResult,
+  type RunUnitOfWork
 } from '@autocatalyst/core';
-import { asInternalSqliteDatabase, createSqliteDatabase } from '@autocatalyst/persistence';
+import {
+  asInternalSqliteDatabase,
+  createDrizzleDomainRepositories,
+  createSqliteDatabase,
+  migrateSqliteDatabase
+} from '@autocatalyst/persistence';
 
 import { createControlPlaneServer, startControlPlaneServer } from './server.js';
 
@@ -455,6 +462,149 @@ describe('provider startup composition integration', () => {
 
       expect(result).toEqual({ composed: [], warnings: [], unresolved: [] });
       await app.close();
+    });
+  });
+
+  it('proves orchestrator ingress end-to-end over the network: POST conversation, GET run, GET steps, SSE event after tick', { timeout: 60000 }, async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      // Seed a project directly in the SQLite file before starting the server.
+      const seedDb = createSqliteDatabase({ path: databasePath });
+      await migrateSqliteDatabase(seedDb);
+      const seedRepos = createDrizzleDomainRepositories(seedDb);
+      const project = await seedRepos.projects.create({
+        owner: hardcodedDevelopmentPrincipal,
+        tenant: hardcodedDevelopmentPrincipal.tenantId,
+        displayName: 'P',
+        repoUrl: 'https://example.test',
+        hostRepository: { provider: 'github', owner: 'test', name: 'repo' },
+        workspaceRootOverride: null,
+        issueTrackerSetting: null,
+        codeHostSetting: null,
+        credentialRefs: []
+      });
+      seedDb.close();
+
+      const unitOfWork: RunUnitOfWork = { run: async () => ({ directive: 'advance' }) };
+      let controlPlane: ControlPlaneService | undefined;
+
+      const handle = await startControlPlaneServer({
+        port: 0,
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET,
+        runConcurrency: 2,
+        unitOfWork,
+        onControlPlaneReady: (service) => {
+          controlPlane = service;
+        }
+      });
+
+      try {
+        if (controlPlane === undefined) {
+          throw new Error('control-plane service was not exposed via onControlPlaneReady');
+        }
+        const captured = controlPlane;
+        const baseUrl = `http://127.0.0.1:${handle.port}`;
+        const authHeaders = { authorization: `Bearer ${BEARER_TOKEN}` };
+
+        // POST /v1/conversations
+        const createResp = await fetch(`${baseUrl}/v1/conversations`, {
+          method: 'POST',
+          headers: { ...authHeaders, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            projectId: project.id,
+            identity: 'test',
+            topic: { title: 'T' },
+            submission: { kind: 'free_form', body: 'hello', workKind: 'feature' }
+          })
+        });
+        expect(createResp.status).toBe(201);
+        const createBody = (await createResp.json()) as { run: { id: string } };
+        const runId = createBody.run.id;
+        expect(runId).toMatch(/^run_/u);
+
+        // GET /v1/runs/:id
+        const getRunResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: authHeaders });
+        const getRunBody = (await getRunResp.json()) as { id: string };
+        expect(getRunResp.status).toBe(200);
+        expect(getRunBody.id).toBe(runId);
+
+        // GET /v1/runs/:id/steps
+        const stepsResp = await fetch(`${baseUrl}/v1/runs/${runId}/steps`, { headers: authHeaders });
+        const stepsBody = (await stepsResp.json()) as { steps: Array<{ runId: string }> };
+        expect(stepsResp.status).toBe(200);
+        expect(stepsBody.steps).toBeInstanceOf(Array);
+        expect(stepsBody.steps.length).toBeGreaterThanOrEqual(1);
+        expect(stepsBody.steps[0].runId).toBe(runId);
+
+        // Open SSE stream BEFORE triggering tick (live bus does not replay).
+        const controller = new AbortController();
+        const sseResp = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
+          headers: authHeaders,
+          signal: controller.signal
+        });
+        expect(sseResp.status).toBe(200);
+        expect(sseResp.headers.get('content-type')).toMatch(/^text\/event-stream/u);
+
+        // Trigger tick AFTER subscribing.
+        const tickPromise = captured.tick({
+          principal: hardcodedDevelopmentPrincipal,
+          tenant: hardcodedDevelopmentPrincipal.tenantId,
+          runId
+        });
+
+        // Read SSE frames until we find a `run_state_transition` event.
+        const reader = sseResp.body?.getReader();
+        if (reader === undefined) {
+          throw new Error('SSE response has no body reader');
+        }
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let payload: { type: string; runId: string; tenant: string } | undefined;
+
+        const findRunStateTransitionFrame = (): boolean => {
+          let frameEnd = buffer.indexOf('\n\n');
+          while (frameEnd !== -1) {
+            const frame = buffer.slice(0, frameEnd);
+            buffer = buffer.slice(frameEnd + 2);
+            const lines = frame.split('\n');
+            const eventLine = lines.find((line) => line.startsWith('event:'));
+            const dataLine = lines.find((line) => line.startsWith('data:'));
+            if (
+              eventLine !== undefined &&
+              dataLine !== undefined &&
+              /^event:\s*run_state_transition/u.test(eventLine)
+            ) {
+              payload = JSON.parse(dataLine.slice('data:'.length).trim()) as {
+                type: string;
+                runId: string;
+                tenant: string;
+              };
+              return true;
+            }
+            frameEnd = buffer.indexOf('\n\n');
+          }
+          return false;
+        };
+
+        while (payload === undefined) {
+          const result = await reader.read();
+          if (result.done) break;
+          buffer += decoder.decode(result.value, { stream: true });
+          if (findRunStateTransitionFrame()) break;
+        }
+        await tickPromise;
+
+        expect(payload).toBeDefined();
+        expect(payload!.type).toBe('run_state_transition');
+        expect(payload!.runId).toBe(runId);
+        expect(payload!.tenant).toBe(hardcodedDevelopmentPrincipal.tenantId);
+
+        controller.abort();
+        await reader.cancel().catch(() => undefined);
+      } finally {
+        await handle.close();
+      }
     });
   });
 

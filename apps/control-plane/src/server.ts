@@ -10,11 +10,13 @@ import {
   permissivePolicyDecisionPoint,
   registerControlPlaneRoutes,
   RunDispatchQueue,
+  type ControlPlaneService,
   type ExtensionRegistryCatalog,
   type HealthDependencyChecker,
   type PolicyDecisionPoint,
   type ProviderAdapterMap,
-  type ProviderCompositionResult
+  type ProviderCompositionResult,
+  type RunUnitOfWork
 } from '@autocatalyst/core';
 import {
   DrizzleConfigurationRecordRepository,
@@ -39,6 +41,8 @@ export interface ControlPlaneServerOptions {
   readonly extensionRegistry?: ExtensionRegistryCatalog;
   readonly providerAdapters?: ProviderAdapterMap;
   readonly onProviderComposition?: (result: ProviderCompositionResult) => void | Promise<void>;
+  readonly unitOfWork?: RunUnitOfWork;
+  readonly onControlPlaneReady?: (service: ControlPlaneService) => void;
 }
 
 const DEFAULT_RUN_CONCURRENCY = 2;
@@ -117,7 +121,8 @@ export async function createControlPlaneServer(
     runs: domainRepos.runs,
     conversationIngress,
     events: eventBus,
-    dispatchQueue
+    dispatchQueue,
+    ...(options.unitOfWork !== undefined ? { unitOfWork: options.unitOfWork } : {})
   });
   const policy = options.policy ?? permissivePolicyDecisionPoint;
   const controlPlane = new DefaultControlPlaneService({
@@ -127,6 +132,7 @@ export async function createControlPlaneServer(
     events: eventBus,
     policy
   });
+  options.onControlPlaneReady?.(controlPlane);
 
   await registerControlPlaneRoutes(app, {
     health: options.health ?? {
@@ -147,14 +153,21 @@ export async function createControlPlaneServer(
   return app;
 }
 
+export type StartControlPlaneServerOptions = ControlPlaneAppConfig & {
+  readonly unitOfWork?: RunUnitOfWork;
+  readonly onControlPlaneReady?: (service: ControlPlaneService) => void;
+};
+
 export async function startControlPlaneServer(
-  config: ControlPlaneAppConfig
+  config: StartControlPlaneServerOptions
 ): Promise<ControlPlaneServerHandle> {
   const app = await createControlPlaneServer({
     ...config,
     onProviderComposition: (result) => {
       logProviderCompositionDiagnostics(result, console);
-    }
+    },
+    ...(config.unitOfWork !== undefined ? { unitOfWork: config.unitOfWork } : {}),
+    ...(config.onControlPlaneReady !== undefined ? { onControlPlaneReady: config.onControlPlaneReady } : {})
   });
 
   await app.listen({ port: config.port, host: '127.0.0.1' });

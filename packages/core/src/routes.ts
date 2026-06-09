@@ -503,6 +503,8 @@ export async function registerControlPlaneRoutes(
         'cache-control': 'no-cache, no-transform',
         connection: 'keep-alive'
       });
+      // Flush headers immediately so SSE clients (e.g. fetch) resolve before the first event.
+      reply.raw.write(': connected\n\n');
 
       request.raw.on('close', () => {
         subscription.close();
