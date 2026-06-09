@@ -5,9 +5,13 @@ import { promisify } from 'node:util';
 
 import {
   WorkspaceProvisioningError,
+  WorkspacePruneError,
+  WorkspaceTeardownError,
   redactWorkspaceDiagnostic,
   summarizeWorkspaceCause,
-  type WorkspaceProvisioningErrorCode
+  type WorkspaceProvisioningErrorCode,
+  type WorkspacePruneErrorCode,
+  type WorkspaceTeardownErrorCode
 } from '../workspace.js';
 import { assertPathInsideRoot } from './workspace-paths.js';
 
@@ -55,6 +59,26 @@ export interface RemoveDirectoryInput {
   readonly targetPath: string;
 }
 
+export type PathStatKind = 'file' | 'directory' | 'symlink' | 'other' | 'missing';
+
+export interface PruneWorktreeAdminStateInput {
+  readonly hostRepositoryPath: string;
+}
+
+export interface CommitInput {
+  readonly repoRoot: string;
+  readonly message: string;
+  readonly identity: {
+    readonly name: string;
+    readonly email: string;
+  };
+}
+
+export interface DeleteBranchInput {
+  readonly hostRepositoryPath: string;
+  readonly branchName: string;
+}
+
 export interface WorkspaceDriver {
   ensureHostRepository(input: HostRepositoryInput): Promise<void>;
   fetchHostRepository(input: FetchHostRepositoryInput): Promise<void>;
@@ -63,17 +87,24 @@ export interface WorkspaceDriver {
   addWorktree(input: AddWorktreeInput): Promise<void>;
   currentBranch(repoRoot: string): Promise<string | null>;
   removeWorktree(input: RemoveWorktreeInput): Promise<void>;
+  pruneWorktreeAdminState(input: PruneWorktreeAdminStateInput): Promise<void>;
   mkdirp(input: MkdirpInput): Promise<void>;
   pathExists(targetPath: string): Promise<boolean>;
   realpath(targetPath: string): Promise<string>;
+  statPath(targetPath: string): Promise<PathStatKind>;
   removeDirectory(input: RemoveDirectoryInput): Promise<void>;
+  hasUncommittedChanges(repoRoot: string): Promise<boolean>;
+  stageAll(repoRoot: string): Promise<void>;
+  commit(input: CommitInput): Promise<string>;
+  deleteBranch(input: DeleteBranchInput): Promise<void>;
 }
 
 interface RunGitOptions {
-  readonly code: WorkspaceProvisioningErrorCode;
+  readonly code: WorkspaceProvisioningErrorCode | WorkspacePruneErrorCode | WorkspaceTeardownErrorCode;
   readonly message: string;
   readonly targetPath?: string;
   readonly cwd?: string;
+  readonly category?: 'provisioning' | 'prune' | 'teardown';
 }
 
 async function runGit(args: readonly string[], options: RunGitOptions): Promise<string> {
@@ -87,13 +118,20 @@ async function runGit(args: readonly string[], options: RunGitOptions): Promise<
   } catch (cause) {
     const summary = summarizeWorkspaceCause(cause);
     const targetPath = options.targetPath ?? options.cwd;
-    throw new WorkspaceProvisioningError(options.code, options.message, {
+    const context = {
       ...(targetPath !== undefined && { targetPath }),
       cause: {
         ...summary,
         message: redactWorkspaceDiagnostic(summary.message)
       }
-    });
+    };
+    if (options.category === 'prune') {
+      throw new WorkspacePruneError(options.code as WorkspacePruneErrorCode, options.message, context);
+    }
+    if (options.category === 'teardown') {
+      throw new WorkspaceTeardownError(options.code as WorkspaceTeardownErrorCode, options.message, context);
+    }
+    throw new WorkspaceProvisioningError(options.code as WorkspaceProvisioningErrorCode, options.message, context);
   }
 }
 
@@ -205,9 +243,20 @@ export function createNodeWorkspaceDriver(): WorkspaceDriver {
     async removeWorktree(input) {
       await runGit(['worktree', 'remove', '--force', input.repoRoot], {
         cwd: input.hostRepositoryPath,
-        code: 'rollback_failed',
-        message: 'Failed to remove run worktree during rollback',
+        category: 'prune',
+        code: 'worktree_remove_failed',
+        message: 'Failed to remove run worktree',
         targetPath: input.repoRoot
+      });
+    },
+
+    async pruneWorktreeAdminState(input) {
+      await runGit(['worktree', 'prune'], {
+        cwd: input.hostRepositoryPath,
+        category: 'prune',
+        code: 'worktree_admin_prune_failed',
+        message: 'Failed to prune stale git worktree administration state',
+        targetPath: input.hostRepositoryPath
       });
     },
 
@@ -227,12 +276,80 @@ export function createNodeWorkspaceDriver(): WorkspaceDriver {
       return nodeRealpath(targetPath);
     },
 
+    async statPath(targetPath) {
+      try {
+        const stat = await fs.lstat(targetPath);
+        if (stat.isSymbolicLink()) return 'symlink';
+        if (stat.isDirectory()) return 'directory';
+        if (stat.isFile()) return 'file';
+        return 'other';
+      } catch (cause) {
+        const errorWithCode = cause as NodeJS.ErrnoException;
+        if (errorWithCode.code === 'ENOENT') return 'missing';
+        throw new WorkspacePruneError('target_stat_failed', 'Failed to stat workspace prune target', {
+          targetPath,
+          cause: summarizeWorkspaceCause(cause)
+        });
+      }
+    },
+
     async removeDirectory(input) {
       const safeTargetPath = await assertPathInsideRoot(
         { root: input.workspaceRoot, rootKind: 'workspace', targetPath: input.targetPath, intent: 'delete' },
         { pathExists: exists, realpath: nodeRealpath }
       );
       await fs.rm(safeTargetPath, { recursive: true, force: true });
+    },
+
+    async hasUncommittedChanges(repoRoot) {
+      const output = await runGit(['status', '--porcelain=v1'], {
+        cwd: repoRoot,
+        category: 'teardown',
+        code: 'checkpoint_commit_failed',
+        message: 'Failed to inspect worktree changes',
+        targetPath: repoRoot
+      });
+      return output.length > 0;
+    },
+
+    async stageAll(repoRoot) {
+      await runGit(['add', '-A'], {
+        cwd: repoRoot,
+        category: 'teardown',
+        code: 'checkpoint_commit_failed',
+        message: 'Failed to stage final checkpoint changes',
+        targetPath: repoRoot
+      });
+    },
+
+    async commit(input) {
+      await runGit(
+        ['-c', `user.name=${input.identity.name}`, '-c', `user.email=${input.identity.email}`, 'commit', '-m', input.message],
+        {
+          cwd: input.repoRoot,
+          category: 'teardown',
+          code: 'checkpoint_commit_failed',
+          message: 'Failed to create final checkpoint commit',
+          targetPath: input.repoRoot
+        }
+      );
+      return runGit(['rev-parse', 'HEAD'], {
+        cwd: input.repoRoot,
+        category: 'teardown',
+        code: 'checkpoint_commit_failed',
+        message: 'Failed to read final checkpoint commit SHA',
+        targetPath: input.repoRoot
+      });
+    },
+
+    async deleteBranch(input) {
+      await runGit(['branch', '-D', input.branchName], {
+        cwd: input.hostRepositoryPath,
+        category: 'teardown',
+        code: 'branch_delete_failed',
+        message: 'Failed to delete run branch',
+        targetPath: input.hostRepositoryPath
+      });
     }
   };
 }
