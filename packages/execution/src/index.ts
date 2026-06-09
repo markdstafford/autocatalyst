@@ -12,3 +12,21 @@ export interface Runner {
 }
 
 export const executionPackageName = '@autocatalyst/execution' as const;
+
+export {
+  WorkspaceProvisioningError,
+  provisionWorkspace,
+  redactWorkspaceDiagnostic,
+  summarizeWorkspaceCause
+} from './workspace.js';
+export type {
+  ImplementingWorkspaceRunKind,
+  ProvisionWorkspaceRequest,
+  ProvisionWorkspaceResult,
+  WorkspaceProvisioningErrorCauseSummary,
+  WorkspaceProvisioningErrorCode,
+  WorkspaceProvisioningErrorContext,
+  WorkspaceProvisioningRoots,
+  WorkspaceProvisioningShape,
+  WorkspaceRunKind
+} from './workspace.js';

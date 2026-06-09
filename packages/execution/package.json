@@ -10,5 +10,8 @@
       "types": "./dist/src/index.d.ts",
       "import": "./dist/src/index.js"
     }
+  },
+  "dependencies": {
+    "@autocatalyst/api-contract": "*"
   }
 }
