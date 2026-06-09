@@ -2,8 +2,12 @@ import {
   configurationRecordCollectionPath,
   configurationRecordListResponseSchema,
   configurationRecordResponseSchema,
+  conversationCollectionPath,
   createConfigurationRecordRequestSchema,
   createConfigurationRecordSuccessStatusCode,
+  createConversationSuccessStatusCode,
+  createConversationWithFirstRunRequestSchema,
+  createConversationWithFirstRunResponseSchema,
   createProbeResourceRequestSchema,
   createProbeResourceSuccessStatusCode,
   createSecretRequestSchema,
@@ -12,20 +16,30 @@ import {
   degradedHealthStatusCode,
   deleteConfigurationRecordSuccessStatusCode,
   errorResponseSchema,
+  getRunSuccessStatusCode,
   healthResponseSchema,
   probeResourceCollectionPath,
   probeResourceSchema,
+  runEventsPath,
+  runResourcePath,
+  runSchema,
+  runStepListResponseSchema,
+  runStepsPath,
   secretCollectionPath,
   updateConfigurationRecordRequestSchema,
   type ConfigurationRecord,
   type ConfigurationRecordListResponse,
   type CreateConfigurationRecordRequest,
+  type CreateConversationWithFirstRunRequest,
+  type CreateConversationWithFirstRunResponse,
   type CreateProbeResourceRequest,
   type CreateSecretRequest,
   type CreateSecretResponse,
   type ErrorResponse,
   type HealthResponse,
   type ProbeResource,
+  type Run,
+  type RunStepListResponse,
   type UpdateConfigurationRecordRequest
 } from '@autocatalyst/api-contract';
 
@@ -45,7 +59,18 @@ export interface ControlPlaneClient {
   updateConfigurationRecord(id: string, patch: UpdateConfigurationRecordRequest): Promise<ConfigurationRecord>;
   deleteConfigurationRecord(id: string): Promise<void>;
   createSecret(request: CreateSecretRequest): Promise<CreateSecretResponse>;
+  createConversationWithFirstRun(request: CreateConversationWithFirstRunRequest): Promise<CreateConversationWithFirstRunResponse>;
+  getRun(id: string): Promise<Run>;
+  listRunSteps(id: string): Promise<RunStepListResponse>;
+  subscribeRunEvents(id: string, options?: RunEventsStreamOptions): Promise<Response>;
 }
+
+export interface RunEventsStreamOptions {
+  readonly lastEventId?: string;
+  readonly signal?: AbortSignal;
+}
+
+export type RunEventsResponse = { readonly kind: 'response'; readonly response: Response };
 
 export class ControlPlaneClientError extends Error {
   readonly status: number;
@@ -208,6 +233,56 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
         );
       }
       return createSecretResponseSchema.parse(await parseJson(response));
+    },
+
+    async createConversationWithFirstRun(request) {
+      const body = createConversationWithFirstRunRequestSchema.parse(request);
+      const response = await fetchImplementation(urlFor(baseUrl, conversationCollectionPath), {
+        method: 'POST',
+        headers: protectedHeaders(bearerToken, { 'content-type': 'application/json' }),
+        body: JSON.stringify(body)
+      });
+      await throwForError(response);
+      if (response.status !== createConversationSuccessStatusCode) {
+        throw new Error(
+          `Expected ${createConversationSuccessStatusCode} from createConversationWithFirstRun, received ${response.status}.`
+        );
+      }
+      return createConversationWithFirstRunResponseSchema.parse(await parseJson(response));
+    },
+
+    async getRun(id) {
+      const response = await fetchImplementation(
+        urlFor(baseUrl, runResourcePath.replace(':id', id)),
+        { method: 'GET', headers: protectedHeaders(bearerToken) }
+      );
+      await throwForError(response);
+      return runSchema.parse(await parseJson(response));
+    },
+
+    async listRunSteps(id) {
+      const response = await fetchImplementation(
+        urlFor(baseUrl, runStepsPath.replace(':id', id)),
+        { method: 'GET', headers: protectedHeaders(bearerToken) }
+      );
+      await throwForError(response);
+      return runStepListResponseSchema.parse(await parseJson(response));
+    },
+
+    async subscribeRunEvents(id, options) {
+      const headers: Record<string, string> = protectedHeaders(bearerToken);
+      if (options?.lastEventId !== undefined) {
+        headers['last-event-id'] = options.lastEventId;
+      }
+      const response = await fetchImplementation(
+        urlFor(baseUrl, runEventsPath.replace(':id', id)),
+        { method: 'GET', headers, signal: options?.signal }
+      );
+      if (!response.ok) {
+        const parsed = errorResponseSchema.parse(await parseJson(response));
+        throw new ControlPlaneClientError(response.status, parsed);
+      }
+      return response;
     }
   };
 }
