@@ -93,6 +93,7 @@ import type {
   TopicRepository
 } from '@autocatalyst/core';
 
+import { ActiveRunConflictPersistenceError, isActiveRunConstraintViolation } from './active-run-conflict.js';
 import {
   nullableJsonForRow,
   parseJsonValue,
@@ -608,19 +609,26 @@ export class DrizzleRunRepository implements RunRepository {
         createdAt: now,
         updatedAt: now
       });
-      tx.insert(runs).values({
-        id: run.id,
-        topicId: run.topicId,
-        ownerJson: stringifyJsonValue(nonModelPrincipalSchema, run.owner),
-        tenant: run.tenant,
-        workKind: run.workKind,
-        currentStep: run.currentStep,
-        terminal: run.terminal,
-        trackedIssueJson: nullableJsonForRow(trackedIssueSchema, run.trackedIssue),
-        testingGuideResultJson: nullableJsonForRow(testingGuideResultSchema, run.testingGuideResult),
-        createdAt: run.createdAt,
-        updatedAt: run.updatedAt
-      }).run();
+      try {
+        tx.insert(runs).values({
+          id: run.id,
+          topicId: run.topicId,
+          ownerJson: stringifyJsonValue(nonModelPrincipalSchema, run.owner),
+          tenant: run.tenant,
+          workKind: run.workKind,
+          currentStep: run.currentStep,
+          terminal: run.terminal,
+          trackedIssueJson: nullableJsonForRow(trackedIssueSchema, run.trackedIssue),
+          testingGuideResultJson: nullableJsonForRow(testingGuideResultSchema, run.testingGuideResult),
+          createdAt: run.createdAt,
+          updatedAt: run.updatedAt
+        }).run();
+      } catch (error) {
+        if (isActiveRunConstraintViolation(error)) {
+          throw new ActiveRunConflictPersistenceError(parsedRun.topicId, null);
+        }
+        throw error;
+      }
       const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep);
       return { run, runStep };
     });
@@ -1325,19 +1333,26 @@ export class DrizzleConversationIngressRepository implements ConversationIngress
         createdAt: now,
         updatedAt: now
       });
-      tx.insert(runs).values({
-        id: run.id,
-        topicId: run.topicId,
-        ownerJson: stringifyJsonValue(nonModelPrincipalSchema, run.owner),
-        tenant: run.tenant,
-        workKind: run.workKind,
-        currentStep: run.currentStep,
-        terminal: run.terminal,
-        trackedIssueJson: nullableJsonForRow(trackedIssueSchema, run.trackedIssue),
-        testingGuideResultJson: nullableJsonForRow(testingGuideResultSchema, run.testingGuideResult),
-        createdAt: run.createdAt,
-        updatedAt: run.updatedAt
-      }).run();
+      try {
+        tx.insert(runs).values({
+          id: run.id,
+          topicId: run.topicId,
+          ownerJson: stringifyJsonValue(nonModelPrincipalSchema, run.owner),
+          tenant: run.tenant,
+          workKind: run.workKind,
+          currentStep: run.currentStep,
+          terminal: run.terminal,
+          trackedIssueJson: nullableJsonForRow(trackedIssueSchema, run.trackedIssue),
+          testingGuideResultJson: nullableJsonForRow(testingGuideResultSchema, run.testingGuideResult),
+          createdAt: run.createdAt,
+          updatedAt: run.updatedAt
+        }).run();
+      } catch (error) {
+        if (isActiveRunConstraintViolation(error)) {
+          throw new ActiveRunConflictPersistenceError(run.topicId, null);
+        }
+        throw error;
+      }
 
       // 7. Create initial RunStep using shared helper
       const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep);

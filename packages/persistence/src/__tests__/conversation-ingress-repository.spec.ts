@@ -171,7 +171,7 @@ describe('DrizzleConversationIngressRepository', () => {
       await withTempDatabasePath(async (databasePath) => {
         const database = createSqliteDatabase({ path: databasePath });
         await migrateSqliteDatabase(database);
-        const { repos, project } = await setupProject(database);
+        const { project } = await setupProject(database);
         const repo = new DrizzleConversationIngressRepository(database);
 
         asInternalSqliteDatabase(database).client

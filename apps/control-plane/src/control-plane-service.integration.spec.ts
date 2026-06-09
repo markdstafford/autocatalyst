@@ -4,6 +4,7 @@ import {
   DefaultControlPlaneService,
   DefaultOrchestrator,
   InMemoryRunEventBus,
+  OrchestratorError,
   RunDispatchQueue,
   hardcodedDevelopmentPrincipal,
   permissivePolicyDecisionPoint,
@@ -22,6 +23,85 @@ const owner = {
   tenantId: 'tenant_dev',
   displayName: 'Development Principal'
 };
+
+describe('duplicate-active-run conflict via real SQLite orchestrator', () => {
+  it('createRun returns active_run_conflict with topic and existing run details when a non-terminal run already exists on the topic', async () => {
+    const database = createSqliteDatabase({ path: ':memory:' });
+    await migrateSqliteDatabase(database);
+    try {
+      const domainRepos = createDrizzleDomainRepositories(database);
+      const conversationIngress = new DrizzleConversationIngressRepository(database);
+      const eventBus = new InMemoryRunEventBus();
+      const dispatchQueue = new RunDispatchQueue({ maxConcurrent: 2 });
+      const orchestrator = new DefaultOrchestrator({
+        runs: domainRepos.runs,
+        conversationIngress,
+        events: eventBus,
+        dispatchQueue
+      });
+
+      const project = await domainRepos.projects.create({
+        owner,
+        tenant: 'tenant_dev',
+        displayName: 'Conflict Project',
+        repoUrl: 'https://example.test',
+        hostRepository: { provider: 'github', owner: 'test', name: 'repo' },
+        workspaceRootOverride: null,
+        issueTrackerSetting: null,
+        codeHostSetting: null,
+        credentialRefs: []
+      });
+      const conv = await domainRepos.conversations.create({
+        projectId: project.id,
+        owner,
+        tenant: 'tenant_dev',
+        identity: 'conflict-test',
+        activeTopicId: null
+      });
+      const topic = await domainRepos.topics.create({
+        conversationId: conv.id,
+        owner,
+        tenant: 'tenant_dev',
+        title: 'Topic for conflict test',
+        kind: 'main'
+      });
+
+      const first = await orchestrator.createRun({
+        topicId: topic.id,
+        owner,
+        tenant: 'tenant_dev',
+        workKind: 'feature'
+      });
+      expect(first.run.terminal).toBe(false);
+
+      let caught: unknown;
+      try {
+        await orchestrator.createRun({
+          topicId: topic.id,
+          owner,
+          tenant: 'tenant_dev',
+          workKind: 'feature'
+        });
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(caught).toBeInstanceOf(OrchestratorError);
+      const err = caught as OrchestratorError;
+      expect(err.code).toBe('active_run_conflict');
+      const details = err.details as { topicId: string; existingRunId: string | null };
+      expect(details.topicId).toBe(topic.id);
+      expect(details.existingRunId).toBe(first.run.id);
+
+      // First run must remain unchanged
+      const unchanged = await domainRepos.runs.findById(first.run.id);
+      expect(unchanged?.id).toBe(first.run.id);
+      expect(unchanged?.terminal).toBe(false);
+    } finally {
+      database.close();
+    }
+  });
+});
 
 describe('control-plane-service integration (SQLite + real orchestrator + real event bus)', () => {
   it('delivers a run_state_transition event end-to-end through subscribeRunEvents after a tick', async () => {
