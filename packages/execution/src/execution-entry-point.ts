@@ -27,8 +27,12 @@ export function createExecutionEntryPoint(options: CreateExecutionEntryPointOpti
       };
       let streamError: unknown = undefined;
       let closeProtocolError: RunnerProtocolError | undefined;
+      let terminalSeen = false;
       try {
         for await (const event of options.runner.run(runnerInput)) {
+          if (event.type === 'runner_terminal_result') {
+            terminalSeen = true;
+          }
           yield event;
         }
       } catch (error) {
@@ -43,8 +47,16 @@ export function createExecutionEntryPoint(options: CreateExecutionEntryPointOpti
               'runner_close_failed',
               'Runner close failed after successful stream completion.'
             );
+          } else if (!terminalSeen) {
+            // Stream threw before any terminal result AND close also failed → teardown
+            // integrity is unknown; close failure takes precedence over the stream error.
+            closeProtocolError = new RunnerProtocolError(
+              'runner_close_failed',
+              'Runner close failed after pre-terminal stream error; teardown integrity unknown.'
+            );
           }
-          // Stream already failed — don't mask the original error with close failure
+          // Post-terminal stream error + close failure: original stream error takes precedence
+          // (terminalSeen === true && streamError !== undefined).
         }
       }
       if (closeProtocolError !== undefined) {

@@ -188,6 +188,30 @@ describe('ExecutionContextResolver', () => {
       });
     });
 
+    it('rejects empty handle with invalid_secret_declaration', async () => {
+      const resolver = createExecutionContextResolver({
+        secretBindings: [{ handle: '', envName: 'MODEL_API_KEY' }],
+        secretsAvailable: true
+      });
+      const input = makeInput(makeRun({ workKind: 'question', currentStep: 'respond' }));
+      await expect(resolver.resolve(input)).rejects.toMatchObject({
+        name: 'ExecutionContextResolutionError',
+        code: 'invalid_secret_declaration'
+      });
+    });
+
+    it('rejects whitespace-only handle with invalid_secret_declaration', async () => {
+      const resolver = createExecutionContextResolver({
+        secretBindings: [{ handle: '   ', envName: 'MODEL_API_KEY' }],
+        secretsAvailable: true
+      });
+      const input = makeInput(makeRun({ workKind: 'question', currentStep: 'respond' }));
+      await expect(resolver.resolve(input)).rejects.toMatchObject({
+        name: 'ExecutionContextResolutionError',
+        code: 'invalid_secret_declaration'
+      });
+    });
+
     it('does not include ambient process.env values', async () => {
       process.env['SENTINEL_SHOULD_NOT_LEAK'] = 'sentinel-secret';
       try {

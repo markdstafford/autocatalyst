@@ -148,6 +148,12 @@ async function resolveContext(
 
   const envNamePattern = /^[A-Z_][A-Z0-9_]*$/u;
   for (const binding of secretBindings) {
+    if (binding.handle.trim().length === 0) {
+      throw new ExecutionContextResolutionError(
+        'invalid_secret_declaration',
+        `Invalid secret binding: handle must be a non-empty string.`
+      );
+    }
     if (!envNamePattern.test(binding.envName)) {
       throw new ExecutionContextResolutionError(
         'invalid_secret_declaration',

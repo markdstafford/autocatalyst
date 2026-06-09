@@ -103,10 +103,24 @@ export function createExecutionMaterializer(options: ExecutionMaterializerOption
             variables[binding.envName] = value;
             secretVariableNames.push(binding.envName);
           } catch (error) {
-            const message = error instanceof Error ? error.message : 'Unknown secret resolution error.';
+            // Map known resolution codes to static sanitized messages; never include
+            // the resolver's raw error.message which may contain secret material.
+            const knownCode =
+              error !== null &&
+              typeof error === 'object' &&
+              'code' in error &&
+              typeof (error as { code: unknown }).code === 'string'
+                ? (error as { code: string }).code
+                : undefined;
+            const sanitizedReason =
+              knownCode === 'missing_secret' ? 'Secret not found.'
+              : knownCode === 'locked' ? 'Secret store is locked.'
+              : knownCode === 'undecryptable' ? 'Secret could not be decrypted.'
+              : knownCode === 'unavailable' ? 'Secret is unavailable.'
+              : 'Secret resolution failed.';
             throw new ExecutionMaterializationError(
               'secret_resolution_failed',
-              `Failed to resolve secret for handle '${binding.handle}': ${message}`,
+              `Failed to resolve secret for handle '${binding.handle}': ${sanitizedReason}`,
               { handle: binding.handle }
             );
           }

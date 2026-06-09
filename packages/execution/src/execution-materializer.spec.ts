@@ -186,6 +186,29 @@ describe('createExecutionMaterializer', () => {
         details: { handle: 'sec_missing' }
       });
     });
+
+    it('resolver error message containing secret material is not exposed in materialization error', async () => {
+      const sentinel = 'sk-SECRET-SENTINEL-VALUE-12345';
+      const mockSecretResolver = {
+        resolveSecret: vi.fn().mockRejectedValue(new Error(`Token is invalid: ${sentinel}`))
+      };
+      const materializer = createExecutionMaterializer({ secretResolver: mockSecretResolver });
+      const context = makeContext({
+        workspaceIntent: { shape: 'none' },
+        secretBindings: [{ handle: 'sec_token', envName: 'API_TOKEN' }]
+      });
+
+      let caughtError: unknown;
+      try {
+        await materializer.materialize(context);
+      } catch (err) {
+        caughtError = err;
+      }
+
+      expect(caughtError).toBeDefined();
+      const errorMessage = caughtError instanceof Error ? caughtError.message : String(caughtError);
+      expect(errorMessage).not.toContain(sentinel);
+    });
   });
 
   describe('capability materialization', () => {

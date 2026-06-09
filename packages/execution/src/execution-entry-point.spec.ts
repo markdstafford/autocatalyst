@@ -143,15 +143,14 @@ describe('createExecutionEntryPoint', () => {
     });
   });
 
-  it('runner.close() throws after stream error → original stream error propagates, not close error', async () => {
+  it('pre-terminal stream error + close failure → RunnerProtocolError(runner_close_failed)', async () => {
     const context = makeContext();
     const materialize = vi.fn().mockResolvedValue(makeMaterializedEnv(context));
 
-    const streamError = new Error('Original stream error');
     const throwingRunner: Runner = {
       run(_input: RunnerRunInput): AsyncIterable<RunnerEvent> {
         return (async function* () {
-          throw streamError;
+          throw new Error('Pre-terminal stream error');
           yield {} as RunnerEvent; // unreachable — needed to satisfy AsyncGenerator<RunnerEvent> return type
         })();
       },
@@ -164,7 +163,35 @@ describe('createExecutionEntryPoint', () => {
       for await (const _ of entryPoint.execute({ context })) {
         // consume
       }
-    }).rejects.toThrow('Original stream error');
+    }).rejects.toMatchObject({
+      name: 'RunnerProtocolError',
+      code: 'runner_close_failed'
+    });
+  });
+
+  it('post-terminal stream error + close failure → original stream error propagates', async () => {
+    const context = makeContext();
+    const materialize = vi.fn().mockResolvedValue(makeMaterializedEnv(context));
+
+    const terminal = makeTerminalEvent();
+    const postTerminalError = new Error('Post-terminal stream error');
+    const throwingRunner: Runner = {
+      run(_input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+        return (async function* () {
+          yield terminal;
+          throw postTerminalError;
+        })();
+      },
+      close: vi.fn().mockRejectedValue(new Error('Also close failed'))
+    };
+
+    const entryPoint = createExecutionEntryPoint({ runner: throwingRunner, materialize });
+
+    await expect(async () => {
+      for await (const _ of entryPoint.execute({ context })) {
+        // consume
+      }
+    }).rejects.toThrow('Post-terminal stream error');
   });
 
   it('materialization error propagates before runner is invoked', async () => {
