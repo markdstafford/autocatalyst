@@ -1,1 +1,5 @@
-export const executionInternalWorkspaceDriver = 'execution-internal-workspace-driver' as const;
+export interface WorkspaceDriver {}
+
+export function createNodeWorkspaceDriver(): WorkspaceDriver {
+  return {};
+}
