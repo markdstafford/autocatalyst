@@ -15,18 +15,42 @@ export const executionPackageName = '@autocatalyst/execution' as const;
 
 export {
   WorkspaceProvisioningError,
+  WorkspacePruneError,
+  WorkspaceTeardownError,
   provisionWorkspace,
+  pruneWorkspacePath,
   redactWorkspaceDiagnostic,
-  summarizeWorkspaceCause
+  summarizeWorkspaceCause,
+  teardownWorkspace
 } from './workspace.js';
 export type {
   ImplementingWorkspaceRunKind,
+  PruneWorkspacePathRequest,
   ProvisionWorkspaceRequest,
   ProvisionWorkspaceResult,
+  TeardownWorkspaceRequest,
+  WorkspaceBranchAction,
+  WorkspaceBranchResult,
+  WorkspaceCheckpointAction,
+  WorkspaceCheckpointKind,
+  WorkspaceCheckpointResult,
+  WorkspaceErrorCauseSummary,
+  WorkspacePruneErrorCode,
+  WorkspacePruneErrorContext,
+  WorkspacePruneMode,
+  WorkspacePruneResult,
+  WorkspacePruneStatus,
+  WorkspacePrunePurpose,
   WorkspaceProvisioningErrorCauseSummary,
   WorkspaceProvisioningErrorCode,
   WorkspaceProvisioningErrorContext,
   WorkspaceProvisioningRoots,
   WorkspaceProvisioningShape,
-  WorkspaceRunKind
+  WorkspaceRunKind,
+  WorkspaceTeardownErrorCode,
+  WorkspaceTeardownErrorContext,
+  WorkspaceTeardownOutcome,
+  WorkspaceTeardownPruneResult,
+  WorkspaceTeardownResult,
+  WorkspaceTerminalStep
 } from './workspace.js';
