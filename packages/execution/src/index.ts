@@ -1,17 +1,31 @@
-export interface RunnerInput {
-  readonly runId: string;
-}
-
-export interface RunnerResult {
-  readonly runId: string;
-  readonly status: 'accepted';
-}
-
-export interface Runner {
-  run(input: RunnerInput): Promise<RunnerResult>;
-}
-
 export const executionPackageName = '@autocatalyst/execution' as const;
+
+export {
+  RunnerProtocolError,
+  type Runner,
+  type RunnerCloseResult,
+  type RunnerProtocolErrorCode,
+  type RunnerRunInput
+} from './runner.js';
+
+export {
+  ExecutionMaterializationError,
+  type ExecutionMaterializationErrorCode,
+  type MaterializedExecutionEnvironment,
+  type MaterializedWorkspace
+} from './materialized-environment.js';
+
+export {
+  sanitizeSecretResolutionCause,
+  type ExecutionSecretResolver
+} from './secret-resolver.js';
+
+export {
+  createExecutionEntryPoint,
+  type CreateExecutionEntryPointOptions,
+  type ExecutionEntryPoint,
+  type ExecutionEntryPointInput
+} from './execution-entry-point.js';
 
 export {
   WorkspaceProvisioningError,
