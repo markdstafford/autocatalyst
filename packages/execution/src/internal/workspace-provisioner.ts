@@ -137,7 +137,7 @@ export function createWorkspaceProvisioner(dependencies: WorkspaceProvisionerDep
       await driver.fetchHostRepository({ reposRoot: paths.reposRoot, hostRepositoryPath: paths.hostRepositoryPath });
       const baseRef = await driver.resolveDefaultBranch({
         hostRepositoryPath: paths.hostRepositoryPath,
-        defaultBranch: request.defaultBranch
+        ...(request.defaultBranch !== undefined && { defaultBranch: request.defaultBranch })
       });
 
       try {
