@@ -323,6 +323,13 @@ describe('DefaultControlPlaneService.listRunSteps', () => {
       service.listRunSteps({ principal, tenant: 'tenant_1', runId: 'run_1' })
     ).rejects.toMatchObject({ code: 'forbidden' });
   });
+
+  it('throws forbidden when policy denies', async () => {
+    const service = makeService({ policy: makeDenyPolicy() });
+    await expect(
+      service.listRunSteps({ principal, tenant: 'tenant_1', runId: 'run_1' })
+    ).rejects.toMatchObject({ code: 'forbidden' });
+  });
 });
 
 describe('DefaultControlPlaneService.subscribeRunEvents', () => {
@@ -354,6 +361,13 @@ describe('DefaultControlPlaneService.subscribeRunEvents', () => {
       findById: vi.fn().mockResolvedValue(makeRun({ tenant: 'tenant_2', owner: { ...owner, tenantId: 'tenant_2' } }))
     });
     const service = makeService({ runs });
+    await expect(
+      service.subscribeRunEvents({ principal, tenant: 'tenant_1', runId: 'run_1' })
+    ).rejects.toMatchObject({ code: 'forbidden' });
+  });
+
+  it('throws forbidden when policy denies', async () => {
+    const service = makeService({ policy: makeDenyPolicy() });
     await expect(
       service.subscribeRunEvents({ principal, tenant: 'tenant_1', runId: 'run_1' })
     ).rejects.toMatchObject({ code: 'forbidden' });
