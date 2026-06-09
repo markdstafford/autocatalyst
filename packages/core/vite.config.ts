@@ -5,7 +5,8 @@ export default defineConfig({
   cacheDir: '../../node_modules/.vite/packages/core',
   resolve: {
     alias: {
-      '@autocatalyst/api-contract': resolve(__dirname, '../api-contract/src/index.ts')
+      '@autocatalyst/api-contract': resolve(__dirname, '../api-contract/src/index.ts'),
+      '@autocatalyst/execution': resolve(__dirname, '../execution/src/index.ts')
     }
   },
   test: {

@@ -93,3 +93,5 @@ export * from './run-step.js';
 export * from './run-events.js';
 export * from './session.js';
 export * from './test-result.js';
+export * from './runner-events.js';
+export * from './execution-context.js';

@@ -16,7 +16,9 @@ import {
   secretStoreLockedErrorCode,
   submissionKindSchema,
   unauthorizedErrorCode,
-  validationErrorCode
+  validationErrorCode,
+  runnerEventSchema,
+  executionContextSchema
 } from './index.js';
 
 describe('api-contract barrel', () => {
@@ -51,5 +53,10 @@ describe('api-contract barrel', () => {
     expect(runResourcePath).toBe('/v1/runs/:id');
     expect(runStepsPath).toBe('/v1/runs/:id/steps');
     expect(runEventsPath).toBe('/v1/runs/:id/events');
+  });
+
+  it('exports runner event and execution context contracts', () => {
+    expect(runnerEventSchema).toBeDefined();
+    expect(executionContextSchema).toBeDefined();
   });
 });
