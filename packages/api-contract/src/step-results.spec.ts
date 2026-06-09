@@ -29,6 +29,8 @@ describe('step result contracts', () => {
       directive: 'fail',
       reason: 'Execution failed: schema_validation_failed'
     });
+    expect(runnerTerminalStepResultSchema.safeParse({ directive: 'needs_input', reason: 'bad' }).success).toBe(false);
+    expect(runnerTerminalStepResultSchema.safeParse({ directive: 'fail', question: 'bad?' }).success).toBe(false);
   });
 
   it('accepts top-level result objects and rejects arrays or primitive result payloads', () => {
