@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ExecutionContext, RunnerEvent } from '@autocatalyst/api-contract';
 import { createExecutionEntryPoint } from './execution-entry-point.js';
-import type { ExecutionBoundaryEvent } from './execution-boundary-events.js';
+import type { ExecutionBoundaryEvent, ExecutionTerminalResultEvent } from './execution-boundary-events.js';
 import { RunnerProtocolError } from './runner.js';
+import { StubRunner } from './stub-runner.js';
+import type { ExecutionResultValidationConfig } from './execution-entry-point.js';
 import type { Runner, RunnerCloseResult, RunnerRunInput } from './runner.js';
 import type { MaterializedExecutionEnvironment } from './materialized-environment.js';
 
@@ -484,6 +486,96 @@ describe('createExecutionEntryPoint — resultValidation', () => {
       name: 'RunnerProtocolError',
       code: 'wrong_run'
     });
+  });
+
+  it('scratch_file mode: missing result file yields synthesized fail terminal', async () => {
+    const context = makeContext();
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'ep-test-'));
+    const materializedEnv: MaterializedExecutionEnvironment = {
+      ...makeMaterializedEnv(context),
+      workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] },
+      capabilities: {
+        shell: { kind: 'bash', available: false },
+        paths: { scratchRoot },
+        lsp: { requested: false, available: false }
+      }
+    };
+    const materialize = vi.fn().mockResolvedValue(materializedEnv);
+
+    const schema = z.object({ artifact: z.string() }).strict();
+    const stubRunner = new StubRunner(); // no resultFile — file never written
+    const entryPoint = createExecutionEntryPoint({
+      runner: stubRunner,
+      materialize,
+      resultValidation: {
+        mode: 'scratch_file',
+        contract: { step: 'implement', schemaId: 'terminal-handoff.v1', schema, resultFile: 'result.json' }
+      }
+    });
+
+    const events: ExecutionBoundaryEvent[] = [];
+    for await (const event of entryPoint.execute({ context })) {
+      events.push(event);
+    }
+
+    const terminal = events.find((e) => e.type === 'runner_terminal_result') as ExecutionTerminalResultEvent | undefined;
+    expect(terminal).toBeDefined();
+    expect(terminal?.result.directive).toBe('fail');
+    expect(terminal?.result.reason).toContain('result_file_missing');
+  });
+
+  it('raw post-terminal event throws RunnerProtocolError', async () => {
+    const context = makeContext();
+    const materialize = vi.fn().mockResolvedValue(makeMaterializedEnv(context));
+
+    const postTerminalRunner: Runner = {
+      run(_input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+        return (async function* () {
+          yield {
+            id: 'evt_terminal',
+            type: 'runner_terminal_result' as const,
+            runId,
+            step: 'implement',
+            importance: 'normal' as const,
+            createdAt: '2026-06-09T00:00:00.000Z',
+            result: { directive: 'advance' as const }
+          };
+          yield {
+            id: 'evt_after_terminal',
+            type: 'runner_progress' as const,
+            runId,
+            step: 'implement',
+            importance: 'normal' as const,
+            createdAt: '2026-06-09T00:00:00.000Z',
+            progress: { kind: 'intent' as const, summary: 'too late' }
+          };
+        })();
+      },
+      close: vi.fn().mockResolvedValue({ status: 'closed' })
+    };
+
+    const entryPoint = createExecutionEntryPoint({
+      runner: postTerminalRunner,
+      materialize,
+      resultValidation: { mode: 'none' }
+    });
+
+    await expect(async () => {
+      for await (const _ of entryPoint.execute({ context })) {
+        // consume
+      }
+    }).rejects.toMatchObject({ name: 'RunnerProtocolError', code: 'event_after_terminal' });
+  });
+
+  it('unknown resultValidation mode throws TypeError', () => {
+    const context = makeContext();
+    const materialize = vi.fn().mockResolvedValue(makeMaterializedEnv(context));
+
+    expect(() => createExecutionEntryPoint({
+      runner: makeFakeRunner([makeTerminalEvent()]),
+      materialize,
+      resultValidation: { mode: 'unknown_mode' } as unknown as ExecutionResultValidationConfig
+    })).toThrow(TypeError);
   });
 });
 
