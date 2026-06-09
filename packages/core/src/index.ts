@@ -102,3 +102,5 @@ export type { TransitionErrorCode, TransitionResult } from './run-transition.js'
 
 export { RunLifecycleError, applyRunDirective, startRunLifecycle } from './run-lifecycle.js';
 export type { ApplyRunDirectiveInput, RunLifecycleErrorCode, RunLifecycleState, StartRunLifecycleInput } from './run-lifecycle.js';
+
+export * from './run-events.js';
