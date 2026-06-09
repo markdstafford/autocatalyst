@@ -5,8 +5,9 @@ import path from 'node:path';
 import { promisify } from 'node:util';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
-import type { RunnerEvent, RunnerStepCheckpointEvent } from '@autocatalyst/api-contract';
+import type { RunnerStepCheckpointEvent } from '@autocatalyst/api-contract';
 import {
   DefaultControlPlaneService,
   DefaultOrchestrator,
@@ -17,13 +18,15 @@ import {
   createExecutionRunUnitOfWork,
   hardcodedDevelopmentPrincipal,
   permissivePolicyDecisionPoint,
-  type RunUnitOfWork
+  type RunUnitOfWork,
+  type RunWorkInput
 } from '@autocatalyst/core';
 import {
   StubRunner,
   createExecutionEntryPoint,
   createExecutionMaterializer,
-  provisionWorkspace
+  provisionWorkspace,
+  type ExecutionBoundaryEvent
 } from '@autocatalyst/execution';
 import {
   DrizzleConversationIngressRepository,
@@ -272,7 +275,7 @@ describe('execution boundary integration (real StubRunner through two-root works
         credentialRefs: []
       });
 
-      const capturedEvents: RunnerEvent[] = [];
+      const capturedEvents: ExecutionBoundaryEvent[] = [];
 
       const contextResolver = createExecutionContextResolver({
         workspace: (input) => ({
@@ -399,7 +402,7 @@ describe('execution boundary integration (real StubRunner through two-root works
         throw new Error('provisionWorkspace should not be called for question workKind');
       };
 
-      const capturedEvents: RunnerEvent[] = [];
+      const capturedEvents: ExecutionBoundaryEvent[] = [];
 
       const contextResolver = createExecutionContextResolver({
         // For 'question' workKind, workspace input won't be used (shape: 'none')
@@ -477,4 +480,156 @@ describe('execution boundary integration (real StubRunner through two-root works
       database.close();
     }
   }, 30000);
+
+  it('StubRunner with result file and scratch_file validation yields advance with result', async () => {
+    const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ac-scratch-'));
+    try {
+      const artifactSchema = z.object({ artifact: z.string() }).strict();
+
+      const runner = new StubRunner({
+        resultFile: { relativePath: 'result.json', value: { artifact: 'result.md' } }
+      });
+
+      const context = {
+        run: { id: 'run_scratch_1', workKind: 'feature', currentStep: 'implement', tenant: 'tenant_1' },
+        task: { prompt: 'Do something', inputs: {} },
+        workspaceIntent: { shape: 'none' as const },
+        secretBindings: [],
+        toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' as const },
+        skills: { requested: [] },
+        capabilityRequirements: {
+          shell: { kind: 'bash' as const, required: false },
+          paths: { canonicalWorkspacePaths: false },
+          lsp: { requested: false }
+        }
+      };
+
+      const entryPoint = createExecutionEntryPoint({
+        runner,
+        materialize: async () => ({
+          context,
+          workspace: { shape: 'scratch_only' as const, scratchRoot, workspaceRoots: [scratchRoot] },
+          environment: { variables: {}, secretVariableNames: [] },
+          toolPolicy: { allowedTools: [], workspaceRoots: [scratchRoot] },
+          skills: { requested: [] },
+          capabilities: {
+            shell: { kind: 'bash' as const, available: false },
+            paths: { scratchRoot },
+            lsp: { requested: false, available: false }
+          }
+        }),
+        resultValidation: {
+          mode: 'scratch_file',
+          schemaId: 'artifact-result.v1',
+          schema: artifactSchema,
+          resultFile: 'result.json'
+        }
+      });
+
+      const unitOfWork = createExecutionRunUnitOfWork({
+        execute: entryPoint,
+        resolveContext: async () => context,
+        onEvent: () => {}
+      });
+
+      const input: RunWorkInput = {
+        runId: 'run_scratch_1',
+        run: {
+          id: 'run_scratch_1',
+          topicId: 'topic_scratch_1',
+          owner: { id: 'user_1', kind: 'human', tenantId: 'tenant_1', displayName: 'Test User' },
+          tenant: 'tenant_1',
+          workKind: 'feature',
+          currentStep: 'implement',
+          terminal: false,
+          createdAt: '2026-06-09T00:00:00.000Z',
+          updatedAt: '2026-06-09T00:00:00.000Z'
+        },
+        tenant: 'tenant_1'
+      };
+
+      const result = await unitOfWork.run(input);
+
+      expect(result).toEqual({ directive: 'advance', result: { artifact: 'result.md' } });
+    } finally {
+      await fs.rm(scratchRoot, { recursive: true, force: true });
+    }
+  }, 10000);
+
+  it('StubRunner with malformed result file and scratch_file validation yields synthesized fail', async () => {
+    const scratchRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ac-scratch-'));
+    try {
+      const artifactSchema = z.object({ artifact: z.string() }).strict();
+
+      // artifact is a number (invalid — schema expects string)
+      const runner = new StubRunner({
+        resultFile: { relativePath: 'result.json', value: { artifact: 123 } }
+      });
+
+      const context = {
+        run: { id: 'run_scratch_2', workKind: 'feature', currentStep: 'implement', tenant: 'tenant_1' },
+        task: { prompt: 'Do something', inputs: {} },
+        workspaceIntent: { shape: 'none' as const },
+        secretBindings: [],
+        toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' as const },
+        skills: { requested: [] },
+        capabilityRequirements: {
+          shell: { kind: 'bash' as const, required: false },
+          paths: { canonicalWorkspacePaths: false },
+          lsp: { requested: false }
+        }
+      };
+
+      const entryPoint = createExecutionEntryPoint({
+        runner,
+        materialize: async () => ({
+          context,
+          workspace: { shape: 'scratch_only' as const, scratchRoot, workspaceRoots: [scratchRoot] },
+          environment: { variables: {}, secretVariableNames: [] },
+          toolPolicy: { allowedTools: [], workspaceRoots: [scratchRoot] },
+          skills: { requested: [] },
+          capabilities: {
+            shell: { kind: 'bash' as const, available: false },
+            paths: { scratchRoot },
+            lsp: { requested: false, available: false }
+          }
+        }),
+        resultValidation: {
+          mode: 'scratch_file',
+          schemaId: 'artifact-result.v1',
+          schema: artifactSchema,
+          resultFile: 'result.json',
+          maxCorrectionAttempts: 0
+        }
+      });
+
+      const unitOfWork = createExecutionRunUnitOfWork({
+        execute: entryPoint,
+        resolveContext: async () => context,
+        onEvent: () => {}
+      });
+
+      const input: RunWorkInput = {
+        runId: 'run_scratch_2',
+        run: {
+          id: 'run_scratch_2',
+          topicId: 'topic_scratch_2',
+          owner: { id: 'user_1', kind: 'human', tenantId: 'tenant_1', displayName: 'Test User' },
+          tenant: 'tenant_1',
+          workKind: 'feature',
+          currentStep: 'implement',
+          terminal: false,
+          createdAt: '2026-06-09T00:00:00.000Z',
+          updatedAt: '2026-06-09T00:00:00.000Z'
+        },
+        tenant: 'tenant_1'
+      };
+
+      const result = await unitOfWork.run(input);
+
+      expect(result).toEqual({ directive: 'fail', reason: 'Execution failed: schema_validation_failed' });
+    } finally {
+      await fs.rm(scratchRoot, { recursive: true, force: true });
+    }
+  }, 10000);
 });
