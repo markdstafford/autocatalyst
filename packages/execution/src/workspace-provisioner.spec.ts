@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { Project } from '@autocatalyst/api-contract';
 
-import { WorkspaceProvisioningError, type ProvisionWorkspaceRequest } from './workspace.js';
+import type { ProvisionWorkspaceRequest } from './workspace.js';
 import { createWorkspaceProvisioner } from './internal/workspace-provisioner.js';
 import type { WorkspaceDriver } from './internal/workspace-driver.js';
 
