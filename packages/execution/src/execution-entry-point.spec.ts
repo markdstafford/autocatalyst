@@ -143,7 +143,7 @@ describe('createExecutionEntryPoint', () => {
     });
   });
 
-  it('pre-terminal stream error + close failure → RunnerProtocolError(runner_close_failed)', async () => {
+  it('pre-terminal stream error + close failure → original stream error propagates', async () => {
     const context = makeContext();
     const materialize = vi.fn().mockResolvedValue(makeMaterializedEnv(context));
 
@@ -163,10 +163,32 @@ describe('createExecutionEntryPoint', () => {
       for await (const _ of entryPoint.execute({ context })) {
         // consume
       }
-    }).rejects.toMatchObject({
-      name: 'RunnerProtocolError',
-      code: 'runner_close_failed'
-    });
+    }).rejects.toThrow('Pre-terminal stream error');
+  });
+
+  it('no-terminal stream + close fails → generator completes without throwing', async () => {
+    const context = makeContext();
+    const materialize = vi.fn().mockResolvedValue(makeMaterializedEnv(context));
+
+    const noTerminalRunner: Runner = {
+      run(_input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+        return (async function* () {
+          // No events emitted — no terminal event
+        })();
+      },
+      close: vi.fn().mockRejectedValue(new Error('Close failed'))
+    };
+
+    const entryPoint = createExecutionEntryPoint({ runner: noTerminalRunner, materialize });
+
+    // Should NOT throw — the generator completes normally
+    // Consumer (consumeRunnerEventStream) will then report missing_terminal_result
+    const collected: RunnerEvent[] = [];
+    for await (const event of entryPoint.execute({ context })) {
+      collected.push(event);
+    }
+
+    expect(collected).toHaveLength(0);
   });
 
   it('post-terminal stream error + close failure → original stream error propagates', async () => {

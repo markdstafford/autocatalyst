@@ -41,22 +41,17 @@ export function createExecutionEntryPoint(options: CreateExecutionEntryPointOpti
         try {
           await options.runner.close();
         } catch {
-          if (streamError === undefined) {
-            // Stream succeeded but close failed → runner_close_failed takes precedence
+          if (streamError === undefined && terminalSeen) {
+            // Stream completed cleanly with terminal, but close failed
             closeProtocolError = new RunnerProtocolError(
               'runner_close_failed',
               'Runner close failed after successful stream completion.'
             );
-          } else if (!terminalSeen) {
-            // Stream threw before any terminal result AND close also failed → teardown
-            // integrity is unknown; close failure takes precedence over the stream error.
-            closeProtocolError = new RunnerProtocolError(
-              'runner_close_failed',
-              'Runner close failed after pre-terminal stream error; teardown integrity unknown.'
-            );
           }
-          // Post-terminal stream error + close failure: original stream error takes precedence
-          // (terminalSeen === true && streamError !== undefined).
+          // When no terminal was seen (whether stream threw or completed normally):
+          // - If stream threw: streamError propagates below
+          // - If stream completed without terminal: generator returns normally,
+          //   consumer will catch missing_terminal_result
         }
       }
       if (closeProtocolError !== undefined) {

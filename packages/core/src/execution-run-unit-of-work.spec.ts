@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ExecutionContext, RunnerEvent } from '@autocatalyst/api-contract';
 import type { ExecutionEntryPoint, ExecutionEntryPointInput } from '@autocatalyst/execution';
-import { ExecutionMaterializationError } from '@autocatalyst/execution';
+import { createExecutionEntryPoint, ExecutionMaterializationError } from '@autocatalyst/execution';
+import type { Runner, RunnerRunInput } from '@autocatalyst/execution';
 import type { RunWorkInput } from './orchestrator.js';
 import { createExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
 
@@ -287,6 +288,44 @@ describe('createExecutionRunUnitOfWork', () => {
       await expect(unitOfWork.run(makeInput())).rejects.toMatchObject({
         name: 'RunnerProtocolError',
         code: 'duplicate_terminal_result'
+      });
+    });
+
+    it('no-terminal stream + close fails → RunnerProtocolError(missing_terminal_result)', async () => {
+      // Build a real entry point with a no-terminal runner and a failing close
+      const noTerminalRunner: Runner = {
+        run(_input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+          return (async function* () {
+            // No terminal event emitted
+          })();
+        },
+        close: vi.fn().mockRejectedValue(new Error('Close failed'))
+      };
+
+      const fakeEntryPoint = createExecutionEntryPoint({
+        runner: noTerminalRunner,
+        materialize: async () => ({
+          context: makeContext(),
+          workspace: { shape: 'none', workspaceRoots: [] },
+          environment: { variables: {}, secretVariableNames: [] },
+          toolPolicy: { allowedTools: ['bash'], workspaceRoots: [] },
+          skills: { requested: [] },
+          capabilities: {
+            shell: { kind: 'bash', available: false },
+            paths: {},
+            lsp: { requested: false, available: false }
+          }
+        })
+      });
+
+      const unitOfWork = createExecutionRunUnitOfWork({
+        execute: fakeEntryPoint,
+        resolveContext: async () => makeContext()
+      });
+
+      await expect(unitOfWork.run(makeInput())).rejects.toMatchObject({
+        name: 'RunnerProtocolError',
+        code: 'missing_terminal_result'
       });
     });
   });
