@@ -50,6 +50,7 @@ class FakeWorkspaceDriver implements WorkspaceDriver {
   currentBranchValue: string | null = 'feature/hello-world-Abc123';
   failOnCall?: string;
   removeDirectoryFails = false;
+  removeWorktreeFails = false;
 
   async ensureHostRepository(): Promise<void> {
     this.record('ensureHostRepository');
@@ -76,6 +77,9 @@ class FakeWorkspaceDriver implements WorkspaceDriver {
 
   async removeWorktree(): Promise<void> {
     this.record('removeWorktree');
+    if (this.removeWorktreeFails) {
+      throw new Error('removeWorktree failed');
+    }
   }
 
   async mkdirp(targetPath: string): Promise<void> {
@@ -103,7 +107,7 @@ class FakeWorkspaceDriver implements WorkspaceDriver {
 
   private record(call: string): void {
     this.calls.push(call);
-    if (this.failOnCall === call || (this.failOnCall?.startsWith('mkdirp:') && call === this.failOnCall)) {
+    if (this.failOnCall === call) {
       throw new Error('https://user:secret@example.com induced failure');
     }
   }
@@ -200,6 +204,19 @@ describe('workspace provisioner', () => {
     expect(driver.calls.indexOf(`removeDirectory:${path.resolve('/tmp/workspaces/acme/widgets/run_123')}`)).toBeGreaterThan(
       driver.calls.indexOf('removeWorktree')
     );
+  });
+
+  it('still removes the run root even when removeWorktree fails during rollback', async () => {
+    const driver = new FakeWorkspaceDriver();
+    driver.failOnCall = `mkdirp:${path.resolve('/tmp/workspaces/acme/widgets/run_123/scratch')}`;
+    driver.removeWorktreeFails = true;
+    const provisioner = createWorkspaceProvisioner({ driver });
+
+    await expect(provisioner.provisionWorkspace(makeRequest())).rejects.toMatchObject({
+      code: 'rollback_failed'
+    });
+    // Directory removal must still have been attempted despite removeWorktree failing
+    expect(driver.calls).toContain(`removeDirectory:${path.resolve('/tmp/workspaces/acme/widgets/run_123')}`);
   });
 
   it('preserves the original failure and redacts rollback credential diagnostics', async () => {

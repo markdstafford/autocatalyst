@@ -42,13 +42,18 @@ async function rollbackRunRoot(input: {
 }): Promise<never> {
   let rollbackCause: unknown;
 
-  try {
-    if (input.worktreeCreated) {
+  if (input.worktreeCreated) {
+    try {
       await input.driver.removeWorktree({ hostRepositoryPath: input.hostRepositoryPath, repoRoot: input.repoRoot });
+    } catch (e) {
+      rollbackCause = e;
     }
+  }
+
+  try {
     await input.driver.removeDirectory({ workspaceRoot: input.workspaceRoot, targetPath: input.runRoot });
-  } catch (cause) {
-    rollbackCause = cause;
+  } catch (e) {
+    rollbackCause ??= e;
   }
 
   if (rollbackCause !== undefined) {
