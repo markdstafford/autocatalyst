@@ -21,6 +21,7 @@ import { type RunDispatchQueue } from './run-dispatch-queue.js';
 import { createRunStateTransitionEvent, type RunEventPublisher } from './run-events.js';
 import {
   applyRunDirective,
+  buildEntryRunStep,
   RunLifecycleError,
   startRunLifecycle,
   type RunLifecycleState
@@ -258,14 +259,7 @@ export class DefaultOrchestrator implements Orchestrator {
     }
 
     const startedAt = this.#clock?.() ?? new Date().toISOString();
-    const runStepInput: LifecycleRunStepInput = {
-      phase: step.phase,
-      step: step.id,
-      role: 'none',
-      startedAt,
-      endedAt: null,
-      durationMs: null
-    };
+    const runStepInput: LifecycleRunStepInput = buildEntryRunStep(step, startedAt);
 
     let result: CreateConversationTopicMessageAndRunResult;
     try {
@@ -346,6 +340,9 @@ export class DefaultOrchestrator implements Orchestrator {
     if (existing === null) {
       throw new OrchestratorError('missing_run', `Run '${input.runId}' does not exist.`);
     }
+    if (existing.tenant !== input.tenant) {
+      throw new OrchestratorError('forbidden', `Run '${input.runId}' does not belong to tenant '${input.tenant}'.`);
+    }
     if (existing.terminal) {
       throw new OrchestratorError('terminal_run', `Run '${input.runId}' is terminal.`);
     }
@@ -385,6 +382,9 @@ export class DefaultOrchestrator implements Orchestrator {
     const run = await this.#runs.findById(input.runId);
     if (run === null) {
       throw new OrchestratorError('missing_run', `Run '${input.runId}' does not exist.`);
+    }
+    if (run.tenant !== input.tenant) {
+      throw new OrchestratorError('forbidden', `Run '${input.runId}' does not belong to tenant '${input.tenant}'.`);
     }
     if (run.terminal) {
       throw new OrchestratorError('terminal_run', `Run '${input.runId}' is terminal.`);

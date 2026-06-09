@@ -16,7 +16,6 @@ import {
   degradedHealthStatusCode,
   deleteConfigurationRecordSuccessStatusCode,
   errorResponseSchema,
-  getRunSuccessStatusCode,
   healthResponseSchema,
   probeResourceCollectionPath,
   probeResourceSchema,
@@ -276,7 +275,7 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
       }
       const response = await fetchImplementation(
         urlFor(baseUrl, runEventsPath.replace(':id', id)),
-        { method: 'GET', headers, signal: options?.signal }
+        { method: 'GET', headers, ...(options?.signal !== undefined ? { signal: options.signal } : {}) }
       );
       if (!response.ok) {
         const parsed = errorResponseSchema.parse(await parseJson(response));

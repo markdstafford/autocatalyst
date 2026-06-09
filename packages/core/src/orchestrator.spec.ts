@@ -570,6 +570,35 @@ describe('DefaultOrchestrator.dispatch — bounded queue', () => {
   });
 });
 
+describe('DefaultOrchestrator.applyDirective — tenant enforcement', () => {
+  it('rejects when run.tenant does not match input.tenant', async () => {
+    const run = makeRun({ tenant: 'tenant_1' });
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(run) });
+    const { publisher, events } = makeRecordingPublisher();
+    const { orchestrator } = makeOrchestrator({ runs, events: publisher });
+
+    await expect(
+      orchestrator.applyDirective({ runId: 'run_1', directive: 'advance', tenant: 'tenant_other' })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'forbidden' });
+    expect(events).toHaveLength(0);
+  });
+});
+
+describe('DefaultOrchestrator.dispatch — tenant enforcement', () => {
+  it('rejects when run.tenant does not match input.tenant', async () => {
+    const run = makeRun({ tenant: 'tenant_1' });
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(run) });
+    const unitOfWork: RunUnitOfWork = { run: vi.fn() };
+    const { publisher, events } = makeRecordingPublisher();
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork, events: publisher });
+
+    await expect(
+      orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_other' })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'forbidden' });
+    expect(events).toHaveLength(0);
+  });
+});
+
 describe('DefaultOrchestrator.tick', () => {
   it('returns { status: "noop" } when no runId is provided', async () => {
     const { orchestrator } = makeOrchestrator();

@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  ActiveRunConflictPersistenceError,
   DrizzleConversationIngressRepository,
   asInternalSqliteDatabase,
   createDrizzleDomainRepositories,

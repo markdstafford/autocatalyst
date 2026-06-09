@@ -140,27 +140,24 @@ class Subscriber {
   }
 
   iterable(): AsyncIterable<RunStateTransitionEvent> {
-    const self = this;
     return {
-      [Symbol.asyncIterator](): AsyncIterator<RunStateTransitionEvent> {
-        return {
-          next(): Promise<IteratorResult<RunStateTransitionEvent>> {
-            if (self.#buffer.length > 0) {
-              return Promise.resolve({ value: self.#buffer.shift()!, done: false });
-            }
-            if (self.#closed) {
-              return Promise.resolve({ value: undefined as unknown as RunStateTransitionEvent, done: true });
-            }
-            return new Promise<IteratorResult<RunStateTransitionEvent>>((resolve) => {
-              self.#resolve = resolve;
-            });
-          },
-          return(): Promise<IteratorResult<RunStateTransitionEvent>> {
-            self.close();
+      [Symbol.asyncIterator]: (): AsyncIterator<RunStateTransitionEvent> => ({
+        next: (): Promise<IteratorResult<RunStateTransitionEvent>> => {
+          if (this.#buffer.length > 0) {
+            return Promise.resolve({ value: this.#buffer.shift()!, done: false });
+          }
+          if (this.#closed) {
             return Promise.resolve({ value: undefined as unknown as RunStateTransitionEvent, done: true });
           }
-        };
-      }
+          return new Promise<IteratorResult<RunStateTransitionEvent>>((resolve) => {
+            this.#resolve = resolve;
+          });
+        },
+        return: (): Promise<IteratorResult<RunStateTransitionEvent>> => {
+          this.close();
+          return Promise.resolve({ value: undefined as unknown as RunStateTransitionEvent, done: true });
+        }
+      })
     };
   }
 }

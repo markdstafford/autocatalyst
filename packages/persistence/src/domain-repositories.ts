@@ -92,7 +92,7 @@ import type {
   TestResultRepository,
   TopicRepository
 } from '@autocatalyst/core';
-import { deriveRunTerminal } from '@autocatalyst/core';
+import { deriveRunTerminal, isKnownRunStepId } from '@autocatalyst/core';
 
 import { ActiveRunConflictPersistenceError, isActiveRunConstraintViolation } from './active-run-conflict.js';
 import {
@@ -1315,14 +1315,18 @@ export class DrizzleConversationIngressRepository implements ConversationIngress
         }
 
         // 6. Create run with currentStep and terminal derived from runStep.step
+        const runStepId = input.runStep.step;
+        if (!isKnownRunStepId(runStepId)) {
+          throw new Error(`Unknown run step id '${runStepId}' in ingress transaction.`);
+        }
         const run = validateEntity(runSchema, {
           id: `run_${randomUUID()}`,
           topicId: topic.id,
           owner: input.run.owner,
           tenant: input.run.tenant,
           workKind: input.run.workKind,
-          currentStep: input.runStep.step,
-          terminal: deriveRunTerminal(input.runStep.step),
+          currentStep: runStepId,
+          terminal: deriveRunTerminal(runStepId),
           ...(input.run.trackedIssue === undefined ? {} : { trackedIssue: input.run.trackedIssue }),
           ...(input.run.testingGuideResult === undefined ? {} : { testingGuideResult: input.run.testingGuideResult }),
           createdAt: now,
@@ -1345,7 +1349,7 @@ export class DrizzleConversationIngressRepository implements ConversationIngress
         // 7. Create initial RunStep using shared helper
         const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep);
 
-        return { conversation: updatedConv, topic, message, run, runStep };
+        return { conversation: updatedConv, topic, ...(message !== undefined ? { message } : {}), run, runStep };
       });
     } catch (error) {
       if (isActiveRunConstraintViolation(error)) {
