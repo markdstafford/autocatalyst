@@ -5,10 +5,12 @@ import {
   type ProvisionWorkspaceResult
 } from '../workspace.js';
 import type { WorkspaceDriver } from './workspace-driver.js';
+import type { WorkspacePruner } from './workspace-pruner.js';
 import { deriveRunBranchName, resolveWorkspacePaths, selectWorkspaceProvisioningShape } from './workspace-paths.js';
 
 export interface WorkspaceProvisionerDependencies {
   readonly driver: WorkspaceDriver;
+  readonly pruner: WorkspacePruner;
 }
 
 export interface WorkspaceProvisioner {
@@ -33,6 +35,8 @@ async function ensureRunRootAbsent(driver: WorkspaceDriver, runRoot: string): Pr
 
 async function rollbackRunRoot(input: {
   readonly driver: WorkspaceDriver;
+  readonly pruner: WorkspacePruner;
+  readonly runId: string;
   readonly workspaceRoot: string;
   readonly runRoot: string;
   readonly hostRepositoryPath: string;
@@ -43,10 +47,18 @@ async function rollbackRunRoot(input: {
   let rollbackCause: unknown;
 
   if (input.worktreeCreated) {
-    try {
-      await input.driver.removeWorktree({ hostRepositoryPath: input.hostRepositoryPath, repoRoot: input.repoRoot });
-    } catch (e) {
-      rollbackCause = e;
+    const result = await input.pruner.pruneWorkspacePath({
+      runId: input.runId,
+      mode: 'worktree',
+      workspaceRoot: input.workspaceRoot,
+      targetPath: input.repoRoot,
+      hostRepositoryPath: input.hostRepositoryPath
+    });
+    if (result.status === 'failed' || result.status === 'rejected') {
+      rollbackCause = new WorkspaceProvisioningError('rollback_failed', 'Worktree rollback prune failed', {
+        targetPath: input.repoRoot,
+        cause: summarizeWorkspaceCause(result.errorCode ?? result.status)
+      });
     }
   }
 
@@ -55,10 +67,17 @@ async function rollbackRunRoot(input: {
   // to remove and calling removeDirectory would just produce a second error.
   const runRootExists = await input.driver.pathExists(input.runRoot);
   if (runRootExists) {
-    try {
-      await input.driver.removeDirectory({ workspaceRoot: input.workspaceRoot, targetPath: input.runRoot });
-    } catch (e) {
-      rollbackCause ??= e;
+    const result = await input.pruner.pruneWorkspacePath({
+      runId: input.runId,
+      mode: 'directory',
+      workspaceRoot: input.workspaceRoot,
+      targetPath: input.runRoot
+    });
+    if (result.status === 'failed' || result.status === 'rejected') {
+      rollbackCause ??= new WorkspaceProvisioningError('rollback_failed', 'Run root rollback prune failed', {
+        targetPath: input.runRoot,
+        cause: summarizeWorkspaceCause(result.errorCode ?? result.status)
+      });
     }
   }
 
@@ -89,7 +108,7 @@ async function verifyBranch(input: {
 }
 
 export function createWorkspaceProvisioner(dependencies: WorkspaceProvisionerDependencies): WorkspaceProvisioner {
-  const { driver } = dependencies;
+  const { driver, pruner } = dependencies;
 
   return {
     async provisionWorkspace(request) {
@@ -109,6 +128,8 @@ export function createWorkspaceProvisioner(dependencies: WorkspaceProvisionerDep
         } catch (cause) {
           await rollbackRunRoot({
             driver,
+            pruner,
+            runId: request.runId,
             workspaceRoot: paths.workspaceRoot,
             runRoot: paths.runRoot,
             hostRepositoryPath: paths.hostRepositoryPath,
@@ -161,6 +182,8 @@ export function createWorkspaceProvisioner(dependencies: WorkspaceProvisionerDep
       } catch (cause) {
         await rollbackRunRoot({
           driver,
+          pruner,
+          runId: request.runId,
           workspaceRoot: paths.workspaceRoot,
           runRoot: paths.runRoot,
           hostRepositoryPath: paths.hostRepositoryPath,

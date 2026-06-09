@@ -132,7 +132,9 @@ export function summarizeWorkspaceCause(cause: unknown): WorkspaceErrorCauseSumm
 }
 
 export async function provisionWorkspace(request: ProvisionWorkspaceRequest): Promise<ProvisionWorkspaceResult> {
-  const provisioner = createWorkspaceProvisioner({ driver: createNodeWorkspaceDriver() });
+  const driver = createNodeWorkspaceDriver();
+  const pruner = createWorkspacePruner({ driver });
+  const provisioner = createWorkspaceProvisioner({ driver, pruner });
   return provisioner.provisionWorkspace(request);
 }
 

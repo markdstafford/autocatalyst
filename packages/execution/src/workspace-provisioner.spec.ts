@@ -7,6 +7,7 @@ import type { Project } from '@autocatalyst/api-contract';
 import type { ProvisionWorkspaceRequest } from './workspace.js';
 import { createWorkspaceProvisioner } from './internal/workspace-provisioner.js';
 import type { WorkspaceDriver } from './internal/workspace-driver.js';
+import type { WorkspacePruner } from './internal/workspace-pruner.js';
 
 function makeProject(overrides: Partial<Project> = {}): Project {
   return {
@@ -113,10 +114,49 @@ class FakeWorkspaceDriver implements WorkspaceDriver {
   }
 }
 
+function makeFakePruner(driver: FakeWorkspaceDriver): WorkspacePruner {
+  return {
+    async pruneWorkspacePath(request) {
+      driver.calls.push(`prune:${request.mode}:${path.resolve(request.targetPath)}`);
+      if (request.mode === 'worktree' && driver.removeWorktreeFails) {
+        return {
+          runId: request.runId,
+          mode: request.mode,
+          status: 'failed',
+          root: request.workspaceRoot,
+          targetPath: request.targetPath,
+          durationMs: 0,
+          errorCode: 'worktree_remove_failed'
+        };
+      }
+      if (request.mode === 'directory' && driver.removeDirectoryFails) {
+        return {
+          runId: request.runId,
+          mode: request.mode,
+          status: 'failed',
+          root: request.workspaceRoot,
+          targetPath: request.targetPath,
+          durationMs: 0,
+          errorCode: 'directory_remove_failed'
+        };
+      }
+      driver.paths.delete(path.resolve(request.targetPath));
+      return {
+        runId: request.runId,
+        mode: request.mode,
+        status: 'deleted',
+        root: request.workspaceRoot,
+        targetPath: request.targetPath,
+        durationMs: 0
+      };
+    }
+  };
+}
+
 describe('workspace provisioner', () => {
   it('returns no workspace for question runs without filesystem or git mutations', async () => {
     const driver = new FakeWorkspaceDriver();
-    const provisioner = createWorkspaceProvisioner({ driver });
+    const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
 
     await expect(provisioner.provisionWorkspace(makeRequest({ runKind: 'question' }))).resolves.toEqual({
       shape: 'none',
@@ -127,7 +167,7 @@ describe('workspace provisioner', () => {
 
   it('creates run root and scratch only for file_issue runs', async () => {
     const driver = new FakeWorkspaceDriver();
-    const provisioner = createWorkspaceProvisioner({ driver });
+    const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
 
     await expect(provisioner.provisionWorkspace(makeRequest({ runKind: 'file_issue' }))).resolves.toMatchObject({
       shape: 'scratch_only',
@@ -144,7 +184,7 @@ describe('workspace provisioner', () => {
 
   it('creates implementing workspaces in git-safe order', async () => {
     const driver = new FakeWorkspaceDriver();
-    const provisioner = createWorkspaceProvisioner({ driver });
+    const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
 
     await expect(provisioner.provisionWorkspace(makeRequest())).resolves.toMatchObject({
       shape: 'two_roots',
@@ -169,7 +209,7 @@ describe('workspace provisioner', () => {
   it('fails when an existing run root would be overwritten', async () => {
     const driver = new FakeWorkspaceDriver();
     driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123'));
-    const provisioner = createWorkspaceProvisioner({ driver });
+    const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
 
     await expect(provisioner.provisionWorkspace(makeRequest())).rejects.toMatchObject({ code: 'run_workspace_exists' });
   });
@@ -177,7 +217,7 @@ describe('workspace provisioner', () => {
   it('fails branch guard mismatch with expected and actual branch context', async () => {
     const driver = new FakeWorkspaceDriver();
     driver.currentBranchValue = 'feature/other-Abc123';
-    const provisioner = createWorkspaceProvisioner({ driver });
+    const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
 
     await expect(provisioner.provisionWorkspace(makeRequest())).rejects.toMatchObject({
       code: 'branch_guard_failed',
@@ -188,49 +228,57 @@ describe('workspace provisioner', () => {
   it('rolls back the run root after worktree creation failure', async () => {
     const driver = new FakeWorkspaceDriver();
     driver.failOnCall = 'addWorktree';
-    const provisioner = createWorkspaceProvisioner({ driver });
+    const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
 
     await expect(provisioner.provisionWorkspace(makeRequest())).rejects.toThrow(/induced failure/);
-    expect(driver.calls).toContain(`removeDirectory:${path.resolve('/tmp/workspaces/acme/widgets/run_123')}`);
+    expect(driver.calls).toContain(`prune:directory:${path.resolve('/tmp/workspaces/acme/widgets/run_123')}`);
+    expect(driver.calls).not.toContain('removeWorktree');
+    expect(driver.calls.some((call) => call.startsWith('removeDirectory:'))).toBe(false);
   });
 
   it('removes the git worktree before deleting the run root after post-worktree failure', async () => {
     const driver = new FakeWorkspaceDriver();
     driver.failOnCall = `mkdirp:${path.resolve('/tmp/workspaces/acme/widgets/run_123/scratch')}`;
-    const provisioner = createWorkspaceProvisioner({ driver });
+    const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
 
     await expect(provisioner.provisionWorkspace(makeRequest())).rejects.toThrow(/induced failure/);
-    expect(driver.calls.indexOf('removeWorktree')).toBeGreaterThan(driver.calls.indexOf('addWorktree'));
-    expect(driver.calls.indexOf(`removeDirectory:${path.resolve('/tmp/workspaces/acme/widgets/run_123')}`)).toBeGreaterThan(
-      driver.calls.indexOf('removeWorktree')
+    expect(driver.calls.indexOf(`prune:worktree:${path.resolve('/tmp/workspaces/acme/widgets/run_123/repo')}`)).toBeGreaterThan(driver.calls.indexOf('addWorktree'));
+    expect(driver.calls.indexOf(`prune:directory:${path.resolve('/tmp/workspaces/acme/widgets/run_123')}`)).toBeGreaterThan(
+      driver.calls.indexOf(`prune:worktree:${path.resolve('/tmp/workspaces/acme/widgets/run_123/repo')}`)
     );
+    expect(driver.calls).not.toContain('removeWorktree');
+    expect(driver.calls.some((call) => call.startsWith('removeDirectory:'))).toBe(false);
   });
 
   it('still removes the run root even when removeWorktree fails during rollback', async () => {
     const driver = new FakeWorkspaceDriver();
     driver.failOnCall = `mkdirp:${path.resolve('/tmp/workspaces/acme/widgets/run_123/scratch')}`;
     driver.removeWorktreeFails = true;
-    const provisioner = createWorkspaceProvisioner({ driver });
+    const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
 
     await expect(provisioner.provisionWorkspace(makeRequest())).rejects.toMatchObject({
       code: 'rollback_failed'
     });
-    // Directory removal must still have been attempted despite removeWorktree failing
-    expect(driver.calls).toContain(`removeDirectory:${path.resolve('/tmp/workspaces/acme/widgets/run_123')}`);
+    // Directory removal must still have been attempted despite worktree prune failing
+    expect(driver.calls).toContain(`prune:directory:${path.resolve('/tmp/workspaces/acme/widgets/run_123')}`);
+    expect(driver.calls).not.toContain('removeWorktree');
+    expect(driver.calls.some((call) => call.startsWith('removeDirectory:'))).toBe(false);
   });
 
-  it('preserves the original failure and redacts rollback credential diagnostics', async () => {
+  it('preserves the original failure when directory prune fails during rollback', async () => {
     const driver = new FakeWorkspaceDriver();
     driver.failOnCall = `mkdirp:${path.resolve('/tmp/workspaces/acme/widgets/run_123/scratch')}`;
     driver.removeDirectoryFails = true;
-    const provisioner = createWorkspaceProvisioner({ driver });
+    const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
 
     await expect(provisioner.provisionWorkspace(makeRequest())).rejects.toMatchObject({
       code: 'rollback_failed',
       context: {
         cause: { message: 'https://[redacted]@example.com induced failure' },
-        rollbackCause: { message: 'https://[redacted]@example.com cleanup failed' }
+        rollbackCause: { message: 'Run root rollback prune failed' }
       }
     });
+    expect(driver.calls).not.toContain('removeWorktree');
+    expect(driver.calls.some((call) => call.startsWith('removeDirectory:'))).toBe(false);
   });
 });
