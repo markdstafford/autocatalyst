@@ -1,39 +1,49 @@
-import type { ExecutionContext, RunnerEvent, RunnerTerminalResultEvent } from '@autocatalyst/api-contract';
-import { RunnerProtocolError, ExecutionMaterializationError } from '@autocatalyst/execution';
-import type { ExecutionEntryPoint } from '@autocatalyst/execution';
+import type { ExecutionContext } from '@autocatalyst/api-contract';
+import {
+  RunnerProtocolError,
+  ExecutionMaterializationError,
+  validateExecutionBoundaryEventStream
+} from '@autocatalyst/execution';
+import type { ExecutionBoundaryEvent, ExecutionEntryPoint, ExecutionTerminalResultEvent } from '@autocatalyst/execution';
 import type { RunWorkInput, RunWorkResult, RunUnitOfWork } from './orchestrator.js';
-import { consumeRunnerEventStream } from './runner-event-stream.js';
 
 export interface ExecutionRunUnitOfWorkOptions {
   readonly execute: ExecutionEntryPoint;
   readonly resolveContext: (input: RunWorkInput) => Promise<ExecutionContext>;
-  readonly onEvent?: (event: RunnerEvent) => void | Promise<void>;
+  readonly onEvent?: (event: ExecutionBoundaryEvent) => void | Promise<void>;
 }
 
 export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOptions): RunUnitOfWork {
   return {
     async run(input: RunWorkInput): Promise<RunWorkResult> {
-      // 1. Resolve declarative context
       const context = await options.resolveContext(input);
-
-      // 2. Invoke execution entry point
       const events = options.execute.execute({ context, correlationId: input.runId });
 
-      // 3. Consume event stream with validation
-      let terminalEvent: RunnerTerminalResultEvent;
+      let terminalEvent: ExecutionTerminalResultEvent | undefined;
+      let terminalSeen = false;
       try {
-        const result = await consumeRunnerEventStream({
-          events,
-          runId: input.runId,
-          ...(options.onEvent !== undefined ? { onEvent: options.onEvent } : {})
-        });
-        terminalEvent = result.terminalEvent;
+        for await (const event of validateExecutionBoundaryEventStream(events, input.runId)) {
+          if (options.onEvent !== undefined) {
+            try {
+              await options.onEvent(event);
+            } catch {
+              throw new RunnerProtocolError('runner_failed', 'Telemetry onEvent hook threw during event processing.');
+            }
+          }
+          if (event.type === 'runner_terminal_result') {
+            terminalSeen = true;
+            terminalEvent = event;
+          }
+        }
       } catch (error) {
         if (error instanceof RunnerProtocolError) {
-          // Protocol violations → re-throw
           throw error;
         }
-        // Runner threw before terminal → fail directive with sanitized static reason
+        // Stream threw after terminal → protocol violation
+        if (terminalSeen) {
+          throw new RunnerProtocolError('runner_failed', 'Runner threw after terminal result during drain.');
+        }
+        // Runner threw before terminal → fail directive with sanitized reason
         let reason: string;
         if (error instanceof ExecutionMaterializationError) {
           reason = `Execution failed: ${error.code}`;
@@ -43,16 +53,23 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
         return { directive: 'fail', reason };
       }
 
-      // 4. Map terminal directive to work result
+      if (terminalEvent === undefined) {
+        // validateExecutionBoundaryEventStream throws missing_terminal_result, so this is unreachable
+        throw new RunnerProtocolError('missing_terminal_result', 'No terminal event.');
+      }
+
       return mapTerminalToWorkResult(terminalEvent);
     }
   };
 }
 
-function mapTerminalToWorkResult(event: RunnerTerminalResultEvent): RunWorkResult {
+function mapTerminalToWorkResult(event: ExecutionTerminalResultEvent): RunWorkResult {
   switch (event.result.directive) {
     case 'advance':
-      return { directive: 'advance' };
+      return {
+        directive: 'advance',
+        ...(event.result.result !== undefined ? { result: event.result.result } : {})
+      };
     case 'needs_input':
       return {
         directive: 'needs_input',

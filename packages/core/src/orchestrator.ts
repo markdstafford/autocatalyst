@@ -73,7 +73,7 @@ export interface RunWorkInput {
 }
 
 export type RunWorkResult =
-  | { readonly directive: 'advance' }
+  | { readonly directive: 'advance'; readonly result?: Readonly<Record<string, unknown>> }
   | { readonly directive: 'needs_input'; readonly question?: string }
   | { readonly directive: 'fail'; readonly reason: string };
 

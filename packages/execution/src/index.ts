@@ -35,6 +35,22 @@ export {
   type ExecutionEntryPointInput
 } from './execution-entry-point.js';
 
+export type {
+  ExecutionResultValidationConfig,
+  ExecutionResultValidationResolver,
+  NoExecutionResultValidationConfig,
+  ScratchFileExecutionResultValidationConfig
+} from './execution-entry-point.js';
+
+export {
+  executionTerminalResultEventSchema,
+  executionBoundaryEventSchema,
+  validateExecutionBoundaryEvent,
+  validateExecutionBoundaryEventStream,
+  type ExecutionTerminalResultEvent,
+  type ExecutionBoundaryEvent
+} from './execution-boundary-events.js';
+
 export {
   WorkspaceProvisioningError,
   WorkspacePruneError,
