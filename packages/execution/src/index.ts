@@ -1,5 +1,7 @@
 export const executionPackageName = '@autocatalyst/execution' as const;
 
+export { StubRunner, type StubRunnerOptions } from './stub-runner.js';
+
 export {
   createExecutionMaterializer,
   type ExecutionMaterializer,
