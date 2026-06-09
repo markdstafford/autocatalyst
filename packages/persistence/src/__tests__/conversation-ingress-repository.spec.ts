@@ -61,7 +61,9 @@ describe('DrizzleConversationIngressRepository', () => {
           run: {
             owner,
             tenant: 'tenant_1',
-            workKind: 'feature'
+            workKind: 'feature',
+            currentStep: 'intake',
+            terminal: false
           },
           runStep: {
             phase: null,
@@ -142,7 +144,9 @@ describe('DrizzleConversationIngressRepository', () => {
           run: {
             owner,
             tenant: 'tenant_1',
-            workKind: 'feature'
+            workKind: 'feature',
+            currentStep: 'intake',
+            terminal: false
           },
           runStep: {
             phase: null,
@@ -193,7 +197,9 @@ describe('DrizzleConversationIngressRepository', () => {
             run: {
               owner,
               tenant: 'tenant_1',
-              workKind: 'feature'
+              workKind: 'feature',
+              currentStep: 'intake',
+              terminal: false
             },
             runStep: {
               phase: null,
@@ -253,7 +259,9 @@ describe('DrizzleConversationIngressRepository', () => {
           run: {
             owner,
             tenant: 'tenant_1',
-            workKind: 'feature'
+            workKind: 'feature',
+            currentStep: 'intake',
+            terminal: false
           },
           runStep: {
             phase: null,

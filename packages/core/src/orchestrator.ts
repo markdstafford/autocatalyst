@@ -26,7 +26,7 @@ import {
   startRunLifecycle,
   type RunLifecycleState
 } from './run-lifecycle.js';
-import { getRunStepDefinition } from './run-step-catalog.js';
+import { deriveRunTerminal, getRunStepDefinition } from './run-step-catalog.js';
 import { getRunWorkflowForWorkKind, type RunDirective } from './run-workflows.js';
 
 // --- Error types ---
@@ -294,6 +294,8 @@ export class DefaultOrchestrator implements Orchestrator {
           owner: input.owner,
           tenant: input.tenant,
           workKind: input.workKind,
+          currentStep: step.id,
+          terminal: deriveRunTerminal(step.id),
           ...(input.trackedIssue !== undefined ? { trackedIssue: input.trackedIssue } : {}),
           ...(input.testingGuideResult !== undefined
             ? { testingGuideResult: input.testingGuideResult }

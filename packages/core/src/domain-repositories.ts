@@ -142,7 +142,7 @@ export interface CreateConversationTopicMessageAndRunInput {
   readonly conversation: CreateConversationInput;
   readonly topic: Omit<CreateTopicInput, 'conversationId'>;
   readonly message?: Omit<CreateMessageInput, 'topicId'>;
-  readonly run: Omit<CreateRunInput, 'topicId' | 'currentStep' | 'terminal'>;
+  readonly run: Omit<CreateRunInput, 'topicId'>;
   readonly runStep: LifecycleRunStepInput;
 }
 

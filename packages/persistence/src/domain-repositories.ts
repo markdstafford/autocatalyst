@@ -92,7 +92,6 @@ import type {
   TestResultRepository,
   TopicRepository
 } from '@autocatalyst/core';
-import { deriveRunTerminal, isKnownRunStepId } from '@autocatalyst/core';
 
 import {
   nullableJsonForRow,
@@ -1312,19 +1311,15 @@ export class DrizzleConversationIngressRepository implements ConversationIngress
         }).run();
       }
 
-      // 6. Create run with currentStep and terminal derived from runStep.step
-      const runStepId = input.runStep.step;
-      if (!isKnownRunStepId(runStepId)) {
-        throw new Error(`Unknown run step id '${runStepId}' in ingress transaction.`);
-      }
+      // 6. Create run using currentStep and terminal supplied by the orchestrator
       const run = validateEntity(runSchema, {
         id: `run_${randomUUID()}`,
         topicId: topic.id,
         owner: input.run.owner,
         tenant: input.run.tenant,
         workKind: input.run.workKind,
-        currentStep: runStepId,
-        terminal: deriveRunTerminal(runStepId),
+        currentStep: input.run.currentStep,
+        terminal: input.run.terminal,
         ...(input.run.trackedIssue === undefined ? {} : { trackedIssue: input.run.trackedIssue }),
         ...(input.run.testingGuideResult === undefined ? {} : { testingGuideResult: input.run.testingGuideResult }),
         createdAt: now,

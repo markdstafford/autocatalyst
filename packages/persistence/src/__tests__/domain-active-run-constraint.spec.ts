@@ -257,7 +257,9 @@ describe('DrizzleConversationIngressRepository — active-run constraint', () =>
         run: {
           owner,
           tenant: 'tenant_1',
-          workKind: 'feature'
+          workKind: 'feature',
+          currentStep: 'intake',
+          terminal: false
         },
         runStep: {
           phase: null,
