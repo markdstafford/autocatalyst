@@ -115,7 +115,7 @@ describe('workspace teardown', () => {
     expect(result).toMatchObject({
       outcome: 'completed',
       branch: { action: 'retained' },
-      checkpoint: { action: 'committed', message: 'fix: final checkpoint' }
+      checkpoint: { action: 'committed', message: 'chore: final checkpoint' }
     });
     expect(calls).toEqual([
       'currentBranch',
@@ -127,19 +127,20 @@ describe('workspace teardown', () => {
     ]);
   });
 
-  it('uses feat prefix for feature runKind', async () => {
+  it('uses feat prefix when checkpointKind is feature', async () => {
     const fake = new FakeDriver();
     fake.dirty = true;
     const teardown = createWorkspaceTeardown({ driver: fake as unknown as WorkspaceDriver, pruner: fakePruner([]) });
     const result = await teardown.teardownWorkspace({
       ...baseRequest,
       terminalStep: 'canceled',
+      checkpointKind: 'feature',
       checkpointSubject: 'my custom change'
     });
     expect(result.checkpoint).toMatchObject({ action: 'committed', message: 'feat: my custom change' });
   });
 
-  it('uses fix prefix for bug runKind', async () => {
+  it('uses fix prefix when checkpointKind is bug', async () => {
     const fake = new FakeDriver();
     fake.dirty = true;
     const teardown = createWorkspaceTeardown({ driver: fake as unknown as WorkspaceDriver, pruner: fakePruner([]) });
@@ -147,9 +148,23 @@ describe('workspace teardown', () => {
       ...baseRequest,
       runKind: 'bug',
       terminalStep: 'canceled',
+      checkpointKind: 'bug',
       checkpointSubject: 'fixed the bug'
     });
     expect(result.checkpoint).toMatchObject({ action: 'committed', message: 'fix: fixed the bug' });
+  });
+
+  it('defaults to chore prefix when checkpointKind is omitted', async () => {
+    const fake = new FakeDriver();
+    fake.dirty = true;
+    const teardown = createWorkspaceTeardown({ driver: fake as unknown as WorkspaceDriver, pruner: fakePruner([]) });
+    const result = await teardown.teardownWorkspace({
+      ...baseRequest,
+      runKind: 'feature',
+      terminalStep: 'canceled',
+      checkpointSubject: 'some work'
+    });
+    expect(result.checkpoint).toMatchObject({ action: 'committed', message: 'chore: some work' });
   });
 
   it('treats detached HEAD (currentBranch null, repoRoot present) as failed with worktree_branch_mismatch', async () => {

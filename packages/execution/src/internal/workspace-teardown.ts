@@ -5,7 +5,6 @@ import {
   type WorkspaceCheckpointResult,
   type WorkspaceTeardownPruneResult,
   type WorkspaceTeardownResult,
-  type WorkspaceRunKind,
   type WorkspaceTerminalStep
 } from '../workspace.js';
 import { isImplementingRunKind } from './workspace-paths.js';
@@ -57,7 +56,7 @@ function requireScratchContext(request: TeardownWorkspaceRequest): { workspaceRo
   return { workspaceRoot: request.workspaceRoot, runRoot: request.runRoot };
 }
 
-function checkpointPrefix(kind: WorkspaceRunKind): 'feat' | 'fix' | 'chore' {
+function checkpointPrefix(kind: TeardownWorkspaceRequest['checkpointKind']): 'feat' | 'fix' | 'chore' {
   if (kind === 'feature' || kind === 'enhancement') return 'feat';
   if (kind === 'bug') return 'fix';
   return 'chore';
@@ -73,7 +72,7 @@ function normalizeCheckpointSubject(subject: string | undefined): string {
 }
 
 function buildCheckpointMessage(request: TeardownWorkspaceRequest): string {
-  return `${checkpointPrefix(request.runKind)}: ${normalizeCheckpointSubject(request.checkpointSubject)}`;
+  return `${checkpointPrefix(request.checkpointKind)}: ${normalizeCheckpointSubject(request.checkpointSubject)}`;
 }
 
 function finishTeardown(logger: WorkspaceLogger, result: WorkspaceTeardownResult): WorkspaceTeardownResult {

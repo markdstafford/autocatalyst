@@ -129,6 +129,7 @@ describe('workspace teardown integration', () => {
       scratchRoot: provisioned.scratchRoot,
       hostRepositoryPath: provisioned.hostRepositoryPath,
       branchName: provisioned.branchName,
+      checkpointKind: 'bug',
       checkpointSubject: ' Final Checkpoint. '
     });
 

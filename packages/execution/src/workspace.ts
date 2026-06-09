@@ -221,6 +221,7 @@ export interface TeardownWorkspaceRequest {
   readonly scratchRoot?: string;
   readonly hostRepositoryPath?: string;
   readonly branchName?: string;
+  readonly checkpointKind?: 'feature' | 'enhancement' | 'bug' | 'chore';
   readonly checkpointSubject?: string;
 }
 
