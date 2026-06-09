@@ -5,6 +5,7 @@
   "type": "module",
   "dependencies": {
     "@autocatalyst/core": "workspace:*",
+    "@autocatalyst/execution": "workspace:*",
     "@autocatalyst/persistence": "workspace:*",
     "fastify": "^5.8.5"
   }
