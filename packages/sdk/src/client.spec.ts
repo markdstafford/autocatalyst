@@ -261,8 +261,9 @@ describe('orchestrator ingress methods', () => {
       new Response('', { status: 200, headers: { 'content-type': 'text/event-stream' } })
     );
     const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
-    const response = await client.subscribeRunEvents('run_1', { lastEventId: 'evt_42' });
-    expect(response.status).toBe(200);
+    const result = await client.subscribeRunEvents('run_1', { lastEventId: 'evt_42' });
+    expect(result.kind).toBe('response');
+    expect(result.response.ok).toBe(true);
     const [url, init] = mockFetch.mock.calls[0];
     expect(String(url)).toContain('/v1/runs/run_1/events');
     expect(init?.method).toBe('GET');

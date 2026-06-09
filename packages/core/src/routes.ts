@@ -33,7 +33,9 @@ import {
   probeResourceIdParamsSchema,
   probeResourceSchema,
   runCollectionPath,
+  runEventsMediaType,
   runEventsPath,
+  runEventsSuccessStatusCode,
   runIdParamsSchema,
   runStateTransitionEventName,
   runStateTransitionEventSchema,
@@ -109,6 +111,9 @@ async function handleControlPlaneServiceError(
       return;
     case 'active_run_conflict':
       await reply.status(409).send(errorResponse(activeRunConflictErrorCode, error.message, error.details));
+      return;
+    case 'persistence_failed':
+      await reply.status(500).send(errorResponse('internal_error', 'Internal server error.'));
       return;
     default:
       await reply.status(500).send(errorResponse('internal_error', 'Internal server error.'));
@@ -498,8 +503,8 @@ export async function registerControlPlaneRoutes(
         throw error;
       }
 
-      reply.raw.writeHead(200, {
-        'content-type': 'text/event-stream; charset=utf-8',
+      reply.raw.writeHead(runEventsSuccessStatusCode, {
+        'content-type': `${runEventsMediaType}; charset=utf-8`,
         'cache-control': 'no-cache, no-transform',
         connection: 'keep-alive'
       });

@@ -61,7 +61,7 @@ export interface ControlPlaneClient {
   createConversationWithFirstRun(request: CreateConversationWithFirstRunRequest): Promise<CreateConversationWithFirstRunResponse>;
   getRun(id: string): Promise<Run>;
   listRunSteps(id: string): Promise<RunStepListResponse>;
-  subscribeRunEvents(id: string, options?: RunEventsStreamOptions): Promise<Response>;
+  subscribeRunEvents(id: string, options?: RunEventsStreamOptions): Promise<RunEventsResponse>;
 }
 
 export interface RunEventsStreamOptions {
@@ -281,7 +281,7 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
         const parsed = errorResponseSchema.parse(await parseJson(response));
         throw new ControlPlaneClientError(response.status, parsed);
       }
-      return response;
+      return { kind: 'response' as const, response };
     }
   };
 }
