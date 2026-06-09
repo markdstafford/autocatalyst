@@ -8,9 +8,15 @@ import {
   defaultExtensionRegistryCatalog,
   emptyProviderAdapterMap,
   getHealth,
-  validateProviderConfigurationAgainstRegistry
+  validateProviderConfigurationAgainstRegistry,
+  DefaultOrchestrator,
+  OrchestratorError,
+  DefaultControlPlaneService,
+  ControlPlaneServiceError,
+  InMemoryRunEventBus,
+  RunDispatchQueue
 } from './index.js';
-import type { ProjectRepository, RunRepository, PullRequestRepository } from './index.js';
+import type { ProjectRepository, RunRepository, PullRequestRepository, ControlPlaneService, RunUnitOfWork } from './index.js';
 
 describe('core barrel', () => {
   it('exports core service behavior', () => {
@@ -37,5 +43,21 @@ describe('core barrel', () => {
     expect(projectRepository).toBeUndefined();
     expect(runRepository).toBeUndefined();
     expect(pullRequestRepository).toBeUndefined();
+  });
+
+  it('exports orchestrator service APIs', () => {
+    expect(DefaultOrchestrator).toBeTypeOf('function');
+    expect(OrchestratorError).toBeTypeOf('function');
+    expect(DefaultControlPlaneService).toBeTypeOf('function');
+    expect(ControlPlaneServiceError).toBeTypeOf('function');
+    expect(InMemoryRunEventBus).toBeTypeOf('function');
+    expect(RunDispatchQueue).toBeTypeOf('function');
+  });
+
+  it('exports orchestrator service interface types for TypeScript consumers', () => {
+    const controlPlaneService = undefined as unknown as ControlPlaneService;
+    const runUnitOfWork = undefined as unknown as RunUnitOfWork;
+    expect(controlPlaneService).toBeUndefined();
+    expect(runUnitOfWork).toBeUndefined();
   });
 });

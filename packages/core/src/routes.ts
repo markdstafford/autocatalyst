@@ -2,12 +2,16 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { ZodError } from 'zod';
 
 import {
+  activeRunConflictErrorCode,
   configurationRecordCollectionPath,
   configurationRecordIdParamsSchema,
   configurationRecordListResponseSchema,
   configurationRecordResponseSchema,
+  conversationCollectionPath,
   createConfigurationRecordRequestSchema,
   createConfigurationRecordSuccessStatusCode,
+  createConversationSuccessStatusCode,
+  createConversationWithFirstRunRequestSchema,
   createProbeResourceRequestSchema,
   createProbeResourceSuccessStatusCode,
   createSecretRequestSchema,
@@ -17,26 +21,45 @@ import {
   deleteConfigurationRecordSuccessStatusCode,
   errorResponseSchema,
   eventsStreamPath,
+  forbiddenErrorCode,
+  getRunSuccessStatusCode,
   healthResponseSchema,
+  intakeRoutingErrorCode,
+  listRunStepsSuccessStatusCode,
   notFoundErrorCode,
   principalDiagnosticPath,
   principalDiagnosticResponseSchema,
   probeResourceCollectionPath,
   probeResourceIdParamsSchema,
   probeResourceSchema,
+  runCollectionPath,
+  runEventsMediaType,
+  runEventsPath,
+  runEventsSuccessStatusCode,
+  runIdParamsSchema,
+  runStateTransitionEventName,
+  runStateTransitionEventSchema,
+  runStepListResponseSchema,
+  runStepsPath,
   secretCollectionPath,
   secretStoreLockedErrorCode,
   updateConfigurationRecordRequestSchema,
   type ConfigurationRecordIdParams,
   type CreateConfigurationRecordRequest,
+  type CreateConversationWithFirstRunRequest,
   type CreateProbeResourceRequest,
   type CreateSecretRequest,
   type ErrorResponse,
   type ProbeResourceIdParams,
+  type RunIdParams,
   type UpdateConfigurationRecordRequest
 } from '@autocatalyst/api-contract';
 
 import { registerBearerAuthHook, type BearerAuthOptions } from './auth.js';
+import {
+  ControlPlaneServiceError,
+  type ControlPlaneService
+} from './control-plane-service.js';
 import { getHealth, type HealthDependencyChecker } from './health.js';
 import {
   authorizeRequest,
@@ -59,6 +82,7 @@ import {
   type ConfigurationRecordRepository
 } from './configuration-record.js';
 import { createSecret, SecretStoreLockedError, type SecretStore } from './secret.js';
+import type { RunEventSubscription } from './run-events.js';
 
 export interface ControlPlaneRouteDependencies {
   readonly health: HealthDependencyChecker;
@@ -67,6 +91,33 @@ export interface ControlPlaneRouteDependencies {
   readonly probeResources: ProbeResourceRepository;
   readonly configurationRecords: ConfigurationRecordRepository;
   readonly secrets: SecretStore;
+  readonly controlPlane: ControlPlaneService;
+}
+
+async function handleControlPlaneServiceError(
+  reply: FastifyReply,
+  error: ControlPlaneServiceError
+): Promise<void> {
+  switch (error.code) {
+    case 'not_found':
+      await reply.status(404).send(errorResponse(notFoundErrorCode, error.message));
+      return;
+    case 'forbidden':
+    case 'unauthorized':
+      await reply.status(403).send(errorResponse(forbiddenErrorCode, error.message));
+      return;
+    case 'intake_routing_error':
+      await reply.status(400).send(errorResponse(intakeRoutingErrorCode, error.message, error.details));
+      return;
+    case 'active_run_conflict':
+      await reply.status(409).send(errorResponse(activeRunConflictErrorCode, error.message, error.details));
+      return;
+    case 'persistence_failed':
+      await reply.status(500).send(errorResponse('internal_error', 'Internal server error.'));
+      return;
+    default:
+      await reply.status(500).send(errorResponse('internal_error', 'Internal server error.'));
+  }
 }
 
 function errorResponse(code: string, message: string, details?: unknown): ErrorResponse {
@@ -318,6 +369,165 @@ export async function registerControlPlaneRoutes(
         }
         throw error;
       }
+    });
+
+    // Story 7: Conversation ingress
+    protectedApp.post(conversationCollectionPath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'conversation.create', () => ({
+        kind: 'conversation_collection' as const,
+        path: '/v1/conversations' as const
+      }))
+    }, async (request, reply) => {
+      let body: CreateConversationWithFirstRunRequest;
+      try {
+        body = createConversationWithFirstRunRequestSchema.parse(request.body);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const principal = requirePrincipalFromRequest(request);
+      try {
+        const result = await dependencies.controlPlane.createConversationWithFirstRun({
+          principal,
+          tenant: principal.tenantId,
+          request: body
+        });
+        await reply.status(createConversationSuccessStatusCode).send(result);
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(reply, error);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    // Story 7: Get run
+    protectedApp.get(`${runCollectionPath}/:id`, {
+      preHandler: authorizePreHandler(dependencies.policy, 'run.read', (request) => ({
+        kind: 'run' as const,
+        id: (request.params as { id: string }).id,
+        path: '/v1/runs/:id' as const
+      }))
+    }, async (request, reply) => {
+      let params: RunIdParams;
+      try {
+        params = runIdParamsSchema.parse(request.params);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const principal = requirePrincipalFromRequest(request);
+      try {
+        const result = await dependencies.controlPlane.getRun({
+          principal,
+          tenant: principal.tenantId,
+          runId: params.id
+        });
+        await reply.status(getRunSuccessStatusCode).send(result.run);
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(reply, error);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    // Story 7: List run steps
+    protectedApp.get(runStepsPath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'run_steps.list', (request) => ({
+        kind: 'run_steps' as const,
+        id: (request.params as { id: string }).id,
+        path: '/v1/runs/:id/steps' as const
+      }))
+    }, async (request, reply) => {
+      let params: RunIdParams;
+      try {
+        params = runIdParamsSchema.parse(request.params);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const principal = requirePrincipalFromRequest(request);
+      try {
+        const result = await dependencies.controlPlane.listRunSteps({
+          principal,
+          tenant: principal.tenantId,
+          runId: params.id
+        });
+        await reply.status(listRunStepsSuccessStatusCode).send(
+          runStepListResponseSchema.parse({ steps: result.steps })
+        );
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(reply, error);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    // Story 7: Stream run events (SSE)
+    protectedApp.get(runEventsPath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'run_events.stream', (request) => ({
+        kind: 'run_events' as const,
+        id: (request.params as { id: string }).id,
+        path: '/v1/runs/:id/events' as const
+      }))
+    }, async (request, reply) => {
+      let params: RunIdParams;
+      try {
+        params = runIdParamsSchema.parse(request.params);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const principal = requirePrincipalFromRequest(request);
+      const lastEventIdHeader = request.headers['last-event-id'];
+      const lastEventId = typeof lastEventIdHeader === 'string' ? lastEventIdHeader : undefined;
+
+      let subscription: RunEventSubscription;
+      try {
+        subscription = await dependencies.controlPlane.subscribeRunEvents({
+          principal,
+          tenant: principal.tenantId,
+          runId: params.id,
+          ...(lastEventId !== undefined ? { lastEventId } : {})
+        });
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(reply, error);
+          return;
+        }
+        throw error;
+      }
+
+      reply.raw.writeHead(runEventsSuccessStatusCode, {
+        'content-type': `${runEventsMediaType}; charset=utf-8`,
+        'cache-control': 'no-cache, no-transform',
+        connection: 'keep-alive'
+      });
+      // Flush headers immediately so SSE clients (e.g. fetch) resolve before the first event.
+      reply.raw.write(': connected\n\n');
+
+      request.raw.on('close', () => {
+        subscription.close();
+      });
+
+      try {
+        for await (const event of subscription.events) {
+          const validated = runStateTransitionEventSchema.parse(event);
+          reply.raw.write(`event: ${runStateTransitionEventName}\n`);
+          reply.raw.write(`id: ${validated.id}\n`);
+          reply.raw.write(`data: ${JSON.stringify(validated)}\n\n`);
+        }
+      } finally {
+        subscription.close();
+        reply.raw.end();
+      }
+
+      return reply;
     });
   });
 

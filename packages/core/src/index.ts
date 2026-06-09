@@ -65,6 +65,9 @@ export type {
 } from './domain-repositories.js';
 
 export type {
+  ConversationIngressRepository,
+  CreateConversationTopicMessageAndRunInput,
+  CreateConversationTopicMessageAndRunResult,
   LifecycleRunStepInput,
   RecordRunLifecycleStartInput,
   RecordRunLifecycleStartResult,
@@ -97,5 +100,13 @@ export type { RunArtifactKind, RunDirective, RunWorkflowDefinition, RunWorkflowI
 export { nextWorkflowStep } from './run-transition.js';
 export type { TransitionErrorCode, TransitionResult } from './run-transition.js';
 
-export { RunLifecycleError, applyRunDirective, startRunLifecycle } from './run-lifecycle.js';
+export { RunLifecycleError, applyRunDirective, buildEntryRunStep, startRunLifecycle } from './run-lifecycle.js';
 export type { ApplyRunDirectiveInput, RunLifecycleErrorCode, RunLifecycleState, StartRunLifecycleInput } from './run-lifecycle.js';
+
+export * from './run-events.js';
+
+export * from './run-dispatch-queue.js';
+
+export * from './orchestrator.js';
+
+export * from './control-plane-service.js';

@@ -71,7 +71,10 @@ import {
 } from '@autocatalyst/api-contract';
 import type {
   ArtifactRepository,
+  ConversationIngressRepository,
   ConversationRepository,
+  CreateConversationTopicMessageAndRunInput,
+  CreateConversationTopicMessageAndRunResult,
   DomainRepositories,
   FeedbackRepository,
   LifecycleRunStepInput,
@@ -90,6 +93,7 @@ import type {
   TopicRepository
 } from '@autocatalyst/core';
 
+import { ActiveRunConflictPersistenceError, isActiveRunConstraintViolation } from './active-run-conflict.js';
 import {
   nullableJsonForRow,
   parseJsonValue,
@@ -546,6 +550,18 @@ export class DrizzleRunRepository implements RunRepository {
     return row === undefined ? null : this.#rowToRun(row);
   }
 
+  async findActiveByTopic(topicId: string): Promise<Run | null> {
+    const rows = this.#database.drizzle
+      .select()
+      .from(runs)
+      .where(and(eq(runs.topicId, topicId), eq(runs.terminal, false)))
+      .orderBy(asc(runs.createdAt), asc(runs.id))
+      .limit(1)
+      .all();
+    const row = rows[0];
+    return row === undefined ? null : this.#rowToRun(row);
+  }
+
   async listByTopic(topicId: string): Promise<readonly Run[]> {
     const rows = this.#database.drizzle
       .select()
@@ -593,19 +609,26 @@ export class DrizzleRunRepository implements RunRepository {
         createdAt: now,
         updatedAt: now
       });
-      tx.insert(runs).values({
-        id: run.id,
-        topicId: run.topicId,
-        ownerJson: stringifyJsonValue(nonModelPrincipalSchema, run.owner),
-        tenant: run.tenant,
-        workKind: run.workKind,
-        currentStep: run.currentStep,
-        terminal: run.terminal,
-        trackedIssueJson: nullableJsonForRow(trackedIssueSchema, run.trackedIssue),
-        testingGuideResultJson: nullableJsonForRow(testingGuideResultSchema, run.testingGuideResult),
-        createdAt: run.createdAt,
-        updatedAt: run.updatedAt
-      }).run();
+      try {
+        tx.insert(runs).values({
+          id: run.id,
+          topicId: run.topicId,
+          ownerJson: stringifyJsonValue(nonModelPrincipalSchema, run.owner),
+          tenant: run.tenant,
+          workKind: run.workKind,
+          currentStep: run.currentStep,
+          terminal: run.terminal,
+          trackedIssueJson: nullableJsonForRow(trackedIssueSchema, run.trackedIssue),
+          testingGuideResultJson: nullableJsonForRow(testingGuideResultSchema, run.testingGuideResult),
+          createdAt: run.createdAt,
+          updatedAt: run.updatedAt
+        }).run();
+      } catch (error) {
+        if (isActiveRunConstraintViolation(error)) {
+          throw new ActiveRunConflictPersistenceError(parsedRun.topicId, null);
+        }
+        throw error;
+      }
       const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep);
       return { run, runStep };
     });
@@ -1187,6 +1210,154 @@ export class DrizzleTestResultRepository implements TestResultRepository {
       feedbackRefs: parseJsonValue(feedbackRefsSchema, row.feedbackRefsJson),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Conversation Ingress
+// ---------------------------------------------------------------------------
+
+export class DrizzleConversationIngressRepository implements ConversationIngressRepository {
+  readonly #database;
+
+  constructor(database: SqliteDatabase) {
+    this.#database = asInternalSqliteDatabase(database);
+  }
+
+  async createConversationTopicMessageAndRun(
+    input: CreateConversationTopicMessageAndRunInput
+  ): Promise<CreateConversationTopicMessageAndRunResult> {
+    const topicId = `topic_${randomUUID()}`;
+
+    return this.#database.drizzle.transaction((tx) => {
+      const now = nowIso();
+
+      // 1. Check project exists
+      const parentRows = tx.select({ id: projects.id }).from(projects).where(eq(projects.id, input.conversation.projectId)).limit(1).all();
+      requireParent(parentRows, input.conversation.projectId, 'Project');
+
+      // 2. Create conversation with activeTopicId: null
+      const convId = `conv_${randomUUID()}`;
+      const conv = validateEntity(conversationSchema, {
+        id: convId,
+        projectId: input.conversation.projectId,
+        owner: input.conversation.owner,
+        tenant: input.conversation.tenant,
+        identity: input.conversation.identity,
+        ...(input.conversation.channel === undefined ? {} : { channel: input.conversation.channel }),
+        activeTopicId: null,
+        createdAt: now,
+        updatedAt: now
+      });
+      tx.insert(conversations).values({
+        id: conv.id,
+        projectId: conv.projectId,
+        ownerJson: stringifyJsonValue(nonModelPrincipalSchema, conv.owner),
+        tenant: conv.tenant,
+        identity: conv.identity,
+        channelJson: nullableJsonForRow(channelReferenceSchema, conv.channel),
+        activeTopicId: null,
+        createdAt: conv.createdAt,
+        updatedAt: conv.updatedAt
+      }).run();
+
+      // 3. Create main topic
+      const topic = validateEntity(topicSchema, {
+        id: topicId,
+        conversationId: conv.id,
+        owner: input.topic.owner,
+        tenant: input.topic.tenant,
+        title: input.topic.title,
+        kind: input.topic.kind,
+        createdAt: now,
+        updatedAt: now
+      });
+      tx.insert(topics).values({
+        id: topic.id,
+        conversationId: topic.conversationId,
+        ownerJson: stringifyJsonValue(nonModelPrincipalSchema, topic.owner),
+        tenant: topic.tenant,
+        title: topic.title,
+        kind: topic.kind,
+        createdAt: topic.createdAt,
+        updatedAt: topic.updatedAt
+      }).run();
+
+      // 4. Update conversation activeTopicId
+      tx.update(conversations)
+        .set({ activeTopicId: topic.id, updatedAt: now })
+        .where(eq(conversations.id, conv.id))
+        .run();
+      const updatedConv = validateEntity(conversationSchema, { ...conv, activeTopicId: topic.id, updatedAt: now });
+
+      // 5. Optionally create inbound message
+      let message: Message | undefined;
+      if (input.message !== undefined) {
+        const msg = input.message;
+        message = validateEntity(messageSchema, {
+          id: `msg_${randomUUID()}`,
+          topicId: topic.id,
+          owner: msg.owner,
+          tenant: msg.tenant,
+          author: msg.author,
+          direction: msg.direction,
+          body: msg.body,
+          ...(msg.intent === undefined ? {} : { intent: msg.intent }),
+          createdAt: now
+        });
+        tx.insert(messages).values({
+          id: message.id,
+          topicId: message.topicId,
+          ownerJson: stringifyJsonValue(nonModelPrincipalSchema, message.owner),
+          tenant: message.tenant,
+          authorJson: stringifyJsonValue(principalSchema, message.author),
+          direction: message.direction,
+          body: message.body,
+          intent: message.intent ?? null,
+          createdAt: message.createdAt
+        }).run();
+      }
+
+      // 6. Create run using currentStep and terminal supplied by the orchestrator
+      const run = validateEntity(runSchema, {
+        id: `run_${randomUUID()}`,
+        topicId: topic.id,
+        owner: input.run.owner,
+        tenant: input.run.tenant,
+        workKind: input.run.workKind,
+        currentStep: input.run.currentStep,
+        terminal: input.run.terminal,
+        ...(input.run.trackedIssue === undefined ? {} : { trackedIssue: input.run.trackedIssue }),
+        ...(input.run.testingGuideResult === undefined ? {} : { testingGuideResult: input.run.testingGuideResult }),
+        createdAt: now,
+        updatedAt: now
+      });
+      try {
+        tx.insert(runs).values({
+          id: run.id,
+          topicId: run.topicId,
+          ownerJson: stringifyJsonValue(nonModelPrincipalSchema, run.owner),
+          tenant: run.tenant,
+          workKind: run.workKind,
+          currentStep: run.currentStep,
+          terminal: run.terminal,
+          trackedIssueJson: nullableJsonForRow(trackedIssueSchema, run.trackedIssue),
+          testingGuideResultJson: nullableJsonForRow(testingGuideResultSchema, run.testingGuideResult),
+          createdAt: run.createdAt,
+          updatedAt: run.updatedAt
+        }).run();
+      } catch (error) {
+        if (isActiveRunConstraintViolation(error)) {
+          throw new ActiveRunConflictPersistenceError(run.topicId, null);
+        }
+        throw error;
+      }
+
+      // 7. Create initial RunStep using shared helper
+      const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep);
+
+      return { conversation: updatedConv, topic, ...(message !== undefined ? { message } : {}), run, runStep };
     });
   }
 }

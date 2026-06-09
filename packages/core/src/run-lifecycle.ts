@@ -1,6 +1,6 @@
 import type { CreateRunInput, NonModelPrincipal, Run, RunStep, TestingGuideResult, TrackedIssue } from '@autocatalyst/api-contract';
 
-import type { RunRepository } from './domain-repositories.js';
+import type { LifecycleRunStepInput, RunRepository } from './domain-repositories.js';
 import { deriveRunTerminal, getRunStepDefinition, type RunStepDefinition } from './run-step-catalog.js';
 import { nextWorkflowStep, type TransitionErrorCode, type TransitionResult } from './run-transition.js';
 import { getRunWorkflowForWorkKind, type RunDirective, type RunWorkflowDefinition } from './run-workflows.js';
@@ -64,8 +64,8 @@ function now(clock?: () => string): string {
   return clock?.() ?? new Date().toISOString();
 }
 
-function entryRunStep(step: RunStepDefinition, startedAt: string) {
-  return { phase: step.phase, step: step.id, role: 'none', startedAt, endedAt: null, durationMs: null } as const;
+export function buildEntryRunStep(step: RunStepDefinition, startedAt: string): LifecycleRunStepInput {
+  return { phase: step.phase, step: step.id, role: 'none', startedAt, endedAt: null, durationMs: null };
 }
 
 function requireWorkflowForWorkKind(workKind: string): RunWorkflowDefinition {
@@ -97,7 +97,7 @@ export async function startRunLifecycle(input: StartRunLifecycleInput): Promise<
     ...(input.run.testingGuideResult === undefined ? {} : { testingGuideResult: input.run.testingGuideResult })
   };
   try {
-    const recorded = await input.runs.recordRunLifecycleStart({ run, runStep: entryRunStep(step, now(input.clock)) });
+    const recorded = await input.runs.recordRunLifecycleStart({ run, runStep: buildEntryRunStep(step, now(input.clock)) });
     return { run: recorded.run, workflow, step, runStep: recorded.runStep };
   } catch (error) {
     if (error instanceof RunLifecycleError) {
@@ -129,7 +129,7 @@ export async function applyRunDirective(input: ApplyRunDirectiveInput): Promise<
       runId: existing.id,
       currentStep: step.id,
       terminal: deriveRunTerminal(step.id),
-      runStep: entryRunStep(step, now(input.clock))
+      runStep: buildEntryRunStep(step, now(input.clock))
     });
     return { run: recorded.run, workflow, step, runStep: recorded.runStep, transition };
   } catch (error) {

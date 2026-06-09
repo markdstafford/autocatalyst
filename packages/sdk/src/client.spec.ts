@@ -188,6 +188,114 @@ describe('control-plane SDK client', () => {
   });
 });
 
+describe('orchestrator ingress methods', () => {
+  const owner = { kind: 'human' as const, id: 'user_1', tenantId: 'org_1' };
+  const baseConversation = {
+    id: 'conv_1', projectId: 'proj_1', owner, tenant: 'org_1', identity: 'user_1',
+    activeTopicId: null,
+    createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z'
+  };
+  const baseRun = {
+    id: 'run_1', topicId: 'topic_1', owner,
+    tenant: 'org_1', workKind: 'feature', currentStep: 'start',
+    terminal: false,
+    createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z'
+  };
+  const baseTopic = {
+    id: 'topic_1', conversationId: 'conv_1', owner, tenant: 'org_1',
+    title: 'Do work', kind: 'main' as const,
+    createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z'
+  };
+  const baseRunStep = {
+    id: 'step_1', runId: 'run_1', phase: null, step: 'start', role: 'orchestrator' as const,
+    startedAt: '2026-06-08T00:00:00.000Z', endedAt: null, durationMs: null,
+    occurrence: { index: 0, attempt: 1 }
+  };
+
+  it('createConversationWithFirstRun sends POST to /v1/conversations with bearer token and returns validated response', async () => {
+    const responseBody = { conversation: baseConversation, topic: baseTopic, run: baseRun, runStep: baseRunStep };
+    const mockFetch = vi.fn(async () =>
+      new Response(JSON.stringify(responseBody), { status: 201, headers: { 'content-type': 'application/json' } })
+    );
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
+    const result = await client.createConversationWithFirstRun({
+      projectId: 'proj_1', identity: 'user_1',
+      topic: { title: 'Do work' },
+      submission: { kind: 'free_form', body: 'Build something', workKind: 'feature' }
+    });
+    expect(result.run.id).toBe('run_1');
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(String(url)).toContain('/v1/conversations');
+    expect(init?.method).toBe('POST');
+    expect((init?.headers as Record<string, string>)?.authorization).toBe('Bearer sdk-token');
+  });
+
+  it('getRun sends GET to /v1/runs/:id with bearer token', async () => {
+    const mockFetch = vi.fn(async () =>
+      new Response(JSON.stringify(baseRun), { status: 200, headers: { 'content-type': 'application/json' } })
+    );
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
+    const result = await client.getRun('run_1');
+    expect(result.id).toBe('run_1');
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(String(url)).toContain('/v1/runs/run_1');
+    expect(init?.method).toBe('GET');
+    expect((init?.headers as Record<string, string>)?.authorization).toBe('Bearer sdk-token');
+  });
+
+  it('listRunSteps sends GET to /v1/runs/:id/steps with bearer token', async () => {
+    const mockFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ steps: [baseRunStep] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    );
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
+    const result = await client.listRunSteps('run_1');
+    expect(result.steps).toHaveLength(1);
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(String(url)).toContain('/v1/runs/run_1/steps');
+    expect(init?.method).toBe('GET');
+    expect((init?.headers as Record<string, string>)?.authorization).toBe('Bearer sdk-token');
+  });
+
+  it('subscribeRunEvents sends GET to /v1/runs/:id/events and forwards last-event-id header', async () => {
+    const mockFetch = vi.fn(async () =>
+      new Response('', { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    );
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
+    const result = await client.subscribeRunEvents('run_1', { lastEventId: 'evt_42' });
+    expect(result.kind).toBe('response');
+    expect(result.response.ok).toBe(true);
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(String(url)).toContain('/v1/runs/run_1/events');
+    expect(init?.method).toBe('GET');
+    expect((init?.headers as Record<string, string>)?.['last-event-id']).toBe('evt_42');
+    expect((init?.headers as Record<string, string>)?.authorization).toBe('Bearer sdk-token');
+  });
+
+  it('subscribeRunEvents throws ControlPlaneClientError on non-ok response', async () => {
+    const mockFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ error: { code: 'not_found', message: 'Run not found.' } }), {
+        status: 404, headers: { 'content-type': 'application/json' }
+      })
+    );
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
+    await expect(client.subscribeRunEvents('run_missing')).rejects.toBeInstanceOf(ControlPlaneClientError);
+  });
+
+  it('createConversationWithFirstRun throws ControlPlaneClientError for error response', async () => {
+    const mockFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ error: { code: 'bad_request', message: 'Invalid.' } }), {
+        status: 400, headers: { 'content-type': 'application/json' }
+      })
+    );
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
+    await expect(client.createConversationWithFirstRun({
+      projectId: 'proj_1', identity: 'user_1',
+      topic: { title: 'Do work' },
+      submission: { kind: 'free_form', body: 'Build something', workKind: 'feature' }
+    })).rejects.toBeInstanceOf(ControlPlaneClientError);
+  });
+});
+
 describe('control-plane SDK client against a test server', () => {
   let testApp: ReturnType<typeof Fastify> | undefined;
 
