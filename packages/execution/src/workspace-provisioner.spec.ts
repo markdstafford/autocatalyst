@@ -65,9 +65,9 @@ class FakeWorkspaceDriver implements WorkspaceDriver {
     return 'origin/main';
   }
 
-  async addWorktree(): Promise<void> {
+  async addWorktree(input: { repoRoot: string; [key: string]: unknown }): Promise<void> {
     this.record('addWorktree');
-    this.paths.add('/tmp/workspaces/acme/widgets/run_123/repo');
+    this.paths.add(path.resolve(input.repoRoot));
   }
 
   async currentBranch(): Promise<string | null> {
@@ -82,9 +82,9 @@ class FakeWorkspaceDriver implements WorkspaceDriver {
     }
   }
 
-  async mkdirp(targetPath: string): Promise<void> {
-    this.record(`mkdirp:${targetPath}`);
-    this.paths.add(path.resolve(targetPath));
+  async mkdirp(input: { workspaceRoot: string; targetPath: string }): Promise<void> {
+    this.record(`mkdirp:${path.resolve(input.targetPath)}`);
+    this.paths.add(path.resolve(input.targetPath));
   }
 
   async pathExists(targetPath: string): Promise<boolean> {

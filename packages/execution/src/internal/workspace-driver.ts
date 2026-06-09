@@ -33,10 +33,16 @@ export interface ResolveDefaultBranchInput {
 }
 
 export interface AddWorktreeInput {
+  readonly workspaceRoot: string;
   readonly hostRepositoryPath: string;
   readonly repoRoot: string;
   readonly branchName: string;
   readonly baseRef: string;
+}
+
+export interface MkdirpInput {
+  readonly workspaceRoot: string;
+  readonly targetPath: string;
 }
 
 export interface RemoveWorktreeInput {
@@ -57,7 +63,7 @@ export interface WorkspaceDriver {
   addWorktree(input: AddWorktreeInput): Promise<void>;
   currentBranch(repoRoot: string): Promise<string | null>;
   removeWorktree(input: RemoveWorktreeInput): Promise<void>;
-  mkdirp(targetPath: string): Promise<void>;
+  mkdirp(input: MkdirpInput): Promise<void>;
   pathExists(targetPath: string): Promise<boolean>;
   realpath(targetPath: string): Promise<string>;
   removeDirectory(input: RemoveDirectoryInput): Promise<void>;
@@ -169,6 +175,10 @@ export function createNodeWorkspaceDriver(): WorkspaceDriver {
     },
 
     async addWorktree(input) {
+      await assertPathInsideRoot(
+        { root: input.workspaceRoot, rootKind: 'workspace', targetPath: input.repoRoot, intent: 'write' },
+        { pathExists: exists, realpath: nodeRealpath }
+      );
       await runGit(['worktree', 'add', '-b', input.branchName, input.repoRoot, input.baseRef], {
         cwd: input.hostRepositoryPath,
         code: 'worktree_creation_failed',
@@ -201,8 +211,12 @@ export function createNodeWorkspaceDriver(): WorkspaceDriver {
       });
     },
 
-    async mkdirp(targetPath) {
-      await fs.mkdir(targetPath, { recursive: true });
+    async mkdirp(input) {
+      const safePath = await assertPathInsideRoot(
+        { root: input.workspaceRoot, rootKind: 'workspace', targetPath: input.targetPath, intent: 'write' },
+        { pathExists: exists, realpath: nodeRealpath }
+      );
+      await fs.mkdir(safePath, { recursive: true });
     },
 
     async pathExists(targetPath) {

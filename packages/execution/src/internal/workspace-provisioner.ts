@@ -50,10 +50,16 @@ async function rollbackRunRoot(input: {
     }
   }
 
-  try {
-    await input.driver.removeDirectory({ workspaceRoot: input.workspaceRoot, targetPath: input.runRoot });
-  } catch (e) {
-    rollbackCause ??= e;
+  // Only attempt directory removal if the run root was actually created. If it
+  // was never created (e.g. mkdirp failed a containment check), there is nothing
+  // to remove and calling removeDirectory would just produce a second error.
+  const runRootExists = await input.driver.pathExists(input.runRoot);
+  if (runRootExists) {
+    try {
+      await input.driver.removeDirectory({ workspaceRoot: input.workspaceRoot, targetPath: input.runRoot });
+    } catch (e) {
+      rollbackCause ??= e;
+    }
   }
 
   if (rollbackCause !== undefined) {
@@ -98,8 +104,8 @@ export function createWorkspaceProvisioner(dependencies: WorkspaceProvisionerDep
 
       if (shape === 'scratch_only') {
         try {
-          await driver.mkdirp(paths.runRoot);
-          await driver.mkdirp(paths.scratchRoot);
+          await driver.mkdirp({ workspaceRoot: paths.workspaceRoot, targetPath: paths.runRoot });
+          await driver.mkdirp({ workspaceRoot: paths.workspaceRoot, targetPath: paths.scratchRoot });
         } catch (cause) {
           await rollbackRunRoot({
             driver,
@@ -141,15 +147,16 @@ export function createWorkspaceProvisioner(dependencies: WorkspaceProvisionerDep
       });
 
       try {
-        await driver.mkdirp(paths.runRoot);
+        await driver.mkdirp({ workspaceRoot: paths.workspaceRoot, targetPath: paths.runRoot });
         await driver.addWorktree({
+          workspaceRoot: paths.workspaceRoot,
           hostRepositoryPath: paths.hostRepositoryPath,
           repoRoot: paths.repoRoot,
           branchName,
           baseRef
         });
         worktreeCreated = true;
-        await driver.mkdirp(paths.scratchRoot);
+        await driver.mkdirp({ workspaceRoot: paths.workspaceRoot, targetPath: paths.scratchRoot });
         await verifyBranch({ driver, repoRoot: paths.repoRoot, expectedBranch: branchName });
       } catch (cause) {
         await rollbackRunRoot({

@@ -154,4 +154,17 @@ describe('workspace provisioning integration', () => {
       )
     ).rejects.toMatchObject({ code: 'out_of_root_path' });
   });
+
+  it('rejects provisioning when a symlinked workspace parent escapes the workspace root before any filesystem mutation', async () => {
+    const outsideDir = path.join(tempRoot, 'outside');
+    await fs.mkdir(outsideDir, { recursive: true });
+    // Symlink workspacesRoot/acme -> outside directory (simulates a compromised parent segment)
+    const symlinkPath = path.join(workspacesRoot, 'acme');
+    await fs.symlink(outsideDir, symlinkPath);
+
+    await expect(provisionWorkspace(makeRequest())).rejects.toMatchObject({ code: 'out_of_root_path' });
+
+    // No run directory should have been created under the escape target
+    await expect(fs.stat(path.join(outsideDir, 'widgets'))).rejects.toThrow();
+  });
 });
