@@ -162,4 +162,37 @@ describe('workspace path helpers', () => {
       WorkspaceProvisioningError
     );
   });
+
+  it('removes repeated .lock suffixes and falls back after trimming unsafe suffixes', () => {
+    expect(deriveRunBranchName({ runKind: 'bug', topicSlug: 'topic.lock.lock', shortRunId: 'Bug123' })).toBe(
+      'bug/topic-Bug123'
+    );
+    expect(deriveRunBranchName({ runKind: 'chore', topicSlug: '.lock', shortRunId: 'Cho123' })).toBe('chore/lock-Cho123');
+  });
+
+  it('rejects non-implementing run kinds for branch derivation', () => {
+    expect(() => deriveRunBranchName({ runKind: 'file_issue', topicSlug: 'topic', shortRunId: 'Abc123' })).toThrow(
+      WorkspaceProvisioningError
+    );
+  });
+
+  it('uses canonical realpath values for existing paths', async () => {
+    const existing = new Set(['/link-root', '/real-root', '/real-root/repo']);
+
+    await expect(
+      assertPathInsideRoot(
+        { root: '/link-root', rootKind: 'repos', targetPath: '/link-root/repo', intent: 'git' },
+        {
+          async pathExists(value) {
+            return existing.has(value);
+          },
+          async realpath(value) {
+            if (value === '/link-root') return '/real-root';
+            if (value === '/link-root/repo') return '/real-root/repo';
+            return value;
+          }
+        }
+      )
+    ).resolves.toBe('/real-root/repo');
+  });
 });
