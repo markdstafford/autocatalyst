@@ -115,7 +115,7 @@ describe('workspace teardown', () => {
     expect(result).toMatchObject({
       outcome: 'completed',
       branch: { action: 'retained' },
-      checkpoint: { action: 'committed', message: 'chore: final checkpoint' }
+      checkpoint: { action: 'committed', message: 'fix: final checkpoint' }
     });
     expect(calls).toEqual([
       'currentBranch',
@@ -127,27 +127,26 @@ describe('workspace teardown', () => {
     ]);
   });
 
-  it('uses feat prefix for feature checkpointKind', async () => {
+  it('uses feat prefix for feature runKind', async () => {
     const fake = new FakeDriver();
     fake.dirty = true;
     const teardown = createWorkspaceTeardown({ driver: fake as unknown as WorkspaceDriver, pruner: fakePruner([]) });
     const result = await teardown.teardownWorkspace({
       ...baseRequest,
       terminalStep: 'canceled',
-      checkpointKind: 'feature',
       checkpointSubject: 'my custom change'
     });
     expect(result.checkpoint).toMatchObject({ action: 'committed', message: 'feat: my custom change' });
   });
 
-  it('uses fix prefix for bug checkpointKind', async () => {
+  it('uses fix prefix for bug runKind', async () => {
     const fake = new FakeDriver();
     fake.dirty = true;
     const teardown = createWorkspaceTeardown({ driver: fake as unknown as WorkspaceDriver, pruner: fakePruner([]) });
     const result = await teardown.teardownWorkspace({
       ...baseRequest,
+      runKind: 'bug',
       terminalStep: 'canceled',
-      checkpointKind: 'bug',
       checkpointSubject: 'fixed the bug'
     });
     expect(result.checkpoint).toMatchObject({ action: 'committed', message: 'fix: fixed the bug' });
@@ -184,6 +183,20 @@ describe('workspace teardown', () => {
     const result = await teardown.teardownWorkspace({ ...baseRequest, terminalStep: 'canceled' });
     expect(result).toMatchObject({ outcome: 'retained', branch: { action: 'retained' }, checkpoint: { action: 'not_applicable' } });
     expect(pruneCalls).toEqual(['prune:worktree:/tmp/workspaces/acme/widgets/run_123/repo']);
+  });
+
+  it('reconciles missing worktree with rejected prune as failed outcome', async () => {
+    const fake = new FakeDriver();
+    fake.branch = null as unknown as string;
+    fake.statResult = 'missing';
+    const rejectingPruner: WorkspacePruner = {
+      async pruneWorkspacePath(request): Promise<WorkspacePruneResult> {
+        return { runId: request.runId, mode: request.mode, status: 'rejected', root: request.workspaceRoot, targetPath: request.targetPath, durationMs: 1 };
+      }
+    };
+    const teardown = createWorkspaceTeardown({ driver: fake as unknown as WorkspaceDriver, pruner: rejectingPruner });
+    const result = await teardown.teardownWorkspace({ ...baseRequest, terminalStep: 'canceled' });
+    expect(result).toMatchObject({ outcome: 'failed' });
   });
 
   it('gates run-directory prune when worktree prune returns failed', async () => {

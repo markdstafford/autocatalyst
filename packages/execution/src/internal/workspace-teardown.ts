@@ -2,10 +2,10 @@ import {
   WorkspaceTeardownError,
   type TeardownWorkspaceRequest,
   type WorkspaceBranchResult,
-  type WorkspaceCheckpointKind,
   type WorkspaceCheckpointResult,
   type WorkspaceTeardownPruneResult,
   type WorkspaceTeardownResult,
+  type WorkspaceRunKind,
   type WorkspaceTerminalStep
 } from '../workspace.js';
 import { isImplementingRunKind } from './workspace-paths.js';
@@ -57,7 +57,7 @@ function requireScratchContext(request: TeardownWorkspaceRequest): { workspaceRo
   return { workspaceRoot: request.workspaceRoot, runRoot: request.runRoot };
 }
 
-function checkpointPrefix(kind: WorkspaceCheckpointKind | undefined): 'feat' | 'fix' | 'chore' {
+function checkpointPrefix(kind: WorkspaceRunKind): 'feat' | 'fix' | 'chore' {
   if (kind === 'feature' || kind === 'enhancement') return 'feat';
   if (kind === 'bug') return 'fix';
   return 'chore';
@@ -73,7 +73,7 @@ function normalizeCheckpointSubject(subject: string | undefined): string {
 }
 
 function buildCheckpointMessage(request: TeardownWorkspaceRequest): string {
-  return `${checkpointPrefix(request.checkpointKind)}: ${normalizeCheckpointSubject(request.checkpointSubject)}`;
+  return `${checkpointPrefix(request.runKind)}: ${normalizeCheckpointSubject(request.checkpointSubject)}`;
 }
 
 function finishTeardown(logger: WorkspaceLogger, result: WorkspaceTeardownResult): WorkspaceTeardownResult {
@@ -195,7 +195,7 @@ async function teardownCanceled(input: {
       runId: request.runId,
       runKind: request.runKind,
       terminalStep: request.terminalStep,
-      outcome: missingPrune.status === 'failed' ? 'failed' : 'retained',
+      outcome: missingPrune.status === 'failed' || missingPrune.status === 'rejected' ? 'failed' : 'retained',
       prunes: [{ ...missingPrune, purpose: 'worktree' }],
       branch: { name: context.branchName, action: 'retained' },
       checkpoint: { action: 'not_applicable' }

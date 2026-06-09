@@ -32,7 +32,6 @@ export type {
   WorkspaceBranchAction,
   WorkspaceBranchResult,
   WorkspaceCheckpointAction,
-  WorkspaceCheckpointKind,
   WorkspaceCheckpointResult,
   WorkspaceErrorCauseSummary,
   WorkspacePruneErrorCode,

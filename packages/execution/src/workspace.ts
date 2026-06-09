@@ -205,7 +205,6 @@ export type WorkspaceTerminalStep = 'done' | 'canceled' | 'failed';
 export type WorkspaceTeardownOutcome = 'completed' | 'retained' | 'skipped' | 'partial_failure' | 'failed';
 export type WorkspaceBranchAction = 'deleted' | 'retained' | 'not_applicable' | 'failed';
 export type WorkspaceCheckpointAction = 'committed' | 'no_changes' | 'not_applicable' | 'failed';
-export type WorkspaceCheckpointKind = 'feature' | 'enhancement' | 'bug' | 'chore';
 export type WorkspacePrunePurpose = 'worktree' | 'run_directory';
 
 export interface WorkspaceTeardownPruneResult extends WorkspacePruneResult {
@@ -222,7 +221,6 @@ export interface TeardownWorkspaceRequest {
   readonly scratchRoot?: string;
   readonly hostRepositoryPath?: string;
   readonly branchName?: string;
-  readonly checkpointKind?: WorkspaceCheckpointKind;
   readonly checkpointSubject?: string;
 }
 
