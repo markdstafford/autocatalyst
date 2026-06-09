@@ -114,6 +114,22 @@ describe('createControlPlaneServer', () => {
     });
   });
 
+  it('accepts runConcurrency option and starts correctly', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const app = await createControlPlaneServer({
+        databasePath,
+        bearerToken: 'token',
+        masterSecret: 'correct-master-secret',
+        runConcurrency: 1
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/health' });
+      expect(response.statusCode).toBe(200);
+
+      await app.close();
+    });
+  });
+
   it('continues startup when an existing provider profile is unresolved', async () => {
     await withTempDatabasePath(async (databasePath) => {
       const first = await createControlPlaneServer({

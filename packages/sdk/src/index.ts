@@ -4,5 +4,7 @@ export {
 } from './client.js';
 export type {
   ControlPlaneClient,
-  ControlPlaneClientOptions
+  ControlPlaneClientOptions,
+  RunEventsStreamOptions,
+  RunEventsResponse
 } from './client.js';

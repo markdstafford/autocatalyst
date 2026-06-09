@@ -1,9 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  activeRunConflictErrorCode,
+  conflictErrorCode,
+  conversationCollectionPath,
+  createConversationWithFirstRunRequestSchema,
+  forbiddenErrorCode,
   healthResponseSchema,
+  intakeRoutingErrorCode,
   notFoundErrorCode,
+  runCollectionPath,
+  runEventsPath,
+  runResourcePath,
+  runStepsPath,
   secretStoreLockedErrorCode,
+  submissionKindSchema,
   unauthorizedErrorCode,
   validationErrorCode
 } from './index.js';
@@ -20,5 +31,25 @@ describe('api-contract barrel', () => {
     expect(validationErrorCode).toBe('validation_error');
     expect(notFoundErrorCode).toBe('not_found');
     expect(secretStoreLockedErrorCode).toBe('secret_store_locked');
+  });
+
+  it('exports new error code constants', () => {
+    expect(conflictErrorCode).toBe('conflict');
+    expect(activeRunConflictErrorCode).toBe('active_run_conflict');
+    expect(intakeRoutingErrorCode).toBe('intake_routing_error');
+    expect(forbiddenErrorCode).toBe('forbidden');
+  });
+
+  it('exports conversation ingress contract', () => {
+    expect(conversationCollectionPath).toBe('/v1/conversations');
+    expect(submissionKindSchema.parse('free_form')).toBe('free_form');
+    expect(() => createConversationWithFirstRunRequestSchema.parse({})).toThrow();
+  });
+
+  it('exports run path constants', () => {
+    expect(runCollectionPath).toBe('/v1/runs');
+    expect(runResourcePath).toBe('/v1/runs/:id');
+    expect(runStepsPath).toBe('/v1/runs/:id/steps');
+    expect(runEventsPath).toBe('/v1/runs/:id/events');
   });
 });

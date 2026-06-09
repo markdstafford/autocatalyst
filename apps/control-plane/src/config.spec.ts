@@ -14,7 +14,8 @@ describe('readControlPlaneAppConfig', () => {
       port: 4300,
       databasePath: '/tmp/control-plane.sqlite',
       bearerToken: 'test-bearer-token',
-      masterSecret: 'test-master-secret'
+      masterSecret: 'test-master-secret',
+      runConcurrency: 2
     });
   });
 
@@ -33,8 +34,74 @@ describe('readControlPlaneAppConfig', () => {
       port: 4400,
       databasePath: '/tmp/flag.sqlite',
       bearerToken: 'flag-token',
-      masterSecret: 'flag-secret'
+      masterSecret: 'flag-secret',
+      runConcurrency: 2
     });
+  });
+
+  it('reads runConcurrency from AUTOCATALYST_RUN_CONCURRENCY when set', () => {
+    expect(
+      readControlPlaneAppConfig([], {
+        CONTROL_PLANE_PORT: '4300',
+        CONTROL_PLANE_DATABASE_PATH: '/tmp/db.sqlite',
+        CONTROL_PLANE_BEARER_TOKEN: 'token',
+        CONTROL_PLANE_MASTER_SECRET: 'secret',
+        AUTOCATALYST_RUN_CONCURRENCY: '5'
+      }).runConcurrency
+    ).toBe(5);
+  });
+
+  it('lets --run-concurrency flag take precedence over the env var', () => {
+    expect(
+      readControlPlaneAppConfig(['--run-concurrency', '7'], {
+        CONTROL_PLANE_PORT: '4300',
+        CONTROL_PLANE_DATABASE_PATH: '/tmp/db.sqlite',
+        CONTROL_PLANE_BEARER_TOKEN: 'token',
+        CONTROL_PLANE_MASTER_SECRET: 'secret',
+        AUTOCATALYST_RUN_CONCURRENCY: '5'
+      }).runConcurrency
+    ).toBe(7);
+  });
+
+  it('defaults runConcurrency to 2 when not provided', () => {
+    expect(
+      readControlPlaneAppConfig([], {
+        CONTROL_PLANE_PORT: '4300',
+        CONTROL_PLANE_DATABASE_PATH: '/tmp/db.sqlite',
+        CONTROL_PLANE_BEARER_TOKEN: 'token',
+        CONTROL_PLANE_MASTER_SECRET: 'secret'
+      }).runConcurrency
+    ).toBe(2);
+  });
+
+  it('throws for non-positive or non-integer runConcurrency', () => {
+    expect(() =>
+      readControlPlaneAppConfig([], {
+        CONTROL_PLANE_PORT: '4300',
+        CONTROL_PLANE_DATABASE_PATH: '/tmp/db.sqlite',
+        CONTROL_PLANE_BEARER_TOKEN: 'token',
+        CONTROL_PLANE_MASTER_SECRET: 'secret',
+        AUTOCATALYST_RUN_CONCURRENCY: '0'
+      })
+    ).toThrow('Run concurrency must be a positive integer.');
+    expect(() =>
+      readControlPlaneAppConfig([], {
+        CONTROL_PLANE_PORT: '4300',
+        CONTROL_PLANE_DATABASE_PATH: '/tmp/db.sqlite',
+        CONTROL_PLANE_BEARER_TOKEN: 'token',
+        CONTROL_PLANE_MASTER_SECRET: 'secret',
+        AUTOCATALYST_RUN_CONCURRENCY: 'abc'
+      })
+    ).toThrow('Run concurrency must be a positive integer.');
+    expect(() =>
+      readControlPlaneAppConfig([], {
+        CONTROL_PLANE_PORT: '4300',
+        CONTROL_PLANE_DATABASE_PATH: '/tmp/db.sqlite',
+        CONTROL_PLANE_BEARER_TOKEN: 'token',
+        CONTROL_PLANE_MASTER_SECRET: 'secret',
+        AUTOCATALYST_RUN_CONCURRENCY: '1.5'
+      })
+    ).toThrow('Run concurrency must be a positive integer.');
   });
 
   it('throws for missing, non-numeric, or out-of-range ports', () => {

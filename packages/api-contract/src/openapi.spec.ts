@@ -42,4 +42,20 @@ describe('OpenAPI generation', () => {
     };
     expect(createOperation.responses?.['401']).toBeDefined();
   });
+
+  it('documents conversation ingress route', () => {
+    const document = generateOpenApiDocument();
+    expect(document.paths['/v1/conversations']?.post).toBeDefined();
+    const createOp = document.paths['/v1/conversations']?.post as {
+      responses?: Record<string, unknown>;
+    };
+    expect(createOp.responses?.['201']).toBeDefined();
+  });
+
+  it('documents run resource routes', () => {
+    const document = generateOpenApiDocument();
+    expect(document.paths['/v1/runs/{id}']?.get?.responses?.['200']).toBeDefined();
+    expect(document.paths['/v1/runs/{id}/steps']?.get?.responses?.['200']).toBeDefined();
+    expect(document.paths['/v1/runs/{id}/events']?.get?.responses?.['200']).toBeDefined();
+  });
 });

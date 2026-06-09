@@ -2,21 +2,29 @@ import Fastify, { type FastifyInstance } from 'fastify';
 
 import {
   composeConfiguredProviders,
+  DefaultControlPlaneService,
+  DefaultOrchestrator,
   defaultExtensionRegistryCatalog,
   emptyProviderAdapterMap,
+  InMemoryRunEventBus,
   permissivePolicyDecisionPoint,
   registerControlPlaneRoutes,
+  RunDispatchQueue,
+  type ControlPlaneService,
   type ExtensionRegistryCatalog,
   type HealthDependencyChecker,
   type PolicyDecisionPoint,
   type ProviderAdapterMap,
-  type ProviderCompositionResult
+  type ProviderCompositionResult,
+  type RunUnitOfWork
 } from '@autocatalyst/core';
 import {
   DrizzleConfigurationRecordRepository,
+  DrizzleConversationIngressRepository,
   DrizzleProbeResourceRepository,
   SqliteSecretStore,
   checkSqliteDatabaseReachability,
+  createDrizzleDomainRepositories,
   createSqliteDatabase,
   migrateSqliteDatabase
 } from '@autocatalyst/persistence';
@@ -27,12 +35,17 @@ export interface ControlPlaneServerOptions {
   readonly databasePath: string;
   readonly bearerToken: string;
   readonly masterSecret: string;
+  readonly runConcurrency?: number;
   readonly policy?: PolicyDecisionPoint;
   readonly health?: HealthDependencyChecker;
   readonly extensionRegistry?: ExtensionRegistryCatalog;
   readonly providerAdapters?: ProviderAdapterMap;
   readonly onProviderComposition?: (result: ProviderCompositionResult) => void | Promise<void>;
+  readonly unitOfWork?: RunUnitOfWork;
+  readonly onControlPlaneReady?: (service: ControlPlaneService) => void;
 }
+
+const DEFAULT_RUN_CONCURRENCY = 2;
 
 export interface ControlPlaneServerHandle {
   readonly port: number;
@@ -98,15 +111,39 @@ export async function createControlPlaneServer(
 
   const app = Fastify({ logger: false });
 
+  const domainRepos = createDrizzleDomainRepositories(database);
+  const conversationIngress = new DrizzleConversationIngressRepository(database);
+  const eventBus = new InMemoryRunEventBus();
+  const dispatchQueue = new RunDispatchQueue({
+    maxConcurrent: options.runConcurrency ?? DEFAULT_RUN_CONCURRENCY
+  });
+  const orchestrator = new DefaultOrchestrator({
+    runs: domainRepos.runs,
+    conversationIngress,
+    events: eventBus,
+    dispatchQueue,
+    ...(options.unitOfWork !== undefined ? { unitOfWork: options.unitOfWork } : {})
+  });
+  const policy = options.policy ?? permissivePolicyDecisionPoint;
+  const controlPlane = new DefaultControlPlaneService({
+    orchestrator,
+    runs: domainRepos.runs,
+    runSteps: domainRepos.runSteps,
+    events: eventBus,
+    policy
+  });
+  options.onControlPlaneReady?.(controlPlane);
+
   await registerControlPlaneRoutes(app, {
     health: options.health ?? {
       isDatabaseReachable: async () => checkSqliteDatabaseReachability(database)
     },
     auth: { bearerToken: options.bearerToken },
-    policy: options.policy ?? permissivePolicyDecisionPoint,
+    policy,
     probeResources: new DrizzleProbeResourceRepository(database),
     configurationRecords,
-    secrets: secretStore
+    secrets: secretStore,
+    controlPlane
   });
 
   app.addHook('onClose', async () => {
@@ -116,14 +153,21 @@ export async function createControlPlaneServer(
   return app;
 }
 
+export type StartControlPlaneServerOptions = ControlPlaneAppConfig & {
+  readonly unitOfWork?: RunUnitOfWork;
+  readonly onControlPlaneReady?: (service: ControlPlaneService) => void;
+};
+
 export async function startControlPlaneServer(
-  config: ControlPlaneAppConfig
+  config: StartControlPlaneServerOptions
 ): Promise<ControlPlaneServerHandle> {
   const app = await createControlPlaneServer({
     ...config,
     onProviderComposition: (result) => {
       logProviderCompositionDiagnostics(result, console);
-    }
+    },
+    ...(config.unitOfWork !== undefined ? { unitOfWork: config.unitOfWork } : {}),
+    ...(config.onControlPlaneReady !== undefined ? { onControlPlaneReady: config.onControlPlaneReady } : {})
   });
 
   await app.listen({ port: config.port, host: '127.0.0.1' });

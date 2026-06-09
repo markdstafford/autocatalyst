@@ -31,5 +31,11 @@ export const createRunStepInputSchema = z.object({
   occurrence: occurrenceSchema
 }).strict();
 
+export const runStepsPath = '/v1/runs/:id/steps' as const;
+export const listRunStepsSuccessStatusCode = 200 as const;
+
+export const runStepListResponseSchema = z.object({ steps: z.array(runStepSchema) }).strict();
+
 export type RunStep = z.infer<typeof runStepSchema>;
 export type CreateRunStepInput = z.infer<typeof createRunStepInputSchema>;
+export type RunStepListResponse = z.infer<typeof runStepListResponseSchema>;

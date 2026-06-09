@@ -14,6 +14,12 @@ import {
   createConfigurationRecordSuccessStatusCode,
   updateConfigurationRecordRequestSchema
 } from './configuration-record.js';
+import {
+  conversationCollectionPath,
+  createConversationSuccessStatusCode,
+  createConversationWithFirstRunRequestSchema,
+  createConversationWithFirstRunResponseSchema
+} from './conversation-ingress.js';
 import { errorResponseSchema } from './errors.js';
 import { degradedHealthStatusCode, healthResponseSchema } from './health.js';
 import { principalDiagnosticPath, principalDiagnosticResponseSchema } from './principal.js';
@@ -24,6 +30,15 @@ import {
   probeResourceIdParamsSchema,
   probeResourceSchema
 } from './probe-resource.js';
+import {
+  getRunSuccessStatusCode,
+  runIdParamsSchema,
+  runSchema
+} from './run.js';
+import {
+  listRunStepsSuccessStatusCode,
+  runStepListResponseSchema
+} from './run-step.js';
 import {
   createSecretRequestSchema,
   createSecretResponseSchema,
@@ -71,6 +86,17 @@ export function generateOpenApiDocument(): OpenApiDocument {
   const ConfigurationRecordIdParams = registry.register('ConfigurationRecordIdParams', configurationRecordIdParamsSchema);
   const CreateSecretRequest = registry.register('CreateSecretRequest', createSecretRequestSchema);
   const CreateSecretResponse = registry.register('CreateSecretResponse', createSecretResponseSchema);
+  const CreateConversationWithFirstRunRequest = registry.register(
+    'CreateConversationWithFirstRunRequest',
+    createConversationWithFirstRunRequestSchema
+  );
+  const CreateConversationWithFirstRunResponse = registry.register(
+    'CreateConversationWithFirstRunResponse',
+    createConversationWithFirstRunResponseSchema
+  );
+  const Run = registry.register('Run', runSchema);
+  const RunIdParams = registry.register('RunIdParams', runIdParamsSchema);
+  const RunStepListResponse = registry.register('RunStepListResponse', runStepListResponseSchema);
 
   registry.registerPath({
     method: 'get',
@@ -225,6 +251,68 @@ export function generateOpenApiDocument(): OpenApiDocument {
       [createSecretSuccessStatusCode]: jsonResponse(CreateSecretResponse, 'Created secret handle.'),
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
       400: jsonResponse(ErrorResponse, 'Validation error or secret store locked.')
+    }
+  });
+
+  // POST /v1/conversations
+  registry.registerPath({
+    method: 'post',
+    path: conversationCollectionPath,
+    tags: ['conversations'],
+    request: {
+      body: { content: { 'application/json': { schema: CreateConversationWithFirstRunRequest } } }
+    },
+    responses: {
+      [createConversationSuccessStatusCode]: jsonResponse(CreateConversationWithFirstRunResponse, 'Created conversation with first run.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      400: jsonResponse(ErrorResponse, 'Validation error.'),
+      409: jsonResponse(ErrorResponse, 'Conflict.')
+    }
+  });
+
+  // GET /v1/runs/{id}
+  registry.registerPath({
+    method: 'get',
+    path: '/v1/runs/{id}',
+    tags: ['runs'],
+    request: { params: RunIdParams },
+    responses: {
+      [getRunSuccessStatusCode]: jsonResponse(Run, 'Run.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      404: jsonResponse(ErrorResponse, 'Run not found.')
+    }
+  });
+
+  // GET /v1/runs/{id}/steps
+  registry.registerPath({
+    method: 'get',
+    path: '/v1/runs/{id}/steps',
+    tags: ['runs'],
+    request: { params: RunIdParams },
+    responses: {
+      [listRunStepsSuccessStatusCode]: jsonResponse(RunStepListResponse, 'List of run steps.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      404: jsonResponse(ErrorResponse, 'Run not found.')
+    }
+  });
+
+  // GET /v1/runs/{id}/events (SSE)
+  registry.registerPath({
+    method: 'get',
+    path: '/v1/runs/{id}/events',
+    tags: ['runs'],
+    request: { params: RunIdParams },
+    responses: {
+      200: {
+        description: 'SSE stream of run state transition events.',
+        content: {
+          'text/event-stream': {
+            schema: { type: 'string' }
+          }
+        }
+      },
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      404: jsonResponse(ErrorResponse, 'Run not found.')
     }
   });
 
