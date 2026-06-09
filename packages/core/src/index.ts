@@ -110,3 +110,14 @@ export * from './run-dispatch-queue.js';
 export * from './orchestrator.js';
 
 export * from './control-plane-service.js';
+
+export {
+  createExecutionContextResolver,
+  ExecutionContextResolutionError
+} from './execution-context-resolver.js';
+export type {
+  ExecutionContextResolver,
+  CreateExecutionContextResolverOptions,
+  WorkspaceResolverInput,
+  ExecutionContextResolutionErrorCode
+} from './execution-context-resolver.js';
