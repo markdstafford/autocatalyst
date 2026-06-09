@@ -95,6 +95,17 @@ function makeFakeThrowingEntryPoint(error: Error): ExecutionEntryPoint {
   };
 }
 
+function makeFakeThrowAfterTerminalEntryPoint(terminal: RunnerEvent, error: Error): ExecutionEntryPoint {
+  return {
+    execute(_input: ExecutionEntryPointInput): AsyncIterable<RunnerEvent> {
+      return (async function* () {
+        yield terminal;
+        throw error;
+      })();
+    }
+  };
+}
+
 describe('createExecutionRunUnitOfWork', () => {
   describe('terminal directive mapping', () => {
     it('advance terminal directive maps to { directive: advance }', async () => {
@@ -220,6 +231,19 @@ describe('createExecutionRunUnitOfWork', () => {
       await expect(unitOfWork.run(makeInput())).rejects.toMatchObject({
         name: 'RunnerProtocolError',
         code: 'missing_terminal_result'
+      });
+    });
+
+    it('runner throws after terminal re-throws RunnerProtocolError(runner_failed)', async () => {
+      const terminal = makeTerminalEvent('advance');
+      const unitOfWork = createExecutionRunUnitOfWork({
+        execute: makeFakeThrowAfterTerminalEntryPoint(terminal, new Error('crash after terminal')),
+        resolveContext: async () => makeContext()
+      });
+
+      await expect(unitOfWork.run(makeInput())).rejects.toMatchObject({
+        name: 'RunnerProtocolError',
+        code: 'runner_failed'
       });
     });
 

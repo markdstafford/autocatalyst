@@ -202,4 +202,18 @@ describe('consumeRunnerEventStream', () => {
       })
     ).rejects.toBeInstanceOf(RunnerProtocolError);
   });
+
+  it('throws RunnerProtocolError runner_failed when generator throws after terminal', async () => {
+    async function* throwAfterTerminal(): AsyncIterable<unknown> {
+      yield makeTerminalEvent();
+      throw new Error('Runner crashed after terminal');
+    }
+
+    await expect(
+      consumeRunnerEventStream({ events: throwAfterTerminal(), runId })
+    ).rejects.toMatchObject({
+      name: 'RunnerProtocolError',
+      code: 'runner_failed'
+    });
+  });
 });

@@ -16,53 +16,63 @@ export async function consumeRunnerEventStream(
 ): Promise<ConsumeRunnerEventStreamResult> {
   let terminalEvent: RunnerTerminalResultEvent | null = null;
 
-  for await (const rawEvent of options.events) {
-    // 1. Validate event schema
-    const parseResult = runnerEventSchema.safeParse(rawEvent);
-    if (!parseResult.success) {
-      throw new RunnerProtocolError(
-        'invalid_event',
-        `Invalid runner event: ${parseResult.error.message}`
-      );
-    }
-    const event = parseResult.data;
+  try {
+    for await (const rawEvent of options.events) {
+      // 1. Validate event schema
+      const parseResult = runnerEventSchema.safeParse(rawEvent);
+      if (!parseResult.success) {
+        throw new RunnerProtocolError(
+          'invalid_event',
+          `Invalid runner event: ${parseResult.error.message}`
+        );
+      }
+      const event = parseResult.data;
 
-    // 2. Check runId
-    if (event.runId !== options.runId) {
-      throw new RunnerProtocolError(
-        'wrong_run',
-        `Event run ID '${event.runId}' does not match expected '${options.runId}'.`
-      );
-    }
+      // 2. Check runId
+      if (event.runId !== options.runId) {
+        throw new RunnerProtocolError(
+          'wrong_run',
+          `Event run ID '${event.runId}' does not match expected '${options.runId}'.`
+        );
+      }
 
-    // 3. Check if we already have a terminal event
-    if (terminalEvent !== null) {
+      // 3. Check if we already have a terminal event
+      if (terminalEvent !== null) {
+        if (event.type === 'runner_terminal_result') {
+          throw new RunnerProtocolError('duplicate_terminal_result', 'Duplicate terminal result event.');
+        } else {
+          throw new RunnerProtocolError(
+            'event_after_terminal',
+            `Non-terminal event '${event.type}' after terminal.`
+          );
+        }
+      }
+
+      // 4. Track terminal event
       if (event.type === 'runner_terminal_result') {
-        throw new RunnerProtocolError('duplicate_terminal_result', 'Duplicate terminal result event.');
-      } else {
-        throw new RunnerProtocolError(
-          'event_after_terminal',
-          `Non-terminal event '${event.type}' after terminal.`
-        );
+        terminalEvent = event as RunnerTerminalResultEvent;
+      }
+
+      // 5. Call onEvent with validated event
+      if (options.onEvent !== undefined) {
+        try {
+          await options.onEvent(event);
+        } catch {
+          throw new RunnerProtocolError(
+            'runner_failed',
+            'Telemetry onEvent hook threw during event processing.'
+          );
+        }
       }
     }
-
-    // 4. Track terminal event
-    if (event.type === 'runner_terminal_result') {
-      terminalEvent = event as RunnerTerminalResultEvent;
+  } catch (error) {
+    // If the generator threw after we already captured a terminal event, this is a
+    // runner_failed protocol violation (drain-phase throw). Re-wrap unless it is
+    // already a RunnerProtocolError (which we threw ourselves above).
+    if (terminalEvent !== null && !(error instanceof RunnerProtocolError)) {
+      throw new RunnerProtocolError('runner_failed', 'Runner threw after terminal result during drain.');
     }
-
-    // 5. Call onEvent with validated event
-    if (options.onEvent !== undefined) {
-      try {
-        await options.onEvent(event);
-      } catch {
-        throw new RunnerProtocolError(
-          'runner_failed',
-          'Telemetry onEvent hook threw during event processing.'
-        );
-      }
-    }
+    throw error;
   }
 
   // After stream completes, check we got a terminal
