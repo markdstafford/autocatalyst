@@ -1,5 +1,3 @@
-import path from 'node:path';
-
 import {
   WorkspaceTeardownError,
   type TeardownWorkspaceRequest,
@@ -161,13 +159,8 @@ async function teardownCanceled(input: {
 }): Promise<WorkspaceTeardownResult> {
   const { request, context, driver, pruner, logger } = input;
 
-  // Validate checkpoint subject BEFORE any git operations
-  let message: string;
-  try {
-    message = buildCheckpointMessage(request);
-  } catch (e) {
-    throw e; // rethrow WorkspaceTeardownError with invalid_checkpoint_subject
-  }
+  // Validate checkpoint subject BEFORE any git operations — throws WorkspaceTeardownError with invalid_checkpoint_subject
+  const message = buildCheckpointMessage(request);
 
   const actualBranch = await driver.currentBranch(context.repoRoot);
 

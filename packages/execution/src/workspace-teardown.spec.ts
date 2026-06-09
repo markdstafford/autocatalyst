@@ -215,8 +215,8 @@ describe('workspace teardown', () => {
       logger: logger as Parameters<typeof createWorkspaceTeardown>[0]['logger']
     });
     await teardown.teardownWorkspace(baseRequest);
-    expect(events.some((e: any) => (e as any).event === 'workspace.teardown.started')).toBe(true);
-    expect(events.some((e: any) => (e as any).event === 'workspace.teardown.completed')).toBe(true);
+    expect(events.some((e) => (e as Record<string, unknown>)['event'] === 'workspace.teardown.started')).toBe(true);
+    expect(events.some((e) => (e as Record<string, unknown>)['event'] === 'workspace.teardown.completed')).toBe(true);
     const serialized = JSON.stringify(events);
     expect(serialized).not.toContain('secret');
     expect(serialized).not.toContain('prompt');
