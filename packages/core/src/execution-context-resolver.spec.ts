@@ -175,6 +175,18 @@ describe('ExecutionContextResolver', () => {
       });
     });
 
+    it('rejects malformed envName with invalid_secret_declaration', async () => {
+      const resolver = createExecutionContextResolver({
+        secretBindings: [{ handle: 'sec_abc', envName: 'bad-key' }],
+        secretsAvailable: true
+      });
+      const input = makeInput(makeRun({ workKind: 'question', currentStep: 'respond' }));
+      await expect(resolver.resolve(input)).rejects.toMatchObject({
+        name: 'ExecutionContextResolutionError',
+        code: 'invalid_secret_declaration'
+      });
+    });
+
     it('does not include ambient process.env values', async () => {
       process.env['SENTINEL_SHOULD_NOT_LEAK'] = 'sentinel-secret';
       try {

@@ -124,10 +124,17 @@ async function resolveContext(
       ...(workspaceInput.defaultBranch !== undefined ? { defaultBranch: workspaceInput.defaultBranch } : {})
     };
 
-    workspaceIntent =
-      shape === 'scratch_only'
-        ? { shape: 'scratch_only', provisioning }
-        : { shape: 'two_roots', provisioning };
+    if (shape === 'scratch_only') {
+      workspaceIntent = { shape: 'scratch_only', provisioning };
+    } else if (shape === 'two_roots') {
+      workspaceIntent = { shape: 'two_roots', provisioning };
+    } else {
+      throw new ExecutionContextResolutionError(
+        'unsupported_workspace_shape',
+        `Workspace shape '${shape as string}' is not supported.`,
+        { shape }
+      );
+    }
   }
 
   // 3. Validate secret bindings
