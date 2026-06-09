@@ -2,7 +2,7 @@ import type { ExecutionContext } from '@autocatalyst/api-contract';
 import type { ExecutionSecretResolver } from '../secret-resolver.js';
 import type { MaterializedExecutionEnvironment } from '../materialized-environment.js';
 import { ExecutionMaterializationError } from '../materialized-environment.js';
-import { provisionWorkspace as defaultProvisionWorkspace } from '../workspace.js';
+import { provisionWorkspace as defaultProvisionWorkspace, summarizeWorkspaceCause } from '../workspace.js';
 
 export interface ExecutionMaterializerOptions {
   readonly secretResolver?: ExecutionSecretResolver;
@@ -49,8 +49,8 @@ export function createExecutionMaterializer(options: ExecutionMaterializerOption
         } catch (error) {
           throw new ExecutionMaterializationError(
             'workspace_provisioning_failed',
-            `Workspace provisioning failed: ${error instanceof Error ? error.message : String(error)}`,
-            { cause: error }
+            'Workspace provisioning failed.',
+            { cause: summarizeWorkspaceCause(error) }
           );
         }
 

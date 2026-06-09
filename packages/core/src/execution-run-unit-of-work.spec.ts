@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ExecutionContext, RunnerEvent } from '@autocatalyst/api-contract';
 import type { ExecutionEntryPoint, ExecutionEntryPointInput } from '@autocatalyst/execution';
+import { ExecutionMaterializationError } from '@autocatalyst/execution';
 import type { RunWorkInput } from './orchestrator.js';
 import { createExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
 
@@ -197,26 +198,48 @@ describe('createExecutionRunUnitOfWork', () => {
   });
 
   describe('error handling', () => {
-    it('runner throws before terminal maps to { directive: fail }', async () => {
+    it('runner throws before terminal maps to { directive: fail } with static reason', async () => {
       const unitOfWork = createExecutionRunUnitOfWork({
         execute: makeFakeThrowingEntryPoint(new Error('Runner crashed')),
         resolveContext: async () => makeContext()
       });
 
       const result = await unitOfWork.run(makeInput());
-      expect(result).toMatchObject({ directive: 'fail', reason: 'Runner crashed' });
+      expect(result).toMatchObject({ directive: 'fail', reason: 'Runner failed before terminal result.' });
     });
 
-    it('runner error reason is truncated to 500 chars', async () => {
-      const longMsg = 'x'.repeat(1000);
+    it('runner throw with sensitive message → fail reason does not contain sensitive value', async () => {
+      const sentinel = 'sk-SENSITIVE-API-KEY-12345';
       const unitOfWork = createExecutionRunUnitOfWork({
-        execute: makeFakeThrowingEntryPoint(new Error(longMsg)),
+        execute: makeFakeThrowingEntryPoint(new Error(`Connection failed: token=${sentinel}`)),
         resolveContext: async () => makeContext()
       });
 
       const result = await unitOfWork.run(makeInput());
+      expect(result.directive).toBe('fail');
       if (result.directive === 'fail') {
-        expect(result.reason.length).toBeLessThanOrEqual(500);
+        expect(result.reason).not.toContain(sentinel);
+      }
+    });
+
+    it('materialization failure with sensitive message → fail reason does not contain sensitive value', async () => {
+      const sentinel = 'sk-SENSITIVE-WORKSPACE-PATH-99999';
+      const materializationError = new ExecutionMaterializationError(
+        'workspace_provisioning_failed',
+        `Workspace provisioning failed: /home/${sentinel}/repos`,
+        { cause: new Error('sensitive details') }
+      );
+      const unitOfWork = createExecutionRunUnitOfWork({
+        execute: makeFakeThrowingEntryPoint(materializationError),
+        resolveContext: async () => makeContext()
+      });
+
+      const result = await unitOfWork.run(makeInput());
+      expect(result.directive).toBe('fail');
+      if (result.directive === 'fail') {
+        expect(result.reason).not.toContain(sentinel);
+        // Should use code-based reason, not the raw message
+        expect(result.reason).toContain('workspace_provisioning_failed');
       }
     });
 

@@ -124,6 +124,26 @@ describe('createExecutionMaterializer', () => {
         code: 'workspace_provisioning_failed'
       });
     });
+
+    it('provisioning error message containing sensitive value is not exposed in ExecutionMaterializationError message', async () => {
+      const sentinel = 'sk-SENSITIVE-PROVISIONING-TOKEN-99999';
+      const mockProvision = vi.fn().mockRejectedValue(
+        new Error(`Git clone failed: username=${sentinel}`)
+      );
+      const materializer = createExecutionMaterializer({ provisionWorkspace: mockProvision });
+      const context = makeContext({ workspaceIntent: { shape: 'scratch_only', provisioning } });
+
+      let caughtError: unknown;
+      try {
+        await materializer.materialize(context);
+      } catch (err) {
+        caughtError = err;
+      }
+
+      expect(caughtError).toBeDefined();
+      const errorMessage = caughtError instanceof Error ? caughtError.message : String(caughtError);
+      expect(errorMessage).not.toContain(sentinel);
+    });
   });
 
   describe('secret resolution', () => {

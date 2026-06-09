@@ -1,5 +1,5 @@
 import type { ExecutionContext, RunnerEvent, RunnerTerminalResultEvent } from '@autocatalyst/api-contract';
-import { RunnerProtocolError } from '@autocatalyst/execution';
+import { RunnerProtocolError, ExecutionMaterializationError } from '@autocatalyst/execution';
 import type { ExecutionEntryPoint } from '@autocatalyst/execution';
 import type { RunWorkInput, RunWorkResult, RunUnitOfWork } from './orchestrator.js';
 import { consumeRunnerEventStream } from './runner-event-stream.js';
@@ -33,10 +33,14 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
           // Protocol violations → re-throw
           throw error;
         }
-        // Runner threw before terminal → fail directive
-        const reason =
-          error instanceof Error ? error.message : 'Runner failed before terminal result.';
-        return { directive: 'fail', reason: reason.slice(0, 500) };
+        // Runner threw before terminal → fail directive with sanitized static reason
+        let reason: string;
+        if (error instanceof ExecutionMaterializationError) {
+          reason = `Execution failed: ${error.code}`;
+        } else {
+          reason = 'Runner failed before terminal result.';
+        }
+        return { directive: 'fail', reason };
       }
 
       // 4. Map terminal directive to work result
