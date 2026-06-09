@@ -291,7 +291,8 @@ describe('execution boundary integration (real StubRunner through two-root works
 
       const entryPoint = createExecutionEntryPoint({
         runner: new StubRunner(),
-        materialize: (context) => materializer.materialize(context)
+        materialize: (context) => materializer.materialize(context),
+        resultValidation: { mode: 'none' }
       });
 
       const unitOfWork = createExecutionRunUnitOfWork({
@@ -420,7 +421,8 @@ describe('execution boundary integration (real StubRunner through two-root works
 
       const entryPoint = createExecutionEntryPoint({
         runner: new StubRunner(),
-        materialize: (context) => materializer.materialize(context)
+        materialize: (context) => materializer.materialize(context),
+        resultValidation: { mode: 'none' }
       });
 
       const unitOfWork = createExecutionRunUnitOfWork({

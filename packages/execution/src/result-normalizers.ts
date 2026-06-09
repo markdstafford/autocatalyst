@@ -158,7 +158,7 @@ export function createUrlWrappedIdentifierNormalizer(options: UrlWrappedIdentifi
       if (matches.length !== 1) {
         return { status: 'ambiguous', message: 'URL contains multiple or no matching identifiers.' };
       }
-      const match = matches[0];
+      const match = matches[0]!;
       const captured = match[1];
       if (captured === undefined) return { status: 'unchanged' };
       return {

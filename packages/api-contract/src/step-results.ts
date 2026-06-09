@@ -5,7 +5,7 @@ import { runnerTerminalDirectiveSchema } from './runner-events.js';
 
 // Mirrors the directive cross-field invariant in runner-events.ts runnerTerminalResultPayloadSchema.
 // runner-events.ts cannot be modified; this refinement is intentionally co-located.
-function applyTerminalResultRefinement(value: { directive: string; question?: string; reason?: string }, ctx: z.RefinementCtx): void {
+function applyTerminalResultRefinement(value: { directive: string; question?: string | undefined; reason?: string | undefined }, ctx: z.RefinementCtx): void {
   if (value.directive === 'needs_input' && value.reason !== undefined) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['reason'], message: 'needs_input terminal results use question, not reason.' });
   }
