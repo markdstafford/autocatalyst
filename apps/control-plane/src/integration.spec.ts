@@ -32,6 +32,11 @@ import {
   type ClaudeNativeEvent
 } from '@autocatalyst/claude-agent-adapter';
 import {
+  createOpenAIAgentAdapter,
+  type OpenAINativeEvent
+} from '@autocatalyst/openai-agent-adapter';
+import type { RunnerEvent } from '@autocatalyst/execution';
+import {
   asInternalSqliteDatabase,
   createDrizzleDomainRepositories,
   createSqliteDatabase,
@@ -1457,6 +1462,154 @@ describe('real Claude agent dispatch - failure paths', () => {
         expect(stepsResp.status).toBe(200);
         const stepsBody = await stepsResp.text();
         expect(stepsBody).not.toContain('Unexpected session event sequence');
+      } finally {
+        await handle.close();
+      }
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// OpenAI agent cell SSE event stream + checkpoint proof
+// ---------------------------------------------------------------------------
+
+describe('real OpenAI agent dispatch - SSE and checkpoint', () => {
+  it('dispatches an OpenAI agent run through production SSE and records a RunStep', { timeout: 60000 }, async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const { projectId } = await seedQuestionProject(databasePath);
+
+      // Bootstrap server to create profile config for OpenAI agent adapter.
+      const bootstrap = await createControlPlaneServer({
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET
+      });
+      let profileId: string;
+      try {
+        const cfgInj = await bootstrap.inject({
+          method: 'POST',
+          url: '/v1/configuration-records',
+          headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+          payload: {
+            kind: 'provider_profile',
+            providerKind: 'openai',
+            adapterId: 'openai-agents-sdk',
+            settings: {
+              profileName: 'integration-openai-agent',
+              model: { provider: 'openai', model: 'gpt-4.1' }
+            }
+          }
+        });
+        expect(cfgInj.statusCode).toBe(201);
+        profileId = configurationRecordResponseSchema.parse(cfgInj.json()).id;
+      } finally {
+        await bootstrap.close();
+      }
+
+      // Fake OpenAI agent adapter that returns an advance terminal event.
+      const fakeOpenAIAdapter = createOpenAIAgentAdapter({
+        sdk: {
+          SandboxAgent: class {
+            constructor(_opts: Record<string, unknown>) {}
+            async *run(_input: unknown): AsyncIterable<OpenAINativeEvent> {}
+          } as never,
+          NoopSnapshotSpec: class { readonly type = 'noop'; } as never,
+          isNoopSnapshotSpec: (v: unknown) => (v as { type?: unknown }).type === 'noop',
+          createClientBinding: ({ transport }) => ({ kind: 'transport' as const, value: transport })
+        },
+        sandboxClientFactory: async () => ({ kind: 'local' as const })
+      });
+      // Override startSession to return fake events directly (bypasses SDK native mapping)
+      fakeOpenAIAdapter.startSession = async (input) => {
+        const runId = input.telemetryContext.runId;
+        const step = input.telemetryContext.step ?? 'intake';
+        async function* events(): AsyncIterable<RunnerEvent> {
+          yield {
+            id: 'evt_sse_terminal',
+            runId,
+            step,
+            importance: 'normal',
+            createdAt: new Date().toISOString(),
+            type: 'runner_terminal_result',
+            result: { directive: 'advance' }
+          } as RunnerEvent;
+        }
+        return {
+          events: events(),
+          metadata: Promise.resolve({ outcome: 'succeeded' as const, launchMechanism: 'fetch_transport' as const, degradedCapabilities: [], tokenUsage: { available: false } as const })
+        };
+      };
+
+      let controlPlane: ControlPlaneService | undefined;
+      const handle = await startControlPlaneServer({
+        port: 0,
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET,
+        runConcurrency: 1,
+        realRunnerDispatch: { enabled: true, defaultProviderProfileId: profileId },
+        providerAdapters: new Map([
+          [
+            buildProviderAdapterKey('openai', 'openai-agents-sdk'),
+            () => fakeOpenAIAdapter
+          ]
+        ]),
+        onControlPlaneReady: (service) => { controlPlane = service; }
+      });
+
+      try {
+        if (controlPlane === undefined) throw new Error('control-plane not exposed');
+        const captured = controlPlane;
+        const baseUrl = `http://127.0.0.1:${handle.port}`;
+        const authHeaders = { authorization: `Bearer ${BEARER_TOKEN}` };
+
+        const runId = await createQuestionRun(baseUrl, authHeaders, projectId);
+
+        const sseController = new AbortController();
+        const eventsResp = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
+          headers: authHeaders,
+          signal: sseController.signal
+        });
+        expect(eventsResp.status).toBe(200);
+
+        const tickPromise = captured.tick({
+          principal: hardcodedDevelopmentPrincipal,
+          tenant: hardcodedDevelopmentPrincipal.tenantId,
+          runId
+        });
+
+        const reader = eventsResp.body?.getReader();
+        if (reader === undefined) throw new Error('SSE body had no reader');
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let sawTerminalOrStateTransition = false;
+        const deadline = setTimeout(() => sseController.abort(), 15000);
+        try {
+          while (!sawTerminalOrStateTransition) {
+            const result = await reader.read();
+            if (result.done) break;
+            buffer += decoder.decode(result.value, { stream: true });
+            if (/event:\s*run_state_transition|event:\s*runner_terminal_result/u.test(buffer)) {
+              sawTerminalOrStateTransition = true;
+            }
+          }
+        } catch {
+          // aborted via deadline
+        } finally {
+          clearTimeout(deadline);
+          sseController.abort();
+          await reader.cancel().catch(() => undefined);
+        }
+        await tickPromise;
+
+        expect(sawTerminalOrStateTransition).toBe(true);
+
+        // RunStep must be persisted.
+        const stepsResp = await fetch(`${baseUrl}/v1/runs/${runId}/steps`, { headers: authHeaders });
+        expect(stepsResp.status).toBe(200);
+        const stepsBody = (await stepsResp.json()) as { steps: Array<{ runId: string; step: string; startedAt: string }> };
+        expect(stepsBody.steps.length).toBeGreaterThanOrEqual(1);
+        expect(stepsBody.steps[0].runId).toBe(runId);
       } finally {
         await handle.close();
       }
