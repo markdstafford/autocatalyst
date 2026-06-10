@@ -111,7 +111,7 @@ export async function createAgentConnection(
     role: telemetryContext.role,
     configurationRecordId: telemetryContext.configurationRecordId,
     provider: profile.providerKind,
-    model: profile.model.id,
+    model: profile.model.model,
     mechanism: profile.connectionMechanism,
     profileName: profile.profileName
   };
@@ -141,7 +141,7 @@ export async function createAgentConnection(
           const altered = applyRequestAlteration({
             request,
             endpoint: profile.endpoint,
-            credential: resolvedCredential,
+            ...(resolvedCredential !== undefined && { credential: resolvedCredential }),
             authScheme: 'raw'
           });
 
@@ -168,7 +168,7 @@ export async function createAgentConnection(
               response = await fetchImpl(altered.request.url, {
                 method: altered.request.method,
                 headers: fetchHeaders,
-                body,
+                ...(body !== undefined && { body }),
                 signal: ctrl.signal
               });
 

@@ -77,11 +77,11 @@ export function createAgentRunnerFactory(options: CreateAgentRunnerFactoryOption
           ? telemetryContextFn(input)
           : {
               runId: input.runId,
-              phase: input.phase,
               step: input.step,
-              role: input.role,
-              profileName: profile.profileName,
-              configurationRecordId: profile.configurationRecordId
+              ...(input.phase !== undefined && { phase: input.phase }),
+              ...(input.role !== undefined && { role: input.role }),
+              ...(profile.profileName !== undefined && { profileName: profile.profileName }),
+              ...(profile.configurationRecordId !== undefined && { configurationRecordId: profile.configurationRecordId })
             };
 
       // Step c: look up adapter
