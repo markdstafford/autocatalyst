@@ -65,6 +65,8 @@ export {
   createConfigurationRecordRequestSchema,
   createConfigurationRecordSuccessStatusCode,
   deleteConfigurationRecordSuccessStatusCode,
+  runnerEndpointRequiredAlterationsSchema,
+  runnerEndpointSettingsSchema,
   updateConfigurationRecordRequestSchema,
   updateConfigurationRecordSettingsSchema
 } from './configuration-record.js';
@@ -75,6 +77,10 @@ export type {
   ConfigurationRecordListResponse,
   ConfigurationRecordSettings,
   CreateConfigurationRecordRequest,
+  InferenceSettings,
+  ProviderProfileSettings,
+  RunnerEndpointRequiredAlterations,
+  RunnerEndpointSettings,
   UpdateConfigurationRecordRequest
 } from './configuration-record.js';
 

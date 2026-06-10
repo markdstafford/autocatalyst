@@ -1,14 +1,38 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ConfigurationRecord } from '@autocatalyst/api-contract';
+import { getAgentProviderAdapterKey } from '@autocatalyst/execution';
 
 import { createExtensionRegistryCatalog } from './extension-registry.js';
 import {
   buildProviderAdapterKey,
+  composeAgentProviderAdapterRegistry,
   composeConfiguredProviders,
   emptyProviderAdapterMap,
   type ProviderAdapterMap
 } from './provider-composition.js';
+
+const validAdapter = {
+  providerKind: 'anthropic',
+  adapterId: 'claude-agent-sdk',
+  supportedConnectionMechanism: 'process_environment' as const,
+  startSession: async () => ({
+    events: (async function* () {})(),
+    metadata: Promise.resolve({
+      outcome: 'succeeded' as const,
+      launchMechanism: 'process_environment' as const,
+      degradedCapabilities: [],
+      tokenUsage: { available: false }
+    })
+  })
+};
+
+const validBinding = {
+  providerKind: 'anthropic',
+  adapterId: 'claude-agent-sdk',
+  configurationRecordId: 'rec_001',
+  adapter: validAdapter
+};
 
 function makeProviderRecord(overrides: Partial<ConfigurationRecord> = {}): ConfigurationRecord {
   return {
@@ -243,5 +267,43 @@ describe('composeConfiguredProviders', () => {
       adapterId: 'malicious',
       configurationRecordId: 'malicious'
     });
+  });
+});
+
+describe('composeAgentProviderAdapterRegistry', () => {
+  it('returns empty registry when composed list is empty', () => {
+    const registry = composeAgentProviderAdapterRegistry({ composed: [] });
+    expect(registry.size).toBe(0);
+  });
+
+  it('valid binding is narrowed into registry with correct key', () => {
+    const registry = composeAgentProviderAdapterRegistry({ composed: [validBinding] });
+    expect(registry.size).toBe(1);
+    const key = getAgentProviderAdapterKey('anthropic', 'claude-agent-sdk');
+    expect(registry.get(key)).toBe(validAdapter);
+  });
+
+  it('throws ProviderConfigurationError with unsupported_adapter code when adapter shape is invalid', () => {
+    const badBinding = {
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      configurationRecordId: 'rec_002',
+      adapter: {}
+    };
+    expect(() => composeAgentProviderAdapterRegistry({ composed: [badBinding] })).toThrow(
+      expect.objectContaining({ name: 'ProviderConfigurationError', code: 'unsupported_adapter' })
+    );
+  });
+
+  it('throws ProviderConfigurationError on duplicate (providerKind, adapterId) pair', () => {
+    const secondBinding = {
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      configurationRecordId: 'rec_003',
+      adapter: validAdapter
+    };
+    expect(() => composeAgentProviderAdapterRegistry({ composed: [validBinding, secondBinding] })).toThrow(
+      expect.objectContaining({ name: 'ProviderConfigurationError', code: 'duplicate_adapter' })
+    );
   });
 });

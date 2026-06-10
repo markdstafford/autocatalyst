@@ -7,6 +7,7 @@ export default defineConfig({
   resolve: {
     alias: {
       '@autocatalyst/api-contract': resolve(__dirname, '../../packages/api-contract/src/index.ts'),
+      '@autocatalyst/claude-agent-adapter': resolve(__dirname, '../../packages/claude-agent-adapter/src/index.ts'),
       '@autocatalyst/core': resolve(__dirname, '../../packages/core/src/index.ts'),
       '@autocatalyst/execution': resolve(__dirname, '../../packages/execution/src/index.ts'),
       '@autocatalyst/persistence': resolve(__dirname, '../../packages/persistence/src/index.ts')

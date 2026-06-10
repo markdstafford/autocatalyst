@@ -1,7 +1,17 @@
-import Fastify, { type FastifyInstance } from 'fastify';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
+import Fastify, { type FastifyInstance } from 'fastify';
+import { z } from 'zod';
+
+import type { ConfigurationRecord, ExecutionContext, ProviderProfileSettings } from '@autocatalyst/api-contract';
 import {
+  buildProviderAdapterKey,
+  composeAgentProviderAdapterRegistry,
   composeConfiguredProviders,
+  createExecutionContextResolver,
+  createExecutionRunUnitOfWork,
   DefaultControlPlaneService,
   DefaultOrchestrator,
   defaultExtensionRegistryCatalog,
@@ -14,11 +24,37 @@ import {
   type ExtensionRegistryCatalog,
   type HealthDependencyChecker,
   type PolicyDecisionPoint,
+  type ProviderAdapterFactory,
   type ProviderAdapterMap,
   type ProviderCompositionResult,
   type RetainedRunEventStoreOptions,
   type RunUnitOfWork
 } from '@autocatalyst/core';
+import {
+  createAgentConnection,
+  createAgentRunnerFactory,
+  createExecutionEntryPoint,
+  createExecutionMaterializer,
+  ProviderConfigurationError,
+  type AgentConnection,
+  type AgentConnectionTelemetryContext,
+  type AgentProfileResolution,
+  type AgentProviderAdapterRegistry,
+  type AgentRunnerFactory,
+  type AgentRunnerFactoryInput,
+  type ExecutionEntryPoint,
+  type ExecutionEntryPointInput,
+  type ExecutionBoundaryEvent,
+  type MaterializedExecutionEnvironment,
+  type ProviderCredentialResolver,
+  type ResolvedAgentCredentialReference,
+  type ResolvedAgentRunnerProfile
+} from '@autocatalyst/execution';
+import {
+  claudeAgentAdapterId,
+  claudeProviderKind,
+  createClaudeAgentAdapter
+} from '@autocatalyst/claude-agent-adapter';
 import {
   DrizzleConfigurationRecordRepository,
   DrizzleConversationIngressRepository,
@@ -31,6 +67,11 @@ import {
 } from '@autocatalyst/persistence';
 
 import type { ControlPlaneAppConfig } from './config.js';
+
+export interface RealRunnerDispatchOptions {
+  readonly enabled: boolean;
+  readonly defaultProviderProfileId?: string;
+}
 
 export interface ControlPlaneServerOptions {
   readonly databasePath: string;
@@ -45,6 +86,7 @@ export interface ControlPlaneServerOptions {
   readonly unitOfWork?: RunUnitOfWork;
   readonly onControlPlaneReady?: (service: ControlPlaneService) => void;
   readonly runEventStoreOptions?: RetainedRunEventStoreOptions;
+  readonly realRunnerDispatch?: RealRunnerDispatchOptions;
 }
 
 const DEFAULT_RUN_CONCURRENCY = 2;
@@ -87,6 +129,157 @@ export function logProviderCompositionDiagnostics(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Real runner dispatch wiring
+// ---------------------------------------------------------------------------
+
+const defaultModelIdentity = { provider: 'anthropic', model: 'claude-sonnet-4' } as const;
+
+/**
+ * Build a profile resolver that always returns the configured
+ * `defaultProviderProfileId`. Throws `ProviderConfigurationError` when the
+ * record is missing or its adapterId is not present in the registry.
+ */
+export function createExplicitProfileResolver(input: {
+  readonly defaultProviderProfileId: string;
+  readonly listRecords: () => Promise<readonly ConfigurationRecord[]>;
+  readonly registry: AgentProviderAdapterRegistry;
+}): (factoryInput: AgentRunnerFactoryInput) => Promise<AgentProfileResolution> {
+  return async (factoryInput) => {
+    const records = await input.listRecords();
+    const record = records.find(
+      (candidate) =>
+        candidate.id === input.defaultProviderProfileId && candidate.kind === 'provider_profile'
+    );
+    if (record === undefined) {
+      throw new ProviderConfigurationError(
+        'missing_profile',
+        `No provider_profile configuration record found with id "${input.defaultProviderProfileId}".`,
+        { runId: factoryInput.runId, step: factoryInput.step }
+      );
+    }
+
+    const adapterKey = buildProviderAdapterKey(record.providerKind, record.adapterId);
+    if (!input.registry.has(adapterKey)) {
+      throw new ProviderConfigurationError(
+        'unsupported_adapter',
+        `No adapter registered for providerKind "${record.providerKind}" and adapterId "${record.adapterId}".`,
+        { providerKind: record.providerKind, adapterId: record.adapterId }
+      );
+    }
+
+    const settings = record.settings as ProviderProfileSettings;
+    const profile: ResolvedAgentRunnerProfile = {
+      providerKind: record.providerKind,
+      adapterId: record.adapterId,
+      profileName: settings.profileName,
+      configurationRecordId: record.id,
+      model: settings.model ?? { ...defaultModelIdentity },
+      inferenceSettings: settings.inferenceSettings ?? {},
+      endpoint: settings.endpoint ?? {},
+      connectionMechanism: 'process_environment'
+    };
+
+    // For the process_environment mechanism (Claude Agent SDK), a credential is
+    // always required — an empty auth token would reach the subprocess silently.
+    // The secret handle remains optional at schema level for additive
+    // compatibility, but its absence is caught by createAgentConnection as a
+    // missing_credential configuration error before any session starts.
+    const credentialReference: ResolvedAgentCredentialReference = {
+      required: true,
+      ...(settings.credentialSecretHandle !== undefined
+        ? { secretHandle: settings.credentialSecretHandle }
+        : {}),
+      authTarget: 'process_environment'
+    };
+
+    return { profile, credentialReference };
+  };
+}
+
+async function createConnectionFromAgentConnection(
+  input: AgentProfileResolution & { readonly telemetryContext: AgentConnectionTelemetryContext },
+  secretStore: SqliteSecretStore
+): Promise<AgentConnection> {
+  const credentialResolver: ProviderCredentialResolver = {
+    async resolveCredential(handle: string): Promise<string | undefined> {
+      try {
+        return await secretStore.resolveSecret(handle);
+      } catch {
+        return undefined;
+      }
+    }
+  };
+  return createAgentConnection({
+    profile: input.profile,
+    credentialReference: input.credentialReference,
+    credentialResolver,
+    telemetryContext: input.telemetryContext
+  });
+}
+
+function createDelegatingExecutionEntryPoint(input: {
+  readonly factory: AgentRunnerFactory;
+  readonly materialize: (context: ExecutionContext) => Promise<MaterializedExecutionEnvironment>;
+}): ExecutionEntryPoint {
+  /**
+   * Wraps the materializer to ensure a scratch root is always available.
+   * For workspace shapes that do not provision a scratch root (e.g. 'none' for
+   * question runs), a temporary directory is created so the Claude adapter can
+   * write step-result.json and scratch_file validation can read it back.
+   */
+  async function materializeWithScratch(
+    context: ExecutionContext
+  ): Promise<MaterializedExecutionEnvironment> {
+    const env = await input.materialize(context);
+    if (env.workspace.shape !== 'none') {
+      return env;
+    }
+    const scratchRoot = await mkdtemp(join(tmpdir(), `ac-run-${context.run.id}-`));
+    return {
+      ...env,
+      workspace: {
+        shape: 'scratch_only',
+        scratchRoot,
+        workspaceRoots: [scratchRoot]
+      },
+      toolPolicy: {
+        ...env.toolPolicy,
+        workspaceRoots: [scratchRoot]
+      },
+      capabilities: {
+        ...env.capabilities,
+        paths: { ...env.capabilities.paths, scratchRoot }
+      }
+    };
+  }
+
+  return {
+    async *execute(entryInput: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
+      const runnerFactoryInput: AgentRunnerFactoryInput = {
+        runId: entryInput.context.run.id,
+        step: entryInput.context.run.currentStep
+      };
+      const runner = await input.factory.createRunner(runnerFactoryInput);
+      const perRunEntryPoint = createExecutionEntryPoint({
+        runner,
+        materialize: materializeWithScratch,
+        resultValidation: {
+          mode: 'scratch_file',
+          schema: z.unknown(),
+          schemaId: 'any',
+          resultFile: 'step-result.json'
+        }
+      });
+      yield* perRunEntryPoint.execute(entryInput);
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Server factory
+// ---------------------------------------------------------------------------
+
 export async function createControlPlaneServer(
   options: ControlPlaneServerOptions
 ): Promise<FastifyInstance> {
@@ -104,10 +297,29 @@ export async function createControlPlaneServer(
   await secretStore.unlock(options.masterSecret);
 
   const configurationRecords = new DrizzleConfigurationRecordRepository(database);
+
+  // If real dispatch is enabled and no explicit unitOfWork was provided, register
+  // the Claude adapter factory. Callers can still override by providing their own
+  // factory with the same key in `providerAdapters`.
+  const realDispatchEnabled =
+    options.realRunnerDispatch?.enabled === true && options.unitOfWork === undefined;
+
+  const baseAdapters = options.providerAdapters ?? emptyProviderAdapterMap;
+  let mergedAdapters: ProviderAdapterMap = baseAdapters;
+  if (realDispatchEnabled) {
+    const claudeKey = buildProviderAdapterKey(claudeProviderKind, claudeAgentAdapterId);
+    if (!baseAdapters.has(claudeKey)) {
+      const merged = new Map<string, ProviderAdapterFactory>(baseAdapters);
+      const claudeAdapterFactory: ProviderAdapterFactory = () => createClaudeAgentAdapter();
+      merged.set(claudeKey, claudeAdapterFactory);
+      mergedAdapters = merged;
+    }
+  }
+
   const providerCompositionResult = await composeConfiguredProviders({
     configurationRecords: await configurationRecords.list(),
     registry: options.extensionRegistry ?? defaultExtensionRegistryCatalog,
-    providerAdapters: options.providerAdapters ?? emptyProviderAdapterMap
+    providerAdapters: mergedAdapters
   });
   await options.onProviderComposition?.(providerCompositionResult);
 
@@ -123,12 +335,51 @@ export async function createControlPlaneServer(
   const dispatchQueue = new RunDispatchQueue({
     maxConcurrent: options.runConcurrency ?? DEFAULT_RUN_CONCURRENCY
   });
+
+  // Build the real dispatch unit of work if requested. `options.unitOfWork`
+  // always takes precedence.
+  let resolvedUnitOfWork: RunUnitOfWork | undefined = options.unitOfWork;
+  if (resolvedUnitOfWork === undefined && realDispatchEnabled) {
+    const profileId = options.realRunnerDispatch?.defaultProviderProfileId;
+    if (profileId === undefined || profileId.length === 0) {
+      throw new Error(
+        'realRunnerDispatch.defaultProviderProfileId is required when realRunnerDispatch.enabled is true.'
+      );
+    }
+    const adapterRegistry = composeAgentProviderAdapterRegistry({
+      composed: providerCompositionResult.composed
+    });
+    const resolveProfile = createExplicitProfileResolver({
+      defaultProviderProfileId: profileId,
+      listRecords: () => configurationRecords.list(),
+      registry: adapterRegistry
+    });
+    const runnerFactory = createAgentRunnerFactory({
+      adapters: adapterRegistry,
+      resolveProfile,
+      createConnection: (input) => createConnectionFromAgentConnection(input, secretStore)
+    });
+    const materializer = createExecutionMaterializer({
+      capabilities: { shellAvailable: false, lspAvailable: false }
+    });
+    const entryPoint = createDelegatingExecutionEntryPoint({
+      factory: runnerFactory,
+      materialize: (context) => materializer.materialize(context)
+    });
+    const contextResolver = createExecutionContextResolver({ secretsAvailable: false });
+    resolvedUnitOfWork = createExecutionRunUnitOfWork({
+      execute: entryPoint,
+      resolveContext: (workInput) => contextResolver.resolve(workInput),
+      eventsStore: eventBus
+    });
+  }
+
   const orchestrator = new DefaultOrchestrator({
     runs: domainRepos.runs,
     conversationIngress,
     events: eventBus,
     dispatchQueue,
-    ...(options.unitOfWork !== undefined ? { unitOfWork: options.unitOfWork } : {})
+    ...(resolvedUnitOfWork !== undefined ? { unitOfWork: resolvedUnitOfWork } : {})
   });
   const policy = options.policy ?? permissivePolicyDecisionPoint;
   const controlPlane = new DefaultControlPlaneService({
