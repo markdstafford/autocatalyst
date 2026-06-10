@@ -151,4 +151,22 @@ describe('readScratchStepResultFile', () => {
     await expect(readScratchStepResultFile({ environment: noneEnvironment, resultFile: 'result.json' }))
       .resolves.toMatchObject({ status: 'failed', code: 'result_file_missing' });
   });
+
+  it('returns a sanitized failure for a non-directory ancestor instead of throwing', async () => {
+    // Regression: a regular file sits where a directory component is expected
+    // (`afile/result.json`). Path resolution must map the ENOTDIR to a sanitized
+    // failure rather than throwing a raw, path-bearing filesystem error.
+    const base = await mkdtemp(path.join(os.tmpdir(), 'result-file-enotdir-'));
+    const scratchRoot = path.join(base, 'scratch');
+    await mkdir(scratchRoot);
+    await writeFile(path.join(scratchRoot, 'afile'), 'not a directory', 'utf8');
+
+    const result = await readScratchStepResultFile({
+      environment: environmentWithScratch(scratchRoot),
+      resultFile: 'afile/result.json'
+    });
+
+    expect(result).toMatchObject({ status: 'failed', code: 'result_file_unreadable' });
+    expect(JSON.stringify(result)).not.toContain(base);
+  });
 });

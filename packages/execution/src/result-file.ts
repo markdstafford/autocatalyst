@@ -86,8 +86,12 @@ async function resolveDeepestExistingAncestor(
     try {
       const real = await realpath(current);
       return { realAncestor: real, remainingSegments: [...pendingSegments].reverse() };
-    } catch (error) {
-      if (!hasNodeCode(error, 'ENOENT')) throw error;
+    } catch {
+      // Any realpath error means this component is not a resolvable directory: ENOENT for a
+      // not-yet-created path, ENOTDIR for a non-directory ancestor, plus ELOOP, EACCES, and so
+      // on. Treat them all the same — walk up to the deepest ancestor we can resolve and
+      // re-check containment there. This keeps the walk total so no raw filesystem error
+      // escapes to crash the validation path or leak a host path.
       const parent = path.dirname(current);
       if (parent === current) {
         // Reached the filesystem root without finding an existing path; return lexical root.
@@ -115,7 +119,10 @@ export async function isFinalWriteTargetSafe(resolvedCandidate: string, rootReal
     return true;
   } catch (error) {
     if (hasNodeCode(error, 'ENOENT')) return true;
-    throw error;
+    // Any other filesystem error (ENOTDIR for a non-directory ancestor, EACCES, ELOOP, ...)
+    // means we cannot prove the target is safe. Fail closed rather than rethrow a raw,
+    // path-bearing error to the caller.
+    return false;
   }
 }
 
@@ -125,7 +132,14 @@ export async function readScratchStepResultFile(input: ReadScratchStepResultFile
     return fileFailure('result_file_missing', 'No scratch root is available for result-file reading.');
   }
 
-  const resolution = await resolveScratchRootCandidatePath(scratchRoot, input.resultFile);
+  let resolution: { readonly resolvedCandidate: string; readonly rootRealPath: string } | null;
+  try {
+    resolution = await resolveScratchRootCandidatePath(scratchRoot, input.resultFile);
+  } catch {
+    // Defense in depth: path resolution is expected to be total, but never let an unexpected
+    // filesystem error escape as a raw, path-bearing exception.
+    return fileFailure('result_file_unreadable', 'Result file is unreadable.');
+  }
   if (resolution === null) {
     return fileFailure('result_path_outside_scratch_root', 'Result file path escapes the scratch root.');
   }

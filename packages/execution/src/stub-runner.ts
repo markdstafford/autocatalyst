@@ -144,7 +144,12 @@ export class StubRunner implements Runner {
       throw new Error('StubRunner resultFile path escapes scratch root.');
     }
 
-    await mkdir(path.dirname(resolution.resolvedCandidate), { recursive: true });
-    await writeFile(resolution.resolvedCandidate, JSON.stringify(this.#resultFile.value), 'utf8');
+    try {
+      await mkdir(path.dirname(resolution.resolvedCandidate), { recursive: true });
+      await writeFile(resolution.resolvedCandidate, JSON.stringify(this.#resultFile.value), 'utf8');
+    } catch {
+      // Never surface a raw filesystem error (which may carry a host path) from the stub.
+      throw new Error('StubRunner could not write the result file safely.');
+    }
   }
 }

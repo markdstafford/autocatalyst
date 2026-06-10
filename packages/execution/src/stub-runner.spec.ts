@@ -288,6 +288,37 @@ describe('StubRunner — resultFile and correction responses', () => {
       })
     ).rejects.toThrow(/exhausted/);
   });
+
+  it('fails safely with a sanitized error when a write ancestor is not a directory', async () => {
+    // Regression: a regular file sits where a directory component is expected
+    // (`afile/result.json`). The write must reject without surfacing a raw, path-bearing
+    // filesystem error.
+    const base = await mkdtemp(path.join(tmpdir(), 'stub-enotdir-'));
+    try {
+      const scratchRoot = path.join(base, 'scratch');
+      await mkdir(scratchRoot);
+      const { writeFile: writeFileLocal } = await import('node:fs/promises');
+      await writeFileLocal(path.join(scratchRoot, 'afile'), 'not a directory', 'utf8');
+
+      const runner = new StubRunner({
+        resultFile: { relativePath: 'afile/result.json', value: { a: 1 } }
+      });
+      const env = makeEnvironment({
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      });
+
+      let caught: unknown;
+      try {
+        for await (const _ of runner.run({ environment: env })) { /* consume */ }
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).not.toContain(base);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('assertPathWithinWorkspaceRoots', () => {
