@@ -7,7 +7,8 @@ export default defineConfig({
   resolve: {
     alias: {
       '@autocatalyst/api-contract': resolve(__dirname, '../api-contract/src/index.ts'),
-      '@autocatalyst/core': resolve(__dirname, '../core/src/index.ts')
+      '@autocatalyst/core': resolve(__dirname, '../core/src/index.ts'),
+      '@autocatalyst/execution': resolve(__dirname, '../execution/src/index.ts')
     }
   },
   test: {

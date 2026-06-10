@@ -95,3 +95,4 @@ export * from './session.js';
 export * from './test-result.js';
 export * from './runner-events.js';
 export * from './execution-context.js';
+export * from './step-results.js';

@@ -1,4 +1,8 @@
 import { describe, expect, it } from 'vitest';
+import { mkdir, mkdtemp, readFile, rm, symlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import { StubRunner } from './stub-runner.js';
 import { assertPathWithinWorkspaceRoots } from './internal/workspace-root-guard.js';
 import type { MaterializedExecutionEnvironment } from './materialized-environment.js';
@@ -132,6 +136,188 @@ describe('StubRunner', () => {
       ids.push(event.id);
     }
     expect(ids).toEqual(['test_evt_1', 'test_evt_2', 'test_evt_3', 'test_evt_4']);
+  });
+});
+
+describe('StubRunner — resultFile and correction responses', () => {
+  it('writes JSON result file under scratch root when configured', async () => {
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'stub-rf-'));
+    try {
+      const runner = new StubRunner({
+        resultFile: { relativePath: 'nested/result.json', value: { a: 1, b: 'x' } }
+      });
+      const env = makeEnvironment({
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      });
+      const events = [];
+      for await (const event of runner.run({ environment: env })) {
+        events.push(event);
+      }
+      expect(events).toHaveLength(4);
+      const written = await readFile(path.join(scratchRoot, 'nested/result.json'), 'utf8');
+      expect(JSON.parse(written)).toEqual({ a: 1, b: 'x' });
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('skips writing result file when no scratch root is materialized', async () => {
+    const runner = new StubRunner({
+      resultFile: { relativePath: 'r.json', value: { a: 1 } }
+    });
+    const env = makeEnvironment();
+    const events = [];
+    for await (const event of runner.run({ environment: env })) {
+      events.push(event);
+    }
+    expect(events).toHaveLength(4);
+  });
+
+  it('getCorrectionRequester returns scripted responses in order', async () => {
+    const runner = new StubRunner({
+      correctionResponses: [{ ok: 1 }, { ok: 2 }]
+    });
+    const requester = runner.getCorrectionRequester();
+    const baseRequest = {
+      runId: 'run_1',
+      step: 'implement',
+      schemaId: 'schema',
+      attempt: 1,
+      maxAttempts: 2,
+      issues: [],
+      safeCandidatePreview: null
+    };
+    await expect(requester.requestCorrection(baseRequest)).resolves.toEqual({ ok: 1 });
+    await expect(requester.requestCorrection({ ...baseRequest, attempt: 2 })).resolves.toEqual({ ok: 2 });
+  });
+
+  it('rejects write when a symlinked directory inside scratchRoot points outside it', async () => {
+    const base = await mkdtemp(path.join(tmpdir(), 'stub-symlink-'));
+    try {
+      const scratchRoot = path.join(base, 'scratch');
+      const outsideDir = path.join(base, 'outside');
+      await mkdir(scratchRoot);
+      await mkdir(outsideDir);
+      // Create a symlink inside scratchRoot that points to a directory outside it.
+      await symlink(outsideDir, path.join(scratchRoot, 'symlink'));
+
+      const runner = new StubRunner({
+        resultFile: { relativePath: 'symlink/result.json', value: { escaped: true } }
+      });
+      const env = makeEnvironment({
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      });
+
+      const consume = async (): Promise<void> => {
+        for await (const _ of runner.run({ environment: env })) { /* consume */ }
+      };
+      await expect(consume()).rejects.toThrow(/escapes scratch root/);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects write when symlink points outside and a non-existent sub-directory follows it', async () => {
+    // Regression: `link/new/result.json` where `link` → outside and `new/` does not yet exist.
+    // The old code fell back to the lexical parent on ENOENT, bypassing symlink detection.
+    const base = await mkdtemp(path.join(tmpdir(), 'stub-symlink-enoent-'));
+    try {
+      const scratchRoot = path.join(base, 'scratch');
+      const outsideDir = path.join(base, 'outside');
+      await mkdir(scratchRoot);
+      await mkdir(outsideDir);
+      // Symlink inside scratchRoot → outside directory; `new/` sub-directory does NOT exist yet.
+      await symlink(outsideDir, path.join(scratchRoot, 'symlink'));
+
+      const runner = new StubRunner({
+        resultFile: { relativePath: 'symlink/new/result.json', value: { escaped: true } }
+      });
+      const env = makeEnvironment({
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      });
+
+      const consume = async (): Promise<void> => {
+        for await (const _ of runner.run({ environment: env })) { /* consume */ }
+      };
+      await expect(consume()).rejects.toThrow(/escapes scratch root/);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects write when the result file itself is a symlink pointing outside scratchRoot', async () => {
+    const base = await mkdtemp(path.join(tmpdir(), 'stub-file-symlink-'));
+    try {
+      const scratchRoot = path.join(base, 'scratch');
+      await mkdir(scratchRoot);
+      // Create a real file outside scratchRoot that the symlink will target.
+      const outsideFile = path.join(base, 'secret.json');
+      const { writeFile: writeFileLocal } = await import('node:fs/promises');
+      await writeFileLocal(outsideFile, JSON.stringify({ secret: true }), 'utf8');
+      // Place a symlink at the result-file path inside scratchRoot pointing to the outside file.
+      await symlink(outsideFile, path.join(scratchRoot, 'result.json'));
+
+      const runner = new StubRunner({
+        resultFile: { relativePath: 'result.json', value: { injected: true } }
+      });
+      const env = makeEnvironment({
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      });
+
+      const consume = async (): Promise<void> => {
+        for await (const _ of runner.run({ environment: env })) { /* consume */ }
+      };
+      await expect(consume()).rejects.toThrow(/escapes scratch root/);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
+  it('throws when scripted correction responses are exhausted', async () => {
+    const runner = new StubRunner({ correctionResponses: [] });
+    const requester = runner.getCorrectionRequester();
+    await expect(
+      requester.requestCorrection({
+        runId: 'run_1',
+        step: 'implement',
+        schemaId: 'schema',
+        attempt: 1,
+        maxAttempts: 1,
+        issues: [],
+        safeCandidatePreview: null
+      })
+    ).rejects.toThrow(/exhausted/);
+  });
+
+  it('fails safely with a sanitized error when a write ancestor is not a directory', async () => {
+    // Regression: a regular file sits where a directory component is expected
+    // (`afile/result.json`). The write must reject without surfacing a raw, path-bearing
+    // filesystem error.
+    const base = await mkdtemp(path.join(tmpdir(), 'stub-enotdir-'));
+    try {
+      const scratchRoot = path.join(base, 'scratch');
+      await mkdir(scratchRoot);
+      const { writeFile: writeFileLocal } = await import('node:fs/promises');
+      await writeFileLocal(path.join(scratchRoot, 'afile'), 'not a directory', 'utf8');
+
+      const runner = new StubRunner({
+        resultFile: { relativePath: 'afile/result.json', value: { a: 1 } }
+      });
+      const env = makeEnvironment({
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      });
+
+      let caught: unknown;
+      try {
+        for await (const _ of runner.run({ environment: env })) { /* consume */ }
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(Error);
+      expect((caught as Error).message).not.toContain(base);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
   });
 });
 

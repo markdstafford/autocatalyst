@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ExecutionContext, RunnerEvent } from '@autocatalyst/api-contract';
-import type { ExecutionEntryPoint, ExecutionEntryPointInput } from '@autocatalyst/execution';
+import type { ExecutionContext } from '@autocatalyst/api-contract';
+import type { ExecutionBoundaryEvent, ExecutionEntryPoint, ExecutionEntryPointInput } from '@autocatalyst/execution';
 import { createExecutionEntryPoint, ExecutionMaterializationError } from '@autocatalyst/execution';
 import type { Runner, RunnerRunInput } from '@autocatalyst/execution';
 import type { RunWorkInput } from './orchestrator.js';
@@ -44,7 +44,7 @@ function makeContext(): ExecutionContext {
   };
 }
 
-function makeTerminalEvent(directive: 'advance' | 'needs_input' | 'fail', overrides: Record<string, unknown> = {}): RunnerEvent {
+function makeTerminalEvent(directive: 'advance' | 'needs_input' | 'fail', overrides: Record<string, unknown> = {}): ExecutionBoundaryEvent {
   const result: Record<string, unknown> = { directive };
   if (directive === 'needs_input') result['question'] = 'What color?';
   if (directive === 'fail') result['reason'] = 'Something went wrong.';
@@ -57,10 +57,10 @@ function makeTerminalEvent(directive: 'advance' | 'needs_input' | 'fail', overri
     importance: 'normal',
     createdAt: '2026-06-09T00:00:00.000Z',
     result: { ...result, ...overrides }
-  } as RunnerEvent;
+  } as ExecutionBoundaryEvent;
 }
 
-function makeProgressEvent(): RunnerEvent {
+function makeProgressEvent(): ExecutionBoundaryEvent {
   return {
     id: 'evt_progress',
     type: 'runner_progress',
@@ -69,12 +69,12 @@ function makeProgressEvent(): RunnerEvent {
     importance: 'low',
     createdAt: '2026-06-09T00:00:00.000Z',
     progress: { kind: 'intent', summary: 'Working' }
-  } as RunnerEvent;
+  } as ExecutionBoundaryEvent;
 }
 
-function makeFakeEntryPoint(events: RunnerEvent[]): ExecutionEntryPoint {
+function makeFakeEntryPoint(events: ExecutionBoundaryEvent[]): ExecutionEntryPoint {
   return {
-    execute(_input: ExecutionEntryPointInput): AsyncIterable<RunnerEvent> {
+    execute(_input: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
       return (async function* () {
         for (const event of events) {
           yield event;
@@ -86,18 +86,18 @@ function makeFakeEntryPoint(events: RunnerEvent[]): ExecutionEntryPoint {
 
 function makeFakeThrowingEntryPoint(error: Error): ExecutionEntryPoint {
   return {
-    execute(_input: ExecutionEntryPointInput): AsyncIterable<RunnerEvent> {
+    execute(_input: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
       return (async function* () {
         throw error;
-        yield {} as RunnerEvent; // unreachable — needed to satisfy AsyncGenerator<RunnerEvent> return type
+        yield {} as ExecutionBoundaryEvent; // unreachable — needed to satisfy AsyncGenerator<ExecutionBoundaryEvent> return type
       })();
     }
   };
 }
 
-function makeFakeThrowAfterTerminalEntryPoint(terminal: RunnerEvent, error: Error): ExecutionEntryPoint {
+function makeFakeThrowAfterTerminalEntryPoint(terminal: ExecutionBoundaryEvent, error: Error): ExecutionEntryPoint {
   return {
-    execute(_input: ExecutionEntryPointInput): AsyncIterable<RunnerEvent> {
+    execute(_input: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
       return (async function* () {
         yield terminal;
         throw error;
@@ -139,7 +139,7 @@ describe('createExecutionRunUnitOfWork', () => {
     });
 
     it('fail terminal directive with no reason uses fallback reason', async () => {
-      const terminalNoReason: RunnerEvent = {
+      const terminalNoReason: ExecutionBoundaryEvent = {
         id: 'evt_1',
         type: 'runner_terminal_result',
         runId,
@@ -147,7 +147,7 @@ describe('createExecutionRunUnitOfWork', () => {
         importance: 'normal',
         createdAt: '2026-06-09T00:00:00.000Z',
         result: { directive: 'fail' }
-      };
+      } as ExecutionBoundaryEvent;
 
       const unitOfWork = createExecutionRunUnitOfWork({
         execute: makeFakeEntryPoint([terminalNoReason]),
@@ -159,6 +159,34 @@ describe('createExecutionRunUnitOfWork', () => {
       if (result.directive === 'fail') {
         expect(result.reason).toBeTruthy();
       }
+    });
+
+    it('advance terminal with result passes result through to RunWorkResult', async () => {
+      const terminalWithResult: ExecutionBoundaryEvent = {
+        id: 'evt_1',
+        type: 'runner_terminal_result',
+        runId,
+        step: 'implement',
+        importance: 'normal',
+        createdAt: '2026-06-09T00:00:00.000Z',
+        result: { directive: 'advance', result: { fileCount: 3, summary: 'done' } }
+      } as ExecutionBoundaryEvent;
+      const unitOfWork = createExecutionRunUnitOfWork({
+        execute: makeFakeEntryPoint([terminalWithResult]),
+        resolveContext: async () => makeContext()
+      });
+      const workResult = await unitOfWork.run(makeInput());
+      expect(workResult).toEqual({ directive: 'advance', result: { fileCount: 3, summary: 'done' } });
+    });
+
+    it('advance terminal without result yields RunWorkResult without result field', async () => {
+      const unitOfWork = createExecutionRunUnitOfWork({
+        execute: makeFakeEntryPoint([makeTerminalEvent('advance')]),
+        resolveContext: async () => makeContext()
+      });
+      const workResult = await unitOfWork.run(makeInput());
+      expect(workResult).toEqual({ directive: 'advance' });
+      expect('result' in workResult).toBe(false);
     });
   });
 
@@ -271,7 +299,7 @@ describe('createExecutionRunUnitOfWork', () => {
 
     it('duplicate terminal result re-throws RunnerProtocolError(duplicate_terminal_result)', async () => {
       const terminal1 = makeTerminalEvent('advance');
-      const terminal2: RunnerEvent = {
+      const terminal2: ExecutionBoundaryEvent = {
         id: 'evt_2',
         type: 'runner_terminal_result',
         runId,
@@ -279,7 +307,7 @@ describe('createExecutionRunUnitOfWork', () => {
         importance: 'normal',
         createdAt: '2026-06-09T00:00:00.000Z',
         result: { directive: 'advance' }
-      };
+      } as ExecutionBoundaryEvent;
       const unitOfWork = createExecutionRunUnitOfWork({
         execute: makeFakeEntryPoint([terminal1, terminal2]),
         resolveContext: async () => makeContext()
@@ -294,7 +322,7 @@ describe('createExecutionRunUnitOfWork', () => {
     it('no-terminal stream + close fails → RunnerProtocolError(missing_terminal_result)', async () => {
       // Build a real entry point with a no-terminal runner and a failing close
       const noTerminalRunner: Runner = {
-        run(_input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+        run(_input: RunnerRunInput): AsyncIterable<{ id: string; type: string; runId: string; step: string; importance: string; createdAt: string }> {
           return (async function* () {
             // No terminal event emitted
           })();
@@ -304,6 +332,7 @@ describe('createExecutionRunUnitOfWork', () => {
 
       const fakeEntryPoint = createExecutionEntryPoint({
         runner: noTerminalRunner,
+        resultValidation: { mode: 'none' },
         materialize: async () => ({
           context: makeContext(),
           workspace: { shape: 'none', workspaceRoots: [] },

@@ -1,5 +1,58 @@
 export const executionPackageName = '@autocatalyst/execution' as const;
 
+export {
+  createStepResultContractRegistry,
+  resolveStepResultContract,
+  type StepResultContractDefinition,
+  type StepResultContractRegistry,
+  type StepResultContractResolver,
+  type StepResultContractResolution,
+  type StepResultContractResolutionFailure
+} from './result-contracts.js';
+
+export {
+  validateStepResult,
+  defaultStepResultCorrectionMaxAttempts,
+  type ValidateStepResultInput,
+  type StepResultValidationOutcome,
+  type StepResultValidationSuccess,
+  type StepResultValidationFailure,
+  type StepResultValidationFailureCode,
+  type ResultValidationIssue,
+  type ResultToleranceEvent,
+  type ResultDegradationPolicy
+} from './result-tolerance.js';
+
+export {
+  createResultNormalizerRegistry,
+  defaultResultNormalizers,
+  createFilenameAliasNormalizer,
+  createUrlWrappedIdentifierNormalizer,
+  type ResultNormalizer,
+  type ResultNormalizerInput,
+  type ResultNormalizerOutcome,
+  type ResultNormalizerRegistry,
+  type FilenameAliasNormalizerOptions,
+  type UrlWrappedIdentifierNormalizerOptions
+} from './result-normalizers.js';
+
+export {
+  buildResultCorrectionRequest,
+  createNoopResultCorrectionRequester,
+  type ResultCorrectionRequester,
+  type ResultCorrectionRequest,
+  type ResultCorrectionRequestInput
+} from './result-correction.js';
+
+export {
+  readScratchStepResultFile,
+  type ReadScratchStepResultFileInput,
+  type StepResultFileReadOutcome,
+  type StepResultFileReadSuccess,
+  type StepResultFileReadFailure,
+  type StepResultFileErrorCode
+} from './result-file.js';
+
 export { StubRunner, type StubRunnerOptions } from './stub-runner.js';
 
 export {
@@ -34,6 +87,22 @@ export {
   type ExecutionEntryPoint,
   type ExecutionEntryPointInput
 } from './execution-entry-point.js';
+
+export type {
+  ExecutionResultValidationConfig,
+  ExecutionResultValidationResolver,
+  NoExecutionResultValidationConfig,
+  ScratchFileExecutionResultValidationConfig
+} from './execution-entry-point.js';
+
+export {
+  executionTerminalResultEventSchema,
+  executionBoundaryEventSchema,
+  validateExecutionBoundaryEvent,
+  validateExecutionBoundaryEventStream,
+  type ExecutionTerminalResultEvent,
+  type ExecutionBoundaryEvent
+} from './execution-boundary-events.js';
 
 export {
   WorkspaceProvisioningError,
