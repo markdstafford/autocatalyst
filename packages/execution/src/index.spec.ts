@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
+import type {
+  AgentProviderAdapter,
+  AgentProviderSession
+} from './index.js';
 import {
   WorkspaceProvisioningError,
   WorkspacePruneError,
@@ -184,6 +188,7 @@ describe('agent provider adapter public contracts', () => {
     const connErr = new ProviderConnectionError('timeout', 'timed out', { durationMs: 60000 });
     expect(connErr).toBeInstanceOf(ProviderConnectionError);
     expect(connErr.code).toBe('timeout');
+    expect(connErr.name).toBe('ProviderConnectionError');
     expect(connErr.safeDetails).toEqual({ durationMs: 60000 });
 
     const protoErr = new ProviderProtocolError('invalid_provider_event', 'bad event');
@@ -195,6 +200,28 @@ describe('agent provider adapter public contracts', () => {
     expect(capErr).toBeInstanceOf(UnsupportedProviderCapabilityError);
     expect(capErr.code).toBe('tool_policy_unsupported');
     expect(capErr.name).toBe('UnsupportedProviderCapabilityError');
+  });
+
+  it('satisfies AgentProviderAdapter and AgentProviderSession structural contracts at compile time', () => {
+    // Compile-time structural assertion for AgentProviderAdapter
+    const _mockAdapter: AgentProviderAdapter = {
+      providerKind: 'test',
+      adapterId: 'test-adapter',
+      supportedConnectionMechanism: 'process_environment',
+      startSession(_input) {
+        const session: AgentProviderSession = {
+          events: (async function* () {})(),
+          metadata: Promise.resolve({
+            outcome: 'succeeded',
+            launchMechanism: 'process_environment',
+            degradedCapabilities: [],
+            tokenUsage: { available: false }
+          })
+        };
+        return session;
+      }
+    };
+    expect(_mockAdapter.providerKind).toBe('test');
   });
 });
 

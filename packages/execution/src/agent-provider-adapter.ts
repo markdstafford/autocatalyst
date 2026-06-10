@@ -2,6 +2,7 @@ import type { InferenceSettings, ModelIdentity, RunnerEndpointSettings, TokenBre
 import type { RunnerEvent } from '@autocatalyst/api-contract';
 
 import type { RunnerRunInput } from './runner.js';
+import type { ProviderCapabilityDegradation } from './request-alteration.js';
 
 export type ProviderConnectionMechanism = 'fetch_transport' | 'process_environment';
 
@@ -54,7 +55,7 @@ export interface AgentTokenUsage {
 export interface AgentProviderSessionMetadata {
   readonly outcome: 'succeeded' | 'failed' | 'canceled';
   readonly launchMechanism: ProviderConnectionMechanism;
-  readonly degradedCapabilities: readonly import('./request-alteration.js').ProviderCapabilityDegradation[];
+  readonly degradedCapabilities: readonly ProviderCapabilityDegradation[];
   readonly tokenUsage: AgentTokenUsage;
   readonly model?: ModelIdentity;
 }
