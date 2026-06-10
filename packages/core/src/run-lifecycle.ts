@@ -1,4 +1,4 @@
-import type { CreateRunInput, NonModelPrincipal, Run, RunStep, TestingGuideResult, TrackedIssue } from '@autocatalyst/api-contract';
+import type { CreateRunInput, JsonValue, NonModelPrincipal, Run, RunStep, TestingGuideResult, TrackedIssue } from '@autocatalyst/api-contract';
 
 import type { LifecycleRunStepInput, RunRepository } from './domain-repositories.js';
 import { deriveRunTerminal, getRunStepDefinition, type RunStepDefinition } from './run-step-catalog.js';
@@ -49,6 +49,7 @@ export interface ApplyRunDirectiveInput {
   readonly runs: RunRepository;
   readonly runId: string;
   readonly directive: RunDirective;
+  readonly checkpointResult?: JsonValue;
   readonly clock?: () => string;
 }
 
@@ -125,11 +126,16 @@ export async function applyRunDirective(input: ApplyRunDirectiveInput): Promise<
     throw new RunLifecycleError('unknown_workflow', `Transition destination '${transition.to}' is not a known step.`);
   }
   try {
+    const sourceRunStep = input.runs.findLatestOpenRunStep
+      ? await input.runs.findLatestOpenRunStep({ runId: existing.id, step: existing.currentStep })
+      : null;
     const recorded = await input.runs.recordRunStepTransition({
       runId: existing.id,
       currentStep: step.id,
       terminal: deriveRunTerminal(step.id),
-      runStep: buildEntryRunStep(step, now(input.clock))
+      runStep: buildEntryRunStep(step, now(input.clock)),
+      ...(sourceRunStep !== null ? { sourceRunStepId: sourceRunStep.id } : {}),
+      ...(input.checkpointResult !== undefined ? { checkpointResult: input.checkpointResult } : {})
     });
     return { run: recorded.run, workflow, step, runStep: recorded.runStep, transition };
   } catch (error) {

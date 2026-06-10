@@ -16,7 +16,8 @@ import {
   type OrchestratorErrorCode
 } from './orchestrator.js';
 import type { PolicyDecisionPoint, PolicyResourceDescriptor } from './policy.js';
-import type { RunEventSubscriber, RunEventSubscription } from './run-events.js';
+import type { RunEventStore, RunEventSubscription } from './run-events.js';
+import type { RunEventReplayResult } from '@autocatalyst/api-contract';
 
 // --- Error types ---
 
@@ -91,6 +92,13 @@ export interface ServiceSubscribeRunEventsInput {
   readonly lastEventId?: string;
 }
 
+export interface ServiceReplayRunEventsInput {
+  readonly principal: Principal;
+  readonly tenant: string;
+  readonly runId: string;
+  readonly lastEventId?: string;
+}
+
 export interface ServiceTickInput {
   readonly principal: Principal;
   readonly tenant: string;
@@ -110,6 +118,7 @@ export interface ControlPlaneService {
   getRun(input: ServiceGetRunInput): Promise<ServiceGetRunResult>;
   listRunSteps(input: ServiceListRunStepsInput): Promise<ServiceListRunStepsResult>;
   subscribeRunEvents(input: ServiceSubscribeRunEventsInput): Promise<RunEventSubscription>;
+  replayRunEvents(input: ServiceReplayRunEventsInput): Promise<RunEventReplayResult>;
   tick(input: ServiceTickInput): Promise<ServiceTickResult>;
 }
 
@@ -119,7 +128,7 @@ export interface DefaultControlPlaneServiceOptions {
   readonly orchestrator: Orchestrator;
   readonly runs: RunRepository;
   readonly runSteps: RunStepRepository;
-  readonly events: RunEventSubscriber;
+  readonly events: RunEventStore;
   readonly policy: PolicyDecisionPoint;
 }
 
@@ -142,7 +151,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
   readonly #orchestrator: Orchestrator;
   readonly #runs: RunRepository;
   readonly #runSteps: RunStepRepository;
-  readonly #events: RunEventSubscriber;
+  readonly #events: RunEventStore;
   readonly #policy: PolicyDecisionPoint;
 
   constructor(options: DefaultControlPlaneServiceOptions) {
@@ -275,6 +284,30 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     }
 
     return this.#events.subscribe({
+      runId: input.runId,
+      tenant: input.tenant
+    });
+  }
+
+  async replayRunEvents(input: ServiceReplayRunEventsInput): Promise<RunEventReplayResult> {
+    const decision = await this.#policy.authorize({
+      principal: input.principal,
+      action: 'run_events.stream',
+      resource: { kind: 'run_events', id: input.runId, path: '/v1/runs/:id/events' }
+    });
+    if (!decision.allowed) {
+      throw new ControlPlaneServiceError('forbidden', 'Not authorized to stream run events.');
+    }
+
+    const run = await this.#runs.findById(input.runId);
+    if (run === null) {
+      throw new ControlPlaneServiceError('not_found', `Run '${input.runId}' not found.`);
+    }
+    if (run.tenant !== input.tenant) {
+      throw new ControlPlaneServiceError('forbidden', 'Run not accessible.');
+    }
+
+    return this.#events.replayAfter({
       runId: input.runId,
       tenant: input.tenant,
       ...(input.lastEventId !== undefined ? { lastEventId: input.lastEventId } : {})

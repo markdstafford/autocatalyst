@@ -33,12 +33,12 @@ import {
   probeResourceIdParamsSchema,
   probeResourceSchema,
   runCollectionPath,
+  clientRunEventSchema,
+  formatRunEventFrameName,
   runEventsMediaType,
   runEventsPath,
   runEventsSuccessStatusCode,
   runIdParamsSchema,
-  runStateTransitionEventName,
-  runStateTransitionEventSchema,
   runStepListResponseSchema,
   runStepsPath,
   secretCollectionPath,
@@ -487,13 +487,13 @@ export async function registerControlPlaneRoutes(
       const lastEventIdHeader = request.headers['last-event-id'];
       const lastEventId = typeof lastEventIdHeader === 'string' ? lastEventIdHeader : undefined;
 
+      // Subscribe FIRST to avoid losing events emitted while replay is computed.
       let subscription: RunEventSubscription;
       try {
         subscription = await dependencies.controlPlane.subscribeRunEvents({
           principal,
           tenant: principal.tenantId,
-          runId: params.id,
-          ...(lastEventId !== undefined ? { lastEventId } : {})
+          runId: params.id
         });
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
@@ -503,24 +503,72 @@ export async function registerControlPlaneRoutes(
         throw error;
       }
 
+      // Then compute replay.
+      let replay;
+      try {
+        replay = await dependencies.controlPlane.replayRunEvents({
+          principal,
+          tenant: principal.tenantId,
+          runId: params.id,
+          ...(lastEventId !== undefined ? { lastEventId } : {})
+        });
+      } catch (error) {
+        subscription.close();
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(reply, error);
+          return;
+        }
+        throw error;
+      }
+
+      if (replay.status === 'unknown_event_id' || replay.status === 'expired_event_id') {
+        // Close subscription and return 409 BEFORE any SSE bytes.
+        subscription.close();
+        const code = replay.status === 'unknown_event_id'
+          ? 'run_event_replay_cursor_unknown'
+          : 'run_event_replay_cursor_expired';
+        await reply.status(409).send({
+          error: {
+            code,
+            message: `Run event replay cursor '${replay.lastEventId}' is not available.`,
+            lastEventId: replay.lastEventId
+          }
+        });
+        return;
+      }
+
       reply.raw.writeHead(runEventsSuccessStatusCode, {
         'content-type': `${runEventsMediaType}; charset=utf-8`,
         'cache-control': 'no-cache, no-transform',
         connection: 'keep-alive'
       });
-      // Flush headers immediately so SSE clients (e.g. fetch) resolve before the first event.
       reply.raw.write(': connected\n\n');
 
       request.raw.on('close', () => {
         subscription.close();
       });
 
+      const writeFrame = (event: unknown) => {
+        const validated = clientRunEventSchema.parse(event);
+        reply.raw.write(`event: ${formatRunEventFrameName(validated)}\n`);
+        reply.raw.write(`id: ${validated.id}\n`);
+        reply.raw.write(`data: ${JSON.stringify(validated)}\n\n`);
+      };
+
       try {
+        // Replay ids that may also appear in the live buffer (events appended in the
+        // subscribe→replayAfter window). Pre-existing events are only in replay, not
+        // in the live buffer, so a linear scan waiting for the last replay id would
+        // skip all subsequent live events if it never appears.
+        const replayedIds = new Set(replay.events.map(e => e.id));
+        for (const event of replay.events) {
+          writeFrame(event);
+        }
         for await (const event of subscription.events) {
-          const validated = runStateTransitionEventSchema.parse(event);
-          reply.raw.write(`event: ${runStateTransitionEventName}\n`);
-          reply.raw.write(`id: ${validated.id}\n`);
-          reply.raw.write(`data: ${JSON.stringify(validated)}\n\n`);
+          if (replayedIds.has(event.id)) {
+            continue; // already delivered in replay
+          }
+          writeFrame(event);
         }
       } finally {
         subscription.close();

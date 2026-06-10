@@ -151,7 +151,8 @@ describe('conversation-ingress contract', () => {
         startedAt: now,
         endedAt: null,
         durationMs: null,
-        occurrence: { index: 0, attempt: 1 }
+        occurrence: { index: 0, attempt: 1 },
+        checkpointResult: null
       }
     };
     expect(createConversationWithFirstRunResponseSchema.parse(validResponse)).toEqual(validResponse);
@@ -210,7 +211,8 @@ describe('conversation-ingress contract', () => {
         startedAt: now,
         endedAt: null,
         durationMs: null,
-        occurrence: { index: 0, attempt: 1 }
+        occurrence: { index: 0, attempt: 1 },
+        checkpointResult: null
       }
     };
     expect(createConversationWithFirstRunResponseSchema.parse(validResponse)).toEqual(validResponse);

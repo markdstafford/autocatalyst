@@ -6,7 +6,7 @@ import {
   DefaultOrchestrator,
   defaultExtensionRegistryCatalog,
   emptyProviderAdapterMap,
-  InMemoryRunEventBus,
+  InMemoryRetainedRunEventStore,
   permissivePolicyDecisionPoint,
   registerControlPlaneRoutes,
   RunDispatchQueue,
@@ -16,6 +16,7 @@ import {
   type PolicyDecisionPoint,
   type ProviderAdapterMap,
   type ProviderCompositionResult,
+  type RetainedRunEventStoreOptions,
   type RunUnitOfWork
 } from '@autocatalyst/core';
 import {
@@ -43,6 +44,7 @@ export interface ControlPlaneServerOptions {
   readonly onProviderComposition?: (result: ProviderCompositionResult) => void | Promise<void>;
   readonly unitOfWork?: RunUnitOfWork;
   readonly onControlPlaneReady?: (service: ControlPlaneService) => void;
+  readonly runEventStoreOptions?: RetainedRunEventStoreOptions;
 }
 
 const DEFAULT_RUN_CONCURRENCY = 2;
@@ -113,7 +115,11 @@ export async function createControlPlaneServer(
 
   const domainRepos = createDrizzleDomainRepositories(database);
   const conversationIngress = new DrizzleConversationIngressRepository(database);
-  const eventBus = new InMemoryRunEventBus();
+  const eventBus = new InMemoryRetainedRunEventStore(options.runEventStoreOptions ?? {
+    maxEventsPerScope: 256,
+    maxExpiredIdsPerScope: 256,
+    subscriberBufferSize: 64
+  });
   const dispatchQueue = new RunDispatchQueue({
     maxConcurrent: options.runConcurrency ?? DEFAULT_RUN_CONCURRENCY
   });

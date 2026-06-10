@@ -28,7 +28,8 @@ describe('run-step contract extensions', () => {
           startedAt: now,
           endedAt: null,
           durationMs: null,
-          occurrence: { index: 0, attempt: 1 }
+          occurrence: { index: 0, attempt: 1 },
+          checkpointResult: null
         }
       ]
     };
@@ -41,5 +42,36 @@ describe('run-step contract extensions', () => {
 
   it('rejects extra fields (strict)', () => {
     expect(() => runStepListResponseSchema.parse({ steps: [], extra: 'field' })).toThrow();
+  });
+
+  it('accepts a run step with a JSON checkpointResult payload', () => {
+    const now = new Date().toISOString();
+    const response = {
+      steps: [
+        {
+          id: 'step_1',
+          runId: 'run_1',
+          phase: null,
+          step: 'start',
+          role: 'orchestrator' as const,
+          startedAt: now,
+          endedAt: now,
+          durationMs: 10,
+          occurrence: { index: 0, attempt: 1 },
+          checkpointResult: { summary: 'ok', count: 3 }
+        }
+      ]
+    };
+    expect(runStepListResponseSchema.parse(response)).toEqual(response);
+  });
+
+  it('rejects a run step missing checkpointResult', () => {
+    const now = new Date().toISOString();
+    expect(() => runStepListResponseSchema.parse({
+      steps: [{
+        id: 'step_1', runId: 'run_1', phase: null, step: 'start', role: 'orchestrator',
+        startedAt: now, endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 }
+      }]
+    })).toThrow();
   });
 });

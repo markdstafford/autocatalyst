@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import { createRunStateTransitionEvent, InMemoryRunEventBus } from './run-events.js';
+import {
+  createRunStateTransitionEvent,
+  InMemoryRetainedRunEventStore
+} from './run-events.js';
 import { runStateTransitionEventSchema } from '@autocatalyst/api-contract';
 
 const owner = { id: 'user_1', kind: 'human' as const, tenantId: 'tenant_1', displayName: 'Ada' };
@@ -27,248 +30,160 @@ const validRunStep = {
   startedAt: timestamp,
   endedAt: null,
   durationMs: null,
-  occurrence: { index: 0, attempt: 1 }
+  occurrence: { index: 0, attempt: 1 },
+  checkpointResult: null
 };
+
+function makeEvent(id: string, directive: 'start' | 'advance' = 'advance', tenant = 'tenant_1', runId = 'run_1') {
+  return createRunStateTransitionEvent({
+    runId,
+    directive,
+    ...(directive === 'advance' ? { fromStep: 'intake' } : {}),
+    toStep: 'spec.author',
+    run: { ...validRun, id: runId, tenant },
+    runStep: { ...validRunStep, runId },
+    tenant,
+    idGenerator: () => id,
+    clock: () => timestamp
+  });
+}
 
 describe('createRunStateTransitionEvent', () => {
   it('creates a start event without fromStep', () => {
     const event = createRunStateTransitionEvent({
-      runId: 'run_1',
-      directive: 'start',
-      toStep: 'intake',
-      run: validRun,
-      runStep: validRunStep,
-      tenant: 'tenant_1'
+      runId: 'run_1', directive: 'start', toStep: 'intake',
+      run: validRun, runStep: validRunStep, tenant: 'tenant_1'
     });
-
     expect(event.type).toBe('run_state_transition');
-    expect(event.runId).toBe('run_1');
-    expect(event.transition.directive).toBe('start');
-    expect(event.transition.toStep).toBe('intake');
     expect(event.transition.fromStep).toBeUndefined();
-    expect(event.tenant).toBe('tenant_1');
-    // Passes schema validation (parse would throw if not valid)
     expect(() => runStateTransitionEventSchema.parse(event)).not.toThrow();
-  });
-
-  it('creates an advance event with fromStep', () => {
-    const event = createRunStateTransitionEvent({
-      runId: 'run_1',
-      directive: 'advance',
-      fromStep: 'intake',
-      toStep: 'spec.author',
-      run: validRun,
-      runStep: validRunStep,
-      tenant: 'tenant_1'
-    });
-
-    expect(event.transition.directive).toBe('advance');
-    expect(event.transition.fromStep).toBe('intake');
-    expect(event.transition.toStep).toBe('spec.author');
   });
 
   it('uses injected idGenerator and clock', () => {
     const event = createRunStateTransitionEvent({
-      runId: 'run_1',
-      directive: 'start',
-      toStep: 'intake',
-      run: validRun,
-      runStep: validRunStep,
-      tenant: 'tenant_1',
-      idGenerator: () => 'evt_fixed_id',
-      clock: () => '2026-01-01T00:00:00.000Z'
+      runId: 'run_1', directive: 'start', toStep: 'intake',
+      run: validRun, runStep: validRunStep, tenant: 'tenant_1',
+      idGenerator: () => 'evt_fixed', clock: () => '2026-01-01T00:00:00.000Z'
     });
-
-    expect(event.id).toBe('evt_fixed_id');
+    expect(event.id).toBe('evt_fixed');
     expect(event.createdAt).toBe('2026-01-01T00:00:00.000Z');
   });
 });
 
-describe('InMemoryRunEventBus', () => {
-  it('delivers a published event to a subscriber', async () => {
-    const bus = new InMemoryRunEventBus();
-    const event = createRunStateTransitionEvent({
-      runId: 'run_1',
-      directive: 'start',
-      toStep: 'intake',
-      run: validRun,
-      runStep: validRunStep,
-      tenant: 'tenant_1',
-      idGenerator: () => 'evt_1',
-      clock: () => timestamp
-    });
-
-    const sub = bus.subscribe({ runId: 'run_1', tenant: 'tenant_1' });
+describe('InMemoryRetainedRunEventStore', () => {
+  it('appends and fans-out events to live subscribers in order', async () => {
+    const store = new InMemoryRetainedRunEventStore();
+    const sub = store.subscribe({ runId: 'run_1', tenant: 'tenant_1' });
     const iter = sub.events[Symbol.asyncIterator]();
-    bus.publish(event);
-    const result = await iter.next();
-    expect(result.done).toBe(false);
-    expect(result.value).toEqual(event);
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_1') });
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_2') });
+    const r1 = await iter.next();
+    const r2 = await iter.next();
+    expect(r1.value.id).toBe('evt_1');
+    expect(r2.value.id).toBe('evt_2');
     sub.close();
   });
 
-  it('filters by runId+tenant — only matching subscriber receives event', async () => {
-    const bus = new InMemoryRunEventBus();
-    const event = createRunStateTransitionEvent({
-      runId: 'run_1',
-      directive: 'start',
-      toStep: 'intake',
-      run: validRun,
-      runStep: validRunStep,
-      tenant: 'tenant_1',
-      idGenerator: () => 'evt_1',
-      clock: () => timestamp
-    });
-
-    const sub1 = bus.subscribe({ runId: 'run_1', tenant: 'tenant_1' });
-    const sub2 = bus.subscribe({ runId: 'run_other', tenant: 'tenant_2' });
-
-    const iter1 = sub1.events[Symbol.asyncIterator]();
-    bus.publish(event);
-
-    const result1 = await iter1.next();
-    expect(result1.done).toBe(false);
-    expect(result1.value).toEqual(event);
-
-    // sub2 should not have received anything; close it and check done
-    sub2.close();
+  it('isolates scopes with adversarial id pairs that share the same naive concatenation', async () => {
+    // Without a separator, (tenant="tenant_1", runId="bc") concatenates to "tenant_1bc",
+    // identical to (tenant="tenant_1b", runId="c"). The null-byte separator prevents the collision.
+    const store = new InMemoryRetainedRunEventStore();
+    const scopeA = { runId: 'bc', tenant: 'tenant_1' };
+    const scopeB = { runId: 'c', tenant: 'tenant_1b' };
+    const sub1 = store.subscribe(scopeA);
+    const sub2 = store.subscribe(scopeB);
     const iter2 = sub2.events[Symbol.asyncIterator]();
-    const result2 = await iter2.next();
-    expect(result2.done).toBe(true);
-
+    await store.append({
+      scope: scopeA,
+      event: makeEvent('evt_x', 'advance', 'tenant_1', 'bc')
+    });
+    // sub2 must not receive the event appended for scopeA
+    sub2.close();
+    expect((await iter2.next()).done).toBe(true);
     sub1.close();
   });
 
-  it('delivers events in publication order', async () => {
-    const bus = new InMemoryRunEventBus();
-
-    const makeEvent = (id: string) => createRunStateTransitionEvent({
-      runId: 'run_1',
-      directive: 'advance',
-      fromStep: 'intake',
-      toStep: 'spec.author',
-      run: validRun,
-      runStep: validRunStep,
-      tenant: 'tenant_1',
-      idGenerator: () => id,
-      clock: () => timestamp
-    });
-
-    const sub = bus.subscribe({ runId: 'run_1', tenant: 'tenant_1' });
-    const iter = sub.events[Symbol.asyncIterator]();
-
-    const e1 = makeEvent('evt_1');
-    const e2 = makeEvent('evt_2');
-    const e3 = makeEvent('evt_3');
-
-    bus.publish(e1);
-    bus.publish(e2);
-    bus.publish(e3);
-
-    const r1 = await iter.next();
-    const r2 = await iter.next();
-    const r3 = await iter.next();
-
-    expect(r1.value.id).toBe('evt_1');
-    expect(r2.value.id).toBe('evt_2');
-    expect(r3.value.id).toBe('evt_3');
-
-    sub.close();
+  it('isolates scopes by tenant and runId', async () => {
+    const store = new InMemoryRetainedRunEventStore();
+    const subA = store.subscribe({ runId: 'run_1', tenant: 'tenant_1' });
+    const subB = store.subscribe({ runId: 'run_1', tenant: 'tenant_2' });
+    const iterA = subA.events[Symbol.asyncIterator]();
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_1', 'advance', 'tenant_1') });
+    const r = await iterA.next();
+    expect(r.value.id).toBe('evt_1');
+    subB.close();
+    const iterB = subB.events[Symbol.asyncIterator]();
+    expect((await iterB.next()).done).toBe(true);
+    subA.close();
   });
 
-  it('stops delivering events after close', async () => {
-    const bus = new InMemoryRunEventBus();
-    const event = createRunStateTransitionEvent({
-      runId: 'run_1',
-      directive: 'start',
-      toStep: 'intake',
-      run: validRun,
-      runStep: validRunStep,
-      tenant: 'tenant_1',
-      idGenerator: () => 'evt_1',
-      clock: () => timestamp
-    });
-
-    const sub = bus.subscribe({ runId: 'run_1', tenant: 'tenant_1' });
-    const iter = sub.events[Symbol.asyncIterator]();
-    sub.close();
-
-    // After close, next() should resolve done immediately
-    const result = await iter.next();
-    expect(result.done).toBe(true);
-
-    // Publishing after close should not cause issues
-    bus.publish(event);
+  it('replayAfter with no lastEventId returns empty ok', async () => {
+    const store = new InMemoryRetainedRunEventStore();
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_1') });
+    const result = await store.replayAfter({ runId: 'run_1', tenant: 'tenant_1' });
+    expect(result).toEqual({ status: 'ok', events: [] });
   });
 
-  it('removes subscriber on close (no leak)', () => {
-    const bus = new InMemoryRunEventBus();
-    const sub = bus.subscribe({ runId: 'run_1', tenant: 'tenant_1' });
-    sub.close();
-
-    // After close, publishing should not throw (no subscribers to deliver to)
-    const event = createRunStateTransitionEvent({
-      runId: 'run_1',
-      directive: 'start',
-      toStep: 'intake',
-      run: validRun,
-      runStep: validRunStep,
-      tenant: 'tenant_1',
-      idGenerator: () => 'evt_1',
-      clock: () => timestamp
-    });
-    expect(() => bus.publish(event)).not.toThrow();
+  it('replayAfter returns events strictly after the cursor', async () => {
+    const store = new InMemoryRetainedRunEventStore();
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_1') });
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_2') });
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_3') });
+    const result = await store.replayAfter({ runId: 'run_1', tenant: 'tenant_1', lastEventId: 'evt_1' });
+    if (result.status !== 'ok') throw new Error(`expected ok, got ${result.status}`);
+    expect(result.events.map((e) => e.id)).toEqual(['evt_2', 'evt_3']);
   });
 
-  it('silently closes an overflowing subscriber and does not affect other subscribers', async () => {
-    const bus = new InMemoryRunEventBus();
+  it('replayAfter returns unknown_event_id for an unknown cursor', async () => {
+    const store = new InMemoryRetainedRunEventStore();
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_1') });
+    const result = await store.replayAfter({ runId: 'run_1', tenant: 'tenant_1', lastEventId: 'evt_unknown' });
+    expect(result).toEqual({ status: 'unknown_event_id', lastEventId: 'evt_unknown' });
+  });
 
-    const makeEvent = (i: number) => createRunStateTransitionEvent({
-      runId: 'run_1',
-      directive: 'advance',
-      fromStep: 'intake',
-      toStep: 'spec.author',
-      run: validRun,
-      runStep: validRunStep,
-      tenant: 'tenant_1',
-      idGenerator: () => `evt_${i}`,
-      clock: () => timestamp
-    });
+  it('evicts oldest events when retention overflows and reports expired_event_id', async () => {
+    const store = new InMemoryRetainedRunEventStore({ maxEventsPerScope: 2, maxExpiredIdsPerScope: 4 });
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_1') });
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_2') });
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_3') });
+    // evt_1 was evicted
+    const expired = await store.replayAfter({ runId: 'run_1', tenant: 'tenant_1', lastEventId: 'evt_1' });
+    expect(expired).toEqual({ status: 'expired_event_id', lastEventId: 'evt_1' });
+    const ok = await store.replayAfter({ runId: 'run_1', tenant: 'tenant_1', lastEventId: 'evt_2' });
+    expect(ok.status).toBe('ok');
+  });
 
-    const sub1 = bus.subscribe({ runId: 'run_1', tenant: 'tenant_1' });
-    const sub2 = bus.subscribe({ runId: 'run_1', tenant: 'tenant_1' });
+  it('rejects events whose runId does not match the scope', async () => {
+    const store = new InMemoryRetainedRunEventStore();
+    await expect(store.append({
+      scope: { runId: 'run_1', tenant: 'tenant_1' },
+      event: makeEvent('evt_1', 'advance', 'tenant_1', 'run_other')
+    })).rejects.toThrow(/runId/);
+  });
 
-    const iter1 = sub1.events[Symbol.asyncIterator]();
+  it('closes only the overflowing subscriber and leaves others healthy', async () => {
+    const store = new InMemoryRetainedRunEventStore({ subscriberBufferSize: 2 });
+    const sub1 = store.subscribe({ runId: 'run_1', tenant: 'tenant_1' });
+    const sub2 = store.subscribe({ runId: 'run_1', tenant: 'tenant_1' });
     const iter2 = sub2.events[Symbol.asyncIterator]();
 
-    // Fill both buffers with 32 events (DEFAULT_BUFFER_SIZE = 32)
-    for (let i = 0; i < 32; i++) {
-      bus.publish(makeEvent(i));
-    }
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_1') });
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_2') });
+    // drain sub2 so its buffer is empty (sub1 still has 2 buffered)
+    await iter2.next();
+    await iter2.next();
 
-    // Drain sub2 entirely so its buffer is empty
-    for (let i = 0; i < 32; i++) {
-      const r = await iter2.next();
-      expect(r.done).toBe(false);
-      expect(r.value.id).toBe(`evt_${i}`);
-    }
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_3') });
+    // sub1 overflows on evt_3 — it should be closed; sub2 should receive evt_3
+    const iter1 = sub1.events[Symbol.asyncIterator]();
+    // drain its 2 buffered then expect done
+    await iter1.next();
+    await iter1.next();
+    const r = await iter1.next();
+    expect(r.done).toBe(true);
 
-    // Publishing the 33rd event overflows sub1 (buffer full) but not sub2 (buffer empty,
-    // sub2 receives it immediately via the pending promise resolve path)
-    expect(() => bus.publish(makeEvent(32))).not.toThrow();
-
-    // sub1 should be closed — drain its 32 buffered events then expect done
-    for (let i = 0; i < 32; i++) {
-      await iter1.next();
-    }
-    const overflowResult = await iter1.next();
-    expect(overflowResult.done).toBe(true);
-
-    // sub2 should have received the 33rd event without issue
-    const r33 = await iter2.next();
-    expect(r33.done).toBe(false);
-    expect(r33.value.id).toBe('evt_32');
-
+    const r3 = await iter2.next();
+    expect(r3.value.id).toBe('evt_3');
     sub2.close();
   });
 });

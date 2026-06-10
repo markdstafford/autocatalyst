@@ -56,6 +56,17 @@ export {
 export { StubRunner, type StubRunnerOptions } from './stub-runner.js';
 
 export {
+  runnerProgressToolNameSchema,
+  updatePlanToolInputSchema,
+  reportProgressToolInputSchema,
+  notifyToolInputSchema,
+  type RunnerProgressToolName,
+  type UpdatePlanToolInput,
+  type ReportProgressToolInput,
+  type NotifyToolInput
+} from './runner-progress-tools.js';
+
+export {
   createExecutionMaterializer,
   type ExecutionMaterializer,
   type ExecutionMaterializerOptions

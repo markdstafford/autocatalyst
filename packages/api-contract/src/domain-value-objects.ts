@@ -1,6 +1,9 @@
+import { extendZodWithOpenApi } from '@asteasolutions/zod-to-openapi';
 import { z } from 'zod';
 
 import { principalSchema } from './principal.js';
+
+extendZodWithOpenApi(z);
 
 export const jsonValueSchema: z.ZodType<unknown> = z.lazy(() => z.union([
   z.string(),
@@ -9,7 +12,7 @@ export const jsonValueSchema: z.ZodType<unknown> = z.lazy(() => z.union([
   z.null(),
   z.array(jsonValueSchema),
   z.record(jsonValueSchema)
-]));
+])).openapi({ type: 'object', additionalProperties: true, description: 'Arbitrary JSON value.' });
 
 export const nonModelPrincipalSchema = principalSchema.refine(
   (principal) => principal.kind === 'human' || principal.kind === 'system',

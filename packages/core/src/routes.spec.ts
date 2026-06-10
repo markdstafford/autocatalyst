@@ -39,6 +39,11 @@ function createFakeControlPlaneService(): ControlPlaneService {
     subscribeRunEvents: vi.fn(async () => {
       throw new Error('controlPlane.subscribeRunEvents not stubbed for this test');
     }),
+    replayRunEvents: vi.fn(async (input) => ({
+      status: 'ok' as const,
+      events: [] as never[],
+      ...(input.lastEventId !== undefined ? {} : {})
+    })),
     tick: vi.fn(async () => ({ status: 'noop' as const }))
   };
 }
@@ -347,7 +352,7 @@ describe('registerControlPlaneRoutes', () => {
       topic: { id: 'topic_1', conversationId: 'conv_1', owner: hardcodedDevelopmentPrincipal, tenant: 'tenant_dev', title: 'My Topic', kind: 'main', createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' },
       message: { id: 'msg_1', topicId: 'topic_1', owner: hardcodedDevelopmentPrincipal, tenant: 'tenant_dev', author: hardcodedDevelopmentPrincipal, direction: 'inbound', body: 'hello', createdAt: '2026-06-08T00:00:00.000Z' },
       run: { id: 'run_1', topicId: 'topic_1', owner: hardcodedDevelopmentPrincipal, tenant: 'tenant_dev', workKind: 'feature', currentStep: 'intake', terminal: false, createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' },
-      runStep: { id: 'step_1', runId: 'run_1', phase: 'intake', step: 'intake', role: 'none', startedAt: '2026-06-08T00:00:00.000Z', endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 } }
+      runStep: { id: 'step_1', runId: 'run_1', phase: 'intake', step: 'intake', role: 'none', startedAt: '2026-06-08T00:00:00.000Z', endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 }, checkpointResult: null }
     };
     const controlPlane = createFakeControlPlaneService();
     (controlPlane.createConversationWithFirstRun as ReturnType<typeof vi.fn>).mockResolvedValue(orchestratedResult);
@@ -479,7 +484,7 @@ describe('registerControlPlaneRoutes', () => {
 
   it('GET /v1/runs/:id/steps returns 200 with the run-step list', async () => {
     const steps = [
-      { id: 'step_1', runId: 'run_1', phase: 'intake', step: 'intake', role: 'none', startedAt: '2026-06-08T00:00:00.000Z', endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 } }
+      { id: 'step_1', runId: 'run_1', phase: 'intake', step: 'intake', role: 'none', startedAt: '2026-06-08T00:00:00.000Z', endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 }, checkpointResult: null }
     ];
     const controlPlane = createFakeControlPlaneService();
     (controlPlane.listRunSteps as ReturnType<typeof vi.fn>).mockResolvedValue({ steps });
@@ -538,6 +543,9 @@ describe('registerControlPlaneRoutes', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toMatch(/^text\/event-stream/u);
     expect(controlPlane.subscribeRunEvents).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'run_1', tenant: 'tenant_dev' })
+    );
+    expect(controlPlane.replayRunEvents).toHaveBeenCalledWith(
       expect.objectContaining({ runId: 'run_1', tenant: 'tenant_dev', lastEventId: 'evt_42' })
     );
     controller.abort();
@@ -546,7 +554,7 @@ describe('registerControlPlaneRoutes', () => {
   it('GET /v1/runs/:id/events writes event/id/data SSE frames for each published event', async () => {
     const timestamp = '2026-06-08T00:00:00.000Z';
     const run = { id: 'run_1', topicId: 'topic_1', owner: hardcodedDevelopmentPrincipal, tenant: 'tenant_dev', workKind: 'feature', currentStep: 'intake', terminal: false, createdAt: timestamp, updatedAt: timestamp };
-    const runStep = { id: 'step_1', runId: 'run_1', phase: 'intake', step: 'intake', role: 'none', startedAt: timestamp, endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 } };
+    const runStep = { id: 'step_1', runId: 'run_1', phase: 'intake', step: 'intake', role: 'none', startedAt: timestamp, endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 }, checkpointResult: null };
     const sseEvent = {
       id: 'evt_abc',
       type: 'run_state_transition' as const,
@@ -579,6 +587,56 @@ describe('registerControlPlaneRoutes', () => {
     expect(body).toContain('event: run_state_transition\n');
     expect(body).toContain('id: evt_abc\n');
     expect(body).toContain(`data: ${JSON.stringify(sseEvent)}\n\n`);
+  });
+
+  it('GET /v1/runs/:id/events delivers live events when replay returns only pre-existing events', async () => {
+    // Regression for dedup bug: if replay returns events that existed before subscribe(),
+    // those ids will never appear in the live buffer. The route must still deliver live
+    // events whose ids are not in the replay set.
+    const timestamp = '2026-06-08T00:00:00.000Z';
+    const run = { id: 'run_1', topicId: 'topic_1', owner: hardcodedDevelopmentPrincipal, tenant: 'tenant_dev', workKind: 'feature', currentStep: 'intake', terminal: false, createdAt: timestamp, updatedAt: timestamp };
+    const runStep = { id: 'step_1', runId: 'run_1', phase: 'intake', step: 'intake', role: 'none', startedAt: timestamp, endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 }, checkpointResult: null };
+
+    const replayEvent = {
+      id: 'evt_replay_1',
+      type: 'run_state_transition' as const,
+      runId: 'run_1',
+      transition: { directive: 'start' as const, toStep: 'intake' },
+      run, runStep, tenant: 'tenant_dev', createdAt: timestamp
+    };
+    const liveEvent = {
+      id: 'evt_live_1',
+      type: 'run_state_transition' as const,
+      runId: 'run_1',
+      transition: { directive: 'start' as const, toStep: 'intake' },
+      run, runStep, tenant: 'tenant_dev', createdAt: timestamp
+    };
+
+    async function* generateLive() { yield liveEvent; }
+    const subscription: RunEventSubscription = {
+      events: { [Symbol.asyncIterator]: generateLive },
+      close: vi.fn()
+    };
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.subscribeRunEvents as ReturnType<typeof vi.fn>).mockResolvedValue(subscription);
+    (controlPlane.replayRunEvents as ReturnType<typeof vi.fn>).mockResolvedValue({
+      status: 'ok' as const, events: [replayEvent]
+    });
+
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const address = app.server.address() as { port: number };
+
+    const response = await fetch(`http://127.0.0.1:${address.port}/v1/runs/run_1/events`, {
+      headers: { ...authorization, 'last-event-id': 'evt_prior' }
+    });
+    expect(response.status).toBe(200);
+    const body = await response.text();
+
+    // Both the replayed event and the subsequent live event must be present.
+    expect(body).toContain('id: evt_replay_1\n');
+    expect(body).toContain('id: evt_live_1\n');
   });
 
   it('GET /v1/runs/:id/events calls subscription.close() when server closes after stream ends', async () => {

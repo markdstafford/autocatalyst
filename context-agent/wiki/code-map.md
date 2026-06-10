@@ -1,6 +1,6 @@
 # Code map
 
-Last updated: 2026-06-09 (step result tolerance pipeline: result-contracts, result-tolerance, result-normalizers, result-correction, result-file, execution-boundary-events in execution; step-results handoff schema in api-contract; execution-run-unit-of-work in core now uses validateExecutionBoundaryEventStream and maps advance.result; integration tests prove full scratch_file validation path and malformed-output fail path.)
+Last updated: 2026-06-09 (runner event consumer and step result checkpoints: InMemoryRetainedRunEventStore with append/replay/subscribe and cursor-expiry metadata; consumeRunnerEvents consumer in core; ClientRunEvent union, formatRunEventFrameName, RunEventReplayResult in api-contract; RunStep.checkpointResult persisted atomically with lifecycle transition; SSE route with subscribe-before-replay and pre-stream 409 for unknown/expired cursors; progress tool schemas and stub-runner progress signals in execution.)
 
 > How agents navigate the codebase. Keep this current: whenever you add, move, or significantly
 > change a module, update the relevant section in the same change.
@@ -71,7 +71,7 @@ Orchestrator service ingress routes (added by Story 7-9):
 - `POST /v1/conversations` — create a conversation, topic, optional message, run, and initial run step atomically; returns the created `Conversation`/`Topic`/`Message?`/`Run`/`RunStep`. Body schema: `createConversationWithFirstRunRequestSchema` from `@autocatalyst/api-contract`.
 - `GET /v1/runs/:id` — return the run for the authenticated tenant. 404 if missing; 403 if cross-tenant.
 - `GET /v1/runs/:id/steps` — list run-steps for a run ordered by `(startedAt, id)`. 404/403 like above.
-- `GET /v1/runs/:id/events` — Server-Sent Events stream of `run_state_transition` events for the given run+tenant. Headers include `content-type: text/event-stream; charset=utf-8` and `cache-control: no-cache, no-transform`. A `: connected\n\n` comment is flushed immediately after headers so SSE clients (including Node's `fetch`) resolve before the first real event; the bus does not replay history, so subscribers must register before the transition they want to observe. `Last-Event-ID` header is forwarded to the bus.
+- `GET /v1/runs/:id/events` — Server-Sent Events stream of `ClientRunEvent` frames for the given run+tenant. Streams full runner event vocabulary (assistant turns, tool activity, progress, notifications, step checkpoints, terminal results) plus state transitions. Route subscribes before replaying so no events are lost during reconnect; replayed events are written first, then live events from the subscription. Each frame has `event: <type>`, `id: <eventId>`, and `data: <json>` lines. `Last-Event-ID` header triggers replay-after-cursor; unknown or expired cursors return HTTP `409 Conflict` with JSON `{ error: { code: "run_event_replay_cursor_unknown" | "run_event_replay_cursor_expired", message, lastEventId } }` before any SSE bytes (no `: connected` comment).
 
 Provider composition test seams:
 

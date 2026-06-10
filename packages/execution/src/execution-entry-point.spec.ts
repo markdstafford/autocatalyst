@@ -255,6 +255,50 @@ describe('createExecutionEntryPoint', () => {
 
     expect(caughtError).toBeInstanceOf(RunnerProtocolError);
   });
+
+  it('non-terminal events are yielded before runner.close() is called', async () => {
+    // Verifies live delivery: consumers should receive progress events while the run is
+    // still active, not only after the entire stream has been buffered and close() completes.
+    const context = makeContext();
+    const materialize = vi.fn().mockResolvedValue(makeMaterializedEnv(context));
+
+    const progressEvent: RunnerEvent = {
+      id: 'evt_progress',
+      type: 'runner_progress',
+      runId,
+      step: 'implement',
+      importance: 'normal',
+      createdAt: '2026-06-09T00:00:00.000Z',
+      progress: { kind: 'task_progress', label: 'Running tests', completed: 1, total: 3 }
+    };
+
+    let closeCallCount = 0;
+    const runner: Runner = {
+      run(_input) {
+        return (async function* () {
+          yield progressEvent;
+          yield makeTerminalEvent();
+        })();
+      },
+      close: vi.fn(async () => {
+        closeCallCount++;
+        return { status: 'closed' as const };
+      })
+    };
+
+    const entryPoint = createExecutionEntryPoint({ runner, materialize, resultValidation: { mode: 'none' } });
+
+    let progressReceivedBeforeClose = false;
+    for await (const event of entryPoint.execute({ context })) {
+      if (event.type !== 'runner_terminal_result') {
+        // close() must not have been called yet — the stream is still active
+        progressReceivedBeforeClose = closeCallCount === 0;
+      }
+    }
+
+    expect(progressReceivedBeforeClose).toBe(true);
+    expect(closeCallCount).toBe(1);
+  });
 });
 
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';

@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { and, asc, count, eq } from 'drizzle-orm';
+import { and, asc, count, desc, eq, isNull } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type {
@@ -52,6 +52,7 @@ import {
   feedbackThreadSchema,
   frontedResourceSchema,
   inferenceSettingsSchema,
+  jsonValueSchema,
   messageSchema,
   modelIdentitySchema,
   nonModelPrincipalSchema,
@@ -174,7 +175,8 @@ function buildRunStepInsideTransaction(tx: DrizzleTx, runId: string, input: Life
     startedAt: input.startedAt,
     endedAt: input.endedAt,
     durationMs: input.durationMs,
-    occurrence
+    occurrence,
+    checkpointResult: null
   });
   tx.insert(runSteps).values({
     id: entity.id,
@@ -185,7 +187,8 @@ function buildRunStepInsideTransaction(tx: DrizzleTx, runId: string, input: Life
     startedAt: entity.startedAt,
     endedAt: entity.endedAt,
     durationMs: entity.durationMs,
-    occurrenceJson: stringifyJsonValue(occurrenceSchema, entity.occurrence)
+    occurrenceJson: stringifyJsonValue(occurrenceSchema, entity.occurrence),
+    checkpointResultJson: null
   }).run();
   return entity;
 }
@@ -645,10 +648,44 @@ export class DrizzleRunRepository implements RunRepository {
         throw new Error(`Run '${input.runId}' does not exist.`);
       }
       const run = this.#rowToRun(updatedRows[0]);
+      if (input.sourceRunStepId !== undefined && input.checkpointResult !== undefined) {
+        const json = stringifyJsonValue(jsonValueSchema, input.checkpointResult);
+        tx.update(runSteps)
+          .set({ checkpointResultJson: json })
+          .where(eq(runSteps.id, input.sourceRunStepId))
+          .run();
+      }
       const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep);
       return { run, runStep };
     });
   }
+
+  async findLatestOpenRunStep(input: { runId: string; step: string }): Promise<RunStep | null> {
+    const rows = this.#database.drizzle
+      .select()
+      .from(runSteps)
+      .where(and(eq(runSteps.runId, input.runId), eq(runSteps.step, input.step), isNull(runSteps.endedAt)))
+      .orderBy(desc(runSteps.startedAt), desc(runSteps.id))
+      .limit(1)
+      .all();
+    const row = rows[0];
+    return row === undefined ? null : rowToRunStepEntity(row);
+  }
+}
+
+function rowToRunStepEntity(row: typeof runSteps.$inferSelect): RunStep {
+  return validateEntity(runStepSchema, {
+    id: row.id,
+    runId: row.runId,
+    phase: row.phase,
+    step: row.step,
+    role: row.role,
+    startedAt: row.startedAt,
+    endedAt: row.endedAt,
+    durationMs: row.durationMs,
+    occurrence: parseJsonValue(occurrenceSchema, row.occurrenceJson),
+    checkpointResult: row.checkpointResultJson === null ? null : parseJsonValue(jsonValueSchema, row.checkpointResultJson)
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -996,7 +1033,8 @@ export class DrizzleRunStepRepository implements RunStepRepository {
       startedAt: parsed.startedAt,
       endedAt: parsed.endedAt,
       durationMs: parsed.durationMs,
-      occurrence: parsed.occurrence
+      occurrence: parsed.occurrence,
+      checkpointResult: null
     });
 
     this.#database.drizzle.insert(runSteps).values({
@@ -1008,7 +1046,8 @@ export class DrizzleRunStepRepository implements RunStepRepository {
       startedAt: entity.startedAt,
       endedAt: entity.endedAt,
       durationMs: entity.durationMs,
-      occurrenceJson: stringifyJsonValue(occurrenceSchema, entity.occurrence)
+      occurrenceJson: stringifyJsonValue(occurrenceSchema, entity.occurrence),
+      checkpointResultJson: null
     }).run();
 
     return entity;
@@ -1031,17 +1070,7 @@ export class DrizzleRunStepRepository implements RunStepRepository {
   }
 
   #rowToRunStep(row: typeof runSteps.$inferSelect): RunStep {
-    return validateEntity(runStepSchema, {
-      id: row.id,
-      runId: row.runId,
-      phase: row.phase,
-      step: row.step,
-      role: row.role,
-      startedAt: row.startedAt,
-      endedAt: row.endedAt,
-      durationMs: row.durationMs,
-      occurrence: parseJsonValue(occurrenceSchema, row.occurrenceJson)
-    });
+    return rowToRunStepEntity(row);
   }
 }
 

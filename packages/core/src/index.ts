@@ -129,4 +129,11 @@ export type {
 } from './runner-event-stream.js';
 
 export { createExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
-export type { ExecutionRunUnitOfWorkOptions } from './execution-run-unit-of-work.js';
+export type { ExecutionRunUnitOfWorkOptions, ExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
+
+export { consumeRunnerEvents } from './runner-event-consumer.js';
+export type {
+  ConsumeRunnerEventsInput,
+  ConsumeRunnerEventsResult,
+  RunnerEventConsumerDependencies
+} from './runner-event-consumer.js';

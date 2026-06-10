@@ -60,7 +60,7 @@ describe('domain entity contracts', () => {
   });
 
   it('validates run-step, session, and test-result parent-hung records without owner or tenant', () => {
-    expect(runStepSchema.parse({ id: 'step_1', runId: 'run_1', phase: 'implementation', step: 'implementation.build', role: 'implementer', startedAt: now, endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 } }).role).toBe('implementer');
+    expect(runStepSchema.parse({ id: 'step_1', runId: 'run_1', phase: 'implementation', step: 'implementation.build', role: 'implementer', startedAt: now, endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 }, checkpointResult: null }).role).toBe('implementer');
     expect(sessionSchema.parse({ id: 'sess_1', runId: 'run_1', phase: null, step: 'intake.classify', role: 'none', round: 0, model: { provider: 'openai', model: 'gpt-4.1' }, inferenceSettings: { extra: { responseFormat: 'json' } }, startedAt: now, endedAt: now, durationMs: 100, tokens, usageAvailable: true, assistantTurnCount: 1, toolCallCount: 0, outcome: 'succeeded', cost }).cost.usd).toBeNull();
     expect(() => sessionSchema.parse({ id: 'sess_2', runId: 'run_1', phase: null, step: 'intake.classify', role: 'none', round: 0, model: { provider: 'openai', model: 'gpt-4.1' }, inferenceSettings: {}, startedAt: now, endedAt: now, durationMs: 100, tokens, usageAvailable: true, assistantTurnCount: 1, toolCallCount: 0, outcome: 'succeeded', cost: { ...cost, tokens: { ...tokens, output: 999 } } })).toThrow();
     expect(testResultSchema.parse({ id: 'test_1', runId: 'run_1', tester: owner, outcome: 'passed', evidence: { kind: 'external', summary: 'Manual smoke test passed.' }, feedbackRefs: ['fb_1'], createdAt: now, updatedAt: now }).outcome).toBe('passed');

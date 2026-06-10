@@ -38,6 +38,7 @@ function makeRunStep(overrides: Partial<RunStep> = {}): RunStep {
     endedAt: null,
     durationMs: null,
     occurrence: { index: 0, attempt: 1 },
+    checkpointResult: null,
     ...overrides
   };
 }
