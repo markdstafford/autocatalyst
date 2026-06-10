@@ -152,6 +152,12 @@ export {
 } from './connection.js';
 
 export {
+  createAgentOrchestratorRunner,
+  type AgentOrchestratorTelemetryEmitter,
+  type CreateAgentOrchestratorRunnerOptions
+} from './agent-orchestrator-runner.js';
+
+export {
   createExecutionEntryPoint,
   type CreateExecutionEntryPointOptions,
   type ExecutionEntryPoint,
