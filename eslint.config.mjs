@@ -89,5 +89,28 @@ export default [
         }
       ]
     }
+  },
+  // @anthropic-ai/claude-agent-sdk is an optional peer dep used only via
+  // dynamic import() in the Claude adapter — the @nx/dependency-checks rule
+  // cannot detect dynamic imports, so we suppress the false positive here.
+  {
+    files: ['packages/claude-agent-adapter/package.json'],
+    languageOptions: {
+      parser: jsoncParser
+    },
+    plugins: { '@nx': nxPlugin },
+    rules: {
+      '@nx/dependency-checks': [
+        'error',
+        {
+          ignoredFiles: [
+            '{projectRoot}/vite.config.ts',
+            '{projectRoot}/vitest.config.ts',
+            '{projectRoot}/drizzle.config.ts'
+          ],
+          ignoredDependencies: ['@anthropic-ai/claude-agent-sdk']
+        }
+      ]
+    }
   }
 ];

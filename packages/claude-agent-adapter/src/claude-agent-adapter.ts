@@ -119,6 +119,7 @@ async function* realSDKLaunch(
   type QueryFn = (input: { prompt: string; options?: Record<string, unknown> }) => AsyncIterable<Record<string, unknown>>;
   let query: QueryFn;
   try {
+    // @ts-expect-error -- optional peer dependency: types unavailable until the package is installed
     const sdk = await import('@anthropic-ai/claude-agent-sdk') as { query: QueryFn };
     query = sdk.query;
   } catch {
@@ -153,20 +154,19 @@ async function* realSDKLaunch(
       const subtype = msg['subtype'] as string | undefined;
       const usage = msg['usage'] as Record<string, unknown> | undefined;
       if (subtype === 'success') {
+        const input_tokens =
+          typeof usage?.['input_tokens'] === 'number' ? (usage['input_tokens'] as number) : undefined;
+        const output_tokens =
+          typeof usage?.['output_tokens'] === 'number' ? (usage['output_tokens'] as number) : undefined;
+        const hasTokens = input_tokens !== undefined && output_tokens !== undefined;
         yield {
           type: 'result',
           result: {
-            output: typeof msg['result'] === 'string' ? msg['result'] : undefined,
             is_error: msg['is_error'] === true,
-            total_tokens:
-              typeof usage?.['input_tokens'] === 'number' &&
-              typeof usage?.['output_tokens'] === 'number'
-                ? (usage['input_tokens'] as number) + (usage['output_tokens'] as number)
-                : undefined,
-            input_tokens:
-              typeof usage?.['input_tokens'] === 'number' ? usage['input_tokens'] as number : undefined,
-            output_tokens:
-              typeof usage?.['output_tokens'] === 'number' ? usage['output_tokens'] as number : undefined
+            ...(typeof msg['result'] === 'string' ? { output: msg['result'] } : {}),
+            ...(hasTokens
+              ? { total_tokens: input_tokens + output_tokens, input_tokens, output_tokens }
+              : {})
           }
         };
       } else {
@@ -176,7 +176,7 @@ async function* realSDKLaunch(
           type: 'result',
           result: {
             is_error: true,
-            output: errors.length > 0 ? errors.join('\n') : undefined
+            ...(errors.length > 0 ? { output: errors.join('\n') } : {})
           }
         };
       }
