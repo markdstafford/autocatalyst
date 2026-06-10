@@ -1,4 +1,4 @@
-import { access, readFile, realpath } from 'node:fs/promises';
+import { access, lstat, readFile, realpath } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
 
@@ -56,6 +56,26 @@ export async function resolveScratchRootCandidatePath(
     return null;
   }
   return { resolvedCandidate, rootRealPath };
+}
+
+/**
+ * Returns `true` when it is safe to write to `resolvedCandidate` (the path does not exist,
+ * is not a symlink, or is a symlink whose realpath is still contained by `rootRealPath`).
+ * Returns `false` when an existing symlink at the write target resolves outside the root.
+ * Rethrows unexpected filesystem errors.
+ */
+export async function isFinalWriteTargetSafe(resolvedCandidate: string, rootRealPath: string): Promise<boolean> {
+  try {
+    const stat = await lstat(resolvedCandidate);
+    if (stat.isSymbolicLink()) {
+      const fileRealPath = await realpath(resolvedCandidate);
+      return isContainedByRoot(fileRealPath, rootRealPath);
+    }
+    return true;
+  } catch (error) {
+    if (hasNodeCode(error, 'ENOENT')) return true;
+    throw error;
+  }
 }
 
 export async function readScratchStepResultFile(input: ReadScratchStepResultFileInput): Promise<StepResultFileReadOutcome> {

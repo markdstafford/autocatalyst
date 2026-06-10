@@ -4,7 +4,7 @@ import path from 'node:path';
 import type { RunnerEvent } from '@autocatalyst/api-contract';
 
 import type { ResultCorrectionRequester } from './result-correction.js';
-import { resolveScratchRootCandidatePath } from './result-file.js';
+import { isFinalWriteTargetSafe, resolveScratchRootCandidatePath } from './result-file.js';
 import type { Runner, RunnerCloseResult, RunnerRunInput } from './runner.js';
 
 export interface StubRunnerOptions {
@@ -135,6 +135,12 @@ export class StubRunner implements Runner {
     // directories inside scratchRoot cannot redirect the write outside it.
     const resolution = await resolveScratchRootCandidatePath(scratchRoot, this.#resultFile.relativePath);
     if (resolution === null) {
+      throw new Error('StubRunner resultFile path escapes scratch root.');
+    }
+
+    // Reject an existing symlink at the final write target that resolves outside scratchRoot.
+    const writeSafe = await isFinalWriteTargetSafe(resolution.resolvedCandidate, resolution.rootRealPath);
+    if (!writeSafe) {
       throw new Error('StubRunner resultFile path escapes scratch root.');
     }
 

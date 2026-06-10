@@ -217,6 +217,34 @@ describe('StubRunner — resultFile and correction responses', () => {
     }
   });
 
+  it('rejects write when the result file itself is a symlink pointing outside scratchRoot', async () => {
+    const base = await mkdtemp(path.join(tmpdir(), 'stub-file-symlink-'));
+    try {
+      const scratchRoot = path.join(base, 'scratch');
+      await mkdir(scratchRoot);
+      // Create a real file outside scratchRoot that the symlink will target.
+      const outsideFile = path.join(base, 'secret.json');
+      const { writeFile: writeFileLocal } = await import('node:fs/promises');
+      await writeFileLocal(outsideFile, JSON.stringify({ secret: true }), 'utf8');
+      // Place a symlink at the result-file path inside scratchRoot pointing to the outside file.
+      await symlink(outsideFile, path.join(scratchRoot, 'result.json'));
+
+      const runner = new StubRunner({
+        resultFile: { relativePath: 'result.json', value: { injected: true } }
+      });
+      const env = makeEnvironment({
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      });
+
+      const consume = async (): Promise<void> => {
+        for await (const _ of runner.run({ environment: env })) { /* consume */ }
+      };
+      await expect(consume()).rejects.toThrow(/escapes scratch root/);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
   it('throws when scripted correction responses are exhausted', async () => {
     const runner = new StubRunner({ correctionResponses: [] });
     const requester = runner.getCorrectionRequester();
