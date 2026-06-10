@@ -136,11 +136,7 @@ export function composeAgentProviderAdapterRegistry(
   const registry = new Map<string, AgentProviderAdapter>();
   for (const binding of input.composed) {
     if (!isAgentProviderAdapter(binding.adapter)) {
-      throw new ProviderConfigurationError(
-        'unsupported_adapter',
-        `Provider binding for ${binding.providerKind}/${binding.adapterId} does not implement the AgentProviderAdapter contract`,
-        { configurationRecordId: binding.configurationRecordId, providerKind: binding.providerKind, adapterId: binding.adapterId }
-      );
+      continue; // skip direct adapters and other non-agent bindings
     }
     const key = getAgentProviderAdapterKey(binding.providerKind, binding.adapterId);
     if (registry.has(key)) {

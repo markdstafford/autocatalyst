@@ -60,15 +60,15 @@ import {
   createClaudeAgentAdapter
 } from '@autocatalyst/claude-agent-adapter';
 import {
-  createOpenAIAgentAdapter,
-  openaiAgentAdapterId,
-  openaiProviderKind
-} from '@autocatalyst/openai-agent-adapter';
-import {
   anthropicDirectAdapterId,
   anthropicProviderKind,
   createAnthropicDirectAdapter
 } from '@autocatalyst/anthropic-direct-adapter';
+import {
+  createOpenAIDirectAdapter,
+  openaiDirectAdapterId,
+  openaiProviderKind
+} from '@autocatalyst/openai-direct-adapter';
 import {
   DrizzleConfigurationRecordRepository,
   DrizzleConversationIngressRepository,
@@ -336,13 +336,13 @@ export async function createControlPlaneServer(
     if (!merged.has(claudeKey)) {
       merged.set(claudeKey, () => createClaudeAgentAdapter());
     }
-    const openaiKey = buildProviderAdapterKey(openaiProviderKind, openaiAgentAdapterId);
-    if (!merged.has(openaiKey)) {
-      merged.set(openaiKey, () => createOpenAIAgentAdapter());
-    }
     const anthropicDirectKey = buildProviderAdapterKey(anthropicProviderKind, anthropicDirectAdapterId);
     if (!merged.has(anthropicDirectKey)) {
       merged.set(anthropicDirectKey, () => createAnthropicDirectAdapter());
+    }
+    const openaiDirectKey = buildProviderAdapterKey(openaiProviderKind, openaiDirectAdapterId);
+    if (!merged.has(openaiDirectKey)) {
+      merged.set(openaiDirectKey, () => createOpenAIDirectAdapter());
     }
     mergedAdapters = merged;
   }
@@ -423,7 +423,7 @@ export async function createControlPlaneServer(
             connectionMechanism: 'fetch_transport' as const
           },
           credentialReference: {
-            required: false,
+            required: settings.credentialSecretHandle !== undefined,
             ...(settings.credentialSecretHandle !== undefined
               ? { secretHandle: settings.credentialSecretHandle }
               : {})
