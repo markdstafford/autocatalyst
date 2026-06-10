@@ -1,0 +1,36 @@
+{
+  "name": "claude-agent-adapter",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/claude-agent-adapter/src",
+  "projectType": "library",
+  "tags": ["type:lib", "scope:adapter", "plane:execution"],
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "packages/claude-agent-adapter/dist",
+        "main": "packages/claude-agent-adapter/src/index.ts",
+        "tsConfig": "packages/claude-agent-adapter/tsconfig.lib.json"
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "outputs": ["{options.outputFile}"],
+      "options": {
+        "lintFilePatterns": [
+          "packages/claude-agent-adapter/src/**/*.ts",
+          "packages/claude-agent-adapter/project.json",
+          "packages/claude-agent-adapter/package.json"
+        ]
+      }
+    },
+    "test": {
+      "executor": "@nx/vite:test",
+      "outputs": ["{workspaceRoot}/coverage/packages/claude-agent-adapter"],
+      "options": {
+        "config": "packages/claude-agent-adapter/vite.config.ts"
+      }
+    }
+  }
+}
