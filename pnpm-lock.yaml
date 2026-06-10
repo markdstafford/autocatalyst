@@ -90,9 +90,9 @@ importers:
       '@autocatalyst/execution':
         specifier: workspace:*
         version: link:../../packages/execution
-      '@autocatalyst/openai-agent-adapter':
+      '@autocatalyst/openai-direct-adapter':
         specifier: workspace:*
-        version: link:../../packages/openai-agent-adapter
+        version: link:../../packages/openai-direct-adapter
       '@autocatalyst/persistence':
         specifier: workspace:*
         version: link:../../packages/persistence
@@ -105,9 +105,6 @@ importers:
 
   packages/anthropic-direct-adapter:
     dependencies:
-      '@autocatalyst/api-contract':
-        specifier: '*'
-        version: link:../api-contract
       '@autocatalyst/execution':
         specifier: '*'
         version: link:../execution
@@ -154,11 +151,8 @@ importers:
         specifier: ^3.0.0
         version: 3.25.76
 
-  packages/openai-agent-adapter:
+  packages/openai-direct-adapter:
     dependencies:
-      '@autocatalyst/api-contract':
-        specifier: '*'
-        version: link:../api-contract
       '@autocatalyst/execution':
         specifier: '*'
         version: link:../execution

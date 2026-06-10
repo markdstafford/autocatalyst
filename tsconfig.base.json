@@ -28,7 +28,7 @@
       "@autocatalyst/claude-agent-adapter": ["packages/claude-agent-adapter/src/index.ts"],
       "@autocatalyst/core": ["packages/core/src/index.ts"],
       "@autocatalyst/execution": ["packages/execution/src/index.ts"],
-      "@autocatalyst/openai-agent-adapter": ["packages/openai-agent-adapter/src/index.ts"],
+      "@autocatalyst/openai-direct-adapter": ["packages/openai-direct-adapter/src/index.ts"],
       "@autocatalyst/persistence": ["packages/persistence/src/index.ts"],
       "@autocatalyst/sdk": ["packages/sdk/src/index.ts"]
     }
