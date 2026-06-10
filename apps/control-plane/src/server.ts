@@ -436,7 +436,7 @@ export async function createControlPlaneServer(
       direct: {
         call: (directWorkInput) => directCallFactory.call({
           runId: directWorkInput.runId,
-          phase: directWorkInput.phase,
+          ...(directWorkInput.phase !== undefined && { phase: directWorkInput.phase }),
           step: directWorkInput.step,
           directCall: directWorkInput.directCall
         })

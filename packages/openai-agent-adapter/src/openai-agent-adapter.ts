@@ -328,15 +328,16 @@ export function createOpenAIAgentAdapter(adapterOptions: OpenAIAgentAdapterOptio
       // Build fetch bridge from connection layer
       const transport = connection.createFetchTransport();
       const fetchBridge: typeof globalThis.fetch = async (
-        url: RequestInfo | URL,
+        url: string | URL | Request,
         init?: RequestInit
       ) => {
+        const headers = init?.headers as Record<string, string> | undefined;
+        const body = init?.body as string | undefined;
         return transport.fetch({
           url: String(url),
           method: (init?.method ?? 'GET') as string,
-          headers: init?.headers as Record<string, string> | undefined,
-          body: init?.body as string | undefined,
-          signal: init?.signal as AbortSignal | undefined
+          ...(headers !== undefined && { headers }),
+          ...(body !== undefined && { body })
         });
       };
 

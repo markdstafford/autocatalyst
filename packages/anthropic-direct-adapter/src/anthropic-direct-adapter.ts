@@ -194,7 +194,7 @@ function extractCandidate(response: AnthropicMessagesResponse, toolName: string)
   }
 
   if (toolUseBlocks.length === 1) {
-    const block = toolUseBlocks[0];
+    const block = toolUseBlocks[0]!;
     if (block.name !== toolName) {
       throw new DirectProviderProtocolError(
         'structured_result_missing',
@@ -231,7 +231,7 @@ function extractCandidate(response: AnthropicMessagesResponse, toolName: string)
     );
   }
 
-  const text = textBlocks[0].text.trim();
+  const text = textBlocks[0]!.text.trim();
 
   // Must be only a JSON object, no surrounding prose
   if (!text.startsWith('{') && !text.startsWith('[')) {

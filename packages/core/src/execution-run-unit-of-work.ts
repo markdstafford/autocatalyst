@@ -54,7 +54,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
       const inner = await this.runWithCheckpoint(input);
       return inner.workResult;
     },
-    async runWithCheckpoint(input: RunWorkInput) {
+    async runWithCheckpoint(input: RunWorkInput): Promise<{ workResult: RunWorkResult; checkpointResult?: JsonValue }> {
       const context = await options.resolveContext(input);
 
       // Resolve execution mode (default to agent for backward compat)
@@ -70,12 +70,11 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
           const directResult = await options.direct.call({
             runId: input.runId,
             tenant: input.tenant,
-            phase: undefined,
             step: input.runId, // use runId as step fallback; real composition provides step
             directCall: modeResolution.directCall
           });
           return {
-            workResult: { directive: 'advance' as const, result: directResult.value as JsonValue },
+            workResult: { directive: 'advance' as const, result: directResult.value as unknown as Readonly<Record<string, unknown>> },
             checkpointResult: directResult.value as JsonValue
           };
         } catch (error) {
