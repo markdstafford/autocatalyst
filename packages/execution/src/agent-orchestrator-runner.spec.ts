@@ -21,6 +21,7 @@ import {
   ProviderConnectionError
 } from './agent-provider-adapter.js';
 import type { RunnerRunInput } from './runner.js';
+import { RunnerProtocolError } from './runner.js';
 import { createAgentOrchestratorRunner } from './agent-orchestrator-runner.js';
 import type { CreateAgentOrchestratorRunnerOptions } from './agent-orchestrator-runner.js';
 import { createExecutionEntryPoint } from './execution-entry-point.js';
@@ -490,6 +491,95 @@ describe('createAgentOrchestratorRunner', () => {
       }
 
       await expect(runner.close()).resolves.toEqual({ status: 'closed' });
+    });
+
+    it('propagates session.close() failure from runner.close() on clean stream path', async () => {
+      // This proves the entry point can observe runner_close_failed when
+      // the session close fails after a clean terminal event.
+      const runId = 'run_test_1';
+      const sessionCloseError = new Error('Session close failed');
+      const { options } = makeOrchestratorOptions({
+        events: [makeTerminalEvent(runId)],
+        sessionCloseError
+      });
+      const runner = createAgentOrchestratorRunner(options);
+      await collectEvents(runner, makeRunInput());
+
+      // runner.close() must throw — the execution entry point wraps this
+      // throw in a runner_close_failed RunnerProtocolError.
+      await expect(runner.close()).rejects.toThrow('Session close failed');
+    });
+
+    it('propagates adapter.close() failure from runner.close() on clean stream path', async () => {
+      const runId = 'run_test_1';
+      const adapterCloseError = new Error('Adapter close failed');
+      const { options } = makeOrchestratorOptions({
+        events: [makeTerminalEvent(runId)],
+        closeError: adapterCloseError
+      });
+      const runner = createAgentOrchestratorRunner(options);
+      await collectEvents(runner, makeRunInput());
+
+      await expect(runner.close()).rejects.toThrow('Adapter close failed');
+    });
+
+    it('produces runner_close_failed via execution entry point when runner.close() throws', async () => {
+      // Full entry-point integration: proves close failure on clean path
+      // becomes RunnerProtocolError(runner_close_failed).
+      const runId = 'run_context_1';
+      const sessionCloseError = new Error('Close broke');
+      const { options } = makeOrchestratorOptions(
+        { events: [makeTerminalEvent(runId)], sessionCloseError },
+        { providerKind: 'test', adapterId: 'test-adapter', connectionMechanism: 'process_environment' }
+      );
+      const orchestratorRunner = createAgentOrchestratorRunner(options);
+
+      const fakeContext: ExecutionContext = {
+        run: { id: runId, workKind: 'question', currentStep: 'implement', tenant: 'tenant_1' },
+        task: { prompt: 'Test', inputs: {} },
+        workspaceIntent: { shape: 'none' },
+        secretBindings: [],
+        toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
+        skills: { requested: [] },
+        capabilityRequirements: {
+          shell: { kind: 'bash', required: false },
+          paths: { canonicalWorkspacePaths: false },
+          lsp: { requested: false }
+        }
+      };
+
+      const fakeMaterialize = async (_ctx: ExecutionContext): Promise<MaterializedExecutionEnvironment> => ({
+        context: fakeContext,
+        workspace: { shape: 'none', workspaceRoots: [] },
+        environment: { variables: {}, secretVariableNames: [] },
+        toolPolicy: { allowedTools: [], workspaceRoots: [] },
+        skills: { requested: [] },
+        capabilities: {
+          shell: { kind: 'bash', available: false },
+          paths: {},
+          lsp: { requested: false, available: false }
+        }
+      });
+
+      const entryPoint = createExecutionEntryPoint({
+        runner: orchestratorRunner,
+        materialize: fakeMaterialize,
+        resultValidation: { mode: 'none' }
+      });
+
+      const events: unknown[] = [];
+      let caughtError: unknown;
+      try {
+        for await (const evt of entryPoint.execute({ context: fakeContext })) {
+          events.push(evt);
+        }
+      } catch (err) {
+        caughtError = err;
+      }
+
+      expect(caughtError).toBeDefined();
+      expect(caughtError).toBeInstanceOf(RunnerProtocolError);
+      expect((caughtError as RunnerProtocolError).code).toBe('runner_close_failed');
     });
   });
 

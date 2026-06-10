@@ -109,16 +109,87 @@ function redactString(value: string, knownSecretValues: readonly string[]): stri
   return out;
 }
 
-function defaultLaunch(): ClaudeSessionLaunch {
-  // The real SDK is dynamically imported so the package can be built and
-  // unit-tested without the runtime dependency installed. Production wiring
-  // injects a real launch function.
-  return () => {
+// Real SDK launch: dynamically imports @anthropic-ai/claude-agent-sdk and
+// translates its SDKMessage stream into the ClaudeNativeEvent shape used by
+// mapNativeEvent. Dynamic import keeps the package buildable and unit-testable
+// without the SDK installed; tests inject their own launchClaudeSession seam.
+async function* realSDKLaunch(
+  opts: ClaudeSessionLaunchOptions
+): AsyncIterable<ClaudeNativeEvent> {
+  type QueryFn = (input: { prompt: string; options?: Record<string, unknown> }) => AsyncIterable<Record<string, unknown>>;
+  let query: QueryFn;
+  try {
+    const sdk = await import('@anthropic-ai/claude-agent-sdk') as { query: QueryFn };
+    query = sdk.query;
+  } catch {
     throw new ProviderConnectionError(
       'process_launch_failed',
-      'Claude Agent SDK not available. Provide options.launchClaudeSession.'
+      '@anthropic-ai/claude-agent-sdk is not installed. Install it as a peer dependency or provide options.launchClaudeSession.'
     );
+  }
+
+  const sdkOpts: Record<string, unknown> = {
+    ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
+    ...(opts.env !== undefined ? { env: opts.env } : {}),
+    ...(opts.allowedTools !== undefined ? { allowedTools: opts.allowedTools } : {}),
+    permissionMode: 'dontAsk',
+    ...(opts.options ?? {})
   };
+
+  for await (const msg of query({ prompt: opts.prompt, options: sdkOpts })) {
+    if (msg['type'] === 'assistant') {
+      const inner = msg['message'] as Record<string, unknown> | undefined;
+      const content = inner?.['content'];
+      if (Array.isArray(content)) {
+        for (const block of content as Record<string, unknown>[]) {
+          if (block['type'] === 'text' && typeof block['text'] === 'string') {
+            yield { type: 'assistant', content: block['text'] };
+          } else if (block['type'] === 'tool_use' && typeof block['name'] === 'string') {
+            yield { type: 'tool_use', tool: { name: block['name'], input: block['input'] } };
+          }
+        }
+      }
+    } else if (msg['type'] === 'result') {
+      const subtype = msg['subtype'] as string | undefined;
+      const usage = msg['usage'] as Record<string, unknown> | undefined;
+      if (subtype === 'success') {
+        yield {
+          type: 'result',
+          result: {
+            output: typeof msg['result'] === 'string' ? msg['result'] : undefined,
+            is_error: msg['is_error'] === true,
+            total_tokens:
+              typeof usage?.['input_tokens'] === 'number' &&
+              typeof usage?.['output_tokens'] === 'number'
+                ? (usage['input_tokens'] as number) + (usage['output_tokens'] as number)
+                : undefined,
+            input_tokens:
+              typeof usage?.['input_tokens'] === 'number' ? usage['input_tokens'] as number : undefined,
+            output_tokens:
+              typeof usage?.['output_tokens'] === 'number' ? usage['output_tokens'] as number : undefined
+          }
+        };
+      } else {
+        // Error result subtypes (error_max_turns, error_during_execution, etc.)
+        const errors = Array.isArray(msg['errors']) ? (msg['errors'] as unknown[]).map(String) : [];
+        yield {
+          type: 'result',
+          result: {
+            is_error: true,
+            output: errors.length > 0 ? errors.join('\n') : undefined
+          }
+        };
+      }
+    }
+    // System, user, status, hook, task, and other messages are intentionally ignored.
+  }
+}
+
+function defaultLaunch(): ClaudeSessionLaunch {
+  // realSDKLaunch is an async generator function; it satisfies ClaudeSessionLaunch
+  // (returns AsyncIterable<ClaudeNativeEvent>). Dynamic import means the SDK is
+  // only required at runtime — tests inject launchClaudeSession instead.
+  return realSDKLaunch;
 }
 
 // ---------------------------------------------------------------------------

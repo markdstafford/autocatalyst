@@ -180,8 +180,13 @@ export function createExplicitProfileResolver(input: {
       connectionMechanism: 'process_environment'
     };
 
+    // For the process_environment mechanism (Claude Agent SDK), a credential is
+    // always required — an empty auth token would reach the subprocess silently.
+    // The secret handle remains optional at schema level for additive
+    // compatibility, but its absence is caught by createAgentConnection as a
+    // missing_credential configuration error before any session starts.
     const credentialReference: ResolvedAgentCredentialReference = {
-      required: settings.credentialSecretHandle !== undefined,
+      required: true,
       ...(settings.credentialSecretHandle !== undefined
         ? { secretHandle: settings.credentialSecretHandle }
         : {}),

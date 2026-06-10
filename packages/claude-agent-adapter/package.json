@@ -14,5 +14,13 @@
   "dependencies": {
     "@autocatalyst/api-contract": "*",
     "@autocatalyst/execution": "*"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/claude-agent-sdk": ">=0.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/claude-agent-sdk": {
+      "optional": true
+    }
   }
 }

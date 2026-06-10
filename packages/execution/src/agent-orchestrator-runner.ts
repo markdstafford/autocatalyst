@@ -27,33 +27,10 @@ export interface CreateAgentOrchestratorRunnerOptions {
 export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRunnerOptions): Runner {
   const { adapter, profile, connection, telemetryContext, telemetry, clock = Date.now } = options;
 
-  // State for cleanup — shared between run() generator and close()
+  // State for close idempotency — shared between run() generator and close().
   let activeSession: AgentProviderSession | undefined;
   let sessionClosed = false;
   let adapterClosed = false;
-  let _runComplete = false;
-
-  async function closeSession(): Promise<void> {
-    if (!sessionClosed && activeSession?.close !== undefined) {
-      sessionClosed = true;
-      try {
-        await activeSession.close!();
-      } catch {
-        // Suppress close errors — they must not mask original errors
-      }
-    }
-  }
-
-  async function closeAdapter(): Promise<void> {
-    if (!adapterClosed && adapter.close !== undefined) {
-      adapterClosed = true;
-      try {
-        await adapter.close!();
-      } catch {
-        // Suppress close errors
-      }
-    }
-  }
 
   return {
     async *run(input: RunnerRunInput): AsyncIterable<RunnerEvent> {
@@ -157,7 +134,12 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
           // metadata unavailable
         }
 
-        await closeSession();
+        // Session close is intentionally NOT called here. Closing is delegated
+        // entirely to the public close() method so the execution entry point
+        // can observe close failures and surface runner_close_failed on clean
+        // paths. On error paths the entry point's finally still calls close(),
+        // and its catch block suppresses the close error when a stream error is
+        // already in flight.
 
         const durationMs = clock() - startedAt;
         telemetry?.emit('agent_orchestrator_session_end', {
@@ -172,14 +154,21 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
           degradedCapabilities: metadata?.degradedCapabilities ?? [],
           tokenUsage: metadata?.tokenUsage ?? { available: false }
         });
-
-        _runComplete = true;
       }
     },
 
     async close(): Promise<RunnerCloseResult> {
-      await closeSession();
-      await closeAdapter();
+      // Propagate close failures so the entry point can surface
+      // runner_close_failed on clean-stream paths. The entry point's catch
+      // block already suppresses close errors when a stream error is in flight.
+      if (!sessionClosed && activeSession?.close !== undefined) {
+        sessionClosed = true;
+        await activeSession.close!();
+      }
+      if (!adapterClosed && adapter.close !== undefined) {
+        adapterClosed = true;
+        await adapter.close!();
+      }
       return { status: 'closed' };
     }
   };
