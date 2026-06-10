@@ -33,6 +33,7 @@ const SECRET_TOKEN = 'sk-ant-secret-12345';
 
 function makeProfile(overrides?: Partial<ResolvedAgentRunnerProfile>): ResolvedAgentRunnerProfile {
   return {
+    mode: 'agent',
     providerKind: claudeProviderKind,
     adapterId: claudeAgentAdapterId,
     profileName: 'default',

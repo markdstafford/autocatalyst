@@ -170,6 +170,7 @@ export function createExplicitProfileResolver(input: {
 
     const settings = record.settings as ProviderProfileSettings;
     const profile: ResolvedAgentRunnerProfile = {
+      mode: 'agent',
       providerKind: record.providerKind,
       adapterId: record.adapterId,
       profileName: settings.profileName,

@@ -141,8 +141,23 @@ export {
   type ProviderProtocolErrorCode,
   type ResolvedAgentCredentialReference,
   type ResolvedAgentRunnerProfile,
+  type RunnerProfileMode,
   type UnsupportedProviderCapabilityErrorCode
 } from './agent-provider-adapter.js';
+
+export {
+  DirectProviderProtocolError,
+  DirectResultValidationError,
+  type DirectCallRequest,
+  type DirectProviderAdapter,
+  type DirectProviderCallInput,
+  type DirectProviderCallMetadata,
+  type DirectProviderCallResult,
+  type DirectProviderProtocolErrorCode,
+  type DirectResultValidationConfig,
+  type DirectResultValidationOutcome,
+  type DirectResultValidationSuccess
+} from './direct-provider-adapter.js';
 
 export {
   createAgentConnection,

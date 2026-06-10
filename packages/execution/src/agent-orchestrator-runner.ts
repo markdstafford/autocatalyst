@@ -35,6 +35,13 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
   return {
     async *run(input: RunnerRunInput): AsyncIterable<RunnerEvent> {
       // Pre-flight validation
+      if (profile.mode !== 'agent') {
+        throw new ProviderConfigurationError(
+          'mechanism_mismatch',
+          'Agent orchestrator requires an agent profile.',
+          { mode: profile.mode }
+        );
+      }
       if (adapter.providerKind !== profile.providerKind) {
         throw new ProviderConfigurationError(
           'mechanism_mismatch',
