@@ -39,6 +39,11 @@ function createFakeControlPlaneService(): ControlPlaneService {
     subscribeRunEvents: vi.fn(async () => {
       throw new Error('controlPlane.subscribeRunEvents not stubbed for this test');
     }),
+    replayRunEvents: vi.fn(async (input) => ({
+      status: 'ok' as const,
+      events: [] as never[],
+      ...(input.lastEventId !== undefined ? {} : {})
+    })),
     tick: vi.fn(async () => ({ status: 'noop' as const }))
   };
 }
@@ -347,7 +352,7 @@ describe('registerControlPlaneRoutes', () => {
       topic: { id: 'topic_1', conversationId: 'conv_1', owner: hardcodedDevelopmentPrincipal, tenant: 'tenant_dev', title: 'My Topic', kind: 'main', createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' },
       message: { id: 'msg_1', topicId: 'topic_1', owner: hardcodedDevelopmentPrincipal, tenant: 'tenant_dev', author: hardcodedDevelopmentPrincipal, direction: 'inbound', body: 'hello', createdAt: '2026-06-08T00:00:00.000Z' },
       run: { id: 'run_1', topicId: 'topic_1', owner: hardcodedDevelopmentPrincipal, tenant: 'tenant_dev', workKind: 'feature', currentStep: 'intake', terminal: false, createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' },
-      runStep: { id: 'step_1', runId: 'run_1', phase: 'intake', step: 'intake', role: 'none', startedAt: '2026-06-08T00:00:00.000Z', endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 } }
+      runStep: { id: 'step_1', runId: 'run_1', phase: 'intake', step: 'intake', role: 'none', startedAt: '2026-06-08T00:00:00.000Z', endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 }, checkpointResult: null }
     };
     const controlPlane = createFakeControlPlaneService();
     (controlPlane.createConversationWithFirstRun as ReturnType<typeof vi.fn>).mockResolvedValue(orchestratedResult);
@@ -479,7 +484,7 @@ describe('registerControlPlaneRoutes', () => {
 
   it('GET /v1/runs/:id/steps returns 200 with the run-step list', async () => {
     const steps = [
-      { id: 'step_1', runId: 'run_1', phase: 'intake', step: 'intake', role: 'none', startedAt: '2026-06-08T00:00:00.000Z', endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 } }
+      { id: 'step_1', runId: 'run_1', phase: 'intake', step: 'intake', role: 'none', startedAt: '2026-06-08T00:00:00.000Z', endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 }, checkpointResult: null }
     ];
     const controlPlane = createFakeControlPlaneService();
     (controlPlane.listRunSteps as ReturnType<typeof vi.fn>).mockResolvedValue({ steps });
@@ -538,6 +543,9 @@ describe('registerControlPlaneRoutes', () => {
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toMatch(/^text\/event-stream/u);
     expect(controlPlane.subscribeRunEvents).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'run_1', tenant: 'tenant_dev' })
+    );
+    expect(controlPlane.replayRunEvents).toHaveBeenCalledWith(
       expect.objectContaining({ runId: 'run_1', tenant: 'tenant_dev', lastEventId: 'evt_42' })
     );
     controller.abort();
@@ -546,7 +554,7 @@ describe('registerControlPlaneRoutes', () => {
   it('GET /v1/runs/:id/events writes event/id/data SSE frames for each published event', async () => {
     const timestamp = '2026-06-08T00:00:00.000Z';
     const run = { id: 'run_1', topicId: 'topic_1', owner: hardcodedDevelopmentPrincipal, tenant: 'tenant_dev', workKind: 'feature', currentStep: 'intake', terminal: false, createdAt: timestamp, updatedAt: timestamp };
-    const runStep = { id: 'step_1', runId: 'run_1', phase: 'intake', step: 'intake', role: 'none', startedAt: timestamp, endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 } };
+    const runStep = { id: 'step_1', runId: 'run_1', phase: 'intake', step: 'intake', role: 'none', startedAt: timestamp, endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 }, checkpointResult: null };
     const sseEvent = {
       id: 'evt_abc',
       type: 'run_state_transition' as const,

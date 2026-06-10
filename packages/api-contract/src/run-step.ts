@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { sessionRoleSchema } from './domain-value-objects.js';
+import { jsonValueSchema, sessionRoleSchema } from './domain-value-objects.js';
 
 const occurrenceSchema = z.object({
   index: z.number().int().min(0),
@@ -17,7 +17,8 @@ export const runStepSchema = z.object({
   startedAt: z.string().datetime(),
   endedAt: z.string().datetime().nullable(),
   durationMs: z.number().int().min(0).nullable(),
-  occurrence: occurrenceSchema
+  occurrence: occurrenceSchema,
+  checkpointResult: jsonValueSchema.nullable()
 }).strict();
 
 export const createRunStepInputSchema = z.object({

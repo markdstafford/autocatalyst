@@ -1,84 +1,72 @@
-import type { ExecutionContext } from '@autocatalyst/api-contract';
+import type { ExecutionContext, JsonValue } from '@autocatalyst/api-contract';
 import {
   RunnerProtocolError,
   ExecutionMaterializationError,
-  validateExecutionBoundaryEventStream
+  type ExecutionBoundaryEvent
 } from '@autocatalyst/execution';
-import type { ExecutionBoundaryEvent, ExecutionEntryPoint, ExecutionTerminalResultEvent } from '@autocatalyst/execution';
+import type { ExecutionEntryPoint } from '@autocatalyst/execution';
 import type { RunWorkInput, RunWorkResult, RunUnitOfWork } from './orchestrator.js';
+import { consumeRunnerEvents } from './runner-event-consumer.js';
+import { InMemoryRetainedRunEventStore, type RunEventStore } from './run-events.js';
 
 export interface ExecutionRunUnitOfWorkOptions {
   readonly execute: ExecutionEntryPoint;
   readonly resolveContext: (input: RunWorkInput) => Promise<ExecutionContext>;
+  readonly eventsStore?: RunEventStore;
+  /** Optional passthrough observer for each validated boundary event (used by integration tests). */
   readonly onEvent?: (event: ExecutionBoundaryEvent) => void | Promise<void>;
 }
 
-export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOptions): RunUnitOfWork {
+export type ExecutionRunUnitOfWorkResult = RunWorkResult & {
+  readonly checkpointResult?: JsonValue;
+};
+
+export interface ExecutionRunUnitOfWork extends RunUnitOfWork {
+  runWithCheckpoint(input: RunWorkInput): Promise<{ workResult: RunWorkResult; checkpointResult?: JsonValue }>;
+}
+
+export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOptions): ExecutionRunUnitOfWork {
   return {
     async run(input: RunWorkInput): Promise<RunWorkResult> {
+      const inner = await this.runWithCheckpoint(input);
+      return inner.workResult;
+    },
+    async runWithCheckpoint(input: RunWorkInput) {
       const context = await options.resolveContext(input);
       const events = options.execute.execute({ context, correlationId: input.runId });
-
-      let terminalEvent: ExecutionTerminalResultEvent | undefined;
-      let terminalSeen = false;
-      try {
-        for await (const event of validateExecutionBoundaryEventStream(events, input.runId)) {
-          if (options.onEvent !== undefined) {
-            try {
-              await options.onEvent(event);
-            } catch {
-              throw new RunnerProtocolError('runner_failed', 'Telemetry onEvent hook threw during event processing.');
+      const onEvent = options.onEvent;
+      const tapped = onEvent === undefined
+        ? events
+        : (async function* () {
+            for await (const event of events) {
+              try {
+                await onEvent(event);
+              } catch {
+                throw new RunnerProtocolError('runner_failed', 'Telemetry onEvent hook threw during event processing.');
+              }
+              yield event;
             }
-          }
-          if (event.type === 'runner_terminal_result') {
-            terminalSeen = true;
-            terminalEvent = event;
-          }
-        }
+          })();
+      const eventsStore = options.eventsStore ?? new InMemoryRetainedRunEventStore();
+      try {
+        return await consumeRunnerEvents({
+          eventsStore,
+          events: tapped,
+          runId: input.runId,
+          tenant: input.tenant
+        });
       } catch (error) {
         if (error instanceof RunnerProtocolError) {
           throw error;
         }
-        // Stream threw after terminal → protocol violation
-        if (terminalSeen) {
-          throw new RunnerProtocolError('runner_failed', 'Runner threw after terminal result during drain.');
-        }
-        // Runner threw before terminal → fail directive with sanitized reason
         let reason: string;
         if (error instanceof ExecutionMaterializationError) {
           reason = `Execution failed: ${error.code}`;
         } else {
           reason = 'Runner failed before terminal result.';
         }
-        return { directive: 'fail', reason };
+        return { workResult: { directive: 'fail', reason } };
       }
-
-      if (terminalEvent === undefined) {
-        // validateExecutionBoundaryEventStream throws missing_terminal_result, so this is unreachable
-        throw new RunnerProtocolError('missing_terminal_result', 'No terminal event.');
-      }
-
-      return mapTerminalToWorkResult(terminalEvent);
     }
   };
-}
-
-function mapTerminalToWorkResult(event: ExecutionTerminalResultEvent): RunWorkResult {
-  switch (event.result.directive) {
-    case 'advance':
-      return {
-        directive: 'advance',
-        ...(event.result.result !== undefined ? { result: event.result.result } : {})
-      };
-    case 'needs_input':
-      return {
-        directive: 'needs_input',
-        ...(event.result.question !== undefined ? { question: event.result.question } : {})
-      };
-    case 'fail':
-      return {
-        directive: 'fail',
-        reason: event.result.reason ?? 'Runner returned a failed terminal result.'
-      };
-  }
 }

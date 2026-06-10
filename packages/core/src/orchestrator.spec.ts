@@ -39,6 +39,7 @@ function makeRunStep(overrides: Partial<RunStep> = {}): RunStep {
     endedAt: null,
     durationMs: null,
     occurrence: { index: 0, attempt: 1 },
+    checkpointResult: null,
     ...overrides
   };
 }
@@ -113,7 +114,11 @@ function makeFakeIngressRepo(overrides: Partial<ConversationIngressRepository> =
 function makeRecordingPublisher(): { publisher: RunEventPublisher; events: RunStateTransitionEvent[] } {
   const events: RunStateTransitionEvent[] = [];
   return {
-    publisher: { publish: (event) => events.push(event) },
+    publisher: {
+      append: async (input) => { events.push(input.event as RunStateTransitionEvent); },
+      replayAfter: async () => ({ status: 'ok', events: [] }),
+      subscribe: () => ({ events: (async function*() {})() as unknown as AsyncIterable<RunStateTransitionEvent>, close: () => {} })
+    } as unknown as RunEventPublisher,
     events
   };
 }

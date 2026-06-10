@@ -14,6 +14,7 @@ import type {
   CreateTestResultInput,
   CreateTopicInput,
   Feedback,
+  JsonValue,
   Message,
   Project,
   Publication,
@@ -65,6 +66,8 @@ export interface RecordRunStepTransitionInput {
   readonly currentStep: string;
   readonly terminal: boolean;
   readonly runStep: LifecycleRunStepInput;
+  readonly sourceRunStepId?: string;
+  readonly checkpointResult?: JsonValue;
 }
 
 export interface RecordRunStepTransitionResult {
@@ -79,6 +82,7 @@ export interface RunRepository {
   listByTopic(topicId: string): Promise<readonly Run[]>;
   recordRunLifecycleStart(input: RecordRunLifecycleStartInput): Promise<RecordRunLifecycleStartResult>;
   recordRunStepTransition(input: RecordRunStepTransitionInput): Promise<RecordRunStepTransitionResult>;
+  findLatestOpenRunStep?(input: { runId: string; step: string }): Promise<RunStep | null>;
 }
 
 export interface ArtifactRepository {

@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import {
+  clientRunEventSchema,
   runStateTransitionEventSchema,
+  type ClientRunEvent,
   type Run,
+  type RunEventReplayResult,
   type RunStateTransitionEvent,
   type RunStateTransitionKind,
   type RunStep
@@ -40,32 +43,48 @@ export function createRunStateTransitionEvent(input: CreateRunStateTransitionEve
   });
 }
 
-// --- Event bus interfaces ---
+// --- Store interfaces ---
 
-export interface SubscribeRunEventsInput {
+export interface RunEventStoreScope {
   readonly runId: string;
   readonly tenant: string;
-  readonly lastEventId?: string; // live-memory-only; no durable replay for this issue
+}
+
+export interface AppendRunEventInput {
+  readonly scope: RunEventStoreScope;
+  readonly event: ClientRunEvent;
+}
+
+export interface ReplayRunEventsInput extends RunEventStoreScope {
+  readonly lastEventId?: string;
+}
+
+export interface SubscribeRunEventsInput extends RunEventStoreScope {
+  readonly lastEventId?: string;
 }
 
 export interface RunEventSubscription {
-  readonly events: AsyncIterable<RunStateTransitionEvent>;
+  readonly events: AsyncIterable<ClientRunEvent>;
   close(): void;
 }
 
-export interface RunEventPublisher {
-  publish(event: RunStateTransitionEvent): void;
-}
-
-export interface RunEventSubscriber {
+export interface RunEventStore {
+  append(input: AppendRunEventInput): Promise<void>;
+  replayAfter(input: ReplayRunEventsInput): Promise<RunEventReplayResult>;
   subscribe(input: SubscribeRunEventsInput): RunEventSubscription;
 }
 
-export interface RunEventBus extends RunEventPublisher, RunEventSubscriber {}
+// Backwards-compatible publisher/subscriber aliases.
+export type RunEventPublisher = RunEventStore;
+export type RunEventSubscriber = Pick<RunEventStore, 'subscribe'>;
+export type RunEventBus = RunEventStore;
 
-// --- In-memory implementation ---
-
-const DEFAULT_BUFFER_SIZE = 32;
+export interface RetainedRunEventStoreOptions {
+  readonly maxEventsPerScope?: number;
+  readonly maxExpiredIdsPerScope?: number;
+  readonly subscriberBufferSize?: number;
+  readonly clock?: () => string;
+}
 
 export class RunEventSubscriptionOverflowError extends Error {
   constructor() {
@@ -74,56 +93,122 @@ export class RunEventSubscriptionOverflowError extends Error {
   }
 }
 
-export class InMemoryRunEventBus implements RunEventBus {
-  readonly #subscribers = new Map<string, Set<Subscriber>>();
+const DEFAULT_MAX_EVENTS = 256;
+const DEFAULT_MAX_EXPIRED_IDS = 256;
+const DEFAULT_SUBSCRIBER_BUFFER = 64;
 
-  publish(event: RunStateTransitionEvent): void {
-    const key = `${event.runId}:${event.tenant}`;
-    const subs = this.#subscribers.get(key);
-    if (subs === undefined) return;
-    for (const sub of subs) {
+interface ScopeState {
+  readonly events: ClientRunEvent[];
+  readonly expiredIds: Set<string>;
+  readonly expiredIdOrder: string[];
+  readonly subscribers: Set<Subscriber>;
+}
+
+export class InMemoryRetainedRunEventStore implements RunEventStore {
+  readonly #scopes = new Map<string, ScopeState>();
+  readonly #maxEvents: number;
+  readonly #maxExpiredIds: number;
+  readonly #subscriberBufferSize: number;
+
+  constructor(options: RetainedRunEventStoreOptions = {}) {
+    this.#maxEvents = options.maxEventsPerScope ?? DEFAULT_MAX_EVENTS;
+    this.#maxExpiredIds = options.maxExpiredIdsPerScope ?? DEFAULT_MAX_EXPIRED_IDS;
+    this.#subscriberBufferSize = options.subscriberBufferSize ?? DEFAULT_SUBSCRIBER_BUFFER;
+  }
+
+  async append(input: AppendRunEventInput): Promise<void> {
+    const validated = clientRunEventSchema.parse(input.event);
+    if (validated.runId !== input.scope.runId) {
+      throw new Error(`Event runId '${validated.runId}' does not match scope runId '${input.scope.runId}'.`);
+    }
+    const key = this.#scopeKey(input.scope);
+    const state = this.#getOrCreate(key);
+    state.events.push(validated);
+    if (state.events.length > this.#maxEvents) {
+      const evicted = state.events.shift();
+      if (evicted !== undefined) {
+        this.#recordExpired(state, evicted.id);
+      }
+    }
+    for (const sub of [...state.subscribers]) {
       try {
-        sub.push(event);
+        sub.push(validated);
       } catch {
         sub.close();
-        subs.delete(sub);
-        if (subs.size === 0) {
-          this.#subscribers.delete(key);
-        }
+        state.subscribers.delete(sub);
       }
     }
   }
 
-  subscribe(input: SubscribeRunEventsInput): RunEventSubscription {
-    const key = `${input.runId}:${input.tenant}`;
-    const sub = new Subscriber();
-    if (!this.#subscribers.has(key)) {
-      this.#subscribers.set(key, new Set());
+  async replayAfter(input: ReplayRunEventsInput): Promise<RunEventReplayResult> {
+    const key = this.#scopeKey(input);
+    const state = this.#scopes.get(key);
+    if (input.lastEventId === undefined) {
+      return { status: 'ok', events: [] };
     }
-    this.#subscribers.get(key)!.add(sub);
+    if (state === undefined) {
+      return { status: 'unknown_event_id', lastEventId: input.lastEventId };
+    }
+    const cursorIndex = state.events.findIndex((event) => event.id === input.lastEventId);
+    if (cursorIndex >= 0) {
+      const events = state.events.slice(cursorIndex + 1);
+      return { status: 'ok', events };
+    }
+    if (state.expiredIds.has(input.lastEventId)) {
+      return { status: 'expired_event_id', lastEventId: input.lastEventId };
+    }
+    return { status: 'unknown_event_id', lastEventId: input.lastEventId };
+  }
 
+  subscribe(input: SubscribeRunEventsInput): RunEventSubscription {
+    const key = this.#scopeKey(input);
+    const state = this.#getOrCreate(key);
+    const sub = new Subscriber(this.#subscriberBufferSize);
+    state.subscribers.add(sub);
     return {
       events: sub.iterable(),
       close: () => {
         sub.close();
-        const set = this.#subscribers.get(key);
-        if (set !== undefined) {
-          set.delete(sub);
-          if (set.size === 0) {
-            this.#subscribers.delete(key);
-          }
-        }
+        state.subscribers.delete(sub);
       }
     };
+  }
+
+  #scopeKey(scope: RunEventStoreScope): string {
+    return `${scope.tenant}${scope.runId}`;
+  }
+
+  #getOrCreate(key: string): ScopeState {
+    let state = this.#scopes.get(key);
+    if (state === undefined) {
+      state = { events: [], expiredIds: new Set(), expiredIdOrder: [], subscribers: new Set() };
+      this.#scopes.set(key, state);
+    }
+    return state;
+  }
+
+  #recordExpired(state: ScopeState, id: string): void {
+    if (state.expiredIds.has(id)) return;
+    state.expiredIds.add(id);
+    state.expiredIdOrder.push(id);
+    while (state.expiredIdOrder.length > this.#maxExpiredIds) {
+      const removed = state.expiredIdOrder.shift();
+      if (removed !== undefined) state.expiredIds.delete(removed);
+    }
   }
 }
 
 class Subscriber {
+  readonly #bufferSize: number;
   #closed = false;
-  #buffer: RunStateTransitionEvent[] = [];
-  #resolve: ((value: IteratorResult<RunStateTransitionEvent>) => void) | null = null;
+  #buffer: ClientRunEvent[] = [];
+  #resolve: ((value: IteratorResult<ClientRunEvent>) => void) | null = null;
 
-  push(event: RunStateTransitionEvent): void {
+  constructor(bufferSize: number) {
+    this.#bufferSize = bufferSize;
+  }
+
+  push(event: ClientRunEvent): void {
     if (this.#closed) return;
     if (this.#resolve !== null) {
       const resolve = this.#resolve;
@@ -131,9 +216,8 @@ class Subscriber {
       resolve({ value: event, done: false });
       return;
     }
-    if (this.#buffer.length >= DEFAULT_BUFFER_SIZE) {
-      this.close();
-      return;
+    if (this.#buffer.length >= this.#bufferSize) {
+      throw new RunEventSubscriptionOverflowError();
     }
     this.#buffer.push(event);
   }
@@ -143,29 +227,57 @@ class Subscriber {
     if (this.#resolve !== null) {
       const resolve = this.#resolve;
       this.#resolve = null;
-      resolve({ value: undefined as unknown as RunStateTransitionEvent, done: true });
+      resolve({ value: undefined as unknown as ClientRunEvent, done: true });
     }
   }
 
-  iterable(): AsyncIterable<RunStateTransitionEvent> {
+  iterable(): AsyncIterable<ClientRunEvent> {
     return {
-      [Symbol.asyncIterator]: (): AsyncIterator<RunStateTransitionEvent> => ({
-        next: (): Promise<IteratorResult<RunStateTransitionEvent>> => {
+      [Symbol.asyncIterator]: (): AsyncIterator<ClientRunEvent> => ({
+        next: (): Promise<IteratorResult<ClientRunEvent>> => {
           if (this.#buffer.length > 0) {
             return Promise.resolve({ value: this.#buffer.shift()!, done: false });
           }
           if (this.#closed) {
-            return Promise.resolve({ value: undefined as unknown as RunStateTransitionEvent, done: true });
+            return Promise.resolve({ value: undefined as unknown as ClientRunEvent, done: true });
           }
-          return new Promise<IteratorResult<RunStateTransitionEvent>>((resolve) => {
+          return new Promise<IteratorResult<ClientRunEvent>>((resolve) => {
             this.#resolve = resolve;
           });
         },
-        return: (): Promise<IteratorResult<RunStateTransitionEvent>> => {
+        return: (): Promise<IteratorResult<ClientRunEvent>> => {
           this.close();
-          return Promise.resolve({ value: undefined as unknown as RunStateTransitionEvent, done: true });
+          return Promise.resolve({ value: undefined as unknown as ClientRunEvent, done: true });
         }
       })
     };
+  }
+}
+
+// --- Backwards-compatible InMemoryRunEventBus shim (deprecated) ---
+// Wraps the retained store and exposes the older synchronous publish() API used by
+// RunEventPublisher consumers during the migration.
+export class InMemoryRunEventBus implements RunEventStore {
+  readonly #store: InMemoryRetainedRunEventStore;
+
+  constructor(options: RetainedRunEventStoreOptions = {}) {
+    this.#store = new InMemoryRetainedRunEventStore(options);
+  }
+
+  async append(input: AppendRunEventInput): Promise<void> {
+    await this.#store.append(input);
+  }
+
+  async replayAfter(input: ReplayRunEventsInput): Promise<RunEventReplayResult> {
+    return this.#store.replayAfter(input);
+  }
+
+  subscribe(input: SubscribeRunEventsInput): RunEventSubscription {
+    return this.#store.subscribe(input);
+  }
+
+  /** @deprecated Use append({scope, event}) instead. */
+  publish(event: RunStateTransitionEvent): void {
+    void this.#store.append({ scope: { runId: event.runId, tenant: event.tenant }, event });
   }
 }

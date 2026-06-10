@@ -191,7 +191,8 @@ export const runSteps = sqliteTable('run_steps', {
   startedAt: text('started_at').notNull(),
   endedAt: text('ended_at'),
   durationMs: integer('duration_ms'),
-  occurrenceJson: text('occurrence_json').notNull()
+  occurrenceJson: text('occurrence_json').notNull(),
+  checkpointResultJson: text('checkpoint_result_json')
 }, (table) => [
   index('run_steps_run_started_idx').on(table.runId, table.startedAt)
 ]);
