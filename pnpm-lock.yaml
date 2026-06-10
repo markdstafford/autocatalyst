@@ -75,6 +75,9 @@ importers:
 
   apps/control-plane:
     dependencies:
+      '@autocatalyst/anthropic-direct-adapter':
+        specifier: workspace:*
+        version: link:../../packages/anthropic-direct-adapter
       '@autocatalyst/api-contract':
         specifier: workspace:*
         version: link:../../packages/api-contract
@@ -87,12 +90,27 @@ importers:
       '@autocatalyst/execution':
         specifier: workspace:*
         version: link:../../packages/execution
+      '@autocatalyst/openai-agent-adapter':
+        specifier: workspace:*
+        version: link:../../packages/openai-agent-adapter
       '@autocatalyst/persistence':
         specifier: workspace:*
         version: link:../../packages/persistence
       fastify:
         specifier: ^5.8.5
         version: 5.8.5
+      zod:
+        specifier: ^3.25.64
+        version: 3.25.76
+
+  packages/anthropic-direct-adapter:
+    dependencies:
+      '@autocatalyst/api-contract':
+        specifier: '*'
+        version: link:../api-contract
+      '@autocatalyst/execution':
+        specifier: '*'
+        version: link:../execution
 
   packages/api-contract:
     dependencies:
@@ -135,6 +153,15 @@ importers:
       zod:
         specifier: ^3.0.0
         version: 3.25.76
+
+  packages/openai-agent-adapter:
+    dependencies:
+      '@autocatalyst/api-contract':
+        specifier: '*'
+        version: link:../api-contract
+      '@autocatalyst/execution':
+        specifier: '*'
+        version: link:../execution
 
   packages/persistence:
     dependencies:

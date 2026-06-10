@@ -101,11 +101,13 @@ async function* mapNativeEventsToRunnerEvents(
     id: nextEventId(),
     runId,
     step,
-    ...(role !== undefined ? { role } : {}),
     importance: 'normal' as const,
     createdAt: now(),
     ...extra
   });
+
+  // role is captured for telemetry context but not emitted in RunnerEvent fields
+  void role;
 
   for await (const native of nativeEvents) {
     if (native.type === 'usage') {
