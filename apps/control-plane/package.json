@@ -4,11 +4,12 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@autocatalyst/api-contract": "workspace:*",
+    "@autocatalyst/claude-agent-adapter": "workspace:*",
     "@autocatalyst/core": "workspace:*",
+    "@autocatalyst/execution": "workspace:*",
     "@autocatalyst/persistence": "workspace:*",
-    "fastify": "^5.8.5"
-  },
-  "devDependencies": {
-    "@autocatalyst/execution": "workspace:*"
+    "fastify": "^5.8.5",
+    "zod": "^3.25.64"
   }
 }

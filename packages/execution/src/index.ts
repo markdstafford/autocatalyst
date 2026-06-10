@@ -93,6 +93,81 @@ export {
 } from './secret-resolver.js';
 
 export {
+  applyRequestAlteration,
+  buildClaudeProcessLaunchEnvironment,
+  claudeProviderOwnedEnvironmentVariables,
+  defaultMaxRetries,
+  defaultRequestTimeoutMs,
+  isTransientProviderFailure,
+  maximumMaxRetries,
+  maximumRequestTimeoutMs,
+  ProviderAlterationError,
+  redactProcessLaunchConfigForLog,
+  redactProviderRequestForLog,
+  redactProviderResponseForLog,
+  transientHttpStatuses,
+  validateHttpHeaderName,
+  type AlteredProviderRequest,
+  type ClaudeProcessLaunchInput,
+  type ClaudeProcessLaunchResult,
+  type ProviderAlterationErrorCode,
+  type ProviderCapabilityDegradation,
+  type ProviderRequest,
+  type RedactProcessLaunchConfigInput,
+  type RedactProviderRequestInput,
+  type RedactProviderResponseInput,
+  type RequestAlterationOptions,
+  type RetryPolicy
+} from './request-alteration.js';
+
+export {
+  ProviderConfigurationError,
+  ProviderConnectionError,
+  ProviderProtocolError,
+  UnsupportedProviderCapabilityError,
+  type AgentConnection,
+  type AgentConnectionTelemetryContext,
+  type AgentProviderAdapter,
+  type AgentProviderSession,
+  type AgentProviderSessionInput,
+  type AgentProviderSessionMetadata,
+  type AgentTokenUsage,
+  type ProcessLaunchConfig,
+  type ProcessLaunchConfigInput,
+  type ProviderConfigurationErrorCode,
+  type ProviderConnectionErrorCode,
+  type ProviderConnectionMechanism,
+  type ProviderFetchTransport,
+  type ProviderProtocolErrorCode,
+  type ResolvedAgentCredentialReference,
+  type ResolvedAgentRunnerProfile,
+  type UnsupportedProviderCapabilityErrorCode
+} from './agent-provider-adapter.js';
+
+export {
+  createAgentConnection,
+  type AgentConnectionFactoryOptions,
+  type ProviderConnectionLogger,
+  type ProviderCredentialResolver
+} from './connection.js';
+
+export {
+  createAgentOrchestratorRunner,
+  type AgentOrchestratorTelemetryEmitter,
+  type CreateAgentOrchestratorRunnerOptions
+} from './agent-orchestrator-runner.js';
+
+export {
+  getAgentProviderAdapterKey,
+  createAgentRunnerFactory,
+  type AgentProviderAdapterRegistry,
+  type AgentProfileResolution,
+  type AgentRunnerFactoryInput,
+  type AgentRunnerFactory,
+  type CreateAgentRunnerFactoryOptions
+} from './runner-dispatch.js';
+
+export {
   createExecutionEntryPoint,
   type CreateExecutionEntryPointOptions,
   type ExecutionEntryPoint,
