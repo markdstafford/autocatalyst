@@ -7,7 +7,8 @@ import {
 import type { DirectProviderCallInput } from '@autocatalyst/execution';
 import {
   DirectProviderProtocolError,
-  ProviderConnectionError
+  ProviderConnectionError,
+  createAgentConnection
 } from '@autocatalyst/execution';
 import type {
   ResolvedAgentRunnerProfile,
@@ -433,5 +434,128 @@ describe('createAnthropicDirectAdapter', () => {
       // but we verify no ANTHROPIC_API_KEY usage by absence in transport calls)
       expect(process.env).toEqual(envBefore);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Production-seam tests: real createAgentConnection, only outermost fetch mocked
+// ---------------------------------------------------------------------------
+
+describe('anthropic-direct-adapter: production connection seam', () => {
+  it('sends a properly-serialized JSON body through the real createAgentConnection transport', async () => {
+    const capturedRequests: Array<{ url: string; method: string; body?: string; headers?: Record<string, string> }> = [];
+
+    const outerFetch: typeof globalThis.fetch = async (url, init) => {
+      capturedRequests.push({
+        url: String(url),
+        method: (init?.method ?? 'GET') as string,
+        body: init?.body as string | undefined,
+        headers: init?.headers as Record<string, string> | undefined
+      });
+      return new Response(JSON.stringify({
+        id: 'msg_prod_1',
+        content: [{ type: 'tool_use', id: 'tu_prod_1', name: 'autocatalyst_direct_result', input: { intent: 'implement' } }],
+        model: 'claude-3-5-sonnet-latest',
+        usage: { input_tokens: 20, output_tokens: 10 },
+        stop_reason: 'tool_use'
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+
+    const profile: ResolvedAgentRunnerProfile = {
+      mode: 'direct',
+      providerKind: anthropicProviderKind,
+      adapterId: anthropicDirectAdapterId,
+      profileName: 'prod-seam-test',
+      model: { provider: 'anthropic', model: 'claude-3-5-sonnet-latest' },
+      inferenceSettings: {},
+      endpoint: {},
+      connectionMechanism: 'fetch_transport'
+    };
+
+    const connection = await createAgentConnection({
+      profile,
+      credentialReference: { required: false },
+      credentialResolver: { resolveCredential: async () => undefined },
+      telemetryContext: { runId: 'run_seam_1', phase: 'main', step: 'classify' },
+      fetch: outerFetch
+    });
+
+    const adapter = createAnthropicDirectAdapter();
+    const schema = z.object({ intent: z.enum(['implement', 'review']) }).strict();
+    const result = await adapter.call({
+      call: {
+        purpose: 'intent_classification',
+        input: { rawText: 'implement this feature' },
+        resultValidation: { schemaId: 'intent-result', schema }
+      },
+      profile,
+      connection,
+      telemetryContext: { runId: 'run_seam_1', phase: 'main', step: 'classify' }
+    });
+
+    // The outermost fetch was reached (production seam exercised)
+    expect(capturedRequests).toHaveLength(1);
+    const req = capturedRequests[0]!;
+
+    // Body is a JSON string (not double-encoded)
+    expect(typeof req.body).toBe('string');
+    const parsed = JSON.parse(req.body!);
+    expect(typeof parsed).toBe('object');
+    expect(parsed).not.toBeNull();
+    // Body should be an object with model, messages — not a string literal
+    expect(typeof parsed.model).toBe('string');
+    expect(Array.isArray(parsed.messages)).toBe(true);
+
+    // Result was parsed correctly from the response
+    expect(result.candidate).toEqual({ intent: 'implement' });
+    expect(result.metadata.outcome).toBe('succeeded');
+  });
+
+  it('correctly maps token usage from the real transport response', async () => {
+    const outerFetch: typeof globalThis.fetch = async () => new Response(JSON.stringify({
+      content: [{ type: 'tool_use', id: 'tu_2', name: 'autocatalyst_direct_result', input: { result: 'ok' } }],
+      model: 'claude-3-5-sonnet-latest',
+      usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 30, cache_creation_input_tokens: 10 }
+    }), { status: 200, headers: { 'content-type': 'application/json' } });
+
+    const profile: ResolvedAgentRunnerProfile = {
+      mode: 'direct',
+      providerKind: anthropicProviderKind,
+      adapterId: anthropicDirectAdapterId,
+      profileName: 'prod-seam-usage',
+      model: { provider: 'anthropic', model: 'claude-3-5-sonnet-latest' },
+      inferenceSettings: {},
+      endpoint: {},
+      connectionMechanism: 'fetch_transport'
+    };
+
+    const connection = await createAgentConnection({
+      profile,
+      credentialReference: { required: false },
+      credentialResolver: { resolveCredential: async () => undefined },
+      telemetryContext: { runId: 'run_seam_2', step: 'usage_test' },
+      fetch: outerFetch
+    });
+
+    const adapter = createAnthropicDirectAdapter();
+    const schema = z.object({ result: z.string() });
+    const result = await adapter.call({
+      call: {
+        purpose: 'test_usage',
+        input: {},
+        resultValidation: { schemaId: 'test-result', schema }
+      },
+      profile,
+      connection,
+      telemetryContext: { runId: 'run_seam_2', step: 'usage_test' }
+    });
+
+    expect(result.metadata.tokenUsage.available).toBe(true);
+    if (result.metadata.tokenUsage.available) {
+      expect(result.metadata.tokenUsage.tokens.input).toBe(100);
+      expect(result.metadata.tokenUsage.tokens.output).toBe(50);
+      expect(result.metadata.tokenUsage.tokens.cacheRead).toBe(30);
+      expect(result.metadata.tokenUsage.tokens.cacheWrite).toBe(10);
+    }
   });
 });

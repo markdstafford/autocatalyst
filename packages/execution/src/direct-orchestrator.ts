@@ -49,10 +49,18 @@ export function createDirectOrchestrator(options: CreateDirectOrchestratorOption
   const { adapter, profile, connection, telemetryContext, telemetry, clock = Date.now } = options;
 
   let adapterClosed = false;
+  let callCompleted = false;
 
   const orchestrator: DirectOrchestrator = {
     async call<TSchema extends z.ZodTypeAny>(call: DirectCallRequest<TSchema>): Promise<DirectOrchestratorCallResult<z.infer<TSchema>>> {
       // Preflight checks
+      if (callCompleted) {
+        throw new ProviderConfigurationError(
+          'mechanism_mismatch',
+          'DirectOrchestrator.call() may only be called once. The orchestrator closes adapter resources on completion.',
+          { providerKind: profile.providerKind, adapterId: profile.adapterId }
+        );
+      }
       if (profile.mode !== 'direct') {
         throw new ProviderConfigurationError(
           'mechanism_mismatch',
@@ -161,8 +169,12 @@ export function createDirectOrchestrator(options: CreateDirectOrchestratorOption
         const durationMs = clock() - startedAt;
         telemetry?.emit('direct_orchestrator_call_end', {
           runId: telemetryContext.runId,
+          phase: telemetryContext.phase,
+          step: telemetryContext.step,
           durationMs,
           outcome: 'failed',
+          providerKind: profile.providerKind,
+          adapterId: profile.adapterId,
           safeErrorCode: 'invalid_direct_metadata'
         });
         await orchestrator.close().catch(() => {});
@@ -224,6 +236,7 @@ export function createDirectOrchestrator(options: CreateDirectOrchestratorOption
         model: adapterResult.metadata.model
       });
 
+      callCompleted = true;
       await orchestrator.close();
 
       return {

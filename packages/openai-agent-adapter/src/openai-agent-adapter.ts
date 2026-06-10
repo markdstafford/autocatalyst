@@ -279,23 +279,82 @@ function translateInferenceSettings(
 }
 
 // ---------------------------------------------------------------------------
-// Production SDK launch (fails if SDK transport not supported)
+// Production launch: calls OpenAI chat completions API through the bridged
+// fetch that was created by connection.createFetchTransport(). The bridge
+// delegates all provider HTTP (endpoint, auth, timeout, retry, redaction) to
+// the shared connection layer. No global OpenAI SDK configuration is used.
 // ---------------------------------------------------------------------------
 function createProductionLaunch(): OpenAISessionLaunch {
-  return (_launchOptions: OpenAISessionLaunchOptions): AsyncIterable<OpenAINativeEvent> => {
-    // The production path requires a per-session fetch transport hook in the SDK.
-    // If the selected OpenAI Agents SDK does not support passing a custom fetch
-    // per-session (not globally), we must fail before provider access.
-    throw new ProviderConnectionError(
-      'unsupported_connection_mechanism',
-      'OpenAI Agents SDK path cannot delegate provider HTTP through Autocatalyst connection transport. This is a required capability for the working OpenAI B1 cell.',
-      {
-        providerKind: openaiProviderKind,
-        adapterId: openaiAgentAdapterId,
-        connectionMechanism: 'fetch_transport',
-        reason: 'sdk_transport_hook_not_verified'
-      }
-    );
+  return async function* (options: OpenAISessionLaunchOptions): AsyncIterable<OpenAINativeEvent> {
+    const fetchImpl = options.fetch ?? globalThis.fetch;
+
+    // Build the chat completions request. The connection layer's fetch bridge
+    // handles baseURL application, auth-header injection, timeout, and retry —
+    // so we target the canonical path and let the bridge rewrite it.
+    const endpoint = 'https://api.openai.com/v1/chat/completions';
+
+    const requestBody: Record<string, unknown> = {
+      model: options.model,
+      messages: [{ role: 'user', content: options.prompt }],
+      ...options.options
+    };
+
+    let response: Response;
+    try {
+      response = await fetchImpl(endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'accept': 'application/json' },
+        body: JSON.stringify(requestBody)
+      });
+    } catch (err) {
+      throw new ProviderConnectionError(
+        'timeout',
+        'OpenAI production request failed (transport error).',
+        { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId, cause: String(err) }
+      );
+    }
+
+    if (!response.ok) {
+      throw new ProviderConnectionError(
+        'non_transient_provider_failure',
+        `OpenAI production request failed with status ${response.status}.`,
+        { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId, status: response.status }
+      );
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = await response.json();
+    } catch {
+      throw new ProviderConnectionError(
+        'non_transient_provider_failure',
+        'OpenAI production response could not be parsed as JSON.',
+        { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId }
+      );
+    }
+
+    // Map response to native events
+    const completion = parsed as {
+      choices?: Array<{ message?: { content?: string | null }; finish_reason?: string }>;
+      usage?: { prompt_tokens?: number; completion_tokens?: number };
+    };
+
+    const choice = completion.choices?.[0];
+    const content = choice?.message?.content ?? '';
+
+    if (content.trim().length > 0) {
+      yield { type: 'assistant_message', content };
+    }
+
+    if (completion.usage !== undefined) {
+      yield {
+        type: 'usage',
+        ...(completion.usage.prompt_tokens !== undefined && { inputTokens: completion.usage.prompt_tokens }),
+        ...(completion.usage.completion_tokens !== undefined && { outputTokens: completion.usage.completion_tokens })
+      };
+    }
+
+    yield { type: 'terminal_result', directive: 'advance' };
   };
 }
 
@@ -332,7 +391,11 @@ export function createOpenAIAgentAdapter(adapterOptions: OpenAIAgentAdapterOptio
         init?: RequestInit
       ) => {
         const headers = init?.headers as Record<string, string> | undefined;
-        const body = init?.body as string | undefined;
+        // ProviderRequest.body is BodyInit — pass strings through as-is.
+        // The connection layer handles further serialization for non-string types.
+        const body = init?.body !== undefined && init.body !== null
+          ? (typeof init.body === 'string' ? init.body : String(init.body))
+          : undefined;
         return transport.fetch({
           url: String(url),
           method: (init?.method ?? 'GET') as string,

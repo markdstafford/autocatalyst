@@ -13,6 +13,7 @@ import type {
 import {
   ProviderConnectionError,
   ProviderProtocolError,
+  createAgentConnection,
   createAgentOrchestratorRunner
 } from '@autocatalyst/execution';
 
@@ -567,19 +568,38 @@ describe('createOpenAIAgentAdapter — metadata', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Production launch throws typed error
+// Production launch uses the fetch bridge (not a stub that always throws)
 // ---------------------------------------------------------------------------
 
 describe('createOpenAIAgentAdapter — production launch', () => {
-  it('throws ProviderConnectionError("unsupported_connection_mechanism") when no injected launcher', async () => {
+  it('calls the fetch transport when no injected launcher (production path, non-2xx → ProviderConnectionError)', async () => {
+    // Production launch now uses the fetch bridge. Verify it propagates a
+    // non-2xx status as a ProviderConnectionError rather than unconditionally
+    // throwing unsupported_connection_mechanism before any network contact.
     const { input } = makeSessionInput();
-    // No launchSession injected — uses production path
+
+    // Override the connection's fake transport to return a 401
+    const errorTransport: ProviderFetchTransport = {
+      fetch: async () => new Response('{"error":"unauthorized"}', { status: 401 })
+    };
+    const profile = makeProfile();
+    const connection: AgentConnection = {
+      profile,
+      credentialResolved: true,
+      createFetchTransport: () => errorTransport,
+      createProcessLaunchConfig: (_launchInput: ProcessLaunchConfigInput): ProcessLaunchConfig => ({
+        environment: {},
+        secretVariableNames: [],
+        degradedCapabilities: [],
+        redacted: {}
+      })
+    };
+    const errorInput = { ...input, connection };
+
     const adapter = createOpenAIAgentAdapter();
-    const session = adapter.startSession(input);
+    const session = adapter.startSession(errorInput);
     await expect(collect(session.events)).rejects.toSatisfy(
-      (err: unknown) =>
-        err instanceof ProviderConnectionError &&
-        err.code === 'unsupported_connection_mechanism'
+      (err: unknown) => err instanceof ProviderConnectionError
     );
   });
 });
@@ -643,5 +663,121 @@ describe('createOpenAIAgentAdapter — orchestrator runner integration', () => {
     const assistantTurn = events.find((e) => e.type === 'runner_assistant_turn');
     expect(assistantTurn).toBeDefined();
     await runner.close();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Production-seam tests: real createAgentConnection, production launch, only
+// outermost fetch mocked. Proves the fetch bridge is wired end-to-end.
+// ---------------------------------------------------------------------------
+
+describe('openai-agent-adapter: production connection seam', () => {
+  it('routes a production launch through the real createAgentConnection fetch transport', async () => {
+    const capturedRequests: Array<{ url: string; method: string; body?: string }> = [];
+
+    // Mock the outermost fetch — this is what the real transport calls
+    const outerFetch: typeof globalThis.fetch = async (url, init) => {
+      capturedRequests.push({
+        url: String(url),
+        method: (init?.method ?? 'GET') as string,
+        body: init?.body as string | undefined
+      });
+      return new Response(JSON.stringify({
+        choices: [{ message: { role: 'assistant', content: 'Test response from OpenAI' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 25, completion_tokens: 10 }
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+
+    const profile: ResolvedAgentRunnerProfile = {
+      mode: 'agent',
+      providerKind: openaiProviderKind,
+      adapterId: openaiAgentAdapterId,
+      profileName: 'prod-seam-test',
+      model: { provider: 'openai', model: 'gpt-4o' },
+      inferenceSettings: {},
+      endpoint: {},
+      connectionMechanism: 'fetch_transport'
+    };
+
+    const connection = await createAgentConnection({
+      profile,
+      credentialReference: { required: false },
+      credentialResolver: { resolveCredential: async () => undefined },
+      telemetryContext: { runId: 'run_prod_seam', step: 'implement' },
+      fetch: outerFetch
+    });
+
+    // No launchSession injected — uses createProductionLaunch()
+    const adapter = createOpenAIAgentAdapter();
+
+    const session = adapter.startSession({
+      runInput: makeSessionInput().input.runInput,
+      profile,
+      connection,
+      telemetryContext: { runId: 'run_prod_seam', step: 'implement' }
+    });
+
+    const events: RunnerEvent[] = [];
+    for await (const ev of session.events) {
+      events.push(ev);
+    }
+
+    // The production launch went through the real transport
+    expect(capturedRequests).toHaveLength(1);
+    const req = capturedRequests[0]!;
+
+    // Request body is properly serialized JSON (not double-encoded)
+    expect(typeof req.body).toBe('string');
+    const parsedBody = JSON.parse(req.body!);
+    expect(typeof parsedBody).toBe('object');
+    expect(parsedBody).not.toBeNull();
+    // Should have model and messages fields
+    expect(parsedBody.model).toBe('gpt-4o');
+    expect(Array.isArray(parsedBody.messages)).toBe(true);
+
+    // Events were yielded (assistant_message + terminal_result)
+    const assistantTurn = events.find(e => e.type === 'runner_assistant_turn');
+    expect(assistantTurn).toBeDefined();
+    const terminal = events.find(e => e.type === 'runner_terminal_result');
+    expect(terminal).toBeDefined();
+    if (terminal?.type === 'runner_terminal_result') {
+      expect(terminal.result.directive).toBe('advance');
+    }
+  });
+
+  it('production launch propagates a non-2xx response as a ProviderConnectionError', async () => {
+    const outerFetch: typeof globalThis.fetch = async () =>
+      new Response('{"error":"unauthorized"}', { status: 401 });
+
+    const profile: ResolvedAgentRunnerProfile = {
+      mode: 'agent',
+      providerKind: openaiProviderKind,
+      adapterId: openaiAgentAdapterId,
+      profileName: 'prod-seam-error',
+      model: { provider: 'openai', model: 'gpt-4o' },
+      inferenceSettings: {},
+      endpoint: {},
+      connectionMechanism: 'fetch_transport'
+    };
+
+    const connection = await createAgentConnection({
+      profile,
+      credentialReference: { required: false },
+      credentialResolver: { resolveCredential: async () => undefined },
+      telemetryContext: { runId: 'run_prod_err', step: 'implement' },
+      fetch: outerFetch
+    });
+
+    const adapter = createOpenAIAgentAdapter();
+    const session = adapter.startSession({
+      runInput: makeSessionInput().input.runInput,
+      profile,
+      connection,
+      telemetryContext: { runId: 'run_prod_err', step: 'implement' }
+    });
+
+    await expect(async () => {
+      for await (const _ev of session.events) { /* consume */ }
+    }).rejects.toBeInstanceOf(ProviderConnectionError);
   });
 });
