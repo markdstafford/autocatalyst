@@ -66,6 +66,22 @@ describe('applyRequestAlteration — alteration order', () => {
     expect(result.request.headers['x-auth']).toBe('Bearer my-token');
   });
 
+  it('does not add a header when headersToRewrite references a header not present in the request', () => {
+    const endpoint: RunnerEndpointSettings = {
+      headersToRewrite: { 'x-absent-header': 'should-not-appear' }
+    };
+    const result = applyRequestAlteration({
+      request: {
+        url: 'https://api.example.com/v1/messages',
+        method: 'POST',
+        headers: { 'content-type': 'application/json' }
+      },
+      endpoint
+    });
+    expect(result.request.headers['x-absent-header']).toBeUndefined();
+    expect(result.request.headers['content-type']).toBe('application/json');
+  });
+
   it('uses raw auth scheme when authScheme is raw', () => {
     const endpoint: RunnerEndpointSettings = {
       authHeaderName: 'x-api-key'
@@ -96,7 +112,7 @@ describe('applyRequestAlteration — baseUrl parsing', () => {
       endpoint
     });
     expect(result.request.url).toMatch(/^https:\/\/proxy\.internal\.example\.com/);
-    expect(result.request.url).toContain('/v1/messages');
+    expect(result.request.url).toContain('/prefix/v1/messages');
     expect(result.request.url).toContain('version=2023-06-01');
   });
 
@@ -285,6 +301,26 @@ describe('buildClaudeProcessLaunchEnvironment', () => {
     expect(result.environment['CLAUDE_CODE_MAX_RETRIES']).toBe(String(maximumMaxRetries));
   });
 
+  it('strips ANTHROPIC_AUTH_TOKEN from materialized env even when credential is mapped to ANTHROPIC_API_KEY', () => {
+    const input: ClaudeProcessLaunchInput = {
+      endpoint: { authEnvironmentVariable: 'ANTHROPIC_API_KEY' },
+      credential: 'new-key',
+      materializedEnvironment: {
+        variables: {
+          HOME: '/home/user',
+          ANTHROPIC_AUTH_TOKEN: 'old-auth-token-must-be-stripped',
+          ANTHROPIC_API_KEY: 'old-api-key-must-be-stripped'
+        },
+        secretVariableNames: ['ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY']
+      }
+    };
+    const result = buildClaudeProcessLaunchEnvironment(input);
+    // The old ANTHROPIC_AUTH_TOKEN from materializedEnvironment must not survive
+    expect(result.environment['ANTHROPIC_AUTH_TOKEN']).toBeUndefined();
+    // The credential is mapped to ANTHROPIC_API_KEY with the new value
+    expect(result.environment['ANTHROPIC_API_KEY']).toBe('new-key');
+  });
+
   it('does not mutate the input environment', () => {
     const originalVars = { HOME: '/home/user', ANTHROPIC_API_KEY: 'old' };
     const input: ClaudeProcessLaunchInput = {
@@ -390,6 +426,20 @@ describe('redaction — known secrets must not appear in log projections', () =>
       sensitiveHeaderNames: ['x-api-key']
     });
     expect(JSON.stringify(redacted).includes(KNOWN_SECRET)).toBe(false);
+  });
+
+  it('returns [non-serializable body] for a body with circular references', () => {
+    const circular: Record<string, unknown> = { a: 1 };
+    circular['self'] = circular; // circular reference
+    const redacted = redactProviderRequestForLog({
+      request: {
+        url: 'https://api.example.com/v1/messages',
+        method: 'POST',
+        body: circular
+      }
+    });
+    const redactedObj = redacted as Record<string, unknown>;
+    expect(redactedObj['body']).toBe('[non-serializable body]');
   });
 
   it('does not expose secret in redacted process launch config log projection', () => {

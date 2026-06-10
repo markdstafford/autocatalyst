@@ -114,6 +114,11 @@ function stripHeaders(
   );
 }
 
+/**
+ * Rewrites the values of headers that already exist in `headers`.
+ * NOTE: Header rewrites only apply to headers that already exist after stripping.
+ * Headers not present are not added.
+ */
 function rewriteHeaders(
   headers: Record<string, string>,
   headersToRewrite: Readonly<Record<string, string>>
@@ -144,8 +149,11 @@ export function applyRequestAlteration(options: RequestAlterationOptions): Alter
     try {
       const base = new URL(endpoint.baseUrl);
       const original = new URL(request.url);
-      // Combine: use base origin + base pathname prefix, then append original path
-      const combined = new URL(original.pathname + original.search + original.hash, base);
+      // Combine: preserve base pathname prefix, then append original path
+      const basePath = base.pathname.replace(/\/$/, ''); // remove trailing slash
+      const reqPath = original.pathname; // starts with /
+      const combinedPath = basePath + reqPath;
+      const combined = new URL(combinedPath + original.search + original.hash, base.origin);
       finalUrl = combined.toString();
     } catch {
       throw new ProviderAlterationError(
@@ -208,7 +216,7 @@ export function isTransientProviderFailure(
     | { readonly kind: 'transport_error'; readonly code?: string }
 ): boolean {
   if (input.kind === 'transport_error') return true;
-  return (transientHttpStatuses as number[]).includes(input.status);
+  return transientHttpStatuses.includes(input.status);
 }
 
 // ---------------------------------------------------------------------------
@@ -430,10 +438,17 @@ export function redactProcessLaunchConfigForLog(input: RedactProcessLaunchConfig
     }
   }
 
-  return {
+  const result: Record<string, JsonValue> = {
     environment: redactedEnv,
-    secretVariableNames: launchResult.secretVariableNames,
-    degradedCapabilities: launchResult.degradedCapabilities,
-    ...(additionalMeta ? { meta: additionalMeta } : {})
-  } as unknown as JsonValue;
+    secretVariableNames: [...launchResult.secretVariableNames],
+    degradedCapabilities: launchResult.degradedCapabilities.map((d) => ({
+      capability: d.capability,
+      reason: d.reason,
+      required: d.required
+    }))
+  };
+  if (additionalMeta) {
+    result['meta'] = additionalMeta as JsonValue;
+  }
+  return result as JsonValue;
 }
