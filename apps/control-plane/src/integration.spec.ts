@@ -26,12 +26,19 @@ import {
   type RunUnitOfWork
 } from '@autocatalyst/core';
 import {
+  claudeAgentAdapterId,
+  claudeProviderKind,
+  createClaudeAgentAdapter,
+  type ClaudeNativeEvent
+} from '@autocatalyst/claude-agent-adapter';
+import {
   asInternalSqliteDatabase,
   createDrizzleDomainRepositories,
   createSqliteDatabase,
   migrateSqliteDatabase
 } from '@autocatalyst/persistence';
 
+import { createFakeLaunchHarness } from './fake-claude-agent-sdk-harness.spec-helper.js';
 import { createControlPlaneServer, startControlPlaneServer } from './server.js';
 
 const BEARER_TOKEN = 'integration-token';
@@ -620,6 +627,425 @@ describe('provider startup composition integration', () => {
       expect(errorResponseSchema.parse(protectedRoute.json()).error.code).toBe('unauthorized');
 
       await app.close();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Real Claude-agent dispatch integration: proves the production composition
+// (realRunnerDispatch + delegating execution entry point + Claude adapter)
+// drives a run end-to-end while never leaking the resolved secret value.
+// ---------------------------------------------------------------------------
+
+const CREDENTIAL_VALUE = 'cred-value-that-must-not-leak';
+const ENDPOINT_BASE_URL = 'https://gateway.example.test';
+
+const SUCCESS_EVENTS: readonly ClaudeNativeEvent[] = [
+  { type: 'assistant', content: 'I will answer the question.' },
+  { type: 'tool_use', tool: { name: 'read_file', input: { path: 'README.md' } } },
+  {
+    type: 'result',
+    result: {
+      output: JSON.stringify({ status: 'done', answer: 'Integration test result' }),
+      total_tokens: 100,
+      input_tokens: 50,
+      output_tokens: 50
+    }
+  }
+];
+
+interface CapturedLogEntry {
+  readonly stream: 'log' | 'info' | 'warn' | 'error';
+  readonly text: string;
+}
+
+function captureConsole(): { entries: CapturedLogEntry[]; restore: () => void } {
+  const entries: CapturedLogEntry[] = [];
+  const originals = {
+    log: console.log.bind(console),
+    info: console.info.bind(console),
+    warn: console.warn.bind(console),
+    error: console.error.bind(console)
+  };
+  const push = (stream: CapturedLogEntry['stream']) => (...args: unknown[]) => {
+    entries.push({
+      stream,
+      text: args
+        .map((arg) => (typeof arg === 'string' ? arg : (() => { try { return JSON.stringify(arg); } catch { return String(arg); } })()))
+        .join(' ')
+    });
+  };
+  console.log = push('log');
+  console.info = push('info');
+  console.warn = push('warn');
+  console.error = push('error');
+  return {
+    entries,
+    restore() {
+      console.log = originals.log;
+      console.info = originals.info;
+      console.warn = originals.warn;
+      console.error = originals.error;
+    }
+  };
+}
+
+async function seedQuestionProject(databasePath: string): Promise<{ projectId: string }> {
+  const seedDb = createSqliteDatabase({ path: databasePath });
+  await migrateSqliteDatabase(seedDb);
+  const seedRepos = createDrizzleDomainRepositories(seedDb);
+  const project = await seedRepos.projects.create({
+    owner: hardcodedDevelopmentPrincipal,
+    tenant: hardcodedDevelopmentPrincipal.tenantId,
+    displayName: 'Real Dispatch Project',
+    repoUrl: 'https://example.test',
+    hostRepository: { provider: 'github', owner: 'test', name: 'repo' },
+    workspaceRootOverride: null,
+    issueTrackerSetting: null,
+    codeHostSetting: null,
+    credentialRefs: []
+  });
+  seedDb.close();
+  return { projectId: project.id };
+}
+
+async function createQuestionRun(
+  baseUrl: string,
+  authHeaders: Record<string, string>,
+  projectId: string
+): Promise<string> {
+  const createResp = await fetch(`${baseUrl}/v1/conversations`, {
+    method: 'POST',
+    headers: { ...authHeaders, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      projectId,
+      identity: 'real-dispatch-test',
+      topic: { title: 'Real dispatch topic' },
+      submission: { kind: 'free_form', body: 'what is the answer?', workKind: 'question' }
+    })
+  });
+  expect(createResp.status).toBe(201);
+  const body = (await createResp.json()) as { run: { id: string } };
+  return body.run.id;
+}
+
+describe('real Claude agent dispatch', () => {
+  it(
+    'dispatches a run through the production composition, records the launch env, persists events, and never leaks the credential',
+    { timeout: 60000 },
+    async () => {
+      await withTempDatabasePath(async (databasePath) => {
+        const { projectId } = await seedQuestionProject(databasePath);
+        const harness = createFakeLaunchHarness();
+        const logCapture = captureConsole();
+
+        // Pre-create a placeholder server to mint a profile id we'll inject as
+        // the defaultProviderProfileId on the real-dispatch server.
+        const bootstrap = await createControlPlaneServer({
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET
+        });
+        let profileId: string;
+        try {
+          const inj = await bootstrap.inject({
+            method: 'POST',
+            url: '/v1/secrets',
+            headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+            payload: { value: CREDENTIAL_VALUE }
+          });
+          expect(inj.statusCode).toBe(201);
+          const { handle } = createSecretResponseSchema.parse(inj.json());
+
+          const cfgInj = await bootstrap.inject({
+            method: 'POST',
+            url: '/v1/configuration-records',
+            headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+            payload: {
+              kind: 'provider_profile',
+              providerKind: claudeProviderKind,
+              adapterId: claudeAgentAdapterId,
+              settings: {
+                profileName: 'integration-default',
+                credentialSecretHandle: handle,
+                endpoint: {
+                  baseUrl: ENDPOINT_BASE_URL,
+                  authEnvironmentVariable: 'ANTHROPIC_AUTH_TOKEN'
+                }
+              }
+            }
+          });
+          expect(cfgInj.statusCode).toBe(201);
+          profileId = configurationRecordResponseSchema.parse(cfgInj.json()).id;
+        } finally {
+          await bootstrap.close();
+        }
+
+        let controlPlane: ControlPlaneService | undefined;
+        const handle = await startControlPlaneServer({
+          port: 0,
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET,
+          runConcurrency: 1,
+          realRunnerDispatch: { enabled: true, defaultProviderProfileId: profileId },
+          providerAdapters: new Map([
+            [
+              buildProviderAdapterKey(claudeProviderKind, claudeAgentAdapterId),
+              () =>
+                createClaudeAgentAdapter({
+                  launchClaudeSession: harness.createLaunch(SUCCESS_EVENTS)
+                })
+            ]
+          ]),
+          onControlPlaneReady: (service) => { controlPlane = service; }
+        });
+
+        try {
+          if (controlPlane === undefined) {
+            throw new Error('control-plane service was not exposed via onControlPlaneReady');
+          }
+          const captured = controlPlane;
+          const baseUrl = `http://127.0.0.1:${handle.port}`;
+          const authHeaders = { authorization: `Bearer ${BEARER_TOKEN}` };
+
+          // Create a run via the public conversations API.
+          const runId = await createQuestionRun(baseUrl, authHeaders, projectId);
+          const runResp0 = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: authHeaders });
+          const runBody0 = (await runResp0.json()) as { id: string; currentStep: string };
+          const initialStep = runBody0.currentStep;
+
+          // Open SSE BEFORE the tick: the retained event store's replay only
+          // returns events strictly after a known cursor, so replay with no
+          // cursor returns no events. The live subscription is what surfaces
+          // events emitted after we open the stream.
+          const sseController = new AbortController();
+          const eventsResp = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
+            headers: authHeaders,
+            signal: sseController.signal
+          });
+          expect(eventsResp.status).toBe(200);
+          expect(eventsResp.headers.get('content-type')).toMatch(/^text\/event-stream/u);
+
+          // Drive the run through tick() AFTER subscribing.
+          const tickPromise = captured.tick({
+            principal: hardcodedDevelopmentPrincipal,
+            tenant: hardcodedDevelopmentPrincipal.tenantId,
+            runId
+          });
+
+          const reader = eventsResp.body?.getReader();
+          if (reader === undefined) throw new Error('SSE body had no reader');
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let sawStateTransition = false;
+          const sseDeadline = setTimeout(() => sseController.abort(), 10000);
+          try {
+            while (!sawStateTransition) {
+              const result = await reader.read();
+              if (result.done) break;
+              buffer += decoder.decode(result.value, { stream: true });
+              if (/event:\s*run_state_transition/u.test(buffer)) sawStateTransition = true;
+            }
+          } catch {
+            // aborted via deadline
+          } finally {
+            clearTimeout(sseDeadline);
+            sseController.abort();
+            await reader.cancel().catch(() => undefined);
+          }
+          await tickPromise;
+          expect(sawStateTransition).toBe(true);
+
+          // The fake launch must have been invoked exactly once with the
+          // configured endpoint and credential surfaced as env vars.
+          expect(harness.records).toHaveLength(1);
+          const launch = harness.lastRecord();
+          expect(launch.env['ANTHROPIC_BASE_URL']).toBe(ENDPOINT_BASE_URL);
+          expect(launch.env['ANTHROPIC_AUTH_TOKEN']).toBe(CREDENTIAL_VALUE);
+          // No accidental dual-binding of the credential.
+          expect(launch.env['ANTHROPIC_API_KEY']).toBeUndefined();
+          expect(launch.prompt.length).toBeGreaterThan(0);
+
+          // RunStep must be persisted for the executed step.
+          const stepsResp = await fetch(`${baseUrl}/v1/runs/${runId}/steps`, { headers: authHeaders });
+          expect(stepsResp.status).toBe(200);
+          const stepsBody = (await stepsResp.json()) as {
+            steps: Array<{ runId: string; step: string; endedAt: string | null }>;
+          };
+          expect(stepsBody.steps.length).toBeGreaterThanOrEqual(1);
+          expect(stepsBody.steps[0].runId).toBe(runId);
+
+          // Run must have transitioned to either the next step or terminal.
+          const runResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: authHeaders });
+          expect(runResp.status).toBe(200);
+          const runBody = (await runResp.json()) as {
+            id: string;
+            terminal: boolean;
+            currentStep: string;
+          };
+          expect(runBody.terminal === true || runBody.currentStep !== initialStep).toBe(true);
+
+          // The credential value must NEVER appear in captured stdout/stderr.
+          const offendingLogs = logCapture.entries.filter((entry) =>
+            entry.text.includes(CREDENTIAL_VALUE)
+          );
+          expect(offendingLogs).toEqual([]);
+        } finally {
+          logCapture.restore();
+          await handle.close();
+        }
+      });
+    }
+  );
+});
+
+describe('real Claude agent dispatch - failure paths', () => {
+  it('fails the run cleanly when the configured defaultProviderProfileId does not exist', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const { projectId } = await seedQuestionProject(databasePath);
+      const harness = createFakeLaunchHarness();
+
+      let controlPlane: ControlPlaneService | undefined;
+      const handle = await startControlPlaneServer({
+        port: 0,
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET,
+        runConcurrency: 1,
+        realRunnerDispatch: {
+          enabled: true,
+          defaultProviderProfileId: 'cfg_does_not_exist_anywhere'
+        },
+        providerAdapters: new Map([
+          [
+            buildProviderAdapterKey(claudeProviderKind, claudeAgentAdapterId),
+            () =>
+              createClaudeAgentAdapter({
+                launchClaudeSession: harness.createLaunch(SUCCESS_EVENTS)
+              })
+          ]
+        ]),
+        onControlPlaneReady: (service) => { controlPlane = service; }
+      });
+
+      try {
+        if (controlPlane === undefined) throw new Error('control-plane service not exposed');
+        const captured = controlPlane;
+        const baseUrl = `http://127.0.0.1:${handle.port}`;
+        const authHeaders = { authorization: `Bearer ${BEARER_TOKEN}` };
+
+        const runId = await createQuestionRun(baseUrl, authHeaders, projectId);
+
+        // Tick must NOT crash — the unit of work converts thrown configuration
+        // errors into a 'fail' directive that transitions the run.
+        await captured.tick({
+          principal: hardcodedDevelopmentPrincipal,
+          tenant: hardcodedDevelopmentPrincipal.tenantId,
+          runId
+        });
+
+        // The adapter must never have been launched: profile resolution failed
+        // before the runner could call it.
+        expect(harness.records).toEqual([]);
+
+        // Run must be terminal (failed).
+        const runResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: authHeaders });
+        expect(runResp.status).toBe(200);
+        const runBody = (await runResp.json()) as { id: string; terminal: boolean };
+        expect(runBody.terminal).toBe(true);
+      } finally {
+        await handle.close();
+      }
+    });
+  });
+
+  it('fails the run cleanly when the profile references a credentialSecretHandle that does not exist', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const { projectId } = await seedQuestionProject(databasePath);
+
+      // Bootstrap server to create a profile whose credentialSecretHandle
+      // references a non-existent secret.
+      const bootstrap = await createControlPlaneServer({
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET
+      });
+      let profileId: string;
+      try {
+        // Use a syntactically-valid handle that nothing was stored under.
+        // Must match the secretHandleSchema regex: ^sec_[A-Za-z0-9_-]{32}$
+        const danglingHandle = 'sec_DanglingHandleThatDoesNotExistAA';
+        const cfgInj = await bootstrap.inject({
+          method: 'POST',
+          url: '/v1/configuration-records',
+          headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+          payload: {
+            kind: 'provider_profile',
+            providerKind: claudeProviderKind,
+            adapterId: claudeAgentAdapterId,
+            settings: {
+              profileName: 'broken-credential',
+              credentialSecretHandle: danglingHandle,
+              endpoint: {
+                baseUrl: ENDPOINT_BASE_URL,
+                authEnvironmentVariable: 'ANTHROPIC_AUTH_TOKEN'
+              }
+            }
+          }
+        });
+        expect(cfgInj.statusCode).toBe(201);
+        profileId = configurationRecordResponseSchema.parse(cfgInj.json()).id;
+      } finally {
+        await bootstrap.close();
+      }
+
+      const harness = createFakeLaunchHarness();
+      let controlPlane: ControlPlaneService | undefined;
+      const handle = await startControlPlaneServer({
+        port: 0,
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET,
+        runConcurrency: 1,
+        realRunnerDispatch: { enabled: true, defaultProviderProfileId: profileId },
+        providerAdapters: new Map([
+          [
+            buildProviderAdapterKey(claudeProviderKind, claudeAgentAdapterId),
+            () =>
+              createClaudeAgentAdapter({
+                launchClaudeSession: harness.createLaunch(SUCCESS_EVENTS)
+              })
+          ]
+        ]),
+        onControlPlaneReady: (service) => { controlPlane = service; }
+      });
+
+      try {
+        if (controlPlane === undefined) throw new Error('control-plane service not exposed');
+        const captured = controlPlane;
+        const baseUrl = `http://127.0.0.1:${handle.port}`;
+        const authHeaders = { authorization: `Bearer ${BEARER_TOKEN}` };
+
+        const runId = await createQuestionRun(baseUrl, authHeaders, projectId);
+
+        await captured.tick({
+          principal: hardcodedDevelopmentPrincipal,
+          tenant: hardcodedDevelopmentPrincipal.tenantId,
+          runId
+        });
+
+        // Adapter must never have been launched because credential resolution
+        // failed inside connection creation.
+        expect(harness.records).toEqual([]);
+
+        const runResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: authHeaders });
+        expect(runResp.status).toBe(200);
+        const runBody = (await runResp.json()) as { id: string; terminal: boolean };
+        expect(runBody.terminal).toBe(true);
+      } finally {
+        await handle.close();
+      }
     });
   });
 });
