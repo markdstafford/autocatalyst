@@ -9,6 +9,7 @@
     "@autocatalyst/claude-agent-adapter": "workspace:*",
     "@autocatalyst/core": "workspace:*",
     "@autocatalyst/execution": "workspace:*",
+    "@autocatalyst/openai-agent-adapter": "workspace:*",
     "@autocatalyst/openai-direct-adapter": "workspace:*",
     "@autocatalyst/persistence": "workspace:*",
     "fastify": "^5.8.5",

@@ -70,6 +70,10 @@ import {
   openaiProviderKind
 } from '@autocatalyst/openai-direct-adapter';
 import {
+  createOpenAIAgentAdapter,
+  openaiAgentAdapterId
+} from '@autocatalyst/openai-agent-adapter';
+import {
   DrizzleConfigurationRecordRepository,
   DrizzleConversationIngressRepository,
   DrizzleProbeResourceRepository,
@@ -167,23 +171,30 @@ export function createExplicitProfileResolver(input: {
   readonly defaultProviderProfileId: string;
   readonly listRecords: () => Promise<readonly ConfigurationRecord[]>;
   readonly registry: AgentProviderAdapterRegistry;
+  readonly selectProviderProfileId?: (factoryInput: AgentRunnerFactoryInput) => string | undefined;
 }): (factoryInput: AgentRunnerFactoryInput) => Promise<AgentProfileResolution> {
   return async (factoryInput) => {
+    const selectedProfileId = input.selectProviderProfileId?.(factoryInput) ?? input.defaultProviderProfileId;
+    if (selectedProfileId.length === 0) {
+      throw new ProviderConfigurationError('missing_profile', 'No explicit provider profile id was selected.', { runId: factoryInput.runId, step: factoryInput.step });
+    }
+
     const records = await input.listRecords();
     const record = records.find(
       (candidate) =>
-        candidate.id === input.defaultProviderProfileId && candidate.kind === 'provider_profile'
+        candidate.id === selectedProfileId && candidate.kind === 'provider_profile'
     );
     if (record === undefined) {
       throw new ProviderConfigurationError(
         'missing_profile',
-        `No provider_profile configuration record found with id "${input.defaultProviderProfileId}".`,
+        `No provider_profile configuration record found with id "${selectedProfileId}".`,
         { runId: factoryInput.runId, step: factoryInput.step }
       );
     }
 
     const adapterKey = buildProviderAdapterKey(record.providerKind, record.adapterId);
-    if (!input.registry.has(adapterKey)) {
+    const adapter = input.registry.get(adapterKey);
+    if (adapter === undefined) {
       throw new ProviderConfigurationError(
         'unsupported_adapter',
         `No adapter registered for providerKind "${record.providerKind}" and adapterId "${record.adapterId}".`,
@@ -201,20 +212,20 @@ export function createExplicitProfileResolver(input: {
       model: settings.model ?? { ...defaultModelIdentity },
       inferenceSettings: settings.inferenceSettings ?? {},
       endpoint: settings.endpoint ?? {},
-      connectionMechanism: 'process_environment'
+      connectionMechanism: adapter.supportedConnectionMechanism
     };
 
-    // For the process_environment mechanism (Claude Agent SDK), a credential is
-    // always required — an empty auth token would reach the subprocess silently.
-    // The secret handle remains optional at schema level for additive
-    // compatibility, but its absence is caught by createAgentConnection as a
-    // missing_credential configuration error before any session starts.
+    // Derive authTarget from connectionMechanism. For fetch_transport adapters
+    // (e.g. OpenAI Agents SDK), the credential is passed as an Authorization header.
+    // For process_environment adapters (e.g. Claude Agent SDK), it is injected as
+    // an environment variable. A credential is always required — absence is caught
+    // by createAgentConnection as a missing_credential error before any session starts.
     const credentialReference: ResolvedAgentCredentialReference = {
       required: true,
       ...(settings.credentialSecretHandle !== undefined
         ? { secretHandle: settings.credentialSecretHandle }
         : {}),
-      authTarget: 'process_environment'
+      authTarget: adapter.supportedConnectionMechanism === 'fetch_transport' ? 'header' : 'process_environment'
     };
 
     return { profile, credentialReference };
@@ -344,6 +355,10 @@ export async function createControlPlaneServer(
     if (!merged.has(openaiDirectKey)) {
       merged.set(openaiDirectKey, () => createOpenAIDirectAdapter());
     }
+    const openaiAgentKey = buildProviderAdapterKey(openaiProviderKind, openaiAgentAdapterId);
+    if (!merged.has(openaiAgentKey)) {
+      merged.set(openaiAgentKey, () => createOpenAIAgentAdapter());
+    }
     mergedAdapters = merged;
   }
 
@@ -409,7 +424,8 @@ export async function createControlPlaneServer(
             { runId: directInput.runId, step: directInput.step }
           );
         }
-        const settings = record.settings as import('@autocatalyst/api-contract').ProviderProfileSettings;
+        const settings = record.settings as ProviderProfileSettings;
+        // Direct providers always use fetch_transport; authTarget is not applicable for direct profiles.
         return {
           profile: {
             mode: 'direct' as const,
