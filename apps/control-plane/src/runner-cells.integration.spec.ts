@@ -13,8 +13,14 @@ import { z } from 'zod';
 
 import {
   consumeRunnerEvents,
+  createExecutionRunUnitOfWork,
+  DefaultOrchestrator,
   InMemoryRetainedRunEventStore,
+  RunDispatchQueue,
+  type RunUnitOfWork,
 } from '@autocatalyst/core';
+import type { JsonValue, Run, RunStep } from '@autocatalyst/api-contract';
+import type { ConversationIngressRepository, RunRepository } from '@autocatalyst/core';
 import {
   createAgentOrchestratorRunner,
   createAgentRunnerFactory,
@@ -583,5 +589,341 @@ describe('runner-cells: sensitive data redaction', () => {
     // Confirm OpenAI orchestrator events were captured (making the redaction assertion non-vacuous)
     expect(telemetryEvents.some(e => e.event === 'agent_orchestrator_session_start')).toBe(true);
     expect(telemetryEvents.some(e => e.event === 'agent_orchestrator_session_end')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Production-seam integration helpers
+// ---------------------------------------------------------------------------
+
+const TS = '2026-06-10T00:00:00.000Z';
+const owner = { id: 'user_1', kind: 'human' as const, tenantId: 'tenant_test', displayName: 'Test User' };
+
+function makeRun(overrides: Partial<Run> = {}): Run {
+  return {
+    id: 'run_prod_001',
+    topicId: 'topic_1',
+    owner,
+    tenant: 'tenant_test',
+    workKind: 'feature',
+    currentStep: 'intake',
+    terminal: false,
+    createdAt: TS,
+    updatedAt: TS,
+    ...overrides
+  };
+}
+
+function makeRunStep(overrides: Partial<RunStep> = {}): RunStep {
+  return {
+    id: 'step_1',
+    runId: 'run_prod_001',
+    phase: null,
+    step: 'intake',
+    role: 'none',
+    startedAt: TS,
+    endedAt: null,
+    durationMs: null,
+    occurrence: { index: 0, attempt: 1 },
+    checkpointResult: null,
+    ...overrides
+  };
+}
+
+function makeFakeRunRepo(overrides: Partial<RunRepository> = {}): RunRepository {
+  return {
+    create: vi.fn(),
+    findById: vi.fn().mockResolvedValue(makeRun()),
+    findActiveByTopic: vi.fn().mockResolvedValue(null),
+    listByTopic: vi.fn().mockResolvedValue([]),
+    recordRunLifecycleStart: vi.fn().mockResolvedValue({ run: makeRun(), runStep: makeRunStep() }),
+    recordRunStepTransition: vi.fn().mockResolvedValue({
+      run: makeRun({ currentStep: 'spec.author' }),
+      runStep: makeRunStep({ step: 'spec.author' })
+    }),
+    ...overrides
+  };
+}
+
+function makeFakeIngressRepo(): ConversationIngressRepository {
+  return {
+    createConversationTopicMessageAndRun: vi.fn().mockResolvedValue({
+      conversation: { id: 'conv_1' },
+      topic: { id: 'topic_1' },
+      message: { id: 'msg_1' },
+      run: makeRun(),
+      runStep: makeRunStep()
+    })
+  } as unknown as ConversationIngressRepository;
+}
+
+// ---------------------------------------------------------------------------
+// Task 6.2 (production): Multi-role dispatch through DefaultOrchestrator
+// ---------------------------------------------------------------------------
+
+describe('runner-cells: multi-role dispatch through DefaultOrchestrator production seams', () => {
+  it('dispatches implementer+reviewer sequentially and persists aggregate checkpoint via orchestrator', async () => {
+    const CLAUDE_EVENTS: ClaudeNativeEvent[] = [
+      { type: 'assistant', content: 'Implementing...' },
+      { type: 'result', result: { output: '{"directive":"advance"}' } }
+    ];
+    const OPENAI_EVENTS: OpenAINativeEvent[] = [
+      { type: 'assistant_message', content: 'Reviewing...' },
+      { type: 'terminal_result', directive: 'advance' }
+    ];
+
+    const claudeAdapter = createClaudeAgentAdapter({
+      launchClaudeSession: createFakeClaudeLaunch(CLAUDE_EVENTS)
+    });
+    const openaiAdapter = createOpenAIAgentAdapter({
+      launchSession: createFakeOpenAILaunch(OPENAI_EVENTS)
+    });
+
+    const agentRegistry = new Map([
+      [getAgentProviderAdapterKey(claudeProviderKind, claudeAgentAdapterId), claudeAdapter],
+      [getAgentProviderAdapterKey(openaiProviderKind, openaiAgentAdapterId), openaiAdapter]
+    ]);
+
+    const roleProfiles: Record<string, ResolvedAgentRunnerProfile> = {
+      implementer: makeClaudeProfile(),
+      reviewer: makeOpenAIProfile()
+    };
+
+    // Multi-role unit of work: run both roles sequentially, return aggregate checkpoint
+    const multiRoleUoW: RunUnitOfWork = {
+      async run(input): Promise<{ directive: 'advance' | 'needs_input' | 'fail'; reason?: string; result?: Readonly<Record<string, unknown>> }> {
+        const roleOrder = ['implementer', 'reviewer'] as const;
+        const roleResults: Record<string, { directive: string; providerKind: string }> = {};
+
+        for (const role of roleOrder) {
+          const profile = roleProfiles[role]!;
+          const eventsStore = new InMemoryRetainedRunEventStore({
+            maxEventsPerScope: 256, maxExpiredIdsPerScope: 64, subscriberBufferSize: 32
+          });
+
+          const factory = createAgentRunnerFactory({
+            adapters: agentRegistry,
+            resolveProfile: async (): Promise<AgentProfileResolution> => ({
+              profile,
+              credentialReference: { required: false }
+            }),
+            createConnection: async (ci) => {
+              if (ci.profile.connectionMechanism === 'process_environment') {
+                return makeProcessConnection(ci.profile);
+              }
+              return makeFetchConnection(ci.profile);
+            },
+            telemetryContext: (fi): AgentConnectionTelemetryContext => ({
+              runId: fi.runId, step: fi.step, role: fi.role, profileName: profile.profileName
+            })
+          });
+
+          const runner = await factory.createRunner({
+            runId: input.runId,
+            step: input.run.currentStep,
+            role
+          });
+          const result = await consumeRunnerEvents({
+            eventsStore,
+            events: runner.run({
+              environment: {
+                context: {
+                  run: { id: input.runId, workKind: 'feature', currentStep: input.run.currentStep, tenant: input.tenant },
+                  task: { prompt: 'Multi-role task', inputs: {} },
+                  workspaceIntent: { shape: 'none' },
+                  secretBindings: [],
+                  toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
+                  skills: { requested: [] },
+                  capabilityRequirements: {
+                    shell: { kind: 'bash', required: false },
+                    paths: { canonicalWorkspacePaths: false },
+                    lsp: { requested: false }
+                  }
+                },
+                workspace: { shape: 'none', workspaceRoots: [] },
+                environment: { variables: {}, secretVariableNames: [] },
+                toolPolicy: { allowedTools: [], workspaceRoots: [] },
+                skills: { requested: [] },
+                capabilities: {
+                  shell: { kind: 'bash', available: false },
+                  paths: {},
+                  lsp: { requested: false, available: false }
+                }
+              }
+            }),
+            runId: input.runId,
+            tenant: input.tenant
+          });
+
+          roleResults[role] = { directive: result.workResult.directive, providerKind: profile.providerKind };
+        }
+
+        // Aggregate checkpoint: keyed by role
+        const aggregateCheckpoint = { roles: roleResults };
+        return { directive: 'advance', result: aggregateCheckpoint };
+      }
+    };
+
+    // Capture checkpoint via spy on recordRunStepTransition
+    const capturedTransitions: Array<{ checkpointResult?: JsonValue }> = [];
+    const fakeRunRepo = makeFakeRunRepo({
+      recordRunStepTransition: vi.fn().mockImplementation(async (input: { checkpointResult?: JsonValue }) => {
+        capturedTransitions.push({ checkpointResult: input.checkpointResult });
+        return {
+          run: makeRun({ currentStep: 'spec.author' }),
+          runStep: makeRunStep({ step: 'spec.author' })
+        };
+      })
+    });
+
+    const eventBus = new InMemoryRetainedRunEventStore({
+      maxEventsPerScope: 256, maxExpiredIdsPerScope: 64, subscriberBufferSize: 32
+    });
+    const orchestrator = new DefaultOrchestrator({
+      runs: fakeRunRepo,
+      conversationIngress: makeFakeIngressRepo(),
+      events: eventBus,
+      dispatchQueue: new RunDispatchQueue({ maxConcurrent: 1 }),
+      unitOfWork: multiRoleUoW
+    });
+
+    // Dispatch through production orchestrator seam
+    await orchestrator.dispatch({ runId: 'run_prod_001', tenant: 'tenant_test' });
+
+    // One source RunStep → one call to recordRunStepTransition
+    expect(capturedTransitions).toHaveLength(1);
+
+    // Aggregate checkpoint is keyed by role
+    const checkpoint = capturedTransitions[0]?.checkpointResult;
+    expect(checkpoint).toMatchObject({
+      roles: {
+        implementer: { directive: 'advance', providerKind: claudeProviderKind },
+        reviewer: { directive: 'advance', providerKind: openaiProviderKind }
+      }
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Task 6.3 (production): Direct mode through DefaultOrchestrator
+// ---------------------------------------------------------------------------
+
+describe('runner-cells: direct mode through DefaultOrchestrator and createExecutionRunUnitOfWork', () => {
+  it('direct result persists as checkpoint via DefaultOrchestrator.applyDirective()', async () => {
+    const schema = z.object({ intent: z.enum(['implement', 'review']) }).strict();
+    const fakeTransport: ProviderFetchTransport = {
+      fetch: vi.fn(async (_request) => new Response(JSON.stringify({
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'autocatalyst_direct_result', input: { intent: 'implement' } }],
+        model: 'claude-3-5-sonnet-latest',
+        usage: { input_tokens: 20, output_tokens: 10 }
+      }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    };
+
+    const anthropicAdapter = createAnthropicDirectAdapter();
+    const directCallFactory = createDirectCallFactory({
+      adapters: [anthropicAdapter],
+      resolveProfile: async () => ({
+        profile: {
+          mode: 'direct' as const,
+          providerKind: anthropicProviderKind,
+          adapterId: anthropicDirectAdapterId,
+          profileName: 'test-direct',
+          model: { provider: 'anthropic', model: 'claude-3-5-sonnet-latest' },
+          inferenceSettings: {},
+          endpoint: {},
+          connectionMechanism: 'fetch_transport' as const
+        },
+        credentialReference: { required: false }
+      }),
+      createConnection: async (input) => ({
+        profile: input.profile,
+        credentialResolved: true,
+        createFetchTransport: () => fakeTransport,
+        createProcessLaunchConfig: (_launchInput: ProcessLaunchConfigInput): ProcessLaunchConfig => {
+          throw new Error('createProcessLaunchConfig not supported');
+        }
+      })
+    });
+
+    // Unit of work: resolveExecutionMode → direct, direct port → directCallFactory
+    const directUoW = createExecutionRunUnitOfWork({
+      execute: {
+        execute: () => {
+          throw new Error('execute should not be called in direct mode');
+        }
+      },
+      resolveContext: async (workInput) => ({
+        run: { id: workInput.runId, workKind: 'feature', currentStep: workInput.run.currentStep, tenant: workInput.tenant },
+        task: { prompt: 'Classify intent', inputs: {} },
+        workspaceIntent: { shape: 'none' },
+        secretBindings: [],
+        toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
+        skills: { requested: [] },
+        capabilityRequirements: {
+          shell: { kind: 'bash', required: false },
+          paths: { canonicalWorkspacePaths: false },
+          lsp: { requested: false }
+        }
+      }),
+      resolveExecutionMode: () => ({
+        mode: 'direct' as const,
+        directCall: {
+          purpose: 'intent_classification',
+          input: { rawText: 'implement this feature' },
+          resultValidation: { schemaId: 'intent-result', schema }
+        }
+      }),
+      direct: {
+        call: (input) => directCallFactory.call({
+          runId: input.runId,
+          step: input.step,
+          ...(input.phase !== undefined && { phase: input.phase }),
+          directCall: input.directCall
+        })
+      },
+      eventsStore: new InMemoryRetainedRunEventStore({
+        maxEventsPerScope: 256, maxExpiredIdsPerScope: 64, subscriberBufferSize: 32
+      })
+    });
+
+    // Capture checkpoint in fake run repo
+    const capturedTransitions: Array<{ checkpointResult?: JsonValue }> = [];
+    const fakeRunRepo = makeFakeRunRepo({
+      recordRunStepTransition: vi.fn().mockImplementation(async (input: { checkpointResult?: JsonValue }) => {
+        capturedTransitions.push({ checkpointResult: input.checkpointResult });
+        return {
+          run: makeRun({ currentStep: 'spec.author' }),
+          runStep: makeRunStep({ step: 'spec.author' })
+        };
+      })
+    });
+
+    const eventBus = new InMemoryRetainedRunEventStore({
+      maxEventsPerScope: 256, maxExpiredIdsPerScope: 64, subscriberBufferSize: 32
+    });
+    const orchestrator = new DefaultOrchestrator({
+      runs: fakeRunRepo,
+      conversationIngress: makeFakeIngressRepo(),
+      events: eventBus,
+      dispatchQueue: new RunDispatchQueue({ maxConcurrent: 1 }),
+      unitOfWork: directUoW
+    });
+
+    // Dispatch through production orchestrator seam
+    await orchestrator.dispatch({ runId: 'run_prod_001', tenant: 'tenant_test' });
+
+    // Direct result should be checkpointed
+    expect(capturedTransitions).toHaveLength(1);
+    expect(capturedTransitions[0]?.checkpointResult).toEqual({ intent: 'implement' });
+
+    // Transport was called (proves production dispatch path reached the adapter)
+    expect(fakeTransport.fetch).toHaveBeenCalledTimes(1);
+
+    // No runner events in the event store for this run (direct mode)
+    const replay = await eventBus.replayAfter({ runId: 'run_prod_001', tenant: 'tenant_test' });
+    expect(replay.status).toBe('ok');
+    if (replay.status === 'ok') {
+      expect(replay.events).toHaveLength(0);
+    }
   });
 });

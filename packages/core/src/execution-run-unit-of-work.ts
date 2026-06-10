@@ -70,7 +70,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
           const directResult = await options.direct.call({
             runId: input.runId,
             tenant: input.tenant,
-            step: input.runId, // use runId as step fallback; real composition provides step
+            step: input.run.currentStep,
             directCall: modeResolution.directCall
           });
           return {

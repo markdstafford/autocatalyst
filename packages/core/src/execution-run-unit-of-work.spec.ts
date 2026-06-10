@@ -359,6 +359,29 @@ describe('direct mode integration seam', () => {
     expect(executeSpy).not.toHaveBeenCalled();
   });
 
+  it('direct mode: port receives step from run.currentStep, not runId', async () => {
+    const directCall = makeDirectCall();
+    const directPort = makeDirectPort({ intent: 'review' });
+
+    const input = makeInput();
+    // run.currentStep is 'implement', while runId is 'run_1' — they differ
+    expect(input.run.currentStep).toBe('implement');
+    expect(input.runId).toBe('run_1');
+
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: makeFakeEntryPoint([]),
+      resolveContext: async () => makeContext(),
+      resolveExecutionMode: () => ({ mode: 'direct' as const, directCall }),
+      direct: directPort,
+      eventsStore: newStore()
+    });
+
+    await unitOfWork.run(input);
+    expect(directPort.call).toHaveBeenCalledWith(
+      expect.objectContaining({ step: 'implement', runId: 'run_1' })
+    );
+  });
+
   it('direct mode: result is { directive: advance, result: value }', async () => {
     const directCall = makeDirectCall();
     const directPort = makeDirectPort({ score: 42 });

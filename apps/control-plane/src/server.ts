@@ -22,6 +22,7 @@ import {
   registerControlPlaneRoutes,
   RunDispatchQueue,
   type ControlPlaneService,
+  type ExecutionModeResolution,
   type ExtensionRegistryCatalog,
   type HealthDependencyChecker,
   type PolicyDecisionPoint,
@@ -29,7 +30,8 @@ import {
   type ProviderAdapterMap,
   type ProviderCompositionResult,
   type RetainedRunEventStoreOptions,
-  type RunUnitOfWork
+  type RunUnitOfWork,
+  type RunWorkInput
 } from '@autocatalyst/core';
 import {
   createAgentConnection,
@@ -99,6 +101,15 @@ export interface ControlPlaneServerOptions {
   readonly onControlPlaneReady?: (service: ControlPlaneService) => void;
   readonly runEventStoreOptions?: RetainedRunEventStoreOptions;
   readonly realRunnerDispatch?: RealRunnerDispatchOptions;
+  /**
+   * Injectable resolver for execution mode selection. Defaults to always returning agent mode,
+   * which preserves existing behavior. Integration tests and real workflows with direct steps
+   * should inject a resolver that inspects workflow/step metadata to determine the mode.
+   */
+  readonly resolveExecutionMode?: (
+    input: RunWorkInput,
+    context: ExecutionContext
+  ) => Promise<ExecutionModeResolution> | ExecutionModeResolution;
 }
 
 const DEFAULT_RUN_CONCURRENCY = 2;
@@ -432,6 +443,7 @@ export async function createControlPlaneServer(
     resolvedUnitOfWork = createExecutionRunUnitOfWork({
       execute: entryPoint,
       resolveContext: (workInput) => contextResolver.resolve(workInput),
+      ...(options.resolveExecutionMode !== undefined && { resolveExecutionMode: options.resolveExecutionMode }),
       eventsStore: eventBus,
       direct: {
         call: (directWorkInput) => directCallFactory.call({

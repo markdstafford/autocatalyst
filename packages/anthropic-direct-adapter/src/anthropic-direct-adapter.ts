@@ -99,6 +99,16 @@ export function createAnthropicDirectAdapter(
       // Build request body
       // Prefer tool_use structured output for clean extraction
       const toolName = 'autocatalyst_direct_result';
+      // Serialize the call input safely. The raw value must reach the model
+      // so it can perform the bounded task, but it must not appear in logs or
+      // telemetry (handled by the connection-layer redaction boundary).
+      let inputSerialized: string;
+      try {
+        inputSerialized = JSON.stringify(call.input);
+      } catch {
+        inputSerialized = '[non-serializable input]';
+      }
+
       const requestBody: Record<string, unknown> = {
         model: profile.model.model,
         max_tokens: maxTokens,
@@ -107,7 +117,7 @@ export function createAnthropicDirectAdapter(
         messages: [
           {
             role: 'user',
-            content: `Perform this task: ${call.purpose}\n\nInput data (for your analysis only, do not reproduce it in your response): [input provided]\n\nYou MUST call the \`${toolName}\` tool with your result.`
+            content: `Perform this task: ${call.purpose}\n\nInput data:\n${inputSerialized}\n\nYou MUST call the \`${toolName}\` tool with your result.`
           }
         ],
         tools: [

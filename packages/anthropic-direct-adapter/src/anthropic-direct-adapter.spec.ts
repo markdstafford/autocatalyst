@@ -371,6 +371,39 @@ describe('createAnthropicDirectAdapter', () => {
     });
   });
 
+  describe('test 14a: call.input serialized into request body', () => {
+    it('includes the call.input data in the outbound request body', async () => {
+      const callInput = { taskId: 'task_42', category: 'feature', priority: 'high' };
+      const capturedBodies: string[] = [];
+      const transport: ProviderFetchTransport = {
+        fetch: vi.fn(async (req) => {
+          capturedBodies.push(req.body ?? '');
+          return makeToolUseResponse({ intent: 'implement' });
+        })
+      };
+      const connection = makeConnection(transport);
+      const adapter = createAnthropicDirectAdapter();
+      await adapter.call({
+        call: {
+          purpose: 'intent_classification',
+          input: callInput,
+          resultValidation: { schemaId: 'intent', schema: z.object({ intent: z.string() }) }
+        },
+        profile: makeProfile(),
+        connection,
+        telemetryContext: makeTelemetryContext()
+      });
+
+      expect(capturedBodies).toHaveLength(1);
+      const parsedBody = JSON.parse(capturedBodies[0]!) as { messages: Array<{ content: string }> };
+      const messageContent = parsedBody.messages[0]!.content;
+      // The input must be serialized into the message
+      expect(messageContent).toContain(JSON.stringify(callInput));
+      // Confirm it does NOT contain the placeholder from before the fix
+      expect(messageContent).not.toContain('[input provided]');
+    });
+  });
+
   describe('test 14: uses fetch transport, NOT direct credentials', () => {
     it('calls connection.createFetchTransport() and does not read process.env', async () => {
       const transport = makeFetchTransport(() =>
