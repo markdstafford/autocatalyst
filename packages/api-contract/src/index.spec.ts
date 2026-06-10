@@ -18,7 +18,11 @@ import {
   unauthorizedErrorCode,
   validationErrorCode,
   runnerEventSchema,
-  executionContextSchema
+  executionContextSchema,
+  runnerTerminalHandoffResultSchema,
+  runnerTerminalStepResultSchema,
+  stepResultContractSchema,
+  stepResultSchemaIdSchema
 } from './index.js';
 
 describe('api-contract barrel', () => {
@@ -58,5 +62,16 @@ describe('api-contract barrel', () => {
   it('exports runner event and execution context contracts', () => {
     expect(runnerEventSchema).toBeDefined();
     expect(executionContextSchema).toBeDefined();
+  });
+
+  it('exports step-result contract schemas from the public entry point', () => {
+    expect(stepResultSchemaIdSchema.safeParse('terminal-handoff.v1').success).toBe(true);
+    expect(stepResultContractSchema.safeParse({ step: 'implement', schemaId: 'terminal-handoff.v1' }).success).toBe(true);
+    expect(runnerTerminalStepResultSchema.safeParse({ directive: 'advance', result: { ok: true } }).success).toBe(true);
+    expect(runnerTerminalHandoffResultSchema.safeParse({
+      step: 'implement',
+      schemaId: 'terminal-handoff.v1',
+      result: { directive: 'advance', result: { ok: true } }
+    }).success).toBe(true);
   });
 });
