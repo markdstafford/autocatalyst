@@ -107,6 +107,7 @@ export type ProviderConfigurationErrorCode =
   | 'missing_credential'
   | 'secret_store_locked'
   | 'unsupported_adapter'
+  | 'duplicate_adapter'
   | 'invalid_endpoint'
   | 'mechanism_mismatch'
   | 'unsupported_required_capability';

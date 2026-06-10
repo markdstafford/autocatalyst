@@ -303,7 +303,7 @@ describe('composeAgentProviderAdapterRegistry', () => {
       adapter: validAdapter
     };
     expect(() => composeAgentProviderAdapterRegistry({ composed: [validBinding, secondBinding] })).toThrow(
-      expect.objectContaining({ name: 'ProviderConfigurationError', code: 'unsupported_adapter' })
+      expect.objectContaining({ name: 'ProviderConfigurationError', code: 'duplicate_adapter' })
     );
   });
 });

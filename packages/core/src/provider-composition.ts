@@ -142,9 +142,9 @@ export function composeAgentProviderAdapterRegistry(
     const key = getAgentProviderAdapterKey(binding.providerKind, binding.adapterId);
     if (registry.has(key)) {
       throw new ProviderConfigurationError(
-        'unsupported_adapter',
+        'duplicate_adapter',
         `Duplicate adapter registered for ${binding.providerKind}/${binding.adapterId}`,
-        { providerKind: binding.providerKind, adapterId: binding.adapterId }
+        { configurationRecordId: binding.configurationRecordId, providerKind: binding.providerKind, adapterId: binding.adapterId }
       );
     }
     registry.set(key, binding.adapter);
