@@ -255,8 +255,8 @@ class Subscriber {
 }
 
 // --- Backwards-compatible InMemoryRunEventBus shim (deprecated) ---
-// Wraps the retained store and exposes the older synchronous publish() API used by
-// RunEventPublisher consumers during the migration.
+// Thin alias kept only so existing tests compile without churn.
+// Use InMemoryRetainedRunEventStore directly in new code.
 export class InMemoryRunEventBus implements RunEventStore {
   readonly #store: InMemoryRetainedRunEventStore;
 
@@ -274,10 +274,5 @@ export class InMemoryRunEventBus implements RunEventStore {
 
   subscribe(input: SubscribeRunEventsInput): RunEventSubscription {
     return this.#store.subscribe(input);
-  }
-
-  /** @deprecated Use append({scope, event}) instead. */
-  publish(event: RunStateTransitionEvent): void {
-    void this.#store.append({ scope: { runId: event.runId, tenant: event.tenant }, event });
   }
 }

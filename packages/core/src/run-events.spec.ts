@@ -84,6 +84,25 @@ describe('InMemoryRetainedRunEventStore', () => {
     sub.close();
   });
 
+  it('isolates scopes with adversarial id pairs that share the same naive concatenation', async () => {
+    // Without a separator, (tenant="tenant_1", runId="bc") concatenates to "tenant_1bc",
+    // identical to (tenant="tenant_1b", runId="c"). The null-byte separator prevents the collision.
+    const store = new InMemoryRetainedRunEventStore();
+    const scopeA = { runId: 'bc', tenant: 'tenant_1' };
+    const scopeB = { runId: 'c', tenant: 'tenant_1b' };
+    const sub1 = store.subscribe(scopeA);
+    const sub2 = store.subscribe(scopeB);
+    const iter2 = sub2.events[Symbol.asyncIterator]();
+    await store.append({
+      scope: scopeA,
+      event: makeEvent('evt_x', 'advance', 'tenant_1', 'bc')
+    });
+    // sub2 must not receive the event appended for scopeA
+    sub2.close();
+    expect((await iter2.next()).done).toBe(true);
+    sub1.close();
+  });
+
   it('isolates scopes by tenant and runId', async () => {
     const store = new InMemoryRetainedRunEventStore();
     const subA = store.subscribe({ runId: 'run_1', tenant: 'tenant_1' });

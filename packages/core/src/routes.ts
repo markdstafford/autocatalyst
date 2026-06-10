@@ -559,7 +559,18 @@ export async function registerControlPlaneRoutes(
         for (const event of replay.events) {
           writeFrame(event);
         }
+        // Deduplicate: events appended between subscribe() and replayAfter() appear in both
+        // the replay slice and the live subscriber buffer. Skip live events up to and
+        // including the last replayed id before draining fresh live frames.
+        const lastReplayEvent = replay.events.length > 0 ? replay.events[replay.events.length - 1] : undefined;
+        let lastReplayedId = lastReplayEvent?.id;
         for await (const event of subscription.events) {
+          if (lastReplayedId !== undefined) {
+            if (event.id === lastReplayedId) {
+              lastReplayedId = undefined;
+            }
+            continue;
+          }
           writeFrame(event);
         }
       } finally {

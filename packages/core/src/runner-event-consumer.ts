@@ -1,14 +1,13 @@
 import {
   RunnerProtocolError,
   validateExecutionBoundaryEventStream,
-  type ExecutionBoundaryEvent,
   type ExecutionTerminalResultEvent
 } from '@autocatalyst/execution';
-import type {
-  ClientRunEvent,
-  ClientRunnerEvent,
-  JsonValue,
-  RunnerTerminalResultClientEvent
+import {
+  clientRunEventSchema,
+  type ClientRunEvent,
+  type JsonValue,
+  type RunnerTerminalResultClientEvent
 } from '@autocatalyst/api-contract';
 import type { RunWorkResult } from './orchestrator.js';
 import type { RunEventStore } from './run-events.js';
@@ -26,11 +25,6 @@ export interface ConsumeRunnerEventsInput extends RunnerEventConsumerDependencie
 export interface ConsumeRunnerEventsResult {
   readonly workResult: RunWorkResult;
   readonly checkpointResult?: JsonValue;
-}
-
-function toClientRunnerEvent(event: Exclude<ExecutionBoundaryEvent, ExecutionTerminalResultEvent>): ClientRunnerEvent {
-  // Non-terminal runner events are already in the shape clientRunEventSchema expects.
-  return event as unknown as ClientRunnerEvent;
 }
 
 function toClientTerminalEvent(event: ExecutionTerminalResultEvent): RunnerTerminalResultClientEvent {
@@ -93,7 +87,7 @@ export async function consumeRunnerEvents(input: ConsumeRunnerEventsInput): Prom
         }
         continue;
       }
-      const clientEvent: ClientRunEvent = toClientRunnerEvent(event);
+      const clientEvent: ClientRunEvent = clientRunEventSchema.parse(event);
       try {
         await input.eventsStore.append({ scope, event: clientEvent });
       } catch {
