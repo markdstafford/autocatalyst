@@ -282,7 +282,7 @@ function translateInferenceSettings(
 // Production SDK launch (fails if SDK transport not supported)
 // ---------------------------------------------------------------------------
 function createProductionLaunch(): OpenAISessionLaunch {
-  return async function* (_launchOptions: OpenAISessionLaunchOptions): AsyncIterable<OpenAINativeEvent> {
+  return (_launchOptions: OpenAISessionLaunchOptions): AsyncIterable<OpenAINativeEvent> => {
     // The production path requires a per-session fetch transport hook in the SDK.
     // If the selected OpenAI Agents SDK does not support passing a custom fetch
     // per-session (not globally), we must fail before provider access.

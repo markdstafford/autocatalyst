@@ -133,7 +133,7 @@ export function createDirectCallFactory(options: CreateDirectCallFactoryOptions)
         profile,
         connection,
         telemetryContext,
-        telemetry
+        ...(telemetry !== undefined && { telemetry })
       });
 
       return orchestrator.call(input.directCall);

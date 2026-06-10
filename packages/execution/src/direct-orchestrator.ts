@@ -183,10 +183,10 @@ export function createDirectOrchestrator(options: CreateDirectOrchestratorOption
         schemaId: resultValidation.schemaId,
         schema: resultValidation.schema,
         candidate: adapterResult.candidate,
-        normalizers: resultValidation.normalizers,
-        correctionRequester: resultValidation.correctionRequester,
-        maxCorrectionAttempts: resultValidation.maxCorrectionAttempts,
-        degradationPolicy: resultValidation.degradationPolicy
+        ...(resultValidation.normalizers !== undefined && { normalizers: resultValidation.normalizers }),
+        ...(resultValidation.correctionRequester !== undefined && { correctionRequester: resultValidation.correctionRequester }),
+        ...(resultValidation.maxCorrectionAttempts !== undefined && { maxCorrectionAttempts: resultValidation.maxCorrectionAttempts }),
+        ...(resultValidation.degradationPolicy !== undefined && { degradationPolicy: resultValidation.degradationPolicy })
       });
 
       const durationMs = clock() - startedAt;

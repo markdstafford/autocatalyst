@@ -1,7 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import { createDirectOrchestrator } from './direct-orchestrator.js';
-import type { DirectOrchestrator } from './direct-orchestrator.js';
 import type { DirectProviderAdapter } from './direct-provider-adapter.js';
 import { DirectProviderProtocolError, DirectResultValidationError } from './direct-provider-adapter.js';
 import { ProviderConfigurationError, ProviderConnectionError } from './agent-provider-adapter.js';
