@@ -839,13 +839,15 @@ describe('real Claude agent dispatch', () => {
           const decoder = new TextDecoder();
           let buffer = '';
           let sawStateTransition = false;
+          let sawRunnerEvent = false;
           const sseDeadline = setTimeout(() => sseController.abort(), 10000);
           try {
-            while (!sawStateTransition) {
+            while (!sawStateTransition || !sawRunnerEvent) {
               const result = await reader.read();
               if (result.done) break;
               buffer += decoder.decode(result.value, { stream: true });
               if (/event:\s*run_state_transition/u.test(buffer)) sawStateTransition = true;
+              if (/event:\s*runner_assistant_turn|event:\s*runner_tool_activity/u.test(buffer)) sawRunnerEvent = true;
             }
           } catch {
             // aborted via deadline
@@ -856,6 +858,7 @@ describe('real Claude agent dispatch', () => {
           }
           await tickPromise;
           expect(sawStateTransition).toBe(true);
+          expect(sawRunnerEvent).toBe(true);
 
           // The fake launch must have been invoked exactly once with the
           // configured endpoint and credential surfaced as env vars.

@@ -322,7 +322,8 @@ export async function createControlPlaneServer(
     const contextResolver = createExecutionContextResolver({ secretsAvailable: false });
     resolvedUnitOfWork = createExecutionRunUnitOfWork({
       execute: entryPoint,
-      resolveContext: (workInput) => contextResolver.resolve(workInput)
+      resolveContext: (workInput) => contextResolver.resolve(workInput),
+      eventsStore: eventBus
     });
   }
 
