@@ -1,8 +1,8 @@
-import type { InferenceSettings, ModelIdentity, RunnerEndpointSettings, TokenBreakdown } from '@autocatalyst/api-contract';
+import type { InferenceSettings, JsonValue, ModelIdentity, RunnerEndpointSettings, TokenBreakdown } from '@autocatalyst/api-contract';
 import type { RunnerEvent } from '@autocatalyst/api-contract';
 
 import type { RunnerRunInput } from './runner.js';
-import type { ProviderCapabilityDegradation } from './request-alteration.js';
+import type { ProviderCapabilityDegradation, ProviderRequest } from './request-alteration.js';
 
 export type ProviderConnectionMechanism = 'fetch_transport' | 'process_environment';
 
@@ -34,10 +34,34 @@ export interface AgentConnectionTelemetryContext {
   readonly configurationRecordId?: string;
 }
 
-// Minimal AgentConnection interface here; connection.ts will expand/re-export
+// ---------------------------------------------------------------------------
+// Connection handle types (defined here; connection.ts imports from here)
+// ---------------------------------------------------------------------------
+
+export interface ProviderFetchTransport {
+  fetch(request: ProviderRequest): Promise<Response>;
+}
+
+export interface ProcessLaunchConfigInput {
+  readonly materializedEnvironment: {
+    readonly variables: Readonly<Record<string, string>>;
+    readonly secretVariableNames: readonly string[];
+  };
+}
+
+export interface ProcessLaunchConfig {
+  readonly environment: Readonly<Record<string, string>>;
+  readonly secretVariableNames: readonly string[];
+  readonly degradedCapabilities: readonly ProviderCapabilityDegradation[];
+  readonly redacted: JsonValue;
+}
+
+// Full AgentConnection interface
 export interface AgentConnection {
   readonly profile: ResolvedAgentRunnerProfile;
   readonly credentialResolved: boolean;
+  createFetchTransport(): ProviderFetchTransport;
+  createProcessLaunchConfig(input: ProcessLaunchConfigInput): ProcessLaunchConfig;
 }
 
 export interface AgentProviderSessionInput {

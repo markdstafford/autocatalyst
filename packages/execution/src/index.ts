@@ -132,14 +132,24 @@ export {
   type AgentProviderSessionInput,
   type AgentProviderSessionMetadata,
   type AgentTokenUsage,
+  type ProcessLaunchConfig,
+  type ProcessLaunchConfigInput,
   type ProviderConfigurationErrorCode,
   type ProviderConnectionErrorCode,
   type ProviderConnectionMechanism,
+  type ProviderFetchTransport,
   type ProviderProtocolErrorCode,
   type ResolvedAgentCredentialReference,
   type ResolvedAgentRunnerProfile,
   type UnsupportedProviderCapabilityErrorCode
 } from './agent-provider-adapter.js';
+
+export {
+  createAgentConnection,
+  type AgentConnectionFactoryOptions,
+  type ProviderConnectionLogger,
+  type ProviderCredentialResolver
+} from './connection.js';
 
 export {
   createExecutionEntryPoint,
