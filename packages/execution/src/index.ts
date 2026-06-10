@@ -173,6 +173,15 @@ export {
 } from './agent-orchestrator-runner.js';
 
 export {
+  createDirectOrchestrator,
+  type CreateDirectOrchestratorOptions,
+  type DirectOrchestrator,
+  type DirectOrchestratorCallResult,
+  type DirectOrchestratorLogger,
+  type DirectOrchestratorTelemetryEmitter
+} from './direct-orchestrator.js';
+
+export {
   getAgentProviderAdapterKey,
   createAgentRunnerFactory,
   type AgentProviderAdapterRegistry,
