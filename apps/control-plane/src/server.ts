@@ -9,6 +9,7 @@ import type { ConfigurationRecord, ExecutionContext, ProviderProfileSettings } f
 import {
   buildProviderAdapterKey,
   composeAgentProviderAdapterRegistry,
+  composeDirectProviderAdapterRegistry,
   composeConfiguredProviders,
   createExecutionContextResolver,
   createExecutionRunUnitOfWork,
@@ -21,6 +22,7 @@ import {
   registerControlPlaneRoutes,
   RunDispatchQueue,
   type ControlPlaneService,
+  type ExecutionModeResolution,
   type ExtensionRegistryCatalog,
   type HealthDependencyChecker,
   type PolicyDecisionPoint,
@@ -28,11 +30,13 @@ import {
   type ProviderAdapterMap,
   type ProviderCompositionResult,
   type RetainedRunEventStoreOptions,
-  type RunUnitOfWork
+  type RunUnitOfWork,
+  type RunWorkInput
 } from '@autocatalyst/core';
 import {
   createAgentConnection,
   createAgentRunnerFactory,
+  createDirectCallFactory,
   createExecutionEntryPoint,
   createExecutionMaterializer,
   ProviderConfigurationError,
@@ -55,6 +59,16 @@ import {
   claudeProviderKind,
   createClaudeAgentAdapter
 } from '@autocatalyst/claude-agent-adapter';
+import {
+  anthropicDirectAdapterId,
+  anthropicProviderKind,
+  createAnthropicDirectAdapter
+} from '@autocatalyst/anthropic-direct-adapter';
+import {
+  createOpenAIDirectAdapter,
+  openaiDirectAdapterId,
+  openaiProviderKind
+} from '@autocatalyst/openai-direct-adapter';
 import {
   DrizzleConfigurationRecordRepository,
   DrizzleConversationIngressRepository,
@@ -87,6 +101,15 @@ export interface ControlPlaneServerOptions {
   readonly onControlPlaneReady?: (service: ControlPlaneService) => void;
   readonly runEventStoreOptions?: RetainedRunEventStoreOptions;
   readonly realRunnerDispatch?: RealRunnerDispatchOptions;
+  /**
+   * Injectable resolver for execution mode selection. Defaults to always returning agent mode,
+   * which preserves existing behavior. Integration tests and real workflows with direct steps
+   * should inject a resolver that inspects workflow/step metadata to determine the mode.
+   */
+  readonly resolveExecutionMode?: (
+    input: RunWorkInput,
+    context: ExecutionContext
+  ) => Promise<ExecutionModeResolution> | ExecutionModeResolution;
 }
 
 const DEFAULT_RUN_CONCURRENCY = 2;
@@ -170,6 +193,7 @@ export function createExplicitProfileResolver(input: {
 
     const settings = record.settings as ProviderProfileSettings;
     const profile: ResolvedAgentRunnerProfile = {
+      mode: 'agent',
       providerKind: record.providerKind,
       adapterId: record.adapterId,
       profileName: settings.profileName,
@@ -307,13 +331,20 @@ export async function createControlPlaneServer(
   const baseAdapters = options.providerAdapters ?? emptyProviderAdapterMap;
   let mergedAdapters: ProviderAdapterMap = baseAdapters;
   if (realDispatchEnabled) {
+    const merged = new Map<string, ProviderAdapterFactory>(baseAdapters);
     const claudeKey = buildProviderAdapterKey(claudeProviderKind, claudeAgentAdapterId);
-    if (!baseAdapters.has(claudeKey)) {
-      const merged = new Map<string, ProviderAdapterFactory>(baseAdapters);
-      const claudeAdapterFactory: ProviderAdapterFactory = () => createClaudeAgentAdapter();
-      merged.set(claudeKey, claudeAdapterFactory);
-      mergedAdapters = merged;
+    if (!merged.has(claudeKey)) {
+      merged.set(claudeKey, () => createClaudeAgentAdapter());
     }
+    const anthropicDirectKey = buildProviderAdapterKey(anthropicProviderKind, anthropicDirectAdapterId);
+    if (!merged.has(anthropicDirectKey)) {
+      merged.set(anthropicDirectKey, () => createAnthropicDirectAdapter());
+    }
+    const openaiDirectKey = buildProviderAdapterKey(openaiProviderKind, openaiDirectAdapterId);
+    if (!merged.has(openaiDirectKey)) {
+      merged.set(openaiDirectKey, () => createOpenAIDirectAdapter());
+    }
+    mergedAdapters = merged;
   }
 
   const providerCompositionResult = await composeConfiguredProviders({
@@ -349,6 +380,9 @@ export async function createControlPlaneServer(
     const adapterRegistry = composeAgentProviderAdapterRegistry({
       composed: providerCompositionResult.composed
     });
+    const directRegistry = composeDirectProviderAdapterRegistry({
+      composed: providerCompositionResult.composed
+    });
     const resolveProfile = createExplicitProfileResolver({
       defaultProviderProfileId: profileId,
       listRecords: () => configurationRecords.list(),
@@ -357,6 +391,45 @@ export async function createControlPlaneServer(
     const runnerFactory = createAgentRunnerFactory({
       adapters: adapterRegistry,
       resolveProfile,
+      createConnection: (input) => createConnectionFromAgentConnection(input, secretStore)
+    });
+    const directCallFactory = createDirectCallFactory({
+      adapters: directRegistry,
+      resolveProfile: async (directInput) => {
+        // For direct calls, we reuse the explicit profile resolver pattern
+        const records = await configurationRecords.list();
+        const record = records.find(
+          (candidate) =>
+            candidate.id === profileId && candidate.kind === 'provider_profile'
+        );
+        if (record === undefined) {
+          throw new ProviderConfigurationError(
+            'missing_profile',
+            `No provider_profile configuration record found with id "${profileId}".`,
+            { runId: directInput.runId, step: directInput.step }
+          );
+        }
+        const settings = record.settings as import('@autocatalyst/api-contract').ProviderProfileSettings;
+        return {
+          profile: {
+            mode: 'direct' as const,
+            providerKind: record.providerKind,
+            adapterId: record.adapterId,
+            profileName: settings.profileName,
+            configurationRecordId: record.id,
+            model: settings.model ?? { ...defaultModelIdentity },
+            inferenceSettings: settings.inferenceSettings ?? {},
+            endpoint: settings.endpoint ?? {},
+            connectionMechanism: 'fetch_transport' as const
+          },
+          credentialReference: {
+            required: settings.credentialSecretHandle !== undefined,
+            ...(settings.credentialSecretHandle !== undefined
+              ? { secretHandle: settings.credentialSecretHandle }
+              : {})
+          }
+        };
+      },
       createConnection: (input) => createConnectionFromAgentConnection(input, secretStore)
     });
     const materializer = createExecutionMaterializer({
@@ -370,7 +443,16 @@ export async function createControlPlaneServer(
     resolvedUnitOfWork = createExecutionRunUnitOfWork({
       execute: entryPoint,
       resolveContext: (workInput) => contextResolver.resolve(workInput),
-      eventsStore: eventBus
+      ...(options.resolveExecutionMode !== undefined && { resolveExecutionMode: options.resolveExecutionMode }),
+      eventsStore: eventBus,
+      direct: {
+        call: (directWorkInput) => directCallFactory.call({
+          runId: directWorkInput.runId,
+          ...(directWorkInput.phase !== undefined && { phase: directWorkInput.phase }),
+          step: directWorkInput.step,
+          directCall: directWorkInput.directCall
+        })
+      }
     });
   }
 

@@ -141,8 +141,23 @@ export {
   type ProviderProtocolErrorCode,
   type ResolvedAgentCredentialReference,
   type ResolvedAgentRunnerProfile,
+  type RunnerProfileMode,
   type UnsupportedProviderCapabilityErrorCode
 } from './agent-provider-adapter.js';
+
+export {
+  DirectProviderProtocolError,
+  DirectResultValidationError,
+  type DirectCallRequest,
+  type DirectProviderAdapter,
+  type DirectProviderCallInput,
+  type DirectProviderCallMetadata,
+  type DirectProviderCallResult,
+  type DirectProviderProtocolErrorCode,
+  type DirectResultValidationConfig,
+  type DirectResultValidationOutcome,
+  type DirectResultValidationSuccess
+} from './direct-provider-adapter.js';
 
 export {
   createAgentConnection,
@@ -158,6 +173,15 @@ export {
 } from './agent-orchestrator-runner.js';
 
 export {
+  createDirectOrchestrator,
+  type CreateDirectOrchestratorOptions,
+  type DirectOrchestrator,
+  type DirectOrchestratorCallResult,
+  type DirectOrchestratorLogger,
+  type DirectOrchestratorTelemetryEmitter
+} from './direct-orchestrator.js';
+
+export {
   getAgentProviderAdapterKey,
   createAgentRunnerFactory,
   type AgentProviderAdapterRegistry,
@@ -166,6 +190,17 @@ export {
   type AgentRunnerFactory,
   type CreateAgentRunnerFactoryOptions
 } from './runner-dispatch.js';
+
+export {
+  getDirectProviderAdapterKey,
+  createDirectProviderAdapterRegistry,
+  createDirectCallFactory,
+  type DirectProviderAdapterRegistry,
+  type DirectProfileResolution,
+  type DirectCallFactoryInput,
+  type DirectCallFactory,
+  type CreateDirectCallFactoryOptions
+} from './direct-runner-dispatch.js';
 
 export {
   createExecutionEntryPoint,

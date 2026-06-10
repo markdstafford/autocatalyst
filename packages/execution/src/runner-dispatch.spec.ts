@@ -29,6 +29,7 @@ import {
 
 function makeProfile(overrides: Partial<ResolvedAgentRunnerProfile> = {}): ResolvedAgentRunnerProfile {
   return {
+    mode: 'agent',
     providerKind: 'anthropic',
     adapterId: 'claude-agent-sdk',
     profileName: 'default',

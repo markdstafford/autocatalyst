@@ -22,6 +22,7 @@ function captureLogger() {
 
 function makeFetchProfile(): ResolvedAgentRunnerProfile {
   return {
+    mode: 'agent',
     providerKind: 'anthropic',
     adapterId: 'claude-adapter',
     profileName: 'test-fetch',
@@ -37,6 +38,7 @@ function makeFetchProfile(): ResolvedAgentRunnerProfile {
 
 function makeProcessProfile(): ResolvedAgentRunnerProfile {
   return {
+    mode: 'agent',
     providerKind: 'anthropic',
     adapterId: 'claude-adapter',
     profileName: 'test-process',

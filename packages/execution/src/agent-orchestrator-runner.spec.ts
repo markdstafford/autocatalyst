@@ -155,6 +155,7 @@ function makeFakeAdapter(options: FakeAdapterOptions = {}): {
 
 function makeProfile(overrides: Partial<ResolvedAgentRunnerProfile> = {}): ResolvedAgentRunnerProfile {
   return {
+    mode: 'agent',
     providerKind: 'test',
     adapterId: 'test-adapter',
     profileName: 'default',
