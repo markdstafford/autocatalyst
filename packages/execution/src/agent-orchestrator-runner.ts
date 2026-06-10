@@ -166,6 +166,7 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
           step: telemetryContext.step,
           durationMs,
           outcome: metadata?.outcome ?? outcome,
+          launchMechanism: metadata?.launchMechanism,
           assistantTurnCount,
           toolCallCount,
           degradedCapabilities: metadata?.degradedCapabilities ?? [],

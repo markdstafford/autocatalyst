@@ -445,6 +445,113 @@ describe('createAgentOrchestratorRunner', () => {
       const result = await runner.close();
       expect(result).toEqual({ status: 'closed' });
     });
+
+    it('calls adapter.close() even when startSession throws', async () => {
+      const startError = new Error('Failed to connect');
+      const adapterCloseMock = vi.fn().mockResolvedValue(undefined);
+      const profile = makeProfile();
+      const adapter: AgentProviderAdapter = {
+        providerKind: 'test',
+        adapterId: 'test-adapter',
+        supportedConnectionMechanism: 'process_environment',
+        startSession() {
+          throw startError;
+        },
+        close: adapterCloseMock
+      };
+      const options: CreateAgentOrchestratorRunnerOptions = {
+        adapter,
+        profile,
+        connection: makeConnection(profile),
+        telemetryContext: makeTelemetryContext(),
+        clock: () => 1000
+      };
+      const runner = createAgentOrchestratorRunner(options);
+
+      try {
+        await collectEvents(runner, makeRunInput());
+      } catch {
+        // expected — startSession throws
+      }
+
+      await runner.close();
+      expect(adapterCloseMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not throw when close() is called after generator abandonment', async () => {
+      const runId = 'run_test_1';
+      const { options } = makeOrchestratorOptions({
+        events: [makeAssistantTurnEvent(runId), makeTerminalEvent(runId)]
+      });
+      const runner = createAgentOrchestratorRunner(options);
+
+      // Abandon the generator after the first event
+      for await (const _event of runner.run(makeRunInput())) {
+        break;
+      }
+
+      await expect(runner.close()).resolves.toEqual({ status: 'closed' });
+    });
+  });
+
+  describe('telemetry end event fields', () => {
+    it('emits durationMs, outcome, and degradedCapabilities in session_end', async () => {
+      const runId = 'run_test_1';
+      const emitMock = vi.fn();
+      const profile = makeProfile();
+      const { adapter } = makeFakeAdapter({
+        events: [makeAssistantTurnEvent(runId), makeTerminalEvent(runId)]
+      });
+
+      let clockValue = 1000;
+      const options: CreateAgentOrchestratorRunnerOptions = {
+        adapter,
+        profile,
+        connection: makeConnection(profile),
+        telemetryContext: makeTelemetryContext(),
+        telemetry: { emit: emitMock },
+        clock: () => {
+          clockValue += 50;
+          return clockValue;
+        }
+      };
+      const runner = createAgentOrchestratorRunner(options);
+      await collectEvents(runner, makeRunInput());
+
+      const sessionEndCall = emitMock.mock.calls.find(
+        ([event]) => event === 'agent_orchestrator_session_end'
+      );
+      expect(sessionEndCall).toBeDefined();
+      const fields = sessionEndCall![1] as Record<string, unknown>;
+
+      expect(typeof fields['durationMs']).toBe('number');
+      expect((fields['durationMs'] as number) >= 0).toBe(true);
+      expect(fields['outcome']).toBe('succeeded');
+      expect(Array.isArray(fields['degradedCapabilities'])).toBe(true);
+    });
+  });
+
+  describe('provider error safety', () => {
+    it('re-throws ProviderConnectionError as a typed error (not a raw string dump)', async () => {
+      const runId = 'run_test_1';
+      const providerError = new ProviderConnectionError('timeout', 'raw unsafe message with credentials: secret123');
+      const { options } = makeOrchestratorOptions({
+        events: [makeAssistantTurnEvent(runId)],
+        streamError: providerError
+      });
+      const runner = createAgentOrchestratorRunner(options);
+
+      let caught: unknown;
+      try {
+        await collectEvents(runner, makeRunInput());
+      } catch (err) {
+        caught = err;
+      }
+
+      expect(caught).toBeDefined();
+      expect(caught).toBeInstanceOf(ProviderConnectionError);
+      expect((caught as ProviderConnectionError).code).toBe('timeout');
+    });
   });
 
   describe('counters', () => {
