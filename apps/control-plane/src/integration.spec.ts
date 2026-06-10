@@ -32,8 +32,7 @@ import {
   type ClaudeNativeEvent
 } from '@autocatalyst/claude-agent-adapter';
 import {
-  createOpenAIAgentAdapter,
-  type OpenAINativeEvent
+  createOpenAIAgentAdapter
 } from '@autocatalyst/openai-agent-adapter';
 import type { RunnerEvent } from '@autocatalyst/execution';
 import {
@@ -1507,18 +1506,7 @@ describe('real OpenAI agent dispatch - SSE and checkpoint', () => {
       }
 
       // Fake OpenAI agent adapter that returns an advance terminal event.
-      const fakeOpenAIAdapter = createOpenAIAgentAdapter({
-        sdk: {
-          SandboxAgent: class {
-            constructor(_opts: Record<string, unknown>) {}
-            async *run(_input: unknown): AsyncIterable<OpenAINativeEvent> {}
-          } as never,
-          NoopSnapshotSpec: class { readonly type = 'noop'; } as never,
-          isNoopSnapshotSpec: (v: unknown) => (v as { type?: unknown }).type === 'noop',
-          createClientBinding: ({ transport }) => ({ kind: 'transport' as const, value: transport })
-        },
-        sandboxClientFactory: async () => ({ kind: 'local' as const })
-      });
+      const fakeOpenAIAdapter = createOpenAIAgentAdapter();
       // Override startSession to return fake events directly (bypasses SDK native mapping)
       fakeOpenAIAdapter.startSession = async (input) => {
         const runId = input.telemetryContext.runId;

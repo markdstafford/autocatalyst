@@ -6,11 +6,12 @@ export {
 export type {
   OpenAIAgentAdapterLogger,
   OpenAIAgentAdapterOptions,
-  OpenAIAgentsSdkFacade,
-  OpenAISandboxClient,
   OpenAISandboxClientFactory,
   OpenAISandboxClientFactoryInput,
+  OpenAISandboxClientHandle,
+  OpenAISandboxSession,
   OpenAIWorkspaceSandboxConfig,
-  OpenAINativeEvent,
-  OpenAIProviderClientBinding
+  OpenAIRunAgentSession,
+  OpenAIRunSessionInput,
+  OpenAIRunOutcome
 } from './openai-agent-adapter.js';

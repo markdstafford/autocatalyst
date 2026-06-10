@@ -1,17 +1,31 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
+import { Runner, OpenAIProvider, tool } from '@openai/agents';
+import {
+  SandboxAgent,
+  Manifest,
+  NoopSnapshotSpec,
+  isNoopSnapshotSpec,
+  localDir
+} from '@openai/agents/sandbox';
+import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
+import type { RunItem } from '@openai/agents';
+import type { SandboxClient, SandboxSessionLike } from '@openai/agents/sandbox';
+import OpenAI from 'openai';
+import { z } from 'zod/v4';
+
 import type {
   AgentProviderAdapter,
   AgentProviderSession,
   AgentProviderSessionInput,
   AgentProviderSessionMetadata,
   ProviderCapabilityDegradation,
-  ProviderFetchTransport
+  ProviderFetchTransport,
+  ProviderRequest
 } from '@autocatalyst/execution';
 import {
   notifyToolInputSchema,
-  ProviderConfigurationError,
   ProviderProtocolError,
   reportProgressToolInputSchema,
   UnsupportedProviderCapabilityError,
@@ -22,10 +36,9 @@ import type { RunnerEvent } from '@autocatalyst/api-contract';
 export const openaiProviderKind = 'openai' as const;
 export const openaiAgentAdapterId = 'openai-agents-sdk' as const;
 
-export interface OpenAIProviderClientBinding {
-  readonly kind: 'client' | 'transport';
-  readonly value: unknown;
-}
+// ---------------------------------------------------------------------------
+// Public seam types
+// ---------------------------------------------------------------------------
 
 export interface OpenAIWorkspaceSandboxConfig {
   readonly shape: 'none' | 'scratch_only' | 'two_roots';
@@ -35,36 +48,70 @@ export interface OpenAIWorkspaceSandboxConfig {
   readonly resultRoot?: string;
 }
 
-export interface OpenAISandboxClient {
-  readonly kind: 'local';
-  close?(): Promise<void> | void;
-}
+/**
+ * A sandbox session opened against the materialized workspace. This is the real
+ * `@openai/agents/sandbox` session shape (`SandboxSessionLike`); the per-session
+ * `UnixLocalSandboxClient` produces it and `Runner.run({ sandbox: { session } })`
+ * consumes it.
+ */
+export type OpenAISandboxSession = SandboxSessionLike;
 
 export interface OpenAISandboxClientFactoryInput {
   readonly workspace: OpenAIWorkspaceSandboxConfig;
-  readonly snapshot: unknown;
+  /** The validated NoopSnapshotSpec; bound to the client, never a process global. */
+  readonly snapshot: NoopSnapshotSpec;
+  /** Secret-stripped environment variables to seed the sandbox with. */
   readonly environment: Readonly<Record<string, string>>;
-  readonly transport: ProviderFetchTransport;
   readonly telemetryContext: AgentProviderSessionInput['telemetryContext'];
+}
+
+export interface OpenAISandboxClientHandle {
+  /** The real (or fake) sandbox client used to create the session. */
+  readonly client: SandboxClient;
+  /** The session opened against the materialized workspace. */
+  readonly session: OpenAISandboxSession;
+  close?(): Promise<void> | void;
 }
 
 export type OpenAISandboxClientFactory = (
   input: OpenAISandboxClientFactoryInput
-) => OpenAISandboxClient | Promise<OpenAISandboxClient>;
+) => OpenAISandboxClientHandle | Promise<OpenAISandboxClientHandle>;
 
-export interface OpenAINativeEvent {
-  readonly type: string;
-  readonly [key: string]: unknown;
+/**
+ * Drives a single agent run. The default implementation constructs a real
+ * `SandboxAgent` and a per-session `Runner` bound to an `OpenAIProvider` (which
+ * is itself bound to the per-session fetch transport), then yields the real
+ * `RunItem`s and final `RunResult`. Tests inject a fake to feed canned
+ * RunItem-shaped events without driving the model.
+ */
+export interface OpenAIRunSessionInput {
+  readonly prompt: string;
+  readonly model: string;
+  readonly instructions: string;
+  readonly tools: ReturnType<typeof tool>[];
+  readonly manifest: Manifest;
+  readonly session: OpenAISandboxSession;
+  /** OpenAIProvider bound to the per-session fetch transport. Never a global. */
+  readonly modelProvider: OpenAIProvider;
+  readonly modelSettings: Readonly<Record<string, unknown>>;
 }
 
-export interface OpenAIAgentsSdkFacade {
-  readonly SandboxAgent?: new (options: Record<string, unknown>) => {
-    run(input: unknown, options?: Record<string, unknown>): AsyncIterable<OpenAINativeEvent> | Promise<AsyncIterable<OpenAINativeEvent>>;
-  };
-  readonly NoopSnapshotSpec?: new () => { readonly type?: string };
-  isNoopSnapshotSpec?(value: unknown): boolean;
-  createClientBinding?(input: { readonly transport: ProviderFetchTransport }): OpenAIProviderClientBinding;
+export interface OpenAIRunOutcome {
+  readonly items: AsyncIterable<RunItem> | Iterable<RunItem>;
+  /**
+   * The terminal result of the run. `directive` maps to the canonical terminal
+   * directive; `output` (if present) is written to the step-result file.
+   */
+  readonly result: Promise<{
+    readonly directive: 'advance' | 'needs_input' | 'fail';
+    readonly output?: unknown;
+    readonly question?: string;
+    readonly reason?: string;
+    readonly tokenUsage?: { readonly input: number; readonly output: number };
+  }>;
 }
+
+export type OpenAIRunAgentSession = (input: OpenAIRunSessionInput) => OpenAIRunOutcome | Promise<OpenAIRunOutcome>;
 
 export interface OpenAIAgentAdapterLogger {
   info(event: string, fields: unknown): void;
@@ -73,8 +120,12 @@ export interface OpenAIAgentAdapterLogger {
 }
 
 export interface OpenAIAgentAdapterOptions {
-  readonly sdk?: OpenAIAgentsSdkFacade;
+  /** Override the default real-SDK sandbox client/session factory (tests inject a fake). */
   readonly sandboxClientFactory?: OpenAISandboxClientFactory;
+  /** Override the default real-SDK run driver (tests inject canned RunItems). */
+  readonly runAgentSession?: OpenAIRunAgentSession;
+  /** Base directory under which the local sandbox materializes workspaces. Defaults to os tmp. */
+  readonly sandboxWorkspaceBaseDir?: string;
   readonly clock?: () => string;
   readonly eventIdGenerator?: () => string;
   readonly logger?: OpenAIAgentAdapterLogger;
@@ -86,6 +137,7 @@ export interface OpenAIAgentAdapterOptions {
 
 const PROGRESS_TOOL_NAMES = new Set(['update_plan', 'report_progress', 'notify']);
 
+// Inference settings the OpenAI Agents SDK plumbs through ModelSettings.
 const SUPPORTED_INFERENCE_SETTINGS = new Set(['temperature', 'topP', 'maxOutputTokens']);
 const OPTIONAL_AGENT_UNSUPPORTED_SETTINGS = ['reasoningEffort', 'seed', 'topK', 'streamingMode', 'parallelToolCalls'] as const;
 
@@ -105,7 +157,8 @@ function mapInferenceSettings(profile: AgentProviderSessionInput['profile']): Op
   for (const [key, value] of Object.entries(settings)) {
     if (value === undefined) continue;
     if (SUPPORTED_INFERENCE_SETTINGS.has(key)) {
-      mapped[key] = value;
+      // ModelSettings uses maxTokens, not maxOutputTokens.
+      mapped[key === 'maxOutputTokens' ? 'maxTokens' : key] = value;
     } else if ((OPTIONAL_AGENT_UNSUPPORTED_SETTINGS as readonly string[]).includes(key)) {
       degraded.push({
         capability: `inference_setting:${key}`,
@@ -119,57 +172,47 @@ function mapInferenceSettings(profile: AgentProviderSessionInput['profile']): Op
 
 // ---------------------------------------------------------------------------
 // Progress tool definitions
+//
+// The progress tools are *signaling* tools: the SDK executes them locally and
+// returns a benign acknowledgement. The adapter intercepts the tool-call items
+// (not the executor) and re-emits them as canonical runner_progress /
+// runner_notification events. The executors only need to return something so the
+// run loop can continue.
 // ---------------------------------------------------------------------------
 
-function createProgressTools(): readonly Record<string, unknown>[] {
+function createProgressTools(): ReturnType<typeof tool>[] {
+  const ack = async (): Promise<string> => 'acknowledged';
   return [
-    {
-      type: 'function',
+    tool({
       name: 'update_plan',
       description: 'Replace the current plan with a list of safe plan items and statuses.',
-      parameters: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          title: { type: 'string' },
-          steps: {
-            type: 'array',
-            items: { type: 'string' }
-          }
-        },
-        required: ['title', 'steps']
-      }
-    },
-    {
-      type: 'function',
+      parameters: z.object({
+        title: z.string(),
+        steps: z.array(z.string())
+      }),
+      execute: ack
+    }),
+    tool({
       name: 'report_progress',
       description: 'Report task counts or a short safe progress intent summary.',
-      parameters: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          label: { type: 'string', minLength: 1 },
-          completed: { type: 'integer', minimum: 0 },
-          total: { type: 'integer', minimum: 1 },
-          summary: { type: 'string', minLength: 1 }
-        }
-      }
-    },
-    {
-      type: 'function',
+      parameters: z.object({
+        label: z.string().nullable().optional(),
+        completed: z.number().int().nullable().optional(),
+        total: z.number().int().nullable().optional(),
+        summary: z.string().nullable().optional()
+      }),
+      execute: ack
+    }),
+    tool({
       name: 'notify',
       description: 'Emit a safe notification for the run event stream.',
-      parameters: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          message: { type: 'string' },
-          severity: { type: 'string', enum: ['debug', 'info', 'warn', 'error'] },
-          importance: { type: 'string', enum: ['low', 'normal', 'high'] }
-        },
-        required: ['message']
-      }
-    }
+      parameters: z.object({
+        message: z.string(),
+        severity: z.enum(['debug', 'info', 'warn', 'error']).nullable().optional(),
+        importance: z.enum(['low', 'normal', 'high']).nullable().optional()
+      }),
+      execute: ack
+    })
   ];
 }
 
@@ -192,10 +235,6 @@ function baseEvent(ctx: EventContext): { id: string; runId: string; step: string
     importance: 'normal' as const,
     createdAt: ctx.clock()
   };
-}
-
-function safeStr(value: unknown): string {
-  return typeof value === 'string' ? value : '';
 }
 
 function parseArgs(value: unknown): Record<string, unknown> | undefined {
@@ -272,25 +311,43 @@ function mapProgressToolCall(name: string, rawArgs: unknown, ctx: EventContext):
   return lowImportanceToolActivity(name, ctx);
 }
 
-function mapNativeEvent(native: OpenAINativeEvent, ctx: EventContext): RunnerEvent | undefined {
-  switch (native.type) {
-    case 'assistant':
-    case 'assistant_turn':
-    case 'message': {
-      const content = safeStr(native['content'] ?? native['text']);
-      if (content.length === 0) return undefined;
+function assistantText(rawItem: unknown): string {
+  if (typeof rawItem !== 'object' || rawItem === null) return '';
+  const content = (rawItem as { content?: unknown }).content;
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  let text = '';
+  for (const block of content as Array<Record<string, unknown>>) {
+    if (block && block['type'] === 'output_text' && typeof block['text'] === 'string') {
+      text += block['text'];
+    }
+  }
+  return text;
+}
+
+/**
+ * Maps a single native `RunItem` (from the real SDK) into a canonical
+ * RunnerEvent, or undefined when the item carries no surfaced signal. Terminal
+ * results are NOT produced here — the run driver returns a separate terminal
+ * result so the adapter can enforce the single-terminal protocol.
+ */
+function mapRunItem(item: RunItem, ctx: EventContext): RunnerEvent | undefined {
+  switch (item.type) {
+    case 'message_output_item': {
+      const text = assistantText(item.rawItem);
+      if (text.length === 0) return undefined;
       return {
         ...baseEvent(ctx),
         type: 'runner_assistant_turn',
-        message: { role: 'assistant', content }
+        message: { role: 'assistant', content: text }
       } as RunnerEvent;
     }
 
-    case 'tool_call':
-    case 'tool_start': {
-      const name = safeStr(native['name'] ?? (native['tool'] as Record<string, unknown> | undefined)?.['name']);
+    case 'tool_call_item': {
+      const raw = item.rawItem as { name?: unknown; arguments?: unknown; type?: unknown };
+      const name = typeof raw.name === 'string' ? raw.name : '';
       if (PROGRESS_TOOL_NAMES.has(name)) {
-        return mapProgressToolCall(name, native['arguments'] ?? native['input'], ctx);
+        return mapProgressToolCall(name, raw.arguments, ctx);
       }
       return {
         ...baseEvent(ctx),
@@ -299,10 +356,12 @@ function mapNativeEvent(native: OpenAINativeEvent, ctx: EventContext): RunnerEve
       } as RunnerEvent;
     }
 
-    case 'tool_result':
-    case 'tool_end': {
-      const name = safeStr(native['name'] ?? (native['tool'] as Record<string, unknown> | undefined)?.['name']);
-      const status = native['isError'] === true ? 'failed' : 'completed';
+    case 'tool_call_output_item': {
+      const raw = item.rawItem as { name?: unknown; status?: unknown };
+      const name = typeof raw.name === 'string' ? raw.name : '';
+      // Progress tool acknowledgements were already surfaced on the call item.
+      if (PROGRESS_TOOL_NAMES.has(name)) return undefined;
+      const status = raw.status === 'incomplete' ? 'failed' : 'completed';
       return {
         ...baseEvent(ctx),
         type: 'runner_tool_activity',
@@ -310,47 +369,10 @@ function mapNativeEvent(native: OpenAINativeEvent, ctx: EventContext): RunnerEve
       } as RunnerEvent;
     }
 
-    case 'final':
-    case 'result': {
-      const directive =
-        native['directive'] === 'needs_input' ? 'needs_input' :
-        native['isError'] === true ? 'fail' :
-        'advance';
-
-      if (directive === 'advance') {
-        return {
-          ...baseEvent(ctx),
-          type: 'runner_terminal_result',
-          importance: 'high' as const,
-          result: { directive }
-        } as RunnerEvent;
-      }
-      if (directive === 'needs_input') {
-        return {
-          ...baseEvent(ctx),
-          type: 'runner_terminal_result',
-          importance: 'high' as const,
-          result: { directive, question: 'The OpenAI agent requested more input.' }
-        } as RunnerEvent;
-      }
-      return {
-        ...baseEvent(ctx),
-        type: 'runner_terminal_result',
-        importance: 'high' as const,
-        result: { directive, reason: 'OpenAI agent session failed.' }
-      } as RunnerEvent;
-    }
-
-    case 'system':
-    case 'usage':
-      return undefined;
-
+    // Reasoning, handoff, tool-approval, and tool-search items carry no
+    // surfaced signal for the canonical stream.
     default:
-      throw new ProviderProtocolError(
-        'invalid_provider_event',
-        'OpenAI native event has an unsupported type.',
-        { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId, eventType: native.type }
-      );
+      return undefined;
   }
 }
 
@@ -378,57 +400,8 @@ async function maybeWriteResultFile(
 }
 
 // ---------------------------------------------------------------------------
-// Helper functions
+// Workspace mapping & containment
 // ---------------------------------------------------------------------------
-
-async function resolveDefaultSdkFacade(): Promise<OpenAIAgentsSdkFacade> {
-  try {
-    // @ts-expect-error -- optional peer dependency: types unavailable until the package is installed
-    const sdk = await import('@openai/agents');
-    return sdk as unknown as OpenAIAgentsSdkFacade;
-  } catch {
-    throw new ProviderConfigurationError(
-      'unsupported_required_capability',
-      'The @openai/agents SDK package could not be loaded. Ensure it is installed.',
-      { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId }
-    );
-  }
-}
-
-function assertSdkSupportsSession(sdk: OpenAIAgentsSdkFacade): asserts sdk is OpenAIAgentsSdkFacade & {
-  SandboxAgent: NonNullable<OpenAIAgentsSdkFacade['SandboxAgent']>;
-  NoopSnapshotSpec: NonNullable<OpenAIAgentsSdkFacade['NoopSnapshotSpec']>;
-} {
-  if (!sdk.SandboxAgent) {
-    throw new UnsupportedProviderCapabilityError(
-      'tool_policy_unsupported',
-      'The @openai/agents SDK does not export SandboxAgent. Upgrade to a version that supports sandbox sessions.',
-      { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId, capability: 'openai_agents_sandbox_agent' }
-    );
-  }
-  if (!sdk.NoopSnapshotSpec) {
-    throw new UnsupportedProviderCapabilityError(
-      'tool_policy_unsupported',
-      'The @openai/agents SDK does not export NoopSnapshotSpec. Upgrade to a version that supports noop snapshots.',
-      { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId, capability: 'openai_agents_noop_snapshot' }
-    );
-  }
-}
-
-function createNoopSnapshot(sdk: OpenAIAgentsSdkFacade & { NoopSnapshotSpec: NonNullable<OpenAIAgentsSdkFacade['NoopSnapshotSpec']> }): { readonly type?: string } {
-  const snapshot = new sdk.NoopSnapshotSpec();
-  const isValid = sdk.isNoopSnapshotSpec
-    ? sdk.isNoopSnapshotSpec(snapshot)
-    : snapshot.type === 'noop';
-  if (!isValid) {
-    throw new UnsupportedProviderCapabilityError(
-      'tool_policy_unsupported',
-      'The @openai/agents SDK NoopSnapshotSpec instance failed validation. The snapshot type must be "noop".',
-      { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId, capability: 'openai_agents_noop_snapshot' }
-    );
-  }
-  return snapshot;
-}
 
 function mapWorkspaceForSandbox(input: AgentProviderSessionInput): OpenAIWorkspaceSandboxConfig {
   const workspace = input.runInput.environment.workspace;
@@ -458,7 +431,7 @@ function assertWorkspaceRootsDoNotEscape(workspace: OpenAIWorkspaceSandboxConfig
   for (const p of pathsToCheck) {
     if (p !== undefined && !rootsSet.has(p)) {
       throw new UnsupportedProviderCapabilityError(
-        'tool_policy_unsupported',
+        'workspace_containment_violation',
         `Workspace path "${p}" is not within the declared workspace roots.`,
         { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId, capability: 'workspace_roots' }
       );
@@ -466,47 +439,191 @@ function assertWorkspaceRootsDoNotEscape(workspace: OpenAIWorkspaceSandboxConfig
   }
 }
 
-async function defaultSandboxClientFactory(_input: OpenAISandboxClientFactoryInput): Promise<OpenAISandboxClient> {
-  try {
-    // @ts-expect-error -- optional peer dependency: types unavailable until the package is installed
-    const local = await import('@openai/agents/sandbox/local');
-    const localModule = local as Record<string, unknown>;
-    const Candidate = localModule['UnixLocalSandboxClient'] ?? localModule['LocalSandboxClient'] ?? localModule['DockerSandboxClient'];
-    if (typeof Candidate !== 'function') {
-      throw new Error('no local sandbox constructor found');
+/**
+ * Builds the sandbox Manifest that materializes the run's workspace roots into
+ * the local sandbox. Each declared root becomes a `localDir` entry, and each is
+ * granted via `extraPathGrants` so `UnixLocalSandboxClient` may copy it from its
+ * host location into the session workspace (the SDK otherwise restricts
+ * local_dir sources to its own base directory).
+ */
+function buildWorkspaceManifest(
+  workspace: OpenAIWorkspaceSandboxConfig,
+  environment: Readonly<Record<string, string>>
+): Manifest {
+  const entries: Record<string, ReturnType<typeof localDir>> = {};
+  const grants: Array<{ path: string; readOnly: boolean }> = [];
+  for (const root of workspace.workspaceRoots) {
+    const logicalName = path.basename(root) || 'root';
+    entries[logicalName] = localDir({ src: root });
+    grants.push({ path: root, readOnly: false });
+  }
+  const environmentInit: Record<string, string> = {};
+  for (const [key, value] of Object.entries(environment)) {
+    environmentInit[key] = value;
+  }
+  return new Manifest({
+    root: '/workspace',
+    entries,
+    environment: environmentInit,
+    extraPathGrants: grants
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Transport bridge: ProviderFetchTransport -> WHATWG fetch for the OpenAI client
+// ---------------------------------------------------------------------------
+
+function bridgeTransportToFetch(transport: ProviderFetchTransport): typeof fetch {
+  const bridged = async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    let resolvedUrl: string;
+    let method: string;
+    let headers: Record<string, string> = {};
+    let body: unknown;
+
+    if (url instanceof Request) {
+      resolvedUrl = url.url;
+      method = url.method;
+      url.headers.forEach((value, key) => { headers[key] = value; });
+      body = init?.body ?? (await url.clone().text());
+    } else {
+      resolvedUrl = url.toString();
+      method = init?.method ?? 'GET';
+      const initHeaders = init?.headers;
+      if (initHeaders instanceof Headers) {
+        initHeaders.forEach((value, key) => { headers[key] = value; });
+      } else if (Array.isArray(initHeaders)) {
+        for (const [key, value] of initHeaders as Array<[string, string]>) headers[key] = value;
+      } else if (initHeaders) {
+        headers = { ...(initHeaders as Record<string, string>) };
+      }
+      body = init?.body;
     }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const client = new (Candidate as any)({
-      workspaceRoots: _input.workspace.workspaceRoots,
-      repoRoot: _input.workspace.repoRoot,
-      scratchRoot: _input.workspace.scratchRoot,
-      snapshot: _input.snapshot,
-      environment: _input.environment
-    }) as OpenAISandboxClient;
-    return client;
-  } catch {
-    throw new UnsupportedProviderCapabilityError(
-      'tool_policy_unsupported',
-      'OpenAI local sandbox client is not available. Inject a sandboxClientFactory or install a compatible @openai/agents/sandbox/local.',
-      { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId, capability: 'openai_agents_local_sandbox_client' }
-    );
+
+    const request: ProviderRequest = {
+      url: resolvedUrl,
+      method,
+      headers,
+      ...(body !== undefined && body !== null ? { body } : {})
+    };
+    return transport.fetch(request);
+  };
+  return bridged as unknown as typeof fetch;
+}
+
+// ---------------------------------------------------------------------------
+// Default (real-SDK) run driver
+// ---------------------------------------------------------------------------
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+/**
+ * The structural subset of the SDK's non-stream RunResult that the adapter
+ * consumes. The SDK's own `RunResult<_, SandboxAgent>` does not round-trip under
+ * exactOptionalPropertyTypes (its `Agent` class declares optional fields without
+ * `| undefined`), so we narrow to what we actually read instead of naming it.
+ */
+interface NonStreamRunResultView {
+  readonly newItems: readonly RunItem[];
+  readonly finalOutput: unknown;
+  readonly state: { readonly _context: { readonly usage?: { readonly inputTokens?: number; readonly outputTokens?: number } } };
+}
+
+/**
+ * Drives a non-streaming run and returns the resolved RunResult (narrowed). The
+ * `run` call itself typechecks against the concrete SandboxAgent; only naming
+ * the full result type trips the SDK's exactOptional quirk, so we view it
+ * structurally.
+ */
+async function runRunnerNonStream(
+  runner: Runner,
+  agent: SandboxAgent,
+  prompt: string,
+  session: OpenAISandboxSession,
+  onError: (err: unknown) => void
+): Promise<NonStreamRunResultView> {
+  try {
+    const result = await runner.run(agent, prompt, { sandbox: { session }, stream: false });
+    return result as NonStreamRunResultView;
+  } catch (err) {
+    onError(err);
+    throw err;
   }
 }
 
-function mapTokenUsage(value: unknown): AgentProviderSessionMetadata['tokenUsage'] {
-  const usage = value as { input_tokens?: number; output_tokens?: number; prompt_tokens?: number; completion_tokens?: number } | undefined;
-  if (usage == null) return { available: false };
-  const input = (usage.input_tokens ?? usage.prompt_tokens) ?? 0;
-  const output = (usage.output_tokens ?? usage.completion_tokens) ?? 0;
-  if (input === 0 && output === 0) return { available: false };
-  return {
-    available: true,
-    tokens: {
-      input,
-      output,
-      cacheRead: 0,
-      cacheWrite: 0
+function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome {
+  const agent = new SandboxAgent({
+    name: 'autocatalyst-openai-agent',
+    model: input.model,
+    instructions: input.instructions,
+    defaultManifest: input.manifest,
+    tools: input.tools,
+    ...(Object.keys(input.modelSettings).length > 0 ? { modelSettings: input.modelSettings } : {})
+  });
+
+  // Per-session Runner bound to the per-session model provider via RunConfig.
+  // This is the ONLY place the model provider is set — never through any of the
+  // SDK's process-global default setters.
+  const runner = new Runner({ modelProvider: input.modelProvider, tracingDisabled: true });
+
+  let resolveResult!: (value: OpenAIRunOutcome['result'] extends Promise<infer R> ? R : never) => void;
+  let rejectResult!: (err: unknown) => void;
+  const result: OpenAIRunOutcome['result'] = new Promise((resolve, reject) => {
+    resolveResult = resolve as never;
+    rejectResult = reject;
+  });
+
+  async function* drive(): AsyncIterable<RunItem> {
+    // The non-stream overload (no `stream: true`) returns a RunResult; let TS
+    // infer the precise (agent-specialized) result type from the call.
+    const runResult = await runRunnerNonStream(runner, agent, input.prompt, input.session, rejectResult);
+    for (const item of runResult.newItems) {
+      yield item;
     }
+    const usage = runResult.state._context.usage;
+    resolveResult({
+      directive: 'advance',
+      ...(runResult.finalOutput !== undefined ? { output: runResult.finalOutput } : {}),
+      ...(usage
+        ? { tokenUsage: { input: usage.inputTokens ?? 0, output: usage.outputTokens ?? 0 } }
+        : {})
+    });
+  }
+
+  return { items: drive(), result };
+}
+
+/**
+ * Default sandbox client factory: builds a per-session UnixLocalSandboxClient
+ * (with the validated NoopSnapshotSpec bound to it) and opens a session over the
+ * manifest that materializes the run's workspace roots.
+ */
+function makeDefaultSandboxClientFactory(workspaceBaseDir?: string): OpenAISandboxClientFactory {
+  return async (factoryInput): Promise<OpenAISandboxClientHandle> => {
+    const manifest = buildWorkspaceManifest(factoryInput.workspace, factoryInput.environment);
+    let client: UnixLocalSandboxClient;
+    let session: SandboxSessionLike;
+    try {
+      client = new UnixLocalSandboxClient({
+        ...(workspaceBaseDir !== undefined ? { workspaceBaseDir } : {}),
+        snapshot: factoryInput.snapshot
+      });
+      session = await client.create(manifest);
+    } catch {
+      throw new UnsupportedProviderCapabilityError(
+        'sandbox_client_unsupported',
+        'OpenAI local sandbox client could not open a session for the materialized workspace.',
+        { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId, capability: 'openai_agents_local_sandbox_client' }
+      );
+    }
+    return {
+      client,
+      session,
+      async close(): Promise<void> {
+        await session.close?.();
+      }
+    };
   };
 }
 
@@ -526,28 +643,42 @@ export function createOpenAIAgentAdapter(
     });
   }
 
+  const sandboxClientFactory = options.sandboxClientFactory ?? makeDefaultSandboxClientFactory(options.sandboxWorkspaceBaseDir);
+  const runAgentSession = options.runAgentSession ?? defaultRunAgentSession;
+  const clock = options.clock ?? (() => new Date().toISOString());
+  const eventIdGenerator = options.eventIdGenerator ?? (() => `evt_${Math.random().toString(36).slice(2)}`);
+
   return {
     providerKind: openaiProviderKind,
     adapterId: openaiAgentAdapterId,
     supportedConnectionMechanism: 'fetch_transport',
 
     async startSession(input: AgentProviderSessionInput): Promise<AgentProviderSession> {
-      const sdk = options.sdk ?? await resolveDefaultSdkFacade();
-      assertSdkSupportsSession(sdk);
-
+      // 1. Per-session transport, bound to the per-session fetch transport.
       const transport = input.connection.createFetchTransport();
-      const clientBinding = sdk.createClientBinding?.({ transport }) ?? { kind: 'transport' as const, value: transport };
-      if (clientBinding.kind !== 'client' && clientBinding.kind !== 'transport') {
+
+      // 2. Explicit NoopSnapshotSpec with validation (snapshot belongs on the client).
+      const snapshot = new NoopSnapshotSpec();
+      if (!isNoopSnapshotSpec(snapshot) || snapshot.type !== 'noop') {
         throw new UnsupportedProviderCapabilityError(
-          'header_operation_unsupported',
-          'OpenAI Agents SDK custom client or transport binding is unavailable.',
-          { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId, capability: 'openai_agents_custom_transport' }
+          'sandbox_snapshot_unsupported',
+          'The @openai/agents SDK NoopSnapshotSpec instance failed validation. The snapshot type must be "noop".',
+          { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId, capability: 'openai_agents_noop_snapshot' }
         );
       }
 
-      const snapshot = createNoopSnapshot(sdk);
+      // 3. Workspace mapping + containment.
       const workspace = mapWorkspaceForSandbox(input);
       assertWorkspaceRootsDoNotEscape(workspace);
+
+      // 4. Secret-env stripping.
+      const { variables, secretVariableNames } = input.runInput.environment.environment;
+      const secretSet = new Set(secretVariableNames);
+      const safeEnvironment: Record<string, string> = {};
+      for (const [key, value] of Object.entries(variables)) {
+        if (!secretSet.has(key)) safeEnvironment[key] = value;
+      }
+
       safeLog('info', 'openai_agent_session_start', {
         runId: input.telemetryContext.runId,
         phase: input.telemetryContext.phase,
@@ -559,44 +690,54 @@ export function createOpenAIAgentAdapter(
         workspaceShape: workspace.shape,
         workspaceRootCount: workspace.workspaceRoots.length
       });
-      const sandboxFactory = options.sandboxClientFactory ?? defaultSandboxClientFactory;
-      const { variables, secretVariableNames } = input.runInput.environment.environment;
-      const safeEnvironment: Record<string, string> = {};
-      const secretSet = new Set(secretVariableNames);
-      for (const [key, value] of Object.entries(variables)) {
-        if (!secretSet.has(key)) {
-          safeEnvironment[key] = value;
-        }
-      }
 
-      const sandboxClient = await sandboxFactory({
+      // 5. Open the sandbox session over the materialized workspace.
+      const sandboxHandle = await sandboxClientFactory({
         workspace,
         snapshot,
         environment: safeEnvironment,
-        transport,
         telemetryContext: input.telemetryContext
       });
-      if (sandboxClient.kind !== 'local') {
-        throw new UnsupportedProviderCapabilityError(
-          'tool_policy_unsupported',
-          'OpenAI agent sessions require a local sandbox client.',
-          { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId, capability: 'openai_agents_local_sandbox_client' }
-        );
-      }
+
+      // 6. Per-session OpenAI client + model provider. The OpenAI client's fetch
+      //    is bridged to the per-session ProviderFetchTransport, and the provider
+      //    is passed to the per-session Runner — NEVER a global setter.
+      const endpoint = input.profile.endpoint as { baseUrl?: string };
+      const openAIClient = new OpenAI({
+        apiKey: 'sk-autocatalyst-transport-bound',
+        ...(isNonEmptyString(endpoint.baseUrl) ? { baseURL: endpoint.baseUrl } : {}),
+        fetch: bridgeTransportToFetch(transport)
+      });
+      // OpenAIProvider's `openAIClient` is typed via its own (import-mode)
+      // resolution of `openai`; under NodeNext that is nominally distinct from
+      // the default-mode `OpenAI` we instantiate here even though both resolve
+      // to the same package. Borrow the provider's own expected type so the two
+      // identities unify without widening to `any`.
+      type OpenAIProviderOptions = NonNullable<ConstructorParameters<typeof OpenAIProvider>[0]>;
+      type OpenAIProviderClient = NonNullable<OpenAIProviderOptions['openAIClient']>;
+      const providerOptions: OpenAIProviderOptions = {
+        openAIClient: openAIClient as unknown as OpenAIProviderClient,
+        useResponses: false
+      };
+      const modelProvider = new OpenAIProvider(providerOptions);
 
       const inferenceMapping = mapInferenceSettings(input.profile);
+      const tools = createProgressTools();
 
-      // Build a Record for agent options to avoid computed property TypeScript issues
-      const agentOptions: Record<string, unknown> = {
+      // The manifest the run driver hands to the SandboxAgent mirrors the one the
+      // client used to open the session, so defaultManifest matches the session.
+      const manifest = buildWorkspaceManifest(workspace, safeEnvironment);
+
+      const outcome = await runAgentSession({
+        prompt: input.runInput.environment.context.task.prompt,
         model: input.profile.model.model,
-        tools: createProgressTools(),
-        sandbox: sandboxClient,
-        snapshot,
-        inferenceSettings: inferenceMapping.mapped
-      };
-      agentOptions[clientBinding.kind] = clientBinding.value;
-
-      const agent = new sdk.SandboxAgent(agentOptions);
+        instructions: input.runInput.environment.context.task.prompt,
+        tools,
+        manifest,
+        session: sandboxHandle.session,
+        modelProvider,
+        modelSettings: inferenceMapping.mapped
+      });
 
       let metadataResolve!: (value: AgentProviderSessionMetadata) => void;
       let metadataReject!: (err: unknown) => void;
@@ -604,9 +745,6 @@ export function createOpenAIAgentAdapter(
         metadataResolve = resolve;
         metadataReject = reject;
       });
-
-      const clock = options.clock ?? (() => new Date().toISOString());
-      const eventIdGenerator = options.eventIdGenerator ?? (() => `evt_${Math.random().toString(36).slice(2)}`);
 
       async function* events(): AsyncIterable<RunnerEvent> {
         const ctx: EventContext = {
@@ -616,51 +754,61 @@ export function createOpenAIAgentAdapter(
           eventIdGenerator
         };
         let terminalSeen = false;
-        let lastUsage: unknown = undefined;
         try {
-          const runOptions: Record<string, unknown> = {
-            sandbox: sandboxClient,
-            snapshot
-          };
-          runOptions[clientBinding.kind] = clientBinding.value;
-
-          const nativeStream = await agent.run(
-            input.runInput.environment.context.task.prompt,
-            runOptions
-          );
-          for await (const native of nativeStream) {
-            if (native.type === 'result' || native.type === 'final' || native.type === 'usage') {
-              lastUsage = native['usage'] ?? lastUsage;
-            }
-            if ((native.type === 'result' || native.type === 'final') &&
-                native['directive'] !== 'needs_input' &&
-                native['isError'] !== true) {
-              await maybeWriteResultFile(input.runInput.environment, native['output']);
-            }
-            const event = mapNativeEvent(native, ctx);
+          for await (const item of outcome.items) {
+            const event = mapRunItem(item, ctx);
             if (event === undefined) continue;
             if (terminalSeen) {
               throw new ProviderProtocolError(
                 'impossible_session_sequence',
-                'OpenAI native stream produced events after terminal result.',
+                'OpenAI run produced events after the terminal result.',
                 { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId }
               );
             }
-            if (event.type === 'runner_terminal_result') terminalSeen = true;
             yield event;
           }
-          if (!terminalSeen) {
-            throw new ProviderProtocolError(
-              'impossible_session_sequence',
-              'OpenAI native stream ended without a terminal result.',
-              { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId }
-            );
+
+          const terminal = await outcome.result;
+
+          // Result-file handoff: write the raw final output to the scratch root,
+          // leaving validation to the execution entry point. Only on advance.
+          if (terminal.directive === 'advance') {
+            await maybeWriteResultFile(input.runInput.environment, terminal.output);
           }
+
+          let terminalEvent: RunnerEvent;
+          if (terminal.directive === 'needs_input') {
+            terminalEvent = {
+              ...baseEvent(ctx),
+              type: 'runner_terminal_result',
+              importance: 'high' as const,
+              result: { directive: 'needs_input', question: terminal.question ?? 'The OpenAI agent requested more input.' }
+            } as RunnerEvent;
+          } else if (terminal.directive === 'fail') {
+            terminalEvent = {
+              ...baseEvent(ctx),
+              type: 'runner_terminal_result',
+              importance: 'high' as const,
+              result: { directive: 'fail', reason: terminal.reason ?? 'OpenAI agent session failed.' }
+            } as RunnerEvent;
+          } else {
+            terminalEvent = {
+              ...baseEvent(ctx),
+              type: 'runner_terminal_result',
+              importance: 'high' as const,
+              result: { directive: 'advance' }
+            } as RunnerEvent;
+          }
+          terminalSeen = true;
+          yield terminalEvent;
+
           metadataResolve({
-            outcome: 'succeeded',
+            outcome: terminal.directive === 'fail' ? 'failed' : 'succeeded',
             launchMechanism: 'fetch_transport',
             degradedCapabilities: inferenceMapping.degraded,
-            tokenUsage: mapTokenUsage(lastUsage),
+            tokenUsage: terminal.tokenUsage
+              ? { available: true, tokens: { input: terminal.tokenUsage.input, output: terminal.tokenUsage.output, cacheRead: 0, cacheWrite: 0 } }
+              : { available: false },
             model: input.profile.model
           });
         } catch (err) {
@@ -673,7 +821,7 @@ export function createOpenAIAgentAdapter(
         events: events(),
         metadata: metadataPromise,
         async close(): Promise<void> {
-          await sandboxClient.close?.();
+          await sandboxHandle.close?.();
         }
       };
     }

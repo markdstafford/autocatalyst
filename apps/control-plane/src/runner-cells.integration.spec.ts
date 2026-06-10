@@ -62,7 +62,9 @@ import {
 import {
   createOpenAIAgentAdapter,
   openaiAgentAdapterId,
-  type OpenAINativeEvent
+  type OpenAIRunOutcome,
+  type OpenAIRunSessionInput,
+  type OpenAISandboxClientHandle
 } from '@autocatalyst/openai-agent-adapter';
 import { createExplicitProfileResolver } from './server.js';
 
@@ -931,19 +933,9 @@ describe('runner-cells: OpenAI agent cell profile resolution', () => {
       updatedAt: '2026-06-10T00:00:00.000Z'
     };
 
-    const fakeAdapter = createOpenAIAgentAdapter({
-      sdk: {
-        SandboxAgent: class {
-          constructor(_opts: Record<string, unknown>) {}
-          async *run(_input: unknown): AsyncIterable<OpenAINativeEvent> {}
-        } as never,
-        NoopSnapshotSpec: class {
-          readonly type = 'noop';
-        } as never,
-        isNoopSnapshotSpec: (v: unknown) => (v as { type?: unknown }).type === 'noop',
-        createClientBinding: ({ transport }) => ({ kind: 'transport' as const, value: transport })
-      }
-    });
+    // This test only exercises profile resolution; the adapter is never started,
+    // so the default (real-SDK) adapter suffices.
+    const fakeAdapter = createOpenAIAgentAdapter();
 
     const registry = new Map([
       [buildProviderAdapterKey(openaiProviderKind, openaiAgentAdapterId), fakeAdapter]
@@ -1134,26 +1126,25 @@ describe('runner-cells: two-provider dispatch (Claude implementer + OpenAI revie
 
 describe('runner-cells: OpenAI agent cell factory lookup', () => {
   it('dispatches the OpenAI agent cell through the production agent runner factory seam and drains events', async () => {
-    const sdkCalls: Array<{ kind: string; options?: unknown }> = [];
+    const sdkCalls: Array<{ kind: string; snapshot?: unknown; tools?: string[] }> = [];
 
+    // Drive the adapter through its documented seams (no network, no real model
+    // traffic): the sandbox factory records the validated noop snapshot, and the
+    // run driver yields RunItem-shaped objects so the canonical mapper + terminal
+    // protocol are exercised through the production dispatch path.
     const fakeAdapter = createOpenAIAgentAdapter({
-      sdk: {
-        SandboxAgent: class {
-          constructor(opts: Record<string, unknown>) { sdkCalls.push({ kind: 'constructor', options: opts }); }
-          async *run(_input: unknown, opts?: Record<string, unknown>): AsyncIterable<OpenAINativeEvent> {
-            sdkCalls.push({ kind: 'run', options: opts });
-            yield { type: 'assistant', content: 'Reviewing the implementation...' };
-            yield { type: 'tool_call', name: 'notify', arguments: JSON.stringify({ message: 'review started', importance: 'low' }) };
-            yield { type: 'result' };
-          }
-        } as never,
-        NoopSnapshotSpec: class {
-          readonly type = 'noop';
-        } as never,
-        isNoopSnapshotSpec: (v: unknown) => (v as { type?: unknown }).type === 'noop',
-        createClientBinding: ({ transport }) => ({ kind: 'transport' as const, value: transport })
+      sandboxClientFactory: (fi): OpenAISandboxClientHandle => {
+        sdkCalls.push({ kind: 'sandbox', snapshot: fi.snapshot });
+        return { client: {} as OpenAISandboxClientHandle['client'], session: {} as OpenAISandboxClientHandle['session'] };
       },
-      sandboxClientFactory: async () => ({ kind: 'local' as const })
+      runAgentSession: (runInput: OpenAIRunSessionInput): OpenAIRunOutcome => {
+        sdkCalls.push({ kind: 'run', tools: runInput.tools.map((t) => (t as { name: string }).name) });
+        const items = [
+          { type: 'message_output_item', rawItem: { role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Reviewing the implementation...' }] } },
+          { type: 'tool_call_item', rawItem: { type: 'function_call', name: 'notify', callId: 'c1', status: 'completed', arguments: JSON.stringify({ message: 'review started', importance: 'low' }) } }
+        ] as unknown as OpenAIRunOutcome['items'];
+        return { items, result: Promise.resolve({ directive: 'advance' as const }) };
+      }
     });
 
     const agentRegistry = new Map([
@@ -1244,14 +1235,17 @@ describe('runner-cells: OpenAI agent cell factory lookup', () => {
     // Proves registry lookup and production dispatch worked; terminal result was validated
     expect(result.workResult.directive).toBe('advance');
 
-    // Proves the adapter's SDK seam was invoked (SandboxAgent constructed + run called)
-    expect(sdkCalls.some((c) => c.kind === 'constructor')).toBe(true);
+    // Proves the adapter's SDK seams were invoked (sandbox session opened + run driven)
+    expect(sdkCalls.some((c) => c.kind === 'sandbox')).toBe(true);
     expect(sdkCalls.some((c) => c.kind === 'run')).toBe(true);
 
-    // Proves SandboxAgent received a snapshot with type 'noop'
-    const constructorCall = sdkCalls.find((c) => c.kind === 'constructor');
-    const snapshotArg = (constructorCall?.options as Record<string, unknown> | undefined)?.['snapshot'];
-    expect((snapshotArg as { type?: unknown } | undefined)?.type).toBe('noop');
+    // Proves the sandbox client received a snapshot with type 'noop'
+    const sandboxCall = sdkCalls.find((c) => c.kind === 'sandbox');
+    expect((sandboxCall?.snapshot as { type?: unknown } | undefined)?.type).toBe('noop');
+
+    // Proves the progress tools reached the run driver
+    const runCall = sdkCalls.find((c) => c.kind === 'run');
+    expect(runCall?.tools).toEqual(expect.arrayContaining(['update_plan', 'report_progress', 'notify']));
 
     // Proves events flowed through the consumer/retained event store (SSE replay path)
     expect(capturedEventTypes).toContain('runner_assistant_turn');

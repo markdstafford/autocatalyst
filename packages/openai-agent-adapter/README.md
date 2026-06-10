@@ -17,3 +17,26 @@ OpenAI Agents SDK `SandboxAgent`.
 - Snapshot persistence is disabled by explicitly passing the JS SDK `NoopSnapshotSpec` with `type: 'noop'`.
 - Hosted or remote sandbox providers are outside this package's production behavior for this slice.
 - Native SDK events are mapped to canonical `RunnerEvent` values before they leave the package.
+
+## Real SDK wiring (`@openai/agents` 0.11.x)
+
+- Imports `run`/`Runner`/`OpenAIProvider`/`tool` from `@openai/agents`, and
+  `SandboxAgent`/`Manifest`/`NoopSnapshotSpec`/`isNoopSnapshotSpec`/`localDir`
+  from `@openai/agents/sandbox`, and `UnixLocalSandboxClient` from
+  `@openai/agents/sandbox/local`. `openai` and `zod` (v4) are direct deps.
+- Per-session binding, never a global: a per-session `OpenAI` client is built
+  with its `fetch` bridged to `connection.createFetchTransport()`, wrapped in an
+  `OpenAIProvider`, and passed to a per-session `new Runner({ modelProvider })`.
+  The SDK's `setDefault*` global setters are never called.
+- `useResponses: false` selects the Chat Completions wire format.
+- Workspace materialization: each declared workspace root becomes a `localDir`
+  manifest entry plus an `extraPathGrants` entry (the local sandbox otherwise
+  restricts `local_dir` sources to its own base dir). `UnixLocalSandboxClient`
+  is constructed with `{ workspaceBaseDir, snapshot }` and `client.create(manifest)`
+  opens the session; `runner.run(agent, prompt, { sandbox: { session } })` drives it.
+- Mapping seam: the run driver yields the SDK's `RunItem`s (`message_output_item`,
+  `tool_call_item`, `tool_call_output_item`); the adapter maps those plus
+  `result.finalOutput` (step-result file) and `state._context.usage` (tokens).
+- Two injectable seams (`sandboxClientFactory`, `runAgentSession`) default to the
+  real SDK; tests inject fakes for dispatch wiring, while the package's own spec
+  drives the **real** module with only the OpenAI client's `fetch` mocked.

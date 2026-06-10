@@ -13,14 +13,9 @@
   },
   "dependencies": {
     "@autocatalyst/api-contract": "*",
-    "@autocatalyst/execution": "*"
-  },
-  "peerDependencies": {
-    "@openai/agents": ">=0.1.0"
-  },
-  "peerDependenciesMeta": {
-    "@openai/agents": {
-      "optional": true
-    }
+    "@autocatalyst/execution": "*",
+    "@openai/agents": "0.11.6",
+    "openai": "^6.35.0",
+    "zod": "^4.0.0"
   }
 }
