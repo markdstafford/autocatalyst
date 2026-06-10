@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ExecutionContext } from '@autocatalyst/api-contract';
-import type { ExecutionBoundaryEvent, ExecutionEntryPoint, ExecutionEntryPointInput } from '@autocatalyst/execution';
+import type { ExecutionBoundaryEvent, ExecutionEntryPoint, ExecutionEntryPointInput, DirectCallRequest } from '@autocatalyst/execution';
 import { createExecutionEntryPoint, ExecutionMaterializationError } from '@autocatalyst/execution';
 import type { Runner, RunnerRunInput } from '@autocatalyst/execution';
 import type { RunWorkInput } from './orchestrator.js';
 import { createExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
+import type { DirectStepExecutionPort } from './execution-run-unit-of-work.js';
 import { InMemoryRetainedRunEventStore } from './run-events.js';
 
 const runId = 'run_1';
@@ -314,6 +315,168 @@ describe('createExecutionRunUnitOfWork', () => {
       await unitOfWork.run(makeInput());
       expect(order).toEqual(['resolveContext', 'execute']);
     });
+  });
+});
+
+describe('direct mode integration seam', () => {
+  function makeDirectCall(): DirectCallRequest {
+    return {
+      purpose: 'intent_classification',
+      input: { text: 'test' },
+      resultValidation: {
+        schemaId: 'intent',
+        schema: { parse: (v: unknown) => v } as unknown as import('zod').ZodTypeAny
+      }
+    };
+  }
+
+  function makeDirectPort(result: unknown): DirectStepExecutionPort {
+    return {
+      call: vi.fn().mockResolvedValue({
+        value: result,
+        validation: { status: 'valid' },
+        metadata: { outcome: 'succeeded', tokenUsage: { available: false }, degradedCapabilities: [] }
+      })
+    };
+  }
+
+  it('direct mode: directPort.call invoked, execute NOT invoked', async () => {
+    const directCall = makeDirectCall();
+    const directPort = makeDirectPort({ intent: 'review' });
+    const executeSpy = vi.fn();
+
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: { execute: executeSpy },
+      resolveContext: async () => makeContext(),
+      resolveExecutionMode: () => ({ mode: 'direct' as const, directCall }),
+      direct: directPort,
+      eventsStore: newStore()
+    });
+
+    const result = await unitOfWork.run(makeInput());
+    expect(result).toEqual({ directive: 'advance', result: { intent: 'review' } });
+    expect(directPort.call).toHaveBeenCalledOnce();
+    expect(executeSpy).not.toHaveBeenCalled();
+  });
+
+  it('direct mode: result is { directive: advance, result: value }', async () => {
+    const directCall = makeDirectCall();
+    const directPort = makeDirectPort({ score: 42 });
+
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: makeFakeEntryPoint([]),
+      resolveContext: async () => makeContext(),
+      resolveExecutionMode: () => ({ mode: 'direct' as const, directCall }),
+      direct: directPort,
+      eventsStore: newStore()
+    });
+
+    const result = await unitOfWork.run(makeInput());
+    expect(result).toEqual({ directive: 'advance', result: { score: 42 } });
+  });
+
+  it('direct mode: failure maps to { directive: fail, reason: Execution failed: <code> }', async () => {
+    const directCall = makeDirectCall();
+    const error = Object.assign(new Error('Direct call error'), { code: 'unsupported_adapter' });
+    const directPort: DirectStepExecutionPort = {
+      call: vi.fn().mockRejectedValue(error)
+    };
+
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: makeFakeEntryPoint([]),
+      resolveContext: async () => makeContext(),
+      resolveExecutionMode: () => ({ mode: 'direct' as const, directCall }),
+      direct: directPort,
+      eventsStore: newStore()
+    });
+
+    const result = await unitOfWork.run(makeInput());
+    expect(result).toEqual({ directive: 'fail', reason: 'Execution failed: unsupported_adapter' });
+  });
+
+  it('direct mode: generic error maps to { directive: fail, reason: Execution failed: direct_call_failed }', async () => {
+    const directCall = makeDirectCall();
+    const error = new Error('Something generic');
+    const directPort: DirectStepExecutionPort = {
+      call: vi.fn().mockRejectedValue(error)
+    };
+
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: makeFakeEntryPoint([]),
+      resolveContext: async () => makeContext(),
+      resolveExecutionMode: () => ({ mode: 'direct' as const, directCall }),
+      direct: directPort,
+      eventsStore: newStore()
+    });
+
+    const result = await unitOfWork.run(makeInput());
+    expect(result).toEqual({ directive: 'fail', reason: 'Execution failed: direct_call_failed' });
+  });
+
+  it('direct mode: port not configured returns fail with direct_port_not_configured', async () => {
+    const directCall = makeDirectCall();
+
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: makeFakeEntryPoint([]),
+      resolveContext: async () => makeContext(),
+      resolveExecutionMode: () => ({ mode: 'direct' as const, directCall }),
+      // direct not provided
+      eventsStore: newStore()
+    });
+
+    const result = await unitOfWork.run(makeInput());
+    expect(result).toEqual({ directive: 'fail', reason: 'Execution failed: direct_port_not_configured' });
+  });
+
+  it('consumeRunnerEvents NOT called in direct mode', async () => {
+    // Ensure the agent path (event consumption loop) never runs during direct mode.
+    // We use an entry point that would throw if called — any call to execute() would fail.
+    const directCall = makeDirectCall();
+    const directPort = makeDirectPort({ ok: true });
+
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: makeFakeThrowingEntryPoint(new Error('should not be called')),
+      resolveContext: async () => makeContext(),
+      resolveExecutionMode: () => ({ mode: 'direct' as const, directCall }),
+      direct: directPort,
+      eventsStore: newStore()
+    });
+
+    // Should succeed without throwing (execute was not called)
+    const result = await unitOfWork.run(makeInput());
+    expect(result.directive).toBe('advance');
+  });
+
+  it('agent mode: existing behavior unchanged, execute invoked', async () => {
+    const terminal = makeTerminalEvent('advance');
+    const executeSpy = vi.fn().mockImplementation(() =>
+      (async function* () { yield terminal; })()
+    );
+    const directPort = makeDirectPort({});
+
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: { execute: executeSpy },
+      resolveContext: async () => makeContext(),
+      resolveExecutionMode: () => ({ mode: 'agent' as const }),
+      direct: directPort,
+      eventsStore: newStore()
+    });
+
+    const result = await unitOfWork.run(makeInput());
+    expect(result).toEqual({ directive: 'advance' });
+    expect(executeSpy).toHaveBeenCalledOnce();
+    expect(directPort.call).not.toHaveBeenCalled();
+  });
+
+  it('default mode (no resolveExecutionMode) uses agent path', async () => {
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: makeFakeEntryPoint([makeTerminalEvent('advance')]),
+      resolveContext: async () => makeContext(),
+      eventsStore: newStore()
+    });
+
+    const result = await unitOfWork.run(makeInput());
+    expect(result).toEqual({ directive: 'advance' });
   });
 });
 

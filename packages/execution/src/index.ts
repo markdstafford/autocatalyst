@@ -192,6 +192,17 @@ export {
 } from './runner-dispatch.js';
 
 export {
+  getDirectProviderAdapterKey,
+  createDirectProviderAdapterRegistry,
+  createDirectCallFactory,
+  type DirectProviderAdapterRegistry,
+  type DirectProfileResolution,
+  type DirectCallFactoryInput,
+  type DirectCallFactory,
+  type CreateDirectCallFactoryOptions
+} from './direct-runner-dispatch.js';
+
+export {
   createExecutionEntryPoint,
   type CreateExecutionEntryPointOptions,
   type ExecutionEntryPoint,
