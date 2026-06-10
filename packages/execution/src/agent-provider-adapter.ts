@@ -6,8 +6,11 @@ import type { ProviderCapabilityDegradation, ProviderRequest } from './request-a
 
 export type ProviderConnectionMechanism = 'fetch_transport' | 'process_environment';
 
+export type RunnerProfileMode = 'agent' | 'direct';
+
 // The same profile shape that model routing (issue #29) will later resolve to
 export interface ResolvedAgentRunnerProfile {
+  readonly mode: RunnerProfileMode;
   readonly providerKind: string;
   readonly adapterId: string;
   readonly profileName: string;

@@ -1,13 +1,14 @@
 import { describe, expect, it } from 'vitest';
 
 import type { ConfigurationRecord } from '@autocatalyst/api-contract';
-import { getAgentProviderAdapterKey } from '@autocatalyst/execution';
+import { getAgentProviderAdapterKey, getDirectProviderAdapterKey } from '@autocatalyst/execution';
 
 import { createExtensionRegistryCatalog } from './extension-registry.js';
 import {
   buildProviderAdapterKey,
   composeAgentProviderAdapterRegistry,
   composeConfiguredProviders,
+  composeDirectProviderAdapterRegistry,
   emptyProviderAdapterMap,
   type ProviderAdapterMap
 } from './provider-composition.js';
@@ -283,16 +284,43 @@ describe('composeAgentProviderAdapterRegistry', () => {
     expect(registry.get(key)).toBe(validAdapter);
   });
 
-  it('throws ProviderConfigurationError with unsupported_adapter code when adapter shape is invalid', () => {
-    const badBinding = {
+  it('silently skips a binding whose adapter does not implement AgentProviderAdapter', () => {
+    const nonAgentBinding = {
       providerKind: 'anthropic',
       adapterId: 'claude-agent-sdk',
       configurationRecordId: 'rec_002',
-      adapter: {}
+      adapter: {} // neither agent nor direct shape
     };
-    expect(() => composeAgentProviderAdapterRegistry({ composed: [badBinding] })).toThrow(
-      expect.objectContaining({ name: 'ProviderConfigurationError', code: 'unsupported_adapter' })
-    );
+    const registry = composeAgentProviderAdapterRegistry({ composed: [nonAgentBinding] });
+    expect(registry.size).toBe(0);
+  });
+
+  it('skips direct adapter bindings and includes only agent adapter bindings in mixed composed list', () => {
+    const directAdapter = {
+      providerKind: 'anthropic',
+      adapterId: 'anthropic-direct',
+      supportedConnectionMechanism: 'fetch_transport' as const,
+      call: async () => ({ outcome: 'succeeded' as const, value: {}, rawOutput: '' })
+    };
+    const directBinding = {
+      providerKind: 'anthropic',
+      adapterId: 'anthropic-direct',
+      configurationRecordId: 'rec_direct_001',
+      adapter: directAdapter
+    };
+
+    const agentRegistry = composeAgentProviderAdapterRegistry({
+      composed: [validBinding, directBinding]
+    });
+    const directRegistry = composeDirectProviderAdapterRegistry({
+      composed: [validBinding, directBinding]
+    });
+
+    expect(agentRegistry.size).toBe(1);
+    expect(agentRegistry.get(getAgentProviderAdapterKey('anthropic', 'claude-agent-sdk'))).toBe(validAdapter);
+
+    expect(directRegistry.size).toBe(1);
+    expect(directRegistry.get(getDirectProviderAdapterKey('anthropic', 'anthropic-direct'))).toBe(directAdapter);
   });
 
   it('throws ProviderConfigurationError on duplicate (providerKind, adapterId) pair', () => {

@@ -160,6 +160,7 @@ describe('agent provider adapter public contracts', () => {
     } = await import('./index.js');
 
     const profile: import('./index.js').ResolvedAgentRunnerProfile = {
+      mode: 'agent',
       providerKind: 'anthropic',
       adapterId: 'claude-agent-sdk',
       profileName: 'default',

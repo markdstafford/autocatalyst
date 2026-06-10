@@ -2,8 +2,11 @@ import type { ConfigurationRecord } from '@autocatalyst/api-contract';
 import {
   ProviderConfigurationError,
   getAgentProviderAdapterKey,
+  getDirectProviderAdapterKey,
   type AgentProviderAdapter,
-  type AgentProviderAdapterRegistry
+  type AgentProviderAdapterRegistry,
+  type DirectProviderAdapter,
+  type DirectProviderAdapterRegistry
 } from '@autocatalyst/execution';
 
 import {
@@ -133,17 +136,54 @@ export function composeAgentProviderAdapterRegistry(
   const registry = new Map<string, AgentProviderAdapter>();
   for (const binding of input.composed) {
     if (!isAgentProviderAdapter(binding.adapter)) {
-      throw new ProviderConfigurationError(
-        'unsupported_adapter',
-        `Provider binding for ${binding.providerKind}/${binding.adapterId} does not implement the AgentProviderAdapter contract`,
-        { configurationRecordId: binding.configurationRecordId, providerKind: binding.providerKind, adapterId: binding.adapterId }
-      );
+      continue; // skip direct adapters and other non-agent bindings
     }
     const key = getAgentProviderAdapterKey(binding.providerKind, binding.adapterId);
     if (registry.has(key)) {
       throw new ProviderConfigurationError(
         'duplicate_adapter',
         `Duplicate adapter registered for ${binding.providerKind}/${binding.adapterId}`,
+        { configurationRecordId: binding.configurationRecordId, providerKind: binding.providerKind, adapterId: binding.adapterId }
+      );
+    }
+    registry.set(key, binding.adapter);
+  }
+  return registry;
+}
+
+// ---------------------------------------------------------------------------
+// Direct adapter registry composition
+// ---------------------------------------------------------------------------
+
+function isDirectProviderAdapter(value: unknown): value is DirectProviderAdapter {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v['providerKind'] === 'string' &&
+    typeof v['adapterId'] === 'string' &&
+    (v['supportedConnectionMechanism'] === 'fetch_transport' ||
+      v['supportedConnectionMechanism'] === 'process_environment') &&
+    typeof v['call'] === 'function' // direct adapters have .call(), not .startSession()
+  );
+}
+
+export interface ComposeDirectProviderAdapterRegistryInput {
+  readonly composed: readonly ProviderPortBinding[];
+}
+
+export function composeDirectProviderAdapterRegistry(
+  input: ComposeDirectProviderAdapterRegistryInput
+): DirectProviderAdapterRegistry {
+  const registry = new Map<string, DirectProviderAdapter>();
+  for (const binding of input.composed) {
+    if (!isDirectProviderAdapter(binding.adapter)) {
+      continue; // skip agent adapters — they don't have .call()
+    }
+    const key = getDirectProviderAdapterKey(binding.providerKind, binding.adapterId);
+    if (registry.has(key)) {
+      throw new ProviderConfigurationError(
+        'duplicate_adapter',
+        `Duplicate direct adapter registered for ${binding.providerKind}/${binding.adapterId}`,
         { configurationRecordId: binding.configurationRecordId, providerKind: binding.providerKind, adapterId: binding.adapterId }
       );
     }

@@ -1,0 +1,36 @@
+{
+  "name": "anthropic-direct-adapter",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/anthropic-direct-adapter/src",
+  "projectType": "library",
+  "tags": ["type:lib", "scope:adapter", "plane:execution"],
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "packages/anthropic-direct-adapter/dist",
+        "main": "packages/anthropic-direct-adapter/src/index.ts",
+        "tsConfig": "packages/anthropic-direct-adapter/tsconfig.lib.json"
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "outputs": ["{options.outputFile}"],
+      "options": {
+        "lintFilePatterns": [
+          "packages/anthropic-direct-adapter/src/**/*.ts",
+          "packages/anthropic-direct-adapter/project.json",
+          "packages/anthropic-direct-adapter/package.json"
+        ]
+      }
+    },
+    "test": {
+      "executor": "@nx/vite:test",
+      "outputs": ["{workspaceRoot}/coverage/packages/anthropic-direct-adapter"],
+      "options": {
+        "config": "packages/anthropic-direct-adapter/vite.config.ts"
+      }
+    }
+  }
+}

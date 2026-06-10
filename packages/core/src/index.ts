@@ -36,7 +36,8 @@ export {
   buildProviderAdapterKey,
   emptyProviderAdapterMap,
   composeConfiguredProviders,
-  composeAgentProviderAdapterRegistry
+  composeAgentProviderAdapterRegistry,
+  composeDirectProviderAdapterRegistry
 } from './provider-composition.js';
 export type {
   ProviderAdapterFactoryInput,
@@ -47,7 +48,8 @@ export type {
   ProviderCompositionUnresolved,
   ProviderCompositionResult,
   ComposeConfiguredProvidersInput,
-  ComposeAgentProviderAdapterRegistryInput
+  ComposeAgentProviderAdapterRegistryInput,
+  ComposeDirectProviderAdapterRegistryInput
 } from './provider-composition.js';
 
 export type {
@@ -131,7 +133,13 @@ export type {
 } from './runner-event-stream.js';
 
 export { createExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
-export type { ExecutionRunUnitOfWorkOptions, ExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
+export type {
+  ExecutionRunUnitOfWorkOptions,
+  ExecutionRunUnitOfWork,
+  DirectStepExecutionPort,
+  DirectStepWorkInput,
+  ExecutionModeResolution
+} from './execution-run-unit-of-work.js';
 
 export { consumeRunnerEvents } from './runner-event-consumer.js';
 export type {

@@ -161,8 +161,11 @@ export async function createAgentConnection(
               const timeoutId = setTimeout(() => ctrl.abort(), altered.timeoutMs);
 
               const fetchHeaders = altered.request.headers as Record<string, string>;
-              const body = altered.request.body !== undefined
-                ? JSON.stringify(altered.request.body)
+              // ProviderRequest.body is fetch-style BodyInit — already serialized when string.
+              // Only stringify non-string objects; pass strings and other BodyInit values through.
+              const rawBody = altered.request.body;
+              const body = rawBody !== undefined
+                ? (typeof rawBody === 'string' ? rawBody : JSON.stringify(rawBody))
                 : undefined;
 
               response = await fetchImpl(altered.request.url, {
