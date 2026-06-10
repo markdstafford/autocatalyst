@@ -91,12 +91,25 @@ export async function createAgentConnection(
   const credentialResolved = resolvedCredential !== undefined;
 
   // ------------------------------------------------------------------
+  // Eager endpoint validation for fetch_transport profiles
+  // ------------------------------------------------------------------
+  if (profile.connectionMechanism === 'fetch_transport' && profile.endpoint.baseUrl) {
+    try {
+      new URL(profile.endpoint.baseUrl);
+    } catch {
+      throw new ProviderConfigurationError('invalid_endpoint', `Invalid endpoint baseUrl: ${profile.endpoint.baseUrl}`);
+    }
+  }
+
+  // ------------------------------------------------------------------
   // Shared safe log context (telemetry, no secrets)
   // ------------------------------------------------------------------
   const safeLogContext = {
     runId: telemetryContext.runId,
     phase: telemetryContext.phase,
     step: telemetryContext.step,
+    role: telemetryContext.role,
+    configurationRecordId: telemetryContext.configurationRecordId,
     provider: profile.providerKind,
     model: profile.model.id,
     mechanism: profile.connectionMechanism,

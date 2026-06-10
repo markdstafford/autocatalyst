@@ -358,6 +358,54 @@ describe('createAgentConnection — fetch retry', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Test: Credential secret absent from fetch-attempt log entries
+// ---------------------------------------------------------------------------
+
+describe('createAgentConnection — credential secret absent from log entries', () => {
+  it('does not include credential secret in any fetch-attempt log entry', async () => {
+    const knownSecret = 'known-secret-value-for-log-test';
+    const credentialResolver: ProviderCredentialResolver = {
+      resolveCredential: async () => knownSecret
+    };
+
+    const { entries, logger } = captureLogger();
+
+    // First response is a transient 429, second is a 200 — both paths emit log entries
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce(new Response('rate limited', { status: 429 }))
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }));
+
+    const profile: ResolvedAgentRunnerProfile = {
+      ...makeFetchProfile(),
+      endpoint: {
+        baseUrl: 'https://api.anthropic.com',
+        authHeaderName: 'x-api-key',
+        maxRetries: 1
+      }
+    };
+
+    const connection = await createAgentConnection(
+      makeOptions({ profile, credentialResolver, logger, fetch: mockFetch })
+    );
+    const transport = connection.createFetchTransport();
+
+    await transport.fetch({
+      url: 'https://api.anthropic.com/v1/messages',
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: { model: 'claude-3-5-haiku-20241022' }
+    });
+
+    // At least one log entry should have been emitted
+    expect(entries.length).toBeGreaterThan(0);
+
+    // The raw credential value must not appear in any log entry
+    const logStr = JSON.stringify(entries);
+    expect(logStr.includes(knownSecret)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Test: Non-transient response
 // ---------------------------------------------------------------------------
 
