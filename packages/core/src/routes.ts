@@ -556,20 +556,17 @@ export async function registerControlPlaneRoutes(
       };
 
       try {
+        // Replay ids that may also appear in the live buffer (events appended in the
+        // subscribe→replayAfter window). Pre-existing events are only in replay, not
+        // in the live buffer, so a linear scan waiting for the last replay id would
+        // skip all subsequent live events if it never appears.
+        const replayedIds = new Set(replay.events.map(e => e.id));
         for (const event of replay.events) {
           writeFrame(event);
         }
-        // Deduplicate: events appended between subscribe() and replayAfter() appear in both
-        // the replay slice and the live subscriber buffer. Skip live events up to and
-        // including the last replayed id before draining fresh live frames.
-        const lastReplayEvent = replay.events.length > 0 ? replay.events[replay.events.length - 1] : undefined;
-        let lastReplayedId = lastReplayEvent?.id;
         for await (const event of subscription.events) {
-          if (lastReplayedId !== undefined) {
-            if (event.id === lastReplayedId) {
-              lastReplayedId = undefined;
-            }
-            continue;
+          if (replayedIds.has(event.id)) {
+            continue; // already delivered in replay
           }
           writeFrame(event);
         }
