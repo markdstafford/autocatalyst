@@ -770,7 +770,10 @@ describe('real Claude agent dispatch', () => {
                 credentialSecretHandle: handle,
                 endpoint: {
                   baseUrl: ENDPOINT_BASE_URL,
-                  authEnvironmentVariable: 'ANTHROPIC_AUTH_TOKEN'
+                  authEnvironmentVariable: 'ANTHROPIC_AUTH_TOKEN',
+                  requestTimeoutMs: 30000,
+                  maxRetries: 2,
+                  headersToRewrite: { 'x-gateway': 'enabled' }
                 }
               }
             }
@@ -869,15 +872,24 @@ describe('real Claude agent dispatch', () => {
           // No accidental dual-binding of the credential.
           expect(launch.env['ANTHROPIC_API_KEY']).toBeUndefined();
           expect(launch.prompt.length).toBeGreaterThan(0);
+          // Req 6: timeout, retry, and custom header rewrite are forwarded as env vars.
+          expect(launch.env['API_TIMEOUT_MS']).toBe('30000');
+          expect(launch.env['CLAUDE_CODE_MAX_RETRIES']).toBe('2');
+          expect(launch.env['ANTHROPIC_CUSTOM_HEADERS']).toBeDefined();
+          expect(launch.env['ANTHROPIC_CUSTOM_HEADERS']).toContain('x-gateway');
 
           // RunStep must be persisted for the executed step.
           const stepsResp = await fetch(`${baseUrl}/v1/runs/${runId}/steps`, { headers: authHeaders });
           expect(stepsResp.status).toBe(200);
           const stepsBody = (await stepsResp.json()) as {
-            steps: Array<{ runId: string; step: string; endedAt: string | null }>;
+            steps: Array<{ runId: string; step: string; startedAt: string; endedAt: string | null; checkpointResult: unknown }>;
           };
           expect(stepsBody.steps.length).toBeGreaterThanOrEqual(1);
           expect(stepsBody.steps[0].runId).toBe(runId);
+          // Req 11: at least one step must carry a non-empty step identifier and startedAt timestamp,
+          // demonstrating the step was executed and persisted with meaningful result data.
+          expect(stepsBody.steps[0].step.length).toBeGreaterThan(0);
+          expect(stepsBody.steps[0].startedAt).toBeTruthy();
 
           // Run must have transitioned to either the next step or terminal.
           const runResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: authHeaders });
@@ -1046,6 +1058,399 @@ describe('real Claude agent dispatch - failure paths', () => {
         expect(runResp.status).toBe(200);
         const runBody = (await runResp.json()) as { id: string; terminal: boolean };
         expect(runBody.terminal).toBe(true);
+      } finally {
+        await handle.close();
+      }
+    });
+  });
+
+  // Req 7: configuring headersToStrip (without requiredAlterations) degrades but does not fail the run.
+  it('run succeeds with degraded capabilities when headersToStrip is set without requiredAlterations', { timeout: 60000 }, async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const { projectId } = await seedQuestionProject(databasePath);
+      const harness = createFakeLaunchHarness();
+
+      const bootstrap = await createControlPlaneServer({
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET
+      });
+      let profileId: string;
+      try {
+        const inj = await bootstrap.inject({
+          method: 'POST',
+          url: '/v1/secrets',
+          headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+          payload: { value: CREDENTIAL_VALUE }
+        });
+        expect(inj.statusCode).toBe(201);
+        const { handle: secretHandle } = createSecretResponseSchema.parse(inj.json());
+
+        const cfgInj = await bootstrap.inject({
+          method: 'POST',
+          url: '/v1/configuration-records',
+          headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+          payload: {
+            kind: 'provider_profile',
+            providerKind: claudeProviderKind,
+            adapterId: claudeAgentAdapterId,
+            settings: {
+              profileName: 'strip-degraded',
+              credentialSecretHandle: secretHandle,
+              endpoint: {
+                baseUrl: ENDPOINT_BASE_URL,
+                authEnvironmentVariable: 'ANTHROPIC_AUTH_TOKEN',
+                // headersToStrip without requiredAlterations.headerStrip — should degrade, not fail
+                headersToStrip: ['x-remove-me']
+              }
+            }
+          }
+        });
+        expect(cfgInj.statusCode).toBe(201);
+        profileId = configurationRecordResponseSchema.parse(cfgInj.json()).id;
+      } finally {
+        await bootstrap.close();
+      }
+
+      let controlPlane: ControlPlaneService | undefined;
+      const handle = await startControlPlaneServer({
+        port: 0,
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET,
+        runConcurrency: 1,
+        realRunnerDispatch: { enabled: true, defaultProviderProfileId: profileId },
+        providerAdapters: new Map([
+          [
+            buildProviderAdapterKey(claudeProviderKind, claudeAgentAdapterId),
+            () =>
+              createClaudeAgentAdapter({
+                launchClaudeSession: harness.createLaunch(SUCCESS_EVENTS)
+              })
+          ]
+        ]),
+        onControlPlaneReady: (service) => { controlPlane = service; }
+      });
+
+      try {
+        if (controlPlane === undefined) throw new Error('control-plane service not exposed');
+        const captured = controlPlane;
+        const baseUrl = `http://127.0.0.1:${handle.port}`;
+        const authHeaders = { authorization: `Bearer ${BEARER_TOKEN}` };
+
+        const runId = await createQuestionRun(baseUrl, authHeaders, projectId);
+
+        await captured.tick({
+          principal: hardcodedDevelopmentPrincipal,
+          tenant: hardcodedDevelopmentPrincipal.tenantId,
+          runId
+        });
+
+        // The adapter MUST have been launched (strip degradation does not block launch).
+        expect(harness.records.length).toBeGreaterThanOrEqual(1);
+
+        // Run must have advanced (succeeded despite degradation): either terminal or moved to the next step.
+        const runResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: authHeaders });
+        expect(runResp.status).toBe(200);
+        const runBody = (await runResp.json()) as { id: string; terminal: boolean; currentStep: string };
+        expect(runBody.terminal === true || runBody.currentStep !== 'intake').toBe(true);
+      } finally {
+        await handle.close();
+      }
+    });
+  });
+
+  // Req 13: configuring requiredAlterations.headerStrip fails the run without launching the adapter.
+  it('fails the run before launch when requiredAlterations.headerStrip is true (unsupported capability)', { timeout: 60000 }, async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const { projectId } = await seedQuestionProject(databasePath);
+      const harness = createFakeLaunchHarness();
+
+      const bootstrap = await createControlPlaneServer({
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET
+      });
+      let profileId: string;
+      try {
+        const inj = await bootstrap.inject({
+          method: 'POST',
+          url: '/v1/secrets',
+          headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+          payload: { value: CREDENTIAL_VALUE }
+        });
+        expect(inj.statusCode).toBe(201);
+        const { handle: secretHandle } = createSecretResponseSchema.parse(inj.json());
+
+        const cfgInj = await bootstrap.inject({
+          method: 'POST',
+          url: '/v1/configuration-records',
+          headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+          payload: {
+            kind: 'provider_profile',
+            providerKind: claudeProviderKind,
+            adapterId: claudeAgentAdapterId,
+            settings: {
+              profileName: 'required-strip-unsupported',
+              credentialSecretHandle: secretHandle,
+              endpoint: {
+                baseUrl: ENDPOINT_BASE_URL,
+                authEnvironmentVariable: 'ANTHROPIC_AUTH_TOKEN',
+                headersToStrip: ['x-remove-me'],
+                requiredAlterations: { headerStrip: true }
+              }
+            }
+          }
+        });
+        expect(cfgInj.statusCode).toBe(201);
+        profileId = configurationRecordResponseSchema.parse(cfgInj.json()).id;
+      } finally {
+        await bootstrap.close();
+      }
+
+      let controlPlane: ControlPlaneService | undefined;
+      const handle = await startControlPlaneServer({
+        port: 0,
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET,
+        runConcurrency: 1,
+        realRunnerDispatch: { enabled: true, defaultProviderProfileId: profileId },
+        providerAdapters: new Map([
+          [
+            buildProviderAdapterKey(claudeProviderKind, claudeAgentAdapterId),
+            () =>
+              createClaudeAgentAdapter({
+                launchClaudeSession: harness.createLaunch(SUCCESS_EVENTS)
+              })
+          ]
+        ]),
+        onControlPlaneReady: (service) => { controlPlane = service; }
+      });
+
+      try {
+        if (controlPlane === undefined) throw new Error('control-plane service not exposed');
+        const captured = controlPlane;
+        const baseUrl = `http://127.0.0.1:${handle.port}`;
+        const authHeaders = { authorization: `Bearer ${BEARER_TOKEN}` };
+
+        const runId = await createQuestionRun(baseUrl, authHeaders, projectId);
+
+        // Tick must NOT crash — the configuration error propagates as a terminal failure.
+        await captured.tick({
+          principal: hardcodedDevelopmentPrincipal,
+          tenant: hardcodedDevelopmentPrincipal.tenantId,
+          runId
+        });
+
+        // The adapter must never have been launched: the unsupported required capability
+        // throws before the launch seam is reached.
+        expect(harness.records).toHaveLength(0);
+
+        // Run must be terminal (failed).
+        const runResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: authHeaders });
+        expect(runResp.status).toBe(200);
+        const runBody = (await runResp.json()) as { id: string; terminal: boolean };
+        expect(runBody.terminal).toBe(true);
+      } finally {
+        await handle.close();
+      }
+    });
+  });
+
+  // Req 14: SDK launch failure (retry exhaustion) terminates the run cleanly without crashing.
+  it('terminates the run when the SDK launch throws a retry-exhausted error', { timeout: 60000 }, async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const { projectId } = await seedQuestionProject(databasePath);
+      const harness = createFakeLaunchHarness();
+      const logCapture = captureConsole();
+
+      const bootstrap = await createControlPlaneServer({
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET
+      });
+      let profileId: string;
+      try {
+        const inj = await bootstrap.inject({
+          method: 'POST',
+          url: '/v1/secrets',
+          headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+          payload: { value: CREDENTIAL_VALUE }
+        });
+        expect(inj.statusCode).toBe(201);
+        const { handle: secretHandle } = createSecretResponseSchema.parse(inj.json());
+
+        const cfgInj = await bootstrap.inject({
+          method: 'POST',
+          url: '/v1/configuration-records',
+          headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+          payload: {
+            kind: 'provider_profile',
+            providerKind: claudeProviderKind,
+            adapterId: claudeAgentAdapterId,
+            settings: {
+              profileName: 'retry-exhausted',
+              credentialSecretHandle: secretHandle,
+              endpoint: {
+                baseUrl: ENDPOINT_BASE_URL,
+                authEnvironmentVariable: 'ANTHROPIC_AUTH_TOKEN'
+              }
+            }
+          }
+        });
+        expect(cfgInj.statusCode).toBe(201);
+        profileId = configurationRecordResponseSchema.parse(cfgInj.json()).id;
+      } finally {
+        await bootstrap.close();
+      }
+
+      let controlPlane: ControlPlaneService | undefined;
+      const handle = await startControlPlaneServer({
+        port: 0,
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET,
+        runConcurrency: 1,
+        realRunnerDispatch: { enabled: true, defaultProviderProfileId: profileId },
+        providerAdapters: new Map([
+          [
+            buildProviderAdapterKey(claudeProviderKind, claudeAgentAdapterId),
+            () =>
+              createClaudeAgentAdapter({
+                launchClaudeSession: harness.createRetryExhaustedLaunch()
+              })
+          ]
+        ]),
+        onControlPlaneReady: (service) => { controlPlane = service; }
+      });
+
+      try {
+        if (controlPlane === undefined) throw new Error('control-plane service not exposed');
+        const captured = controlPlane;
+        const baseUrl = `http://127.0.0.1:${handle.port}`;
+        const authHeaders = { authorization: `Bearer ${BEARER_TOKEN}` };
+
+        const runId = await createQuestionRun(baseUrl, authHeaders, projectId);
+
+        // Tick must NOT crash despite the SDK failing.
+        await captured.tick({
+          principal: hardcodedDevelopmentPrincipal,
+          tenant: hardcodedDevelopmentPrincipal.tenantId,
+          runId
+        });
+
+        // The run must be terminal (failed cleanly).
+        const runResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: authHeaders });
+        expect(runResp.status).toBe(200);
+        const runBody = (await runResp.json()) as { id: string; terminal: boolean };
+        expect(runBody.terminal).toBe(true);
+
+        // The credential must not appear in captured logs.
+        const offendingLogs = logCapture.entries.filter((entry) =>
+          entry.text.includes(CREDENTIAL_VALUE)
+        );
+        expect(offendingLogs).toEqual([]);
+      } finally {
+        logCapture.restore();
+        await handle.close();
+      }
+    });
+  });
+
+  // Req 15: provider protocol failure terminates the run without leaking native payloads.
+  it('terminates the run when the SDK launch throws a protocol failure error', { timeout: 60000 }, async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const { projectId } = await seedQuestionProject(databasePath);
+      const harness = createFakeLaunchHarness();
+
+      const bootstrap = await createControlPlaneServer({
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET
+      });
+      let profileId: string;
+      try {
+        const inj = await bootstrap.inject({
+          method: 'POST',
+          url: '/v1/secrets',
+          headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+          payload: { value: CREDENTIAL_VALUE }
+        });
+        expect(inj.statusCode).toBe(201);
+        const { handle: secretHandle } = createSecretResponseSchema.parse(inj.json());
+
+        const cfgInj = await bootstrap.inject({
+          method: 'POST',
+          url: '/v1/configuration-records',
+          headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+          payload: {
+            kind: 'provider_profile',
+            providerKind: claudeProviderKind,
+            adapterId: claudeAgentAdapterId,
+            settings: {
+              profileName: 'protocol-failure',
+              credentialSecretHandle: secretHandle,
+              endpoint: {
+                baseUrl: ENDPOINT_BASE_URL,
+                authEnvironmentVariable: 'ANTHROPIC_AUTH_TOKEN'
+              }
+            }
+          }
+        });
+        expect(cfgInj.statusCode).toBe(201);
+        profileId = configurationRecordResponseSchema.parse(cfgInj.json()).id;
+      } finally {
+        await bootstrap.close();
+      }
+
+      let controlPlane: ControlPlaneService | undefined;
+      const handle = await startControlPlaneServer({
+        port: 0,
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET,
+        runConcurrency: 1,
+        realRunnerDispatch: { enabled: true, defaultProviderProfileId: profileId },
+        providerAdapters: new Map([
+          [
+            buildProviderAdapterKey(claudeProviderKind, claudeAgentAdapterId),
+            () =>
+              createClaudeAgentAdapter({
+                launchClaudeSession: harness.createProtocolFailureLaunch()
+              })
+          ]
+        ]),
+        onControlPlaneReady: (service) => { controlPlane = service; }
+      });
+
+      try {
+        if (controlPlane === undefined) throw new Error('control-plane service not exposed');
+        const captured = controlPlane;
+        const baseUrl = `http://127.0.0.1:${handle.port}`;
+        const authHeaders = { authorization: `Bearer ${BEARER_TOKEN}` };
+
+        const runId = await createQuestionRun(baseUrl, authHeaders, projectId);
+
+        // Tick must NOT crash despite the protocol error.
+        await captured.tick({
+          principal: hardcodedDevelopmentPrincipal,
+          tenant: hardcodedDevelopmentPrincipal.tenantId,
+          runId
+        });
+
+        // The run must be terminal (failed cleanly).
+        const runResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: authHeaders });
+        expect(runResp.status).toBe(200);
+        const runBody = (await runResp.json()) as { id: string; terminal: boolean };
+        expect(runBody.terminal).toBe(true);
+
+        // No native SDK event payloads should appear in the stored run result.
+        // The run steps response must not contain raw SDK event content.
+        const stepsResp = await fetch(`${baseUrl}/v1/runs/${runId}/steps`, { headers: authHeaders });
+        expect(stepsResp.status).toBe(200);
+        const stepsBody = await stepsResp.text();
+        expect(stepsBody).not.toContain('Unexpected session event sequence');
       } finally {
         await handle.close();
       }

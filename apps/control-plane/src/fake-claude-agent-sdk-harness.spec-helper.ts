@@ -29,6 +29,17 @@ export interface FakeLaunchHarness {
    * tests where the SDK itself fails immediately.
    */
   createFailingLaunch(error: Error): ClaudeSessionLaunch;
+  /**
+   * Build a `ClaudeSessionLaunch` that simulates retry exhaustion —
+   * i.e. the SDK process exited with a non-zero status after all
+   * retries were consumed.
+   */
+  createRetryExhaustedLaunch(): ClaudeSessionLaunch;
+  /**
+   * Build a `ClaudeSessionLaunch` that simulates a provider protocol
+   * failure — i.e. the SDK yielded an unexpected event sequence.
+   */
+  createProtocolFailureLaunch(): ClaudeSessionLaunch;
   readonly records: FakeLaunchRecord[];
   lastRecord(): FakeLaunchRecord;
 }
@@ -71,6 +82,28 @@ export function createFakeLaunchHarness(): FakeLaunchHarness {
         records.push(snapshotOptions(options));
         async function* iterate(): AsyncIterable<ClaudeNativeEvent> {
           throw error;
+          // eslint-disable-next-line no-unreachable
+          yield {} as ClaudeNativeEvent;
+        }
+        return iterate();
+      };
+    },
+    createRetryExhaustedLaunch(): ClaudeSessionLaunch {
+      return (options) => {
+        records.push(snapshotOptions(options));
+        async function* iterate(): AsyncIterable<ClaudeNativeEvent> {
+          throw new Error('claude process exited with non-zero status after retries');
+          // eslint-disable-next-line no-unreachable
+          yield {} as ClaudeNativeEvent;
+        }
+        return iterate();
+      };
+    },
+    createProtocolFailureLaunch(): ClaudeSessionLaunch {
+      return (options) => {
+        records.push(snapshotOptions(options));
+        async function* iterate(): AsyncIterable<ClaudeNativeEvent> {
+          throw new Error('Unexpected session event sequence');
           // eslint-disable-next-line no-unreachable
           yield {} as ClaudeNativeEvent;
         }
