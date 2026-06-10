@@ -24,6 +24,7 @@
     "baseUrl": ".",
     "paths": {
       "@autocatalyst/api-contract": ["packages/api-contract/src/index.ts"],
+      "@autocatalyst/anthropic-direct-adapter": ["packages/anthropic-direct-adapter/src/index.ts"],
       "@autocatalyst/claude-agent-adapter": ["packages/claude-agent-adapter/src/index.ts"],
       "@autocatalyst/core": ["packages/core/src/index.ts"],
       "@autocatalyst/execution": ["packages/execution/src/index.ts"],
