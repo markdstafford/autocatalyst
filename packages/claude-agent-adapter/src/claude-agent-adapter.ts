@@ -398,12 +398,9 @@ function mapNativeEvent(ev: ClaudeNativeEvent, ctx: MapContext): MappedNative {
   if (ev.type === 'result') {
     const r = ev.result ?? {};
     const tokens = pickTokens(r, ev.usage);
-    const usage: AgentTokenUsage | undefined = tokens.available
-      ? {
-          available: true,
-          tokens: tokens.breakdown as AgentTokenUsage['tokens']
-        }
-      : { available: true };
+    const usage: AgentTokenUsage = tokens.available
+      ? { available: true, tokens: tokens.breakdown }
+      : { available: false };
     return {
       events: [],
       usage,
@@ -498,17 +495,22 @@ function mapToolUse(
   return { events: [event] };
 }
 
+type TokensBreakdown = { input?: number; output?: number; total?: number };
+type PickTokensResult =
+  | { available: false }
+  | { available: true; breakdown: TokensBreakdown };
+
 function pickTokens(
   r: NonNullable<ClaudeNativeEvent['result']>,
   usage: ClaudeNativeEvent['usage']
-): { available: boolean; breakdown?: { input?: number; output?: number; total?: number } } {
+): PickTokensResult {
   const input = r.input_tokens ?? usage?.input_tokens;
   const output = r.output_tokens ?? usage?.output_tokens;
   const total = r.total_tokens;
   if (input === undefined && output === undefined && total === undefined) {
-    return { available: true };
+    return { available: false };
   }
-  const breakdown: { input?: number; output?: number; total?: number } = {};
+  const breakdown: TokensBreakdown = {};
   if (input !== undefined) breakdown.input = input;
   if (output !== undefined) breakdown.output = output;
   if (total !== undefined) breakdown.total = total;
