@@ -11,6 +11,19 @@ import {
   redactWorkspaceDiagnostic,
   summarizeWorkspaceCause,
   teardownWorkspace,
+  ProviderAlterationError,
+  applyRequestAlteration,
+  buildClaudeProcessLaunchEnvironment,
+  claudeProviderOwnedEnvironmentVariables,
+  defaultMaxRetries,
+  defaultRequestTimeoutMs,
+  isTransientProviderFailure,
+  maximumMaxRetries,
+  maximumRequestTimeoutMs,
+  redactProcessLaunchConfigForLog,
+  redactProviderRequestForLog,
+  redactProviderResponseForLog,
+  validateHttpHeaderName,
   type PruneWorkspacePathRequest,
   type TeardownWorkspaceRequest,
   type WorkspaceErrorCauseSummary,
@@ -20,7 +33,17 @@ import {
   type ProvisionWorkspaceRequest,
   type ProvisionWorkspaceResult,
   type Runner,
-  type RunnerRunInput
+  type RunnerRunInput,
+  type AlteredProviderRequest,
+  type ClaudeProcessLaunchInput,
+  type ClaudeProcessLaunchResult,
+  type ProviderCapabilityDegradation,
+  type ProviderRequest,
+  type RequestAlterationOptions,
+  type RetryPolicy,
+  type RedactProviderRequestInput,
+  type RedactProviderResponseInput,
+  type RedactProcessLaunchConfigInput
 } from './index.js';
 
 describe('execution scaffold', () => {
@@ -120,5 +143,49 @@ describe('workspace lifecycle API', () => {
       code: 'invalid_terminal_step'
     });
     expect(result.outcome).toBe('skipped');
+  });
+});
+
+describe('request alteration public API', () => {
+  it('exports request alteration primitives from the public entrypoint', () => {
+    // Verify function exports are callable
+    expect(applyRequestAlteration).toBeTypeOf('function');
+    expect(buildClaudeProcessLaunchEnvironment).toBeTypeOf('function');
+    expect(isTransientProviderFailure).toBeTypeOf('function');
+    expect(validateHttpHeaderName).toBeTypeOf('function');
+    expect(redactProviderRequestForLog).toBeTypeOf('function');
+    expect(redactProviderResponseForLog).toBeTypeOf('function');
+    expect(redactProcessLaunchConfigForLog).toBeTypeOf('function');
+
+    // Verify constants
+    expect(defaultRequestTimeoutMs).toBe(60_000);
+    expect(maximumRequestTimeoutMs).toBe(120_000);
+    expect(defaultMaxRetries).toBe(1);
+    expect(maximumMaxRetries).toBe(5);
+    expect(claudeProviderOwnedEnvironmentVariables).toContain('ANTHROPIC_API_KEY');
+
+    // Verify error class
+    const err = new ProviderAlterationError('invalid_base_url', 'test error');
+    expect(err).toBeInstanceOf(ProviderAlterationError);
+    expect(err.code).toBe('invalid_base_url');
+    expect(err.name).toBe('ProviderAlterationError');
+
+    // Verify type imports satisfy type assertions (compile-time)
+    const _req: ProviderRequest = { url: 'https://example.com', method: 'GET' };
+    const _opts: RequestAlterationOptions = { request: _req, endpoint: {} };
+    const _altered: AlteredProviderRequest = applyRequestAlteration(_opts);
+    const _policy: RetryPolicy = _altered.retryPolicy;
+    const _launchInput: ClaudeProcessLaunchInput = { endpoint: {}, credential: 'c', materializedEnvironment: { variables: {}, secretVariableNames: [] } };
+    const _launchResult: ClaudeProcessLaunchResult = buildClaudeProcessLaunchEnvironment(_launchInput);
+    const _degradation: ProviderCapabilityDegradation | undefined = _launchResult.degradedCapabilities[0];
+    const _redactReq: RedactProviderRequestInput = { request: _req };
+    const _redactRes: RedactProviderResponseInput = { statusCode: 200 };
+    const _redactLaunch: RedactProcessLaunchConfigInput = { launchResult: _launchResult };
+    expect(_altered.timeoutMs).toBe(defaultRequestTimeoutMs);
+    expect(_policy.maxRetries).toBe(defaultMaxRetries);
+    expect(_degradation).toBeUndefined();
+    expect(_redactReq).toBeDefined();
+    expect(_redactRes).toBeDefined();
+    expect(_redactLaunch).toBeDefined();
   });
 });

@@ -93,6 +93,34 @@ export {
 } from './secret-resolver.js';
 
 export {
+  applyRequestAlteration,
+  buildClaudeProcessLaunchEnvironment,
+  claudeProviderOwnedEnvironmentVariables,
+  defaultMaxRetries,
+  defaultRequestTimeoutMs,
+  isTransientProviderFailure,
+  maximumMaxRetries,
+  maximumRequestTimeoutMs,
+  ProviderAlterationError,
+  redactProcessLaunchConfigForLog,
+  redactProviderRequestForLog,
+  redactProviderResponseForLog,
+  transientHttpStatuses,
+  validateHttpHeaderName,
+  type AlteredProviderRequest,
+  type ClaudeProcessLaunchInput,
+  type ClaudeProcessLaunchResult,
+  type ProviderAlterationErrorCode,
+  type ProviderCapabilityDegradation,
+  type ProviderRequest,
+  type RedactProcessLaunchConfigInput,
+  type RedactProviderRequestInput,
+  type RedactProviderResponseInput,
+  type RequestAlterationOptions,
+  type RetryPolicy
+} from './request-alteration.js';
+
+export {
   createExecutionEntryPoint,
   type CreateExecutionEntryPointOptions,
   type ExecutionEntryPoint,
