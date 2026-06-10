@@ -230,7 +230,7 @@ export function createClaudeAgentAdapter(
         adapterId: claudeAgentAdapterId,
         profileName: profile.profileName,
         configurationRecordId: profile.configurationRecordId,
-        model: profile.model.id,
+        model: profile.model.model,
         mechanism: profile.connectionMechanism,
         allowedToolsCount: allowedTools.length,
         requestedSkillCount: requestedSkills.length,
@@ -398,9 +398,9 @@ function mapNativeEvent(ev: ClaudeNativeEvent, ctx: MapContext): MappedNative {
   if (ev.type === 'result') {
     const r = ev.result ?? {};
     const tokens = pickTokens(r, ev.usage);
-    const usage: AgentTokenUsage = tokens.available
+    const usage: AgentTokenUsage = (tokens.available
       ? { available: true, tokens: tokens.breakdown }
-      : { available: false };
+      : { available: false }) as AgentTokenUsage;
     return {
       events: [],
       usage,
@@ -430,9 +430,9 @@ function mapToolUse(
   const input = isRecord(tool.input) ? tool.input : {};
 
   if (name === 'update_plan') {
-    const title = typeof input.title === 'string' ? input.title : '';
-    const steps = Array.isArray(input.steps)
-      ? input.steps.filter((s): s is string => typeof s === 'string' && s.length > 0)
+    const title = typeof input['title'] === 'string' ? input['title'] : '';
+    const steps = Array.isArray(input['steps'])
+      ? input['steps'].filter((s): s is string => typeof s === 'string' && s.length > 0)
       : [];
     if (title.length === 0 || steps.length === 0) {
       return { events: [] };
@@ -447,10 +447,10 @@ function mapToolUse(
   }
 
   if (name === 'report_progress') {
-    const completed = typeof input.completed === 'number' ? input.completed : undefined;
-    const total = typeof input.total === 'number' ? input.total : undefined;
-    const label = typeof input.label === 'string' ? input.label : undefined;
-    const summary = typeof input.summary === 'string' ? input.summary : undefined;
+    const completed = typeof input['completed'] === 'number' ? input['completed'] : undefined;
+    const total = typeof input['total'] === 'number' ? input['total'] : undefined;
+    const label = typeof input['label'] === 'string' ? input['label'] : undefined;
+    const summary = typeof input['summary'] === 'string' ? input['summary'] : undefined;
 
     if (completed !== undefined && total !== undefined && label !== undefined) {
       const event: RunnerEvent = {
@@ -474,14 +474,14 @@ function mapToolUse(
   }
 
   // notify
-  const message = typeof input.message === 'string' ? input.message : '';
+  const message = typeof input['message'] === 'string' ? input['message'] : '';
   if (message.length === 0) return { events: [] };
-  const severityRaw = input.severity;
+  const severityRaw = input['severity'];
   const severity =
     severityRaw === 'debug' || severityRaw === 'info' || severityRaw === 'warn' || severityRaw === 'error'
       ? severityRaw
       : 'info';
-  const importanceRaw = input.importance;
+  const importanceRaw = input['importance'];
   const importance =
     importanceRaw === 'low' || importanceRaw === 'normal' || importanceRaw === 'high'
       ? importanceRaw

@@ -71,7 +71,7 @@ export async function createAgentConnection(
   if (credentialReference.secretHandle !== undefined) {
     try {
       resolvedCredential = await credentialResolver.resolveCredential(credentialReference.secretHandle);
-    } catch (err) {
+    } catch {
       throw new ProviderConfigurationError(
         'secret_store_locked',
         'The credential store is locked or unavailable.',
@@ -145,7 +145,7 @@ export async function createAgentConnection(
             authScheme: 'raw'
           });
 
-          const { maxRetries, transientHttpStatuses: transientStatuses } = altered.retryPolicy;
+          const { maxRetries } = altered.retryPolicy;
           let attemptNumber = 0;
           let lastStatus: number | undefined;
 

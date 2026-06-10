@@ -31,7 +31,7 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
   let activeSession: AgentProviderSession | undefined;
   let sessionClosed = false;
   let adapterClosed = false;
-  let runComplete = false;
+  let _runComplete = false;
 
   async function closeSession(): Promise<void> {
     if (!sessionClosed && activeSession?.close !== undefined) {
@@ -173,7 +173,7 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
           tokenUsage: metadata?.tokenUsage ?? { available: false }
         });
 
-        runComplete = true;
+        _runComplete = true;
       }
     },
 

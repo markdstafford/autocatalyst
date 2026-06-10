@@ -82,8 +82,7 @@ export function createFakeLaunchHarness(): FakeLaunchHarness {
         records.push(snapshotOptions(options));
         async function* iterate(): AsyncIterable<ClaudeNativeEvent> {
           throw error;
-          // eslint-disable-next-line no-unreachable
-          yield {} as ClaudeNativeEvent;
+          yield {} as ClaudeNativeEvent; // unreachable — satisfies generator return type
         }
         return iterate();
       };
@@ -93,8 +92,7 @@ export function createFakeLaunchHarness(): FakeLaunchHarness {
         records.push(snapshotOptions(options));
         async function* iterate(): AsyncIterable<ClaudeNativeEvent> {
           throw new Error('claude process exited with non-zero status after retries');
-          // eslint-disable-next-line no-unreachable
-          yield {} as ClaudeNativeEvent;
+          yield {} as ClaudeNativeEvent; // unreachable — satisfies generator return type
         }
         return iterate();
       };
@@ -104,8 +102,7 @@ export function createFakeLaunchHarness(): FakeLaunchHarness {
         records.push(snapshotOptions(options));
         async function* iterate(): AsyncIterable<ClaudeNativeEvent> {
           throw new Error('Unexpected session event sequence');
-          // eslint-disable-next-line no-unreachable
-          yield {} as ClaudeNativeEvent;
+          yield {} as ClaudeNativeEvent; // unreachable — satisfies generator return type
         }
         return iterate();
       };

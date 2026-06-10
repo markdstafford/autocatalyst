@@ -20,7 +20,6 @@ import {
   ProviderConfigurationError,
   ProviderConnectionError
 } from './agent-provider-adapter.js';
-import { RunnerProtocolError } from './runner.js';
 import type { RunnerRunInput } from './runner.js';
 import { createAgentOrchestratorRunner } from './agent-orchestrator-runner.js';
 import type { CreateAgentOrchestratorRunnerOptions } from './agent-orchestrator-runner.js';

@@ -12,7 +12,6 @@ import {
   ProviderConfigurationError,
   ProviderConnectionError
 } from './agent-provider-adapter.js';
-import type { RunnerRunInput } from './runner.js';
 import { StubRunner } from './stub-runner.js';
 import type {
   AgentProfileResolution,

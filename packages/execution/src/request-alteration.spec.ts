@@ -16,12 +16,10 @@ import {
   redactProviderRequestForLog,
   redactProviderResponseForLog,
   validateHttpHeaderName,
-  type AlteredProviderRequest,
   type ClaudeProcessLaunchInput,
   type ClaudeProcessLaunchResult,
   type ProviderCapabilityDegradation,
-  type ProviderRequest,
-  type RequestAlterationOptions
+  type ProviderRequest
 } from './request-alteration.js';
 
 // ---------------------------------------------------------------------------

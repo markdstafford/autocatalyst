@@ -200,7 +200,7 @@ describe('createAgentConnection — fetch transport availability', () => {
 
   it('createFetchTransport() throws ProviderConnectionError(unsupported_connection_mechanism) for process_environment profile', async () => {
     const connection = await createAgentConnection(makeOptions({ profile: makeProcessProfile() }));
-    expect(() => connection.createFetchTransport()).toSatisfy((err: unknown) => {
+    expect(() => connection.createFetchTransport()).toSatisfy((_err: unknown) => {
       // It should throw
       return true; // verified below
     });
