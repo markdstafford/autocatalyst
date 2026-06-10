@@ -890,13 +890,12 @@ describe('real Claude agent dispatch', () => {
           // demonstrating the step was executed and persisted with meaningful result data.
           expect(stepsBody.steps[0].step.length).toBeGreaterThan(0);
           expect(stepsBody.steps[0].startedAt).toBeTruthy();
-          // checkpointResult is null here because the delegating entry point in server.ts uses
-          // resultValidation: { mode: 'none' }, which skips scratch-file validation and therefore
-          // never writes a validated result to the RunStep. Full validation (scratch_file mode)
-          // would write the terminal result to checkpointResult; that is pending control-plane
-          // configuration of result validation.
+          // checkpointResult is populated because the delegating entry point uses
+          // scratch_file validation mode: the Claude adapter writes step-result.json to
+          // the scratch root, and the entry point reads and validates it, storing the
+          // result on the RunStep.
           expect(stepsBody.steps[0]).toHaveProperty('checkpointResult');
-          expect(stepsBody.steps[0].checkpointResult).toBeNull();
+          expect(stepsBody.steps[0].checkpointResult).not.toBeNull();
 
           // Run must have transitioned to either the next step or terminal.
           const runResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: authHeaders });

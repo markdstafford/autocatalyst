@@ -1,4 +1,9 @@
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import Fastify, { type FastifyInstance } from 'fastify';
+import { z } from 'zod';
 
 import type { ConfigurationRecord, ExecutionContext, ProviderProfileSettings } from '@autocatalyst/api-contract';
 import {
@@ -212,6 +217,38 @@ function createDelegatingExecutionEntryPoint(input: {
   readonly factory: AgentRunnerFactory;
   readonly materialize: (context: ExecutionContext) => Promise<MaterializedExecutionEnvironment>;
 }): ExecutionEntryPoint {
+  /**
+   * Wraps the materializer to ensure a scratch root is always available.
+   * For workspace shapes that do not provision a scratch root (e.g. 'none' for
+   * question runs), a temporary directory is created so the Claude adapter can
+   * write step-result.json and scratch_file validation can read it back.
+   */
+  async function materializeWithScratch(
+    context: ExecutionContext
+  ): Promise<MaterializedExecutionEnvironment> {
+    const env = await input.materialize(context);
+    if (env.workspace.shape !== 'none') {
+      return env;
+    }
+    const scratchRoot = await mkdtemp(join(tmpdir(), `ac-run-${context.run.id}-`));
+    return {
+      ...env,
+      workspace: {
+        shape: 'scratch_only',
+        scratchRoot,
+        workspaceRoots: [scratchRoot]
+      },
+      toolPolicy: {
+        ...env.toolPolicy,
+        workspaceRoots: [scratchRoot]
+      },
+      capabilities: {
+        ...env.capabilities,
+        paths: { ...env.capabilities.paths, scratchRoot }
+      }
+    };
+  }
+
   return {
     async *execute(entryInput: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
       const runnerFactoryInput: AgentRunnerFactoryInput = {
@@ -221,8 +258,13 @@ function createDelegatingExecutionEntryPoint(input: {
       const runner = await input.factory.createRunner(runnerFactoryInput);
       const perRunEntryPoint = createExecutionEntryPoint({
         runner,
-        materialize: input.materialize,
-        resultValidation: { mode: 'none' }
+        materialize: materializeWithScratch,
+        resultValidation: {
+          mode: 'scratch_file',
+          schema: z.unknown(),
+          schemaId: 'any',
+          resultFile: 'step-result.json'
+        }
       });
       yield* perRunEntryPoint.execute(entryInput);
     }
