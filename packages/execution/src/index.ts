@@ -121,6 +121,27 @@ export {
 } from './request-alteration.js';
 
 export {
+  ProviderConfigurationError,
+  ProviderConnectionError,
+  ProviderProtocolError,
+  UnsupportedProviderCapabilityError,
+  type AgentConnection,
+  type AgentConnectionTelemetryContext,
+  type AgentProviderAdapter,
+  type AgentProviderSession,
+  type AgentProviderSessionInput,
+  type AgentProviderSessionMetadata,
+  type AgentTokenUsage,
+  type ProviderConfigurationErrorCode,
+  type ProviderConnectionErrorCode,
+  type ProviderConnectionMechanism,
+  type ProviderProtocolErrorCode,
+  type ResolvedAgentCredentialReference,
+  type ResolvedAgentRunnerProfile,
+  type UnsupportedProviderCapabilityErrorCode
+} from './agent-provider-adapter.js';
+
+export {
   createExecutionEntryPoint,
   type CreateExecutionEntryPointOptions,
   type ExecutionEntryPoint,

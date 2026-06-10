@@ -146,6 +146,58 @@ describe('workspace lifecycle API', () => {
   });
 });
 
+describe('agent provider adapter public contracts', () => {
+  it('exports ResolvedAgentRunnerProfile and ResolvedAgentCredentialReference types', async () => {
+    const {
+      ProviderConfigurationError,
+      ProviderConnectionError,
+      ProviderProtocolError,
+      UnsupportedProviderCapabilityError
+    } = await import('./index.js');
+
+    const profile: import('./index.js').ResolvedAgentRunnerProfile = {
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      profileName: 'default',
+      model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+      inferenceSettings: {},
+      endpoint: {},
+      connectionMechanism: 'process_environment'
+    };
+    expect(profile.providerKind).toBe('anthropic');
+    expect(profile.adapterId).toBe('claude-agent-sdk');
+    expect(profile.connectionMechanism).toBe('process_environment');
+
+    const cred: import('./index.js').ResolvedAgentCredentialReference = {
+      required: true,
+      secretHandle: 'sec_test',
+      authTarget: 'process_environment'
+    };
+    expect(cred.required).toBe(true);
+    expect(cred.secretHandle).toBe('sec_test');
+
+    const configErr = new ProviderConfigurationError('missing_profile', 'profile not found');
+    expect(configErr).toBeInstanceOf(ProviderConfigurationError);
+    expect(configErr.code).toBe('missing_profile');
+    expect(configErr.name).toBe('ProviderConfigurationError');
+
+    const connErr = new ProviderConnectionError('timeout', 'timed out', { durationMs: 60000 });
+    expect(connErr).toBeInstanceOf(ProviderConnectionError);
+    expect(connErr.code).toBe('timeout');
+    expect(connErr.safeDetails).toEqual({ durationMs: 60000 });
+
+    const protoErr = new ProviderProtocolError('invalid_provider_event', 'bad event');
+    expect(protoErr).toBeInstanceOf(ProviderProtocolError);
+    expect(protoErr.code).toBe('invalid_provider_event');
+    expect(protoErr.name).toBe('ProviderProtocolError');
+
+    const capErr = new UnsupportedProviderCapabilityError('tool_policy_unsupported', 'not supported');
+    expect(capErr).toBeInstanceOf(UnsupportedProviderCapabilityError);
+    expect(capErr.code).toBe('tool_policy_unsupported');
+    expect(capErr.name).toBe('UnsupportedProviderCapabilityError');
+  });
+});
+
 describe('request alteration public API', () => {
   it('exports request alteration primitives from the public entrypoint', () => {
     // Verify function exports are callable
