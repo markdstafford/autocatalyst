@@ -131,7 +131,10 @@ export type UnsupportedProviderCapabilityErrorCode =
   | 'inference_setting_unsupported'
   | 'tool_policy_unsupported'
   | 'skill_unsupported'
-  | 'header_operation_unsupported';
+  | 'header_operation_unsupported'
+  | 'sandbox_client_unsupported'
+  | 'sandbox_snapshot_unsupported'
+  | 'workspace_containment_violation';
 
 export class ProviderConfigurationError extends Error {
   constructor(

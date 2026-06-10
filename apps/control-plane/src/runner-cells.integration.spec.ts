@@ -16,13 +16,14 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import {
+  buildProviderAdapterKey,
   consumeRunnerEvents,
   createExecutionRunUnitOfWork,
   DefaultOrchestrator,
   InMemoryRetainedRunEventStore,
   RunDispatchQueue,
 } from '@autocatalyst/core';
-import type { JsonValue, Run, RunStep } from '@autocatalyst/api-contract';
+import type { ConfigurationRecord, JsonValue, Run, RunStep } from '@autocatalyst/api-contract';
 import type { ConversationIngressRepository, RunRepository } from '@autocatalyst/core';
 import {
   createAgentConnection,
@@ -32,12 +33,14 @@ import {
   type AgentConnection,
   type AgentConnectionTelemetryContext,
   type AgentProfileResolution,
+  type AgentProviderAdapter,
   type AgentRunnerFactoryInput,
   type DirectOrchestratorCallResult,
   type ProcessLaunchConfig,
   type ProcessLaunchConfigInput,
   type ProviderFetchTransport,
-  type ResolvedAgentRunnerProfile
+  type ResolvedAgentRunnerProfile,
+  type RunnerEvent
 } from '@autocatalyst/execution';
 import {
   claudeAgentAdapterId,
@@ -56,6 +59,14 @@ import {
   openaiDirectAdapterId,
   openaiProviderKind
 } from '@autocatalyst/openai-direct-adapter';
+import {
+  createOpenAIAgentAdapter,
+  openaiAgentAdapterId,
+  type OpenAIRunOutcome,
+  type OpenAIRunSessionInput,
+  type OpenAISandboxClientHandle
+} from '@autocatalyst/openai-agent-adapter';
+import { createExplicitProfileResolver } from './server.js';
 
 // ---------------------------------------------------------------------------
 // Fake launcher helpers
@@ -897,5 +908,348 @@ describe('runner-cells: direct credential guard', () => {
 
     // Provider adapter must not be invoked when the credential check fails
     expect(adapterCallSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (d) OpenAI agent cell — profile resolution and factory lookup
+// ---------------------------------------------------------------------------
+
+describe('runner-cells: OpenAI agent cell profile resolution', () => {
+  it('resolves explicit OpenAI agent profiles to fetch_transport/header', async () => {
+    const record: ConfigurationRecord = {
+      id: 'cfg_openai_agent',
+      owner: { tenant: 'tenant_test' },
+      kind: 'provider_profile',
+      providerKind: openaiProviderKind,
+      adapterId: openaiAgentAdapterId,
+      settings: {
+        profileName: 'openai-reviewer',
+        model: { provider: 'openai', model: 'gpt-4.1' },
+        endpoint: { baseUrl: 'https://api.openai.example' },
+        credentialSecretHandle: 'sec_fake_openai'
+      },
+      createdAt: '2026-06-10T00:00:00.000Z',
+      updatedAt: '2026-06-10T00:00:00.000Z'
+    };
+
+    // This test only exercises profile resolution; the adapter is never started,
+    // so the default (real-SDK) adapter suffices.
+    const fakeAdapter = createOpenAIAgentAdapter();
+
+    const registry = new Map([
+      [buildProviderAdapterKey(openaiProviderKind, openaiAgentAdapterId), fakeAdapter]
+    ]);
+
+    const resolve = createExplicitProfileResolver({
+      defaultProviderProfileId: record.id,
+      listRecords: async () => [record],
+      registry
+    });
+
+    const resolution = await resolve({ runId: 'run_openai_agent_001', step: 'implementation.work' });
+
+    expect(resolution.profile.connectionMechanism).toBe('fetch_transport');
+    expect(resolution.profile.providerKind).toBe('openai');
+    expect(resolution.profile.adapterId).toBe(openaiAgentAdapterId);
+    expect(resolution.credentialReference.authTarget).toBe('header');
+    expect(resolution.credentialReference.secretHandle).toBe('sec_fake_openai');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (e) Two-provider dispatch: Claude implementer + OpenAI reviewer
+// ---------------------------------------------------------------------------
+
+// Shared helpers for two-provider test
+function makeFakeAgentAdapter(opts: {
+  providerKind: string;
+  adapterId: string;
+  mechanism: 'process_environment' | 'fetch_transport';
+  terminalId: string;
+}): AgentProviderAdapter {
+  return {
+    providerKind: opts.providerKind,
+    adapterId: opts.adapterId,
+    supportedConnectionMechanism: opts.mechanism,
+    async startSession(input) {
+      const runId = input.telemetryContext.runId;
+      const step = input.telemetryContext.step ?? 'implementation.work';
+      async function* events(): AsyncIterable<RunnerEvent> {
+        yield {
+          id: opts.terminalId,
+          runId,
+          step,
+          importance: 'normal',
+          createdAt: new Date().toISOString(),
+          type: 'runner_terminal_result',
+          result: { directive: 'advance' }
+        } as RunnerEvent;
+      }
+      return {
+        events: events(),
+        metadata: Promise.resolve({
+          outcome: 'succeeded' as const,
+          launchMechanism: opts.mechanism,
+          degradedCapabilities: [],
+          tokenUsage: { available: false } as const,
+        })
+      };
+    }
+  };
+}
+
+function makeResolvedProfile(opts: { providerKind: string; adapterId: string; mechanism: 'process_environment' | 'fetch_transport' }): ResolvedAgentRunnerProfile {
+  return {
+    mode: 'agent',
+    providerKind: opts.providerKind,
+    adapterId: opts.adapterId,
+    profileName: `${opts.adapterId}-profile`,
+    model: { provider: opts.providerKind as 'anthropic' | 'openai', model: opts.providerKind === 'anthropic' ? 'claude-sonnet-4' : 'gpt-4.1' },
+    inferenceSettings: {},
+    endpoint: {},
+    connectionMechanism: opts.mechanism
+  };
+}
+
+function makeFakeConnection(profile: ResolvedAgentRunnerProfile): AgentConnection {
+  return {
+    profile,
+    credentialResolved: true,
+    createFetchTransport: () => ({ fetch: vi.fn(async () => new Response('{}', { status: 200 })) }),
+    createProcessLaunchConfig: (_input: ProcessLaunchConfigInput): ProcessLaunchConfig => ({
+      environment: { ANTHROPIC_AUTH_TOKEN: 'fake-token', ANTHROPIC_BASE_URL: 'https://api.anthropic.com' },
+      secretVariableNames: ['ANTHROPIC_AUTH_TOKEN'],
+      degradedCapabilities: [],
+      redacted: { mechanism: 'process_environment', hasAuthToken: true }
+    })
+  };
+}
+
+describe('runner-cells: two-provider dispatch (Claude implementer + OpenAI reviewer)', () => {
+  it('dispatches Claude implementer and OpenAI reviewer as separate agent streams for one step setup', async () => {
+    const claudeAdapter = makeFakeAgentAdapter({ providerKind: 'anthropic', adapterId: 'claude-agent-sdk', mechanism: 'process_environment', terminalId: 'evt_claude_terminal' });
+    const openaiAdapter = makeFakeAgentAdapter({ providerKind: 'openai', adapterId: 'openai-agents-sdk', mechanism: 'fetch_transport', terminalId: 'evt_openai_terminal' });
+
+    const adapters = new Map([
+      [getAgentProviderAdapterKey('anthropic', 'claude-agent-sdk'), claudeAdapter],
+      [getAgentProviderAdapterKey('openai', 'openai-agents-sdk'), openaiAdapter]
+    ]);
+
+    const factory = createAgentRunnerFactory({
+      adapters,
+      resolveProfile: async (input: AgentRunnerFactoryInput): Promise<AgentProfileResolution> =>
+        input.role === 'implementer'
+          ? {
+              profile: makeResolvedProfile({ providerKind: 'anthropic', adapterId: 'claude-agent-sdk', mechanism: 'process_environment' }),
+              credentialReference: { required: false }
+            }
+          : {
+              profile: makeResolvedProfile({ providerKind: 'openai', adapterId: 'openai-agents-sdk', mechanism: 'fetch_transport' }),
+              credentialReference: { required: false }
+            },
+      createConnection: async (connectionInput) => makeFakeConnection(connectionInput.profile)
+    });
+
+    const implementer = await factory.createRunner({ runId: 'run_two_provider_001', step: 'implementation.work', role: 'implementer' });
+    const reviewer = await factory.createRunner({ runId: 'run_two_provider_001', step: 'implementation.work', role: 'reviewer' });
+
+    const eventsStore = new InMemoryRetainedRunEventStore({ maxEventsPerScope: 256, maxExpiredIdsPerScope: 64, subscriberBufferSize: 32 });
+
+    const implementerResult = await consumeRunnerEvents({
+      eventsStore,
+      events: implementer.run({
+        environment: {
+          context: {
+            run: { id: 'run_two_provider_001', workKind: 'feature', currentStep: 'implementation.work', tenant: 'tenant_test' },
+            task: { prompt: 'Test task', inputs: {} },
+            workspaceIntent: { shape: 'none' },
+            secretBindings: [],
+            toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
+            skills: { requested: [] },
+            capabilityRequirements: {
+              shell: { kind: 'bash', required: false },
+              paths: { canonicalWorkspacePaths: false },
+              lsp: { requested: false }
+            }
+          },
+          workspace: { shape: 'none', workspaceRoots: [] },
+          environment: { variables: {}, secretVariableNames: [] },
+          toolPolicy: { allowedTools: [], workspaceRoots: [] },
+          skills: { requested: [] },
+          capabilities: {
+            shell: { kind: 'bash', available: false },
+            paths: {},
+            lsp: { requested: false, available: false }
+          }
+        }
+      }),
+      runId: 'run_two_provider_001',
+      tenant: 'tenant_test'
+    });
+    const reviewerResult = await consumeRunnerEvents({
+      eventsStore,
+      events: reviewer.run({
+        environment: {
+          context: {
+            run: { id: 'run_two_provider_001', workKind: 'feature', currentStep: 'implementation.work', tenant: 'tenant_test' },
+            task: { prompt: 'Test task', inputs: {} },
+            workspaceIntent: { shape: 'none' },
+            secretBindings: [],
+            toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
+            skills: { requested: [] },
+            capabilityRequirements: {
+              shell: { kind: 'bash', required: false },
+              paths: { canonicalWorkspacePaths: false },
+              lsp: { requested: false }
+            }
+          },
+          workspace: { shape: 'none', workspaceRoots: [] },
+          environment: { variables: {}, secretVariableNames: [] },
+          toolPolicy: { allowedTools: [], workspaceRoots: [] },
+          skills: { requested: [] },
+          capabilities: {
+            shell: { kind: 'bash', available: false },
+            paths: {},
+            lsp: { requested: false, available: false }
+          }
+        }
+      }),
+      runId: 'run_two_provider_001',
+      tenant: 'tenant_test'
+    });
+
+    expect(implementerResult.workResult.directive).toBe('advance');
+    expect(reviewerResult.workResult.directive).toBe('advance');
+  });
+});
+
+describe('runner-cells: OpenAI agent cell factory lookup', () => {
+  it('dispatches the OpenAI agent cell through the production agent runner factory seam and drains events', async () => {
+    const sdkCalls: Array<{ kind: string; snapshot?: unknown; tools?: string[] }> = [];
+
+    // Drive the adapter through its documented seams (no network, no real model
+    // traffic): the sandbox factory records the validated noop snapshot, and the
+    // run driver yields RunItem-shaped objects so the canonical mapper + terminal
+    // protocol are exercised through the production dispatch path.
+    const fakeAdapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: (fi): OpenAISandboxClientHandle => {
+        sdkCalls.push({ kind: 'sandbox', snapshot: fi.snapshot });
+        return { client: {} as OpenAISandboxClientHandle['client'], session: {} as OpenAISandboxClientHandle['session'] };
+      },
+      runAgentSession: (runInput: OpenAIRunSessionInput): OpenAIRunOutcome => {
+        sdkCalls.push({ kind: 'run', tools: runInput.tools.map((t) => (t as { name: string }).name) });
+        const items = [
+          { type: 'message_output_item', rawItem: { role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Reviewing the implementation...' }] } },
+          { type: 'tool_call_item', rawItem: { type: 'function_call', name: 'notify', callId: 'c1', status: 'completed', arguments: JSON.stringify({ message: 'review started', importance: 'low' }) } }
+        ] as unknown as OpenAIRunOutcome['items'];
+        return { items, result: Promise.resolve({ directive: 'advance' as const }) };
+      }
+    });
+
+    const agentRegistry = new Map([
+      [getAgentProviderAdapterKey(openaiProviderKind, openaiAgentAdapterId), fakeAdapter]
+    ]);
+
+    const profile: ResolvedAgentRunnerProfile = {
+      mode: 'agent',
+      providerKind: openaiProviderKind,
+      adapterId: openaiAgentAdapterId,
+      profileName: 'test-openai-agent',
+      model: { provider: 'openai', model: 'gpt-4.1' },
+      inferenceSettings: {},
+      endpoint: {},
+      connectionMechanism: 'fetch_transport'
+    };
+
+    const fakeTransport: ProviderFetchTransport = {
+      fetch: vi.fn(async () => new Response('{}', { status: 200 }))
+    };
+
+    const agentRunnerFactory = createAgentRunnerFactory({
+      adapters: agentRegistry,
+      resolveProfile: async (): Promise<AgentProfileResolution> => ({
+        profile,
+        credentialReference: { required: false }
+      }),
+      createConnection: async (connectionInput) => ({
+        profile: connectionInput.profile,
+        credentialResolved: true,
+        createFetchTransport: () => fakeTransport,
+        createProcessLaunchConfig: (_launchInput: ProcessLaunchConfigInput): ProcessLaunchConfig => {
+          throw new Error('process launch not supported for fetch_transport');
+        }
+      })
+    });
+
+    const runId = 'run_openai_agent_001';
+    const step = 'implement';
+    const runner = await agentRunnerFactory.createRunner({ runId, step });
+
+    const eventsStore = new InMemoryRetainedRunEventStore({ maxEventsPerScope: 256, maxExpiredIdsPerScope: 64, subscriberBufferSize: 32 });
+
+    // Subscribe before draining to capture events flowing through the consumer/SSE path
+    const capturedEventTypes: string[] = [];
+    const subscription = eventsStore.subscribe({ runId, tenant: 'tenant_test' });
+    const collectPromise = (async () => {
+      for await (const ev of subscription.events) {
+        capturedEventTypes.push((ev as { type: string }).type);
+      }
+    })();
+
+    const result = await consumeRunnerEvents({
+      eventsStore,
+      events: runner.run({
+        environment: {
+          context: {
+            run: { id: runId, workKind: 'feature', currentStep: step, tenant: 'tenant_test' },
+            task: { prompt: 'Test task', inputs: {} },
+            workspaceIntent: { shape: 'none' },
+            secretBindings: [],
+            toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
+            skills: { requested: [] },
+            capabilityRequirements: {
+              shell: { kind: 'bash', required: false },
+              paths: { canonicalWorkspacePaths: false },
+              lsp: { requested: false }
+            }
+          },
+          workspace: { shape: 'none', workspaceRoots: [] },
+          environment: { variables: {}, secretVariableNames: [] },
+          toolPolicy: { allowedTools: [], workspaceRoots: [] },
+          skills: { requested: [] },
+          capabilities: {
+            shell: { kind: 'bash', available: false },
+            paths: {},
+            lsp: { requested: false, available: false }
+          }
+        }
+      }),
+      runId,
+      tenant: 'tenant_test'
+    });
+
+    subscription.close();
+    await collectPromise;
+
+    // Proves registry lookup and production dispatch worked; terminal result was validated
+    expect(result.workResult.directive).toBe('advance');
+
+    // Proves the adapter's SDK seams were invoked (sandbox session opened + run driven)
+    expect(sdkCalls.some((c) => c.kind === 'sandbox')).toBe(true);
+    expect(sdkCalls.some((c) => c.kind === 'run')).toBe(true);
+
+    // Proves the sandbox client received a snapshot with type 'noop'
+    const sandboxCall = sdkCalls.find((c) => c.kind === 'sandbox');
+    expect((sandboxCall?.snapshot as { type?: unknown } | undefined)?.type).toBe('noop');
+
+    // Proves the progress tools reached the run driver
+    const runCall = sdkCalls.find((c) => c.kind === 'run');
+    expect(runCall?.tools).toEqual(expect.arrayContaining(['update_plan', 'report_progress', 'notify']));
+
+    // Proves events flowed through the consumer/retained event store (SSE replay path)
+    expect(capturedEventTypes).toContain('runner_assistant_turn');
+    expect(capturedEventTypes).toContain('runner_notification');
+    expect(capturedEventTypes).toContain('runner_terminal_result');
   });
 });
