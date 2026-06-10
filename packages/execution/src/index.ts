@@ -158,6 +158,16 @@ export {
 } from './agent-orchestrator-runner.js';
 
 export {
+  getAgentProviderAdapterKey,
+  createAgentRunnerFactory,
+  type AgentProviderAdapterRegistry,
+  type AgentProfileResolution,
+  type AgentRunnerFactoryInput,
+  type AgentRunnerFactory,
+  type CreateAgentRunnerFactoryOptions
+} from './runner-dispatch.js';
+
+export {
   createExecutionEntryPoint,
   type CreateExecutionEntryPointOptions,
   type ExecutionEntryPoint,

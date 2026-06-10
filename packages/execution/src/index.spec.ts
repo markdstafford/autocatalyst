@@ -225,6 +225,20 @@ describe('agent provider adapter public contracts', () => {
   });
 });
 
+describe('runner dispatch public API', () => {
+  it('exports getAgentProviderAdapterKey and createAgentRunnerFactory', async () => {
+    const { getAgentProviderAdapterKey, createAgentRunnerFactory } = await import('./index.js');
+
+    expect(getAgentProviderAdapterKey).toBeTypeOf('function');
+    expect(createAgentRunnerFactory).toBeTypeOf('function');
+
+    // Key format is stable
+    expect(getAgentProviderAdapterKey('anthropic', 'claude-agent-sdk')).toBe(
+      JSON.stringify(['anthropic', 'claude-agent-sdk'])
+    );
+  });
+});
+
 describe('request alteration public API', () => {
   it('exports request alteration primitives from the public entrypoint', () => {
     // Verify function exports are callable
