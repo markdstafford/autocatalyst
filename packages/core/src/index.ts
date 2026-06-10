@@ -35,7 +35,8 @@ export type {
 export {
   buildProviderAdapterKey,
   emptyProviderAdapterMap,
-  composeConfiguredProviders
+  composeConfiguredProviders,
+  composeAgentProviderAdapterRegistry
 } from './provider-composition.js';
 export type {
   ProviderAdapterFactoryInput,
@@ -45,7 +46,8 @@ export type {
   ProviderCompositionUnresolvedReason,
   ProviderCompositionUnresolved,
   ProviderCompositionResult,
-  ComposeConfiguredProvidersInput
+  ComposeConfiguredProvidersInput,
+  ComposeAgentProviderAdapterRegistryInput
 } from './provider-composition.js';
 
 export type {

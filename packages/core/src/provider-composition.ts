@@ -1,4 +1,10 @@
 import type { ConfigurationRecord } from '@autocatalyst/api-contract';
+import {
+  ProviderConfigurationError,
+  getAgentProviderAdapterKey,
+  type AgentProviderAdapter,
+  type AgentProviderAdapterRegistry
+} from '@autocatalyst/execution';
 
 import {
   validateProviderConfigurationAgainstRegistry,
@@ -99,4 +105,49 @@ export async function composeConfiguredProviders(
   }
 
   return { composed, warnings, unresolved };
+}
+
+// ---------------------------------------------------------------------------
+// Registry composition
+// ---------------------------------------------------------------------------
+
+function isAgentProviderAdapter(value: unknown): value is AgentProviderAdapter {
+  if (typeof value !== 'object' || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v['providerKind'] === 'string' &&
+    typeof v['adapterId'] === 'string' &&
+    (v['supportedConnectionMechanism'] === 'fetch_transport' ||
+      v['supportedConnectionMechanism'] === 'process_environment') &&
+    typeof v['startSession'] === 'function'
+  );
+}
+
+export interface ComposeAgentProviderAdapterRegistryInput {
+  readonly composed: readonly ProviderPortBinding[];
+}
+
+export function composeAgentProviderAdapterRegistry(
+  input: ComposeAgentProviderAdapterRegistryInput
+): AgentProviderAdapterRegistry {
+  const registry = new Map<string, AgentProviderAdapter>();
+  for (const binding of input.composed) {
+    if (!isAgentProviderAdapter(binding.adapter)) {
+      throw new ProviderConfigurationError(
+        'unsupported_adapter',
+        `Provider binding for ${binding.providerKind}/${binding.adapterId} does not implement the AgentProviderAdapter contract`,
+        { configurationRecordId: binding.configurationRecordId, providerKind: binding.providerKind, adapterId: binding.adapterId }
+      );
+    }
+    const key = getAgentProviderAdapterKey(binding.providerKind, binding.adapterId);
+    if (registry.has(key)) {
+      throw new ProviderConfigurationError(
+        'unsupported_adapter',
+        `Duplicate adapter registered for ${binding.providerKind}/${binding.adapterId}`,
+        { providerKind: binding.providerKind, adapterId: binding.adapterId }
+      );
+    }
+    registry.set(key, binding.adapter);
+  }
+  return registry;
 }
