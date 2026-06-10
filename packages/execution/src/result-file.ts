@@ -32,9 +32,15 @@ export interface StepResultFileReadFailure {
 }
 
 /**
- * Resolves a relative path against a scratch root using realpath on the parent directory so
- * symlinked directories inside the root cannot redirect reads or writes outside it.
+ * Resolves a relative path against a scratch root by walking existing path components via
+ * realpath so symlinked directory ancestors cannot redirect reads or writes outside the root.
  * Returns `{ resolvedCandidate, rootRealPath }` when the path is contained, or `null` when it escapes.
+ *
+ * Unlike resolving only the immediate parent, this function walks upward from the full candidate
+ * to find the deepest existing ancestor and calls realpath on it. This prevents the ENOENT-fallback
+ * gap where `realpath(candidateParent)` would fail because a non-existent sub-directory sits beyond
+ * a symlink that points outside the root (e.g. `link/new/result.json` where `link` → outside and
+ * `new/` does not yet exist).
  *
  * Both the result-file reader and the StubRunner writer use this helper so their containment
  * rules stay in sync.
@@ -47,15 +53,50 @@ export async function resolveScratchRootCandidatePath(
   // even when scratchRoot itself is a symlink (e.g. /tmp → /private/tmp on macOS).
   const rootRealPath = await realpath(scratchRoot).catch(() => scratchRoot);
   const candidate = path.resolve(rootRealPath, relativePath);
-  const candidateParent = path.dirname(candidate);
-  // When the parent directory does not exist yet (write path), realpath falls back
-  // to the lexical path which is already under rootRealPath.
-  const parentRealPath = await realpath(candidateParent).catch(() => candidateParent);
-  const resolvedCandidate = path.join(parentRealPath, path.basename(candidate));
+
+  // Walk upward from the candidate to find the deepest existing path component, resolve its
+  // real path (expanding any symlinks), and verify containment before reconstructing the full
+  // candidate. This catches symlinked ancestors that would redirect a subsequent mkdir/write
+  // outside scratchRoot even when the final path component does not yet exist.
+  const { realAncestor, remainingSegments } = await resolveDeepestExistingAncestor(candidate);
+  if (!isContainedByRoot(realAncestor, rootRealPath)) {
+    return null;
+  }
+
+  const resolvedCandidate =
+    remainingSegments.length > 0 ? path.join(realAncestor, ...remainingSegments) : realAncestor;
   if (!isContainedByRoot(resolvedCandidate, rootRealPath)) {
     return null;
   }
+
   return { resolvedCandidate, rootRealPath };
+}
+
+/**
+ * Walks upward from `p` to find the deepest existing path component, resolves it via realpath,
+ * and returns the resolved ancestor together with the remaining (not-yet-existing) segments in
+ * top-down order. Rethrows unexpected filesystem errors (anything other than ENOENT).
+ */
+async function resolveDeepestExistingAncestor(
+  p: string
+): Promise<{ readonly realAncestor: string; readonly remainingSegments: readonly string[] }> {
+  const pendingSegments: string[] = [];
+  let current = p;
+  for (;;) {
+    try {
+      const real = await realpath(current);
+      return { realAncestor: real, remainingSegments: [...pendingSegments].reverse() };
+    } catch (error) {
+      if (!hasNodeCode(error, 'ENOENT')) throw error;
+      const parent = path.dirname(current);
+      if (parent === current) {
+        // Reached the filesystem root without finding an existing path; return lexical root.
+        return { realAncestor: current, remainingSegments: [...pendingSegments].reverse() };
+      }
+      pendingSegments.push(path.basename(current));
+      current = parent;
+    }
+  }
 }
 
 /**

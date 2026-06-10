@@ -114,6 +114,26 @@ describe('readScratchStepResultFile', () => {
     expect(JSON.stringify(result)).not.toContain(base);
   });
 
+  it('rejects a symlinked ancestor directory pointing outside scratchRoot with a non-existent sub-path', async () => {
+    // Regression: `symlink/new/result.json` where `symlink` → outside and `new/` does not exist.
+    // The old code ENOENT-fell-back to the lexical parent, bypassing symlink detection.
+    const base = await mkdtemp(path.join(os.tmpdir(), 'result-file-symlink-enoent-'));
+    const scratchRoot = path.join(base, 'scratch');
+    const outsideDir = path.join(base, 'outside');
+    await mkdir(scratchRoot);
+    await mkdir(outsideDir);
+    // Symlink inside scratchRoot points to a directory outside it; `new/` sub-dir does NOT exist.
+    await symlink(outsideDir, path.join(scratchRoot, 'symlink'));
+
+    const result = await readScratchStepResultFile({
+      environment: environmentWithScratch(scratchRoot),
+      resultFile: 'symlink/new/result.json'
+    });
+
+    expect(result).toMatchObject({ status: 'failed', code: 'result_path_outside_scratch_root' });
+    expect(JSON.stringify(result)).not.toContain(base);
+  });
+
   it('reports workspace shape none as missing result file', async () => {
     const noneEnvironment: MaterializedExecutionEnvironment = {
       context: stubContext,

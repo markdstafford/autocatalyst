@@ -217,6 +217,34 @@ describe('StubRunner — resultFile and correction responses', () => {
     }
   });
 
+  it('rejects write when symlink points outside and a non-existent sub-directory follows it', async () => {
+    // Regression: `link/new/result.json` where `link` → outside and `new/` does not yet exist.
+    // The old code fell back to the lexical parent on ENOENT, bypassing symlink detection.
+    const base = await mkdtemp(path.join(tmpdir(), 'stub-symlink-enoent-'));
+    try {
+      const scratchRoot = path.join(base, 'scratch');
+      const outsideDir = path.join(base, 'outside');
+      await mkdir(scratchRoot);
+      await mkdir(outsideDir);
+      // Symlink inside scratchRoot → outside directory; `new/` sub-directory does NOT exist yet.
+      await symlink(outsideDir, path.join(scratchRoot, 'symlink'));
+
+      const runner = new StubRunner({
+        resultFile: { relativePath: 'symlink/new/result.json', value: { escaped: true } }
+      });
+      const env = makeEnvironment({
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      });
+
+      const consume = async (): Promise<void> => {
+        for await (const _ of runner.run({ environment: env })) { /* consume */ }
+      };
+      await expect(consume()).rejects.toThrow(/escapes scratch root/);
+    } finally {
+      await rm(base, { recursive: true, force: true });
+    }
+  });
+
   it('rejects write when the result file itself is a symlink pointing outside scratchRoot', async () => {
     const base = await mkdtemp(path.join(tmpdir(), 'stub-file-symlink-'));
     try {
