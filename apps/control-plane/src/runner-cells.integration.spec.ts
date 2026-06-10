@@ -1133,12 +1133,19 @@ describe('runner-cells: two-provider dispatch (Claude implementer + OpenAI revie
 });
 
 describe('runner-cells: OpenAI agent cell factory lookup', () => {
-  it('dispatches the OpenAI agent cell through the production agent runner factory seam', async () => {
+  it('dispatches the OpenAI agent cell through the production agent runner factory seam and drains events', async () => {
+    const sdkCalls: Array<{ kind: string; options?: unknown }> = [];
+
     const fakeAdapter = createOpenAIAgentAdapter({
       sdk: {
         SandboxAgent: class {
-          constructor(_opts: Record<string, unknown>) {}
-          async *run(_input: unknown): AsyncIterable<OpenAINativeEvent> {}
+          constructor(opts: Record<string, unknown>) { sdkCalls.push({ kind: 'constructor', options: opts }); }
+          async *run(_input: unknown, opts?: Record<string, unknown>): AsyncIterable<OpenAINativeEvent> {
+            sdkCalls.push({ kind: 'run', options: opts });
+            yield { type: 'assistant', content: 'Reviewing the implementation...' };
+            yield { type: 'tool_call', name: 'notify', arguments: JSON.stringify({ message: 'review started', importance: 'low' }) };
+            yield { type: 'result' };
+          }
         } as never,
         NoopSnapshotSpec: class {
           readonly type = 'noop';
@@ -1184,38 +1191,71 @@ describe('runner-cells: OpenAI agent cell factory lookup', () => {
       })
     });
 
-    const runner = await agentRunnerFactory.createRunner({ runId: 'run_openai_agent_001', step: 'implement' });
+    const runId = 'run_openai_agent_001';
+    const step = 'implement';
+    const runner = await agentRunnerFactory.createRunner({ runId, step });
 
-    // The factory lookup succeeds — proves the adapter key resolution and registry wiring are correct.
-    expect(runner).toBeDefined();
-    // Confirms the runner was dispatched through the production factory — not just a static const check
-    const runResult = runner.run({
-      environment: {
-        context: {
-          run: { id: 'run_openai_agent_001', workKind: 'feature', currentStep: 'implement', tenant: 'tenant_test' },
-          task: { prompt: 'Test task', inputs: {} },
-          workspaceIntent: { shape: 'none' },
-          secretBindings: [],
-          toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
-          skills: { requested: [] },
-          capabilityRequirements: {
-            shell: { kind: 'bash', required: false },
-            paths: { canonicalWorkspacePaths: false },
-            lsp: { requested: false }
-          }
-        },
-        workspace: { shape: 'none', workspaceRoots: [] },
-        environment: { variables: {}, secretVariableNames: [] },
-        toolPolicy: { allowedTools: [], workspaceRoots: [] },
-        skills: { requested: [] },
-        capabilities: {
-          shell: { kind: 'bash', available: false },
-          paths: {},
-          lsp: { requested: false, available: false }
-        }
+    const eventsStore = new InMemoryRetainedRunEventStore({ maxEventsPerScope: 256, maxExpiredIdsPerScope: 64, subscriberBufferSize: 32 });
+
+    // Subscribe before draining to capture events flowing through the consumer/SSE path
+    const capturedEventTypes: string[] = [];
+    const subscription = eventsStore.subscribe({ runId, tenant: 'tenant_test' });
+    const collectPromise = (async () => {
+      for await (const ev of subscription.events) {
+        capturedEventTypes.push((ev as { type: string }).type);
       }
+    })();
+
+    const result = await consumeRunnerEvents({
+      eventsStore,
+      events: runner.run({
+        environment: {
+          context: {
+            run: { id: runId, workKind: 'feature', currentStep: step, tenant: 'tenant_test' },
+            task: { prompt: 'Test task', inputs: {} },
+            workspaceIntent: { shape: 'none' },
+            secretBindings: [],
+            toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
+            skills: { requested: [] },
+            capabilityRequirements: {
+              shell: { kind: 'bash', required: false },
+              paths: { canonicalWorkspacePaths: false },
+              lsp: { requested: false }
+            }
+          },
+          workspace: { shape: 'none', workspaceRoots: [] },
+          environment: { variables: {}, secretVariableNames: [] },
+          toolPolicy: { allowedTools: [], workspaceRoots: [] },
+          skills: { requested: [] },
+          capabilities: {
+            shell: { kind: 'bash', available: false },
+            paths: {},
+            lsp: { requested: false, available: false }
+          }
+        }
+      }),
+      runId,
+      tenant: 'tenant_test'
     });
-    // Confirms the runner.run() returns an AsyncIterable — proves adapter key resolution worked
-    expect(typeof runResult[Symbol.asyncIterator]).toBe('function');
+
+    subscription.close();
+    await collectPromise;
+
+    // Proves registry lookup and production dispatch worked; terminal result was validated
+    expect(result.workResult.directive).toBe('advance');
+
+    // Proves the adapter's SDK seam was invoked (SandboxAgent constructed + run called)
+    expect(sdkCalls.some((c) => c.kind === 'constructor')).toBe(true);
+    expect(sdkCalls.some((c) => c.kind === 'run')).toBe(true);
+
+    // Proves SandboxAgent received a snapshot with type 'noop'
+    const constructorCall = sdkCalls.find((c) => c.kind === 'constructor');
+    const snapshotArg = (constructorCall?.options as Record<string, unknown> | undefined)?.['snapshot'];
+    expect((snapshotArg as { type?: unknown } | undefined)?.type).toBe('noop');
+
+    // Proves events flowed through the consumer/retained event store (SSE replay path)
+    expect(capturedEventTypes).toContain('runner_assistant_turn');
+    expect(capturedEventTypes).toContain('runner_notification');
+    expect(capturedEventTypes).toContain('runner_terminal_result');
   });
 });

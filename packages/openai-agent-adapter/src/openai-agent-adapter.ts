@@ -1,3 +1,6 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+
 import type {
   AgentProviderAdapter,
   AgentProviderSession,
@@ -7,9 +10,12 @@ import type {
   ProviderFetchTransport
 } from '@autocatalyst/execution';
 import {
+  notifyToolInputSchema,
   ProviderConfigurationError,
   ProviderProtocolError,
-  UnsupportedProviderCapabilityError
+  reportProgressToolInputSchema,
+  UnsupportedProviderCapabilityError,
+  updatePlanToolInputSchema
 } from '@autocatalyst/execution';
 import type { RunnerEvent } from '@autocatalyst/api-contract';
 
@@ -142,10 +148,10 @@ function createProgressTools(): readonly Record<string, unknown>[] {
         type: 'object',
         additionalProperties: false,
         properties: {
-          label: { type: 'string' },
-          completed: { type: 'number' },
-          total: { type: 'number' },
-          summary: { type: 'string' }
+          label: { type: 'string', minLength: 1 },
+          completed: { type: 'integer', minimum: 0 },
+          total: { type: 'integer', minimum: 1 },
+          summary: { type: 'string', minLength: 1 }
         }
       }
     },
@@ -209,60 +215,45 @@ function parseArgs(value: unknown): Record<string, unknown> | undefined {
   return undefined;
 }
 
+function lowImportanceToolActivity(name: string, ctx: EventContext): RunnerEvent {
+  return {
+    ...baseEvent(ctx),
+    type: 'runner_tool_activity',
+    importance: 'low' as const,
+    tool: { name, action: 'invoke', status: 'completed' }
+  } as RunnerEvent;
+}
+
 function mapProgressToolCall(name: string, rawArgs: unknown, ctx: EventContext): RunnerEvent | undefined {
   const args = parseArgs(rawArgs);
-  if (args === undefined) {
-    // Invalid payload — emit low-importance tool activity
-    return {
-      ...baseEvent(ctx),
-      type: 'runner_tool_activity',
-      importance: 'low' as const,
-      tool: { name, action: 'invoke', status: 'completed' }
-    } as RunnerEvent;
-  }
 
   if (name === 'notify') {
-    const message = safeStr(args['message']);
-    if (message.length === 0) return undefined;
-    const severityRaw = args['severity'];
-    const severity: 'debug' | 'info' | 'warn' | 'error' =
-      severityRaw === 'debug' || severityRaw === 'info' || severityRaw === 'warn' || severityRaw === 'error'
-        ? severityRaw
-        : 'info';
-    const importanceRaw = args['importance'];
-    const importance: 'low' | 'normal' | 'high' =
-      importanceRaw === 'low' || importanceRaw === 'normal' || importanceRaw === 'high'
-        ? importanceRaw
-        : 'normal';
+    const parsed = notifyToolInputSchema.safeParse(args);
+    if (!parsed.success) return lowImportanceToolActivity(name, ctx);
     return {
       ...baseEvent(ctx),
       type: 'runner_notification',
-      importance,
-      notification: { severity, message }
+      importance: parsed.data.importance ?? 'normal',
+      notification: { severity: parsed.data.severity ?? 'info', message: parsed.data.message }
     } as RunnerEvent;
   }
 
   if (name === 'update_plan') {
-    const title = safeStr(args['title']);
-    const steps = Array.isArray(args['steps'])
-      ? (args['steps'] as unknown[]).filter((s): s is string => typeof s === 'string' && s.length > 0)
-      : [];
-    if (title.length === 0 || steps.length === 0) return undefined;
+    const parsed = updatePlanToolInputSchema.safeParse(args);
+    if (!parsed.success) return lowImportanceToolActivity(name, ctx);
     return {
       ...baseEvent(ctx),
       type: 'runner_progress',
       importance: 'normal' as const,
-      progress: { kind: 'plan' as const, title, steps }
+      progress: { kind: 'plan' as const, title: parsed.data.title, steps: parsed.data.steps }
     } as RunnerEvent;
   }
 
   // report_progress
-  const completed = typeof args['completed'] === 'number' ? args['completed'] : undefined;
-  const total = typeof args['total'] === 'number' ? args['total'] : undefined;
-  const label = safeStr(args['label'] ?? '');
-  const summary = safeStr(args['summary'] ?? '');
-
-  if (completed !== undefined && total !== undefined && label.length > 0) {
+  const parsed = reportProgressToolInputSchema.safeParse(args);
+  if (!parsed.success) return lowImportanceToolActivity(name, ctx);
+  const { label, completed, total, summary } = parsed.data;
+  if (completed !== undefined && total !== undefined && label !== undefined) {
     return {
       ...baseEvent(ctx),
       type: 'runner_progress',
@@ -270,7 +261,7 @@ function mapProgressToolCall(name: string, rawArgs: unknown, ctx: EventContext):
       progress: { kind: 'task_progress' as const, label, completed, total }
     } as RunnerEvent;
   }
-  if (summary.length > 0) {
+  if (summary !== undefined) {
     return {
       ...baseEvent(ctx),
       type: 'runner_progress',
@@ -278,7 +269,7 @@ function mapProgressToolCall(name: string, rawArgs: unknown, ctx: EventContext):
       progress: { kind: 'intent' as const, summary }
     } as RunnerEvent;
   }
-  return undefined;
+  return lowImportanceToolActivity(name, ctx);
 }
 
 function mapNativeEvent(native: OpenAINativeEvent, ctx: EventContext): RunnerEvent | undefined {
@@ -360,6 +351,29 @@ function mapNativeEvent(native: OpenAINativeEvent, ctx: EventContext): RunnerEve
         'OpenAI native event has an unsupported type.',
         { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId, eventType: native.type }
       );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Result file helper
+// ---------------------------------------------------------------------------
+
+async function maybeWriteResultFile(
+  env: AgentProviderSessionInput['runInput']['environment'],
+  output: unknown
+): Promise<void> {
+  if (output === undefined || output === null) return;
+  const workspace = env.workspace;
+  const scratchRoot = 'scratchRoot' in workspace ? workspace.scratchRoot : undefined;
+  if (scratchRoot === undefined) return;
+  const target = path.join(scratchRoot, 'step-result.json');
+  const content = typeof output === 'string' ? output : JSON.stringify(output);
+  try {
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, content, 'utf8');
+  } catch {
+    // Suppress raw filesystem errors that may carry host paths.
+    throw new Error('OpenAI agent adapter failed to write the step result file.');
   }
 }
 
@@ -617,6 +631,11 @@ export function createOpenAIAgentAdapter(
           for await (const native of nativeStream) {
             if (native.type === 'result' || native.type === 'final' || native.type === 'usage') {
               lastUsage = native['usage'] ?? lastUsage;
+            }
+            if ((native.type === 'result' || native.type === 'final') &&
+                native['directive'] !== 'needs_input' &&
+                native['isError'] !== true) {
+              await maybeWriteResultFile(input.runInput.environment, native['output']);
             }
             const event = mapNativeEvent(native, ctx);
             if (event === undefined) continue;
