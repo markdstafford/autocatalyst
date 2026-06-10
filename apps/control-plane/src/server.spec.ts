@@ -11,11 +11,26 @@ import {
   healthResponseSchema
 } from '@autocatalyst/api-contract';
 import {
+  buildProviderAdapterKey,
   createExtensionRegistryCatalog,
-  type ProviderCompositionResult
+  type ProviderAdapterFactory,
+  type ProviderCompositionResult,
+  type RunUnitOfWork
 } from '@autocatalyst/core';
+import {
+  ProviderConfigurationError,
+  type AgentProviderAdapter,
+  type AgentProviderAdapterRegistry,
+  type AgentRunnerFactoryInput
+} from '@autocatalyst/execution';
+import { claudeAgentAdapterId, claudeProviderKind } from '@autocatalyst/claude-agent-adapter';
 
-import { createControlPlaneServer, logProviderCompositionDiagnostics, startControlPlaneServer } from './server.js';
+import {
+  createControlPlaneServer,
+  createExplicitProfileResolver,
+  logProviderCompositionDiagnostics,
+  startControlPlaneServer
+} from './server.js';
 
 async function withTempDatabasePath(run: (databasePath: string) => Promise<void>): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), 'autocatalyst-control-plane-'));
@@ -173,6 +188,142 @@ describe('createControlPlaneServer', () => {
       ]);
 
       await second.close();
+    });
+  });
+});
+
+describe('createControlPlaneServer (real runner dispatch composition)', () => {
+  const fakeAdapter: AgentProviderAdapter = {
+    providerKind: claudeProviderKind,
+    adapterId: claudeAgentAdapterId,
+    supportedConnectionMechanism: 'process_environment',
+    async startSession() {
+      throw new Error('startSession should not be invoked in composition test');
+    }
+  };
+  const fakeClaudeAdapterFactory: ProviderAdapterFactory = () => fakeAdapter;
+  const fakeClaudeKey = buildProviderAdapterKey(claudeProviderKind, claudeAgentAdapterId);
+
+  const stubUnitOfWork: RunUnitOfWork = {
+    async run() {
+      return { directive: 'fail', reason: 'stub-unit-of-work' };
+    }
+  };
+
+  it('uses injected unitOfWork without requiring a Claude adapter', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      // No realRunnerDispatch, no providerAdapters — and explicit unitOfWork supplied.
+      const app = await createControlPlaneServer({
+        databasePath,
+        bearerToken: 'token',
+        masterSecret: 'correct-master-secret',
+        unitOfWork: stubUnitOfWork
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/health' });
+      expect(response.statusCode).toBe(200);
+
+      await app.close();
+    });
+  });
+
+  it('starts without realRunnerDispatch and does not require a Claude adapter', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const app = await createControlPlaneServer({
+        databasePath,
+        bearerToken: 'token',
+        masterSecret: 'correct-master-secret'
+      });
+
+      const response = await app.inject({ method: 'GET', url: '/health' });
+      expect(response.statusCode).toBe(200);
+
+      await app.close();
+    });
+  });
+
+  it('composes the adapter registry and starts when realRunnerDispatch is enabled', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      // Seed a provider profile configuration record so the registry has something to bind.
+      const seed = await createControlPlaneServer({
+        databasePath,
+        bearerToken: 'token',
+        masterSecret: 'correct-master-secret'
+      });
+      const createdResponse = await seed.inject({
+        method: 'POST',
+        url: configurationRecordCollectionPath,
+        headers: { authorization: 'Bearer token' },
+        payload: {
+          kind: 'provider_profile',
+          providerKind: claudeProviderKind,
+          adapterId: claudeAgentAdapterId,
+          settings: { profileName: 'default' }
+        }
+      });
+      expect(createdResponse.statusCode).toBe(createConfigurationRecordSuccessStatusCode);
+      const created = createdResponse.json() as { id: string };
+      await seed.close();
+
+      let compositionResult: ProviderCompositionResult | undefined;
+      const app = await createControlPlaneServer({
+        databasePath,
+        bearerToken: 'token',
+        masterSecret: 'correct-master-secret',
+        // Override the Claude adapter with a fake to avoid loading the real SDK.
+        providerAdapters: new Map([[fakeClaudeKey, fakeClaudeAdapterFactory]]),
+        realRunnerDispatch: { enabled: true, defaultProviderProfileId: created.id },
+        onProviderComposition: (result) => {
+          compositionResult = result;
+        }
+      });
+
+      expect(compositionResult?.composed).toEqual([
+        expect.objectContaining({
+          providerKind: claudeProviderKind,
+          adapterId: claudeAgentAdapterId
+        })
+      ]);
+      const response = await app.inject({ method: 'GET', url: '/health' });
+      expect(response.statusCode).toBe(200);
+
+      await app.close();
+    });
+  });
+
+  it('createExplicitProfileResolver throws missing_profile when no matching record exists', async () => {
+    const registry: AgentProviderAdapterRegistry = new Map([[fakeClaudeKey, fakeAdapter]]);
+    const resolver = createExplicitProfileResolver({
+      defaultProviderProfileId: 'cfg_does_not_exist',
+      listRecords: async () => [],
+      registry
+    });
+    const factoryInput: AgentRunnerFactoryInput = { runId: 'run_1', step: 'plan' };
+
+    await expect(resolver(factoryInput)).rejects.toBeInstanceOf(ProviderConfigurationError);
+    await expect(resolver(factoryInput)).rejects.toMatchObject({ code: 'missing_profile' });
+  });
+
+  it('createExplicitProfileResolver throws unsupported_adapter when registry lacks the adapter', async () => {
+    const registry: AgentProviderAdapterRegistry = new Map();
+    const resolver = createExplicitProfileResolver({
+      defaultProviderProfileId: 'cfg_1',
+      listRecords: async () => [
+        {
+          id: 'cfg_1',
+          kind: 'provider_profile',
+          providerKind: claudeProviderKind,
+          adapterId: claudeAgentAdapterId,
+          settings: { profileName: 'default' },
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }
+      ],
+      registry
+    });
+
+    await expect(resolver({ runId: 'run_1', step: 'plan' })).rejects.toMatchObject({
+      code: 'unsupported_adapter'
     });
   });
 });
