@@ -11,7 +11,7 @@ import type { RunRepository, RunStepRepository } from './domain-repositories.js'
 import type { Orchestrator, OrchestratedConversationResult } from './orchestrator.js';
 import { OrchestratorError } from './orchestrator.js';
 import { permissivePolicyDecisionPoint, type PolicyDecisionPoint } from './policy.js';
-import { InMemoryRunEventBus, type RunEventSubscriber, type RunEventSubscription } from './run-events.js';
+import { InMemoryRunEventBus, type RunEventStore, type RunEventSubscriber, type RunEventSubscription } from './run-events.js';
 
 const timestamp = '2026-06-08T00:00:00.000Z';
 const owner = {
@@ -48,6 +48,7 @@ function makeRunStep(overrides?: Partial<RunStep>): RunStep {
     endedAt: null,
     durationMs: null,
     occurrence: { index: 0, attempt: 1 },
+    checkpointResult: null,
     ...overrides
   };
 }
@@ -130,14 +131,14 @@ function makeService(options?: {
   orchestrator?: Orchestrator;
   runs?: RunRepository;
   runSteps?: RunStepRepository;
-  events?: RunEventSubscriber;
+  events?: RunEventStore | RunEventSubscriber;
   policy?: PolicyDecisionPoint;
 }) {
   return new DefaultControlPlaneService({
     orchestrator: options?.orchestrator ?? makeFakeOrchestrator(),
     runs: options?.runs ?? makeFakeRunRepo(),
     runSteps: options?.runSteps ?? makeFakeRunStepRepo(),
-    events: options?.events ?? new InMemoryRunEventBus(),
+    events: (options?.events ?? new InMemoryRunEventBus()) as RunEventStore,
     policy: options?.policy ?? permissivePolicyDecisionPoint
   });
 }
@@ -373,13 +374,17 @@ describe('DefaultControlPlaneService.subscribeRunEvents', () => {
     ).rejects.toMatchObject({ code: 'forbidden' });
   });
 
-  it('returns a subscription and forwards lastEventId to the subscriber', async () => {
+  it('returns a live subscription (lastEventId is not passed to subscribe — it is replay-only)', async () => {
     const fakeSub: RunEventSubscription = {
       events: { [Symbol.asyncIterator]: () => ({ next: () => Promise.resolve({ value: undefined as never, done: true }) }) },
       close: vi.fn()
     };
     const subscribe = vi.fn().mockReturnValue(fakeSub);
-    const events: RunEventSubscriber = { subscribe };
+    const events = {
+      subscribe,
+      append: vi.fn(),
+      replayAfter: vi.fn().mockResolvedValue({ status: 'ok', events: [] })
+    } as unknown as RunEventSubscriber;
     const service = makeService({ events });
     const sub = await service.subscribeRunEvents({
       principal,
@@ -387,7 +392,7 @@ describe('DefaultControlPlaneService.subscribeRunEvents', () => {
       runId: 'run_1',
       lastEventId: 'evt_42'
     });
-    expect(subscribe).toHaveBeenCalledWith({ runId: 'run_1', tenant: 'tenant_1', lastEventId: 'evt_42' });
+    expect(subscribe).toHaveBeenCalledWith({ runId: 'run_1', tenant: 'tenant_1' });
     expect(sub).toBe(fakeSub);
   });
 });

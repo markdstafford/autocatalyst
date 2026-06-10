@@ -209,7 +209,8 @@ describe('orchestrator ingress methods', () => {
   const baseRunStep = {
     id: 'step_1', runId: 'run_1', phase: null, step: 'start', role: 'orchestrator' as const,
     startedAt: '2026-06-08T00:00:00.000Z', endedAt: null, durationMs: null,
-    occurrence: { index: 0, attempt: 1 }
+    occurrence: { index: 0, attempt: 1 },
+    checkpointResult: null
   };
 
   it('createConversationWithFirstRun sends POST to /v1/conversations with bearer token and returns validated response', async () => {

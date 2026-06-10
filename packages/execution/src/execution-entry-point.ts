@@ -78,16 +78,9 @@ export function createExecutionEntryPoint(options: CreateExecutionEntryPointOpti
       let closeProtocolError: RunnerProtocolError | undefined;
       let rawTerminal: RawTerminalEvent | undefined;
 
-      // This entry point validates the raw RunnerEvent stream before result transformation.
-      // validateExecutionBoundaryEventStream in execution-boundary-events.ts validates the
-      // converted ExecutionBoundaryEvent stream consumed by core — both validators enforce
-      // similar ordering rules at different pipeline stages.
-      //
-      // Pull the entire stream first (buffering non-terminal events) so that
-      // runner.close() can run in the finally before we transform the terminal
-      // event using async validation. This preserves the previous semantics
-      // where close runs before any further work.
-      const buffered: ExecutionBoundaryEvent[] = [];
+      // Validate the raw RunnerEvent stream before result transformation.
+      // Non-terminal events are yielded immediately for live delivery; the terminal event
+      // is buffered until runner.close() completes and async result validation runs.
       try {
         for await (const event of options.runner.run(runnerInput)) {
           const parsed = runnerEventSchema.safeParse(event);
@@ -114,7 +107,7 @@ export function createExecutionEntryPoint(options: CreateExecutionEntryPointOpti
               'Runner emitted an event after the terminal event.'
             );
           }
-          buffered.push(validated as Exclude<RunnerEvent, { type: 'runner_terminal_result' }>);
+          yield validated as Exclude<RunnerEvent, { type: 'runner_terminal_result' }>;
         }
       } catch (error) {
         streamError = error;
@@ -129,13 +122,6 @@ export function createExecutionEntryPoint(options: CreateExecutionEntryPointOpti
             );
           }
         }
-      }
-
-      // Yield buffered non-terminal events. If close() failed after a complete stream,
-      // these events represent real progress — the close failure is a transport error,
-      // not a run failure, so events are emitted before propagating the protocol error.
-      for (const event of buffered) {
-        yield event;
       }
 
       if (closeProtocolError !== undefined) {

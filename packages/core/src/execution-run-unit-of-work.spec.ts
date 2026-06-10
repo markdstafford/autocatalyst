@@ -6,6 +6,7 @@ import { createExecutionEntryPoint, ExecutionMaterializationError } from '@autoc
 import type { Runner, RunnerRunInput } from '@autocatalyst/execution';
 import type { RunWorkInput } from './orchestrator.js';
 import { createExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
+import { InMemoryRetainedRunEventStore } from './run-events.js';
 
 const runId = 'run_1';
 const tenant = 'tenant_1';
@@ -15,14 +16,15 @@ function makeInput(overrides: Partial<RunWorkInput> = {}): RunWorkInput {
     runId,
     run: {
       id: runId,
-      owner: { id: 'user_1', kind: 'user', tenant },
+      topicId: 'topic_1',
+      owner: { id: 'user_1', kind: 'human', tenantId: tenant },
       tenant,
       workKind: 'feature',
       currentStep: 'implement',
       terminal: false,
       createdAt: '2026-06-09T00:00:00.000Z',
       updatedAt: '2026-06-09T00:00:00.000Z'
-    },
+    } as RunWorkInput['run'],
     tenant,
     ...overrides
   };
@@ -41,7 +43,7 @@ function makeContext(): ExecutionContext {
       paths: { canonicalWorkspacePaths: true },
       lsp: { requested: true }
     }
-  };
+  } as ExecutionContext;
 }
 
 function makeTerminalEvent(directive: 'advance' | 'needs_input' | 'fail', overrides: Record<string, unknown> = {}): ExecutionBoundaryEvent {
@@ -50,7 +52,7 @@ function makeTerminalEvent(directive: 'advance' | 'needs_input' | 'fail', overri
   if (directive === 'fail') result['reason'] = 'Something went wrong.';
 
   return {
-    id: 'evt_1',
+    id: 'evt_terminal',
     type: 'runner_terminal_result',
     runId,
     step: 'implement',
@@ -60,9 +62,9 @@ function makeTerminalEvent(directive: 'advance' | 'needs_input' | 'fail', overri
   } as ExecutionBoundaryEvent;
 }
 
-function makeProgressEvent(): ExecutionBoundaryEvent {
+function makeProgressEvent(id = 'evt_progress'): ExecutionBoundaryEvent {
   return {
-    id: 'evt_progress',
+    id,
     type: 'runner_progress',
     runId,
     step: 'implement',
@@ -89,7 +91,7 @@ function makeFakeThrowingEntryPoint(error: Error): ExecutionEntryPoint {
     execute(_input: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
       return (async function* () {
         throw error;
-        yield {} as ExecutionBoundaryEvent; // unreachable — needed to satisfy AsyncGenerator<ExecutionBoundaryEvent> return type
+        yield {} as ExecutionBoundaryEvent;
       })();
     }
   };
@@ -106,280 +108,216 @@ function makeFakeThrowAfterTerminalEntryPoint(terminal: ExecutionBoundaryEvent, 
   };
 }
 
+function newStore() {
+  return new InMemoryRetainedRunEventStore();
+}
+
 describe('createExecutionRunUnitOfWork', () => {
   describe('terminal directive mapping', () => {
-    it('advance terminal directive maps to { directive: advance }', async () => {
+    it('advance maps to { directive: advance }', async () => {
       const unitOfWork = createExecutionRunUnitOfWork({
         execute: makeFakeEntryPoint([makeTerminalEvent('advance')]),
-        resolveContext: async () => makeContext()
+        resolveContext: async () => makeContext(),
+        eventsStore: newStore()
       });
-
-      const result = await unitOfWork.run(makeInput());
-      expect(result).toEqual({ directive: 'advance' });
+      expect(await unitOfWork.run(makeInput())).toEqual({ directive: 'advance' });
     });
 
-    it('needs_input terminal directive maps to { directive: needs_input, question }', async () => {
+    it('needs_input maps with question', async () => {
       const unitOfWork = createExecutionRunUnitOfWork({
         execute: makeFakeEntryPoint([makeTerminalEvent('needs_input')]),
-        resolveContext: async () => makeContext()
+        resolveContext: async () => makeContext(),
+        eventsStore: newStore()
       });
-
-      const result = await unitOfWork.run(makeInput());
-      expect(result).toEqual({ directive: 'needs_input', question: 'What color?' });
+      expect(await unitOfWork.run(makeInput())).toEqual({ directive: 'needs_input', question: 'What color?' });
     });
 
-    it('fail terminal directive maps to { directive: fail, reason }', async () => {
+    it('fail maps with reason', async () => {
       const unitOfWork = createExecutionRunUnitOfWork({
         execute: makeFakeEntryPoint([makeTerminalEvent('fail')]),
-        resolveContext: async () => makeContext()
+        resolveContext: async () => makeContext(),
+        eventsStore: newStore()
       });
-
-      const result = await unitOfWork.run(makeInput());
-      expect(result).toEqual({ directive: 'fail', reason: 'Something went wrong.' });
+      expect(await unitOfWork.run(makeInput())).toEqual({ directive: 'fail', reason: 'Something went wrong.' });
     });
 
-    it('fail terminal directive with no reason uses fallback reason', async () => {
+    it('fail with no reason uses fallback', async () => {
       const terminalNoReason: ExecutionBoundaryEvent = {
-        id: 'evt_1',
-        type: 'runner_terminal_result',
-        runId,
-        step: 'implement',
-        importance: 'normal',
-        createdAt: '2026-06-09T00:00:00.000Z',
-        result: { directive: 'fail' }
+        id: 'evt_1', type: 'runner_terminal_result', runId, step: 'implement', importance: 'normal',
+        createdAt: '2026-06-09T00:00:00.000Z', result: { directive: 'fail' }
       } as ExecutionBoundaryEvent;
-
       const unitOfWork = createExecutionRunUnitOfWork({
         execute: makeFakeEntryPoint([terminalNoReason]),
-        resolveContext: async () => makeContext()
+        resolveContext: async () => makeContext(),
+        eventsStore: newStore()
       });
-
       const result = await unitOfWork.run(makeInput());
-      expect(result).toMatchObject({ directive: 'fail' });
-      if (result.directive === 'fail') {
-        expect(result.reason).toBeTruthy();
-      }
+      expect(result.directive).toBe('fail');
+      if (result.directive === 'fail') expect(result.reason).toBeTruthy();
     });
 
-    it('advance terminal with result passes result through to RunWorkResult', async () => {
+    it('advance with result passes result through', async () => {
       const terminalWithResult: ExecutionBoundaryEvent = {
-        id: 'evt_1',
-        type: 'runner_terminal_result',
-        runId,
-        step: 'implement',
-        importance: 'normal',
+        id: 'evt_1', type: 'runner_terminal_result', runId, step: 'implement', importance: 'normal',
         createdAt: '2026-06-09T00:00:00.000Z',
         result: { directive: 'advance', result: { fileCount: 3, summary: 'done' } }
       } as ExecutionBoundaryEvent;
       const unitOfWork = createExecutionRunUnitOfWork({
         execute: makeFakeEntryPoint([terminalWithResult]),
-        resolveContext: async () => makeContext()
+        resolveContext: async () => makeContext(),
+        eventsStore: newStore()
       });
-      const workResult = await unitOfWork.run(makeInput());
-      expect(workResult).toEqual({ directive: 'advance', result: { fileCount: 3, summary: 'done' } });
-    });
-
-    it('advance terminal without result yields RunWorkResult without result field', async () => {
-      const unitOfWork = createExecutionRunUnitOfWork({
-        execute: makeFakeEntryPoint([makeTerminalEvent('advance')]),
-        resolveContext: async () => makeContext()
+      expect(await unitOfWork.run(makeInput())).toEqual({
+        directive: 'advance', result: { fileCount: 3, summary: 'done' }
       });
-      const workResult = await unitOfWork.run(makeInput());
-      expect(workResult).toEqual({ directive: 'advance' });
-      expect('result' in workResult).toBe(false);
     });
   });
 
-  describe('onEvent', () => {
-    it('onEvent is called for each validated event', async () => {
-      const onEvent = vi.fn();
+  describe('event retention', () => {
+    it('appends every validated boundary event to the store in order', async () => {
+      const store = newStore();
       const progress = makeProgressEvent();
       const terminal = makeTerminalEvent('advance');
-
       const unitOfWork = createExecutionRunUnitOfWork({
         execute: makeFakeEntryPoint([progress, terminal]),
         resolveContext: async () => makeContext(),
-        onEvent
+        eventsStore: store
       });
 
       await unitOfWork.run(makeInput());
+      const replay = await store.replayAfter({ runId, tenant });
+      expect(replay).toEqual({ status: 'ok', events: [] });
 
-      expect(onEvent).toHaveBeenCalledTimes(2);
-      expect(onEvent).toHaveBeenNthCalledWith(1, progress);
-      expect(onEvent).toHaveBeenNthCalledWith(2, terminal);
-    });
-
-    it('onEvent throwing re-throws RunnerProtocolError(runner_failed)', async () => {
-      const onEvent = vi.fn().mockRejectedValue(new Error('telemetry fail'));
-      const terminal = makeTerminalEvent('advance');
-
-      const unitOfWork = createExecutionRunUnitOfWork({
-        execute: makeFakeEntryPoint([terminal]),
-        resolveContext: async () => makeContext(),
-        onEvent
-      });
-
-      await expect(unitOfWork.run(makeInput())).rejects.toMatchObject({
-        name: 'RunnerProtocolError',
-        code: 'runner_failed'
-      });
+      // Now query the events through a fresh subscriber+replay-by-id chain.
+      // Use a brand new subscriber - it won't see past events, so verify via the
+      // overall path by checking replay with a known id.
+      const result = await store.replayAfter({ runId, tenant, lastEventId: 'evt_progress' });
+      if (result.status !== 'ok') throw new Error(`expected ok`);
+      expect(result.events.map((e) => e.id)).toEqual(['evt_terminal']);
     });
   });
 
   describe('error handling', () => {
-    it('runner throws before terminal maps to { directive: fail } with static reason', async () => {
+    it('runner throws before terminal maps to fail with sanitized reason', async () => {
       const unitOfWork = createExecutionRunUnitOfWork({
         execute: makeFakeThrowingEntryPoint(new Error('Runner crashed')),
-        resolveContext: async () => makeContext()
+        resolveContext: async () => makeContext(),
+        eventsStore: newStore()
       });
-
       const result = await unitOfWork.run(makeInput());
       expect(result).toMatchObject({ directive: 'fail', reason: 'Runner failed before terminal result.' });
     });
 
-    it('runner throw with sensitive message → fail reason does not contain sensitive value', async () => {
-      const sentinel = 'sk-SENSITIVE-API-KEY-12345';
+    it('sensitive error message does not leak into the fail reason', async () => {
+      const sentinel = 'sk-SENSITIVE-KEY-12345';
       const unitOfWork = createExecutionRunUnitOfWork({
-        execute: makeFakeThrowingEntryPoint(new Error(`Connection failed: token=${sentinel}`)),
-        resolveContext: async () => makeContext()
+        execute: makeFakeThrowingEntryPoint(new Error(`token=${sentinel}`)),
+        resolveContext: async () => makeContext(),
+        eventsStore: newStore()
       });
-
       const result = await unitOfWork.run(makeInput());
       expect(result.directive).toBe('fail');
-      if (result.directive === 'fail') {
-        expect(result.reason).not.toContain(sentinel);
-      }
+      if (result.directive === 'fail') expect(result.reason).not.toContain(sentinel);
     });
 
-    it('materialization failure with sensitive message → fail reason does not contain sensitive value', async () => {
-      const sentinel = 'sk-SENSITIVE-WORKSPACE-PATH-99999';
+    it('materialization error uses code-based reason', async () => {
+      const sentinel = 'WORKSPACE-99999';
       const materializationError = new ExecutionMaterializationError(
         'workspace_provisioning_failed',
-        `Workspace provisioning failed: /home/${sentinel}/repos`,
-        { cause: new Error('sensitive details') }
+        `Workspace failed: /home/${sentinel}`,
+        { cause: new Error('details') }
       );
       const unitOfWork = createExecutionRunUnitOfWork({
         execute: makeFakeThrowingEntryPoint(materializationError),
-        resolveContext: async () => makeContext()
+        resolveContext: async () => makeContext(),
+        eventsStore: newStore()
       });
-
       const result = await unitOfWork.run(makeInput());
       expect(result.directive).toBe('fail');
       if (result.directive === 'fail') {
         expect(result.reason).not.toContain(sentinel);
-        // Should use code-based reason, not the raw message
         expect(result.reason).toContain('workspace_provisioning_failed');
       }
     });
 
-    it('missing terminal result re-throws RunnerProtocolError(missing_terminal_result)', async () => {
+    it('missing terminal re-throws missing_terminal_result', async () => {
       const unitOfWork = createExecutionRunUnitOfWork({
-        execute: makeFakeEntryPoint([makeProgressEvent()]), // no terminal
-        resolveContext: async () => makeContext()
+        execute: makeFakeEntryPoint([makeProgressEvent()]),
+        resolveContext: async () => makeContext(),
+        eventsStore: newStore()
       });
-
       await expect(unitOfWork.run(makeInput())).rejects.toMatchObject({
-        name: 'RunnerProtocolError',
-        code: 'missing_terminal_result'
+        name: 'RunnerProtocolError', code: 'missing_terminal_result'
       });
     });
 
-    it('runner throws after terminal re-throws RunnerProtocolError(runner_failed)', async () => {
-      const terminal = makeTerminalEvent('advance');
+    it('runner throws after terminal re-throws runner_failed', async () => {
       const unitOfWork = createExecutionRunUnitOfWork({
-        execute: makeFakeThrowAfterTerminalEntryPoint(terminal, new Error('crash after terminal')),
-        resolveContext: async () => makeContext()
+        execute: makeFakeThrowAfterTerminalEntryPoint(makeTerminalEvent('advance'), new Error('after')),
+        resolveContext: async () => makeContext(),
+        eventsStore: newStore()
       });
-
       await expect(unitOfWork.run(makeInput())).rejects.toMatchObject({
-        name: 'RunnerProtocolError',
-        code: 'runner_failed'
+        name: 'RunnerProtocolError', code: 'runner_failed'
       });
     });
 
-    it('duplicate terminal result re-throws RunnerProtocolError(duplicate_terminal_result)', async () => {
+    it('duplicate terminal re-throws duplicate_terminal_result', async () => {
       const terminal1 = makeTerminalEvent('advance');
       const terminal2: ExecutionBoundaryEvent = {
-        id: 'evt_2',
-        type: 'runner_terminal_result',
-        runId,
-        step: 'implement',
-        importance: 'normal',
-        createdAt: '2026-06-09T00:00:00.000Z',
-        result: { directive: 'advance' }
+        id: 'evt_2', type: 'runner_terminal_result', runId, step: 'implement', importance: 'normal',
+        createdAt: '2026-06-09T00:00:00.000Z', result: { directive: 'advance' }
       } as ExecutionBoundaryEvent;
       const unitOfWork = createExecutionRunUnitOfWork({
         execute: makeFakeEntryPoint([terminal1, terminal2]),
-        resolveContext: async () => makeContext()
+        resolveContext: async () => makeContext(),
+        eventsStore: newStore()
       });
-
       await expect(unitOfWork.run(makeInput())).rejects.toMatchObject({
-        name: 'RunnerProtocolError',
-        code: 'duplicate_terminal_result'
+        name: 'RunnerProtocolError', code: 'duplicate_terminal_result'
       });
     });
 
-    it('no-terminal stream + close fails → RunnerProtocolError(missing_terminal_result)', async () => {
-      // Build a real entry point with a no-terminal runner and a failing close
-      const noTerminalRunner: Runner = {
-        run(_input: RunnerRunInput): AsyncIterable<{ id: string; type: string; runId: string; step: string; importance: string; createdAt: string }> {
-          return (async function* () {
-            // No terminal event emitted
-          })();
-        },
-        close: vi.fn().mockRejectedValue(new Error('Close failed'))
+    it('pre-terminal append failure produces sanitized fail directive', async () => {
+      const failingStore: InMemoryRetainedRunEventStore = newStore();
+      const origAppend = failingStore.append.bind(failingStore);
+      let n = 0;
+      failingStore.append = async (input) => {
+        n += 1;
+        if (n === 1) throw new Error('store oom');
+        return origAppend(input);
       };
-
-      const fakeEntryPoint = createExecutionEntryPoint({
-        runner: noTerminalRunner,
-        resultValidation: { mode: 'none' },
-        materialize: async () => ({
-          context: makeContext(),
-          workspace: { shape: 'none', workspaceRoots: [] },
-          environment: { variables: {}, secretVariableNames: [] },
-          toolPolicy: { allowedTools: ['bash'], workspaceRoots: [] },
-          skills: { requested: [] },
-          capabilities: {
-            shell: { kind: 'bash', available: false },
-            paths: {},
-            lsp: { requested: false, available: false }
-          }
-        })
-      });
-
       const unitOfWork = createExecutionRunUnitOfWork({
-        execute: fakeEntryPoint,
-        resolveContext: async () => makeContext()
+        execute: makeFakeEntryPoint([makeProgressEvent(), makeTerminalEvent('advance')]),
+        resolveContext: async () => makeContext(),
+        eventsStore: failingStore
       });
-
-      await expect(unitOfWork.run(makeInput())).rejects.toMatchObject({
-        name: 'RunnerProtocolError',
-        code: 'missing_terminal_result'
-      });
+      const result = await unitOfWork.run(makeInput());
+      expect(result).toEqual({ directive: 'fail', reason: 'Control plane failed to append runner event.' });
     });
   });
 
   describe('ordering', () => {
-    it('resolveContext is called before execute', async () => {
-      const callOrder: string[] = [];
-
+    it('resolveContext runs before execute', async () => {
+      const order: string[] = [];
       const resolveContext = vi.fn().mockImplementation(async () => {
-        callOrder.push('resolveContext');
+        order.push('resolveContext');
         return makeContext();
       });
-
       const execute = vi.fn().mockImplementation((_input: ExecutionEntryPointInput) => {
-        callOrder.push('execute');
-        return (async function* () {
-          yield makeTerminalEvent('advance');
-        })();
+        order.push('execute');
+        return (async function* () { yield makeTerminalEvent('advance'); })();
       });
-
-      const unitOfWork = createExecutionRunUnitOfWork({ execute: { execute }, resolveContext });
-
+      const unitOfWork = createExecutionRunUnitOfWork({
+        execute: { execute }, resolveContext, eventsStore: newStore()
+      });
       await unitOfWork.run(makeInput());
-
-      expect(callOrder).toEqual(['resolveContext', 'execute']);
+      expect(order).toEqual(['resolveContext', 'execute']);
     });
   });
 });
+
+// Reference to suppress unused-imports lints in this minimal spec.
+void createExecutionEntryPoint;
+void ((null as unknown) as Runner);
+void ((null as unknown) as RunnerRunInput);

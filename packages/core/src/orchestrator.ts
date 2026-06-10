@@ -1,6 +1,7 @@
 import type {
   ChannelReference,
   Conversation,
+  JsonValue,
   Message,
   NonModelPrincipal,
   Run,
@@ -18,7 +19,7 @@ import type {
   RunRepository
 } from './domain-repositories.js';
 import { type RunDispatchQueue } from './run-dispatch-queue.js';
-import { createRunStateTransitionEvent, type RunEventPublisher } from './run-events.js';
+import { createRunStateTransitionEvent, type RunEventStore } from './run-events.js';
 import {
   applyRunDirective,
   buildEntryRunStep,
@@ -112,6 +113,7 @@ export interface ApplyOrchestratedDirectiveInput {
   readonly runId: string;
   readonly directive: RunDirective;
   readonly tenant: string;
+  readonly checkpointResult?: JsonValue;
 }
 
 export interface DispatchRunInput {
@@ -156,12 +158,13 @@ export interface Orchestrator {
 export interface DefaultOrchestratorOptions {
   readonly runs: RunRepository;
   readonly conversationIngress: ConversationIngressRepository;
-  readonly events: RunEventPublisher;
+  readonly events: RunEventStore;
   readonly dispatchQueue: RunDispatchQueue;
   readonly unitOfWork?: RunUnitOfWork;
   readonly clock?: () => string;
   readonly eventIdGenerator?: () => string;
   readonly isActiveRunConflict?: (error: unknown) => boolean;
+  readonly logger?: { warn(message: string, details?: unknown): void };
 }
 
 function defaultIsActiveRunConflict(error: unknown): boolean {
@@ -180,12 +183,13 @@ function unwrapCause(error: unknown): unknown {
 export class DefaultOrchestrator implements Orchestrator {
   readonly #runs: RunRepository;
   readonly #conversationIngress: ConversationIngressRepository;
-  readonly #events: RunEventPublisher;
+  readonly #events: RunEventStore;
   readonly #dispatchQueue: RunDispatchQueue;
   readonly #unitOfWork: RunUnitOfWork | undefined;
   readonly #clock: (() => string) | undefined;
   readonly #eventIdGenerator: (() => string) | undefined;
   readonly #isActiveRunConflict: (error: unknown) => boolean;
+  readonly #logger: { warn(message: string, details?: unknown): void } | undefined;
 
   constructor(options: DefaultOrchestratorOptions) {
     this.#runs = options.runs;
@@ -196,6 +200,7 @@ export class DefaultOrchestrator implements Orchestrator {
     this.#clock = options.clock;
     this.#eventIdGenerator = options.eventIdGenerator;
     this.#isActiveRunConflict = options.isActiveRunConflict ?? defaultIsActiveRunConflict;
+    this.#logger = options.logger;
   }
 
   async createRun(input: CreateOrchestratedRunInput): Promise<OrchestratedRunResult> {
@@ -230,7 +235,7 @@ export class DefaultOrchestrator implements Orchestrator {
       throw new OrchestratorError('persistence_failed', 'Failed to create run.', { cause: error });
     }
 
-    this.#publishEvent({
+    await this.#publishEvent({
       runId: state.run.id,
       directive: 'start',
       toStep: state.run.currentStep,
@@ -334,7 +339,7 @@ export class DefaultOrchestrator implements Orchestrator {
       });
     }
 
-    this.#publishEvent({
+    await this.#publishEvent({
       runId: result.run.id,
       directive: 'start',
       toStep: result.run.currentStep,
@@ -365,6 +370,7 @@ export class DefaultOrchestrator implements Orchestrator {
         runs: this.#runs,
         runId: input.runId,
         directive: input.directive,
+        ...(input.checkpointResult !== undefined ? { checkpointResult: input.checkpointResult } : {}),
         ...(this.#clock !== undefined ? { clock: this.#clock } : {})
       });
     } catch (error) {
@@ -376,7 +382,7 @@ export class DefaultOrchestrator implements Orchestrator {
       });
     }
 
-    this.#publishEvent({
+    await this.#publishEvent({
       runId: state.run.id,
       directive: input.directive as RunStateTransitionKind,
       fromStep,
@@ -422,10 +428,18 @@ export class DefaultOrchestrator implements Orchestrator {
             `Step '${run.currentStep}' in workflow '${run.workKind}' has no 'needs_input' edge.`
           );
         }
-        // result.question is available for future storage; not persisted in this implementation
       }
       const directive: RunDirective = result.directive === 'needs_input' ? 'needs_input' : 'advance';
-      return this.applyDirective({ runId: input.runId, directive, tenant: input.tenant });
+      const checkpointResult: JsonValue | undefined =
+        result.directive === 'advance' && result.result !== undefined
+          ? (result.result as JsonValue)
+          : undefined;
+      return this.applyDirective({
+        runId: input.runId,
+        directive,
+        tenant: input.tenant,
+        ...(checkpointResult !== undefined ? { checkpointResult } : {})
+      });
     });
   }
 
@@ -437,7 +451,7 @@ export class DefaultOrchestrator implements Orchestrator {
     return { status: 'dispatched', runId: input.runId };
   }
 
-  #publishEvent(args: {
+  async #publishEvent(args: {
     runId: string;
     directive: RunStateTransitionKind;
     fromStep?: string;
@@ -445,7 +459,7 @@ export class DefaultOrchestrator implements Orchestrator {
     run: Run;
     runStep: RunStep;
     tenant: string;
-  }): void {
+  }): Promise<void> {
     const event = createRunStateTransitionEvent({
       runId: args.runId,
       directive: args.directive,
@@ -457,7 +471,16 @@ export class DefaultOrchestrator implements Orchestrator {
       ...(this.#eventIdGenerator !== undefined ? { idGenerator: this.#eventIdGenerator } : {}),
       ...(this.#clock !== undefined ? { clock: this.#clock } : {})
     });
-    this.#events.publish(event);
+    try {
+      await this.#events.append({
+        scope: { runId: args.runId, tenant: args.tenant },
+        event
+      });
+    } catch (error) {
+      // Post-commit append failures must not fail the API call — the lifecycle
+      // already advanced; we just lose the live stream notification.
+      this.#logger?.warn('Failed to append run state transition event after commit.', { error, runId: args.runId });
+    }
   }
 
   #mapLifecycleError(error: RunLifecycleError): OrchestratorError {
