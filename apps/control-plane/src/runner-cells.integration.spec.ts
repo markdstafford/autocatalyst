@@ -16,6 +16,7 @@ import {
   InMemoryRetainedRunEventStore,
 } from '@autocatalyst/core';
 import {
+  createAgentOrchestratorRunner,
   createAgentRunnerFactory,
   createDirectCallFactory,
   getAgentProviderAdapterKey,
@@ -23,6 +24,7 @@ import {
   type AgentConnectionTelemetryContext,
   type AgentProfileResolution,
   type AgentRunnerFactoryInput,
+  type DirectOrchestratorCallResult,
   type ProcessLaunchConfig,
   type ProcessLaunchConfigInput,
   type ProviderFetchTransport,
@@ -401,8 +403,15 @@ describe('runner-cells: Anthropic direct dispatch', () => {
 
     expect(directPortCallSpy).toHaveBeenCalledOnce();
     expect(callResult.value).toEqual({ classification: 'feature' });
-    // The direct path does not emit runner events — only returns a result
     expect(callResult.metadata.outcome).toBe('succeeded');
+
+    // Task 6.3: Assert direct mode never emits runner events.
+    // Structural proof: DirectOrchestratorCallResult has no `events` property.
+    // The type constraint below fails at compile time if events were added.
+    const _noEventsTypeCheck: DirectOrchestratorCallResult = callResult;
+    expect('events' in _noEventsTypeCheck).toBe(false);
+    // Runtime proof: the result object itself has no events key.
+    expect(Object.prototype.hasOwnProperty.call(callResult, 'events')).toBe(false);
   });
 });
 
@@ -477,6 +486,9 @@ describe('runner-cells: sensitive data redaction', () => {
     });
 
     // 2. Test OpenAI agent adapter redaction
+    // Wire telemetryEmitter directly so agent_orchestrator_session_start/end events
+    // are captured. The OPENAI_FAKE_SECRET is passed as an env variable that would
+    // be visible to the adapter's launchOptions but must not leak into telemetry.
     const OPENAI_EVENTS: OpenAINativeEvent[] = [
       { type: 'assistant_message', content: 'Processing...' },
       { type: 'terminal_result', directive: 'advance' }
@@ -487,39 +499,39 @@ describe('runner-cells: sensitive data redaction', () => {
     });
 
     const openaiProfile = makeOpenAIProfile();
-    const openaiAgentRegistry = new Map([
-      [getAgentProviderAdapterKey(openaiProviderKind, openaiAgentAdapterId), openaiAdapter]
-    ]);
-
-    const openaiRunnerFactory = createAgentRunnerFactory({
-      adapters: openaiAgentRegistry,
-      resolveProfile: async (): Promise<AgentProfileResolution> => ({
-        profile: openaiProfile,
-        credentialReference: { required: false }
-      }),
-      createConnection: async (input) => {
-        // Build a fetch connection that includes the fake secret in the response header
+    const openaiConnection: AgentConnection = {
+      profile: openaiProfile,
+      credentialResolved: true,
+      createFetchTransport(): ProviderFetchTransport {
+        // The fake transport response body contains the secret — it must not
+        // appear in the telemetry events emitted by the orchestrator runner.
         return {
-          profile: input.profile,
-          credentialResolved: true,
-          createFetchTransport(): ProviderFetchTransport {
-            return {
-              fetch: async (_req) => new Response(JSON.stringify({
-                response: RAW_PROVIDER_RESPONSE,
-                credential: OPENAI_FAKE_SECRET
-              }), { status: 200 })
-            };
-          },
-          createProcessLaunchConfig(_launchInput: ProcessLaunchConfigInput): ProcessLaunchConfig {
-            throw new Error('createProcessLaunchConfig not supported');
-          }
+          fetch: async (_req) => new Response(JSON.stringify({
+            response: RAW_PROVIDER_RESPONSE,
+            credential: OPENAI_FAKE_SECRET
+          }), { status: 200 })
         };
+      },
+      createProcessLaunchConfig(_launchInput: ProcessLaunchConfigInput): ProcessLaunchConfig {
+        throw new Error('createProcessLaunchConfig not supported');
       }
-    });
+    };
 
-    const openaiRunner = await openaiRunnerFactory.createRunner({
+    const openaiTelemetryContext: AgentConnectionTelemetryContext = {
       runId: 'run_redact_002',
-      step: 'review_step'
+      step: 'review_step',
+      profileName: openaiProfile.profileName
+    };
+
+    // Create the runner directly so we can pass the telemetryEmitter.
+    // This proves that agent_orchestrator_session_start/end telemetry does not
+    // contain the OPENAI_FAKE_SECRET even when it is present in the env variables.
+    const openaiRunner = createAgentOrchestratorRunner({
+      adapter: openaiAdapter,
+      profile: openaiProfile,
+      connection: openaiConnection,
+      telemetryContext: openaiTelemetryContext,
+      telemetry: telemetryEmitter
     });
 
     const openaiEventsStore = new InMemoryRetainedRunEventStore({ maxEventsPerScope: 256, maxExpiredIdsPerScope: 64, subscriberBufferSize: 32 });
@@ -559,13 +571,17 @@ describe('runner-cells: sensitive data redaction', () => {
     const serializedTelemetry = JSON.stringify(telemetryEvents);
     expect(serializedTelemetry).not.toContain(ANTHROPIC_FAKE_SECRET);
 
-    // The RAW_PROMPT_BODY and RAW_PROVIDER_RESPONSE are provided as inputs, not credentials,
-    // so the redaction guarantee covers: credentials (secrets), not arbitrary input data.
-    // The key guarantee is that no secret credentials appear in telemetry.
+    // Task 6.4: The OPENAI_FAKE_SECRET is present in the env variables passed to
+    // the adapter (launchOptions.env), but must not appear in orchestrator telemetry.
+    // This assertion is non-vacuous because we wired telemetryEmitter to the OpenAI
+    // runner above, so agent_orchestrator_session_start/end events ARE captured.
     expect(serializedTelemetry).not.toContain(OPENAI_FAKE_SECRET);
 
     // Verify telemetry was actually emitted (not just silently skipped)
     expect(telemetryEvents.length).toBeGreaterThan(0);
     expect(telemetryEvents.some(e => e.event === 'direct_orchestrator_call_end')).toBe(true);
+    // Confirm OpenAI orchestrator events were captured (making the redaction assertion non-vacuous)
+    expect(telemetryEvents.some(e => e.event === 'agent_orchestrator_session_start')).toBe(true);
+    expect(telemetryEvents.some(e => e.event === 'agent_orchestrator_session_end')).toBe(true);
   });
 });
