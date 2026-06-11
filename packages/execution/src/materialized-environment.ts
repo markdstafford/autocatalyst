@@ -1,4 +1,6 @@
-import type { ExecutionContext } from '@autocatalyst/api-contract';
+import type { ExecutionContext, SkillIntent } from '@autocatalyst/api-contract';
+
+export type MaterializedSkillIntent = SkillIntent;
 
 export type MaterializedWorkspace =
   | { readonly shape: 'none'; readonly workspaceRoots: readonly string[] }
@@ -16,10 +18,7 @@ export interface MaterializedExecutionEnvironment {
     readonly allowedTools: readonly string[];
     readonly workspaceRoots: readonly string[];
   };
-  readonly skills: {
-    readonly requested: readonly string[];
-    readonly plugins?: readonly string[];
-  };
+  readonly skills: MaterializedSkillIntent;
   readonly capabilities: {
     readonly shell: { readonly kind: 'bash'; readonly available: boolean };
     readonly paths: { readonly repoRoot?: string; readonly scratchRoot?: string };
@@ -32,7 +31,8 @@ export type ExecutionMaterializationErrorCode =
   | 'workspace_provisioning_failed'
   | 'secret_resolution_failed'
   | 'unsupported_workspace_shape'
-  | 'capability_materialization_failed';
+  | 'capability_materialization_failed'
+  | 'skill_materialization_failed';
 
 export class ExecutionMaterializationError extends Error {
   readonly code: ExecutionMaterializationErrorCode;

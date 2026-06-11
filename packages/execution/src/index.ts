@@ -1,6 +1,23 @@
 export const executionPackageName = '@autocatalyst/execution' as const;
 
 export {
+  runtimeSkillsCatalog,
+  runtimeSkillsCatalogRoot,
+  type RuntimeSkillCatalogEntry
+} from './skills/catalog.js';
+
+export {
+  SkillCatalogResolutionError,
+  validateSkillCatalog,
+  resolveCatalogAssetPath,
+  resolveSkills,
+  type SkillCatalogResolutionErrorCode,
+  type ValidateSkillCatalogInput,
+  type ValidatedRuntimeSkillCatalogEntry,
+  type ResolveSkillsOptions
+} from './skills/skill-resolver.js';
+
+export {
   createStepResultContractRegistry,
   resolveStepResultContract,
   type StepResultContractDefinition,
@@ -84,6 +101,7 @@ export {
   ExecutionMaterializationError,
   type ExecutionMaterializationErrorCode,
   type MaterializedExecutionEnvironment,
+  type MaterializedSkillIntent,
   type MaterializedWorkspace
 } from './materialized-environment.js';
 

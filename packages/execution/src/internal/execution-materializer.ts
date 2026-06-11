@@ -3,10 +3,13 @@ import type { ExecutionSecretResolver } from '../secret-resolver.js';
 import type { MaterializedExecutionEnvironment } from '../materialized-environment.js';
 import { ExecutionMaterializationError } from '../materialized-environment.js';
 import { provisionWorkspace as defaultProvisionWorkspace, summarizeWorkspaceCause } from '../workspace.js';
+import { validateSkillCatalog as defaultValidateSkillCatalog, SkillCatalogResolutionError } from '../skills/skill-resolver.js';
+import { runtimeSkillsCatalogRoot, type RuntimeSkillCatalogEntry } from '../skills/catalog.js';
 
 export interface ExecutionMaterializerOptions {
   readonly secretResolver?: ExecutionSecretResolver;
   readonly provisionWorkspace?: typeof defaultProvisionWorkspace;
+  readonly validateSkillCatalog?: typeof defaultValidateSkillCatalog;
   readonly capabilities?: {
     readonly shellAvailable?: boolean;
     readonly lspAvailable?: boolean;
@@ -19,10 +22,27 @@ export interface ExecutionMaterializer {
 
 export function createExecutionMaterializer(options: ExecutionMaterializerOptions = {}): ExecutionMaterializer {
   const doProvision = options.provisionWorkspace ?? defaultProvisionWorkspace;
+  const doValidateSkillCatalog = options.validateSkillCatalog ?? defaultValidateSkillCatalog;
 
   return {
     async materialize(context: ExecutionContext): Promise<MaterializedExecutionEnvironment> {
       const intent = context.workspaceIntent;
+
+      // 0. Skill bundle validation — must run before any provider or workspace work
+      if (context.skills.resolved.length > 0) {
+        try {
+          await doValidateSkillCatalog({
+            catalog: context.skills.resolved as unknown as RuntimeSkillCatalogEntry[],
+            catalogRoot: runtimeSkillsCatalogRoot
+          });
+        } catch (error) {
+          throw new ExecutionMaterializationError(
+            'skill_materialization_failed',
+            'Resolved skill bundle failed materialization validation.',
+            error instanceof SkillCatalogResolutionError ? error : undefined
+          );
+        }
+      }
 
       // 1. Workspace materialization
       let workspace: MaterializedExecutionEnvironment['workspace'];
@@ -146,10 +166,15 @@ export function createExecutionMaterializer(options: ExecutionMaterializerOption
       };
 
       // 4. Return MaterializedExecutionEnvironment
-      const skills: MaterializedExecutionEnvironment['skills'] =
-        context.skills.plugins !== undefined
-          ? { requested: context.skills.requested, plugins: context.skills.plugins }
-          : { requested: context.skills.requested };
+      const skills: MaterializedExecutionEnvironment['skills'] = {
+        requested: [...context.skills.requested],
+        resolved: context.skills.resolved.map((skill) => ({
+          ref: skill.ref,
+          assetPath: skill.assetPath,
+          dependencies: [...skill.dependencies],
+          ...(skill.description !== undefined ? { description: skill.description } : {})
+        }))
+      };
 
       return {
         context,

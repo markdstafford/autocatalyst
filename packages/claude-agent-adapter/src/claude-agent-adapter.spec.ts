@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
-import type { RunnerEvent } from '@autocatalyst/api-contract';
+import type { ResolvedSkill, RunnerEvent } from '@autocatalyst/api-contract';
 import type {
   AgentConnection,
   AgentConnectionTelemetryContext,
@@ -99,6 +99,7 @@ function makeSessionInput(args: {
   prompt?: string;
   allowedTools?: string[];
   requestedSkills?: string[];
+  resolvedSkills?: ResolvedSkill[];
   variables?: Record<string, string>;
   secretVariableNames?: string[];
   scratchRoot?: string;
@@ -133,7 +134,7 @@ function makeSessionInput(args: {
           workspaceIntent: { shape: 'none' },
           secretBindings: [],
           toolPolicy: { allowedTools: args.allowedTools ?? ['bash'], workspaceScope: 'declared_workspace' },
-          skills: { requested: args.requestedSkills ?? ['stub_runner'] },
+          skills: { requested: args.requestedSkills ?? ['stub_runner'], resolved: args.resolvedSkills ?? [] },
           capabilityRequirements: {
             shell: { kind: 'bash', required: false },
             paths: { canonicalWorkspacePaths: true },
@@ -143,7 +144,7 @@ function makeSessionInput(args: {
         workspace,
         environment: { variables, secretVariableNames },
         toolPolicy: { allowedTools: args.allowedTools ?? ['bash'], workspaceRoots: workspace.workspaceRoots },
-        skills: { requested: args.requestedSkills ?? ['stub_runner'] },
+        skills: { requested: args.requestedSkills ?? ['stub_runner'], resolved: args.resolvedSkills ?? [] },
         capabilities: {
           shell: { kind: 'bash', available: true },
           paths: workspace.shape === 'two_roots'
@@ -211,12 +212,11 @@ describe('createClaudeAgentAdapter — connection mechanism', () => {
 });
 
 describe('createClaudeAgentAdapter — launch input mapping', () => {
-  it('forwards prompt, cwd, allowedTools, skills, and connection env', async () => {
+  it('forwards prompt, cwd, allowedTools, and connection env', async () => {
     const scratchRoot = '/tmp/claude-adapter-test-scratch';
     const { input } = makeSessionInput({
       prompt: 'Implement parser',
       allowedTools: ['bash', 'edit'],
-      requestedSkills: ['skill-a', 'skill-b'],
       scratchRoot
     });
     const { launch, calls } = fakeLaunch([{ type: 'result', result: { output: '' } }]);
@@ -230,7 +230,37 @@ describe('createClaudeAgentAdapter — launch input mapping', () => {
     expect(opts.allowedTools).toEqual(['bash', 'edit']);
     expect(opts.env?.ANTHROPIC_AUTH_TOKEN).toBe(SECRET_TOKEN);
     expect(opts.env?.ANTHROPIC_BASE_URL).toBe('https://api.anthropic.com');
-    expect(opts.options?.skills).toEqual(['skill-a', 'skill-b']);
+  });
+
+  it('does not include options.skills when resolved skills list is empty', async () => {
+    const { input } = makeSessionInput({ resolvedSkills: [] });
+    const { launch, calls } = fakeLaunch([{ type: 'result', result: { output: '' } }]);
+    const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch });
+    const session = await adapter.startSession(input);
+    await collect(session.events);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.options).toBeUndefined();
+  });
+
+  it('passes materialized plugin entries in options.skills when resolved skills are present', async () => {
+    const resolvedSkills: ResolvedSkill[] = [
+      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/writing-guidelines', dependencies: [] },
+      { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: ['mm:writing-guidelines'] }
+    ];
+    const { input } = makeSessionInput({ resolvedSkills });
+    const { launch, calls } = fakeLaunch([{ type: 'result', result: { output: '' } }]);
+    const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch });
+    const session = await adapter.startSession(input);
+    await collect(session.events);
+    expect(calls).toHaveLength(1);
+    const skillOptions = calls[0]!.options?.skills;
+    expect(Array.isArray(skillOptions)).toBe(true);
+    expect((skillOptions as unknown[]).length).toBe(2);
+    const [first, second] = skillOptions as Array<{ type: string; path: string }>;
+    expect(first!.type).toBe('claudecode');
+    expect(first!.path).toMatch(/assets\/mm\/writing-guidelines$/);
+    expect(second!.type).toBe('claudecode');
+    expect(second!.path).toMatch(/assets\/mm\/planning$/);
   });
 });
 
@@ -412,6 +442,29 @@ describe('createClaudeAgentAdapter — inference setting capability', () => {
     const { launch } = fakeLaunch([]);
     const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch });
     expect(() => adapter.startSession(input)).toThrowError(UnsupportedProviderCapabilityError);
+  });
+});
+
+describe('createClaudeAgentAdapter — skill containment', () => {
+  it('throws before calling launch when a resolved skill assetPath escapes the catalog via traversal', async () => {
+    const resolvedSkills = [
+      { ref: 'mm:planning', assetPath: '../../etc/passwd', dependencies: [] }
+    ];
+    const { input } = makeSessionInput({ resolvedSkills });
+    const { launch, calls } = fakeLaunch([]);
+    const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch });
+    // startSession itself may throw synchronously, or the returned session may
+    // throw on iteration — both are valid containment responses.
+    let threw = false;
+    try {
+      const session = await adapter.startSession(input);
+      // If startSession didn't throw, drain the stream to trigger any lazy throw.
+      await collect(session.events);
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    expect(calls).toHaveLength(0);
   });
 });
 
