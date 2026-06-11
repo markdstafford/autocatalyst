@@ -64,8 +64,14 @@ import {
   openaiAgentAdapterId,
   type OpenAIRunOutcome,
   type OpenAIRunSessionInput,
-  type OpenAISandboxClientHandle
+  type OpenAISandboxClientHandle,
+  type OpenAISandboxClientFactoryInput
 } from '@autocatalyst/openai-agent-adapter';
+import {
+  resolveSkills,
+  runtimeSkillsCatalogRoot
+} from '@autocatalyst/execution';
+import type { MaterializedExecutionEnvironment } from '@autocatalyst/execution';
 import { createExplicitProfileResolver } from './server.js';
 
 // ---------------------------------------------------------------------------
@@ -174,7 +180,7 @@ describe('runner-cells: Claude agent cell dispatch', () => {
             workspaceIntent: { shape: 'none' },
             secretBindings: [],
             toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
-            skills: { requested: [] },
+            skills: { requested: [], resolved: [] },
             capabilityRequirements: {
               shell: { kind: 'bash', required: false },
               paths: { canonicalWorkspacePaths: false },
@@ -184,7 +190,7 @@ describe('runner-cells: Claude agent cell dispatch', () => {
           workspace: { shape: 'none', workspaceRoots: [] },
           environment: { variables: {}, secretVariableNames: [] },
           toolPolicy: { allowedTools: [], workspaceRoots: [] },
-          skills: { requested: [] },
+          skills: { requested: [], resolved: [] },
           capabilities: {
             shell: { kind: 'bash', available: false },
             paths: {},
@@ -458,7 +464,7 @@ describe('runner-cells: OpenAI direct dispatch', () => {
         workspaceIntent: { shape: 'none' },
         secretBindings: [],
         toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
-        skills: { requested: [] },
+        skills: { requested: [], resolved: [] },
         capabilityRequirements: {
           shell: { kind: 'bash', required: false },
           paths: { canonicalWorkspacePaths: false },
@@ -785,7 +791,7 @@ describe('runner-cells: direct mode through DefaultOrchestrator and createExecut
         workspaceIntent: { shape: 'none' },
         secretBindings: [],
         toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
-        skills: { requested: [] },
+        skills: { requested: [], resolved: [] },
         capabilityRequirements: {
           shell: { kind: 'bash', required: false },
           paths: { canonicalWorkspacePaths: false },
@@ -1067,7 +1073,7 @@ describe('runner-cells: two-provider dispatch (Claude implementer + OpenAI revie
             workspaceIntent: { shape: 'none' },
             secretBindings: [],
             toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
-            skills: { requested: [] },
+            skills: { requested: [], resolved: [] },
             capabilityRequirements: {
               shell: { kind: 'bash', required: false },
               paths: { canonicalWorkspacePaths: false },
@@ -1077,7 +1083,7 @@ describe('runner-cells: two-provider dispatch (Claude implementer + OpenAI revie
           workspace: { shape: 'none', workspaceRoots: [] },
           environment: { variables: {}, secretVariableNames: [] },
           toolPolicy: { allowedTools: [], workspaceRoots: [] },
-          skills: { requested: [] },
+          skills: { requested: [], resolved: [] },
           capabilities: {
             shell: { kind: 'bash', available: false },
             paths: {},
@@ -1098,7 +1104,7 @@ describe('runner-cells: two-provider dispatch (Claude implementer + OpenAI revie
             workspaceIntent: { shape: 'none' },
             secretBindings: [],
             toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
-            skills: { requested: [] },
+            skills: { requested: [], resolved: [] },
             capabilityRequirements: {
               shell: { kind: 'bash', required: false },
               paths: { canonicalWorkspacePaths: false },
@@ -1108,7 +1114,7 @@ describe('runner-cells: two-provider dispatch (Claude implementer + OpenAI revie
           workspace: { shape: 'none', workspaceRoots: [] },
           environment: { variables: {}, secretVariableNames: [] },
           toolPolicy: { allowedTools: [], workspaceRoots: [] },
-          skills: { requested: [] },
+          skills: { requested: [], resolved: [] },
           capabilities: {
             shell: { kind: 'bash', available: false },
             paths: {},
@@ -1208,7 +1214,7 @@ describe('runner-cells: OpenAI agent cell factory lookup', () => {
             workspaceIntent: { shape: 'none' },
             secretBindings: [],
             toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
-            skills: { requested: [] },
+            skills: { requested: [], resolved: [] },
             capabilityRequirements: {
               shell: { kind: 'bash', required: false },
               paths: { canonicalWorkspacePaths: false },
@@ -1218,7 +1224,7 @@ describe('runner-cells: OpenAI agent cell factory lookup', () => {
           workspace: { shape: 'none', workspaceRoots: [] },
           environment: { variables: {}, secretVariableNames: [] },
           toolPolicy: { allowedTools: [], workspaceRoots: [] },
-          skills: { requested: [] },
+          skills: { requested: [], resolved: [] },
           capabilities: {
             shell: { kind: 'bash', available: false },
             paths: {},
@@ -1252,5 +1258,230 @@ describe('runner-cells: OpenAI agent cell factory lookup', () => {
     expect(capturedEventTypes).toContain('runner_assistant_turn');
     expect(capturedEventTypes).toContain('runner_notification');
     expect(capturedEventTypes).toContain('runner_terminal_result');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (f) B1 skill materialization — Claude agent cell
+// ---------------------------------------------------------------------------
+
+describe('runner-cells: B1 skill materialization — Claude agent cell', () => {
+  it('materializes B1 skill plugins in Claude session when mm:planning is requested', async () => {
+    // Real resolver — exercises the whole catalog-to-plugin path.
+    const skillIntent = await resolveSkills(['mm:planning']);
+
+    // Build a materialized environment with real resolved skills.
+    const runId = 'run_claude_skills_001';
+    const step = 'implement';
+
+    const materializedEnv: MaterializedExecutionEnvironment = {
+      context: {
+        run: { id: runId, workKind: 'feature', currentStep: step, tenant: 'tenant_test' },
+        task: { prompt: 'Test skill materialization', inputs: {} },
+        workspaceIntent: { shape: 'none' },
+        secretBindings: [],
+        toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
+        skills: skillIntent,
+        capabilityRequirements: {
+          shell: { kind: 'bash', required: false },
+          paths: { canonicalWorkspacePaths: false },
+          lsp: { requested: false }
+        }
+      },
+      workspace: { shape: 'none', workspaceRoots: [] },
+      environment: { variables: {}, secretVariableNames: [] },
+      toolPolicy: { allowedTools: [], workspaceRoots: [] },
+      skills: skillIntent,
+      capabilities: {
+        shell: { kind: 'bash', available: false },
+        paths: {},
+        lsp: { requested: false, available: false }
+      }
+    };
+
+    // Spy: capture options passed to the real launch seam.
+    const capturedLaunchOptions: Array<{ options?: Record<string, unknown> }> = [];
+
+    const CLAUDE_EVENTS: ClaudeNativeEvent[] = [
+      { type: 'assistant', content: 'Working on it...' },
+      { type: 'result', result: { output: '{"directive":"advance"}' } }
+    ];
+
+    const spyLaunch: ClaudeSessionLaunch = (launchOpts) => {
+      capturedLaunchOptions.push({ options: launchOpts.options });
+      async function* gen(): AsyncIterable<ClaudeNativeEvent> {
+        for (const ev of CLAUDE_EVENTS) yield ev;
+      }
+      return gen();
+    };
+
+    const claudeAdapter = createClaudeAgentAdapter({ launchClaudeSession: spyLaunch });
+    const profile = makeClaudeProfile();
+    const connection = makeProcessConnection(profile);
+
+    const session = claudeAdapter.startSession({
+      runInput: { environment: materializedEnv },
+      profile,
+      connection,
+      telemetryContext: { runId, step, profileName: profile.profileName }
+    });
+
+    // Drain all events to drive the async generator to completion.
+    for await (const _ev of session.events) { /* drain */ }
+
+    // The spy must have been called exactly once.
+    expect(capturedLaunchOptions).toHaveLength(1);
+
+    // The options must contain a `skills` array (Claude SDK plugin format).
+    const launchSkills = capturedLaunchOptions[0]?.options?.['skills'];
+    expect(Array.isArray(launchSkills)).toBe(true);
+    const plugins = launchSkills as Array<{ type: string; path: string }>;
+
+    // Both B1 skills (mm:planning and its dependency mm:writing-guidelines) must be present.
+    expect(plugins.length).toBeGreaterThanOrEqual(2);
+
+    for (const plugin of plugins) {
+      // Each plugin must be of type 'claudecode'.
+      expect(plugin.type).toBe('claudecode');
+      // Each plugin path must be inside the catalog root.
+      expect(plugin.path.startsWith(runtimeSkillsCatalogRoot)).toBe(true);
+    }
+
+    // Verify asset path segments are present for both B1 skills.
+    const planningPlugin = plugins.find((p) => p.path.includes('assets/mm/planning'));
+    const writingPlugin = plugins.find((p) => p.path.includes('assets/mm/writing-guidelines'));
+    expect(planningPlugin).toBeDefined();
+    expect(writingPlugin).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// (g) B1 skill materialization — OpenAI agent cell
+// ---------------------------------------------------------------------------
+
+describe('runner-cells: B1 skill materialization — OpenAI agent cell', () => {
+  it('mounts B1 skill files in OpenAI sandbox when mm:planning is requested', async () => {
+    // Real resolver — exercises the whole catalog-to-sandbox-mount path.
+    const skillIntent = await resolveSkills(['mm:planning']);
+
+    const runId = 'run_openai_skills_001';
+    const step = 'implement';
+
+    const materializedEnv: MaterializedExecutionEnvironment = {
+      context: {
+        run: { id: runId, workKind: 'feature', currentStep: step, tenant: 'tenant_test' },
+        task: { prompt: 'Test skill materialization for OpenAI', inputs: {} },
+        workspaceIntent: { shape: 'none' },
+        secretBindings: [],
+        toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
+        skills: skillIntent,
+        capabilityRequirements: {
+          shell: { kind: 'bash', required: false },
+          paths: { canonicalWorkspacePaths: false },
+          lsp: { requested: false }
+        }
+      },
+      workspace: { shape: 'none', workspaceRoots: [] },
+      environment: { variables: {}, secretVariableNames: [] },
+      toolPolicy: { allowedTools: [], workspaceRoots: [] },
+      skills: skillIntent,
+      capabilities: {
+        shell: { kind: 'bash', available: false },
+        paths: {},
+        lsp: { requested: false, available: false }
+      }
+    };
+
+    // Spy: capture sandbox factory input (to inspect skillMounts).
+    const capturedSandboxInputs: OpenAISandboxClientFactoryInput[] = [];
+
+    // Spy: capture runAgentSession input (to inspect instructions).
+    const capturedRunInputs: OpenAIRunSessionInput[] = [];
+
+    const fakeAdapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: (fi): OpenAISandboxClientHandle => {
+        capturedSandboxInputs.push(fi);
+        return {
+          client: {} as OpenAISandboxClientHandle['client'],
+          session: {} as OpenAISandboxClientHandle['session']
+        };
+      },
+      runAgentSession: (runInput: OpenAIRunSessionInput): OpenAIRunOutcome => {
+        capturedRunInputs.push(runInput);
+        const items = [
+          {
+            type: 'message_output_item',
+            rawItem: {
+              role: 'assistant',
+              status: 'completed',
+              content: [{ type: 'output_text', text: 'Done.' }]
+            }
+          }
+        ] as unknown as OpenAIRunOutcome['items'];
+        return { items, result: Promise.resolve({ directive: 'advance' as const }) };
+      }
+    });
+
+    const openaiProfile: ResolvedAgentRunnerProfile = {
+      mode: 'agent',
+      providerKind: openaiProviderKind,
+      adapterId: openaiAgentAdapterId,
+      profileName: 'test-openai-skills',
+      model: { provider: 'openai', model: 'gpt-4.1' },
+      inferenceSettings: {},
+      endpoint: {},
+      connectionMechanism: 'fetch_transport'
+    };
+
+    const fakeTransport: ProviderFetchTransport = {
+      fetch: vi.fn(async () => new Response('{}', { status: 200 }))
+    };
+
+    const openaiConnection: AgentConnection = {
+      profile: openaiProfile,
+      credentialResolved: true,
+      createFetchTransport: () => fakeTransport,
+      createProcessLaunchConfig: (_launchInput: ProcessLaunchConfigInput): ProcessLaunchConfig => {
+        throw new Error('process launch not supported for fetch_transport');
+      }
+    };
+
+    const session = await fakeAdapter.startSession({
+      runInput: { environment: materializedEnv },
+      profile: openaiProfile,
+      connection: openaiConnection,
+      telemetryContext: { runId, step, profileName: openaiProfile.profileName }
+    });
+
+    // Drain events to drive the async generator to completion.
+    for await (const _ev of session.events) { /* drain */ }
+
+    // The sandbox factory must have been called once.
+    expect(capturedSandboxInputs).toHaveLength(1);
+
+    // The sandbox factory input must contain skill mounts for both B1 skills.
+    const sandboxInput = capturedSandboxInputs[0]!;
+    const mounts = sandboxInput.skillMounts ?? [];
+    expect(mounts.length).toBeGreaterThanOrEqual(2);
+
+    // Verify host paths are inside the catalog root and sandbox paths follow ref→dir convention.
+    const planningMount = mounts.find((m) => m.hostPath.includes('assets/mm/planning'));
+    const writingMount = mounts.find((m) => m.hostPath.includes('assets/mm/writing-guidelines'));
+    expect(planningMount).toBeDefined();
+    expect(writingMount).toBeDefined();
+
+    expect(planningMount?.sandboxPath).toBe('/skills/mm/planning');
+    expect(writingMount?.sandboxPath).toBe('/skills/mm/writing-guidelines');
+
+    for (const mount of mounts) {
+      expect(mount.hostPath.startsWith(runtimeSkillsCatalogRoot)).toBe(true);
+    }
+
+    // The run agent session must have received instructions containing the system-prompt hint.
+    expect(capturedRunInputs).toHaveLength(1);
+    const instructions = capturedRunInputs[0]!.instructions;
+    expect(instructions).toContain('Runtime skills are staged in this session.');
+    expect(instructions).toContain('mm:planning');
+    expect(instructions).toContain('mm:writing-guidelines');
   });
 });
