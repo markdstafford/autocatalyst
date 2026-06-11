@@ -1,11 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
+  agentModelRouteKeySchema,
   configurationRecordCollectionPath,
   configurationRecordIdParamsSchema,
+  configurationRecordKindSchema,
   configurationRecordListResponseSchema,
   configurationRecordResponseSchema,
   createConfigurationRecordRequestSchema,
-  updateConfigurationRecordRequestSchema
+  directModelRouteKeySchema,
+  modelRoutingErrorCodeSchema,
+  modelRoutingTableSettingsSchema,
+  providerProfileSettingsSchema,
+  configurationRecordSettingsSchema,
+  roleDistinctRequirementSchema,
+  updateConfigurationRecordRequestSchema,
+  updateModelRoutingTableSettingsSchema
 } from './configuration-record.js';
 import type { InferenceSettings, ProviderProfileSettings, RunnerEndpointSettings } from './configuration-record.js';
 
@@ -20,12 +29,14 @@ describe('configuration record contract schemas', () => {
   it('validates provider profile create requests', () => {
     expect(
       createConfigurationRecordRequestSchema.parse({
+        tenant: 'tenant_a',
         kind: 'provider_profile',
         providerKind: 'model_runner',
         adapterId: 'openai',
         settings: { profileName: 'default', credentialSecretHandle: handle }
       })
     ).toEqual({
+      tenant: 'tenant_a',
       kind: 'provider_profile',
       providerKind: 'model_runner',
       adapterId: 'openai',
@@ -33,6 +44,7 @@ describe('configuration record contract schemas', () => {
     });
     expect(() =>
       createConfigurationRecordRequestSchema.parse({
+        tenant: 'tenant_a',
         kind: 'provider_profile',
         providerKind: 'model_runner',
         adapterId: 'openai',
@@ -45,21 +57,23 @@ describe('configuration record contract schemas', () => {
     expect(() => updateConfigurationRecordRequestSchema.parse({})).toThrow();
     expect(() => updateConfigurationRecordRequestSchema.parse({ id: 'cfg_bad' })).toThrow();
     expect(
-      updateConfigurationRecordRequestSchema.parse({ settings: { credentialSecretHandle: null } })
-    ).toEqual({ settings: { credentialSecretHandle: null } });
-    expect(() => updateConfigurationRecordRequestSchema.parse({ settings: { profileName: '' } })).toThrow();
-    expect(() => updateConfigurationRecordRequestSchema.parse({ settings: {} })).toThrow();
+      updateConfigurationRecordRequestSchema.parse({ kind: 'provider_profile', settings: { credentialSecretHandle: null } })
+    ).toEqual({ kind: 'provider_profile', settings: { credentialSecretHandle: null } });
+    expect(() => updateConfigurationRecordRequestSchema.parse({ kind: 'provider_profile', settings: { profileName: '' } })).toThrow();
+    expect(() => updateConfigurationRecordRequestSchema.parse({ kind: 'provider_profile', settings: {} })).toThrow();
   });
 
   it('parses a profileName-only record (existing behaviour preserved)', () => {
     expect(
       createConfigurationRecordRequestSchema.parse({
+        tenant: 'tenant_a',
         kind: 'provider_profile',
         providerKind: 'anthropic',
         adapterId: 'claude-agent-sdk',
         settings: { profileName: 'minimal' }
       })
     ).toEqual({
+      tenant: 'tenant_a',
       kind: 'provider_profile',
       providerKind: 'anthropic',
       adapterId: 'claude-agent-sdk',
@@ -69,6 +83,7 @@ describe('configuration record contract schemas', () => {
 
   it('parses a fully populated Claude-capable profile', () => {
     const input = {
+      tenant: 'tenant_a',
       kind: 'provider_profile',
       providerKind: 'anthropic',
       adapterId: 'claude-agent-sdk',
@@ -104,6 +119,7 @@ describe('configuration record contract schemas', () => {
 
   it('rejects malformed endpoint fields', () => {
     const base = {
+      tenant: 'tenant_a',
       kind: 'provider_profile',
       providerKind: 'anthropic',
       adapterId: 'claude-agent-sdk',
@@ -159,6 +175,7 @@ describe('configuration record contract schemas', () => {
   it('validates responses with datetime timestamps and no secret value field', () => {
     const record = {
       id: 'cfg_123',
+      tenant: 'tenant_a',
       kind: 'provider_profile',
       providerKind: 'model_runner',
       adapterId: 'openai',
@@ -170,5 +187,174 @@ describe('configuration record contract schemas', () => {
     expect(configurationRecordListResponseSchema.parse({ records: [record] })).toEqual({ records: [record] });
     expect(() => configurationRecordResponseSchema.parse(Object.assign({}, record, { secretValue: 'sk-test' }))).toThrow();
     expect(() => configurationRecordResponseSchema.parse(Object.assign({}, record, { createdAt: 'not-a-date' }))).toThrow();
+  });
+});
+
+describe('configuration record kind split', () => {
+  it('accepts only provider_profile and model_routing_table kinds', () => {
+    expect(configurationRecordKindSchema.parse('provider_profile')).toBe('provider_profile');
+    expect(configurationRecordKindSchema.parse('model_routing_table')).toBe('model_routing_table');
+    expect(configurationRecordKindSchema.safeParse('other_kind').success).toBe(false);
+  });
+
+  it('keeps provider-profile settings separate and exported', () => {
+    const parsed = providerProfileSettingsSchema.parse({
+      profileName: 'Claude agent',
+      credentialSecretHandle: 'sec_abcdefghijklmnopqrstuvwxyzABCDEF',
+      model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+      inferenceSettings: {},
+      endpoint: {}
+    });
+    expect(parsed.profileName).toBe('Claude agent');
+    expect(configurationRecordSettingsSchema.safeParse(parsed).success).toBe(true);
+  });
+
+  it('requires provider metadata and tenant for provider_profile create requests', () => {
+    const parsed = createConfigurationRecordRequestSchema.parse({
+      tenant: 'tenant_a',
+      kind: 'provider_profile',
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      settings: {
+        profileName: 'Claude agent',
+        credentialSecretHandle: 'sec_abcdefghijklmnopqrstuvwxyzABCDEF',
+        model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+        inferenceSettings: {},
+        endpoint: {}
+      }
+    });
+    expect(parsed.tenant).toBe('tenant_a');
+    expect(parsed.kind).toBe('provider_profile');
+  });
+
+  it('rejects provider-profile settings in model_routing_table response branch', () => {
+    expect(configurationRecordResponseSchema.safeParse({
+      id: 'cfg_table',
+      tenant: 'tenant_a',
+      kind: 'model_routing_table',
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      settings: { profileName: 'not a routing table' },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }).success).toBe(false);
+  });
+
+  it('rejects update bodies without an explicit record kind', () => {
+    expect(updateConfigurationRecordRequestSchema.safeParse({
+      settings: { profileName: 'Renamed profile' }
+    }).success).toBe(false);
+  });
+});
+
+describe('model routing table schemas', () => {
+  const claudeProfileId = 'cfg_claude';
+  const exactAgentEntry = {
+    id: 'route_impl',
+    route: { mode: 'agent', step: 'implementation.author', role: 'implementer' },
+    profileId: claudeProfileId
+  };
+  const agentDefaultEntry = {
+    id: 'route_default',
+    route: { mode: 'agent', step: 'implementation.author', defaultForStep: true },
+    profileId: claudeProfileId
+  };
+  const directEntry = {
+    id: 'route_intake',
+    route: { mode: 'direct', step: 'intake.classify' },
+    profileId: 'cfg_direct'
+  };
+
+  it('validates agent exact route key', () => {
+    expect(agentModelRouteKeySchema.safeParse(exactAgentEntry.route).success).toBe(true);
+    expect(agentModelRouteKeySchema.safeParse(agentDefaultEntry.route).success).toBe(true);
+    expect(agentModelRouteKeySchema.safeParse({ mode: 'agent', step: 'x', role: 'implementer', defaultForStep: true }).success).toBe(false);
+    expect(agentModelRouteKeySchema.safeParse({ mode: 'agent', step: 'x' }).success).toBe(false);
+  });
+
+  it('validates direct route key and rejects role/defaultForStep', () => {
+    expect(directModelRouteKeySchema.safeParse(directEntry.route).success).toBe(true);
+    expect(directModelRouteKeySchema.safeParse({ mode: 'direct', step: 'x', role: 'implementer' }).success).toBe(false);
+  });
+
+  it('validates a valid model routing table settings', () => {
+    expect(modelRoutingTableSettingsSchema.safeParse({
+      active: true,
+      entries: [exactAgentEntry, agentDefaultEntry, directEntry]
+    }).success).toBe(true);
+  });
+
+  it('rejects duplicate enabled route keys in routing table', () => {
+    expect(modelRoutingTableSettingsSchema.safeParse({
+      active: true,
+      entries: [exactAgentEntry, { ...exactAgentEntry, id: 'route_dup' }]
+    }).success).toBe(false);
+  });
+
+  it('validates routing table patch schemas', () => {
+    expect(updateModelRoutingTableSettingsSchema.safeParse({ entries: [] }).success).toBe(true);
+    expect(updateModelRoutingTableSettingsSchema.safeParse({ entries: null }).success).toBe(false);
+    expect(updateModelRoutingTableSettingsSchema.safeParse({ roleDistinctRequirements: null }).success).toBe(true);
+  });
+
+  it('validates error code schema contains all expected codes', () => {
+    expect(modelRoutingErrorCodeSchema.options).toEqual([
+      'routing_table_missing',
+      'routing_table_ambiguous',
+      'route_not_found',
+      'duplicate_route',
+      'profile_not_found',
+      'profile_incomplete',
+      'route_mode_mismatch',
+      'adapter_unavailable',
+      'credential_reference_invalid',
+      'role_distinct_unsatisfied'
+    ]);
+  });
+
+  it('validates model routing table create request', () => {
+    expect(createConfigurationRecordRequestSchema.safeParse({
+      tenant: 'tenant_a',
+      kind: 'model_routing_table',
+      settings: { active: true, entries: [] }
+    }).success).toBe(true);
+  });
+
+  it('ignores disabled entries for duplicate-route detection', () => {
+    const disabledEntry = {
+      id: 'route_disabled',
+      route: { mode: 'agent' as const, step: 'implementation.author', role: 'implementer' },
+      profileId: 'cfg_claude',
+      enabled: false
+    };
+    const enabledEntry = {
+      id: 'route_impl',
+      route: { mode: 'agent' as const, step: 'implementation.author', role: 'implementer' },
+      profileId: 'cfg_claude'
+    };
+    // One disabled + one enabled with same key is allowed
+    expect(modelRoutingTableSettingsSchema.safeParse({
+      active: true,
+      entries: [disabledEntry, enabledEntry]
+    }).success).toBe(true);
+  });
+
+  it('roleDistinctRequirementSchema rejects duplicate roles and empty roles array', () => {
+    expect(roleDistinctRequirementSchema.safeParse({
+      step: 'impl',
+      mode: 'agent',
+      roles: ['implementer', 'implementer'],
+      distinctBy: 'model'
+    }).success).toBe(false);
+    expect(roleDistinctRequirementSchema.safeParse({
+      step: 'impl',
+      mode: 'agent',
+      roles: [],
+      distinctBy: 'model'
+    }).success).toBe(false);
+  });
+
+  it('updateModelRoutingTableSettingsSchema rejects empty patch', () => {
+    expect(updateModelRoutingTableSettingsSchema.safeParse({}).success).toBe(false);
   });
 });

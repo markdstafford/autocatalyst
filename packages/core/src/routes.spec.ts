@@ -66,7 +66,7 @@ async function buildServer(overrides?: Partial<ControlPlaneRouteDependencies>) {
       findById: vi.fn(async (id) => stored.get(id) ?? null)
     },
     configurationRecords: {
-      create: vi.fn(async () => ({ id: 'cfg_123', kind: 'provider_profile', providerKind: 'model_runner', adapterId: 'openai', settings: { profileName: 'default' }, createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' })),
+      create: vi.fn(async () => ({ id: 'cfg_123', tenant: 'tenant_dev', kind: 'provider_profile', providerKind: 'model_runner', adapterId: 'openai', settings: { profileName: 'default' }, createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' })),
       list: vi.fn(async () => []),
       findById: vi.fn(async () => null),
       update: vi.fn(async () => null),
@@ -216,6 +216,7 @@ describe('registerControlPlaneRoutes', () => {
   it('creates, lists, reads, updates, and deletes configuration records', async () => {
     const record = {
       id: 'cfg_123',
+      tenant: 'tenant_dev',
       kind: 'provider_profile',
       providerKind: 'model_runner',
       adapterId: 'openai',
@@ -225,10 +226,10 @@ describe('registerControlPlaneRoutes', () => {
     };
     const configRepo = {
       create: vi.fn(async () => record),
-      list: vi.fn(async () => [record]),
-      findById: vi.fn(async (id: string) => id === 'cfg_123' ? record : null),
-      update: vi.fn(async (id: string) => id === 'cfg_123' ? { ...record, updatedAt: '2026-06-08T01:00:00.000Z' } : null),
-      delete: vi.fn(async (id: string) => id === 'cfg_123')
+      list: vi.fn(async (_tenant: string) => [record]),
+      findById: vi.fn(async (_tenant: string, id: string) => id === 'cfg_123' ? record : null),
+      update: vi.fn(async (_tenant: string, id: string) => id === 'cfg_123' ? { ...record, updatedAt: '2026-06-08T01:00:00.000Z' } : null),
+      delete: vi.fn(async (_tenant: string, id: string) => id === 'cfg_123')
     };
     const { app, authorization, policyCalls } = await buildServer({ configurationRecords: configRepo });
     server = app;
@@ -259,7 +260,7 @@ describe('registerControlPlaneRoutes', () => {
     // Update
     const patchResponse = await app.inject({
       method: 'PATCH', url: '/v1/configuration-records/cfg_123', headers: authorization,
-      payload: { providerKind: 'updated_runner' }
+      payload: { kind: 'provider_profile', providerKind: 'updated_runner' }
     });
     expect(patchResponse.statusCode).toBe(200);
 

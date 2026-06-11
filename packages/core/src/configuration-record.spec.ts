@@ -11,9 +11,12 @@ import {
   type ConfigurationRecordRepository
 } from './configuration-record.js';
 
+const TEST_TENANT = 'tenant_dev';
+
 function makeRecord(overrides: Partial<ConfigurationRecord> = {}): ConfigurationRecord {
   return {
     id: 'cfg_123',
+    tenant: TEST_TENANT,
     kind: 'provider_profile',
     providerKind: 'model_runner',
     adapterId: 'openai',
@@ -21,7 +24,7 @@ function makeRecord(overrides: Partial<ConfigurationRecord> = {}): Configuration
     createdAt: '2026-06-08T00:00:00.000Z',
     updatedAt: '2026-06-08T00:00:00.000Z',
     ...overrides
-  };
+  } as ConfigurationRecord;
 }
 
 describe('configuration record use cases', () => {
@@ -36,6 +39,7 @@ describe('configuration record use cases', () => {
     };
 
     const input = {
+      tenant: TEST_TENANT,
       kind: 'provider_profile' as const,
       providerKind: 'model_runner',
       adapterId: 'openai',
@@ -55,8 +59,8 @@ describe('configuration record use cases', () => {
       delete: vi.fn(async () => false)
     };
 
-    await expect(listConfigurationRecords(repository)).resolves.toEqual(records);
-    expect(repository.list).toHaveBeenCalled();
+    await expect(listConfigurationRecords(repository, TEST_TENANT)).resolves.toEqual(records);
+    expect(repository.list).toHaveBeenCalledWith(TEST_TENANT);
   });
 
   it('delegates getConfigurationRecord to repository findById and returns null when missing', async () => {
@@ -68,8 +72,8 @@ describe('configuration record use cases', () => {
       delete: vi.fn(async () => false)
     };
 
-    await expect(getConfigurationRecord(repository, 'cfg_missing')).resolves.toBeNull();
-    expect(repository.findById).toHaveBeenCalledWith('cfg_missing');
+    await expect(getConfigurationRecord(repository, TEST_TENANT, 'cfg_missing')).resolves.toBeNull();
+    expect(repository.findById).toHaveBeenCalledWith(TEST_TENANT, 'cfg_missing');
   });
 
   it('delegates update and returns null for missing ids', async () => {
@@ -81,9 +85,9 @@ describe('configuration record use cases', () => {
       delete: vi.fn(async () => false)
     };
 
-    const patch = { settings: { credentialSecretHandle: null } };
-    await expect(updateConfigurationRecord(repository, 'cfg_missing', patch)).resolves.toBeNull();
-    expect(repository.update).toHaveBeenCalledWith('cfg_missing', patch);
+    const patch = { kind: 'provider_profile' as const, settings: { credentialSecretHandle: null } };
+    await expect(updateConfigurationRecord(repository, TEST_TENANT, 'cfg_missing', patch)).resolves.toBeNull();
+    expect(repository.update).toHaveBeenCalledWith(TEST_TENANT, 'cfg_missing', patch);
   });
 
   it('delegates delete and returns false for missing ids', async () => {
@@ -95,7 +99,7 @@ describe('configuration record use cases', () => {
       delete: vi.fn(async () => false)
     };
 
-    await expect(deleteConfigurationRecord(repository, 'cfg_missing')).resolves.toBe(false);
-    expect(repository.delete).toHaveBeenCalledWith('cfg_missing');
+    await expect(deleteConfigurationRecord(repository, TEST_TENANT, 'cfg_missing')).resolves.toBe(false);
+    expect(repository.delete).toHaveBeenCalledWith(TEST_TENANT, 'cfg_missing');
   });
 });

@@ -68,7 +68,16 @@ export {
   runnerEndpointRequiredAlterationsSchema,
   runnerEndpointSettingsSchema,
   updateConfigurationRecordRequestSchema,
-  updateConfigurationRecordSettingsSchema
+  updateConfigurationRecordSettingsSchema,
+  providerProfileSettingsSchema,
+  agentModelRouteKeySchema,
+  directModelRouteKeySchema,
+  modelRouteKeySchema,
+  modelRoutingEntrySchema,
+  roleDistinctRequirementSchema,
+  modelRoutingTableSettingsSchema,
+  updateModelRoutingTableSettingsSchema,
+  modelRoutingErrorCodeSchema
 } from './configuration-record.js';
 export type {
   ConfigurationRecord,
@@ -81,7 +90,15 @@ export type {
   ProviderProfileSettings,
   RunnerEndpointRequiredAlterations,
   RunnerEndpointSettings,
-  UpdateConfigurationRecordRequest
+  UpdateConfigurationRecordRequest,
+  AgentModelRouteKey,
+  DirectModelRouteKey,
+  ModelRouteKey,
+  ModelRoutingEntry,
+  RoleDistinctRequirement,
+  ModelRoutingTableSettings,
+  UpdateModelRoutingTableSettings,
+  ModelRoutingErrorCode
 } from './configuration-record.js';
 
 export * from './domain-value-objects.js';

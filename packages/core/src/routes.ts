@@ -251,9 +251,13 @@ export async function registerControlPlaneRoutes(
         path: '/v1/configuration-records' as const
       }))
     }, async (request, reply) => {
+      const principal = requirePrincipalFromRequest(request);
       let body: CreateConfigurationRecordRequest;
       try {
-        body = createConfigurationRecordRequestSchema.parse(request.body);
+        body = createConfigurationRecordRequestSchema.parse({
+          ...request.body as object,
+          tenant: principal.tenantId
+        });
       } catch (error) {
         await sendValidationError(reply, error);
         return;
@@ -269,9 +273,10 @@ export async function registerControlPlaneRoutes(
         kind: 'configuration_record_collection' as const,
         path: '/v1/configuration-records' as const
       }))
-    }, async (_request, reply) => {
+    }, async (request, reply) => {
+      const principal = requirePrincipalFromRequest(request);
       await reply.status(200).send(configurationRecordListResponseSchema.parse({
-        records: await listConfigurationRecords(dependencies.configurationRecords)
+        records: await listConfigurationRecords(dependencies.configurationRecords, principal.tenantId)
       }));
     });
 
@@ -282,6 +287,7 @@ export async function registerControlPlaneRoutes(
         path: '/v1/configuration-records/:id' as const
       }))
     }, async (request, reply) => {
+      const principal = requirePrincipalFromRequest(request);
       let params: ConfigurationRecordIdParams;
       try {
         params = configurationRecordIdParamsSchema.parse(request.params);
@@ -289,7 +295,7 @@ export async function registerControlPlaneRoutes(
         await sendValidationError(reply, error);
         return;
       }
-      const record = await getConfigurationRecord(dependencies.configurationRecords, params.id);
+      const record = await getConfigurationRecord(dependencies.configurationRecords, principal.tenantId, params.id);
       if (record === null) {
         await reply.status(404).send(errorResponse(notFoundErrorCode, 'Configuration record not found.'));
         return;
@@ -304,6 +310,7 @@ export async function registerControlPlaneRoutes(
         path: '/v1/configuration-records/:id' as const
       }))
     }, async (request, reply) => {
+      const principal = requirePrincipalFromRequest(request);
       let params: ConfigurationRecordIdParams;
       let body: UpdateConfigurationRecordRequest;
       try {
@@ -313,7 +320,7 @@ export async function registerControlPlaneRoutes(
         await sendValidationError(reply, error);
         return;
       }
-      const updated = await updateConfigurationRecord(dependencies.configurationRecords, params.id, body);
+      const updated = await updateConfigurationRecord(dependencies.configurationRecords, principal.tenantId, params.id, body);
       if (updated === null) {
         await reply.status(404).send(errorResponse(notFoundErrorCode, 'Configuration record not found.'));
         return;
@@ -328,6 +335,7 @@ export async function registerControlPlaneRoutes(
         path: '/v1/configuration-records/:id' as const
       }))
     }, async (request, reply) => {
+      const principal = requirePrincipalFromRequest(request);
       let params: ConfigurationRecordIdParams;
       try {
         params = configurationRecordIdParamsSchema.parse(request.params);
@@ -335,7 +343,7 @@ export async function registerControlPlaneRoutes(
         await sendValidationError(reply, error);
         return;
       }
-      const deleted = await deleteConfigurationRecord(dependencies.configurationRecords, params.id);
+      const deleted = await deleteConfigurationRecord(dependencies.configurationRecords, principal.tenantId, params.id);
       if (!deleted) {
         await reply.status(404).send(errorResponse(notFoundErrorCode, 'Configuration record not found.'));
         return;
