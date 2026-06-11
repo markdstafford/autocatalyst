@@ -244,6 +244,43 @@ describe('DefaultControlPlaneService.createConversationWithFirstRun', () => {
   });
 });
 
+describe('DefaultControlPlaneService.listRuns', () => {
+  it('authorizes with run.list on the run collection resource', async () => {
+    const policy: PolicyDecisionPoint = { authorize: vi.fn().mockResolvedValue({ allowed: true }) };
+    const runs = makeFakeRunRepo({ listByTenant: vi.fn().mockResolvedValue([]) });
+    const service = makeService({ policy, runs });
+
+    await service.listRuns({ principal, tenant: 'tenant_1' });
+
+    expect(policy.authorize).toHaveBeenCalledWith({
+      principal,
+      action: 'run.list',
+      resource: { kind: 'run_collection', path: '/v1/runs' }
+    });
+  });
+
+  it('calls listByTenant with the input tenant and returns runs', async () => {
+    const run = makeRun({ id: 'run_2' });
+    const runs = makeFakeRunRepo({ listByTenant: vi.fn().mockResolvedValue([run]) });
+    const service = makeService({ runs });
+
+    const result = await service.listRuns({ principal, tenant: 'tenant_1' });
+
+    expect(runs.listByTenant).toHaveBeenCalledWith('tenant_1');
+    expect(result).toEqual({ runs: [run] });
+  });
+
+  it('throws forbidden and does not read persistence when policy denies', async () => {
+    const runs = makeFakeRunRepo({ listByTenant: vi.fn().mockResolvedValue([makeRun()]) });
+    const service = makeService({ policy: makeDenyPolicy(), runs });
+
+    await expect(service.listRuns({ principal, tenant: 'tenant_1' })).rejects.toMatchObject({
+      code: 'forbidden'
+    });
+    expect(runs.listByTenant).not.toHaveBeenCalled();
+  });
+});
+
 describe('DefaultControlPlaneService.getRun', () => {
   it('authorizes with run.read on the run resource', async () => {
     const policy: PolicyDecisionPoint = { authorize: vi.fn().mockResolvedValue({ allowed: true }) };
