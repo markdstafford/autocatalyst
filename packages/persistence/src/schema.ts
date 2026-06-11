@@ -10,13 +10,16 @@ export const probeResources = sqliteTable('probe_resources', {
 
 export const configurationRecords = sqliteTable('configuration_records', {
   id: text('id').primaryKey(),
+  tenant: text('tenant').notNull(),
   kind: text('kind').notNull(),
-  providerKind: text('provider_kind').notNull(),
-  adapterId: text('adapter_id').notNull(),
+  providerKind: text('provider_kind'),        // nullable (routing tables have no provider)
+  adapterId: text('adapter_id'),               // nullable
   settingsJson: text('settings_json').notNull(),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull()
-});
+}, (table) => [
+  index('configuration_records_tenant_kind_idx').on(table.tenant, table.kind)
+]);
 
 export const secretStoreMetadata = sqliteTable('secret_store_metadata', {
   id: text('id').primaryKey(),

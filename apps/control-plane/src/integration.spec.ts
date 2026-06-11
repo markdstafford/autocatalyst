@@ -254,7 +254,7 @@ describe('configuration record CRUD integration', () => {
         method: 'PATCH',
         url: `/v1/configuration-records/${created.id}`,
         headers: authHeaders,
-        payload: { providerKind: 'updated_runner' }
+        payload: { kind: 'provider_profile', providerKind: 'updated_runner' }
       });
       expect(patchResp.statusCode).toBe(200);
       const updated = configurationRecordResponseSchema.parse(patchResp.json());

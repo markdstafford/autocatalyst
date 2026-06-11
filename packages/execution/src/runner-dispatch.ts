@@ -23,6 +23,7 @@ export interface AgentProfileResolution {
 
 export interface AgentRunnerFactoryInput {
   readonly runId: string;
+  readonly tenant?: string;
   readonly phase?: string;
   readonly step: string;
   readonly role?: string;

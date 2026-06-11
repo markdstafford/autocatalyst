@@ -47,7 +47,7 @@ describe('configuration record methods', () => {
   it('creates, lists, gets, updates, and deletes configuration records', async () => {
     const record = {
       id: 'cfg_123', kind: 'provider_profile', providerKind: 'model_runner',
-      adapterId: 'openai', settings: { profileName: 'default' },
+      adapterId: 'openai', settings: { profileName: 'default' }, tenant: 'test-tenant',
       createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z'
     };
 
@@ -75,7 +75,7 @@ describe('configuration record methods', () => {
 
     const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
 
-    const created = await client.createConfigurationRecord({ kind: 'provider_profile', providerKind: 'model_runner', adapterId: 'openai', settings: { profileName: 'default' } });
+    const created = await client.createConfigurationRecord({ tenant: 'test-tenant', kind: 'provider_profile', providerKind: 'model_runner', adapterId: 'openai', settings: { profileName: 'default' } });
     expect(created.id).toBe('cfg_123');
 
     const listed = await client.listConfigurationRecords();
@@ -84,7 +84,7 @@ describe('configuration record methods', () => {
     const fetched = await client.getConfigurationRecord('cfg_123');
     expect(fetched.id).toBe('cfg_123');
 
-    const updated = await client.updateConfigurationRecord('cfg_123', { providerKind: 'updated' });
+    const updated = await client.updateConfigurationRecord('cfg_123', { kind: 'provider_profile', providerKind: 'updated' });
     expect(updated.providerKind).toBe('updated');
 
     const deleteResult = await client.deleteConfigurationRecord('cfg_123');

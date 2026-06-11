@@ -147,3 +147,17 @@ export type {
   ConsumeRunnerEventsResult,
   RunnerEventConsumerDependencies
 } from './runner-event-consumer.js';
+
+export {
+  ModelRoutingConfigurationError,
+  createModelRoutingResolver,
+  type ModelRoutingResolver,
+  type CreateModelRoutingResolverOptions,
+  type ModelRoutingConfigurationReader,
+  type ResolveAgentRouteInput,
+  type ResolveDirectRouteInput,
+  type ResolveDistinctAgentRoutesInput,
+  type ModelRoutingResolution,
+  type ModelRoutingDistinctResolution,
+  type ModelRoutingSafeDetails
+} from './model-routing-resolver.js';

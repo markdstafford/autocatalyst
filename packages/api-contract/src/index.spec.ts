@@ -25,6 +25,8 @@ import {
   stepResultSchemaIdSchema
 } from './index.js';
 
+import * as apiContract from './index.js';
+
 describe('api-contract barrel', () => {
   it('exports the health contract', () => {
     expect(
@@ -73,5 +75,17 @@ describe('api-contract barrel', () => {
       schemaId: 'terminal-handoff.v1',
       result: { directive: 'advance', result: { ok: true } }
     }).success).toBe(true);
+  });
+
+  it('exports model-routing configuration contract symbols from the package root', () => {
+    expect(apiContract.providerProfileSettingsSchema).toBeDefined();
+    expect(apiContract.agentModelRouteKeySchema).toBeDefined();
+    expect(apiContract.directModelRouteKeySchema).toBeDefined();
+    expect(apiContract.modelRouteKeySchema).toBeDefined();
+    expect(apiContract.modelRoutingEntrySchema).toBeDefined();
+    expect(apiContract.roleDistinctRequirementSchema).toBeDefined();
+    expect(apiContract.modelRoutingTableSettingsSchema).toBeDefined();
+    expect(apiContract.updateModelRoutingTableSettingsSchema).toBeDefined();
+    expect(apiContract.modelRoutingErrorCodeSchema).toBeDefined();
   });
 });
