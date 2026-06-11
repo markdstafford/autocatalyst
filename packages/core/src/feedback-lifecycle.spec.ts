@@ -105,6 +105,28 @@ describe('createArtifactFeedback', () => {
       thread: [expect.objectContaining({ id: 'thread_init', author: principal('alice'), body: 'Initial body', createdAt: '2026-06-11T11:00:00.000Z' })]
     }));
   });
+
+  it('forwards optional anchor to the repository create call', async () => {
+    const deps = makeFeedbackDeps({ ids: () => 'thread_anchored', clock: () => '2026-06-11T11:00:00.000Z' });
+    const anchor = { kind: 'artifact' as const, artifactId: 'art_123' };
+    await createArtifactFeedback(
+      { runId: 'run_1', owner: principal('alice'), tenant: 'tenant_1', principal: principal('alice'), title: 'Anchored', body: 'Body', anchor },
+      deps
+    );
+
+    expect(deps.feedback.create).toHaveBeenCalledWith(expect.objectContaining({ anchor }));
+  });
+
+  it('omits anchor when not provided', async () => {
+    const deps = makeFeedbackDeps({ ids: () => 'thread_no_anchor', clock: () => '2026-06-11T11:00:00.000Z' });
+    await createArtifactFeedback(
+      { runId: 'run_1', owner: principal('alice'), tenant: 'tenant_1', principal: principal('alice'), title: 'No anchor', body: 'Body' },
+      deps
+    );
+
+    const call = (deps.feedback.create as ReturnType<typeof vi.fn>).mock.calls[0][0] as Record<string, unknown>;
+    expect(call).not.toHaveProperty('anchor');
+  });
 });
 
 // ---- addressFeedback --------------------------------------------------------

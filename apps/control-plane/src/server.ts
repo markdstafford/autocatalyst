@@ -1,6 +1,11 @@
-import { mkdtemp } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, writeFile, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -27,6 +32,7 @@ import {
   type ControlPlaneService,
   type ExecutionModeResolution,
   type ExtensionRegistryCatalog,
+  type FeedbackLifecycleDependencies,
   type HealthDependencyChecker,
   type ModelRoutingResolver,
   type PolicyDecisionPoint,
@@ -35,7 +41,12 @@ import {
   type ProviderCompositionResult,
   type RetainedRunEventStoreOptions,
   type RunUnitOfWork,
-  type RunWorkInput
+  type RunWorkInput,
+  type SpecAuthoringServiceDependencies,
+  type SpecApprovalFinalizerDependencies,
+  type WorkspaceContextResolver,
+  type WorkspaceFileSystemPort,
+  type WorkspaceGitPort
 } from '@autocatalyst/core';
 import {
   createAgentConnection,
@@ -43,6 +54,9 @@ import {
   createDirectCallFactory,
   createExecutionEntryPoint,
   createExecutionMaterializer,
+  createStepResultContractRegistry,
+  registerSpecAuthorResultContract,
+  SPEC_AUTHOR_SCHEMA_ID,
   ProviderConfigurationError,
   type AgentConnection,
   type AgentConnectionTelemetryContext,
@@ -120,6 +134,12 @@ export interface ControlPlaneServerOptions {
     input: RunWorkInput,
     context: ExecutionContext
   ) => Promise<ExecutionModeResolution> | ExecutionModeResolution;
+  /**
+   * Resolves the workspace repo root and handle for a run. Required for spec.author completion
+   * and spec.human_review approval finalization in feature and enhancement workflows.
+   * When not provided, spec authoring side effects and approval finalization are skipped.
+   */
+  readonly resolveWorkspaceContext?: WorkspaceContextResolver;
 }
 
 const DEFAULT_RUN_CONCURRENCY = 2;
@@ -318,6 +338,12 @@ export function createRoutingProfileResolver(options: {
   };
 }
 
+// Registry with contracts for all steps that have typed result schemas.
+// Other steps fall back to the generic unknown/any pass-through validation.
+const stepResultContractRegistry = registerSpecAuthorResultContract(
+  createStepResultContractRegistry()
+);
+
 function createDelegatingExecutionEntryPoint(input: {
   readonly factory: AgentRunnerFactory;
   readonly materialize: (context: ExecutionContext) => Promise<MaterializedExecutionEnvironment>;
@@ -370,14 +396,55 @@ function createDelegatingExecutionEntryPoint(input: {
       const perRunEntryPoint = createExecutionEntryPoint({
         runner,
         materialize: materializeWithScratch,
-        resultValidation: {
-          mode: 'scratch_file',
-          schema: z.unknown(),
-          schemaId: 'any',
-          resultFile: 'step-result.json'
+        resultValidation: (entryInput) => {
+          const step = entryInput.context.run.currentStep;
+          if (step === 'spec.author') {
+            return {
+              mode: 'scratch_file' as const,
+              contractRegistry: stepResultContractRegistry,
+              step: 'spec.author',
+              schemaId: SPEC_AUTHOR_SCHEMA_ID,
+              resultFile: 'step-result.json'
+            };
+          }
+          return {
+            mode: 'scratch_file' as const,
+            schema: z.unknown(),
+            schemaId: 'any',
+            resultFile: 'step-result.json'
+          };
         }
       });
       yield* perRunEntryPoint.execute(entryInput);
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Production workspace ports
+// ---------------------------------------------------------------------------
+
+function createNodeWorkspaceFilesystem(): WorkspaceFileSystemPort {
+  return {
+    async writeFile(input) {
+      const fullPath = join(input.workspaceRepoRoot, input.relativePath);
+      await mkdir(dirname(fullPath), { recursive: true });
+      await writeFile(fullPath, input.contents, 'utf-8');
+    },
+    async readFile(input) {
+      const fullPath = join(input.workspaceRepoRoot, input.relativePath);
+      return readFile(fullPath, 'utf-8');
+    }
+  };
+}
+
+function createNodeWorkspaceGit(): WorkspaceGitPort {
+  return {
+    async commitFiles(input) {
+      const cwd = input.workspaceRepoRoot;
+      await execFileAsync('git', ['-C', cwd, 'add', '--', ...input.relativePaths]);
+      await execFileAsync('git', ['-C', cwd, 'commit', '-m', input.message]);
+      return {};
     }
   };
 }
@@ -605,12 +672,41 @@ export async function createControlPlaneServer(
     });
   }
 
+  const nodeFilesystem = createNodeWorkspaceFilesystem();
+  const nodeGit = createNodeWorkspaceGit();
+
+  const feedbackLifecycleDependencies: FeedbackLifecycleDependencies = {
+    feedback: domainRepos.feedback,
+    ids: () => randomUUID(),
+    clock: () => new Date().toISOString()
+  };
+
+  const specAuthoringDependencies: SpecAuthoringServiceDependencies = {
+    artifacts: domainRepos.artifacts,
+    filesystem: nodeFilesystem,
+    git: nodeGit,
+    clock: () => new Date().toISOString()
+  };
+
+  const specApprovalFinalizerDependencies: SpecApprovalFinalizerDependencies = {
+    artifacts: domainRepos.artifacts,
+    filesystem: nodeFilesystem,
+    git: nodeGit,
+    clock: () => new Date().toISOString()
+  };
+
   const orchestrator = new DefaultOrchestrator({
     runs: domainRepos.runs,
     conversationIngress,
     events: eventBus,
     dispatchQueue,
-    ...(resolvedUnitOfWork !== undefined ? { unitOfWork: resolvedUnitOfWork } : {})
+    ...(resolvedUnitOfWork !== undefined ? { unitOfWork: resolvedUnitOfWork } : {}),
+    feedbackLifecycleDependencies,
+    specAuthoringDependencies,
+    specApprovalFinalizerDependencies,
+    ...(options.resolveWorkspaceContext !== undefined
+      ? { resolveWorkspaceContext: options.resolveWorkspaceContext }
+      : {})
   });
   const policy = options.policy ?? permissivePolicyDecisionPoint;
   const controlPlane = new DefaultControlPlaneService({

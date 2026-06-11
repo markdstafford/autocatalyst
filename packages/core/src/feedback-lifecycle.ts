@@ -1,4 +1,4 @@
-import type { CreateFeedbackInput, Feedback, FeedbackStatus, NonModelPrincipal } from '@autocatalyst/api-contract';
+import type { CreateFeedbackInput, Feedback, FeedbackAnchor, FeedbackStatus, NonModelPrincipal } from '@autocatalyst/api-contract';
 
 import type { FeedbackRepository } from './domain-repositories.js';
 
@@ -56,6 +56,7 @@ export interface CreateArtifactFeedbackInput {
   readonly principal: NonModelPrincipal;
   readonly title: string;
   readonly body: string;
+  readonly anchor?: FeedbackAnchor;
 }
 
 export async function createArtifactFeedback(
@@ -70,6 +71,7 @@ export async function createArtifactFeedback(
     status: 'open',
     title: input.title,
     body: input.body,
+    ...(input.anchor !== undefined ? { anchor: input.anchor } : {}),
     thread: [
       {
         id: deps.ids(),
