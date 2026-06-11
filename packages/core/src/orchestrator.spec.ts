@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Artifact, Conversation, Message, Run, RunStateTransitionEvent, RunStep, Topic } from '@autocatalyst/api-contract';
+import type { Artifact, Conversation, Feedback, Message, NonModelPrincipal, Run, RunStateTransitionEvent, RunStep, Topic } from '@autocatalyst/api-contract';
 
-import type { ConversationIngressRepository, RunRepository } from './domain-repositories.js';
+import type { ConversationIngressRepository, FeedbackRepository, RunRepository } from './domain-repositories.js';
+import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
+import { SpecReviewGateBlockedError } from './spec-review-gate.js';
 import { RunDispatchQueue } from './run-dispatch-queue.js';
 import { InMemoryRunEventBus, type RunEventPublisher } from './run-events.js';
 import {
@@ -701,6 +703,38 @@ function makeSpecAuthorResult() {
     body: '# Test\n\nBody.'
   };
 }
+
+describe('DefaultOrchestrator.dispatch — human-waiting steps', () => {
+  it('refuses runner dispatch for human-waiting spec review', async () => {
+    const existing = makeRun({ currentStep: 'spec.human_review' });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing)
+    });
+    const unitRun = vi.fn();
+    const unitOfWork: RunUnitOfWork = { run: unitRun };
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork });
+
+    await expect(
+      orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition' });
+    expect(unitRun).not.toHaveBeenCalled();
+  });
+
+  it('refuses runner dispatch for other human-waiting steps', async () => {
+    const existing = makeRun({ currentStep: 'implementation.human_review' });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing)
+    });
+    const unitRun = vi.fn();
+    const unitOfWork: RunUnitOfWork = { run: unitRun };
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork });
+
+    await expect(
+      orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition' });
+    expect(unitRun).not.toHaveBeenCalled();
+  });
+});
 
 describe('DefaultOrchestrator.dispatch — spec.author completion', () => {
   it('calls completeSpecAuthoring before persisting spec.author advance', async () => {

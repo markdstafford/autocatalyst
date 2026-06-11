@@ -22,6 +22,9 @@ import type {
   LifecycleRunStepInput,
   RunRepository
 } from './domain-repositories.js';
+import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
+import { resolveApproverAddressedFeedback } from './feedback-lifecycle.js';
+import { assertSpecReviewGateCanAdvance, SpecReviewGateBlockedError } from './spec-review-gate.js';
 import { type RunDispatchQueue } from './run-dispatch-queue.js';
 import { createRunStateTransitionEvent, type RunEventStore } from './run-events.js';
 import {
@@ -118,6 +121,7 @@ export interface ApplyOrchestratedDirectiveInput {
   readonly directive: RunDirective;
   readonly tenant: string;
   readonly checkpointResult?: JsonValue;
+  readonly principal?: NonModelPrincipal;
 }
 
 export interface DispatchRunInput {
@@ -180,6 +184,9 @@ export interface DefaultOrchestratorOptions {
   readonly logger?: { warn(message: string, details?: unknown): void };
   readonly specAuthoringDependencies?: SpecAuthoringServiceDependencies;
   readonly resolveWorkspaceContext?: WorkspaceContextResolver;
+  readonly resolveApproverAddressedFeedback?: typeof resolveApproverAddressedFeedback;
+  readonly assertSpecReviewGateCanAdvance?: typeof assertSpecReviewGateCanAdvance;
+  readonly feedbackLifecycleDependencies?: FeedbackLifecycleDependencies;
 }
 
 function defaultIsActiveRunConflict(error: unknown): boolean {
@@ -207,6 +214,9 @@ export class DefaultOrchestrator implements Orchestrator {
   readonly #logger: { warn(message: string, details?: unknown): void } | undefined;
   readonly #specAuthoringDependencies: SpecAuthoringServiceDependencies | undefined;
   readonly #resolveWorkspaceContext: WorkspaceContextResolver | undefined;
+  readonly #resolveApproverAddressedFeedback: typeof resolveApproverAddressedFeedback;
+  readonly #assertSpecReviewGateCanAdvance: typeof assertSpecReviewGateCanAdvance;
+  readonly #feedbackLifecycleDependencies: FeedbackLifecycleDependencies | undefined;
 
   constructor(options: DefaultOrchestratorOptions) {
     this.#runs = options.runs;
@@ -220,6 +230,9 @@ export class DefaultOrchestrator implements Orchestrator {
     this.#logger = options.logger;
     this.#specAuthoringDependencies = options.specAuthoringDependencies;
     this.#resolveWorkspaceContext = options.resolveWorkspaceContext;
+    this.#resolveApproverAddressedFeedback = options.resolveApproverAddressedFeedback ?? resolveApproverAddressedFeedback;
+    this.#assertSpecReviewGateCanAdvance = options.assertSpecReviewGateCanAdvance ?? assertSpecReviewGateCanAdvance;
+    this.#feedbackLifecycleDependencies = options.feedbackLifecycleDependencies;
   }
 
   async createRun(input: CreateOrchestratedRunInput): Promise<OrchestratedRunResult> {
@@ -383,6 +396,50 @@ export class DefaultOrchestrator implements Orchestrator {
     }
     const fromStep = existing.currentStep;
 
+    // Gate guard: before advancing from spec.human_review, co-resolve approver feedback and assert gate.
+    if (input.directive === 'advance' && existing.currentStep === 'spec.human_review') {
+      const approver: NonModelPrincipal = input.principal ?? existing.owner;
+      if (this.#feedbackLifecycleDependencies !== undefined) {
+        try {
+          await this.#resolveApproverAddressedFeedback(
+            { runId: input.runId, target: 'artifact', approver },
+            this.#feedbackLifecycleDependencies
+          );
+        } catch (error) {
+          if (error instanceof SpecReviewGateBlockedError && error.code === 'feedback_gate_blocked') {
+            throw new OrchestratorError('invalid_transition', 'Artifact feedback blocks spec approval.', {
+              cause: error,
+              details: { blockingFeedbackIds: error.blockingFeedbackIds }
+            });
+          }
+          throw error;
+        }
+      }
+      try {
+        await this.#assertSpecReviewGateCanAdvance(
+          { run: existing },
+          {
+            listBlockingFeedback: this.#feedbackLifecycleDependencies !== undefined
+              ? (listInput) => {
+                  const deps = this.#feedbackLifecycleDependencies!;
+                  return deps.feedback.listByRun(listInput.runId).then(all =>
+                    all.filter(f => f.target === listInput.target && (f.status === 'open' || f.status === 'addressed'))
+                  );
+                }
+              : async () => []
+          }
+        );
+      } catch (error) {
+        if (error instanceof SpecReviewGateBlockedError && error.code === 'feedback_gate_blocked') {
+          throw new OrchestratorError('invalid_transition', 'Artifact feedback blocks spec approval.', {
+            cause: error,
+            details: { blockingFeedbackIds: error.blockingFeedbackIds }
+          });
+        }
+        throw error;
+      }
+    }
+
     let state: RunLifecycleState;
     try {
       state = await applyRunDirective({
@@ -424,6 +481,14 @@ export class DefaultOrchestrator implements Orchestrator {
     }
     if (run.terminal) {
       throw new OrchestratorError('terminal_run', `Run '${input.runId}' is terminal.`);
+    }
+
+    const stepDefinition = getRunStepDefinition(run.currentStep);
+    if (stepDefinition?.waitingOn === 'human') {
+      throw new OrchestratorError(
+        'invalid_transition',
+        `Step '${run.currentStep}' is waiting on human input and cannot be dispatched to a runner.`
+      );
     }
 
     if (this.#unitOfWork === undefined) {
