@@ -481,13 +481,13 @@ export async function createControlPlaneServer(
     });
     const routingProfileHelper = createRoutingProfileResolver({
       resolver: routingResolver,
-      fallbackTenant: 'tenant_dev'
+      fallbackTenant: startupCompositionTenant
     });
 
     const explicitProfileFallback = profileId !== undefined && profileId.length > 0
       ? createExplicitProfileResolver({
           defaultProviderProfileId: profileId,
-          listRecords: () => configurationRecords.list('tenant_dev'),
+          listRecords: () => configurationRecords.list(startupCompositionTenant),
           registry: adapterRegistry
         })
       : undefined;
@@ -528,7 +528,8 @@ export async function createControlPlaneServer(
           ) {
             // Fall back to the explicit profile for direct calls when no
             // active routing table is configured.
-            const records = await configurationRecords.list('tenant_dev');
+            const fallbackTenant = directInput.tenant ?? startupCompositionTenant;
+            const records = await configurationRecords.list(fallbackTenant);
             const record = records.find(
               (candidate) =>
                 candidate.id === profileId && candidate.kind === 'provider_profile'
@@ -538,6 +539,14 @@ export async function createControlPlaneServer(
                 'missing_profile',
                 `No provider_profile configuration record found with id "${profileId}".`,
                 { runId: directInput.runId, step: directInput.step }
+              );
+            }
+            const adapterKey = buildProviderAdapterKey(record.providerKind, record.adapterId);
+            if (!directRegistry.has(adapterKey)) {
+              throw new ProviderConfigurationError(
+                'missing_profile',
+                `No direct adapter registered for providerKind "${record.providerKind}" and adapterId "${record.adapterId}".`,
+                { providerKind: record.providerKind, adapterId: record.adapterId }
               );
             }
             const settings = record.settings as ProviderProfileSettings;
