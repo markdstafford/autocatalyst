@@ -1,6 +1,6 @@
 # Code map
 
-Last updated: 2026-06-10 (model routing table, role-aware resolution, and resolved profiles added; openai-agent-adapter rebuilt against the REAL `@openai/agents` 0.11.x SDK — Runner/OpenAIProvider/SandboxAgent/UnixLocalSandboxClient — replacing the invented facade; direct orchestrator + Anthropic/OpenAI direct adapters also present)
+Last updated: 2026-06-10 (model routing table, role-aware resolution, and resolved profiles added; composed dispatch integration tests added — implementer→Claude and reviewer→OpenAI through createAgentRunnerFactory+consumeRunnerEvents; cross-tenant isolation test added; write-time validation decision recorded)
 
 > How agents navigate the codebase. Keep this current: whenever you add, move, or significantly
 > change a module, update the relevant section in the same change.
