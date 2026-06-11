@@ -1,5 +1,7 @@
 import type {
   Artifact,
+  ArtifactCachedStatus,
+  ArtifactKind,
   Conversation,
   CreateArtifactInput,
   CreateConversationInput,
@@ -14,8 +16,10 @@ import type {
   CreateTestResultInput,
   CreateTopicInput,
   Feedback,
+  FeedbackStatus,
   JsonValue,
   Message,
+  NonModelPrincipal,
   Project,
   Publication,
   PullRequest,
@@ -94,12 +98,45 @@ export interface ArtifactRepository {
   create(input: CreateArtifactInput): Promise<Artifact>;
   findById(id: string): Promise<Artifact | null>;
   listByRun(runId: string): Promise<readonly Artifact[]>;
+  findByRunAndKind(input: { readonly runId: string; readonly kind: ArtifactKind }): Promise<Artifact | null>;
+  updateCachedStatus(input: { readonly artifactId: string; readonly cachedStatus: ArtifactCachedStatus; readonly updatedAt: string }): Promise<Artifact>;
+}
+
+export interface FeedbackThreadEntryPersistenceInput {
+  readonly id: string;
+  readonly author: NonModelPrincipal;
+  readonly body: string;
+  readonly createdAt: string;
+}
+
+export interface FeedbackStatusTransitionPersistenceInput {
+  readonly feedbackId: string;
+  readonly expectedStatus: FeedbackStatus;
+  readonly nextStatus: FeedbackStatus;
+  readonly threadEntry: FeedbackThreadEntryPersistenceInput;
+  readonly updatedAt: string;
+}
+
+export class FeedbackConcurrentModificationError extends Error {
+  readonly code = 'feedback_concurrent_modification' as const;
+  readonly feedbackId: string;
+  readonly expectedStatus: FeedbackStatus;
+  readonly actualStatus: FeedbackStatus | undefined;
+
+  constructor(feedbackId: string, expectedStatus: FeedbackStatus, actualStatus?: FeedbackStatus) {
+    super('Feedback status changed before transition could be persisted.');
+    this.name = 'FeedbackConcurrentModificationError';
+    this.feedbackId = feedbackId;
+    this.expectedStatus = expectedStatus;
+    this.actualStatus = actualStatus;
+  }
 }
 
 export interface FeedbackRepository {
   create(input: CreateFeedbackInput): Promise<Feedback>;
   findById(id: string): Promise<Feedback | null>;
   listByRun(runId: string): Promise<readonly Feedback[]>;
+  updateStatusAndAppendThread(input: FeedbackStatusTransitionPersistenceInput): Promise<Feedback>;
 }
 
 export interface PublicationRepository {

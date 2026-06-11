@@ -72,6 +72,8 @@ export type {
   ConversationIngressRepository,
   CreateConversationTopicMessageAndRunInput,
   CreateConversationTopicMessageAndRunResult,
+  FeedbackStatusTransitionPersistenceInput,
+  FeedbackThreadEntryPersistenceInput,
   LifecycleRunStepInput,
   ListRunsByTenantOptions,
   RecordRunLifecycleStartInput,
@@ -79,6 +81,8 @@ export type {
   RecordRunStepTransitionInput,
   RecordRunStepTransitionResult
 } from './domain-repositories.js';
+
+export { FeedbackConcurrentModificationError } from './domain-repositories.js';
 
 export {
   deriveRunTerminal,
