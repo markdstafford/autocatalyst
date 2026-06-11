@@ -1,6 +1,6 @@
 import { specAuthorFrontmatterSchema, type SpecAuthorFrontmatter } from '@autocatalyst/api-contract';
 
-export type SpecFrontmatterErrorCode = 'spec_frontmatter_missing' | 'spec_frontmatter_invalid';
+export type SpecFrontmatterErrorCode = 'spec_frontmatter_missing' | 'spec_frontmatter_invalid' | 'spec_body_contains_frontmatter';
 
 export class SpecFrontmatterError extends Error {
   readonly code: SpecFrontmatterErrorCode;
@@ -58,10 +58,7 @@ export function renderCommittedSpecMarkdown(input: RenderCommittedSpecMarkdownIn
   }
   const firstBodyLine = input.body.split('\n')[0] ?? '';
   if (/^---\s*$/u.test(firstBodyLine)) {
-    const error = new SpecFrontmatterError('spec_frontmatter_invalid', 'Spec body must not contain a frontmatter block.');
-    // Override code to spec_body_contains_frontmatter
-    Object.defineProperty(error, 'code', { value: 'spec_body_contains_frontmatter', writable: false, configurable: true });
-    throw error;
+    throw new SpecFrontmatterError('spec_body_contains_frontmatter', 'Spec body must not contain a frontmatter block.');
   }
   const body = input.body.endsWith('\n') ? input.body : `${input.body}\n`;
   const markdown = `${renderSpecFrontmatter(validated)}${body}`;
