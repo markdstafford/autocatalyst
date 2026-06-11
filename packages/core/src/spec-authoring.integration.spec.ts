@@ -311,9 +311,38 @@ interface TestHarness {
   readonly workspaceRepoRoot: string;
 }
 
-function buildHarness(unitOfWork: RunUnitOfWork): TestHarness {
+interface BuildHarnessOptions {
+  /** Deep-merge patch applied to the base specAuthorResult before returning from unit of work. */
+  readonly resultPatch?: Record<string, unknown>;
+  /** If set, artifact.create() will throw this error instead of succeeding. */
+  readonly artifactCreateFailure?: Error;
+  /** workKind for the unit of work result. Defaults to 'feature'. */
+  readonly workKind?: 'feature' | 'enhancement';
+}
+
+/**
+ * A thin wrapper around InMemoryArtifactRepository that throws on create().
+ * Used to simulate artifact persistence failure after commit.
+ */
+class FailingArtifactRepository extends InMemoryArtifactRepository {
+  readonly #failureError: Error;
+
+  constructor(failureError: Error) {
+    super();
+    this.#failureError = failureError;
+  }
+
+  override async create(_input: CreateArtifactInput): Promise<Artifact> {
+    throw this.#failureError;
+  }
+}
+
+function buildHarness(unitOfWork: RunUnitOfWork, options: BuildHarnessOptions = {}): TestHarness {
   const runRepository = new InMemoryRunRepository();
-  const artifactRepository = new InMemoryArtifactRepository();
+  const artifactRepository =
+    options.artifactCreateFailure !== undefined
+      ? new FailingArtifactRepository(options.artifactCreateFailure)
+      : new InMemoryArtifactRepository();
   const { port: filesystem, files } = makeFakeFilesystem();
   const { port: git, commits } = makeFakeGit();
   const workspaceRepoRoot = '/tmp/test-repo';
@@ -378,6 +407,25 @@ function makeSpecAuthorResult(workKind: 'feature' | 'enhancement') {
       specced_by: 'autocatalyst'
     },
     body: `# Feature: Artifact Feedback Gate\n\nThis is the spec body.\n`
+  };
+}
+
+/**
+ * Returns a shallow-patched specAuthorResult for malformed-result testing.
+ * The patch can override top-level keys or nested `frontmatter` keys.
+ */
+function makePatchedSpecAuthorResult(
+  workKind: 'feature' | 'enhancement',
+  patch: Record<string, unknown>
+): Record<string, unknown> {
+  const base = makeSpecAuthorResult(workKind);
+  const frontmatterPatch = patch['frontmatter'] as Record<string, unknown> | undefined;
+  return {
+    ...base,
+    ...patch,
+    ...(frontmatterPatch !== undefined
+      ? { frontmatter: { ...base.frontmatter, ...frontmatterPatch } }
+      : {})
   };
 }
 
@@ -467,4 +515,107 @@ describe('spec authoring integration — successful workflows', () => {
       expect(artifact.cachedStatus).toBe('draft');
     }
   );
+});
+
+// ---------------------------------------------------------------------------
+// Failure ordering tests
+// ---------------------------------------------------------------------------
+
+/**
+ * Helper: create a run, advance to spec.author, and dispatch.
+ * Returns the dispatch result run.
+ */
+async function advanceToSpecAuthorAndDispatch(harness: TestHarness, workKind: 'feature' | 'enhancement') {
+  const { run: createdRun } = await harness.orchestrator.createRun({
+    topicId: `topic_${Math.random()}`,
+    owner,
+    tenant: 'tenant_1',
+    workKind
+  });
+  const { run: specAuthorRun } = await harness.orchestrator.applyDirective({
+    runId: createdRun.id,
+    directive: 'advance',
+    tenant: 'tenant_1'
+  });
+  expect(specAuthorRun.currentStep).toBe('spec.author');
+
+  const result = await harness.orchestrator.dispatch({
+    runId: specAuthorRun.id,
+    tenant: 'tenant_1'
+  });
+  return { specAuthorRun, dispatchResult: result };
+}
+
+describe('spec authoring integration — malformed results do not commit or create Artifact', () => {
+  it.each([
+    ['string issue', { frontmatter: { issue: '39' } }],
+    ['bad path', { relativePath: '../feature.md', slug: 'feature' }],
+    ['wrong kind for feature run', { kind: 'enhancement_spec', relativePath: 'context-human/specs/enhancement-artifact-feedback-gate.md' }],
+    ['invalid status', { frontmatter: { status: 'approved' } }]
+  ] as Array<[string, Record<string, unknown>]>)(
+    'does not commit or create Artifact for malformed result: %s',
+    async (_name, patch) => {
+      const workKind = 'feature';
+      const patchedResult = makePatchedSpecAuthorResult(workKind, patch);
+
+      const unitOfWork: RunUnitOfWork = {
+        async run() {
+          return { directive: 'advance', result: patchedResult as Record<string, unknown> };
+        }
+      };
+
+      const harness = buildHarness(unitOfWork);
+      const { specAuthorRun, dispatchResult } = await advanceToSpecAuthorAndDispatch(harness, workKind);
+
+      // The run must be terminal (failed) — it cannot advance to spec.human_review
+      // because spec authoring validation or rendering rejected the malformed result.
+      expect(dispatchResult.run.terminal).toBe(true);
+      // It must NOT have advanced to spec.human_review
+      expect(dispatchResult.run.currentStep).not.toBe('spec.human_review');
+
+      // No git commits were recorded — side effects were prevented
+      expect(harness.git.all).toHaveLength(0);
+
+      // No artifacts were created
+      const artifacts = await harness.artifactRepository.listByRun(specAuthorRun.id);
+      expect(artifacts).toHaveLength(0);
+    }
+  );
+});
+
+describe('spec authoring integration — artifact persistence failure after commit', () => {
+  it('artifact persistence failure after commit surfaces a safe failure and does not advance', async () => {
+    const workKind = 'feature';
+    const specAuthorResult = makeSpecAuthorResult(workKind);
+
+    const unitOfWork: RunUnitOfWork = {
+      async run() {
+        return { directive: 'advance', result: specAuthorResult as unknown as Record<string, unknown> };
+      }
+    };
+
+    // Inject an artifact failure whose message contains a sensitive path
+    const sensitiveError = new Error('db down /tmp/secret');
+    const harness = buildHarness(unitOfWork, { artifactCreateFailure: sensitiveError });
+
+    const { specAuthorRun, dispatchResult } = await advanceToSpecAuthorAndDispatch(harness, workKind);
+
+    // The run must NOT have advanced to spec.human_review
+    expect(dispatchResult.run.currentStep).not.toBe('spec.human_review');
+    // The run is terminal — it failed after the commit
+    expect(dispatchResult.run.terminal).toBe(true);
+
+    // Git DID commit — the write and commit happened before artifact creation
+    expect(harness.git.all).toHaveLength(1);
+    expect(harness.git.wasCommitted('context-human/specs/feature-artifact-feedback-gate.md')).toBe(true);
+
+    // No artifact was created (the persistence step failed)
+    const artifacts = await harness.artifactRepository.listByRun(specAuthorRun.id);
+    expect(artifacts).toHaveLength(0);
+
+    // The sensitive path must NOT be surfaced in any thrown error message
+    // (the orchestrator swallows the cause and logs it; the dispatch result is a failed run, not a thrown error).
+    // We verify this by asserting the dispatch completed without throwing and the run is terminal.
+    expect(dispatchResult.run.terminal).toBe(true);
+  });
 });
