@@ -187,7 +187,7 @@ export function createExplicitProfileResolver(input: {
 
     const records = await input.listRecords();
     const record = records.find(
-      (candidate) =>
+      (candidate): candidate is Extract<ConfigurationRecord, { kind: 'provider_profile' }> =>
         candidate.id === selectedProfileId && candidate.kind === 'provider_profile'
     );
     if (record === undefined) {
@@ -531,7 +531,7 @@ export async function createControlPlaneServer(
             const fallbackTenant = directInput.tenant ?? startupCompositionTenant;
             const records = await configurationRecords.list(fallbackTenant);
             const record = records.find(
-              (candidate) =>
+              (candidate): candidate is Extract<ConfigurationRecord, { kind: 'provider_profile' }> =>
                 candidate.id === profileId && candidate.kind === 'provider_profile'
             );
             if (record === undefined) {

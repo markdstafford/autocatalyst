@@ -562,7 +562,7 @@ describe('dispatch through createRoutingProfileResolver', () => {
         directAdapters
       });
       const routingProfileResolver = createRoutingProfileResolver({ resolver, fallbackTenant: TENANT });
-      const factoryInput = { runId: 'run_1', step: 'impl', role: undefined as any, tenant: TENANT } as AgentRunnerFactoryInput;
+      const factoryInput = { runId: 'run_1', step: 'impl', role: undefined as unknown as AgentRunnerFactoryInput['role'], tenant: TENANT } as AgentRunnerFactoryInput;
 
       await expect(
         routingProfileResolver.resolveAgentProfile(factoryInput)

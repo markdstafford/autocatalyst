@@ -47,7 +47,9 @@ export class ModelRoutingConfigurationError extends Error {
     super(message);
     this.name = 'ModelRoutingConfigurationError';
     this.code = code;
-    this.safeDetails = safeDetails;
+    if (safeDetails !== undefined) {
+      this.safeDetails = safeDetails;
+    }
   }
 }
 
@@ -125,17 +127,17 @@ async function loadActiveRoutingTable(
     throw new ModelRoutingConfigurationError(
       'routing_table_missing',
       'No active model-routing table for tenant.',
-      { tenant, runId }
+      { tenant, ...(runId !== undefined ? { runId } : {}) }
     );
   }
   if (activeTables.length > 1) {
     throw new ModelRoutingConfigurationError(
       'routing_table_ambiguous',
       'Multiple active model-routing tables for tenant.',
-      { tenant, runId }
+      { tenant, ...(runId !== undefined ? { runId } : {}) }
     );
   }
-  const tableRecord = activeTables[0];
+  const tableRecord = activeTables[0]!;
   return { table: tableRecord.settings as ModelRoutingTableSettings, tableId: tableRecord.id };
 }
 
@@ -182,7 +184,8 @@ function selectSingleRoute(
       errorDetails
     );
   }
-  return matches[0];
+  const [only] = matches;
+  return only!;
 }
 
 async function resolveEntryToProfile(
@@ -199,7 +202,7 @@ async function resolveEntryToProfile(
     throw new ModelRoutingConfigurationError(
       'profile_not_found',
       'Referenced provider-profile record not found.',
-      { tenant, runId, routingTableId, routeId: entry.id, profileId: entry.profileId, mode }
+      { tenant, ...(runId !== undefined ? { runId } : {}), routingTableId, routeId: entry.id, profileId: entry.profileId, mode }
     );
   }
 
@@ -212,11 +215,11 @@ async function resolveEntryToProfile(
       'Provider profile is missing explicit model.',
       {
         tenant,
-        runId,
+        ...(runId !== undefined ? { runId } : {}),
         routingTableId,
         routeId: entry.id,
         profileId: entry.profileId,
-        profileName: profileSettings.profileName
+        ...(profileSettings.profileName !== undefined ? { profileName: profileSettings.profileName } : {})
       }
     );
   }
@@ -226,11 +229,11 @@ async function resolveEntryToProfile(
       'Provider profile is missing explicit inferenceSettings.',
       {
         tenant,
-        runId,
+        ...(runId !== undefined ? { runId } : {}),
         routingTableId,
         routeId: entry.id,
         profileId: entry.profileId,
-        profileName: profileSettings.profileName
+        ...(profileSettings.profileName !== undefined ? { profileName: profileSettings.profileName } : {})
       }
     );
   }
@@ -240,11 +243,11 @@ async function resolveEntryToProfile(
       'Provider profile is missing explicit endpoint settings.',
       {
         tenant,
-        runId,
+        ...(runId !== undefined ? { runId } : {}),
         routingTableId,
         routeId: entry.id,
         profileId: entry.profileId,
-        profileName: profileSettings.profileName
+        ...(profileSettings.profileName !== undefined ? { profileName: profileSettings.profileName } : {})
       }
     );
   }
@@ -254,11 +257,11 @@ async function resolveEntryToProfile(
       'Provider profile is missing credential reference.',
       {
         tenant,
-        runId,
+        ...(runId !== undefined ? { runId } : {}),
         routingTableId,
         routeId: entry.id,
         profileId: entry.profileId,
-        profileName: profileSettings.profileName
+        ...(profileSettings.profileName !== undefined ? { profileName: profileSettings.profileName } : {})
       }
     );
   }
@@ -278,7 +281,7 @@ async function resolveEntryToProfile(
           'Agent route references a profile that is only available as a direct adapter.',
           {
             tenant,
-            runId,
+            ...(runId !== undefined ? { runId } : {}),
             routingTableId,
             routeId: entry.id,
             profileId: entry.profileId,
@@ -292,7 +295,7 @@ async function resolveEntryToProfile(
         'No agent adapter registered for provider/adapter.',
         {
           tenant,
-          runId,
+          ...(runId !== undefined ? { runId } : {}),
           routingTableId,
           routeId: entry.id,
           profileId: entry.profileId,
@@ -313,7 +316,7 @@ async function resolveEntryToProfile(
           'Direct route references a profile that is only available as an agent adapter.',
           {
             tenant,
-            runId,
+            ...(runId !== undefined ? { runId } : {}),
             routingTableId,
             routeId: entry.id,
             profileId: entry.profileId,
@@ -327,7 +330,7 @@ async function resolveEntryToProfile(
         'No direct adapter registered for provider/adapter.',
         {
           tenant,
-          runId,
+          ...(runId !== undefined ? { runId } : {}),
           routingTableId,
           routeId: entry.id,
           profileId: entry.profileId,
@@ -366,17 +369,17 @@ async function resolveEntryToProfile(
   if (options.validateCredentialReference) {
     try {
       await options.validateCredentialReference({ tenant, profile, credentialReference });
-    } catch (cause) {
+    } catch {
       throw new ModelRoutingConfigurationError(
         'credential_reference_invalid',
         'Credential reference validation failed.',
         {
           tenant,
-          runId,
+          ...(runId !== undefined ? { runId } : {}),
           routingTableId,
           routeId: entry.id,
           profileId: entry.profileId,
-          profileName: profileSettings.profileName,
+          ...(profileSettings.profileName !== undefined ? { profileName: profileSettings.profileName } : {}),
           providerKind: profileRecord.providerKind,
           adapterId: profileRecord.adapterId
         }
@@ -405,14 +408,14 @@ export function createModelRoutingResolver(options: CreateModelRoutingResolverOp
         throw new ModelRoutingConfigurationError(
           'route_not_found',
           'Invalid session role format.',
-          { tenant: input.tenant, runId: input.runId, step: input.step, mode: 'agent' }
+          { tenant: input.tenant, ...(input.runId !== undefined ? { runId: input.runId } : {}), step: input.step, mode: 'agent' }
         );
       }
 
       const { table, tableId } = await loadActiveRoutingTable(options, input.tenant, input.runId);
       const errorDetails: ModelRoutingSafeDetails = {
         tenant: input.tenant,
-        runId: input.runId,
+        ...(input.runId !== undefined ? { runId: input.runId } : {}),
         step: input.step,
         role: input.role,
         mode: 'agent',
@@ -437,7 +440,7 @@ export function createModelRoutingResolver(options: CreateModelRoutingResolverOp
       const { table, tableId } = await loadActiveRoutingTable(options, input.tenant, input.runId);
       const errorDetails: ModelRoutingSafeDetails = {
         tenant: input.tenant,
-        runId: input.runId,
+        ...(input.runId !== undefined ? { runId: input.runId } : {}),
         step: input.step,
         mode: 'direct',
         routingTableId: tableId
@@ -468,7 +471,7 @@ export function createModelRoutingResolver(options: CreateModelRoutingResolverOp
       for (const role of roles) {
         const errorDetails: ModelRoutingSafeDetails = {
           tenant: input.tenant,
-          runId: input.runId,
+          ...(input.runId !== undefined ? { runId: input.runId } : {}),
           step: input.step,
           role,
           mode: 'agent',
@@ -513,7 +516,7 @@ export function createModelRoutingResolver(options: CreateModelRoutingResolverOp
       }> = [];
 
       for (const role of roles) {
-        const resolution = resolutionsByRole[role];
+        const resolution = resolutionsByRole[role]!;
         const key = getDistinctKey(resolution);
         if (seenKeys.has(key)) {
           collided.push({
@@ -532,7 +535,7 @@ export function createModelRoutingResolver(options: CreateModelRoutingResolverOp
           'Resolved roles do not satisfy the distinct-model requirement.',
           {
             tenant: input.tenant,
-            runId: input.runId,
+            ...(input.runId !== undefined ? { runId: input.runId } : {}),
             step: input.step,
             roles: input.roles,
             distinctBy,
