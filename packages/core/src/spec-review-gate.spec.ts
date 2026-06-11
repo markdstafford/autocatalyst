@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
-import { assertSpecReviewGateCanAdvance, SpecReviewGateBlockedError } from './spec-review-gate.js';
+import type { Feedback, Run } from '@autocatalyst/api-contract';
+import { assertSpecReviewGateCanAdvance } from './spec-review-gate.js';
 
 // makeRun helper: returns a Run-like object
-function makeRun(overrides: Partial<{ currentStep: string; id: string }> = {}) {
-  return { id: 'run_1', currentStep: 'spec.human_review', ...overrides } as any;
+function makeRun(overrides: Partial<{ currentStep: string; id: string }> = {}): Run {
+  return { id: 'run_1', currentStep: 'spec.human_review', ...overrides } as unknown as Run;
 }
 
 describe('assertSpecReviewGateCanAdvance', () => {
@@ -17,14 +18,14 @@ describe('assertSpecReviewGateCanAdvance', () => {
   it('blocks open artifact feedback with safe ids', async () => {
     await expect(assertSpecReviewGateCanAdvance(
       { run: makeRun() },
-      { listBlockingFeedback: async () => [{ id: 'fb_1', status: 'open', body: 'secret body' } as any] }
+      { listBlockingFeedback: async () => [{ id: 'fb_1', status: 'open', body: 'secret body' } as unknown as Feedback] }
     )).rejects.toMatchObject({ code: 'feedback_gate_blocked', blockingFeedbackIds: ['fb_1'] });
   });
 
   it('blocks addressed artifact feedback', async () => {
     await expect(assertSpecReviewGateCanAdvance(
       { run: makeRun() },
-      { listBlockingFeedback: async () => [{ id: 'fb_2', status: 'addressed' } as any] }
+      { listBlockingFeedback: async () => [{ id: 'fb_2', status: 'addressed' } as unknown as Feedback] }
     )).rejects.toMatchObject({ code: 'feedback_gate_blocked', blockingFeedbackIds: ['fb_2'] });
   });
 
@@ -48,10 +49,10 @@ describe('assertSpecReviewGateCanAdvance', () => {
     const feedback = [
       { id: 'fb_1', status: 'open' },
       { id: 'fb_2', status: 'addressed' }
-    ];
+    ] as unknown as Feedback[];
     await expect(assertSpecReviewGateCanAdvance(
       { run: makeRun() },
-      { listBlockingFeedback: async () => feedback as any }
+      { listBlockingFeedback: async () => feedback }
     )).rejects.toMatchObject({ blockingFeedbackIds: ['fb_1', 'fb_2'] });
   });
 });

@@ -3,7 +3,6 @@ import {
   SpecAuthoringError,
   completeSpecAuthoring,
   type CompleteSpecAuthoringInput,
-  type SpecAuthoringServiceDependencies,
   type WorkspaceFileSystemPort,
   type WorkspaceGitPort
 } from './spec-authoring-service.js';

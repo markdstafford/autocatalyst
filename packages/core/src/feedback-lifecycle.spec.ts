@@ -1,10 +1,9 @@
-import { vi, describe, it, expect, beforeEach } from 'vitest';
+import { vi, describe, it, expect } from 'vitest';
 
 import type { Feedback, FeedbackStatus, FeedbackThreadEntry, NonModelPrincipal } from '@autocatalyst/api-contract';
 
 import type { FeedbackRepository, FeedbackStatusTransitionPersistenceInput } from './domain-repositories.js';
 import {
-  FeedbackLifecycleError,
   createArtifactFeedback,
   addressFeedback,
   markFeedbackWontFix,
