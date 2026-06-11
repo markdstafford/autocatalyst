@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 
 import type {
   ConfigurationRecord,
@@ -16,23 +16,35 @@ import { asInternalSqliteDatabase, type SqliteDatabase } from './sqlite.js';
 
 function rowToRecord(row: {
   id: string;
+  tenant: string;
   kind: string;
-  providerKind: string;
-  adapterId: string;
+  providerKind: string | null;
+  adapterId: string | null;
   settingsJson: string;
   createdAt: string;
   updatedAt: string;
 }): ConfigurationRecord {
   const settings = JSON.parse(row.settingsJson) as ConfigurationRecordSettings;
+  if (row.kind === 'provider_profile') {
+    return {
+      id: row.id,
+      tenant: row.tenant,
+      kind: 'provider_profile',
+      providerKind: row.providerKind ?? '',
+      adapterId: row.adapterId ?? '',
+      settings,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt
+    } as ConfigurationRecord;
+  }
   return {
     id: row.id,
+    tenant: row.tenant,
     kind: row.kind as ConfigurationRecord['kind'],
-    providerKind: row.providerKind,
-    adapterId: row.adapterId,
     settings,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt
-  };
+  } as ConfigurationRecord;
 }
 
 export class DrizzleConfigurationRecordRepository implements ConfigurationRecordRepository {
@@ -44,109 +56,144 @@ export class DrizzleConfigurationRecordRepository implements ConfigurationRecord
 
   async create(input: CreateConfigurationRecordRequest): Promise<ConfigurationRecord> {
     const now = new Date().toISOString();
-    const record: ConfigurationRecord = {
-      id: `cfg_${randomUUID()}`,
-      kind: input.kind,
-      providerKind: input.providerKind,
-      adapterId: input.adapterId,
-      settings: input.settings,
-      createdAt: now,
-      updatedAt: now
-    };
+    const id = `cfg_${randomUUID()}`;
+
+    const isProviderProfile = input.kind === 'provider_profile';
 
     this.#database.drizzle.insert(configurationRecords).values({
-      id: record.id,
-      kind: record.kind,
-      providerKind: record.providerKind,
-      adapterId: record.adapterId,
-      settingsJson: JSON.stringify(record.settings),
-      createdAt: record.createdAt,
-      updatedAt: record.updatedAt
+      id,
+      tenant: input.tenant,
+      kind: input.kind,
+      providerKind: isProviderProfile ? input.providerKind : null,
+      adapterId: isProviderProfile ? input.adapterId : null,
+      settingsJson: JSON.stringify(input.settings),
+      createdAt: now,
+      updatedAt: now
     }).run();
 
-    return record;
+    return rowToRecord({
+      id,
+      tenant: input.tenant,
+      kind: input.kind,
+      providerKind: isProviderProfile ? input.providerKind : null,
+      adapterId: isProviderProfile ? input.adapterId : null,
+      settingsJson: JSON.stringify(input.settings),
+      createdAt: now,
+      updatedAt: now
+    });
   }
 
-  async list(): Promise<readonly ConfigurationRecord[]> {
+  async list(tenant: string): Promise<readonly ConfigurationRecord[]> {
     const rows = this.#database.drizzle
       .select()
       .from(configurationRecords)
+      .where(eq(configurationRecords.tenant, tenant))
       .all();
 
     return rows.map(rowToRecord);
   }
 
-  async findById(id: string): Promise<ConfigurationRecord | null> {
+  async findById(tenant: string, id: string): Promise<ConfigurationRecord | null> {
     const rows = this.#database.drizzle
       .select()
       .from(configurationRecords)
-      .where(eq(configurationRecords.id, id))
+      .where(and(eq(configurationRecords.tenant, tenant), eq(configurationRecords.id, id)))
       .limit(1)
       .all();
 
     return rows[0] !== undefined ? rowToRecord(rows[0]) : null;
   }
 
-  async update(id: string, input: UpdateConfigurationRecordRequest): Promise<ConfigurationRecord | null> {
-    const existing = await this.findById(id);
+  async update(tenant: string, id: string, input: UpdateConfigurationRecordRequest): Promise<ConfigurationRecord | null> {
+    const existing = await this.findById(tenant, id);
     if (existing === null) {
       return null;
     }
 
-    const updatedProviderKind = input.providerKind ?? existing.providerKind;
-    const updatedAdapterId = input.adapterId ?? existing.adapterId;
+    if (input.kind === 'provider_profile') {
+      // Provider profile update: patch providerKind, adapterId, and settings fields
+      const existingProfile = existing as Extract<ConfigurationRecord, { kind: 'provider_profile' }>;
+      const updatedProviderKind = input.providerKind ?? existingProfile.providerKind;
+      const updatedAdapterId = input.adapterId ?? existingProfile.adapterId;
 
-    let updatedSettings: ConfigurationRecordSettings;
-    if (input.settings !== undefined) {
-      const merged: Record<string, unknown> = { ...existing.settings };
-      if (input.settings.profileName !== undefined) {
-        merged['profileName'] = input.settings.profileName;
-      }
-      if ('credentialSecretHandle' in input.settings) {
-        if (input.settings.credentialSecretHandle === null) {
-          delete merged['credentialSecretHandle'];
-        } else if (input.settings.credentialSecretHandle !== undefined) {
-          merged['credentialSecretHandle'] = input.settings.credentialSecretHandle;
+      let updatedSettings: ConfigurationRecordSettings;
+      if (input.settings !== undefined) {
+        const merged: Record<string, unknown> = { ...existingProfile.settings };
+        if (input.settings.profileName !== undefined) {
+          merged['profileName'] = input.settings.profileName;
         }
+        if ('credentialSecretHandle' in input.settings) {
+          if (input.settings.credentialSecretHandle === null) {
+            delete merged['credentialSecretHandle'];
+          } else if (input.settings.credentialSecretHandle !== undefined) {
+            merged['credentialSecretHandle'] = input.settings.credentialSecretHandle;
+          }
+        }
+        updatedSettings = merged as ConfigurationRecordSettings;
+      } else {
+        updatedSettings = existingProfile.settings;
       }
-      updatedSettings = merged as ConfigurationRecordSettings;
-    } else {
-      updatedSettings = existing.settings;
+
+      const updatedAt = new Date().toISOString();
+
+      this.#database.drizzle
+        .update(configurationRecords)
+        .set({
+          providerKind: updatedProviderKind,
+          adapterId: updatedAdapterId,
+          settingsJson: JSON.stringify(updatedSettings),
+          updatedAt
+        })
+        .where(and(eq(configurationRecords.tenant, tenant), eq(configurationRecords.id, id)))
+        .run();
+
+      return {
+        id: existing.id,
+        tenant: existing.tenant,
+        kind: 'provider_profile',
+        providerKind: updatedProviderKind,
+        adapterId: updatedAdapterId,
+        settings: updatedSettings,
+        createdAt: existing.createdAt,
+        updatedAt
+      } as ConfigurationRecord;
     }
+
+    // model_routing_table update: replace settings as-is (full routing-table patch semantics in Task 2.2)
+    const updatedSettings = input.settings !== undefined
+      ? ({ ...existing.settings, ...input.settings } as ConfigurationRecordSettings)
+      : existing.settings;
 
     const updatedAt = new Date().toISOString();
 
     this.#database.drizzle
       .update(configurationRecords)
       .set({
-        providerKind: updatedProviderKind,
-        adapterId: updatedAdapterId,
         settingsJson: JSON.stringify(updatedSettings),
         updatedAt
       })
-      .where(eq(configurationRecords.id, id))
+      .where(and(eq(configurationRecords.tenant, tenant), eq(configurationRecords.id, id)))
       .run();
 
     return {
       id: existing.id,
+      tenant: existing.tenant,
       kind: existing.kind,
-      providerKind: updatedProviderKind,
-      adapterId: updatedAdapterId,
       settings: updatedSettings,
       createdAt: existing.createdAt,
       updatedAt
-    };
+    } as ConfigurationRecord;
   }
 
-  async delete(id: string): Promise<boolean> {
-    const existing = await this.findById(id);
+  async delete(tenant: string, id: string): Promise<boolean> {
+    const existing = await this.findById(tenant, id);
     if (existing === null) {
       return false;
     }
 
     this.#database.drizzle
       .delete(configurationRecords)
-      .where(eq(configurationRecords.id, id))
+      .where(and(eq(configurationRecords.tenant, tenant), eq(configurationRecords.id, id)))
       .run();
 
     return true;

@@ -362,8 +362,9 @@ export async function createControlPlaneServer(
     mergedAdapters = merged;
   }
 
+  const startupCompositionTenant = 'tenant_dev';
   const providerCompositionResult = await composeConfiguredProviders({
-    configurationRecords: await configurationRecords.list(),
+    configurationRecords: await configurationRecords.list(startupCompositionTenant),
     registry: options.extensionRegistry ?? defaultExtensionRegistryCatalog,
     providerAdapters: mergedAdapters
   });
@@ -400,7 +401,7 @@ export async function createControlPlaneServer(
     });
     const resolveProfile = createExplicitProfileResolver({
       defaultProviderProfileId: profileId,
-      listRecords: () => configurationRecords.list(),
+      listRecords: () => configurationRecords.list('tenant_dev'),
       registry: adapterRegistry
     });
     const runnerFactory = createAgentRunnerFactory({
@@ -412,7 +413,7 @@ export async function createControlPlaneServer(
       adapters: directRegistry,
       resolveProfile: async (directInput) => {
         // For direct calls, we reuse the explicit profile resolver pattern
-        const records = await configurationRecords.list();
+        const records = await configurationRecords.list('tenant_dev');
         const record = records.find(
           (candidate) =>
             candidate.id === profileId && candidate.kind === 'provider_profile'
