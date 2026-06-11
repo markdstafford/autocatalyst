@@ -192,6 +192,11 @@ export {
   resolveApproverAddressedFeedback,
   type FeedbackLifecycleDependencies
 } from './feedback-lifecycle.js';
+
+export {
+  SpecReviewGateBlockedError,
+  assertSpecReviewGateCanAdvance
+} from './spec-review-gate.js';
 export type {
   SpecAuthoringErrorCode,
   WorkspaceFileSystemPort,
