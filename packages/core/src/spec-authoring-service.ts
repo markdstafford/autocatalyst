@@ -1,5 +1,6 @@
 import type { Artifact, Run, SpecAuthorResult } from '@autocatalyst/api-contract';
 import type { ArtifactRepository } from './domain-repositories.js';
+import { parseSpecFrontmatter, renderCommittedSpecMarkdown } from './spec-frontmatter.js';
 
 // --- Error types ---
 
@@ -111,12 +112,83 @@ function assertPreSideEffectInput(input: CompleteSpecAuthoringInput): void {
   }
 }
 
-// completeSpecAuthoring: validation implemented in T-006, side effects will be implemented in T-007
+function commitMessagePrefix(kind: 'feature_spec' | 'enhancement_spec'): string {
+  return kind === 'feature_spec' ? 'feature' : 'enhancement';
+}
+
 export async function completeSpecAuthoring(
   input: CompleteSpecAuthoringInput,
-  _deps: SpecAuthoringServiceDependencies
+  deps: SpecAuthoringServiceDependencies
 ): Promise<CompleteSpecAuthoringOutput> {
   assertPreSideEffectInput(input);
-  // Side effects will be implemented in T-007
-  throw new SpecAuthoringError('spec_file_write_failed', 'Side effects not yet implemented.');
+
+  const { run, result, workspaceRepoRoot, workspaceHandle } = input;
+  const { relativePath, frontmatter, body, kind, slug } = result;
+
+  // Step 1: Render spec Markdown
+  const contents = renderCommittedSpecMarkdown({ frontmatter, body, requireDraftStatus: true });
+
+  // Step 2: Write the file
+  try {
+    await deps.filesystem.writeFile({ workspaceRepoRoot, relativePath, contents });
+  } catch (cause) {
+    throw new SpecAuthoringError('spec_file_write_failed', 'Failed to write spec file.', { cause });
+  }
+
+  // Step 3: Read back and validate
+  try {
+    const written = await deps.filesystem.readFile({ workspaceRepoRoot, relativePath });
+    parseSpecFrontmatter(written);
+  } catch (cause) {
+    throw new SpecAuthoringError('spec_file_validation_failed', 'Spec file validation failed after write.', { cause });
+  }
+
+  // Step 4: Commit
+  const prefix = commitMessagePrefix(kind as 'feature_spec' | 'enhancement_spec');
+  try {
+    await deps.git.commitFiles({
+      workspaceRepoRoot,
+      relativePaths: [relativePath],
+      message: `docs: add ${prefix} spec ${slug}`
+    });
+  } catch (cause) {
+    throw new SpecAuthoringError('spec_commit_failed', 'Failed to commit spec file.', { cause });
+  }
+
+  // Step 5: Create or recover Artifact
+  let artifact: Artifact;
+  let artifactCreated: 'created' | 'recovered';
+  try {
+    const existing = await deps.artifacts.findByRunAndKind({ runId: run.id, kind: kind as import('@autocatalyst/api-contract').ArtifactKind });
+    if (existing === null) {
+      artifact = await deps.artifacts.create({
+        runId: run.id,
+        owner: run.owner,
+        tenant: run.tenant,
+        kind: kind as import('@autocatalyst/api-contract').ArtifactKind,
+        canonicalRecord: 'file',
+        location: relativePath,
+        cachedStatus: 'draft',
+        linkedIssue: run.trackedIssue,
+        publicationRefs: []
+      });
+      artifactCreated = 'created';
+    } else {
+      artifact = existing;
+      artifactCreated = 'recovered';
+    }
+  } catch (cause) {
+    throw new SpecAuthoringError('spec_artifact_persistence_failed', 'Failed to persist spec artifact.', { cause });
+  }
+
+  return {
+    artifact,
+    committedPath: relativePath,
+    artifactCreated,
+    checkpointResult: {
+      artifactId: artifact.id,
+      committedPath: relativePath,
+      workspaceHandle
+    }
+  };
 }
