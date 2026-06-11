@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { secretHandleSchema } from './secret.js';
-import { inferenceSettingsSchema, modelIdentitySchema } from './domain-value-objects.js';
+import { inferenceSettingsSchema, modelIdentitySchema, sessionRoleSchema } from './domain-value-objects.js';
 
 export const configurationRecordCollectionPath = '/v1/configuration-records' as const;
 export const createConfigurationRecordSuccessStatusCode = 201 as const;
@@ -39,14 +39,91 @@ export const providerProfileSettingsSchema = z.object({
   endpoint: runnerEndpointSettingsSchema.optional()
 }).strict();
 
-const modelRoutingTableSettingsSchemaBase = z.object({
-  active: z.boolean(),
-  entries: z.array(z.unknown()).default([])
+// --- Routing key schemas ---
+
+const stepIdSchema = z.string().min(1);
+
+export const agentModelRouteKeySchema = z.union([
+  z.object({
+    mode: z.literal('agent'),
+    step: stepIdSchema,
+    role: sessionRoleSchema
+  }).strict(),
+  z.object({
+    mode: z.literal('agent'),
+    step: stepIdSchema,
+    defaultForStep: z.literal(true)
+  }).strict()
+]);
+
+export const directModelRouteKeySchema = z.object({
+  mode: z.literal('direct'),
+  step: stepIdSchema
 }).strict();
+
+export const modelRouteKeySchema = z.union([agentModelRouteKeySchema, directModelRouteKeySchema]);
+
+function modelRouteKeyForComparison(route: z.infer<typeof modelRouteKeySchema>): string {
+  if (route.mode === 'direct') return `direct:${route.step}`;
+  if ('defaultForStep' in route) return `agent:${route.step}:default`;
+  return `agent:${route.step}:role:${(route as { role: string }).role}`;
+}
+
+export const modelRoutingEntrySchema = z.object({
+  id: z.string().min(1),
+  route: modelRouteKeySchema,
+  profileId: z.string().min(1),
+  enabled: z.boolean().optional()
+}).strict();
+
+export const roleDistinctRequirementSchema = z.object({
+  step: stepIdSchema,
+  mode: z.literal('agent'),
+  roles: z.array(sessionRoleSchema).min(1).refine(
+    (roles) => new Set(roles).size === roles.length,
+    { message: 'Role distinct requirements must not contain duplicate roles.' }
+  ),
+  distinctBy: z.enum(['model', 'profile'])
+}).strict();
+
+function hasDuplicateEnabledRoutes(entries: readonly z.infer<typeof modelRoutingEntrySchema>[]): boolean {
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    if (entry.enabled === false) continue;
+    const key = modelRouteKeyForComparison(entry.route);
+    if (seen.has(key)) return true;
+    seen.add(key);
+  }
+  return false;
+}
+
+export const modelRoutingTableSettingsSchema = z.object({
+  active: z.boolean(),
+  tableName: z.string().min(1).optional(),
+  version: z.number().int().min(0).optional(),
+  entries: z.array(modelRoutingEntrySchema),
+  roleDistinctRequirements: z.array(roleDistinctRequirementSchema).optional()
+}).strict().refine(
+  (value) => !hasDuplicateEnabledRoutes(value.entries),
+  { message: 'Routing table must not contain duplicate enabled route keys.', path: ['entries'] }
+);
+
+export const modelRoutingErrorCodeSchema = z.enum([
+  'routing_table_missing',
+  'routing_table_ambiguous',
+  'route_not_found',
+  'duplicate_route',
+  'profile_not_found',
+  'profile_incomplete',
+  'route_mode_mismatch',
+  'adapter_unavailable',
+  'credential_reference_invalid',
+  'role_distinct_unsatisfied'
+]);
 
 export const configurationRecordSettingsSchema = z.union([
   providerProfileSettingsSchema,
-  modelRoutingTableSettingsSchemaBase
+  modelRoutingTableSettingsSchema
 ]);
 
 // --- Update settings schemas ---
@@ -70,10 +147,24 @@ export const updateProviderProfileSettingsSchema = z.object({
 // Keep legacy name for backward compatibility
 export const updateConfigurationRecordSettingsSchema = updateProviderProfileSettingsSchema;
 
-const updateModelRoutingTableSettingsSchema = z.object({
+export const updateModelRoutingTableSettingsSchema = z.object({
   active: z.boolean().optional(),
-  entries: z.array(z.unknown()).optional()
-}).partial();
+  tableName: z.string().min(1).nullable().optional(),
+  version: z.number().int().min(0).nullable().optional(),
+  entries: z.array(modelRoutingEntrySchema).optional(),
+  roleDistinctRequirements: z.array(roleDistinctRequirementSchema).nullable().optional()
+}).strict().refine(
+  (value) =>
+    value.active !== undefined ||
+    value.tableName !== undefined ||
+    value.version !== undefined ||
+    value.entries !== undefined ||
+    value.roleDistinctRequirements !== undefined,
+  { message: 'Routing-table settings patch must include at least one field.' }
+).refine(
+  (value) => value.entries === undefined || !hasDuplicateEnabledRoutes(value.entries),
+  { message: 'Routing table must not contain duplicate enabled route keys.', path: ['entries'] }
+);
 
 // --- Create request schemas ---
 
@@ -88,7 +179,7 @@ const createProviderProfileRequestSchema = z.object({
 const createModelRoutingTableRequestSchema = z.object({
   tenant: z.string().min(1),
   kind: z.literal('model_routing_table'),
-  settings: modelRoutingTableSettingsSchemaBase
+  settings: modelRoutingTableSettingsSchema
 }).strict();
 
 export const createConfigurationRecordRequestSchema = z.discriminatedUnion('kind', [
@@ -140,7 +231,7 @@ const modelRoutingTableResponseSchema = z.object({
   id: z.string().min(1),
   tenant: z.string().min(1),
   kind: z.literal('model_routing_table'),
-  settings: modelRoutingTableSettingsSchemaBase,
+  settings: modelRoutingTableSettingsSchema,
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
 }).strict();
@@ -164,5 +255,13 @@ export type CreateConfigurationRecordRequest = z.infer<typeof createConfiguratio
 export type UpdateConfigurationRecordRequest = z.infer<typeof updateConfigurationRecordRequestSchema>;
 export type ConfigurationRecord = z.infer<typeof configurationRecordResponseSchema>;
 export type ConfigurationRecordListResponse = z.infer<typeof configurationRecordListResponseSchema>;
+export type AgentModelRouteKey = z.infer<typeof agentModelRouteKeySchema>;
+export type DirectModelRouteKey = z.infer<typeof directModelRouteKeySchema>;
+export type ModelRouteKey = z.infer<typeof modelRouteKeySchema>;
+export type ModelRoutingEntry = z.infer<typeof modelRoutingEntrySchema>;
+export type RoleDistinctRequirement = z.infer<typeof roleDistinctRequirementSchema>;
+export type ModelRoutingTableSettings = z.infer<typeof modelRoutingTableSettingsSchema>;
+export type UpdateModelRoutingTableSettings = z.infer<typeof updateModelRoutingTableSettingsSchema>;
+export type ModelRoutingErrorCode = z.infer<typeof modelRoutingErrorCodeSchema>;
 // Re-export InferenceSettings from domain-value-objects for convenience
 export type { InferenceSettings } from './domain-value-objects.js';
