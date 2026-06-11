@@ -8,6 +8,8 @@ import { StubRunner } from './stub-runner.js';
 import type { ExecutionResultValidationConfig } from './execution-entry-point.js';
 import type { Runner, RunnerCloseResult, RunnerRunInput } from './runner.js';
 import type { MaterializedExecutionEnvironment } from './materialized-environment.js';
+import { ExecutionMaterializationError } from './materialized-environment.js';
+import { SkillCatalogResolutionError } from './skills/skill-resolver.js';
 
 const runId = 'run_1';
 
@@ -254,6 +256,46 @@ describe('createExecutionEntryPoint', () => {
     }
 
     expect(caughtError).toBeInstanceOf(RunnerProtocolError);
+  });
+
+  it('throws skill_materialization_failed before runner.run is invoked when validateSkillCatalog fails', async () => {
+    const context = makeContext();
+    const skillError = new SkillCatalogResolutionError(
+      'skill_not_found',
+      'Requested skill ref is not present in the catalog.',
+      { ref: 'missing-skill' }
+    );
+    const materializationError = new ExecutionMaterializationError(
+      'skill_materialization_failed',
+      'Resolved skill bundle failed materialization validation.',
+      skillError
+    );
+    const materialize = vi.fn().mockRejectedValue(materializationError);
+    const runSpy = vi.fn();
+    const spiedRunner: Runner = {
+      run(input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+        runSpy(input);
+        return (async function* () {
+          yield makeTerminalEvent();
+        })();
+      },
+      close: vi.fn().mockResolvedValue({ status: 'closed' })
+    };
+
+    const entryPoint = createExecutionEntryPoint({ runner: spiedRunner, materialize, resultValidation: { mode: 'none' } });
+
+    let caughtError: unknown;
+    try {
+      for await (const _ of entryPoint.execute({ context })) {
+        // consume
+      }
+    } catch (err) {
+      caughtError = err;
+    }
+
+    expect(caughtError).toBeInstanceOf(ExecutionMaterializationError);
+    expect((caughtError as ExecutionMaterializationError).code).toBe('skill_materialization_failed');
+    expect(runSpy).not.toHaveBeenCalled();
   });
 
   it('non-terminal events are yielded before runner.close() is called', async () => {

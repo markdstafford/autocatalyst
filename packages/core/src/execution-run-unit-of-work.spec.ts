@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ExecutionContext } from '@autocatalyst/api-contract';
 import type { ExecutionBoundaryEvent, ExecutionEntryPoint, ExecutionEntryPointInput, DirectCallRequest } from '@autocatalyst/execution';
-import { createExecutionEntryPoint, ExecutionMaterializationError } from '@autocatalyst/execution';
+import { createExecutionEntryPoint, ExecutionMaterializationError, SkillCatalogResolutionError } from '@autocatalyst/execution';
 import type { Runner, RunnerRunInput } from '@autocatalyst/execution';
 import type { RunWorkInput } from './orchestrator.js';
 import { createExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
@@ -239,6 +239,23 @@ describe('createExecutionRunUnitOfWork', () => {
         expect(result.reason).not.toContain(sentinel);
         expect(result.reason).toContain('workspace_provisioning_failed');
       }
+    });
+
+    it('resolveContext throwing SkillCatalogResolutionError propagates and runner is never invoked', async () => {
+      const skillError = new SkillCatalogResolutionError(
+        'skill_not_found',
+        'Requested skill ref is not present in the catalog.',
+        { ref: 'missing-skill' }
+      );
+      const executeSpy = vi.fn();
+      const unitOfWork = createExecutionRunUnitOfWork({
+        execute: { execute: executeSpy },
+        resolveContext: async () => { throw skillError; },
+        eventsStore: newStore()
+      });
+
+      await expect(unitOfWork.run(makeInput())).rejects.toBeInstanceOf(SkillCatalogResolutionError);
+      expect(executeSpy).not.toHaveBeenCalled();
     });
 
     it('missing terminal re-throws missing_terminal_result', async () => {
