@@ -15,6 +15,8 @@ import type {
 
 import type { CompleteSpecAuthoringOutput, SpecAuthoringServiceDependencies } from './spec-authoring-service.js';
 import { completeSpecAuthoring } from './spec-authoring-service.js';
+import type { SpecApprovalFinalizerDependencies } from './spec-approval-finalizer.js';
+import { finalizeSpecApproval } from './spec-approval-finalizer.js';
 
 import type {
   ConversationIngressRepository,
@@ -187,6 +189,8 @@ export interface DefaultOrchestratorOptions {
   readonly resolveApproverAddressedFeedback?: typeof resolveApproverAddressedFeedback;
   readonly assertSpecReviewGateCanAdvance?: typeof assertSpecReviewGateCanAdvance;
   readonly feedbackLifecycleDependencies?: FeedbackLifecycleDependencies;
+  readonly finalizeSpecApproval?: typeof finalizeSpecApproval;
+  readonly specApprovalFinalizerDependencies?: SpecApprovalFinalizerDependencies;
 }
 
 function defaultIsActiveRunConflict(error: unknown): boolean {
@@ -217,6 +221,8 @@ export class DefaultOrchestrator implements Orchestrator {
   readonly #resolveApproverAddressedFeedback: typeof resolveApproverAddressedFeedback;
   readonly #assertSpecReviewGateCanAdvance: typeof assertSpecReviewGateCanAdvance;
   readonly #feedbackLifecycleDependencies: FeedbackLifecycleDependencies | undefined;
+  readonly #finalizeSpecApproval: typeof finalizeSpecApproval;
+  readonly #specApprovalFinalizerDependencies: SpecApprovalFinalizerDependencies | undefined;
 
   constructor(options: DefaultOrchestratorOptions) {
     this.#runs = options.runs;
@@ -233,6 +239,8 @@ export class DefaultOrchestrator implements Orchestrator {
     this.#resolveApproverAddressedFeedback = options.resolveApproverAddressedFeedback ?? resolveApproverAddressedFeedback;
     this.#assertSpecReviewGateCanAdvance = options.assertSpecReviewGateCanAdvance ?? assertSpecReviewGateCanAdvance;
     this.#feedbackLifecycleDependencies = options.feedbackLifecycleDependencies;
+    this.#finalizeSpecApproval = options.finalizeSpecApproval ?? finalizeSpecApproval;
+    this.#specApprovalFinalizerDependencies = options.specApprovalFinalizerDependencies;
   }
 
   async createRun(input: CreateOrchestratedRunInput): Promise<OrchestratedRunResult> {
@@ -437,6 +445,35 @@ export class DefaultOrchestrator implements Orchestrator {
           });
         }
         throw error;
+      }
+    }
+
+    // Spec approval finalizer: before persisting the transition out of spec.human_review,
+    // update the spec file and artifact cached status.
+    if (input.directive === 'advance' && existing.currentStep === 'spec.human_review') {
+      if (this.#specApprovalFinalizerDependencies !== undefined && this.#resolveWorkspaceContext !== undefined) {
+        const approver: NonModelPrincipal = input.principal ?? existing.owner;
+        let workspaceContext: WorkspaceContext;
+        try {
+          workspaceContext = await this.#resolveWorkspaceContext({ runId: input.runId });
+        } catch (cause) {
+          this.#logger?.warn('Failed to resolve workspace context for spec approval finalization.', { runId: input.runId, cause });
+          throw new OrchestratorError('persistence_failed', 'Failed to resolve workspace context for spec approval.', { cause });
+        }
+        try {
+          await this.#finalizeSpecApproval(
+            {
+              run: existing,
+              approver,
+              workspaceRepoRoot: workspaceContext.workspaceRepoRoot,
+              workspaceHandle: workspaceContext.workspaceHandle
+            },
+            this.#specApprovalFinalizerDependencies
+          );
+        } catch (cause) {
+          this.#logger?.warn('Spec approval finalization failed.', { runId: input.runId, cause });
+          throw new OrchestratorError('persistence_failed', 'Failed to finalize spec approval.', { cause });
+        }
       }
     }
 

@@ -205,3 +205,11 @@ export type {
   CompleteSpecAuthoringInput,
   CompleteSpecAuthoringOutput
 } from './spec-authoring-service.js';
+
+export {
+  SpecApprovalError,
+  finalizeSpecApproval,
+  type FinalizeSpecApprovalInput,
+  type SpecApprovalFinalizerDependencies,
+  type SpecApprovalErrorCode
+} from './spec-approval-finalizer.js';

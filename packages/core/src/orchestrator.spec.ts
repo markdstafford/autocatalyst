@@ -14,6 +14,7 @@ import {
 } from './orchestrator.js';
 import type { SpecAuthoringServiceDependencies } from './spec-authoring-service.js';
 import { SpecAuthoringError } from './spec-authoring-service.js';
+import type { SpecApprovalFinalizerDependencies } from './spec-approval-finalizer.js';
 
 const timestamp = '2026-06-08T00:00:00.000Z';
 const owner = { id: 'user_1', kind: 'human' as const, tenantId: 'tenant_1', displayName: 'Ada' };
@@ -143,6 +144,8 @@ function makeOrchestrator(opts: {
   resolveApproverAddressedFeedback?: (input: { runId: string; target: 'artifact'; approver: NonModelPrincipal }, deps: FeedbackLifecycleDependencies) => Promise<void>;
   assertSpecReviewGateCanAdvance?: (input: { run: Run }, deps: { listBlockingFeedback: (input: { runId: string; target: 'artifact' }) => Promise<readonly Feedback[]> }) => Promise<void>;
   feedbackLifecycleDependencies?: FeedbackLifecycleDependencies;
+  finalizeSpecApproval?: (input: unknown, deps: SpecApprovalFinalizerDependencies) => Promise<void>;
+  specApprovalFinalizerDependencies?: SpecApprovalFinalizerDependencies;
 } = {}) {
   const runs = opts.runs ?? makeFakeRunRepo();
   const conversationIngress = opts.conversationIngress ?? makeFakeIngressRepo();
@@ -161,7 +164,9 @@ function makeOrchestrator(opts: {
     ...(opts.resolveWorkspaceContext !== undefined ? { resolveWorkspaceContext: opts.resolveWorkspaceContext } : {}),
     ...(opts.resolveApproverAddressedFeedback !== undefined ? { resolveApproverAddressedFeedback: opts.resolveApproverAddressedFeedback } : {}),
     ...(opts.assertSpecReviewGateCanAdvance !== undefined ? { assertSpecReviewGateCanAdvance: opts.assertSpecReviewGateCanAdvance } : {}),
-    ...(opts.feedbackLifecycleDependencies !== undefined ? { feedbackLifecycleDependencies: opts.feedbackLifecycleDependencies } : {})
+    ...(opts.feedbackLifecycleDependencies !== undefined ? { feedbackLifecycleDependencies: opts.feedbackLifecycleDependencies } : {}),
+    ...(opts.finalizeSpecApproval !== undefined ? { finalizeSpecApproval: opts.finalizeSpecApproval as typeof import('./spec-approval-finalizer.js').finalizeSpecApproval } : {}),
+    ...(opts.specApprovalFinalizerDependencies !== undefined ? { specApprovalFinalizerDependencies: opts.specApprovalFinalizerDependencies } : {})
   });
   return { orchestrator, runs, conversationIngress, events, dispatchQueue };
 }
@@ -1162,5 +1167,201 @@ describe('DefaultOrchestrator.applyDirective — spec.human_review gate guard', 
       const err = error as { details: unknown };
       expect(err.details).toEqual({ blockingFeedbackIds: [blockingId] });
     }
+  });
+});
+
+// --- Spec approval finalizer helpers ---
+
+function makeFakeApprovalDeps(): SpecApprovalFinalizerDependencies {
+  const artifact = {
+    id: 'art_1',
+    runId: 'run_1',
+    owner,
+    tenant: 'tenant_1',
+    kind: 'feature_spec' as const,
+    canonicalRecord: 'file' as const,
+    location: 'context-human/specs/feature-test.md',
+    cachedStatus: 'draft' as const,
+    publicationRefs: [],
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+  const validContents = '---\ncreated: 2026-06-11\nlast_updated: 2026-06-11\nstatus: draft\nspecced_by: autocatalyst\n---\n# Test\n';
+  let writtenContents = validContents;
+  return {
+    artifacts: {
+      create: vi.fn(),
+      findById: vi.fn(),
+      listByRun: vi.fn(),
+      findByRunAndKind: vi.fn().mockResolvedValue(artifact),
+      updateCachedStatus: vi.fn().mockResolvedValue({ ...artifact, cachedStatus: 'approved' })
+    } as unknown as SpecApprovalFinalizerDependencies['artifacts'],
+    filesystem: {
+      writeFile: vi.fn().mockImplementation(async ({ contents }: { workspaceRepoRoot: string; relativePath: string; contents: string }) => {
+        writtenContents = contents;
+      }),
+      readFile: vi.fn().mockImplementation(async () => writtenContents)
+    } as unknown as SpecApprovalFinalizerDependencies['filesystem'],
+    git: {
+      commitFiles: vi.fn().mockResolvedValue({ commitSha: 'abc123' })
+    } as unknown as SpecApprovalFinalizerDependencies['git'],
+    clock: () => timestamp
+  };
+}
+
+describe('DefaultOrchestrator.applyDirective — spec approval finalizer', () => {
+  it('calls finalizeSpecApproval before advancing the run from spec.human_review', async () => {
+    const finalizeSpecApprovalFn = vi.fn(async () => undefined);
+    const specApprovalFinalizerDependencies = makeFakeApprovalDeps();
+    const resolveWorkspaceContext = vi.fn().mockResolvedValue({
+      workspaceRepoRoot: '/workspace/repo',
+      workspaceHandle: 'ws_1'
+    });
+
+    const existing = makeRun({ currentStep: 'spec.human_review' });
+    const updated = makeRun({ currentStep: 'implementation' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation', phase: 'implementation' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      finalizeSpecApproval: finalizeSpecApprovalFn,
+      specApprovalFinalizerDependencies,
+      resolveWorkspaceContext
+    });
+
+    const result = await orchestrator.applyDirective({
+      runId: 'run_1',
+      directive: 'advance',
+      tenant: 'tenant_1',
+      principal: principal('phoebe')
+    });
+
+    expect(finalizeSpecApprovalFn).toHaveBeenCalledTimes(1);
+    expect(finalizeSpecApprovalFn).toHaveBeenCalledWith(
+      expect.objectContaining({ run: existing }),
+      specApprovalFinalizerDependencies
+    );
+    expect(recordTransition).toHaveBeenCalledTimes(1);
+    expect(result.run.currentStep).toBe('implementation');
+  });
+
+  it('does NOT call finalizeSpecApproval when specApprovalFinalizerDependencies not configured', async () => {
+    const finalizeSpecApprovalFn = vi.fn(async () => undefined);
+
+    const existing = makeRun({ currentStep: 'spec.human_review' });
+    const updated = makeRun({ currentStep: 'implementation' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation', phase: 'implementation' });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep })
+    });
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      finalizeSpecApproval: finalizeSpecApprovalFn
+      // No specApprovalFinalizerDependencies — should not call finalizer
+    });
+
+    await orchestrator.applyDirective({
+      runId: 'run_1',
+      directive: 'advance',
+      tenant: 'tenant_1'
+    });
+
+    expect(finalizeSpecApprovalFn).not.toHaveBeenCalled();
+  });
+
+  it('throws persistence_failed when finalizeSpecApproval throws', async () => {
+    const finalizeSpecApprovalFn = vi.fn(async () => { throw new Error('approval failed'); });
+    const specApprovalFinalizerDependencies = makeFakeApprovalDeps();
+    const resolveWorkspaceContext = vi.fn().mockResolvedValue({
+      workspaceRepoRoot: '/workspace/repo',
+      workspaceHandle: 'ws_1'
+    });
+
+    const existing = makeRun({ currentStep: 'spec.human_review' });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: vi.fn()
+    });
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      finalizeSpecApproval: finalizeSpecApprovalFn,
+      specApprovalFinalizerDependencies,
+      resolveWorkspaceContext
+    });
+
+    await expect(
+      orchestrator.applyDirective({
+        runId: 'run_1',
+        directive: 'advance',
+        tenant: 'tenant_1'
+      })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'persistence_failed' });
+
+    // Run must NOT have been advanced
+    expect(runs.recordRunStepTransition).not.toHaveBeenCalled();
+  });
+
+  it('does NOT call finalizeSpecApproval for non-advance directives at spec.human_review', async () => {
+    const finalizeSpecApprovalFn = vi.fn(async () => undefined);
+    const specApprovalFinalizerDependencies = makeFakeApprovalDeps();
+    const resolveWorkspaceContext = vi.fn().mockResolvedValue({
+      workspaceRepoRoot: '/workspace/repo',
+      workspaceHandle: 'ws_1'
+    });
+
+    const existing = makeRun({ currentStep: 'spec.human_review' });
+    const failed = makeRun({ currentStep: 'failed', terminal: true });
+    const failedStep = makeRunStep({ step: 'failed' });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: vi.fn().mockResolvedValue({ run: failed, runStep: failedStep })
+    });
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      finalizeSpecApproval: finalizeSpecApprovalFn,
+      specApprovalFinalizerDependencies,
+      resolveWorkspaceContext
+    });
+
+    const result = await orchestrator.applyDirective({
+      runId: 'run_1',
+      directive: 'fail',
+      tenant: 'tenant_1'
+    });
+
+    expect(finalizeSpecApprovalFn).not.toHaveBeenCalled();
+    expect(result.run.currentStep).toBe('failed');
+  });
+
+  it('does NOT call finalizeSpecApproval for other steps', async () => {
+    const finalizeSpecApprovalFn = vi.fn(async () => undefined);
+    const specApprovalFinalizerDependencies = makeFakeApprovalDeps();
+
+    const existing = makeRun({ currentStep: 'intake' });
+    const updated = makeRun({ currentStep: 'spec.author' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'spec.author', phase: 'spec' });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep })
+    });
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      finalizeSpecApproval: finalizeSpecApprovalFn,
+      specApprovalFinalizerDependencies
+    });
+
+    await orchestrator.applyDirective({ runId: 'run_1', directive: 'advance', tenant: 'tenant_1' });
+
+    expect(finalizeSpecApprovalFn).not.toHaveBeenCalled();
   });
 });
