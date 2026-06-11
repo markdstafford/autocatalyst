@@ -108,6 +108,7 @@ function makeFakeRunRepo(overrides?: Partial<RunRepository>): RunRepository {
     findById: vi.fn().mockResolvedValue(makeRun()),
     findActiveByTopic: vi.fn().mockResolvedValue(null),
     listByTopic: vi.fn().mockResolvedValue([]),
+    listByTenant: vi.fn().mockResolvedValue([]),
     recordRunLifecycleStart: vi.fn(),
     recordRunStepTransition: vi.fn(),
     ...overrides
