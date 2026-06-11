@@ -81,4 +81,72 @@ describe('DrizzleConfigurationRecordRepository', () => {
       database.close();
     });
   });
+
+  it('parses provider_profile and model_routing_table rows by kind', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const database = createSqliteDatabase({ path: databasePath });
+      await migrateSqliteDatabase(database);
+      const repository = new DrizzleConfigurationRecordRepository(database);
+
+      const providerProfile = await repository.create({
+        tenant: 'tenant_a',
+        kind: 'provider_profile',
+        providerKind: 'anthropic',
+        adapterId: 'claude-agent-sdk',
+        settings: {
+          profileName: 'Claude agent',
+          credentialSecretHandle: 'sec_abcdefghijklmnopqrstuvwxyzABCDEF',
+          model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+          inferenceSettings: {},
+          endpoint: {}
+        }
+      });
+
+      expect(providerProfile.kind).toBe('provider_profile');
+      if (providerProfile.kind === 'provider_profile') {
+        expect(providerProfile.providerKind).toBe('anthropic');
+        expect(providerProfile.adapterId).toBe('claude-agent-sdk');
+        expect(providerProfile.settings.profileName).toBe('Claude agent');
+      }
+
+      const routingTable = await repository.create({
+        tenant: 'tenant_a',
+        kind: 'model_routing_table',
+        settings: { active: true, entries: [] }
+      });
+
+      expect(routingTable.kind).toBe('model_routing_table');
+      if (routingTable.kind === 'model_routing_table') {
+        expect('providerKind' in routingTable).toBe(false);
+        expect('adapterId' in routingTable).toBe(false);
+        expect(routingTable.settings.active).toBe(true);
+        expect(routingTable.settings.entries).toEqual([]);
+      }
+
+      database.close();
+    });
+  });
+
+  it('rejects kind/settings mismatch at the repository boundary', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const database = createSqliteDatabase({ path: databasePath });
+      await migrateSqliteDatabase(database);
+      const repository = new DrizzleConfigurationRecordRepository(database);
+
+      // Create a legitimate routing table first
+      const created = await repository.create({
+        tenant: 'tenant_a',
+        kind: 'model_routing_table',
+        settings: { active: true, entries: [] }
+      });
+
+      // Attempt to update it with provider-profile kind
+      await expect(repository.update('tenant_a', created.id, {
+        kind: 'provider_profile',
+        settings: { profileName: 'Wrong kind' }
+      })).rejects.toThrow();
+
+      database.close();
+    });
+  });
 });

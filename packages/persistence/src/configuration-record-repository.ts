@@ -8,6 +8,7 @@ import type {
   CreateConfigurationRecordRequest,
   UpdateConfigurationRecordRequest
 } from '@autocatalyst/api-contract';
+import { configurationRecordResponseSchema } from '@autocatalyst/api-contract';
 
 import type { ConfigurationRecordRepository } from '@autocatalyst/core';
 
@@ -24,27 +25,22 @@ function rowToRecord(row: {
   createdAt: string;
   updatedAt: string;
 }): ConfigurationRecord {
-  const settings = JSON.parse(row.settingsJson) as ConfigurationRecordSettings;
-  if (row.kind === 'provider_profile') {
-    return {
-      id: row.id,
-      tenant: row.tenant,
-      kind: 'provider_profile',
-      providerKind: row.providerKind ?? '',
-      adapterId: row.adapterId ?? '',
-      settings,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt
-    } as ConfigurationRecord;
-  }
-  return {
+  const settings = JSON.parse(row.settingsJson) as unknown;
+  const candidate: Record<string, unknown> = {
     id: row.id,
     tenant: row.tenant,
-    kind: row.kind as ConfigurationRecord['kind'],
+    kind: row.kind,
     settings,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt
-  } as ConfigurationRecord;
+  };
+  if (row.providerKind !== null) {
+    candidate['providerKind'] = row.providerKind;
+  }
+  if (row.adapterId !== null) {
+    candidate['adapterId'] = row.adapterId;
+  }
+  return configurationRecordResponseSchema.parse(candidate);
 }
 
 export class DrizzleConfigurationRecordRepository implements ConfigurationRecordRepository {
@@ -108,6 +104,10 @@ export class DrizzleConfigurationRecordRepository implements ConfigurationRecord
     const existing = await this.findById(tenant, id);
     if (existing === null) {
       return null;
+    }
+
+    if (input.kind !== existing.kind) {
+      throw new Error(`Cannot update configuration record kind ${existing.kind} with body kind ${input.kind}`);
     }
 
     if (input.kind === 'provider_profile') {
