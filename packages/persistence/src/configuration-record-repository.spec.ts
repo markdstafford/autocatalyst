@@ -149,4 +149,140 @@ describe('DrizzleConfigurationRecordRepository', () => {
       database.close();
     });
   });
+
+  describe('model_routing_table CRUD', () => {
+    it('creates, finds, lists, and updates a routing table', async () => {
+      await withTempDatabasePath(async (databasePath) => {
+        const database = createSqliteDatabase({ path: databasePath });
+        await migrateSqliteDatabase(database);
+        const repository = new DrizzleConfigurationRecordRepository(database);
+
+        const created = await repository.create({
+          tenant: 'tenant_a',
+          kind: 'model_routing_table',
+          settings: {
+            active: true,
+            tableName: 'Primary',
+            version: 1,
+            entries: [],
+            roleDistinctRequirements: []
+          }
+        });
+
+        expect(created.kind).toBe('model_routing_table');
+        if (created.kind === 'model_routing_table') {
+          expect(created.settings.active).toBe(true);
+          expect(created.settings.tableName).toBe('Primary');
+          expect(created.settings.version).toBe(1);
+        }
+
+        const found = await repository.findById('tenant_a', created.id);
+        expect(found?.id).toBe(created.id);
+
+        const listed = await repository.list('tenant_a');
+        expect(listed.some((r) => r.id === created.id)).toBe(true);
+
+        database.close();
+      });
+    });
+
+    it('enforces at most one active routing table per tenant', async () => {
+      await withTempDatabasePath(async (databasePath) => {
+        const database = createSqliteDatabase({ path: databasePath });
+        await migrateSqliteDatabase(database);
+        const repository = new DrizzleConfigurationRecordRepository(database);
+
+        await repository.create({
+          tenant: 'tenant_a',
+          kind: 'model_routing_table',
+          settings: { active: true, entries: [] }
+        });
+
+        await expect(repository.create({
+          tenant: 'tenant_a',
+          kind: 'model_routing_table',
+          settings: { active: true, entries: [] }
+        })).rejects.toThrow(/active model-routing table/i);
+
+        // Different tenant should succeed
+        const tenantB = await repository.create({
+          tenant: 'tenant_b',
+          kind: 'model_routing_table',
+          settings: { active: true, entries: [] }
+        });
+        expect(tenantB.tenant).toBe('tenant_b');
+
+        database.close();
+      });
+    });
+
+    it('applies routing-table patch semantics correctly', async () => {
+      await withTempDatabasePath(async (databasePath) => {
+        const database = createSqliteDatabase({ path: databasePath });
+        await migrateSqliteDatabase(database);
+        const repository = new DrizzleConfigurationRecordRepository(database);
+
+        const created = await repository.create({
+          tenant: 'tenant_a',
+          kind: 'model_routing_table',
+          settings: {
+            active: false,
+            tableName: 'Initial',
+            version: 1,
+            entries: [],
+            roleDistinctRequirements: [{ step: 's', mode: 'agent', roles: ['implementer', 'reviewer'], distinctBy: 'model' }]
+          }
+        });
+
+        // Activate and update tableName
+        const updated = await repository.update('tenant_a', created.id, {
+          kind: 'model_routing_table',
+          settings: { active: true, tableName: 'Updated' }
+        });
+        expect(updated?.kind === 'model_routing_table' && updated.settings.active).toBe(true);
+        if (updated?.kind === 'model_routing_table') {
+          expect(updated.settings.tableName).toBe('Updated');
+          expect(updated.settings.version).toBe(1); // unchanged
+          // roleDistinctRequirements should be preserved since not patched
+          expect(updated.settings.roleDistinctRequirements).toHaveLength(1);
+        }
+
+        // Clear tableName with null
+        const cleared = await repository.update('tenant_a', created.id, {
+          kind: 'model_routing_table',
+          settings: { tableName: null }
+        });
+        if (cleared?.kind === 'model_routing_table') {
+          expect(cleared.settings.tableName).toBeUndefined();
+          expect(cleared.settings.version).toBe(1); // version unchanged
+        }
+
+        // Whole-array replace entries
+        const withEntries = await repository.update('tenant_a', created.id, {
+          kind: 'model_routing_table',
+          settings: {
+            entries: [{
+              id: 'route_1',
+              route: { mode: 'agent', step: 'impl', role: 'implementer' },
+              profileId: 'cfg_123'
+            }]
+          }
+        });
+        if (withEntries?.kind === 'model_routing_table') {
+          expect(withEntries.settings.entries).toHaveLength(1);
+        }
+
+        // Clear roleDistinctRequirements with null
+        const withNullReqs = await repository.update('tenant_a', created.id, {
+          kind: 'model_routing_table',
+          settings: { roleDistinctRequirements: null }
+        });
+        if (withNullReqs?.kind === 'model_routing_table') {
+          expect(withNullReqs.settings.roleDistinctRequirements).toBeUndefined();
+        }
+
+        database.close();
+      });
+    });
+  });
 });

@@ -6,7 +6,9 @@ import type {
   ConfigurationRecord,
   ConfigurationRecordSettings,
   CreateConfigurationRecordRequest,
-  UpdateConfigurationRecordRequest
+  ModelRoutingTableSettings,
+  UpdateConfigurationRecordRequest,
+  UpdateModelRoutingTableSettings
 } from '@autocatalyst/api-contract';
 import { configurationRecordResponseSchema } from '@autocatalyst/api-contract';
 
@@ -43,6 +45,48 @@ function rowToRecord(row: {
   return configurationRecordResponseSchema.parse(candidate);
 }
 
+function applyRoutingTableSettingsPatch(
+  existing: ModelRoutingTableSettings,
+  patch: UpdateModelRoutingTableSettings
+): ModelRoutingTableSettings {
+  const result: Record<string, unknown> = { active: existing.active };
+
+  // active: set if provided
+  if (patch.active !== undefined) {
+    result['active'] = patch.active;
+  }
+
+  // tableName: null = clear, string = set, undefined = keep
+  if (patch.tableName !== undefined) {
+    if (patch.tableName !== null) result['tableName'] = patch.tableName;
+    // null = omit (cleared)
+  } else if (existing.tableName !== undefined) {
+    result['tableName'] = existing.tableName;
+  }
+
+  // version: null = clear, number = set, undefined = keep
+  if (patch.version !== undefined) {
+    if (patch.version !== null) result['version'] = patch.version;
+  } else if (existing.version !== undefined) {
+    result['version'] = existing.version;
+  }
+
+  // entries: whole-array replacement when present, keep existing if absent
+  result['entries'] = patch.entries !== undefined ? patch.entries : existing.entries;
+
+  // roleDistinctRequirements: null = clear (omit field), array = set, undefined = keep
+  if (patch.roleDistinctRequirements !== undefined) {
+    if (patch.roleDistinctRequirements !== null) {
+      result['roleDistinctRequirements'] = patch.roleDistinctRequirements;
+    }
+    // null = omit (cleared)
+  } else if (existing.roleDistinctRequirements !== undefined) {
+    result['roleDistinctRequirements'] = existing.roleDistinctRequirements;
+  }
+
+  return result as unknown as ModelRoutingTableSettings;
+}
+
 export class DrizzleConfigurationRecordRepository implements ConfigurationRecordRepository {
   readonly #database;
 
@@ -50,9 +94,23 @@ export class DrizzleConfigurationRecordRepository implements ConfigurationRecord
     this.#database = asInternalSqliteDatabase(database);
   }
 
+  private async assertSingleActiveRoutingTable(tenant: string, excludeId?: string): Promise<void> {
+    const allRecords = await this.list(tenant);
+    const activeRoutingTables = allRecords.filter(
+      (record) => record.kind === 'model_routing_table' && record.settings.active === true && record.id !== excludeId
+    );
+    if (activeRoutingTables.length > 0) {
+      throw new Error(`Tenant ${tenant} already has an active model-routing table.`);
+    }
+  }
+
   async create(input: CreateConfigurationRecordRequest): Promise<ConfigurationRecord> {
     const now = new Date().toISOString();
     const id = `cfg_${randomUUID()}`;
+
+    if (input.kind === 'model_routing_table' && input.settings.active === true) {
+      await this.assertSingleActiveRoutingTable(input.tenant);
+    }
 
     const isProviderProfile = input.kind === 'provider_profile';
 
@@ -159,11 +217,16 @@ export class DrizzleConfigurationRecordRepository implements ConfigurationRecord
       } as ConfigurationRecord;
     }
 
-    // model_routing_table update: replace settings as-is (full routing-table patch semantics in Task 2.2)
-    const updatedSettings = input.settings !== undefined
-      ? ({ ...existing.settings, ...input.settings } as ConfigurationRecordSettings)
-      : existing.settings;
+    // model_routing_table update: proper patch semantics with active-uniqueness enforcement
+    const existingTable = existing as Extract<ConfigurationRecord, { kind: 'model_routing_table' }>;
+    const patch = input.settings ?? {} as UpdateModelRoutingTableSettings;
 
+    // Check active uniqueness if activating
+    if (patch.active === true) {
+      await this.assertSingleActiveRoutingTable(tenant, id);
+    }
+
+    const updatedSettings = applyRoutingTableSettingsPatch(existingTable.settings, patch);
     const updatedAt = new Date().toISOString();
 
     this.#database.drizzle
@@ -178,7 +241,7 @@ export class DrizzleConfigurationRecordRepository implements ConfigurationRecord
     return {
       id: existing.id,
       tenant: existing.tenant,
-      kind: existing.kind,
+      kind: 'model_routing_table',
       settings: updatedSettings,
       createdAt: existing.createdAt,
       updatedAt
