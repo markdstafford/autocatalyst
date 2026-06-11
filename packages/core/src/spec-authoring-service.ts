@@ -73,10 +73,50 @@ export interface CompleteSpecAuthoringOutput {
   };
 }
 
-// completeSpecAuthoring will be implemented in T-006 and T-007
+function expectedKindForRun(run: Run): 'feature_spec' | 'enhancement_spec' | null {
+  if (run.workKind === 'feature') return 'feature_spec';
+  if (run.workKind === 'enhancement') return 'enhancement_spec';
+  return null;
+}
+
+function assertPreSideEffectInput(input: CompleteSpecAuthoringInput): void {
+  const expectedKind = expectedKindForRun(input.run);
+  if (expectedKind === null || input.result.kind !== expectedKind) {
+    throw new SpecAuthoringError('spec_workflow_kind_mismatch', 'Spec result kind does not match run workflow.');
+  }
+
+  const expectedPrefix = input.result.kind === 'feature_spec' ? 'feature' : 'enhancement';
+  const expectedPath = `context-human/specs/${expectedPrefix}-${input.result.slug}.md`;
+
+  if (
+    input.result.relativePath.startsWith('/') ||
+    input.result.relativePath.includes('..') ||
+    !input.result.relativePath.startsWith('context-human/specs/') ||
+    input.result.relativePath !== expectedPath
+  ) {
+    throw new SpecAuthoringError('spec_path_invalid', 'Spec path is outside the allowed specs directory.');
+  }
+
+  if (input.result.frontmatter.status !== 'draft') {
+    throw new SpecAuthoringError('spec_initial_status_invalid', 'Initial spec frontmatter status must be draft.');
+  }
+
+  const expectedIssue = input.run.trackedIssue?.number;
+  if (
+    expectedIssue !== undefined &&
+    input.result.frontmatter.issue !== undefined &&
+    input.result.frontmatter.issue !== expectedIssue
+  ) {
+    throw new SpecAuthoringError('spec_issue_mismatch', 'Spec issue does not match the tracked issue.');
+  }
+}
+
+// completeSpecAuthoring: validation implemented in T-006, side effects will be implemented in T-007
 export async function completeSpecAuthoring(
-  _input: CompleteSpecAuthoringInput,
+  input: CompleteSpecAuthoringInput,
   _deps: SpecAuthoringServiceDependencies
 ): Promise<CompleteSpecAuthoringOutput> {
-  throw new SpecAuthoringError('spec_path_invalid', 'Not yet implemented.');
+  assertPreSideEffectInput(input);
+  // Side effects will be implemented in T-007
+  throw new SpecAuthoringError('spec_file_write_failed', 'Side effects not yet implemented.');
 }
