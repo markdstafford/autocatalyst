@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
-import type { ConfigurationRecord, ExecutionContext, ProviderProfileSettings } from '@autocatalyst/api-contract';
+import type { ConfigurationRecord, ExecutionContext, ProviderProfileSettings, SessionRole } from '@autocatalyst/api-contract';
 import {
   buildProviderAdapterKey,
   composeAgentProviderAdapterRegistry,
@@ -13,11 +13,13 @@ import {
   composeConfiguredProviders,
   createExecutionContextResolver,
   createExecutionRunUnitOfWork,
+  createModelRoutingResolver,
   DefaultControlPlaneService,
   DefaultOrchestrator,
   defaultExtensionRegistryCatalog,
   emptyProviderAdapterMap,
   InMemoryRetainedRunEventStore,
+  ModelRoutingConfigurationError,
   permissivePolicyDecisionPoint,
   registerControlPlaneRoutes,
   RunDispatchQueue,
@@ -25,6 +27,7 @@ import {
   type ExecutionModeResolution,
   type ExtensionRegistryCatalog,
   type HealthDependencyChecker,
+  type ModelRoutingResolver,
   type PolicyDecisionPoint,
   type ProviderAdapterFactory,
   type ProviderAdapterMap,
@@ -46,6 +49,8 @@ import {
   type AgentProviderAdapterRegistry,
   type AgentRunnerFactory,
   type AgentRunnerFactoryInput,
+  type DirectCallFactoryInput,
+  type DirectProfileResolution,
   type ExecutionEntryPoint,
   type ExecutionEntryPointInput,
   type ExecutionBoundaryEvent,
@@ -253,10 +258,71 @@ async function createConnectionFromAgentConnection(
   });
 }
 
+/**
+ * Bridge between dispatch-layer factory inputs and the model-routing resolver.
+ * Returned helpers extract `tenant`/`role` from factory inputs, defaulting tenant
+ * to `fallbackTenant` when absent. ModelRoutingConfigurationError is left to
+ * propagate so callers can preserve the typed routing error code (and optionally
+ * fall back to an explicit profile when `routing_table_missing`).
+ */
+export function createRoutingProfileResolver(options: {
+  readonly resolver: ModelRoutingResolver;
+  readonly fallbackTenant?: string;
+}): {
+  resolveAgentProfile(factoryInput: AgentRunnerFactoryInput): Promise<AgentProfileResolution>;
+  resolveDirectProfile(factoryInput: DirectCallFactoryInput): Promise<DirectProfileResolution>;
+} {
+  return {
+    async resolveAgentProfile(factoryInput) {
+      const tenant = factoryInput.tenant ?? options.fallbackTenant;
+      if (tenant === undefined || tenant.length === 0) {
+        throw new ProviderConfigurationError(
+          'missing_profile',
+          'No tenant available for routing.',
+          { runId: factoryInput.runId, step: factoryInput.step }
+        );
+      }
+      const role = factoryInput.role;
+      if (role === undefined || role.length === 0) {
+        throw new ProviderConfigurationError(
+          'missing_profile',
+          'No role available for agent routing.',
+          { runId: factoryInput.runId, step: factoryInput.step }
+        );
+      }
+      const resolution = await options.resolver.resolveAgentRoute({
+        tenant,
+        runId: factoryInput.runId,
+        step: factoryInput.step,
+        role: role as SessionRole
+      });
+      return { profile: resolution.profile, credentialReference: resolution.credentialReference };
+    },
+    async resolveDirectProfile(factoryInput) {
+      const tenant = factoryInput.tenant ?? options.fallbackTenant;
+      if (tenant === undefined || tenant.length === 0) {
+        throw new ProviderConfigurationError(
+          'missing_profile',
+          'No tenant available for direct routing.',
+          { runId: factoryInput.runId, step: factoryInput.step }
+        );
+      }
+      const resolution = await options.resolver.resolveDirectRoute({
+        tenant,
+        runId: factoryInput.runId,
+        step: factoryInput.step
+      });
+      return { profile: resolution.profile, credentialReference: resolution.credentialReference };
+    }
+  };
+}
+
 function createDelegatingExecutionEntryPoint(input: {
   readonly factory: AgentRunnerFactory;
   readonly materialize: (context: ExecutionContext) => Promise<MaterializedExecutionEnvironment>;
+  readonly resolveRole?: (step: string) => string;
 }): ExecutionEntryPoint {
+  const { resolveRole } = input;
   /**
    * Wraps the materializer to ensure a scratch root is always available.
    * For workspace shapes that do not provision a scratch root (e.g. 'none' for
@@ -293,7 +359,11 @@ function createDelegatingExecutionEntryPoint(input: {
     async *execute(entryInput: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
       const runnerFactoryInput: AgentRunnerFactoryInput = {
         runId: entryInput.context.run.id,
-        step: entryInput.context.run.currentStep
+        step: entryInput.context.run.currentStep,
+        tenant: entryInput.context.run.tenant,
+        ...(resolveRole !== undefined
+          ? { role: resolveRole(entryInput.context.run.currentStep) }
+          : {})
       };
       const runner = await input.factory.createRunner(runnerFactoryInput);
       const perRunEntryPoint = createExecutionEntryPoint({
@@ -388,22 +458,56 @@ export async function createControlPlaneServer(
   let resolvedUnitOfWork: RunUnitOfWork | undefined = options.unitOfWork;
   if (resolvedUnitOfWork === undefined && realDispatchEnabled) {
     const profileId = options.realRunnerDispatch?.defaultProviderProfileId;
-    if (profileId === undefined || profileId.length === 0) {
-      throw new Error(
-        'realRunnerDispatch.defaultProviderProfileId is required when realRunnerDispatch.enabled is true.'
-      );
-    }
     const adapterRegistry = composeAgentProviderAdapterRegistry({
       composed: providerCompositionResult.composed
     });
     const directRegistry = composeDirectProviderAdapterRegistry({
       composed: providerCompositionResult.composed
     });
-    const resolveProfile = createExplicitProfileResolver({
-      defaultProviderProfileId: profileId,
-      listRecords: () => configurationRecords.list('tenant_dev'),
-      registry: adapterRegistry
+
+    // Build the routing resolver and its dispatch-input bridge. Routing is the
+    // default profile-resolution mode; an explicit `defaultProviderProfileId`
+    // (when provided) acts as a fallback used only when no active routing table
+    // exists for the tenant — preserving backward compatibility with callers
+    // that have not yet configured routing.
+    const routingResolver = createModelRoutingResolver({
+      configuration: {
+        listConfigurationRecords: (tenant) => configurationRecords.list(tenant),
+        findConfigurationRecordById: (tenant, id) => configurationRecords.findById(tenant, id)
+      },
+      agentAdapters: adapterRegistry,
+      directAdapters: directRegistry
     });
+    const routingProfileHelper = createRoutingProfileResolver({
+      resolver: routingResolver,
+      fallbackTenant: 'tenant_dev'
+    });
+
+    const explicitProfileFallback = profileId !== undefined && profileId.length > 0
+      ? createExplicitProfileResolver({
+          defaultProviderProfileId: profileId,
+          listRecords: () => configurationRecords.list('tenant_dev'),
+          registry: adapterRegistry
+        })
+      : undefined;
+
+    const resolveProfile = async (
+      factoryInput: AgentRunnerFactoryInput
+    ): Promise<AgentProfileResolution> => {
+      try {
+        return await routingProfileHelper.resolveAgentProfile(factoryInput);
+      } catch (err) {
+        if (
+          err instanceof ModelRoutingConfigurationError &&
+          err.code === 'routing_table_missing' &&
+          explicitProfileFallback !== undefined
+        ) {
+          return explicitProfileFallback(factoryInput);
+        }
+        throw err;
+      }
+    };
+
     const runnerFactory = createAgentRunnerFactory({
       adapters: adapterRegistry,
       resolveProfile,
@@ -412,40 +516,52 @@ export async function createControlPlaneServer(
     const directCallFactory = createDirectCallFactory({
       adapters: directRegistry,
       resolveProfile: async (directInput) => {
-        // For direct calls, we reuse the explicit profile resolver pattern
-        const records = await configurationRecords.list('tenant_dev');
-        const record = records.find(
-          (candidate) =>
-            candidate.id === profileId && candidate.kind === 'provider_profile'
-        );
-        if (record === undefined) {
-          throw new ProviderConfigurationError(
-            'missing_profile',
-            `No provider_profile configuration record found with id "${profileId}".`,
-            { runId: directInput.runId, step: directInput.step }
-          );
-        }
-        const settings = record.settings as ProviderProfileSettings;
-        // Direct providers always use fetch_transport; authTarget is not applicable for direct profiles.
-        return {
-          profile: {
-            mode: 'direct' as const,
-            providerKind: record.providerKind,
-            adapterId: record.adapterId,
-            profileName: settings.profileName,
-            configurationRecordId: record.id,
-            model: settings.model ?? { ...defaultModelIdentity },
-            inferenceSettings: settings.inferenceSettings ?? {},
-            endpoint: settings.endpoint ?? {},
-            connectionMechanism: 'fetch_transport' as const
-          },
-          credentialReference: {
-            required: settings.credentialSecretHandle !== undefined,
-            ...(settings.credentialSecretHandle !== undefined
-              ? { secretHandle: settings.credentialSecretHandle }
-              : {})
+        try {
+          return await routingProfileHelper.resolveDirectProfile(directInput);
+        } catch (err) {
+          if (
+            err instanceof ModelRoutingConfigurationError &&
+            err.code === 'routing_table_missing' &&
+            profileId !== undefined &&
+            profileId.length > 0
+          ) {
+            // Fall back to the explicit profile for direct calls when no
+            // active routing table is configured.
+            const records = await configurationRecords.list('tenant_dev');
+            const record = records.find(
+              (candidate) =>
+                candidate.id === profileId && candidate.kind === 'provider_profile'
+            );
+            if (record === undefined) {
+              throw new ProviderConfigurationError(
+                'missing_profile',
+                `No provider_profile configuration record found with id "${profileId}".`,
+                { runId: directInput.runId, step: directInput.step }
+              );
+            }
+            const settings = record.settings as ProviderProfileSettings;
+            return {
+              profile: {
+                mode: 'direct' as const,
+                providerKind: record.providerKind,
+                adapterId: record.adapterId,
+                profileName: settings.profileName,
+                configurationRecordId: record.id,
+                model: settings.model ?? { ...defaultModelIdentity },
+                inferenceSettings: settings.inferenceSettings ?? {},
+                endpoint: settings.endpoint ?? {},
+                connectionMechanism: 'fetch_transport' as const
+              },
+              credentialReference: {
+                required: settings.credentialSecretHandle !== undefined,
+                ...(settings.credentialSecretHandle !== undefined
+                  ? { secretHandle: settings.credentialSecretHandle }
+                  : {})
+              }
+            };
           }
-        };
+          throw err;
+        }
       },
       createConnection: (input) => createConnectionFromAgentConnection(input, secretStore)
     });
@@ -454,7 +570,12 @@ export async function createControlPlaneServer(
     });
     const entryPoint = createDelegatingExecutionEntryPoint({
       factory: runnerFactory,
-      materialize: (context) => materializer.materialize(context)
+      materialize: (context) => materializer.materialize(context),
+      // Default to 'implementer' for routing until per-step role catalog is wired in.
+      resolveRole: (step) => {
+        void step;
+        return 'implementer';
+      }
     });
     const contextResolver = createExecutionContextResolver({ secretsAvailable: false });
     resolvedUnitOfWork = createExecutionRunUnitOfWork({
@@ -465,6 +586,7 @@ export async function createControlPlaneServer(
       direct: {
         call: (directWorkInput) => directCallFactory.call({
           runId: directWorkInput.runId,
+          tenant: directWorkInput.tenant,
           ...(directWorkInput.phase !== undefined && { phase: directWorkInput.phase }),
           step: directWorkInput.step,
           directCall: directWorkInput.directCall
