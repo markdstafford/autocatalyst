@@ -450,7 +450,7 @@ export class DefaultOrchestrator implements Orchestrator {
       }
 
       // For spec.author advance: run completion service before persisting transition.
-      if (result.directive === 'advance' && run.currentStep === 'spec.author') {
+      if (result.directive === 'advance' && run.currentStep === 'spec.author' && (run.workKind === 'feature' || run.workKind === 'enhancement')) {
         const completionResult = await this.#runSpecAuthoringCompletion(input.runId, run, result.result);
         if (completionResult.kind === 'failed') {
           return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant });

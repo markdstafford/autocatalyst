@@ -827,6 +827,39 @@ describe('DefaultOrchestrator.dispatch — spec.author completion', () => {
     expect(result.run.terminal).toBe(true);
   });
 
+  it('does NOT call completeSpecAuthoring when workKind is not feature or enhancement', async () => {
+    const existing = makeRun({ currentStep: 'spec.author', workKind: 'bug' });
+    const updated = makeRun({ currentStep: 'spec.human_review', workKind: 'bug' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'spec.human_review', phase: 'spec' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const unitOfWork: RunUnitOfWork = {
+      run: vi.fn().mockResolvedValue({ directive: 'advance' })
+    };
+    const specAuthoringDeps = makeSpecAuthoringDeps();
+    const resolveWorkspaceContext = vi.fn();
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      unitOfWork,
+      specAuthoringDependencies: specAuthoringDeps,
+      resolveWorkspaceContext
+    });
+
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    // completeSpecAuthoring must NOT have been triggered
+    expect(resolveWorkspaceContext).not.toHaveBeenCalled();
+    expect(specAuthoringDeps.filesystem.writeFile).not.toHaveBeenCalled();
+    expect(specAuthoringDeps.git.commitFiles).not.toHaveBeenCalled();
+    // The run still advances normally through applyDirective
+    expect(recordTransition).toHaveBeenCalledTimes(1);
+    expect(result.run.currentStep).toBe('spec.human_review');
+  });
+
   it('does NOT call completeSpecAuthoring for non-spec.author steps', async () => {
     const existing = makeRun({ currentStep: 'intake' });
     const updated = makeRun({ currentStep: 'spec.author' });
