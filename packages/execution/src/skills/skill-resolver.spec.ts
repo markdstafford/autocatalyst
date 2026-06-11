@@ -48,13 +48,18 @@ describe('runtime skills catalog assets', () => {
 
   it('records source metadata for both B1 skills', async () => {
     const metadata = JSON.parse(await readFile(path.join(runtimeSkillsCatalogRoot, 'assets/mm/SOURCE.json'), 'utf8')) as {
-      sources: Array<{ ref: string; sourcePath: string; sha256: string; vendoredPath: string }>;
+      sources: Array<{ ref: string; sourcePath?: string; vendoredPath: string; vendoredContentSha256: string }>;
     };
-    expect(metadata.sources.map((source) => source.ref).sort()).toEqual(['mm:planning', 'mm:writing-guidelines']);
+    const refs = metadata.sources.map((source) => source.ref);
+    expect(refs).toContain('mm:planning');
+    expect(refs).toContain('mm:writing-guidelines');
     for (const source of metadata.sources) {
-      expect(source.sourcePath).toMatch(/^\.agents\/mm:/u);
-      expect(source.sha256).toMatch(/^[a-f0-9]{64}$/u);
       expect(source.vendoredPath).toMatch(/^assets\/mm\//u);
+      expect(source.vendoredContentSha256).toMatch(/^[a-f0-9]{64}$/u);
+    }
+    const skillMdEntries = metadata.sources.filter((source) => source.sourcePath !== undefined);
+    for (const source of skillMdEntries) {
+      expect(source.sourcePath).toMatch(/^\.agents\/mm:/u);
     }
   });
 
@@ -98,6 +103,31 @@ describe('runtime skills catalog assets', () => {
     const requiredSections = ['When to use', 'Style principles', 'Document-specific guidance', 'Review checklist', 'When to break the rules'];
     for (const section of requiredSections) {
       expect(guidelines).toContain(section);
+    }
+  });
+
+  it('has a filesystem entry for every references/... path cited in the planning SKILL.md', async () => {
+    const skillMdPath = path.join(runtimeSkillsCatalogRoot, 'assets/mm/planning/SKILL.md');
+    const content = await readFile(skillMdPath, 'utf8');
+    const planningRoot = path.join(runtimeSkillsCatalogRoot, 'assets/mm/planning');
+
+    // Extract all `references/...` paths from backtick spans
+    const cited = new Set<string>();
+    const pattern = /`(references\/[^`\s]+)`/g;
+    let match: RegExpExecArray | null;
+    while ((match = pattern.exec(content)) !== null) {
+      const p = match[1]!;
+      // Skip bare directory references (e.g., `references/templates/`)
+      if (!p.endsWith('/')) {
+        cited.add(p);
+      }
+    }
+
+    expect(cited.size).toBeGreaterThan(0); // sanity check
+
+    for (const relPath of cited) {
+      const fullPath = path.join(planningRoot, relPath);
+      await expect(stat(fullPath), `Expected ${relPath} to exist in the vendored catalog`).resolves.toBeDefined();
     }
   });
 });

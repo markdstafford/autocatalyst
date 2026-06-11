@@ -445,6 +445,29 @@ describe('createClaudeAgentAdapter — inference setting capability', () => {
   });
 });
 
+describe('createClaudeAgentAdapter — skill containment', () => {
+  it('throws before calling launch when a resolved skill assetPath escapes the catalog via traversal', async () => {
+    const resolvedSkills = [
+      { ref: 'mm:planning', assetPath: '../../etc/passwd', dependencies: [] }
+    ];
+    const { input } = makeSessionInput({ resolvedSkills });
+    const { launch, calls } = fakeLaunch([]);
+    const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch });
+    // startSession itself may throw synchronously, or the returned session may
+    // throw on iteration — both are valid containment responses.
+    let threw = false;
+    try {
+      const session = await adapter.startSession(input);
+      // If startSession didn't throw, drain the stream to trigger any lazy throw.
+      await collect(session.events);
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    expect(calls).toHaveLength(0);
+  });
+});
+
 describe('createClaudeAgentAdapter — credential redaction', () => {
   it('does not leak the credential into adapter logs', async () => {
     const info = vi.fn();

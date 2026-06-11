@@ -377,6 +377,33 @@ describe('createOpenAIAgentAdapter — skill materialization', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Skill containment (traversal guard)
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — skill containment', () => {
+  it('throws before calling sandboxClientFactory when a resolved skill assetPath escapes the catalog via traversal', async () => {
+    const { run } = makeRunSession([]);
+    const sandboxCalls: number[] = [];
+    const input = makeSessionInputWithSkills('scratch_only', [
+      { ref: 'mm:planning', assetPath: '../../etc/passwd', dependencies: [] }
+    ]);
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession: run,
+      sandboxClientFactory: () => { sandboxCalls.push(1); return fakeSandboxHandle(); }
+    });
+    let threw = false;
+    try {
+      const session = await adapter.startSession(input);
+      await collectEvents(session.events);
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    expect(sandboxCalls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Event mapping & terminal protocol (seam-driven)
 // ---------------------------------------------------------------------------
 

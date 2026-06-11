@@ -1,6 +1,5 @@
-import path from 'node:path';
-
 import type { ResolvedSkill } from '@autocatalyst/api-contract';
+import { resolveCatalogAssetPath } from '@autocatalyst/execution';
 
 // ---------------------------------------------------------------------------
 // Claude SDK skill/plugin shape
@@ -62,10 +61,11 @@ export class ClaudeSkillMaterializationError extends Error {
  * Agent SDK plugin descriptor array expected by `options.skills`.
  *
  * This is a pure transformation — no async, no filesystem access. Path
- * resolution uses `path.resolve(catalogRoot, skill.assetPath)`. Containment
- * checks and asset existence checks are the responsibility of the execution
- * materializer (`validateMaterializedSkills`), which must run before any
- * adapter call.
+ * resolution uses `resolveCatalogAssetPath` from `@autocatalyst/execution`,
+ * which enforces catalog boundary containment (no traversal, no escaped
+ * symlinks). Callers that invoke this helper directly are protected by this
+ * check; callers that go through the execution materializer path receive an
+ * additional layer of validation from `validateMaterializedSkills`.
  *
  * @param skills    Resolved skill entries from `MaterializedExecutionEnvironment.skills.resolved`.
  * @param catalogRoot  Absolute path to the runtime skills catalog root. Used to
@@ -93,7 +93,16 @@ export function materializeClaudeSkillPlugins(
       );
     }
 
-    const absolutePath = path.resolve(catalogRoot, skill.assetPath);
+    let absolutePath: string;
+    try {
+      absolutePath = resolveCatalogAssetPath(catalogRoot, skill.assetPath);
+    } catch {
+      throw new ClaudeSkillMaterializationError(
+        'skill_materialization_failed',
+        `Skill '${skill.ref}' asset path escapes the catalog boundary.`,
+        { ref: skill.ref, assetPath: skill.assetPath, reason: 'asset_path_outside_catalog' }
+      );
+    }
 
     return {
       type: 'claudecode' as const,

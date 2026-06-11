@@ -2,17 +2,99 @@
   "sources": [
     {
       "ref": "mm:planning",
-      "sourcePath": ".agents/mm:planning/SKILL.md",
-      "sha256": "8a539ff46013b8511d41c8baa3669ab835a3b75d40c204833e159d98edc60822",
       "vendoredPath": "assets/mm/planning/SKILL.md",
+      "sourcePath": ".agents/mm:planning/SKILL.md",
+      "sourceContentSha256": "8a539ff46013b8511d41c8baa3669ab835a3b75d40c204833e159d98edc60822",
+      "vendoredContentSha256": "77b8bf20b431a1d89f5215439ec732a38caf2e04c1648493665370ae96d40050",
       "alignment": "Authoring stages retained; Autocatalyst-owned implementation handoff, branch setup, and session-lifecycle guidance removed or neutralized."
     },
     {
       "ref": "mm:writing-guidelines",
-      "sourcePath": ".agents/mm:writing-guidelines/SKILL.md",
-      "sha256": "08ae86e7073225f87483261f413792db2462db2e89a8ab4a760482733e4eadfd",
       "vendoredPath": "assets/mm/writing-guidelines/SKILL.md",
+      "sourcePath": ".agents/mm:writing-guidelines/SKILL.md",
+      "sourceContentSha256": "08ae86e7073225f87483261f413792db2462db2e89a8ab4a760482733e4eadfd",
+      "vendoredContentSha256": "08ae86e7073225f87483261f413792db2462db2e89a8ab4a760482733e4eadfd",
       "alignment": "Writing guidance retained for runtime spec-authoring support."
+    },
+    {
+      "ref": "mm:planning",
+      "vendoredPath": "assets/mm/planning/enhancement-pause-before.md",
+      "vendoredContentSha256": "7e9032dc3a4d5ec48c23f29a313e6b666ab89662d0a86ad789f595e44ea9fb6a"
+    },
+    {
+      "ref": "mm:planning",
+      "vendoredPath": "assets/mm/planning/enhancement-spec-lifecycle-state.md",
+      "vendoredContentSha256": "62f31431da769a0095522e6cdf1867cb0be8c543be6935f917591edef5bb85e8"
+    },
+    {
+      "ref": "mm:planning",
+      "vendoredPath": "assets/mm/planning/references/collaboration-protocol.md",
+      "vendoredContentSha256": "a1372baa061edf3adcecef869b8b609d96fbf01d881316f0a731968e241b5cf3"
+    },
+    {
+      "ref": "mm:planning",
+      "vendoredPath": "assets/mm/planning/references/roles.md",
+      "vendoredContentSha256": "320711a34d306e4fbf821dd59aef5a700072f0682ced96b455b7eeac7de8d74e"
+    },
+    {
+      "ref": "mm:planning",
+      "vendoredPath": "assets/mm/planning/references/scaling-guide.md",
+      "vendoredContentSha256": "aa976f201e34ed6b6421ff5cc7e02f90d8d2c2551ccd2a0b310d136267d4a510"
+    },
+    {
+      "ref": "mm:planning",
+      "vendoredPath": "assets/mm/planning/references/stages/adrs.md",
+      "vendoredContentSha256": "fee6660f40b5136facadf4d5359ee6033b1f981c1f17ae13c45ef5b3a723847a"
+    },
+    {
+      "ref": "mm:planning",
+      "vendoredPath": "assets/mm/planning/references/stages/bug-triage.md",
+      "vendoredContentSha256": "0e6cbaab34af22cf377fe0e5e5de33773a04cd959b60e285bfac32c4d63f28a5"
+    },
+    {
+      "ref": "mm:planning",
+      "vendoredPath": "assets/mm/planning/references/stages/design-specs.md",
+      "vendoredContentSha256": "fd62a4628c5576f38df49dfa1f6c0a681197c7af38202823924e8b8852df9c7c"
+    },
+    {
+      "ref": "mm:planning",
+      "vendoredPath": "assets/mm/planning/references/stages/enhancements.md",
+      "vendoredContentSha256": "0b55a8c9c3b0f675908fa257e405c79136ad12a887ed9d22c8d42c4ebe42778e"
+    },
+    {
+      "ref": "mm:planning",
+      "vendoredPath": "assets/mm/planning/references/stages/product-requirements.md",
+      "vendoredContentSha256": "7f2608c959cc1b7936f8e5153e0e1d3a099c33d8b7cfd369645343cb9688dd63"
+    },
+    {
+      "ref": "mm:planning",
+      "vendoredPath": "assets/mm/planning/references/stages/task-decomposition.md",
+      "vendoredContentSha256": "7eef49c9d3082e1da89b02f90603e398d363fe5a5775a50cad79cf1a8e3fd301"
+    },
+    {
+      "ref": "mm:planning",
+      "vendoredPath": "assets/mm/planning/references/stages/tech-specs.md",
+      "vendoredContentSha256": "285a07fb010def8b2cc3e64ec6a3d913fed3d530a1d294f15b8163e0a0816262"
+    },
+    {
+      "ref": "mm:planning",
+      "vendoredPath": "assets/mm/planning/references/templates/adr.md",
+      "vendoredContentSha256": "cdc76f56905f44ed982f20a7fb5b4e076d12885aa7d54e198a927515ed0961e2"
+    },
+    {
+      "ref": "mm:planning",
+      "vendoredPath": "assets/mm/planning/references/templates/app-spec.md",
+      "vendoredContentSha256": "c3601eaa32387fded6d87e3b6304267026f31c86f4604247ec56c31008dc147f"
+    },
+    {
+      "ref": "mm:planning",
+      "vendoredPath": "assets/mm/planning/references/templates/enhancement-spec.md",
+      "vendoredContentSha256": "159b64545c1dc2e4a3aaba46486853343fcf15eff3e683901dbe1ecc1e2344e7"
+    },
+    {
+      "ref": "mm:planning",
+      "vendoredPath": "assets/mm/planning/references/templates/feature-spec.md",
+      "vendoredContentSha256": "29be306588ae7c0279951858945dfd2291e5b7723521276f95e3fba21f66d6b6"
     }
   ]
 }

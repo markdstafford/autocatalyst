@@ -1,6 +1,5 @@
-import path from 'node:path';
-
 import type { MaterializedSkillIntent } from '@autocatalyst/execution';
+import { resolveCatalogAssetPath } from '@autocatalyst/execution';
 
 export interface OpenAISkillMount {
   readonly hostPath: string;
@@ -57,7 +56,15 @@ export function materializeOpenAISkillFiles(
   for (const skill of skills.resolved) {
     const sandboxDir = sandboxDirFromRef(skill.ref);
     const sandboxSkillMdPath = `${sandboxDir}/SKILL.md`;
-    const hostPath = path.resolve(catalogRoot, skill.assetPath);
+    let hostPath: string;
+    try {
+      hostPath = resolveCatalogAssetPath(catalogRoot, skill.assetPath);
+    } catch {
+      // Surface a safe error — do not include file contents or catalog internals
+      throw new Error(
+        `Skill '${skill.ref}' asset path escapes the catalog boundary and cannot be staged.`
+      );
+    }
 
     mounts.push({ hostPath, sandboxPath: sandboxDir });
     manifest[skill.ref] = sandboxSkillMdPath;
