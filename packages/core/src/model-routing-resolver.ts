@@ -366,7 +366,7 @@ async function resolveEntryToProfile(
   if (options.validateCredentialReference) {
     try {
       await options.validateCredentialReference({ tenant, profile, credentialReference });
-    } catch {
+    } catch (cause) {
       throw new ModelRoutingConfigurationError(
         'credential_reference_invalid',
         'Credential reference validation failed.',
@@ -460,9 +460,12 @@ export function createModelRoutingResolver(options: CreateModelRoutingResolverOp
       // Table-defined requirement overrides caller distinctBy
       const distinctBy: 'model' | 'profile' = tableRequirement?.distinctBy ?? input.distinctBy ?? 'model';
 
+      // Deduplicate to avoid phantom collisions from repeated roles
+      const roles = [...new Set(input.roles)];
+
       // Resolve each role
       const resolutionsByRole: Record<SessionRole, ModelRoutingResolution> = {};
-      for (const role of input.roles) {
+      for (const role of roles) {
         const errorDetails: ModelRoutingSafeDetails = {
           tenant: input.tenant,
           runId: input.runId,
@@ -509,7 +512,7 @@ export function createModelRoutingResolver(options: CreateModelRoutingResolverOp
         model: ModelIdentity;
       }> = [];
 
-      for (const role of input.roles) {
+      for (const role of roles) {
         const resolution = resolutionsByRole[role];
         const key = getDistinctKey(resolution);
         if (seenKeys.has(key)) {
