@@ -150,6 +150,14 @@ export type {
 } from './runner-event-consumer.js';
 
 export {
+  SpecFrontmatterError,
+  parseSpecFrontmatter,
+  renderSpecFrontmatter,
+  validateCommittedSpecFrontmatter
+} from './spec-frontmatter.js';
+export type { SpecFrontmatterErrorCode } from './spec-frontmatter.js';
+
+export {
   ModelRoutingConfigurationError,
   createModelRoutingResolver,
   type ModelRoutingResolver,
