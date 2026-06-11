@@ -19,7 +19,9 @@ import {
   healthResponseSchema,
   probeResourceCollectionPath,
   probeResourceSchema,
+  runCollectionPath,
   runEventsPath,
+  runListResponseSchema,
   runResourcePath,
   runSchema,
   runStepListResponseSchema,
@@ -38,6 +40,7 @@ import {
   type HealthResponse,
   type ProbeResource,
   type Run,
+  type RunListResponse,
   type RunStepListResponse,
   type UpdateConfigurationRecordRequest
 } from '@autocatalyst/api-contract';
@@ -59,6 +62,7 @@ export interface ControlPlaneClient {
   deleteConfigurationRecord(id: string): Promise<void>;
   createSecret(request: CreateSecretRequest): Promise<CreateSecretResponse>;
   createConversationWithFirstRun(request: CreateConversationWithFirstRunRequest): Promise<CreateConversationWithFirstRunResponse>;
+  listRuns(): Promise<RunListResponse>;
   getRun(id: string): Promise<Run>;
   listRunSteps(id: string): Promise<RunStepListResponse>;
   subscribeRunEvents(id: string, options?: RunEventsStreamOptions): Promise<RunEventsResponse>;
@@ -248,6 +252,15 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
         );
       }
       return createConversationWithFirstRunResponseSchema.parse(await parseJson(response));
+    },
+
+    async listRuns() {
+      const response = await fetchImplementation(urlFor(baseUrl, runCollectionPath), {
+        method: 'GET',
+        headers: protectedHeaders(bearerToken)
+      });
+      await throwForError(response);
+      return runListResponseSchema.parse(await parseJson(response));
     },
 
     async getRun(id) {
