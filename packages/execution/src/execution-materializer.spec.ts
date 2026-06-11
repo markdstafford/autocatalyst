@@ -36,7 +36,7 @@ function makeContext(partial: Partial<ExecutionContext> & { workspaceIntent: Exe
     task: { prompt: 'Implement feature', inputs: {} },
     secretBindings: [],
     toolPolicy: { allowedTools: ['bash'], workspaceScope: 'declared_workspace' },
-    skills: { requested: ['stub_runner'] },
+    skills: { requested: [], resolved: [] },
     capabilityRequirements: {
       shell: { kind: 'bash', required: false },
       paths: { canonicalWorkspacePaths: true },
@@ -343,17 +343,23 @@ describe('createExecutionMaterializer', () => {
       expect(result.toolPolicy.workspaceRoots).toEqual(['/tmp/ws/run_1/scratch']);
     });
 
-    it('skills carried through from context', async () => {
+    it('skills carried through from context as requested refs plus resolved entries', async () => {
       const materializer = createExecutionMaterializer();
       const context = makeContext({
         workspaceIntent: { shape: 'none' },
-        skills: { requested: ['stub_runner', 'code_reviewer'], plugins: ['some-plugin'] }
+        skills: {
+          requested: ['mm:planning'],
+          resolved: [
+            { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/writing-guidelines', dependencies: [] },
+            { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: ['mm:writing-guidelines'] }
+          ]
+        }
       });
 
       const result = await materializer.materialize(context);
 
-      expect(result.skills.requested).toEqual(['stub_runner', 'code_reviewer']);
-      expect(result.skills.plugins).toEqual(['some-plugin']);
+      expect(result.skills).toEqual(context.skills);
+      expect('plugins' in result.skills).toBe(false);
     });
 
     it('original context is preserved in result', async () => {

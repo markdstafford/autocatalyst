@@ -84,6 +84,7 @@ export {
   ExecutionMaterializationError,
   type ExecutionMaterializationErrorCode,
   type MaterializedExecutionEnvironment,
+  type MaterializedSkillIntent,
   type MaterializedWorkspace
 } from './materialized-environment.js';
 

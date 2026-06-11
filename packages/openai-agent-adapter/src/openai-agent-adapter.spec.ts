@@ -88,13 +88,13 @@ function makeSessionInput(
           workspaceIntent: { shape: 'none' },
           secretBindings: [],
           toolPolicy: { allowedTools: ['bash'], workspaceScope: 'declared_workspace' },
-          skills: { requested: ['progress'] },
+          skills: { requested: [], resolved: [] },
           capabilityRequirements: { shell: { kind: 'bash', required: false }, paths: { canonicalWorkspacePaths: true }, lsp: { requested: false } }
         },
         workspace,
         environment: { variables: { SAFE_ENV: 'value', OPENAI_API_KEY: FAKE_SECRET }, secretVariableNames: ['OPENAI_API_KEY'] },
         toolPolicy: { allowedTools: ['bash'], workspaceRoots: workspace.workspaceRoots },
-        skills: { requested: ['progress'] },
+        skills: { requested: [], resolved: [] },
         capabilities: { shell: { kind: 'bash', available: false }, paths: {}, lsp: { requested: false, available: false } }
       }
     },
@@ -440,13 +440,13 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
               workspaceIntent: { shape: 'none' },
               secretBindings: [],
               toolPolicy: { allowedTools: ['bash'], workspaceScope: 'declared_workspace' },
-              skills: { requested: [] },
+              skills: { requested: [], resolved: [] },
               capabilityRequirements: { shell: { kind: 'bash', required: false }, paths: { canonicalWorkspacePaths: true }, lsp: { requested: false } }
             },
             workspace: { shape: 'two_roots', repoRoot, scratchRoot, branchName: 'feature/x', workspaceRoots: [repoRoot, scratchRoot] },
             environment: { variables: { SAFE_ENV: 'v', OPENAI_API_KEY: FAKE_SECRET }, secretVariableNames: ['OPENAI_API_KEY'] },
             toolPolicy: { allowedTools: ['bash'], workspaceRoots: [repoRoot, scratchRoot] },
-            skills: { requested: [] },
+            skills: { requested: [], resolved: [] },
             capabilities: { shell: { kind: 'bash', available: false }, paths: { repoRoot, scratchRoot }, lsp: { requested: false, available: false } }
           }
         },

@@ -30,7 +30,7 @@ function makeContext(): ExecutionContext {
     workspaceIntent: { shape: 'none' },
     secretBindings: [],
     toolPolicy: { allowedTools: ['bash'], workspaceScope: 'declared_workspace' },
-    skills: { requested: ['stub_runner'] },
+    skills: { requested: [], resolved: [] },
     capabilityRequirements: {
       shell: { kind: 'bash', required: false },
       paths: { canonicalWorkspacePaths: true },
@@ -45,7 +45,7 @@ function makeMaterializedEnv(context: ExecutionContext): MaterializedExecutionEn
     workspace: { shape: 'none', workspaceRoots: [] },
     environment: { variables: {}, secretVariableNames: [] },
     toolPolicy: { allowedTools: ['bash'], workspaceRoots: [] },
-    skills: { requested: ['stub_runner'] },
+    skills: { requested: [], resolved: [] },
     capabilities: {
       shell: { kind: 'bash', available: false },
       paths: {},

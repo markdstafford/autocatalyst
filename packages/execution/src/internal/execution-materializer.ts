@@ -146,10 +146,15 @@ export function createExecutionMaterializer(options: ExecutionMaterializerOption
       };
 
       // 4. Return MaterializedExecutionEnvironment
-      const skills: MaterializedExecutionEnvironment['skills'] =
-        context.skills.plugins !== undefined
-          ? { requested: context.skills.requested, plugins: context.skills.plugins }
-          : { requested: context.skills.requested };
+      const skills: MaterializedExecutionEnvironment['skills'] = {
+        requested: [...context.skills.requested],
+        resolved: context.skills.resolved.map((skill) => ({
+          ref: skill.ref,
+          assetPath: skill.assetPath,
+          dependencies: [...skill.dependencies],
+          ...(skill.description !== undefined ? { description: skill.description } : {})
+        }))
+      };
 
       return {
         context,
