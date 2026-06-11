@@ -12,6 +12,7 @@ import {
   modelRoutingTableSettingsSchema,
   providerProfileSettingsSchema,
   configurationRecordSettingsSchema,
+  roleDistinctRequirementSchema,
   updateConfigurationRecordRequestSchema,
   updateModelRoutingTableSettingsSchema
 } from './configuration-record.js';
@@ -317,5 +318,43 @@ describe('model routing table schemas', () => {
       kind: 'model_routing_table',
       settings: { active: true, entries: [] }
     }).success).toBe(true);
+  });
+
+  it('ignores disabled entries for duplicate-route detection', () => {
+    const disabledEntry = {
+      id: 'route_disabled',
+      route: { mode: 'agent' as const, step: 'implementation.author', role: 'implementer' },
+      profileId: 'cfg_claude',
+      enabled: false
+    };
+    const enabledEntry = {
+      id: 'route_impl',
+      route: { mode: 'agent' as const, step: 'implementation.author', role: 'implementer' },
+      profileId: 'cfg_claude'
+    };
+    // One disabled + one enabled with same key is allowed
+    expect(modelRoutingTableSettingsSchema.safeParse({
+      active: true,
+      entries: [disabledEntry, enabledEntry]
+    }).success).toBe(true);
+  });
+
+  it('roleDistinctRequirementSchema rejects duplicate roles and empty roles array', () => {
+    expect(roleDistinctRequirementSchema.safeParse({
+      step: 'impl',
+      mode: 'agent',
+      roles: ['implementer', 'implementer'],
+      distinctBy: 'model'
+    }).success).toBe(false);
+    expect(roleDistinctRequirementSchema.safeParse({
+      step: 'impl',
+      mode: 'agent',
+      roles: [],
+      distinctBy: 'model'
+    }).success).toBe(false);
+  });
+
+  it('updateModelRoutingTableSettingsSchema rejects empty patch', () => {
+    expect(updateModelRoutingTableSettingsSchema.safeParse({}).success).toBe(false);
   });
 });
