@@ -73,7 +73,7 @@ export function parseSpecFrontmatter(markdown: string): SpecAuthorFrontmatter {
     throw new SpecFrontmatterError('spec_frontmatter_missing', 'Spec frontmatter block is missing.');
   }
   const raw: Record<string, unknown> = {};
-  for (const line of match[1].split('\n')) {
+  for (const line of (match[1] ?? '').split('\n')) {
     if (line.trim().length === 0) continue;
     const separator = line.indexOf(':');
     if (separator <= 0) {
