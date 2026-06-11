@@ -1,6 +1,12 @@
 export const executionPackageName = '@autocatalyst/execution' as const;
 
 export {
+  runtimeSkillsCatalog,
+  runtimeSkillsCatalogRoot,
+  type RuntimeSkillCatalogEntry
+} from './skills/catalog.js';
+
+export {
   createStepResultContractRegistry,
   resolveStepResultContract,
   type StepResultContractDefinition,

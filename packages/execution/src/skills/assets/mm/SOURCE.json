@@ -1,0 +1,18 @@
+{
+  "sources": [
+    {
+      "ref": "mm:planning",
+      "sourcePath": ".agents/mm:planning/SKILL.md",
+      "sha256": "8a539ff46013b8511d41c8baa3669ab835a3b75d40c204833e159d98edc60822",
+      "vendoredPath": "assets/mm/planning/SKILL.md",
+      "alignment": "Authoring stages retained; Autocatalyst-owned implementation handoff, branch setup, and session-lifecycle guidance removed or neutralized."
+    },
+    {
+      "ref": "mm:writing-guidelines",
+      "sourcePath": ".agents/mm:writing-guidelines/SKILL.md",
+      "sha256": "08ae86e7073225f87483261f413792db2462db2e89a8ab4a760482733e4eadfd",
+      "vendoredPath": "assets/mm/writing-guidelines/SKILL.md",
+      "alignment": "Writing guidance retained for runtime spec-authoring support."
+    }
+  ]
+}
