@@ -175,3 +175,16 @@ export {
   type ModelRoutingDistinctResolution,
   type ModelRoutingSafeDetails
 } from './model-routing-resolver.js';
+
+export {
+  SpecAuthoringError,
+  completeSpecAuthoring
+} from './spec-authoring-service.js';
+export type {
+  SpecAuthoringErrorCode,
+  WorkspaceFileSystemPort,
+  WorkspaceGitPort,
+  SpecAuthoringServiceDependencies,
+  CompleteSpecAuthoringInput,
+  CompleteSpecAuthoringOutput
+} from './spec-authoring-service.js';
