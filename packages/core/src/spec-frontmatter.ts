@@ -43,7 +43,7 @@ export function renderSpecFrontmatter(frontmatter: SpecAuthorFrontmatter): strin
   return lines.join('\n');
 }
 
-export type SpecMarkdownRenderErrorCode = SpecFrontmatterErrorCode | 'spec_body_contains_frontmatter';
+export type SpecMarkdownRenderErrorCode = SpecFrontmatterErrorCode;
 
 export interface RenderCommittedSpecMarkdownInput {
   readonly frontmatter: SpecAuthorFrontmatter;
