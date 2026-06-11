@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { ExecutionContext } from '@autocatalyst/api-contract';
 import { createExecutionMaterializer } from './internal/execution-materializer.js';
 import { WorkspaceProvisioningError } from './workspace.js';
+import { SkillCatalogResolutionError } from './skills/skill-resolver.js';
 
 // Ensure process.env sentinel is not set
 delete process.env['SENTINEL_SHOULD_NOT_LEAK'];
@@ -369,6 +370,64 @@ describe('createExecutionMaterializer', () => {
       const result = await materializer.materialize(context);
 
       expect(result.context).toBe(context);
+    });
+  });
+
+  describe('skill bundle validation', () => {
+    const resolvedSkills = [
+      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/writing-guidelines', dependencies: [] },
+      { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: ['mm:writing-guidelines'] }
+    ];
+
+    it('proceeds normally when resolved skills are non-empty and validateSkillCatalog succeeds', async () => {
+      const mockValidate = vi.fn().mockResolvedValue([]);
+      const materializer = createExecutionMaterializer({ validateSkillCatalog: mockValidate });
+      const context = makeContext({
+        workspaceIntent: { shape: 'none' },
+        skills: { requested: ['mm:planning'], resolved: resolvedSkills }
+      });
+
+      const result = await materializer.materialize(context);
+
+      expect(mockValidate).toHaveBeenCalledOnce();
+      expect(mockValidate).toHaveBeenCalledWith({
+        catalog: resolvedSkills,
+        catalogRoot: expect.any(String)
+      });
+      expect(result.skills.resolved).toHaveLength(2);
+    });
+
+    it('throws skill_materialization_failed before any workspace or provider work when validateSkillCatalog fails', async () => {
+      const catalogError = new SkillCatalogResolutionError('skill_asset_missing', 'Skill asset path does not exist.', { ref: 'mm:planning', assetPath: 'assets/mm/planning' });
+      const mockValidate = vi.fn().mockRejectedValue(catalogError);
+      const mockProvision = vi.fn();
+      const materializer = createExecutionMaterializer({
+        validateSkillCatalog: mockValidate,
+        provisionWorkspace: mockProvision
+      });
+      const context = makeContext({
+        workspaceIntent: { shape: 'scratch_only', provisioning },
+        skills: { requested: ['mm:planning'], resolved: resolvedSkills }
+      });
+
+      await expect(materializer.materialize(context)).rejects.toMatchObject({
+        name: 'ExecutionMaterializationError',
+        code: 'skill_materialization_failed'
+      });
+      expect(mockProvision).not.toHaveBeenCalled();
+    });
+
+    it('skips validateSkillCatalog when resolved skills list is empty', async () => {
+      const mockValidate = vi.fn();
+      const materializer = createExecutionMaterializer({ validateSkillCatalog: mockValidate });
+      const context = makeContext({
+        workspaceIntent: { shape: 'none' },
+        skills: { requested: [], resolved: [] }
+      });
+
+      await materializer.materialize(context);
+
+      expect(mockValidate).not.toHaveBeenCalled();
     });
   });
 });

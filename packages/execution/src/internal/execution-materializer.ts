@@ -3,10 +3,13 @@ import type { ExecutionSecretResolver } from '../secret-resolver.js';
 import type { MaterializedExecutionEnvironment } from '../materialized-environment.js';
 import { ExecutionMaterializationError } from '../materialized-environment.js';
 import { provisionWorkspace as defaultProvisionWorkspace, summarizeWorkspaceCause } from '../workspace.js';
+import { validateSkillCatalog as defaultValidateSkillCatalog, SkillCatalogResolutionError } from '../skills/skill-resolver.js';
+import { runtimeSkillsCatalogRoot } from '../skills/catalog.js';
 
 export interface ExecutionMaterializerOptions {
   readonly secretResolver?: ExecutionSecretResolver;
   readonly provisionWorkspace?: typeof defaultProvisionWorkspace;
+  readonly validateSkillCatalog?: typeof defaultValidateSkillCatalog;
   readonly capabilities?: {
     readonly shellAvailable?: boolean;
     readonly lspAvailable?: boolean;
@@ -19,10 +22,27 @@ export interface ExecutionMaterializer {
 
 export function createExecutionMaterializer(options: ExecutionMaterializerOptions = {}): ExecutionMaterializer {
   const doProvision = options.provisionWorkspace ?? defaultProvisionWorkspace;
+  const doValidateSkillCatalog = options.validateSkillCatalog ?? defaultValidateSkillCatalog;
 
   return {
     async materialize(context: ExecutionContext): Promise<MaterializedExecutionEnvironment> {
       const intent = context.workspaceIntent;
+
+      // 0. Skill bundle validation — must run before any provider or workspace work
+      if (context.skills.resolved.length > 0) {
+        try {
+          await doValidateSkillCatalog({
+            catalog: context.skills.resolved,
+            catalogRoot: runtimeSkillsCatalogRoot
+          });
+        } catch (error) {
+          throw new ExecutionMaterializationError(
+            'skill_materialization_failed',
+            'Resolved skill bundle failed materialization validation.',
+            error instanceof SkillCatalogResolutionError ? error : undefined
+          );
+        }
+      }
 
       // 1. Workspace materialization
       let workspace: MaterializedExecutionEnvironment['workspace'];
