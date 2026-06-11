@@ -140,6 +140,9 @@ function makeOrchestrator(opts: {
   isActiveRunConflict?: (error: unknown) => boolean;
   specAuthoringDependencies?: SpecAuthoringServiceDependencies;
   resolveWorkspaceContext?: WorkspaceContextResolver;
+  resolveApproverAddressedFeedback?: (input: { runId: string; target: 'artifact'; approver: NonModelPrincipal }, deps: FeedbackLifecycleDependencies) => Promise<void>;
+  assertSpecReviewGateCanAdvance?: (input: { run: Run }, deps: { listBlockingFeedback: (input: { runId: string; target: 'artifact' }) => Promise<readonly Feedback[]> }) => Promise<void>;
+  feedbackLifecycleDependencies?: FeedbackLifecycleDependencies;
 } = {}) {
   const runs = opts.runs ?? makeFakeRunRepo();
   const conversationIngress = opts.conversationIngress ?? makeFakeIngressRepo();
@@ -155,7 +158,10 @@ function makeOrchestrator(opts: {
     ...(opts.eventIdGenerator !== undefined ? { eventIdGenerator: opts.eventIdGenerator } : {}),
     ...(opts.isActiveRunConflict !== undefined ? { isActiveRunConflict: opts.isActiveRunConflict } : {}),
     ...(opts.specAuthoringDependencies !== undefined ? { specAuthoringDependencies: opts.specAuthoringDependencies } : {}),
-    ...(opts.resolveWorkspaceContext !== undefined ? { resolveWorkspaceContext: opts.resolveWorkspaceContext } : {})
+    ...(opts.resolveWorkspaceContext !== undefined ? { resolveWorkspaceContext: opts.resolveWorkspaceContext } : {}),
+    ...(opts.resolveApproverAddressedFeedback !== undefined ? { resolveApproverAddressedFeedback: opts.resolveApproverAddressedFeedback } : {}),
+    ...(opts.assertSpecReviewGateCanAdvance !== undefined ? { assertSpecReviewGateCanAdvance: opts.assertSpecReviewGateCanAdvance } : {}),
+    ...(opts.feedbackLifecycleDependencies !== undefined ? { feedbackLifecycleDependencies: opts.feedbackLifecycleDependencies } : {})
   });
   return { orchestrator, runs, conversationIngress, events, dispatchQueue };
 }
@@ -920,5 +926,241 @@ describe('DefaultOrchestrator.dispatch — spec.author completion', () => {
     expect(resolveWorkspaceContext).not.toHaveBeenCalled();
     expect(specAuthoringDeps.filesystem.writeFile).not.toHaveBeenCalled();
     expect(result.run.currentStep).toBe('spec.author');
+  });
+});
+
+// --- Gate guard helpers ---
+
+function principal(id: string): NonModelPrincipal {
+  return { id, kind: 'human', tenantId: 'tenant_1', displayName: id };
+}
+
+function makeFakeFeedbackRepo(overrides: Partial<FeedbackRepository> = {}): FeedbackRepository {
+  return {
+    create: vi.fn(),
+    findById: vi.fn().mockResolvedValue(null),
+    listByRun: vi.fn().mockResolvedValue([]),
+    updateStatusAndAppendThread: vi.fn().mockResolvedValue(null),
+    ...overrides
+  };
+}
+
+function makeFakeFeedbackLifecycleDeps(overrides: Partial<FeedbackLifecycleDependencies> = {}): FeedbackLifecycleDependencies {
+  return {
+    feedback: makeFakeFeedbackRepo(),
+    ids: () => 'id_1',
+    clock: () => timestamp,
+    ...overrides
+  };
+}
+
+function makeOrchestratorAtSpecReview(overrides: {
+  resolveApproverAddressedFeedback?: Parameters<typeof makeOrchestrator>[0]['resolveApproverAddressedFeedback'];
+  assertSpecReviewGateCanAdvance?: Parameters<typeof makeOrchestrator>[0]['assertSpecReviewGateCanAdvance'];
+  feedbackLifecycleDependencies?: FeedbackLifecycleDependencies;
+  runs?: RunRepository;
+} = {}) {
+  const existing = makeRun({ currentStep: 'spec.human_review' });
+  const updated = makeRun({ currentStep: 'implementation' });
+  const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation', phase: 'implementation' });
+  const runs = overrides.runs ?? makeFakeRunRepo({
+    findById: vi.fn().mockResolvedValue(existing),
+    recordRunStepTransition: vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep })
+  });
+  const feedbackLifecycleDependencies = overrides.feedbackLifecycleDependencies ?? makeFakeFeedbackLifecycleDeps();
+  const { orchestrator } = makeOrchestrator({
+    runs,
+    feedbackLifecycleDependencies,
+    ...(overrides.resolveApproverAddressedFeedback !== undefined
+      ? { resolveApproverAddressedFeedback: overrides.resolveApproverAddressedFeedback }
+      : {}),
+    ...(overrides.assertSpecReviewGateCanAdvance !== undefined
+      ? { assertSpecReviewGateCanAdvance: overrides.assertSpecReviewGateCanAdvance }
+      : {})
+  });
+  return orchestrator;
+}
+
+describe('DefaultOrchestrator.applyDirective — spec.human_review gate guard', () => {
+  it('co-resolves approver-owned addressed feedback before the gate', async () => {
+    const callOrder: string[] = [];
+    const resolveApproverAddressedFeedbackFn = vi.fn(async () => {
+      callOrder.push('resolve');
+    });
+    const assertSpecReviewGateCanAdvanceFn = vi.fn(async () => {
+      callOrder.push('assert');
+    });
+    const orchestrator = makeOrchestratorAtSpecReview({
+      resolveApproverAddressedFeedback: resolveApproverAddressedFeedbackFn,
+      assertSpecReviewGateCanAdvance: assertSpecReviewGateCanAdvanceFn
+    });
+
+    await orchestrator.applyDirective({
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      directive: 'advance',
+      principal: principal('phoebe')
+    });
+
+    expect(resolveApproverAddressedFeedbackFn).toHaveBeenCalledTimes(1);
+    expect(assertSpecReviewGateCanAdvanceFn).toHaveBeenCalledTimes(1);
+    expect(callOrder).toEqual(['resolve', 'assert']);
+  });
+
+  it('uses principal as approver when provided', async () => {
+    const resolveApproverAddressedFeedbackFn = vi.fn(async () => undefined);
+    const orchestrator = makeOrchestratorAtSpecReview({
+      resolveApproverAddressedFeedback: resolveApproverAddressedFeedbackFn
+    });
+    const phoebe = principal('phoebe');
+
+    await orchestrator.applyDirective({
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      directive: 'advance',
+      principal: phoebe
+    });
+
+    expect(resolveApproverAddressedFeedbackFn).toHaveBeenCalledWith(
+      expect.objectContaining({ approver: phoebe }),
+      expect.anything()
+    );
+  });
+
+  it('falls back to run.owner as approver when principal not provided', async () => {
+    const resolveApproverAddressedFeedbackFn = vi.fn(async () => undefined);
+    const orchestrator = makeOrchestratorAtSpecReview({
+      resolveApproverAddressedFeedback: resolveApproverAddressedFeedbackFn
+    });
+
+    await orchestrator.applyDirective({
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      directive: 'advance'
+    });
+
+    expect(resolveApproverAddressedFeedbackFn).toHaveBeenCalledWith(
+      expect.objectContaining({ approver: owner }),
+      expect.anything()
+    );
+  });
+
+  it('blocks advance when gate throws feedback_gate_blocked and maps to invalid_transition', async () => {
+    const blockingId = 'fb_1';
+    const assertSpecReviewGateCanAdvanceFn = vi.fn(async () => {
+      throw new SpecReviewGateBlockedError('feedback_gate_blocked', 'Artifact feedback blocks spec approval.', [blockingId]);
+    });
+    const orchestrator = makeOrchestratorAtSpecReview({
+      assertSpecReviewGateCanAdvance: assertSpecReviewGateCanAdvanceFn
+    });
+
+    await expect(
+      orchestrator.applyDirective({
+        runId: 'run_1',
+        tenant: 'tenant_1',
+        directive: 'advance',
+        principal: principal('phoebe')
+      })
+    ).rejects.toMatchObject({
+      name: 'OrchestratorError',
+      code: 'invalid_transition',
+      message: 'Artifact feedback blocks spec approval.'
+    });
+  });
+
+  it('includes blockingFeedbackIds in error details when gate is blocked', async () => {
+    const blockingId = 'fb_42';
+    const assertSpecReviewGateCanAdvanceFn = vi.fn(async () => {
+      throw new SpecReviewGateBlockedError('feedback_gate_blocked', 'Artifact feedback blocks spec approval.', [blockingId]);
+    });
+    const orchestrator = makeOrchestratorAtSpecReview({
+      assertSpecReviewGateCanAdvance: assertSpecReviewGateCanAdvanceFn
+    });
+
+    try {
+      await orchestrator.applyDirective({
+        runId: 'run_1',
+        tenant: 'tenant_1',
+        directive: 'advance',
+        principal: principal('phoebe')
+      });
+      throw new Error('expected to throw');
+    } catch (error) {
+      expect(error).toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition' });
+      const err = error as { details: unknown };
+      expect(err.details).toEqual({ blockingFeedbackIds: [blockingId] });
+    }
+  });
+
+  it('does NOT run the gate guard when advance is for a non-spec.human_review step', async () => {
+    const assertSpecReviewGateCanAdvanceFn = vi.fn(async () => undefined);
+    const existing = makeRun({ currentStep: 'intake' });
+    const updated = makeRun({ currentStep: 'spec.author' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'spec.author', phase: 'spec' });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep })
+    });
+    const orchestrator = makeOrchestratorAtSpecReview({
+      runs,
+      assertSpecReviewGateCanAdvance: assertSpecReviewGateCanAdvanceFn
+    });
+
+    const result = await orchestrator.applyDirective({
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      directive: 'advance'
+    });
+
+    expect(assertSpecReviewGateCanAdvanceFn).not.toHaveBeenCalled();
+    expect(result.run.currentStep).toBe('spec.author');
+  });
+
+  it('does NOT run the gate guard for non-advance directives at spec.human_review', async () => {
+    const assertSpecReviewGateCanAdvanceFn = vi.fn(async () => undefined);
+    const existing = makeRun({ currentStep: 'spec.human_review' });
+    const failed = makeRun({ currentStep: 'failed', terminal: true });
+    const failedStep = makeRunStep({ step: 'failed' });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: vi.fn().mockResolvedValue({ run: failed, runStep: failedStep })
+    });
+    const orchestrator = makeOrchestratorAtSpecReview({
+      runs,
+      assertSpecReviewGateCanAdvance: assertSpecReviewGateCanAdvanceFn
+    });
+
+    const result = await orchestrator.applyDirective({
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      directive: 'fail'
+    });
+
+    expect(assertSpecReviewGateCanAdvanceFn).not.toHaveBeenCalled();
+    expect(result.run.currentStep).toBe('failed');
+  });
+
+  it('passes blocking feedback ids through when resolveApproverAddressedFeedback throws feedback_gate_blocked', async () => {
+    const blockingId = 'fb_99';
+    const resolveApproverAddressedFeedbackFn = vi.fn(async () => {
+      throw new SpecReviewGateBlockedError('feedback_gate_blocked', 'Artifact feedback blocks spec approval.', [blockingId]);
+    });
+    const orchestrator = makeOrchestratorAtSpecReview({
+      resolveApproverAddressedFeedback: resolveApproverAddressedFeedbackFn
+    });
+
+    try {
+      await orchestrator.applyDirective({
+        runId: 'run_1',
+        tenant: 'tenant_1',
+        directive: 'advance',
+        principal: principal('phoebe')
+      });
+      throw new Error('expected to throw');
+    } catch (error) {
+      expect(error).toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition' });
+      const err = error as { details: unknown };
+      expect(err.details).toEqual({ blockingFeedbackIds: [blockingId] });
+    }
   });
 });
