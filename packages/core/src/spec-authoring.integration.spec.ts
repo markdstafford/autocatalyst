@@ -23,6 +23,7 @@ import type {
   Run,
   RunStep
 } from '@autocatalyst/api-contract';
+import { specAuthorResultSchema } from '@autocatalyst/api-contract';
 
 import type {
   ArtifactRepository,
@@ -288,12 +289,25 @@ function makeFakeGit(): { port: WorkspaceGitPort; commits: CommitRecord[] } {
 // Harness builder
 // ---------------------------------------------------------------------------
 
+interface FakeFiles {
+  /** Returns true if the given absolute path exists in the fake filesystem. */
+  exists(path: string): boolean;
+  /** Returns the file contents at the given absolute path, or undefined. */
+  get(path: string): string | undefined;
+}
+
+interface FakeGit {
+  /** Returns true if any commit recorded a file at the given relative path. */
+  wasCommitted(relativePath: string): boolean;
+  readonly all: CommitRecord[];
+}
+
 interface TestHarness {
   readonly orchestrator: DefaultOrchestrator;
   readonly runRepository: InMemoryRunRepository;
   readonly artifactRepository: InMemoryArtifactRepository;
-  readonly files: Map<string, string>;
-  readonly commits: CommitRecord[];
+  readonly files: FakeFiles;
+  readonly git: FakeGit;
   readonly workspaceRepoRoot: string;
 }
 
@@ -327,7 +341,19 @@ function buildHarness(unitOfWork: RunUnitOfWork): TestHarness {
     })
   });
 
-  return { orchestrator, runRepository, artifactRepository, files, commits, workspaceRepoRoot };
+  const fakeFiles: FakeFiles = {
+    exists(path) { return files.has(path); },
+    get(path) { return files.get(path); }
+  };
+
+  const fakeGit: FakeGit = {
+    wasCommitted(relativePath) {
+      return commits.some((c) => c.relativePaths.includes(relativePath));
+    },
+    get all() { return commits; }
+  };
+
+  return { orchestrator, runRepository, artifactRepository, files: fakeFiles, git: fakeGit, workspaceRepoRoot };
 }
 
 // ---------------------------------------------------------------------------
@@ -414,9 +440,12 @@ describe('spec authoring integration — successful workflows', () => {
       expect(result.run.currentStep).toBe('spec.human_review');
       expect(result.run.terminal).toBe(false);
 
+      // Spec result must satisfy the result contract schema
+      expect(() => specAuthorResultSchema.parse(specAuthorResult)).not.toThrow();
+
       // File written to fake filesystem at the expected path
       const fileKey = `${harness.workspaceRepoRoot}/${expectedRelativePath}`;
-      expect(harness.files.has(fileKey)).toBe(true);
+      expect(harness.files.exists(fileKey)).toBe(true);
 
       const writtenContents = harness.files.get(fileKey)!;
       // The file must contain a frontmatter block with status: draft
@@ -424,8 +453,8 @@ describe('spec authoring integration — successful workflows', () => {
       expect(writtenContents).toContain('specced_by: autocatalyst');
 
       // Git commit recorded for the file
-      expect(harness.commits).toHaveLength(1);
-      expect(harness.commits[0]!.relativePaths).toContain(expectedRelativePath);
+      expect(harness.git.all).toHaveLength(1);
+      expect(harness.git.wasCommitted(expectedRelativePath)).toBe(true);
 
       // Artifact persisted with correct fields
       const artifacts = await harness.artifactRepository.listByRun(specAuthorRun.id);
