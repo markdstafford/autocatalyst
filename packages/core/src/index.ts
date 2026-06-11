@@ -180,6 +180,18 @@ export {
   SpecAuthoringError,
   completeSpecAuthoring
 } from './spec-authoring-service.js';
+
+export {
+  FeedbackLifecycleError,
+  createArtifactFeedback,
+  addressFeedback,
+  markFeedbackWontFix,
+  resolveFeedback,
+  reopenFeedback,
+  listBlockingFeedback,
+  resolveApproverAddressedFeedback,
+  type FeedbackLifecycleDependencies
+} from './feedback-lifecycle.js';
 export type {
   SpecAuthoringErrorCode,
   WorkspaceFileSystemPort,
