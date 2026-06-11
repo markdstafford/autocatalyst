@@ -134,17 +134,123 @@ describe('DrizzleConfigurationRecordRepository', () => {
       const repository = new DrizzleConfigurationRecordRepository(database);
 
       // Create a legitimate routing table first
-      const created = await repository.create({
+      const routingTable = await repository.create({
         tenant: 'tenant_a',
         kind: 'model_routing_table',
         settings: { active: true, entries: [] }
       });
 
-      // Attempt to update it with provider-profile kind
-      await expect(repository.update('tenant_a', created.id, {
+      // Attempt to update routing-table with provider-profile kind
+      await expect(repository.update('tenant_a', routingTable.id, {
         kind: 'provider_profile',
         settings: { profileName: 'Wrong kind' }
       })).rejects.toThrow();
+
+      // Create a legitimate provider-profile
+      const providerProfile = await repository.create({
+        tenant: 'tenant_a',
+        kind: 'provider_profile',
+        providerKind: 'anthropic',
+        adapterId: 'claude-agent-sdk',
+        settings: { profileName: 'Default' }
+      });
+
+      // Attempt to update provider-profile with routing-table kind
+      await expect(repository.update('tenant_a', providerProfile.id, {
+        kind: 'model_routing_table',
+        settings: { active: false }
+      })).rejects.toThrow();
+
+      database.close();
+    });
+  });
+
+  it('provider-profile with all optional fields round-trips through create, list, findById, and update', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const database = createSqliteDatabase({ path: databasePath });
+      await migrateSqliteDatabase(database);
+      const repository = new DrizzleConfigurationRecordRepository(database);
+
+      const created = await repository.create({
+        tenant: 'tenant_a',
+        kind: 'provider_profile',
+        providerKind: 'anthropic',
+        adapterId: 'claude-agent-sdk',
+        settings: {
+          profileName: 'Full profile',
+          credentialSecretHandle: 'sec_abcdefghijklmnopqrstuvwxyzABCDEF',
+          model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+          inferenceSettings: { temperature: 0.7 },
+          endpoint: { baseUrl: 'https://api.anthropic.com', requestTimeoutMs: 30000 }
+        }
+      });
+
+      expect(created.kind).toBe('provider_profile');
+      if (created.kind === 'provider_profile') {
+        expect(created.settings.profileName).toBe('Full profile');
+        expect(created.settings.credentialSecretHandle).toBe('sec_abcdefghijklmnopqrstuvwxyzABCDEF');
+        expect(created.settings.model).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' });
+        expect(created.settings.inferenceSettings).toEqual({ temperature: 0.7 });
+        expect(created.settings.endpoint).toEqual({ baseUrl: 'https://api.anthropic.com', requestTimeoutMs: 30000 });
+      }
+
+      // findById round-trip
+      const found = await repository.findById('tenant_a', created.id);
+      expect(found).toEqual(created);
+
+      // list round-trip
+      const listed = await repository.list('tenant_a');
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toEqual(created);
+
+      // update: rename profile, preserve all other optional fields
+      const updated = await repository.update('tenant_a', created.id, {
+        kind: 'provider_profile',
+        settings: { profileName: 'Renamed profile' }
+      });
+      expect(updated?.kind).toBe('provider_profile');
+      if (updated?.kind === 'provider_profile') {
+        expect(updated.settings.profileName).toBe('Renamed profile');
+        expect(updated.settings.credentialSecretHandle).toBe('sec_abcdefghijklmnopqrstuvwxyzABCDEF');
+        expect(updated.settings.model).toEqual({ provider: 'anthropic', model: 'claude-sonnet-4' });
+        expect(updated.settings.inferenceSettings).toEqual({ temperature: 0.7 });
+        expect(updated.settings.endpoint).toEqual({ baseUrl: 'https://api.anthropic.com', requestTimeoutMs: 30000 });
+      }
+
+      database.close();
+    });
+  });
+
+  it('cross-tenant isolation: update and delete return null/false for records from a different tenant', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const database = createSqliteDatabase({ path: databasePath });
+      await migrateSqliteDatabase(database);
+      const repository = new DrizzleConfigurationRecordRepository(database);
+
+      const created = await repository.create({
+        tenant: 'tenant_a',
+        kind: 'provider_profile',
+        providerKind: 'model_runner',
+        adapterId: 'openai',
+        settings: { profileName: 'Tenant A profile' }
+      });
+
+      // tenant_b cannot update tenant_a's record
+      await expect(repository.update('tenant_b', created.id, {
+        kind: 'provider_profile',
+        settings: { profileName: 'Hijacked' }
+      })).resolves.toBeNull();
+
+      // tenant_b cannot delete tenant_a's record
+      await expect(repository.delete('tenant_b', created.id)).resolves.toBe(false);
+
+      // tenant_a's record still intact
+      const found = await repository.findById('tenant_a', created.id);
+      expect(found?.kind === 'provider_profile' && found.settings.profileName).toBe('Tenant A profile');
+
+      // tenant_b list is empty
+      const listedB = await repository.list('tenant_b');
+      expect(listedB).toHaveLength(0);
 
       database.close();
     });
@@ -279,6 +385,15 @@ describe('DrizzleConfigurationRecordRepository', () => {
         });
         if (withNullReqs?.kind === 'model_routing_table') {
           expect(withNullReqs.settings.roleDistinctRequirements).toBeUndefined();
+        }
+
+        // Clear version with null
+        const withNullVersion = await repository.update('tenant_a', created.id, {
+          kind: 'model_routing_table',
+          settings: { version: null }
+        });
+        if (withNullVersion?.kind === 'model_routing_table') {
+          expect(withNullVersion.settings.version).toBeUndefined();
         }
 
         database.close();
