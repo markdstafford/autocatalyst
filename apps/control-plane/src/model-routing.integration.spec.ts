@@ -1,11 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { CreateConfigurationRecordRequest } from '@autocatalyst/api-contract';
+import type { CreateConfigurationRecordRequest, RunnerEvent } from '@autocatalyst/api-contract';
 import {
+  consumeRunnerEvents,
   createModelRoutingResolver,
+  InMemoryRetainedRunEventStore,
   ModelRoutingConfigurationError
 } from '@autocatalyst/core';
 import {
@@ -14,11 +16,17 @@ import {
   DrizzleConfigurationRecordRepository
 } from '@autocatalyst/persistence';
 import {
+  createAgentRunnerFactory,
   getAgentProviderAdapterKey,
+  type AgentProfileResolution,
+  type AgentProviderAdapter,
+  type AgentConnection,
   type AgentRunnerFactoryInput,
   type DirectCallFactoryInput,
   type AgentProviderAdapterRegistry,
-  type DirectProviderAdapterRegistry
+  type DirectProviderAdapterRegistry,
+  type ProcessLaunchConfig,
+  type ResolvedAgentRunnerProfile
 } from '@autocatalyst/execution';
 import { createRoutingProfileResolver } from './server.js';
 
@@ -602,6 +610,358 @@ describe('dispatch through createRoutingProfileResolver', () => {
 
       expect(result.profile.mode).toBe('direct');
       expect(result.profile.providerKind).toBe('anthropic');
+    });
+  });
+
+  it('profile owned by a different tenant cannot be resolved for another tenant routing table', async () => {
+    const TENANT_A = 'tenant_a';
+    const TENANT_B = 'tenant_b';
+
+    await withTempDb(async (repo) => {
+      // Create a Claude profile owned by tenant_a
+      const claudeForA = await repo.create({ ...CLAUDE_PROFILE, tenant: TENANT_A });
+
+      // Create a routing table for tenant_b that references tenant_a's profile id
+      await repo.create({
+        tenant: TENANT_B,
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [
+            {
+              id: 'rt_impl_implementer',
+              route: { mode: 'agent', step: 'impl', role: 'implementer' },
+              profileId: claudeForA.id
+            }
+          ]
+        }
+      });
+
+      // Build a resolver for tenant_b — its findConfigurationRecordById will
+      // scope the lookup to tenant_b, so the profile (owned by tenant_a) is invisible.
+      const resolver = createModelRoutingResolver({
+        configuration: configurationReaderFor(repo),
+        agentAdapters,
+        directAdapters
+      });
+
+      await expect(
+        resolver.resolveAgentRoute({ tenant: TENANT_B, step: 'impl', role: 'implementer' })
+      ).rejects.toMatchObject({
+        name: 'ModelRoutingConfigurationError',
+        code: 'profile_not_found'
+      });
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Helpers for composed dispatch tests
+// ---------------------------------------------------------------------------
+
+function makeLiveAgentAdapter(opts: {
+  providerKind: string;
+  adapterId: string;
+  terminalId: string;
+  onStartSession?: (providerKind: string) => void;
+}): AgentProviderAdapter {
+  return {
+    providerKind: opts.providerKind,
+    adapterId: opts.adapterId,
+    supportedConnectionMechanism: 'fetch_transport' as const,
+    async startSession(input) {
+      opts.onStartSession?.(opts.providerKind);
+      const runId = input.telemetryContext.runId;
+      const step = input.telemetryContext.step ?? 'impl';
+      async function* events(): AsyncIterable<RunnerEvent> {
+        yield {
+          id: opts.terminalId,
+          runId,
+          step,
+          importance: 'normal',
+          createdAt: new Date().toISOString(),
+          type: 'runner_terminal_result',
+          result: { directive: 'advance' }
+        } as RunnerEvent;
+      }
+      return {
+        events: events(),
+        metadata: Promise.resolve({
+          outcome: 'succeeded' as const,
+          launchMechanism: 'fetch_transport' as const,
+          degradedCapabilities: [],
+          tokenUsage: { available: false } as const
+        })
+      };
+    }
+  };
+}
+
+function makeLiveConnection(profile: ResolvedAgentRunnerProfile): AgentConnection {
+  return {
+    profile,
+    credentialResolved: true,
+    createFetchTransport: () => ({ fetch: vi.fn(async () => new Response('{}', { status: 200 })) }),
+    createProcessLaunchConfig: (): ProcessLaunchConfig => ({
+      environment: { ANTHROPIC_AUTH_TOKEN: 'fake-token', ANTHROPIC_BASE_URL: 'https://api.anthropic.com' },
+      secretVariableNames: ['ANTHROPIC_AUTH_TOKEN'],
+      degradedCapabilities: [],
+      redacted: { mechanism: 'process_environment', hasAuthToken: true }
+    })
+  };
+}
+
+function makeRunEnvironment(runId: string, tenant: string, step: string) {
+  return {
+    context: {
+      run: { id: runId, workKind: 'feature' as const, currentStep: step, tenant },
+      task: { prompt: 'Test', inputs: {} },
+      workspaceIntent: { shape: 'none' as const },
+      secretBindings: [],
+      toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' as const },
+      skills: { requested: [] },
+      capabilityRequirements: {
+        shell: { kind: 'bash' as const, required: false },
+        paths: { canonicalWorkspacePaths: false },
+        lsp: { requested: false }
+      }
+    },
+    workspace: { shape: 'none' as const, workspaceRoots: [] },
+    environment: { variables: {}, secretVariableNames: [] },
+    toolPolicy: { allowedTools: [], workspaceRoots: [] },
+    skills: { requested: [] },
+    capabilities: {
+      shell: { kind: 'bash' as const, available: false },
+      paths: {},
+      lsp: { requested: false, available: false }
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Composed dispatch tests: full production path
+// DB config → resolver → createRoutingProfileResolver → createAgentRunnerFactory → consumeRunnerEvents
+// ---------------------------------------------------------------------------
+
+describe('dispatch through createAgentRunnerFactory + consumeRunnerEvents', () => {
+  it('implementer routes to Claude cell through event consumer', async () => {
+    await withTempDb(async (repo) => {
+      const claude = await repo.create(CLAUDE_PROFILE);
+      await repo.create({
+        tenant: TENANT,
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [
+            {
+              id: 'rt_impl_implementer',
+              route: { mode: 'agent', step: 'impl', role: 'implementer' },
+              profileId: claude.id
+            }
+          ]
+        }
+      });
+
+      const invokedProviders: string[] = [];
+      const claudeAdapter = makeLiveAgentAdapter({
+        providerKind: 'anthropic',
+        adapterId: 'claude-agent-sdk',
+        terminalId: 'evt_claude_001',
+        onStartSession: (pk) => invokedProviders.push(pk)
+      });
+
+      const liveAdapters = new Map([
+        [getAgentProviderAdapterKey('anthropic', 'claude-agent-sdk'), claudeAdapter]
+      ]) as unknown as AgentProviderAdapterRegistry;
+
+      const resolver = createModelRoutingResolver({
+        configuration: configurationReaderFor(repo),
+        agentAdapters: liveAdapters,
+        directAdapters
+      });
+      const routingProfileResolver = createRoutingProfileResolver({ resolver, fallbackTenant: TENANT });
+
+      const factory = createAgentRunnerFactory({
+        adapters: liveAdapters,
+        resolveProfile: (input: AgentRunnerFactoryInput): Promise<AgentProfileResolution> =>
+          routingProfileResolver.resolveAgentProfile(input),
+        createConnection: async (connectionInput) => makeLiveConnection(connectionInput.profile)
+      });
+
+      const runner = await factory.createRunner({
+        runId: 'run_dispatch_001',
+        step: 'impl',
+        role: 'implementer',
+        tenant: TENANT
+      });
+
+      const eventsStore = new InMemoryRetainedRunEventStore({
+        maxEventsPerScope: 256,
+        maxExpiredIdsPerScope: 64,
+        subscriberBufferSize: 32
+      });
+
+      const result = await consumeRunnerEvents({
+        eventsStore,
+        events: runner.run({ environment: makeRunEnvironment('run_dispatch_001', TENANT, 'impl') }),
+        runId: 'run_dispatch_001',
+        tenant: TENANT
+      });
+
+      expect(result.workResult.directive).toBe('advance');
+      expect(invokedProviders).toContain('anthropic');
+    });
+  });
+
+  it('implementer and reviewer route to different providers through event consumer', async () => {
+    await withTempDb(async (repo) => {
+      const claude = await repo.create(CLAUDE_PROFILE);
+      const openai = await repo.create(OPENAI_PROFILE);
+      await repo.create({
+        tenant: TENANT,
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [
+            {
+              id: 'rt_impl_implementer',
+              route: { mode: 'agent', step: 'impl', role: 'implementer' },
+              profileId: claude.id
+            },
+            {
+              id: 'rt_impl_reviewer',
+              route: { mode: 'agent', step: 'impl', role: 'reviewer' },
+              profileId: openai.id
+            }
+          ]
+        }
+      });
+
+      const invokedByRole: Record<string, string> = {};
+      const claudeAdapter = makeLiveAgentAdapter({
+        providerKind: 'anthropic',
+        adapterId: 'claude-agent-sdk',
+        terminalId: 'evt_claude_002',
+        onStartSession: (pk) => { invokedByRole['implementer'] = pk; }
+      });
+      const openaiAdapter = makeLiveAgentAdapter({
+        providerKind: 'openai',
+        adapterId: 'openai-agents-sdk',
+        terminalId: 'evt_openai_002',
+        onStartSession: (pk) => { invokedByRole['reviewer'] = pk; }
+      });
+
+      const liveAdapters = new Map([
+        [getAgentProviderAdapterKey('anthropic', 'claude-agent-sdk'), claudeAdapter],
+        [getAgentProviderAdapterKey('openai', 'openai-agents-sdk'), openaiAdapter]
+      ]) as unknown as AgentProviderAdapterRegistry;
+
+      const resolver = createModelRoutingResolver({
+        configuration: configurationReaderFor(repo),
+        agentAdapters: liveAdapters,
+        directAdapters
+      });
+      const routingProfileResolver = createRoutingProfileResolver({ resolver, fallbackTenant: TENANT });
+
+      const factory = createAgentRunnerFactory({
+        adapters: liveAdapters,
+        resolveProfile: (input: AgentRunnerFactoryInput): Promise<AgentProfileResolution> =>
+          routingProfileResolver.resolveAgentProfile(input),
+        createConnection: async (connectionInput) => makeLiveConnection(connectionInput.profile)
+      });
+
+      const implementerRunner = await factory.createRunner({
+        runId: 'run_dispatch_002',
+        step: 'impl',
+        role: 'implementer',
+        tenant: TENANT
+      });
+      const reviewerRunner = await factory.createRunner({
+        runId: 'run_dispatch_002',
+        step: 'impl',
+        role: 'reviewer',
+        tenant: TENANT
+      });
+
+      const eventsStore = new InMemoryRetainedRunEventStore({
+        maxEventsPerScope: 256,
+        maxExpiredIdsPerScope: 64,
+        subscriberBufferSize: 32
+      });
+
+      const implementerResult = await consumeRunnerEvents({
+        eventsStore,
+        events: implementerRunner.run({ environment: makeRunEnvironment('run_dispatch_002', TENANT, 'impl') }),
+        runId: 'run_dispatch_002',
+        tenant: TENANT
+      });
+      const reviewerResult = await consumeRunnerEvents({
+        eventsStore,
+        events: reviewerRunner.run({ environment: makeRunEnvironment('run_dispatch_002', TENANT, 'impl') }),
+        runId: 'run_dispatch_002',
+        tenant: TENANT
+      });
+
+      expect(implementerResult.workResult.directive).toBe('advance');
+      expect(reviewerResult.workResult.directive).toBe('advance');
+      expect(invokedByRole['implementer']).toBe('anthropic');
+      expect(invokedByRole['reviewer']).toBe('openai');
+    });
+  });
+
+  it('route miss through factory raises ModelRoutingConfigurationError', async () => {
+    await withTempDb(async (repo) => {
+      const claude = await repo.create(CLAUDE_PROFILE);
+      await repo.create({
+        tenant: TENANT,
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [
+            {
+              id: 'rt_impl_implementer',
+              route: { mode: 'agent', step: 'impl', role: 'implementer' },
+              profileId: claude.id
+            }
+          ]
+        }
+      });
+
+      const claudeAdapter = makeLiveAgentAdapter({
+        providerKind: 'anthropic',
+        adapterId: 'claude-agent-sdk',
+        terminalId: 'evt_claude_003'
+      });
+      const liveAdapters = new Map([
+        [getAgentProviderAdapterKey('anthropic', 'claude-agent-sdk'), claudeAdapter]
+      ]) as unknown as AgentProviderAdapterRegistry;
+
+      const resolver = createModelRoutingResolver({
+        configuration: configurationReaderFor(repo),
+        agentAdapters: liveAdapters,
+        directAdapters
+      });
+      const routingProfileResolver = createRoutingProfileResolver({ resolver, fallbackTenant: TENANT });
+
+      const factory = createAgentRunnerFactory({
+        adapters: liveAdapters,
+        resolveProfile: (input: AgentRunnerFactoryInput): Promise<AgentProfileResolution> =>
+          routingProfileResolver.resolveAgentProfile(input),
+        createConnection: async (connectionInput) => makeLiveConnection(connectionInput.profile)
+      });
+
+      // Attempt to create a runner for a step that has no route
+      await expect(
+        factory.createRunner({
+          runId: 'run_dispatch_003',
+          step: 'planning',
+          role: 'implementer',
+          tenant: TENANT
+        })
+      ).rejects.toMatchObject({
+        name: 'ModelRoutingConfigurationError',
+        code: 'route_not_found'
+      });
     });
   });
 });
