@@ -2,6 +2,7 @@ import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runtimeSkillsCatalog, runtimeSkillsCatalogRoot } from './catalog.js';
+import { SkillCatalogResolutionError, validateSkillCatalog, resolveSkills } from './skill-resolver.js';
 
 const forbiddenSkillRefs = [
   'superpowers:using-git-worktrees',
@@ -96,5 +97,88 @@ describe('runtime skills catalog assets', () => {
     for (const section of requiredSections) {
       expect(guidelines).toContain(section);
     }
+  });
+});
+
+describe('validateSkillCatalog', () => {
+  it('accepts the real B1 catalog without error', async () => {
+    const result = await validateSkillCatalog({ catalog: runtimeSkillsCatalog, catalogRoot: runtimeSkillsCatalogRoot });
+    expect(result.map((e) => e.ref).sort()).toEqual(['mm:planning', 'mm:writing-guidelines']);
+    for (const entry of result) {
+      expect(typeof entry.absoluteAssetPath).toBe('string');
+      expect(path.isAbsolute(entry.absoluteAssetPath)).toBe(true);
+    }
+  });
+
+  it('rejects a catalog entry with a bad ref format', async () => {
+    const catalog = [{ ref: 'not-a-valid-ref', assetPath: 'assets/x', dependencies: [], description: 'x' }] as const;
+    await expect(
+      validateSkillCatalog({ catalog: catalog as any, catalogRoot: '/some/path' })
+    ).rejects.toMatchObject({ code: 'catalog_entry_malformed' });
+  });
+
+  it('rejects a catalog with a duplicate ref', async () => {
+    const catalog = [
+      { ref: 'a:b', assetPath: 'assets/a/b', dependencies: [], description: 'first' },
+      { ref: 'a:b', assetPath: 'assets/a/b2', dependencies: [], description: 'second' }
+    ] as const;
+    await expect(
+      validateSkillCatalog({ catalog: catalog as any, catalogRoot: '/some/path' })
+    ).rejects.toMatchObject({ code: 'catalog_entry_malformed' });
+  });
+
+  it('rejects a catalog entry whose dependency is not in the catalog', async () => {
+    const catalog = [
+      { ref: 'a:b', assetPath: 'assets/a/b', dependencies: ['a:missing'], description: 'b' }
+    ] as const;
+    await expect(
+      validateSkillCatalog({ catalog: catalog as any, catalogRoot: '/some/path' })
+    ).rejects.toMatchObject({ code: 'skill_dependency_missing' });
+  });
+
+  it('rejects an asset path that escapes the catalog root', async () => {
+    const catalog = [
+      { ref: 'a:b', assetPath: '../../etc/passwd', dependencies: [], description: 'b' }
+    ] as const;
+    await expect(
+      validateSkillCatalog({ catalog: catalog as any, catalogRoot: '/some/path' })
+    ).rejects.toMatchObject({ code: 'skill_asset_outside_catalog' });
+  });
+
+  it('rejects an asset path that does not exist on the filesystem', async () => {
+    const catalog = [
+      { ref: 'a:b', assetPath: 'assets/does-not-exist-xyz', dependencies: [], description: 'b' }
+    ] as const;
+    await expect(
+      validateSkillCatalog({ catalog: catalog as any, catalogRoot: '/nonexistent/catalog-root' })
+    ).rejects.toMatchObject({ code: 'skill_asset_missing' });
+  });
+});
+
+describe('resolveSkills', () => {
+  it('resolves mm:planning with dep-first ordering (writing-guidelines before planning)', async () => {
+    const result = await resolveSkills(['mm:planning']);
+    expect(result.requested).toEqual(['mm:planning']);
+    expect(result.resolved.map((e) => e.ref)).toEqual(['mm:writing-guidelines', 'mm:planning']);
+  });
+
+  it('deduplicates repeated requested refs', async () => {
+    const result = await resolveSkills(['mm:planning', 'mm:planning']);
+    expect(result.requested).toEqual(['mm:planning']);
+    expect(result.resolved.filter((e) => e.ref === 'mm:planning')).toHaveLength(1);
+  });
+
+  it('resolves mm:writing-guidelines alone without pulling in mm:planning', async () => {
+    const result = await resolveSkills(['mm:writing-guidelines']);
+    expect(result.requested).toEqual(['mm:writing-guidelines']);
+    expect(result.resolved.map((e) => e.ref)).toEqual(['mm:writing-guidelines']);
+  });
+
+  it('throws skill_not_found for a ref absent from the catalog', async () => {
+    await expect(resolveSkills(['mm:does-not-exist'])).rejects.toMatchObject({ code: 'skill_not_found' });
+  });
+
+  it('throws skill_ref_invalid for a ref that does not match the ref schema', async () => {
+    await expect(resolveSkills(['not-a-valid-ref'])).rejects.toMatchObject({ code: 'skill_ref_invalid' });
   });
 });

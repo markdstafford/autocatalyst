@@ -7,6 +7,17 @@ export {
 } from './skills/catalog.js';
 
 export {
+  SkillCatalogResolutionError,
+  validateSkillCatalog,
+  resolveCatalogAssetPath,
+  resolveSkills,
+  type SkillCatalogResolutionErrorCode,
+  type ValidateSkillCatalogInput,
+  type ValidatedRuntimeSkillCatalogEntry,
+  type ResolveSkillsOptions
+} from './skills/skill-resolver.js';
+
+export {
   createStepResultContractRegistry,
   resolveStepResultContract,
   type StepResultContractDefinition,
