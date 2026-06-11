@@ -750,6 +750,67 @@ describe('credential validation', () => {
 });
 
 // ---------------------------------------------------------------------------
+// resolveAgentRoute — table-defined RoleDistinctRequirement guard
+// ---------------------------------------------------------------------------
+
+describe('resolveAgentRoute distinct-requirement guard', () => {
+  it('throws role_distinct_unsatisfied when table has a RoleDistinctRequirement for the step', async () => {
+    const claudeProfileB: ConfigurationRecord = { ...claudeProfile, id: 'cfg_claude_b', tenant: 'tenant_b' };
+    const tableWithReq: ConfigurationRecord = {
+      ...routingTable,
+      id: 'tbl_guard',
+      tenant: 'tenant_b',
+      settings: {
+        active: true,
+        entries: [
+          { id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_claude_b' }
+        ],
+        roleDistinctRequirements: [
+          { step: 'impl', mode: 'agent', roles: ['implementer', 'reviewer'], distinctBy: 'model' }
+        ]
+      }
+    };
+    const opts: CreateModelRoutingResolverOptions = {
+      ...makeDefaultOptions(),
+      configuration: makeReader([claudeProfileB, tableWithReq])
+    };
+    const resolver = createModelRoutingResolver(opts);
+    await expect(
+      resolver.resolveAgentRoute({ tenant: 'tenant_b', step: 'impl', role: 'implementer' })
+    ).rejects.toMatchObject({
+      code: 'role_distinct_unsatisfied',
+      safeDetails: expect.objectContaining({ step: 'impl', mode: 'agent', distinctBy: 'model' })
+    });
+  });
+
+  it('does not throw when the step has no RoleDistinctRequirement in the table', async () => {
+    const claudeProfileB: ConfigurationRecord = { ...claudeProfile, id: 'cfg_claude_b', tenant: 'tenant_b' };
+    const tableWithReqForOtherStep: ConfigurationRecord = {
+      ...routingTable,
+      id: 'tbl_guard_other',
+      tenant: 'tenant_b',
+      settings: {
+        active: true,
+        entries: [
+          { id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_claude_b' }
+        ],
+        roleDistinctRequirements: [
+          { step: 'other_step', mode: 'agent', roles: ['implementer', 'reviewer'], distinctBy: 'model' }
+        ]
+      }
+    };
+    const opts: CreateModelRoutingResolverOptions = {
+      ...makeDefaultOptions(),
+      configuration: makeReader([claudeProfileB, tableWithReqForOtherStep])
+    };
+    const resolver = createModelRoutingResolver(opts);
+    // Should resolve without error since the distinct requirement is for a different step
+    const result = await resolver.resolveAgentRoute({ tenant: 'tenant_b', step: 'impl', role: 'implementer' });
+    expect(result.profileId).toBe('cfg_claude_b');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Role-distinct resolution
 // ---------------------------------------------------------------------------
 

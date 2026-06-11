@@ -422,6 +422,29 @@ export function createModelRoutingResolver(options: CreateModelRoutingResolverOp
         routingTableId: tableId
       };
 
+      // Guard: if the active table defines a RoleDistinctRequirement for this step,
+      // single-role resolution must not bypass group validation. Callers must use
+      // resolveDistinctAgentRoutes for pre-dispatch group validation on these steps.
+      const distinctReq = table.roleDistinctRequirements?.find(
+        (req) => req.step === input.step && req.mode === 'agent'
+      );
+      if (distinctReq !== undefined) {
+        throw new ModelRoutingConfigurationError(
+          'role_distinct_unsatisfied',
+          'Step has a routing-table RoleDistinctRequirement; use resolveDistinctAgentRoutes for pre-dispatch group validation.',
+          {
+            tenant: input.tenant,
+            ...(input.runId !== undefined ? { runId: input.runId } : {}),
+            step: input.step,
+            role: input.role,
+            mode: 'agent',
+            routingTableId: tableId,
+            roles: distinctReq.roles,
+            distinctBy: distinctReq.distinctBy
+          }
+        );
+      }
+
       // Try exact match first
       const exactMatches = table.entries.filter((e) => matchesAgentExact(e, input.step, input.role));
       let entry: ModelRoutingEntry;

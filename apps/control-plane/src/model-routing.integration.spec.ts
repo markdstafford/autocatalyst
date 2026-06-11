@@ -382,6 +382,48 @@ describe('model routing integration (real SQLite DB + mocked adapters)', () => {
     });
   });
 
+  it('raises role_distinct_unsatisfied from resolveAgentRoute when table has a RoleDistinctRequirement for the step', async () => {
+    await withTempDb(async (repo) => {
+      const claude = await repo.create(CLAUDE_PROFILE);
+      await repo.create({
+        tenant: TENANT,
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [
+            {
+              id: 'rt_impl_implementer',
+              route: { mode: 'agent', step: 'impl', role: 'implementer' },
+              profileId: claude.id
+            },
+            {
+              id: 'rt_impl_reviewer',
+              route: { mode: 'agent', step: 'impl', role: 'reviewer' },
+              profileId: claude.id
+            }
+          ],
+          roleDistinctRequirements: [
+            { step: 'impl', mode: 'agent', roles: ['implementer', 'reviewer'], distinctBy: 'model' }
+          ]
+        }
+      });
+
+      const resolver = createModelRoutingResolver({
+        configuration: configurationReaderFor(repo),
+        agentAdapters,
+        directAdapters
+      });
+      // Single-role resolution must be blocked when a table-defined distinct requirement
+      // exists for the step — callers must use resolveDistinctAgentRoutes instead.
+      await expect(
+        resolver.resolveAgentRoute({ tenant: TENANT, step: 'impl', role: 'implementer' })
+      ).rejects.toMatchObject({
+        name: 'ModelRoutingConfigurationError',
+        code: 'role_distinct_unsatisfied'
+      });
+    });
+  });
+
   it('raises routing_table_missing when no active table exists for the tenant', async () => {
     await withTempDb(async (repo) => {
       await repo.create(CLAUDE_PROFILE);
