@@ -75,11 +75,16 @@ export interface RecordRunStepTransitionResult {
   readonly runStep: RunStep;
 }
 
+export interface ListRunsByTenantOptions {
+  readonly limit?: number;
+}
+
 export interface RunRepository {
   create(input: CreateRunInput): Promise<Run>;
   findById(id: string): Promise<Run | null>;
   findActiveByTopic(topicId: string): Promise<Run | null>;
   listByTopic(topicId: string): Promise<readonly Run[]>;
+  listByTenant(tenant: string, options?: ListRunsByTenantOptions): Promise<readonly Run[]>;
   recordRunLifecycleStart(input: RecordRunLifecycleStartInput): Promise<RecordRunLifecycleStartResult>;
   recordRunStepTransition(input: RecordRunStepTransitionInput): Promise<RecordRunStepTransitionResult>;
   findLatestOpenRunStep?(input: { runId: string; step: string }): Promise<RunStep | null>;

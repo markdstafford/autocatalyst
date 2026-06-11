@@ -32,7 +32,10 @@ import {
 } from './probe-resource.js';
 import {
   getRunSuccessStatusCode,
+  listRunsSuccessStatusCode,
+  runCollectionPath,
   runIdParamsSchema,
+  runListResponseSchema,
   runSchema
 } from './run.js';
 import {
@@ -95,6 +98,7 @@ export function generateOpenApiDocument(): OpenApiDocument {
     createConversationWithFirstRunResponseSchema
   );
   const Run = registry.register('Run', runSchema);
+  const RunListResponse = registry.register('RunListResponse', runListResponseSchema);
   const RunIdParams = registry.register('RunIdParams', runIdParamsSchema);
   const RunStepListResponse = registry.register('RunStepListResponse', runStepListResponseSchema);
 
@@ -267,6 +271,18 @@ export function generateOpenApiDocument(): OpenApiDocument {
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
       400: jsonResponse(ErrorResponse, 'Validation error.'),
       409: jsonResponse(ErrorResponse, 'Conflict.')
+    }
+  });
+
+  // GET /v1/runs
+  registry.registerPath({
+    method: 'get',
+    path: runCollectionPath,
+    tags: ['runs'],
+    responses: {
+      [listRunsSuccessStatusCode]: jsonResponse(RunListResponse, 'List of runs for the authenticated tenant.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      403: jsonResponse(ErrorResponse, 'Forbidden.')
     }
   });
 

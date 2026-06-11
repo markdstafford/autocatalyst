@@ -13,7 +13,9 @@ import {
   principalDiagnosticResponseSchema,
   probeResourceCollectionPath,
   probeResourceSchema,
-  type ProbeResource
+  runListResponseSchema,
+  type ProbeResource,
+  type Run
 } from '@autocatalyst/api-contract';
 
 import { SecretStoreLockedError } from './secret.js';
@@ -29,6 +31,9 @@ function createFakeControlPlaneService(): ControlPlaneService {
   return {
     createConversationWithFirstRun: vi.fn(async () => {
       throw new Error('controlPlane.createConversationWithFirstRun not stubbed for this test');
+    }),
+    listRuns: vi.fn(async () => {
+      throw new Error('controlPlane.listRuns not stubbed for this test');
     }),
     getRun: vi.fn(async () => {
       throw new Error('controlPlane.getRun not stubbed for this test');
@@ -445,6 +450,82 @@ describe('registerControlPlaneRoutes', () => {
     const parsed = errorResponseSchema.parse(response.json());
     expect(parsed.error.code).toBe('active_run_conflict');
     expect(parsed.error.details).toEqual({ topicId: 'topic_1', existingRunId: 'run_99' });
+  });
+
+  const routeRun: Run = {
+    id: 'run_1',
+    topicId: 'topic_1',
+    owner: hardcodedDevelopmentPrincipal,
+    tenant: 'tenant_dev',
+    workKind: 'feature',
+    currentStep: 'intake',
+    terminal: false,
+    createdAt: '2026-06-08T00:00:00.000Z',
+    updatedAt: '2026-06-08T00:00:00.000Z'
+  };
+
+  it('GET /v1/runs returns 200 with tenant runs and calls listRuns with principal tenant', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.listRuns as ReturnType<typeof vi.fn>).mockResolvedValue({ runs: [routeRun] });
+    const { app, authorization, policyCalls } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({ method: 'GET', url: '/v1/runs', headers: authorization });
+
+    expect(response.statusCode).toBe(200);
+    expect(runListResponseSchema.parse(response.json())).toEqual({ runs: [routeRun] });
+    expect(controlPlane.listRuns).toHaveBeenCalledWith({
+      principal: hardcodedDevelopmentPrincipal,
+      tenant: 'tenant_dev'
+    });
+    expect(policyCalls).toContainEqual({
+      principal: hardcodedDevelopmentPrincipal,
+      action: 'run.list',
+      resource: { kind: 'run_collection', path: '/v1/runs' }
+    });
+  });
+
+  it('GET /v1/runs rejects unauthenticated requests with 401', async () => {
+    const { app } = await buildServer();
+    server = app;
+
+    const response = await app.inject({ method: 'GET', url: '/v1/runs' });
+
+    expect(response.statusCode).toBe(401);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('unauthorized');
+  });
+
+  it('GET /v1/runs maps forbidden service errors to 403', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.listRuns as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('forbidden', 'Not authorized to list runs.')
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({ method: 'GET', url: '/v1/runs', headers: authorization });
+
+    expect(response.statusCode).toBe(403);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('forbidden');
+  });
+
+  it('GET /v1/runs/:id still reaches the single-run route', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.getRun as ReturnType<typeof vi.fn>).mockResolvedValue({ run: routeRun });
+    (controlPlane.listRuns as ReturnType<typeof vi.fn>).mockResolvedValue({ runs: [] });
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({ method: 'GET', url: '/v1/runs/run_1', headers: authorization });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(routeRun);
+    expect(controlPlane.getRun).toHaveBeenCalledWith({
+      principal: hardcodedDevelopmentPrincipal,
+      tenant: 'tenant_dev',
+      runId: 'run_1'
+    });
+    expect(controlPlane.listRuns).not.toHaveBeenCalled();
   });
 
   it('GET /v1/runs/:id returns 200 with the run on success', async () => {

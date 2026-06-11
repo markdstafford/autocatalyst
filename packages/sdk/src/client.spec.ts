@@ -5,6 +5,7 @@ import {
   createProbeResourceSuccessStatusCode,
   degradedHealthStatusCode,
   probeResourceCollectionPath,
+  runCollectionPath,
   type ProbeResource
 } from '@autocatalyst/api-contract';
 import { registerControlPlaneRoutes } from '@autocatalyst/core';
@@ -242,6 +243,45 @@ describe('orchestrator ingress methods', () => {
     expect(String(url)).toContain('/v1/runs/run_1');
     expect(init?.method).toBe('GET');
     expect((init?.headers as Record<string, string>)?.authorization).toBe('Bearer sdk-token');
+  });
+
+  it('listRuns sends GET to /v1/runs with bearer token and parses the response', async () => {
+    const mockFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ runs: [baseRun] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    );
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
+
+    const result = await client.listRuns();
+
+    expect(result).toEqual({ runs: [baseRun] });
+    const [url, init] = mockFetch.mock.calls[0];
+    expect(String(url)).toBe(`http://localhost:3000${runCollectionPath}`);
+    expect(init?.method).toBe('GET');
+    expect((init?.headers as Record<string, string>)?.authorization).toBe('Bearer sdk-token');
+  });
+
+  it('listRuns rejects invalid successful response bodies', async () => {
+    const mockFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ runs: [{ ...baseRun, unknownField: 'extra' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
+
+    await expect(client.listRuns()).rejects.toThrow();
+  });
+
+  it('listRuns throws ControlPlaneClientError on non-ok response', async () => {
+    const mockFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ error: { code: 'forbidden', message: 'Forbidden.' } }), {
+        status: 403,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
+
+    await expect(client.listRuns()).rejects.toBeInstanceOf(ControlPlaneClientError);
   });
 
   it('listRunSteps sends GET to /v1/runs/:id/steps with bearer token', async () => {

@@ -14,7 +14,9 @@ export {
   DrizzleSessionRepository,
   DrizzleTestResultRepository,
   DrizzleTopicRepository,
-  createDrizzleDomainRepositories
+  createDrizzleDomainRepositories,
+  defaultRunListLimit,
+  normalizeRunListLimit
 } from './domain-repositories.js';
 export type { DrizzleDomainRepositories } from './domain-repositories.js';
 export { DrizzleProbeResourceRepository } from './probe-resource-repository.js';

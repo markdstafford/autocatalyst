@@ -65,6 +65,15 @@ export interface ServiceCreateConversationInput {
   readonly request: CreateConversationWithFirstRunRequest;
 }
 
+export interface ServiceListRunsInput {
+  readonly principal: Principal;
+  readonly tenant: string;
+}
+
+export interface ServiceListRunsResult {
+  readonly runs: readonly Run[];
+}
+
 export interface ServiceGetRunInput {
   readonly principal: Principal;
   readonly tenant: string;
@@ -115,6 +124,7 @@ export interface ControlPlaneService {
   createConversationWithFirstRun(
     input: ServiceCreateConversationInput
   ): Promise<CreateConversationWithFirstRunResponse>;
+  listRuns(input: ServiceListRunsInput): Promise<ServiceListRunsResult>;
   getRun(input: ServiceGetRunInput): Promise<ServiceGetRunResult>;
   listRunSteps(input: ServiceListRunStepsInput): Promise<ServiceListRunStepsResult>;
   subscribeRunEvents(input: ServiceSubscribeRunEventsInput): Promise<RunEventSubscription>;
@@ -220,6 +230,20 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       runStep: result.runStep
     };
     return createConversationWithFirstRunResponseSchema.parse(response);
+  }
+
+  async listRuns(input: ServiceListRunsInput): Promise<ServiceListRunsResult> {
+    const decision = await this.#policy.authorize({
+      principal: input.principal,
+      action: 'run.list',
+      resource: { kind: 'run_collection', path: '/v1/runs' }
+    });
+    if (!decision.allowed) {
+      throw new ControlPlaneServiceError('forbidden', 'Not authorized to list runs.');
+    }
+
+    const runs = await this.#runs.listByTenant(input.tenant);
+    return { runs };
   }
 
   async getRun(input: ServiceGetRunInput): Promise<ServiceGetRunResult> {

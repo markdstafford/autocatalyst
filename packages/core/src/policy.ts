@@ -9,6 +9,7 @@ export type PolicyResourceDescriptor =
   | { readonly kind: 'configuration_record'; readonly id: string; readonly path: '/v1/configuration-records/:id' }
   | { readonly kind: 'secret_collection'; readonly path: '/v1/secrets' }
   | { readonly kind: 'conversation_collection'; readonly path: '/v1/conversations' }
+  | { readonly kind: 'run_collection'; readonly path: '/v1/runs' }
   | { readonly kind: 'run'; readonly id: string; readonly path: '/v1/runs/:id' }
   | { readonly kind: 'run_steps'; readonly id: string; readonly path: '/v1/runs/:id/steps' }
   | { readonly kind: 'run_events'; readonly id: string; readonly path: '/v1/runs/:id/events' };
@@ -25,6 +26,7 @@ export type PolicyAction =
   | 'configuration_record.delete'
   | 'secret.create'
   | 'conversation.create'
+  | 'run.list'
   | 'run.read'
   | 'run_steps.list'
   | 'run_events.stream'

@@ -14,7 +14,8 @@ import {
   healthResponseSchema,
   principalDiagnosticResponseSchema,
   probeResourceCollectionPath,
-  probeResourceSchema
+  probeResourceSchema,
+  runListResponseSchema
 } from '@autocatalyst/api-contract';
 import {
   buildProviderAdapterKey,
@@ -1461,6 +1462,133 @@ describe('real Claude agent dispatch - failure paths', () => {
         expect(stepsResp.status).toBe(200);
         const stepsBody = await stepsResp.text();
         expect(stepsBody).not.toContain('Unexpected session event sequence');
+      } finally {
+        await handle.close();
+      }
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Run list — newest-first ordering and cross-tenant isolation
+// ---------------------------------------------------------------------------
+
+describe('run list integration', () => {
+  it('lists authenticated tenant runs newest-first and excludes other tenant runs', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      // Seed database before starting server
+      const seedDb = createSqliteDatabase({ path: databasePath });
+      await migrateSqliteDatabase(seedDb);
+      const seedRepos = createDrizzleDomainRepositories(seedDb);
+
+      // Create a project for the main tenant (hardcodedDevelopmentPrincipal)
+      const project = await seedRepos.projects.create({
+        owner: hardcodedDevelopmentPrincipal,
+        tenant: hardcodedDevelopmentPrincipal.tenantId,
+        displayName: 'Run List Project',
+        repoUrl: 'https://example.test/run-list',
+        hostRepository: { provider: 'github', owner: 'test', name: 'run-list' },
+        workspaceRootOverride: null,
+        issueTrackerSetting: null,
+        codeHostSetting: null,
+        credentialRefs: []
+      });
+
+      // Create a run for another tenant directly in persistence (to prove isolation)
+      const tenantTwoOwner = { kind: 'human' as const, id: 'user_other', tenantId: 'tenant_other' };
+      const tenantTwoProject = await seedRepos.projects.create({
+        owner: tenantTwoOwner,
+        tenant: 'tenant_other',
+        displayName: 'Other Tenant Project',
+        repoUrl: 'https://example.test/other',
+        hostRepository: { provider: 'github', owner: 'example', name: 'other' },
+        workspaceRootOverride: null,
+        issueTrackerSetting: null,
+        codeHostSetting: null,
+        credentialRefs: []
+      });
+      const tenantTwoConversation = await seedRepos.conversations.create({
+        projectId: tenantTwoProject.id,
+        owner: tenantTwoOwner,
+        tenant: 'tenant_other',
+        identity: 'other-tenant',
+        activeTopicId: null
+      });
+      const tenantTwoTopic = await seedRepos.topics.create({
+        conversationId: tenantTwoConversation.id,
+        owner: tenantTwoOwner,
+        tenant: 'tenant_other',
+        title: 'Other tenant topic',
+        kind: 'main'
+      });
+      const tenantTwoRun = await seedRepos.runs.create({
+        topicId: tenantTwoTopic.id,
+        owner: tenantTwoOwner,
+        tenant: 'tenant_other',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false
+      });
+      seedDb.close();
+
+      // Start the server
+      const handle = await startControlPlaneServer({
+        port: 0,
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET
+      });
+
+      try {
+        const baseUrl = `http://127.0.0.1:${handle.port}`;
+        const headers = { authorization: `Bearer ${BEARER_TOKEN}` };
+
+        // Create first run
+        const first = await fetch(`${baseUrl}/v1/conversations`, {
+          method: 'POST',
+          headers: { ...headers, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            projectId: project.id,
+            identity: 'list-runs-first',
+            topic: { title: 'First listable run' },
+            submission: { kind: 'free_form', body: 'First body', workKind: 'feature' }
+          })
+        });
+        expect(first.status).toBe(201);
+        const firstBody = await first.json() as { run: { id: string } };
+
+        // Small delay to ensure distinct createdAt timestamps
+        await new Promise((resolve) => setTimeout(resolve, 5));
+
+        // Create second run
+        const second = await fetch(`${baseUrl}/v1/conversations`, {
+          method: 'POST',
+          headers: { ...headers, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            projectId: project.id,
+            identity: 'list-runs-second',
+            topic: { title: 'Second listable run' },
+            submission: { kind: 'free_form', body: 'Second body', workKind: 'bug' }
+          })
+        });
+        expect(second.status).toBe(201);
+        const secondBody = await second.json() as { run: { id: string } };
+
+        // List runs
+        const listed = await fetch(`${baseUrl}/v1/runs`, { method: 'GET', headers });
+        expect(listed.status).toBe(200);
+        const body = runListResponseSchema.parse(await listed.json());
+        const ids = body.runs.map((run) => run.id);
+
+        // Assert both runs present, newest first
+        expect(body.runs.length).toBeGreaterThanOrEqual(2);
+        expect(ids).toContain(firstBody.run.id);
+        expect(ids).toContain(secondBody.run.id);
+        expect(ids.indexOf(secondBody.run.id)).toBeLessThan(ids.indexOf(firstBody.run.id));
+
+        // Assert cross-tenant isolation
+        expect(ids).not.toContain(tenantTwoRun.id);
+        expect(body.runs.every((run) => run.tenant === hardcodedDevelopmentPrincipal.tenantId)).toBe(true);
       } finally {
         await handle.close();
       }

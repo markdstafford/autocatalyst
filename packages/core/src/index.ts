@@ -73,6 +73,7 @@ export type {
   CreateConversationTopicMessageAndRunInput,
   CreateConversationTopicMessageAndRunResult,
   LifecycleRunStepInput,
+  ListRunsByTenantOptions,
   RecordRunLifecycleStartInput,
   RecordRunLifecycleStartResult,
   RecordRunStepTransitionInput,

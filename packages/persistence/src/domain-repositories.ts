@@ -79,6 +79,7 @@ import type {
   DomainRepositories,
   FeedbackRepository,
   LifecycleRunStepInput,
+  ListRunsByTenantOptions,
   MessageRepository,
   ProjectRepository,
   PublicationRepository,
@@ -504,6 +505,18 @@ export class DrizzleMessageRepository implements MessageRepository {
 // Runs
 // ---------------------------------------------------------------------------
 
+export const defaultRunListLimit = 100;
+
+export function normalizeRunListLimit(limit: number | undefined): number {
+  if (limit === undefined) {
+    return defaultRunListLimit;
+  }
+  if (!Number.isInteger(limit) || !Number.isFinite(limit) || limit <= 0) {
+    throw new RangeError('Run list limit must be a positive integer.');
+  }
+  return Math.min(limit, defaultRunListLimit);
+}
+
 export class DrizzleRunRepository implements RunRepository {
   readonly #database;
 
@@ -571,6 +584,18 @@ export class DrizzleRunRepository implements RunRepository {
       .from(runs)
       .where(eq(runs.topicId, topicId))
       .orderBy(asc(runs.createdAt), asc(runs.id))
+      .all();
+    return rows.map((row) => this.#rowToRun(row));
+  }
+
+  async listByTenant(tenant: string, options: ListRunsByTenantOptions = {}): Promise<readonly Run[]> {
+    const limit = normalizeRunListLimit(options.limit);
+    const rows = this.#database.drizzle
+      .select()
+      .from(runs)
+      .where(eq(runs.tenant, tenant))
+      .orderBy(desc(runs.createdAt), desc(runs.id))
+      .limit(limit)
       .all();
     return rows.map((row) => this.#rowToRun(row));
   }

@@ -48,6 +48,7 @@ function makeRunRepository(overrides: Partial<RunRepository> = {}): RunRepositor
     create: () => Promise.reject(new Error('not implemented')),
     findById: () => Promise.resolve(null),
     listByTopic: () => Promise.resolve([]),
+    listByTenant: () => Promise.resolve([]),
     recordRunLifecycleStart: () => Promise.reject(new Error('not implemented')),
     recordRunStepTransition: () => Promise.reject(new Error('not implemented')),
     ...overrides

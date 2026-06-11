@@ -4,6 +4,7 @@ import {
   asInternalSqliteDatabase,
   createDrizzleDomainRepositories,
   createSqliteDatabase,
+  defaultRunListLimit,
   migrateSqliteDatabase,
   withTempDatabasePath
 } from '../index.js';
@@ -25,6 +26,38 @@ async function withRepositories(
       database.close();
     }
   });
+}
+
+async function createProjectConversationAndTopic(
+  repos: DrizzleDomainRepositories,
+  input: { readonly tenant: string; readonly owner: typeof owner; readonly identity: string; readonly title: string }
+) {
+  const project = await repos.projects.create({
+    owner: input.owner,
+    tenant: input.tenant,
+    displayName: `Project ${input.identity}`,
+    repoUrl: 'https://example.test/repo',
+    hostRepository: { provider: 'github', owner: 'example', name: `repo-${input.identity}` },
+    workspaceRootOverride: null,
+    issueTrackerSetting: null,
+    codeHostSetting: null,
+    credentialRefs: []
+  });
+  const conversation = await repos.conversations.create({
+    projectId: project.id,
+    owner: input.owner,
+    tenant: input.tenant,
+    identity: input.identity,
+    activeTopicId: null
+  });
+  const topic = await repos.topics.create({
+    conversationId: conversation.id,
+    owner: input.owner,
+    tenant: input.tenant,
+    title: input.title,
+    kind: 'main'
+  });
+  return { project, conversation, topic };
 }
 
 describe('DrizzleDomainRepositories round-trip', () => {
@@ -649,4 +682,135 @@ describe('DrizzleDomainRepositories round-trip', () => {
       ).rejects.toThrow();
     });
   });
+
+  it('lists runs by tenant only, newest first, with deterministic createdAt ties', async () => {
+    await withRepositories(async (repos, database) => {
+      const tenantOne = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'tenant-one',
+        title: 'Tenant one'
+      });
+      const otherOwner = { ...owner, id: 'user_2', tenantId: 'tenant_2' } as const;
+      const tenantTwo = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_2',
+        owner: otherOwner,
+        identity: 'tenant-two',
+        title: 'Tenant two'
+      });
+
+      // Each active run needs its own topic due to the one-active-run-per-topic constraint
+      const olderTopic = await repos.topics.create({
+        conversationId: tenantOne.conversation.id,
+        owner,
+        tenant: 'tenant_1',
+        title: 'Older topic',
+        kind: 'side'
+      });
+      const tieLowTopic = await repos.topics.create({
+        conversationId: tenantOne.conversation.id,
+        owner,
+        tenant: 'tenant_1',
+        title: 'Tie low topic',
+        kind: 'side'
+      });
+      const tieHighTopic = await repos.topics.create({
+        conversationId: tenantOne.conversation.id,
+        owner,
+        tenant: 'tenant_1',
+        title: 'Tie high topic',
+        kind: 'side'
+      });
+
+      const older = await repos.runs.create({
+        topicId: olderTopic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false
+      });
+      const tieLow = await repos.runs.create({
+        topicId: tieLowTopic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'bug',
+        currentStep: 'impl.build',
+        terminal: false
+      });
+      const tieHigh = await repos.runs.create({
+        topicId: tieHighTopic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'chore',
+        currentStep: 'review',
+        terminal: false
+      });
+      const otherTenant = await repos.runs.create({
+        topicId: tenantTwo.topic.id,
+        owner: otherOwner,
+        tenant: 'tenant_2',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false
+      });
+
+      // Manipulate createdAt via raw SQL to control ordering
+      asInternalSqliteDatabase(database).client.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run('2026-06-11T10:00:00.000Z', older.id);
+      asInternalSqliteDatabase(database).client.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run('2026-06-11T12:00:00.000Z', tieLow.id);
+      asInternalSqliteDatabase(database).client.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run('2026-06-11T12:00:00.000Z', tieHigh.id);
+      asInternalSqliteDatabase(database).client.prepare('UPDATE runs SET created_at = ? WHERE id = ?').run('2026-06-11T13:00:00.000Z', otherTenant.id);
+
+      const listed = await repos.runs.listByTenant('tenant_1');
+      const expectedTieOrder = [tieLow.id, tieHigh.id].sort().reverse();
+
+      expect(listed.map((run) => run.id)).toEqual([...expectedTieOrder, older.id]);
+      expect(listed.map((run) => run.tenant)).toEqual(['tenant_1', 'tenant_1', 'tenant_1']);
+      expect(listed.some((run) => run.id === otherTenant.id)).toBe(false);
+    });
+  });
+
+  it('honors explicit run list limits and exposes the default cap', async () => {
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'limits',
+        title: 'Limits'
+      });
+      const runIds: string[] = [];
+      for (const idx of [0, 1, 2]) {
+        // Each run needs its own topic due to the one-active-run-per-topic constraint
+        const topic = await repos.topics.create({
+          conversationId: setup.conversation.id,
+          owner,
+          tenant: 'tenant_1',
+          title: `Limits topic ${idx}`,
+          kind: 'side'
+        });
+        const run = await repos.runs.create({
+          topicId: topic.id,
+          owner,
+          tenant: 'tenant_1',
+          workKind: 'feature',
+          currentStep: `step_${idx}`,
+          terminal: false
+        });
+        runIds.push(run.id);
+      }
+
+      expect(defaultRunListLimit).toBe(100);
+      await expect(repos.runs.listByTenant('tenant_1', { limit: 1 })).resolves.toHaveLength(1);
+      await expect(repos.runs.listByTenant('tenant_1', { limit: defaultRunListLimit + 10 })).resolves.toHaveLength(runIds.length);
+    });
+  });
+
+  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    'rejects invalid run list limit %s',
+    async (limit) => {
+      await withRepositories(async (repos) => {
+        await expect(repos.runs.listByTenant('tenant_1', { limit })).rejects.toThrow(RangeError);
+      });
+    }
+  );
 });
