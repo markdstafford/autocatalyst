@@ -7,10 +7,14 @@ import type {
   Run,
   RunStateTransitionKind,
   RunStep,
+  SpecAuthorResult,
   TestingGuideResult,
   Topic,
   TrackedIssue
 } from '@autocatalyst/api-contract';
+
+import type { CompleteSpecAuthoringOutput, SpecAuthoringServiceDependencies } from './spec-authoring-service.js';
+import { completeSpecAuthoring } from './spec-authoring-service.js';
 
 import type {
   ConversationIngressRepository,
@@ -153,6 +157,15 @@ export interface Orchestrator {
   tick(input: TickInput): Promise<TickResult>;
 }
 
+// --- Spec authoring completion ---
+
+export interface WorkspaceContext {
+  readonly workspaceRepoRoot: string;
+  readonly workspaceHandle: string;
+}
+
+export type WorkspaceContextResolver = (input: { runId: string }) => Promise<WorkspaceContext>;
+
 // --- Constructor options ---
 
 export interface DefaultOrchestratorOptions {
@@ -165,6 +178,8 @@ export interface DefaultOrchestratorOptions {
   readonly eventIdGenerator?: () => string;
   readonly isActiveRunConflict?: (error: unknown) => boolean;
   readonly logger?: { warn(message: string, details?: unknown): void };
+  readonly specAuthoringDependencies?: SpecAuthoringServiceDependencies;
+  readonly resolveWorkspaceContext?: WorkspaceContextResolver;
 }
 
 function defaultIsActiveRunConflict(error: unknown): boolean {
@@ -190,6 +205,8 @@ export class DefaultOrchestrator implements Orchestrator {
   readonly #eventIdGenerator: (() => string) | undefined;
   readonly #isActiveRunConflict: (error: unknown) => boolean;
   readonly #logger: { warn(message: string, details?: unknown): void } | undefined;
+  readonly #specAuthoringDependencies: SpecAuthoringServiceDependencies | undefined;
+  readonly #resolveWorkspaceContext: WorkspaceContextResolver | undefined;
 
   constructor(options: DefaultOrchestratorOptions) {
     this.#runs = options.runs;
@@ -201,6 +218,8 @@ export class DefaultOrchestrator implements Orchestrator {
     this.#eventIdGenerator = options.eventIdGenerator;
     this.#isActiveRunConflict = options.isActiveRunConflict ?? defaultIsActiveRunConflict;
     this.#logger = options.logger;
+    this.#specAuthoringDependencies = options.specAuthoringDependencies;
+    this.#resolveWorkspaceContext = options.resolveWorkspaceContext;
   }
 
   async createRun(input: CreateOrchestratedRunInput): Promise<OrchestratedRunResult> {
@@ -429,6 +448,21 @@ export class DefaultOrchestrator implements Orchestrator {
           );
         }
       }
+
+      // For spec.author advance: run completion service before persisting transition.
+      if (result.directive === 'advance' && run.currentStep === 'spec.author') {
+        const completionResult = await this.#runSpecAuthoringCompletion(input.runId, run, result.result);
+        if (completionResult.kind === 'failed') {
+          return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant });
+        }
+        return this.applyDirective({
+          runId: input.runId,
+          directive: 'advance',
+          tenant: input.tenant,
+          checkpointResult: completionResult.checkpointResult as JsonValue
+        });
+      }
+
       const directive: RunDirective = result.directive === 'needs_input' ? 'needs_input' : 'advance';
       const checkpointResult: JsonValue | undefined =
         result.directive === 'advance' && result.result !== undefined
@@ -449,6 +483,41 @@ export class DefaultOrchestrator implements Orchestrator {
     }
     await this.dispatch({ runId: input.runId, tenant: input.tenant });
     return { status: 'dispatched', runId: input.runId };
+  }
+
+  async #runSpecAuthoringCompletion(
+    runId: string,
+    run: Run,
+    result: Readonly<Record<string, unknown>> | undefined
+  ): Promise<{ kind: 'ok'; checkpointResult: CompleteSpecAuthoringOutput['checkpointResult'] } | { kind: 'failed' }> {
+    if (this.#specAuthoringDependencies === undefined || this.#resolveWorkspaceContext === undefined) {
+      this.#logger?.warn('spec.author advanced but specAuthoringDependencies or resolveWorkspaceContext not configured.', { runId });
+      return { kind: 'failed' };
+    }
+
+    let workspaceContext: WorkspaceContext;
+    try {
+      workspaceContext = await this.#resolveWorkspaceContext({ runId });
+    } catch (cause) {
+      this.#logger?.warn('Failed to resolve workspace context for spec.author completion.', { runId, cause });
+      return { kind: 'failed' };
+    }
+
+    try {
+      const output = await completeSpecAuthoring(
+        {
+          run,
+          result: result as unknown as SpecAuthorResult,
+          workspaceRepoRoot: workspaceContext.workspaceRepoRoot,
+          workspaceHandle: workspaceContext.workspaceHandle
+        },
+        this.#specAuthoringDependencies
+      );
+      return { kind: 'ok', checkpointResult: output.checkpointResult };
+    } catch (cause) {
+      this.#logger?.warn('spec.author completion service failed.', { runId, cause });
+      return { kind: 'failed' };
+    }
   }
 
   async #publishEvent(args: {
