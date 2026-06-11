@@ -23,6 +23,8 @@ import {
   eventsStreamPath,
   forbiddenErrorCode,
   getRunSuccessStatusCode,
+  listRunsSuccessStatusCode,
+  runListResponseSchema,
   healthResponseSchema,
   intakeRoutingErrorCode,
   listRunStepsSuccessStatusCode,
@@ -401,6 +403,31 @@ export async function registerControlPlaneRoutes(
           request: body
         });
         await reply.status(createConversationSuccessStatusCode).send(result);
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(reply, error);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    // Story 8: List runs
+    protectedApp.get(runCollectionPath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'run.list', () => ({
+        kind: 'run_collection' as const,
+        path: '/v1/runs' as const
+      }))
+    }, async (request, reply) => {
+      const principal = requirePrincipalFromRequest(request);
+      try {
+        const result = await dependencies.controlPlane.listRuns({
+          principal,
+          tenant: principal.tenantId
+        });
+        await reply.status(listRunsSuccessStatusCode).send(
+          runListResponseSchema.parse({ runs: result.runs })
+        );
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
           await handleControlPlaneServiceError(reply, error);

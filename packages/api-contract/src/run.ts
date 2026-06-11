@@ -36,13 +36,19 @@ export const createRunInputSchema = z.object({
 export const runCollectionPath = '/v1/runs' as const;
 export const runResourcePath = '/v1/runs/:id' as const;
 export const getRunSuccessStatusCode = 200 as const;
+export const listRunsSuccessStatusCode = 200 as const;
 
 export const createRunWorkKindSchema = z.enum(['feature', 'enhancement', 'bug', 'chore', 'file_issue', 'question']);
 
 export const runIdParamsSchema = z.object({ id: z.string().min(1) }).strict();
+
+export const runListResponseSchema = z.object({
+  runs: z.array(runSchema)
+}).strict();
 
 export type RunWorkKind = z.infer<typeof runWorkKindSchema>;
 export type Run = z.infer<typeof runSchema>;
 export type CreateRunInput = z.infer<typeof createRunInputSchema>;
 export type CreateRunWorkKind = z.infer<typeof createRunWorkKindSchema>;
 export type RunIdParams = z.infer<typeof runIdParamsSchema>;
+export type RunListResponse = z.infer<typeof runListResponseSchema>;
