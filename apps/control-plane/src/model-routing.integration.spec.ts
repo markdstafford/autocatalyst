@@ -15,9 +15,12 @@ import {
 } from '@autocatalyst/persistence';
 import {
   getAgentProviderAdapterKey,
+  type AgentRunnerFactoryInput,
+  type DirectCallFactoryInput,
   type AgentProviderAdapterRegistry,
   type DirectProviderAdapterRegistry
 } from '@autocatalyst/execution';
+import { createRoutingProfileResolver } from './server.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -439,6 +442,166 @@ describe('model routing integration (real SQLite DB + mocked adapters)', () => {
       } catch (err) {
         expect(err).toBeInstanceOf(ModelRoutingConfigurationError);
       }
+    });
+  });
+});
+
+describe('dispatch through createRoutingProfileResolver', () => {
+  it('resolves exact agent route through routing profile resolver', async () => {
+    await withTempDb(async (repo) => {
+      const claude = await repo.create(CLAUDE_PROFILE);
+      await repo.create({
+        tenant: TENANT,
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [
+            {
+              id: 'rt_impl_implementer',
+              route: { mode: 'agent', step: 'impl', role: 'implementer' },
+              profileId: claude.id
+            }
+          ]
+        }
+      });
+
+      const resolver = createModelRoutingResolver({
+        configuration: configurationReaderFor(repo),
+        agentAdapters,
+        directAdapters
+      });
+      const routingProfileResolver = createRoutingProfileResolver({ resolver, fallbackTenant: TENANT });
+      const factoryInput: AgentRunnerFactoryInput = { runId: 'run_1', step: 'impl', role: 'implementer', tenant: TENANT };
+      const result = await routingProfileResolver.resolveAgentProfile(factoryInput);
+
+      expect(result.profile.providerKind).toBe('anthropic');
+      expect(result.profile.adapterId).toBe('claude-agent-sdk');
+      expect(result.profile.mode).toBe('agent');
+    });
+  });
+
+  it('falls back to step-default when no exact role route exists through routing profile resolver', async () => {
+    await withTempDb(async (repo) => {
+      const claude = await repo.create(CLAUDE_PROFILE);
+      const openai = await repo.create(OPENAI_PROFILE);
+      await repo.create({
+        tenant: TENANT,
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [
+            {
+              id: 'rt_impl_implementer',
+              route: { mode: 'agent', step: 'impl', role: 'implementer' },
+              profileId: claude.id
+            },
+            {
+              id: 'rt_impl_default',
+              route: { mode: 'agent', step: 'impl', defaultForStep: true },
+              profileId: openai.id
+            }
+          ]
+        }
+      });
+
+      const resolver = createModelRoutingResolver({
+        configuration: configurationReaderFor(repo),
+        agentAdapters,
+        directAdapters
+      });
+      const routingProfileResolver = createRoutingProfileResolver({ resolver, fallbackTenant: TENANT });
+      const factoryInput: AgentRunnerFactoryInput = { runId: 'run_1', step: 'impl', role: 'reviewer', tenant: TENANT };
+      const result = await routingProfileResolver.resolveAgentProfile(factoryInput);
+
+      expect(result.profile.providerKind).toBe('openai');
+    });
+  });
+
+  it('raises route_not_found when no routes match the step through routing profile resolver', async () => {
+    await withTempDb(async (repo) => {
+      const claude = await repo.create(CLAUDE_PROFILE);
+      await repo.create({
+        tenant: TENANT,
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [
+            {
+              id: 'rt_impl_implementer',
+              route: { mode: 'agent', step: 'impl', role: 'implementer' },
+              profileId: claude.id
+            }
+          ]
+        }
+      });
+
+      const resolver = createModelRoutingResolver({
+        configuration: configurationReaderFor(repo),
+        agentAdapters,
+        directAdapters
+      });
+      const routingProfileResolver = createRoutingProfileResolver({ resolver, fallbackTenant: TENANT });
+      const factoryInput: AgentRunnerFactoryInput = { runId: 'run_1', step: 'planning', role: 'implementer', tenant: TENANT };
+
+      await expect(
+        routingProfileResolver.resolveAgentProfile(factoryInput)
+      ).rejects.toMatchObject({
+        name: 'ModelRoutingConfigurationError',
+        code: 'route_not_found'
+      });
+    });
+  });
+
+  it('raises ModelRoutingConfigurationError route_not_found for missing role (not ProviderConfigurationError)', async () => {
+    await withTempDb(async (repo) => {
+      await repo.create(CLAUDE_PROFILE);
+
+      const resolver = createModelRoutingResolver({
+        configuration: configurationReaderFor(repo),
+        agentAdapters,
+        directAdapters
+      });
+      const routingProfileResolver = createRoutingProfileResolver({ resolver, fallbackTenant: TENANT });
+      const factoryInput = { runId: 'run_1', step: 'impl', role: undefined as any, tenant: TENANT } as AgentRunnerFactoryInput;
+
+      await expect(
+        routingProfileResolver.resolveAgentProfile(factoryInput)
+      ).rejects.toMatchObject({
+        name: 'ModelRoutingConfigurationError',
+        code: 'route_not_found'
+      });
+    });
+  });
+
+  it('resolves direct route through routing profile resolver', async () => {
+    await withTempDb(async (repo) => {
+      const direct = await repo.create(DIRECT_PROFILE);
+      await repo.create({
+        tenant: TENANT,
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [
+            {
+              id: 'rt_intake_direct',
+              route: { mode: 'direct', step: 'intake' },
+              profileId: direct.id
+            }
+          ]
+        }
+      });
+
+      const resolver = createModelRoutingResolver({
+        configuration: configurationReaderFor(repo),
+        agentAdapters,
+        directAdapters
+      });
+      const routingProfileResolver = createRoutingProfileResolver({ resolver, fallbackTenant: TENANT });
+      const factoryInput = { runId: 'run_1', step: 'intake', tenant: TENANT } as DirectCallFactoryInput;
+      const result = await routingProfileResolver.resolveDirectProfile(factoryInput);
+
+      expect(result.profile.mode).toBe('direct');
+      expect(result.profile.providerKind).toBe('anthropic');
     });
   });
 });

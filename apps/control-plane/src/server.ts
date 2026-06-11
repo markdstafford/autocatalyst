@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
-import type { ConfigurationRecord, ExecutionContext, ProviderProfileSettings, SessionRole } from '@autocatalyst/api-contract';
+import { sessionRoleSchema } from '@autocatalyst/api-contract';
+import type { ConfigurationRecord, ExecutionContext, ProviderProfileSettings } from '@autocatalyst/api-contract';
 import {
   buildProviderAdapterKey,
   composeAgentProviderAdapterRegistry,
@@ -282,19 +283,19 @@ export function createRoutingProfileResolver(options: {
           { runId: factoryInput.runId, step: factoryInput.step }
         );
       }
-      const role = factoryInput.role;
-      if (role === undefined || role.length === 0) {
-        throw new ProviderConfigurationError(
-          'missing_profile',
-          'No role available for agent routing.',
-          { runId: factoryInput.runId, step: factoryInput.step }
+      const roleParse = sessionRoleSchema.safeParse(factoryInput.role);
+      if (!roleParse.success) {
+        throw new ModelRoutingConfigurationError(
+          'route_not_found',
+          'No valid role available for agent routing.',
+          { tenant, runId: factoryInput.runId, step: factoryInput.step, mode: 'agent' }
         );
       }
       const resolution = await options.resolver.resolveAgentRoute({
         tenant,
         runId: factoryInput.runId,
         step: factoryInput.step,
-        role: role as SessionRole
+        role: roleParse.data
       });
       return { profile: resolution.profile, credentialReference: resolution.credentialReference };
     },
