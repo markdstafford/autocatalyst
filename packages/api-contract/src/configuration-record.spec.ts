@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   configurationRecordCollectionPath,
   configurationRecordIdParamsSchema,
+  configurationRecordKindSchema,
   configurationRecordListResponseSchema,
   configurationRecordResponseSchema,
   createConfigurationRecordRequestSchema,
+  providerProfileSettingsSchema,
+  configurationRecordSettingsSchema,
   updateConfigurationRecordRequestSchema
 } from './configuration-record.js';
 import type { InferenceSettings, ProviderProfileSettings, RunnerEndpointSettings } from './configuration-record.js';
@@ -20,12 +23,14 @@ describe('configuration record contract schemas', () => {
   it('validates provider profile create requests', () => {
     expect(
       createConfigurationRecordRequestSchema.parse({
+        tenant: 'tenant_a',
         kind: 'provider_profile',
         providerKind: 'model_runner',
         adapterId: 'openai',
         settings: { profileName: 'default', credentialSecretHandle: handle }
       })
     ).toEqual({
+      tenant: 'tenant_a',
       kind: 'provider_profile',
       providerKind: 'model_runner',
       adapterId: 'openai',
@@ -33,6 +38,7 @@ describe('configuration record contract schemas', () => {
     });
     expect(() =>
       createConfigurationRecordRequestSchema.parse({
+        tenant: 'tenant_a',
         kind: 'provider_profile',
         providerKind: 'model_runner',
         adapterId: 'openai',
@@ -45,21 +51,23 @@ describe('configuration record contract schemas', () => {
     expect(() => updateConfigurationRecordRequestSchema.parse({})).toThrow();
     expect(() => updateConfigurationRecordRequestSchema.parse({ id: 'cfg_bad' })).toThrow();
     expect(
-      updateConfigurationRecordRequestSchema.parse({ settings: { credentialSecretHandle: null } })
-    ).toEqual({ settings: { credentialSecretHandle: null } });
-    expect(() => updateConfigurationRecordRequestSchema.parse({ settings: { profileName: '' } })).toThrow();
-    expect(() => updateConfigurationRecordRequestSchema.parse({ settings: {} })).toThrow();
+      updateConfigurationRecordRequestSchema.parse({ kind: 'provider_profile', settings: { credentialSecretHandle: null } })
+    ).toEqual({ kind: 'provider_profile', settings: { credentialSecretHandle: null } });
+    expect(() => updateConfigurationRecordRequestSchema.parse({ kind: 'provider_profile', settings: { profileName: '' } })).toThrow();
+    expect(() => updateConfigurationRecordRequestSchema.parse({ kind: 'provider_profile', settings: {} })).toThrow();
   });
 
   it('parses a profileName-only record (existing behaviour preserved)', () => {
     expect(
       createConfigurationRecordRequestSchema.parse({
+        tenant: 'tenant_a',
         kind: 'provider_profile',
         providerKind: 'anthropic',
         adapterId: 'claude-agent-sdk',
         settings: { profileName: 'minimal' }
       })
     ).toEqual({
+      tenant: 'tenant_a',
       kind: 'provider_profile',
       providerKind: 'anthropic',
       adapterId: 'claude-agent-sdk',
@@ -69,6 +77,7 @@ describe('configuration record contract schemas', () => {
 
   it('parses a fully populated Claude-capable profile', () => {
     const input = {
+      tenant: 'tenant_a',
       kind: 'provider_profile',
       providerKind: 'anthropic',
       adapterId: 'claude-agent-sdk',
@@ -104,6 +113,7 @@ describe('configuration record contract schemas', () => {
 
   it('rejects malformed endpoint fields', () => {
     const base = {
+      tenant: 'tenant_a',
       kind: 'provider_profile',
       providerKind: 'anthropic',
       adapterId: 'claude-agent-sdk',
@@ -159,6 +169,7 @@ describe('configuration record contract schemas', () => {
   it('validates responses with datetime timestamps and no secret value field', () => {
     const record = {
       id: 'cfg_123',
+      tenant: 'tenant_a',
       kind: 'provider_profile',
       providerKind: 'model_runner',
       adapterId: 'openai',
@@ -170,5 +181,62 @@ describe('configuration record contract schemas', () => {
     expect(configurationRecordListResponseSchema.parse({ records: [record] })).toEqual({ records: [record] });
     expect(() => configurationRecordResponseSchema.parse(Object.assign({}, record, { secretValue: 'sk-test' }))).toThrow();
     expect(() => configurationRecordResponseSchema.parse(Object.assign({}, record, { createdAt: 'not-a-date' }))).toThrow();
+  });
+});
+
+describe('configuration record kind split', () => {
+  it('accepts only provider_profile and model_routing_table kinds', () => {
+    expect(configurationRecordKindSchema.parse('provider_profile')).toBe('provider_profile');
+    expect(configurationRecordKindSchema.parse('model_routing_table')).toBe('model_routing_table');
+    expect(configurationRecordKindSchema.safeParse('other_kind').success).toBe(false);
+  });
+
+  it('keeps provider-profile settings separate and exported', () => {
+    const parsed = providerProfileSettingsSchema.parse({
+      profileName: 'Claude agent',
+      credentialSecretHandle: 'sec_abcdefghijklmnopqrstuvwxyzABCDEF',
+      model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+      inferenceSettings: {},
+      endpoint: {}
+    });
+    expect(parsed.profileName).toBe('Claude agent');
+    expect(configurationRecordSettingsSchema.safeParse(parsed).success).toBe(true);
+  });
+
+  it('requires provider metadata and tenant for provider_profile create requests', () => {
+    const parsed = createConfigurationRecordRequestSchema.parse({
+      tenant: 'tenant_a',
+      kind: 'provider_profile',
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      settings: {
+        profileName: 'Claude agent',
+        credentialSecretHandle: 'sec_abcdefghijklmnopqrstuvwxyzABCDEF',
+        model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+        inferenceSettings: {},
+        endpoint: {}
+      }
+    });
+    expect(parsed.tenant).toBe('tenant_a');
+    expect(parsed.kind).toBe('provider_profile');
+  });
+
+  it('rejects provider-profile settings in model_routing_table response branch', () => {
+    expect(configurationRecordResponseSchema.safeParse({
+      id: 'cfg_table',
+      tenant: 'tenant_a',
+      kind: 'model_routing_table',
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      settings: { profileName: 'not a routing table' },
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    }).success).toBe(false);
+  });
+
+  it('rejects update bodies without an explicit record kind', () => {
+    expect(updateConfigurationRecordRequestSchema.safeParse({
+      settings: { profileName: 'Renamed profile' }
+    }).success).toBe(false);
   });
 });
