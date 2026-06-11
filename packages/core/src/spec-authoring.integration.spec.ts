@@ -549,8 +549,10 @@ async function advanceToSpecAuthorAndDispatch(harness: TestHarness, workKind: 'f
 describe('spec authoring integration — malformed results do not commit or create Artifact', () => {
   it.each([
     ['string issue', { frontmatter: { issue: '39' } }],
-    ['bad path', { relativePath: '../feature.md', slug: 'feature' }],
-    ['wrong kind for feature run', { kind: 'enhancement_spec', relativePath: 'context-human/specs/enhancement-artifact-feedback-gate.md' }],
+    ['bad path', { relativePath: '../feature.md' }],
+    // 'wrong kind' only patches kind; relativePath keeps the feature- prefix, which the schema's
+    // superRefine then rejects as mismatched (kind mismatch is also caught earlier by the service).
+    ['wrong kind for feature run', { kind: 'enhancement_spec' }],
     ['invalid status', { frontmatter: { status: 'approved' } }]
   ] as Array<[string, Record<string, unknown>]>)(
     'does not commit or create Artifact for malformed result: %s',
@@ -613,9 +615,14 @@ describe('spec authoring integration — artifact persistence failure after comm
     const artifacts = await harness.artifactRepository.listByRun(specAuthorRun.id);
     expect(artifacts).toHaveLength(0);
 
-    // The sensitive path must NOT be surfaced in any thrown error message
-    // (the orchestrator swallows the cause and logs it; the dispatch result is a failed run, not a thrown error).
-    // We verify this by asserting the dispatch completed without throwing and the run is terminal.
-    expect(dispatchResult.run.terminal).toBe(true);
+    // The sensitive path must NOT appear anywhere in the dispatch result surfaced to callers.
+    // The orchestrator catches the SpecAuthoringError and logs it internally; the result is a
+    // terminal run, not a thrown error, so the raw cause message never escapes to the caller.
+    const serializedResult = JSON.stringify(dispatchResult);
+    expect(serializedResult).not.toContain('/tmp/secret');
+
+    // Typed code check: the orchestrator does not expose the SpecAuthoringError code to callers —
+    // it swallows the error into a 'fail' directive and returns a terminal run without a typed code.
+    // No code assertion is added here because the error is fully internal.
   });
 });
