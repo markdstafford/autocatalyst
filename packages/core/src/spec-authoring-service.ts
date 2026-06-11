@@ -1,8 +1,6 @@
-import type { Artifact, Run, SpecAuthorResult } from '@autocatalyst/api-contract';
+import type { Artifact, ArtifactKind, Run, SpecAuthorResult } from '@autocatalyst/api-contract';
 import type { ArtifactRepository } from './domain-repositories.js';
 import { parseSpecFrontmatter, renderCommittedSpecMarkdown } from './spec-frontmatter.js';
-
-// --- Error types ---
 
 export type SpecAuthoringErrorCode =
   | 'spec_workflow_kind_mismatch'
@@ -25,8 +23,6 @@ export class SpecAuthoringError extends Error {
   }
 }
 
-// --- Workspace ports ---
-
 export interface WorkspaceFileSystemPort {
   writeFile(input: {
     readonly workspaceRepoRoot: string;
@@ -46,8 +42,6 @@ export interface WorkspaceGitPort {
     readonly message: string;
   }): Promise<{ readonly commitSha?: string }>;
 }
-
-// --- Service types ---
 
 export interface SpecAuthoringServiceDependencies {
   readonly artifacts: ArtifactRepository;
@@ -125,17 +119,14 @@ export async function completeSpecAuthoring(
   const { run, result, workspaceRepoRoot, workspaceHandle } = input;
   const { relativePath, frontmatter, body, kind, slug } = result;
 
-  // Step 1: Render spec Markdown
   const contents = renderCommittedSpecMarkdown({ frontmatter, body, requireDraftStatus: true });
 
-  // Step 2: Write the file
   try {
     await deps.filesystem.writeFile({ workspaceRepoRoot, relativePath, contents });
   } catch (cause) {
     throw new SpecAuthoringError('spec_file_write_failed', 'Failed to write spec file.', { cause });
   }
 
-  // Step 3: Read back and validate
   try {
     const written = await deps.filesystem.readFile({ workspaceRepoRoot, relativePath });
     parseSpecFrontmatter(written);
@@ -143,7 +134,6 @@ export async function completeSpecAuthoring(
     throw new SpecAuthoringError('spec_file_validation_failed', 'Spec file validation failed after write.', { cause });
   }
 
-  // Step 4: Commit
   const prefix = commitMessagePrefix(kind as 'feature_spec' | 'enhancement_spec');
   try {
     await deps.git.commitFiles({
@@ -155,17 +145,16 @@ export async function completeSpecAuthoring(
     throw new SpecAuthoringError('spec_commit_failed', 'Failed to commit spec file.', { cause });
   }
 
-  // Step 5: Create or recover Artifact
   let artifact: Artifact;
   let artifactCreated: 'created' | 'recovered';
   try {
-    const existing = await deps.artifacts.findByRunAndKind({ runId: run.id, kind: kind as import('@autocatalyst/api-contract').ArtifactKind });
+    const existing = await deps.artifacts.findByRunAndKind({ runId: run.id, kind: kind as ArtifactKind });
     if (existing === null) {
       artifact = await deps.artifacts.create({
         runId: run.id,
         owner: run.owner,
         tenant: run.tenant,
-        kind: kind as import('@autocatalyst/api-contract').ArtifactKind,
+        kind: kind as ArtifactKind,
         canonicalRecord: 'file',
         location: relativePath,
         cachedStatus: 'draft',
