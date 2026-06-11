@@ -1093,7 +1093,7 @@ describe('DefaultOrchestrator.applyDirective — spec.human_review gate guard', 
     } catch (error) {
       expect(error).toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition' });
       const err = error as { details: unknown };
-      expect(err.details).toEqual({ blockingFeedbackIds: [blockingId] });
+      expect(err.details).toEqual({ code: 'feedback_gate_blocked', blockingFeedbackIds: [blockingId] });
     }
   });
 
@@ -1165,7 +1165,7 @@ describe('DefaultOrchestrator.applyDirective — spec.human_review gate guard', 
     } catch (error) {
       expect(error).toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition' });
       const err = error as { details: unknown };
-      expect(err.details).toEqual({ blockingFeedbackIds: [blockingId] });
+      expect(err.details).toEqual({ code: 'feedback_gate_blocked', blockingFeedbackIds: [blockingId] });
     }
   });
 });

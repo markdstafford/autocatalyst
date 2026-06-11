@@ -502,7 +502,7 @@ describe('spec feedback gate integration', () => {
       tenant: harness.run.tenant,
       directive: 'advance',
       principal: phoebe
-    })).rejects.toMatchObject({ code: 'invalid_transition' });
+    })).rejects.toMatchObject({ code: 'invalid_transition', details: expect.objectContaining({ code: 'feedback_gate_blocked' }) });
 
     // 3. Mark won't fix → reopen → try to advance again → still blocked
     const enzo = principal('enzo');

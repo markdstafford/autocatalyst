@@ -417,7 +417,7 @@ export class DefaultOrchestrator implements Orchestrator {
           if (error instanceof SpecReviewGateBlockedError && error.code === 'feedback_gate_blocked') {
             throw new OrchestratorError('invalid_transition', 'Artifact feedback blocks spec approval.', {
               cause: error,
-              details: { blockingFeedbackIds: error.blockingFeedbackIds }
+              details: { code: 'feedback_gate_blocked', blockingFeedbackIds: error.blockingFeedbackIds }
             });
           }
           throw error;
@@ -441,7 +441,7 @@ export class DefaultOrchestrator implements Orchestrator {
         if (error instanceof SpecReviewGateBlockedError && error.code === 'feedback_gate_blocked') {
           throw new OrchestratorError('invalid_transition', 'Artifact feedback blocks spec approval.', {
             cause: error,
-            details: { blockingFeedbackIds: error.blockingFeedbackIds }
+            details: { code: 'feedback_gate_blocked', blockingFeedbackIds: error.blockingFeedbackIds }
           });
         }
         throw error;
