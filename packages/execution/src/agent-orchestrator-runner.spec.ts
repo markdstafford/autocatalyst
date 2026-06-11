@@ -203,7 +203,7 @@ function makeRunInput(): RunnerRunInput {
     workspaceIntent: { shape: 'none' },
     secretBindings: [],
     toolPolicy: { allowedTools: ['bash'], workspaceScope: 'declared_workspace' },
-    skills: { requested: [] },
+    skills: { requested: [], resolved: [] },
     capabilityRequirements: {
       shell: { kind: 'bash', required: false },
       paths: { canonicalWorkspacePaths: false },
@@ -215,7 +215,7 @@ function makeRunInput(): RunnerRunInput {
     workspace: { shape: 'none', workspaceRoots: [] },
     environment: { variables: {}, secretVariableNames: [] },
     toolPolicy: { allowedTools: ['bash'], workspaceRoots: [] },
-    skills: { requested: [] },
+    skills: { requested: [], resolved: [] },
     capabilities: {
       shell: { kind: 'bash', available: false },
       paths: {},
@@ -541,7 +541,7 @@ describe('createAgentOrchestratorRunner', () => {
         workspaceIntent: { shape: 'none' },
         secretBindings: [],
         toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
-        skills: { requested: [] },
+        skills: { requested: [], resolved: [] },
         capabilityRequirements: {
           shell: { kind: 'bash', required: false },
           paths: { canonicalWorkspacePaths: false },
@@ -554,7 +554,7 @@ describe('createAgentOrchestratorRunner', () => {
         workspace: { shape: 'none', workspaceRoots: [] },
         environment: { variables: {}, secretVariableNames: [] },
         toolPolicy: { allowedTools: [], workspaceRoots: [] },
-        skills: { requested: [] },
+        skills: { requested: [], resolved: [] },
         capabilities: {
           shell: { kind: 'bash', available: false },
           paths: {},
@@ -764,7 +764,7 @@ describe('createAgentOrchestratorRunner', () => {
         workspaceIntent: { shape: 'none' },
         secretBindings: [],
         toolPolicy: { allowedTools: ['bash'], workspaceScope: 'declared_workspace' },
-        skills: { requested: [] },
+        skills: { requested: [], resolved: [] },
         capabilityRequirements: {
           shell: { kind: 'bash', required: false },
           paths: { canonicalWorkspacePaths: false },
@@ -776,7 +776,7 @@ describe('createAgentOrchestratorRunner', () => {
         workspace: { shape: 'none', workspaceRoots: [] },
         environment: { variables: {}, secretVariableNames: [] },
         toolPolicy: { allowedTools: ['bash'], workspaceRoots: [] },
-        skills: { requested: [] },
+        skills: { requested: [], resolved: [] },
         capabilities: {
           shell: { kind: 'bash', available: false },
           paths: {},

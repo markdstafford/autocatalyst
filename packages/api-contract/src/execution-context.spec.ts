@@ -8,12 +8,26 @@ const project = {
   workspaceRootOverride: null, issueTrackerSetting: null, codeHostSetting: null, credentialRefs: [],
   createdAt: '2026-06-09T00:00:00.000Z', updatedAt: '2026-06-09T00:00:00.000Z'
 };
+
+const resolvedPlanningSkill = {
+  ref: 'mm:planning',
+  assetPath: 'assets/mm/planning',
+  dependencies: ['mm:writing-guidelines'],
+  description: 'Micromanager planning workflow for Autocatalyst spec authoring.'
+};
+const resolvedWritingGuidelinesSkill = {
+  ref: 'mm:writing-guidelines',
+  assetPath: 'assets/mm/writing-guidelines',
+  dependencies: [],
+  description: 'Writing guidance used when drafting planning artifacts.'
+};
+
 const base = {
-  run: { id: 'run_1', workKind: 'feature', currentStep: 'implement', tenant: 'tenant_1' },
-  task: { prompt: 'Implement feature', inputs: { trackedIssue: { number: 21 } } },
+  run: { id: 'run_1', workKind: 'feature', currentStep: 'spec.author', tenant: 'tenant_1' },
+  task: { prompt: 'Author the spec', inputs: { trackedIssue: { number: 37 } } },
   secretBindings: [{ handle: 'sec_test_handle', envName: 'MODEL_API_KEY' }],
   toolPolicy: { allowedTools: ['bash', 'filesystem'], workspaceScope: 'declared_workspace' as const },
-  skills: { requested: ['implementation'], plugins: ['stub'] },
+  skills: { requested: ['mm:planning'], resolved: [resolvedWritingGuidelinesSkill, resolvedPlanningSkill] },
   capabilityRequirements: {
     shell: { kind: 'bash' as const, required: false },
     paths: { canonicalWorkspacePaths: true },
@@ -37,5 +51,36 @@ describe('execution context contract', () => {
     expect(() => executionContextSchema.parse({ ...base, workspaceIntent: { shape: 'two_roots', provisioning }, repoRoot: '/tmp/repo' })).toThrow();
     expect(() => executionContextSchema.parse({ ...base, workspaceIntent: { shape: 'none' }, secretBindings: [{ handle: 'sec_test_handle', envName: 'MODEL_API_KEY', value: 'plaintext' }] })).toThrow();
     expect(() => executionContextSchema.parse({ ...base, workspaceIntent: { shape: 'none' }, capabilityRequirements: { ...base.capabilityRequirements, shell: { kind: 'bash', required: false, available: true } } })).toThrow();
+  });
+
+  it('validates requested refs plus resolved skill entries', () => {
+    const context = { ...base, workspaceIntent: { shape: 'none' as const } };
+    expect(executionContextSchema.parse(context).skills).toEqual(base.skills);
+  });
+
+  it('rejects invalid skill refs and the former plugins passthrough field', () => {
+    expect(() => executionContextSchema.parse({
+      ...base,
+      workspaceIntent: { shape: 'none' as const },
+      skills: { requested: ['Bad Ref'], resolved: [] }
+    })).toThrow();
+    expect(() => executionContextSchema.parse({
+      ...base,
+      workspaceIntent: { shape: 'none' as const },
+      skills: { requested: ['mm:planning'], resolved: [], plugins: ['stub'] }
+    })).toThrow();
+  });
+
+  it('rejects malformed resolved skill entries', () => {
+    expect(() => executionContextSchema.parse({
+      ...base,
+      workspaceIntent: { shape: 'none' as const },
+      skills: { requested: ['mm:planning'], resolved: [{ ref: 'mm:planning', assetPath: '', dependencies: [] }] }
+    })).toThrow();
+  });
+
+  it('accepts empty requested and resolved skills', () => {
+    const context = { ...base, workspaceIntent: { shape: 'none' as const }, skills: { requested: [], resolved: [] } };
+    expect(executionContextSchema.parse(context).skills).toEqual({ requested: [], resolved: [] });
   });
 });

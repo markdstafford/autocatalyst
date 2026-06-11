@@ -12,7 +12,7 @@ const stubContext: MaterializedExecutionEnvironment['context'] = {
   workspaceIntent: { shape: 'none' },
   secretBindings: [],
   toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
-  skills: { requested: [] },
+  skills: { requested: [], resolved: [] },
   capabilityRequirements: {
     shell: { kind: 'bash', required: false },
     paths: { canonicalWorkspacePaths: false },
@@ -28,7 +28,7 @@ function environmentWithScratch(scratchRoot: string, repoRoot?: string): Materia
       : { shape: 'two_roots', repoRoot, scratchRoot, branchName: 'run/run_1', workspaceRoots: [repoRoot, scratchRoot] },
     environment: { variables: {}, secretVariableNames: [] },
     toolPolicy: { allowedTools: [], workspaceRoots: [scratchRoot] },
-    skills: { requested: [] },
+    skills: { requested: [], resolved: [] },
     capabilities: {
       shell: { kind: 'bash', available: false },
       paths: { scratchRoot, ...(repoRoot === undefined ? {} : { repoRoot }) },
@@ -140,7 +140,7 @@ describe('readScratchStepResultFile', () => {
       workspace: { shape: 'none', workspaceRoots: [] },
       environment: { variables: {}, secretVariableNames: [] },
       toolPolicy: { allowedTools: [], workspaceRoots: [] },
-      skills: { requested: [] },
+      skills: { requested: [], resolved: [] },
       capabilities: {
         shell: { kind: 'bash', available: false },
         paths: {},

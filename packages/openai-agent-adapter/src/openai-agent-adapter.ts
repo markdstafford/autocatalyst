@@ -28,9 +28,11 @@ import {
   notifyToolInputSchema,
   ProviderProtocolError,
   reportProgressToolInputSchema,
+  runtimeSkillsCatalogRoot,
   UnsupportedProviderCapabilityError,
   updatePlanToolInputSchema
 } from '@autocatalyst/execution';
+import { materializeOpenAISkillFiles } from './skill-materialization.js';
 import type { RunnerEvent } from '@autocatalyst/api-contract';
 
 export const openaiProviderKind = 'openai' as const;
@@ -63,6 +65,8 @@ export interface OpenAISandboxClientFactoryInput {
   /** Secret-stripped environment variables to seed the sandbox with. */
   readonly environment: Readonly<Record<string, string>>;
   readonly telemetryContext: AgentProviderSessionInput['telemetryContext'];
+  /** Resolved skill host→sandbox directory mounts to include in the sandbox manifest. */
+  readonly skillMounts?: ReadonlyArray<{ readonly hostPath: string; readonly sandboxPath: string }>;
 }
 
 export interface OpenAISandboxClientHandle {
@@ -445,10 +449,14 @@ function assertWorkspaceRootsDoNotEscape(workspace: OpenAIWorkspaceSandboxConfig
  * granted via `extraPathGrants` so `UnixLocalSandboxClient` may copy it from its
  * host location into the session workspace (the SDK otherwise restricts
  * local_dir sources to its own base directory).
+ *
+ * Optional `skillMounts` are appended as additional read-only `localDir` entries
+ * so that the staged skill directories are visible inside the sandbox.
  */
 function buildWorkspaceManifest(
   workspace: OpenAIWorkspaceSandboxConfig,
-  environment: Readonly<Record<string, string>>
+  environment: Readonly<Record<string, string>>,
+  skillMounts: ReadonlyArray<{ readonly hostPath: string; readonly sandboxPath: string }> = []
 ): Manifest {
   const entries: Record<string, ReturnType<typeof localDir>> = {};
   const grants: Array<{ path: string; readOnly: boolean }> = [];
@@ -456,6 +464,17 @@ function buildWorkspaceManifest(
     const logicalName = path.basename(root) || 'root';
     entries[logicalName] = localDir({ src: root });
     grants.push({ path: root, readOnly: false });
+  }
+  for (const mount of skillMounts) {
+    // Use a stable key derived from the sandbox path, preserving the path
+    // structure relative to the manifest root so the sandbox places files at
+    // the exact path the agent is told to look in.
+    const MANIFEST_ROOT = '/workspace';
+    const logicalName = mount.sandboxPath.startsWith(`${MANIFEST_ROOT}/`)
+      ? mount.sandboxPath.slice(MANIFEST_ROOT.length + 1)
+      : mount.sandboxPath.replace(/^\//, '');
+    entries[logicalName] = localDir({ src: mount.hostPath });
+    grants.push({ path: mount.hostPath, readOnly: true });
   }
   const environmentInit: Record<string, string> = {};
   for (const [key, value] of Object.entries(environment)) {
@@ -601,7 +620,7 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
  */
 function makeDefaultSandboxClientFactory(workspaceBaseDir?: string): OpenAISandboxClientFactory {
   return async (factoryInput): Promise<OpenAISandboxClientHandle> => {
-    const manifest = buildWorkspaceManifest(factoryInput.workspace, factoryInput.environment);
+    const manifest = buildWorkspaceManifest(factoryInput.workspace, factoryInput.environment, factoryInput.skillMounts ?? []);
     let client: UnixLocalSandboxClient;
     let session: SandboxSessionLike;
     try {
@@ -691,15 +710,20 @@ export function createOpenAIAgentAdapter(
         workspaceRootCount: workspace.workspaceRoots.length
       });
 
-      // 5. Open the sandbox session over the materialized workspace.
+      // 5. Materialize resolved runtime skills into sandbox mounts + a system-prompt hint.
+      const env = input.runInput.environment;
+      const skillMaterialization = materializeOpenAISkillFiles(env.skills, runtimeSkillsCatalogRoot);
+
+      // 6. Open the sandbox session over the materialized workspace (including skill mounts).
       const sandboxHandle = await sandboxClientFactory({
         workspace,
         snapshot,
         environment: safeEnvironment,
-        telemetryContext: input.telemetryContext
+        telemetryContext: input.telemetryContext,
+        skillMounts: skillMaterialization.mounts
       });
 
-      // 6. Per-session OpenAI client + model provider. The OpenAI client's fetch
+      // 7. Per-session OpenAI client + model provider. The OpenAI client's fetch
       //    is bridged to the per-session ProviderFetchTransport, and the provider
       //    is passed to the per-session Runner — NEVER a global setter.
       const endpoint = input.profile.endpoint as { baseUrl?: string };
@@ -725,13 +749,20 @@ export function createOpenAIAgentAdapter(
       const tools = createProgressTools();
 
       // The manifest the run driver hands to the SandboxAgent mirrors the one the
-      // client used to open the session, so defaultManifest matches the session.
-      const manifest = buildWorkspaceManifest(workspace, safeEnvironment);
+      // client used to open the session, so defaultManifest matches the session
+      // (including skill mounts).
+      const manifest = buildWorkspaceManifest(workspace, safeEnvironment, skillMaterialization.mounts);
+
+      // Build the system instructions, appending the skill discovery hint when skills are staged.
+      const baseInstructions = input.runInput.environment.context.task.prompt;
+      const instructions = skillMaterialization.systemPromptHint.length > 0
+        ? `${baseInstructions}\n\n${skillMaterialization.systemPromptHint}`
+        : baseInstructions;
 
       const outcome = await runAgentSession({
         prompt: input.runInput.environment.context.task.prompt,
         model: input.profile.model.model,
-        instructions: input.runInput.environment.context.task.prompt,
+        instructions,
         tools,
         manifest,
         session: sandboxHandle.session,

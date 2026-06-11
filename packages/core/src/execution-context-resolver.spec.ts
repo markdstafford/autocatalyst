@@ -1,8 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { RunWorkInput } from './orchestrator.js';
-import type { Run } from '@autocatalyst/api-contract';
+import type { Run, SkillIntent } from '@autocatalyst/api-contract';
+import { SkillCatalogResolutionError } from '@autocatalyst/execution';
 import { createExecutionContextResolver } from './execution-context-resolver.js';
-import type { WorkspaceResolverInput } from './execution-context-resolver.js';
+import type { WorkspaceResolverInput, ResolveSkillsFn } from './execution-context-resolver.js';
 
 const owner = { id: 'user_1', kind: 'human' as const, tenantId: 'tenant_1' };
 const project = {
@@ -246,10 +247,11 @@ describe('ExecutionContextResolver', () => {
       expect(context.toolPolicy).toEqual({ allowedTools: ['bash', 'filesystem', 'lsp'], workspaceScope: 'declared_workspace' });
     });
 
-    it('includes default skill intent', async () => {
+    it('includes empty skill intent for steps with no mapped skills', async () => {
       const resolver = createExecutionContextResolver({});
       const context = await resolver.resolve(makeInput(makeRun({ workKind: 'question', currentStep: 'respond' })));
-      expect(context.skills.requested).toContain('stub_runner');
+      expect(context.skills.requested).toEqual([]);
+      expect(context.skills.resolved).toEqual([]);
     });
 
     it('includes default capability requirements', async () => {
@@ -297,4 +299,75 @@ describe('ExecutionContextResolver', () => {
       expect(context).toBeDefined();
     });
   });
+
+  describe('B1 skill resolution', () => {
+    const fakeSkillIntent: SkillIntent = {
+      requested: ['mm:planning'],
+      resolved: [
+        { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/writing-guidelines', dependencies: [] },
+        { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: ['mm:writing-guidelines'] }
+      ]
+    };
+
+    const fakeResolver: ResolveSkillsFn = async (_refs) => fakeSkillIntent;
+
+    it('spec.author in feature workflow resolves mm:planning skills', async () => {
+      const resolver = createExecutionContextResolver({
+        workspace: { project, roots, topicSlug: 'widgets', shortRunId: 'abc123' },
+        resolveSkills: fakeResolver
+      });
+      const context = await resolver.resolve(makeInput(makeRun({ workKind: 'feature', currentStep: 'spec.author' })));
+      expect(context.skills.requested).toContain('mm:planning');
+      expect(context.skills.resolved).toHaveLength(2);
+      expect(context.skills.resolved.map((s) => s.ref)).toContain('mm:writing-guidelines');
+      expect(context.skills.resolved.map((s) => s.ref)).toContain('mm:planning');
+    });
+
+    it('spec.author in enhancement workflow resolves mm:planning skills', async () => {
+      const resolver = createExecutionContextResolver({
+        workspace: { project, roots, topicSlug: 'widgets', shortRunId: 'abc123' },
+        resolveSkills: fakeResolver
+      });
+      const context = await resolver.resolve(makeInput(makeRun({ workKind: 'enhancement', currentStep: 'spec.author' })));
+      expect(context.skills.requested).toContain('mm:planning');
+      expect(context.skills.resolved).toHaveLength(2);
+    });
+
+    it('spec.author in bug workflow has empty skills', async () => {
+      const resolver = createExecutionContextResolver({
+        workspace: { project, roots, topicSlug: 'widgets', shortRunId: 'abc123' },
+        resolveSkills: fakeResolver
+      });
+      const context = await resolver.resolve(makeInput(makeRun({ workKind: 'bug', currentStep: 'spec.author' })));
+      expect(context.skills.requested).toEqual([]);
+      expect(context.skills.resolved).toEqual([]);
+    });
+
+    it('non-spec.author step has empty skills', async () => {
+      const resolver = createExecutionContextResolver({
+        workspace: { project, roots, topicSlug: 'widgets', shortRunId: 'abc123' },
+        resolveSkills: fakeResolver
+      });
+      const context = await resolver.resolve(makeInput(makeRun({ workKind: 'feature', currentStep: 'implement' })));
+      expect(context.skills.requested).toEqual([]);
+      expect(context.skills.resolved).toEqual([]);
+    });
+
+    it('propagates SkillCatalogResolutionError from resolver seam', async () => {
+      const errorResolver: ResolveSkillsFn = async (_refs) => {
+        throw new SkillCatalogResolutionError('skill_not_found', 'Skill mm:planning not found in catalog.');
+      };
+      const resolver = createExecutionContextResolver({
+        workspace: { project, roots, topicSlug: 'widgets', shortRunId: 'abc123' },
+        resolveSkills: errorResolver
+      });
+      await expect(
+        resolver.resolve(makeInput(makeRun({ workKind: 'feature', currentStep: 'spec.author' })))
+      ).rejects.toMatchObject({
+        name: 'SkillCatalogResolutionError',
+        code: 'skill_not_found'
+      });
+    });
+  });
 });
+

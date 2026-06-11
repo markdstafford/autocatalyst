@@ -88,13 +88,13 @@ function makeSessionInput(
           workspaceIntent: { shape: 'none' },
           secretBindings: [],
           toolPolicy: { allowedTools: ['bash'], workspaceScope: 'declared_workspace' },
-          skills: { requested: ['progress'] },
+          skills: { requested: [], resolved: [] },
           capabilityRequirements: { shell: { kind: 'bash', required: false }, paths: { canonicalWorkspacePaths: true }, lsp: { requested: false } }
         },
         workspace,
         environment: { variables: { SAFE_ENV: 'value', OPENAI_API_KEY: FAKE_SECRET }, secretVariableNames: ['OPENAI_API_KEY'] },
         toolPolicy: { allowedTools: ['bash'], workspaceRoots: workspace.workspaceRoots },
-        skills: { requested: ['progress'] },
+        skills: { requested: [], resolved: [] },
         capabilities: { shell: { kind: 'bash', available: false }, paths: {}, lsp: { requested: false, available: false } }
       }
     },
@@ -139,6 +139,32 @@ function makeRunSession(
         items,
         result: Promise.resolve({ directive: 'advance' as const, ...result })
       };
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Skill-aware session input factory
+// ---------------------------------------------------------------------------
+
+function makeSessionInputWithSkills(
+  workspaceShape: 'none' | 'scratch_only' | 'two_roots' = 'scratch_only',
+  resolvedSkills: Array<{ ref: string; assetPath: string; dependencies: string[] }> = []
+): AgentProviderSessionInput {
+  const base = makeSessionInput(workspaceShape);
+  const skills = { requested: resolvedSkills.map((s) => s.ref), resolved: resolvedSkills };
+  return {
+    ...base,
+    runInput: {
+      ...base.runInput,
+      environment: {
+        ...base.runInput.environment,
+        context: {
+          ...base.runInput.environment.context,
+          skills
+        },
+        skills
+      }
     }
   };
 }
@@ -238,6 +264,142 @@ describe('createOpenAIAgentAdapter — session startup', () => {
     expect(capNames.some((c) => c.includes('reasoningEffort'))).toBe(true);
     expect(capNames.some((c) => c.includes('seed'))).toBe(true);
     expect(capNames.some((c) => c.includes('temperature'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Skill materialization (seam-driven)
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — skill materialization', () => {
+  it('passes skill mounts to the sandbox client factory when resolved skills are present', async () => {
+    const { run } = makeRunSession([assistantItem('done')]);
+    const sandboxInputs: Array<Record<string, unknown>> = [];
+    const input = makeSessionInputWithSkills('scratch_only', [
+      { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: [] },
+      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/writing-guidelines', dependencies: [] }
+    ]);
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession: run,
+      sandboxClientFactory: (fi) => { sandboxInputs.push(fi as unknown as Record<string, unknown>); return fakeSandboxHandle(); }
+    });
+    const session = await adapter.startSession(input);
+    await collectEvents(session.events);
+
+    expect(sandboxInputs).toHaveLength(1);
+    const mounts = sandboxInputs[0]!['skillMounts'] as Array<{ hostPath: string; sandboxPath: string }>;
+    expect(Array.isArray(mounts)).toBe(true);
+    expect(mounts).toHaveLength(2);
+    const sandboxPaths = mounts.map((m) => m.sandboxPath).sort();
+    expect(sandboxPaths).toEqual(['/workspace/skills/mm/planning', '/workspace/skills/mm/writing-guidelines']);
+    expect(mounts.every((m) => typeof m.hostPath === 'string' && m.hostPath.length > 0)).toBe(true);
+  });
+
+  it('includes the systemPromptHint in the run session instructions when skills are staged', async () => {
+    const { run, calls } = makeRunSession([assistantItem('done')]);
+    const input = makeSessionInputWithSkills('scratch_only', [
+      { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: [] }
+    ]);
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession: run,
+      sandboxClientFactory: () => fakeSandboxHandle()
+    });
+    const session = await adapter.startSession(input);
+    await collectEvents(session.events);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.instructions).toContain('mm:planning');
+    expect(calls[0]!.instructions).toContain('/workspace/skills/mm/planning');
+  });
+
+  it('passes no skill mounts and no hint when env.skills is empty', async () => {
+    const { run, calls } = makeRunSession([assistantItem('done')]);
+    const sandboxInputs: Array<Record<string, unknown>> = [];
+    const input = makeSessionInput('scratch_only'); // uses default empty skills
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession: run,
+      sandboxClientFactory: (fi) => { sandboxInputs.push(fi as unknown as Record<string, unknown>); return fakeSandboxHandle(); }
+    });
+    const session = await adapter.startSession(input);
+    await collectEvents(session.events);
+
+    expect(sandboxInputs).toHaveLength(1);
+    const mounts = sandboxInputs[0]!['skillMounts'] as Array<unknown>;
+    // Either empty array or undefined is acceptable when there are no skills.
+    expect(!mounts || mounts.length === 0).toBe(true);
+
+    expect(calls).toHaveLength(1);
+    // Instructions should not contain skill hint markers.
+    expect(calls[0]!.instructions).not.toContain('/workspace/skills/');
+    expect(calls[0]!.instructions).not.toContain('Runtime skills');
+  });
+
+  it('skill mount host paths use the catalog-declared assetPaths', async () => {
+    const { run } = makeRunSession([assistantItem('done')]);
+    const sandboxInputs: Array<Record<string, unknown>> = [];
+    const assetPath = 'assets/mm/planning';
+    const input = makeSessionInputWithSkills('scratch_only', [
+      { ref: 'mm:planning', assetPath, dependencies: [] }
+    ]);
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession: run,
+      sandboxClientFactory: (fi) => { sandboxInputs.push(fi as unknown as Record<string, unknown>); return fakeSandboxHandle(); }
+    });
+    await collectEvents((await adapter.startSession(input)).events);
+
+    const mounts = sandboxInputs[0]!['skillMounts'] as Array<{ hostPath: string; sandboxPath: string }>;
+    expect(mounts).toHaveLength(1);
+    // The host path must end with the catalog assetPath segment.
+    expect(mounts[0]!.hostPath.endsWith(assetPath)).toBe(true);
+  });
+
+  it('advertised sandbox paths in skill mounts match paths referenced in run session instructions', async () => {
+    const { run, calls } = makeRunSession([assistantItem('done')]);
+    const sandboxInputs: Array<Record<string, unknown>> = [];
+    const input = makeSessionInputWithSkills('scratch_only', [
+      { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: [] },
+      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/writing-guidelines', dependencies: [] }
+    ]);
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession: run,
+      sandboxClientFactory: (fi) => { sandboxInputs.push(fi as unknown as Record<string, unknown>); return fakeSandboxHandle(); }
+    });
+    const session = await adapter.startSession(input);
+    await collectEvents(session.events);
+
+    const mounts = sandboxInputs[0]!['skillMounts'] as Array<{ hostPath: string; sandboxPath: string }>;
+    const instructions = calls[0]!.instructions;
+    // Each advertised sandbox path must appear in the instructions (proving the paths are consistent).
+    for (const mount of mounts) {
+      expect(instructions).toContain(mount.sandboxPath);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Skill containment (traversal guard)
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — skill containment', () => {
+  it('throws before calling sandboxClientFactory when a resolved skill assetPath escapes the catalog via traversal', async () => {
+    const { run } = makeRunSession([]);
+    const sandboxCalls: number[] = [];
+    const input = makeSessionInputWithSkills('scratch_only', [
+      { ref: 'mm:planning', assetPath: '../../etc/passwd', dependencies: [] }
+    ]);
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession: run,
+      sandboxClientFactory: () => { sandboxCalls.push(1); return fakeSandboxHandle(); }
+    });
+    let threw = false;
+    try {
+      const session = await adapter.startSession(input);
+      await collectEvents(session.events);
+    } catch {
+      threw = true;
+    }
+    expect(threw).toBe(true);
+    expect(sandboxCalls).toHaveLength(0);
   });
 });
 
@@ -440,13 +602,13 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
               workspaceIntent: { shape: 'none' },
               secretBindings: [],
               toolPolicy: { allowedTools: ['bash'], workspaceScope: 'declared_workspace' },
-              skills: { requested: [] },
+              skills: { requested: [], resolved: [] },
               capabilityRequirements: { shell: { kind: 'bash', required: false }, paths: { canonicalWorkspacePaths: true }, lsp: { requested: false } }
             },
             workspace: { shape: 'two_roots', repoRoot, scratchRoot, branchName: 'feature/x', workspaceRoots: [repoRoot, scratchRoot] },
             environment: { variables: { SAFE_ENV: 'v', OPENAI_API_KEY: FAKE_SECRET }, secretVariableNames: ['OPENAI_API_KEY'] },
             toolPolicy: { allowedTools: ['bash'], workspaceRoots: [repoRoot, scratchRoot] },
-            skills: { requested: [] },
+            skills: { requested: [], resolved: [] },
             capabilities: { shell: { kind: 'bash', available: false }, paths: { repoRoot, scratchRoot }, lsp: { requested: false, available: false } }
           }
         },

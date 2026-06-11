@@ -11,8 +11,23 @@
       "options": {
         "outputPath": "packages/execution/dist",
         "main": "packages/execution/src/index.ts",
-        "tsConfig": "packages/execution/tsconfig.lib.json"
+        "tsConfig": "packages/execution/tsconfig.lib.json",
+        "assets": [
+          {
+            "glob": "**/*",
+            "input": "packages/execution/src/skills/assets",
+            "output": "src/skills/assets"
+          }
+        ]
       }
+    },
+    "verify-dist-assets": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node packages/execution/scripts/verify-dist-assets.mjs",
+        "cwd": "{workspaceRoot}"
+      },
+      "dependsOn": ["build"]
     },
     "lint": {
       "executor": "@nx/eslint:lint",

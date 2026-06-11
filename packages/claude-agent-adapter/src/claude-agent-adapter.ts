@@ -13,8 +13,11 @@ import type {
 } from '@autocatalyst/execution';
 import {
   ProviderConnectionError,
-  UnsupportedProviderCapabilityError
+  UnsupportedProviderCapabilityError,
+  runtimeSkillsCatalogRoot
 } from '@autocatalyst/execution';
+
+import { materializeClaudeSkillPlugins } from './skill-materialization.js';
 
 // ---------------------------------------------------------------------------
 // Identity constants
@@ -287,8 +290,15 @@ export function createClaudeAgentAdapter(
           : workspace.workspaceRoots[0];
 
       const allowedTools = [...env.toolPolicy.allowedTools];
-      const requestedSkills = [...env.skills.requested];
       const prompt = env.context.task.prompt;
+
+      // Materialize resolved skills into Claude SDK plugin descriptors.
+      // This is a pure transformation — throws ClaudeSkillMaterializationError
+      // if any resolved skill has an empty assetPath.
+      const skillPlugins = materializeClaudeSkillPlugins(
+        env.skills.resolved,
+        runtimeSkillsCatalogRoot
+      );
 
       // The connection.environment IS the overlay; tests check that secret
       // values do not leak out of launch logs. We DO NOT log the env map.
@@ -304,7 +314,8 @@ export function createClaudeAgentAdapter(
         model: profile.model.model,
         mechanism: profile.connectionMechanism,
         allowedToolsCount: allowedTools.length,
-        requestedSkillCount: requestedSkills.length,
+        requestedSkillCount: env.skills.requested.length,
+        resolvedSkillPluginCount: skillPlugins.length,
         cwdProvided: cwd !== undefined,
         // Redacted summary the connection layer already prepared.
         launchConfig: launchConfig.redacted
@@ -345,7 +356,7 @@ export function createClaudeAgentAdapter(
             ...(cwd !== undefined ? { cwd } : {}),
             env: launchEnv,
             allowedTools,
-            options: { skills: requestedSkills }
+            ...(skillPlugins.length > 0 ? { options: { skills: skillPlugins } } : {})
           });
 
           for await (const ev of native) {

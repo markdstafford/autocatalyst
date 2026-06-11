@@ -15,7 +15,7 @@ function makeEnvironment(partial?: Partial<MaterializedExecutionEnvironment>): M
     workspaceIntent: { shape: 'none' },
     secretBindings: [],
     toolPolicy: { allowedTools: ['bash'], workspaceScope: 'declared_workspace' },
-    skills: { requested: ['stub_runner'] },
+    skills: { requested: [], resolved: [] },
     capabilityRequirements: {
       shell: { kind: 'bash', required: false },
       paths: { canonicalWorkspacePaths: true },
@@ -27,7 +27,7 @@ function makeEnvironment(partial?: Partial<MaterializedExecutionEnvironment>): M
     workspace: { shape: 'none', workspaceRoots: [] },
     environment: { variables: {}, secretVariableNames: [] },
     toolPolicy: { allowedTools: ['bash'], workspaceRoots: [] },
-    skills: { requested: ['stub_runner'] },
+    skills: { requested: [], resolved: [] },
     capabilities: {
       shell: { kind: 'bash', available: false },
       paths: {},

@@ -1,4 +1,5 @@
-import type { ExecutionContext, Project } from '@autocatalyst/api-contract';
+import type { ExecutionContext, Project, SkillIntent } from '@autocatalyst/api-contract';
+import { resolveSkills as defaultResolveSkills } from '@autocatalyst/execution';
 
 import type { RunWorkInput } from './orchestrator.js';
 
@@ -34,16 +35,14 @@ export interface WorkspaceResolverInput {
   readonly defaultBranch?: string;
 }
 
+export type ResolveSkillsFn = (requestedRefs: readonly string[]) => Promise<SkillIntent>;
+
 export interface CreateExecutionContextResolverOptions {
   readonly workspace?: WorkspaceResolverInput | ((input: RunWorkInput) => WorkspaceResolverInput);
   readonly secretBindings?: ReadonlyArray<{ readonly handle: string; readonly envName: string }>;
   readonly secretsAvailable?: boolean;
   readonly toolPolicy?: {
     readonly allowedTools?: readonly string[];
-  };
-  readonly skills?: {
-    readonly requested?: readonly string[];
-    readonly plugins?: readonly string[];
   };
   readonly capabilityRequirements?: {
     readonly shell?: { readonly required?: boolean };
@@ -52,6 +51,8 @@ export interface CreateExecutionContextResolverOptions {
   };
   readonly prompt?: string | ((input: RunWorkInput) => string);
   readonly taskInputs?: Record<string, unknown> | ((input: RunWorkInput) => Record<string, unknown>);
+  /** Seam for skill resolution — defaults to the real `resolveSkills` from \`@autocatalyst/execution\`. */
+  readonly resolveSkills?: ResolveSkillsFn;
 }
 
 export interface ExecutionContextResolver {
@@ -70,6 +71,17 @@ const WORK_KIND_SHAPE_MAP: Record<string, WorkspaceShape> = {
   question: 'none',
   file_issue: 'scratch_only'
 };
+
+// --- B1 skill mapper ---
+
+const PLANNING_SKILL_WORKFLOWS = new Set(['feature', 'enhancement']);
+
+function mapStepSkillRefs(workKind: string, currentStep: string): readonly string[] {
+  if (currentStep === 'spec.author' && PLANNING_SKILL_WORKFLOWS.has(workKind)) {
+    return ['mm:planning'];
+  }
+  return [];
+}
 
 // --- Core resolver logic ---
 
@@ -180,14 +192,13 @@ async function resolveContext(
     workspaceScope: 'declared_workspace'
   };
 
-  // 5. Build skills
-  const requestedSkills = options.skills?.requested
-    ? [...options.skills.requested]
-    : ['stub_runner'];
-  const skills: ExecutionContext['skills'] = {
-    requested: requestedSkills,
-    ...(options.skills?.plugins !== undefined ? { plugins: [...options.skills.plugins] } : {})
-  };
+  // 5. Resolve skills via B1 mapper and seam
+  const resolveSkillsFn = options.resolveSkills ?? defaultResolveSkills;
+  const mappedRefs = mapStepSkillRefs(run.workKind, run.currentStep);
+  const skills: SkillIntent =
+    mappedRefs.length > 0
+      ? await resolveSkillsFn(mappedRefs)
+      : { requested: [], resolved: [] };
 
   // 6. Build capability requirements
   const capReqs = options.capabilityRequirements;

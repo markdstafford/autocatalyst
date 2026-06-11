@@ -44,9 +44,18 @@ export const toolPolicySchema = z.object({
   workspaceScope: z.literal('declared_workspace')
 }).strict();
 
+export const skillRefSchema = z.string().regex(/^[a-z][a-z0-9-]*:[a-z][a-z0-9-]*$/u);
+
+export const resolvedSkillSchema = z.object({
+  ref: skillRefSchema,
+  assetPath: z.string().min(1),
+  dependencies: z.array(skillRefSchema),
+  description: z.string().min(1).optional()
+}).strict();
+
 export const skillIntentSchema = z.object({
-  requested: z.array(z.string().min(1)),
-  plugins: z.array(z.string().min(1)).optional()
+  requested: z.array(skillRefSchema),
+  resolved: z.array(resolvedSkillSchema)
 }).strict();
 
 export const capabilityRequirementsSchema = z.object({
@@ -79,6 +88,8 @@ export type WorkspaceProvisioningIntent = z.infer<typeof workspaceProvisioningIn
 export type WorkspaceIntent = z.infer<typeof workspaceIntentSchema>;
 export type SecretBinding = z.infer<typeof secretBindingSchema>;
 export type ToolPolicy = z.infer<typeof toolPolicySchema>;
+export type SkillRef = z.infer<typeof skillRefSchema>;
+export type ResolvedSkill = z.infer<typeof resolvedSkillSchema>;
 export type SkillIntent = z.infer<typeof skillIntentSchema>;
 export type CapabilityRequirements = z.infer<typeof capabilityRequirementsSchema>;
 export type ExecutionContext = z.infer<typeof executionContextSchema>;
