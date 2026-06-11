@@ -56,7 +56,7 @@ export interface ValidatedRuntimeSkillCatalogEntry extends ResolvedSkill {
   readonly absoluteAssetPath: string;
 }
 
-export interface ResolveSkillsOptions extends ValidateSkillCatalogInput {}
+export type ResolveSkillsOptions = ValidateSkillCatalogInput;
 
 // ---------------------------------------------------------------------------
 // Containment helper
@@ -100,7 +100,11 @@ export async function validateSkillCatalog(
         { ref: typeof entry.ref === 'string' ? entry.ref : undefined }
       );
     }
-    parsed.push(result.data);
+    const data = result.data;
+    const item: RuntimeSkillCatalogEntry = data.description !== undefined
+      ? { ref: data.ref, assetPath: data.assetPath, dependencies: data.dependencies, description: data.description }
+      : { ref: data.ref, assetPath: data.assetPath, dependencies: data.dependencies };
+    parsed.push(item);
   }
 
   const refs = new Set<string>();
@@ -158,7 +162,10 @@ export async function validateSkillCatalog(
         { ref: entry.ref, assetPath: entry.assetPath }
       );
     }
-    validated.push({ ...entry, absoluteAssetPath });
+    const validatedEntry: ValidatedRuntimeSkillCatalogEntry = entry.description !== undefined
+      ? { ref: entry.ref, assetPath: entry.assetPath, dependencies: [...entry.dependencies], description: entry.description, absoluteAssetPath }
+      : { ref: entry.ref, assetPath: entry.assetPath, dependencies: [...entry.dependencies], absoluteAssetPath };
+    validated.push(validatedEntry);
   }
   return validated;
 }

@@ -4,7 +4,7 @@ import type { MaterializedExecutionEnvironment } from '../materialized-environme
 import { ExecutionMaterializationError } from '../materialized-environment.js';
 import { provisionWorkspace as defaultProvisionWorkspace, summarizeWorkspaceCause } from '../workspace.js';
 import { validateSkillCatalog as defaultValidateSkillCatalog, SkillCatalogResolutionError } from '../skills/skill-resolver.js';
-import { runtimeSkillsCatalogRoot } from '../skills/catalog.js';
+import { runtimeSkillsCatalogRoot, type RuntimeSkillCatalogEntry } from '../skills/catalog.js';
 
 export interface ExecutionMaterializerOptions {
   readonly secretResolver?: ExecutionSecretResolver;
@@ -32,7 +32,7 @@ export function createExecutionMaterializer(options: ExecutionMaterializerOption
       if (context.skills.resolved.length > 0) {
         try {
           await doValidateSkillCatalog({
-            catalog: context.skills.resolved,
+            catalog: context.skills.resolved as unknown as RuntimeSkillCatalogEntry[],
             catalogRoot: runtimeSkillsCatalogRoot
           });
         } catch (error) {

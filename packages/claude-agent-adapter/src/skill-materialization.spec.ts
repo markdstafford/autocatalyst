@@ -18,7 +18,7 @@ const SECRET_TOKEN = 'sk-ant-secret-99999';
 const PROMPT_TEXT = 'Write a comprehensive plan for the feature.';
 const WORKSPACE_CONTENT = 'README content from repo';
 
-function makeResolvedSkill(overrides?: Partial<ResolvedSkill>): ResolvedSkill {
+function _makeResolvedSkill(overrides?: Partial<ResolvedSkill>): ResolvedSkill {
   return {
     ref: 'mm:planning',
     assetPath: 'assets/mm/planning',

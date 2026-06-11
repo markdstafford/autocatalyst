@@ -2,7 +2,8 @@ import { readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runtimeSkillsCatalog, runtimeSkillsCatalogRoot } from './catalog.js';
-import { SkillCatalogResolutionError, validateSkillCatalog, resolveSkills } from './skill-resolver.js';
+import type { RuntimeSkillCatalogEntry } from './catalog.js';
+import { validateSkillCatalog, resolveSkills } from './skill-resolver.js';
 
 const forbiddenSkillRefs = [
   'superpowers:using-git-worktrees',
@@ -113,7 +114,7 @@ describe('validateSkillCatalog', () => {
   it('rejects a catalog entry with a bad ref format', async () => {
     const catalog = [{ ref: 'not-a-valid-ref', assetPath: 'assets/x', dependencies: [], description: 'x' }] as const;
     await expect(
-      validateSkillCatalog({ catalog: catalog as any, catalogRoot: '/some/path' })
+      validateSkillCatalog({ catalog: catalog as unknown as readonly RuntimeSkillCatalogEntry[], catalogRoot: '/some/path' })
     ).rejects.toMatchObject({ code: 'catalog_entry_malformed' });
   });
 
@@ -123,7 +124,7 @@ describe('validateSkillCatalog', () => {
       { ref: 'a:b', assetPath: 'assets/a/b2', dependencies: [], description: 'second' }
     ] as const;
     await expect(
-      validateSkillCatalog({ catalog: catalog as any, catalogRoot: '/some/path' })
+      validateSkillCatalog({ catalog: catalog as unknown as readonly RuntimeSkillCatalogEntry[], catalogRoot: '/some/path' })
     ).rejects.toMatchObject({ code: 'catalog_entry_malformed' });
   });
 
@@ -132,7 +133,7 @@ describe('validateSkillCatalog', () => {
       { ref: 'a:b', assetPath: 'assets/a/b', dependencies: ['a:missing'], description: 'b' }
     ] as const;
     await expect(
-      validateSkillCatalog({ catalog: catalog as any, catalogRoot: '/some/path' })
+      validateSkillCatalog({ catalog: catalog as unknown as readonly RuntimeSkillCatalogEntry[], catalogRoot: '/some/path' })
     ).rejects.toMatchObject({ code: 'skill_dependency_missing' });
   });
 
@@ -141,7 +142,7 @@ describe('validateSkillCatalog', () => {
       { ref: 'a:b', assetPath: '../../etc/passwd', dependencies: [], description: 'b' }
     ] as const;
     await expect(
-      validateSkillCatalog({ catalog: catalog as any, catalogRoot: '/some/path' })
+      validateSkillCatalog({ catalog: catalog as unknown as readonly RuntimeSkillCatalogEntry[], catalogRoot: '/some/path' })
     ).rejects.toMatchObject({ code: 'skill_asset_outside_catalog' });
   });
 
@@ -150,7 +151,7 @@ describe('validateSkillCatalog', () => {
       { ref: 'a:b', assetPath: 'assets/does-not-exist-xyz', dependencies: [], description: 'b' }
     ] as const;
     await expect(
-      validateSkillCatalog({ catalog: catalog as any, catalogRoot: '/nonexistent/catalog-root' })
+      validateSkillCatalog({ catalog: catalog as unknown as readonly RuntimeSkillCatalogEntry[], catalogRoot: '/nonexistent/catalog-root' })
     ).rejects.toMatchObject({ code: 'skill_asset_missing' });
   });
 });
