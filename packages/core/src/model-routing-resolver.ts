@@ -457,8 +457,8 @@ export function createModelRoutingResolver(options: CreateModelRoutingResolverOp
         (req) => req.step === input.step && req.mode === 'agent'
       );
 
-      // Determine effective distinctBy
-      const distinctBy: 'model' | 'profile' = input.distinctBy ?? tableRequirement?.distinctBy ?? 'model';
+      // Table-defined requirement overrides caller distinctBy
+      const distinctBy: 'model' | 'profile' = tableRequirement?.distinctBy ?? input.distinctBy ?? 'model';
 
       // Resolve each role
       const resolutionsByRole: Record<SessionRole, ModelRoutingResolution> = {};
