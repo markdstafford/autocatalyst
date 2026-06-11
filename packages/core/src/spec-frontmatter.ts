@@ -43,6 +43,33 @@ export function renderSpecFrontmatter(frontmatter: SpecAuthorFrontmatter): strin
   return lines.join('\n');
 }
 
+export type SpecMarkdownRenderErrorCode = SpecFrontmatterErrorCode | 'spec_body_contains_frontmatter';
+
+export interface RenderCommittedSpecMarkdownInput {
+  readonly frontmatter: SpecAuthorFrontmatter;
+  readonly body: string;
+  readonly requireDraftStatus?: boolean;
+}
+
+export function renderCommittedSpecMarkdown(input: RenderCommittedSpecMarkdownInput): string {
+  const validated = validateCommittedSpecFrontmatter(input.frontmatter);
+  if (input.requireDraftStatus === true && validated.status !== 'draft') {
+    throw new SpecFrontmatterError('spec_frontmatter_invalid', 'Initial spec authoring status must be draft.');
+  }
+  const firstBodyLine = input.body.split('\n')[0] ?? '';
+  if (/^---\s*$/u.test(firstBodyLine)) {
+    const error = new SpecFrontmatterError('spec_frontmatter_invalid', 'Spec body must not contain a frontmatter block.');
+    // Override code to spec_body_contains_frontmatter
+    Object.defineProperty(error, 'code', { value: 'spec_body_contains_frontmatter', writable: false, configurable: true });
+    throw error;
+  }
+  const body = input.body.endsWith('\n') ? input.body : `${input.body}\n`;
+  const markdown = `${renderSpecFrontmatter(validated)}${body}`;
+  // Validate the rendered bytes by round-tripping
+  parseSpecFrontmatter(markdown);
+  return markdown;
+}
+
 export function parseSpecFrontmatter(markdown: string): SpecAuthorFrontmatter {
   const match = /^---\n([\s\S]*?)\n---(?:\n|$)/u.exec(markdown);
   if (match === null) {

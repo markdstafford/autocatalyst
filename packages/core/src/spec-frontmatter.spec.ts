@@ -3,7 +3,8 @@ import {
   parseSpecFrontmatter,
   renderSpecFrontmatter,
   validateCommittedSpecFrontmatter,
-  SpecFrontmatterError
+  SpecFrontmatterError,
+  renderCommittedSpecMarkdown
 } from './spec-frontmatter.js';
 
 const frontmatter = {
@@ -81,5 +82,61 @@ describe('spec frontmatter helpers', () => {
     const rendered = renderSpecFrontmatter(frontmatter);
     expect(rendered).not.toContain('implemented_by');
     expect(rendered).not.toContain('supersedes');
+  });
+});
+
+describe('renderCommittedSpecMarkdown', () => {
+  it('renders exactly one frontmatter block followed by body', () => {
+    const markdown = renderCommittedSpecMarkdown({ frontmatter, body: '# Body\n' });
+    const dashMatches = markdown.match(/^---$/gmu);
+    expect(dashMatches).toHaveLength(2);
+    expect(markdown).toContain('\n---\n# Body\n');
+  });
+
+  it('rejects body content that starts with its own frontmatter block', () => {
+    expect(() => renderCommittedSpecMarkdown({
+      frontmatter,
+      body: '---\nstatus: draft\n---\n# Body'
+    })).toThrow();
+    try {
+      renderCommittedSpecMarkdown({ frontmatter, body: '---\nstatus: draft\n---\n# Body' });
+    } catch (error) {
+      expect((error as { code?: string }).code).toBe('spec_body_contains_frontmatter');
+    }
+  });
+
+  it('requires initial committed status draft when requireDraftStatus is true', () => {
+    expect(() => renderCommittedSpecMarkdown({
+      frontmatter: { ...frontmatter, status: 'approved' as const },
+      body: '# Body',
+      requireDraftStatus: true
+    })).toThrow();
+    try {
+      renderCommittedSpecMarkdown({
+        frontmatter: { ...frontmatter, status: 'approved' as const },
+        body: '# Body',
+        requireDraftStatus: true
+      });
+    } catch (error) {
+      expect((error as { code?: string }).code).toBe('spec_frontmatter_invalid');
+    }
+  });
+
+  it('does not require draft status when requireDraftStatus is not set', () => {
+    expect(() => renderCommittedSpecMarkdown({
+      frontmatter: { ...frontmatter, status: 'approved' as const },
+      body: '# Body'
+    })).not.toThrow();
+  });
+
+  it('validates the rendered bytes by round-tripping the frontmatter', () => {
+    const markdown = renderCommittedSpecMarkdown({ frontmatter, body: '# My spec\n\nSome content.' });
+    // The result should be parseable
+    expect(() => parseSpecFrontmatter(markdown)).not.toThrow();
+  });
+
+  it('appends trailing newline to body if missing', () => {
+    const markdown = renderCommittedSpecMarkdown({ frontmatter, body: '# Body without newline' });
+    expect(markdown.endsWith('\n')).toBe(true);
   });
 });

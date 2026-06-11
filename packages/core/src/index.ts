@@ -153,9 +153,10 @@ export {
   SpecFrontmatterError,
   parseSpecFrontmatter,
   renderSpecFrontmatter,
-  validateCommittedSpecFrontmatter
+  validateCommittedSpecFrontmatter,
+  renderCommittedSpecMarkdown
 } from './spec-frontmatter.js';
-export type { SpecFrontmatterErrorCode } from './spec-frontmatter.js';
+export type { SpecFrontmatterErrorCode, SpecMarkdownRenderErrorCode, RenderCommittedSpecMarkdownInput } from './spec-frontmatter.js';
 
 export {
   ModelRoutingConfigurationError,
