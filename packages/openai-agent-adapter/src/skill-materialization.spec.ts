@@ -19,7 +19,7 @@ describe('materializeOpenAISkillFiles', () => {
   it('returns zero mounts, empty manifest, and empty systemPromptHint for empty skills', () => {
     const result = materializeOpenAISkillFiles(makeSkillIntent([]), CATALOG_ROOT);
 
-    expect(result.skillsRoot).toBe('/skills');
+    expect(result.skillsRoot).toBe('/workspace/skills');
     expect(result.mounts).toHaveLength(0);
     expect(result.manifest).toEqual({});
     expect(result.systemPromptHint).toBe('');
@@ -38,8 +38,8 @@ describe('materializeOpenAISkillFiles', () => {
     expect(result.manifest).toHaveProperty('mm:writing-guidelines');
     expect(result.systemPromptHint).toContain('mm:planning');
     expect(result.systemPromptHint).toContain('mm:writing-guidelines');
-    expect(result.systemPromptHint).toContain('/skills/mm/planning/SKILL.md');
-    expect(result.systemPromptHint).toContain('/skills/mm/writing-guidelines/SKILL.md');
+    expect(result.systemPromptHint).toContain('/workspace/skills/mm/planning/SKILL.md');
+    expect(result.systemPromptHint).toContain('/workspace/skills/mm/writing-guidelines/SKILL.md');
   });
 
   it('uses correct hostPath resolved from catalogRoot and assetPath', () => {
@@ -60,7 +60,7 @@ describe('materializeOpenAISkillFiles', () => {
 
     const result = materializeOpenAISkillFiles(skills, CATALOG_ROOT);
 
-    expect(result.mounts[0]?.sandboxPath).toBe('/skills/mm/planning');
+    expect(result.mounts[0]?.sandboxPath).toBe('/workspace/skills/mm/planning');
   });
 
   it('manifest maps refs to sandbox SKILL.md paths', () => {
@@ -71,8 +71,8 @@ describe('materializeOpenAISkillFiles', () => {
 
     const result = materializeOpenAISkillFiles(skills, CATALOG_ROOT);
 
-    expect(result.manifest['mm:planning']).toBe('/skills/mm/planning/SKILL.md');
-    expect(result.manifest['mm:writing-guidelines']).toBe('/skills/mm/writing-guidelines/SKILL.md');
+    expect(result.manifest['mm:planning']).toBe('/workspace/skills/mm/planning/SKILL.md');
+    expect(result.manifest['mm:writing-guidelines']).toBe('/workspace/skills/mm/writing-guidelines/SKILL.md');
   });
 
   it('does not include secrets or file contents in output', () => {
@@ -97,8 +97,8 @@ describe('materializeOpenAISkillFiles', () => {
       CATALOG_ROOT
     );
 
-    expect(empty.skillsRoot).toBe('/skills');
-    expect(withSkills.skillsRoot).toBe('/skills');
+    expect(empty.skillsRoot).toBe('/workspace/skills');
+    expect(withSkills.skillsRoot).toBe('/workspace/skills');
   });
 
   it('systemPromptHint mentions skills root', () => {
@@ -108,7 +108,7 @@ describe('materializeOpenAISkillFiles', () => {
 
     const result = materializeOpenAISkillFiles(skills, CATALOG_ROOT);
 
-    expect(result.systemPromptHint).toContain('Skills root: /skills');
+    expect(result.systemPromptHint).toContain('Skills root: /workspace/skills');
     expect(result.systemPromptHint).toContain('Load and apply the skills declared in your session context');
   });
 });

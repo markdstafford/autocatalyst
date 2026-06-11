@@ -1,4 +1,5 @@
-import { readFile, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, symlink } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { runtimeSkillsCatalog, runtimeSkillsCatalogRoot } from './catalog.js';
@@ -144,6 +145,26 @@ describe('validateSkillCatalog', () => {
     await expect(
       validateSkillCatalog({ catalog: catalog as unknown as readonly RuntimeSkillCatalogEntry[], catalogRoot: '/some/path' })
     ).rejects.toMatchObject({ code: 'skill_asset_outside_catalog' });
+  });
+
+  it('rejects an asset path that escapes the catalog root via a symlink', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'ac-catalog-sym-'));
+    const catalogRoot = path.join(tmp, 'catalog');
+    const outside = path.join(tmp, 'outside');
+    try {
+      await mkdir(catalogRoot, { recursive: true });
+      await mkdir(outside, { recursive: true });
+      // Create a symlink inside the catalog pointing to an outside directory.
+      await symlink(outside, path.join(catalogRoot, 'escape-link'));
+      const catalog = [
+        { ref: 'a:b', assetPath: 'escape-link', dependencies: [], description: 'b' }
+      ] as const;
+      await expect(
+        validateSkillCatalog({ catalog: catalog as unknown as readonly RuntimeSkillCatalogEntry[], catalogRoot })
+      ).rejects.toMatchObject({ code: 'skill_asset_outside_catalog' });
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
   });
 
   it('rejects an asset path that does not exist on the filesystem', async () => {

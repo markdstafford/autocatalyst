@@ -1470,8 +1470,8 @@ describe('runner-cells: B1 skill materialization — OpenAI agent cell', () => {
     expect(planningMount).toBeDefined();
     expect(writingMount).toBeDefined();
 
-    expect(planningMount?.sandboxPath).toBe('/skills/mm/planning');
-    expect(writingMount?.sandboxPath).toBe('/skills/mm/writing-guidelines');
+    expect(planningMount?.sandboxPath).toBe('/workspace/skills/mm/planning');
+    expect(writingMount?.sandboxPath).toBe('/workspace/skills/mm/writing-guidelines');
 
     for (const mount of mounts) {
       expect(mount.hostPath.startsWith(runtimeSkillsCatalogRoot)).toBe(true);

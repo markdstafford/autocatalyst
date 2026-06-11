@@ -291,7 +291,7 @@ describe('createOpenAIAgentAdapter — skill materialization', () => {
     expect(Array.isArray(mounts)).toBe(true);
     expect(mounts).toHaveLength(2);
     const sandboxPaths = mounts.map((m) => m.sandboxPath).sort();
-    expect(sandboxPaths).toEqual(['/skills/mm/planning', '/skills/mm/writing-guidelines']);
+    expect(sandboxPaths).toEqual(['/workspace/skills/mm/planning', '/workspace/skills/mm/writing-guidelines']);
     expect(mounts.every((m) => typeof m.hostPath === 'string' && m.hostPath.length > 0)).toBe(true);
   });
 
@@ -309,7 +309,7 @@ describe('createOpenAIAgentAdapter — skill materialization', () => {
 
     expect(calls).toHaveLength(1);
     expect(calls[0]!.instructions).toContain('mm:planning');
-    expect(calls[0]!.instructions).toContain('/skills/mm/planning');
+    expect(calls[0]!.instructions).toContain('/workspace/skills/mm/planning');
   });
 
   it('passes no skill mounts and no hint when env.skills is empty', async () => {
@@ -330,7 +330,7 @@ describe('createOpenAIAgentAdapter — skill materialization', () => {
 
     expect(calls).toHaveLength(1);
     // Instructions should not contain skill hint markers.
-    expect(calls[0]!.instructions).not.toContain('/skills/');
+    expect(calls[0]!.instructions).not.toContain('/workspace/skills/');
     expect(calls[0]!.instructions).not.toContain('Runtime skills');
   });
 
@@ -351,6 +351,28 @@ describe('createOpenAIAgentAdapter — skill materialization', () => {
     expect(mounts).toHaveLength(1);
     // The host path must end with the catalog assetPath segment.
     expect(mounts[0]!.hostPath.endsWith(assetPath)).toBe(true);
+  });
+
+  it('advertised sandbox paths in skill mounts match paths referenced in run session instructions', async () => {
+    const { run, calls } = makeRunSession([assistantItem('done')]);
+    const sandboxInputs: Array<Record<string, unknown>> = [];
+    const input = makeSessionInputWithSkills('scratch_only', [
+      { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: [] },
+      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/writing-guidelines', dependencies: [] }
+    ]);
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession: run,
+      sandboxClientFactory: (fi) => { sandboxInputs.push(fi as unknown as Record<string, unknown>); return fakeSandboxHandle(); }
+    });
+    const session = await adapter.startSession(input);
+    await collectEvents(session.events);
+
+    const mounts = sandboxInputs[0]!['skillMounts'] as Array<{ hostPath: string; sandboxPath: string }>;
+    const instructions = calls[0]!.instructions;
+    // Each advertised sandbox path must appear in the instructions (proving the paths are consistent).
+    for (const mount of mounts) {
+      expect(instructions).toContain(mount.sandboxPath);
+    }
   });
 });
 

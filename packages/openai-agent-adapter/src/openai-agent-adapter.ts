@@ -466,8 +466,13 @@ function buildWorkspaceManifest(
     grants.push({ path: root, readOnly: false });
   }
   for (const mount of skillMounts) {
-    // Use a stable key derived from the sandbox path (strip leading '/').
-    const logicalName = mount.sandboxPath.replace(/^\//, '').replace(/\//g, '_');
+    // Use a stable key derived from the sandbox path, preserving the path
+    // structure relative to the manifest root so the sandbox places files at
+    // the exact path the agent is told to look in.
+    const MANIFEST_ROOT = '/workspace';
+    const logicalName = mount.sandboxPath.startsWith(`${MANIFEST_ROOT}/`)
+      ? mount.sandboxPath.slice(MANIFEST_ROOT.length + 1)
+      : mount.sandboxPath.replace(/^\//, '');
     entries[logicalName] = localDir({ src: mount.hostPath });
     grants.push({ path: mount.hostPath, readOnly: true });
   }

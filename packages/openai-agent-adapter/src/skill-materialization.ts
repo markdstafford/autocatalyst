@@ -14,7 +14,7 @@ export interface OpenAISkillMaterialization {
   readonly systemPromptHint: string;
 }
 
-const SKILLS_ROOT = '/skills';
+const SKILLS_ROOT = '/workspace/skills';
 
 /**
  * Derives the sandbox-visible directory path for a skill from its ref.

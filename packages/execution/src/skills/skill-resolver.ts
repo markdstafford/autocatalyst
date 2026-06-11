@@ -1,4 +1,4 @@
-import { access, stat } from 'node:fs/promises';
+import { access, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import { resolvedSkillSchema, skillRefSchema, type ResolvedSkill, type SkillIntent } from '@autocatalyst/api-contract';
@@ -131,6 +131,16 @@ export async function validateSkillCatalog(
     }
   }
 
+  // Resolve the real catalog root once (handles case where catalogRoot itself is a symlink).
+  let realCatalogRoot: string;
+  try {
+    realCatalogRoot = await realpath(path.resolve(catalogRoot));
+  } catch {
+    // If the catalog root doesn't resolve (e.g., doesn't exist), fall back to lexical path.
+    // Individual asset stat() calls will still fail with skill_asset_missing.
+    realCatalogRoot = path.resolve(catalogRoot);
+  }
+
   const validated: ValidatedRuntimeSkillCatalogEntry[] = [];
   for (const entry of parsed) {
     let absoluteAssetPath: string;
@@ -159,6 +169,24 @@ export async function validateSkillCatalog(
       throw new SkillCatalogResolutionError(
         'skill_asset_missing',
         'Skill asset path does not exist.',
+        { ref: entry.ref, assetPath: entry.assetPath }
+      );
+    }
+    // Real-path containment check: resolve symlinks and verify the real path stays inside the catalog.
+    let realAssetPath: string;
+    try {
+      realAssetPath = await realpath(absoluteAssetPath);
+    } catch {
+      throw new SkillCatalogResolutionError(
+        'skill_asset_outside_catalog',
+        'Skill asset real-path resolution failed.',
+        { ref: entry.ref, assetPath: entry.assetPath }
+      );
+    }
+    if (!isInsideRoot(realCatalogRoot, realAssetPath)) {
+      throw new SkillCatalogResolutionError(
+        'skill_asset_outside_catalog',
+        'Skill asset path escapes the runtime skills catalog via a symlink.',
         { ref: entry.ref, assetPath: entry.assetPath }
       );
     }
