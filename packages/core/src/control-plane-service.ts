@@ -1,16 +1,19 @@
 import type {
   CreateConversationWithFirstRunRequest,
   CreateConversationWithFirstRunResponse,
+  CreateRunFeedbackRequest,
+  Feedback,
   NonModelPrincipal,
   Principal,
   Run,
   RunSpecResponse,
   RunStep
 } from '@autocatalyst/api-contract';
-import { createConversationWithFirstRunResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
+import { createConversationWithFirstRunResponseSchema, runFeedbackListResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
 
 import type { ArtifactRepository, FeedbackRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
+import { createArtifactFeedback } from './feedback-lifecycle.js';
 import {
   OrchestratorError,
   type OrchestratedConversationResult,
@@ -131,6 +134,25 @@ export interface ServiceGetRunSpecInput {
 
 export type ServiceGetRunSpecResult = RunSpecResponse;
 
+export interface ServiceCreateRunFeedbackInput {
+  readonly principal: Principal;
+  readonly tenant: string;
+  readonly runId: string;
+  readonly request: CreateRunFeedbackRequest;
+}
+
+export type ServiceCreateRunFeedbackResult = Feedback;
+
+export interface ServiceListRunFeedbackInput {
+  readonly principal: Principal;
+  readonly tenant: string;
+  readonly runId: string;
+}
+
+export interface ServiceListRunFeedbackResult {
+  readonly feedback: readonly Feedback[];
+}
+
 // --- Service interface ---
 
 export interface ControlPlaneService {
@@ -144,6 +166,8 @@ export interface ControlPlaneService {
   replayRunEvents(input: ServiceReplayRunEventsInput): Promise<RunEventReplayResult>;
   tick(input: ServiceTickInput): Promise<ServiceTickResult>;
   getRunSpec(input: ServiceGetRunSpecInput): Promise<ServiceGetRunSpecResult>;
+  createRunFeedback(input: ServiceCreateRunFeedbackInput): Promise<ServiceCreateRunFeedbackResult>;
+  listRunFeedback(input: ServiceListRunFeedbackInput): Promise<ServiceListRunFeedbackResult>;
 }
 
 // --- Constructor options ---
@@ -184,6 +208,13 @@ function specArtifactKindForRun(workKind: string): 'feature_spec' | 'enhancement
 
 function persistenceFailed(message: string, cause?: unknown): ControlPlaneServiceError {
   return new ControlPlaneServiceError('persistence_failed', message, cause === undefined ? {} : { cause });
+}
+
+function requireNonModelPrincipal(principal: Principal): NonModelPrincipal {
+  if (principal.kind === 'model') {
+    throw new ControlPlaneServiceError('unauthorized', 'Model principals cannot create feedback.');
+  }
+  return principal as NonModelPrincipal;
 }
 
 function mapRunToApiRun(run: Run): Run {
@@ -480,5 +511,68 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     }
 
     return runSpecResponseSchema.parse({ artifact, markdown, frontmatter });
+  }
+
+  async createRunFeedback(input: ServiceCreateRunFeedbackInput): Promise<ServiceCreateRunFeedbackResult> {
+    const decision = await this.#policy.authorize({
+      principal: input.principal,
+      action: 'run_feedback.create',
+      resource: { kind: 'run_feedback', id: input.runId, path: '/v1/runs/:id/feedback' }
+    });
+    if (!decision.allowed) {
+      throw new ControlPlaneServiceError('forbidden', 'Not authorized to create run feedback.');
+    }
+
+    const author = requireNonModelPrincipal(input.principal);
+
+    const run = await this.#runs.findById(input.runId);
+    if (run === null) {
+      throw new ControlPlaneServiceError('not_found', `Run '${input.runId}' not found.`);
+    }
+    if (run.tenant !== input.tenant) {
+      throw new ControlPlaneServiceError('not_found', 'Run not accessible.');
+    }
+
+    try {
+      return await createArtifactFeedback({
+        runId: run.id,
+        owner: run.owner,
+        tenant: run.tenant,
+        principal: author,
+        title: input.request.title,
+        body: input.request.body,
+        ...(input.request.anchor !== undefined ? { anchor: input.request.anchor } : {})
+      }, this.#feedbackLifecycle);
+    } catch (error) {
+      throw persistenceFailed('Failed to create feedback.', error);
+    }
+  }
+
+  async listRunFeedback(input: ServiceListRunFeedbackInput): Promise<ServiceListRunFeedbackResult> {
+    const decision = await this.#policy.authorize({
+      principal: input.principal,
+      action: 'run_feedback.list',
+      resource: { kind: 'run_feedback', id: input.runId, path: '/v1/runs/:id/feedback' }
+    });
+    if (!decision.allowed) {
+      throw new ControlPlaneServiceError('forbidden', 'Not authorized to list run feedback.');
+    }
+
+    const run = await this.#runs.findById(input.runId);
+    if (run === null) {
+      throw new ControlPlaneServiceError('not_found', `Run '${input.runId}' not found.`);
+    }
+    if (run.tenant !== input.tenant) {
+      throw new ControlPlaneServiceError('not_found', 'Run not accessible.');
+    }
+
+    let feedbackItems: readonly Feedback[];
+    try {
+      feedbackItems = await this.#feedback.listByRun(run.id);
+    } catch (error) {
+      throw persistenceFailed('Failed to list feedback.', error);
+    }
+
+    return runFeedbackListResponseSchema.parse({ feedback: feedbackItems });
   }
 }

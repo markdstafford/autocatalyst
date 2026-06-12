@@ -759,3 +759,134 @@ describe('DefaultControlPlaneService run waiting-state', () => {
     expect(result.run.waitingOn).toBeUndefined();
   });
 });
+
+function makeServiceWithFeedback(feedbackRepo: FeedbackRepository): DefaultControlPlaneService {
+  return new DefaultControlPlaneService({
+    orchestrator: makeFakeOrchestrator(),
+    runs: makeFakeRunRepo(),
+    runSteps: makeFakeRunStepRepo(),
+    events: new InMemoryRunEventBus(),
+    policy: permissivePolicyDecisionPoint,
+    artifacts: makeFakeArtifactRepository(validArtifact),
+    feedback: feedbackRepo,
+    runWorkspaceMetadata: makeFakeRunWorkspaceMetadataRepository(validWorkspaceMetadata),
+    workspaceFilesystem: makeFakeWorkspaceFilesystem(),
+    feedbackLifecycle: {
+      feedback: feedbackRepo,
+      ids: () => 'id_1',
+      clock: () => timestamp
+    }
+  });
+}
+
+describe('DefaultControlPlaneService.createRunFeedback', () => {
+  it('creates artifact feedback and returns it', async () => {
+    const feedbackRepo = makeFakeFeedbackRepository();
+    const createdFeedback: Feedback = {
+      id: 'fb_1',
+      runId: 'run_1',
+      owner,
+      tenant: 'tenant_1',
+      target: 'artifact' as const,
+      status: 'open' as const,
+      title: 'Scope unclear',
+      body: 'Please clarify.',
+      thread: [{ id: 'th_1', author: owner, body: 'Please clarify.', createdAt: timestamp }],
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    vi.spyOn(feedbackRepo, 'create').mockResolvedValue(createdFeedback);
+    const service = makeServiceWithFeedback(feedbackRepo);
+    const result = await service.createRunFeedback({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      request: { target: 'artifact', title: 'Scope unclear', body: 'Please clarify.' }
+    });
+    expect(result.status).toBe('open');
+    expect(result.target).toBe('artifact');
+    expect(result.id).toBe('fb_1');
+  });
+
+  it('rejects model principals', async () => {
+    const modelPrincipal = { kind: 'model' as const, id: 'model_1', tenantId: 'tenant_1' };
+    const service = makeService();
+    await expect(service.createRunFeedback({
+      principal: modelPrincipal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      request: { target: 'artifact', title: 'Title', body: 'Body' }
+    })).rejects.toMatchObject({ code: 'unauthorized' });
+  });
+
+  it('returns not_found for missing run', async () => {
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(null) });
+    const service = makeService({ runs });
+    await expect(service.createRunFeedback({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_missing',
+      request: { target: 'artifact', title: 'Title', body: 'Body' }
+    })).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('returns not_found for cross-tenant run', async () => {
+    const service = makeService();
+    await expect(service.createRunFeedback({
+      principal,
+      tenant: 'tenant_other',
+      runId: 'run_1',
+      request: { target: 'artifact', title: 'Title', body: 'Body' }
+    })).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('maps repository failures to persistence_failed', async () => {
+    const feedbackRepo = makeFakeFeedbackRepository();
+    vi.spyOn(feedbackRepo, 'create').mockRejectedValue(new Error('db failure'));
+    const service = makeServiceWithFeedback(feedbackRepo);
+    await expect(service.createRunFeedback({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      request: { target: 'artifact', title: 'Title', body: 'Body' }
+    })).rejects.toMatchObject({ code: 'persistence_failed' });
+  });
+});
+
+describe('DefaultControlPlaneService.listRunFeedback', () => {
+  it('lists feedback for the tenant-verified run', async () => {
+    const feedbackItem: Feedback = {
+      id: 'fb_1', runId: 'run_1', owner, tenant: 'tenant_1',
+      target: 'artifact' as const, status: 'open' as const,
+      title: 'Scope unclear', body: 'Please clarify.',
+      thread: [{ id: 'th_1', author: owner, body: 'Please clarify.', createdAt: timestamp }],
+      createdAt: timestamp, updatedAt: timestamp
+    };
+    const feedbackRepo = makeFakeFeedbackRepository();
+    vi.spyOn(feedbackRepo, 'listByRun').mockResolvedValue([feedbackItem]);
+    const service = makeServiceWithFeedback(feedbackRepo);
+    const result = await service.listRunFeedback({ principal, tenant: 'tenant_1', runId: 'run_1' });
+    expect(result.feedback).toHaveLength(1);
+    expect(result.feedback[0]?.id).toBe('fb_1');
+  });
+
+  it('returns not_found for missing run', async () => {
+    const service = makeService({ runs: makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(null) }) });
+    await expect(service.listRunFeedback({ principal, tenant: 'tenant_1', runId: 'run_missing' }))
+      .rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('returns not_found for cross-tenant run', async () => {
+    const service = makeService();
+    await expect(service.listRunFeedback({ principal, tenant: 'tenant_other', runId: 'run_1' }))
+      .rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('maps repository failures to persistence_failed', async () => {
+    const feedbackRepo = makeFakeFeedbackRepository();
+    vi.spyOn(feedbackRepo, 'listByRun').mockRejectedValue(new Error('db failure'));
+    const service = makeServiceWithFeedback(feedbackRepo);
+    await expect(service.listRunFeedback({ principal, tenant: 'tenant_1', runId: 'run_1' }))
+      .rejects.toMatchObject({ code: 'persistence_failed' });
+  });
+});
