@@ -50,7 +50,13 @@ export async function finalizeSpecApproval(
 
   // Step 1: Find the spec artifact for this run
   const expectedKind = expectedKindForRun(run);
-  const kind: ArtifactKind = expectedKind ?? 'feature_spec';
+  if (expectedKind === null) {
+    throw new SpecApprovalError(
+      'spec_artifact_missing',
+      `Run '${run.id}' workKind '${run.workKind}' does not correspond to a spec workflow.`
+    );
+  }
+  const kind: ArtifactKind = expectedKind;
 
   const artifact = await artifacts.findByRunAndKind({ runId: run.id, kind });
   if (artifact === null) {
@@ -99,12 +105,13 @@ export async function finalizeSpecApproval(
     throw new SpecApprovalError('spec_approval_validation_failed', 'Spec file validation failed after approval write.', { cause });
   }
 
-  // Step 7: Commit only this file
+  // Step 7: Commit only this file — use slug derived from artifact path, not raw run UUID.
+  const slug = relativePath.replace(/^context-human\/specs\/(?:feature|enhancement)-/u, '').replace(/\.md$/u, '');
   try {
     await git.commitFiles({
       workspaceRepoRoot,
       relativePaths: [relativePath],
-      message: `docs: approve spec ${run.id}`
+      message: `docs: approve spec ${slug}`
     });
   } catch (cause) {
     throw new SpecApprovalError('spec_approval_commit_failed', 'Failed to commit approved spec file.', { cause });

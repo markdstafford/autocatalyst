@@ -97,6 +97,9 @@ function assertPreSideEffectInput(input: CompleteSpecAuthoringInput): void {
   }
 
   const expectedIssue = input.run.trackedIssue?.number;
+  if (expectedIssue !== undefined && input.result.frontmatter.issue === undefined) {
+    throw new SpecAuthoringError('spec_issue_mismatch', 'Spec frontmatter must include issue when run has a tracked issue.');
+  }
   if (
     expectedIssue !== undefined &&
     input.result.frontmatter.issue !== undefined &&
@@ -121,35 +124,48 @@ export async function completeSpecAuthoring(
 
   const contents = renderCommittedSpecMarkdown({ frontmatter, body, requireDraftStatus: true });
 
+  // Check for an existing artifact first so retries can skip write/commit when content is unchanged.
+  let existingArtifact: Artifact | null;
   try {
-    await deps.filesystem.writeFile({ workspaceRepoRoot, relativePath, contents });
+    existingArtifact = await deps.artifacts.findByRunAndKind({ runId: run.id, kind: kind as ArtifactKind });
   } catch (cause) {
-    throw new SpecAuthoringError('spec_file_write_failed', 'Failed to write spec file.', { cause });
+    throw new SpecAuthoringError('spec_artifact_persistence_failed', 'Failed to look up existing spec artifact.', { cause });
   }
 
-  try {
-    const written = await deps.filesystem.readFile({ workspaceRepoRoot, relativePath });
-    parseSpecFrontmatter(written);
-  } catch (cause) {
-    throw new SpecAuthoringError('spec_file_validation_failed', 'Spec file validation failed after write.', { cause });
-  }
+  if (existingArtifact === null) {
+    // First attempt: write, validate, and commit the spec file.
+    try {
+      await deps.filesystem.writeFile({ workspaceRepoRoot, relativePath, contents });
+    } catch (cause) {
+      throw new SpecAuthoringError('spec_file_write_failed', 'Failed to write spec file.', { cause });
+    }
 
-  const prefix = commitMessagePrefix(kind as 'feature_spec' | 'enhancement_spec');
-  try {
-    await deps.git.commitFiles({
-      workspaceRepoRoot,
-      relativePaths: [relativePath],
-      message: `docs: add ${prefix} spec ${slug}`
-    });
-  } catch (cause) {
-    throw new SpecAuthoringError('spec_commit_failed', 'Failed to commit spec file.', { cause });
+    try {
+      const written = await deps.filesystem.readFile({ workspaceRepoRoot, relativePath });
+      parseSpecFrontmatter(written);
+    } catch (cause) {
+      throw new SpecAuthoringError('spec_file_validation_failed', 'Spec file validation failed after write.', { cause });
+    }
+
+    const prefix = commitMessagePrefix(kind as 'feature_spec' | 'enhancement_spec');
+    try {
+      await deps.git.commitFiles({
+        workspaceRepoRoot,
+        relativePaths: [relativePath],
+        message: `docs: add ${prefix} spec ${slug}`
+      });
+    } catch (cause) {
+      throw new SpecAuthoringError('spec_commit_failed', 'Failed to commit spec file.', { cause });
+    }
   }
 
   let artifact: Artifact;
   let artifactCreated: 'created' | 'recovered';
   try {
-    const existing = await deps.artifacts.findByRunAndKind({ runId: run.id, kind: kind as ArtifactKind });
-    if (existing === null) {
+    if (existingArtifact !== null) {
+      artifact = existingArtifact;
+      artifactCreated = 'recovered';
+    } else {
       artifact = await deps.artifacts.create({
         runId: run.id,
         owner: run.owner,
@@ -162,9 +178,6 @@ export async function completeSpecAuthoring(
         publicationRefs: []
       });
       artifactCreated = 'created';
-    } else {
-      artifact = existing;
-      artifactCreated = 'recovered';
     }
   } catch (cause) {
     throw new SpecAuthoringError('spec_artifact_persistence_failed', 'Failed to persist spec artifact.', { cause });

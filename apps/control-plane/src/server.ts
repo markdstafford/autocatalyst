@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -348,6 +348,7 @@ function createDelegatingExecutionEntryPoint(input: {
   readonly factory: AgentRunnerFactory;
   readonly materialize: (context: ExecutionContext) => Promise<MaterializedExecutionEnvironment>;
   readonly resolveRole?: (step: string) => string;
+  readonly onWorkspaceRootResolved?: (runId: string, repoRoot: string) => void;
 }): ExecutionEntryPoint {
   const { resolveRole } = input;
   /**
@@ -355,11 +356,17 @@ function createDelegatingExecutionEntryPoint(input: {
    * For workspace shapes that do not provision a scratch root (e.g. 'none' for
    * question runs), a temporary directory is created so the Claude adapter can
    * write step-result.json and scratch_file validation can read it back.
+   * Also registers the repo root for two_roots workspaces so spec authoring can
+   * resolve the workspace path without importing execution internals.
    */
   async function materializeWithScratch(
     context: ExecutionContext
   ): Promise<MaterializedExecutionEnvironment> {
     const env = await input.materialize(context);
+    if (env.workspace.shape === 'two_roots') {
+      input.onWorkspaceRootResolved?.(context.run.id, env.workspace.repoRoot);
+      return env;
+    }
     if (env.workspace.shape !== 'none') {
       return env;
     }
@@ -398,7 +405,10 @@ function createDelegatingExecutionEntryPoint(input: {
         materialize: materializeWithScratch,
         resultValidation: (entryInput) => {
           const step = entryInput.context.run.currentStep;
-          if (step === 'spec.author') {
+          const workKind = entryInput.context.run.workKind;
+          // Only apply the spec-authoring contract for feature/enhancement workflows.
+          // Bug and file_issue also include spec.author but produce a different result shape.
+          if (step === 'spec.author' && (workKind === 'feature' || workKind === 'enhancement')) {
             return {
               mode: 'scratch_file' as const,
               contractRegistry: stepResultContractRegistry,
@@ -424,15 +434,27 @@ function createDelegatingExecutionEntryPoint(input: {
 // Production workspace ports
 // ---------------------------------------------------------------------------
 
+function assertWithinWorkspaceRoot(workspaceRepoRoot: string, relativePath: string): string {
+  if (isAbsolute(relativePath)) {
+    throw new Error('Workspace path must be relative.');
+  }
+  const fullPath = resolve(workspaceRepoRoot, relativePath);
+  const rel = relative(workspaceRepoRoot, fullPath);
+  if (rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error('Workspace path escapes the workspace root.');
+  }
+  return fullPath;
+}
+
 function createNodeWorkspaceFilesystem(): WorkspaceFileSystemPort {
   return {
     async writeFile(input) {
-      const fullPath = join(input.workspaceRepoRoot, input.relativePath);
+      const fullPath = assertWithinWorkspaceRoot(input.workspaceRepoRoot, input.relativePath);
       await mkdir(dirname(fullPath), { recursive: true });
       await writeFile(fullPath, input.contents, 'utf-8');
     },
     async readFile(input) {
-      const fullPath = join(input.workspaceRepoRoot, input.relativePath);
+      const fullPath = assertWithinWorkspaceRoot(input.workspaceRepoRoot, input.relativePath);
       return readFile(fullPath, 'utf-8');
     }
   };
@@ -443,7 +465,20 @@ function createNodeWorkspaceGit(): WorkspaceGitPort {
     async commitFiles(input) {
       const cwd = input.workspaceRepoRoot;
       await execFileAsync('git', ['-C', cwd, 'add', '--', ...input.relativePaths]);
-      await execFileAsync('git', ['-C', cwd, 'commit', '-m', input.message]);
+      try {
+        await execFileAsync('git', [
+          '-C', cwd,
+          '-c', 'user.name=Autocatalyst',
+          '-c', 'user.email=autocatalyst@local',
+          'commit', '-m', input.message
+        ]);
+      } catch (err) {
+        // Tolerate "nothing to commit" on retry — treat as success.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('nothing to commit') && !msg.includes('nothing added to commit')) {
+          throw err;
+        }
+      }
       return {};
     }
   };
@@ -520,6 +555,11 @@ export async function createControlPlaneServer(
   const dispatchQueue = new RunDispatchQueue({
     maxConcurrent: options.runConcurrency ?? DEFAULT_RUN_CONCURRENCY
   });
+
+  // Registry that maps runId → repoRoot for two_roots workspaces.
+  // Populated during materialization so spec authoring and approval can resolve the
+  // workspace path without importing execution internals.
+  const runWorkspaceRootRegistry = new Map<string, string>();
 
   // Build the real dispatch unit of work if requested. `options.unitOfWork`
   // always takes precedence.
@@ -652,6 +692,9 @@ export async function createControlPlaneServer(
       resolveRole: (step) => {
         void step;
         return 'implementer';
+      },
+      onWorkspaceRootResolved: (runId, repoRoot) => {
+        runWorkspaceRootRegistry.set(runId, repoRoot);
       }
     });
     const contextResolver = createExecutionContextResolver({ secretsAvailable: false });
@@ -695,6 +738,15 @@ export async function createControlPlaneServer(
     clock: () => new Date().toISOString()
   };
 
+  // Resolve workspace root from in-memory registry; tests can inject their own resolver via options.
+  const internalResolveWorkspaceContext: WorkspaceContextResolver = async ({ runId }) => {
+    const repoRoot = runWorkspaceRootRegistry.get(runId);
+    if (repoRoot === undefined) {
+      throw new Error(`Workspace root not available for run '${runId}'. The run may not have been dispatched yet or the server was restarted.`);
+    }
+    return { workspaceRepoRoot: repoRoot, workspaceHandle: runId };
+  };
+
   const orchestrator = new DefaultOrchestrator({
     runs: domainRepos.runs,
     conversationIngress,
@@ -704,9 +756,7 @@ export async function createControlPlaneServer(
     feedbackLifecycleDependencies,
     specAuthoringDependencies,
     specApprovalFinalizerDependencies,
-    ...(options.resolveWorkspaceContext !== undefined
-      ? { resolveWorkspaceContext: options.resolveWorkspaceContext }
-      : {})
+    resolveWorkspaceContext: options.resolveWorkspaceContext ?? internalResolveWorkspaceContext
   });
   const policy = options.policy ?? permissivePolicyDecisionPoint;
   const controlPlane = new DefaultControlPlaneService({

@@ -25,7 +25,7 @@ import type {
   RunRepository
 } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
-import { resolveApproverAddressedFeedback } from './feedback-lifecycle.js';
+import { listBlockingFeedback, resolveApproverAddressedFeedback } from './feedback-lifecycle.js';
 import { assertSpecReviewGateCanAdvance, SpecReviewGateBlockedError } from './spec-review-gate.js';
 import { type RunDispatchQueue } from './run-dispatch-queue.js';
 import { createRunStateTransitionEvent, type RunEventStore } from './run-events.js';
@@ -404,36 +404,37 @@ export class DefaultOrchestrator implements Orchestrator {
     }
     const fromStep = existing.currentStep;
 
-    // Gate guard: before advancing from spec.human_review, co-resolve approver feedback and assert gate.
+    // Gate guard and approval finalizer for spec.human_review.
     if (input.directive === 'advance' && existing.currentStep === 'spec.human_review') {
-      const approver: NonModelPrincipal = input.principal ?? existing.owner;
-      if (this.#feedbackLifecycleDependencies !== undefined) {
-        try {
-          await this.#resolveApproverAddressedFeedback(
-            { runId: input.runId, target: 'artifact', approver },
-            this.#feedbackLifecycleDependencies
-          );
-        } catch (error) {
-          if (error instanceof SpecReviewGateBlockedError && error.code === 'feedback_gate_blocked') {
-            throw new OrchestratorError('invalid_transition', 'Artifact feedback blocks spec approval.', {
-              cause: error,
-              details: { code: 'feedback_gate_blocked', blockingFeedbackIds: error.blockingFeedbackIds }
-            });
-          }
-          throw error;
+      const isSpecWorkflow = existing.workKind === 'feature' || existing.workKind === 'enhancement';
+
+      // For feature/enhancement, required deps must be configured — fail explicitly rather than silently skipping.
+      if (isSpecWorkflow) {
+        if (this.#feedbackLifecycleDependencies === undefined) {
+          throw new OrchestratorError('persistence_failed', 'Feedback lifecycle dependencies required for spec workflows.');
+        }
+        if (this.#specApprovalFinalizerDependencies === undefined || this.#resolveWorkspaceContext === undefined) {
+          throw new OrchestratorError('persistence_failed', 'Spec approval finalizer dependencies required for spec workflows.');
         }
       }
+
+      const approver: NonModelPrincipal = input.principal ?? existing.owner;
+
+      // Co-resolve the approver's own addressed feedback before the gate check.
+      if (this.#feedbackLifecycleDependencies !== undefined) {
+        await this.#resolveApproverAddressedFeedback(
+          { runId: input.runId, target: 'artifact', approver },
+          this.#feedbackLifecycleDependencies
+        );
+      }
+
+      // Gate check: refuse advance while any artifact feedback remains open or addressed.
       try {
         await this.#assertSpecReviewGateCanAdvance(
           { run: existing },
           {
             listBlockingFeedback: this.#feedbackLifecycleDependencies !== undefined
-              ? (listInput) => {
-                  const deps = this.#feedbackLifecycleDependencies!;
-                  return deps.feedback.listByRun(listInput.runId).then(all =>
-                    all.filter(f => f.target === listInput.target && (f.status === 'open' || f.status === 'addressed'))
-                  );
-                }
+              ? (listInput) => listBlockingFeedback(listInput, this.#feedbackLifecycleDependencies!)
               : async () => []
           }
         );
@@ -446,13 +447,9 @@ export class DefaultOrchestrator implements Orchestrator {
         }
         throw error;
       }
-    }
 
-    // Spec approval finalizer: before persisting the transition out of spec.human_review,
-    // update the spec file and artifact cached status.
-    if (input.directive === 'advance' && existing.currentStep === 'spec.human_review') {
+      // Approval finalizer: update spec frontmatter and artifact cached status before advancing.
       if (this.#specApprovalFinalizerDependencies !== undefined && this.#resolveWorkspaceContext !== undefined) {
-        const approver: NonModelPrincipal = input.principal ?? existing.owner;
         let workspaceContext: WorkspaceContext;
         try {
           workspaceContext = await this.#resolveWorkspaceContext({ runId: input.runId });

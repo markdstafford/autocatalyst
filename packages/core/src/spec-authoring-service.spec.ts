@@ -233,7 +233,7 @@ describe('completeSpecAuthoring side effects', () => {
       workspaceHandle: 'workspace_run_1'
     }, deps);
 
-    expect(calls).toEqual(['writeFile', 'readFile', 'commitFiles', 'findByRunAndKind', 'createArtifact']);
+    expect(calls).toEqual(['findByRunAndKind', 'writeFile', 'readFile', 'commitFiles', 'createArtifact']);
     expect(deps.git.commitFiles).toHaveBeenCalledWith({
       workspaceRepoRoot: '/tmp/repo',
       relativePaths: ['context-human/specs/feature-artifact-feedback-gate.md'],

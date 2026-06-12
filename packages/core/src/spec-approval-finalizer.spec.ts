@@ -169,7 +169,7 @@ describe('finalizeSpecApproval', () => {
     await finalizeSpecApproval(makeFinalizeInput(), deps);
     expect(deps.git.commitFiles).toHaveBeenCalledWith(expect.objectContaining({
       relativePaths: ['context-human/specs/feature-artifact-feedback-gate.md'],
-      message: 'docs: approve spec run_1'
+      message: 'docs: approve spec artifact-feedback-gate'
     }));
   });
 

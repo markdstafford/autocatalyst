@@ -67,6 +67,9 @@ export function renderCommittedSpecMarkdown(input: RenderCommittedSpecMarkdownIn
   return markdown;
 }
 
+// Naive colon-split parser — safe for the flat key: value frontmatter fields used here.
+// Values never contain colons except in URLs, which are not valid spec frontmatter values.
+// Used for both the initial write-back read and the approval read-back; keep the field set narrow.
 export function parseSpecFrontmatter(markdown: string): SpecAuthorFrontmatter {
   const match = /^---\n([\s\S]*?)\n---(?:\n|$)/u.exec(markdown);
   if (match === null) {
