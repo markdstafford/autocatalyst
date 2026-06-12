@@ -7,17 +7,27 @@ import type {
   Run,
   RunStateTransitionKind,
   RunStep,
+  SpecAuthorResult,
   TestingGuideResult,
   Topic,
   TrackedIssue
 } from '@autocatalyst/api-contract';
 
+import type { CompleteSpecAuthoringOutput, SpecAuthoringServiceDependencies } from './spec-authoring-service.js';
+import { completeSpecAuthoring } from './spec-authoring-service.js';
+import type { SpecApprovalFinalizerDependencies } from './spec-approval-finalizer.js';
+import { finalizeSpecApproval } from './spec-approval-finalizer.js';
+
 import type {
   ConversationIngressRepository,
   CreateConversationTopicMessageAndRunResult,
   LifecycleRunStepInput,
-  RunRepository
+  RunRepository,
+  RunWorkspaceMetadataRepository
 } from './domain-repositories.js';
+import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
+import { listBlockingFeedback, resolveApproverAddressedFeedback } from './feedback-lifecycle.js';
+import { assertSpecReviewGateCanAdvance, SpecReviewGateBlockedError } from './spec-review-gate.js';
 import { type RunDispatchQueue } from './run-dispatch-queue.js';
 import { createRunStateTransitionEvent, type RunEventStore } from './run-events.js';
 import {
@@ -114,6 +124,7 @@ export interface ApplyOrchestratedDirectiveInput {
   readonly directive: RunDirective;
   readonly tenant: string;
   readonly checkpointResult?: JsonValue;
+  readonly principal?: NonModelPrincipal;
 }
 
 export interface DispatchRunInput {
@@ -153,6 +164,15 @@ export interface Orchestrator {
   tick(input: TickInput): Promise<TickResult>;
 }
 
+// --- Spec authoring completion ---
+
+export interface WorkspaceContext {
+  readonly workspaceRepoRoot: string;
+  readonly workspaceHandle: string;
+}
+
+export type WorkspaceContextResolver = (input: { runId: string }) => Promise<WorkspaceContext>;
+
 // --- Constructor options ---
 
 export interface DefaultOrchestratorOptions {
@@ -165,6 +185,14 @@ export interface DefaultOrchestratorOptions {
   readonly eventIdGenerator?: () => string;
   readonly isActiveRunConflict?: (error: unknown) => boolean;
   readonly logger?: { warn(message: string, details?: unknown): void };
+  readonly specAuthoringDependencies?: SpecAuthoringServiceDependencies;
+  readonly resolveWorkspaceContext?: WorkspaceContextResolver;
+  readonly runWorkspaceMetadata?: RunWorkspaceMetadataRepository;
+  readonly resolveApproverAddressedFeedback?: typeof resolveApproverAddressedFeedback;
+  readonly assertSpecReviewGateCanAdvance?: typeof assertSpecReviewGateCanAdvance;
+  readonly feedbackLifecycleDependencies?: FeedbackLifecycleDependencies;
+  readonly finalizeSpecApproval?: typeof finalizeSpecApproval;
+  readonly specApprovalFinalizerDependencies?: SpecApprovalFinalizerDependencies;
 }
 
 function defaultIsActiveRunConflict(error: unknown): boolean {
@@ -190,6 +218,14 @@ export class DefaultOrchestrator implements Orchestrator {
   readonly #eventIdGenerator: (() => string) | undefined;
   readonly #isActiveRunConflict: (error: unknown) => boolean;
   readonly #logger: { warn(message: string, details?: unknown): void } | undefined;
+  readonly #specAuthoringDependencies: SpecAuthoringServiceDependencies | undefined;
+  readonly #resolveWorkspaceContext: WorkspaceContextResolver | undefined;
+  readonly #runWorkspaceMetadata: RunWorkspaceMetadataRepository | undefined;
+  readonly #resolveApproverAddressedFeedback: typeof resolveApproverAddressedFeedback;
+  readonly #assertSpecReviewGateCanAdvance: typeof assertSpecReviewGateCanAdvance;
+  readonly #feedbackLifecycleDependencies: FeedbackLifecycleDependencies | undefined;
+  readonly #finalizeSpecApproval: typeof finalizeSpecApproval;
+  readonly #specApprovalFinalizerDependencies: SpecApprovalFinalizerDependencies | undefined;
 
   constructor(options: DefaultOrchestratorOptions) {
     this.#runs = options.runs;
@@ -201,6 +237,14 @@ export class DefaultOrchestrator implements Orchestrator {
     this.#eventIdGenerator = options.eventIdGenerator;
     this.#isActiveRunConflict = options.isActiveRunConflict ?? defaultIsActiveRunConflict;
     this.#logger = options.logger;
+    this.#specAuthoringDependencies = options.specAuthoringDependencies;
+    this.#resolveWorkspaceContext = options.resolveWorkspaceContext;
+    this.#runWorkspaceMetadata = options.runWorkspaceMetadata;
+    this.#resolveApproverAddressedFeedback = options.resolveApproverAddressedFeedback ?? resolveApproverAddressedFeedback;
+    this.#assertSpecReviewGateCanAdvance = options.assertSpecReviewGateCanAdvance ?? assertSpecReviewGateCanAdvance;
+    this.#feedbackLifecycleDependencies = options.feedbackLifecycleDependencies;
+    this.#finalizeSpecApproval = options.finalizeSpecApproval ?? finalizeSpecApproval;
+    this.#specApprovalFinalizerDependencies = options.specApprovalFinalizerDependencies;
   }
 
   async createRun(input: CreateOrchestratedRunInput): Promise<OrchestratedRunResult> {
@@ -364,6 +408,76 @@ export class DefaultOrchestrator implements Orchestrator {
     }
     const fromStep = existing.currentStep;
 
+    // Gate guard and approval finalizer for spec.human_review.
+    if (input.directive === 'advance' && existing.currentStep === 'spec.human_review') {
+      const isSpecWorkflow = existing.workKind === 'feature' || existing.workKind === 'enhancement';
+
+      // For feature/enhancement, required deps must be configured — fail explicitly rather than silently skipping.
+      if (isSpecWorkflow) {
+        if (this.#feedbackLifecycleDependencies === undefined) {
+          throw new OrchestratorError('persistence_failed', 'Feedback lifecycle dependencies required for spec workflows.');
+        }
+        if (this.#specApprovalFinalizerDependencies === undefined || this.#resolveWorkspaceContext === undefined) {
+          throw new OrchestratorError('persistence_failed', 'Spec approval finalizer dependencies required for spec workflows.');
+        }
+      }
+
+      const approver: NonModelPrincipal = input.principal ?? existing.owner;
+
+      // Co-resolve the approver's own addressed feedback before the gate check.
+      if (this.#feedbackLifecycleDependencies !== undefined) {
+        await this.#resolveApproverAddressedFeedback(
+          { runId: input.runId, target: 'artifact', approver },
+          this.#feedbackLifecycleDependencies
+        );
+      }
+
+      // Gate check: refuse advance while any artifact feedback remains open or addressed.
+      try {
+        await this.#assertSpecReviewGateCanAdvance(
+          { run: existing },
+          {
+            listBlockingFeedback: this.#feedbackLifecycleDependencies !== undefined
+              ? (listInput) => listBlockingFeedback(listInput, this.#feedbackLifecycleDependencies!)
+              : async () => []
+          }
+        );
+      } catch (error) {
+        if (error instanceof SpecReviewGateBlockedError && error.code === 'feedback_gate_blocked') {
+          throw new OrchestratorError('invalid_transition', 'Artifact feedback blocks spec approval.', {
+            cause: error,
+            details: { code: 'feedback_gate_blocked', blockingFeedbackIds: error.blockingFeedbackIds }
+          });
+        }
+        throw error;
+      }
+
+      // Approval finalizer: update spec frontmatter and artifact cached status before advancing.
+      if (this.#specApprovalFinalizerDependencies !== undefined && this.#resolveWorkspaceContext !== undefined) {
+        let workspaceContext: WorkspaceContext;
+        try {
+          workspaceContext = await this.#resolveWorkspaceContext({ runId: input.runId });
+        } catch (cause) {
+          this.#logger?.warn('Failed to resolve workspace context for spec approval finalization.', { runId: input.runId, cause });
+          throw new OrchestratorError('persistence_failed', 'Failed to resolve workspace context for spec approval.', { cause });
+        }
+        try {
+          await this.#finalizeSpecApproval(
+            {
+              run: existing,
+              approver,
+              workspaceRepoRoot: workspaceContext.workspaceRepoRoot,
+              workspaceHandle: workspaceContext.workspaceHandle
+            },
+            this.#specApprovalFinalizerDependencies
+          );
+        } catch (cause) {
+          this.#logger?.warn('Spec approval finalization failed.', { runId: input.runId, cause });
+          throw new OrchestratorError('persistence_failed', 'Failed to finalize spec approval.', { cause });
+        }
+      }
+    }
+
     let state: RunLifecycleState;
     try {
       state = await applyRunDirective({
@@ -407,6 +521,14 @@ export class DefaultOrchestrator implements Orchestrator {
       throw new OrchestratorError('terminal_run', `Run '${input.runId}' is terminal.`);
     }
 
+    const stepDefinition = getRunStepDefinition(run.currentStep);
+    if (stepDefinition?.waitingOn === 'human') {
+      throw new OrchestratorError(
+        'invalid_transition',
+        `Step '${run.currentStep}' is waiting on human input and cannot be dispatched to a runner.`
+      );
+    }
+
     if (this.#unitOfWork === undefined) {
       throw new OrchestratorError('persistence_failed', 'No unit of work configured.');
     }
@@ -429,6 +551,21 @@ export class DefaultOrchestrator implements Orchestrator {
           );
         }
       }
+
+      // For spec.author advance: run completion service before persisting transition.
+      if (result.directive === 'advance' && run.currentStep === 'spec.author' && (run.workKind === 'feature' || run.workKind === 'enhancement')) {
+        const completionResult = await this.#runSpecAuthoringCompletion(input.runId, run, result.result);
+        if (completionResult.kind === 'failed') {
+          return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant });
+        }
+        return this.applyDirective({
+          runId: input.runId,
+          directive: 'advance',
+          tenant: input.tenant,
+          checkpointResult: completionResult.checkpointResult as JsonValue
+        });
+      }
+
       const directive: RunDirective = result.directive === 'needs_input' ? 'needs_input' : 'advance';
       const checkpointResult: JsonValue | undefined =
         result.directive === 'advance' && result.result !== undefined
@@ -449,6 +586,61 @@ export class DefaultOrchestrator implements Orchestrator {
     }
     await this.dispatch({ runId: input.runId, tenant: input.tenant });
     return { status: 'dispatched', runId: input.runId };
+  }
+
+  async #runSpecAuthoringCompletion(
+    runId: string,
+    run: Run,
+    result: Readonly<Record<string, unknown>> | undefined
+  ): Promise<{ kind: 'ok'; checkpointResult: CompleteSpecAuthoringOutput['checkpointResult'] } | { kind: 'failed' }> {
+    if (this.#specAuthoringDependencies === undefined || this.#resolveWorkspaceContext === undefined) {
+      this.#logger?.warn('spec.author advanced but specAuthoringDependencies or resolveWorkspaceContext not configured.', { runId });
+      return { kind: 'failed' };
+    }
+
+    let workspaceContext: WorkspaceContext;
+    try {
+      workspaceContext = await this.#resolveWorkspaceContext({ runId });
+    } catch (cause) {
+      this.#logger?.warn('Failed to resolve workspace context for spec.author completion.', { runId, cause });
+      return { kind: 'failed' };
+    }
+
+    try {
+      const output = await completeSpecAuthoring(
+        {
+          run,
+          result: result as unknown as SpecAuthorResult,
+          workspaceRepoRoot: workspaceContext.workspaceRepoRoot,
+          workspaceHandle: workspaceContext.workspaceHandle
+        },
+        this.#specAuthoringDependencies
+      );
+
+      // Persist workspace root for restart recovery — stored in internal-only
+      // metadata and never included in public RunStep checkpoints or API responses.
+      // Durable metadata is required: approval finalization resolves the workspace
+      // context from it after a restart, so a persist failure fails the step rather
+      // than advancing the run into the gate with no recoverable record.
+      if (this.#runWorkspaceMetadata !== undefined) {
+        try {
+          await this.#runWorkspaceMetadata.upsert({
+            runId,
+            workspaceHandle: workspaceContext.workspaceHandle,
+            workspaceRepoRoot: workspaceContext.workspaceRepoRoot,
+            createdAt: this.#clock?.() ?? new Date().toISOString()
+          });
+        } catch (persistCause) {
+          this.#logger?.warn('Failed to persist workspace metadata for run; failing spec.author completion.', { runId, cause: persistCause });
+          return { kind: 'failed' };
+        }
+      }
+
+      return { kind: 'ok', checkpointResult: output.checkpointResult };
+    } catch (cause) {
+      this.#logger?.warn('spec.author completion service failed.', { runId, cause });
+      return { kind: 'failed' };
+    }
   }
 
   async #publishEvent(args: {

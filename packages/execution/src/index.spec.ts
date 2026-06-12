@@ -226,6 +226,14 @@ describe('agent provider adapter public contracts', () => {
   });
 });
 
+describe('spec-author result contract public API', () => {
+  it('exports SPEC_AUTHOR_SCHEMA_ID and registerSpecAuthorResultContract', async () => {
+    const { SPEC_AUTHOR_SCHEMA_ID, registerSpecAuthorResultContract } = await import('./index.js');
+    expect(SPEC_AUTHOR_SCHEMA_ID).toBe('autocatalyst.spec_author.v1');
+    expect(registerSpecAuthorResultContract).toBeTypeOf('function');
+  });
+});
+
 describe('runner dispatch public API', () => {
   it('exports getAgentProviderAdapterKey and createAgentRunnerFactory', async () => {
     const { getAgentProviderAdapterKey, createAgentRunnerFactory } = await import('./index.js');

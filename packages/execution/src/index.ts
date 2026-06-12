@@ -20,6 +20,8 @@ export {
 export {
   createStepResultContractRegistry,
   resolveStepResultContract,
+  SPEC_AUTHOR_SCHEMA_ID,
+  registerSpecAuthorResultContract,
   type StepResultContractDefinition,
   type StepResultContractRegistry,
   type StepResultContractResolver,

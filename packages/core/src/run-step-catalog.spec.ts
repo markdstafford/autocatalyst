@@ -65,4 +65,10 @@ describe('run step catalog', () => {
     expect(deriveRunTerminal('spec.human_review')).toBe(false);
     expect(deriveRunTerminal('pr.open')).toBe(false);
   });
+
+  it('reports spec.human_review waitingOn human', () => {
+    const definition = getRunStepDefinition('spec.human_review');
+    expect(definition).not.toBeNull();
+    expect(definition?.waitingOn).toBe('human');
+  });
 });

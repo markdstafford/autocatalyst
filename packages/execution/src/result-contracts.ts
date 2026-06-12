@@ -1,5 +1,6 @@
 import type { z } from 'zod';
 import type { ResultDegradationPolicy, ResultValidationIssue } from './result-tolerance.js';
+import { specAuthorResultSchema } from '@autocatalyst/api-contract';
 
 export interface StepResultContractDefinition<TSchema extends z.ZodTypeAny = z.ZodTypeAny> {
   readonly step: string;
@@ -72,6 +73,19 @@ export function resolveStepResultContract(input: {
   }
 
   return { status: 'resolved', contract };
+}
+
+export const SPEC_AUTHOR_SCHEMA_ID = 'autocatalyst.spec_author.v1' as const;
+
+export function registerSpecAuthorResultContract(
+  registry: StepResultContractRegistry
+): StepResultContractRegistry {
+  return registry.register({
+    step: 'spec.author',
+    schemaId: SPEC_AUTHOR_SCHEMA_ID,
+    schema: specAuthorResultSchema,
+    resultFile: 'step-result.json'
+  });
 }
 
 function contractFailure(

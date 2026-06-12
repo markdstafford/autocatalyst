@@ -88,4 +88,10 @@ describe('api-contract barrel', () => {
     expect(apiContract.updateModelRoutingTableSettingsSchema).toBeDefined();
     expect(apiContract.modelRoutingErrorCodeSchema).toBeDefined();
   });
+
+  it('exports spec-authoring contract schemas from the package root', () => {
+    expect(apiContract.specAuthorResultSchema).toBeDefined();
+    expect(apiContract.specAuthorFrontmatterSchema).toBeDefined();
+    expect(apiContract.specArtifactKindSchema).toBeDefined();
+  });
 });

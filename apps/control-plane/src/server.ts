@@ -1,6 +1,11 @@
-import { mkdtemp } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { lstat, mkdir, readFile, realpath, writeFile, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
@@ -27,6 +32,7 @@ import {
   type ControlPlaneService,
   type ExecutionModeResolution,
   type ExtensionRegistryCatalog,
+  type FeedbackLifecycleDependencies,
   type HealthDependencyChecker,
   type ModelRoutingResolver,
   type PolicyDecisionPoint,
@@ -35,7 +41,12 @@ import {
   type ProviderCompositionResult,
   type RetainedRunEventStoreOptions,
   type RunUnitOfWork,
-  type RunWorkInput
+  type RunWorkInput,
+  type SpecAuthoringServiceDependencies,
+  type SpecApprovalFinalizerDependencies,
+  type WorkspaceContextResolver,
+  type WorkspaceFileSystemPort,
+  type WorkspaceGitPort
 } from '@autocatalyst/core';
 import {
   createAgentConnection,
@@ -43,6 +54,9 @@ import {
   createDirectCallFactory,
   createExecutionEntryPoint,
   createExecutionMaterializer,
+  createStepResultContractRegistry,
+  registerSpecAuthorResultContract,
+  SPEC_AUTHOR_SCHEMA_ID,
   ProviderConfigurationError,
   type AgentConnection,
   type AgentConnectionTelemetryContext,
@@ -120,6 +134,12 @@ export interface ControlPlaneServerOptions {
     input: RunWorkInput,
     context: ExecutionContext
   ) => Promise<ExecutionModeResolution> | ExecutionModeResolution;
+  /**
+   * Resolves the workspace repo root and handle for a run. Required for spec.author completion
+   * and spec.human_review approval finalization in feature and enhancement workflows.
+   * When not provided, spec authoring side effects and approval finalization are skipped.
+   */
+  readonly resolveWorkspaceContext?: WorkspaceContextResolver;
 }
 
 const DEFAULT_RUN_CONCURRENCY = 2;
@@ -318,10 +338,17 @@ export function createRoutingProfileResolver(options: {
   };
 }
 
+// Registry with contracts for all steps that have typed result schemas.
+// Other steps fall back to the generic unknown/any pass-through validation.
+const stepResultContractRegistry = registerSpecAuthorResultContract(
+  createStepResultContractRegistry()
+);
+
 function createDelegatingExecutionEntryPoint(input: {
   readonly factory: AgentRunnerFactory;
   readonly materialize: (context: ExecutionContext) => Promise<MaterializedExecutionEnvironment>;
   readonly resolveRole?: (step: string) => string;
+  readonly onWorkspaceRootResolved?: (runId: string, repoRoot: string) => void;
 }): ExecutionEntryPoint {
   const { resolveRole } = input;
   /**
@@ -329,11 +356,17 @@ function createDelegatingExecutionEntryPoint(input: {
    * For workspace shapes that do not provision a scratch root (e.g. 'none' for
    * question runs), a temporary directory is created so the Claude adapter can
    * write step-result.json and scratch_file validation can read it back.
+   * Also registers the repo root for two_roots workspaces so spec authoring can
+   * resolve the workspace path without importing execution internals.
    */
   async function materializeWithScratch(
     context: ExecutionContext
   ): Promise<MaterializedExecutionEnvironment> {
     const env = await input.materialize(context);
+    if (env.workspace.shape === 'two_roots') {
+      input.onWorkspaceRootResolved?.(context.run.id, env.workspace.repoRoot);
+      return env;
+    }
     if (env.workspace.shape !== 'none') {
       return env;
     }
@@ -370,14 +403,164 @@ function createDelegatingExecutionEntryPoint(input: {
       const perRunEntryPoint = createExecutionEntryPoint({
         runner,
         materialize: materializeWithScratch,
-        resultValidation: {
-          mode: 'scratch_file',
-          schema: z.unknown(),
-          schemaId: 'any',
-          resultFile: 'step-result.json'
+        resultValidation: (entryInput) => {
+          const step = entryInput.context.run.currentStep;
+          const workKind = entryInput.context.run.workKind;
+          // Only apply the spec-authoring contract for feature/enhancement workflows.
+          // Bug and file_issue also include spec.author but produce a different result shape.
+          if (step === 'spec.author' && (workKind === 'feature' || workKind === 'enhancement')) {
+            return {
+              mode: 'scratch_file' as const,
+              contractRegistry: stepResultContractRegistry,
+              step: 'spec.author',
+              schemaId: SPEC_AUTHOR_SCHEMA_ID,
+              resultFile: 'step-result.json'
+            };
+          }
+          return {
+            mode: 'scratch_file' as const,
+            schema: z.unknown(),
+            schemaId: 'any',
+            resultFile: 'step-result.json'
+          };
         }
       });
       yield* perRunEntryPoint.execute(entryInput);
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Production workspace ports
+// ---------------------------------------------------------------------------
+
+function assertWithinWorkspaceRootLexical(workspaceRepoRoot: string, relativePath: string): string {
+  if (isAbsolute(relativePath)) {
+    throw new Error('Workspace path must be relative.');
+  }
+  const fullPath = resolve(workspaceRepoRoot, relativePath);
+  const rel = relative(workspaceRepoRoot, fullPath);
+  if (rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error('Workspace path escapes the workspace root.');
+  }
+  return fullPath;
+}
+
+async function assertRealPathWithinWorkspaceRoot(
+  realWorkspaceRoot: string,
+  realFullPath: string
+): Promise<void> {
+  const rel = relative(realWorkspaceRoot, realFullPath);
+  if (rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error('Resolved real path escapes the workspace root.');
+  }
+}
+
+export function createNodeWorkspaceFilesystem(): WorkspaceFileSystemPort {
+  return {
+    async writeFile(input) {
+      const fullPath = assertWithinWorkspaceRootLexical(input.workspaceRepoRoot, input.relativePath);
+      const parentDir = dirname(fullPath);
+
+      const realWorkspaceRoot = await realpath(input.workspaceRepoRoot);
+
+      // Find the nearest existing ancestor of the target parent directory by walking
+      // upward until lstat succeeds. We must do this BEFORE calling mkdir so that
+      // an intermediate symlink (e.g. context-human -> /outside) cannot cause mkdir
+      // to create directories outside the workspace before the containment check runs.
+      let ancestor = parentDir;
+      while (true) {
+        try {
+          await lstat(ancestor);
+          break; // path exists — stop walking
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+          const parent = dirname(ancestor);
+          if (parent === ancestor) break; // reached filesystem root
+          ancestor = parent;
+        }
+      }
+
+      // Lstat every path component from workspaceRepoRoot to the nearest existing
+      // ancestor, rejecting symlinks before any directory is created.
+      const relFromRoot = relative(input.workspaceRepoRoot, ancestor);
+      if (relFromRoot !== '' && !relFromRoot.startsWith('..') && !isAbsolute(relFromRoot)) {
+        const segments = relFromRoot.split('/').filter(Boolean);
+        let current = input.workspaceRepoRoot;
+        for (const segment of segments) {
+          current = join(current, segment);
+          const componentStat = await lstat(current);
+          if (componentStat.isSymbolicLink()) {
+            throw new Error(
+              `Symlink found in workspace path component before mkdir; refusing to create directories: ${relative(input.workspaceRepoRoot, current)}`
+            );
+          }
+        }
+      }
+
+      // Resolve the canonical realpath of the verified existing ancestor and check
+      // it is inside the real workspace root.
+      const realAncestor = await realpath(ancestor);
+      await assertRealPathWithinWorkspaceRoot(realWorkspaceRoot, realAncestor);
+
+      // Derive the resolved parent directory by appending the remaining (not-yet-created)
+      // path segments to the verified real ancestor and verify containment.
+      const resolvedParentDir = resolve(realAncestor, relative(ancestor, parentDir));
+      await assertRealPathWithinWorkspaceRoot(realWorkspaceRoot, resolvedParentDir);
+
+      // Only now create the missing directories inside the verified real tree.
+      await mkdir(resolvedParentDir, { recursive: true });
+
+      // Reject target paths that are symlinks — writing through a symlink could
+      // overwrite a file outside the workspace even though the lexical path looks safe.
+      const resolvedFull = resolve(resolvedParentDir, basename(fullPath));
+      try {
+        const targetStat = await lstat(resolvedFull);
+        if (targetStat.isSymbolicLink()) {
+          throw new Error('Target path is a symlink; writing to symlinks is not permitted.');
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw err;
+        }
+        // ENOENT: file does not yet exist — real ancestor containment check above is sufficient.
+      }
+
+      await writeFile(resolvedFull, input.contents, 'utf-8');
+    },
+    async readFile(input) {
+      const fullPath = assertWithinWorkspaceRootLexical(input.workspaceRepoRoot, input.relativePath);
+
+      // Resolve all symlinks in the full path and verify real containment.
+      const realWorkspaceRoot = await realpath(input.workspaceRepoRoot);
+      const realFull = await realpath(fullPath);
+      await assertRealPathWithinWorkspaceRoot(realWorkspaceRoot, realFull);
+
+      return readFile(fullPath, 'utf-8');
+    }
+  };
+}
+
+function createNodeWorkspaceGit(): WorkspaceGitPort {
+  return {
+    async commitFiles(input) {
+      const cwd = input.workspaceRepoRoot;
+      await execFileAsync('git', ['-C', cwd, 'add', '--', ...input.relativePaths]);
+      try {
+        await execFileAsync('git', [
+          '-C', cwd,
+          '-c', 'user.name=Autocatalyst',
+          '-c', 'user.email=autocatalyst@local',
+          'commit', '-m', input.message
+        ]);
+      } catch (err) {
+        // Tolerate "nothing to commit" on retry — treat as success.
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!msg.includes('nothing to commit') && !msg.includes('nothing added to commit')) {
+          throw err;
+        }
+      }
+      return {};
     }
   };
 }
@@ -453,6 +636,11 @@ export async function createControlPlaneServer(
   const dispatchQueue = new RunDispatchQueue({
     maxConcurrent: options.runConcurrency ?? DEFAULT_RUN_CONCURRENCY
   });
+
+  // Registry that maps runId → repoRoot for two_roots workspaces.
+  // Populated during materialization so spec authoring and approval can resolve the
+  // workspace path without importing execution internals.
+  const runWorkspaceRootRegistry = new Map<string, string>();
 
   // Build the real dispatch unit of work if requested. `options.unitOfWork`
   // always takes precedence.
@@ -585,6 +773,9 @@ export async function createControlPlaneServer(
       resolveRole: (step) => {
         void step;
         return 'implementer';
+      },
+      onWorkspaceRootResolved: (runId, repoRoot) => {
+        runWorkspaceRootRegistry.set(runId, repoRoot);
       }
     });
     const contextResolver = createExecutionContextResolver({ secretsAvailable: false });
@@ -605,12 +796,54 @@ export async function createControlPlaneServer(
     });
   }
 
+  const nodeFilesystem = createNodeWorkspaceFilesystem();
+  const nodeGit = createNodeWorkspaceGit();
+
+  const feedbackLifecycleDependencies: FeedbackLifecycleDependencies = {
+    feedback: domainRepos.feedback,
+    ids: () => randomUUID(),
+    clock: () => new Date().toISOString()
+  };
+
+  const specAuthoringDependencies: SpecAuthoringServiceDependencies = {
+    artifacts: domainRepos.artifacts,
+    filesystem: nodeFilesystem,
+    git: nodeGit,
+    clock: () => new Date().toISOString()
+  };
+
+  const specApprovalFinalizerDependencies: SpecApprovalFinalizerDependencies = {
+    artifacts: domainRepos.artifacts,
+    filesystem: nodeFilesystem,
+    git: nodeGit,
+    clock: () => new Date().toISOString()
+  };
+
+  // Resolve workspace root: try in-memory registry first (populated during materialization),
+  // then fall back to the persistent run_workspace_metadata store for post-restart recovery.
+  const internalResolveWorkspaceContext: WorkspaceContextResolver = async ({ runId }) => {
+    const repoRoot = runWorkspaceRootRegistry.get(runId);
+    if (repoRoot !== undefined) {
+      return { workspaceRepoRoot: repoRoot, workspaceHandle: runId };
+    }
+    const persisted = await domainRepos.runWorkspaceMetadata.findByRunId(runId);
+    if (persisted !== null) {
+      return { workspaceRepoRoot: persisted.workspaceRepoRoot, workspaceHandle: persisted.workspaceHandle };
+    }
+    throw new Error(`Workspace root not available for run '${runId}'. The run may not have been dispatched yet.`);
+  };
+
   const orchestrator = new DefaultOrchestrator({
     runs: domainRepos.runs,
     conversationIngress,
     events: eventBus,
     dispatchQueue,
-    ...(resolvedUnitOfWork !== undefined ? { unitOfWork: resolvedUnitOfWork } : {})
+    ...(resolvedUnitOfWork !== undefined ? { unitOfWork: resolvedUnitOfWork } : {}),
+    feedbackLifecycleDependencies,
+    specAuthoringDependencies,
+    specApprovalFinalizerDependencies,
+    runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
+    resolveWorkspaceContext: options.resolveWorkspaceContext ?? internalResolveWorkspaceContext
   });
   const policy = options.policy ?? permissivePolicyDecisionPoint;
   const controlPlane = new DefaultControlPlaneService({

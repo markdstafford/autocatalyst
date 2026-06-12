@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { FeedbackConcurrentModificationError } from '@autocatalyst/core';
+
 import {
   asInternalSqliteDatabase,
   createDrizzleDomainRepositories,
@@ -813,4 +815,176 @@ describe('DrizzleDomainRepositories round-trip', () => {
       });
     }
   );
+
+  it('artifacts.findByRunAndKind returns the artifact when present and null otherwise', async () => {
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'art-find',
+        title: 'Art find'
+      });
+      const run = await repos.runs.create({
+        topicId: setup.topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false
+      });
+
+      const noneYet = await repos.artifacts.findByRunAndKind({ runId: run.id, kind: 'feature_spec' });
+      expect(noneYet).toBeNull();
+
+      const artifact = await repos.artifacts.create({
+        runId: run.id,
+        owner,
+        tenant: 'tenant_1',
+        kind: 'feature_spec',
+        canonicalRecord: 'file',
+        location: 'context-human/specs/feature.md',
+        cachedStatus: 'draft',
+        publicationRefs: []
+      });
+
+      const found = await repos.artifacts.findByRunAndKind({ runId: run.id, kind: 'feature_spec' });
+      expect(found?.id).toBe(artifact.id);
+
+      const otherKind = await repos.artifacts.findByRunAndKind({ runId: run.id, kind: 'enhancement_spec' });
+      expect(otherKind).toBeNull();
+    });
+  });
+
+  it('artifacts.updateCachedStatus updates the cached status and updatedAt', async () => {
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'art-upd',
+        title: 'Art upd'
+      });
+      const run = await repos.runs.create({
+        topicId: setup.topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false
+      });
+      const artifact = await repos.artifacts.create({
+        runId: run.id,
+        owner,
+        tenant: 'tenant_1',
+        kind: 'feature_spec',
+        canonicalRecord: 'file',
+        location: 'context-human/specs/feature.md',
+        cachedStatus: 'draft',
+        publicationRefs: []
+      });
+
+      const newUpdatedAt = '2026-06-12T00:00:00.000Z';
+      const updated = await repos.artifacts.updateCachedStatus({
+        artifactId: artifact.id,
+        cachedStatus: 'approved',
+        updatedAt: newUpdatedAt
+      });
+      expect(updated.cachedStatus).toBe('approved');
+      expect(updated.updatedAt).toBe(newUpdatedAt);
+
+      const reread = await repos.artifacts.findById(artifact.id);
+      expect(reread?.cachedStatus).toBe('approved');
+      expect(reread?.updatedAt).toBe(newUpdatedAt);
+    });
+  });
+
+  it('feedback.updateStatusAndAppendThread atomically updates status and appends a thread entry', async () => {
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'fb-tr',
+        title: 'Feedback transition'
+      });
+      const run = await repos.runs.create({
+        topicId: setup.topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false
+      });
+      const fb = await repos.feedback.create({
+        runId: run.id,
+        owner,
+        tenant: 'tenant_1',
+        target: 'artifact',
+        status: 'open',
+        title: 'Needs detail',
+        body: 'Please add more context.',
+        thread: [{ id: 'thread_1', author: owner, body: 'Please add more context.', createdAt: '2026-06-08T00:00:00.000Z' }]
+      });
+
+      const newUpdatedAt = '2026-06-12T01:00:00.000Z';
+      const newEntry = {
+        id: 'thread_2',
+        author: owner,
+        body: 'Resolving with updated text.',
+        createdAt: '2026-06-12T00:59:00.000Z'
+      } as const;
+      const result = await repos.feedback.updateStatusAndAppendThread({
+        feedbackId: fb.id,
+        expectedStatus: 'open',
+        nextStatus: 'resolved',
+        threadEntry: newEntry,
+        updatedAt: newUpdatedAt
+      });
+      expect(result.status).toBe('resolved');
+      expect(result.updatedAt).toBe(newUpdatedAt);
+      expect(result.thread).toHaveLength(2);
+      expect(result.thread[1]?.id).toBe('thread_2');
+
+      const reread = await repos.feedback.findById(fb.id);
+      expect(reread?.status).toBe('resolved');
+      expect(reread?.thread).toHaveLength(2);
+    });
+  });
+
+  it('feedback.updateStatusAndAppendThread throws FeedbackConcurrentModificationError when expectedStatus mismatches', async () => {
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'fb-cc',
+        title: 'Feedback concurrency'
+      });
+      const run = await repos.runs.create({
+        topicId: setup.topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false
+      });
+      const fb = await repos.feedback.create({
+        runId: run.id,
+        owner,
+        tenant: 'tenant_1',
+        target: 'artifact',
+        status: 'open',
+        title: 'Title',
+        body: 'Body',
+        thread: [{ id: 'thread_1', author: owner, body: 'Body', createdAt: '2026-06-08T00:00:00.000Z' }]
+      });
+
+      await expect(
+        repos.feedback.updateStatusAndAppendThread({
+          feedbackId: fb.id,
+          expectedStatus: 'resolved',
+          nextStatus: 'resolved',
+          threadEntry: { id: 'thread_x', author: owner, body: 'noop', createdAt: '2026-06-12T01:00:00.000Z' },
+          updatedAt: '2026-06-12T01:00:00.000Z'
+        })
+      ).rejects.toBeInstanceOf(FeedbackConcurrentModificationError);
+    });
+  });
 });

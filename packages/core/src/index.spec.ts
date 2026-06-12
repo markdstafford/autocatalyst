@@ -60,4 +60,12 @@ describe('core barrel', () => {
     expect(controlPlaneService).toBeUndefined();
     expect(runUnitOfWork).toBeUndefined();
   });
+
+  it('exports spec authoring and feedback gate APIs', async () => {
+    const core = await import('./index.js');
+    expect(core.completeSpecAuthoring).toBeTypeOf('function');
+    expect(core.createArtifactFeedback).toBeTypeOf('function');
+    expect(core.assertSpecReviewGateCanAdvance).toBeTypeOf('function');
+    expect(core.finalizeSpecApproval).toBeTypeOf('function');
+  });
 });
