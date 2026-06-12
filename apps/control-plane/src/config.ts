@@ -90,6 +90,7 @@ export function readControlPlaneAppConfig(
   const runConcurrencyValue = readFlag(argv, '--run-concurrency') ?? env['AUTOCATALYST_RUN_CONCURRENCY'];
   const reposRootValue = readFlag(argv, '--repos-root') ?? env['AUTOCATALYST_REPOS_ROOT'];
   const workspacesRootValue = readFlag(argv, '--workspaces-root') ?? env['AUTOCATALYST_WORKSPACES_ROOT'];
+  const workspaceRoots = parseWorkspaceRoots(reposRootValue, workspacesRootValue);
 
   return {
     port: parsePort(portValue),
@@ -97,6 +98,6 @@ export function readControlPlaneAppConfig(
     bearerToken: parseBearerToken(bearerTokenValue),
     masterSecret: parseMasterSecret(masterSecretValue),
     runConcurrency: parseRunConcurrency(runConcurrencyValue),
-    workspaceRoots: parseWorkspaceRoots(reposRootValue, workspacesRootValue)
+    ...(workspaceRoots !== undefined ? { workspaceRoots } : {})
   };
 }
