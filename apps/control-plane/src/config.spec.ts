@@ -178,4 +178,85 @@ describe('readControlPlaneAppConfig', () => {
       })
     ).toThrow('CONTROL_PLANE_MASTER_SECRET or --master-secret is required.');
   });
+
+  it('reads workspace roots from AUTOCATALYST_REPOS_ROOT and AUTOCATALYST_WORKSPACES_ROOT when set', () => {
+    expect(
+      readControlPlaneAppConfig([], {
+        CONTROL_PLANE_PORT: '4300',
+        CONTROL_PLANE_DATABASE_PATH: '/tmp/db.sqlite',
+        CONTROL_PLANE_BEARER_TOKEN: 'token',
+        CONTROL_PLANE_MASTER_SECRET: 'secret',
+        AUTOCATALYST_REPOS_ROOT: '/var/autocatalyst/repos',
+        AUTOCATALYST_WORKSPACES_ROOT: '/var/autocatalyst/workspaces'
+      }).workspaceRoots
+    ).toEqual({
+      reposRoot: '/var/autocatalyst/repos',
+      workspacesRoot: '/var/autocatalyst/workspaces'
+    });
+  });
+
+  it('lets workspace root flags take precedence over environment variables', () => {
+    expect(
+      readControlPlaneAppConfig(['--repos-root', '/flag/repos', '--workspaces-root', '/flag/workspaces'], {
+        CONTROL_PLANE_PORT: '4300',
+        CONTROL_PLANE_DATABASE_PATH: '/tmp/db.sqlite',
+        CONTROL_PLANE_BEARER_TOKEN: 'token',
+        CONTROL_PLANE_MASTER_SECRET: 'secret',
+        AUTOCATALYST_REPOS_ROOT: '/env/repos',
+        AUTOCATALYST_WORKSPACES_ROOT: '/env/workspaces'
+      }).workspaceRoots
+    ).toEqual({ reposRoot: '/flag/repos', workspacesRoot: '/flag/workspaces' });
+  });
+
+  it('leaves workspace roots undefined when neither root is configured', () => {
+    expect(
+      readControlPlaneAppConfig([], {
+        CONTROL_PLANE_PORT: '4300',
+        CONTROL_PLANE_DATABASE_PATH: '/tmp/db.sqlite',
+        CONTROL_PLANE_BEARER_TOKEN: 'token',
+        CONTROL_PLANE_MASTER_SECRET: 'secret'
+      }).workspaceRoots
+    ).toBeUndefined();
+  });
+
+  it('throws when only one workspace root is configured', () => {
+    expect(() =>
+      readControlPlaneAppConfig([], {
+        CONTROL_PLANE_PORT: '4300',
+        CONTROL_PLANE_DATABASE_PATH: '/tmp/db.sqlite',
+        CONTROL_PLANE_BEARER_TOKEN: 'token',
+        CONTROL_PLANE_MASTER_SECRET: 'secret',
+        AUTOCATALYST_REPOS_ROOT: '/var/autocatalyst/repos'
+      })
+    ).toThrow('Both repos root and workspaces root must be configured together.');
+
+    expect(() =>
+      readControlPlaneAppConfig(['--workspaces-root', '/var/autocatalyst/workspaces'], {
+        CONTROL_PLANE_PORT: '4300',
+        CONTROL_PLANE_DATABASE_PATH: '/tmp/db.sqlite',
+        CONTROL_PLANE_BEARER_TOKEN: 'token',
+        CONTROL_PLANE_MASTER_SECRET: 'secret'
+      })
+    ).toThrow('Both repos root and workspaces root must be configured together.');
+  });
+
+  it('throws for blank workspace root values without echoing them', () => {
+    expect(() =>
+      readControlPlaneAppConfig(['--repos-root', '   ', '--workspaces-root', '/var/autocatalyst/workspaces'], {
+        CONTROL_PLANE_PORT: '4300',
+        CONTROL_PLANE_DATABASE_PATH: '/tmp/db.sqlite',
+        CONTROL_PLANE_BEARER_TOKEN: 'token',
+        CONTROL_PLANE_MASTER_SECRET: 'secret'
+      })
+    ).toThrow('Workspace root values must be non-empty when configured.');
+
+    expect(() =>
+      readControlPlaneAppConfig(['--repos-root', '/var/autocatalyst/repos', '--workspaces-root', '   '], {
+        CONTROL_PLANE_PORT: '4300',
+        CONTROL_PLANE_DATABASE_PATH: '/tmp/db.sqlite',
+        CONTROL_PLANE_BEARER_TOKEN: 'token',
+        CONTROL_PLANE_MASTER_SECRET: 'secret'
+      })
+    ).toThrow('Workspace root values must be non-empty when configured.');
+  });
 });

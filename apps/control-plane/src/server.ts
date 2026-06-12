@@ -11,7 +11,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import { sessionRoleSchema } from '@autocatalyst/api-contract';
-import type { ConfigurationRecord, ExecutionContext, ProviderProfileSettings } from '@autocatalyst/api-contract';
+import type { ConfigurationRecord, Conversation, ExecutionContext, Project, ProviderProfileSettings, Topic } from '@autocatalyst/api-contract';
 import {
   buildProviderAdapterKey,
   composeAgentProviderAdapterRegistry,
@@ -24,12 +24,14 @@ import {
   DefaultOrchestrator,
   defaultExtensionRegistryCatalog,
   emptyProviderAdapterMap,
+  ExecutionContextResolutionError,
   InMemoryRetainedRunEventStore,
   ModelRoutingConfigurationError,
   permissivePolicyDecisionPoint,
   registerControlPlaneRoutes,
   RunDispatchQueue,
   type ControlPlaneService,
+  type DomainRepositories,
   type ExecutionModeResolution,
   type ExtensionRegistryCatalog,
   type FeedbackLifecycleDependencies,
@@ -46,7 +48,8 @@ import {
   type SpecApprovalFinalizerDependencies,
   type WorkspaceContextResolver,
   type WorkspaceFileSystemPort,
-  type WorkspaceGitPort
+  type WorkspaceGitPort,
+  type WorkspaceResolverInput
 } from '@autocatalyst/core';
 import {
   createAgentConnection,
@@ -111,11 +114,17 @@ export interface RealRunnerDispatchOptions {
   readonly defaultProviderProfileId?: string;
 }
 
+export interface WorkspaceRootOptions {
+  readonly reposRoot: string;
+  readonly workspacesRoot: string;
+}
+
 export interface ControlPlaneServerOptions {
   readonly databasePath: string;
   readonly bearerToken: string;
   readonly masterSecret: string;
   readonly runConcurrency?: number;
+  readonly workspaceRoots?: WorkspaceRootOptions;
   readonly policy?: PolicyDecisionPoint;
   readonly health?: HealthDependencyChecker;
   readonly extensionRegistry?: ExtensionRegistryCatalog;
@@ -642,6 +651,101 @@ export async function createControlPlaneServer(
   // workspace path without importing execution internals.
   const runWorkspaceRootRegistry = new Map<string, string>();
 
+  // ---------------------------------------------------------------------------
+  // Workspace input helpers (used in resolveContext below)
+  // ---------------------------------------------------------------------------
+
+  const WORKSPACE_BACKED_WORK_KINDS = new Set(['feature', 'enhancement', 'bug', 'chore', 'file_issue']);
+
+  function isWorkspaceBackedWorkKind(workKind: string): boolean {
+    return WORKSPACE_BACKED_WORK_KINDS.has(workKind);
+  }
+
+  function deriveTopicSlug(title: string): string {
+    const slug = title
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/gu, '-')
+      .replace(/^-+|-+$/gu, '')
+      .slice(0, 80);
+    return slug.length > 0 ? slug : 'topic';
+  }
+
+  function deriveShortRunId(runId: string): string {
+    const withoutPrefix = runId.startsWith('run_') ? runId.slice(4) : runId;
+    const compact = withoutPrefix.replace(/[^a-zA-Z0-9]/gu, '');
+    return compact.length > 0 ? compact.slice(0, 8) : runId.slice(0, 8);
+  }
+
+  function assertTenantMatch(input: {
+    readonly entityName: 'topic' | 'conversation' | 'project';
+    readonly entity: Topic | Conversation | Project;
+    readonly expectedTenant: string;
+    readonly runId: string;
+  }): void {
+    if (input.entity.tenant !== input.expectedTenant) {
+      throw new ExecutionContextResolutionError(
+        'resolver_unavailable',
+        `Cannot resolve workspace context for run '${input.runId}'.`,
+        { reason: `${input.entityName}_tenant_mismatch`, runId: input.runId }
+      );
+    }
+  }
+
+  async function resolveWorkspaceInputForRun(input: {
+    readonly workInput: RunWorkInput;
+    readonly roots: WorkspaceRootOptions | undefined;
+    readonly repositories: DomainRepositories;
+  }): Promise<WorkspaceResolverInput | undefined> {
+    const { workInput, roots, repositories } = input;
+    if (!isWorkspaceBackedWorkKind(workInput.run.workKind)) {
+      return undefined;
+    }
+    if (roots === undefined) {
+      throw new ExecutionContextResolutionError(
+        'missing_workspace_settings',
+        `Workspace-backed work kind '${workInput.run.workKind}' requires configured repos and workspaces roots.`
+      );
+    }
+
+    const topic = await repositories.topics.findById(workInput.run.topicId);
+    if (topic === null) {
+      throw new ExecutionContextResolutionError(
+        'resolver_unavailable',
+        `Cannot resolve workspace context for run '${workInput.runId}'.`,
+        { reason: 'topic_not_found', runId: workInput.runId }
+      );
+    }
+    assertTenantMatch({ entityName: 'topic', entity: topic, expectedTenant: workInput.tenant, runId: workInput.runId });
+
+    const conversation = await repositories.conversations.findById(topic.conversationId);
+    if (conversation === null) {
+      throw new ExecutionContextResolutionError(
+        'resolver_unavailable',
+        `Cannot resolve workspace context for run '${workInput.runId}'.`,
+        { reason: 'conversation_not_found', runId: workInput.runId }
+      );
+    }
+    assertTenantMatch({ entityName: 'conversation', entity: conversation, expectedTenant: workInput.tenant, runId: workInput.runId });
+
+    const project = await repositories.projects.findById(conversation.projectId);
+    if (project === null) {
+      throw new ExecutionContextResolutionError(
+        'resolver_unavailable',
+        `Cannot resolve workspace context for run '${workInput.runId}'.`,
+        { reason: 'project_not_found', runId: workInput.runId }
+      );
+    }
+    assertTenantMatch({ entityName: 'project', entity: project, expectedTenant: workInput.tenant, runId: workInput.runId });
+
+    return {
+      project,
+      roots,
+      topicSlug: deriveTopicSlug(topic.title),
+      shortRunId: deriveShortRunId(workInput.runId)
+    };
+  }
+
   // Build the real dispatch unit of work if requested. `options.unitOfWork`
   // always takes precedence.
   let resolvedUnitOfWork: RunUnitOfWork | undefined = options.unitOfWork;
@@ -778,10 +882,19 @@ export async function createControlPlaneServer(
         runWorkspaceRootRegistry.set(runId, repoRoot);
       }
     });
-    const contextResolver = createExecutionContextResolver({ secretsAvailable: false });
     resolvedUnitOfWork = createExecutionRunUnitOfWork({
       execute: entryPoint,
-      resolveContext: (workInput) => contextResolver.resolve(workInput),
+      resolveContext: async (workInput) => {
+        const workspace = await resolveWorkspaceInputForRun({
+          workInput,
+          roots: options.workspaceRoots,
+          repositories: domainRepos
+        });
+        return createExecutionContextResolver({
+          secretsAvailable: false,
+          ...(workspace !== undefined ? { workspace } : {})
+        }).resolve(workInput);
+      },
       ...(options.resolveExecutionMode !== undefined && { resolveExecutionMode: options.resolveExecutionMode }),
       eventsStore: eventBus,
       direct: {

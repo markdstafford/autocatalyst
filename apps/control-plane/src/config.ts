@@ -1,9 +1,15 @@
+export interface WorkspaceRootConfig {
+  readonly reposRoot: string;
+  readonly workspacesRoot: string;
+}
+
 export interface ControlPlaneAppConfig {
   readonly port: number;
   readonly databasePath: string;
   readonly bearerToken: string;
   readonly masterSecret: string;
   readonly runConcurrency: number;
+  readonly workspaceRoots?: WorkspaceRootConfig;
 }
 
 const DEFAULT_RUN_CONCURRENCY = 2;
@@ -46,6 +52,22 @@ function parseMasterSecret(value: string | undefined): string {
   return parseRequiredString(value, 'CONTROL_PLANE_MASTER_SECRET or --master-secret is required.');
 }
 
+function parseWorkspaceRoots(
+  reposRoot: string | undefined,
+  workspacesRoot: string | undefined
+): WorkspaceRootConfig | undefined {
+  if (reposRoot === undefined && workspacesRoot === undefined) {
+    return undefined;
+  }
+  if (reposRoot === undefined || workspacesRoot === undefined) {
+    throw new Error('Both repos root and workspaces root must be configured together.');
+  }
+  if (reposRoot.trim().length === 0 || workspacesRoot.trim().length === 0) {
+    throw new Error('Workspace root values must be non-empty when configured.');
+  }
+  return { reposRoot, workspacesRoot };
+}
+
 function parseRunConcurrency(value: string | undefined): number {
   if (value === undefined || value.trim().length === 0) {
     return DEFAULT_RUN_CONCURRENCY;
@@ -66,12 +88,16 @@ export function readControlPlaneAppConfig(
   const bearerTokenValue = readFlag(argv, '--bearer-token') ?? env['CONTROL_PLANE_BEARER_TOKEN'];
   const masterSecretValue = readFlag(argv, '--master-secret') ?? env['CONTROL_PLANE_MASTER_SECRET'];
   const runConcurrencyValue = readFlag(argv, '--run-concurrency') ?? env['AUTOCATALYST_RUN_CONCURRENCY'];
+  const reposRootValue = readFlag(argv, '--repos-root') ?? env['AUTOCATALYST_REPOS_ROOT'];
+  const workspacesRootValue = readFlag(argv, '--workspaces-root') ?? env['AUTOCATALYST_WORKSPACES_ROOT'];
+  const workspaceRoots = parseWorkspaceRoots(reposRootValue, workspacesRootValue);
 
   return {
     port: parsePort(portValue),
     databasePath: parseDatabasePath(databasePathValue),
     bearerToken: parseBearerToken(bearerTokenValue),
     masterSecret: parseMasterSecret(masterSecretValue),
-    runConcurrency: parseRunConcurrency(runConcurrencyValue)
+    runConcurrency: parseRunConcurrency(runConcurrencyValue),
+    ...(workspaceRoots !== undefined ? { workspaceRoots } : {})
   };
 }
