@@ -1,6 +1,10 @@
+import { execFile } from 'node:child_process';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 import { describe, expect, it } from 'vitest';
 
@@ -39,7 +43,7 @@ import {
 import {
   createOpenAIAgentAdapter
 } from '@autocatalyst/openai-agent-adapter';
-import type { RunnerEvent } from '@autocatalyst/execution';
+import type { AgentProviderAdapter, RunnerEvent } from '@autocatalyst/execution';
 import {
   asInternalSqliteDatabase,
   createDrizzleDomainRepositories,
@@ -716,6 +720,60 @@ async function seedQuestionProject(databasePath: string): Promise<{ projectId: s
   });
   seedDb.close();
   return { projectId: project.id };
+}
+
+async function createLocalGitRepository(root: string): Promise<string> {
+  const repoPath = join(root, 'host-repo');
+  await mkdir(repoPath, { recursive: true });
+  await execFileAsync('git', ['init', '--initial-branch=main'], { cwd: repoPath });
+  await execFileAsync('git', ['config', 'user.email', 'integration@example.test'], { cwd: repoPath });
+  await execFileAsync('git', ['config', 'user.name', 'Autocatalyst Integration'], { cwd: repoPath });
+  await writeFile(join(repoPath, 'README.md'), '# Local host repository\n');
+  await execFileAsync('git', ['add', 'README.md'], { cwd: repoPath });
+  await execFileAsync('git', ['commit', '-m', 'initial commit'], { cwd: repoPath });
+  return repoPath;
+}
+
+async function seedFeatureProject(input: {
+  readonly databasePath: string;
+  readonly repoUrl: string;
+}): Promise<{ projectId: string }> {
+  const seedDb = createSqliteDatabase({ path: input.databasePath });
+  await migrateSqliteDatabase(seedDb);
+  const seedRepos = createDrizzleDomainRepositories(seedDb);
+  const project = await seedRepos.projects.create({
+    owner: hardcodedDevelopmentPrincipal,
+    tenant: hardcodedDevelopmentPrincipal.tenantId,
+    displayName: 'Real Feature Dispatch Project',
+    repoUrl: input.repoUrl,
+    hostRepository: { provider: 'github', owner: 'integration', name: 'host-repo' },
+    workspaceRootOverride: null,
+    issueTrackerSetting: null,
+    codeHostSetting: null,
+    credentialRefs: []
+  });
+  seedDb.close();
+  return { projectId: project.id };
+}
+
+async function createFeatureRun(
+  baseUrl: string,
+  authHeaders: Record<string, string>,
+  projectId: string
+): Promise<string> {
+  const createResp = await fetch(`${baseUrl}/v1/conversations`, {
+    method: 'POST',
+    headers: { ...authHeaders, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      projectId,
+      identity: 'real-feature-dispatch-test',
+      topic: { title: 'Fix: Load Project Into Dispatch Context' },
+      submission: { kind: 'free_form', body: 'please implement this fix', workKind: 'feature' }
+    })
+  });
+  expect(createResp.status).toBe(201);
+  const body = (await createResp.json()) as { run: { id: string } };
+  return body.run.id;
 }
 
 async function createQuestionRun(
@@ -2451,6 +2509,156 @@ describe('spec review API surface integration', () => {
         }
       } finally {
         await rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature dispatch workspace context regression test
+// ---------------------------------------------------------------------------
+
+describe('real feature dispatch workspace context', () => {
+  it('loads the run project and workspace settings for a feature run through production dispatch', { timeout: 60000 }, async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const tempRoot = await mkdtemp(join(tmpdir(), 'autocatalyst-feature-dispatch-'));
+      const reposRoot = join(tempRoot, 'repos');
+      const workspacesRoot = join(tempRoot, 'workspaces');
+      await mkdir(reposRoot, { recursive: true });
+      await mkdir(workspacesRoot, { recursive: true });
+
+      try {
+        const hostRepoPath = await createLocalGitRepository(tempRoot);
+        const { projectId } = await seedFeatureProject({ databasePath, repoUrl: `file://${hostRepoPath}` });
+
+        // Bootstrap server to create provider profile config.
+        // credentialSecretHandle is required: createExplicitProfileResolver always
+        // sets credentialReference.required = true, so createAgentConnection needs
+        // a resolvable secret handle or it throws missing_credential before dispatch.
+        const bootstrap = await createControlPlaneServer({
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET
+        });
+        let profileId: string;
+        try {
+          const secretInj = await bootstrap.inject({
+            method: 'POST',
+            url: '/v1/secrets',
+            headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+            payload: { value: 'fake-openai-api-key' }
+          });
+          expect(secretInj.statusCode).toBe(201);
+          const { handle: credentialHandle } = createSecretResponseSchema.parse(secretInj.json());
+
+          const cfgInj = await bootstrap.inject({
+            method: 'POST',
+            url: '/v1/configuration-records',
+            headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+            payload: {
+              kind: 'provider_profile',
+              providerKind: 'openai',
+              adapterId: 'openai-agents-sdk',
+              settings: {
+                profileName: 'integration-openai-feature',
+                credentialSecretHandle: credentialHandle,
+                model: { provider: 'openai', model: 'gpt-4.1' }
+              }
+            }
+          });
+          expect(cfgInj.statusCode).toBe(201);
+          profileId = configurationRecordResponseSchema.parse(cfgInj.json()).id;
+        } finally {
+          await bootstrap.close();
+        }
+
+        const capturedWorkspaceFacts: Array<{
+          workspaceShape: string;
+          workspaceRootCount: number;
+          projectId: string;
+        }> = [];
+
+        // Fake adapter that captures workspace materialization facts
+        const fakeOpenAIAdapter = createOpenAIAgentAdapter();
+        fakeOpenAIAdapter.startSession = async (input) => {
+          const runId = input.telemetryContext.runId;
+          const step = input.telemetryContext.step ?? 'spec.author';
+          const workspace = input.runInput.environment.workspace;
+          const workspaceIntent = input.runInput.environment.context.workspaceIntent;
+          capturedWorkspaceFacts.push({
+            workspaceShape: workspace.shape,
+            workspaceRootCount: workspace.workspaceRoots.length,
+            projectId: workspaceIntent.shape === 'two_roots' ? workspaceIntent.provisioning.project.id : 'none'
+          });
+          async function* events(): AsyncIterable<RunnerEvent> {
+            yield {
+              id: 'evt_feature_terminal',
+              runId,
+              step,
+              importance: 'normal',
+              createdAt: new Date().toISOString(),
+              type: 'runner_terminal_result',
+              result: { directive: 'advance' }
+            } as RunnerEvent;
+          }
+          return {
+            events: events(),
+            metadata: Promise.resolve({
+              outcome: 'succeeded' as const,
+              launchMechanism: 'fetch_transport' as const,
+              degradedCapabilities: [],
+              tokenUsage: { available: false } as const
+            })
+          };
+        };
+
+        let controlPlane: ControlPlaneService | undefined;
+        const handle = await startControlPlaneServer({
+          port: 0,
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET,
+          runConcurrency: 1,
+          workspaceRoots: { reposRoot, workspacesRoot },
+          realRunnerDispatch: { enabled: true, defaultProviderProfileId: profileId },
+          providerAdapters: new Map([
+            [
+              buildProviderAdapterKey('openai', 'openai-agents-sdk'),
+              () => fakeOpenAIAdapter
+            ]
+          ]),
+          onControlPlaneReady: (service) => { controlPlane = service; }
+        });
+
+        try {
+          if (controlPlane === undefined) throw new Error('control-plane not exposed');
+          const baseUrl = `http://127.0.0.1:${handle.port}`;
+          const authHeaders = { authorization: `Bearer ${BEARER_TOKEN}` };
+          const runId = await createFeatureRun(baseUrl, authHeaders, projectId);
+
+          await controlPlane.tick({
+            principal: hardcodedDevelopmentPrincipal,
+            tenant: hardcodedDevelopmentPrincipal.tenantId,
+            runId
+          });
+
+          // Assert workspace context captured at startSession call time.
+          expect(capturedWorkspaceFacts).toEqual([
+            { workspaceShape: 'two_roots', workspaceRootCount: 2, projectId }
+          ]);
+
+          // The run transitions to terminal after the tick (either advanced or failed
+          // — the fake adapter does not write a result file so scratch_file validation
+          // converts the advance directive to a fail, which is expected).
+          const runResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: authHeaders });
+          expect(runResp.status).toBe(200);
+          const runBody = runSchema.parse(await runResp.json());
+          expect(runBody.terminal).toBe(true);
+        } finally {
+          await handle.close();
+        }
+      } finally {
+        await rm(tempRoot, { recursive: true, force: true });
       }
     });
   });
