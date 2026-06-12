@@ -43,7 +43,7 @@ import {
 import {
   createOpenAIAgentAdapter
 } from '@autocatalyst/openai-agent-adapter';
-import type { AgentProviderAdapter, RunnerEvent } from '@autocatalyst/execution';
+import type { RunnerEvent } from '@autocatalyst/execution';
 import {
   asInternalSqliteDatabase,
   createDrizzleDomainRepositories,
