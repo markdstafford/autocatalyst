@@ -9,7 +9,7 @@ specced_by: autocatalyst
 
 ## Product requirements
 
-### Summary
+### What
 
 Expose the spec-review state that issue 39 made real inside core through the `/v1` API and SDK. A client can read a run's current spec artifact, see that a run is waiting on a human at the spec gate, and create or list feedback items against the run's spec. This enhancement keeps the existing spec artifact and feedback lifecycle behavior, but makes the initial review loop reachable over the network.
 ### Parent feature
@@ -36,6 +36,19 @@ The spec-review gate is useful only if a client can inspect what is waiting for 
 - A client can create and list feedback items for a run through the API and SDK.
 - Tenant scoping is enforced consistently: cross-tenant access returns 404 for spec and feedback reads/writes.
 - The existing spec-review gate behavior remains unchanged: open or addressed artifact feedback continues to block advancement.
+### Non-goals
+
+- Human reply classification that turns a message into `advance` or `revise`.
+- Moving feedback through `addressed`, `resolved`, `wont_fix`, or reopened states over HTTP.
+- Re-dispatching the spec authoring step to revise the spec after feedback.
+- In-step adversarial convergence review findings.
+- A desktop, mobile, or web UI for reviewing the spec.
+- Changing the spec artifact authoring behavior from issue 39.
+### Personas
+
+- **Phoebe (PM/reviewer)** needs to inspect a generated spec, see that a run is waiting on human review, and record feedback without checking out the workspace manually.
+- **Enzo (Engineer/client developer)** needs typed API contracts and SDK methods so clients can consume the spec-review surface without duplicating HTTP details.
+- **Opal (Operator/security owner)** needs tenant isolation and sanitized file-read failures so child-resource endpoints do not leak another tenant's runs or local workspace paths.
 ### User stories
 
 - As Phoebe, I want to read a generated spec through the API, so that I can review it without checking out the workspace branch manually.
@@ -54,6 +67,7 @@ The spec-review gate is useful only if a client can inspect what is waiting for 
 - `cachedStatus` comes from the `Artifact` row, not from reparsing the file.
 - A run in another tenant returns 404 rather than the spec.
 - A run with no current spec artifact returns 404 with the standard error envelope.
+- A run with a valid current spec artifact but missing run workspace metadata returns a sanitized server error mapped from `persistence_failed`, not a 404, because the missing metadata is an internal persistence invariant failure.
 - The response shape is a Zod schema in `packages/api-contract`.
 - `packages/sdk/src/client.ts` exposes a typed method for the endpoint.
 #### Surface gate state on run reads
@@ -87,21 +101,13 @@ The spec-review gate is useful only if a client can inspect what is waiting for 
 - **Security:** Routes must not expose raw workspace absolute paths, secrets, provider output, prompt content, or filesystem errors. Cross-tenant access to spec and feedback endpoints returns 404.
 - **Compatibility:** The API evolves additively under `/v1`. Existing run fields and existing SDK methods keep their current behavior.
 - **Consistency:** Spec markdown and frontmatter are read from the committed file at the artifact location. The artifact row remains the source for `cachedStatus`.
-- **Reliability:** A missing spec artifact, missing spec file, malformed frontmatter, or unknown current step returns a safe error envelope rather than an uncaught exception.
-- **Performance:** Spec reads perform one run lookup, one artifact lookup, and one file read. No new latency target is required for this slice.
+- **Reliability:** A missing spec artifact, missing run workspace metadata, missing spec file, malformed frontmatter, or unknown current step returns a safe error envelope rather than an uncaught exception.
+- **Performance:** Spec reads perform one run lookup, one workspace metadata lookup, one artifact lookup, and one file read. No new latency target is required for this slice.
 ### Impact on existing behavior
 
 - **Changed behaviors:** Run read responses include a new `waitingOn` field. No existing field is removed or renamed.
 - **Affected user stories:** The parent feature's review stories become reachable by API clients for spec read and feedback creation/listing.
 - **Migration / compatibility concerns:** Existing persisted run rows do not need migration because `waitingOn` is derived at read time from `currentStep`. Existing clients that ignore unknown JSON fields continue to work.
-### Out of scope
-
-- Human reply classification that turns a message into `advance` or `revise`.
-- Moving feedback through `addressed`, `resolved`, `wont_fix`, or reopened states over HTTP.
-- Re-dispatching the spec authoring step to revise the spec after feedback.
-- In-step adversarial convergence review findings.
-- A desktop, mobile, or web UI for reviewing the spec.
-- Changing the spec artifact authoring behavior from issue 39.
 ### Devil's advocate pass
 
 - **Spec reads can leak filesystem details if errors are forwarded directly.** The implementation must convert file and frontmatter failures into standard safe envelopes and keep absolute workspace paths out of responses and logs.
@@ -155,7 +161,7 @@ This is a backend API design. It adds no visual screens, components, or design-s
 
 - `GET /v1/runs/:id/spec` returns `200` when a file-canonical spec artifact exists and the file can be parsed.
 - `GET /v1/runs/:id/spec` returns `404` when the run is missing, inaccessible to the tenant, or has no current spec artifact.
-- `GET /v1/runs/:id/spec` returns a safe server error if the artifact points at a missing or malformed committed file. The response must not include absolute paths.
+- `GET /v1/runs/:id/spec` returns a safe server error if workspace metadata is missing for an otherwise valid run and spec artifact, or if the artifact points at a missing or malformed committed file. The response must not include absolute paths.
 - `POST /v1/runs/:id/feedback` returns the created `Feedback` item with `status: open`.
 - `GET /v1/runs/:id/feedback` returns `{ feedback: [...] }` or the equivalent contract-owned collection wrapper.
 - Validation errors use the existing validation error envelope.
@@ -175,7 +181,7 @@ No UI behavior is introduced. Future review clients should expose `waitingOn`, s
 None.
 ### Reviewer pass
 
-The design covers each acceptance criterion without inventing lifecycle actions beyond create and list. The main design risk is the spec file read boundary: the API must return markdown from the committed spec file while still hiding absolute workspace paths. Implementation should reuse the internal workspace/repository file access seam introduced for spec authoring or add a narrow trusted file-read port rather than letting routes read paths directly.
+The design covers each acceptance criterion without inventing lifecycle actions beyond create and list. The main design risk is the spec file read boundary: the API must return markdown from the committed spec file while still hiding absolute workspace paths. Implementation must reuse the existing `WorkspaceFileSystemPort.readFile` seam introduced for spec authoring rather than adding another path-safety implementation or letting routes read paths directly.
 ## Tech spec
 
 ### Overview
@@ -192,6 +198,8 @@ Per ADR-006 and ADR-007, this enhancement extends `/v1` additively using Zod sch
 - `packages/core/src/routes.ts` registers the new routes under the existing authenticated `/v1` group.
 - `packages/core/src/run-step-catalog.ts` remains the source for `waitingOn` derivation.
 - `packages/core/src/spec-frontmatter.ts` parses committed spec frontmatter for spec reads.
+- `WorkspaceFileSystemPort.readFile` from `packages/core/src/spec-authoring-service.ts` is reused for contained committed-file reads.
+- `RunWorkspaceMetadataRepository.findByRunId` from `packages/core/src/domain-repositories.ts` supplies the persisted internal workspace repo root for the run.
 - `packages/core/src/feedback-lifecycle.ts` remains the creation path for artifact feedback.
 - `packages/sdk/src/client.ts` adds typed client methods using the new contract schemas.
 - `apps/control-plane/src/integration.spec.ts` or a focused integration spec exercises the HTTP surface end to end.
@@ -199,21 +207,22 @@ Per ADR-006 and ADR-007, this enhancement extends `/v1` additively using Zod sch
 
 Routes do not read repositories or files directly. They parse HTTP inputs, obtain the authenticated principal, call `ControlPlaneService`, and serialize contract-validated responses.
 The control-plane service owns tenant checks. For spec and feedback child resources, a run that is missing or belongs to another tenant maps to `not_found`. This avoids leaking cross-tenant existence through child resource endpoints.
-Core file access for spec reads should go through a narrow trusted port, not ad hoc `fs` calls in route handlers. The port should read only the artifact's committed relative path under an approved repository/workspace root. Responses include the relative artifact location only if the contract includes it; they never include absolute workspace paths.
+Core file access for spec reads must reuse the existing `WorkspaceFileSystemPort.readFile({ workspaceRepoRoot, relativePath })` port, not ad hoc `fs` calls in route handlers and not a new spec-specific file reader. The concrete control-plane implementation already protects the read with `assertWithinWorkspaceRootLexical` plus realpath/symlink checks. The service obtains `workspaceRepoRoot` from `RunWorkspaceMetadataRepository.findByRunId(runId)` and `relativePath` from `ArtifactRepository.findByRunAndKind({ runId, kind }).location`. Responses include the relative artifact location only through the artifact contract; they never include absolute workspace paths.
 #### Data flow
 
 1. A client sends an authenticated request with a bearer principal.
 2. The route validates path params and body against `api-contract` schemas.
 3. The service loads the run and verifies `run.tenant === principal.tenantId`.
 4. For run reads, the service maps each run to include `waitingOn` from `getRunStepDefinition(run.currentStep)`.
-5. For spec reads, the service finds the current spec artifact, reads the committed markdown file, parses frontmatter, and returns the response.
+5. For spec reads, the service loads run workspace metadata, finds the current spec artifact, reads the committed markdown file through `WorkspaceFileSystemPort.readFile`, parses frontmatter, and returns the response.
 6. For feedback create, the service builds the lifecycle input from the request, run owner/tenant, and authenticated principal, then calls `createArtifactFeedback` or a generalized create use case.
 7. For feedback list, the service returns `FeedbackRepository.listByRun(run.id)` after tenant verification.
 8. The SDK validates request bodies before sending and validates responses after receiving, matching existing SDK style.
 #### Integration points
 
-- Existing domain repositories: `RunRepository`, `ArtifactRepository`, and `FeedbackRepository`.
+- Existing domain repositories: `RunRepository`, `ArtifactRepository`, `FeedbackRepository`, and `RunWorkspaceMetadataRepository`.
 - Existing spec frontmatter parser: `parseSpecFrontmatter` and `specAuthorFrontmatterSchema`.
+- Existing workspace file-read port: `WorkspaceFileSystemPort.readFile` from `packages/core/src/spec-authoring-service.ts`, implemented in `apps/control-plane/src/server.ts` with lexical and realpath containment guards.
 - Existing error envelope and status code constants from `packages/api-contract/src/errors.ts`.
 - Existing bearer principal attachment and policy authorization in control-plane routes.
 - New policy action/resource variants in `packages/core/src/policy.ts` for the child-resource endpoints: `run_spec.read` on `{ kind: 'run_spec', id, path: '/v1/runs/:id/spec' }`, `run_feedback.create` on `{ kind: 'run_feedback', id, path: '/v1/runs/:id/feedback' }`, and `run_feedback.list` on the same `run_feedback` resource descriptor.
@@ -232,7 +241,7 @@ export const runSchema = z.object({
   waitingOn: waitingOnSchema.optional()
 }).strict().superRefine(requireTenantMatchesOwner);
 ```
-The schema field is optional for additive compatibility, but service responses should populate it for `GET /v1/runs/:id`, `GET /v1/runs`, and conversation-ingress responses if those responses reuse `runSchema` and can be safely decorated. If a run has an unknown `currentStep`, the service should either return `waitingOn: system` only by explicit fallback decision or fail safely with a sanitized internal error. Because the step catalog is authoritative, silently inventing a value is discouraged.
+The schema field is optional for additive compatibility, but service responses should populate it for `GET /v1/runs/:id` and `GET /v1/runs` only in this slice. Do not add `waitingOn` to the `POST /v1/conversations` response as part of issue 41. If a run has an unknown `currentStep`, the service should fail safely with a sanitized internal error, because the step catalog is authoritative and silently inventing a value is discouraged.
 #### Spec read model
 
 The spec read response should include:
@@ -240,11 +249,10 @@ The spec read response should include:
 export const runSpecResponseSchema = z.object({
   artifact: artifactSchema,
   markdown: z.string(),
-  frontmatter: specAuthorFrontmatterSchema,
-  cachedStatus: artifactCachedStatusSchema
+  frontmatter: specAuthorFrontmatterSchema
 }).strict();
 ```
-`cachedStatus` duplicates `artifact.cachedStatus` for client convenience and to satisfy the issue's explicit contract. The implementation may include only the artifact fields needed by clients if the contract defines a smaller artifact summary, but it should avoid creating a second status enum.
+Clients read status from `artifact.cachedStatus`; the response must not duplicate `cachedStatus` at the top level. The implementation may include only the artifact fields needed by clients if the contract defines a smaller artifact summary, but it should avoid creating a second status enum.
 The service selects the current spec artifact by run work kind:
 - `feature` runs read `kind: feature_spec`.
 - `enhancement` runs read `kind: enhancement_spec`.
@@ -274,7 +282,7 @@ For issue 41, `target: artifact` is required and the route-level schema restrict
 - **Authorization:** `run_spec.read` on a `run_spec` child resource descriptor. The service still enforces tenant ownership.
 - **Success:** `200 OK` with `runSpecResponseSchema`.
 - **Not found:** `404` when the run is absent, cross-tenant, unsupported for spec reads, or has no current spec artifact.
-- **Server error:** Standard internal error envelope for missing files, malformed frontmatter, or file-read failures.
+- **Server error:** Standard internal error envelope for missing run workspace metadata, missing files, malformed frontmatter, or file-read failures.
 Example response:
 ```json
 {
@@ -298,8 +306,7 @@ Example response:
     "status": "draft",
     "issue": 41,
     "specced_by": "autocatalyst"
-  },
-  "cachedStatus": "draft"
+  }
 }
 ```
 #### `GET /v1/runs/:id`
@@ -316,7 +323,7 @@ Example response:
 - **Auth:** Bearer principal required and must be a non-model principal for authorship.
 - **Authorization:** `run_feedback.create` on a `run_feedback` child resource descriptor.
 - **Request:** `createRunFeedbackRequestSchema`.
-- **Success:** `201 Created` or existing create status convention with `feedbackSchema`.
+- **Success:** `201 Created` or existing create status convention with a bare `feedbackSchema` item.
 - **Not found:** `404` when the run is absent or cross-tenant.
 - **Validation:** `400` for invalid body or unsupported target.
 #### `GET /v1/runs/:id/feedback`
@@ -328,8 +335,8 @@ Example response:
 ### Implementation plan
 
 First, extend `api-contract` with the route constants and schemas: `waitingOn`, run spec response, feedback create request, feedback list response, and success status constants. Export them from the package entry point and update OpenAPI generation if it enumerates route contracts manually.
-Second, add service-level helpers in core. A run decoration helper should map persisted `Run` values to API `Run` values with `waitingOn`. Service methods should check tenant access, select the spec artifact by run kind, read and parse the spec file through a trusted file-read port, create feedback through lifecycle helpers, and list feedback through the repository. Extend `DefaultControlPlaneServiceOptions` with the concrete dependencies these methods need: `ArtifactRepository`, `FeedbackRepository`, feedback lifecycle dependencies or the existing create use case dependencies, `SpecFileReader`, the id and clock providers used by feedback creation, and any run workspace metadata/root resolver required by the spec file reader.
-Third, wire app-level dependencies in `apps/control-plane/src/server.ts`. The server should instantiate the concrete `NodeSpecFileReader` from the existing run workspace metadata/root seam, reuse the existing domain `artifacts` and `feedback` repositories and lifecycle dependency objects, and pass those plus ids/clock into `DefaultControlPlaneService` along with the existing orchestrator, run repositories, events, and policy.
+Second, add service-level helpers in core. A run decoration helper should map persisted `Run` values to API `Run` values with `waitingOn`. Service methods should check tenant access, select the spec artifact by run kind, read and parse the spec file through the existing `WorkspaceFileSystemPort.readFile` seam, create feedback through lifecycle helpers, and list feedback through the repository. Extend `DefaultControlPlaneServiceOptions` with the concrete dependencies these methods need: `ArtifactRepository`, `FeedbackRepository`, `RunWorkspaceMetadataRepository`, `WorkspaceFileSystemPort`, feedback lifecycle dependencies or the existing create use case dependencies, and the id and clock providers used by feedback creation.
+Third, wire app-level dependencies in `apps/control-plane/src/server.ts`. The server should pass the existing `WorkspaceFileSystemPort` implementation, run workspace metadata repository, domain `artifacts` and `feedback` repositories, lifecycle dependency objects, and ids/clock into `DefaultControlPlaneService` along with the existing orchestrator, run repositories, events, and policy. Do not instantiate a new spec-specific file reader.
 Fourth, register Fastify routes in `packages/core/src/routes.ts`. Route handlers should follow the existing parse/auth/service/error pattern, including validation error responses and `ControlPlaneServiceError` mapping. If child-resource cross-tenant access must return 404, either add a child-resource error mapping path or make service methods throw `not_found` for inaccessible runs.
 Fifth, add SDK methods in `packages/sdk/src/client.ts`. Methods should construct paths from contract constants, validate outbound request bodies, throw `ControlPlaneClientError` for error envelopes, and parse responses with the new schemas.
 Sixth, add integration tests in `apps/control-plane`. Tests should create or seed a run, spec artifact, committed spec file, and feedback repository state through the existing test seams. The tests should hit the HTTP routes with a bearer token and assert response shapes, tenant scoping, and SDK behavior if the SDK is used in integration tests.
@@ -346,300 +353,22 @@ Finally, update `context-agent/wiki/code-map.md` during implementation to point 
 ### Operational concerns
 
 - **Observability:** Log route-level failures with sanitized codes only. Do not log raw markdown, full frontmatter, absolute paths, bearer tokens, or feedback body text at info level.
-- **Failure modes:** Missing spec artifact returns 404. Missing file, malformed frontmatter, or file read failure returns a safe internal error unless the implementation defines a more specific safe code. Unknown `currentStep` should be treated as a data integrity problem.
+- **Failure modes:** Missing spec artifact returns 404. Missing run workspace metadata, missing file, malformed frontmatter, or file read failure returns a safe internal error unless the implementation defines a more specific safe code. Unknown `currentStep` should be treated as a data integrity problem.
 - **Security and privacy:** Child-resource endpoints must not reveal another tenant's run. Feedback bodies may contain sensitive review notes and should be handled as ordinary persisted user content, not diagnostics.
 - **Performance:** The spec endpoint reads a markdown file on demand. No cache is required in this slice because the spec review flow is low volume.
 - **Rollout:** No feature flag is required. The API changes are additive.
-### Open questions
+### Resolved decisions
 
-- **Spec file read root wiring:** The API will use the `SpecFileReader` abstraction, but implementation still must choose the concrete root source in `apps/control-plane/src/server.ts` from the existing issue 39 run workspace metadata/root seam. The selected source must allow only committed repository-relative spec paths and must not expose absolute paths.
-- **Conversation ingress response:** If conversation creation returns a run using `runSchema`, should it also include `waitingOn` immediately? This is additive and likely consistent, but the issue acceptance criteria only require `GET /v1/runs/:id` and `GET /v1/runs`.
+- **Spec file read root wiring:** Reuse issue 39's existing file-read seam. `getRunSpec` loads `RunWorkspaceMetadata.workspaceRepoRoot` through `RunWorkspaceMetadataRepository.findByRunId(runId)`, loads the current spec artifact and committed relative path through `ArtifactRepository.findByRunAndKind({ runId, kind })`, then calls `WorkspaceFileSystemPort.readFile({ workspaceRepoRoot, relativePath: artifact.location })`. If workspace metadata is missing after the run and file-canonical spec artifact are verified, `getRunSpec` returns sanitized `persistence_failed` rather than `not_found`. This keeps path safety in the existing `apps/control-plane/src/server.ts` implementation with lexical containment and realpath/symlink checks.
+- **Conversation ingress response:** Do not add `waitingOn` to `POST /v1/conversations` in this slice. Only `GET /v1/runs/:id` and `GET /v1/runs` need it.
 ### Devil's advocate pass
 
-The biggest unresolved technical risk is file access. The artifact stores a relative committed location, but API service code still needs a safe way to read the file for the correct run without exposing or trusting arbitrary paths. The implementation should not solve this by putting filesystem logic in routes or by accepting a client-provided path.
+The main file-access risk is accidentally duplicating path-containment logic. The artifact stores a relative committed location, and the service must read it for the correct run without exposing or trusting arbitrary paths. The implementation should not solve this by putting filesystem logic in routes, accepting a client-provided path, or adding a new spec-specific reader; it should reuse `WorkspaceFileSystemPort.readFile` and the persisted run workspace root.
 A second risk is mixing domain entities and API view models. Adding `waitingOn` to `runSchema` may tempt code to persist it or expect repositories to return it. The implementation should keep a clear mapper between persisted runs and API responses.
 A third risk is route scope creep. Once feedback endpoints exist, it is tempting to add resolve or reopen operations. Those lifecycle transitions are out of scope for issue 41 and should remain behind existing core seams until the HITL pause/resume work defines the user action model.
 ### Reviewer pass
 
-This technical plan follows the existing package boundaries. Contracts live in `api-contract`, service behavior lives in `core`, persistence remains behind repositories, and SDK methods consume the same schemas. The design preserves additive `/v1` evolution and does not change the spec gate's completion rules. The remaining implementation decision is narrow and should be resolved while wiring the concrete file-read root seam.
-## Converged API
-
-### Files
-
-Path
-Purpose
-Exports
-
-`packages/api-contract/src/run.ts`
-Add the derived run waiting-state contract to existing run read and list responses while keeping run fields additive. Document the implementation decision that unknown currentStep values are data-integrity errors: service decorators must fail safely with ControlPlaneServiceError('persistence_failed') rather than omitting waitingOn or inventing a fallback.
-`waitingOnSchema`, `runSchema`, `RunWaitingOn`, `Run`
-
-`packages/api-contract/src/run-spec.ts`
-Define the /v1/runs/:id/spec path constants, success status, and response schema for reading a run's current file-canonical spec artifact.
-`runSpecPath`, `getRunSpecSuccessStatusCode`, `runSpecResponseSchema`, `RunSpecResponse`
-
-`packages/api-contract/src/feedback.ts`
-Add route-level request/response schemas and path constants for creating and listing run feedback while reusing existing feedback entity schemas.
-`runFeedbackPath`, `createRunFeedbackRequestSchema`, `runFeedbackListResponseSchema`, `createRunFeedbackSuccessStatusCode`, `listRunFeedbackSuccessStatusCode`, `CreateRunFeedbackRequest`, `RunFeedbackListResponse`
-
-`packages/api-contract/src/index.ts`
-Add only the new run-spec barrel export (`export * from './run-spec.js'`). Existing `export * from './run.js'` and `export * from './feedback.js'` already re-export waitingOn and run feedback symbols, including createRunFeedbackSuccessStatusCode and listRunFeedbackSuccessStatusCode.
-`runSpecPath`, `getRunSpecSuccessStatusCode`, `runSpecResponseSchema`, `RunSpecResponse`
-
-`packages/api-contract/src/openapi.ts`
-Register the new spec and feedback routes and the additive run waitingOn field in generated OpenAPI output if route contracts are enumerated manually.
-
-`packages/core/src/control-plane-service.ts`
-Add tenant-scoped service methods for spec reads and feedback create/list, decorate run read/list responses with waitingOn derived from the run-step catalog, and extend `DefaultControlPlaneServiceOptions` with the required repositories and helper dependencies (`ArtifactRepository`, `FeedbackRepository`, feedback lifecycle dependencies or create use case dependencies, `SpecFileReader`, ids/clock, and workspace metadata/root resolver access as needed). Unknown currentStep values are treated as data-integrity failures and surfaced as sanitized persistence_failed service errors.
-`ControlPlaneService`, `DefaultControlPlaneService`, `DefaultControlPlaneServiceOptions`, `ServiceGetRunSpecInput`, `ServiceGetRunSpecResult`, `ServiceCreateRunFeedbackInput`, `ServiceCreateRunFeedbackResult`, `ServiceListRunFeedbackInput`, `ServiceListRunFeedbackResult`
-
-`packages/core/src/spec-file-reader.ts`
-Provide a narrow trusted file-read port for reading the committed spec file at an artifact's repository-relative location without exposing workspace absolute paths to routes or responses.
-`SpecFileReader`, `NodeSpecFileReader`
-
-`packages/core/src/policy.ts`
-Add explicit policy actions and child-resource descriptors for the new endpoints instead of reusing generic run actions.
-`PolicyAction` variants `run_spec.read`, `run_feedback.create`, `run_feedback.list`; `PolicyResourceDescriptor` variants `run_spec`, `run_feedback`
-
-`packages/core/src/routes.ts`
-Register authenticated Fastify handlers for GET /v1/runs/:id/spec, POST /v1/runs/:id/feedback, and GET /v1/runs/:id/feedback using contract validation and control-plane service methods.
-
-`packages/sdk/src/client.ts`
-Expose typed SDK methods for reading a run spec and creating/listing run feedback using the shared api-contract schemas.
-`ControlPlaneClient`, `createControlPlaneClient`
-
-`apps/control-plane/src/server.ts`
-Instantiate and pass the new control-plane service dependencies: artifact and feedback repositories, feedback lifecycle dependencies, `NodeSpecFileReader`, ids/clock, and workspace metadata/root access from the existing domain repository setup.
-`createControlPlaneServer` wiring for `DefaultControlPlaneServiceOptions`
-
-`apps/control-plane/src/integration.spec.ts`
-Exercise the new HTTP endpoints end to end with bearer principals, including spec read, waitingOn on run reads, feedback create/list, and cross-tenant 404 behavior.
-
-`context-agent/wiki/code-map.md`
-Document the new contracts, routes, service methods, file-read seam, and SDK methods for future agents.
-
-### Public API
-
-#### `waitingOnSchema`
-
-```typescript
-export const waitingOnSchema = z.enum(['system', 'ai', 'human', 'none']);
-```
-- Returns: `Zod schema for RunWaitingOn`
-#### `runSchema`
-
-```typescript
-export const runSchema: z.ZodObject ;
-```
-- Returns: `Zod schema for Run with optional additive waitingOn field`
-- Errors:
-	- `ZodError when waitingOn is present and is not one of system, ai, human, or none`
-	- `Note: runSchema retains the pre-existing requireTenantMatchesOwner superRefine constraint; this enhancement does not introduce or change that validation.`
-#### `runSpecPath`
-
-```typescript
-export const runSpecPath = '/v1/runs/:id/spec' as const;
-```
-- Returns: `'/v1/runs/:id/spec'`
-#### `runSpecResponseSchema`
-
-```typescript
-export const runSpecResponseSchema = z.object({ artifact: artifactSchema, markdown: z.string(), frontmatter: specAuthorFrontmatterSchema, cachedStatus: artifactCachedStatusSchema }).strict();
-```
-- Returns: `Zod schema for RunSpecResponse`
-- Errors:
-	- `ZodError when artifact is not a valid Artifact`
-	- `ZodError when frontmatter does not satisfy specAuthorFrontmatterSchema`
-	- `ZodError when cachedStatus is not a valid ArtifactCachedStatus`
-#### `getRunSpecSuccessStatusCode`
-
-```typescript
-export const getRunSpecSuccessStatusCode = 200 as const;
-```
-- Returns: `200`
-#### `runFeedbackPath`
-
-```typescript
-export const runFeedbackPath = '/v1/runs/:id/feedback' as const;
-```
-- Returns: `'/v1/runs/:id/feedback'`
-#### `createRunFeedbackRequestSchema`
-
-```typescript
-export const createRunFeedbackRequestSchema = z.object({ target: z.literal('artifact'), title: z.string().min(1), body: z.string().min(1), anchor: feedbackAnchorSchema.optional() }).strict();
-```
-- Returns: `Zod schema for CreateRunFeedbackRequest`
-- Errors:
-	- `ZodError when target is not artifact`
-	- `ZodError when title or body is empty`
-	- `ZodError when anchor does not satisfy feedbackAnchorSchema`
-#### `runFeedbackListResponseSchema`
-
-```typescript
-export const runFeedbackListResponseSchema = z.object({ feedback: z.array(feedbackSchema) }).strict();
-```
-- Returns: `Zod schema for RunFeedbackListResponse`
-- Errors:
-	- `ZodError when any listed item does not satisfy feedbackSchema`
-#### `createRunFeedbackSuccessStatusCode`
-
-```typescript
-export const createRunFeedbackSuccessStatusCode = 201 as const;
-```
-- Returns: `201`
-#### `listRunFeedbackSuccessStatusCode`
-
-```typescript
-export const listRunFeedbackSuccessStatusCode = 200 as const;
-```
-- Returns: `200`
-#### `ControlPlaneService.getRunSpec`
-
-```typescript
-getRunSpec(input: ServiceGetRunSpecInput): Promise;
-```
-- Parameters:
-	- `input: ServiceGetRunSpecInput` — Authenticated principal, tenant id, and target run id. The service derives access from the caller tenant and run ownership.
-- Returns: `Promise`
-- Errors:
-	- `ControlPlaneServiceError('forbidden')` when policy denies `run_spec.read`
-	- `ControlPlaneServiceError('not_found')` when the run is missing, belongs to another tenant, has unsupported work kind, has no current file-canonical spec artifact, or has no current spec artifact
-	- `ControlPlaneServiceError('persistence_failed')` when the committed spec file cannot be safely read or frontmatter parsing fails
-#### `ControlPlaneService.createRunFeedback`
-
-```typescript
-createRunFeedback(input: ServiceCreateRunFeedbackInput): Promise;
-```
-- Parameters:
-	- `input: ServiceCreateRunFeedbackInput` — Authenticated non-model principal, tenant id, run id, and validated create feedback request.
-- Returns: `Promise`
-- Errors:
-	- `ControlPlaneServiceError('forbidden')` when policy denies `run_feedback.create`
-	- `ControlPlaneServiceError('unauthorized')` when the authenticated principal cannot author feedback
-	- `ControlPlaneServiceError('not_found')` when the run is missing or belongs to another tenant
-	- `ControlPlaneServiceError('persistence_failed')` when feedback lifecycle creation or repository persistence fails
-#### `ControlPlaneService.listRunFeedback`
-
-```typescript
-listRunFeedback(input: ServiceListRunFeedbackInput): Promise;
-```
-- Parameters:
-	- `input: ServiceListRunFeedbackInput` — Authenticated principal, tenant id, and target run id.
-- Returns: `Promise`
-- Errors:
-	- `ControlPlaneServiceError('forbidden')` when policy denies `run_feedback.list`
-	- `ControlPlaneServiceError('not_found')` when the run is missing or belongs to another tenant
-	- `ControlPlaneServiceError('persistence_failed')` when feedback repository access fails
-#### `SpecFileReader.readCommittedSpec`
-
-```typescript
-readCommittedSpec(input: { readonly run: Run; readonly artifact: Artifact }): Promise;
-```
-- Parameters:
-	- `input: { readonly run: Run; readonly artifact: Artifact }` — The tenant-verified run and selected file-canonical spec artifact whose relative location should be read.
-- Returns: `Promise`
-- Errors:
-	- `SpecFileReadError` when the artifact location is absolute, escapes the approved workspace/repository root, is outside the committed spec path constraints, is missing, or cannot be read
-#### `ControlPlaneClient.getRunSpec`
-
-```typescript
-getRunSpec(id: string): Promise;
-```
-- Parameters:
-	- `id: string` — Run id to read the current spec for.
-- Returns: `Promise`
-- Errors:
-	- `ControlPlaneClientError` when the HTTP response is a non-ok standard error envelope, including 404 for missing, cross-tenant, or no-spec runs
-	- `ZodError` when a successful response does not satisfy runSpecResponseSchema
-#### `ControlPlaneClient.createRunFeedback`
-
-```typescript
-createRunFeedback(id: string, request: CreateRunFeedbackRequest): Promise;
-```
-- Parameters:
-	- `id: string` — Run id to create feedback for.
-	- `request: CreateRunFeedbackRequest` — Feedback target, title, body, and optional anchor. For this slice target must be artifact.
-- Returns: `Promise`
-- Errors:
-	- `ZodError` before sending when request does not satisfy createRunFeedbackRequestSchema
-	- `ControlPlaneClientError` when the HTTP response is a non-ok standard error envelope, including 404 for missing or cross-tenant runs
-	- `ZodError` when a successful response does not satisfy feedbackSchema
-#### `ControlPlaneClient.listRunFeedback`
-
-```typescript
-listRunFeedback(id: string): Promise;
-```
-- Parameters:
-	- `id: string` — Run id to list feedback for.
-- Returns: `Promise`
-- Errors:
-	- `ControlPlaneClientError` when the HTTP response is a non-ok standard error envelope, including 404 for missing or cross-tenant runs
-	- `ZodError` when a successful response does not satisfy runFeedbackListResponseSchema
-### Types
-
-#### `RunWaitingOn`
-
-```typescript
-type RunWaitingOn = 'system' | 'ai' | 'human' | 'none';
-```
-#### `Run`
-
-```typescript
-interface Run { id: string; topicId: string; owner: NonModelPrincipal; tenant: string; workKind: string; currentStep: string; terminal: boolean; waitingOn?: RunWaitingOn; trackedIssue?: TrackedIssue; testingGuideResult?: TestingGuideResult; createdAt: string; updatedAt: string; }
-```
-#### `RunSpecResponse`
-
-```typescript
-interface RunSpecResponse { artifact: Artifact; markdown: string; frontmatter: SpecAuthorFrontmatter; cachedStatus: ArtifactCachedStatus; }
-```
-#### `CreateRunFeedbackRequest`
-
-```typescript
-interface CreateRunFeedbackRequest { target: 'artifact'; title: string; body: string; anchor?: FeedbackAnchor; }
-```
-#### `RunFeedbackListResponse`
-
-```typescript
-interface RunFeedbackListResponse { feedback: Feedback[]; }
-```
-#### `ServiceGetRunSpecInput`
-
-```typescript
-interface ServiceGetRunSpecInput { principal: Principal; tenant: string; runId: string; }
-```
-#### `ServiceGetRunSpecResult`
-
-```typescript
-interface ServiceGetRunSpecResult { spec: RunSpecResponse; }
-```
-#### `ServiceCreateRunFeedbackInput`
-
-```typescript
-interface ServiceCreateRunFeedbackInput { principal: Principal; tenant: string; runId: string; request: CreateRunFeedbackRequest; }
-```
-#### `ServiceCreateRunFeedbackResult`
-
-```typescript
-interface ServiceCreateRunFeedbackResult { feedback: Feedback; }
-```
-#### `ServiceListRunFeedbackInput`
-
-```typescript
-interface ServiceListRunFeedbackInput { principal: Principal; tenant: string; runId: string; }
-```
-#### `ServiceListRunFeedbackResult`
-
-```typescript
-interface ServiceListRunFeedbackResult { feedback: readonly Feedback[]; }
-```
-#### `SpecFileReader`
-
-```typescript
-interface SpecFileReader { readCommittedSpec(input: { readonly run: Run; readonly artifact: Artifact }): Promise; }
-```
-### Notes
-
-The proposed API is additive under /v1. Feedback creation is intentionally restricted to target: artifact for the issue 41 spec-review slice; lifecycle transitions such as resolve, reopen, addressed, and wont_fix remain out of scope. Cross-tenant access for the spec and feedback child resources should be mapped to not_found rather than forbidden to avoid leaking run existence. WaitingOn derivation decision: because run-step-catalog.ts is authoritative and getRunStepDefinition can return null for unknown currentStep values, run read/list decorators must fail safely with a sanitized ControlPlaneServiceError('persistence_failed') for unknown steps. They must not silently omit waitingOn or invent a default. The optional contract field remains only for additive wire compatibility. Index barrel decision: index.ts only needs `export * from './run-spec.js'`; existing run.ts and feedback.ts barrel exports already expose waitingOn and all run feedback request/response/status symbols. The runSchema tenant-owner Zod refinement is pre-existing and unchanged by this enhancement.
+This technical plan follows the existing package boundaries. Contracts live in `api-contract`, service behavior lives in `core`, persistence remains behind repositories, and SDK methods consume the same schemas. The design preserves additive `/v1` evolution and does not change the spec gate's completion rules. The file-read seam is no longer open-ended: implementation reuses `WorkspaceFileSystemPort.readFile` with `RunWorkspaceMetadata.workspaceRepoRoot` and `Artifact.location`.
 ## Task list
 
 ### Story 1: Add the shared API contracts
@@ -653,7 +382,7 @@ The proposed API is additive under /v1. Feedback creation is intentionally restr
 - `index.ts` exports only the new `run-spec.js` barrel in addition to existing exports.
 - OpenAPI generation includes the new spec and feedback routes if routes are enumerated manually.
 - Contract tests cover valid and invalid `waitingOn`, spec response, feedback create request, and feedback list response payloads.
-**Dependencies:** Existing `artifactSchema`, `artifactCachedStatusSchema`, `specAuthorFrontmatterSchema`, `feedbackSchema`, `feedbackTargetSchema`, and `feedbackAnchorSchema`.
+**Dependencies:** Existing `artifactSchema`, `specAuthorFrontmatterSchema`, `feedbackSchema`, `feedbackTargetSchema`, and `feedbackAnchorSchema`.
 #### Task 1.1: Extend the run contract with `waitingOn`
 
 **Description:** Add the waiting-state enum and optional additive field to `runSchema` without changing existing run fields or tenant-owner validation.
@@ -669,7 +398,7 @@ The proposed API is additive under /v1. Feedback creation is intentionally restr
 **Acceptance criteria:**
 - `runSpecPath` is `'/v1/runs/:id/spec' as const`.
 - `getRunSpecSuccessStatusCode` is `200 as const`.
-- `runSpecResponseSchema` is strict and contains `artifact`, `markdown`, `frontmatter`, and `cachedStatus`.
+- `runSpecResponseSchema` is strict and contains `artifact`, `markdown`, and `frontmatter`.
 - The response schema reuses the existing artifact and spec frontmatter schemas.
 - `RunSpecResponse` is inferred from `runSpecResponseSchema`.
 **Dependencies:** Task 1.1 only if the module export ordering requires it.
@@ -714,13 +443,13 @@ The proposed API is additive under /v1. Feedback creation is intentionally restr
 **Dependencies:** Tasks 1.1, 1.2, and 1.3.
 ### Story 2: Read the current spec through the control-plane service
 
-**Description:** Add a tenant-scoped service path that locates a run's current file-canonical spec artifact, reads the committed spec markdown safely, parses frontmatter, and returns the converged API response.
+**Description:** Add a tenant-scoped service path that locates a run's current file-canonical spec artifact, reads the committed spec markdown safely through the existing workspace file-read seam, parses frontmatter, and returns the contract response.
 **Acceptance criteria:**
-- `ControlPlaneService.getRunSpec` and `DefaultControlPlaneService.getRunSpec` are implemented with the converged input and result types.
+- `ControlPlaneService.getRunSpec` and `DefaultControlPlaneService.getRunSpec` are implemented with contract-aligned input and result types.
 - The method verifies policy and tenant ownership before reading artifact or file data.
 - Missing, cross-tenant, unsupported run kind, missing current spec artifact, and non-file-canonical spec artifact cases return `ControlPlaneServiceError('not_found')`.
-- File read failures and frontmatter parse failures return a sanitized `ControlPlaneServiceError('persistence_failed')`.
-- The response uses markdown from the committed spec file, frontmatter from `spec-frontmatter.ts`, and `cachedStatus` from the artifact row.
+- Missing run workspace metadata after a valid run and file-canonical spec artifact are found, file read failures, and frontmatter parse failures return a sanitized `ControlPlaneServiceError('persistence_failed')`.
+- The response uses markdown from the committed spec file, frontmatter from `spec-frontmatter.ts`, and `artifact.cachedStatus` from the artifact row.
 - No absolute workspace paths are exposed in service results or service errors.
 **Dependencies:** Story 1.
 #### Task 2.0: Extend service options and server wiring for spec and feedback dependencies
@@ -729,53 +458,55 @@ The proposed API is additive under /v1. Feedback creation is intentionally restr
 **Acceptance criteria:**
 - `DefaultControlPlaneServiceOptions` includes `ArtifactRepository` for spec artifact lookup.
 - `DefaultControlPlaneServiceOptions` includes `FeedbackRepository` and the existing feedback lifecycle dependencies or create use case dependencies needed by feedback creation.
-- `DefaultControlPlaneServiceOptions` includes `SpecFileReader` for committed spec reads.
+- `DefaultControlPlaneServiceOptions` includes `RunWorkspaceMetadataRepository` so `getRunSpec` can load the persisted internal `workspaceRepoRoot`.
+- `DefaultControlPlaneServiceOptions` includes `WorkspaceFileSystemPort` for committed spec reads.
 - `DefaultControlPlaneServiceOptions` includes the id generator and clock providers required by feedback lifecycle creation.
-- `DefaultControlPlaneServiceOptions` includes or receives access to the workspace metadata/root resolver required by `NodeSpecFileReader`; routes do not receive this dependency directly.
-- `apps/control-plane/src/server.ts` instantiates `NodeSpecFileReader` from the existing run workspace metadata/root seam and passes it to `DefaultControlPlaneService`.
+- `apps/control-plane/src/server.ts` passes the existing `WorkspaceFileSystemPort` implementation and run workspace metadata repository to `DefaultControlPlaneService`; routes do not receive these dependencies directly.
 - `apps/control-plane/src/server.ts` passes the concrete artifact repository, feedback repository, feedback lifecycle dependencies, ids/clock, and existing policy to `DefaultControlPlaneService`.
 - Existing `DefaultControlPlaneService` tests and app server construction are updated to provide test doubles for the new required dependencies.
-**Dependencies:** Story 1 and the existing issue 39 artifact, feedback, and workspace metadata seams.
-#### Task 2.1: Add the spec file reader port
+**Dependencies:** Story 1 and the existing issue 39 artifact, feedback, workspace metadata, and workspace file-system seams.
+#### Task 2.1: Reuse the existing workspace file-read seam
 
-**Description:** Implement `SpecFileReader` and `NodeSpecFileReader` in `packages/core/src/spec-file-reader.ts` as the only file-read seam used by spec API service code.
+**Description:** Wire `getRunSpec` to the existing `WorkspaceFileSystemPort.readFile` path instead of adding a new spec-specific reader module or duplicating containment checks.
 **Acceptance criteria:**
-- `SpecFileReader.readCommittedSpec` accepts a tenant-verified `Run` and file-canonical `Artifact`.
-- The reader rejects absolute artifact locations.
-- The reader rejects paths that escape the approved workspace or repository root.
-- The reader rejects paths outside the committed spec path constraints, including locations outside `context-human/specs/`.
-- The reader returns `{ markdown }` for valid committed spec files.
-- `SpecFileReadError` does not expose absolute paths in public messages.
-**Dependencies:** Existing run workspace or repository root metadata seam from issue 39.
+- `getRunSpec` obtains `workspaceRepoRoot` from `RunWorkspaceMetadataRepository.findByRunId(runId)`.
+- If `RunWorkspaceMetadataRepository.findByRunId(runId)` returns no metadata after the run and spec artifact have been verified, `getRunSpec` maps that missing metadata to sanitized `persistence_failed`.
+- `getRunSpec` obtains the committed relative path from `ArtifactRepository.findByRunAndKind({ runId, kind }).location`.
+- `getRunSpec` calls `WorkspaceFileSystemPort.readFile({ workspaceRepoRoot, relativePath: artifact.location })`.
+- No new spec-specific file reader class, module, or parallel path-containment implementation is introduced.
+- Path traversal, absolute-path, and symlink escape checks remain centralized in the existing control-plane `WorkspaceFileSystemPort` implementation.
+- File-read errors are mapped to sanitized service errors that do not expose absolute paths.
+**Dependencies:** Existing run workspace metadata and workspace file-system seams from issue 39.
 #### Task 2.2: Select the current spec artifact safely
 
-**Description:** Add a service helper that maps run work kind to the expected artifact kind and selects the current file-canonical spec artifact.
+**Description:** Add a service helper that maps run work kind to the expected artifact kind and selects the current file-canonical spec artifact through `ArtifactRepository.findByRunAndKind`.
 **Acceptance criteria:**
 - Feature runs select `kind: 'feature_spec'`.
 - Enhancement runs select `kind: 'enhancement_spec'`.
 - Other run kinds return `not_found`.
 - Artifacts with `canonicalRecord` other than `file` return `not_found`.
-- Artifact `location` validation is delegated to `SpecFileReader`, not duplicated in routes.
+- Artifact path containment validation is delegated to `WorkspaceFileSystemPort.readFile`, not duplicated in routes or a new reader.
 **Dependencies:** Task 2.1 and existing `ArtifactRepository`.
 #### Task 2.3: Implement `getRunSpec`
 
 **Description:** Wire run lookup, policy checks, tenant checks, artifact selection, file reading, frontmatter parsing, and response creation into the control-plane service.
 **Acceptance criteria:**
-- `ServiceGetRunSpecInput` and `ServiceGetRunSpecResult` match the converged API section.
+- `ServiceGetRunSpecInput` and `ServiceGetRunSpecResult` match the route contract.
 - The method performs policy checks for `run_spec.read` on the `run_spec` resource descriptor before reading artifact or file data.
 - Cross-tenant runs return `not_found`, not `forbidden`, after policy authorization succeeds.
+- Missing run workspace metadata for an otherwise valid run and file-canonical spec artifact returns sanitized `persistence_failed`, not `not_found`.
 - `parseSpecFrontmatter` or the existing committed spec parser validates the markdown frontmatter.
-- `cachedStatus` is copied from the artifact row, not derived from parsed frontmatter.
+- Status is read from `artifact.cachedStatus`, not derived from parsed frontmatter or duplicated at the response top level.
 - Service results satisfy `runSpecResponseSchema`.
 **Dependencies:** Tasks 2.0, 2.1, and 2.2.
 #### Task 2.4: Add service tests for spec reads
 
 **Description:** Cover successful spec reads and safe failure modes at the service layer.
 **Acceptance criteria:**
-- A valid enhancement run with a file-canonical enhancement spec returns artifact, markdown, parsed frontmatter, and cached status.
+- A valid enhancement run with a file-canonical enhancement spec returns artifact, markdown, parsed frontmatter, and `artifact.cachedStatus`.
 - A valid feature run selects a feature spec artifact.
 - Missing run, cross-tenant run, unsupported work kind, no spec artifact, and non-file-canonical artifact return `not_found`.
-- Missing file, unsafe location, malformed frontmatter, and read errors return `persistence_failed`.
+- Missing run workspace metadata, missing file, unsafe location, malformed frontmatter, and read errors return `persistence_failed`.
 - Error assertions do not depend on absolute filesystem paths.
 **Dependencies:** Task 2.3.
 ### Story 3: Decorate run reads with derived waiting state
@@ -806,7 +537,7 @@ The proposed API is additive under /v1. Feedback creation is intentionally restr
 - `getRun` returns a run with `waitingOn`.
 - `listRuns` returns every run with `waitingOn`.
 - Existing authorization, tenant filtering, and pagination behavior remain unchanged.
-- Conversation-ingress responses that reuse `runSchema` are decorated if they pass through the same mapper and can do so safely.
+- `POST /v1/conversations` responses are not changed in this slice, even if they reuse `runSchema`.
 **Dependencies:** Task 3.1.
 #### Task 3.3: Add run waiting-state tests
 
@@ -821,8 +552,8 @@ The proposed API is additive under /v1. Feedback creation is intentionally restr
 
 **Description:** Add tenant-scoped service methods that create artifact feedback authored by the authenticated principal and list feedback items for a run.
 **Acceptance criteria:**
-- `ControlPlaneService.createRunFeedback` and `DefaultControlPlaneService.createRunFeedback` are implemented with the converged input and result types.
-- `ControlPlaneService.listRunFeedback` and `DefaultControlPlaneService.listRunFeedback` are implemented with the converged input and result types.
+- `ControlPlaneService.createRunFeedback` and `DefaultControlPlaneService.createRunFeedback` are implemented with contract-aligned input and result types.
+- `ControlPlaneService.listRunFeedback` and `DefaultControlPlaneService.listRunFeedback` are implemented with contract-aligned input and result types.
 - Create rejects model principals as feedback authors with `unauthorized`.
 - Missing and cross-tenant runs return `not_found` for create and list.
 - Create uses the existing feedback lifecycle creation path.
@@ -831,10 +562,10 @@ The proposed API is additive under /v1. Feedback creation is intentionally restr
 **Dependencies:** Story 1 and Task 2.0.
 #### Task 4.1: Define service input and result types
 
-**Description:** Add the feedback service types named in the converged API section.
+**Description:** Add the feedback service types needed by the route contracts.
 **Acceptance criteria:**
 - `ServiceCreateRunFeedbackInput` contains `principal`, `tenant`, `runId`, and validated `request`.
-- `ServiceCreateRunFeedbackResult` contains `feedback`.
+- `ServiceCreateRunFeedbackResult` is the bare created `Feedback` item, matching the route and SDK create response contract.
 - `ServiceListRunFeedbackInput` contains `principal`, `tenant`, and `runId`.
 - `ServiceListRunFeedbackResult` contains readonly feedback items.
 - Types use shared contract request and feedback response types.
@@ -890,14 +621,14 @@ The proposed API is additive under /v1. Feedback creation is intentionally restr
 - The authenticated principal and tenant are passed to the service after `run_spec.read` authorization succeeds.
 - A successful response is validated or serialized against `runSpecResponseSchema`.
 - `not_found` returns 404 for missing, cross-tenant, unsupported, and no-spec runs.
-- Filesystem and frontmatter failures return a safe standard error without path leakage.
+- Missing workspace metadata, filesystem, and frontmatter failures return a safe standard error without path leakage.
 **Dependencies:** Story 2.
 #### Task 5.2: Register feedback create and list routes
 
 **Description:** Add Fastify handlers for `POST /v1/runs/:id/feedback` and `GET /v1/runs/:id/feedback`.
 **Acceptance criteria:**
 - Create parses and validates the request body with `createRunFeedbackRequestSchema`.
-- Create returns the created `Feedback` item with status code `201`.
+- Create returns the bare created `Feedback` item with status code `201`.
 - List returns `{ feedback: [...] }` with status code `200`.
 - Cross-tenant runs return 404 for both routes.
 - Unsupported feedback targets fail validation before service invocation.
@@ -981,6 +712,7 @@ The proposed API is additive under /v1. Feedback creation is intentionally restr
 - `GET /v1/runs` returns the same run with `waitingOn: 'human'`.
 - Cross-tenant spec read returns 404.
 - A run without a current spec artifact returns 404.
+- A run with a valid current spec artifact but missing run workspace metadata returns a sanitized server error with no absolute workspace path.
 **Dependencies:** Task 7.1 and Story 5.
 #### Task 7.3: Test feedback create and list endpoints
 
@@ -1016,7 +748,7 @@ The proposed API is additive under /v1. Feedback creation is intentionally restr
 **Acceptance criteria:**
 - The code map references `packages/api-contract/src/run-spec.ts`.
 - The code map references the changed run and feedback contract files.
-- The code map references `packages/core/src/spec-file-reader.ts`.
+- The code map references the reused `WorkspaceFileSystemPort.readFile` and `RunWorkspaceMetadataRepository` seam for spec reads.
 - The code map references the new `ControlPlaneService` methods and Fastify routes.
 - The code map references the SDK methods and control-plane integration tests.
 **Dependencies:** Stories 1 through 7.
