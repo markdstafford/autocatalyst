@@ -22,6 +22,7 @@ import type { RunEventStore, RunEventSubscription } from './run-events.js';
 import type { RunEventReplayResult } from '@autocatalyst/api-contract';
 import { parseSpecFrontmatter } from './spec-frontmatter.js';
 import type { WorkspaceFileSystemPort } from './spec-authoring-service.js';
+import { getRunStepDefinition } from './run-step-catalog.js';
 
 // --- Error types ---
 
@@ -185,6 +186,14 @@ function persistenceFailed(message: string, cause?: unknown): ControlPlaneServic
   return new ControlPlaneServiceError('persistence_failed', message, cause === undefined ? {} : { cause });
 }
 
+function mapRunToApiRun(run: Run): Run {
+  const definition = getRunStepDefinition(run.currentStep);
+  if (definition === null) {
+    throw persistenceFailed(`Unknown run step '${run.currentStep}'.`);
+  }
+  return { ...run, waitingOn: definition.waitingOn };
+}
+
 export class DefaultControlPlaneService implements ControlPlaneService {
   readonly #orchestrator: Orchestrator;
   readonly #runs: RunRepository;
@@ -281,7 +290,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     }
 
     const runs = await this.#runs.listByTenant(input.tenant);
-    return { runs };
+    return { runs: runs.map(mapRunToApiRun) };
   }
 
   async getRun(input: ServiceGetRunInput): Promise<ServiceGetRunResult> {
@@ -302,7 +311,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       throw new ControlPlaneServiceError('forbidden', 'Run not accessible.');
     }
 
-    return { run };
+    return { run: mapRunToApiRun(run) };
   }
 
   async listRunSteps(input: ServiceListRunStepsInput): Promise<ServiceListRunStepsResult> {

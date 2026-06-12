@@ -338,7 +338,9 @@ describe('DefaultControlPlaneService.listRuns', () => {
     const result = await service.listRuns({ principal, tenant: 'tenant_1' });
 
     expect(runs.listByTenant).toHaveBeenCalledWith('tenant_1');
-    expect(result).toEqual({ runs: [run] });
+    expect(result.runs).toHaveLength(1);
+    expect(result.runs[0]?.id).toBe('run_2');
+    expect(result.runs[0]?.waitingOn).toBe('system');
   });
 
   it('throws forbidden and does not read persistence when policy denies', async () => {
@@ -696,5 +698,64 @@ describe('DefaultControlPlaneService.getRunSpec', () => {
       action: 'run_spec.read',
       resource: { kind: 'run_spec', id: 'run_1', path: '/v1/runs/:id/spec' }
     });
+  });
+});
+
+describe('DefaultControlPlaneService run waiting-state', () => {
+  it('getRun returns waitingOn: human for spec.human_review step', async () => {
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'spec.human_review', workKind: 'feature' })) });
+    const service = makeService({ runs });
+    const result = await service.getRun({ principal, tenant: 'tenant_1', runId: 'run_1' });
+    expect(result.run.waitingOn).toBe('human');
+  });
+
+  it('getRun returns waitingOn: ai for spec.author step', async () => {
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'spec.author' })) });
+    const service = makeService({ runs });
+    const result = await service.getRun({ principal, tenant: 'tenant_1', runId: 'run_1' });
+    expect(result.run.waitingOn).toBe('ai');
+  });
+
+  it('getRun returns waitingOn: system for intake step', async () => {
+    const service = makeService();
+    const result = await service.getRun({ principal, tenant: 'tenant_1', runId: 'run_1' });
+    expect(result.run.waitingOn).toBe('system');
+  });
+
+  it('getRun returns waitingOn: none for done step', async () => {
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'done', terminal: true })) });
+    const service = makeService({ runs });
+    const result = await service.getRun({ principal, tenant: 'tenant_1', runId: 'run_1' });
+    expect(result.run.waitingOn).toBe('none');
+  });
+
+  it('listRuns returns waitingOn for each run', async () => {
+    const fakeRunsRepo = makeFakeRunRepo({
+      listByTenant: vi.fn().mockResolvedValue([
+        makeRun({ id: 'run_1', currentStep: 'spec.human_review', workKind: 'feature' }),
+        makeRun({ id: 'run_2', currentStep: 'spec.author', workKind: 'enhancement' })
+      ])
+    });
+    const service = makeService({ runs: fakeRunsRepo });
+    const result = await service.listRuns({ principal, tenant: 'tenant_1' });
+    expect(result.runs[0]?.waitingOn).toBe('human');
+    expect(result.runs[1]?.waitingOn).toBe('ai');
+  });
+
+  it('getRun throws persistence_failed for unknown currentStep', async () => {
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'unknown.step.xyz' as never })) });
+    const service = makeService({ runs });
+    await expect(service.getRun({ principal, tenant: 'tenant_1', runId: 'run_1' }))
+      .rejects.toMatchObject({ code: 'persistence_failed' });
+  });
+
+  it('createConversationWithFirstRun run does NOT include waitingOn', async () => {
+    const service = makeService();
+    const result = await service.createConversationWithFirstRun({
+      principal,
+      tenant: 'tenant_1',
+      request: baseRequest
+    });
+    expect(result.run.waitingOn).toBeUndefined();
   });
 });
