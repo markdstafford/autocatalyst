@@ -4,6 +4,9 @@ import { nonModelPrincipalSchema, requireTenantMatchesOwner, testingGuideResultS
 
 export const runWorkKindSchema = z.string().min(1);
 
+export const waitingOnSchema = z.enum(['system', 'ai', 'human', 'none']);
+export type RunWaitingOn = z.infer<typeof waitingOnSchema>;
+
 export const runSchema = z.object({
   id: z.string().min(1),
   topicId: z.string().min(1),
@@ -11,6 +14,7 @@ export const runSchema = z.object({
   tenant: z.string().min(1),
   workKind: runWorkKindSchema,
   currentStep: z.string().min(1),
+  waitingOn: waitingOnSchema.optional(),
   // Temporary persistence discriminator for the one-active-run partial index. ADR-015 will reconcile
   // terminality to the workflow step catalog's waiting_on-derived source of truth when that feature lands.
   terminal: z.boolean(),
