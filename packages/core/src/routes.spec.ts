@@ -9,11 +9,14 @@ import {
   degradedHealthStatusCode,
   errorResponseSchema,
   eventsStreamPath,
+  feedbackSchema,
   healthResponseSchema,
   principalDiagnosticResponseSchema,
   probeResourceCollectionPath,
   probeResourceSchema,
+  runFeedbackListResponseSchema,
   runListResponseSchema,
+  runSpecResponseSchema,
   type ProbeResource,
   type Run
 } from '@autocatalyst/api-contract';
@@ -49,6 +52,15 @@ function createFakeControlPlaneService(): ControlPlaneService {
       events: [] as never[],
       ...(input.lastEventId !== undefined ? {} : {})
     })),
+    getRunSpec: vi.fn(async () => {
+      throw new Error('controlPlane.getRunSpec not stubbed for this test');
+    }),
+    createRunFeedback: vi.fn(async () => {
+      throw new Error('controlPlane.createRunFeedback not stubbed for this test');
+    }),
+    listRunFeedback: vi.fn(async () => {
+      throw new Error('controlPlane.listRunFeedback not stubbed for this test');
+    }),
     tick: vi.fn(async () => ({ status: 'noop' as const }))
   };
 }
@@ -746,6 +758,223 @@ describe('registerControlPlaneRoutes', () => {
 
     expect(closeSpy).toHaveBeenCalled();
     expect(closeCalled).toBe(true);
+  });
+
+  // Spec review route tests
+  const specArtifact = {
+    id: 'artifact_spec_1',
+    runId: 'run_1',
+    owner: hardcodedDevelopmentPrincipal,
+    tenant: 'tenant_dev',
+    kind: 'feature_spec',
+    canonicalRecord: 'file',
+    location: 'context-human/specs/feature-my-feature.md',
+    cachedStatus: 'approved',
+    publicationRefs: [],
+    createdAt: '2026-06-08T00:00:00.000Z',
+    updatedAt: '2026-06-08T00:00:00.000Z'
+  };
+
+  const specRunSpecResponse = {
+    artifact: specArtifact,
+    markdown: '# Feature Spec\n\nSome content.',
+    frontmatter: {
+      created: '2026-06-01',
+      last_updated: '2026-06-08',
+      status: 'approved',
+      specced_by: 'mark-stafford'
+    }
+  };
+
+  const specFeedback = {
+    id: 'fbk_1',
+    runId: 'run_1',
+    owner: hardcodedDevelopmentPrincipal,
+    tenant: 'tenant_dev',
+    target: 'artifact' as const,
+    status: 'open' as const,
+    title: 'Missing acceptance criteria',
+    body: 'Please add acceptance criteria to section 2.',
+    thread: [
+      {
+        id: 'thread_1',
+        author: hardcodedDevelopmentPrincipal,
+        body: 'Please add acceptance criteria to section 2.',
+        createdAt: '2026-06-08T00:00:00.000Z'
+      }
+    ],
+    createdAt: '2026-06-08T00:00:00.000Z',
+    updatedAt: '2026-06-08T00:00:00.000Z'
+  };
+
+  it('GET /v1/runs/:id/spec returns 200 with spec response on success', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.getRunSpec as ReturnType<typeof vi.fn>).mockResolvedValue(specRunSpecResponse);
+    const { app, authorization, policyCalls } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({ method: 'GET', url: '/v1/runs/run_1/spec', headers: authorization });
+
+    expect(response.statusCode).toBe(200);
+    expect(runSpecResponseSchema.parse(response.json())).toEqual(specRunSpecResponse);
+    expect(controlPlane.getRunSpec).toHaveBeenCalledWith({
+      principal: hardcodedDevelopmentPrincipal,
+      tenant: 'tenant_dev',
+      runId: 'run_1'
+    });
+    expect(policyCalls).toContainEqual({
+      principal: hardcodedDevelopmentPrincipal,
+      action: 'run_spec.read',
+      resource: { kind: 'run_spec', id: 'run_1', path: '/v1/runs/:id/spec' }
+    });
+  });
+
+  it('GET /v1/runs/:id/spec maps not_found to 404', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.getRunSpec as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('not_found', "Run 'missing' not found.")
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({ method: 'GET', url: '/v1/runs/missing/spec', headers: authorization });
+
+    expect(response.statusCode).toBe(404);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('not_found');
+  });
+
+  it('GET /v1/runs/:id/spec maps persistence_failed to 500 without path details', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.getRunSpec as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('persistence_failed', 'Failed to read spec file from /absolute/path/on/disk.')
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({ method: 'GET', url: '/v1/runs/run_1/spec', headers: authorization });
+
+    expect(response.statusCode).toBe(500);
+    const parsed = errorResponseSchema.parse(response.json());
+    expect(parsed.error.code).toBe('internal_error');
+    expect(parsed.error.message).toBe('Internal server error.');
+    expect(response.body).not.toContain('/absolute/path');
+  });
+
+  it('POST /v1/runs/:id/feedback returns 201 with the created feedback on success', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.createRunFeedback as ReturnType<typeof vi.fn>).mockResolvedValue(specFeedback);
+    const { app, authorization, policyCalls } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/feedback',
+      headers: authorization,
+      payload: { target: 'artifact', title: 'Missing acceptance criteria', body: 'Please add acceptance criteria to section 2.' }
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(feedbackSchema.parse(response.json())).toEqual(specFeedback);
+    expect(controlPlane.createRunFeedback).toHaveBeenCalledWith({
+      principal: hardcodedDevelopmentPrincipal,
+      tenant: 'tenant_dev',
+      runId: 'run_1',
+      request: { target: 'artifact', title: 'Missing acceptance criteria', body: 'Please add acceptance criteria to section 2.' }
+    });
+    expect(policyCalls).toContainEqual({
+      principal: hardcodedDevelopmentPrincipal,
+      action: 'run_feedback.create',
+      resource: { kind: 'run_feedback', id: 'run_1', path: '/v1/runs/:id/feedback' }
+    });
+  });
+
+  it('POST /v1/runs/:id/feedback returns 400 for invalid body (non-artifact target)', async () => {
+    const { app, authorization } = await buildServer();
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/feedback',
+      headers: authorization,
+      payload: { target: 'implementation', title: 'Bad target', body: 'This should fail.' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('validation_error');
+  });
+
+  it('POST /v1/runs/:id/feedback maps not_found to 404', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.createRunFeedback as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('not_found', "Run 'missing' not found.")
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/missing/feedback',
+      headers: authorization,
+      payload: { target: 'artifact', title: 'Title', body: 'Body text.' }
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('not_found');
+  });
+
+  it('POST /v1/runs/:id/feedback maps unauthorized to 403', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.createRunFeedback as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('unauthorized', 'Not authorized to create run feedback.')
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/feedback',
+      headers: authorization,
+      payload: { target: 'artifact', title: 'Title', body: 'Body text.' }
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('forbidden');
+  });
+
+  it('GET /v1/runs/:id/feedback returns 200 with feedback list on success', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.listRunFeedback as ReturnType<typeof vi.fn>).mockResolvedValue({ feedback: [specFeedback] });
+    const { app, authorization, policyCalls } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({ method: 'GET', url: '/v1/runs/run_1/feedback', headers: authorization });
+
+    expect(response.statusCode).toBe(200);
+    expect(runFeedbackListResponseSchema.parse(response.json())).toEqual({ feedback: [specFeedback] });
+    expect(controlPlane.listRunFeedback).toHaveBeenCalledWith({
+      principal: hardcodedDevelopmentPrincipal,
+      tenant: 'tenant_dev',
+      runId: 'run_1'
+    });
+    expect(policyCalls).toContainEqual({
+      principal: hardcodedDevelopmentPrincipal,
+      action: 'run_feedback.list',
+      resource: { kind: 'run_feedback', id: 'run_1', path: '/v1/runs/:id/feedback' }
+    });
+  });
+
+  it('GET /v1/runs/:id/feedback maps not_found to 404', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.listRunFeedback as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('not_found', "Run 'missing' not found.")
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({ method: 'GET', url: '/v1/runs/missing/feedback', headers: authorization });
+
+    expect(response.statusCode).toBe(404);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('not_found');
   });
 
   it('exposes an SSE route with event-stream semantics', async () => {
