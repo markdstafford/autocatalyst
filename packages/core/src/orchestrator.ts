@@ -175,6 +175,10 @@ export type WorkspaceContextResolver = (input: { runId: string }) => Promise<Wor
 
 // --- Constructor options ---
 
+export interface AutoDispatchOptions {
+  readonly enabled?: boolean;
+}
+
 export interface DefaultOrchestratorOptions {
   readonly runs: RunRepository;
   readonly conversationIngress: ConversationIngressRepository;
@@ -193,6 +197,7 @@ export interface DefaultOrchestratorOptions {
   readonly feedbackLifecycleDependencies?: FeedbackLifecycleDependencies;
   readonly finalizeSpecApproval?: typeof finalizeSpecApproval;
   readonly specApprovalFinalizerDependencies?: SpecApprovalFinalizerDependencies;
+  readonly autoDispatch?: AutoDispatchOptions;
 }
 
 function defaultIsActiveRunConflict(error: unknown): boolean {
@@ -226,6 +231,8 @@ export class DefaultOrchestrator implements Orchestrator {
   readonly #feedbackLifecycleDependencies: FeedbackLifecycleDependencies | undefined;
   readonly #finalizeSpecApproval: typeof finalizeSpecApproval;
   readonly #specApprovalFinalizerDependencies: SpecApprovalFinalizerDependencies | undefined;
+  readonly #autoDispatchEnabled: boolean;
+  readonly #autoDispatchInFlightRunIds = new Set<string>();
 
   constructor(options: DefaultOrchestratorOptions) {
     this.#runs = options.runs;
@@ -233,6 +240,7 @@ export class DefaultOrchestrator implements Orchestrator {
     this.#events = options.events;
     this.#dispatchQueue = options.dispatchQueue;
     this.#unitOfWork = options.unitOfWork;
+    this.#autoDispatchEnabled = options.autoDispatch?.enabled !== false;
     this.#clock = options.clock;
     this.#eventIdGenerator = options.eventIdGenerator;
     this.#isActiveRunConflict = options.isActiveRunConflict ?? defaultIsActiveRunConflict;
@@ -586,6 +594,19 @@ export class DefaultOrchestrator implements Orchestrator {
     }
     await this.dispatch({ runId: input.runId, tenant: input.tenant });
     return { status: 'dispatched', runId: input.runId };
+  }
+
+  #shouldAutoDispatch(run: Run): boolean {
+    const stepDefinition = getRunStepDefinition(run.currentStep);
+    if (stepDefinition === null) {
+      this.#logger?.warn('Unknown run step encountered while evaluating auto-dispatch eligibility.', {
+        runId: run.id,
+        tenant: run.tenant,
+        currentStep: run.currentStep
+      });
+      return false;
+    }
+    return stepDefinition.waitingOn === 'system' || stepDefinition.waitingOn === 'ai';
   }
 
   async #runSpecAuthoringCompletion(

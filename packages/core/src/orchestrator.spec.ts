@@ -9,6 +9,7 @@ import { InMemoryRunEventBus, type RunEventPublisher } from './run-events.js';
 import {
   DefaultOrchestrator,
   OrchestratorError,
+  type AutoDispatchOptions,
   type RunUnitOfWork,
   type WorkspaceContextResolver
 } from './orchestrator.js';
@@ -147,6 +148,8 @@ function makeOrchestrator(opts: {
   finalizeSpecApproval?: (input: unknown, deps: SpecApprovalFinalizerDependencies) => Promise<void>;
   specApprovalFinalizerDependencies?: SpecApprovalFinalizerDependencies;
   runWorkspaceMetadata?: RunWorkspaceMetadataRepository;
+  logger?: { warn: ReturnType<typeof vi.fn> };
+  autoDispatch?: AutoDispatchOptions;
 } = {}) {
   const runs = opts.runs ?? makeFakeRunRepo();
   const conversationIngress = opts.conversationIngress ?? makeFakeIngressRepo();
@@ -168,7 +171,9 @@ function makeOrchestrator(opts: {
     ...(opts.feedbackLifecycleDependencies !== undefined ? { feedbackLifecycleDependencies: opts.feedbackLifecycleDependencies } : {}),
     ...(opts.finalizeSpecApproval !== undefined ? { finalizeSpecApproval: opts.finalizeSpecApproval as typeof import('./spec-approval-finalizer.js').finalizeSpecApproval } : {}),
     ...(opts.specApprovalFinalizerDependencies !== undefined ? { specApprovalFinalizerDependencies: opts.specApprovalFinalizerDependencies } : {}),
-    ...(opts.runWorkspaceMetadata !== undefined ? { runWorkspaceMetadata: opts.runWorkspaceMetadata } : {})
+    ...(opts.runWorkspaceMetadata !== undefined ? { runWorkspaceMetadata: opts.runWorkspaceMetadata } : {}),
+    ...(opts.logger !== undefined ? { logger: opts.logger } : {}),
+    ...(opts.autoDispatch !== undefined ? { autoDispatch: opts.autoDispatch } : {})
   });
   return { orchestrator, runs, conversationIngress, events, dispatchQueue };
 }
@@ -533,6 +538,37 @@ describe('DefaultOrchestrator.createConversationWithFirstRun — duplicate activ
       expect(err.details).toEqual({ topicId: 'topic_existing', existingRunId: 'run_existing' });
     }
     expect(events).toHaveLength(0);
+  });
+});
+
+describe('DefaultOrchestrator.createConversationWithFirstRun — auto-dispatch disabled', () => {
+  it('does not auto-dispatch when autoDispatch is explicitly disabled', async () => {
+    const run = makeRun({ currentStep: 'intake' });
+    const runStep = makeRunStep({ step: 'intake' });
+    const conversation = makeConversation();
+    const topic = makeTopic();
+    const message = makeMessage();
+    const conversationIngress = makeFakeIngressRepo({
+      createConversationTopicMessageAndRun: vi.fn().mockResolvedValue({ conversation, topic, message, run, runStep })
+    });
+    const unitRun = vi.fn().mockResolvedValue({ directive: 'advance' });
+    const { orchestrator } = makeOrchestrator({
+      conversationIngress,
+      unitOfWork: { run: unitRun },
+      autoDispatch: { enabled: false }
+    });
+
+    await orchestrator.createConversationWithFirstRun({
+      projectId: 'proj_1',
+      owner,
+      tenant: 'tenant_1',
+      identity: 'identity_1',
+      topic: { title: 'T' },
+      workKind: 'feature'
+    });
+
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(unitRun).not.toHaveBeenCalled();
   });
 });
 
@@ -1426,5 +1462,43 @@ describe('DefaultOrchestrator.applyDirective — spec approval finalizer', () =>
     await orchestrator.applyDirective({ runId: 'run_1', directive: 'advance', tenant: 'tenant_1' });
 
     expect(finalizeSpecApprovalFn).not.toHaveBeenCalled();
+  });
+});
+
+describe('DefaultOrchestrator auto-dispatch policy', () => {
+  it('auto-dispatches system and ai steps but not human or terminal steps', async () => {
+    const unitRun = vi.fn().mockResolvedValue({ directive: 'advance' });
+    const logger = { warn: vi.fn() };
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'intake' })),
+      recordRunStepTransition: vi
+        .fn()
+        .mockResolvedValueOnce({
+          run: makeRun({ currentStep: 'spec.author' }),
+          runStep: makeRunStep({ id: 'step_2', step: 'spec.author', phase: 'spec' })
+        })
+        .mockResolvedValueOnce({
+          run: makeRun({ currentStep: 'spec.human_review' }),
+          runStep: makeRunStep({ id: 'step_3', step: 'spec.human_review', phase: 'spec' })
+        })
+        .mockResolvedValueOnce({
+          run: makeRun({ currentStep: 'done', terminal: true }),
+          runStep: makeRunStep({ id: 'step_4', step: 'done' })
+        })
+    });
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork: { run: unitRun }, logger });
+
+    await orchestrator.applyDirective({ runId: 'run_1', directive: 'advance', tenant: 'tenant_1' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(unitRun).toHaveBeenCalledTimes(1);
+    expect(unitRun.mock.calls[0]?.[0]).toMatchObject({ runId: 'run_1', tenant: 'tenant_1' });
+
+    await orchestrator.applyDirective({ runId: 'run_1', directive: 'advance', tenant: 'tenant_1' });
+    await orchestrator.applyDirective({ runId: 'run_1', directive: 'advance', tenant: 'tenant_1' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(unitRun).toHaveBeenCalledTimes(1);
+    expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('Unknown run step'), expect.anything());
   });
 });
