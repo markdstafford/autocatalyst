@@ -179,6 +179,45 @@ function makeOrchestrator(opts: {
 }
 
 describe('DefaultOrchestrator.createRun', () => {
+  it('publishes the start event before detached auto-dispatch starts and createRun returns without awaiting work completion', async () => {
+    const order: string[] = [];
+    let releaseUnit!: () => void;
+    // unitRun blocks until releaseUnit() is called — if createRun awaited work it would never resolve
+    const unitRun = vi.fn(async () => {
+      order.push('unit-start');
+      await new Promise<void>((release) => { releaseUnit = release; });
+      return { directive: 'advance' };
+    });
+    const runs = makeFakeRunRepo({
+      recordRunLifecycleStart: vi.fn().mockResolvedValue({ run: makeRun({ currentStep: 'intake' }), runStep: makeRunStep() }),
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'intake' })),
+      recordRunStepTransition: vi.fn().mockResolvedValue({
+        run: makeRun({ currentStep: 'spec.author' }),
+        runStep: makeRunStep({ id: 'step_2', step: 'spec.author', phase: 'spec' })
+      })
+    });
+    const publisher: RunEventPublisher = {
+      append: async () => { order.push('event'); },
+      replayAfter: async () => ({ status: 'ok', events: [] }),
+      subscribe: () => ({ events: (async function*() {})() as unknown as AsyncIterable<RunStateTransitionEvent>, close: () => {} })
+    } as unknown as RunEventPublisher;
+    const { orchestrator } = makeOrchestrator({ runs, events: publisher, unitOfWork: { run: unitRun } });
+
+    // createRun resolves with the committed run — it does NOT await unit completion
+    const result = await orchestrator.createRun({ topicId: 'topic_1', owner, tenant: 'tenant_1', workKind: 'feature' });
+    expect(result).toMatchObject({ run: { id: 'run_1', currentStep: 'intake' } });
+
+    // The event was published before auto-dispatch started
+    expect(order[0]).toBe('event');
+
+    // Auto-dispatch fires detached — wait for it to start and verify ordering
+    await vi.waitFor(() => expect(unitRun).toHaveBeenCalledTimes(1));
+    expect(order).toContain('unit-start');
+    expect(order.indexOf('event')).toBeLessThan(order.indexOf('unit-start'));
+
+    releaseUnit();
+  });
+
   it('publishes a start event after a successful lifecycle start', async () => {
     const run = makeRun();
     const runStep = makeRunStep();
@@ -454,7 +493,7 @@ describe('DefaultOrchestrator.dispatch', () => {
     const unitRun = vi.fn().mockResolvedValue({ directive: 'advance' });
     const unitOfWork: RunUnitOfWork = { run: unitRun };
     const { publisher, events } = makeRecordingPublisher();
-    const { orchestrator } = makeOrchestrator({ runs, unitOfWork, events: publisher });
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork, events: publisher, autoDispatch: { enabled: false } });
 
     const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
 
@@ -592,7 +631,7 @@ describe('DefaultOrchestrator.dispatch — bounded queue', () => {
         return { directive: 'advance' };
       })
     };
-    const { orchestrator } = makeOrchestrator({ runs, unitOfWork, dispatchQueue });
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork, dispatchQueue, autoDispatch: { enabled: false } });
 
     await Promise.all([
       orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' }),
@@ -633,7 +672,7 @@ describe('DefaultOrchestrator.dispatch — bounded queue', () => {
         return { directive: 'advance' };
       })
     };
-    const { orchestrator } = makeOrchestrator({ runs, unitOfWork, dispatchQueue });
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork, dispatchQueue, autoDispatch: { enabled: false } });
 
     const firstResult = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
     expect(firstResult.run.currentStep).toBe('failed');
@@ -692,7 +731,7 @@ describe('DefaultOrchestrator.tick', () => {
       recordRunStepTransition: vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep })
     });
     const unitOfWork: RunUnitOfWork = { run: vi.fn().mockResolvedValue({ directive: 'advance' }) };
-    const { orchestrator } = makeOrchestrator({ runs, unitOfWork });
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork, autoDispatch: { enabled: false } });
 
     const result = await orchestrator.tick({ runId: 'run_1', tenant: 'tenant_1' });
     expect(result).toEqual({ status: 'dispatched', runId: 'run_1' });
@@ -1466,38 +1505,113 @@ describe('DefaultOrchestrator.applyDirective — spec approval finalizer', () =>
 });
 
 describe('DefaultOrchestrator auto-dispatch policy', () => {
+  it('skips duplicate automatic schedules for the same run while one is in flight', async () => {
+    let releaseUnit!: () => void;
+    const unitRun = vi.fn(async () => {
+      await new Promise<void>((resolve) => { releaseUnit = resolve; });
+      return { directive: 'advance' };
+    });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'spec.author' })),
+      recordRunStepTransition: vi.fn()
+        .mockResolvedValueOnce({ run: makeRun({ currentStep: 'spec.author' }), runStep: makeRunStep({ step: 'spec.author', phase: 'spec' }) })
+        .mockResolvedValueOnce({ run: makeRun({ currentStep: 'spec.author' }), runStep: makeRunStep({ step: 'spec.author', phase: 'spec' }) })
+    });
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork: { run: unitRun } });
+
+    await orchestrator.applyDirective({ runId: 'run_1', directive: 'advance', tenant: 'tenant_1' });
+    await vi.waitFor(() => expect(unitRun).toHaveBeenCalledTimes(1));
+    await orchestrator.applyDirective({ runId: 'run_1', directive: 'advance', tenant: 'tenant_1' });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(unitRun).toHaveBeenCalledTimes(1);
+    releaseUnit();
+  });
+
+  it('catches detached dispatch rejections and safely fails an eligible run', async () => {
+    const logger = { warn: vi.fn() };
+    const runAtDispatch = makeRun({ currentStep: 'intake' });
+    const failedRun = makeRun({ currentStep: 'failed', terminal: true });
+    // findById is called four times in the failure path:
+    //   1. dispatch() reads the run before invoking unitOfWork
+    //   2. #handleAutoDispatchFailure re-reads the run to check current state
+    //   3. applyDirective({ directive: 'fail' }) reads the run in the guard check
+    //   4. applyRunDirective() reads the run again to perform the transition
+    const findById = vi.fn()
+      .mockResolvedValueOnce(runAtDispatch)
+      .mockResolvedValueOnce(runAtDispatch)
+      .mockResolvedValueOnce(runAtDispatch)
+      .mockResolvedValueOnce(runAtDispatch);
+    const recordRunStepTransition = vi.fn().mockResolvedValue({
+      run: failedRun,
+      runStep: makeRunStep({ id: 'failed_step', step: 'failed' })
+    });
+    const runs = makeFakeRunRepo({
+      findById,
+      recordRunLifecycleStart: vi.fn().mockResolvedValue({ run: runAtDispatch, runStep: makeRunStep() }),
+      recordRunStepTransition
+    });
+    const unitRun = vi.fn().mockRejectedValue(new Error('provider token secret=do-not-log'));
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork: { run: unitRun }, logger });
+
+    await orchestrator.createRun({ topicId: 'topic_1', owner, tenant: 'tenant_1', workKind: 'feature' });
+
+    await vi.waitFor(() => expect(recordRunStepTransition).toHaveBeenCalledWith(expect.objectContaining({ currentStep: 'failed' })));
+    expect(logger.warn).toHaveBeenCalledWith(
+      'Auto-dispatch failed after a committed run transition.',
+      expect.objectContaining({ runId: 'run_1', tenant: 'tenant_1', code: 'unexpected_error' })
+    );
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('do-not-log');
+  });
+
+  it('does not overwrite human or terminal state from a detached failure handler', async () => {
+    const logger = { warn: vi.fn() };
+    const runs = makeFakeRunRepo({
+      recordRunLifecycleStart: vi.fn().mockResolvedValue({ run: makeRun({ currentStep: 'intake' }), runStep: makeRunStep() }),
+      findById: vi.fn()
+        .mockResolvedValueOnce(makeRun({ currentStep: 'intake' }))
+        .mockResolvedValueOnce(makeRun({ currentStep: 'spec.human_review' })),
+      recordRunStepTransition: vi.fn()
+    });
+    const unitRun = vi.fn().mockRejectedValue(new Error('runner unavailable'));
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork: { run: unitRun }, logger });
+
+    await orchestrator.createRun({ topicId: 'topic_1', owner, tenant: 'tenant_1', workKind: 'feature' });
+    await vi.waitFor(() => expect(unitRun).toHaveBeenCalledTimes(1));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(runs.recordRunStepTransition).not.toHaveBeenCalled();
+  });
+
   it('auto-dispatches system and ai steps but not human or terminal steps', async () => {
     const unitRun = vi.fn().mockResolvedValue({ directive: 'advance' });
     const logger = { warn: vi.fn() };
+    // findById is called by dispatch() before invoking unitRun — always return intake step run
     const runs = makeFakeRunRepo({
       findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'intake' })),
       recordRunStepTransition: vi
         .fn()
+        // 1st: explicit applyDirective intake->spec.author (triggers auto-dispatch)
         .mockResolvedValueOnce({
           run: makeRun({ currentStep: 'spec.author' }),
           runStep: makeRunStep({ id: 'step_2', step: 'spec.author', phase: 'spec' })
         })
+        // 2nd: auto-dispatched applyDirective (spec.author->spec.human_review — human, no further dispatch)
         .mockResolvedValueOnce({
           run: makeRun({ currentStep: 'spec.human_review' }),
           runStep: makeRunStep({ id: 'step_3', step: 'spec.human_review', phase: 'spec' })
-        })
-        .mockResolvedValueOnce({
-          run: makeRun({ currentStep: 'done', terminal: true }),
-          runStep: makeRunStep({ id: 'step_4', step: 'done' })
         })
     });
     const { orchestrator } = makeOrchestrator({ runs, unitOfWork: { run: unitRun }, logger });
 
     await orchestrator.applyDirective({ runId: 'run_1', directive: 'advance', tenant: 'tenant_1' });
-    await new Promise<void>((resolve) => setImmediate(resolve));
 
-    expect(unitRun).toHaveBeenCalledTimes(1);
+    // Wait for the detached auto-dispatch to complete
+    await vi.waitFor(() => expect(unitRun).toHaveBeenCalledTimes(1));
     expect(unitRun.mock.calls[0]?.[0]).toMatchObject({ runId: 'run_1', tenant: 'tenant_1' });
 
-    await orchestrator.applyDirective({ runId: 'run_1', directive: 'advance', tenant: 'tenant_1' });
-    await orchestrator.applyDirective({ runId: 'run_1', directive: 'advance', tenant: 'tenant_1' });
+    // spec.human_review is human-waiting — no further auto-dispatch
     await new Promise<void>((resolve) => setImmediate(resolve));
-
     expect(unitRun).toHaveBeenCalledTimes(1);
     expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('Unknown run step'), expect.anything());
   });

@@ -296,6 +296,8 @@ export class DefaultOrchestrator implements Orchestrator {
       tenant: state.run.tenant
     });
 
+    this.#scheduleAutoDispatch(state.run);
+
     return { run: state.run, runStep: state.runStep };
   }
 
@@ -399,6 +401,8 @@ export class DefaultOrchestrator implements Orchestrator {
       runStep: result.runStep,
       tenant: result.run.tenant
     });
+
+    this.#scheduleAutoDispatch(result.run);
 
     return result;
   }
@@ -514,6 +518,8 @@ export class DefaultOrchestrator implements Orchestrator {
       tenant: state.run.tenant
     });
 
+    this.#scheduleAutoDispatch(state.run);
+
     return { run: state.run, runStep: state.runStep };
   }
 
@@ -607,6 +613,90 @@ export class DefaultOrchestrator implements Orchestrator {
       return false;
     }
     return stepDefinition.waitingOn === 'system' || stepDefinition.waitingOn === 'ai';
+  }
+
+  #scheduleAutoDispatch(run: Run): void {
+    if (!this.#autoDispatchEnabled) return;
+    if (!this.#shouldAutoDispatch(run)) return;
+    if (this.#autoDispatchInFlightRunIds.has(run.id)) return;
+
+    this.#autoDispatchInFlightRunIds.add(run.id);
+    void Promise.resolve()
+      .then(() => this.dispatch({ runId: run.id, tenant: run.tenant }))
+      .catch((error: unknown) => this.#handleAutoDispatchFailure(run, error))
+      .finally(() => {
+        this.#autoDispatchInFlightRunIds.delete(run.id);
+      });
+  }
+
+  async #handleAutoDispatchFailure(run: Run, error: unknown): Promise<void> {
+    const code = error instanceof OrchestratorError ? error.code : 'unexpected_error';
+    this.#logger?.warn('Auto-dispatch failed after a committed run transition.', {
+      runId: run.id,
+      tenant: run.tenant,
+      currentStep: run.currentStep,
+      code,
+      message: this.#safeFailureMessage(error)
+    });
+
+    if (this.#isExpectedAutoDispatchFailure(error)) {
+      return;
+    }
+
+    let current: Run | null;
+    try {
+      current = await this.#runs.findById(run.id);
+    } catch (readError) {
+      this.#logger?.warn('Failed to read run after auto-dispatch failure.', {
+        runId: run.id,
+        tenant: run.tenant,
+        code: readError instanceof OrchestratorError ? readError.code : 'read_failed'
+      });
+      return;
+    }
+
+    if (current === null || current.tenant !== run.tenant || current.terminal || !this.#shouldAutoDispatch(current)) {
+      return;
+    }
+
+    try {
+      await this.applyDirective({ runId: run.id, tenant: run.tenant, directive: 'fail' });
+    } catch (failError) {
+      const failCode = failError instanceof OrchestratorError ? failError.code : 'unexpected_error';
+      if (failError instanceof OrchestratorError && this.#isExpectedAutoDispatchFailure(failError)) {
+        this.#logger?.warn('Auto-dispatch failure was not applied because run state changed.', {
+          runId: run.id,
+          tenant: run.tenant,
+          code: failCode
+        });
+        return;
+      }
+      this.#logger?.warn('Failed to mark run failed after auto-dispatch rejection.', {
+        runId: run.id,
+        tenant: run.tenant,
+        code: failCode,
+        message: this.#safeFailureMessage(failError)
+      });
+    }
+  }
+
+  #safeFailureMessage(error: unknown): string {
+    if (error instanceof OrchestratorError) {
+      return error.code;
+    }
+    if (error instanceof Error) {
+      return error.name;
+    }
+    return typeof error;
+  }
+
+  #isExpectedAutoDispatchFailure(error: unknown): boolean {
+    return error instanceof OrchestratorError && (
+      error.code === 'missing_run' ||
+      error.code === 'forbidden' ||
+      error.code === 'terminal_run' ||
+      error.code === 'invalid_transition'
+    );
   }
 
   async #runSpecAuthoringCompletion(
