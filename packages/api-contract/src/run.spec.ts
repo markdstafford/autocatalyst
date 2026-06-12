@@ -8,7 +8,8 @@ import {
   runIdParamsSchema,
   runListResponseSchema,
   runResourcePath,
-  runSchema
+  runSchema,
+  waitingOnSchema
 } from './run.js';
 
 const validRun = {
@@ -77,5 +78,30 @@ describe('run contract extensions', () => {
 
   it('rejects unknown top-level fields in run list responses', () => {
     expect(() => runListResponseSchema.parse({ runs: [], nextCursor: null })).toThrow();
+  });
+
+  it('accepts valid waitingOn values on run responses', () => {
+    for (const waitingOn of ['system', 'ai', 'human', 'none'] as const) {
+      expect(runSchema.parse({ ...validRun, waitingOn }).waitingOn).toBe(waitingOn);
+    }
+  });
+
+  it('keeps waitingOn optional for additive compatibility', () => {
+    const parsed = runSchema.parse(validRun);
+    expect(parsed.waitingOn).toBeUndefined();
+  });
+
+  it('rejects invalid waitingOn values', () => {
+    expect(() => runSchema.parse({ ...validRun, waitingOn: 'reviewer' })).toThrow();
+  });
+
+  it('parses run list responses with waitingOn', () => {
+    expect(runListResponseSchema.parse({
+      runs: [{ ...validRun, waitingOn: 'human' }]
+    }).runs[0]?.waitingOn).toBe('human');
+  });
+
+  it('exports the waitingOn enum contract', () => {
+    expect(waitingOnSchema.options).toEqual(['system', 'ai', 'human', 'none']);
   });
 });

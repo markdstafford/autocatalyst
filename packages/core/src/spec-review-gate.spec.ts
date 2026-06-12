@@ -55,4 +55,15 @@ describe('assertSpecReviewGateCanAdvance', () => {
       { listBlockingFeedback: async () => feedback }
     )).rejects.toMatchObject({ blockingFeedbackIds: ['fb_1', 'fb_2'] });
   });
+
+  // Regression: API-created feedback (always starts as 'open') must block the gate.
+  // This ensures feedback submitted via POST /v1/runs/:id/feedback cannot be silently
+  // ignored when spec.human_review tries to advance.
+  it('blocks feedback with status open — the initial status of API-created feedback', async () => {
+    const apiFeedback = { id: 'fb_api', status: 'open', target: 'artifact' } as unknown as Feedback;
+    await expect(assertSpecReviewGateCanAdvance(
+      { run: makeRun() },
+      { listBlockingFeedback: async () => [apiFeedback] }
+    )).rejects.toMatchObject({ code: 'feedback_gate_blocked', blockingFeedbackIds: ['fb_api'] });
+  });
 });

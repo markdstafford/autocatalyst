@@ -14,6 +14,8 @@ import {
   createConversationWithFirstRunRequestSchema,
   createProbeResourceRequestSchema,
   createProbeResourceSuccessStatusCode,
+  createRunFeedbackRequestSchema,
+  createRunFeedbackSuccessStatusCode,
   createSecretRequestSchema,
   createSecretResponseSchema,
   createSecretSuccessStatusCode,
@@ -21,8 +23,11 @@ import {
   deleteConfigurationRecordSuccessStatusCode,
   errorResponseSchema,
   eventsStreamPath,
+  feedbackSchema,
   forbiddenErrorCode,
+  getRunSpecSuccessStatusCode,
   getRunSuccessStatusCode,
+  listRunFeedbackSuccessStatusCode,
   listRunsSuccessStatusCode,
   runListResponseSchema,
   healthResponseSchema,
@@ -40,7 +45,11 @@ import {
   runEventsMediaType,
   runEventsPath,
   runEventsSuccessStatusCode,
+  runFeedbackListResponseSchema,
+  runFeedbackPath,
   runIdParamsSchema,
+  runSpecPath,
+  runSpecResponseSchema,
   runStepListResponseSchema,
   runStepsPath,
   secretCollectionPath,
@@ -50,6 +59,7 @@ import {
   type CreateConfigurationRecordRequest,
   type CreateConversationWithFirstRunRequest,
   type CreateProbeResourceRequest,
+  type CreateRunFeedbackRequest,
   type CreateSecretRequest,
   type ErrorResponse,
   type ProbeResourceIdParams,
@@ -428,6 +438,105 @@ export async function registerControlPlaneRoutes(
         await reply.status(listRunsSuccessStatusCode).send(
           runListResponseSchema.parse({ runs: result.runs })
         );
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(reply, error);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    // Spec review: GET /v1/runs/:id/spec
+    protectedApp.get(runSpecPath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'run_spec.read', (request) => ({
+        kind: 'run_spec' as const,
+        id: (request.params as { id: string }).id,
+        path: '/v1/runs/:id/spec' as const
+      }))
+    }, async (request, reply) => {
+      let params: RunIdParams;
+      try {
+        params = runIdParamsSchema.parse(request.params);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const principal = requirePrincipalFromRequest(request);
+      try {
+        const result = await dependencies.controlPlane.getRunSpec({
+          principal,
+          tenant: principal.tenantId,
+          runId: params.id
+        });
+        await reply.status(getRunSpecSuccessStatusCode).send(runSpecResponseSchema.parse(result));
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(reply, error);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    // Spec review: POST /v1/runs/:id/feedback
+    protectedApp.post(runFeedbackPath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'run_feedback.create', (request) => ({
+        kind: 'run_feedback' as const,
+        id: (request.params as { id: string }).id,
+        path: '/v1/runs/:id/feedback' as const
+      }))
+    }, async (request, reply) => {
+      let params: RunIdParams;
+      let body: CreateRunFeedbackRequest;
+      try {
+        params = runIdParamsSchema.parse(request.params);
+        body = createRunFeedbackRequestSchema.parse(request.body);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const principal = requirePrincipalFromRequest(request);
+      try {
+        const feedback = await dependencies.controlPlane.createRunFeedback({
+          principal,
+          tenant: principal.tenantId,
+          runId: params.id,
+          request: body
+        });
+        await reply.status(createRunFeedbackSuccessStatusCode).send(feedbackSchema.parse(feedback));
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(reply, error);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    // Spec review: GET /v1/runs/:id/feedback
+    protectedApp.get(runFeedbackPath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'run_feedback.list', (request) => ({
+        kind: 'run_feedback' as const,
+        id: (request.params as { id: string }).id,
+        path: '/v1/runs/:id/feedback' as const
+      }))
+    }, async (request, reply) => {
+      let params: RunIdParams;
+      try {
+        params = runIdParamsSchema.parse(request.params);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const principal = requirePrincipalFromRequest(request);
+      try {
+        const result = await dependencies.controlPlane.listRunFeedback({
+          principal,
+          tenant: principal.tenantId,
+          runId: params.id
+        });
+        await reply.status(listRunFeedbackSuccessStatusCode).send(runFeedbackListResponseSchema.parse(result));
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
           await handleControlPlaneServiceError(reply, error);

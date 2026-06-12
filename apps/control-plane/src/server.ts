@@ -851,7 +851,12 @@ export async function createControlPlaneServer(
     runs: domainRepos.runs,
     runSteps: domainRepos.runSteps,
     events: eventBus,
-    policy
+    policy,
+    artifacts: domainRepos.artifacts,
+    feedback: domainRepos.feedback,
+    runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
+    workspaceFilesystem: nodeFilesystem,
+    feedbackLifecycle: feedbackLifecycleDependencies
   });
   options.onControlPlaneReady?.(controlPlane);
 

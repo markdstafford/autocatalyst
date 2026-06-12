@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import type { RunnerStepCheckpointEvent } from '@autocatalyst/api-contract';
@@ -156,7 +156,12 @@ describe('control-plane-service integration (SQLite + real orchestrator + real e
         runs: domainRepos.runs,
         runSteps: domainRepos.runSteps,
         events: eventBus,
-        policy: permissivePolicyDecisionPoint
+        policy: permissivePolicyDecisionPoint,
+        artifacts: domainRepos.artifacts,
+        feedback: domainRepos.feedback,
+        runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
+        workspaceFilesystem: { writeFile: vi.fn(), readFile: vi.fn().mockResolvedValue('') },
+        feedbackLifecycle: { feedback: domainRepos.feedback, ids: () => 'id', clock: () => new Date().toISOString() }
       });
 
       // Create a project so the conversation ingress has a valid project.
@@ -318,7 +323,12 @@ describe('execution boundary integration (real StubRunner through two-root works
         runs: domainRepos.runs,
         runSteps: domainRepos.runSteps,
         events: eventBus,
-        policy: permissivePolicyDecisionPoint
+        policy: permissivePolicyDecisionPoint,
+        artifacts: domainRepos.artifacts,
+        feedback: domainRepos.feedback,
+        runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
+        workspaceFilesystem: { writeFile: vi.fn(), readFile: vi.fn().mockResolvedValue('') },
+        feedbackLifecycle: { feedback: domainRepos.feedback, ids: () => 'id', clock: () => new Date().toISOString() }
       });
 
       // Create conversation + first run
@@ -448,7 +458,12 @@ describe('execution boundary integration (real StubRunner through two-root works
         runs: domainRepos.runs,
         runSteps: domainRepos.runSteps,
         events: eventBus,
-        policy: permissivePolicyDecisionPoint
+        policy: permissivePolicyDecisionPoint,
+        artifacts: domainRepos.artifacts,
+        feedback: domainRepos.feedback,
+        runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
+        workspaceFilesystem: { writeFile: vi.fn(), readFile: vi.fn().mockResolvedValue('') },
+        feedbackLifecycle: { feedback: domainRepos.feedback, ids: () => 'id', clock: () => new Date().toISOString() }
       });
 
       const createResp = await controlPlane.createConversationWithFirstRun({

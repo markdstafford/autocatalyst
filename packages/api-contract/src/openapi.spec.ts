@@ -59,6 +59,40 @@ describe('OpenAPI generation', () => {
     expect(document.paths['/v1/runs/{id}/events']?.get?.responses?.['200']).toBeDefined();
   });
 
+  it('documents GET /v1/runs/{id}/spec', () => {
+    const document = generateOpenApiDocument();
+    const operation = document.paths['/v1/runs/{id}/spec']?.get as
+      | { responses?: Record<string, unknown>; tags?: string[] }
+      | undefined;
+    expect(operation).toBeDefined();
+    expect(operation?.tags).toContain('runs');
+    expect(operation?.responses?.['200']).toBeDefined();
+    expect(operation?.responses?.['401']).toBeDefined();
+    expect(operation?.responses?.['404']).toBeDefined();
+  });
+
+  it('documents POST /v1/runs/{id}/feedback', () => {
+    const document = generateOpenApiDocument();
+    const operation = document.paths['/v1/runs/{id}/feedback']?.post as
+      | { responses?: Record<string, unknown>; tags?: string[] }
+      | undefined;
+    expect(operation).toBeDefined();
+    expect(operation?.tags).toContain('runs');
+    expect(operation?.responses?.['201']).toBeDefined();
+    expect(operation?.responses?.['401']).toBeDefined();
+  });
+
+  it('documents GET /v1/runs/{id}/feedback', () => {
+    const document = generateOpenApiDocument();
+    const operation = document.paths['/v1/runs/{id}/feedback']?.get as
+      | { responses?: Record<string, unknown>; tags?: string[] }
+      | undefined;
+    expect(operation).toBeDefined();
+    expect(operation?.tags).toContain('runs');
+    expect(operation?.responses?.['200']).toBeDefined();
+    expect(operation?.responses?.['401']).toBeDefined();
+  });
+
   it('documents GET /v1/runs with success and auth errors', () => {
     const document = generateOpenApiDocument();
     const operation = document.paths['/v1/runs']?.get as

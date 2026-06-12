@@ -337,6 +337,160 @@ describe('orchestrator ingress methods', () => {
   });
 });
 
+describe('ControlPlaneClient.getRunSpec', () => {
+  it('calls GET /v1/runs/:id/spec with bearer header and parses response', async () => {
+    const specResponse = {
+      artifact: {
+        id: 'art_1', runId: 'run_1',
+        owner: { kind: 'human', id: 'user_1', tenantId: 'tenant_1', displayName: 'Phoebe' },
+        tenant: 'tenant_1', kind: 'enhancement_spec', canonicalRecord: 'file',
+        location: 'context-human/specs/enhancement-spec.md',
+        cachedStatus: 'draft', publicationRefs: [],
+        createdAt: '2026-06-12T00:00:00.000Z', updatedAt: '2026-06-12T00:00:00.000Z'
+      },
+      markdown: '---\ncreated: 2026-06-12\nlast_updated: 2026-06-12\nstatus: implementing\nspecced_by: autocatalyst\n---\n# Title\n',
+      frontmatter: {
+        created: '2026-06-12', last_updated: '2026-06-12',
+        status: 'implementing', specced_by: 'autocatalyst'
+      }
+    };
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => specResponse
+    });
+    const client = createControlPlaneClient({
+      baseUrl: 'http://localhost:3000',
+      bearerToken: 'test-token',
+      fetch: mockFetch
+    });
+    const result = await client.getRunSpec('run_1');
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.objectContaining({ href: expect.stringContaining('/v1/runs/run_1/spec') }),
+      expect.objectContaining({ method: 'GET', headers: expect.objectContaining({ authorization: 'Bearer test-token' }) })
+    );
+    expect(result.artifact.id).toBe('art_1');
+  });
+
+  it('throws ControlPlaneClientError on error response', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({ error: { code: 'not_found', message: 'Spec not found.' } })
+    });
+    const client = createControlPlaneClient({
+      baseUrl: 'http://localhost:3000',
+      bearerToken: 'test-token',
+      fetch: mockFetch
+    });
+    await expect(client.getRunSpec('run_1')).rejects.toBeInstanceOf(ControlPlaneClientError);
+  });
+});
+
+describe('ControlPlaneClient.createRunFeedback', () => {
+  const feedbackItem = {
+    id: 'fb_1', runId: 'run_1',
+    owner: { kind: 'human', id: 'user_1', tenantId: 'tenant_1', displayName: 'Phoebe' },
+    tenant: 'tenant_1', target: 'artifact', status: 'open',
+    title: 'Scope unclear', body: 'Please clarify.',
+    thread: [{ id: 'th_1', author: { kind: 'human', id: 'user_1', tenantId: 'tenant_1', displayName: 'Phoebe' }, body: 'Please clarify.', createdAt: '2026-06-12T00:00:00.000Z' }],
+    createdAt: '2026-06-12T00:00:00.000Z', updatedAt: '2026-06-12T00:00:00.000Z'
+  };
+
+  it('calls POST /v1/runs/:id/feedback and parses created feedback', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 201,
+      json: async () => feedbackItem
+    });
+    const client = createControlPlaneClient({
+      baseUrl: 'http://localhost:3000',
+      bearerToken: 'test-token',
+      fetch: mockFetch
+    });
+    const result = await client.createRunFeedback('run_1', {
+      target: 'artifact',
+      title: 'Scope unclear',
+      body: 'Please clarify.'
+    });
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.objectContaining({ href: expect.stringContaining('/v1/runs/run_1/feedback') }),
+      expect.objectContaining({ method: 'POST' })
+    );
+    expect(result.id).toBe('fb_1');
+    expect(result.status).toBe('open');
+  });
+
+  it('rejects non-artifact target before sending (pre-send validation)', async () => {
+    const mockFetch = vi.fn();
+    const client = createControlPlaneClient({
+      baseUrl: 'http://localhost:3000',
+      bearerToken: 'test-token',
+      fetch: mockFetch
+    });
+    await expect(client.createRunFeedback('run_1', {
+      target: 'implementation' as unknown as 'artifact',
+      title: 'Title',
+      body: 'Body'
+    })).rejects.toThrow();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('throws ControlPlaneClientError on error response', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({ error: { code: 'not_found', message: 'Run not found.' } })
+    });
+    const client = createControlPlaneClient({
+      baseUrl: 'http://localhost:3000',
+      bearerToken: 'test-token',
+      fetch: mockFetch
+    });
+    await expect(client.createRunFeedback('run_1', {
+      target: 'artifact',
+      title: 'Title',
+      body: 'Body'
+    })).rejects.toBeInstanceOf(ControlPlaneClientError);
+  });
+});
+
+describe('ControlPlaneClient.listRunFeedback', () => {
+  it('calls GET /v1/runs/:id/feedback and parses feedback list', async () => {
+    const listResponse = { feedback: [] };
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => listResponse
+    });
+    const client = createControlPlaneClient({
+      baseUrl: 'http://localhost:3000',
+      bearerToken: 'test-token',
+      fetch: mockFetch
+    });
+    const result = await client.listRunFeedback('run_1');
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.objectContaining({ href: expect.stringContaining('/v1/runs/run_1/feedback') }),
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(result.feedback).toHaveLength(0);
+  });
+
+  it('throws ControlPlaneClientError on error response', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({ error: { code: 'not_found', message: 'Run not found.' } })
+    });
+    const client = createControlPlaneClient({
+      baseUrl: 'http://localhost:3000',
+      bearerToken: 'test-token',
+      fetch: mockFetch
+    });
+    await expect(client.listRunFeedback('run_1')).rejects.toBeInstanceOf(ControlPlaneClientError);
+  });
+});
+
 describe('control-plane SDK client against a test server', () => {
   let testApp: ReturnType<typeof Fastify> | undefined;
 
