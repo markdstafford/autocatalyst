@@ -429,7 +429,7 @@ describe('ControlPlaneClient.createRunFeedback', () => {
       fetch: mockFetch
     });
     await expect(client.createRunFeedback('run_1', {
-      target: 'implementation' as any,
+      target: 'implementation' as unknown as 'artifact',
       title: 'Title',
       body: 'Body'
     })).rejects.toThrow();

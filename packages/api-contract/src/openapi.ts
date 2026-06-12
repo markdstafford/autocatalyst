@@ -352,7 +352,7 @@ export function generateOpenApiDocument(): OpenApiDocument {
   // GET /v1/runs/{id}/spec
   registry.registerPath({
     method: 'get',
-    path: '/v1/runs/{id}/spec',
+    path: runSpecPath.replace(':id', '{id}') as '/v1/runs/{id}/spec',
     tags: ['runs'],
     request: { params: RunIdParams },
     responses: {
@@ -366,7 +366,7 @@ export function generateOpenApiDocument(): OpenApiDocument {
   // POST /v1/runs/{id}/feedback
   registry.registerPath({
     method: 'post',
-    path: '/v1/runs/{id}/feedback',
+    path: runFeedbackPath.replace(':id', '{id}') as '/v1/runs/{id}/feedback',
     tags: ['runs'],
     request: {
       params: RunIdParams,
@@ -383,7 +383,7 @@ export function generateOpenApiDocument(): OpenApiDocument {
   // GET /v1/runs/{id}/feedback
   registry.registerPath({
     method: 'get',
-    path: '/v1/runs/{id}/feedback',
+    path: runFeedbackPath.replace(':id', '{id}') as '/v1/runs/{id}/feedback',
     tags: ['runs'],
     request: { params: RunIdParams },
     responses: {
