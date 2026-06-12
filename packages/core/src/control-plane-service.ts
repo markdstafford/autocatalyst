@@ -4,11 +4,13 @@ import type {
   NonModelPrincipal,
   Principal,
   Run,
+  RunSpecResponse,
   RunStep
 } from '@autocatalyst/api-contract';
-import { createConversationWithFirstRunResponseSchema } from '@autocatalyst/api-contract';
+import { createConversationWithFirstRunResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
 
-import type { RunRepository, RunStepRepository } from './domain-repositories.js';
+import type { ArtifactRepository, FeedbackRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository } from './domain-repositories.js';
+import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
 import {
   OrchestratorError,
   type OrchestratedConversationResult,
@@ -18,6 +20,8 @@ import {
 import type { PolicyDecisionPoint, PolicyResourceDescriptor } from './policy.js';
 import type { RunEventStore, RunEventSubscription } from './run-events.js';
 import type { RunEventReplayResult } from '@autocatalyst/api-contract';
+import { parseSpecFrontmatter } from './spec-frontmatter.js';
+import type { WorkspaceFileSystemPort } from './spec-authoring-service.js';
 
 // --- Error types ---
 
@@ -118,6 +122,14 @@ export type ServiceTickResult =
   | { readonly status: 'noop' }
   | { readonly status: 'dispatched'; readonly runId: string };
 
+export interface ServiceGetRunSpecInput {
+  readonly principal: Principal;
+  readonly tenant: string;
+  readonly runId: string;
+}
+
+export type ServiceGetRunSpecResult = RunSpecResponse;
+
 // --- Service interface ---
 
 export interface ControlPlaneService {
@@ -130,6 +142,7 @@ export interface ControlPlaneService {
   subscribeRunEvents(input: ServiceSubscribeRunEventsInput): Promise<RunEventSubscription>;
   replayRunEvents(input: ServiceReplayRunEventsInput): Promise<RunEventReplayResult>;
   tick(input: ServiceTickInput): Promise<ServiceTickResult>;
+  getRunSpec(input: ServiceGetRunSpecInput): Promise<ServiceGetRunSpecResult>;
 }
 
 // --- Constructor options ---
@@ -140,6 +153,11 @@ export interface DefaultControlPlaneServiceOptions {
   readonly runSteps: RunStepRepository;
   readonly events: RunEventStore;
   readonly policy: PolicyDecisionPoint;
+  readonly artifacts: ArtifactRepository;
+  readonly feedback: FeedbackRepository;
+  readonly runWorkspaceMetadata: RunWorkspaceMetadataRepository;
+  readonly workspaceFilesystem: WorkspaceFileSystemPort;
+  readonly feedbackLifecycle: FeedbackLifecycleDependencies;
 }
 
 // --- Implementation ---
@@ -157,12 +175,27 @@ function mapOrchestratorErrorCode(code: OrchestratorErrorCode): ControlPlaneServ
   }
 }
 
+function specArtifactKindForRun(workKind: string): 'feature_spec' | 'enhancement_spec' | null {
+  if (workKind === 'feature') return 'feature_spec';
+  if (workKind === 'enhancement') return 'enhancement_spec';
+  return null;
+}
+
+function persistenceFailed(message: string, cause?: unknown): ControlPlaneServiceError {
+  return new ControlPlaneServiceError('persistence_failed', message, cause === undefined ? {} : { cause });
+}
+
 export class DefaultControlPlaneService implements ControlPlaneService {
   readonly #orchestrator: Orchestrator;
   readonly #runs: RunRepository;
   readonly #runSteps: RunStepRepository;
   readonly #events: RunEventStore;
   readonly #policy: PolicyDecisionPoint;
+  readonly #artifacts: ArtifactRepository;
+  readonly #feedback: FeedbackRepository;
+  readonly #runWorkspaceMetadata: RunWorkspaceMetadataRepository;
+  readonly #workspaceFilesystem: WorkspaceFileSystemPort;
+  readonly #feedbackLifecycle: FeedbackLifecycleDependencies;
 
   constructor(options: DefaultControlPlaneServiceOptions) {
     this.#orchestrator = options.orchestrator;
@@ -170,6 +203,11 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     this.#runSteps = options.runSteps;
     this.#events = options.events;
     this.#policy = options.policy;
+    this.#artifacts = options.artifacts;
+    this.#feedback = options.feedback;
+    this.#runWorkspaceMetadata = options.runWorkspaceMetadata;
+    this.#workspaceFilesystem = options.workspaceFilesystem;
+    this.#feedbackLifecycle = options.feedbackLifecycle;
   }
 
   async createConversationWithFirstRun(
@@ -366,5 +404,72 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       }
       throw error;
     }
+  }
+
+  async getRunSpec(input: ServiceGetRunSpecInput): Promise<ServiceGetRunSpecResult> {
+    const decision = await this.#policy.authorize({
+      principal: input.principal,
+      action: 'run_spec.read',
+      resource: { kind: 'run_spec', id: input.runId, path: '/v1/runs/:id/spec' }
+    });
+    if (!decision.allowed) {
+      throw new ControlPlaneServiceError('forbidden', 'Not authorized to read run spec.');
+    }
+
+    // Load and tenant-check the run
+    const run = await this.#runs.findById(input.runId);
+    if (run === null) {
+      throw new ControlPlaneServiceError('not_found', `Run '${input.runId}' not found.`);
+    }
+    if (run.tenant !== input.tenant) {
+      throw new ControlPlaneServiceError('not_found', 'Run not accessible.');
+    }
+
+    // Select the spec artifact kind based on run work kind
+    const artifactKind = specArtifactKindForRun(run.workKind);
+    if (artifactKind === null) {
+      throw new ControlPlaneServiceError('not_found', `Run work kind '${run.workKind}' does not support spec reads.`);
+    }
+
+    // Find the current spec artifact
+    const artifact = await this.#artifacts.findByRunAndKind({ runId: run.id, kind: artifactKind });
+    if (artifact === null) {
+      throw new ControlPlaneServiceError('not_found', `No spec artifact found for run '${run.id}'.`);
+    }
+    if (artifact.canonicalRecord !== 'file') {
+      throw new ControlPlaneServiceError('not_found', `Spec artifact for run '${run.id}' is not file-canonical.`);
+    }
+
+    // Load workspace metadata
+    let workspaceMetadata;
+    try {
+      workspaceMetadata = await this.#runWorkspaceMetadata.findByRunId(run.id);
+    } catch (error) {
+      throw persistenceFailed('Failed to load workspace metadata.', error);
+    }
+    if (workspaceMetadata === null) {
+      throw persistenceFailed('Run workspace metadata is not available.');
+    }
+
+    // Read the committed spec file
+    let markdown: string;
+    try {
+      markdown = await this.#workspaceFilesystem.readFile({
+        workspaceRepoRoot: workspaceMetadata.workspaceRepoRoot,
+        relativePath: artifact.location
+      });
+    } catch (error) {
+      throw persistenceFailed('Failed to read spec file.', error);
+    }
+
+    // Parse frontmatter
+    let frontmatter;
+    try {
+      frontmatter = parseSpecFrontmatter(markdown);
+    } catch (error) {
+      throw persistenceFailed('Failed to parse spec frontmatter.', error);
+    }
+
+    return runSpecResponseSchema.parse({ artifact, markdown, frontmatter });
   }
 }

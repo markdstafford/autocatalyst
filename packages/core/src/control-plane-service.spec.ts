@@ -1,17 +1,20 @@
 import { describe, expect, it, vi } from 'vitest';
 import type {
+  Artifact,
   CreateConversationWithFirstRunRequest,
+  Feedback,
   Principal,
   Run,
   RunStep
 } from '@autocatalyst/api-contract';
 
 import { ControlPlaneServiceError, DefaultControlPlaneService } from './control-plane-service.js';
-import type { RunRepository, RunStepRepository } from './domain-repositories.js';
+import type { ArtifactRepository, FeedbackRepository, RunRepository, RunStepRepository, RunWorkspaceMetadata, RunWorkspaceMetadataRepository } from './domain-repositories.js';
 import type { Orchestrator, OrchestratedConversationResult } from './orchestrator.js';
 import { OrchestratorError } from './orchestrator.js';
 import { permissivePolicyDecisionPoint, type PolicyDecisionPoint } from './policy.js';
 import { InMemoryRunEventBus, type RunEventStore, type RunEventSubscriber, type RunEventSubscription } from './run-events.js';
+import type { WorkspaceFileSystemPort } from './spec-authoring-service.js';
 
 const timestamp = '2026-06-08T00:00:00.000Z';
 const owner = {
@@ -128,19 +131,87 @@ function makeDenyPolicy(): PolicyDecisionPoint {
   return { authorize: vi.fn().mockResolvedValue({ allowed: false }) };
 }
 
+const validMarkdown = '---\ncreated: 2026-06-12\nlast_updated: 2026-06-12\nstatus: implementing\nissue: 41\nspecced_by: autocatalyst\n---\n# Spec Title\n';
+
+const validArtifact: Artifact = {
+  id: 'art_1',
+  runId: 'run_1',
+  owner,
+  tenant: 'tenant_1',
+  kind: 'feature_spec' as const,
+  canonicalRecord: 'file' as const,
+  location: 'context-human/specs/feature-spec.md',
+  cachedStatus: 'draft' as const,
+  publicationRefs: [],
+  createdAt: timestamp,
+  updatedAt: timestamp
+};
+
+const validWorkspaceMetadata: RunWorkspaceMetadata = {
+  runId: 'run_1',
+  workspaceHandle: 'handle_1',
+  workspaceRepoRoot: '/tmp/workspace',
+  createdAt: timestamp
+};
+
+function makeFakeArtifactRepository(artifact?: Artifact | null): ArtifactRepository {
+  return {
+    create: vi.fn(),
+    findById: vi.fn(),
+    listByRun: vi.fn(),
+    findByRunAndKind: vi.fn().mockResolvedValue(artifact !== undefined ? artifact : validArtifact),
+    updateCachedStatus: vi.fn()
+  };
+}
+
+function makeFakeFeedbackRepository(): FeedbackRepository {
+  return {
+    create: vi.fn(),
+    findById: vi.fn(),
+    listByRun: vi.fn().mockResolvedValue([] as readonly Feedback[]),
+    updateStatusAndAppendThread: vi.fn()
+  };
+}
+
+function makeFakeRunWorkspaceMetadataRepository(metadata?: RunWorkspaceMetadata | null): RunWorkspaceMetadataRepository {
+  return {
+    upsert: vi.fn(),
+    findByRunId: vi.fn().mockResolvedValue(metadata !== undefined ? metadata : validWorkspaceMetadata)
+  };
+}
+
+function makeFakeWorkspaceFilesystem(content?: string): WorkspaceFileSystemPort {
+  return {
+    writeFile: vi.fn(),
+    readFile: vi.fn().mockResolvedValue(content !== undefined ? content : validMarkdown)
+  };
+}
+
 function makeService(options?: {
   orchestrator?: Orchestrator;
   runs?: RunRepository;
   runSteps?: RunStepRepository;
   events?: RunEventStore | RunEventSubscriber;
   policy?: PolicyDecisionPoint;
+  artifacts?: ArtifactRepository;
+  runWorkspaceMetadata?: RunWorkspaceMetadataRepository;
+  workspaceFilesystem?: WorkspaceFileSystemPort;
 }) {
   return new DefaultControlPlaneService({
     orchestrator: options?.orchestrator ?? makeFakeOrchestrator(),
     runs: options?.runs ?? makeFakeRunRepo(),
     runSteps: options?.runSteps ?? makeFakeRunStepRepo(),
     events: (options?.events ?? new InMemoryRunEventBus()) as RunEventStore,
-    policy: options?.policy ?? permissivePolicyDecisionPoint
+    policy: options?.policy ?? permissivePolicyDecisionPoint,
+    artifacts: options?.artifacts ?? makeFakeArtifactRepository(),
+    feedback: makeFakeFeedbackRepository(),
+    runWorkspaceMetadata: options?.runWorkspaceMetadata ?? makeFakeRunWorkspaceMetadataRepository(),
+    workspaceFilesystem: options?.workspaceFilesystem ?? makeFakeWorkspaceFilesystem(),
+    feedbackLifecycle: {
+      feedback: makeFakeFeedbackRepository(),
+      ids: () => 'id_1',
+      clock: () => timestamp
+    }
   });
 }
 
@@ -503,5 +574,127 @@ describe('DefaultControlPlaneService.tick', () => {
     const error = await service.tick({ principal, tenant: 'tenant_1', runId: 'run_1' }).catch((e) => e);
     expect(error).toBeInstanceOf(ControlPlaneServiceError);
     expect((error as ControlPlaneServiceError).code).toBe('not_found');
+  });
+});
+
+describe('DefaultControlPlaneService.getRunSpec', () => {
+  it('returns artifact, markdown, and parsed frontmatter for a valid feature run', async () => {
+    const service = makeService();
+    const result = await service.getRunSpec({ principal, tenant: 'tenant_1', runId: 'run_1' });
+    expect(result.artifact.id).toBe('art_1');
+    expect(result.markdown).toBe(validMarkdown);
+    expect(result.frontmatter.status).toBe('implementing');
+  });
+
+  it('selects enhancement_spec artifact kind for an enhancement run', async () => {
+    const enhancementRun = makeRun({ workKind: 'enhancement', id: 'run_1' });
+    const enhancementArtifact: Artifact = { ...validArtifact, kind: 'enhancement_spec' };
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(enhancementRun) });
+    const artifacts = makeFakeArtifactRepository(enhancementArtifact);
+    const service = makeService({ runs, artifacts });
+    const result = await service.getRunSpec({ principal, tenant: 'tenant_1', runId: 'run_1' });
+    expect(result.artifact.kind).toBe('enhancement_spec');
+    expect(artifacts.findByRunAndKind).toHaveBeenCalledWith({ runId: 'run_1', kind: 'enhancement_spec' });
+  });
+
+  it('throws not_found when the run is missing', async () => {
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(null) });
+    const service = makeService({ runs });
+    await expect(
+      service.getRunSpec({ principal, tenant: 'tenant_1', runId: 'missing' })
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('throws not_found on cross-tenant run', async () => {
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(makeRun({ tenant: 'tenant_2', owner: { ...owner, tenantId: 'tenant_2' } }))
+    });
+    const service = makeService({ runs });
+    await expect(
+      service.getRunSpec({ principal, tenant: 'tenant_1', runId: 'run_1' })
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('throws not_found for unsupported work kind', async () => {
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(makeRun({ workKind: 'bug' }))
+    });
+    const service = makeService({ runs });
+    await expect(
+      service.getRunSpec({ principal, tenant: 'tenant_1', runId: 'run_1' })
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('throws not_found when no spec artifact exists', async () => {
+    const artifacts = makeFakeArtifactRepository(null);
+    const service = makeService({ artifacts });
+    await expect(
+      service.getRunSpec({ principal, tenant: 'tenant_1', runId: 'run_1' })
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('throws not_found when artifact is not file-canonical', async () => {
+    const nonFileArtifact: Artifact = { ...validArtifact, canonicalRecord: 'issue' };
+    const artifacts = makeFakeArtifactRepository(nonFileArtifact);
+    const service = makeService({ artifacts });
+    await expect(
+      service.getRunSpec({ principal, tenant: 'tenant_1', runId: 'run_1' })
+    ).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('throws persistence_failed when workspace metadata is missing', async () => {
+    const runWorkspaceMetadata = makeFakeRunWorkspaceMetadataRepository(null);
+    const service = makeService({ runWorkspaceMetadata });
+    await expect(
+      service.getRunSpec({ principal, tenant: 'tenant_1', runId: 'run_1' })
+    ).rejects.toMatchObject({ code: 'persistence_failed' });
+  });
+
+  it('throws persistence_failed when workspace metadata lookup throws', async () => {
+    const runWorkspaceMetadata: RunWorkspaceMetadataRepository = {
+      upsert: vi.fn(),
+      findByRunId: vi.fn().mockRejectedValue(new Error('DB error'))
+    };
+    const service = makeService({ runWorkspaceMetadata });
+    await expect(
+      service.getRunSpec({ principal, tenant: 'tenant_1', runId: 'run_1' })
+    ).rejects.toMatchObject({ code: 'persistence_failed' });
+  });
+
+  it('throws persistence_failed when file read throws', async () => {
+    const workspaceFilesystem: WorkspaceFileSystemPort = {
+      writeFile: vi.fn(),
+      readFile: vi.fn().mockRejectedValue(new Error('ENOENT'))
+    };
+    const service = makeService({ workspaceFilesystem });
+    await expect(
+      service.getRunSpec({ principal, tenant: 'tenant_1', runId: 'run_1' })
+    ).rejects.toMatchObject({ code: 'persistence_failed' });
+  });
+
+  it('throws persistence_failed when frontmatter is malformed', async () => {
+    const workspaceFilesystem = makeFakeWorkspaceFilesystem('no frontmatter here\n');
+    const service = makeService({ workspaceFilesystem });
+    await expect(
+      service.getRunSpec({ principal, tenant: 'tenant_1', runId: 'run_1' })
+    ).rejects.toMatchObject({ code: 'persistence_failed' });
+  });
+
+  it('throws forbidden when policy denies', async () => {
+    const service = makeService({ policy: makeDenyPolicy() });
+    await expect(
+      service.getRunSpec({ principal, tenant: 'tenant_1', runId: 'run_1' })
+    ).rejects.toMatchObject({ code: 'forbidden' });
+  });
+
+  it('authorizes with run_spec.read on the run_spec resource', async () => {
+    const policy: PolicyDecisionPoint = { authorize: vi.fn().mockResolvedValue({ allowed: true }) };
+    const service = makeService({ policy });
+    await service.getRunSpec({ principal, tenant: 'tenant_1', runId: 'run_1' });
+    expect(policy.authorize).toHaveBeenCalledWith({
+      principal,
+      action: 'run_spec.read',
+      resource: { kind: 'run_spec', id: 'run_1', path: '/v1/runs/:id/spec' }
+    });
   });
 });
