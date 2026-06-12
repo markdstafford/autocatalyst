@@ -93,6 +93,9 @@ import type {
   RecordRunStepTransitionInput,
   RecordRunStepTransitionResult,
   RunRepository,
+  RunWorkspaceMetadata,
+  RunWorkspaceMetadataRepository,
+  UpsertRunWorkspaceMetadataInput,
   RunStepRepository,
   SessionRepository,
   TestResultRepository,
@@ -117,6 +120,7 @@ import {
   publications,
   pullRequests,
   runSteps,
+  runWorkspaceMetadata,
   runs,
   sessions,
   testResults,
@@ -1492,6 +1496,54 @@ export class DrizzleConversationIngressRepository implements ConversationIngress
 }
 
 // ---------------------------------------------------------------------------
+// RunWorkspaceMetadata repository — internal only, never exposed publicly
+// ---------------------------------------------------------------------------
+
+export class DrizzleRunWorkspaceMetadataRepository implements RunWorkspaceMetadataRepository {
+  readonly #database: ReturnType<typeof asInternalSqliteDatabase>;
+
+  constructor(database: SqliteDatabase) {
+    this.#database = asInternalSqliteDatabase(database);
+  }
+
+  async upsert(input: UpsertRunWorkspaceMetadataInput): Promise<void> {
+    this.#database.drizzle
+      .insert(runWorkspaceMetadata)
+      .values({
+        runId: input.runId,
+        workspaceHandle: input.workspaceHandle,
+        workspaceRepoRoot: input.workspaceRepoRoot,
+        createdAt: input.createdAt
+      })
+      .onConflictDoUpdate({
+        target: runWorkspaceMetadata.runId,
+        set: {
+          workspaceHandle: input.workspaceHandle,
+          workspaceRepoRoot: input.workspaceRepoRoot
+        }
+      })
+      .run();
+  }
+
+  async findByRunId(runId: string): Promise<RunWorkspaceMetadata | null> {
+    const rows = this.#database.drizzle
+      .select()
+      .from(runWorkspaceMetadata)
+      .where(eq(runWorkspaceMetadata.runId, runId))
+      .limit(1)
+      .all();
+    const row = rows[0];
+    if (row === undefined) return null;
+    return {
+      runId: row.runId,
+      workspaceHandle: row.workspaceHandle,
+      workspaceRepoRoot: row.workspaceRepoRoot,
+      createdAt: row.createdAt
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Repository collection factory
 // ---------------------------------------------------------------------------
 
@@ -1508,6 +1560,7 @@ export interface DrizzleDomainRepositories extends DomainRepositories {
   runSteps: DrizzleRunStepRepository;
   sessions: DrizzleSessionRepository;
   testResults: DrizzleTestResultRepository;
+  runWorkspaceMetadata: DrizzleRunWorkspaceMetadataRepository;
 }
 
 export function createDrizzleDomainRepositories(database: SqliteDatabase): DrizzleDomainRepositories {
@@ -1523,6 +1576,7 @@ export function createDrizzleDomainRepositories(database: SqliteDatabase): Drizz
     pullRequests: new DrizzlePullRequestRepository(database),
     runSteps: new DrizzleRunStepRepository(database),
     sessions: new DrizzleSessionRepository(database),
-    testResults: new DrizzleTestResultRepository(database)
+    testResults: new DrizzleTestResultRepository(database),
+    runWorkspaceMetadata: new DrizzleRunWorkspaceMetadataRepository(database)
   };
 }

@@ -11,6 +11,7 @@ export {
   DrizzlePullRequestRepository,
   DrizzleRunRepository,
   DrizzleRunStepRepository,
+  DrizzleRunWorkspaceMetadataRepository,
   DrizzleSessionRepository,
   DrizzleTestResultRepository,
   DrizzleTopicRepository,

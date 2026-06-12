@@ -22,7 +22,8 @@ import type {
   ConversationIngressRepository,
   CreateConversationTopicMessageAndRunResult,
   LifecycleRunStepInput,
-  RunRepository
+  RunRepository,
+  RunWorkspaceMetadataRepository
 } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
 import { listBlockingFeedback, resolveApproverAddressedFeedback } from './feedback-lifecycle.js';
@@ -186,6 +187,7 @@ export interface DefaultOrchestratorOptions {
   readonly logger?: { warn(message: string, details?: unknown): void };
   readonly specAuthoringDependencies?: SpecAuthoringServiceDependencies;
   readonly resolveWorkspaceContext?: WorkspaceContextResolver;
+  readonly runWorkspaceMetadata?: RunWorkspaceMetadataRepository;
   readonly resolveApproverAddressedFeedback?: typeof resolveApproverAddressedFeedback;
   readonly assertSpecReviewGateCanAdvance?: typeof assertSpecReviewGateCanAdvance;
   readonly feedbackLifecycleDependencies?: FeedbackLifecycleDependencies;
@@ -218,6 +220,7 @@ export class DefaultOrchestrator implements Orchestrator {
   readonly #logger: { warn(message: string, details?: unknown): void } | undefined;
   readonly #specAuthoringDependencies: SpecAuthoringServiceDependencies | undefined;
   readonly #resolveWorkspaceContext: WorkspaceContextResolver | undefined;
+  readonly #runWorkspaceMetadata: RunWorkspaceMetadataRepository | undefined;
   readonly #resolveApproverAddressedFeedback: typeof resolveApproverAddressedFeedback;
   readonly #assertSpecReviewGateCanAdvance: typeof assertSpecReviewGateCanAdvance;
   readonly #feedbackLifecycleDependencies: FeedbackLifecycleDependencies | undefined;
@@ -236,6 +239,7 @@ export class DefaultOrchestrator implements Orchestrator {
     this.#logger = options.logger;
     this.#specAuthoringDependencies = options.specAuthoringDependencies;
     this.#resolveWorkspaceContext = options.resolveWorkspaceContext;
+    this.#runWorkspaceMetadata = options.runWorkspaceMetadata;
     this.#resolveApproverAddressedFeedback = options.resolveApproverAddressedFeedback ?? resolveApproverAddressedFeedback;
     this.#assertSpecReviewGateCanAdvance = options.assertSpecReviewGateCanAdvance ?? assertSpecReviewGateCanAdvance;
     this.#feedbackLifecycleDependencies = options.feedbackLifecycleDependencies;
@@ -612,6 +616,22 @@ export class DefaultOrchestrator implements Orchestrator {
         },
         this.#specAuthoringDependencies
       );
+
+      // Persist workspace root for restart recovery — stored in internal-only
+      // metadata and never included in public RunStep checkpoints or API responses.
+      if (this.#runWorkspaceMetadata !== undefined) {
+        try {
+          await this.#runWorkspaceMetadata.upsert({
+            runId,
+            workspaceHandle: workspaceContext.workspaceHandle,
+            workspaceRepoRoot: workspaceContext.workspaceRepoRoot,
+            createdAt: this.#clock?.() ?? new Date().toISOString()
+          });
+        } catch (persistCause) {
+          this.#logger?.warn('Failed to persist workspace metadata for run.', { runId, cause: persistCause });
+        }
+      }
+
       return { kind: 'ok', checkpointResult: output.checkpointResult };
     } catch (cause) {
       this.#logger?.warn('spec.author completion service failed.', { runId, cause });

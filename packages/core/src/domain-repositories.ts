@@ -169,6 +169,27 @@ export interface TestResultRepository {
   listByRun(runId: string): Promise<readonly TestResult[]>;
 }
 
+export interface UpsertRunWorkspaceMetadataInput {
+  readonly runId: string;
+  readonly workspaceHandle: string;
+  readonly workspaceRepoRoot: string;
+  readonly createdAt: string;
+}
+
+export interface RunWorkspaceMetadata {
+  readonly runId: string;
+  readonly workspaceHandle: string;
+  readonly workspaceRepoRoot: string;
+  readonly createdAt: string;
+}
+
+/** Internal-only repository for persisting workspace paths across server restarts.
+ *  The workspaceRepoRoot field is never exposed through public API responses. */
+export interface RunWorkspaceMetadataRepository {
+  upsert(input: UpsertRunWorkspaceMetadataInput): Promise<void>;
+  findByRunId(runId: string): Promise<RunWorkspaceMetadata | null>;
+}
+
 export interface DomainRepositories {
   projects: ProjectRepository;
   conversations: ConversationRepository;
@@ -182,6 +203,7 @@ export interface DomainRepositories {
   runSteps: RunStepRepository;
   sessions: SessionRepository;
   testResults: TestResultRepository;
+  runWorkspaceMetadata: RunWorkspaceMetadataRepository;
 }
 
 export interface CreateConversationTopicMessageAndRunInput {

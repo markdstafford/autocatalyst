@@ -819,13 +819,18 @@ export async function createControlPlaneServer(
     clock: () => new Date().toISOString()
   };
 
-  // Resolve workspace root from in-memory registry; tests can inject their own resolver via options.
+  // Resolve workspace root: try in-memory registry first (populated during materialization),
+  // then fall back to the persistent run_workspace_metadata store for post-restart recovery.
   const internalResolveWorkspaceContext: WorkspaceContextResolver = async ({ runId }) => {
     const repoRoot = runWorkspaceRootRegistry.get(runId);
-    if (repoRoot === undefined) {
-      throw new Error(`Workspace root not available for run '${runId}'. The run may not have been dispatched yet or the server was restarted.`);
+    if (repoRoot !== undefined) {
+      return { workspaceRepoRoot: repoRoot, workspaceHandle: runId };
     }
-    return { workspaceRepoRoot: repoRoot, workspaceHandle: runId };
+    const persisted = await domainRepos.runWorkspaceMetadata.findByRunId(runId);
+    if (persisted !== null) {
+      return { workspaceRepoRoot: persisted.workspaceRepoRoot, workspaceHandle: persisted.workspaceHandle };
+    }
+    throw new Error(`Workspace root not available for run '${runId}'. The run may not have been dispatched yet.`);
   };
 
   const orchestrator = new DefaultOrchestrator({
@@ -837,6 +842,7 @@ export async function createControlPlaneServer(
     feedbackLifecycleDependencies,
     specAuthoringDependencies,
     specApprovalFinalizerDependencies,
+    runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
     resolveWorkspaceContext: options.resolveWorkspaceContext ?? internalResolveWorkspaceContext
   });
   const policy = options.policy ?? permissivePolicyDecisionPoint;

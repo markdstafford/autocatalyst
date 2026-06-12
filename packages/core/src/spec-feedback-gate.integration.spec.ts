@@ -32,7 +32,10 @@ import type {
   RecordRunLifecycleStartResult,
   RecordRunStepTransitionInput,
   RecordRunStepTransitionResult,
-  RunRepository
+  RunRepository,
+  RunWorkspaceMetadata,
+  RunWorkspaceMetadataRepository,
+  UpsertRunWorkspaceMetadataInput
 } from './domain-repositories.js';
 import { FeedbackConcurrentModificationError } from './domain-repositories.js';
 import type { WorkspaceFileSystemPort, WorkspaceGitPort } from './spec-authoring-service.js';
@@ -304,6 +307,27 @@ class InMemoryFeedbackRepository implements FeedbackRepository {
 }
 
 // ---------------------------------------------------------------------------
+// In-memory RunWorkspaceMetadataRepository
+// ---------------------------------------------------------------------------
+
+class InMemoryRunWorkspaceMetadataRepository implements RunWorkspaceMetadataRepository {
+  readonly #store = new Map<string, RunWorkspaceMetadata>();
+
+  async upsert(input: UpsertRunWorkspaceMetadataInput): Promise<void> {
+    this.#store.set(input.runId, {
+      runId: input.runId,
+      workspaceHandle: input.workspaceHandle,
+      workspaceRepoRoot: input.workspaceRepoRoot,
+      createdAt: input.createdAt
+    });
+  }
+
+  async findByRunId(runId: string): Promise<RunWorkspaceMetadata | null> {
+    return this.#store.get(runId) ?? null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Fake filesystem and git ports
 // ---------------------------------------------------------------------------
 
@@ -353,12 +377,16 @@ interface TestHarness {
   readonly orchestrator: DefaultOrchestrator;
   readonly run: Run;
   readonly repos: {
+    readonly runs: InMemoryRunRepository;
     readonly artifacts: InMemoryArtifactRepository;
     readonly feedback: InMemoryFeedbackRepository;
+    readonly runWorkspaceMetadata: InMemoryRunWorkspaceMetadataRepository;
   };
   readonly feedbackDeps: FeedbackLifecycleDependencies;
   readonly files: FakeFiles;
   readonly workspaceRepoRoot: string;
+  readonly filesystem: WorkspaceFileSystemPort;
+  readonly git: WorkspaceGitPort;
 }
 
 const workspaceRepoRoot = '/tmp/test-repo';
@@ -383,6 +411,7 @@ async function makeAuthoredSpecAtReviewHarness(): Promise<TestHarness> {
   const runRepository = new InMemoryRunRepository();
   const artifactRepository = new InMemoryArtifactRepository();
   const feedbackRepository = new InMemoryFeedbackRepository();
+  const runWorkspaceMetadataRepository = new InMemoryRunWorkspaceMetadataRepository();
   const { port: filesystem, files } = makeFakeFilesystem();
   const { port: git } = makeFakeGit();
 
@@ -427,6 +456,7 @@ async function makeAuthoredSpecAtReviewHarness(): Promise<TestHarness> {
       git,
       clock: () => timestamp
     },
+    runWorkspaceMetadata: runWorkspaceMetadataRepository,
     resolveWorkspaceContext: async () => ({
       workspaceRepoRoot,
       workspaceHandle: 'ws_1'
@@ -468,12 +498,16 @@ async function makeAuthoredSpecAtReviewHarness(): Promise<TestHarness> {
     orchestrator,
     run,
     repos: {
+      runs: runRepository,
       artifacts: artifactRepository,
-      feedback: feedbackRepository
+      feedback: feedbackRepository,
+      runWorkspaceMetadata: runWorkspaceMetadataRepository
     },
     feedbackDeps,
     files: fakeFiles,
-    workspaceRepoRoot
+    workspaceRepoRoot,
+    filesystem,
+    git
   };
 }
 
@@ -533,5 +567,57 @@ describe('spec feedback gate integration', () => {
     const harness = await makeAuthoredSpecAtReviewHarness();
     await expect(harness.orchestrator.dispatch({ runId: harness.run.id, tenant: harness.run.tenant }))
       .rejects.toMatchObject({ code: 'invalid_transition' });
+  });
+
+  it('can approve spec after simulated server restart by resolving workspace from persistent metadata', async () => {
+    // Run was authored before the simulated restart
+    const harness = await makeAuthoredSpecAtReviewHarness();
+
+    // Verify workspace metadata was persisted during spec authoring
+    const persisted = await harness.repos.runWorkspaceMetadata.findByRunId(harness.run.id);
+    expect(persisted).not.toBeNull();
+    expect(persisted?.workspaceRepoRoot).toBe(workspaceRepoRoot);
+
+    // Simulate restart: build a new orchestrator that has no in-memory workspace registry
+    // but can resolve the workspace from the persistent metadata store.
+    const restartedOrchestrator = new DefaultOrchestrator({
+      runs: harness.repos.runs,
+      conversationIngress: {
+        createConversationTopicMessageAndRun: async () => {
+          throw new Error('not used');
+        }
+      },
+      events: new InMemoryRunEventBus(),
+      dispatchQueue: new RunDispatchQueue({ maxConcurrent: 4 }),
+      clock: () => timestamp,
+      feedbackLifecycleDependencies: harness.feedbackDeps,
+      resolveApproverAddressedFeedback,
+      assertSpecReviewGateCanAdvance,
+      finalizeSpecApproval,
+      specApprovalFinalizerDependencies: {
+        artifacts: harness.repos.artifacts,
+        filesystem: harness.filesystem,
+        git: harness.git,
+        clock: () => timestamp
+      },
+      // Post-restart: resolve workspace from persistent metadata, not in-memory registry
+      resolveWorkspaceContext: async ({ runId }) => {
+        const meta = await harness.repos.runWorkspaceMetadata.findByRunId(runId);
+        if (meta === null) throw new Error(`No workspace metadata for run '${runId}'`);
+        return { workspaceRepoRoot: meta.workspaceRepoRoot, workspaceHandle: meta.workspaceHandle };
+      }
+    });
+
+    // Approval should succeed using the persistent workspace root
+    const approved = await restartedOrchestrator.applyDirective({
+      runId: harness.run.id,
+      tenant: harness.run.tenant,
+      directive: 'advance',
+      principal: { id: 'phoebe', kind: 'human', tenantId: 'tenant_1' }
+    });
+    expect(approved.run.currentStep).toBe('implementation.plan');
+
+    const artifacts = await harness.repos.artifacts.listByRun(harness.run.id);
+    expect(artifacts[0]?.cachedStatus).toBe('approved');
   });
 });

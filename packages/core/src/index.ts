@@ -79,7 +79,10 @@ export type {
   RecordRunLifecycleStartInput,
   RecordRunLifecycleStartResult,
   RecordRunStepTransitionInput,
-  RecordRunStepTransitionResult
+  RecordRunStepTransitionResult,
+  RunWorkspaceMetadata,
+  RunWorkspaceMetadataRepository,
+  UpsertRunWorkspaceMetadataInput
 } from './domain-repositories.js';
 
 export { FeedbackConcurrentModificationError } from './domain-repositories.js';
