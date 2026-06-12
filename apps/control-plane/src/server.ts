@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, writeFile, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -461,19 +461,61 @@ export function createNodeWorkspaceFilesystem(): WorkspaceFileSystemPort {
     async writeFile(input) {
       const fullPath = assertWithinWorkspaceRootLexical(input.workspaceRepoRoot, input.relativePath);
       const parentDir = dirname(fullPath);
-      await mkdir(parentDir, { recursive: true });
 
-      // After mkdir follows any symlinks in the path, verify the real parent
-      // is still contained within the real workspace root. This guards against
-      // intermediate symlinks that resolve outside the workspace.
       const realWorkspaceRoot = await realpath(input.workspaceRepoRoot);
-      const realParent = await realpath(parentDir);
-      await assertRealPathWithinWorkspaceRoot(realWorkspaceRoot, realParent);
+
+      // Find the nearest existing ancestor of the target parent directory by walking
+      // upward until lstat succeeds. We must do this BEFORE calling mkdir so that
+      // an intermediate symlink (e.g. context-human -> /outside) cannot cause mkdir
+      // to create directories outside the workspace before the containment check runs.
+      let ancestor = parentDir;
+      while (true) {
+        try {
+          await lstat(ancestor);
+          break; // path exists — stop walking
+        } catch (err) {
+          if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+          const parent = dirname(ancestor);
+          if (parent === ancestor) break; // reached filesystem root
+          ancestor = parent;
+        }
+      }
+
+      // Lstat every path component from workspaceRepoRoot to the nearest existing
+      // ancestor, rejecting symlinks before any directory is created.
+      const relFromRoot = relative(input.workspaceRepoRoot, ancestor);
+      if (relFromRoot !== '' && !relFromRoot.startsWith('..') && !isAbsolute(relFromRoot)) {
+        const segments = relFromRoot.split('/').filter(Boolean);
+        let current = input.workspaceRepoRoot;
+        for (const segment of segments) {
+          current = join(current, segment);
+          const componentStat = await lstat(current);
+          if (componentStat.isSymbolicLink()) {
+            throw new Error(
+              `Symlink found in workspace path component before mkdir; refusing to create directories: ${relative(input.workspaceRepoRoot, current)}`
+            );
+          }
+        }
+      }
+
+      // Resolve the canonical realpath of the verified existing ancestor and check
+      // it is inside the real workspace root.
+      const realAncestor = await realpath(ancestor);
+      await assertRealPathWithinWorkspaceRoot(realWorkspaceRoot, realAncestor);
+
+      // Derive the resolved parent directory by appending the remaining (not-yet-created)
+      // path segments to the verified real ancestor and verify containment.
+      const resolvedParentDir = resolve(realAncestor, relative(ancestor, parentDir));
+      await assertRealPathWithinWorkspaceRoot(realWorkspaceRoot, resolvedParentDir);
+
+      // Only now create the missing directories inside the verified real tree.
+      await mkdir(resolvedParentDir, { recursive: true });
 
       // Reject target paths that are symlinks — writing through a symlink could
       // overwrite a file outside the workspace even though the lexical path looks safe.
+      const resolvedFull = resolve(resolvedParentDir, basename(fullPath));
       try {
-        const targetStat = await lstat(fullPath);
+        const targetStat = await lstat(resolvedFull);
         if (targetStat.isSymbolicLink()) {
           throw new Error('Target path is a symlink; writing to symlinks is not permitted.');
         }
@@ -481,10 +523,10 @@ export function createNodeWorkspaceFilesystem(): WorkspaceFileSystemPort {
         if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
           throw err;
         }
-        // ENOENT: file does not yet exist — real parent containment check above is sufficient.
+        // ENOENT: file does not yet exist — real ancestor containment check above is sufficient.
       }
 
-      await writeFile(fullPath, input.contents, 'utf-8');
+      await writeFile(resolvedFull, input.contents, 'utf-8');
     },
     async readFile(input) {
       const fullPath = assertWithinWorkspaceRootLexical(input.workspaceRepoRoot, input.relativePath);

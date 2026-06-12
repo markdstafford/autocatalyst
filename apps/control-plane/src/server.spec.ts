@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -380,6 +380,26 @@ describe('createNodeWorkspaceFilesystem (symlink containment)', () => {
           contents: 'should not be written'
         })
       ).rejects.toThrow();
+    });
+  });
+
+  it('rejects writeFile when context-human is a symlink to outside and specs does not preexist, and creates no directory outside the workspace', async () => {
+    await withTempDirs(async (workspace, outside) => {
+      // context-human is a symlink to an outside directory; specs does not exist there.
+      await symlink(outside, join(workspace, 'context-human'));
+
+      const fs = createNodeWorkspaceFilesystem();
+      await expect(
+        fs.writeFile({
+          workspaceRepoRoot: workspace,
+          relativePath: 'context-human/specs/feature-symlink-escape.md',
+          contents: 'should not be written'
+        })
+      ).rejects.toThrow();
+
+      // No directory must have been created inside the outside directory.
+      const outsideEntries = await readdir(outside).catch(() => []);
+      expect(outsideEntries).toHaveLength(0);
     });
   });
 
