@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -11,11 +11,15 @@ import {
   createSecretResponseSchema,
   degradedHealthStatusCode,
   errorResponseSchema,
+  feedbackSchema,
   healthResponseSchema,
   principalDiagnosticResponseSchema,
   probeResourceCollectionPath,
   probeResourceSchema,
-  runListResponseSchema
+  runFeedbackListResponseSchema,
+  runListResponseSchema,
+  runSchema,
+  runSpecResponseSchema
 } from '@autocatalyst/api-contract';
 import {
   buildProviderAdapterKey,
@@ -1728,6 +1732,725 @@ describe('real OpenAI agent dispatch - SSE and checkpoint', () => {
         expect(stepsBody.steps[0].runId).toBe(runId);
       } finally {
         await handle.close();
+      }
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Spec review API surface: waitingOn, GET spec, POST/GET feedback
+// ---------------------------------------------------------------------------
+
+const SPEC_MARKDOWN = `---
+created: 2026-06-12
+last_updated: 2026-06-12
+status: implementing
+issue: 41
+specced_by: autocatalyst
+---
+# Enhancement: Spec Review API Surface
+
+## Product requirements
+Test spec content.
+`;
+
+async function seedSpecReviewScenario(
+  databasePath: string,
+  tempDir: string
+): Promise<{ runId: string }> {
+  await mkdir(join(tempDir, 'context-human', 'specs'), { recursive: true });
+  await writeFile(join(tempDir, 'context-human', 'specs', 'enhancement-spec-review.md'), SPEC_MARKDOWN, 'utf-8');
+
+  const seedDb = createSqliteDatabase({ path: databasePath });
+  await migrateSqliteDatabase(seedDb);
+  const seedRepos = createDrizzleDomainRepositories(seedDb);
+
+  const project = await seedRepos.projects.create({
+    owner: hardcodedDevelopmentPrincipal,
+    tenant: hardcodedDevelopmentPrincipal.tenantId,
+    displayName: 'Spec Review Project',
+    repoUrl: 'https://example.test/spec-review',
+    hostRepository: { provider: 'github', owner: 'test', name: 'spec-review' },
+    workspaceRootOverride: null,
+    issueTrackerSetting: null,
+    codeHostSetting: null,
+    credentialRefs: []
+  });
+
+  const conversation = await seedRepos.conversations.create({
+    projectId: project.id,
+    owner: hardcodedDevelopmentPrincipal,
+    tenant: hardcodedDevelopmentPrincipal.tenantId,
+    identity: 'spec-review-test',
+    activeTopicId: null
+  });
+
+  const topic = await seedRepos.topics.create({
+    conversationId: conversation.id,
+    owner: hardcodedDevelopmentPrincipal,
+    tenant: hardcodedDevelopmentPrincipal.tenantId,
+    title: 'Spec review topic',
+    kind: 'main'
+  });
+
+  const run = await seedRepos.runs.create({
+    topicId: topic.id,
+    owner: hardcodedDevelopmentPrincipal,
+    tenant: hardcodedDevelopmentPrincipal.tenantId,
+    workKind: 'enhancement',
+    currentStep: 'spec.human_review',
+    terminal: false
+  });
+
+  await seedRepos.artifacts.create({
+    runId: run.id,
+    owner: hardcodedDevelopmentPrincipal,
+    tenant: hardcodedDevelopmentPrincipal.tenantId,
+    kind: 'enhancement_spec',
+    canonicalRecord: 'file',
+    location: 'context-human/specs/enhancement-spec-review.md',
+    cachedStatus: 'draft',
+    publicationRefs: []
+  });
+
+  await seedRepos.runWorkspaceMetadata.upsert({
+    runId: run.id,
+    workspaceHandle: 'test-workspace',
+    workspaceRepoRoot: tempDir,
+    createdAt: new Date().toISOString()
+  });
+
+  seedDb.close();
+  return { runId: run.id };
+}
+
+describe('spec review API surface integration', () => {
+  it('GET /v1/runs/:id returns waitingOn derived from currentStep', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const tempDir = await mkdtemp(join(tmpdir(), 'spec-review-waton-'));
+      try {
+        const { runId } = await seedSpecReviewScenario(databasePath, tempDir);
+
+        const app = await createControlPlaneServer({
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET
+        });
+        try {
+          const resp = await app.inject({
+            method: 'GET',
+            url: `/v1/runs/${runId}`,
+            headers: { authorization: `Bearer ${BEARER_TOKEN}` }
+          });
+          expect(resp.statusCode).toBe(200);
+          const run = runSchema.parse(resp.json());
+          expect(run.id).toBe(runId);
+          expect(run.currentStep).toBe('spec.human_review');
+          expect(run.waitingOn).toBe('human');
+        } finally {
+          await app.close();
+        }
+      } finally {
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('GET /v1/runs returns waitingOn for each run in list', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const tempDir = await mkdtemp(join(tmpdir(), 'spec-review-list-'));
+      try {
+        await seedSpecReviewScenario(databasePath, tempDir);
+
+        const app = await createControlPlaneServer({
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET
+        });
+        try {
+          const resp = await app.inject({
+            method: 'GET',
+            url: '/v1/runs',
+            headers: { authorization: `Bearer ${BEARER_TOKEN}` }
+          });
+          expect(resp.statusCode).toBe(200);
+          const body = runListResponseSchema.parse(resp.json());
+          expect(body.runs.length).toBeGreaterThanOrEqual(1);
+          const specRun = body.runs.find((r) => r.currentStep === 'spec.human_review');
+          expect(specRun).toBeDefined();
+          expect(specRun?.waitingOn).toBe('human');
+        } finally {
+          await app.close();
+        }
+      } finally {
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('GET /v1/runs/:id/spec returns artifact, markdown, and frontmatter', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const tempDir = await mkdtemp(join(tmpdir(), 'spec-review-spec-'));
+      try {
+        const { runId } = await seedSpecReviewScenario(databasePath, tempDir);
+
+        const app = await createControlPlaneServer({
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET
+        });
+        try {
+          const resp = await app.inject({
+            method: 'GET',
+            url: `/v1/runs/${runId}/spec`,
+            headers: { authorization: `Bearer ${BEARER_TOKEN}` }
+          });
+          expect(resp.statusCode).toBe(200);
+          const body = runSpecResponseSchema.parse(resp.json());
+          expect(body.artifact.kind).toBe('enhancement_spec');
+          expect(body.artifact.location).toBe('context-human/specs/enhancement-spec-review.md');
+          expect(body.markdown).toContain('# Enhancement: Spec Review API Surface');
+          expect(body.frontmatter.specced_by).toBe('autocatalyst');
+          expect(body.frontmatter.status).toBe('implementing');
+          expect(body.frontmatter.issue).toBe(41);
+        } finally {
+          await app.close();
+        }
+      } finally {
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('GET /v1/runs/:id/spec returns 404 for run with no spec artifact', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      // Seed a run with NO artifact
+      const seedDb = createSqliteDatabase({ path: databasePath });
+      await migrateSqliteDatabase(seedDb);
+      const seedRepos = createDrizzleDomainRepositories(seedDb);
+
+      const project = await seedRepos.projects.create({
+        owner: hardcodedDevelopmentPrincipal,
+        tenant: hardcodedDevelopmentPrincipal.tenantId,
+        displayName: 'No Artifact Project',
+        repoUrl: 'https://example.test/no-artifact',
+        hostRepository: { provider: 'github', owner: 'test', name: 'no-artifact' },
+        workspaceRootOverride: null,
+        issueTrackerSetting: null,
+        codeHostSetting: null,
+        credentialRefs: []
+      });
+      const conversation = await seedRepos.conversations.create({
+        projectId: project.id,
+        owner: hardcodedDevelopmentPrincipal,
+        tenant: hardcodedDevelopmentPrincipal.tenantId,
+        identity: 'no-artifact-test',
+        activeTopicId: null
+      });
+      const topic = await seedRepos.topics.create({
+        conversationId: conversation.id,
+        owner: hardcodedDevelopmentPrincipal,
+        tenant: hardcodedDevelopmentPrincipal.tenantId,
+        title: 'No artifact topic',
+        kind: 'main'
+      });
+      const run = await seedRepos.runs.create({
+        topicId: topic.id,
+        owner: hardcodedDevelopmentPrincipal,
+        tenant: hardcodedDevelopmentPrincipal.tenantId,
+        workKind: 'enhancement',
+        currentStep: 'spec.human_review',
+        terminal: false
+      });
+      seedDb.close();
+
+      const app = await createControlPlaneServer({
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET
+      });
+      try {
+        const resp = await app.inject({
+          method: 'GET',
+          url: `/v1/runs/${run.id}/spec`,
+          headers: { authorization: `Bearer ${BEARER_TOKEN}` }
+        });
+        expect(resp.statusCode).toBe(404);
+        const body = errorResponseSchema.parse(resp.json());
+        expect(body.error.code).toBe('not_found');
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
+  it('GET /v1/runs/:id/spec returns 404 for cross-tenant run', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const tempDir = await mkdtemp(join(tmpdir(), 'spec-review-xten-'));
+      try {
+        await mkdir(join(tempDir, 'context-human', 'specs'), { recursive: true });
+        await writeFile(join(tempDir, 'context-human', 'specs', 'enhancement-spec-review.md'), SPEC_MARKDOWN, 'utf-8');
+
+        const tenantOtherOwner = { kind: 'human' as const, id: 'user_other', tenantId: 'tenant_other' };
+
+        const seedDb = createSqliteDatabase({ path: databasePath });
+        await migrateSqliteDatabase(seedDb);
+        const seedRepos = createDrizzleDomainRepositories(seedDb);
+
+        const project = await seedRepos.projects.create({
+          owner: tenantOtherOwner,
+          tenant: 'tenant_other',
+          displayName: 'Other Tenant Project',
+          repoUrl: 'https://example.test/other-tenant',
+          hostRepository: { provider: 'github', owner: 'other', name: 'repo' },
+          workspaceRootOverride: null,
+          issueTrackerSetting: null,
+          codeHostSetting: null,
+          credentialRefs: []
+        });
+        const conversation = await seedRepos.conversations.create({
+          projectId: project.id,
+          owner: tenantOtherOwner,
+          tenant: 'tenant_other',
+          identity: 'cross-tenant-test',
+          activeTopicId: null
+        });
+        const topic = await seedRepos.topics.create({
+          conversationId: conversation.id,
+          owner: tenantOtherOwner,
+          tenant: 'tenant_other',
+          title: 'Cross-tenant topic',
+          kind: 'main'
+        });
+        const run = await seedRepos.runs.create({
+          topicId: topic.id,
+          owner: tenantOtherOwner,
+          tenant: 'tenant_other',
+          workKind: 'enhancement',
+          currentStep: 'spec.human_review',
+          terminal: false
+        });
+        await seedRepos.artifacts.create({
+          runId: run.id,
+          owner: tenantOtherOwner,
+          tenant: 'tenant_other',
+          kind: 'enhancement_spec',
+          canonicalRecord: 'file',
+          location: 'context-human/specs/enhancement-spec-review.md',
+          cachedStatus: 'draft',
+          publicationRefs: []
+        });
+        await seedRepos.runWorkspaceMetadata.upsert({
+          runId: run.id,
+          workspaceHandle: 'other-workspace',
+          workspaceRepoRoot: tempDir,
+          createdAt: new Date().toISOString()
+        });
+        seedDb.close();
+
+        const app = await createControlPlaneServer({
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET
+        });
+        try {
+          // Authenticated as tenant_dev, requesting a tenant_other run → 404
+          const resp = await app.inject({
+            method: 'GET',
+            url: `/v1/runs/${run.id}/spec`,
+            headers: { authorization: `Bearer ${BEARER_TOKEN}` }
+          });
+          expect(resp.statusCode).toBe(404);
+        } finally {
+          await app.close();
+        }
+      } finally {
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('GET /v1/runs/:id/spec returns 500 for valid artifact with missing workspace metadata', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      // Seed run + artifact but NO runWorkspaceMetadata upsert
+      const seedDb = createSqliteDatabase({ path: databasePath });
+      await migrateSqliteDatabase(seedDb);
+      const seedRepos = createDrizzleDomainRepositories(seedDb);
+
+      const project = await seedRepos.projects.create({
+        owner: hardcodedDevelopmentPrincipal,
+        tenant: hardcodedDevelopmentPrincipal.tenantId,
+        displayName: 'Missing Metadata Project',
+        repoUrl: 'https://example.test/missing-meta',
+        hostRepository: { provider: 'github', owner: 'test', name: 'missing-meta' },
+        workspaceRootOverride: null,
+        issueTrackerSetting: null,
+        codeHostSetting: null,
+        credentialRefs: []
+      });
+      const conversation = await seedRepos.conversations.create({
+        projectId: project.id,
+        owner: hardcodedDevelopmentPrincipal,
+        tenant: hardcodedDevelopmentPrincipal.tenantId,
+        identity: 'missing-meta-test',
+        activeTopicId: null
+      });
+      const topic = await seedRepos.topics.create({
+        conversationId: conversation.id,
+        owner: hardcodedDevelopmentPrincipal,
+        tenant: hardcodedDevelopmentPrincipal.tenantId,
+        title: 'Missing metadata topic',
+        kind: 'main'
+      });
+      const run = await seedRepos.runs.create({
+        topicId: topic.id,
+        owner: hardcodedDevelopmentPrincipal,
+        tenant: hardcodedDevelopmentPrincipal.tenantId,
+        workKind: 'enhancement',
+        currentStep: 'spec.human_review',
+        terminal: false
+      });
+      await seedRepos.artifacts.create({
+        runId: run.id,
+        owner: hardcodedDevelopmentPrincipal,
+        tenant: hardcodedDevelopmentPrincipal.tenantId,
+        kind: 'enhancement_spec',
+        canonicalRecord: 'file',
+        location: 'context-human/specs/enhancement-spec-review.md',
+        cachedStatus: 'draft',
+        publicationRefs: []
+      });
+      // No runWorkspaceMetadata upsert → resolveWorkspaceContext will fail
+      seedDb.close();
+
+      const app = await createControlPlaneServer({
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET
+      });
+      try {
+        const resp = await app.inject({
+          method: 'GET',
+          url: `/v1/runs/${run.id}/spec`,
+          headers: { authorization: `Bearer ${BEARER_TOKEN}` }
+        });
+        expect(resp.statusCode).toBe(500);
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
+  it('POST /v1/runs/:id/feedback creates an open feedback item', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const tempDir = await mkdtemp(join(tmpdir(), 'spec-review-fb-'));
+      try {
+        const { runId } = await seedSpecReviewScenario(databasePath, tempDir);
+
+        const app = await createControlPlaneServer({
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET
+        });
+        try {
+          const resp = await app.inject({
+            method: 'POST',
+            url: `/v1/runs/${runId}/feedback`,
+            headers: {
+              authorization: `Bearer ${BEARER_TOKEN}`,
+              'content-type': 'application/json'
+            },
+            payload: {
+              target: 'artifact',
+              title: 'Missing section on error handling',
+              body: 'The spec does not address error handling for edge cases.'
+            }
+          });
+          expect(resp.statusCode).toBe(201);
+          const feedback = feedbackSchema.parse(resp.json());
+          expect(feedback.runId).toBe(runId);
+          expect(feedback.target).toBe('artifact');
+          expect(feedback.title).toBe('Missing section on error handling');
+          expect(feedback.status).toBe('open');
+          expect(feedback.tenant).toBe(hardcodedDevelopmentPrincipal.tenantId);
+        } finally {
+          await app.close();
+        }
+      } finally {
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('GET /v1/runs/:id/feedback lists feedback for the run', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const tempDir = await mkdtemp(join(tmpdir(), 'spec-review-fblist-'));
+      try {
+        const { runId } = await seedSpecReviewScenario(databasePath, tempDir);
+
+        const app = await createControlPlaneServer({
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET
+        });
+        try {
+          // Create two feedback items
+          await app.inject({
+            method: 'POST',
+            url: `/v1/runs/${runId}/feedback`,
+            headers: {
+              authorization: `Bearer ${BEARER_TOKEN}`,
+              'content-type': 'application/json'
+            },
+            payload: {
+              target: 'artifact',
+              title: 'First feedback',
+              body: 'First feedback body.'
+            }
+          });
+          await app.inject({
+            method: 'POST',
+            url: `/v1/runs/${runId}/feedback`,
+            headers: {
+              authorization: `Bearer ${BEARER_TOKEN}`,
+              'content-type': 'application/json'
+            },
+            payload: {
+              target: 'artifact',
+              title: 'Second feedback',
+              body: 'Second feedback body.'
+            }
+          });
+
+          const resp = await app.inject({
+            method: 'GET',
+            url: `/v1/runs/${runId}/feedback`,
+            headers: { authorization: `Bearer ${BEARER_TOKEN}` }
+          });
+          expect(resp.statusCode).toBe(200);
+          const body = runFeedbackListResponseSchema.parse(resp.json());
+          expect(body.feedback).toHaveLength(2);
+          expect(body.feedback.every((f) => f.runId === runId)).toBe(true);
+          const titles = body.feedback.map((f) => f.title);
+          expect(titles).toContain('First feedback');
+          expect(titles).toContain('Second feedback');
+        } finally {
+          await app.close();
+        }
+      } finally {
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('POST /v1/runs/:id/feedback returns 404 for cross-tenant run', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const tempDir = await mkdtemp(join(tmpdir(), 'spec-review-fbxten-'));
+      try {
+        await mkdir(join(tempDir, 'context-human', 'specs'), { recursive: true });
+        await writeFile(join(tempDir, 'context-human', 'specs', 'enhancement-spec-review.md'), SPEC_MARKDOWN, 'utf-8');
+
+        const tenantOtherOwner = { kind: 'human' as const, id: 'user_other', tenantId: 'tenant_other' };
+
+        const seedDb = createSqliteDatabase({ path: databasePath });
+        await migrateSqliteDatabase(seedDb);
+        const seedRepos = createDrizzleDomainRepositories(seedDb);
+
+        const project = await seedRepos.projects.create({
+          owner: tenantOtherOwner,
+          tenant: 'tenant_other',
+          displayName: 'Other Tenant FB Project',
+          repoUrl: 'https://example.test/other-fb',
+          hostRepository: { provider: 'github', owner: 'other', name: 'fb-repo' },
+          workspaceRootOverride: null,
+          issueTrackerSetting: null,
+          codeHostSetting: null,
+          credentialRefs: []
+        });
+        const conversation = await seedRepos.conversations.create({
+          projectId: project.id,
+          owner: tenantOtherOwner,
+          tenant: 'tenant_other',
+          identity: 'cross-tenant-fb-test',
+          activeTopicId: null
+        });
+        const topic = await seedRepos.topics.create({
+          conversationId: conversation.id,
+          owner: tenantOtherOwner,
+          tenant: 'tenant_other',
+          title: 'Cross-tenant feedback topic',
+          kind: 'main'
+        });
+        const run = await seedRepos.runs.create({
+          topicId: topic.id,
+          owner: tenantOtherOwner,
+          tenant: 'tenant_other',
+          workKind: 'enhancement',
+          currentStep: 'spec.human_review',
+          terminal: false
+        });
+        seedDb.close();
+
+        const app = await createControlPlaneServer({
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET
+        });
+        try {
+          const resp = await app.inject({
+            method: 'POST',
+            url: `/v1/runs/${run.id}/feedback`,
+            headers: {
+              authorization: `Bearer ${BEARER_TOKEN}`,
+              'content-type': 'application/json'
+            },
+            payload: {
+              target: 'artifact',
+              title: 'Cross-tenant feedback',
+              body: 'Should be 404.'
+            }
+          });
+          expect(resp.statusCode).toBe(404);
+        } finally {
+          await app.close();
+        }
+      } finally {
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('GET /v1/runs/:id/feedback returns 404 for cross-tenant run', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const tenantOtherOwner = { kind: 'human' as const, id: 'user_other', tenantId: 'tenant_other' };
+
+      const seedDb = createSqliteDatabase({ path: databasePath });
+      await migrateSqliteDatabase(seedDb);
+      const seedRepos = createDrizzleDomainRepositories(seedDb);
+
+      const project = await seedRepos.projects.create({
+        owner: tenantOtherOwner,
+        tenant: 'tenant_other',
+        displayName: 'Other Tenant GET FB Project',
+        repoUrl: 'https://example.test/other-getfb',
+        hostRepository: { provider: 'github', owner: 'other', name: 'getfb-repo' },
+        workspaceRootOverride: null,
+        issueTrackerSetting: null,
+        codeHostSetting: null,
+        credentialRefs: []
+      });
+      const conversation = await seedRepos.conversations.create({
+        projectId: project.id,
+        owner: tenantOtherOwner,
+        tenant: 'tenant_other',
+        identity: 'cross-tenant-getfb-test',
+        activeTopicId: null
+      });
+      const topic = await seedRepos.topics.create({
+        conversationId: conversation.id,
+        owner: tenantOtherOwner,
+        tenant: 'tenant_other',
+        title: 'Cross-tenant GET feedback topic',
+        kind: 'main'
+      });
+      const run = await seedRepos.runs.create({
+        topicId: topic.id,
+        owner: tenantOtherOwner,
+        tenant: 'tenant_other',
+        workKind: 'enhancement',
+        currentStep: 'spec.human_review',
+        terminal: false
+      });
+      seedDb.close();
+
+      const app = await createControlPlaneServer({
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET
+      });
+      try {
+        const resp = await app.inject({
+          method: 'GET',
+          url: `/v1/runs/${run.id}/feedback`,
+          headers: { authorization: `Bearer ${BEARER_TOKEN}` }
+        });
+        expect(resp.statusCode).toBe(404);
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
+  it('POST /v1/runs/:id/feedback returns 400 for invalid target', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const tempDir = await mkdtemp(join(tmpdir(), 'spec-review-fbval-'));
+      try {
+        const { runId } = await seedSpecReviewScenario(databasePath, tempDir);
+
+        const app = await createControlPlaneServer({
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET
+        });
+        try {
+          const resp = await app.inject({
+            method: 'POST',
+            url: `/v1/runs/${runId}/feedback`,
+            headers: {
+              authorization: `Bearer ${BEARER_TOKEN}`,
+              'content-type': 'application/json'
+            },
+            payload: {
+              target: 'invalid_target',
+              title: 'Some feedback',
+              body: 'Some body.'
+            }
+          });
+          expect(resp.statusCode).toBe(400);
+          const body = errorResponseSchema.parse(resp.json());
+          expect(body.error.code).toBe('validation_error');
+        } finally {
+          await app.close();
+        }
+      } finally {
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('POST /v1/runs/:id/feedback returns 400 for empty title', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const tempDir = await mkdtemp(join(tmpdir(), 'spec-review-fbempty-'));
+      try {
+        const { runId } = await seedSpecReviewScenario(databasePath, tempDir);
+
+        const app = await createControlPlaneServer({
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET
+        });
+        try {
+          const resp = await app.inject({
+            method: 'POST',
+            url: `/v1/runs/${runId}/feedback`,
+            headers: {
+              authorization: `Bearer ${BEARER_TOKEN}`,
+              'content-type': 'application/json'
+            },
+            payload: {
+              target: 'artifact',
+              title: '',
+              body: 'Valid body.'
+            }
+          });
+          expect(resp.statusCode).toBe(400);
+          const body = errorResponseSchema.parse(resp.json());
+          expect(body.error.code).toBe('validation_error');
+        } finally {
+          await app.close();
+        }
+      } finally {
+        await rm(tempDir, { recursive: true, force: true });
       }
     });
   });
