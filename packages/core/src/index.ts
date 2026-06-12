@@ -72,13 +72,20 @@ export type {
   ConversationIngressRepository,
   CreateConversationTopicMessageAndRunInput,
   CreateConversationTopicMessageAndRunResult,
+  FeedbackStatusTransitionPersistenceInput,
+  FeedbackThreadEntryPersistenceInput,
   LifecycleRunStepInput,
   ListRunsByTenantOptions,
   RecordRunLifecycleStartInput,
   RecordRunLifecycleStartResult,
   RecordRunStepTransitionInput,
-  RecordRunStepTransitionResult
+  RecordRunStepTransitionResult,
+  RunWorkspaceMetadata,
+  RunWorkspaceMetadataRepository,
+  UpsertRunWorkspaceMetadataInput
 } from './domain-repositories.js';
+
+export { FeedbackConcurrentModificationError } from './domain-repositories.js';
 
 export {
   deriveRunTerminal,
@@ -150,6 +157,15 @@ export type {
 } from './runner-event-consumer.js';
 
 export {
+  SpecFrontmatterError,
+  parseSpecFrontmatter,
+  renderSpecFrontmatter,
+  validateCommittedSpecFrontmatter,
+  renderCommittedSpecMarkdown
+} from './spec-frontmatter.js';
+export type { SpecFrontmatterErrorCode, SpecMarkdownRenderErrorCode, RenderCommittedSpecMarkdownInput } from './spec-frontmatter.js';
+
+export {
   ModelRoutingConfigurationError,
   createModelRoutingResolver,
   type ModelRoutingResolver,
@@ -162,3 +178,41 @@ export {
   type ModelRoutingDistinctResolution,
   type ModelRoutingSafeDetails
 } from './model-routing-resolver.js';
+
+export {
+  SpecAuthoringError,
+  completeSpecAuthoring
+} from './spec-authoring-service.js';
+
+export {
+  FeedbackLifecycleError,
+  createArtifactFeedback,
+  addressFeedback,
+  markFeedbackWontFix,
+  resolveFeedback,
+  reopenFeedback,
+  listBlockingFeedback,
+  resolveApproverAddressedFeedback,
+  type FeedbackLifecycleDependencies
+} from './feedback-lifecycle.js';
+
+export {
+  SpecReviewGateBlockedError,
+  assertSpecReviewGateCanAdvance
+} from './spec-review-gate.js';
+export type {
+  SpecAuthoringErrorCode,
+  WorkspaceFileSystemPort,
+  WorkspaceGitPort,
+  SpecAuthoringServiceDependencies,
+  CompleteSpecAuthoringInput,
+  CompleteSpecAuthoringOutput
+} from './spec-authoring-service.js';
+
+export {
+  SpecApprovalError,
+  finalizeSpecApproval,
+  type FinalizeSpecApprovalInput,
+  type SpecApprovalFinalizerDependencies,
+  type SpecApprovalErrorCode
+} from './spec-approval-finalizer.js';

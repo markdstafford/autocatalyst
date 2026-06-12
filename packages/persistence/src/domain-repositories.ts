@@ -5,6 +5,8 @@ import { z } from 'zod';
 
 import type {
   Artifact,
+  ArtifactCachedStatus,
+  ArtifactKind,
   Conversation,
   CreateArtifactInput,
   CreateConversationInput,
@@ -19,6 +21,7 @@ import type {
   CreateTestResultInput,
   CreateTopicInput,
   Feedback,
+  FeedbackStatus,
   Message,
   Project,
   Publication,
@@ -78,6 +81,7 @@ import type {
   CreateConversationTopicMessageAndRunResult,
   DomainRepositories,
   FeedbackRepository,
+  FeedbackStatusTransitionPersistenceInput,
   LifecycleRunStepInput,
   ListRunsByTenantOptions,
   MessageRepository,
@@ -89,11 +93,15 @@ import type {
   RecordRunStepTransitionInput,
   RecordRunStepTransitionResult,
   RunRepository,
+  RunWorkspaceMetadata,
+  RunWorkspaceMetadataRepository,
+  UpsertRunWorkspaceMetadataInput,
   RunStepRepository,
   SessionRepository,
   TestResultRepository,
   TopicRepository
 } from '@autocatalyst/core';
+import { FeedbackConcurrentModificationError } from '@autocatalyst/core';
 
 import { ActiveRunConflictPersistenceError, isActiveRunConstraintViolation } from './active-run-conflict.js';
 import {
@@ -112,6 +120,7 @@ import {
   publications,
   pullRequests,
   runSteps,
+  runWorkspaceMetadata,
   runs,
   sessions,
   testResults,
@@ -778,6 +787,35 @@ export class DrizzleArtifactRepository implements ArtifactRepository {
     return rows.map((row) => this.#rowToArtifact(row));
   }
 
+  async findByRunAndKind(input: { readonly runId: string; readonly kind: ArtifactKind }): Promise<Artifact | null> {
+    const row = this.#database.drizzle
+      .select()
+      .from(artifacts)
+      .where(and(eq(artifacts.runId, input.runId), eq(artifacts.kind, input.kind)))
+      .orderBy(asc(artifacts.createdAt), asc(artifacts.id))
+      .limit(1)
+      .all()[0];
+    return row === undefined ? null : this.#rowToArtifact(row);
+  }
+
+  async updateCachedStatus(input: { readonly artifactId: string; readonly cachedStatus: ArtifactCachedStatus; readonly updatedAt: string }): Promise<Artifact> {
+    this.#database.drizzle
+      .update(artifacts)
+      .set({ cachedStatus: input.cachedStatus, updatedAt: input.updatedAt })
+      .where(eq(artifacts.id, input.artifactId))
+      .run();
+    const row = this.#database.drizzle
+      .select()
+      .from(artifacts)
+      .where(eq(artifacts.id, input.artifactId))
+      .limit(1)
+      .all()[0];
+    if (row === undefined) {
+      throw new Error(`Artifact '${input.artifactId}' does not exist.`);
+    }
+    return this.#rowToArtifact(row);
+  }
+
   #rowToArtifact(row: typeof artifacts.$inferSelect): Artifact {
     const linkedIssue = parseNullableJsonValue(trackedIssueSchema, row.linkedIssueJson);
     return validateEntity(artifactSchema, {
@@ -860,6 +898,47 @@ export class DrizzleFeedbackRepository implements FeedbackRepository {
       .orderBy(asc(feedback.createdAt), asc(feedback.id))
       .all();
     return rows.map((row) => this.#rowToFeedback(row));
+  }
+
+  async updateStatusAndAppendThread(input: FeedbackStatusTransitionPersistenceInput): Promise<Feedback> {
+    return this.#database.drizzle.transaction((tx) => {
+      const current = tx
+        .select()
+        .from(feedback)
+        .where(eq(feedback.id, input.feedbackId))
+        .limit(1)
+        .all()[0];
+      if (current === undefined) {
+        throw new Error(`Feedback '${input.feedbackId}' does not exist.`);
+      }
+      if (current.status !== input.expectedStatus) {
+        throw new FeedbackConcurrentModificationError(
+          input.feedbackId,
+          input.expectedStatus,
+          current.status as FeedbackStatus
+        );
+      }
+      const existingThread = parseJsonValue(feedbackThreadSchema, current.threadJson);
+      const nextThread = [...existingThread, input.threadEntry];
+      tx.update(feedback)
+        .set({
+          status: input.nextStatus,
+          threadJson: stringifyJsonValue(feedbackThreadSchema, nextThread),
+          updatedAt: input.updatedAt
+        })
+        .where(eq(feedback.id, input.feedbackId))
+        .run();
+      const updated = tx
+        .select()
+        .from(feedback)
+        .where(eq(feedback.id, input.feedbackId))
+        .limit(1)
+        .all()[0];
+      if (updated === undefined) {
+        throw new Error(`Feedback '${input.feedbackId}' does not exist after update.`);
+      }
+      return this.#rowToFeedback(updated);
+    });
   }
 
   #rowToFeedback(row: typeof feedback.$inferSelect): Feedback {
@@ -1417,6 +1496,54 @@ export class DrizzleConversationIngressRepository implements ConversationIngress
 }
 
 // ---------------------------------------------------------------------------
+// RunWorkspaceMetadata repository — internal only, never exposed publicly
+// ---------------------------------------------------------------------------
+
+export class DrizzleRunWorkspaceMetadataRepository implements RunWorkspaceMetadataRepository {
+  readonly #database: ReturnType<typeof asInternalSqliteDatabase>;
+
+  constructor(database: SqliteDatabase) {
+    this.#database = asInternalSqliteDatabase(database);
+  }
+
+  async upsert(input: UpsertRunWorkspaceMetadataInput): Promise<void> {
+    this.#database.drizzle
+      .insert(runWorkspaceMetadata)
+      .values({
+        runId: input.runId,
+        workspaceHandle: input.workspaceHandle,
+        workspaceRepoRoot: input.workspaceRepoRoot,
+        createdAt: input.createdAt
+      })
+      .onConflictDoUpdate({
+        target: runWorkspaceMetadata.runId,
+        set: {
+          workspaceHandle: input.workspaceHandle,
+          workspaceRepoRoot: input.workspaceRepoRoot
+        }
+      })
+      .run();
+  }
+
+  async findByRunId(runId: string): Promise<RunWorkspaceMetadata | null> {
+    const rows = this.#database.drizzle
+      .select()
+      .from(runWorkspaceMetadata)
+      .where(eq(runWorkspaceMetadata.runId, runId))
+      .limit(1)
+      .all();
+    const row = rows[0];
+    if (row === undefined) return null;
+    return {
+      runId: row.runId,
+      workspaceHandle: row.workspaceHandle,
+      workspaceRepoRoot: row.workspaceRepoRoot,
+      createdAt: row.createdAt
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Repository collection factory
 // ---------------------------------------------------------------------------
 
@@ -1433,6 +1560,7 @@ export interface DrizzleDomainRepositories extends DomainRepositories {
   runSteps: DrizzleRunStepRepository;
   sessions: DrizzleSessionRepository;
   testResults: DrizzleTestResultRepository;
+  runWorkspaceMetadata: DrizzleRunWorkspaceMetadataRepository;
 }
 
 export function createDrizzleDomainRepositories(database: SqliteDatabase): DrizzleDomainRepositories {
@@ -1448,6 +1576,7 @@ export function createDrizzleDomainRepositories(database: SqliteDatabase): Drizz
     pullRequests: new DrizzlePullRequestRepository(database),
     runSteps: new DrizzleRunStepRepository(database),
     sessions: new DrizzleSessionRepository(database),
-    testResults: new DrizzleTestResultRepository(database)
+    testResults: new DrizzleTestResultRepository(database),
+    runWorkspaceMetadata: new DrizzleRunWorkspaceMetadataRepository(database)
   };
 }

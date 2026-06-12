@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -28,6 +28,7 @@ import { claudeAgentAdapterId, claudeProviderKind } from '@autocatalyst/claude-a
 import {
   createControlPlaneServer,
   createExplicitProfileResolver,
+  createNodeWorkspaceFilesystem,
   logProviderCompositionDiagnostics,
   startControlPlaneServer
 } from './server.js';
@@ -346,6 +347,111 @@ describe('startControlPlaneServer', () => {
       expect(response.status).toBe(200);
 
       await handle.close();
+    });
+  });
+});
+
+describe('createNodeWorkspaceFilesystem (symlink containment)', () => {
+  async function withTempDirs(
+    run: (workspace: string, outside: string) => Promise<void>
+  ): Promise<void> {
+    const workspace = await mkdtemp(join(tmpdir(), 'ac-ws-'));
+    const outside = await mkdtemp(join(tmpdir(), 'ac-outside-'));
+    try {
+      await run(workspace, outside);
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  }
+
+  it('rejects writeFile through an intermediate symlink pointing outside the workspace', async () => {
+    await withTempDirs(async (workspace, outside) => {
+      // Set up context-human/specs as a legitimate directory but with a symlink
+      // entry pointing to a directory outside the workspace.
+      await mkdir(join(workspace, 'context-human'), { recursive: true });
+      await symlink(outside, join(workspace, 'context-human', 'specs'));
+
+      const fs = createNodeWorkspaceFilesystem();
+      await expect(
+        fs.writeFile({
+          workspaceRepoRoot: workspace,
+          relativePath: 'context-human/specs/feature-test.md',
+          contents: 'should not be written'
+        })
+      ).rejects.toThrow();
+    });
+  });
+
+  it('rejects writeFile when context-human is a symlink to outside and specs does not preexist, and creates no directory outside the workspace', async () => {
+    await withTempDirs(async (workspace, outside) => {
+      // context-human is a symlink to an outside directory; specs does not exist there.
+      await symlink(outside, join(workspace, 'context-human'));
+
+      const fs = createNodeWorkspaceFilesystem();
+      await expect(
+        fs.writeFile({
+          workspaceRepoRoot: workspace,
+          relativePath: 'context-human/specs/feature-symlink-escape.md',
+          contents: 'should not be written'
+        })
+      ).rejects.toThrow();
+
+      // No directory must have been created inside the outside directory.
+      const outsideEntries = await readdir(outside).catch(() => []);
+      expect(outsideEntries).toHaveLength(0);
+    });
+  });
+
+  it('rejects writeFile to a symlink target directly under context-human/specs', async () => {
+    await withTempDirs(async (workspace, outside) => {
+      await mkdir(join(workspace, 'context-human', 'specs'), { recursive: true });
+      // Create a file outside and a symlink inside the workspace pointing to it.
+      await writeFile(join(outside, 'target.md'), 'existing content', 'utf-8');
+      await symlink(join(outside, 'target.md'), join(workspace, 'context-human', 'specs', 'escaped.md'));
+
+      const fs = createNodeWorkspaceFilesystem();
+      await expect(
+        fs.writeFile({
+          workspaceRepoRoot: workspace,
+          relativePath: 'context-human/specs/escaped.md',
+          contents: 'should not be written'
+        })
+      ).rejects.toThrow(/symlink/i);
+    });
+  });
+
+  it('rejects readFile through a symlink pointing outside the workspace', async () => {
+    await withTempDirs(async (workspace, outside) => {
+      await mkdir(join(workspace, 'context-human', 'specs'), { recursive: true });
+      await writeFile(join(outside, 'secret.txt'), 'sensitive data', 'utf-8');
+      await symlink(join(outside, 'secret.txt'), join(workspace, 'context-human', 'specs', 'leaked.md'));
+
+      const fs = createNodeWorkspaceFilesystem();
+      await expect(
+        fs.readFile({
+          workspaceRepoRoot: workspace,
+          relativePath: 'context-human/specs/leaked.md'
+        })
+      ).rejects.toThrow();
+    });
+  });
+
+  it('permits normal writeFile and readFile for non-symlink paths', async () => {
+    await withTempDirs(async (workspace) => {
+      await mkdir(join(workspace, 'context-human', 'specs'), { recursive: true });
+
+      const fs = createNodeWorkspaceFilesystem();
+      await fs.writeFile({
+        workspaceRepoRoot: workspace,
+        relativePath: 'context-human/specs/feature-normal.md',
+        contents: '---\nstatus: draft\n---\n# Normal spec'
+      });
+      const contents = await fs.readFile({
+        workspaceRepoRoot: workspace,
+        relativePath: 'context-human/specs/feature-normal.md'
+      });
+      expect(contents).toContain('Normal spec');
     });
   });
 });

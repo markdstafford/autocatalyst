@@ -223,6 +223,13 @@ export const sessions = sqliteTable('sessions', {
   index('sessions_run_step_role_idx').on(table.runId, table.step, table.role)
 ]);
 
+export const runWorkspaceMetadata = sqliteTable('run_workspace_metadata', {
+  runId: text('run_id').primaryKey().references(() => runs.id),
+  workspaceHandle: text('workspace_handle').notNull(),
+  workspaceRepoRoot: text('workspace_repo_root').notNull(),
+  createdAt: text('created_at').notNull()
+});
+
 export const testResults = sqliteTable('test_results', {
   id: text('id').primaryKey(),
   runId: text('run_id').notNull().references(() => runs.id),

@@ -50,6 +50,13 @@
       "when": 1749494400000,
       "tag": "0006_configuration_record_tenant_and_routing",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1781136000000,
+      "tag": "0007_run_workspace_metadata",
+      "breakpoints": true
     }
   ]
 }
