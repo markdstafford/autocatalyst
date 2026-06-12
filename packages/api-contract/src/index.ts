@@ -120,3 +120,4 @@ export * from './runner-events.js';
 export * from './execution-context.js';
 export * from './step-results.js';
 export * from './spec-authoring.js';
+export * from './run-spec.js';

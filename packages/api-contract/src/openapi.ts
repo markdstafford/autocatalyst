@@ -49,6 +49,19 @@ import {
   secretCollectionPath
 } from './secret.js';
 import { eventsStreamPath } from './sse.js';
+import {
+  runSpecPath,
+  runSpecResponseSchema,
+  getRunSpecSuccessStatusCode
+} from './run-spec.js';
+import {
+  runFeedbackPath,
+  createRunFeedbackRequestSchema,
+  runFeedbackListResponseSchema,
+  createRunFeedbackSuccessStatusCode,
+  listRunFeedbackSuccessStatusCode,
+  feedbackSchema
+} from './feedback.js';
 
 extendZodWithOpenApi(z);
 
@@ -101,6 +114,10 @@ export function generateOpenApiDocument(): OpenApiDocument {
   const RunListResponse = registry.register('RunListResponse', runListResponseSchema);
   const RunIdParams = registry.register('RunIdParams', runIdParamsSchema);
   const RunStepListResponse = registry.register('RunStepListResponse', runStepListResponseSchema);
+  const RunSpecResponse = registry.register('RunSpecResponse', runSpecResponseSchema);
+  const CreateRunFeedbackRequest = registry.register('CreateRunFeedbackRequest', createRunFeedbackRequestSchema);
+  const RunFeedbackListResponse = registry.register('RunFeedbackListResponse', runFeedbackListResponseSchema);
+  const Feedback = registry.register('Feedback', feedbackSchema);
 
   registry.registerPath({
     method: 'get',
@@ -327,6 +344,50 @@ export function generateOpenApiDocument(): OpenApiDocument {
           }
         }
       },
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      404: jsonResponse(ErrorResponse, 'Run not found.')
+    }
+  });
+
+  // GET /v1/runs/{id}/spec
+  registry.registerPath({
+    method: 'get',
+    path: runSpecPath.replace(':id', '{id}') as '/v1/runs/{id}/spec',
+    tags: ['runs'],
+    request: { params: RunIdParams },
+    responses: {
+      [getRunSpecSuccessStatusCode]: jsonResponse(RunSpecResponse, 'Current spec for the run.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      404: jsonResponse(ErrorResponse, 'Run or spec not found.'),
+      500: jsonResponse(ErrorResponse, 'Internal server error.')
+    }
+  });
+
+  // POST /v1/runs/{id}/feedback
+  registry.registerPath({
+    method: 'post',
+    path: runFeedbackPath.replace(':id', '{id}') as '/v1/runs/{id}/feedback',
+    tags: ['runs'],
+    request: {
+      params: RunIdParams,
+      body: { content: { 'application/json': { schema: CreateRunFeedbackRequest } } }
+    },
+    responses: {
+      [createRunFeedbackSuccessStatusCode]: jsonResponse(Feedback, 'Created feedback item.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      400: jsonResponse(ErrorResponse, 'Validation error.'),
+      404: jsonResponse(ErrorResponse, 'Run not found.')
+    }
+  });
+
+  // GET /v1/runs/{id}/feedback
+  registry.registerPath({
+    method: 'get',
+    path: runFeedbackPath.replace(':id', '{id}') as '/v1/runs/{id}/feedback',
+    tags: ['runs'],
+    request: { params: RunIdParams },
+    responses: {
+      [listRunFeedbackSuccessStatusCode]: jsonResponse(RunFeedbackListResponse, 'Feedback items for the run.'),
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
       404: jsonResponse(ErrorResponse, 'Run not found.')
     }

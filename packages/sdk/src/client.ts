@@ -19,11 +19,20 @@ import {
   healthResponseSchema,
   probeResourceCollectionPath,
   probeResourceSchema,
+  createRunFeedbackRequestSchema,
+  createRunFeedbackSuccessStatusCode,
+  feedbackSchema,
+  getRunSpecSuccessStatusCode,
+  listRunFeedbackSuccessStatusCode,
   runCollectionPath,
   runEventsPath,
+  runFeedbackListResponseSchema,
+  runFeedbackPath,
   runListResponseSchema,
   runResourcePath,
   runSchema,
+  runSpecPath,
+  runSpecResponseSchema,
   runStepListResponseSchema,
   runStepsPath,
   secretCollectionPath,
@@ -34,14 +43,18 @@ import {
   type CreateConversationWithFirstRunRequest,
   type CreateConversationWithFirstRunResponse,
   type CreateProbeResourceRequest,
+  type CreateRunFeedbackRequest,
   type CreateSecretRequest,
   type CreateSecretResponse,
   type ErrorResponse,
+  type Feedback,
   type HealthResponse,
   type ProbeResource,
   type Run,
+  type RunFeedbackListResponse,
   type RunListResponse,
   type RunStepListResponse,
+  type RunSpecResponse,
   type UpdateConfigurationRecordRequest
 } from '@autocatalyst/api-contract';
 
@@ -66,6 +79,9 @@ export interface ControlPlaneClient {
   getRun(id: string): Promise<Run>;
   listRunSteps(id: string): Promise<RunStepListResponse>;
   subscribeRunEvents(id: string, options?: RunEventsStreamOptions): Promise<RunEventsResponse>;
+  getRunSpec(id: string): Promise<RunSpecResponse>;
+  createRunFeedback(id: string, request: CreateRunFeedbackRequest): Promise<Feedback>;
+  listRunFeedback(id: string): Promise<RunFeedbackListResponse>;
 }
 
 export interface RunEventsStreamOptions {
@@ -295,6 +311,47 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
         throw new ControlPlaneClientError(response.status, parsed);
       }
       return { kind: 'response' as const, response };
+    },
+
+    async getRunSpec(id) {
+      const response = await fetchImplementation(
+        urlFor(baseUrl, runSpecPath.replace(':id', id)),
+        { method: 'GET', headers: protectedHeaders(bearerToken) }
+      );
+      await throwForError(response);
+      if (response.status !== getRunSpecSuccessStatusCode) {
+        throw new Error(`Expected ${getRunSpecSuccessStatusCode} from getRunSpec, received ${response.status}.`);
+      }
+      return runSpecResponseSchema.parse(await parseJson(response));
+    },
+
+    async createRunFeedback(id, request) {
+      const body = createRunFeedbackRequestSchema.parse(request);
+      const response = await fetchImplementation(
+        urlFor(baseUrl, runFeedbackPath.replace(':id', id)),
+        {
+          method: 'POST',
+          headers: protectedHeaders(bearerToken, { 'content-type': 'application/json' }),
+          body: JSON.stringify(body)
+        }
+      );
+      await throwForError(response);
+      if (response.status !== createRunFeedbackSuccessStatusCode) {
+        throw new Error(`Expected ${createRunFeedbackSuccessStatusCode} from createRunFeedback, received ${response.status}.`);
+      }
+      return feedbackSchema.parse(await parseJson(response));
+    },
+
+    async listRunFeedback(id) {
+      const response = await fetchImplementation(
+        urlFor(baseUrl, runFeedbackPath.replace(':id', id)),
+        { method: 'GET', headers: protectedHeaders(bearerToken) }
+      );
+      await throwForError(response);
+      if (response.status !== listRunFeedbackSuccessStatusCode) {
+        throw new Error(`Expected ${listRunFeedbackSuccessStatusCode} from listRunFeedback, received ${response.status}.`);
+      }
+      return runFeedbackListResponseSchema.parse(await parseJson(response));
     }
   };
 }
