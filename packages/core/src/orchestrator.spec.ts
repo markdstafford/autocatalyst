@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Artifact, Conversation, Feedback, Message, NonModelPrincipal, Run, RunStateTransitionEvent, RunStep, Topic } from '@autocatalyst/api-contract';
 
-import type { ConversationIngressRepository, FeedbackRepository, RunRepository } from './domain-repositories.js';
+import type { ConversationIngressRepository, FeedbackRepository, RunRepository, RunWorkspaceMetadataRepository } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
 import { SpecReviewGateBlockedError } from './spec-review-gate.js';
 import { RunDispatchQueue } from './run-dispatch-queue.js';
@@ -146,6 +146,7 @@ function makeOrchestrator(opts: {
   feedbackLifecycleDependencies?: FeedbackLifecycleDependencies;
   finalizeSpecApproval?: (input: unknown, deps: SpecApprovalFinalizerDependencies) => Promise<void>;
   specApprovalFinalizerDependencies?: SpecApprovalFinalizerDependencies;
+  runWorkspaceMetadata?: RunWorkspaceMetadataRepository;
 } = {}) {
   const runs = opts.runs ?? makeFakeRunRepo();
   const conversationIngress = opts.conversationIngress ?? makeFakeIngressRepo();
@@ -166,7 +167,8 @@ function makeOrchestrator(opts: {
     ...(opts.assertSpecReviewGateCanAdvance !== undefined ? { assertSpecReviewGateCanAdvance: opts.assertSpecReviewGateCanAdvance } : {}),
     ...(opts.feedbackLifecycleDependencies !== undefined ? { feedbackLifecycleDependencies: opts.feedbackLifecycleDependencies } : {}),
     ...(opts.finalizeSpecApproval !== undefined ? { finalizeSpecApproval: opts.finalizeSpecApproval as typeof import('./spec-approval-finalizer.js').finalizeSpecApproval } : {}),
-    ...(opts.specApprovalFinalizerDependencies !== undefined ? { specApprovalFinalizerDependencies: opts.specApprovalFinalizerDependencies } : {})
+    ...(opts.specApprovalFinalizerDependencies !== undefined ? { specApprovalFinalizerDependencies: opts.specApprovalFinalizerDependencies } : {}),
+    ...(opts.runWorkspaceMetadata !== undefined ? { runWorkspaceMetadata: opts.runWorkspaceMetadata } : {})
   });
   return { orchestrator, runs, conversationIngress, events, dispatchQueue };
 }
@@ -823,6 +825,50 @@ describe('DefaultOrchestrator.dispatch — spec.author completion', () => {
     expect(result.run.terminal).toBe(true);
     // Transition was called once; the resulting run is terminal (failed)
     expect(recordTransition).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not advance when workspace metadata persistence fails', async () => {
+    const specAuthorResult = makeSpecAuthorResult();
+    const existing = makeRun({ currentStep: 'spec.author' });
+    const failed = makeRun({ currentStep: 'failed', terminal: true });
+    const failedStep = makeRunStep({ step: 'failed' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: failed, runStep: failedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const unitOfWork: RunUnitOfWork = {
+      run: vi.fn().mockResolvedValue({ directive: 'advance', result: specAuthorResult })
+    };
+    const specAuthoringDeps = makeSpecAuthoringDeps();
+    const resolveWorkspaceContext = vi.fn().mockResolvedValue({
+      workspaceRepoRoot: '/workspace/repo',
+      workspaceHandle: 'ws_1'
+    });
+    const upsert = vi.fn().mockRejectedValue(new Error('sqlite write failed'));
+    const runWorkspaceMetadata = {
+      upsert,
+      findByRunId: vi.fn().mockResolvedValue(null)
+    } as unknown as RunWorkspaceMetadataRepository;
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      unitOfWork,
+      specAuthoringDependencies: specAuthoringDeps,
+      resolveWorkspaceContext,
+      runWorkspaceMetadata
+    });
+
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    // The spec was authored, but the run must not enter the gate without a
+    // recoverable workspace-metadata record — it fails instead of advancing.
+    expect(specAuthoringDeps.git.commitFiles).toHaveBeenCalledTimes(1);
+    expect(upsert).toHaveBeenCalledTimes(1);
+    const transitionCall = recordTransition.mock.calls[0]?.[0];
+    expect(transitionCall?.currentStep).toBe('failed');
+    expect(result.run.currentStep).toBe('failed');
+    expect(result.run.terminal).toBe(true);
   });
 
   it('does not advance when resolveWorkspaceContext throws', async () => {

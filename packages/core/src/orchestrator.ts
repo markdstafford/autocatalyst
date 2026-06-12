@@ -619,6 +619,9 @@ export class DefaultOrchestrator implements Orchestrator {
 
       // Persist workspace root for restart recovery — stored in internal-only
       // metadata and never included in public RunStep checkpoints or API responses.
+      // Durable metadata is required: approval finalization resolves the workspace
+      // context from it after a restart, so a persist failure fails the step rather
+      // than advancing the run into the gate with no recoverable record.
       if (this.#runWorkspaceMetadata !== undefined) {
         try {
           await this.#runWorkspaceMetadata.upsert({
@@ -628,7 +631,8 @@ export class DefaultOrchestrator implements Orchestrator {
             createdAt: this.#clock?.() ?? new Date().toISOString()
           });
         } catch (persistCause) {
-          this.#logger?.warn('Failed to persist workspace metadata for run.', { runId, cause: persistCause });
+          this.#logger?.warn('Failed to persist workspace metadata for run; failing spec.author completion.', { runId, cause: persistCause });
+          return { kind: 'failed' };
         }
       }
 
