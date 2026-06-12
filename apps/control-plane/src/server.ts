@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile, mkdtemp } from 'node:fs/promises';
+import { lstat, mkdir, readFile, realpath, writeFile, mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -434,7 +434,7 @@ function createDelegatingExecutionEntryPoint(input: {
 // Production workspace ports
 // ---------------------------------------------------------------------------
 
-function assertWithinWorkspaceRoot(workspaceRepoRoot: string, relativePath: string): string {
+function assertWithinWorkspaceRootLexical(workspaceRepoRoot: string, relativePath: string): string {
   if (isAbsolute(relativePath)) {
     throw new Error('Workspace path must be relative.');
   }
@@ -446,15 +446,54 @@ function assertWithinWorkspaceRoot(workspaceRepoRoot: string, relativePath: stri
   return fullPath;
 }
 
-function createNodeWorkspaceFilesystem(): WorkspaceFileSystemPort {
+async function assertRealPathWithinWorkspaceRoot(
+  realWorkspaceRoot: string,
+  realFullPath: string
+): Promise<void> {
+  const rel = relative(realWorkspaceRoot, realFullPath);
+  if (rel.startsWith('..') || isAbsolute(rel)) {
+    throw new Error('Resolved real path escapes the workspace root.');
+  }
+}
+
+export function createNodeWorkspaceFilesystem(): WorkspaceFileSystemPort {
   return {
     async writeFile(input) {
-      const fullPath = assertWithinWorkspaceRoot(input.workspaceRepoRoot, input.relativePath);
-      await mkdir(dirname(fullPath), { recursive: true });
+      const fullPath = assertWithinWorkspaceRootLexical(input.workspaceRepoRoot, input.relativePath);
+      const parentDir = dirname(fullPath);
+      await mkdir(parentDir, { recursive: true });
+
+      // After mkdir follows any symlinks in the path, verify the real parent
+      // is still contained within the real workspace root. This guards against
+      // intermediate symlinks that resolve outside the workspace.
+      const realWorkspaceRoot = await realpath(input.workspaceRepoRoot);
+      const realParent = await realpath(parentDir);
+      await assertRealPathWithinWorkspaceRoot(realWorkspaceRoot, realParent);
+
+      // Reject target paths that are symlinks — writing through a symlink could
+      // overwrite a file outside the workspace even though the lexical path looks safe.
+      try {
+        const targetStat = await lstat(fullPath);
+        if (targetStat.isSymbolicLink()) {
+          throw new Error('Target path is a symlink; writing to symlinks is not permitted.');
+        }
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw err;
+        }
+        // ENOENT: file does not yet exist — real parent containment check above is sufficient.
+      }
+
       await writeFile(fullPath, input.contents, 'utf-8');
     },
     async readFile(input) {
-      const fullPath = assertWithinWorkspaceRoot(input.workspaceRepoRoot, input.relativePath);
+      const fullPath = assertWithinWorkspaceRootLexical(input.workspaceRepoRoot, input.relativePath);
+
+      // Resolve all symlinks in the full path and verify real containment.
+      const realWorkspaceRoot = await realpath(input.workspaceRepoRoot);
+      const realFull = await realpath(fullPath);
+      await assertRealPathWithinWorkspaceRoot(realWorkspaceRoot, realFull);
+
       return readFile(fullPath, 'utf-8');
     }
   };
