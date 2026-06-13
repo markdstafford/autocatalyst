@@ -30,6 +30,7 @@ import {
   permissivePolicyDecisionPoint,
   registerControlPlaneRoutes,
   RunDispatchQueue,
+  type AutoDispatchOptions,
   type ControlPlaneService,
   type DomainRepositories,
   type ExecutionModeResolution,
@@ -149,6 +150,12 @@ export interface ControlPlaneServerOptions {
    * When not provided, spec authoring side effects and approval finalization are skipped.
    */
   readonly resolveWorkspaceContext?: WorkspaceContextResolver;
+  /**
+   * Auto-dispatch configuration for the orchestrator. Production defaults to enabled, so a created
+   * run advances through its system and AI steps on its own. Integration tests that drive a run
+   * deterministically through `tick` pass `{ enabled: false }` to keep manual control.
+   */
+  readonly autoDispatch?: AutoDispatchOptions;
 }
 
 const DEFAULT_RUN_CONCURRENCY = 2;
@@ -956,7 +963,8 @@ export async function createControlPlaneServer(
     specAuthoringDependencies,
     specApprovalFinalizerDependencies,
     runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
-    resolveWorkspaceContext: options.resolveWorkspaceContext ?? internalResolveWorkspaceContext
+    resolveWorkspaceContext: options.resolveWorkspaceContext ?? internalResolveWorkspaceContext,
+    ...(options.autoDispatch !== undefined ? { autoDispatch: options.autoDispatch } : {})
   });
   const policy = options.policy ?? permissivePolicyDecisionPoint;
   const controlPlane = new DefaultControlPlaneService({
@@ -995,6 +1003,7 @@ export async function createControlPlaneServer(
 export type StartControlPlaneServerOptions = ControlPlaneAppConfig & {
   readonly unitOfWork?: RunUnitOfWork;
   readonly onControlPlaneReady?: (service: ControlPlaneService) => void;
+  readonly autoDispatch?: AutoDispatchOptions;
 };
 
 export async function startControlPlaneServer(

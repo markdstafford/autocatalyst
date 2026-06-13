@@ -191,9 +191,11 @@ describe('DefaultOrchestrator.createRun', () => {
     const runs = makeFakeRunRepo({
       recordRunLifecycleStart: vi.fn().mockResolvedValue({ run: makeRun({ currentStep: 'intake' }), runStep: makeRunStep() }),
       findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'intake' })),
+      // Transition to a human gate so auto-dispatch stops after the first dispatch instead
+      // of re-dispatching an ever-advancing fake forever.
       recordRunStepTransition: vi.fn().mockResolvedValue({
-        run: makeRun({ currentStep: 'spec.author' }),
-        runStep: makeRunStep({ id: 'step_2', step: 'spec.author', phase: 'spec' })
+        run: makeRun({ currentStep: 'spec.human_review' }),
+        runStep: makeRunStep({ id: 'step_2', step: 'spec.human_review', phase: 'spec' })
       })
     });
     const publisher: RunEventPublisher = {
@@ -402,7 +404,10 @@ describe('DefaultOrchestrator.applyDirective', () => {
       recordRunStepTransition: vi.fn().mockResolvedValue({ run: updated, runStep: newStep })
     });
     const { publisher, events } = makeRecordingPublisher();
-    const { orchestrator } = makeOrchestrator({ runs, events: publisher });
+    // This test exercises applyDirective's return and event, not the auto-dispatch chain;
+    // disable auto-dispatch so the detached follow-on dispatch does not run against fakes
+    // that are not set up for it.
+    const { orchestrator } = makeOrchestrator({ runs, events: publisher, autoDispatch: { enabled: false } });
 
     const result = await orchestrator.applyDirective({
       runId: 'run_1',
@@ -595,11 +600,14 @@ describe('DefaultOrchestrator.createConversationWithFirstRun — auto-dispatch o
     const conversationIngress = makeFakeIngressRepo({
       createConversationTopicMessageAndRun: vi.fn().mockResolvedValue({ conversation, topic, message, run, runStep })
     });
+    // The dispatched intake step transitions to spec.human_review (a human gate), so
+    // auto-dispatch fires exactly once and then stops — modelling the real bounded chain
+    // rather than a fake that re-dispatches the same step forever.
     const runs = makeFakeRunRepo({
       findById: vi.fn().mockResolvedValue(run),
       recordRunStepTransition: vi.fn().mockResolvedValue({
-        run: makeRun({ currentStep: 'spec.author' }),
-        runStep: makeRunStep({ id: 'step_2', step: 'spec.author', phase: 'spec' })
+        run: makeRun({ currentStep: 'spec.human_review' }),
+        runStep: makeRunStep({ id: 'step_2', step: 'spec.human_review', phase: 'spec' })
       })
     });
     const publisher: RunEventPublisher = {

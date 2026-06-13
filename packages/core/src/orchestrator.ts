@@ -420,6 +420,20 @@ export class DefaultOrchestrator implements Orchestrator {
     }
     const fromStep = existing.currentStep;
 
+    // Defense-in-depth: block any advance directive when the run is already at a human gate,
+    // unless it is spec.human_review (which has its own gate-check block below).
+    // A stale concurrent dispatch can reach applyDirective after the run has moved to a human
+    // step; this guard prevents it from leapfrogging the gate.
+    if (input.directive === 'advance' && existing.currentStep !== 'spec.human_review') {
+      const currentStepDef = getRunStepDefinition(existing.currentStep);
+      if (currentStepDef !== null && currentStepDef.waitingOn === 'human') {
+        throw new OrchestratorError(
+          'invalid_transition',
+          `Step '${existing.currentStep}' is waiting on human input and cannot be advanced by a runner.`
+        );
+      }
+    }
+
     // Gate guard and approval finalizer for spec.human_review.
     if (input.directive === 'advance' && existing.currentStep === 'spec.human_review') {
       const isSpecWorkflow = existing.workKind === 'feature' || existing.workKind === 'enhancement';
@@ -621,11 +635,23 @@ export class DefaultOrchestrator implements Orchestrator {
     if (this.#autoDispatchInFlightRunIds.has(run.id)) return;
 
     this.#autoDispatchInFlightRunIds.add(run.id);
+    // Capture result outside the .then so .finally can reschedule after releasing the marker.
+    // Previously the marker was deleted in .then (before rescheduling) and again in .finally,
+    // which clobbered the marker the reschedule had just added — letting a second concurrent
+    // chain start. Now the marker is released exactly once, in .finally, then rescheduling runs.
+    let dispatchResult: OrchestratedRunResult | undefined;
     void Promise.resolve()
-      .then(() => this.dispatch({ runId: run.id, tenant: run.tenant }))
+      .then(async () => {
+        dispatchResult = await this.dispatch({ runId: run.id, tenant: run.tenant });
+      })
       .catch((error: unknown) => this.#handleAutoDispatchFailure(run, error))
       .finally(() => {
         this.#autoDispatchInFlightRunIds.delete(run.id);
+        // Only chain to the next step when the run actually advanced. A dispatch that leaves
+        // the run on the same step must not reschedule, or auto-dispatch would spin.
+        if (dispatchResult !== undefined && dispatchResult.run.currentStep !== run.currentStep) {
+          this.#scheduleAutoDispatch(dispatchResult.run);
+        }
       });
   }
 
