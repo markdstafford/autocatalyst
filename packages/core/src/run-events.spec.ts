@@ -68,6 +68,43 @@ describe('createRunStateTransitionEvent', () => {
     expect(event.id).toBe('evt_fixed');
     expect(event.createdAt).toBe('2026-01-01T00:00:00.000Z');
   });
+
+  it('creates fail transition events with reason and embedded run failureReason', () => {
+    const event = createRunStateTransitionEvent({
+      runId: 'run_1',
+      directive: 'fail',
+      fromStep: 'spec.author',
+      toStep: 'failed',
+      reason: 'provider_auth_failed',
+      run: { ...validRun, currentStep: 'failed', terminal: true, failureReason: 'provider_auth_failed' },
+      runStep: { ...validRunStep, step: 'failed' },
+      tenant: 'tenant_1',
+      idGenerator: () => 'evt_fail',
+      clock: () => timestamp
+    });
+
+    expect(event.transition.reason).toBe('provider_auth_failed');
+    expect(event.run.failureReason).toBe('provider_auth_failed');
+    expect(() => runStateTransitionEventSchema.parse(event)).not.toThrow();
+  });
+
+  it('omits reason for non-fail transition events even if a caller supplies one', () => {
+    const event = createRunStateTransitionEvent({
+      runId: 'run_1',
+      directive: 'advance',
+      fromStep: 'intake',
+      toStep: 'spec.author',
+      reason: 'provider_auth_failed',
+      run: validRun,
+      runStep: validRunStep,
+      tenant: 'tenant_1',
+      idGenerator: () => 'evt_advance',
+      clock: () => timestamp
+    });
+
+    expect(event.transition.reason).toBeUndefined();
+    expect(() => runStateTransitionEventSchema.parse(event)).not.toThrow();
+  });
 });
 
 describe('InMemoryRetainedRunEventStore', () => {

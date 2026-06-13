@@ -803,6 +803,7 @@ export class DefaultOrchestrator implements Orchestrator {
       directive: args.directive,
       ...(args.fromStep !== undefined ? { fromStep: args.fromStep } : {}),
       toStep: args.toStep,
+      ...(args.reason !== undefined ? { reason: args.reason } : {}),
       run: args.run,
       runStep: args.runStep,
       tenant: args.tenant,
