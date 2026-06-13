@@ -112,6 +112,7 @@ export const runs = sqliteTable('runs', {
   terminal: integer('terminal', { mode: 'boolean' }).notNull(),
   trackedIssueJson: text('tracked_issue_json'),
   testingGuideResultJson: text('testing_guide_result_json'),
+  failureReason: text('failure_reason'),
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull()
 }, (table) => [

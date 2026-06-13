@@ -28,6 +28,26 @@ describe('domain schema migrations', () => {
     });
   });
 
+  it('adds nullable failure_reason storage to runs', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const database = createSqliteDatabase({ path: databasePath });
+      await migrateSqliteDatabase(database);
+      const internal = asInternalSqliteDatabase(database);
+
+      const columns = internal.client.prepare('PRAGMA table_info(runs)').all() as Array<{
+        name: string;
+        notnull: number;
+        type: string;
+      }>;
+
+      const failureReason = columns.find((column) => column.name === 'failure_reason');
+      expect(failureReason).toMatchObject({ name: 'failure_reason', notnull: 0 });
+      expect(failureReason?.type.toUpperCase()).toBe('TEXT');
+
+      database.close();
+    });
+  });
+
   it('upgrades a pre-0004 database with valid domain data without foreign key errors', async () => {
     await withTempDatabasePath(async (databasePath) => {
       // Simulate a pre-0004 database: tables without FK constraints, plus a __drizzle_migrations
