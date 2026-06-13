@@ -330,6 +330,46 @@ describe('buildClaudeProcessLaunchEnvironment', () => {
     expect(input.materializedEnvironment.variables['HOME']).toBe('/home/user');
     expect(input.materializedEnvironment.variables['ANTHROPIC_API_KEY']).toBe('old');
   });
+
+  it('maps credential to ANTHROPIC_API_KEY by default and redacts it from launch logs', () => {
+    const result = buildClaudeProcessLaunchEnvironment({
+      endpoint: {},
+      credential: 'secret-default-key',
+      materializedEnvironment: { variables: { PATH: '/usr/bin' }, secretVariableNames: [] }
+    });
+    expect(result.environment['ANTHROPIC_API_KEY']).toBe('secret-default-key');
+    expect(result.secretVariableNames).toContain('ANTHROPIC_API_KEY');
+
+    const redacted = redactProcessLaunchConfigForLog({ launchResult: result });
+    expect(JSON.stringify(redacted)).not.toContain('secret-default-key');
+    expect(JSON.stringify(redacted)).toContain('[REDACTED]');
+  });
+
+  it('maps configured Claude auth environment variables without dual-binding credentials', () => {
+    const result = buildClaudeProcessLaunchEnvironment({
+      endpoint: { authEnvironmentVariable: 'ANTHROPIC_AUTH_TOKEN' },
+      credential: 'secret-auth-token',
+      materializedEnvironment: { variables: {}, secretVariableNames: [] }
+    });
+    expect(result.environment['ANTHROPIC_AUTH_TOKEN']).toBe('secret-auth-token');
+    expect(result.environment['ANTHROPIC_API_KEY']).toBeUndefined();
+    expect(result.secretVariableNames).toContain('ANTHROPIC_AUTH_TOKEN');
+  });
+
+  it('encodes custom headers for Claude process launch and redacts secret header values', () => {
+    const result = buildClaudeProcessLaunchEnvironment({
+      endpoint: { headersToRewrite: { 'x-gateway-api-key': 'secret-gateway-key' } },
+      credential: 'secret-default-key',
+      materializedEnvironment: { variables: {}, secretVariableNames: [] }
+    });
+    expect(result.environment['ANTHROPIC_CUSTOM_HEADERS']).toContain('x-gateway-api-key');
+    expect(result.environment['ANTHROPIC_CUSTOM_HEADERS']).toContain('secret-gateway-key');
+    expect(result.secretVariableNames).toContain('ANTHROPIC_CUSTOM_HEADERS');
+
+    const redacted = redactProcessLaunchConfigForLog({ launchResult: result });
+    expect(JSON.stringify(redacted)).not.toContain('secret-gateway-key');
+    expect(JSON.stringify(redacted)).not.toContain('secret-default-key');
+  });
 });
 
 // ---------------------------------------------------------------------------
