@@ -130,6 +130,8 @@ export {
 export type {
   ExecutionContextResolver,
   CreateExecutionContextResolverOptions,
+  ExecutionContextPromptCallback,
+  ExecutionContextTaskInputsCallback,
   WorkspaceResolverInput,
   ExecutionContextResolutionErrorCode
 } from './execution-context-resolver.js';

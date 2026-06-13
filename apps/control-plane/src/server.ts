@@ -14,6 +14,7 @@ import { sessionRoleSchema } from '@autocatalyst/api-contract';
 import type { ConfigurationRecord, Conversation, ExecutionContext, Project, ProviderProfileSettings, Topic } from '@autocatalyst/api-contract';
 import {
   buildProviderAdapterKey,
+  buildSpecAuthorContext,
   composeAgentProviderAdapterRegistry,
   composeDirectProviderAdapterRegistry,
   composeConfiguredProviders,
@@ -52,6 +53,7 @@ import {
   type WorkspaceGitPort,
   type WorkspaceResolverInput
 } from '@autocatalyst/core';
+import { loadSpecAuthorPromptInput, SpecAuthoringContextLoadError } from './spec-authoring-context-loader.js';
 import {
   createAgentConnection,
   createAgentRunnerFactory,
@@ -897,9 +899,37 @@ export async function createControlPlaneServer(
           roots: options.workspaceRoots,
           repositories: domainRepos
         });
+
+        // Load spec-authoring context for spec.author runs
+        let specAuthorContext: ReturnType<typeof buildSpecAuthorContext> | undefined;
+        if (
+          workInput.run.currentStep === 'spec.author' &&
+          (workInput.run.workKind === 'feature' || workInput.run.workKind === 'enhancement')
+        ) {
+          try {
+            const promptInput = await loadSpecAuthorPromptInput({
+              runId: workInput.runId,
+              tenantId: workInput.tenant,
+              repositories: domainRepos
+            });
+            specAuthorContext = buildSpecAuthorContext(promptInput);
+          } catch (error) {
+            if (error instanceof SpecAuthoringContextLoadError) {
+              throw new ExecutionContextResolutionError(
+                'resolver_unavailable',
+                'Cannot resolve spec authoring context.',
+                { reason: error.code, runId: workInput.runId, step: workInput.run.currentStep, workKind: workInput.run.workKind }
+              );
+            }
+            throw error;
+          }
+        }
+
         return createExecutionContextResolver({
           secretsAvailable: false,
-          ...(workspace !== undefined ? { workspace } : {})
+          ...(workspace !== undefined ? { workspace } : {}),
+          prompt: (input) => input.run.currentStep === 'spec.author' ? specAuthorContext?.prompt : undefined,
+          taskInputs: (input) => input.run.currentStep === 'spec.author' ? specAuthorContext?.taskInputs : undefined
         }).resolve(workInput);
       },
       ...(options.resolveExecutionMode !== undefined && { resolveExecutionMode: options.resolveExecutionMode }),
