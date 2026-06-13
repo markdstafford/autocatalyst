@@ -1,9 +1,11 @@
 /**
  * Integration test: sanitized failure reason flows end-to-end through the real
- * production composition path.
+ * production create → auto-dispatch → failure path.
  *
  * A fake adapter that throws ClassifiedProviderFailureError is injected through
- * the standard realRunnerDispatch + providerAdapters seam. The test asserts:
+ * the standard realRunnerDispatch + providerAdapters seam. Auto-dispatch is
+ * enabled (production default), so the run advances and fails without any
+ * manual tick() call. The test asserts:
  *   1. GET /v1/runs/:id returns failureReason: 'provider_auth_failed'
  *   2. GET /v1/runs/:id/events SSE contains matching reason and failureReason
  *   3. No sentinel credential value appears on any serialized surface
@@ -16,7 +18,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { configurationRecordResponseSchema, createSecretResponseSchema } from '@autocatalyst/api-contract';
-import { buildProviderAdapterKey, hardcodedDevelopmentPrincipal, type ControlPlaneService } from '@autocatalyst/core';
+import { buildProviderAdapterKey, hardcodedDevelopmentPrincipal } from '@autocatalyst/core';
 import {
   ClassifiedProviderFailureError,
   type AgentProviderAdapter,
@@ -85,6 +87,12 @@ function createAuthFailingAdapter(): AgentProviderAdapter {
       metadataPromise.catch(() => undefined);
       return {
         events: (async function* (): AsyncGenerator<never> {
+          // Brief pause so the SSE subscription is established before the fail
+          // event is published. Auto-dispatch fires immediately after run
+          // creation, but the SSE HTTP round trip takes a few milliseconds.
+          // 150ms >> typical localhost round trip, making the subscription
+          // timing deterministic without using tick().
+          await new Promise<void>((resolve) => { setTimeout(resolve, 150); });
           yield await Promise.reject<never>(error);
         })(),
         metadata: metadataPromise
@@ -174,7 +182,7 @@ async function collectSseUntilFailureReason(
 
 describe('sanitized failure reason — end-to-end acceptance', () => {
   it(
-    'drives through the real execution path via tick, surfaces provider_auth_failed on GET and SSE, never leaks sentinel credential',
+    'drives through the real execution path via auto-dispatch, surfaces provider_auth_failed on GET and SSE, never leaks sentinel credential',
     { timeout: 30000 },
     async () => {
       await withTempDatabasePath(async (databasePath) => {
@@ -231,14 +239,13 @@ describe('sanitized failure reason — end-to-end acceptance', () => {
         }
 
         // Phase 2: real-dispatch server with the auth-failing adapter injected.
-        // autoDispatch is disabled so the test controls dispatch via tick().
+        // Auto-dispatch is enabled (production default) — the run advances and
+        // fails automatically after creation without any manual tick() call.
         // Uses startControlPlaneServer (real HTTP port) so we can use live
         // fetch() for the SSE stream, which avoids inject's buffering limitation
         // that hangs on long-lived SSE connections.
-        let controlPlane: ControlPlaneService | undefined;
         const handle = await startControlPlaneServer({
           port: 0,
-          autoDispatch: { enabled: false },
           databasePath,
           bearerToken: BEARER_TOKEN,
           masterSecret: MASTER_SECRET,
@@ -252,15 +259,10 @@ describe('sanitized failure reason — end-to-end acceptance', () => {
               buildProviderAdapterKey(FAKE_PROVIDER_KIND, FAKE_ADAPTER_ID),
               () => createAuthFailingAdapter()
             ]
-          ]),
-          onControlPlaneReady: (service) => { controlPlane = service; }
+          ])
         });
 
         try {
-          if (controlPlane === undefined) {
-            throw new Error('control-plane service was not exposed via onControlPlaneReady');
-          }
-          const captured = controlPlane;
           const baseUrl = `http://127.0.0.1:${handle.port}`;
           const fetchHeaders = { authorization: `Bearer ${BEARER_TOKEN}` };
 
@@ -280,8 +282,10 @@ describe('sanitized failure reason — end-to-end acceptance', () => {
           const runId = createBody.run.id;
           expect(runId).toMatch(/^run_/u);
 
-          // Open SSE stream BEFORE tick so the failure transition event is
-          // observed live (the retained store replays only after a cursor).
+          // Open SSE stream. Auto-dispatch fires immediately after run creation;
+          // the retained event store replays any events already emitted, so the
+          // fail transition is visible even if dispatch completes before the
+          // SSE connection is established.
           const sseController = new AbortController();
           const sseResp = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
             headers: fetchHeaders,
@@ -290,15 +294,10 @@ describe('sanitized failure reason — end-to-end acceptance', () => {
           expect(sseResp.status).toBe(200);
           expect(sseResp.headers.get('content-type')).toMatch(/^text\/event-stream/u);
 
-          // Tick drives the run through intake. The fake adapter throws
-          // ClassifiedProviderFailureError from its events generator, caught
-          // by createExecutionRunUnitOfWork → { directive: 'fail', reason: 'provider_auth_failed' }.
-          await captured.tick({
-            principal: hardcodedDevelopmentPrincipal,
-            tenant: hardcodedDevelopmentPrincipal.tenantId,
-            runId
-          });
-
+          // Auto-dispatch drives the run through intake automatically. The fake
+          // adapter throws ClassifiedProviderFailureError from its events
+          // generator, caught by createExecutionRunUnitOfWork →
+          // { directive: 'fail', reason: 'provider_auth_failed' }.
           // Collect SSE until we see the failure reason, then abort.
           const sseBody = await collectSseUntilFailureReason(
             sseResp,
