@@ -216,3 +216,23 @@ export {
   type SpecApprovalFinalizerDependencies,
   type SpecApprovalErrorCode
 } from './spec-approval-finalizer.js';
+
+export {
+  SpecAuthorContextError,
+  assertSupportedSpecAuthorWorkKind,
+  buildSpecAuthorContext,
+  buildSpecAuthorPrompt,
+  buildSpecAuthorTaskInputs,
+  toSafeDetails
+} from './spec-authoring-context.js';
+export type {
+  SpecAuthorContext,
+  SpecAuthorContextErrorCode,
+  SpecAuthorExpectedKind,
+  SpecAuthorLinkedIssueContext,
+  SpecAuthorOutputContractInput,
+  SpecAuthorPromptInput,
+  SpecAuthorRequestContext,
+  SpecAuthorSupportedWorkKind,
+  SpecAuthorTaskInputs
+} from './spec-authoring-context.js';
