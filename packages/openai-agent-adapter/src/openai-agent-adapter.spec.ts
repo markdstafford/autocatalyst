@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { RunItem } from '@openai/agents';
 
 import type { AgentProviderAdapter } from '@autocatalyst/execution';
+import { ClassifiedProviderFailureError } from '@autocatalyst/execution';
 import type {
   AgentConnection,
   AgentConnectionTelemetryContext,
@@ -533,6 +534,59 @@ describe('createOpenAIAgentAdapter — observability', () => {
     expect(captured).not.toContain(FAKE_SECRET);
     expect(captured).not.toContain(FAKE_PROMPT);
     expect(logger.info).toHaveBeenCalledWith('openai_agent_session_start', expect.any(Object));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Provider auth failure classification (seam-driven)
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — provider auth failure classification', () => {
+  it('classifies sandbox authentication failures without leaking diagnostics', async () => {
+    const logs: unknown[] = [];
+    const logger = {
+      info: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
+      warn: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
+      error: vi.fn((_e: string, f: unknown) => { logs.push(f); })
+    };
+    const authError = Object.assign(new Error('raw openai sandbox body sk-test-secret /Users/mark/private'), {
+      name: 'AuthenticationError',
+      status: 401,
+      code: 'invalid_api_key'
+    });
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => { throw authError; },
+      runAgentSession: makeRunSession([assistantItem('hi')]).run,
+      logger
+    });
+    await expect(adapter.startSession(makeSessionInput('scratch_only')))
+      .rejects.toMatchObject({ name: 'ClassifiedProviderFailureError', failureReason: 'provider_auth_failed' });
+    await expect(adapter.startSession(makeSessionInput('scratch_only')))
+      .rejects.toBeInstanceOf(ClassifiedProviderFailureError);
+    const captured = JSON.stringify(logs);
+    expect(captured).not.toContain('sk-test-secret');
+  });
+
+  it('classifies run-session authentication failures instead of returning generic message', async () => {
+    const authError = Object.assign(new Error('raw openai run body sk-test-secret'), {
+      name: 'AuthenticationError',
+      statusCode: 401,
+      code: 'authentication_error'
+    });
+    const failingRun = (): OpenAIRunOutcome => ({
+      items: (async function* () {
+        throw authError;
+      })(),
+      result: new Promise<never>((_, reject) => reject(authError))
+    });
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => fakeSandboxHandle(),
+      runAgentSession: failingRun
+    });
+    const session = await adapter.startSession(makeSessionInput('scratch_only'));
+    const err = await collectEvents(session.events).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ClassifiedProviderFailureError);
+    expect(err).toMatchObject({ failureReason: 'provider_auth_failed' });
   });
 });
 

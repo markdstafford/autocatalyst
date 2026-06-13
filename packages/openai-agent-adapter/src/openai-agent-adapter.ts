@@ -25,6 +25,8 @@ import type {
   ProviderRequest
 } from '@autocatalyst/execution';
 import {
+  ClassifiedProviderFailureError,
+  classifyProviderFailure,
   notifyToolInputSchema,
   ProviderProtocolError,
   reportProgressToolInputSchema,
@@ -662,6 +664,26 @@ export function createOpenAIAgentAdapter(
     });
   }
 
+  function classifySdkError(err: unknown): ClassifiedProviderFailureError | undefined {
+    const shaped = err as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
+    const reason = classifyProviderFailure({
+      status: typeof shaped.status === 'number' ? shaped.status : undefined,
+      statusCode: typeof shaped.statusCode === 'number' ? shaped.statusCode : undefined,
+      code: shaped.code,
+      errorName: shaped.name,
+      providerKind: openaiProviderKind
+    });
+    return reason === undefined
+      ? undefined
+      : new ClassifiedProviderFailureError(reason, {
+          providerKind: openaiProviderKind,
+          status: typeof shaped.status === 'number' ? shaped.status : undefined,
+          statusCode: typeof shaped.statusCode === 'number' ? shaped.statusCode : undefined,
+          code: typeof shaped.code === 'string' ? shaped.code : undefined,
+          errorName: typeof shaped.name === 'string' ? shaped.name : undefined
+        });
+  }
+
   const sandboxClientFactory = options.sandboxClientFactory ?? makeDefaultSandboxClientFactory(options.sandboxWorkspaceBaseDir);
   const runAgentSession = options.runAgentSession ?? defaultRunAgentSession;
   const clock = options.clock ?? (() => new Date().toISOString());
@@ -715,13 +737,28 @@ export function createOpenAIAgentAdapter(
       const skillMaterialization = materializeOpenAISkillFiles(env.skills, runtimeSkillsCatalogRoot);
 
       // 6. Open the sandbox session over the materialized workspace (including skill mounts).
-      const sandboxHandle = await sandboxClientFactory({
-        workspace,
-        snapshot,
-        environment: safeEnvironment,
-        telemetryContext: input.telemetryContext,
-        skillMounts: skillMaterialization.mounts
-      });
+      let sandboxHandle: OpenAISandboxClientHandle;
+      try {
+        sandboxHandle = await sandboxClientFactory({
+          workspace,
+          snapshot,
+          environment: safeEnvironment,
+          telemetryContext: input.telemetryContext,
+          skillMounts: skillMaterialization.mounts
+        });
+      } catch (err) {
+        const classified = classifySdkError(err);
+        if (classified !== undefined) {
+          safeLog('error', 'openai.adapter.sandbox_auth_failed', {
+            runId: input.telemetryContext.runId,
+            step: input.telemetryContext.step,
+            failureReason: classified.failureReason,
+            errorName: err instanceof Error ? err.name : 'unknown'
+          });
+          throw classified;
+        }
+        throw err;
+      }
 
       // 7. Per-session OpenAI client + model provider. The OpenAI client's fetch
       //    is bridged to the per-session ProviderFetchTransport, and the provider
@@ -843,8 +880,18 @@ export function createOpenAIAgentAdapter(
             model: input.profile.model
           });
         } catch (err) {
-          metadataReject(err);
-          throw err;
+          const classified = classifySdkError(err);
+          const thrown = classified ?? err;
+          if (classified !== undefined) {
+            safeLog('error', 'openai.adapter.session_auth_failed', {
+              runId: input.runInput.environment.context.run.id,
+              step: input.runInput.environment.context.run.currentStep,
+              failureReason: classified.failureReason,
+              errorName: err instanceof Error ? err.name : 'unknown'
+            });
+          }
+          metadataReject(thrown);
+          throw thrown;
         }
       }
 
