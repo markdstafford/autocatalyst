@@ -104,4 +104,37 @@ describe('run contract extensions', () => {
   it('exports the waitingOn enum contract', () => {
     expect(waitingOnSchema.options).toEqual(['system', 'ai', 'human', 'none']);
   });
+
+  it('accepts optional failureReason on failed run responses', () => {
+    const parsed = runSchema.parse({
+      ...validRun,
+      currentStep: 'failed',
+      terminal: true,
+      failureReason: 'provider_auth_failed'
+    });
+    expect(parsed.failureReason).toBe('provider_auth_failed');
+  });
+
+  it('keeps failureReason optional for additive compatibility', () => {
+    const parsed = runSchema.parse({ ...validRun, currentStep: 'failed', terminal: true });
+    expect(parsed.failureReason).toBeUndefined();
+  });
+
+  it('rejects empty failureReason values', () => {
+    expect(() => runSchema.parse({
+      ...validRun,
+      currentStep: 'failed',
+      terminal: true,
+      failureReason: ''
+    })).toThrow();
+  });
+
+  it('rejects non-string failureReason values', () => {
+    expect(() => runSchema.parse({
+      ...validRun,
+      currentStep: 'failed',
+      terminal: true,
+      failureReason: 401
+    })).toThrow();
+  });
 });
