@@ -544,6 +544,32 @@ describe('createClaudeAgentAdapter — provider failure classification', () => {
     expect(serialized).not.toContain('sec_secret_handle_value');
     expect(serialized).not.toContain('raw SDK diagnostic');
   });
+
+  it('does not log sentinel-bearing err.name when classification is via status code (logger regression)', async () => {
+    // When err.name is untrusted (e.g. contains a token or path) but the error
+    // is classified through status: 401, the logger must not emit the raw name.
+    const sentinelName = 'authorization: Bearer sec_secret_handle_value sk-test-secret /Users/mark/private raw SDK diagnostic';
+    const logs: unknown[] = [];
+    const authError = Object.assign(new Error('raw body'), {
+      name: sentinelName,
+      status: 401
+    });
+    const adapter = createClaudeAgentAdapter({
+      launchClaudeSession: async function* () { yield await Promise.reject<ClaudeNativeEvent>(authError); },
+      logger: {
+        info: (event, fields) => logs.push({ level: 'info', event, fields }),
+        warn: (event, fields) => logs.push({ level: 'warn', event, fields }),
+        error: (event, fields) => logs.push({ level: 'error', event, fields })
+      }
+    });
+    const { input } = makeSessionInput();
+    const session = adapter.startSession(input);
+    session.metadata.catch(() => undefined);
+    await collect(session.events).catch(() => undefined);
+    const serializedLogs = JSON.stringify(logs);
+    expectNoSentinels(serializedLogs);
+    expect(serializedLogs).toContain('provider_auth_failed');
+  });
 });
 
 describe('createClaudeAgentAdapter — credential redaction', () => {

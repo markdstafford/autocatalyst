@@ -15,6 +15,7 @@ import {
   ClassifiedProviderFailureError,
   ProviderConnectionError,
   UnsupportedProviderCapabilityError,
+  buildSafeAdapterFailureLogDetail,
   classifyProviderFailure,
   filterSafeClassificationDetails,
   runtimeSkillsCatalogRoot
@@ -416,10 +417,8 @@ export function createClaudeAgentAdapter(
           safeLog('error', 'claude.adapter.session_failed', {
             runId,
             step,
-            providerKind: profile.providerKind,
             adapterId: claudeAgentAdapterId,
-            // never include err message — it may carry SDK details
-            errorName: err instanceof Error ? err.name : 'unknown',
+            ...buildSafeAdapterFailureLogDetail(err, profile.providerKind),
             ...(classified !== undefined ? { failureReason: classified.failureReason } : {})
           });
           const thrown = classified ?? err;

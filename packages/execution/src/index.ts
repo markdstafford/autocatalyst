@@ -287,6 +287,7 @@ export type {
 } from './workspace.js';
 
 export {
+  buildSafeAdapterFailureLogDetail,
   classifyProviderFailure,
   filterSafeClassificationDetails,
   formatExecutionFailureReason,

@@ -119,3 +119,25 @@ export function filterSafeClassificationDetails(input: ProviderFailureClassifica
   if (errorName !== undefined && authErrorNames.has(errorName)) (safe as Record<string, unknown>)['errorName'] = errorName;
   return safe;
 }
+
+/**
+ * Extracts safe structured properties from an unknown error for use in adapter
+ * failure-path log calls. Only allowlisted keys and values reach the log — raw
+ * err.name, err.message, response bodies, tokens, and paths are excluded.
+ * Route ALL adapter failure logging through this function so no individual
+ * field can bypass the allowlist and cause a sentinel regression.
+ */
+export function buildSafeAdapterFailureLogDetail(
+  err: unknown,
+  providerKind: string
+): ProviderFailureClassificationInput {
+  const shaped = err as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
+  const input: ProviderFailureClassificationInput = {
+    ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
+    ...(typeof shaped.statusCode === 'number' ? { statusCode: shaped.statusCode } : {}),
+    code: shaped.code,
+    errorName: shaped.name,
+    providerKind
+  };
+  return filterSafeClassificationDetails(input);
+}

@@ -25,6 +25,7 @@ import type {
   ProviderRequest
 } from '@autocatalyst/execution';
 import {
+  buildSafeAdapterFailureLogDetail,
   ClassifiedProviderFailureError,
   classifyProviderFailure,
   filterSafeClassificationDetails,
@@ -763,7 +764,7 @@ export function createOpenAIAgentAdapter(
             runId: input.telemetryContext.runId,
             step: input.telemetryContext.step,
             failureReason: classified.failureReason,
-            errorName: err instanceof Error ? err.name : 'unknown'
+            ...buildSafeAdapterFailureLogDetail(err, openaiProviderKind)
           });
           throw classified;
         }
@@ -898,7 +899,7 @@ export function createOpenAIAgentAdapter(
               runId: input.runInput.environment.context.run.id,
               step: input.runInput.environment.context.run.currentStep,
               failureReason: classified.failureReason,
-              errorName: err instanceof Error ? err.name : 'unknown'
+              ...buildSafeAdapterFailureLogDetail(err, openaiProviderKind)
             });
           }
           metadataReject(thrown);

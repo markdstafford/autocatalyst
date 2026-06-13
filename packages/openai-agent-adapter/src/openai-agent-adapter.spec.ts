@@ -641,6 +641,66 @@ describe('createOpenAIAgentAdapter — provider auth failure classification', ()
     expect(serialized).not.toContain('sec_secret_handle_value');
     expect(serialized).not.toContain('raw SDK diagnostic');
   });
+
+  it('does not log sentinel-bearing err.name when sandbox classification is via status code (logger regression)', async () => {
+    // When err.name is untrusted but classification fires via status: 401,
+    // the raw name must not appear in serialized logger output.
+    const sentinelName = 'authorization: Bearer sec_secret_handle_value sk-test-secret /Users/mark/private raw SDK diagnostic';
+    const logs: unknown[] = [];
+    const logger = {
+      info: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
+      warn: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
+      error: vi.fn((_e: string, f: unknown) => { logs.push(f); })
+    };
+    const authError = Object.assign(new Error('raw body'), {
+      name: sentinelName,
+      status: 401
+    });
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => { throw authError; },
+      runAgentSession: makeRunSession([assistantItem('hi')]).run,
+      logger
+    });
+    await adapter.startSession(makeSessionInput('scratch_only')).catch(() => undefined);
+    const captured = JSON.stringify(logs);
+    expectNoSentinels(captured);
+    expect(captured).toContain('provider_auth_failed');
+  });
+
+  it('does not log sentinel-bearing err.name when run-session classification is via status code (logger regression)', async () => {
+    // Same as above but for the run-session (inner async-generator) failure path.
+    const sentinelName = 'authorization: Bearer sec_secret_handle_value sk-test-secret /Users/mark/private raw SDK diagnostic';
+    const logs: unknown[] = [];
+    const logger = {
+      info: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
+      warn: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
+      error: vi.fn((_e: string, f: unknown) => { logs.push(f); })
+    };
+    const authError = Object.assign(new Error('raw body'), {
+      name: sentinelName,
+      statusCode: 401
+    });
+    const failingRun = (): OpenAIRunOutcome => {
+      const resultPromise = new Promise<never>((_, reject) => reject(authError));
+      resultPromise.catch(() => undefined);
+      return {
+        items: (async function* () {
+          yield await Promise.reject<never>(authError);
+        })(),
+        result: resultPromise
+      };
+    };
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => fakeSandboxHandle(),
+      runAgentSession: failingRun,
+      logger
+    });
+    const session = await adapter.startSession(makeSessionInput('scratch_only'));
+    await collectEvents(session.events).catch(() => undefined);
+    const captured = JSON.stringify(logs);
+    expectNoSentinels(captured);
+    expect(captured).toContain('provider_auth_failed');
+  });
 });
 
 // ---------------------------------------------------------------------------
