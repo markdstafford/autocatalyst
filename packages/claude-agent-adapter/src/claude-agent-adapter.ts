@@ -12,8 +12,10 @@ import type {
   ProviderCapabilityDegradation
 } from '@autocatalyst/execution';
 import {
+  ClassifiedProviderFailureError,
   ProviderConnectionError,
   UnsupportedProviderCapabilityError,
+  classifyProviderFailure,
   runtimeSkillsCatalogRoot
 } from '@autocatalyst/execution';
 
@@ -218,6 +220,26 @@ export function createClaudeAgentAdapter(
     logger[level](event, fields);
   }
 
+  function classifySdkError(err: unknown): ClassifiedProviderFailureError | undefined {
+    const shaped = err as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
+    const reason = classifyProviderFailure({
+      status: typeof shaped.status === 'number' ? shaped.status : undefined,
+      statusCode: typeof shaped.statusCode === 'number' ? shaped.statusCode : undefined,
+      code: shaped.code,
+      errorName: shaped.name,
+      providerKind: claudeProviderKind
+    });
+    return reason === undefined
+      ? undefined
+      : new ClassifiedProviderFailureError(reason, {
+          providerKind: claudeProviderKind,
+          status: typeof shaped.status === 'number' ? shaped.status : undefined,
+          statusCode: typeof shaped.statusCode === 'number' ? shaped.statusCode : undefined,
+          code: typeof shaped.code === 'string' ? shaped.code : undefined,
+          errorName: typeof shaped.name === 'string' ? shaped.name : undefined
+        });
+  }
+
   return {
     providerKind: claudeProviderKind,
     adapterId: claudeAgentAdapterId,
@@ -393,16 +415,19 @@ export function createClaudeAgentAdapter(
           }
         } catch (err) {
           outcome = 'failed';
+          const classified = classifySdkError(err);
           safeLog('error', 'claude.adapter.session_failed', {
             runId,
             step,
             providerKind: profile.providerKind,
             adapterId: claudeAgentAdapterId,
             // never include err message — it may carry SDK details
-            errorName: err instanceof Error ? err.name : 'unknown'
+            errorName: err instanceof Error ? err.name : 'unknown',
+            ...(classified !== undefined ? { failureReason: classified.failureReason } : {})
           });
-          metadataReject(err);
-          throw err;
+          const thrown = classified ?? err;
+          metadataReject(thrown);
+          throw thrown;
         } finally {
           if (outcome !== 'failed') {
             metadataResolve({

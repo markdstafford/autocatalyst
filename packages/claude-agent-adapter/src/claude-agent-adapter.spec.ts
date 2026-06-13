@@ -14,7 +14,7 @@ import type {
   ProviderFetchTransport,
   ResolvedAgentRunnerProfile
 } from '@autocatalyst/execution';
-import { UnsupportedProviderCapabilityError } from '@autocatalyst/execution';
+import { ClassifiedProviderFailureError, UnsupportedProviderCapabilityError } from '@autocatalyst/execution';
 
 import {
   claudeAgentAdapterId,
@@ -465,6 +465,41 @@ describe('createClaudeAgentAdapter — skill containment', () => {
     }
     expect(threw).toBe(true);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe('createClaudeAgentAdapter — provider failure classification', () => {
+  it('classifies SDK authentication failures without logging raw messages', async () => {
+    const logs: unknown[] = [];
+    const authError = Object.assign(new Error('raw anthropic body sk-test-secret /Users/mark/private'), {
+      name: 'AuthenticationError',
+      status: 401,
+      code: 'authentication_error'
+    });
+    const adapter = createClaudeAgentAdapter({
+      launchClaudeSession: async function* () { throw authError; },
+      logger: {
+        info: (event, fields) => logs.push({ level: 'info', event, fields }),
+        warn: (event, fields) => logs.push({ level: 'warn', event, fields }),
+        error: (event, fields) => logs.push({ level: 'error', event, fields })
+      }
+    });
+
+    const { input } = makeSessionInput();
+    const session = adapter.startSession(input);
+    // Suppress unhandled rejection on metadata — we only care about the events stream here.
+    session.metadata.catch(() => undefined);
+    await expect(async () => {
+      for await (const _event of session.events) {
+        // drain generator
+      }
+    }).rejects.toSatisfy((err: unknown) => err instanceof ClassifiedProviderFailureError && err.failureReason === 'provider_auth_failed');
+
+    const serializedLogs = JSON.stringify(logs);
+    expect(serializedLogs).toContain('provider_auth_failed');
+    expect(serializedLogs).not.toContain('raw anthropic body');
+    expect(serializedLogs).not.toContain('sk-test-secret');
+    expect(serializedLogs).not.toContain('/Users/mark/private');
   });
 });
 
