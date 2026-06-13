@@ -61,6 +61,18 @@ export function createSpecAuthoringHarness(mode: SpecAuthoringHarnessMode = 'con
             `This usually means the spec-authoring context was not injected correctly.`
           );
         }
+        if (!prompt.includes('step-result.json')) {
+          throw new Error('Harness requires real prompt with step-result.json contract.');
+        }
+        if (!prompt.includes('do not push')) {
+          throw new Error('Harness requires runtime ownership rules in prompt.');
+        }
+        if (!prompt.includes('do not merge')) {
+          throw new Error('Harness requires runtime ownership rules in prompt.');
+        }
+        if (!prompt.includes('do not open PRs')) {
+          throw new Error('Harness requires runtime ownership rules in prompt.');
+        }
 
         // Write the step-result.json to scratch if we have a scratch directory
         if (scratchRoot !== undefined) {
