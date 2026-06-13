@@ -11,6 +11,8 @@ import {
   ProviderConfigurationError,
   ProviderConnectionError
 } from './agent-provider-adapter.js';
+import { ClassifiedProviderFailureError } from './errors.js';
+import { classifyProviderFailure } from './failure-reasons.js';
 import type { ProviderRequest } from './request-alteration.js';
 import {
   applyRequestAlteration,
@@ -81,11 +83,10 @@ export async function createAgentConnection(
   }
 
   if (credentialReference.required && resolvedCredential === undefined) {
-    throw new ProviderConfigurationError(
-      'missing_credential',
-      `Required credential is missing for profile "${profile.profileName}".`,
-      { providerKind: profile.providerKind, profileName: profile.profileName }
-    );
+    throw new ClassifiedProviderFailureError('provider_auth_failed', {
+      providerKind: profile.providerKind,
+      errorName: 'MissingCredential'
+    });
   }
 
   const credentialResolved = resolvedCredential !== undefined;
@@ -257,6 +258,30 @@ export async function createAgentConnection(
             }
 
             // Non-transient failure — do not retry, do not leak body
+            const classifiedReason = classifyProviderFailure({
+              status,
+              providerKind: profile.providerKind
+            });
+
+            if (classifiedReason !== undefined) {
+              if (logger) {
+                logger.error('provider.fetch.attempt', {
+                  ...safeLogContext,
+                  attemptNumber,
+                  statusCode: status,
+                  durationMs,
+                  outcome: 'classified_provider_failure',
+                  failureReason: classifiedReason,
+                  request: redactedReq,
+                  response: redactedResp
+                });
+              }
+              throw new ClassifiedProviderFailureError(classifiedReason, {
+                providerKind: profile.providerKind,
+                statusCode: status
+              });
+            }
+
             if (logger) {
               logger.error('provider.fetch.attempt', {
                 ...safeLogContext,
