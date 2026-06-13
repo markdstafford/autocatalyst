@@ -929,7 +929,7 @@ export async function createControlPlaneServer(
           secretsAvailable: false,
           ...(workspace !== undefined ? { workspace } : {}),
           prompt: (input) => input.run.currentStep === 'spec.author' ? specAuthorContext?.prompt : undefined,
-          taskInputs: (input) => input.run.currentStep === 'spec.author' ? specAuthorContext?.taskInputs : undefined
+          taskInputs: (input) => input.run.currentStep === 'spec.author' ? specAuthorContext?.taskInputs as Record<string, unknown> | undefined : undefined
         }).resolve(workInput);
       },
       ...(options.resolveExecutionMode !== undefined && { resolveExecutionMode: options.resolveExecutionMode }),

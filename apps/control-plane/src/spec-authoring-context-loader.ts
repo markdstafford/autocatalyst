@@ -119,7 +119,7 @@ export async function loadSpecAuthorPromptInput(request: LoadSpecAuthorPromptInp
     }
   }
 
-  const text = requestTextFrom({ messages, issue: linkedIssue, topicTitle: topic.title });
+  const text = requestTextFrom({ messages, ...(linkedIssue !== undefined ? { issue: linkedIssue } : {}), topicTitle: topic.title });
   if (text.trim().length === 0) {
     throw new SpecAuthoringContextLoadError('missing_request_context', 'Spec authoring context has no actionable request text.', toSafeDetails({ runId: request.runId }));
   }
