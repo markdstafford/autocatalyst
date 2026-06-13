@@ -20,6 +20,14 @@ import type { SpecApprovalFinalizerDependencies } from './spec-approval-finalize
 const timestamp = '2026-06-08T00:00:00.000Z';
 const owner = { id: 'user_1', kind: 'human' as const, tenantId: 'tenant_1', displayName: 'Ada' };
 
+function expectNoSentinels(serialized: string): void {
+  expect(serialized).not.toContain('sk-test-secret');
+  expect(serialized).not.toContain('authorization: Bearer');
+  expect(serialized).not.toContain('/Users/mark/private');
+  expect(serialized).not.toContain('sec_secret_handle_value');
+  expect(serialized).not.toContain('raw SDK diagnostic');
+}
+
 function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: 'run_1',
@@ -1619,6 +1627,34 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
     expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('do-not-log');
   });
 
+  it('records auto_dispatch_failed reason when auto-dispatch fails an eligible run', async () => {
+    const runAtDispatch = makeRun({ currentStep: 'intake' });
+    const failedRun = makeRun({ currentStep: 'failed', terminal: true, failureReason: 'auto_dispatch_failed' });
+    // findById is called: (1) dispatch pre-check, (2) failure handler re-read, (3) applyDirective guard, (4) applyRunDirective
+    const findById = vi.fn()
+      .mockResolvedValueOnce(runAtDispatch)
+      .mockResolvedValueOnce(runAtDispatch)
+      .mockResolvedValueOnce(runAtDispatch)
+      .mockResolvedValueOnce(runAtDispatch);
+    const recordRunStepTransition = vi.fn().mockResolvedValue({
+      run: failedRun,
+      runStep: makeRunStep({ id: 'failed_step', step: 'failed' })
+    });
+    const runs = makeFakeRunRepo({
+      findById,
+      recordRunLifecycleStart: vi.fn().mockResolvedValue({ run: runAtDispatch, runStep: makeRunStep() }),
+      recordRunStepTransition
+    });
+    const unitRun = vi.fn().mockRejectedValue(new Error('unexpected unit failure'));
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork: { run: unitRun } });
+
+    await orchestrator.createRun({ topicId: 'topic_1', owner, tenant: 'tenant_1', workKind: 'feature' });
+
+    await vi.waitFor(() => expect(recordRunStepTransition).toHaveBeenCalledWith(expect.objectContaining({ currentStep: 'failed' })));
+    const transitionCall = recordRunStepTransition.mock.calls[0]?.[0];
+    expect(transitionCall?.failureReason).toBe('auto_dispatch_failed');
+  });
+
   it('does not overwrite human or terminal state from a detached failure handler', async () => {
     const logger = { warn: vi.fn() };
     const runs = makeFakeRunRepo({
@@ -1680,6 +1716,59 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
       'Unknown run step encountered while evaluating auto-dispatch eligibility.',
       { runId: 'run_1', tenant: 'tenant_1', currentStep: 'not.catalogued' }
     );
+  });
+
+  it('threads unit-of-work fail reason through to the persisted run and published event', async () => {
+    const existing = makeRun({ currentStep: 'intake' });
+    const failed = makeRun({ currentStep: 'failed', terminal: true, failureReason: 'provider_auth_failed' });
+    const failedStep = makeRunStep({ step: 'failed' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: failed, runStep: failedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const unitOfWork: RunUnitOfWork = {
+      run: vi.fn().mockResolvedValue({ directive: 'fail', reason: 'provider_auth_failed' })
+    };
+    const { publisher, events } = makeRecordingPublisher();
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork, events: publisher, autoDispatch: { enabled: false } });
+
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    expect(result.run.failureReason).toBe('provider_auth_failed');
+    // The recordRunStepTransition call should have received failureReason
+    const transitionCall = recordTransition.mock.calls[0]?.[0];
+    expect(transitionCall?.failureReason).toBe('provider_auth_failed');
+    // The published event's run should carry the failure reason
+    expect(events).toHaveLength(1);
+    expect(events[0]?.run.failureReason).toBe('provider_auth_failed');
+  });
+
+  it('normalizes an unsafe unit-of-work fail reason before persisting', async () => {
+    const existing = makeRun({ currentStep: 'intake' });
+    const failed = makeRun({ currentStep: 'failed', terminal: true, failureReason: 'runner_failed_before_terminal_result' });
+    const failedStep = makeRunStep({ step: 'failed' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: failed, runStep: failedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const unsafeReason = '401 raw provider body token=sk-test-secret /Users/mark/private authorization: Bearer sec_secret_handle_value raw SDK diagnostic';
+    const unitOfWork: RunUnitOfWork = {
+      run: vi.fn().mockResolvedValue({ directive: 'fail', reason: unsafeReason })
+    };
+    const { publisher, events } = makeRecordingPublisher();
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork, events: publisher, autoDispatch: { enabled: false } });
+
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    expect(result.run.failureReason).toBe('runner_failed_before_terminal_result');
+    // The unsafe content must not appear in the transition call
+    const transitionCall = recordTransition.mock.calls[0]?.[0];
+    expect(transitionCall?.failureReason).toBe('runner_failed_before_terminal_result');
+    expectNoSentinels(JSON.stringify(transitionCall));
+    // Events must not leak the unsafe content either
+    expectNoSentinels(JSON.stringify(events));
   });
 
   it('auto-dispatches system and ai steps but not human or terminal steps', async () => {

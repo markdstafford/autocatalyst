@@ -285,3 +285,23 @@ export type {
   WorkspaceTeardownResult,
   WorkspaceTerminalStep
 } from './workspace.js';
+
+export {
+  buildSafeAdapterFailureLogDetail,
+  classifyProviderFailure,
+  filterSafeClassificationDetails,
+  formatExecutionFailureReason,
+  knownFailureReasonCodes,
+  knownSafeFailurePhrases,
+  makeSanitizedFailureReason,
+  normalizeFailureReasonForPublicSurface,
+  type KnownFailureReasonCode,
+  type KnownSafeFailurePhrase,
+  type ProviderFailureClassificationInput,
+  type SanitizedFailureReason
+} from './failure-reasons.js';
+
+export {
+  ClassifiedProviderFailureError,
+  isClassifiedProviderFailureError
+} from './errors.js';

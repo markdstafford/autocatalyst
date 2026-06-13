@@ -20,6 +20,7 @@ export const runSchema = z.object({
   terminal: z.boolean(),
   trackedIssue: trackedIssueSchema.optional(),
   testingGuideResult: testingGuideResultSchema.optional(),
+  failureReason: z.string().min(1).optional(),
   createdAt: z.string().datetime(),
   updatedAt: z.string().datetime()
 }).strict().superRefine(requireTenantMatchesOwner);

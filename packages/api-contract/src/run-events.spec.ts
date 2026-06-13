@@ -176,6 +176,101 @@ describe('run-events contract', () => {
     };
     expect(() => runStateTransitionEventSchema.parse(validEvent)).toThrow();
   });
+
+  it('accepts transition.reason for fail run state transitions', () => {
+    const now = new Date().toISOString();
+    const event = {
+      id: 'evt_fail',
+      type: 'run_state_transition' as const,
+      runId: 'run_1',
+      transition: {
+        directive: 'fail' as const,
+        fromStep: 'spec.author',
+        toStep: 'failed',
+        reason: 'provider_auth_failed'
+      },
+      run: {
+        id: 'run_1',
+        topicId: 'topic_1',
+        owner,
+        tenant: 'tenant_abc',
+        workKind: 'feature',
+        currentStep: 'failed',
+        terminal: true,
+        failureReason: 'provider_auth_failed',
+        createdAt: now,
+        updatedAt: now
+      },
+      runStep: {
+        id: 'step_failed',
+        runId: 'run_1',
+        phase: null,
+        step: 'failed',
+        role: 'orchestrator',
+        startedAt: now,
+        endedAt: null,
+        durationMs: null,
+        occurrence: { index: 1, attempt: 1 },
+        checkpointResult: null
+      },
+      tenant: 'tenant_abc',
+      createdAt: now
+    };
+
+    expect(runStateTransitionEventSchema.parse(event)).toEqual(event);
+    expect(clientRunEventSchema.parse(event)).toEqual(event);
+  });
+
+  it('rejects transition.reason for non-fail run state transitions', () => {
+    const now = new Date().toISOString();
+    const event = {
+      id: 'evt_advance_reason',
+      type: 'run_state_transition' as const,
+      runId: 'run_1',
+      transition: {
+        directive: 'advance' as const,
+        fromStep: 'intake',
+        toStep: 'spec.author',
+        reason: 'provider_auth_failed'
+      },
+      run: {
+        id: 'run_1', topicId: 'topic_1', owner, tenant: 'tenant_abc',
+        workKind: 'feature', currentStep: 'spec.author', terminal: false,
+        createdAt: now, updatedAt: now
+      },
+      runStep: {
+        id: 'step_2', runId: 'run_1', phase: null, step: 'spec.author', role: 'orchestrator',
+        startedAt: now, endedAt: null, durationMs: null,
+        occurrence: { index: 1, attempt: 1 }, checkpointResult: null
+      },
+      tenant: 'tenant_abc',
+      createdAt: now
+    };
+
+    expect(() => runStateTransitionEventSchema.parse(event)).toThrow(/reason/i);
+  });
+
+  it('rejects empty transition.reason values', () => {
+    const now = new Date().toISOString();
+    expect(() => runStateTransitionEventSchema.parse({
+      id: 'evt_empty_reason',
+      type: 'run_state_transition',
+      runId: 'run_1',
+      transition: { directive: 'fail', fromStep: 'spec.author', toStep: 'failed', reason: '' },
+      run: {
+        id: 'run_1', topicId: 'topic_1', owner, tenant: 'tenant_abc',
+        workKind: 'feature', currentStep: 'failed', terminal: true,
+        createdAt: now, updatedAt: now
+      },
+      runStep: {
+        id: 'step_failed', runId: 'run_1', phase: null, step: 'failed', role: 'orchestrator',
+        startedAt: now, endedAt: null, durationMs: null,
+        occurrence: { index: 1, attempt: 1 }, checkpointResult: null
+      },
+      tenant: 'tenant_abc',
+      createdAt: now
+    })).toThrow();
+  });
 });
 
 describe('clientRunEventSchema', () => {
