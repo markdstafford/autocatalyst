@@ -48,6 +48,7 @@ import {
   asInternalSqliteDatabase,
   createDrizzleDomainRepositories,
   createSqliteDatabase,
+  DrizzleConversationIngressRepository,
   migrateSqliteDatabase
 } from '@autocatalyst/persistence';
 
@@ -910,6 +911,62 @@ async function createFeatureRun(
   expect(createResp.status).toBe(201);
   const body = (await createResp.json()) as { run: { id: string } };
   return body.run.id;
+}
+
+/**
+ * Seeds a feature run directly at the `spec.author` step in the database.
+ * Bypasses the HTTP run-creation flow (which always starts at `intake`) so
+ * the integration test can dispatch `spec.author` with a single tick and
+ * avoid the workspace-exists conflict that occurs when the same run is
+ * dispatched twice through the real workspace provisioner.
+ */
+async function seedSpecAuthorRun(input: {
+  readonly databasePath: string;
+  readonly projectId: string;
+}): Promise<{ runId: string }> {
+  const seedDb = createSqliteDatabase({ path: input.databasePath });
+  await migrateSqliteDatabase(seedDb);
+  const ingress = new DrizzleConversationIngressRepository(seedDb);
+  const now = new Date().toISOString();
+  const result = await ingress.createConversationTopicMessageAndRun({
+    conversation: {
+      projectId: input.projectId,
+      owner: hardcodedDevelopmentPrincipal,
+      tenant: hardcodedDevelopmentPrincipal.tenantId,
+      identity: 'spec-author-dispatch-test',
+      activeTopicId: null
+    },
+    topic: {
+      owner: hardcodedDevelopmentPrincipal,
+      tenant: hardcodedDevelopmentPrincipal.tenantId,
+      title: 'Fix: Load Project Into Dispatch Context',
+      kind: 'main'
+    },
+    message: {
+      owner: hardcodedDevelopmentPrincipal,
+      tenant: hardcodedDevelopmentPrincipal.tenantId,
+      author: hardcodedDevelopmentPrincipal,
+      direction: 'inbound',
+      body: 'please implement this fix'
+    },
+    run: {
+      owner: hardcodedDevelopmentPrincipal,
+      tenant: hardcodedDevelopmentPrincipal.tenantId,
+      workKind: 'feature',
+      currentStep: 'spec.author',
+      terminal: false
+    },
+    runStep: {
+      phase: 'spec',
+      step: 'spec.author',
+      role: 'none',
+      startedAt: now,
+      endedAt: null,
+      durationMs: null
+    }
+  });
+  seedDb.close();
+  return { runId: result.run.id };
 }
 
 async function createQuestionRun(
@@ -2790,6 +2847,155 @@ describe('real feature dispatch workspace context', () => {
           expect(runResp.status).toBe(200);
           const runBody = runSchema.parse(await runResp.json());
           expect(runBody.terminal).toBe(true);
+        } finally {
+          await handle.close();
+        }
+      } finally {
+        await rm(tempRoot, { recursive: true, force: true });
+      }
+    });
+  });
+});
+
+describe('spec authoring dispatch context', () => {
+  it('supplies real prompt and taskInputs for spec.author step in production dispatch', { timeout: 60000 }, async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const tempRoot = await mkdtemp(join(tmpdir(), 'autocatalyst-spec-author-dispatch-'));
+      const reposRoot = join(tempRoot, 'repos');
+      const workspacesRoot = join(tempRoot, 'workspaces');
+      await mkdir(reposRoot, { recursive: true });
+      await mkdir(workspacesRoot, { recursive: true });
+
+      try {
+        const hostRepoPath = await createLocalGitRepository(tempRoot);
+        const { projectId } = await seedFeatureProject({ databasePath, repoUrl: `file://${hostRepoPath}` });
+
+        // Bootstrap server to create provider profile config.
+        const bootstrap = await createControlPlaneServer({ autoDispatch: { enabled: false },
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET
+        });
+        let profileId: string;
+        try {
+          const secretInj = await bootstrap.inject({
+            method: 'POST',
+            url: '/v1/secrets',
+            headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+            payload: { value: 'fake-openai-api-key' }
+          });
+          expect(secretInj.statusCode).toBe(201);
+          const { handle: credentialHandle } = createSecretResponseSchema.parse(secretInj.json());
+
+          const cfgInj = await bootstrap.inject({
+            method: 'POST',
+            url: '/v1/configuration-records',
+            headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+            payload: {
+              kind: 'provider_profile',
+              providerKind: 'openai',
+              adapterId: 'openai-agents-sdk',
+              settings: {
+                profileName: 'integration-openai-spec-author',
+                credentialSecretHandle: credentialHandle,
+                model: { provider: 'openai', model: 'gpt-4.1' }
+              }
+            }
+          });
+          expect(cfgInj.statusCode).toBe(201);
+          profileId = configurationRecordResponseSchema.parse(cfgInj.json()).id;
+        } finally {
+          await bootstrap.close();
+        }
+
+        // Seed a run directly at spec.author to avoid the two-dispatch workspace conflict.
+        // The real workspace provisioner throws run_workspace_exists on the second dispatch for
+        // the same runId. By starting at spec.author we dispatch once and capture real context.
+        const { runId } = await seedSpecAuthorRun({ databasePath, projectId });
+
+        const capturedTaskFacts: Array<{
+          prompt: string;
+          inputs: unknown;
+        }> = [];
+
+        // Fake adapter that captures task prompt and inputs at startSession time.
+        // The spec.author advance will fail (no conformant scratch file written) — that is
+        // acceptable because we only need the context captured at startSession time.
+        const fakeOpenAIAdapter = createOpenAIAgentAdapter();
+        fakeOpenAIAdapter.startSession = async (input) => {
+          const runId = input.telemetryContext.runId;
+          const step = input.telemetryContext.step ?? 'spec.author';
+          const context = input.runInput.environment.context;
+          capturedTaskFacts.push({
+            prompt: context.task.prompt,
+            inputs: context.task.inputs
+          });
+
+          async function* events(): AsyncIterable<RunnerEvent> {
+            yield {
+              id: `evt_${step}_terminal`,
+              runId,
+              step,
+              importance: 'normal',
+              createdAt: new Date().toISOString(),
+              type: 'runner_terminal_result',
+              result: { directive: 'advance' }
+            } as RunnerEvent;
+          }
+          return {
+            events: events(),
+            metadata: Promise.resolve({
+              outcome: 'succeeded' as const,
+              launchMechanism: 'fetch_transport' as const,
+              degradedCapabilities: [],
+              tokenUsage: { available: false } as const
+            })
+          };
+        };
+
+        let controlPlane: ControlPlaneService | undefined;
+        const handle = await startControlPlaneServer({ autoDispatch: { enabled: false },
+          port: 0,
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET,
+          runConcurrency: 1,
+          workspaceRoots: { reposRoot, workspacesRoot },
+          realRunnerDispatch: { enabled: true, defaultProviderProfileId: profileId },
+          providerAdapters: new Map([
+            [
+              buildProviderAdapterKey('openai', 'openai-agents-sdk'),
+              () => fakeOpenAIAdapter
+            ]
+          ]),
+          onControlPlaneReady: (service) => { controlPlane = service; }
+        });
+
+        try {
+          if (controlPlane === undefined) throw new Error('control-plane not exposed');
+
+          // Single tick dispatches spec.author, which should supply real spec-authoring context.
+          // The advance may fail (no conformant scratch file) — that is acceptable because we
+          // only care that startSession was called with the correct context.
+          await controlPlane.tick({
+            principal: hardcodedDevelopmentPrincipal,
+            tenant: hardcodedDevelopmentPrincipal.tenantId,
+            runId
+          }).catch(() => { /* spec.author advance failing due to no scratch file is expected */ });
+
+          // Assert spec authoring context was injected at startSession call time.
+          expect(capturedTaskFacts).toHaveLength(1);
+          const capture = capturedTaskFacts[0]!;
+
+          // Prompt must contain the mm:planning skill reference (not the placeholder)
+          expect(capture.prompt).toContain('mm:planning');
+          expect(capture.prompt).not.toBe('Complete the spec.author step.');
+
+          // taskInputs must carry the spec author schema contract
+          const inputs = capture.inputs as Record<string, unknown>;
+          expect(inputs['schemaId']).toBe('autocatalyst.spec_author.v1');
+          const outputContract = inputs['outputContract'] as Record<string, unknown>;
+          expect(outputContract['expectedKind']).toBe('feature_spec');
         } finally {
           await handle.close();
         }

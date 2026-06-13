@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { RunWorkInput } from './orchestrator.js';
 import type { Run, SkillIntent } from '@autocatalyst/api-contract';
 import { SkillCatalogResolutionError } from '@autocatalyst/execution';
-import { createExecutionContextResolver } from './execution-context-resolver.js';
+import { createExecutionContextResolver, ExecutionContextResolutionError } from './execution-context-resolver.js';
 import type { WorkspaceResolverInput, ResolveSkillsFn } from './execution-context-resolver.js';
 
 const owner = { id: 'user_1', kind: 'human' as const, tenantId: 'tenant_1' };
@@ -366,6 +366,52 @@ describe('ExecutionContextResolver', () => {
       ).rejects.toMatchObject({
         name: 'SkillCatalogResolutionError',
         code: 'skill_not_found'
+      });
+    });
+  });
+
+  describe('async prompt and taskInputs callbacks', () => {
+    it('awaits async prompt callback', async () => {
+      const resolver = createExecutionContextResolver({
+        workspace: { project, roots, topicSlug: 'widgets', shortRunId: 'abc123' },
+        prompt: async (input) => `real prompt for ${input.run.currentStep}`
+      });
+      const context = await resolver.resolve(makeInput(makeRun({ workKind: 'feature', currentStep: 'spec.author' })));
+      expect(context.task.prompt).toBe('real prompt for spec.author');
+    });
+
+    it('awaits async taskInputs callback', async () => {
+      const resolver = createExecutionContextResolver({
+        workspace: { project, roots, topicSlug: 'widgets', shortRunId: 'abc123' },
+        taskInputs: async (input) => ({ step: input.run.currentStep, contract: 'spec-author' })
+      });
+      const context = await resolver.resolve(makeInput(makeRun({ workKind: 'feature', currentStep: 'spec.author' })));
+      expect(context.task.inputs).toEqual({ step: 'spec.author', contract: 'spec-author' });
+    });
+
+    it('falls back to default prompt when callback returns undefined', async () => {
+      const resolver = createExecutionContextResolver({
+        prompt: () => undefined
+      });
+      const context = await resolver.resolve(makeInput(makeRun({ workKind: 'question', currentStep: 'respond' })));
+      expect(context.task.prompt).toBe('Complete the respond step.');
+    });
+
+    it('falls back to empty task inputs when callback returns undefined', async () => {
+      const resolver = createExecutionContextResolver({
+        taskInputs: () => undefined
+      });
+      const context = await resolver.resolve(makeInput(makeRun({ workKind: 'question', currentStep: 'respond' })));
+      expect(context.task.inputs).toEqual({});
+    });
+
+    it('propagates async callback errors as context resolution failures', async () => {
+      const resolver = createExecutionContextResolver({
+        prompt: async () => { throw new ExecutionContextResolutionError('resolver_unavailable', 'Prompt builder failed.', { reason: 'spec_author_context_failed' }); }
+      });
+      await expect(resolver.resolve(makeInput(makeRun({ workKind: 'question', currentStep: 'respond' })))).rejects.toMatchObject({
+        name: 'ExecutionContextResolutionError',
+        code: 'resolver_unavailable'
       });
     });
   });

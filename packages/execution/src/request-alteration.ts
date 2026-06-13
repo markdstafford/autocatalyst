@@ -288,6 +288,7 @@ export function buildClaudeProcessLaunchEnvironment(input: ClaudeProcessLaunchIn
   // Custom headers (header rewrites encoded as JSON)
   if (endpoint.headersToRewrite && Object.keys(endpoint.headersToRewrite).length > 0) {
     overlayEnv['ANTHROPIC_CUSTOM_HEADERS'] = JSON.stringify(endpoint.headersToRewrite);
+    secretVarNames.add('ANTHROPIC_CUSTOM_HEADERS');
   }
 
   // Timeout (bounded)

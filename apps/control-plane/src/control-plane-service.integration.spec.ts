@@ -14,6 +14,8 @@ import {
   InMemoryRunEventBus,
   OrchestratorError,
   RunDispatchQueue,
+  SpecAuthoringServiceDependencies,
+  buildSpecAuthorContext,
   createExecutionContextResolver,
   createExecutionRunUnitOfWork,
   hardcodedDevelopmentPrincipal,
@@ -25,7 +27,9 @@ import {
   StubRunner,
   createExecutionEntryPoint,
   createExecutionMaterializer,
+  createStepResultContractRegistry,
   provisionWorkspace,
+  registerSpecAuthorResultContract,
   type ExecutionBoundaryEvent
 } from '@autocatalyst/execution';
 import {
@@ -34,6 +38,9 @@ import {
   createSqliteDatabase,
   migrateSqliteDatabase
 } from '@autocatalyst/persistence';
+
+import { loadSpecAuthorPromptInput, SpecAuthoringContextLoadError } from './spec-authoring-context-loader.js';
+import { createSpecAuthoringHarness } from './spec-authoring-harness.spec-helper.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -782,4 +789,694 @@ describe('execution boundary integration (real StubRunner through two-root works
       await fs.rm(scratchRoot, { recursive: true, force: true });
     }
   }, 10000);
+});
+
+// ---------------------------------------------------------------------------
+// Spec-authoring end-to-end proof through real contract
+// ---------------------------------------------------------------------------
+//
+// These tests drive a full feature run from conversation creation through the
+// spec.author step using a real SQLite database, real git fixture, and a
+// contract-aware harness Runner that writes a step-result.json to scratch.
+// They assert:
+//  - Success: prompt has mm:planning, run reaches spec.human_review, artifact exists
+//  - Malformed: run is terminal, no spec artifact
+// ---------------------------------------------------------------------------
+
+describe('spec-authoring end-to-end through real contract (SQLite + real git + harness runner)', () => {
+  let tempRoot: string;
+  let upstreamPath: string;
+  let reposRoot: string;
+  let workspacesRoot: string;
+
+  beforeEach(async () => {
+    tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ac-spec-e2e-'));
+    upstreamPath = path.join(tempRoot, 'upstream.git');
+    const sourcePath = path.join(tempRoot, 'source');
+    reposRoot = path.join(tempRoot, 'repos');
+    workspacesRoot = path.join(tempRoot, 'workspaces');
+
+    await git(['init', '--bare', upstreamPath]);
+    await git(['clone', upstreamPath, sourcePath]);
+    await git(['checkout', '-b', 'main'], sourcePath);
+    await git(['config', 'user.name', 'Autocatalyst Test'], sourcePath);
+    await git(['config', 'user.email', 'test@example.invalid'], sourcePath);
+    await fs.writeFile(path.join(sourcePath, 'README.md'), '# Spec E2E Test\n', 'utf8');
+    await git(['add', 'README.md'], sourcePath);
+    await git(['commit', '-m', 'initial commit'], sourcePath);
+    await git(['push', '-u', 'origin', 'main'], sourcePath);
+    await git(['symbolic-ref', 'HEAD', 'refs/heads/main'], upstreamPath);
+
+    await fs.mkdir(reposRoot, { recursive: true });
+    await fs.mkdir(workspacesRoot, { recursive: true });
+  });
+
+  afterEach(async () => {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  });
+
+  it('success: prompt has mm:planning, run reaches spec.human_review, spec artifact is readable', async () => {
+    const database = createSqliteDatabase({ path: ':memory:' });
+    await migrateSqliteDatabase(database);
+    try {
+      const domainRepos = createDrizzleDomainRepositories(database);
+      const conversationIngress = new DrizzleConversationIngressRepository(database);
+
+      const upstreamUrl = `file://${upstreamPath}`;
+      const project = await domainRepos.projects.create({
+        owner,
+        tenant: 'tenant_dev',
+        displayName: 'Spec E2E Project',
+        repoUrl: upstreamUrl,
+        hostRepository: { provider: 'git', owner: 'acme', name: 'widgets', url: upstreamUrl },
+        workspaceRootOverride: null,
+        issueTrackerSetting: null,
+        codeHostSetting: null,
+        credentialRefs: []
+      });
+
+      // Seed the run directly at spec.author to exercise single-step dispatch with real context.
+      const now = new Date().toISOString();
+      const seedResult = await conversationIngress.createConversationTopicMessageAndRun({
+        conversation: {
+          projectId: project.id,
+          owner,
+          tenant: 'tenant_dev',
+          identity: 'spec-e2e-success',
+          activeTopicId: null
+        },
+        topic: {
+          owner,
+          tenant: 'tenant_dev',
+          title: 'Spec E2E Success Topic',
+          kind: 'main'
+        },
+        message: {
+          owner,
+          tenant: 'tenant_dev',
+          author: owner,
+          direction: 'inbound',
+          body: 'author a feature spec'
+        },
+        run: {
+          owner,
+          tenant: 'tenant_dev',
+          workKind: 'feature',
+          currentStep: 'spec.author',
+          terminal: false
+        },
+        runStep: {
+          phase: 'spec',
+          step: 'spec.author',
+          role: 'none',
+          startedAt: now,
+          endedAt: null,
+          durationMs: null
+        }
+      });
+      const runId = seedResult.run.id;
+
+      const harness = createSpecAuthoringHarness('conformant');
+
+      // In-memory filesystem shared between specAuthoringDependencies and
+      // DefaultControlPlaneService.workspaceFilesystem so reads return what was written.
+      const inMemoryFiles = new Map<string, string>();
+      const sharedFilesystem = {
+        writeFile: async (input: { workspaceRepoRoot: string; relativePath: string; contents: string }): Promise<void> => {
+          inMemoryFiles.set(`${input.workspaceRepoRoot}::${input.relativePath}`, input.contents);
+        },
+        readFile: async (input: { workspaceRepoRoot: string; relativePath: string }): Promise<string> => {
+          const key = `${input.workspaceRepoRoot}::${input.relativePath}`;
+          const value = inMemoryFiles.get(key);
+          if (value === undefined) throw new Error(`File not found in in-memory filesystem: ${input.relativePath}`);
+          return value;
+        }
+      };
+
+      // Registry holding runId → repoRoot so resolveWorkspaceContext can return it.
+      const workspaceRootRegistry = new Map<string, string>();
+
+      const specContractRegistry = registerSpecAuthorResultContract(
+        createStepResultContractRegistry()
+      );
+
+      const materializer = createExecutionMaterializer({
+        capabilities: { shellAvailable: false, lspAvailable: false }
+      });
+
+      const entryPoint = createExecutionEntryPoint({
+        runner: harness.runner,
+        materialize: async (context) => {
+          const env = await materializer.materialize(context);
+          // Register repoRoot for two_roots workspace so resolveWorkspaceContext can find it
+          if (env.workspace.shape === 'two_roots') {
+            workspaceRootRegistry.set(context.run.id, env.workspace.repoRoot);
+          }
+          return env;
+        },
+        resultValidation: {
+          mode: 'scratch_file',
+          contractRegistry: specContractRegistry,
+          step: 'spec.author',
+          schemaId: 'autocatalyst.spec_author.v1'
+        }
+      });
+
+      const unitOfWork = createExecutionRunUnitOfWork({
+        execute: entryPoint,
+        resolveContext: async (workInput) => {
+          // Build spec-author context when at spec.author step
+          let specAuthorPrompt: string | undefined;
+          let specAuthorTaskInputs: Record<string, unknown> | undefined;
+          if (
+            workInput.run.currentStep === 'spec.author' &&
+            (workInput.run.workKind === 'feature' || workInput.run.workKind === 'enhancement')
+          ) {
+            try {
+              const promptInput = await loadSpecAuthorPromptInput({
+                runId: workInput.runId,
+                tenantId: workInput.tenant,
+                repositories: domainRepos
+              });
+              const ctx = buildSpecAuthorContext(promptInput);
+              specAuthorPrompt = ctx.prompt;
+              specAuthorTaskInputs = ctx.taskInputs;
+            } catch (error) {
+              if (error instanceof SpecAuthoringContextLoadError) {
+                throw new Error(`spec_authoring_context_load_failed: ${error.code}`);
+              }
+              throw error;
+            }
+          }
+
+          return createExecutionContextResolver({
+            workspace: (input) => ({
+              project,
+              roots: { reposRoot, workspacesRoot },
+              topicSlug: 'spec-e2e-test',
+              shortRunId: input.run.id.slice(0, 8),
+              defaultBranch: 'main'
+            }),
+            secretsAvailable: false,
+            ...(specAuthorPrompt !== undefined ? { prompt: specAuthorPrompt } : {}),
+            ...(specAuthorTaskInputs !== undefined ? { taskInputs: specAuthorTaskInputs } : {})
+          }).resolve(workInput);
+        },
+        onEvent: () => {}
+      });
+
+      const eventBus = new InMemoryRunEventBus();
+      const dispatchQueue = new RunDispatchQueue({ maxConcurrent: 2 });
+
+      const specAuthoringDependencies: SpecAuthoringServiceDependencies = {
+        artifacts: domainRepos.artifacts,
+        filesystem: sharedFilesystem,
+        git: { commitFiles: vi.fn().mockResolvedValue({}) },
+        clock: () => new Date().toISOString()
+      };
+
+      const orchestrator = new DefaultOrchestrator({
+        runs: domainRepos.runs,
+        conversationIngress,
+        events: eventBus,
+        dispatchQueue,
+        unitOfWork,
+        autoDispatch: { enabled: false },
+        specAuthoringDependencies,
+        resolveWorkspaceContext: async ({ runId: rId }) => {
+          const repoRoot = workspaceRootRegistry.get(rId);
+          if (repoRoot === undefined) throw new Error(`Workspace root not found for run '${rId}'`);
+          return { workspaceRepoRoot: repoRoot, workspaceHandle: rId };
+        },
+        runWorkspaceMetadata: domainRepos.runWorkspaceMetadata
+      });
+
+      const controlPlane = new DefaultControlPlaneService({
+        orchestrator,
+        runs: domainRepos.runs,
+        runSteps: domainRepos.runSteps,
+        events: eventBus,
+        policy: permissivePolicyDecisionPoint,
+        artifacts: domainRepos.artifacts,
+        feedback: domainRepos.feedback,
+        runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
+        workspaceFilesystem: sharedFilesystem,
+        feedbackLifecycle: {
+          feedback: domainRepos.feedback,
+          ids: () => `id_${Math.random().toString(36).slice(2)}`,
+          clock: () => new Date().toISOString()
+        }
+      });
+
+      // Tick once — the run is already at spec.author, so this executes the spec authoring step
+      await controlPlane.tick({
+        principal: hardcodedDevelopmentPrincipal,
+        tenant: 'tenant_dev',
+        runId
+      });
+
+      // --- Assertions ---
+
+      // Harness must have captured exactly one spec.author call
+      expect(harness.records).toHaveLength(1);
+      const record = harness.records[0]!;
+
+      // Prompt must be the real spec-authoring prompt (not a placeholder)
+      expect(record.prompt).toContain('mm:planning');
+      expect(record.prompt).not.toContain('Complete the spec.author step.');
+
+      // Task inputs must carry the spec author schema contract
+      expect(record.taskInputs).toMatchObject({
+        schemaId: 'autocatalyst.spec_author.v1',
+        resultFile: 'step-result.json',
+        outputContract: { expectedKind: 'feature_spec' }
+      });
+
+      // Run must be at spec.human_review and not terminal
+      const run = await domainRepos.runs.findById(runId);
+      expect(run).not.toBeNull();
+      expect(run?.currentStep).toBe('spec.human_review');
+      expect(run?.terminal).toBe(false);
+
+      // Spec artifact must be readable via the service
+      const spec = await controlPlane.getRunSpec({
+        principal: hardcodedDevelopmentPrincipal,
+        tenant: 'tenant_dev',
+        runId
+      });
+      expect(spec.artifact.kind).toBe('feature_spec');
+      expect(spec.artifact.location).toMatch(/^context-human\/specs\/feature-[a-z0-9-]+\.md$/u);
+      expect(spec.markdown).toContain('status: draft');
+      expect(spec.markdown).toContain('## Task list');
+    } finally {
+      database.close();
+    }
+  }, 60000);
+
+  it('malformed: mismatched kind/path in step-result.json causes run to fail, no spec artifact', async () => {
+    const database = createSqliteDatabase({ path: ':memory:' });
+    await migrateSqliteDatabase(database);
+    try {
+      const domainRepos = createDrizzleDomainRepositories(database);
+      const conversationIngress = new DrizzleConversationIngressRepository(database);
+
+      const upstreamUrl = `file://${upstreamPath}`;
+      const project = await domainRepos.projects.create({
+        owner,
+        tenant: 'tenant_dev',
+        displayName: 'Spec E2E Malformed Project',
+        repoUrl: upstreamUrl,
+        hostRepository: { provider: 'git', owner: 'acme', name: 'widgets', url: upstreamUrl },
+        workspaceRootOverride: null,
+        issueTrackerSetting: null,
+        codeHostSetting: null,
+        credentialRefs: []
+      });
+
+      // Seed the run directly at spec.author (same pattern as the success test)
+      const now = new Date().toISOString();
+      const seedResult = await conversationIngress.createConversationTopicMessageAndRun({
+        conversation: {
+          projectId: project.id,
+          owner,
+          tenant: 'tenant_dev',
+          identity: 'spec-e2e-malformed',
+          activeTopicId: null
+        },
+        topic: {
+          owner,
+          tenant: 'tenant_dev',
+          title: 'Spec E2E Malformed Topic',
+          kind: 'main'
+        },
+        message: {
+          owner,
+          tenant: 'tenant_dev',
+          author: owner,
+          direction: 'inbound',
+          body: 'author a feature spec (malformed)'
+        },
+        run: {
+          owner,
+          tenant: 'tenant_dev',
+          workKind: 'feature',
+          currentStep: 'spec.author',
+          terminal: false
+        },
+        runStep: {
+          phase: 'spec',
+          step: 'spec.author',
+          role: 'none',
+          startedAt: now,
+          endedAt: null,
+          durationMs: null
+        }
+      });
+      const runId = seedResult.run.id;
+
+      const harness = createSpecAuthoringHarness('mismatched_path');
+
+      const workspaceRootRegistry = new Map<string, string>();
+      const specContractRegistry = registerSpecAuthorResultContract(
+        createStepResultContractRegistry()
+      );
+
+      const materializer = createExecutionMaterializer({
+        capabilities: { shellAvailable: false, lspAvailable: false }
+      });
+
+      const entryPoint = createExecutionEntryPoint({
+        runner: harness.runner,
+        materialize: async (context) => {
+          const env = await materializer.materialize(context);
+          if (env.workspace.shape === 'two_roots') {
+            workspaceRootRegistry.set(context.run.id, env.workspace.repoRoot);
+          }
+          return env;
+        },
+        resultValidation: {
+          mode: 'scratch_file',
+          contractRegistry: specContractRegistry,
+          step: 'spec.author',
+          schemaId: 'autocatalyst.spec_author.v1'
+        }
+      });
+
+      const unitOfWork = createExecutionRunUnitOfWork({
+        execute: entryPoint,
+        resolveContext: async (workInput) => {
+          let specAuthorPrompt: string | undefined;
+          let specAuthorTaskInputs: Record<string, unknown> | undefined;
+          if (
+            workInput.run.currentStep === 'spec.author' &&
+            (workInput.run.workKind === 'feature' || workInput.run.workKind === 'enhancement')
+          ) {
+            try {
+              const promptInput = await loadSpecAuthorPromptInput({
+                runId: workInput.runId,
+                tenantId: workInput.tenant,
+                repositories: domainRepos
+              });
+              const ctx = buildSpecAuthorContext(promptInput);
+              specAuthorPrompt = ctx.prompt;
+              specAuthorTaskInputs = ctx.taskInputs;
+            } catch (error) {
+              if (error instanceof SpecAuthoringContextLoadError) {
+                throw new Error(`spec_authoring_context_load_failed: ${error.code}`);
+              }
+              throw error;
+            }
+          }
+
+          return createExecutionContextResolver({
+            workspace: (input) => ({
+              project,
+              roots: { reposRoot, workspacesRoot },
+              topicSlug: 'spec-e2e-malformed',
+              shortRunId: input.run.id.slice(0, 8),
+              defaultBranch: 'main'
+            }),
+            secretsAvailable: false,
+            ...(specAuthorPrompt !== undefined ? { prompt: specAuthorPrompt } : {}),
+            ...(specAuthorTaskInputs !== undefined ? { taskInputs: specAuthorTaskInputs } : {})
+          }).resolve(workInput);
+        },
+        onEvent: () => {}
+      });
+
+      const eventBus = new InMemoryRunEventBus();
+      const dispatchQueue = new RunDispatchQueue({ maxConcurrent: 2 });
+
+      const specAuthoringDependencies: SpecAuthoringServiceDependencies = {
+        artifacts: domainRepos.artifacts,
+        filesystem: { writeFile: vi.fn(), readFile: vi.fn().mockResolvedValue('') },
+        git: { commitFiles: vi.fn().mockResolvedValue({}) }
+      };
+
+      const orchestrator = new DefaultOrchestrator({
+        runs: domainRepos.runs,
+        conversationIngress,
+        events: eventBus,
+        dispatchQueue,
+        unitOfWork,
+        autoDispatch: { enabled: false },
+        specAuthoringDependencies,
+        resolveWorkspaceContext: async ({ runId: rId }) => {
+          const repoRoot = workspaceRootRegistry.get(rId);
+          if (repoRoot === undefined) throw new Error(`Workspace root not found for run '${rId}'`);
+          return { workspaceRepoRoot: repoRoot, workspaceHandle: rId };
+        },
+        runWorkspaceMetadata: domainRepos.runWorkspaceMetadata
+      });
+
+      const controlPlane = new DefaultControlPlaneService({
+        orchestrator,
+        runs: domainRepos.runs,
+        runSteps: domainRepos.runSteps,
+        events: eventBus,
+        policy: permissivePolicyDecisionPoint,
+        artifacts: domainRepos.artifacts,
+        feedback: domainRepos.feedback,
+        runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
+        workspaceFilesystem: { writeFile: vi.fn(), readFile: vi.fn().mockResolvedValue('') },
+        feedbackLifecycle: {
+          feedback: domainRepos.feedback,
+          ids: () => `id_${Math.random().toString(36).slice(2)}`,
+          clock: () => new Date().toISOString()
+        }
+      });
+
+      // Single tick — harness writes mismatched JSON, schema validation fails → fail directive
+      await controlPlane.tick({
+        principal: hardcodedDevelopmentPrincipal,
+        tenant: 'tenant_dev',
+        runId
+      });
+
+      // --- Assertions ---
+
+      // Harness was called (prompt was correct)
+      expect(harness.records).toHaveLength(1);
+
+      // Run must be terminal due to the fail directive from schema validation failure
+      const run = await domainRepos.runs.findById(runId);
+      expect(run).not.toBeNull();
+      expect(run?.terminal).toBe(true);
+      expect(run?.currentStep).not.toBe('spec.human_review');
+
+      // No spec artifact should exist
+      await expect(
+        controlPlane.getRunSpec({
+          principal: hardcodedDevelopmentPrincipal,
+          tenant: 'tenant_dev',
+          runId
+        })
+      ).rejects.toMatchObject({ code: 'not_found' });
+    } finally {
+      database.close();
+    }
+  }, 60000);
+
+  it('regression: create → auto-dispatch through intake → spec.author → spec.human_review with real two-root workspace (idempotent provisioning)', async () => {
+    const database = createSqliteDatabase({ path: ':memory:' });
+    await migrateSqliteDatabase(database);
+    try {
+      const domainRepos = createDrizzleDomainRepositories(database);
+      const conversationIngress = new DrizzleConversationIngressRepository(database);
+
+      const upstreamUrl = `file://${upstreamPath}`;
+      const project = await domainRepos.projects.create({
+        owner,
+        tenant: 'tenant_dev',
+        displayName: 'Auto-Dispatch Regression Project',
+        repoUrl: upstreamUrl,
+        hostRepository: { provider: 'git', owner: 'acme', name: 'widgets', url: upstreamUrl },
+        workspaceRootOverride: null,
+        issueTrackerSetting: null,
+        codeHostSetting: null,
+        credentialRefs: []
+      });
+
+      const harness = createSpecAuthoringHarness('conformant');
+
+      const inMemoryFiles = new Map<string, string>();
+      const sharedFilesystem = {
+        writeFile: async (input: { workspaceRepoRoot: string; relativePath: string; contents: string }): Promise<void> => {
+          inMemoryFiles.set(`${input.workspaceRepoRoot}::${input.relativePath}`, input.contents);
+        },
+        readFile: async (input: { workspaceRepoRoot: string; relativePath: string }): Promise<string> => {
+          const key = `${input.workspaceRepoRoot}::${input.relativePath}`;
+          const value = inMemoryFiles.get(key);
+          if (value === undefined) throw new Error(`File not found in in-memory filesystem: ${input.relativePath}`);
+          return value;
+        }
+      };
+
+      const workspaceRootRegistry = new Map<string, string>();
+      const specContractRegistry = registerSpecAuthorResultContract(
+        createStepResultContractRegistry()
+      );
+      const materializer = createExecutionMaterializer({
+        capabilities: { shellAvailable: false, lspAvailable: false }
+      });
+
+      // Use a resolver so intake gets mode:'none' and spec.author gets scratch_file validation.
+      const entryPoint = createExecutionEntryPoint({
+        runner: harness.runner,
+        materialize: async (context) => {
+          const env = await materializer.materialize(context);
+          if (env.workspace.shape === 'two_roots') {
+            workspaceRootRegistry.set(context.run.id, env.workspace.repoRoot);
+          }
+          return env;
+        },
+        resultValidation: (input) => {
+          if (input.context.run.currentStep === 'spec.author') {
+            return {
+              mode: 'scratch_file' as const,
+              contractRegistry: specContractRegistry,
+              step: 'spec.author',
+              schemaId: 'autocatalyst.spec_author.v1'
+            };
+          }
+          return { mode: 'none' as const };
+        }
+      });
+
+      const unitOfWork = createExecutionRunUnitOfWork({
+        execute: entryPoint,
+        resolveContext: async (workInput) => {
+          let specAuthorPrompt: string | undefined;
+          let specAuthorTaskInputs: Record<string, unknown> | undefined;
+          if (
+            workInput.run.currentStep === 'spec.author' &&
+            (workInput.run.workKind === 'feature' || workInput.run.workKind === 'enhancement')
+          ) {
+            try {
+              const promptInput = await loadSpecAuthorPromptInput({
+                runId: workInput.runId,
+                tenantId: workInput.tenant,
+                repositories: domainRepos
+              });
+              const ctx = buildSpecAuthorContext(promptInput);
+              specAuthorPrompt = ctx.prompt;
+              specAuthorTaskInputs = ctx.taskInputs;
+            } catch (error) {
+              if (error instanceof SpecAuthoringContextLoadError) {
+                throw new Error(`spec_authoring_context_load_failed: ${error.code}`);
+              }
+              throw error;
+            }
+          }
+
+          return createExecutionContextResolver({
+            workspace: (input) => ({
+              project,
+              roots: { reposRoot, workspacesRoot },
+              topicSlug: 'autodispatch-regression',
+              shortRunId: input.run.id.slice(0, 8),
+              defaultBranch: 'main'
+            }),
+            secretsAvailable: false,
+            ...(specAuthorPrompt !== undefined ? { prompt: specAuthorPrompt } : {}),
+            ...(specAuthorTaskInputs !== undefined ? { taskInputs: specAuthorTaskInputs } : {})
+          }).resolve(workInput);
+        },
+        onEvent: () => {}
+      });
+
+      const eventBus = new InMemoryRunEventBus();
+      const dispatchQueue = new RunDispatchQueue({ maxConcurrent: 2 });
+
+      const specAuthoringDependencies: SpecAuthoringServiceDependencies = {
+        artifacts: domainRepos.artifacts,
+        filesystem: sharedFilesystem,
+        git: { commitFiles: vi.fn().mockResolvedValue({}) },
+        clock: () => new Date().toISOString()
+      };
+
+      const orchestrator = new DefaultOrchestrator({
+        runs: domainRepos.runs,
+        conversationIngress,
+        events: eventBus,
+        dispatchQueue,
+        unitOfWork,
+        // auto-dispatch enabled (default): run advances through intake → spec.author automatically
+        specAuthoringDependencies,
+        resolveWorkspaceContext: async ({ runId: rId }) => {
+          const repoRoot = workspaceRootRegistry.get(rId);
+          if (repoRoot === undefined) throw new Error(`Workspace root not found for run '${rId}'`);
+          return { workspaceRepoRoot: repoRoot, workspaceHandle: rId };
+        },
+        runWorkspaceMetadata: domainRepos.runWorkspaceMetadata
+      });
+
+      const controlPlane = new DefaultControlPlaneService({
+        orchestrator,
+        runs: domainRepos.runs,
+        runSteps: domainRepos.runSteps,
+        events: eventBus,
+        policy: permissivePolicyDecisionPoint,
+        artifacts: domainRepos.artifacts,
+        feedback: domainRepos.feedback,
+        runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
+        workspaceFilesystem: sharedFilesystem,
+        feedbackLifecycle: {
+          feedback: domainRepos.feedback,
+          ids: () => `id_${Math.random().toString(36).slice(2)}`,
+          clock: () => new Date().toISOString()
+        }
+      });
+
+      // Normal create — starts at intake, auto-dispatch fires for each step
+      const createResp = await controlPlane.createConversationWithFirstRun({
+        principal: hardcodedDevelopmentPrincipal,
+        tenant: 'tenant_dev',
+        request: {
+          projectId: project.id,
+          identity: 'autodispatch-regression-test',
+          topic: { title: 'Auto-Dispatch Regression Topic' },
+          submission: { kind: 'free_form', body: 'author a feature spec via auto-dispatch', workKind: 'feature' }
+        }
+      });
+
+      const runId = createResp.run.id;
+
+      // Poll until spec.human_review — intake + spec.author dispatch in the background
+      const finalRun = await waitForRunStep(
+        async () => {
+          const run = await domainRepos.runs.findById(runId);
+          if (run === null) throw new Error(`Run '${runId}' not found`);
+          return run as { readonly currentStep: string; readonly waitingOn?: string };
+        },
+        'spec.human_review',
+        15000
+      );
+
+      expect(finalRun.currentStep).toBe('spec.human_review');
+
+      // Harness must have handled exactly one spec.author step
+      expect(harness.records).toHaveLength(1);
+      const record = harness.records[0]!;
+      expect(record.prompt).toContain('mm:planning');
+      expect(record.prompt).not.toContain('Complete the spec.author step.');
+
+      // Run must not be terminal
+      const run = await domainRepos.runs.findById(runId);
+      expect(run?.terminal).toBe(false);
+      expect(run?.currentStep).toBe('spec.human_review');
+
+      // Spec artifact must exist and be readable
+      const spec = await controlPlane.getRunSpec({
+        principal: hardcodedDevelopmentPrincipal,
+        tenant: 'tenant_dev',
+        runId
+      });
+      expect(spec.artifact.kind).toBe('feature_spec');
+      expect(spec.artifact.location).toMatch(/^context-human\/specs\/feature-[a-z0-9-]+\.md$/u);
+      expect(spec.markdown).toContain('status: draft');
+    } finally {
+      database.close();
+    }
+  }, 90000);
 });
