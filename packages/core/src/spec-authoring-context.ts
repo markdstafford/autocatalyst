@@ -83,7 +83,7 @@ export interface SpecAuthorTaskInputs {
     readonly id: string;
     readonly topicId?: string;
     readonly topicTitle?: string;
-    readonly messages: readonly Array<{
+    readonly messages: ReadonlyArray<{
       readonly id: string;
       readonly direction: Message['direction'];
       readonly body: string;
@@ -160,13 +160,15 @@ function validateInput(input: SpecAuthorPromptInput): SpecAuthorSupportedWorkKin
   if (input.request.classification !== input.run.workKind) {
     throw new SpecAuthorContextError(
       'unsupported_work_kind',
-      'Request classification must match run work kind for spec.author.',
+      'Request classification must match run work kind: expected classification to equal work kind.',
       toSafeDetails({ runId: input.run.id, workKind: input.run.workKind, classification: input.request.classification })
     );
   }
   if (input.request.text.trim().length === 0) {
     throw new SpecAuthorContextError('missing_request_context', 'spec.author requires non-empty request context.', toSafeDetails({ runId: input.run.id }));
   }
+  // Cast is necessary: Run.workKind is typed as string (z.string().min(1)); the assertion
+  // above narrows the local type but TypeScript does not narrow property re-reads.
   return input.run.workKind as SpecAuthorSupportedWorkKind;
 }
 
@@ -284,6 +286,7 @@ export function buildSpecAuthorTaskInputs(input: SpecAuthorPromptInput): SpecAut
     } : {}),
     ...(input.conversation !== undefined || input.topic !== undefined || sorted.length > 0 ? {
       conversation: {
+        // 'unknown' is a safe sentinel when topic/messages exist but no conversation id is available
         id: input.conversation?.id ?? 'unknown',
         ...(input.topic !== undefined ? { topicId: input.topic.id, topicTitle: input.topic.title } : {}),
         messages: sorted.map((m) => ({
