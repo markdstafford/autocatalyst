@@ -27,10 +27,8 @@ function remoteUrlForRequest(request: ProvisionWorkspaceRequest): string {
   return remoteUrl;
 }
 
-async function ensureRunRootAbsent(driver: WorkspaceDriver, runRoot: string): Promise<void> {
-  if (await driver.pathExists(runRoot)) {
-    throw new WorkspaceProvisioningError('run_workspace_exists', 'Run workspace already exists', { targetPath: runRoot });
-  }
+async function runRootExists(driver: WorkspaceDriver, runRoot: string): Promise<boolean> {
+  return driver.pathExists(runRoot);
 }
 
 async function rollbackRunRoot(input: {
@@ -119,7 +117,38 @@ export function createWorkspaceProvisioner(dependencies: WorkspaceProvisionerDep
         return { shape: 'none', runId: request.runId };
       }
 
-      await ensureRunRootAbsent(driver, paths.runRoot);
+      // Idempotent: if the run root already exists, return the resolved paths without re-provisioning.
+      // This allows the same run to be dispatched across multiple steps (e.g. intake → spec.author)
+      // without the second dispatch failing with run_workspace_exists.
+      if (await runRootExists(driver, paths.runRoot)) {
+        if (shape === 'scratch_only') {
+          return {
+            shape: 'scratch_only',
+            runId: request.runId,
+            workspaceRoot: paths.workspaceRoot,
+            runRoot: paths.runRoot,
+            scratchRoot: paths.scratchRoot
+          };
+        }
+
+        // shape === 'two_roots'
+        const branchName = deriveRunBranchName({
+          runKind: request.runKind,
+          topicSlug: request.topicSlug,
+          shortRunId: request.shortRunId
+        });
+        await verifyBranch({ driver, repoRoot: paths.repoRoot, expectedBranch: branchName });
+        return {
+          shape: 'two_roots',
+          runId: request.runId,
+          workspaceRoot: paths.workspaceRoot,
+          runRoot: paths.runRoot,
+          repoRoot: paths.repoRoot,
+          scratchRoot: paths.scratchRoot,
+          hostRepositoryPath: paths.hostRepositoryPath,
+          branchName
+        };
+      }
 
       if (shape === 'scratch_only') {
         try {

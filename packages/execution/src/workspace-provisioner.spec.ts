@@ -206,12 +206,29 @@ describe('workspace provisioner', () => {
     ]);
   });
 
-  it('fails when an existing run root would be overwritten', async () => {
+  it('returns the existing workspace idempotently when the run root already exists', async () => {
     const driver = new FakeWorkspaceDriver();
+    // Pre-populate the run root and repo root to simulate a previously provisioned workspace.
     driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123'));
+    driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123/repo'));
     const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
 
-    await expect(provisioner.provisionWorkspace(makeRequest())).rejects.toMatchObject({ code: 'run_workspace_exists' });
+    const result = await provisioner.provisionWorkspace(makeRequest());
+    expect(result).toMatchObject({
+      shape: 'two_roots',
+      branchName: 'feature/hello-world-Abc123',
+      runRoot: path.resolve('/tmp/workspaces/acme/widgets/run_123'),
+      repoRoot: path.resolve('/tmp/workspaces/acme/widgets/run_123/repo'),
+      scratchRoot: path.resolve('/tmp/workspaces/acme/widgets/run_123/scratch'),
+      hostRepositoryPath: path.resolve('/tmp/repos/acme/widgets')
+    });
+    // Must not re-clone, re-fetch, or re-create the worktree
+    const nonPathExists = driver.calls.filter((call) => !call.startsWith('pathExists:') && !call.startsWith('realpath:'));
+    expect(nonPathExists).not.toContain('ensureHostRepository');
+    expect(nonPathExists).not.toContain('fetchHostRepository');
+    expect(nonPathExists).not.toContain('addWorktree');
+    // Branch guard is still checked
+    expect(nonPathExists).toContain('currentBranch');
   });
 
   it('fails branch guard mismatch with expected and actual branch context', async () => {

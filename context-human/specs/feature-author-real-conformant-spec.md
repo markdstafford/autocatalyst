@@ -12,7 +12,7 @@ specced_by: autocatalyst
 ### What
 
 When a feature or enhancement run reaches `spec.author`, Autocatalyst should dispatch the real planning agent with a prompt and task inputs built from the run's conversation, topic, project, and work kind. The agent should use the materialized `mm:planning` skill to write a complete Markdown spec and a `step-result.json` file that satisfies `specAuthorResultSchema`.
-On success, the system should validate the result through the existing step-result tolerance pipeline, commit the authored spec under `context-human/specs/feature-.md` or `context-human/specs/enhancement-.md`, record the file-canonical spec artifact through the existing completion path, and pause the run at `spec.human_review` with `waitingOn: "human"`.
+On success, the system should validate the result through the existing step-result tolerance pipeline, commit the authored spec under `context-human/specs/feature-<slug>.md` or `context-human/specs/enhancement-<slug>.md`, record the file-canonical spec artifact through the existing completion path, and pause the run at `spec.human_review` with `waitingOn: "human"`.
 This feature turns the wired `spec.author` step from a placeholder execution into the first end-to-end run step that produces a durable, reviewable product artifact through the real agent path.
 ### Why
 
@@ -62,9 +62,10 @@ Autocatalyst's core promise is that a person can submit work and receive a revie
 - Production control-plane wiring supplies real task inputs for `spec.author` in place of `{}`.
 - The task inputs include the `specAuthorResultSchema` shape or an equivalent machine-readable contract: `kind`, `slug`, `relativePath`, `frontmatter`, and `body`.
 - The prompt tells the agent to use `mm:planning`, treat feature runs as features and enhancement runs as enhancements, skip branch/push/merge/PR ownership, write requirements/design/tech spec, include a conformant hierarchical `## Task list` with stories/tasks, descriptions, acceptance criteria, and dependencies, and write `step-result.json` exactly in the registered schema shape.
-- The expected `relativePath` is exactly `context-human/specs/feature-.md` for `kind: "feature_spec"` and `context-human/specs/enhancement-.md` for `kind: "enhancement_spec"`.
+- The expected `relativePath` is exactly `context-human/specs/feature-<slug>.md` for `kind: "feature_spec"` and `context-human/specs/enhancement-<slug>.md` for `kind: "enhancement_spec"`, where `<slug>` is the schema-valid `slug` field from the same result.
 - The frontmatter has `status: "draft"`, `created`, `last_updated`, `specced_by`, and an integer `issue` when the run has a linked tracker issue.
 - The result uses a non-empty `body` containing the Markdown spec body, not only a file path or prose summary.
+- The result `body` includes a real, complete, top-level `## Task list` section with hierarchical stories/tasks, descriptions, acceptance criteria, and dependencies. The prompt, task inputs, and contract-aware harness must treat a placeholder, TODO-only, intentionally empty, or deferred task-list section as unacceptable authoring output; production schema validation for this feature remains limited to deterministic `specAuthorResultSchema` fields plus existing completion invariants.
 - The existing `mm:planning` runtime skill mapping remains the path that materializes planning behavior for file-canonical `spec.author` runs.
 - The authored `step-result.json` passes the registered `spec.author` result contract and tolerance pipeline before spec commit or artifact completion side effects occur.
 - A successful run commits a conformant spec file under `context-human/specs/` on the current run workspace branch.
@@ -129,7 +130,8 @@ Task inputs should give the model structured facts instead of burying everything
 - `project`: project id, owner/tenant, repository display data, and any safe project description available from persisted project data.
 - `conversation`: topic title/slug and relevant inbound request messages in chronological order.
 - `request`: normalized work request text, issue title/body/labels when available, and explicit feature/enhancement classification.
-- `outputContract`: schema id, expected result file name, kind/path mapping, slug rules, frontmatter rules, and body requirements.
+- `outputContract`: schema id, expected result file name, kind/path mapping, expected path prefix, slug rules, and frontmatter rules.
+- `bodyContract`: non-empty Markdown spec body requirements, including `requiresCompleteTopLevelTaskList: true`, `taskListPlaceholderAllowed: false`, and measurable task-list completeness guidance for prompt/task-input consumers and the test harness.
 - `runtimeOwnership`: no branch creation, no worktree creation, no push, no merge, no PR, current branch only.
 - `planningScope`: author requirements/design/tech spec, then include the required hierarchical `## Task list` decomposition while stopping the run at human review before implementation.
 Inputs should avoid secrets and provider configuration. If a value is not available, the builder should omit it or use a clearly safe nullable field rather than inventing context.
@@ -206,17 +208,37 @@ The prompt should include the runtime ownership block from `runtime-skills`: Aut
 Do not require the prompt to embed the whole Zod schema as TypeScript. Prefer a concise JSON contract example plus field rules. The schema object or equivalent machine-readable summary should be in task inputs.
 ### Task input construction
 
-The task-input builder should return JSON-serializable data. It should include:
+The task-input builder should return JSON-serializable data with a stable grouped structure. The task-input contract for this feature is:
 ```json
 {
-  "schemaId": "autocatalyst.spec_author.v1",
-  "resultFile": "step-result.json",
-  "expectedKind": "feature_spec",
-  "expectedPathPrefix": "context-human/specs/feature-",
-  "frontmatter": {
-    "status": "draft",
-    "required": ["created", "last_updated", "status", "specced_by"],
-    "issueType": "positive integer when present"
+  "outputContract": {
+    "schemaId": "autocatalyst.spec_author.v1",
+    "resultFile": "step-result.json",
+    "expectedKind": "feature_spec",
+    "expectedPathPrefix": "context-human/specs/feature-",
+    "expectedRelativePathPattern": "context-human/specs/feature-<slug>.md",
+    "slug": {
+      "required": true,
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$",
+      "relativePathMustUseSameSlug": true
+    },
+    "frontmatter": {
+      "status": "draft",
+      "required": ["created", "last_updated", "status", "specced_by"],
+      "issueType": "positive integer when present"
+    }
+  },
+  "bodyContract": {
+    "required": true,
+    "requiresCompleteTopLevelTaskList": true,
+    "taskListPlaceholderAllowed": false,
+    "taskListRequirements": [
+      "top-level ## Task list heading",
+      "hierarchical stories and tasks",
+      "descriptions",
+      "acceptance criteria",
+      "dependencies"
+    ]
   },
   "planningScope": {
     "stages": ["requirements", "design", "tech_spec"],
@@ -224,7 +246,9 @@ The task-input builder should return JSON-serializable data. It should include:
   }
 }
 ```
-The actual structure may be richer, but it should remain stable and safe to log only as keys or summaries. Include message and issue body text only in the execution context sent to the agent, not in ordinary diagnostics.
+Enhancement runs use the same grouped structure with `outputContract.expectedKind: "enhancement_spec"`, `outputContract.expectedPathPrefix: "context-human/specs/enhancement-"`, and `outputContract.expectedRelativePathPattern: "context-human/specs/enhancement-<slug>.md"`. The actual structure may add fields inside these groups, but it should keep these group names stable and remain safe to log only as keys or summaries. It must not encode the `## Task list` requirement as a placeholder requirement. If the task-list contract is represented with booleans, the names and values must unambiguously require a complete authored task list and disallow placeholders. Include message and issue body text only in the execution context sent to the agent, not in ordinary diagnostics.
+
+Task-list completeness is intentionally not a new production Markdown semantic validator in this feature because `specAuthorResultSchema` validates `body` as a non-empty string and the existing completion path owns only deterministic schema and file-canonical invariants. The enforcement points for complete task-list authoring are the prompt requirements, the grouped `bodyContract`, and the contract-aware harness/end-to-end assertions. A future feature may add a deterministic Markdown task-list validator if product wants production rejection of semantically incomplete task lists.
 ### Production wiring
 
 Update `apps/control-plane/src/server.ts` where it calls `createExecutionContextResolver` during real runner dispatch. The wrapper already loads workspace context for feature/enhancement runs. Extend that path to load or pass the conversation, topic, project, message/request, and linked issue context needed by the prompt/task-input builders.
@@ -243,7 +267,7 @@ The expected data flow is:
 5. The agent writes `/step-result.json`.
 6. The execution entry point reads and validates the file using the `spec.author` contract.
 7. Core receives a validated `RunnerTerminalStepResult` with `advance.result` set to the parsed `SpecAuthorResult`.
-8. The existing spec-authoring completion code validates semantic invariants, writes and commits `context-human/specs/(feature|enhancement)-.md`, records the artifact, and advances the run.
+8. The existing spec-authoring completion code validates semantic invariants, writes and commits `context-human/specs/(feature|enhancement)-<slug>.md`, records the artifact, and advances the run.
 9. The orchestrator transitions the run to `spec.human_review` and stops auto-dispatch because the step waits on a human.
 The feature should not duplicate file commit or artifact creation if issue 39's completion path already owns it. It should supply the missing input context and prove the integrated path.
 ### Claude Agent SDK credential checks
@@ -266,10 +290,10 @@ Persistence changes are not expected unless the current production context lacks
 ### Test plan
 
 Add targeted unit tests for the prompt/task-input builders:
-- feature runs produce feature-oriented instructions, `expectedKind: "feature_spec"`, and `context-human/specs/feature-.md` rules;
-- enhancement runs produce enhancement-oriented instructions, `expectedKind: "enhancement_spec"`, and `context-human/specs/enhancement-.md` rules;
+- feature runs produce feature-oriented instructions, `outputContract.expectedKind: "feature_spec"`, `outputContract.expectedPathPrefix: "context-human/specs/feature-"`, and `context-human/specs/feature-<slug>.md` rules;
+- enhancement runs produce enhancement-oriented instructions, `outputContract.expectedKind: "enhancement_spec"`, `outputContract.expectedPathPrefix: "context-human/specs/enhancement-"`, and `context-human/specs/enhancement-<slug>.md` rules;
 - the prompt includes runtime ownership instructions, requirements/design/tech-spec guidance, and the hierarchical task-list decomposition rule;
-- task inputs include schema id, result file name, frontmatter rules, and non-empty request context when supplied;
+- task inputs include `outputContract.schemaId`, `outputContract.resultFile`, frontmatter rules under `outputContract.frontmatter`, and non-empty request context when supplied;
 - unsupported work kinds do not silently produce a file-canonical prompt.
 Add or update integration coverage for production wiring:
 - `apps/control-plane` real dispatch wiring supplies non-placeholder prompt and non-empty task inputs for `spec.author`.
@@ -318,268 +342,7 @@ Run `pnpm validate` when practical after targeted tests pass.
 
 The technical design uses existing seams: `ExecutionContext` for prompt and inputs, runtime skills for `mm:planning`, the execution entry point for scratch result validation, and the spec-authoring completion path for file/artifact side effects. It does not move provider authentication into business logic, and it keeps branch ownership with Autocatalyst.
 The main implementation decision is module placement for prompt/task-input builders. The safest path is a small core builder with no provider imports and production server wiring that supplies loaded domain context. That keeps tests focused and prevents the control-plane server from accumulating prompt prose inline.
-## Converged API
 
-### Files
-
-Path
-Purpose
-Exports
-
-`packages/core/src/spec-authoring-context.ts`
-New deterministic builder module for [spec.author](http://spec.author) prompts and task inputs. It translates loaded run, project, conversation, topic, message, request, and linked issue context into one cohesive SpecAuthorContext containing the operational prompt and machine-readable output contract consumed by the planning agent. Production callers use buildSpecAuthorContext so prompt and task inputs are derived from the same validated input; individual builders are exported for focused unit coverage and must be called with the same SpecAuthorPromptInput when used directly. Named sub-types and the toSafeDetails constructor are exported so loaders and tests do not rely on anonymous structural shapes or unbranded diagnostic objects.
-`buildSpecAuthorContext`, `buildSpecAuthorPrompt`, `buildSpecAuthorTaskInputs`, `assertSupportedSpecAuthorWorkKind`, `toSafeDetails`, `SpecAuthorPromptInput`, `SpecAuthorContext`, `SpecAuthorTaskInputs`, `SpecAuthorTaskRunInput`, `SpecAuthorTaskProjectInput`, `SpecAuthorTaskConversationInput`, `SpecAuthorTaskRequestInput`, `SpecAuthorConversationMessage`, `SpecAuthorRequestContext`, `SpecAuthorLinkedIssue`, `SpecAuthorOutputContractInput`, `SpecAuthorRuntimeOwnershipInput`, `SpecAuthorPlanningScopeInput`, `SpecAuthorWorkKind`, `SpecAuthorExpectedKind`, `SpecAuthorContextError`, `SafeLogDetails`
-
-`packages/core/src/__tests__/spec-authoring-context.spec.ts`
-Unit tests for deterministic [spec.author](http://spec.author) context construction. Covers feature and enhancement expected kinds/paths, runtime ownership instructions, planning-scope and hierarchical task-list requirements, schema id/result file task inputs, chronological conversation/request/issue fields, unsupported work kinds, and the primary buildSpecAuthorContext combiner to avoid prompt/task-input drift.
-
-`packages/core/src/__tests__/spec-authoring-prompt.spec.ts`
-Prompt-focused unit tests required by the spec. Asserts the real prompt is not the placeholder, includes mm:planning usage, feature/enhancement classification, branch/worktree/push/merge/PR prohibitions, requirements/design/tech-spec instructions, hierarchical ## Task list guidance, and exact step-result.json contract wording without brittle full-prose snapshots.
-
-`packages/core/src/execution-context-resolver.ts`
-Extend or use the existing resolver options seam so production callers can supply function-valued prompt and task input builders for [spec.author](http://spec.author) while preserving default behavior for other steps. The work input shape remains sufficient for callbacks to guard on currentStep === "[spec.author](http://spec.author)" and workKind feature/enhancement before loading real authoring context.
-`createExecutionContextResolver`, `ExecutionContextResolverOptions`, `ExecutionContextWorkInput`
-
-`apps/control-plane/src/spec-authoring-context-loader.ts`
-New production helper that loads the safe persisted context needed by the core spec-authoring builders, including project, topic, conversation messages, normalized request text, and linked issue metadata when available. It requires tenant scoping from the production request or verifies repository-enforced tenant isolation before loading multi-tenant context, and it does not import provider or credential logic.
-`loadSpecAuthorPromptInput`, `SpecAuthorContextLoaderDeps`, `SpecAuthorContextLoaderRequest`, `IssueContextReader`
-
-`apps/control-plane/src/server.ts`
-Wire the production execution context resolver to call loadSpecAuthorPromptInput and buildSpecAuthorContext for feature and enhancement [spec.author](http://spec.author) dispatches; keep all [non-spec.author](http://non-spec.author) steps on their existing prompt/task-input behavior. The wiring supplies callbacks that return the real prompt and non-empty real task inputs, not placeholder prose or an empty object, and it uses only current run workspace branch ownership.
-
-`packages/execution/src/execution-entry-point.ts`
-Execution boundary that reads scratch step-result.json and validates step results before completion side effects. Confirm or add the [spec.author](http://spec.author) -\> SPEC_AUTHOR_SCHEMA_ID selection here so authored specs are checked through the registered specAuthorResultSchema and tolerance pipeline before any spec commit, artifact recording, or run advancement can occur.
-
-`packages/execution/src/execution-entry-point.spec.ts`
-Integration tests for the execution entry point. Proves [spec.author](http://spec.author) selects SPEC_AUTHOR_SCHEMA_ID, validates a real step-result.json contract before terminal advance.result is accepted, rejects malformed or semantically inconsistent harness output safely before commit-side effects, and preserves existing validation behavior for unrelated steps.
-
-`packages/execution/src/result-contracts.ts`
-Use the already registered SPEC_AUTHOR_SCHEMA_ID and step-result.json contract as the authoritative execution boundary for [spec.author](http://spec.author) output validation. Keep this as the schema registry source that execution-entry-point.ts selects for [spec.author](http://spec.author).
-`SPEC_AUTHOR_SCHEMA_ID`
-
-`packages/execution/src/request-alteration.ts`
-Retain and, if needed, narrowly adjust Claude Agent SDK process-environment credential mapping through endpoint/request-alteration configuration rather than [spec.author](http://spec.author) business logic. Unit coverage must verify configured authEnvironmentVariable values such as ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN and custom headers are injected with secret redaction and without logging raw credentials.
-`buildClaudeProcessLaunchEnvironment`
-
-`packages/execution/src/request-alteration.spec.ts`
-Credential-boundary tests for Claude Agent SDK process launch environment behavior. Covers default ANTHROPIC_API_KEY mapping, endpoint-selected authEnvironmentVariable mapping, custom header environment encoding when supported, and sanitized/redacted diagnostics with no secret or authorization-header leakage.
-
-`apps/control-plane/src/integration.spec.ts`
-Control-plane production wiring integration tests. Asserts real [spec.author](http://spec.author) dispatch receives a non-placeholder prompt and non-empty task inputs from the production resolver, the harness consumes those actual ExecutionContext.task fields, and [non-spec.author](http://non-spec.author) steps retain existing default behavior.
-
-`apps/control-plane/src/control-plane-service.integration.spec.ts`
-End-to-end proof through the service path: create conversation/request, auto-dispatch through intake to [spec.author](http://spec.author), harness or SDK receives the real prompt and real task-input contract, writes step-result.json from that contract rather than a baked fixture, result passes specAuthorResultSchema, a conformant draft spec is committed under context-human/specs/, and the run pauses at spec.human_review with waitingOn: "human". Also covers malformed harness result failing before spec commit.
-
-`context-agent/wiki/code-map.md`
-Document the new spec-authoring prompt builder, task-input construction, production wiring, execution-entry-point schema selection, credential behavior if changed, and unit/integration/end-to-end proof locations for future agents.
-
-### Public API
-
-#### `buildSpecAuthorContext`
-
-```typescript
-export function buildSpecAuthorContext(input: SpecAuthorPromptInput): SpecAuthorContext
-```
-- Parameters:
-	- `input: SpecAuthorPromptInput` — Validated loaded [spec.author](http://spec.author) run context used to construct both the prompt and task inputs in one deterministic call. Production wiring should use this primary API to ensure both outputs describe the same run and request.
-- Returns: `SpecAuthorContext`
-- Errors:
-	- `SpecAuthorContextError when input.run.currentStep is not spec.author`
-	- `SpecAuthorContextError when input.run.workKind is not feature or enhancement`
-	- `SpecAuthorContextError when required run identifiers or request context needed to build an actionable prompt are absent`
-	- `SpecAuthorContextError when the derived expected kind, slug, or relative path cannot satisfy the specAuthorResultSchema contract`
-#### `buildSpecAuthorPrompt`
-
-```typescript
-export function buildSpecAuthorPrompt(input: SpecAuthorPromptInput): string
-```
-- Parameters:
-	- `input: SpecAuthorPromptInput` — Loaded run context for a feature or enhancement at currentStep [spec.author](http://spec.author), including safe project, conversation, request, and linked issue data to include in the agent prompt. Direct callers that also need task inputs must use the same SpecAuthorPromptInput instance or prefer buildSpecAuthorContext.
-- Returns: `string`
-- Errors:
-	- `SpecAuthorContextError when input.run.currentStep is not spec.author`
-	- `SpecAuthorContextError when input.run.workKind is not feature or enhancement`
-	- `SpecAuthorContextError when required run identifiers or request context needed to build an actionable prompt are absent`
-#### `buildSpecAuthorTaskInputs`
-
-```typescript
-export function buildSpecAuthorTaskInputs(input: SpecAuthorPromptInput): SpecAuthorTaskInputs
-```
-- Parameters:
-	- `input: SpecAuthorPromptInput` — The same loaded context used for prompt construction, serialized into deterministic JSON-safe task input groups for run, project, conversation, request, outputContract, runtimeOwnership, and planningScope. Direct callers should avoid mixing inputs from different runs by using buildSpecAuthorContext.
-- Returns: `SpecAuthorTaskInputs`
-- Errors:
-	- `SpecAuthorContextError when input.run.currentStep is not spec.author`
-	- `SpecAuthorContextError when input.run.workKind is not feature or enhancement`
-	- `SpecAuthorContextError when the derived expected kind, slug, or relative path cannot satisfy the specAuthorResultSchema contract`
-#### `assertSupportedSpecAuthorWorkKind`
-
-```typescript
-export function assertSupportedSpecAuthorWorkKind(workKind: string): asserts workKind is SpecAuthorWorkKind
-```
-- Parameters:
-	- `workKind: string` — Run work kind to validate before constructing file-canonical [spec.author](http://spec.author) prompt and task input data.
-- Returns: `asserts workKind is SpecAuthorWorkKind`
-- Errors:
-	- `SpecAuthorContextError when workKind is not feature or enhancement`
-#### `toSafeDetails`
-
-```typescript
-export function toSafeDetails(details: Readonly>): SafeLogDetails
-```
-- Parameters:
-	- `details: Readonly>` — Sanitized diagnostic facts such as run ids, schema ids, counts, booleans, and safe enum/code values. Callers must not pass raw prompts, issue bodies, provider responses, secrets, credential values, or authorization headers; implementations should reject unsafe key names such as prompt, body, response, secret, token, credential, authorization, or header before branding.
-- Returns: `SafeLogDetails`
-- Errors:
-	- `SpecAuthorContextError or TypeError when unsafe diagnostic keys are supplied and the helper refuses to brand them`
-#### `loadSpecAuthorPromptInput`
-
-```typescript
-export async function loadSpecAuthorPromptInput(deps: SpecAuthorContextLoaderDeps, request: SpecAuthorContextLoaderRequest): Promise
-```
-- Parameters:
-	- `deps: SpecAuthorContextLoaderDeps` — Control-plane repositories and safe context readers needed to load project, topic, conversation, message, normalized request, and linked issue data without importing provider logic. If deps.issues is omitted while the run has issueNumber, the loader does not throw; it preserves the numeric issueNumber in run/request inputs and leaves linkedIssue null.
-	- `request: SpecAuthorContextLoaderRequest` — Identifiers for the run being dispatched and the workspace context already available to production execution wiring. tenantId is required unless deps.repositoriesEnforceTenantIsolation is true.
-- Returns: `Promise with linkedIssue populated when deps.issues can load it; when deps.issues is absent, linkedIssue is omitted/null even if run.issueNumber is set, while the numeric issueNumber remains available on run context.`
-- Errors:
-	- `SpecAuthorContextError when the run cannot be found or is not positioned at spec.author`
-	- `SpecAuthorContextError when the run work kind is unsupported for file-canonical spec authoring`
-	- `SpecAuthorContextError when tenantId is missing and repository-level tenant isolation is not explicitly guaranteed`
-	- `Repository-specific read errors when required persisted context cannot be loaded`
-	- `Does not throw solely because deps.issues is absent when run.issueNumber is set; linkedIssue metadata is omitted/null and issueNumber is preserved from the run`
-#### `createExecutionContextResolver`
-
-```typescript
-export function createExecutionContextResolver(options?: ExecutionContextResolverOptions): ExecutionContextResolver
-```
-- Parameters:
-	- `options: ExecutionContextResolverOptions` — Resolver customization options; production wiring supplies prompt and taskInputs callbacks that return [spec.author](http://spec.author) context for feature/enhancement authoring runs and defer to existing defaults for other steps.
-- Returns: `ExecutionContextResolver`
-- Errors:
-	- `Propagates safe context-builder errors when prompt or taskInputs callbacks reject or throw`
-#### `buildClaudeProcessLaunchEnvironment`
-
-```typescript
-export function buildClaudeProcessLaunchEnvironment(input: ClaudeProcessLaunchEnvironmentInput): ClaudeProcessLaunchEnvironment
-```
-- Parameters:
-	- `input: ClaudeProcessLaunchEnvironmentInput` — Existing endpoint, credential, request-alteration, and inherited environment settings for launching Claude Agent SDK processes.
-- Returns: `ClaudeProcessLaunchEnvironment`
-### Types
-
-#### `SpecAuthorWorkKind`
-
-```typescript
-type SpecAuthorWorkKind = "feature" | "enhancement";
-```
-#### `SpecAuthorExpectedKind`
-
-```typescript
-type SpecAuthorExpectedKind = "feature_spec" | "enhancement_spec";
-```
-#### `SpecAuthorPromptInput`
-
-```typescript
-interface SpecAuthorPromptInput { readonly run: { readonly id: string; readonly tenantId?: string; readonly projectId?: string; readonly currentStep: "spec.author"; readonly workKind: SpecAuthorWorkKind; readonly topicId?: string; readonly conversationId?: string; readonly issueNumber?: number | null; }; readonly project?: SpecAuthorTaskProjectInput; readonly topic?: { readonly id: string; readonly title?: string; readonly slug?: string; }; readonly conversation?: { readonly id: string; readonly title?: string; }; readonly messages?: readonly SpecAuthorConversationMessage[]; readonly request: SpecAuthorRequestContext; readonly linkedIssue?: SpecAuthorLinkedIssue | null; readonly now?: Date | string; }
-```
-#### `SpecAuthorConversationMessage`
-
-```typescript
-interface SpecAuthorConversationMessage { readonly id?: string; readonly role: "user" | "assistant" | "system" | string; readonly text: string; readonly createdAt?: string; }
-```
-#### `SpecAuthorRequestContext`
-
-```typescript
-interface SpecAuthorRequestContext { readonly text: string; readonly title?: string; readonly slug?: string; readonly classification: SpecAuthorWorkKind; readonly source?: "conversation" | "issue" | "manual" | string; }
-```
-#### `SpecAuthorLinkedIssue`
-
-```typescript
-interface SpecAuthorLinkedIssue { readonly number: number; readonly title?: string; readonly body?: string; readonly labels?: readonly string[]; }
-```
-#### `SpecAuthorContext`
-
-```typescript
-interface SpecAuthorContext { readonly prompt: string; readonly taskInputs: SpecAuthorTaskInputs; }
-```
-#### `SpecAuthorTaskInputs`
-
-```typescript
-interface SpecAuthorTaskInputs { readonly run: SpecAuthorTaskRunInput; readonly project?: SpecAuthorTaskProjectInput; readonly conversation?: SpecAuthorTaskConversationInput; readonly request: SpecAuthorTaskRequestInput; readonly outputContract: SpecAuthorOutputContractInput; readonly runtimeOwnership: SpecAuthorRuntimeOwnershipInput; readonly planningScope: SpecAuthorPlanningScopeInput; }
-```
-#### `SpecAuthorTaskRunInput`
-
-```typescript
-interface SpecAuthorTaskRunInput { readonly id: string; readonly tenantId?: string; readonly projectId?: string; readonly workKind: SpecAuthorWorkKind; readonly currentStep: "spec.author"; readonly workflowExpectation: "advance_to_spec.human_review_after_success"; readonly issueNumber?: number; }
-```
-#### `SpecAuthorTaskProjectInput`
-
-```typescript
-interface SpecAuthorTaskProjectInput { readonly id: string; readonly tenantId?: string; readonly name?: string; readonly repository?: string; readonly description?: string | null; }
-```
-#### `SpecAuthorTaskConversationInput`
-
-```typescript
-interface SpecAuthorTaskConversationInput { readonly conversationId?: string; readonly conversationTitle?: string; readonly topicId?: string; readonly topicTitle?: string; readonly topicSlug?: string; readonly messages: readonly SpecAuthorConversationMessage[]; readonly messageCount: number; }
-```
-#### `SpecAuthorTaskRequestInput`
-
-```typescript
-interface SpecAuthorTaskRequestInput { readonly text: string; readonly title?: string; readonly slug: string; readonly classification: SpecAuthorWorkKind; readonly source?: "conversation" | "issue" | "manual" | string; readonly issueNumber?: number; readonly issueTitle?: string; readonly issueBody?: string; readonly issueLabels?: readonly string[]; }
-```
-#### `SpecAuthorOutputContractInput`
-
-```typescript
-interface SpecAuthorOutputContractInput { readonly schemaId: "autocatalyst.spec_author.v1"; readonly resultFile: "step-result.json"; readonly expectedKind: SpecAuthorExpectedKind; readonly expectedRelativePath: string; readonly expectedPathPrefix: "context-human/specs/feature-" | "context-human/specs/enhancement-"; readonly requiredFields: readonly ["kind", "slug", "relativePath", "frontmatter", "body"]; readonly frontmatter: { readonly status: "draft"; readonly required: readonly ["created", "last_updated", "status", "specced_by"]; readonly issue: "positive integer when a linked tracker issue is present; omit otherwise"; }; readonly body: { readonly nonEmptyMarkdown: true; readonly mustIncludeTopLevelTaskListPlaceholder: true; }; }
-```
-#### `SpecAuthorRuntimeOwnershipInput`
-
-```typescript
-interface SpecAuthorRuntimeOwnershipInput { readonly currentBranchOnly: true; readonly createBranches: false; readonly switchBranches: false; readonly createWorktrees: false; readonly push: false; readonly merge: false; readonly openPullRequests: false; }
-```
-#### `SpecAuthorPlanningScopeInput`
-
-```typescript
-interface SpecAuthorPlanningScopeInput { readonly stages: readonly ["requirements", "design", "tech_spec"]; readonly taskList: "include hierarchical stories/tasks with descriptions, acceptance criteria, and dependencies"; readonly stopAtHumanReview: true; }
-```
-#### `SpecAuthorContextLoaderDeps`
-
-```typescript
-interface SpecAuthorContextLoaderDeps { readonly runs: RunRepository; readonly projects?: ProjectRepository; readonly conversations?: ConversationRepository; readonly topics?: TopicRepository; readonly messages?: MessageRepository; readonly issues?: IssueContextReader; readonly repositoriesEnforceTenantIsolation?: boolean; }
-```
-#### `SpecAuthorContextLoaderRequest`
-
-```typescript
-interface SpecAuthorContextLoaderRequest { readonly runId: string; readonly workspaceRoot?: string; readonly tenantId?: string; }
-```
-#### `IssueContextReader`
-
-```typescript
-interface IssueContextReader { loadLinkedIssueContext(request: { readonly tenantId?: string; readonly projectId?: string; readonly runId: string; readonly issueNumber: number; }): Promise; }
-```
-#### `SafeLogDetails`
-
-```typescript
-type SafeLogDetails = Readonly> & { readonly __safeLogDetailsBrand: unique symbol };
-```
-#### `SpecAuthorContextError`
-
-```typescript
-class SpecAuthorContextError extends Error { readonly code: "UNSUPPORTED_STEP" | "UNSUPPORTED_WORK_KIND" | "MISSING_CONTEXT" | "INVALID_OUTPUT_CONTRACT" | "UNSCOPED_TENANT_CONTEXT"; readonly safeDetails?: SafeLogDetails; }
-```
-#### `ExecutionContextWorkInput`
-
-```typescript
-interface ExecutionContextWorkInput { readonly run: { readonly id: string; readonly currentStep: string; readonly workKind?: string; readonly tenantId?: string; readonly projectId?: string; readonly topicId?: string; readonly conversationId?: string; readonly issueNumber?: number | null; }; readonly workspaceRoot?: string; readonly tenantId?: string; readonly projectId?: string; }
-```
-#### `ExecutionContextResolverOptions`
-
-```typescript
-interface ExecutionContextResolverOptions { readonly prompt?: string | ((workInput: ExecutionContextWorkInput) => string | Promise | undefined); readonly taskInputs?: Record | ((workInput: ExecutionContextWorkInput) => Record | Promise | undefined> | undefined); }
-```
-### Notes
-
-No new external HTTP API, SDK surface, database table, workflow step id, branch/PR operation, or public route is proposed. The API artifact focuses on internal TypeScript exports needed to construct and wire the real [spec.author](http://spec.author) execution context, plus explicit test files for builder units, execution-entry-point contract validation, production wiring integration, credential-boundary coverage, and the create-to-human-review end-to-end proof. Production control-plane wiring should call loadSpecAuthorPromptInput followed by buildSpecAuthorContext, then provide the resulting prompt and taskInputs to createExecutionContextResolver callbacks only for feature/enhancement [spec.author](http://spec.author) runs. packages/execution/src/execution-entry-point.ts is the required validation boundary for [spec.author](http://spec.author) -\> SPEC_AUTHOR_SCHEMA_ID selection; result-contracts.ts remains the schema registry source. Existing completion APIs remain authoritative for validation-tolerated terminal result handling, commit, artifact recording, and the human review gate. Tenant scoping is guarded by requiring tenantId unless repositories explicitly enforce tenant isolation, and diagnostics use SafeLogDetails rather than raw context. Safe diagnostics are branded with a required SafeLogDetails brand and constructed through toSafeDetails, so plain objects cannot be passed as safeDetails without an explicit sanitization step. When deps.issues is absent for a run with issueNumber, loadSpecAuthorPromptInput intentionally omits linkedIssue metadata rather than throwing, while preserving the numeric issueNumber from the run for task inputs and frontmatter guidance.
 ## Task list
 
 ### Story 1 — Build deterministic [spec.author](http://spec.author) context builders
@@ -588,9 +351,9 @@ No new external HTTP API, SDK surface, database table, workflow step id, branch/
 **Dependencies:** None.
 #### Task 1.1 — Add public builder types, errors, and safe diagnostics
 
-**Description:** Create `packages/core/src/spec-authoring-context.ts` with the Converged API types, `SpecAuthorContextError`, `assertSupportedSpecAuthorWorkKind`, and `toSafeDetails`.
+**Description:** Create `packages/core/src/spec-authoring-context.ts` with exported builder input/output types, `SpecAuthorContextError`, `assertSupportedSpecAuthorWorkKind`, and `toSafeDetails`.
 **Acceptance criteria:**
-- The module exports every type and helper listed for `packages/core/src/spec-authoring-context.ts` in the Converged API.
+- The module exports stable types and helpers for the prompt input, combined prompt/task-input output, task-input output contract, safe diagnostics, supported-work-kind assertion, and typed context errors.
 - `assertSupportedSpecAuthorWorkKind` accepts only `"feature"` and `"enhancement"` and throws a typed safe error for other work kinds.
 - `toSafeDetails` brands sanitized details and rejects unsafe key names such as `prompt`, `body`, `response`, `secret`, `token`, `credential`, `authorization`, and `header`.
 - Builder errors expose only safe codes and safe details; they do not include raw prompts, issue bodies, provider responses, or secrets.
@@ -609,11 +372,12 @@ No new external HTTP API, SDK surface, database table, workflow step id, branch/
 
 **Description:** Implement deterministic JSON-safe task inputs for run, project, conversation, request, output contract, runtime ownership, and planning scope.
 **Acceptance criteria:**
-- Feature runs produce `expectedKind: "feature_spec"` and `expectedRelativePath` under `context-human/specs/feature-.md`.
-- Enhancement runs produce `expectedKind: "enhancement_spec"` and `expectedRelativePath` under `context-human/specs/enhancement-.md`.
-- Task inputs include `schemaId: "autocatalyst.spec_author.v1"` and `resultFile: "step-result.json"`.
+- Feature runs produce `outputContract.expectedKind: "feature_spec"`, `outputContract.expectedPathPrefix: "context-human/specs/feature-"`, and `outputContract.expectedRelativePathPattern: "context-human/specs/feature-<slug>.md"`.
+- Enhancement runs produce `outputContract.expectedKind: "enhancement_spec"`, `outputContract.expectedPathPrefix: "context-human/specs/enhancement-"`, and `outputContract.expectedRelativePathPattern: "context-human/specs/enhancement-<slug>.md"`.
+- Task inputs include `outputContract.schemaId: "autocatalyst.spec_author.v1"` and `outputContract.resultFile: "step-result.json"`.
 - Task inputs include frontmatter rules for `created`, `last_updated`, `status: "draft"`, `specced_by`, and integer `issue` when present.
-- Task inputs include runtime ownership and planning-scope fields matching the Converged API.
+- Task inputs include `bodyContract` rules that require a complete top-level `## Task list` and explicitly disallow placeholders for prompt/task-input consumers and harness assertions.
+- Task inputs include runtime ownership and planning-scope fields matching the task input behavior in this spec.
 - Task inputs include request/conversation/issue context when supplied and omit unavailable optional context without inventing facts.
 #### Task 1.4 — Implement `buildSpecAuthorContext`
 
@@ -627,9 +391,9 @@ No new external HTTP API, SDK surface, database table, workflow step id, branch/
 
 **Description:** Add `packages/core/src/__tests__/spec-authoring-context.spec.ts` and `packages/core/src/__tests__/spec-authoring-prompt.spec.ts`.
 **Acceptance criteria:**
-- Tests cover feature and enhancement expected kinds, path prefixes, exact result file name, and frontmatter rules.
+- Tests cover feature and enhancement `outputContract` expected kinds, path prefixes, slug-derived relative path patterns, exact result file name, and frontmatter rules.
 - Tests assert the prompt includes `mm:planning`, work-kind classification, branch/worktree/push/merge/PR prohibitions, requirements/design/tech-spec guidance, and the hierarchical `## Task list` instruction.
-- Tests assert task inputs include schema id, request context, conversation messages in chronological order, linked issue fields when present, and safe omission when issue metadata is unavailable.
+- Tests assert task inputs include `outputContract.schemaId`, request context, conversation messages in chronological order, linked issue fields when present, `bodyContract` rules requiring a complete task list rather than a placeholder, and safe omission when issue metadata is unavailable.
 - Tests assert unsupported work kinds and unsafe diagnostic keys fail safely.
 - Tests avoid brittle full-prompt snapshots while proving the placeholder prompt is not used.
 ### Story 2 — Load safe production context for spec authoring
@@ -640,7 +404,7 @@ No new external HTTP API, SDK surface, database table, workflow step id, branch/
 
 **Description:** Create `apps/control-plane/src/spec-authoring-context-loader.ts` with `loadSpecAuthorPromptInput`, loader dependency types, request types, and the optional `IssueContextReader` seam.
 **Acceptance criteria:**
-- The loader exports the APIs listed in the Converged API.
+- The loader exports `loadSpecAuthorPromptInput`, loader dependency types, request types, and the optional `IssueContextReader` seam.
 - The loader requires `tenantId` unless `repositoriesEnforceTenantIsolation` is explicitly true.
 - The loader fails safely when the run is missing, not at `spec.author`, or has an unsupported work kind.
 - The loader preserves run identifiers, tenant/project/topic/conversation ids, issue number, and current step in the returned prompt input.
@@ -677,7 +441,7 @@ No new external HTTP API, SDK surface, database table, workflow step id, branch/
 **Dependencies:** Stories 1 and 2.
 #### Task 3.1 — Ensure resolver callbacks support [spec.author](http://spec.author) context
 
-**Description:** Extend or confirm `packages/core/src/execution-context-resolver.ts` supports function-valued `prompt` and `taskInputs` options with the `ExecutionContextWorkInput` shape in the Converged API.
+**Description:** Extend or confirm `packages/core/src/execution-context-resolver.ts` supports function-valued `prompt` and `taskInputs` options with the existing `ExecutionContextWorkInput` resolver shape.
 **Acceptance criteria:**
 - `createExecutionContextResolver` accepts prompt and task-input callbacks that can return values, `undefined`, or promises.
 - Callback errors propagate as safe context-resolution failures.
@@ -770,6 +534,7 @@ No new external HTTP API, SDK surface, database table, workflow step id, branch/
 **Acceptance criteria:**
 - The harness asserts the prompt includes the planning skill, runtime ownership rules, planning-scope stop point, and `step-result.json` contract.
 - The harness reads `outputContract` from task inputs to choose `kind`, `relativePath`, required frontmatter, and result file name.
+- The harness reads `bodyContract` from task inputs and refuses outputs that would satisfy only a placeholder `## Task list`.
 - The harness writes `step-result.json` into scratch with `kind`, `slug`, `relativePath`, `frontmatter`, and non-empty `body`.
 - The harness can intentionally write malformed output for failure-path tests.
 - The harness does not bypass `specAuthorResultSchema` or the execution-entry-point validation path.
@@ -781,7 +546,7 @@ No new external HTTP API, SDK surface, database table, workflow step id, branch/
 - Auto-dispatch moves through `intake` to `spec.author` without manual step injection beyond existing test controls.
 - The harness or real SDK receives the actual production prompt and task inputs.
 - The resulting `step-result.json` passes `specAuthorResultSchema`.
-- A draft spec is committed under the expected `context-human/specs/feature-.md` or `context-human/specs/enhancement-.md` path.
+- A draft spec is committed under the expected `context-human/specs/feature-<slug>.md` or `context-human/specs/enhancement-<slug>.md` path derived from the validated result slug.
 - `GET /v1/runs/:id` or equivalent service read reports `currentStep: "spec.human_review"` and `waitingOn: "human"`.
 #### Task 6.3 — Add malformed-output end-to-end coverage
 
