@@ -19,15 +19,26 @@ export const runStateTransitionEventName = 'run_state_transition' as const;
 
 export const runStateTransitionKindSchema = z.enum(['start', 'advance', 'revise', 'needs_input', 'cancel', 'fail']);
 
+const runStateTransitionPayloadSchema = z.object({
+  directive: runStateTransitionKindSchema,
+  fromStep: z.string().min(1).optional(),
+  toStep: z.string().min(1),
+  reason: z.string().min(1).optional()
+}).strict().superRefine((value, ctx) => {
+  if (value.reason !== undefined && value.directive !== 'fail') {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['reason'],
+      message: 'transition.reason is only allowed for fail directives.'
+    });
+  }
+});
+
 export const runStateTransitionEventSchema = z.object({
   id: z.string().min(1),
   type: z.literal(runStateTransitionEventName),
   runId: z.string().min(1),
-  transition: z.object({
-    directive: runStateTransitionKindSchema,
-    fromStep: z.string().min(1).optional(),
-    toStep: z.string().min(1)
-  }).strict(),
+  transition: runStateTransitionPayloadSchema,
   run: runSchema,
   runStep: runStepSchema,
   tenant: z.string().min(1),

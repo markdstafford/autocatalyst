@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ExecutionContext } from '@autocatalyst/api-contract';
 import type { ExecutionBoundaryEvent, ExecutionEntryPoint, ExecutionEntryPointInput, DirectCallRequest } from '@autocatalyst/execution';
-import { createExecutionEntryPoint, ExecutionMaterializationError, SkillCatalogResolutionError } from '@autocatalyst/execution';
+import { createExecutionEntryPoint, ClassifiedProviderFailureError, ExecutionMaterializationError, SkillCatalogResolutionError } from '@autocatalyst/execution';
 import type { Runner, RunnerRunInput } from '@autocatalyst/execution';
 import type { RunWorkInput } from './orchestrator.js';
 import { createExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
@@ -133,13 +133,14 @@ describe('createExecutionRunUnitOfWork', () => {
       expect(await unitOfWork.run(makeInput())).toEqual({ directive: 'needs_input', question: 'What color?' });
     });
 
-    it('fail maps with reason', async () => {
+    it('fail maps with normalized reason (unknown runner reason becomes safe fallback)', async () => {
       const unitOfWork = createExecutionRunUnitOfWork({
         execute: makeFakeEntryPoint([makeTerminalEvent('fail')]),
         resolveContext: async () => makeContext(),
         eventsStore: newStore()
       });
-      expect(await unitOfWork.run(makeInput())).toEqual({ directive: 'fail', reason: 'Something went wrong.' });
+      // 'Something went wrong.' is not on the allowlist — normalized to the safe fallback code.
+      expect(await unitOfWork.run(makeInput())).toEqual({ directive: 'fail', reason: 'runner_failed_before_terminal_result' });
     });
 
     it('fail with no reason uses fallback', async () => {
@@ -239,6 +240,28 @@ describe('createExecutionRunUnitOfWork', () => {
         expect(result.reason).not.toContain(sentinel);
         expect(result.reason).toContain('workspace_provisioning_failed');
       }
+    });
+
+    it('maps classified provider auth failures to canonical fail reasons', async () => {
+      const unitOfWork = createExecutionRunUnitOfWork({
+        execute: makeFakeThrowingEntryPoint(new ClassifiedProviderFailureError('provider_auth_failed')),
+        resolveContext: async () => makeContext(),
+        eventsStore: newStore()
+      });
+      const result = await unitOfWork.run(makeInput());
+      expect(result).toEqual({ directive: 'fail', reason: 'provider_auth_failed' });
+    });
+
+    it('does not copy raw provider errors into fail reasons', async () => {
+      const sentinel = 'sk-test-secret';
+      const unitOfWork = createExecutionRunUnitOfWork({
+        execute: makeFakeThrowingEntryPoint(new Error(`raw SDK body ${sentinel} /Users/mark/private`)),
+        resolveContext: async () => makeContext(),
+        eventsStore: newStore()
+      });
+      const result = await unitOfWork.run(makeInput());
+      expect(result).toEqual({ directive: 'fail', reason: 'Runner failed before terminal result.' });
+      expect(JSON.stringify(result)).not.toContain(sentinel);
     });
 
     it('resolveContext throwing SkillCatalogResolutionError propagates and runner is never invoked', async () => {

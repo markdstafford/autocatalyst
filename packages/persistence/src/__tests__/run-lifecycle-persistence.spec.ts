@@ -184,4 +184,36 @@ describe('recordRunStepTransition', () => {
       database.close();
     });
   });
+
+  it('round-trips failureReason on lifecycle transition result', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const database = createSqliteDatabase({ path: databasePath });
+      await migrateSqliteDatabase(database);
+      const repos = createDrizzleDomainRepositories(database);
+
+      const project = await repos.projects.create({
+        owner, tenant: 'tenant_1', displayName: 'P', repoUrl: 'https://example.test',
+        hostRepository: { provider: 'github', owner: 'test', name: 'repo' },
+        workspaceRootOverride: null, issueTrackerSetting: null, codeHostSetting: null, credentialRefs: []
+      });
+      const conv = await repos.conversations.create({ projectId: project.id, owner, tenant: 'tenant_1', identity: 'conv-c', activeTopicId: null });
+      const topic = await repos.topics.create({ conversationId: conv.id, owner, tenant: 'tenant_1', title: 'T', kind: 'main' });
+
+      const startResult = await repos.runs.recordRunLifecycleStart({
+        run: { topicId: topic.id, owner, tenant: 'tenant_1', workKind: 'feature', currentStep: 'spec.author', terminal: false },
+        runStep: { phase: 'spec', step: 'spec.author', role: 'none', startedAt: new Date().toISOString(), endedAt: null, durationMs: null }
+      });
+
+      const transitioned = await repos.runs.recordRunStepTransition({
+        runId: startResult.run.id,
+        currentStep: 'failed',
+        terminal: true,
+        failureReason: 'provider_auth_failed',
+        runStep: { phase: null, step: 'failed', role: 'none', startedAt: new Date().toISOString(), endedAt: null, durationMs: null }
+      });
+      expect(transitioned.run.failureReason).toBe('provider_auth_failed');
+
+      database.close();
+    });
+  });
 });

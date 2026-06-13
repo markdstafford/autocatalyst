@@ -26,6 +26,7 @@ import {
 import type { ConfigurationRecord, JsonValue, Run, RunStep } from '@autocatalyst/api-contract';
 import type { ConversationIngressRepository, RunRepository } from '@autocatalyst/core';
 import {
+  ClassifiedProviderFailureError,
   createAgentConnection,
   createAgentRunnerFactory,
   createDirectCallFactory,
@@ -899,8 +900,9 @@ describe('runner-cells: direct credential guard', () => {
         })
     });
 
-    await expect(
-      directCallFactory.call({
+    let caughtError: unknown;
+    try {
+      await directCallFactory.call({
         runId: 'run_cred_guard_001',
         step: 'guard_test',
         directCall: {
@@ -908,10 +910,13 @@ describe('runner-cells: direct credential guard', () => {
           input: {},
           resultValidation: { schemaId: 'guard-test', schema: z.object({}) }
         }
-      })
-    ).rejects.toThrow(
-      expect.objectContaining({ code: 'missing_credential' })
-    );
+      });
+    } catch (err) {
+      caughtError = err;
+    }
+
+    expect(caughtError).toBeInstanceOf(ClassifiedProviderFailureError);
+    expect((caughtError as ClassifiedProviderFailureError).failureReason).toBe('provider_auth_failed');
 
     // Provider adapter must not be invoked when the credential check fails
     expect(adapterCallSpy).not.toHaveBeenCalled();

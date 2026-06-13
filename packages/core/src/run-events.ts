@@ -17,6 +17,7 @@ export interface CreateRunStateTransitionEventInput {
   readonly directive: RunStateTransitionKind;
   readonly fromStep?: string;
   readonly toStep: string;
+  readonly reason?: string;
   readonly run: Run;
   readonly runStep: RunStep;
   readonly tenant: string;
@@ -34,7 +35,8 @@ export function createRunStateTransitionEvent(input: CreateRunStateTransitionEve
     transition: {
       directive: input.directive,
       ...(input.fromStep !== undefined ? { fromStep: input.fromStep } : {}),
-      toStep: input.toStep
+      toStep: input.toStep,
+      ...(input.directive === 'fail' && input.reason !== undefined ? { reason: input.reason } : {})
     },
     run: input.run,
     runStep: input.runStep,

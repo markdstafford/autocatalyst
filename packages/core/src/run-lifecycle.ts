@@ -50,6 +50,7 @@ export interface ApplyRunDirectiveInput {
   readonly runId: string;
   readonly directive: RunDirective;
   readonly checkpointResult?: JsonValue;
+  readonly reason?: string;
   readonly clock?: () => string;
 }
 
@@ -135,7 +136,8 @@ export async function applyRunDirective(input: ApplyRunDirectiveInput): Promise<
       terminal: deriveRunTerminal(step.id),
       runStep: buildEntryRunStep(step, now(input.clock)),
       ...(sourceRunStep !== null ? { sourceRunStepId: sourceRunStep.id } : {}),
-      ...(input.checkpointResult !== undefined ? { checkpointResult: input.checkpointResult } : {})
+      ...(input.checkpointResult !== undefined ? { checkpointResult: input.checkpointResult } : {}),
+      ...(input.directive === 'fail' && input.reason !== undefined ? { failureReason: input.reason } : {})
     });
     return { run: recorded.run, workflow, step, runStep: recorded.runStep, transition };
   } catch (error) {

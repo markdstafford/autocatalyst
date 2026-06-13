@@ -622,6 +622,7 @@ export class DrizzleRunRepository implements RunRepository {
       terminal: row.terminal,
       ...(trackedIssue === null ? {} : { trackedIssue }),
       ...(testingGuideResult === null ? {} : { testingGuideResult }),
+      ...(row.failureReason === null || row.failureReason === undefined ? {} : { failureReason: row.failureReason }),
       createdAt: row.createdAt,
       updatedAt: row.updatedAt
     });
@@ -674,7 +675,12 @@ export class DrizzleRunRepository implements RunRepository {
   async recordRunStepTransition(input: RecordRunStepTransitionInput): Promise<RecordRunStepTransitionResult> {
     return this.#database.drizzle.transaction((tx) => {
       const updatedRows = tx.update(runs)
-        .set({ currentStep: input.currentStep, terminal: input.terminal, updatedAt: nowIso() })
+        .set({
+          currentStep: input.currentStep,
+          terminal: input.terminal,
+          failureReason: input.currentStep === 'failed' ? (input.failureReason ?? null) : null,
+          updatedAt: nowIso()
+        })
         .where(eq(runs.id, input.runId))
         .returning()
         .all();

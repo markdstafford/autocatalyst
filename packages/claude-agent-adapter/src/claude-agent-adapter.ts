@@ -12,8 +12,12 @@ import type {
   ProviderCapabilityDegradation
 } from '@autocatalyst/execution';
 import {
+  ClassifiedProviderFailureError,
   ProviderConnectionError,
   UnsupportedProviderCapabilityError,
+  buildSafeAdapterFailureLogDetail,
+  classifyProviderFailure,
+  filterSafeClassificationDetails,
   runtimeSkillsCatalogRoot
 } from '@autocatalyst/execution';
 
@@ -218,6 +222,21 @@ export function createClaudeAgentAdapter(
     logger[level](event, fields);
   }
 
+  function classifySdkError(err: unknown): ClassifiedProviderFailureError | undefined {
+    const shaped = err as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
+    const classificationInput = {
+      ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
+      ...(typeof shaped.statusCode === 'number' ? { statusCode: shaped.statusCode } : {}),
+      code: shaped.code,
+      errorName: shaped.name,
+      providerKind: claudeProviderKind
+    };
+    const reason = classifyProviderFailure(classificationInput);
+    return reason === undefined
+      ? undefined
+      : new ClassifiedProviderFailureError(reason, filterSafeClassificationDetails(classificationInput));
+  }
+
   return {
     providerKind: claudeProviderKind,
     adapterId: claudeAgentAdapterId,
@@ -344,6 +363,7 @@ export function createClaudeAgentAdapter(
         metadataResolve = resolve;
         metadataReject = reject;
       });
+      metadata.catch(() => undefined);
 
       async function* mapEvents(): AsyncIterable<RunnerEvent> {
         let outcome: 'succeeded' | 'failed' | 'canceled' = 'succeeded';
@@ -393,16 +413,17 @@ export function createClaudeAgentAdapter(
           }
         } catch (err) {
           outcome = 'failed';
+          const classified = classifySdkError(err);
           safeLog('error', 'claude.adapter.session_failed', {
             runId,
             step,
-            providerKind: profile.providerKind,
             adapterId: claudeAgentAdapterId,
-            // never include err message — it may carry SDK details
-            errorName: err instanceof Error ? err.name : 'unknown'
+            ...buildSafeAdapterFailureLogDetail(err, profile.providerKind),
+            ...(classified !== undefined ? { failureReason: classified.failureReason } : {})
           });
-          metadataReject(err);
-          throw err;
+          const thrown = classified ?? err;
+          metadataReject(thrown);
+          throw thrown;
         } finally {
           if (outcome !== 'failed') {
             metadataResolve({

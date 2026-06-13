@@ -72,6 +72,7 @@ export interface RecordRunStepTransitionInput {
   readonly runStep: LifecycleRunStepInput;
   readonly sourceRunStepId?: string;
   readonly checkpointResult?: JsonValue;
+  readonly failureReason?: string;
 }
 
 export interface RecordRunStepTransitionResult {

@@ -1,6 +1,7 @@
 import {
   RunnerProtocolError,
   validateExecutionBoundaryEventStream,
+  normalizeFailureReasonForPublicSurface,
   type ExecutionTerminalResultEvent
 } from '@autocatalyst/execution';
 import {
@@ -56,7 +57,7 @@ function mapTerminalToWorkResult(event: ExecutionTerminalResultEvent): RunWorkRe
     case 'fail':
       return {
         directive: 'fail',
-        reason: event.result.reason ?? 'Runner returned a failed terminal result.'
+        reason: normalizeFailureReasonForPublicSurface(event.result.reason) ?? 'runner_failed_before_terminal_result'
       };
   }
 }

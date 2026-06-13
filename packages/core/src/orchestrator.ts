@@ -13,6 +13,8 @@ import type {
   TrackedIssue
 } from '@autocatalyst/api-contract';
 
+import { normalizeFailureReasonForPublicSurface } from '@autocatalyst/execution';
+
 import type { CompleteSpecAuthoringOutput, SpecAuthoringServiceDependencies } from './spec-authoring-service.js';
 import { completeSpecAuthoring } from './spec-authoring-service.js';
 import type { SpecApprovalFinalizerDependencies } from './spec-approval-finalizer.js';
@@ -125,6 +127,7 @@ export interface ApplyOrchestratedDirectiveInput {
   readonly tenant: string;
   readonly checkpointResult?: JsonValue;
   readonly principal?: NonModelPrincipal;
+  readonly reason?: string;
 }
 
 export interface DispatchRunInput {
@@ -419,6 +422,9 @@ export class DefaultOrchestrator implements Orchestrator {
       throw new OrchestratorError('terminal_run', `Run '${input.runId}' is terminal.`);
     }
     const fromStep = existing.currentStep;
+    const normalizedFailureReason = input.directive === 'fail'
+      ? normalizeFailureReasonForPublicSurface(input.reason)
+      : undefined;
 
     // Defense-in-depth: block any advance directive when the run is already at a human gate,
     // unless it is spec.human_review (which has its own gate-check block below).
@@ -511,6 +517,7 @@ export class DefaultOrchestrator implements Orchestrator {
         runId: input.runId,
         directive: input.directive,
         ...(input.checkpointResult !== undefined ? { checkpointResult: input.checkpointResult } : {}),
+        ...(normalizedFailureReason !== undefined ? { reason: normalizedFailureReason } : {}),
         ...(this.#clock !== undefined ? { clock: this.#clock } : {})
       });
     } catch (error) {
@@ -529,7 +536,8 @@ export class DefaultOrchestrator implements Orchestrator {
       toStep: state.run.currentStep,
       run: state.run,
       runStep: state.runStep,
-      tenant: state.run.tenant
+      tenant: state.run.tenant,
+      ...(normalizedFailureReason !== undefined ? { reason: normalizedFailureReason } : {})
     });
 
     this.#scheduleAutoDispatch(state.run);
@@ -565,7 +573,7 @@ export class DefaultOrchestrator implements Orchestrator {
     return this.#dispatchQueue.enqueue(async () => {
       const result = await unitOfWork.run({ runId: input.runId, run, tenant: input.tenant });
       if (result.directive === 'fail') {
-        return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant });
+        return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason: result.reason });
       }
       if (result.directive === 'needs_input') {
         const workflow = getRunWorkflowForWorkKind(run.workKind);
@@ -584,7 +592,7 @@ export class DefaultOrchestrator implements Orchestrator {
       if (result.directive === 'advance' && run.currentStep === 'spec.author' && (run.workKind === 'feature' || run.workKind === 'enhancement')) {
         const completionResult = await this.#runSpecAuthoringCompletion(input.runId, run, result.result);
         if (completionResult.kind === 'failed') {
-          return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant });
+          return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason: 'spec_authoring_failed' });
         }
         return this.applyDirective({
           runId: input.runId,
@@ -686,7 +694,7 @@ export class DefaultOrchestrator implements Orchestrator {
     }
 
     try {
-      await this.applyDirective({ runId: run.id, tenant: run.tenant, directive: 'fail' });
+      await this.applyDirective({ runId: run.id, tenant: run.tenant, directive: 'fail', reason: 'auto_dispatch_failed' });
     } catch (failError) {
       const failCode = failError instanceof OrchestratorError ? failError.code : 'unexpected_error';
       if (failError instanceof OrchestratorError && this.#isExpectedAutoDispatchFailure(failError)) {
@@ -788,12 +796,14 @@ export class DefaultOrchestrator implements Orchestrator {
     run: Run;
     runStep: RunStep;
     tenant: string;
+    reason?: string;
   }): Promise<void> {
     const event = createRunStateTransitionEvent({
       runId: args.runId,
       directive: args.directive,
       ...(args.fromStep !== undefined ? { fromStep: args.fromStep } : {}),
       toStep: args.toStep,
+      ...(args.reason !== undefined ? { reason: args.reason } : {}),
       run: args.run,
       runStep: args.runStep,
       tenant: args.tenant,

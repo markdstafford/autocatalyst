@@ -3,6 +3,19 @@ import type { ResolvedAgentRunnerProfile, ResolvedAgentCredentialReference, Agen
 import { ProviderConfigurationError, ProviderConnectionError } from './agent-provider-adapter.js';
 import type { AgentConnectionFactoryOptions, ProviderCredentialResolver, ProcessLaunchConfigInput } from './connection.js';
 import { createAgentConnection } from './connection.js';
+import { ClassifiedProviderFailureError } from './errors.js';
+
+// ---------------------------------------------------------------------------
+// Sentinel no-leak helper
+// ---------------------------------------------------------------------------
+
+function expectNoSentinels(serialized: string): void {
+  expect(serialized).not.toContain('sk-test-secret');
+  expect(serialized).not.toContain('authorization: Bearer');
+  expect(serialized).not.toContain('/Users/mark/private');
+  expect(serialized).not.toContain('sec_secret_handle_value');
+  expect(serialized).not.toContain('raw SDK diagnostic');
+}
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -127,7 +140,7 @@ describe('createAgentConnection — credential resolution', () => {
 // ---------------------------------------------------------------------------
 
 describe('createAgentConnection — missing credential', () => {
-  it('throws ProviderConfigurationError(missing_credential) when required=true and resolver returns undefined', async () => {
+  it('throws ClassifiedProviderFailureError(provider_auth_failed) when required=true and resolver returns undefined', async () => {
     const credentialResolver: ProviderCredentialResolver = {
       resolveCredential: async () => undefined
     };
@@ -136,13 +149,13 @@ describe('createAgentConnection — missing credential', () => {
       createAgentConnection(makeOptions({ credentialResolver }))
     ).rejects.toSatisfy((err: unknown) => {
       return (
-        err instanceof ProviderConfigurationError &&
-        err.code === 'missing_credential'
+        err instanceof ClassifiedProviderFailureError &&
+        err.failureReason === 'provider_auth_failed'
       );
     });
   });
 
-  it('throws ProviderConfigurationError(missing_credential) when required=true and no secretHandle', async () => {
+  it('throws ClassifiedProviderFailureError(provider_auth_failed) when required=true and no secretHandle', async () => {
     const credentialRef = makeCredentialRef({ required: true, secretHandle: undefined });
     const credentialResolver: ProviderCredentialResolver = {
       resolveCredential: async () => undefined
@@ -152,8 +165,8 @@ describe('createAgentConnection — missing credential', () => {
       createAgentConnection(makeOptions({ credentialReference: credentialRef, credentialResolver }))
     ).rejects.toSatisfy((err: unknown) => {
       return (
-        err instanceof ProviderConfigurationError &&
-        err.code === 'missing_credential'
+        err instanceof ClassifiedProviderFailureError &&
+        err.failureReason === 'provider_auth_failed'
       );
     });
   });
@@ -412,9 +425,9 @@ describe('createAgentConnection — credential secret absent from log entries', 
 // ---------------------------------------------------------------------------
 
 describe('createAgentConnection — non-transient response', () => {
-  const nonTransientStatuses = [400, 401, 403, 404];
+  const genericNonTransientStatuses = [400, 403, 404];
 
-  for (const status of nonTransientStatuses) {
+  for (const status of genericNonTransientStatuses) {
     it(`throws ProviderConnectionError(non_transient_provider_failure) for status ${status} without leaking body`, async () => {
       const sensitiveBody = `{"error":"secret-value-in-body","key":"leak-me-${status}"}`;
       const mockFetch = vi.fn().mockResolvedValue(
@@ -528,5 +541,63 @@ describe('createAgentConnection — process launch config', () => {
 
     expect(config.degradedCapabilities).toHaveLength(1);
     expect(config.degradedCapabilities[0]?.capability).toBe('header_strip');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test: HTTP 401 classified as provider_auth_failed
+// ---------------------------------------------------------------------------
+
+describe('createAgentConnection — HTTP 401 classified as provider_auth_failed', () => {
+  it('classifies HTTP 401 as provider_auth_failed without leaking response body or credential', async () => {
+    const { entries, logger } = captureLogger();
+
+    const rawBody = 'raw body sk-test-secret /Users/mark/private authorization: Bearer sec_secret_handle_value raw SDK diagnostic';
+    const mockFetch = vi.fn().mockResolvedValue(
+      new Response(rawBody, { status: 401 })
+    );
+
+    const connection = await createAgentConnection(makeOptions({ fetch: mockFetch, logger }));
+    const transport = connection.createFetchTransport();
+
+    let thrown: unknown;
+    try {
+      await transport.fetch({ url: 'https://api.anthropic.com/v1/messages', method: 'POST' });
+    } catch (e) {
+      thrown = e;
+    }
+
+    expect(thrown).toBeInstanceOf(ClassifiedProviderFailureError);
+    expect((thrown as ClassifiedProviderFailureError).failureReason).toBe('provider_auth_failed');
+
+    // Logs must not contain the raw response body or sensitive tokens
+    const logStr = JSON.stringify(entries);
+    expect(logStr).not.toContain('raw body');
+    expectNoSentinels(logStr);
+    expectNoSentinels(JSON.stringify(thrown));
+
+    // Logs must record the classified reason
+    expect(logStr).toContain('provider_auth_failed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test: Missing required credentials classified as provider_auth_failed
+// ---------------------------------------------------------------------------
+
+describe('createAgentConnection — missing required credentials classified', () => {
+  it('classifies missing required credentials as provider_auth_failed', async () => {
+    const credentialResolver: ProviderCredentialResolver = {
+      resolveCredential: async () => undefined
+    };
+
+    await expect(
+      createAgentConnection(makeOptions({ credentialResolver }))
+    ).rejects.toSatisfy((err: unknown) => {
+      return (
+        err instanceof ClassifiedProviderFailureError &&
+        err.failureReason === 'provider_auth_failed'
+      );
+    });
   });
 });

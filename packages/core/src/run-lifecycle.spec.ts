@@ -180,4 +180,54 @@ describe('applyRunDirective', () => {
       directive: 'advance'
     })).rejects.toMatchObject({ code: 'transition_persistence_failed' });
   });
+
+  it('forwards reason as failureReason for fail transitions', async () => {
+    let lastTransitionInput: RecordRunStepTransitionInput | undefined;
+    const run = makeRun({ currentStep: 'spec.author' });
+    const failedRun = makeRun({ currentStep: 'failed', terminal: true });
+    const failedStep = makeRunStep({ step: 'failed' });
+
+    const repos = makeRunRepository({
+      findById: async () => run,
+      recordRunStepTransition: async (input: RecordRunStepTransitionInput): Promise<RecordRunStepTransitionResult> => {
+        lastTransitionInput = input;
+        return { run: failedRun, runStep: failedStep };
+      }
+    });
+
+    await applyRunDirective({
+      runs: repos,
+      runId: 'run_1',
+      directive: 'fail',
+      reason: 'provider_auth_failed',
+      clock: () => '2026-06-13T00:00:00.000Z'
+    });
+
+    expect(lastTransitionInput?.failureReason).toBe('provider_auth_failed');
+  });
+
+  it('omits failureReason for non-fail transitions', async () => {
+    let lastTransitionInput: RecordRunStepTransitionInput | undefined;
+    const run = makeRun({ currentStep: 'intake' });
+    const nextRun = makeRun({ currentStep: 'spec.author' });
+    const nextStep = makeRunStep({ step: 'spec.author' });
+
+    const repos = makeRunRepository({
+      findById: async () => run,
+      recordRunStepTransition: async (input: RecordRunStepTransitionInput): Promise<RecordRunStepTransitionResult> => {
+        lastTransitionInput = input;
+        return { run: nextRun, runStep: nextStep };
+      }
+    });
+
+    await applyRunDirective({
+      runs: repos,
+      runId: 'run_1',
+      directive: 'advance',
+      reason: 'provider_auth_failed',
+      clock: () => '2026-06-13T00:00:00.000Z'
+    });
+
+    expect(lastTransitionInput?.failureReason).toBeUndefined();
+  });
 });

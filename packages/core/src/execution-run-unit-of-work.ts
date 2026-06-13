@@ -2,6 +2,7 @@ import type { ExecutionContext, JsonValue } from '@autocatalyst/api-contract';
 import {
   RunnerProtocolError,
   ExecutionMaterializationError,
+  isClassifiedProviderFailureError,
   type ExecutionBoundaryEvent,
   type DirectCallRequest,
   type DirectOrchestratorCallResult
@@ -115,6 +116,9 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
       } catch (error) {
         if (error instanceof RunnerProtocolError) {
           throw error;
+        }
+        if (isClassifiedProviderFailureError(error)) {
+          return { workResult: { directive: 'fail', reason: error.failureReason } };
         }
         let reason: string;
         if (error instanceof ExecutionMaterializationError) {
