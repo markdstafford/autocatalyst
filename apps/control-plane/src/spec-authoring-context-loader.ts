@@ -2,9 +2,11 @@ import type { Message, Project, Run } from '@autocatalyst/api-contract';
 import {
   SpecAuthorContextError,
   assertSupportedSpecAuthorWorkKind,
+  toSafeDetails,
   type DomainRepositories,
   type SpecAuthorLinkedIssueContext,
-  type SpecAuthorPromptInput
+  type SpecAuthorPromptInput,
+  type SpecAuthorSupportedWorkKind
 } from '@autocatalyst/core';
 
 export type SpecAuthoringContextLoadErrorCode =
@@ -48,13 +50,9 @@ export interface LoadSpecAuthorPromptInputRequest {
   readonly issues?: IssueContextReader;
 }
 
-function safeDetails(details: Readonly<Record<string, unknown>>): Readonly<Record<string, unknown>> {
-  return { ...details };
-}
-
 function assertTenant(entity: { readonly tenant: string }, tenantId: string, entityName: string, runId: string): void {
   if (entity.tenant !== tenantId) {
-    throw new SpecAuthoringContextLoadError('tenant_mismatch', 'Loaded spec authoring context crossed tenant boundary.', safeDetails({ entityName, runId }));
+    throw new SpecAuthoringContextLoadError('tenant_mismatch', 'Loaded spec authoring context crossed tenant boundary.', toSafeDetails({ entityName, runId }));
   }
 }
 
@@ -70,35 +68,35 @@ function requestTextFrom(input: { readonly messages: readonly Message[]; readonl
 
 export async function loadSpecAuthorPromptInput(request: LoadSpecAuthorPromptInputRequest): Promise<SpecAuthorPromptInput> {
   if (request.tenantId === undefined && request.repositoriesEnforceTenantIsolation !== true) {
-    throw new SpecAuthoringContextLoadError('tenant_required', 'tenantId is required when repositories do not enforce tenant isolation.', safeDetails({ runId: request.runId }));
+    throw new SpecAuthoringContextLoadError('tenant_required', 'tenantId is required when repositories do not enforce tenant isolation.', toSafeDetails({ runId: request.runId }));
   }
   const run = await request.repositories.runs.findById(request.runId);
   if (run === null) {
-    throw new SpecAuthoringContextLoadError('run_not_found', 'Run not found for spec authoring context.', safeDetails({ runId: request.runId }));
+    throw new SpecAuthoringContextLoadError('run_not_found', 'Run not found for spec authoring context.', toSafeDetails({ runId: request.runId }));
   }
   if (request.tenantId !== undefined) assertTenant(run, request.tenantId, 'run', request.runId);
   if (run.currentStep !== 'spec.author') {
-    throw new SpecAuthoringContextLoadError('unsupported_step', 'Run is not at spec.author.', safeDetails({ runId: request.runId, currentStep: run.currentStep }));
+    throw new SpecAuthoringContextLoadError('unsupported_step', 'Run is not at spec.author.', toSafeDetails({ runId: request.runId, currentStep: run.currentStep }));
   }
   try {
     assertSupportedSpecAuthorWorkKind(run.workKind);
   } catch (error) {
     if (error instanceof SpecAuthorContextError) {
-      throw new SpecAuthoringContextLoadError('unsupported_work_kind', 'Run work kind is not supported for spec.author.', safeDetails({ runId: request.runId, workKind: run.workKind }));
+      throw new SpecAuthoringContextLoadError('unsupported_work_kind', 'Run work kind is not supported for spec.author.', toSafeDetails({ runId: request.runId, workKind: run.workKind }));
     }
     throw error;
   }
 
   const topic = await request.repositories.topics.findById(run.topicId);
-  if (topic === null) throw new SpecAuthoringContextLoadError('topic_not_found', 'Topic not found for spec authoring context.', safeDetails({ runId: request.runId }));
+  if (topic === null) throw new SpecAuthoringContextLoadError('topic_not_found', 'Topic not found for spec authoring context.', toSafeDetails({ runId: request.runId }));
   if (request.tenantId !== undefined) assertTenant(topic, request.tenantId, 'topic', request.runId);
 
   const conversation = await request.repositories.conversations.findById(topic.conversationId);
-  if (conversation === null) throw new SpecAuthoringContextLoadError('conversation_not_found', 'Conversation not found for spec authoring context.', safeDetails({ runId: request.runId }));
+  if (conversation === null) throw new SpecAuthoringContextLoadError('conversation_not_found', 'Conversation not found for spec authoring context.', toSafeDetails({ runId: request.runId }));
   if (request.tenantId !== undefined) assertTenant(conversation, request.tenantId, 'conversation', request.runId);
 
   const project = await request.repositories.projects.findById(conversation.projectId);
-  if (project === null) throw new SpecAuthoringContextLoadError('project_not_found', 'Project not found for spec authoring context.', safeDetails({ runId: request.runId }));
+  if (project === null) throw new SpecAuthoringContextLoadError('project_not_found', 'Project not found for spec authoring context.', toSafeDetails({ runId: request.runId }));
   if (request.tenantId !== undefined) assertTenant(project, request.tenantId, 'project', request.runId);
 
   const messages = sortMessages(await request.repositories.messages.listByTopic(topic.id));
@@ -117,13 +115,13 @@ export async function loadSpecAuthorPromptInput(request: LoadSpecAuthorPromptInp
         ...(issue.labels !== undefined ? { labels: issue.labels } : {})
       };
     } catch {
-      throw new SpecAuthoringContextLoadError('issue_read_failed', 'Issue metadata could not be loaded for spec authoring context.', safeDetails({ runId: request.runId, issueNumber: run.trackedIssue.number }));
+      throw new SpecAuthoringContextLoadError('issue_read_failed', 'Issue metadata could not be loaded for spec authoring context.', toSafeDetails({ runId: request.runId, issueNumber: run.trackedIssue.number }));
     }
   }
 
   const text = requestTextFrom({ messages, issue: linkedIssue, topicTitle: topic.title });
   if (text.trim().length === 0) {
-    throw new SpecAuthoringContextLoadError('missing_request_context', 'Spec authoring context has no actionable request text.', safeDetails({ runId: request.runId }));
+    throw new SpecAuthoringContextLoadError('missing_request_context', 'Spec authoring context has no actionable request text.', toSafeDetails({ runId: request.runId }));
   }
 
   return {
@@ -132,7 +130,7 @@ export async function loadSpecAuthorPromptInput(request: LoadSpecAuthorPromptInp
     conversation,
     topic,
     messages,
-    request: { text, classification: run.workKind as 'feature' | 'enhancement' },
+    request: { text, classification: run.workKind as SpecAuthorSupportedWorkKind },
     ...(linkedIssue !== undefined ? { linkedIssue } : {})
   };
 }
