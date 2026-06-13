@@ -987,4 +987,88 @@ describe('DrizzleDomainRepositories round-trip', () => {
       ).rejects.toBeInstanceOf(FeedbackConcurrentModificationError);
     });
   });
+
+  it('omits failureReason for newly created runs', async () => {
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'run-no-failure',
+        title: 'No failure'
+      });
+      const run = await repos.runs.create({
+        topicId: setup.topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false
+      });
+      expect(run.failureReason).toBeUndefined();
+
+      const found = await repos.runs.findById(run.id);
+      expect(found?.failureReason).toBeUndefined();
+    });
+  });
+
+  it('persists failureReason when recordRunStepTransition fails a run', async () => {
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'run-fail-reason',
+        title: 'Fail reason'
+      });
+      const { run } = await repos.runs.recordRunLifecycleStart({
+        run: { topicId: setup.topic.id, owner, tenant: 'tenant_1', workKind: 'feature', currentStep: 'intake', terminal: false },
+        runStep: { phase: null, step: 'intake', role: 'none', startedAt: new Date().toISOString(), endedAt: null, durationMs: null }
+      });
+
+      const recorded = await repos.runs.recordRunStepTransition({
+        runId: run.id,
+        currentStep: 'failed',
+        terminal: true,
+        failureReason: 'provider_auth_failed',
+        runStep: { phase: null, step: 'failed', role: 'none', startedAt: new Date().toISOString(), endedAt: null, durationMs: null }
+      });
+      expect(recorded.run.failureReason).toBe('provider_auth_failed');
+
+      const found = await repos.runs.findById(run.id);
+      expect(found?.failureReason).toBe('provider_auth_failed');
+    });
+  });
+
+  it('clears stale failureReason when a transition targets a non-failed state', async () => {
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'run-clear-failure',
+        title: 'Clear failure'
+      });
+      const { run } = await repos.runs.recordRunLifecycleStart({
+        run: { topicId: setup.topic.id, owner, tenant: 'tenant_1', workKind: 'feature', currentStep: 'intake', terminal: false },
+        runStep: { phase: null, step: 'intake', role: 'none', startedAt: new Date().toISOString(), endedAt: null, durationMs: null }
+      });
+
+      await repos.runs.recordRunStepTransition({
+        runId: run.id,
+        currentStep: 'failed',
+        terminal: true,
+        failureReason: 'provider_auth_failed',
+        runStep: { phase: null, step: 'failed', role: 'none', startedAt: new Date().toISOString(), endedAt: null, durationMs: null }
+      });
+
+      const recovered = await repos.runs.recordRunStepTransition({
+        runId: run.id,
+        currentStep: 'spec.human_review',
+        terminal: false,
+        runStep: { phase: 'spec', step: 'spec.human_review', role: 'none', startedAt: new Date().toISOString(), endedAt: null, durationMs: null }
+      });
+      expect(recovered.run.failureReason).toBeUndefined();
+
+      const found = await repos.runs.findById(run.id);
+      expect(found?.failureReason).toBeUndefined();
+    });
+  });
 });
