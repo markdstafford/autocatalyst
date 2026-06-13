@@ -489,7 +489,7 @@ describe('createClaudeAgentAdapter — provider failure classification', () => {
       code: 'authentication_error'
     });
     const adapter = createClaudeAgentAdapter({
-      launchClaudeSession: async function* () { throw authError; },
+      launchClaudeSession: async function* () { yield await Promise.reject<ClaudeNativeEvent>(authError); },
       logger: {
         info: (event, fields) => logs.push({ level: 'info', event, fields }),
         warn: (event, fields) => logs.push({ level: 'warn', event, fields }),

@@ -667,8 +667,8 @@ export function createOpenAIAgentAdapter(
   function classifySdkError(err: unknown): ClassifiedProviderFailureError | undefined {
     const shaped = err as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
     const reason = classifyProviderFailure({
-      status: typeof shaped.status === 'number' ? shaped.status : undefined,
-      statusCode: typeof shaped.statusCode === 'number' ? shaped.statusCode : undefined,
+      ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
+      ...(typeof shaped.statusCode === 'number' ? { statusCode: shaped.statusCode } : {}),
       code: shaped.code,
       errorName: shaped.name,
       providerKind: openaiProviderKind
@@ -677,10 +677,10 @@ export function createOpenAIAgentAdapter(
       ? undefined
       : new ClassifiedProviderFailureError(reason, {
           providerKind: openaiProviderKind,
-          status: typeof shaped.status === 'number' ? shaped.status : undefined,
-          statusCode: typeof shaped.statusCode === 'number' ? shaped.statusCode : undefined,
-          code: typeof shaped.code === 'string' ? shaped.code : undefined,
-          errorName: typeof shaped.name === 'string' ? shaped.name : undefined
+          ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
+          ...(typeof shaped.statusCode === 'number' ? { statusCode: shaped.statusCode } : {}),
+          ...(typeof shaped.code === 'string' ? { code: shaped.code } : {}),
+          ...(typeof shaped.name === 'string' ? { errorName: shaped.name } : {})
         });
   }
 

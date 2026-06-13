@@ -84,8 +84,8 @@ function createAuthFailingAdapter(): AgentProviderAdapter {
       const metadataPromise = Promise.reject<never>(error);
       metadataPromise.catch(() => undefined);
       return {
-        events: (async function* (): AsyncIterable<never> {
-          throw error;
+        events: (async function* (): AsyncGenerator<never> {
+          yield await Promise.reject<never>(error);
         })(),
         metadata: metadataPromise
       };

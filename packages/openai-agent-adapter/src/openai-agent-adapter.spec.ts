@@ -587,7 +587,7 @@ describe('createOpenAIAgentAdapter — provider auth failure classification', ()
     });
     const failingRun = (): OpenAIRunOutcome => ({
       items: (async function* () {
-        throw authError;
+        yield await Promise.reject<never>(authError);
       })(),
       result: new Promise<never>((_, reject) => reject(authError))
     });
