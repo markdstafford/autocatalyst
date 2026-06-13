@@ -130,6 +130,8 @@ export {
 export type {
   ExecutionContextResolver,
   CreateExecutionContextResolverOptions,
+  ExecutionContextPromptCallback,
+  ExecutionContextTaskInputsCallback,
   WorkspaceResolverInput,
   ExecutionContextResolutionErrorCode
 } from './execution-context-resolver.js';
@@ -216,3 +218,23 @@ export {
   type SpecApprovalFinalizerDependencies,
   type SpecApprovalErrorCode
 } from './spec-approval-finalizer.js';
+
+export {
+  SpecAuthorContextError,
+  assertSupportedSpecAuthorWorkKind,
+  buildSpecAuthorContext,
+  buildSpecAuthorPrompt,
+  buildSpecAuthorTaskInputs,
+  toSafeDetails
+} from './spec-authoring-context.js';
+export type {
+  SpecAuthorContext,
+  SpecAuthorContextErrorCode,
+  SpecAuthorExpectedKind,
+  SpecAuthorLinkedIssueContext,
+  SpecAuthorOutputContractInput,
+  SpecAuthorPromptInput,
+  SpecAuthorRequestContext,
+  SpecAuthorSupportedWorkKind,
+  SpecAuthorTaskInputs
+} from './spec-authoring-context.js';

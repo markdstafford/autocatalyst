@@ -347,6 +347,7 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
+import { registerSpecAuthorResultContract, createStepResultContractRegistry, SPEC_AUTHOR_SCHEMA_ID } from './result-contracts.js';
 
 describe('createExecutionEntryPoint — resultValidation', () => {
   it('mode: none preserves terminal directive shape', async () => {
@@ -766,6 +767,375 @@ describe('createExecutionEntryPoint — resultValidation', () => {
       if (terminal?.result.directive === 'fail') {
         expect(terminal.result.reason).toBe('Agent crashed.');
       }
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// spec.author result contract enforcement tests
+// ---------------------------------------------------------------------------
+
+const conformantSpecAuthorResult = {
+  kind: 'feature_spec',
+  slug: 'author-real-conformant-spec',
+  relativePath: 'context-human/specs/feature-author-real-conformant-spec.md',
+  frontmatter: {
+    created: '2026-06-13',
+    last_updated: '2026-06-13',
+    status: 'draft',
+    issue: 46,
+    specced_by: 'autocatalyst'
+  },
+  body: '# Feature: Author a real conformant spec\n\n## Task list\n\n### Story 1 — Build context'
+} as const;
+
+function makeSpecAuthorContext(): ExecutionContext {
+  return {
+    run: { id: runId, workKind: 'feature', currentStep: 'spec.author', tenant: 'tenant_1' },
+    task: { prompt: 'Author a spec', inputs: {} },
+    workspaceIntent: { shape: 'none' },
+    secretBindings: [],
+    toolPolicy: { allowedTools: ['bash'], workspaceScope: 'declared_workspace' },
+    skills: { requested: [], resolved: [] },
+    capabilityRequirements: {
+      shell: { kind: 'bash', required: false },
+      paths: { canonicalWorkspacePaths: true },
+      lsp: { requested: true }
+    }
+  };
+}
+
+describe('createExecutionEntryPoint — spec.author result contract', () => {
+  it('SPEC_AUTHOR_SCHEMA_ID resolves from registry for spec.author step', () => {
+    const registry = registerSpecAuthorResultContract(createStepResultContractRegistry());
+    const resolution = registry.resolve({ step: 'spec.author', schemaId: SPEC_AUTHOR_SCHEMA_ID });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status === 'resolved') {
+      expect(resolution.contract.schemaId).toBe(SPEC_AUTHOR_SCHEMA_ID);
+      expect(resolution.contract.step).toBe('spec.author');
+      expect(resolution.contract.resultFile).toBe('step-result.json');
+    }
+  });
+
+  it('conformant step-result.json becomes parsed advance.result with resultContract', async () => {
+    const context = makeSpecAuthorContext();
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'spec-author-ok-'));
+    try {
+      const env: MaterializedExecutionEnvironment = {
+        ...makeMaterializedEnv(context),
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      };
+      const materialize = vi.fn().mockResolvedValue(env);
+      const registry = registerSpecAuthorResultContract(createStepResultContractRegistry());
+      const stubRunner = new StubRunner({
+        resultFile: { relativePath: 'step-result.json', value: conformantSpecAuthorResult }
+      });
+
+      const entryPoint = createExecutionEntryPoint({
+        runner: stubRunner,
+        materialize,
+        resultValidation: {
+          mode: 'scratch_file',
+          step: 'spec.author',
+          schemaId: SPEC_AUTHOR_SCHEMA_ID,
+          contractRegistry: registry,
+          resultFile: 'step-result.json'
+        }
+      });
+
+      const events: ExecutionBoundaryEvent[] = [];
+      for await (const event of entryPoint.execute({ context })) {
+        events.push(event);
+      }
+
+      const terminal = events.find((e) => e.type === 'runner_terminal_result') as ExecutionTerminalResultEvent | undefined;
+      expect(terminal).toBeDefined();
+      expect(terminal?.result.directive).toBe('advance');
+      if (terminal?.result.directive === 'advance') {
+        expect(terminal.result.result).toMatchObject({
+          kind: 'feature_spec',
+          slug: 'author-real-conformant-spec',
+          relativePath: 'context-human/specs/feature-author-real-conformant-spec.md'
+        });
+      }
+      expect(terminal?.resultContract).toMatchObject({
+        step: 'spec.author',
+        schemaId: SPEC_AUTHOR_SCHEMA_ID
+      });
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('missing step-result.json fails with result_file_missing before side-effect spy runs', async () => {
+    const context = makeSpecAuthorContext();
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'spec-author-missing-'));
+    try {
+      const env: MaterializedExecutionEnvironment = {
+        ...makeMaterializedEnv(context),
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      };
+      const materialize = vi.fn().mockResolvedValue(env);
+      const registry = registerSpecAuthorResultContract(createStepResultContractRegistry());
+      // No resultFile written — StubRunner without resultFile option
+      const stubRunner = new StubRunner();
+      const completionSideEffectSpy = vi.fn();
+
+      const entryPoint = createExecutionEntryPoint({
+        runner: stubRunner,
+        materialize,
+        resultValidation: {
+          mode: 'scratch_file',
+          step: 'spec.author',
+          schemaId: SPEC_AUTHOR_SCHEMA_ID,
+          contractRegistry: registry,
+          resultFile: 'step-result.json'
+        }
+      });
+
+      const events: ExecutionBoundaryEvent[] = [];
+      for await (const event of entryPoint.execute({ context })) {
+        events.push(event);
+      }
+
+      // The spy must NOT have been called — validation fails before any completion side-effect
+      expect(completionSideEffectSpy).not.toHaveBeenCalled();
+
+      const terminal = events.find((e) => e.type === 'runner_terminal_result') as ExecutionTerminalResultEvent | undefined;
+      expect(terminal).toBeDefined();
+      expect(terminal?.result.directive).toBe('fail');
+      if (terminal?.result.directive === 'fail') {
+        expect(terminal.result.reason).toContain('result_file_missing');
+      }
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('invalid JSON in step-result.json yields fail with sanitized reason', async () => {
+    const context = makeSpecAuthorContext();
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'spec-author-badjson-'));
+    try {
+      await writeFile(path.join(scratchRoot, 'step-result.json'), 'not valid json {{{{', 'utf8');
+
+      const env: MaterializedExecutionEnvironment = {
+        ...makeMaterializedEnv(context),
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      };
+      const materialize = vi.fn().mockResolvedValue(env);
+      const registry = registerSpecAuthorResultContract(createStepResultContractRegistry());
+      const stubRunner = new StubRunner(); // no resultFile — file already placed above
+
+      const entryPoint = createExecutionEntryPoint({
+        runner: stubRunner,
+        materialize,
+        resultValidation: {
+          mode: 'scratch_file',
+          step: 'spec.author',
+          schemaId: SPEC_AUTHOR_SCHEMA_ID,
+          contractRegistry: registry,
+          resultFile: 'step-result.json'
+        }
+      });
+
+      const events: ExecutionBoundaryEvent[] = [];
+      for await (const event of entryPoint.execute({ context })) {
+        events.push(event);
+      }
+
+      const terminal = events.find((e) => e.type === 'runner_terminal_result') as ExecutionTerminalResultEvent | undefined;
+      expect(terminal).toBeDefined();
+      expect(terminal?.result.directive).toBe('fail');
+      if (terminal?.result.directive === 'fail') {
+        // reason should not contain raw file content
+        expect(terminal.result.reason).not.toContain('not valid json');
+        expect(terminal.result.reason).toMatch(/result_json_invalid|result_parse_failed|json_parse_failed|schema_validation_failed/);
+      }
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('mismatched path/kind/slug in step-result.json fails schema validation', async () => {
+    const context = makeSpecAuthorContext();
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'spec-author-mismatch-'));
+    try {
+      // relativePath doesn't match kind+slug (feature slug but enhancement path)
+      const mismatchedResult = {
+        ...conformantSpecAuthorResult,
+        relativePath: 'context-human/specs/enhancement-author-real-conformant-spec.md'
+      };
+      await writeFile(path.join(scratchRoot, 'step-result.json'), JSON.stringify(mismatchedResult), 'utf8');
+
+      const env: MaterializedExecutionEnvironment = {
+        ...makeMaterializedEnv(context),
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      };
+      const materialize = vi.fn().mockResolvedValue(env);
+      const registry = registerSpecAuthorResultContract(createStepResultContractRegistry());
+      const stubRunner = new StubRunner();
+
+      const entryPoint = createExecutionEntryPoint({
+        runner: stubRunner,
+        materialize,
+        resultValidation: {
+          mode: 'scratch_file',
+          step: 'spec.author',
+          schemaId: SPEC_AUTHOR_SCHEMA_ID,
+          contractRegistry: registry,
+          resultFile: 'step-result.json'
+        }
+      });
+
+      const events: ExecutionBoundaryEvent[] = [];
+      for await (const event of entryPoint.execute({ context })) {
+        events.push(event);
+      }
+
+      const terminal = events.find((e) => e.type === 'runner_terminal_result') as ExecutionTerminalResultEvent | undefined;
+      expect(terminal).toBeDefined();
+      expect(terminal?.result.directive).toBe('fail');
+      if (terminal?.result.directive === 'fail') {
+        expect(terminal.result.reason).toContain('schema_validation_failed');
+      }
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('invalid frontmatter status fails schema validation', async () => {
+    const context = makeSpecAuthorContext();
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'spec-author-badstatus-'));
+    try {
+      // 'in_progress' is not a valid committedSpecStatusSchema value
+      const badStatusResult = {
+        ...conformantSpecAuthorResult,
+        frontmatter: { ...conformantSpecAuthorResult.frontmatter, status: 'in_progress' }
+      };
+      await writeFile(path.join(scratchRoot, 'step-result.json'), JSON.stringify(badStatusResult), 'utf8');
+
+      const env: MaterializedExecutionEnvironment = {
+        ...makeMaterializedEnv(context),
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      };
+      const materialize = vi.fn().mockResolvedValue(env);
+      const registry = registerSpecAuthorResultContract(createStepResultContractRegistry());
+      const stubRunner = new StubRunner();
+
+      const entryPoint = createExecutionEntryPoint({
+        runner: stubRunner,
+        materialize,
+        resultValidation: {
+          mode: 'scratch_file',
+          step: 'spec.author',
+          schemaId: SPEC_AUTHOR_SCHEMA_ID,
+          contractRegistry: registry,
+          resultFile: 'step-result.json',
+          maxCorrectionAttempts: 0
+        }
+      });
+
+      const events: ExecutionBoundaryEvent[] = [];
+      for await (const event of entryPoint.execute({ context })) {
+        events.push(event);
+      }
+
+      const terminal = events.find((e) => e.type === 'runner_terminal_result') as ExecutionTerminalResultEvent | undefined;
+      expect(terminal).toBeDefined();
+      expect(terminal?.result.directive).toBe('fail');
+      if (terminal?.result.directive === 'fail') {
+        expect(terminal.result.reason).toContain('schema_validation_failed');
+      }
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('empty body fails schema validation', async () => {
+    const context = makeSpecAuthorContext();
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'spec-author-emptybody-'));
+    try {
+      const emptyBodyResult = { ...conformantSpecAuthorResult, body: '   ' };
+      await writeFile(path.join(scratchRoot, 'step-result.json'), JSON.stringify(emptyBodyResult), 'utf8');
+
+      const env: MaterializedExecutionEnvironment = {
+        ...makeMaterializedEnv(context),
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      };
+      const materialize = vi.fn().mockResolvedValue(env);
+      const registry = registerSpecAuthorResultContract(createStepResultContractRegistry());
+      const stubRunner = new StubRunner();
+
+      const entryPoint = createExecutionEntryPoint({
+        runner: stubRunner,
+        materialize,
+        resultValidation: {
+          mode: 'scratch_file',
+          step: 'spec.author',
+          schemaId: SPEC_AUTHOR_SCHEMA_ID,
+          contractRegistry: registry,
+          resultFile: 'step-result.json',
+          maxCorrectionAttempts: 0
+        }
+      });
+
+      const events: ExecutionBoundaryEvent[] = [];
+      for await (const event of entryPoint.execute({ context })) {
+        events.push(event);
+      }
+
+      const terminal = events.find((e) => e.type === 'runner_terminal_result') as ExecutionTerminalResultEvent | undefined;
+      expect(terminal).toBeDefined();
+      expect(terminal?.result.directive).toBe('fail');
+      if (terminal?.result.directive === 'fail') {
+        expect(terminal.result.reason).toContain('schema_validation_failed');
+      }
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('unrelated step (not spec.author) uses its own contract and ignores spec author registry entry', async () => {
+    const context = makeContext(); // uses 'implement' step
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'spec-author-unrelated-'));
+    try {
+      const implementResult = { artifact: 'my-artifact' };
+      await writeFile(path.join(scratchRoot, 'result.json'), JSON.stringify(implementResult), 'utf8');
+
+      const env: MaterializedExecutionEnvironment = {
+        ...makeMaterializedEnv(context),
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      };
+      const materialize = vi.fn().mockResolvedValue(env);
+      const schema = z.object({ artifact: z.string() }).strict();
+
+      const entryPoint = createExecutionEntryPoint({
+        runner: makeFakeRunner([makeTerminalEvent()]),
+        materialize,
+        resultValidation: {
+          mode: 'scratch_file',
+          contract: { step: 'implement', schemaId: 'terminal-handoff.v1', schema, resultFile: 'result.json' }
+        }
+      });
+
+      const events: ExecutionBoundaryEvent[] = [];
+      for await (const event of entryPoint.execute({ context })) {
+        events.push(event);
+      }
+
+      const terminal = events.find((e) => e.type === 'runner_terminal_result') as ExecutionTerminalResultEvent | undefined;
+      expect(terminal).toBeDefined();
+      expect(terminal?.result.directive).toBe('advance');
+      if (terminal?.result.directive === 'advance') {
+        expect(terminal.result.result).toEqual(implementResult);
+      }
+      // resultContract should reflect the implement contract, not spec.author
+      expect(terminal?.resultContract).toMatchObject({
+        step: 'implement',
+        schemaId: 'terminal-handoff.v1'
+      });
     } finally {
       await rm(scratchRoot, { recursive: true, force: true });
     }

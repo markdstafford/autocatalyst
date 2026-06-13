@@ -37,6 +37,9 @@ export interface WorkspaceResolverInput {
 
 export type ResolveSkillsFn = (requestedRefs: readonly string[]) => Promise<SkillIntent>;
 
+export type ExecutionContextPromptCallback = (input: RunWorkInput) => string | undefined | Promise<string | undefined>;
+export type ExecutionContextTaskInputsCallback = (input: RunWorkInput) => Record<string, unknown> | undefined | Promise<Record<string, unknown> | undefined>;
+
 export interface CreateExecutionContextResolverOptions {
   readonly workspace?: WorkspaceResolverInput | ((input: RunWorkInput) => WorkspaceResolverInput);
   readonly secretBindings?: ReadonlyArray<{ readonly handle: string; readonly envName: string }>;
@@ -49,8 +52,8 @@ export interface CreateExecutionContextResolverOptions {
     readonly paths?: { readonly canonicalWorkspacePaths?: boolean };
     readonly lsp?: { readonly requested?: boolean };
   };
-  readonly prompt?: string | ((input: RunWorkInput) => string);
-  readonly taskInputs?: Record<string, unknown> | ((input: RunWorkInput) => Record<string, unknown>);
+  readonly prompt?: string | ExecutionContextPromptCallback;
+  readonly taskInputs?: Record<string, unknown> | ExecutionContextTaskInputsCallback;
   /** Seam for skill resolution — defaults to the real `resolveSkills` from \`@autocatalyst/execution\`. */
   readonly resolveSkills?: ResolveSkillsFn;
 }
@@ -216,17 +219,18 @@ async function resolveContext(
   };
 
   // 7. Build task prompt
-  const prompt =
+  const promptRaw =
     typeof options.prompt === 'function'
-      ? options.prompt(input)
-      : (options.prompt ?? `Complete the ${run.currentStep} step.`);
+      ? await options.prompt(input)
+      : options.prompt;
+  const prompt = promptRaw ?? `Complete the ${run.currentStep} step.`;
 
   // 8. Build task inputs
-  const taskInputsRaw = options.taskInputs;
-  const taskInputs: Record<string, unknown> =
-    typeof taskInputsRaw === 'function'
-      ? taskInputsRaw(input)
-      : (taskInputsRaw ?? {});
+  const taskInputsRaw =
+    typeof options.taskInputs === 'function'
+      ? await options.taskInputs(input)
+      : options.taskInputs;
+  const taskInputs: Record<string, unknown> = taskInputsRaw ?? {};
 
   // 9. Return declarative ExecutionContext
   return {
