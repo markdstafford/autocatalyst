@@ -440,6 +440,7 @@ async function makeAuthoredSpecAtReviewHarness(): Promise<TestHarness> {
     dispatchQueue: new RunDispatchQueue({ maxConcurrent: 4 }),
     unitOfWork,
     clock: () => timestamp,
+    autoDispatch: { enabled: false },
     specAuthoringDependencies: {
       artifacts: artifactRepository,
       filesystem,
@@ -590,6 +591,7 @@ describe('spec feedback gate integration', () => {
       events: new InMemoryRunEventBus(),
       dispatchQueue: new RunDispatchQueue({ maxConcurrent: 4 }),
       clock: () => timestamp,
+      autoDispatch: { enabled: false },
       feedbackLifecycleDependencies: harness.feedbackDeps,
       resolveApproverAddressedFeedback,
       assertSpecReviewGateCanAdvance,

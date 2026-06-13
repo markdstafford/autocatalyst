@@ -69,7 +69,7 @@ async function withTempDatabasePath(run: (databasePath: string) => Promise<void>
 describe('control-plane integration', () => {
   it('checks health, creates and reads a probe resource, and survives restart', async () => {
     await withTempDatabasePath(async (databasePath) => {
-      const first = await startControlPlaneServer({
+      const first = await startControlPlaneServer({ autoDispatch: { enabled: false },
         port: 0,
         databasePath,
         bearerToken: BEARER_TOKEN,
@@ -103,7 +103,7 @@ describe('control-plane integration', () => {
 
       await first.close();
 
-      const second = await startControlPlaneServer({
+      const second = await startControlPlaneServer({ autoDispatch: { enabled: false },
         port: 0,
         databasePath,
         bearerToken: BEARER_TOKEN,
@@ -121,7 +121,7 @@ describe('control-plane integration', () => {
 
   it('exposes a real SSE stream that remains open until the test closes it', async () => {
     await withTempDatabasePath(async (databasePath) => {
-      const handle = await startControlPlaneServer({
+      const handle = await startControlPlaneServer({ autoDispatch: { enabled: false },
         port: 0,
         databasePath,
         bearerToken: BEARER_TOKEN,
@@ -148,7 +148,7 @@ describe('control-plane integration', () => {
 
   it('returns degraded health when injected health checker reports unreachable', async () => {
     await withTempDatabasePath(async (databasePath) => {
-      const app = await createControlPlaneServer({
+      const app = await createControlPlaneServer({ autoDispatch: { enabled: false },
         databasePath,
         bearerToken: BEARER_TOKEN,
         masterSecret: MASTER_SECRET,
@@ -171,7 +171,7 @@ describe('principal and policy integration', () => {
   it('resolves the hardcoded principal and consults policy on authenticated requests', async () => {
     await withTempDatabasePath(async (databasePath) => {
       const policyCalls: PolicyDecisionInput[] = [];
-      const app = await createControlPlaneServer({
+      const app = await createControlPlaneServer({ autoDispatch: { enabled: false },
         databasePath,
         bearerToken: 'integration-token',
         masterSecret: 'integration-master-secret',
@@ -197,7 +197,7 @@ describe('principal and policy integration', () => {
 
   it('rejects unauthenticated requests to /v1/principal with 401', async () => {
     await withTempDatabasePath(async (databasePath) => {
-      const app = await createControlPlaneServer({
+      const app = await createControlPlaneServer({ autoDispatch: { enabled: false },
         databasePath,
         bearerToken: 'integration-token',
         masterSecret: 'integration-master-secret'
@@ -221,7 +221,7 @@ describe('principal and policy integration', () => {
 describe('configuration record CRUD integration', () => {
   it('creates, reads, lists, updates, and deletes configuration records', async () => {
     await withTempDatabasePath(async (databasePath) => {
-      const app = await createControlPlaneServer({
+      const app = await createControlPlaneServer({ autoDispatch: { enabled: false },
         databasePath,
         bearerToken: 'integration-token',
         masterSecret: 'integration-master-secret'
@@ -303,7 +303,7 @@ describe('configuration record CRUD integration', () => {
 describe('secret handle separation integration', () => {
   it('stores a secret and references it from a config record without exposing the value', async () => {
     await withTempDatabasePath(async (databasePath) => {
-      const app = await createControlPlaneServer({
+      const app = await createControlPlaneServer({ autoDispatch: { enabled: false },
         databasePath,
         bearerToken: 'integration-token',
         masterSecret: 'integration-master-secret'
@@ -375,7 +375,7 @@ describe('secret handle separation integration', () => {
 describe('provider startup composition integration', () => {
   it('composes registered-and-resolvable providers from persisted configuration records', async () => {
     await withTempDatabasePath(async (databasePath) => {
-      const first = await createControlPlaneServer({ databasePath, bearerToken: BEARER_TOKEN, masterSecret: MASTER_SECRET });
+      const first = await createControlPlaneServer({ autoDispatch: { enabled: false }, databasePath, bearerToken: BEARER_TOKEN, masterSecret: MASTER_SECRET });
       await first.inject({
         method: 'POST',
         url: '/v1/configuration-records',
@@ -385,7 +385,7 @@ describe('provider startup composition integration', () => {
       await first.close();
 
       let result: ProviderCompositionResult | undefined;
-      const second = await createControlPlaneServer({
+      const second = await createControlPlaneServer({ autoDispatch: { enabled: false },
         databasePath,
         bearerToken: BEARER_TOKEN,
         masterSecret: MASTER_SECRET,
@@ -409,7 +409,7 @@ describe('provider startup composition integration', () => {
 
   it('composes unregistered-but-resolvable providers while reporting advisory warnings', async () => {
     await withTempDatabasePath(async (databasePath) => {
-      const first = await createControlPlaneServer({ databasePath, bearerToken: BEARER_TOKEN, masterSecret: MASTER_SECRET });
+      const first = await createControlPlaneServer({ autoDispatch: { enabled: false }, databasePath, bearerToken: BEARER_TOKEN, masterSecret: MASTER_SECRET });
       await first.inject({
         method: 'POST',
         url: '/v1/configuration-records',
@@ -419,7 +419,7 @@ describe('provider startup composition integration', () => {
       await first.close();
 
       let result: ProviderCompositionResult | undefined;
-      const second = await createControlPlaneServer({
+      const second = await createControlPlaneServer({ autoDispatch: { enabled: false },
         databasePath,
         bearerToken: BEARER_TOKEN,
         masterSecret: MASTER_SECRET,
@@ -441,7 +441,7 @@ describe('provider startup composition integration', () => {
 
   it('reports registry-listed-but-unresolved providers without runnable bindings', async () => {
     await withTempDatabasePath(async (databasePath) => {
-      const first = await createControlPlaneServer({ databasePath, bearerToken: BEARER_TOKEN, masterSecret: MASTER_SECRET });
+      const first = await createControlPlaneServer({ autoDispatch: { enabled: false }, databasePath, bearerToken: BEARER_TOKEN, masterSecret: MASTER_SECRET });
       await first.inject({
         method: 'POST',
         url: '/v1/configuration-records',
@@ -451,7 +451,7 @@ describe('provider startup composition integration', () => {
       await first.close();
 
       let result: ProviderCompositionResult | undefined;
-      const second = await createControlPlaneServer({
+      const second = await createControlPlaneServer({ autoDispatch: { enabled: false },
         databasePath,
         bearerToken: BEARER_TOKEN,
         masterSecret: MASTER_SECRET,
@@ -473,7 +473,7 @@ describe('provider startup composition integration', () => {
   it('returns empty composition arrays when no provider records exist', async () => {
     await withTempDatabasePath(async (databasePath) => {
       let result: ProviderCompositionResult | undefined;
-      const app = await createControlPlaneServer({
+      const app = await createControlPlaneServer({ autoDispatch: { enabled: false },
         databasePath,
         bearerToken: BEARER_TOKEN,
         masterSecret: MASTER_SECRET,
@@ -507,7 +507,7 @@ describe('provider startup composition integration', () => {
       const unitOfWork: RunUnitOfWork = { run: async () => ({ directive: 'advance' }) };
       let controlPlane: ControlPlaneService | undefined;
 
-      const handle = await startControlPlaneServer({
+      const handle = await startControlPlaneServer({ autoDispatch: { enabled: false },
         port: 0,
         databasePath,
         bearerToken: BEARER_TOKEN,
@@ -628,9 +628,145 @@ describe('provider startup composition integration', () => {
     });
   });
 
+  it('auto-dispatches a created run through its steps to a human gate, streaming live transitions over SSE without tick', { timeout: 60000 }, async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      // Seed a project directly in the SQLite file before starting the server.
+      const seedDb = createSqliteDatabase({ path: databasePath });
+      await migrateSqliteDatabase(seedDb);
+      const seedRepos = createDrizzleDomainRepositories(seedDb);
+      const project = await seedRepos.projects.create({
+        owner: hardcodedDevelopmentPrincipal,
+        tenant: hardcodedDevelopmentPrincipal.tenantId,
+        displayName: 'P',
+        repoUrl: 'https://example.test',
+        hostRepository: { provider: 'github', owner: 'test', name: 'repo' },
+        workspaceRootOverride: null,
+        issueTrackerSetting: null,
+        codeHostSetting: null,
+        credentialRefs: []
+      });
+      seedDb.close();
+
+      // Controlled runner: park the first (intake) dispatch behind a barrier so the test can
+      // open the SSE stream before any post-intake transition is published, then advance each
+      // step. This drives the REAL push-primary auto-dispatch path — no tick, no injected
+      // dispatch. A chore run walks intake -> implementation.plan -> implementation.build ->
+      // implementation.human_review (a human gate), exercising auto-dispatch across consecutive
+      // system/ai steps without the spec-authoring completion that feature/enhancement add.
+      let releaseFirstDispatch!: () => void;
+      const firstDispatchGate = new Promise<void>((resolve) => { releaseFirstDispatch = resolve; });
+      let dispatchCount = 0;
+      const unitOfWork: RunUnitOfWork = {
+        run: async () => {
+          dispatchCount += 1;
+          if (dispatchCount === 1) {
+            await firstDispatchGate;
+          }
+          return { directive: 'advance' };
+        }
+      };
+
+      const handle = await startControlPlaneServer({
+        autoDispatch: { enabled: true },
+        port: 0,
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET,
+        runConcurrency: 2,
+        unitOfWork
+      });
+
+      try {
+        const baseUrl = `http://127.0.0.1:${handle.port}`;
+        const authHeaders = { authorization: `Bearer ${BEARER_TOKEN}` };
+
+        // POST /v1/conversations — create returns immediately (fire-and-return) even though the
+        // intake step is parked behind the barrier inside the detached auto-dispatch.
+        const createResp = await fetch(`${baseUrl}/v1/conversations`, {
+          method: 'POST',
+          headers: { ...authHeaders, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            projectId: project.id,
+            identity: 'test',
+            topic: { title: 'T' },
+            submission: { kind: 'free_form', body: 'hello', workKind: 'chore' }
+          })
+        });
+        expect(createResp.status).toBe(201);
+        const runId = ((await createResp.json()) as { run: { id: string } }).run.id;
+        expect(runId).toMatch(/^run_/u);
+
+        // Subscribe to the run event stream BEFORE releasing the run, so the post-intake
+        // transitions are observed live rather than via replay.
+        const controller = new AbortController();
+        const sseResp = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
+          headers: authHeaders,
+          signal: controller.signal
+        });
+        expect(sseResp.status).toBe(200);
+        expect(sseResp.headers.get('content-type')).toMatch(/^text\/event-stream/u);
+
+        // Let the run advance on its own.
+        releaseFirstDispatch();
+
+        const reader = sseResp.body?.getReader();
+        if (reader === undefined) {
+          throw new Error('SSE response has no body reader');
+        }
+        const decoder = new TextDecoder();
+        let buffer = '';
+        const transitionToSteps: string[] = [];
+
+        const drainFrames = (): void => {
+          let frameEnd = buffer.indexOf('\n\n');
+          while (frameEnd !== -1) {
+            const frame = buffer.slice(0, frameEnd);
+            buffer = buffer.slice(frameEnd + 2);
+            const dataLine = frame.split('\n').find((line) => line.startsWith('data:'));
+            if (dataLine !== undefined) {
+              const event = JSON.parse(dataLine.slice('data:'.length).trim()) as {
+                type: string;
+                transition?: { toStep?: string };
+              };
+              if (event.type === 'run_state_transition' && event.transition?.toStep !== undefined) {
+                transitionToSteps.push(event.transition.toStep);
+              }
+            }
+            frameEnd = buffer.indexOf('\n\n');
+          }
+        };
+
+        // Read live frames until the run reaches the human gate.
+        while (!transitionToSteps.includes('implementation.human_review')) {
+          const result = await reader.read();
+          if (result.done) break;
+          buffer += decoder.decode(result.value, { stream: true });
+          drainFrames();
+        }
+
+        // The run auto-advanced across its system/ai steps and paused at the human gate — all
+        // observed live over SSE, with no tick and no injected dispatch.
+        expect(transitionToSteps).toContain('implementation.plan');
+        expect(transitionToSteps).toContain('implementation.human_review');
+
+        controller.abort();
+        await reader.cancel().catch(() => undefined);
+
+        // The run rests at the gate reporting waiting_on: human.
+        const runResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: authHeaders });
+        const runBody = (await runResp.json()) as { currentStep: string; waitingOn?: string };
+        expect(runResp.status).toBe(200);
+        expect(runBody.currentStep).toBe('implementation.human_review');
+        expect(runBody.waitingOn).toBe('human');
+      } finally {
+        await handle.close();
+      }
+    });
+  });
+
   it('keeps health public and v1 routes protected after composition is wired', async () => {
     await withTempDatabasePath(async (databasePath) => {
-      const app = await createControlPlaneServer({ databasePath, bearerToken: BEARER_TOKEN, masterSecret: MASTER_SECRET });
+      const app = await createControlPlaneServer({ autoDispatch: { enabled: false }, databasePath, bearerToken: BEARER_TOKEN, masterSecret: MASTER_SECRET });
 
       const health = await app.inject({ method: 'GET', url: '/health' });
       expect(health.statusCode).toBe(200);
@@ -808,7 +944,7 @@ describe('real Claude agent dispatch', () => {
 
         // Pre-create a placeholder server to mint a profile id we'll inject as
         // the defaultProviderProfileId on the real-dispatch server.
-        const bootstrap = await createControlPlaneServer({
+        const bootstrap = await createControlPlaneServer({ autoDispatch: { enabled: false },
           databasePath,
           bearerToken: BEARER_TOKEN,
           masterSecret: MASTER_SECRET
@@ -852,7 +988,7 @@ describe('real Claude agent dispatch', () => {
         }
 
         let controlPlane: ControlPlaneService | undefined;
-        const handle = await startControlPlaneServer({
+        const handle = await startControlPlaneServer({ autoDispatch: { enabled: false },
           port: 0,
           databasePath,
           bearerToken: BEARER_TOKEN,
@@ -995,7 +1131,7 @@ describe('real Claude agent dispatch - failure paths', () => {
       const harness = createFakeLaunchHarness();
 
       let controlPlane: ControlPlaneService | undefined;
-      const handle = await startControlPlaneServer({
+      const handle = await startControlPlaneServer({ autoDispatch: { enabled: false },
         port: 0,
         databasePath,
         bearerToken: BEARER_TOKEN,
@@ -1054,7 +1190,7 @@ describe('real Claude agent dispatch - failure paths', () => {
 
       // Bootstrap server to create a profile whose credentialSecretHandle
       // references a non-existent secret.
-      const bootstrap = await createControlPlaneServer({
+      const bootstrap = await createControlPlaneServer({ autoDispatch: { enabled: false },
         databasePath,
         bearerToken: BEARER_TOKEN,
         masterSecret: MASTER_SECRET
@@ -1090,7 +1226,7 @@ describe('real Claude agent dispatch - failure paths', () => {
 
       const harness = createFakeLaunchHarness();
       let controlPlane: ControlPlaneService | undefined;
-      const handle = await startControlPlaneServer({
+      const handle = await startControlPlaneServer({ autoDispatch: { enabled: false },
         port: 0,
         databasePath,
         bearerToken: BEARER_TOKEN,
@@ -1143,7 +1279,7 @@ describe('real Claude agent dispatch - failure paths', () => {
       const { projectId } = await seedQuestionProject(databasePath);
       const harness = createFakeLaunchHarness();
 
-      const bootstrap = await createControlPlaneServer({
+      const bootstrap = await createControlPlaneServer({ autoDispatch: { enabled: false },
         databasePath,
         bearerToken: BEARER_TOKEN,
         masterSecret: MASTER_SECRET
@@ -1186,7 +1322,7 @@ describe('real Claude agent dispatch - failure paths', () => {
       }
 
       let controlPlane: ControlPlaneService | undefined;
-      const handle = await startControlPlaneServer({
+      const handle = await startControlPlaneServer({ autoDispatch: { enabled: false },
         port: 0,
         databasePath,
         bearerToken: BEARER_TOKEN,
@@ -1239,7 +1375,7 @@ describe('real Claude agent dispatch - failure paths', () => {
       const { projectId } = await seedQuestionProject(databasePath);
       const harness = createFakeLaunchHarness();
 
-      const bootstrap = await createControlPlaneServer({
+      const bootstrap = await createControlPlaneServer({ autoDispatch: { enabled: false },
         databasePath,
         bearerToken: BEARER_TOKEN,
         masterSecret: MASTER_SECRET
@@ -1282,7 +1418,7 @@ describe('real Claude agent dispatch - failure paths', () => {
       }
 
       let controlPlane: ControlPlaneService | undefined;
-      const handle = await startControlPlaneServer({
+      const handle = await startControlPlaneServer({ autoDispatch: { enabled: false },
         port: 0,
         databasePath,
         bearerToken: BEARER_TOKEN,
@@ -1338,7 +1474,7 @@ describe('real Claude agent dispatch - failure paths', () => {
       const harness = createFakeLaunchHarness();
       const logCapture = captureConsole();
 
-      const bootstrap = await createControlPlaneServer({
+      const bootstrap = await createControlPlaneServer({ autoDispatch: { enabled: false },
         databasePath,
         bearerToken: BEARER_TOKEN,
         masterSecret: MASTER_SECRET
@@ -1379,7 +1515,7 @@ describe('real Claude agent dispatch - failure paths', () => {
       }
 
       let controlPlane: ControlPlaneService | undefined;
-      const handle = await startControlPlaneServer({
+      const handle = await startControlPlaneServer({ autoDispatch: { enabled: false },
         port: 0,
         databasePath,
         bearerToken: BEARER_TOKEN,
@@ -1437,7 +1573,7 @@ describe('real Claude agent dispatch - failure paths', () => {
       const { projectId } = await seedQuestionProject(databasePath);
       const harness = createFakeLaunchHarness();
 
-      const bootstrap = await createControlPlaneServer({
+      const bootstrap = await createControlPlaneServer({ autoDispatch: { enabled: false },
         databasePath,
         bearerToken: BEARER_TOKEN,
         masterSecret: MASTER_SECRET
@@ -1478,7 +1614,7 @@ describe('real Claude agent dispatch - failure paths', () => {
       }
 
       let controlPlane: ControlPlaneService | undefined;
-      const handle = await startControlPlaneServer({
+      const handle = await startControlPlaneServer({ autoDispatch: { enabled: false },
         port: 0,
         databasePath,
         bearerToken: BEARER_TOKEN,
@@ -1594,7 +1730,7 @@ describe('run list integration', () => {
       seedDb.close();
 
       // Start the server
-      const handle = await startControlPlaneServer({
+      const handle = await startControlPlaneServer({ autoDispatch: { enabled: false },
         port: 0,
         databasePath,
         bearerToken: BEARER_TOKEN,
@@ -1668,7 +1804,7 @@ describe('real OpenAI agent dispatch - SSE and checkpoint', () => {
       const { projectId } = await seedQuestionProject(databasePath);
 
       // Bootstrap server to create profile config for OpenAI agent adapter.
-      const bootstrap = await createControlPlaneServer({
+      const bootstrap = await createControlPlaneServer({ autoDispatch: { enabled: false },
         databasePath,
         bearerToken: BEARER_TOKEN,
         masterSecret: MASTER_SECRET
@@ -1719,7 +1855,7 @@ describe('real OpenAI agent dispatch - SSE and checkpoint', () => {
       };
 
       let controlPlane: ControlPlaneService | undefined;
-      const handle = await startControlPlaneServer({
+      const handle = await startControlPlaneServer({ autoDispatch: { enabled: false },
         port: 0,
         databasePath,
         bearerToken: BEARER_TOKEN,
@@ -1889,7 +2025,7 @@ describe('spec review API surface integration', () => {
       try {
         const { runId } = await seedSpecReviewScenario(databasePath, tempDir);
 
-        const app = await createControlPlaneServer({
+        const app = await createControlPlaneServer({ autoDispatch: { enabled: false },
           databasePath,
           bearerToken: BEARER_TOKEN,
           masterSecret: MASTER_SECRET
@@ -1920,7 +2056,7 @@ describe('spec review API surface integration', () => {
       try {
         await seedSpecReviewScenario(databasePath, tempDir);
 
-        const app = await createControlPlaneServer({
+        const app = await createControlPlaneServer({ autoDispatch: { enabled: false },
           databasePath,
           bearerToken: BEARER_TOKEN,
           masterSecret: MASTER_SECRET
@@ -1952,7 +2088,7 @@ describe('spec review API surface integration', () => {
       try {
         const { runId } = await seedSpecReviewScenario(databasePath, tempDir);
 
-        const app = await createControlPlaneServer({
+        const app = await createControlPlaneServer({ autoDispatch: { enabled: false },
           databasePath,
           bearerToken: BEARER_TOKEN,
           masterSecret: MASTER_SECRET
@@ -2022,7 +2158,7 @@ describe('spec review API surface integration', () => {
       });
       seedDb.close();
 
-      const app = await createControlPlaneServer({
+      const app = await createControlPlaneServer({ autoDispatch: { enabled: false },
         databasePath,
         bearerToken: BEARER_TOKEN,
         masterSecret: MASTER_SECRET
@@ -2106,7 +2242,7 @@ describe('spec review API surface integration', () => {
         });
         seedDb.close();
 
-        const app = await createControlPlaneServer({
+        const app = await createControlPlaneServer({ autoDispatch: { enabled: false },
           databasePath,
           bearerToken: BEARER_TOKEN,
           masterSecret: MASTER_SECRET
@@ -2181,7 +2317,7 @@ describe('spec review API surface integration', () => {
       // No runWorkspaceMetadata upsert → resolveWorkspaceContext will fail
       seedDb.close();
 
-      const app = await createControlPlaneServer({
+      const app = await createControlPlaneServer({ autoDispatch: { enabled: false },
         databasePath,
         bearerToken: BEARER_TOKEN,
         masterSecret: MASTER_SECRET
@@ -2205,7 +2341,7 @@ describe('spec review API surface integration', () => {
       try {
         const { runId } = await seedSpecReviewScenario(databasePath, tempDir);
 
-        const app = await createControlPlaneServer({
+        const app = await createControlPlaneServer({ autoDispatch: { enabled: false },
           databasePath,
           bearerToken: BEARER_TOKEN,
           masterSecret: MASTER_SECRET
@@ -2246,7 +2382,7 @@ describe('spec review API surface integration', () => {
       try {
         const { runId } = await seedSpecReviewScenario(databasePath, tempDir);
 
-        const app = await createControlPlaneServer({
+        const app = await createControlPlaneServer({ autoDispatch: { enabled: false },
           databasePath,
           bearerToken: BEARER_TOKEN,
           masterSecret: MASTER_SECRET
@@ -2349,7 +2485,7 @@ describe('spec review API surface integration', () => {
         });
         seedDb.close();
 
-        const app = await createControlPlaneServer({
+        const app = await createControlPlaneServer({ autoDispatch: { enabled: false },
           databasePath,
           bearerToken: BEARER_TOKEN,
           masterSecret: MASTER_SECRET
@@ -2421,7 +2557,7 @@ describe('spec review API surface integration', () => {
       });
       seedDb.close();
 
-      const app = await createControlPlaneServer({
+      const app = await createControlPlaneServer({ autoDispatch: { enabled: false },
         databasePath,
         bearerToken: BEARER_TOKEN,
         masterSecret: MASTER_SECRET
@@ -2445,7 +2581,7 @@ describe('spec review API surface integration', () => {
       try {
         const { runId } = await seedSpecReviewScenario(databasePath, tempDir);
 
-        const app = await createControlPlaneServer({
+        const app = await createControlPlaneServer({ autoDispatch: { enabled: false },
           databasePath,
           bearerToken: BEARER_TOKEN,
           masterSecret: MASTER_SECRET
@@ -2482,7 +2618,7 @@ describe('spec review API surface integration', () => {
       try {
         const { runId } = await seedSpecReviewScenario(databasePath, tempDir);
 
-        const app = await createControlPlaneServer({
+        const app = await createControlPlaneServer({ autoDispatch: { enabled: false },
           databasePath,
           bearerToken: BEARER_TOKEN,
           masterSecret: MASTER_SECRET
@@ -2535,7 +2671,7 @@ describe('real feature dispatch workspace context', () => {
         // credentialSecretHandle is required: createExplicitProfileResolver always
         // sets credentialReference.required = true, so createAgentConnection needs
         // a resolvable secret handle or it throws missing_credential before dispatch.
-        const bootstrap = await createControlPlaneServer({
+        const bootstrap = await createControlPlaneServer({ autoDispatch: { enabled: false },
           databasePath,
           bearerToken: BEARER_TOKEN,
           masterSecret: MASTER_SECRET
@@ -2613,7 +2749,7 @@ describe('real feature dispatch workspace context', () => {
         };
 
         let controlPlane: ControlPlaneService | undefined;
-        const handle = await startControlPlaneServer({
+        const handle = await startControlPlaneServer({ autoDispatch: { enabled: false },
           port: 0,
           databasePath,
           bearerToken: BEARER_TOKEN,
