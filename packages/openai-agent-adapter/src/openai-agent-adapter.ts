@@ -568,7 +568,25 @@ async function runRunnerNonStream(
     const result = await runner.run(agent, prompt, { sandbox: { session }, stream: false });
     return result as NonStreamRunResultView;
   } catch (err) {
-    onError(err);
+    // Classify before rejecting so the result promise never carries raw SDK text.
+    const shaped = err as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
+    const reason = classifyProviderFailure({
+      ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
+      ...(typeof shaped.statusCode === 'number' ? { statusCode: shaped.statusCode } : {}),
+      code: shaped.code,
+      errorName: shaped.name,
+      providerKind: openaiProviderKind
+    });
+    const classified: ClassifiedProviderFailureError = reason !== undefined
+      ? new ClassifiedProviderFailureError(reason, {
+          providerKind: openaiProviderKind,
+          ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
+          ...(typeof shaped.statusCode === 'number' ? { statusCode: shaped.statusCode } : {}),
+          ...(typeof shaped.code === 'string' ? { code: shaped.code } : {}),
+          ...(typeof shaped.name === 'string' ? { errorName: shaped.name } : {})
+        })
+      : new ClassifiedProviderFailureError('runner_failed_before_terminal_result', { providerKind: openaiProviderKind });
+    onError(classified);
     throw err;
   }
 }
@@ -594,6 +612,7 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
     resolveResult = resolve as never;
     rejectResult = reject;
   });
+  result.catch(() => undefined);
 
   async function* drive(): AsyncIterable<RunItem> {
     // The non-stream overload (no `stream: true`) returns a RunResult; let TS
@@ -813,6 +832,7 @@ export function createOpenAIAgentAdapter(
         metadataResolve = resolve;
         metadataReject = reject;
       });
+      metadataPromise.catch(() => undefined);
 
       async function* events(): AsyncIterable<RunnerEvent> {
         const ctx: EventContext = {

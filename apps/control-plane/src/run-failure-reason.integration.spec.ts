@@ -69,36 +69,40 @@ const FAKE_ADAPTER_ID = 'openai-agents-sdk' as const;
  * startSession) exercises the full execution-run-unit-of-work catch path and
  * confirms the error propagates through consumeRunnerEvents.
  */
-function createAuthFailingAdapter(): AgentProviderAdapter {
-  return {
+function createAuthFailingAdapter(): { adapter: AgentProviderAdapter; releaseGate: () => void } {
+  let releaseGate: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+
+  const error = new ClassifiedProviderFailureError('provider_auth_failed', {
+    statusCode: 401,
+    errorName: 'AuthenticationError',
+    providerKind: FAKE_PROVIDER_KIND
+  });
+  const metadataPromise = Promise.reject<never>(error);
+  metadataPromise.catch(() => undefined);
+
+  const adapter: AgentProviderAdapter = {
     providerKind: FAKE_PROVIDER_KIND,
     adapterId: FAKE_ADAPTER_ID,
     supportedConnectionMechanism: 'fetch_transport',
     startSession(_input: AgentProviderSessionInput): AgentProviderSession {
-      const error = new ClassifiedProviderFailureError('provider_auth_failed', {
-        statusCode: 401,
-        errorName: 'AuthenticationError',
-        providerKind: FAKE_PROVIDER_KIND
-      });
-      // Attach a no-op catch to the metadata rejection so Node.js does not
-      // surface it as an unhandled rejection before the agent-orchestrator-runner
-      // awaits it in its finally block.
-      const metadataPromise = Promise.reject<never>(error);
-      metadataPromise.catch(() => undefined);
       return {
         events: (async function* (): AsyncGenerator<never> {
-          // Brief pause so the SSE subscription is established before the fail
-          // event is published. Auto-dispatch fires immediately after run
-          // creation, but the SSE HTTP round trip takes a few milliseconds.
-          // 150ms >> typical localhost round trip, making the subscription
-          // timing deterministic without using tick().
-          await new Promise<void>((resolve) => { setTimeout(resolve, 150); });
+          // Hold until the SSE subscription is confirmed open. The test calls
+          // releaseGate() after receiving a 200 OK on the SSE response, which
+          // guarantees the server has registered the subscription before the
+          // fail event is emitted.
+          // NOTE: replayAfter() returns empty without a cursor, so the
+          // subscription must be open before the gate is released.
+          await gate;
           yield await Promise.reject<never>(error);
         })(),
         metadata: metadataPromise
       };
     }
   };
+
+  return { adapter, releaseGate };
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +248,7 @@ describe('sanitized failure reason — end-to-end acceptance', () => {
         // Uses startControlPlaneServer (real HTTP port) so we can use live
         // fetch() for the SSE stream, which avoids inject's buffering limitation
         // that hangs on long-lived SSE connections.
+        const { adapter: authFailingAdapter, releaseGate } = createAuthFailingAdapter();
         const handle = await startControlPlaneServer({
           port: 0,
           databasePath,
@@ -257,7 +262,7 @@ describe('sanitized failure reason — end-to-end acceptance', () => {
           providerAdapters: new Map([
             [
               buildProviderAdapterKey(FAKE_PROVIDER_KIND, FAKE_ADAPTER_ID),
-              () => createAuthFailingAdapter()
+              () => authFailingAdapter
             ]
           ])
         });
@@ -282,10 +287,9 @@ describe('sanitized failure reason — end-to-end acceptance', () => {
           const runId = createBody.run.id;
           expect(runId).toMatch(/^run_/u);
 
-          // Open SSE stream. Auto-dispatch fires immediately after run creation;
-          // the retained event store replays any events already emitted, so the
-          // fail transition is visible even if dispatch completes before the
-          // SSE connection is established.
+          // Open SSE stream. The gate prevents the adapter from emitting the
+          // failure until after this fetch resolves with a 200 OK, guaranteeing
+          // the subscription is registered before the failure event is published.
           const sseController = new AbortController();
           const sseResp = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
             headers: fetchHeaders,
@@ -293,6 +297,12 @@ describe('sanitized failure reason — end-to-end acceptance', () => {
           });
           expect(sseResp.status).toBe(200);
           expect(sseResp.headers.get('content-type')).toMatch(/^text\/event-stream/u);
+
+          // SSE subscription is now registered on the server (confirmed by 200 OK).
+          // Release the gate so the fake adapter can emit the failure. This is
+          // deterministic: replayAfter() returns empty without a cursor, so the
+          // subscription must be open before the failure is emitted.
+          releaseGate();
 
           // Auto-dispatch drives the run through intake automatically. The fake
           // adapter throws ClassifiedProviderFailureError from its events

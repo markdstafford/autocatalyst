@@ -585,12 +585,16 @@ describe('createOpenAIAgentAdapter — provider auth failure classification', ()
       statusCode: 401,
       code: 'authentication_error'
     });
-    const failingRun = (): OpenAIRunOutcome => ({
-      items: (async function* () {
-        yield await Promise.reject<never>(authError);
-      })(),
-      result: new Promise<never>((_, reject) => reject(authError))
-    });
+    const failingRun = (): OpenAIRunOutcome => {
+      const resultPromise = new Promise<never>((_, reject) => reject(authError));
+      resultPromise.catch(() => undefined);
+      return {
+        items: (async function* () {
+          yield await Promise.reject<never>(authError);
+        })(),
+        result: resultPromise
+      };
+    };
     const adapter = createOpenAIAgentAdapter({
       sandboxClientFactory: () => fakeSandboxHandle(),
       runAgentSession: failingRun
@@ -599,6 +603,9 @@ describe('createOpenAIAgentAdapter — provider auth failure classification', ()
     const err = await collectEvents(session.events).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ClassifiedProviderFailureError);
     expect(err).toMatchObject({ failureReason: 'provider_auth_failed' });
+    // Assert raw error text is not in the error
+    expect(JSON.stringify(err)).not.toContain('raw openai run body');
+    expect(JSON.stringify(err)).not.toContain('sk-test-secret');
   });
 });
 

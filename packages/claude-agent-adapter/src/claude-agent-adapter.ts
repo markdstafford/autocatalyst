@@ -366,6 +366,7 @@ export function createClaudeAgentAdapter(
         metadataResolve = resolve;
         metadataReject = reject;
       });
+      metadata.catch(() => undefined);
 
       async function* mapEvents(): AsyncIterable<RunnerEvent> {
         let outcome: 'succeeded' | 'failed' | 'canceled' = 'succeeded';
