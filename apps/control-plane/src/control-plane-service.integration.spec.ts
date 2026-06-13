@@ -49,6 +49,21 @@ const owner = {
   displayName: 'Development Principal'
 };
 
+async function waitForRunStep(
+  read: () => Promise<{ readonly currentStep: string; readonly waitingOn?: string }>,
+  step: string,
+  timeoutMs = 5000
+): Promise<{ readonly currentStep: string; readonly waitingOn?: string }> {
+  const deadline = Date.now() + timeoutMs;
+  let last: { readonly currentStep: string; readonly waitingOn?: string } | undefined;
+  while (Date.now() < deadline) {
+    last = await read();
+    if (last.currentStep === step) return last;
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error(`Timed out waiting for run step '${step}'. Last step: ${last?.currentStep ?? 'unknown'}`);
+}
+
 // ---------------------------------------------------------------------------
 // Owner information used across all suites
 // ---------------------------------------------------------------------------
@@ -133,7 +148,7 @@ describe('duplicate-active-run conflict via real SQLite orchestrator', () => {
 });
 
 describe('control-plane-service integration (SQLite + real orchestrator + real event bus)', () => {
-  it('delivers a run_state_transition event end-to-end through subscribeRunEvents after a tick', async () => {
+  it('delivers a run_state_transition event end-to-end through subscribeRunEvents after fallback tick', async () => {
     const database = createSqliteDatabase({ path: ':memory:' });
     await migrateSqliteDatabase(database);
     try {
@@ -149,7 +164,8 @@ describe('control-plane-service integration (SQLite + real orchestrator + real e
         conversationIngress,
         events: eventBus,
         dispatchQueue,
-        unitOfWork
+        unitOfWork,
+        autoDispatch: { enabled: false }
       });
       const controlPlane = new DefaultControlPlaneService({
         orchestrator,
@@ -223,6 +239,123 @@ describe('control-plane-service integration (SQLite + real orchestrator + real e
       database.close();
     }
   });
+});
+
+describe('control-plane-service auto-dispatch integration (SQLite + real orchestrator + spec gate)', () => {
+  it('auto-advances a feature run from service create to spec.human_review without tick', async () => {
+    const database = createSqliteDatabase({ path: ':memory:' });
+    await migrateSqliteDatabase(database);
+    try {
+      const domainRepos = createDrizzleDomainRepositories(database);
+      const conversationIngress = new DrizzleConversationIngressRepository(database);
+      const eventBus = new InMemoryRunEventBus();
+      const dispatchQueue = new RunDispatchQueue({ maxConcurrent: 2 });
+      const authoredSpecContents = '---\ncreated: 2026-06-12\nlast_updated: 2026-06-12\nstatus: draft\nspecced_by: autocatalyst\n---\n# Service auto dispatch\n';
+      const unitRun = vi.fn(async ({ run }: RunWorkInput) => {
+        if (run.currentStep === 'intake') {
+          return { directive: 'advance' as const };
+        }
+        if (run.currentStep === 'spec.author') {
+          return {
+            directive: 'advance' as const,
+            result: {
+              kind: 'feature_spec',
+              slug: 'service-auto-dispatch',
+              relativePath: 'context-human/specs/feature-service-auto-dispatch.md',
+              frontmatter: {
+                created: '2026-06-12',
+                last_updated: '2026-06-12',
+                status: 'draft',
+                specced_by: 'autocatalyst'
+              },
+              body: '# Service auto dispatch\n'
+            }
+          };
+        }
+        return { directive: 'advance' as const };
+      });
+      const orchestrator = new DefaultOrchestrator({
+        runs: domainRepos.runs,
+        conversationIngress,
+        events: eventBus,
+        dispatchQueue,
+        unitOfWork: { run: unitRun },
+        specAuthoringDependencies: {
+          artifacts: domainRepos.artifacts,
+          filesystem: {
+            writeFile: vi.fn().mockResolvedValue(undefined),
+            readFile: vi.fn().mockResolvedValue(authoredSpecContents)
+          },
+          git: { commitFiles: vi.fn().mockResolvedValue({}) }
+        },
+        resolveWorkspaceContext: vi.fn().mockResolvedValue({
+          workspaceRepoRoot: '/tmp/service-auto-dispatch',
+          workspaceHandle: 'ws_service_auto_dispatch'
+        }),
+        runWorkspaceMetadata: domainRepos.runWorkspaceMetadata
+      });
+      const controlPlane = new DefaultControlPlaneService({
+        orchestrator,
+        runs: domainRepos.runs,
+        runSteps: domainRepos.runSteps,
+        events: eventBus,
+        policy: permissivePolicyDecisionPoint,
+        artifacts: domainRepos.artifacts,
+        feedback: domainRepos.feedback,
+        runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
+        workspaceFilesystem: { writeFile: vi.fn(), readFile: vi.fn().mockResolvedValue('') },
+        feedbackLifecycle: { feedback: domainRepos.feedback, ids: () => 'id', clock: () => new Date().toISOString() }
+      });
+
+      const project = await domainRepos.projects.create({
+        owner,
+        tenant: 'tenant_dev',
+        displayName: 'Auto-Dispatch Project',
+        repoUrl: 'https://example.test',
+        hostRepository: { provider: 'github', owner: 'test', name: 'repo' },
+        workspaceRootOverride: null,
+        issueTrackerSetting: null,
+        codeHostSetting: null,
+        credentialRefs: []
+      });
+
+      const createResp = await controlPlane.createConversationWithFirstRun({
+        principal: hardcodedDevelopmentPrincipal,
+        tenant: 'tenant_dev',
+        request: {
+          projectId: project.id,
+          identity: 'service-auto-dispatch-test',
+          topic: { title: 'Service Auto Dispatch Topic' },
+          submission: { kind: 'free_form', body: 'auto dispatch me', workKind: 'feature' }
+        }
+      });
+
+      const runId = createResp.run.id;
+
+      const finalRun = await waitForRunStep(
+        async () => {
+          const run = await domainRepos.runs.findById(runId);
+          if (run === null) throw new Error(`Run '${runId}' not found`);
+          return run as { readonly currentStep: string; readonly waitingOn?: string };
+        },
+        'spec.human_review'
+      );
+
+      expect(finalRun.currentStep).toBe('spec.human_review');
+      expect(unitRun).toHaveBeenCalledTimes(2);
+
+      const listedRuns = await controlPlane.listRuns({
+        principal: hardcodedDevelopmentPrincipal,
+        tenant: 'tenant_dev'
+      });
+      const listedRun = listedRuns.runs.find((r) => r.id === runId);
+      expect(listedRun).toBeDefined();
+      expect(listedRun?.currentStep).toBe('spec.human_review');
+      expect((listedRun as { waitingOn?: string } | undefined)?.waitingOn).toBe('human');
+    } finally {
+      database.close();
+    }
+  }, 10000);
 });
 
 describe('execution boundary integration (real StubRunner through two-root workspace)', () => {
@@ -316,7 +449,8 @@ describe('execution boundary integration (real StubRunner through two-root works
         conversationIngress,
         events: eventBus,
         dispatchQueue,
-        unitOfWork
+        unitOfWork,
+        autoDispatch: { enabled: false }
       });
       const controlPlane = new DefaultControlPlaneService({
         orchestrator,
@@ -451,7 +585,8 @@ describe('execution boundary integration (real StubRunner through two-root works
         conversationIngress,
         events: eventBus,
         dispatchQueue,
-        unitOfWork
+        unitOfWork,
+        autoDispatch: { enabled: false }
       });
       const controlPlane = new DefaultControlPlaneService({
         orchestrator,

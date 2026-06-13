@@ -355,6 +355,7 @@ function buildHarness(unitOfWork: RunUnitOfWork, options: BuildHarnessOptions = 
     dispatchQueue: new RunDispatchQueue({ maxConcurrent: 4 }),
     unitOfWork,
     clock: () => timestamp,
+    autoDispatch: { enabled: false },
     specAuthoringDependencies: {
       artifacts: artifactRepository,
       filesystem,
