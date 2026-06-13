@@ -6,6 +6,18 @@ import { createAgentConnection } from './connection.js';
 import { ClassifiedProviderFailureError } from './errors.js';
 
 // ---------------------------------------------------------------------------
+// Sentinel no-leak helper
+// ---------------------------------------------------------------------------
+
+function expectNoSentinels(serialized: string): void {
+  expect(serialized).not.toContain('sk-test-secret');
+  expect(serialized).not.toContain('authorization: Bearer');
+  expect(serialized).not.toContain('/Users/mark/private');
+  expect(serialized).not.toContain('sec_secret_handle_value');
+  expect(serialized).not.toContain('raw SDK diagnostic');
+}
+
+// ---------------------------------------------------------------------------
 // Test helpers
 // ---------------------------------------------------------------------------
 
@@ -540,7 +552,7 @@ describe('createAgentConnection — HTTP 401 classified as provider_auth_failed'
   it('classifies HTTP 401 as provider_auth_failed without leaking response body or credential', async () => {
     const { entries, logger } = captureLogger();
 
-    const rawBody = 'raw body sk-test-secret /Users/mark/private';
+    const rawBody = 'raw body sk-test-secret /Users/mark/private authorization: Bearer sec_secret_handle_value raw SDK diagnostic';
     const mockFetch = vi.fn().mockResolvedValue(
       new Response(rawBody, { status: 401 })
     );
@@ -561,8 +573,8 @@ describe('createAgentConnection — HTTP 401 classified as provider_auth_failed'
     // Logs must not contain the raw response body or sensitive tokens
     const logStr = JSON.stringify(entries);
     expect(logStr).not.toContain('raw body');
-    expect(logStr).not.toContain('sk-test-secret');
-    expect(logStr).not.toContain('/Users/mark/private');
+    expectNoSentinels(logStr);
+    expectNoSentinels(JSON.stringify(thrown));
 
     // Logs must record the classified reason
     expect(logStr).toContain('provider_auth_failed');

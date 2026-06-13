@@ -20,6 +20,14 @@ import type { SpecApprovalFinalizerDependencies } from './spec-approval-finalize
 const timestamp = '2026-06-08T00:00:00.000Z';
 const owner = { id: 'user_1', kind: 'human' as const, tenantId: 'tenant_1', displayName: 'Ada' };
 
+function expectNoSentinels(serialized: string): void {
+  expect(serialized).not.toContain('sk-test-secret');
+  expect(serialized).not.toContain('authorization: Bearer');
+  expect(serialized).not.toContain('/Users/mark/private');
+  expect(serialized).not.toContain('sec_secret_handle_value');
+  expect(serialized).not.toContain('raw SDK diagnostic');
+}
+
 function makeRun(overrides: Partial<Run> = {}): Run {
   return {
     id: 'run_1',
@@ -1745,7 +1753,7 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
       findById: vi.fn().mockResolvedValue(existing),
       recordRunStepTransition: recordTransition
     });
-    const unsafeReason = '401 raw provider body token=sk-test-secret /Users/mark/workspace';
+    const unsafeReason = '401 raw provider body token=sk-test-secret /Users/mark/private authorization: Bearer sec_secret_handle_value raw SDK diagnostic';
     const unitOfWork: RunUnitOfWork = {
       run: vi.fn().mockResolvedValue({ directive: 'fail', reason: unsafeReason })
     };
@@ -1758,11 +1766,9 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
     // The unsafe content must not appear in the transition call
     const transitionCall = recordTransition.mock.calls[0]?.[0];
     expect(transitionCall?.failureReason).toBe('runner_failed_before_terminal_result');
-    expect(JSON.stringify(transitionCall)).not.toContain('sk-test-secret');
-    expect(JSON.stringify(transitionCall)).not.toContain('/Users/mark/workspace');
+    expectNoSentinels(JSON.stringify(transitionCall));
     // Events must not leak the unsafe content either
-    expect(JSON.stringify(events)).not.toContain('sk-test-secret');
-    expect(JSON.stringify(events)).not.toContain('/Users/mark/workspace');
+    expectNoSentinels(JSON.stringify(events));
   });
 
   it('auto-dispatches system and ai steps but not human or terminal steps', async () => {

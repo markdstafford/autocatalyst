@@ -185,6 +185,18 @@ async function collect(stream: AsyncIterable<RunnerEvent>): Promise<RunnerEvent[
 }
 
 // ---------------------------------------------------------------------------
+// Sentinel no-leak helper
+// ---------------------------------------------------------------------------
+
+function expectNoSentinels(serialized: string): void {
+  expect(serialized).not.toContain('sk-test-secret');
+  expect(serialized).not.toContain('authorization: Bearer');
+  expect(serialized).not.toContain('/Users/mark/private');
+  expect(serialized).not.toContain('sec_secret_handle_value');
+  expect(serialized).not.toContain('raw SDK diagnostic');
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -471,7 +483,7 @@ describe('createClaudeAgentAdapter — skill containment', () => {
 describe('createClaudeAgentAdapter — provider failure classification', () => {
   it('classifies SDK authentication failures without logging raw messages', async () => {
     const logs: unknown[] = [];
-    const authError = Object.assign(new Error('raw anthropic body sk-test-secret /Users/mark/private'), {
+    const authError = Object.assign(new Error('raw anthropic body sk-test-secret /Users/mark/private authorization: Bearer sec_secret_handle_value raw SDK diagnostic'), {
       name: 'AuthenticationError',
       status: 401,
       code: 'authentication_error'
@@ -498,8 +510,7 @@ describe('createClaudeAgentAdapter — provider failure classification', () => {
     const serializedLogs = JSON.stringify(logs);
     expect(serializedLogs).toContain('provider_auth_failed');
     expect(serializedLogs).not.toContain('raw anthropic body');
-    expect(serializedLogs).not.toContain('sk-test-secret');
-    expect(serializedLogs).not.toContain('/Users/mark/private');
+    expectNoSentinels(serializedLogs);
   });
 });
 

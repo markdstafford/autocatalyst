@@ -12,6 +12,14 @@ import { ClassifiedProviderFailureError, isClassifiedProviderFailureError } from
 
 const sentinel = 'sk-live-secret /Users/mark/private-workspace response_body={token} https://example.test/path?api_key=secret';
 
+function expectNoSentinels(serialized: string): void {
+  expect(serialized).not.toContain('sk-test-secret');
+  expect(serialized).not.toContain('authorization: Bearer');
+  expect(serialized).not.toContain('/Users/mark/private');
+  expect(serialized).not.toContain('sec_secret_handle_value');
+  expect(serialized).not.toContain('raw SDK diagnostic');
+}
+
 describe('sanitized failure reason primitives', () => {
   it('preserves known stable failure codes', () => {
     expect(knownFailureReasonCodes).toContain('provider_auth_failed');
@@ -69,5 +77,21 @@ describe('sanitized failure reason primitives', () => {
     expect(error.safeDetails).toEqual({ providerKind: 'openai', statusCode: 401 });
     expect(isClassifiedProviderFailureError(error)).toBe(true);
     expect(JSON.stringify(error)).not.toContain(sentinel);
+  });
+
+  it('does not copy any sentinel values from classification inputs into outputs', () => {
+    const unsafeInput = {
+      status: 500,
+      code: 'sk-test-secret',
+      errorName: 'authorization: Bearer sk-test-secret',
+      providerKind: '/Users/mark/private',
+      message: 'sec_secret_handle_value raw SDK diagnostic'
+    };
+    const reason = classifyProviderFailure(unsafeInput);
+    expectNoSentinels(JSON.stringify({ reason }));
+    const normalized = normalizeFailureReasonForPublicSurface('sk-test-secret authorization: Bearer /Users/mark/private sec_secret_handle_value raw SDK diagnostic');
+    expectNoSentinels(JSON.stringify({ normalized }));
+    const made = makeSanitizedFailureReason('sk-test-secret');
+    expectNoSentinels(JSON.stringify({ made }));
   });
 });

@@ -171,6 +171,18 @@ function makeSessionInputWithSkills(
 }
 
 // ---------------------------------------------------------------------------
+// Sentinel no-leak helper
+// ---------------------------------------------------------------------------
+
+function expectNoSentinels(serialized: string): void {
+  expect(serialized).not.toContain('sk-test-secret');
+  expect(serialized).not.toContain('authorization: Bearer');
+  expect(serialized).not.toContain('/Users/mark/private');
+  expect(serialized).not.toContain('sec_secret_handle_value');
+  expect(serialized).not.toContain('raw SDK diagnostic');
+}
+
+// ---------------------------------------------------------------------------
 // Identity & boundary
 // ---------------------------------------------------------------------------
 
@@ -549,7 +561,7 @@ describe('createOpenAIAgentAdapter — provider auth failure classification', ()
       warn: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
       error: vi.fn((_e: string, f: unknown) => { logs.push(f); })
     };
-    const authError = Object.assign(new Error('raw openai sandbox body sk-test-secret /Users/mark/private'), {
+    const authError = Object.assign(new Error('raw openai sandbox body sk-test-secret /Users/mark/private authorization: Bearer sec_secret_handle_value raw SDK diagnostic'), {
       name: 'AuthenticationError',
       status: 401,
       code: 'invalid_api_key'
@@ -564,7 +576,7 @@ describe('createOpenAIAgentAdapter — provider auth failure classification', ()
     await expect(adapter.startSession(makeSessionInput('scratch_only')))
       .rejects.toBeInstanceOf(ClassifiedProviderFailureError);
     const captured = JSON.stringify(logs);
-    expect(captured).not.toContain('sk-test-secret');
+    expectNoSentinels(captured);
   });
 
   it('classifies run-session authentication failures instead of returning generic message', async () => {

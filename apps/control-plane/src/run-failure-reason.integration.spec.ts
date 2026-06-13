@@ -34,6 +34,14 @@ import { createControlPlaneServer, startControlPlaneServer } from './server.js';
 const BEARER_TOKEN = 'failure-reason-integration-token';
 const MASTER_SECRET = 'failure-reason-integration-secret';
 
+function expectNoSentinels(serialized: string): void {
+  expect(serialized).not.toContain('sk-test-secret');
+  expect(serialized).not.toContain('authorization: Bearer');
+  expect(serialized).not.toContain('/Users/mark/private');
+  expect(serialized).not.toContain('sec_secret_handle_value');
+  expect(serialized).not.toContain('raw SDK diagnostic');
+}
+
 /**
  * A sentinel value that stands in for a real credential. The test asserts
  * this value never appears on any serialized HTTP surface after a failure.
@@ -320,15 +328,18 @@ describe('sanitized failure reason — end-to-end acceptance', () => {
           // GET /v1/runs/:id body
           const getRunText = JSON.stringify(runBody);
           expect(getRunText).not.toContain(SENTINEL_CREDENTIAL);
+          expectNoSentinels(getRunText);
 
           // SSE body
           expect(sseBody).not.toContain(SENTINEL_CREDENTIAL);
+          expectNoSentinels(sseBody);
 
           // GET /v1/runs/:id/steps body (step records must not carry raw secrets)
           const stepsResp = await fetch(`${baseUrl}/v1/runs/${runId}/steps`, { headers: fetchHeaders });
           expect(stepsResp.status).toBe(200);
           const stepsText = JSON.stringify(await stepsResp.json());
           expect(stepsText).not.toContain(SENTINEL_CREDENTIAL);
+          expectNoSentinels(stepsText);
         } finally {
           await handle.close();
         }

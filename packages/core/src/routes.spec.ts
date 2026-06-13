@@ -30,6 +30,14 @@ import type { ControlPlaneRouteDependencies } from './routes.js';
 import type { PolicyDecisionInput } from './policy.js';
 import type { RunEventSubscription } from './run-events.js';
 
+function expectNoSentinels(serialized: string): void {
+  expect(serialized).not.toContain('sk-test-secret');
+  expect(serialized).not.toContain('authorization: Bearer');
+  expect(serialized).not.toContain('/Users/mark/private');
+  expect(serialized).not.toContain('sec_secret_handle_value');
+  expect(serialized).not.toContain('raw SDK diagnostic');
+}
+
 function createFakeControlPlaneService(): ControlPlaneService {
   return {
     createConversationWithFirstRun: vi.fn(async () => {
@@ -1036,6 +1044,7 @@ describe('registerControlPlaneRoutes', () => {
     });
     expect(getResponse.statusCode).toBe(200);
     expect(getResponse.json().failureReason).toBe('provider_auth_failed');
+    expectNoSentinels(getResponse.body);
 
     // GET /v1/runs/:id/events (SSE via inject) — must contain reason and failureReason
     const sseResponse = await app.inject({
@@ -1047,6 +1056,7 @@ describe('registerControlPlaneRoutes', () => {
     expect(sseResponse.body).toContain('event: run_state_transition');
     expect(sseResponse.body).toContain('"reason":"provider_auth_failed"');
     expect(sseResponse.body).toContain('"failureReason":"provider_auth_failed"');
+    expectNoSentinels(sseResponse.body);
   });
 
   it('exposes an SSE route with event-stream semantics', async () => {
