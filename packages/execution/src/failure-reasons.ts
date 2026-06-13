@@ -101,3 +101,21 @@ export function classifyProviderFailure(input: ProviderFailureClassificationInpu
 
   return undefined;
 }
+
+/**
+ * Returns a safe subset of classification inputs for use as safeDetails.
+ * Strips code/errorName unless they are in the auth allowlists so that
+ * arbitrary SDK-provided strings (tokens, paths, response bodies) cannot
+ * reach serialized error objects.
+ */
+export function filterSafeClassificationDetails(input: ProviderFailureClassificationInput): ProviderFailureClassificationInput {
+  const safe: ProviderFailureClassificationInput = {};
+  if (typeof input.status === 'number') (safe as Record<string, unknown>)['status'] = input.status;
+  if (typeof input.statusCode === 'number') (safe as Record<string, unknown>)['statusCode'] = input.statusCode;
+  if (typeof input.providerKind === 'string') (safe as Record<string, unknown>)['providerKind'] = input.providerKind;
+  const code = typeof input.code === 'string' ? input.code : undefined;
+  if (code !== undefined && authCodes.has(code.toLowerCase())) (safe as Record<string, unknown>)['code'] = code;
+  const errorName = typeof input.errorName === 'string' ? input.errorName : undefined;
+  if (errorName !== undefined && authErrorNames.has(errorName)) (safe as Record<string, unknown>)['errorName'] = errorName;
+  return safe;
+}

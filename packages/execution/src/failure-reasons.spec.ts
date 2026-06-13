@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   classifyProviderFailure,
+  filterSafeClassificationDetails,
   formatExecutionFailureReason,
   knownFailureReasonCodes,
   knownSafeFailurePhrases,
@@ -93,5 +94,56 @@ describe('sanitized failure reason primitives', () => {
     expectNoSentinels(JSON.stringify({ normalized }));
     const made = makeSanitizedFailureReason('sk-test-secret');
     expectNoSentinels(JSON.stringify({ made }));
+  });
+
+  it('filterSafeClassificationDetails strips non-allowlisted code and errorName', () => {
+    const unsafeCode = 'sk-test-secret /Users/mark/private raw SDK diagnostic';
+    const unsafeName = 'authorization: Bearer sec_secret_handle_value';
+    const filtered = filterSafeClassificationDetails({
+      status: 401,
+      code: unsafeCode,
+      errorName: unsafeName,
+      providerKind: 'openai'
+    });
+    expect(JSON.stringify(filtered)).not.toContain('sk-test-secret');
+    expect(JSON.stringify(filtered)).not.toContain('/Users/mark/private');
+    expect(JSON.stringify(filtered)).not.toContain('authorization: Bearer');
+    expect(JSON.stringify(filtered)).not.toContain('sec_secret_handle_value');
+    expect(filtered).toMatchObject({ status: 401, providerKind: 'openai' });
+    expect(filtered).not.toHaveProperty('code');
+    expect(filtered).not.toHaveProperty('errorName');
+  });
+
+  it('filterSafeClassificationDetails retains allowlisted code and errorName', () => {
+    const filtered = filterSafeClassificationDetails({
+      statusCode: 401,
+      code: 'invalid_api_key',
+      errorName: 'AuthenticationError',
+      providerKind: 'anthropic'
+    });
+    expect(filtered).toMatchObject({
+      statusCode: 401,
+      code: 'invalid_api_key',
+      errorName: 'AuthenticationError',
+      providerKind: 'anthropic'
+    });
+  });
+
+  it('ClassifiedProviderFailureError built from 401 with sentinel code/name does not serialize sentinels', () => {
+    const sentinelCode = 'sk-test-secret /Users/mark/private';
+    const sentinelName = 'authorization: Bearer sec_secret_handle_value';
+    const rawInput = {
+      status: 401,
+      code: sentinelCode,
+      errorName: sentinelName,
+      providerKind: 'openai'
+    };
+    const error = new ClassifiedProviderFailureError('provider_auth_failed', filterSafeClassificationDetails(rawInput));
+    const serialized = JSON.stringify(error);
+    expect(serialized).not.toContain('sk-test-secret');
+    expect(serialized).not.toContain('/Users/mark/private');
+    expect(serialized).not.toContain('authorization: Bearer');
+    expect(serialized).not.toContain('sec_secret_handle_value');
+    expect(error.failureReason).toBe('provider_auth_failed');
   });
 });

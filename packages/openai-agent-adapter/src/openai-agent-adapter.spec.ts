@@ -607,6 +607,40 @@ describe('createOpenAIAgentAdapter — provider auth failure classification', ()
     expect(JSON.stringify(err)).not.toContain('raw openai run body');
     expect(JSON.stringify(err)).not.toContain('sk-test-secret');
   });
+
+  it('does not copy sentinel-bearing code/name into safeDetails when 401 triggers status-based classification', async () => {
+    const sentinelCode = 'sk-test-secret /Users/mark/private raw SDK diagnostic';
+    const sentinelName = 'authorization: Bearer sec_secret_handle_value';
+    const authError = Object.assign(new Error('raw body'), {
+      name: sentinelName,
+      statusCode: 401,
+      code: sentinelCode
+    });
+    const failingRun = (): OpenAIRunOutcome => {
+      const resultPromise = new Promise<never>((_, reject) => reject(authError));
+      resultPromise.catch(() => undefined);
+      return {
+        items: (async function* () {
+          yield await Promise.reject<never>(authError);
+        })(),
+        result: resultPromise
+      };
+    };
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => fakeSandboxHandle(),
+      runAgentSession: failingRun
+    });
+    const session = await adapter.startSession(makeSessionInput('scratch_only'));
+    const err = await collectEvents(session.events).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ClassifiedProviderFailureError);
+    expect(err).toMatchObject({ failureReason: 'provider_auth_failed' });
+    const serialized = JSON.stringify(err);
+    expect(serialized).not.toContain('sk-test-secret');
+    expect(serialized).not.toContain('/Users/mark/private');
+    expect(serialized).not.toContain('authorization: Bearer');
+    expect(serialized).not.toContain('sec_secret_handle_value');
+    expect(serialized).not.toContain('raw SDK diagnostic');
+  });
 });
 
 // ---------------------------------------------------------------------------

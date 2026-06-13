@@ -288,6 +288,7 @@ export type {
 
 export {
   classifyProviderFailure,
+  filterSafeClassificationDetails,
   formatExecutionFailureReason,
   knownFailureReasonCodes,
   knownSafeFailurePhrases,

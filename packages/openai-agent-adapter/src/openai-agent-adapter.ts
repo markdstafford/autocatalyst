@@ -27,6 +27,7 @@ import type {
 import {
   ClassifiedProviderFailureError,
   classifyProviderFailure,
+  filterSafeClassificationDetails,
   notifyToolInputSchema,
   ProviderProtocolError,
   reportProgressToolInputSchema,
@@ -570,21 +571,16 @@ async function runRunnerNonStream(
   } catch (err) {
     // Classify before rejecting so the result promise never carries raw SDK text.
     const shaped = err as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
-    const reason = classifyProviderFailure({
+    const classificationInput = {
       ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
       ...(typeof shaped.statusCode === 'number' ? { statusCode: shaped.statusCode } : {}),
       code: shaped.code,
       errorName: shaped.name,
       providerKind: openaiProviderKind
-    });
+    };
+    const reason = classifyProviderFailure(classificationInput);
     const classified: ClassifiedProviderFailureError = reason !== undefined
-      ? new ClassifiedProviderFailureError(reason, {
-          providerKind: openaiProviderKind,
-          ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
-          ...(typeof shaped.statusCode === 'number' ? { statusCode: shaped.statusCode } : {}),
-          ...(typeof shaped.code === 'string' ? { code: shaped.code } : {}),
-          ...(typeof shaped.name === 'string' ? { errorName: shaped.name } : {})
-        })
+      ? new ClassifiedProviderFailureError(reason, filterSafeClassificationDetails(classificationInput))
       : new ClassifiedProviderFailureError('runner_failed_before_terminal_result', { providerKind: openaiProviderKind });
     onError(classified);
     throw err;
@@ -685,22 +681,17 @@ export function createOpenAIAgentAdapter(
 
   function classifySdkError(err: unknown): ClassifiedProviderFailureError | undefined {
     const shaped = err as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
-    const reason = classifyProviderFailure({
+    const classificationInput = {
       ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
       ...(typeof shaped.statusCode === 'number' ? { statusCode: shaped.statusCode } : {}),
       code: shaped.code,
       errorName: shaped.name,
       providerKind: openaiProviderKind
-    });
+    };
+    const reason = classifyProviderFailure(classificationInput);
     return reason === undefined
       ? undefined
-      : new ClassifiedProviderFailureError(reason, {
-          providerKind: openaiProviderKind,
-          ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
-          ...(typeof shaped.statusCode === 'number' ? { statusCode: shaped.statusCode } : {}),
-          ...(typeof shaped.code === 'string' ? { code: shaped.code } : {}),
-          ...(typeof shaped.name === 'string' ? { errorName: shaped.name } : {})
-        });
+      : new ClassifiedProviderFailureError(reason, filterSafeClassificationDetails(classificationInput));
   }
 
   const sandboxClientFactory = options.sandboxClientFactory ?? makeDefaultSandboxClientFactory(options.sandboxWorkspaceBaseDir);

@@ -16,6 +16,7 @@ import {
   ProviderConnectionError,
   UnsupportedProviderCapabilityError,
   classifyProviderFailure,
+  filterSafeClassificationDetails,
   runtimeSkillsCatalogRoot
 } from '@autocatalyst/execution';
 
@@ -222,22 +223,17 @@ export function createClaudeAgentAdapter(
 
   function classifySdkError(err: unknown): ClassifiedProviderFailureError | undefined {
     const shaped = err as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
-    const reason = classifyProviderFailure({
+    const classificationInput = {
       ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
       ...(typeof shaped.statusCode === 'number' ? { statusCode: shaped.statusCode } : {}),
       code: shaped.code,
       errorName: shaped.name,
       providerKind: claudeProviderKind
-    });
+    };
+    const reason = classifyProviderFailure(classificationInput);
     return reason === undefined
       ? undefined
-      : new ClassifiedProviderFailureError(reason, {
-          providerKind: claudeProviderKind,
-          ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
-          ...(typeof shaped.statusCode === 'number' ? { statusCode: shaped.statusCode } : {}),
-          ...(typeof shaped.code === 'string' ? { code: shaped.code } : {}),
-          ...(typeof shaped.name === 'string' ? { errorName: shaped.name } : {})
-        });
+      : new ClassifiedProviderFailureError(reason, filterSafeClassificationDetails(classificationInput));
   }
 
   return {
