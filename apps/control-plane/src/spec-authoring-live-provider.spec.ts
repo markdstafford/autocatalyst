@@ -1,4 +1,4 @@
-import { describe, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 const hasLiveClaudeConfig =
   process.env['AUTOCATALYST_LIVE_CLAUDE_SPEC_AUTHOR'] === '1' &&
