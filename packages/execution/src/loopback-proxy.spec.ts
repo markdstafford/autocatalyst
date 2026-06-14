@@ -1,5 +1,8 @@
 import http from 'node:http';
 import { once } from 'node:events';
+import { mkdtemp, readdir, readFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { createLoopbackProxy } from './loopback-proxy.js';
 
@@ -69,6 +72,45 @@ describe('createLoopbackProxy', () => {
     });
 
     await proxy.close();
+  });
+
+  it('writes redacted request and response dumps when logging is enabled', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'ac-proxy-e2e-'));
+    const upstream = await startFakeUpstream((req, res) => {
+      req.resume();
+      res.writeHead(200, { 'content-type': 'application/json', 'authorization': 'Bearer upstream-secret' });
+      res.end(JSON.stringify({ usage: { output_tokens: 7 }, text: 'ok' }));
+    });
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: { authHeaderName: 'api-key' },
+      credential: 'secret-grove-key',
+      logging: { enabled: true, diagnosticRoot: root, bodyCaptureBytes: 64 },
+      telemetryContext: { runId: 'run_1', step: 'spec.author' }
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt: 'uses secret-grove-key' })
+    });
+    expect(response.status).toBe(200);
+    await response.text();
+
+    const files = await readdir(root);
+    const requestFile = files.find((name) => name.endsWith('.request.json'))!;
+    const responseFile = files.find((name) => name.endsWith('.response.json'))!;
+    const requestDump = await readFile(path.join(root, requestFile), 'utf8');
+    const responseDump = JSON.parse(await readFile(path.join(root, responseFile), 'utf8'));
+
+    expect(requestDump).not.toContain('secret-grove-key');
+    expect(responseDump.status).toBe(200);
+    expect(responseDump.output_tokens).toBe(7);
+    expect(responseDump.headers.authorization).toBe('[redacted]');
+    expect(responseDump.timing_ms.total).toBeGreaterThanOrEqual(0);
+
+    await proxy.close();
+    await upstream.close();
   });
 
   it('streams chunks without buffering the full response', async () => {

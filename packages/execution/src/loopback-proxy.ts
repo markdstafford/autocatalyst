@@ -1,10 +1,13 @@
 import http from 'node:http';
 import https from 'node:https';
 import { once } from 'node:events';
+import { performance } from 'node:perf_hooks';
 import type { RunnerEndpointSettings } from '@autocatalyst/api-contract';
 import type { AgentConnectionTelemetryContext } from './agent-provider-adapter.js';
 import { applyProxyHeaderPolicy, mapLoopbackUrlToUpstream, type HeaderValueFilter } from './proxy-header-policy.js';
-import type { ProxyRequestLoggingOptions } from './proxy-request-logging.js';
+import type { ProxyRequestLoggingOptions, CapturedBody } from './proxy-request-logging.js';
+import { createProxyRequestLogger, captureBodyChunk, parseCapturedBody, extractOutputTokens } from './proxy-request-logging.js';
+import { redactProxyHeaders } from './proxy-redaction.js';
 import type { ProviderConnectionLogger } from './connection.js';
 
 export type ProxyFailureCode =
@@ -55,11 +58,25 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
   // Validate upstream URL eagerly
   new URL(upstreamBaseUrl);
 
+  const knownSecretValues = credential !== undefined ? [credential] : [];
+  const logger = await createProxyRequestLogger(
+    options.logging ?? { enabled: false, diagnosticRoot: '' },
+    { knownSecretValues }
+  );
+
   let requestCounter = 0;
   let closed = false;
 
   const server = http.createServer((req, res) => {
     requestCounter += 1;
+
+    const requestStartMs = performance.now();
+    const requestStartWallClock = Date.now();
+    let dumpId: string | undefined;
+
+    if (logger.enabled) {
+      dumpId = logger.createDumpId();
+    }
 
     // Map loopback URL to upstream
     const absoluteUrl = `http://127.0.0.1:${(server.address() as { port: number }).port}${req.url ?? '/'}`;
@@ -100,8 +117,18 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
 
         res.writeHead(upstreamRes.statusCode ?? 200, safeHeaders);
 
+        const headersMs = performance.now() - requestStartMs;
+        let firstBodyByteMs: number | undefined;
+        let responseCapture: CapturedBody | undefined;
+        let responseTotalBytes = 0;
+
         // Stream chunks with backpressure
         upstreamRes.on('data', (chunk: Buffer) => {
+          if (logger.enabled) {
+            if (firstBodyByteMs === undefined) firstBodyByteMs = performance.now() - requestStartMs;
+            responseCapture = captureBodyChunk(responseCapture, chunk, logger.bodyCaptureBytes);
+            responseTotalBytes += chunk.length;
+          }
           const ok = res.write(chunk);
           if (!ok) {
             upstreamRes.pause();
@@ -109,7 +136,31 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
           }
         });
 
-        upstreamRes.on('end', () => res.end());
+        upstreamRes.on('end', async () => {
+          res.end();
+          if (logger.enabled && dumpId) {
+            const totalMs = performance.now() - requestStartMs;
+            const contentType = upstreamRes.headers['content-type'];
+            const parsedBody = responseCapture
+              ? parseCapturedBody(responseCapture.captured, contentType, { knownSecretValues })
+              : undefined;
+            const outputTokens = extractOutputTokens(parsedBody);
+            await logger.writeResponse(dumpId, {
+              timestamp: new Date().toISOString(),
+              status: upstreamRes.statusCode ?? 200,
+              headers: redactProxyHeaders({ direction: 'response', headers: upstreamRes.headers as Record<string, string>, knownSecretValues }),
+              timing_ms: {
+                headers: Math.round(headersMs),
+                ...(firstBodyByteMs !== undefined ? { first_body_byte: Math.round(firstBodyByteMs) } : {}),
+                total: Math.round(totalMs)
+              },
+              body_bytes: responseTotalBytes,
+              body_capture_truncated: responseCapture?.truncated ?? false,
+              ...(outputTokens !== undefined ? { output_tokens: outputTokens } : {}),
+              stream_state: 'completed'
+            });
+          }
+        });
       }
     );
 
@@ -119,15 +170,48 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
       });
     }
 
-    upstreamReq.on('error', () => {
+    upstreamReq.on('error', async () => {
+      if (logger.enabled && dumpId) {
+        await logger.writeResponseError(dumpId, {
+          timestamp: new Date().toISOString(),
+          error_code: 'proxy_upstream_failed',
+          elapsed_ms: Math.round(performance.now() - requestStartMs),
+          upstream: { origin: new URL(upstreamBaseUrl).origin }
+        });
+      }
       sendJsonError(res, 502, { error: { code: 'proxy_upstream_failed', message: 'Provider proxy upstream request failed.' } });
     });
 
     // Destroy upstream if client disconnects
     res.on('close', () => upstreamReq.destroy());
 
-    // Pipe request body to upstream
-    req.pipe(upstreamReq);
+    // Manual piping with request body capture
+    let requestCapture: CapturedBody | undefined;
+
+    req.on('data', (chunk: Buffer) => {
+      if (logger.enabled) {
+        requestCapture = captureBodyChunk(requestCapture, chunk, logger.bodyCaptureBytes);
+      }
+      upstreamReq.write(chunk);
+    });
+
+    req.on('end', async () => {
+      if (logger.enabled && dumpId) {
+        const contentType = req.headers['content-type'];
+        const body = requestCapture
+          ? parseCapturedBody(requestCapture.captured, contentType, { knownSecretValues })
+          : undefined;
+        await logger.writeRequest(dumpId, {
+          timestamp: new Date(requestStartWallClock).toISOString(),
+          method: req.method ?? 'GET',
+          url: upstreamUrl.toString(),
+          headers: redactProxyHeaders({ direction: 'request', headers: forwardHeaders, knownSecretValues }),
+          body,
+          body_capture_truncated: requestCapture?.truncated ?? false
+        });
+      }
+      upstreamReq.end();
+    });
   });
 
   server.listen(0, '127.0.0.1');
