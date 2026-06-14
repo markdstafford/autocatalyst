@@ -67,7 +67,8 @@ function shouldUseProxy(profile: ResolvedAgentRunnerProfile): boolean {
     return Boolean(
       profile.endpoint.headersToStrip?.length ||
       profile.endpoint.proxyRequestLogging?.enabled ||
-      profile.endpoint.headerValueFilters?.length
+      profile.endpoint.headerValueFilters?.length ||
+      profile.endpoint.authHeaderName
     );
   }
   return Boolean(profile.endpoint.proxyRequestLogging?.enabled && profile.mode === 'agent');

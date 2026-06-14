@@ -2,6 +2,7 @@
 date: 2026-06-14
 status: accepted
 superseded_by: null
+extends: context-human/adrs/adr-023-request-alteration-boundary.md
 ---
 # Loopback proxy supersedes subprocess header-control exception
 **Decision:** Claude process-environment sessions satisfy endpoint auth-header injection, header stripping/filtering, and request dumps through the execution loopback proxy when the SDK can be pointed at a loopback base URL.
@@ -13,3 +14,4 @@ superseded_by: null
 - Request logging is default-off; dump files stay under an app-owned diagnostic root.
 - Direct cells continue using fetch alteration unless a future decision requires a universal proxy path.
 **Rejected:** Provider-specific Grove workaround in the Claude adapter — duplicates connection-layer policy and does not solve observability.
+**See also:** [[adr-023-request-alteration-boundary]] (Subsequent decisions section).

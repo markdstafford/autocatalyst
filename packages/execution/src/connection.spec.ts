@@ -59,7 +59,6 @@ function makeProcessProfile(): ResolvedAgentRunnerProfile {
     inferenceSettings: {},
     endpoint: {
       baseUrl: 'https://api.anthropic.com',
-      authHeaderName: 'x-api-key',
       authEnvironmentVariable: 'ANTHROPIC_API_KEY'
     },
     connectionMechanism: 'process_environment'
@@ -681,6 +680,66 @@ describe('createAgentConnection — proxy selection', () => {
     await expect(connection.createProcessLaunchConfig({
       materializedEnvironment: { variables: {}, secretVariableNames: [] }
     })).rejects.toMatchObject({ code: 'unsupported_required_capability' });
+  });
+
+  it('auto-selects proxy for process_environment profile with authHeaderName only', async () => {
+    // Grove auth-only subprocess: only authHeaderName is set, proxyMode defaults to auto.
+    // Without this fix the stopgap path was used, which still injects ANTHROPIC_API_KEY
+    // alongside the auth header and can produce a grove 401.
+    let proxyStarted = false;
+    const connection = await createAgentConnection({
+      profile: makeProcessProfileWith({
+        baseUrl: 'https://gateway.example.test/anthropic',
+        authHeaderName: 'api-key'
+        // proxyMode intentionally absent — defaults to 'auto'
+      }),
+      credentialReference: { required: true, secretHandle: 'sec_grove' },
+      credentialResolver: { resolveCredential: async () => 'grove-key' },
+      telemetryContext: makeTelemetry(),
+      proxyFactory: async () => {
+        proxyStarted = true;
+        return { baseUrl: 'http://127.0.0.1:45679', startedAt: new Date().toISOString(), requestCount: () => 0, close: async () => undefined };
+      }
+    });
+
+    await connection.createProcessLaunchConfig({
+      materializedEnvironment: { variables: {}, secretVariableNames: [] }
+    });
+
+    expect(proxyStarted).toBe(true);
+  });
+
+  it('does not auto-select proxy for process_environment profile with no proxy-requiring capabilities', async () => {
+    let proxyStarted = false;
+    const connection = await createAgentConnection({
+      profile: {
+        mode: 'agent',
+        providerKind: 'anthropic',
+        adapterId: 'claude-adapter',
+        profileName: 'test-no-proxy',
+        model: { id: 'claude-3-5-haiku-20241022', displayName: 'Claude 3.5 Haiku' },
+        inferenceSettings: {},
+        endpoint: {
+          baseUrl: 'https://api.anthropic.com',
+          authEnvironmentVariable: 'ANTHROPIC_API_KEY'
+          // no authHeaderName, headersToStrip, logging, filters, or proxyMode
+        },
+        connectionMechanism: 'process_environment'
+      },
+      credentialReference: { required: false },
+      credentialResolver: { resolveCredential: async () => undefined },
+      telemetryContext: makeTelemetry(),
+      proxyFactory: async () => {
+        proxyStarted = true;
+        return { baseUrl: 'http://127.0.0.1:45680', startedAt: new Date().toISOString(), requestCount: () => 0, close: async () => undefined };
+      }
+    });
+
+    await connection.createProcessLaunchConfig({
+      materializedEnvironment: { variables: {}, secretVariableNames: [] }
+    });
+
+    expect(proxyStarted).toBe(false);
   });
 
   it('routes fetch transport through the proxy loopback URL when proxyMode is required', async () => {

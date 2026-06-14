@@ -122,6 +122,35 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
         let responseCapture: CapturedBody | undefined;
         let responseTotalBytes = 0;
 
+        // Track stream state to distinguish completed vs aborted/errored in dumps
+        let streamEndWritten = false;
+        const upstreamResHeaders = upstreamRes.headers;
+        const upstreamStatusCode = upstreamRes.statusCode ?? 200;
+
+        const writeResponseDump = (streamState: 'completed' | 'aborted' | 'errored') => {
+          if (!logger.enabled || !dumpId) return;
+          const totalMs = performance.now() - requestStartMs;
+          const contentType = upstreamResHeaders['content-type'];
+          const parsedBody = responseCapture
+            ? parseCapturedBody(responseCapture.captured, contentType, { knownSecretValues })
+            : undefined;
+          const outputTokens = extractOutputTokens(parsedBody);
+          void logger.writeResponse(dumpId!, {
+            timestamp: new Date().toISOString(),
+            status: upstreamStatusCode,
+            headers: redactProxyHeaders({ direction: 'response', headers: upstreamResHeaders as Record<string, string>, knownSecretValues }),
+            timing_ms: {
+              headers: Math.round(headersMs),
+              ...(firstBodyByteMs !== undefined ? { first_body_byte: Math.round(firstBodyByteMs) } : {}),
+              total: Math.round(totalMs)
+            },
+            body_bytes: responseTotalBytes,
+            body_capture_truncated: responseCapture?.truncated ?? false,
+            ...(outputTokens !== undefined ? { output_tokens: outputTokens } : {}),
+            stream_state: streamState
+          }).catch(() => undefined);
+        };
+
         // Stream chunks with backpressure
         upstreamRes.on('data', (chunk: Buffer) => {
           if (logger.enabled) {
@@ -136,30 +165,32 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
           }
         });
 
-        upstreamRes.on('end', async () => {
+        upstreamRes.on('end', () => {
+          streamEndWritten = true;
           res.end();
-          if (logger.enabled && dumpId) {
-            const totalMs = performance.now() - requestStartMs;
-            const contentType = upstreamRes.headers['content-type'];
-            const parsedBody = responseCapture
-              ? parseCapturedBody(responseCapture.captured, contentType, { knownSecretValues })
-              : undefined;
-            const outputTokens = extractOutputTokens(parsedBody);
-            void logger.writeResponse(dumpId, {
-              timestamp: new Date().toISOString(),
-              status: upstreamRes.statusCode ?? 200,
-              headers: redactProxyHeaders({ direction: 'response', headers: upstreamRes.headers as Record<string, string>, knownSecretValues }),
-              timing_ms: {
-                headers: Math.round(headersMs),
-                ...(firstBodyByteMs !== undefined ? { first_body_byte: Math.round(firstBodyByteMs) } : {}),
-                total: Math.round(totalMs)
-              },
-              body_bytes: responseTotalBytes,
-              body_capture_truncated: responseCapture?.truncated ?? false,
-              ...(outputTokens !== undefined ? { output_tokens: outputTokens } : {}),
-              stream_state: 'completed'
-            }).catch(() => undefined);
+          writeResponseDump('completed');
+        });
+
+        // Upstream stream error after headers received (e.g. truncated body)
+        upstreamRes.on('error', () => {
+          if (!streamEndWritten) {
+            streamEndWritten = true;
+            writeResponseDump('errored');
           }
+          if (!res.headersSent) {
+            sendJsonError(res, 502, { error: { code: 'proxy_upstream_failed', message: 'Provider proxy upstream request failed.' } });
+          } else {
+            res.destroy();
+          }
+        });
+
+        // Client disconnected before stream completed
+        res.on('close', () => {
+          if (!streamEndWritten) {
+            streamEndWritten = true;
+            writeResponseDump('aborted');
+          }
+          upstreamReq.destroy();
         });
       }
     );
@@ -181,9 +212,6 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
       }
       sendJsonError(res, 502, { error: { code: 'proxy_upstream_failed', message: 'Provider proxy upstream request failed.' } });
     });
-
-    // Destroy upstream if client disconnects
-    res.on('close', () => upstreamReq.destroy());
 
     // Manual piping with request body capture
     let requestCapture: CapturedBody | undefined;

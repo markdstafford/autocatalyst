@@ -138,4 +138,79 @@ describe('createLoopbackProxy', () => {
     await proxy.close();
     await upstream.close();
   });
+
+  it('writes stream_state=aborted dump when client disconnects before stream ends', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'ac-proxy-abort-'));
+    let upstreamChunksSent = 0;
+    let upstreamEnd: (() => void) | undefined;
+    const upstream = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: chunk1\n\n');
+      upstreamChunksSent++;
+      // Hold open so the proxy never sees 'end' before client abort
+      upstreamEnd = () => res.end();
+    });
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: {},
+      telemetryContext: { runId: 'run_1', step: 'spec.author' },
+      logging: { enabled: true, diagnosticRoot: root }
+    });
+
+    // Abort the request after receiving the first chunk
+    const ctrl = new AbortController();
+    const fetchPromise = fetch(`${proxy.baseUrl}/events`, { signal: ctrl.signal });
+    // Wait briefly for the first chunk to arrive, then abort
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    ctrl.abort();
+    try { await fetchPromise; } catch { /* expected */ }
+
+    // Allow a moment for abort/dump to be written
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+
+    const files = await readdir(root);
+    const responseFile = files.find((name) => name.endsWith('.response.json'));
+    expect(responseFile).toBeDefined();
+    const responseDump = JSON.parse(await readFile(path.join(root, responseFile!), 'utf8'));
+    expect(responseDump.stream_state).toBe('aborted');
+    expect(upstreamChunksSent).toBeGreaterThan(0);
+
+    upstreamEnd?.();
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('writes stream_state=errored dump when upstream stream errors after headers', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'ac-proxy-error-'));
+    let destroyUpstream: (() => void) | undefined;
+    const upstream = await startFakeUpstream((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.write('{"partial":');
+      // Simulate abrupt upstream disconnect mid-body
+      destroyUpstream = () => res.destroy();
+    });
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: {},
+      telemetryContext: { runId: 'run_1', step: 'spec.author' },
+      logging: { enabled: true, diagnosticRoot: root }
+    });
+
+    // Start request, then destroy the upstream while the response is in flight
+    const fetchPromise = fetch(`${proxy.baseUrl}/v1/messages`, { method: 'POST', body: '{}' });
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    destroyUpstream?.();
+    try { await fetchPromise; } catch { /* expected */ }
+
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
+
+    const files = await readdir(root);
+    const responseFile = files.find((name) => name.endsWith('.response.json'));
+    expect(responseFile).toBeDefined();
+    const responseDump = JSON.parse(await readFile(path.join(root, responseFile!), 'utf8'));
+    expect(responseDump.stream_state).toBe('errored');
+
+    await proxy.close();
+    await upstream.close();
+  });
 });

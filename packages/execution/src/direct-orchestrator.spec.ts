@@ -47,7 +47,8 @@ function makeConnection(): AgentConnection {
     profile: makeProfile(),
     credentialResolved: true,
     createFetchTransport: vi.fn(),
-    createProcessLaunchConfig: vi.fn()
+    createProcessLaunchConfig: vi.fn(),
+    close: vi.fn().mockResolvedValue(undefined)
   } as unknown as AgentConnection;
 }
 
@@ -663,6 +664,35 @@ describe('createDirectOrchestrator', () => {
       // Should not double-close even if explicit close is called
       await orchestrator.close();
       expect(closeFn).toHaveBeenCalledOnce();
+    });
+
+    it('connection.close is called after adapter.close on success', async () => {
+      const connection = makeConnection();
+      const connectionCloseMock = connection.close as ReturnType<typeof vi.fn>;
+      const orchestrator = createDirectOrchestrator({
+        adapter: makeAdapter(),
+        profile: makeProfile(),
+        connection,
+        telemetryContext: makeTelemetryContext()
+      });
+
+      await orchestrator.call(makeCallRequest());
+      expect(connectionCloseMock).toHaveBeenCalledOnce();
+    });
+
+    it('connection.close is called exactly once even when close() is called twice', async () => {
+      const connection = makeConnection();
+      const connectionCloseMock = connection.close as ReturnType<typeof vi.fn>;
+      const orchestrator = createDirectOrchestrator({
+        adapter: makeAdapter(),
+        profile: makeProfile(),
+        connection,
+        telemetryContext: makeTelemetryContext()
+      });
+
+      await orchestrator.call(makeCallRequest());
+      await orchestrator.close();
+      expect(connectionCloseMock).toHaveBeenCalledOnce();
     });
 
     it('close() is safe to call multiple times with no adapter.close', async () => {

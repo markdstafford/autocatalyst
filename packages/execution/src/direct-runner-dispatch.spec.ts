@@ -68,7 +68,8 @@ function makeConnection(profile: ResolvedAgentRunnerProfile): AgentConnection {
         degradedCapabilities: [],
         redacted: {}
       };
-    }
+    },
+    close: vi.fn().mockResolvedValue(undefined)
   } as unknown as AgentConnection;
 }
 
