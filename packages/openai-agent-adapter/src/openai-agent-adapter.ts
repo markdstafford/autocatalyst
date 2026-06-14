@@ -774,10 +774,15 @@ export function createOpenAIAgentAdapter(
       // 7. Per-session OpenAI client + model provider. The OpenAI client's fetch
       //    is bridged to the per-session ProviderFetchTransport, and the provider
       //    is passed to the per-session Runner — NEVER a global setter.
-      const endpoint = input.profile.endpoint as { baseUrl?: string };
+      //
+      //    When proxyMode is 'required', the connection's fetch transport already
+      //    rebases every request URL to the loopback proxy — do NOT pass the
+      //    upstream baseURL to the OpenAI client (the transport owns URL routing).
+      const endpoint = input.profile.endpoint as { baseUrl?: string; proxyMode?: string };
+      const proxyModeRequired = endpoint.proxyMode === 'required';
       const openAIClient = new OpenAI({
         apiKey: 'sk-autocatalyst-transport-bound',
-        ...(isNonEmptyString(endpoint.baseUrl) ? { baseURL: endpoint.baseUrl } : {}),
+        ...(!proxyModeRequired && isNonEmptyString(endpoint.baseUrl) ? { baseURL: endpoint.baseUrl } : {}),
         fetch: bridgeTransportToFetch(transport)
       });
       // OpenAIProvider's `openAIClient` is typed via its own (import-mode)

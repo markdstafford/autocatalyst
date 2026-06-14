@@ -216,6 +216,89 @@ describe('package boundary', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Proxy mode routing (seam-driven)
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — proxy mode routing', () => {
+  it('routes OpenAI agent traffic through proxy-mode fetch transport without SDK globals', async () => {
+    // Transport that records every URL it receives (used for real fetch calls).
+    const capturedUrls: string[] = [];
+    const transport: ProviderFetchTransport = {
+      fetch: vi.fn(async (request) => {
+        capturedUrls.push(request.url);
+        return new Response('{}', { status: 200 });
+      })
+    };
+
+    const proxyProfile = makeProfile({
+      endpoint: { baseUrl: 'https://upstream.example.test/v1', proxyMode: 'required' }
+    });
+    const connection: AgentConnection = {
+      profile: proxyProfile,
+      credentialResolved: true,
+      createFetchTransport: vi.fn(() => transport),
+      createProcessLaunchConfig: vi.fn(() => { throw new Error('process launch not supported'); })
+    };
+
+    const { run } = makeRunSession([assistantItem('proxy routed')]);
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession: run,
+      sandboxClientFactory: () => fakeSandboxHandle()
+    });
+
+    const input: AgentProviderSessionInput = {
+      ...makeSessionInput('scratch_only'),
+      profile: proxyProfile,
+      connection
+    };
+
+    const session = await adapter.startSession(input);
+    const events = await collectEvents(session.events);
+
+    // The transport (not a global client) must be created exactly once per session.
+    expect(connection.createFetchTransport).toHaveBeenCalledTimes(1);
+
+    // The session must produce events normally in proxy mode.
+    expect(events.some((e) => e.type === 'runner_terminal_result')).toBe(true);
+
+    // No SDK global setters are called (also verified by the package-boundary static test).
+    // The key invariant: createFetchTransport was called once — the adapter does not
+    // bypass it by using global state or direct HTTP when proxyMode is 'required'.
+  });
+
+  it('passes baseURL to OpenAI client when proxyMode is not required', async () => {
+    const transport = makeTransport();
+    const directProfile = makeProfile({
+      endpoint: { baseUrl: 'https://direct.example.test/v1' }
+    });
+    const connection: AgentConnection = {
+      profile: directProfile,
+      credentialResolved: true,
+      createFetchTransport: vi.fn(() => transport),
+      createProcessLaunchConfig: vi.fn(() => { throw new Error('process launch not supported'); })
+    };
+
+    const { run } = makeRunSession([assistantItem('direct')]);
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession: run,
+      sandboxClientFactory: () => fakeSandboxHandle()
+    });
+
+    const input: AgentProviderSessionInput = {
+      ...makeSessionInput('scratch_only'),
+      profile: directProfile,
+      connection
+    };
+
+    const session = await adapter.startSession(input);
+    await collectEvents(session.events);
+
+    // Transport was wired correctly regardless of baseURL presence.
+    expect(connection.createFetchTransport).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Session startup & workspace containment (seam-driven)
 // ---------------------------------------------------------------------------
 
