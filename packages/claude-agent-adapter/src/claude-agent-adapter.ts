@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { RunnerEvent } from '@autocatalyst/api-contract';
@@ -670,10 +670,15 @@ async function maybeWriteResultFile(
   if (scratchRoot === undefined) return;
   const target = path.join(scratchRoot, 'step-result.json');
   try {
-    await mkdir(path.dirname(target), { recursive: true });
-    await writeFile(target, output, 'utf8');
+    await access(target);
+    return;
   } catch {
-    // Never surface raw filesystem error (which may carry host path).
+    // file does not exist, fall through to write
+  }
+  try {
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, output, { encoding: 'utf8', flag: 'wx' });
+  } catch {
     throw new Error('Claude adapter failed to write the step result file.');
   }
 }
