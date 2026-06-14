@@ -74,8 +74,7 @@ function makeNoopLogger(bodyCaptureBytes: number): ProxyRequestLogger {
 }
 
 export async function createProxyRequestLogger(
-  options: ProxyRequestLoggingOptions,
-  redaction: ProxyRedactionOptions
+  options: ProxyRequestLoggingOptions
 ): Promise<ProxyRequestLogger> {
   const bodyCaptureBytes = options.bodyCaptureBytes ?? DEFAULT_BODY_CAPTURE_BYTES;
 

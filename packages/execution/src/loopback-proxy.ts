@@ -60,8 +60,7 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
 
   const knownSecretValues = credential !== undefined ? [credential] : [];
   const logger = await createProxyRequestLogger(
-    options.logging ?? { enabled: false, diagnosticRoot: '' },
-    { knownSecretValues }
+    options.logging ?? { enabled: false, diagnosticRoot: '' }
   );
 
   let requestCounter = 0;

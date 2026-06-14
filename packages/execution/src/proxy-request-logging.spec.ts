@@ -6,7 +6,7 @@ import { captureBodyChunk, createProxyRequestLogger, extractOutputTokens, parseC
 
 describe('createProxyRequestLogger', () => {
   it('is disabled by default', async () => {
-    const logger = await createProxyRequestLogger({ enabled: false, diagnosticRoot: '/unused' }, {});
+    const logger = await createProxyRequestLogger({ enabled: false, diagnosticRoot: '/unused' });
     expect(logger.enabled).toBe(false);
   });
 
@@ -17,7 +17,7 @@ describe('createProxyRequestLogger', () => {
       diagnosticRoot: root,
       logDir: 'run-1/session-1',
       bodyCaptureBytes: 16
-    }, { knownSecretValues: ['secret-token'] });
+    });
 
     expect(logger.enabled).toBe(true);
     const dumpId = logger.createDumpId();
@@ -53,8 +53,8 @@ describe('createProxyRequestLogger', () => {
     const outside = await mkdtemp(path.join(tmpdir(), 'ac-proxy-log-outside-'));
     await symlink(outside, path.join(root, 'escape'));
 
-    const traversal = await createProxyRequestLogger({ enabled: true, diagnosticRoot: root, logDir: '../outside' }, {});
-    const symlinkEscape = await createProxyRequestLogger({ enabled: true, diagnosticRoot: root, logDir: 'escape' }, {});
+    const traversal = await createProxyRequestLogger({ enabled: true, diagnosticRoot: root, logDir: '../outside' });
+    const symlinkEscape = await createProxyRequestLogger({ enabled: true, diagnosticRoot: root, logDir: 'escape' });
 
     expect(traversal.enabled).toBe(false);
     expect(symlinkEscape.enabled).toBe(false);
@@ -62,7 +62,7 @@ describe('createProxyRequestLogger', () => {
 
   it('disables logging when logDir is an absolute path', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'ac-proxy-log-abs-'));
-    const logger = await createProxyRequestLogger({ enabled: true, diagnosticRoot: root, logDir: '/tmp/absolute' }, {});
+    const logger = await createProxyRequestLogger({ enabled: true, diagnosticRoot: root, logDir: '/tmp/absolute' });
     expect(logger.enabled).toBe(false);
   });
 
@@ -70,20 +70,20 @@ describe('createProxyRequestLogger', () => {
     const root = await mkdtemp(path.join(tmpdir(), 'ac-proxy-log-file-'));
     const filePath = path.join(root, 'not-a-dir');
     await writeFile(filePath, 'data');
-    const logger = await createProxyRequestLogger({ enabled: true, diagnosticRoot: root, logDir: 'not-a-dir' }, {});
+    const logger = await createProxyRequestLogger({ enabled: true, diagnosticRoot: root, logDir: 'not-a-dir' });
     expect(logger.enabled).toBe(false);
   });
 
   it('creates dump directory with 0o700 permissions', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'ac-proxy-log-mode-'));
-    await createProxyRequestLogger({ enabled: true, diagnosticRoot: root, logDir: 'session-dir' }, {});
+    await createProxyRequestLogger({ enabled: true, diagnosticRoot: root, logDir: 'session-dir' });
     const dirStat = await stat(path.join(root, 'session-dir'));
     expect(dirStat.mode & 0o777).toBe(0o700);
   });
 
   it('disables subsequent writes after a write failure', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'ac-proxy-log-fail-'));
-    const logger = await createProxyRequestLogger({ enabled: true, diagnosticRoot: root }, {});
+    const logger = await createProxyRequestLogger({ enabled: true, diagnosticRoot: root });
     const dumpId = logger.createDumpId();
 
     // Write once so the file exists (making the second open with 'wx' fail)
@@ -118,7 +118,7 @@ describe('createProxyRequestLogger', () => {
 
   it('writes safe response-error dumps', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'ac-proxy-log-error-'));
-    const logger = await createProxyRequestLogger({ enabled: true, diagnosticRoot: root }, {});
+    const logger = await createProxyRequestLogger({ enabled: true, diagnosticRoot: root });
     const dumpId = logger.createDumpId();
 
     await logger.writeResponseError(dumpId, {
