@@ -177,7 +177,7 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
         adapterClosed = true;
         await adapter.close!();
       }
-      if (!connectionClosed) {
+      if (!connectionClosed && connection.close !== undefined) {
         connectionClosed = true;
         await connection.close();
       }

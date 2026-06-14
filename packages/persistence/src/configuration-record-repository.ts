@@ -187,6 +187,27 @@ export class DrizzleConfigurationRecordRepository implements ConfigurationRecord
             merged['credentialSecretHandle'] = input.settings.credentialSecretHandle;
           }
         }
+        if ('model' in input.settings) {
+          if (input.settings.model === null) {
+            delete merged['model'];
+          } else if (input.settings.model !== undefined) {
+            merged['model'] = input.settings.model;
+          }
+        }
+        if ('inferenceSettings' in input.settings) {
+          if (input.settings.inferenceSettings === null) {
+            delete merged['inferenceSettings'];
+          } else if (input.settings.inferenceSettings !== undefined) {
+            merged['inferenceSettings'] = input.settings.inferenceSettings;
+          }
+        }
+        if ('endpoint' in input.settings) {
+          if (input.settings.endpoint === null) {
+            delete merged['endpoint'];
+          } else if (input.settings.endpoint !== undefined) {
+            merged['endpoint'] = input.settings.endpoint;
+          }
+        }
         updatedSettings = merged as ConfigurationRecordSettings;
       } else {
         updatedSettings = existingProfile.settings;

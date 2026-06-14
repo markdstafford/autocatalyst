@@ -261,7 +261,7 @@ describe('request alteration public API', () => {
 
     // Verify constants
     expect(defaultRequestTimeoutMs).toBe(60_000);
-    expect(maximumRequestTimeoutMs).toBe(120_000);
+    expect(maximumRequestTimeoutMs).toBe(600_000);
     expect(defaultMaxRetries).toBe(1);
     expect(maximumMaxRetries).toBe(5);
     expect(claudeProviderOwnedEnvironmentVariables).toContain('ANTHROPIC_API_KEY');
