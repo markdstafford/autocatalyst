@@ -221,6 +221,47 @@ describe('createClaudeAgentAdapter — connection mechanism', () => {
     // Verify the materialized environment passed through.
     expect(recorder.createProcessLaunchConfigCalls[0]!.materializedEnvironment).toBeDefined();
   });
+
+  it('awaits async process launch config from the connection layer', async () => {
+    const ASYNC_BASE_URL = 'http://127.0.0.1:45678';
+    const profile = makeProfile();
+    const asyncLaunchConfig: ProcessLaunchConfig = {
+      environment: {
+        ANTHROPIC_AUTH_TOKEN: SECRET_TOKEN,
+        ANTHROPIC_BASE_URL: ASYNC_BASE_URL
+      },
+      secretVariableNames: ['ANTHROPIC_AUTH_TOKEN'],
+      degradedCapabilities: [],
+      redacted: {
+        mechanism: 'process_environment',
+        hasAuthToken: true
+      }
+    };
+    // Build a connection where createProcessLaunchConfig returns a Promise.
+    const asyncConnection: AgentConnection = {
+      profile,
+      credentialResolved: true,
+      createFetchTransport(): ProviderFetchTransport {
+        throw new Error('createFetchTransport should not be called');
+      },
+      createProcessLaunchConfig(_input: ProcessLaunchConfigInput): Promise<ProcessLaunchConfig> {
+        return Promise.resolve(asyncLaunchConfig);
+      }
+    };
+    const { launch, calls } = fakeLaunch([{ type: 'result', result: { output: '' } }]);
+    const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch });
+    const input: AgentProviderSessionInput = {
+      runInput: (makeSessionInput({ profile }).input).runInput,
+      profile,
+      connection: asyncConnection,
+      telemetryContext: makeTelemetry()
+    };
+    const session = await adapter.startSession(input);
+    await collect(session.events);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.env?.ANTHROPIC_BASE_URL).toBe(ASYNC_BASE_URL);
+    expect(calls[0]!.env?.ANTHROPIC_AUTH_TOKEN).toBe(SECRET_TOKEN);
+  });
 });
 
 describe('createClaudeAgentAdapter — launch input mapping', () => {
