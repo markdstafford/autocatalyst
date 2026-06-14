@@ -172,10 +172,19 @@ export async function createAgentConnection(
       endpoint: profile.endpoint,
       ...(resolvedCredential !== undefined ? { credential: resolvedCredential } : {}),
       logging: profile.endpoint.proxyRequestLogging?.enabled && diagnosticRoot
-        ? { ...profile.endpoint.proxyRequestLogging, diagnosticRoot }
+        ? {
+            enabled: true,
+            diagnosticRoot,
+            ...(profile.endpoint.proxyRequestLogging.logDir !== undefined
+              ? { logDir: profile.endpoint.proxyRequestLogging.logDir }
+              : {}),
+            ...(profile.endpoint.proxyRequestLogging.bodyCaptureBytes !== undefined
+              ? { bodyCaptureBytes: profile.endpoint.proxyRequestLogging.bodyCaptureBytes }
+              : {})
+          }
         : { enabled: false, diagnosticRoot: diagnosticRoot ?? '' },
-      headerValueFilters: profile.endpoint.headerValueFilters,
-      logger,
+      ...(profile.endpoint.headerValueFilters !== undefined ? { headerValueFilters: profile.endpoint.headerValueFilters } : {}),
+      ...(logger !== undefined ? { logger } : {}),
       telemetryContext,
     }).then((handle) => {
       proxyHandle = handle;

@@ -92,8 +92,8 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
     const { headers: forwardHeaders } = applyProxyHeaderPolicy({
       headers: req.headers as Record<string, string | string[] | undefined>,
       endpoint,
-      credential,
-      headerValueFilters,
+      ...(credential !== undefined ? { credential } : {}),
+      ...(headerValueFilters !== undefined ? { headerValueFilters } : {}),
       forceIdentityAcceptEncoding: options.logging?.enabled === true
     });
 

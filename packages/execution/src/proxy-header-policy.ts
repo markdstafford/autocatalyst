@@ -125,5 +125,10 @@ export function applyProxyHeaderPolicy(input: ProxyHeaderPolicyInput): ProxyHead
     working['accept-encoding'] = 'identity';
   }
 
-  return { headers: working, strippedHeaders, filteredHeaders, injectedAuthHeaderName };
+  return {
+    headers: working,
+    strippedHeaders,
+    filteredHeaders,
+    ...(injectedAuthHeaderName !== undefined ? { injectedAuthHeaderName } : {})
+  };
 }
