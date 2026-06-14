@@ -20,6 +20,24 @@ export const runnerEndpointRequiredAlterationsSchema = z.object({
   inferenceSettings: z.array(z.string().min(1)).optional()
 }).strict();
 
+const relativeLogDirSchema = z.string().min(1)
+  .refine((value) => !value.startsWith('/'), { message: 'logDir must be relative.' })
+  .refine((value) => !/^[A-Za-z]:[\\/]/u.test(value), { message: 'logDir must be relative.' })
+  .refine((value) => !value.split(/[\\/]+/u).includes('..'), { message: 'logDir must not traverse upward.' });
+
+export const proxyModeSchema = z.enum(['auto', 'disabled', 'required']);
+
+export const proxyRequestLoggingSettingsSchema = z.object({
+  enabled: z.boolean(),
+  logDir: relativeLogDirSchema.optional(),
+  bodyCaptureBytes: z.number().int().min(1).max(1024 * 1024).optional()
+}).strict();
+
+export const headerValueFilterSettingsSchema = z.object({
+  headerName: httpHeaderNameSchema,
+  removeValues: z.array(z.string().min(1)).min(1)
+}).strict();
+
 export const runnerEndpointSettingsSchema = z.object({
   baseUrl: z.string().url().optional(),
   authHeaderName: httpHeaderNameSchema.optional(),
@@ -28,7 +46,10 @@ export const runnerEndpointSettingsSchema = z.object({
   maxRetries: z.number().int().min(0).optional(),
   headersToStrip: z.array(httpHeaderNameSchema).optional(),
   headersToRewrite: z.record(httpHeaderNameSchema, z.string()).optional(),
-  requiredAlterations: runnerEndpointRequiredAlterationsSchema.optional()
+  requiredAlterations: runnerEndpointRequiredAlterationsSchema.optional(),
+  proxyMode: proxyModeSchema.optional(),
+  proxyRequestLogging: proxyRequestLoggingSettingsSchema.optional(),
+  headerValueFilters: z.array(headerValueFilterSettingsSchema).optional()
 }).strict();
 
 export const providerProfileSettingsSchema = z.object({
@@ -248,6 +269,9 @@ export const configurationRecordListResponseSchema = z.object({
 export type ConfigurationRecordIdParams = z.infer<typeof configurationRecordIdParamsSchema>;
 export type ConfigurationRecordKind = z.infer<typeof configurationRecordKindSchema>;
 export type RunnerEndpointRequiredAlterations = z.infer<typeof runnerEndpointRequiredAlterationsSchema>;
+export type ProxyMode = z.infer<typeof proxyModeSchema>;
+export type ProxyRequestLoggingSettings = z.infer<typeof proxyRequestLoggingSettingsSchema>;
+export type HeaderValueFilterSettings = z.infer<typeof headerValueFilterSettingsSchema>;
 export type RunnerEndpointSettings = z.infer<typeof runnerEndpointSettingsSchema>;
 export type ProviderProfileSettings = z.infer<typeof providerProfileSettingsSchema>;
 export type ConfigurationRecordSettings = z.infer<typeof configurationRecordSettingsSchema>;
