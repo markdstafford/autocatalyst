@@ -1,8 +1,8 @@
-import { mkdir, open, chmod, realpath } from 'node:fs/promises';
+import { mkdir, open, chmod, realpath, lstat } from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type { ProxyRedactionOptions } from './proxy-redaction.js';
-import { redactKnownSecretText } from './proxy-redaction.js';
+import { redactKnownSecretText, redactProxyHeaders } from './proxy-redaction.js';
 
 export interface ProxyRequestLoggingOptions {
   readonly enabled: boolean;
@@ -74,7 +74,8 @@ function makeNoopLogger(bodyCaptureBytes: number): ProxyRequestLogger {
 }
 
 export async function createProxyRequestLogger(
-  options: ProxyRequestLoggingOptions
+  options: ProxyRequestLoggingOptions,
+  redaction: ProxyRedactionOptions = {}
 ): Promise<ProxyRequestLogger> {
   const bodyCaptureBytes = options.bodyCaptureBytes ?? DEFAULT_BODY_CAPTURE_BYTES;
 
@@ -107,7 +108,34 @@ export async function createProxyRequestLogger(
     finalLogDir = resolvedRoot;
   }
 
-  // Create directory first if needed, then verify containment
+  // Walk existing intermediate path components before creating directories.
+  // mkdir with recursive:true follows symlinks; we must reject symlinked intermediates
+  // BEFORE calling mkdir so no directories are created outside the diagnostic root.
+  const relParts = path.relative(resolvedRoot, finalLogDir).split(path.sep).filter(Boolean);
+  let walkCurrent = resolvedRoot;
+  for (const part of relParts) {
+    walkCurrent = path.join(walkCurrent, part);
+    let entryStats;
+    try {
+      entryStats = await lstat(walkCurrent);
+    } catch {
+      break; // component does not exist yet — safe to create
+    }
+    if (entryStats.isSymbolicLink()) {
+      return makeNoopLogger(bodyCaptureBytes);
+    }
+    // Verify the existing component still resolves inside the root
+    try {
+      const resolvedEntry = await realpath(walkCurrent);
+      if (!resolvedEntry.startsWith(resolvedRoot + path.sep) && resolvedEntry !== resolvedRoot) {
+        return makeNoopLogger(bodyCaptureBytes);
+      }
+    } catch {
+      return makeNoopLogger(bodyCaptureBytes);
+    }
+  }
+
+  // Create directory and verify final containment
   let resolvedFinal: string;
   try {
     await mkdir(finalLogDir, { recursive: true, mode: 0o700 });
@@ -155,10 +183,19 @@ export async function createProxyRequestLogger(
       return `${timestamp}-${suffix}`;
     },
     async writeRequest(dumpId: string, record: ProxyRequestDumpRecord): Promise<void> {
-      await writeDump(dumpId, 'request.json', record);
+      const safeRecord = {
+        ...record,
+        url: redactKnownSecretText(record.url, redaction),
+        headers: redactProxyHeaders({ direction: 'request', headers: record.headers, ...redaction })
+      };
+      await writeDump(dumpId, 'request.json', safeRecord);
     },
     async writeResponse(dumpId: string, record: ProxyResponseDumpRecord): Promise<void> {
-      await writeDump(dumpId, 'response.json', record);
+      const safeRecord = {
+        ...record,
+        headers: redactProxyHeaders({ direction: 'response', headers: record.headers, ...redaction })
+      };
+      await writeDump(dumpId, 'response.json', safeRecord);
     },
     async writeResponseError(dumpId: string, record: ProxyResponseErrorDumpRecord): Promise<void> {
       await writeDump(dumpId, 'response-error.json', record);

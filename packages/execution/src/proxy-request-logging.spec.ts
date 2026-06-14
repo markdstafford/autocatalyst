@@ -60,6 +60,72 @@ describe('createProxyRequestLogger', () => {
     expect(symlinkEscape.enabled).toBe(false);
   });
 
+  it('disables logging when an intermediate path component is a symlink pointing outside the root', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'ac-proxy-log-interm-'));
+    const outside = await mkdtemp(path.join(tmpdir(), 'ac-proxy-log-interm-outside-'));
+    // Create symlink as an intermediate component, not the final component
+    await symlink(outside, path.join(root, 'escape'));
+
+    const logger = await createProxyRequestLogger({ enabled: true, diagnosticRoot: root, logDir: 'escape/subdir' });
+    expect(logger.enabled).toBe(false);
+
+    // Verify mkdir did not create the directory outside the root
+    const { stat } = await import('node:fs/promises');
+    await expect(stat(path.join(outside, 'subdir'))).rejects.toThrow();
+  });
+
+  it('redacts known secret values from the URL before writing to disk', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'ac-proxy-log-url-redact-'));
+    const logger = await createProxyRequestLogger(
+      { enabled: true, diagnosticRoot: root },
+      { knownSecretValues: ['super-secret-key'] }
+    );
+    const dumpId = logger.createDumpId();
+    await logger.writeRequest(dumpId, {
+      timestamp: '2026-06-13T00:00:00.000Z',
+      method: 'POST',
+      url: 'https://gateway.example.test/v1/messages?api_key=super-secret-key',
+      headers: {},
+      body_capture_truncated: false
+    });
+    const content = await readFile(path.join(root, `${dumpId}.request.json`), 'utf8');
+    expect(content).not.toContain('super-secret-key');
+    expect(content).toContain('[redacted]');
+  });
+
+  it('redacts credential headers and known secrets in request and response dumps', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'ac-proxy-log-header-redact-'));
+    const logger = await createProxyRequestLogger(
+      { enabled: true, diagnosticRoot: root },
+      { knownSecretValues: ['my-raw-credential'] }
+    );
+    const dumpId = logger.createDumpId();
+
+    await logger.writeRequest(dumpId, {
+      timestamp: '2026-06-13T00:00:00.000Z',
+      method: 'POST',
+      url: 'https://gateway.example.test/v1/messages',
+      headers: { 'api-key': 'my-raw-credential', 'content-type': 'application/json' },
+      body_capture_truncated: false
+    });
+    await logger.writeResponse(dumpId, {
+      timestamp: '2026-06-13T00:00:01.000Z',
+      status: 200,
+      headers: { 'authorization': 'Bearer my-raw-credential', 'content-type': 'application/json' },
+      timing_ms: {},
+      body_bytes: 0,
+      body_capture_truncated: false,
+      stream_state: 'completed'
+    });
+
+    const reqContent = await readFile(path.join(root, `${dumpId}.request.json`), 'utf8');
+    const resContent = await readFile(path.join(root, `${dumpId}.response.json`), 'utf8');
+    expect(reqContent).not.toContain('my-raw-credential');
+    expect(resContent).not.toContain('my-raw-credential');
+    expect(reqContent).toContain('[redacted]');
+    expect(resContent).toContain('[redacted]');
+  });
+
   it('disables logging when logDir is an absolute path', async () => {
     const root = await mkdtemp(path.join(tmpdir(), 'ac-proxy-log-abs-'));
     const logger = await createProxyRequestLogger({ enabled: true, diagnosticRoot: root, logDir: '/tmp/absolute' });
