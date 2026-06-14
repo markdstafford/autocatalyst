@@ -269,7 +269,7 @@ describe('createClaudeAgentAdapter — launch input mapping', () => {
     const scratchRoot = '/tmp/claude-adapter-test-scratch';
     const { input } = makeSessionInput({
       prompt: 'Implement parser',
-      allowedTools: ['bash', 'edit'],
+      allowedTools: ['bash', 'filesystem', 'lsp'],
       scratchRoot
     });
     const { launch, calls } = fakeLaunch([{ type: 'result', result: { output: '' } }]);
@@ -280,9 +280,21 @@ describe('createClaudeAgentAdapter — launch input mapping', () => {
     const opts = calls[0]!;
     expect(opts.prompt).toBe('Implement parser');
     expect(opts.cwd).toBe(scratchRoot);
-    expect(opts.allowedTools).toEqual(['bash', 'edit']);
+    expect(opts.allowedTools).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep']);
     expect(opts.env?.ANTHROPIC_AUTH_TOKEN).toBe(SECRET_TOKEN);
     expect(opts.env?.ANTHROPIC_BASE_URL).toBe('https://api.anthropic.com');
+  });
+
+  it('deduplicates Claude tool names and preserves already concrete Claude tools', async () => {
+    const { input } = makeSessionInput({
+      allowedTools: ['bash', 'filesystem', 'Bash', 'Read']
+    });
+    const { launch, calls } = fakeLaunch([{ type: 'result', result: { output: '' } }]);
+    const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch });
+    const session = await adapter.startSession(input);
+    await collect(session.events);
+
+    expect(calls[0]?.allowedTools).toEqual(['Bash', 'Read', 'Write', 'Edit', 'Glob', 'Grep']);
   });
 
   it('does not include options.skills when resolved skills list is empty', async () => {

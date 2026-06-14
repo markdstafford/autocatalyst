@@ -88,6 +88,25 @@ export interface ClaudeAgentAdapterOptions {
 
 const PROGRESS_TOOL_NAMES = new Set(['update_plan', 'report_progress', 'notify']);
 
+const CLAUDE_TOOL_CATEGORY_MAP: Readonly<Record<string, readonly string[]>> = {
+  bash: ['Bash'],
+  filesystem: ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
+  lsp: []
+};
+
+function mapAllowedToolsForClaude(allowedTools: readonly string[]): string[] {
+  const mapped: string[] = [];
+  for (const tool of allowedTools) {
+    const replacement = CLAUDE_TOOL_CATEGORY_MAP[tool];
+    if (replacement !== undefined) {
+      mapped.push(...replacement);
+    } else {
+      mapped.push(tool);
+    }
+  }
+  return Array.from(new Set(mapped));
+}
+
 // Inference settings the Claude Agent SDK does NOT plumb into agent mode.
 // (Everything currently in the InferenceSettings schema falls into this set;
 // the SDK only exposes the model via the launch env / options, never
@@ -287,7 +306,7 @@ export function createClaudeAgentAdapter(
           ? workspace.scratchRoot
           : workspace.workspaceRoots[0];
 
-      const allowedTools = [...env.toolPolicy.allowedTools];
+      const allowedTools = mapAllowedToolsForClaude(env.toolPolicy.allowedTools);
       const prompt = env.context.task.prompt;
 
       // Materialize resolved skills into Claude SDK plugin descriptors.
