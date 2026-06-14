@@ -247,7 +247,7 @@ describe('createAgentConnection — process launch config availability', () => {
 
   it('createProcessLaunchConfig() succeeds for process_environment profile', async () => {
     const connection = await createAgentConnection(makeOptions({ profile: makeProcessProfile() }));
-    expect(() => connection.createProcessLaunchConfig(sampleInput)).not.toThrow();
+    await expect(connection.createProcessLaunchConfig(sampleInput)).resolves.toBeDefined();
   });
 
   it('createProcessLaunchConfig() throws ProviderConnectionError(unsupported_connection_mechanism) for fetch_transport profile', async () => {
@@ -255,7 +255,7 @@ describe('createAgentConnection — process launch config availability', () => {
 
     let thrown: unknown;
     try {
-      connection.createProcessLaunchConfig(sampleInput);
+      await connection.createProcessLaunchConfig(sampleInput);
     } catch (e) {
       thrown = e;
     }
@@ -469,7 +469,7 @@ describe('createAgentConnection — process launch config', () => {
 
   it('returns ProcessLaunchConfig with full environment for adapter use', async () => {
     const connection = await createAgentConnection(makeOptions({ profile: makeProcessProfile() }));
-    const config = connection.createProcessLaunchConfig(sampleInput);
+    const config = await connection.createProcessLaunchConfig(sampleInput);
 
     // Should have environment with ANTHROPIC_API_KEY set
     expect(config.environment['ANTHROPIC_API_KEY']).toBeDefined();
@@ -490,7 +490,7 @@ describe('createAgentConnection — process launch config', () => {
     const connection = await createAgentConnection(
       makeOptions({ profile: makeProcessProfile(), credentialResolver, logger })
     );
-    connection.createProcessLaunchConfig(sampleInput);
+    await connection.createProcessLaunchConfig(sampleInput);
 
     // Check logs do not contain the raw secret
     const logStr = JSON.stringify(entries);
@@ -517,7 +517,7 @@ describe('createAgentConnection — process launch config', () => {
     const connection = await createAgentConnection(
       makeOptions({ profile: makeProcessProfile(), credentialResolver })
     );
-    const config = connection.createProcessLaunchConfig(envWithProviderVars);
+    const config = await connection.createProcessLaunchConfig(envWithProviderVars);
 
     // Provider-owned key should be replaced by the resolved credential
     expect(config.environment['ANTHROPIC_API_KEY']).toBe('new-resolved-key');
@@ -537,7 +537,7 @@ describe('createAgentConnection — process launch config', () => {
     };
 
     const connection = await createAgentConnection(makeOptions({ profile: profileWithHeaderStrip }));
-    const config = connection.createProcessLaunchConfig(sampleInput);
+    const config = await connection.createProcessLaunchConfig(sampleInput);
 
     expect(config.degradedCapabilities).toHaveLength(1);
     expect(config.degradedCapabilities[0]?.capability).toBe('header_strip');
@@ -599,5 +599,87 @@ describe('createAgentConnection — missing required credentials classified', ()
         err.failureReason === 'provider_auth_failed'
       );
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test helpers for proxy tests
+// ---------------------------------------------------------------------------
+
+function makeProcessProfileWith(endpointOverrides: Partial<import('@autocatalyst/api-contract').RunnerEndpointSettings>): ResolvedAgentRunnerProfile {
+  const base = makeProcessProfile();
+  return {
+    ...base,
+    endpoint: { ...base.endpoint, ...endpointOverrides }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Test: Proxy selection — process launch config uses loopback URL
+// ---------------------------------------------------------------------------
+
+describe('createAgentConnection — proxy selection', () => {
+  it('uses loopback base URL in Claude process launch config when proxyMode is required', async () => {
+    const connection = await createAgentConnection({
+      profile: makeProcessProfileWith({
+        baseUrl: 'https://gateway.example.test/anthropic',
+        authHeaderName: 'api-key',
+        proxyMode: 'required',
+        headersToStrip: ['x-api-key']
+      }),
+      credentialReference: { required: true, secretHandle: 'sec_123' },
+      credentialResolver: { resolveCredential: async () => 'secret-grove-key' },
+      telemetryContext: makeTelemetry(),
+      proxyFactory: async () => ({
+        baseUrl: 'http://127.0.0.1:45678',
+        startedAt: '2026-06-13T00:00:00.000Z',
+        requestCount: () => 0,
+        close: async () => undefined
+      })
+    });
+
+    const launch = await connection.createProcessLaunchConfig({
+      materializedEnvironment: { variables: {}, secretVariableNames: [] }
+    });
+
+    expect(launch.environment['ANTHROPIC_BASE_URL']).toBe('http://127.0.0.1:45678');
+    expect(launch.secretVariableNames).toContain('ANTHROPIC_CUSTOM_HEADERS');
+  });
+
+  it('starts proxy lazily once for parallel process launch config calls', async () => {
+    let starts = 0;
+    const connection = await createAgentConnection({
+      profile: makeProcessProfileWith({
+        baseUrl: 'https://gateway.example.test',
+        proxyMode: 'required'
+      }),
+      credentialReference: { required: false },
+      credentialResolver: { resolveCredential: async () => undefined },
+      telemetryContext: makeTelemetry(),
+      proxyFactory: async () => {
+        starts += 1;
+        return { baseUrl: 'http://127.0.0.1:45678', startedAt: new Date().toISOString(), requestCount: () => 0, close: async () => undefined };
+      }
+    });
+
+    await Promise.all([
+      connection.createProcessLaunchConfig({ materializedEnvironment: { variables: {}, secretVariableNames: [] } }),
+      connection.createProcessLaunchConfig({ materializedEnvironment: { variables: {}, secretVariableNames: [] } })
+    ]);
+
+    expect(starts).toBe(1);
+  });
+
+  it('fails required proxy mode when no upstream baseUrl is configured', async () => {
+    const connection = await createAgentConnection({
+      profile: makeProcessProfileWith({ baseUrl: undefined, proxyMode: 'required' }),
+      credentialReference: { required: false },
+      credentialResolver: { resolveCredential: async () => undefined },
+      telemetryContext: makeTelemetry()
+    });
+
+    await expect(connection.createProcessLaunchConfig({
+      materializedEnvironment: { variables: {}, secretVariableNames: [] }
+    })).rejects.toMatchObject({ code: 'unsupported_required_capability' });
   });
 });

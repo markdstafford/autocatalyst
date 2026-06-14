@@ -64,7 +64,8 @@ export interface AgentConnection {
   readonly profile: ResolvedAgentRunnerProfile;
   readonly credentialResolved: boolean;
   createFetchTransport(): ProviderFetchTransport;
-  createProcessLaunchConfig(input: ProcessLaunchConfigInput): ProcessLaunchConfig;
+  createProcessLaunchConfig(input: ProcessLaunchConfigInput): ProcessLaunchConfig | Promise<ProcessLaunchConfig>;
+  close?(): Promise<void>;
 }
 
 export interface AgentProviderSessionInput {
