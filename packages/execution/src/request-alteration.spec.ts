@@ -370,6 +370,50 @@ describe('buildClaudeProcessLaunchEnvironment', () => {
     expect(JSON.stringify(redacted)).not.toContain('secret-gateway-key');
     expect(JSON.stringify(redacted)).not.toContain('secret-default-key');
   });
+
+  it('adds authHeaderName credential to ANTHROPIC_CUSTOM_HEADERS for Claude process launch', () => {
+    const result = buildClaudeProcessLaunchEnvironment({
+      endpoint: {
+        baseUrl: 'https://gateway.example.test/anthropic',
+        authHeaderName: 'api-key',
+        headersToRewrite: {
+          'anthropic-beta': 'tools-2024-04-04'
+        }
+      },
+      credential: 'secret-grove-key',
+      materializedEnvironment: {
+        variables: { SAFE_FLAG: '1' },
+        secretVariableNames: []
+      }
+    });
+
+    expect(result.environment['ANTHROPIC_CUSTOM_HEADERS']).toBe(JSON.stringify({
+      'anthropic-beta': 'tools-2024-04-04',
+      'api-key': 'secret-grove-key'
+    }));
+    expect(result.secretVariableNames).toContain('ANTHROPIC_CUSTOM_HEADERS');
+    expect(result.environment['ANTHROPIC_API_KEY']).toBe('secret-grove-key');
+  });
+
+  it('redacts ANTHROPIC_CUSTOM_HEADERS when it carries an authHeaderName credential', () => {
+    const launchResult = buildClaudeProcessLaunchEnvironment({
+      endpoint: { authHeaderName: 'api-key' },
+      credential: 'secret-grove-key',
+      materializedEnvironment: {
+        variables: {},
+        secretVariableNames: []
+      }
+    });
+
+    const redacted = redactProcessLaunchConfigForLog({
+      launchResult,
+      knownSecretValues: ['secret-grove-key']
+    }) as { environment: Record<string, string>; secretVariableNames: string[] };
+
+    expect(redacted.environment['ANTHROPIC_CUSTOM_HEADERS']).toBe('[REDACTED]');
+    expect(redacted.secretVariableNames).toContain('ANTHROPIC_CUSTOM_HEADERS');
+    expect(JSON.stringify(redacted)).not.toContain('secret-grove-key');
+  });
 });
 
 // ---------------------------------------------------------------------------
