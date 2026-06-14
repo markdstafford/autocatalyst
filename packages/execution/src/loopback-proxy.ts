@@ -4,6 +4,8 @@ import { once } from 'node:events';
 import type { RunnerEndpointSettings } from '@autocatalyst/api-contract';
 import type { AgentConnectionTelemetryContext } from './agent-provider-adapter.js';
 import { applyProxyHeaderPolicy, mapLoopbackUrlToUpstream, type HeaderValueFilter } from './proxy-header-policy.js';
+import type { ProxyRequestLoggingOptions } from './proxy-request-logging.js';
+import type { ProviderConnectionLogger } from './connection.js';
 
 export type ProxyFailureCode =
   | 'proxy_start_failed'
@@ -24,6 +26,8 @@ export interface LoopbackProxyOptions {
   readonly headerValueFilters?: readonly HeaderValueFilter[];
   readonly telemetryContext: AgentConnectionTelemetryContext;
   readonly requestTimeoutMs?: number;
+  readonly logging?: ProxyRequestLoggingOptions;
+  readonly logger?: ProviderConnectionLogger;
 }
 
 export interface LoopbackProxyHandle {
@@ -73,7 +77,7 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
       endpoint,
       credential,
       headerValueFilters,
-      forceIdentityAcceptEncoding: false
+      forceIdentityAcceptEncoding: options.logging?.enabled === true
     });
 
     const isHttps = upstreamUrl.protocol === 'https:';
@@ -108,6 +112,12 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
         upstreamRes.on('end', () => res.end());
       }
     );
+
+    if (options.requestTimeoutMs) {
+      upstreamReq.setTimeout(options.requestTimeoutMs, () => {
+        upstreamReq.destroy();
+      });
+    }
 
     upstreamReq.on('error', () => {
       sendJsonError(res, 502, { error: { code: 'proxy_upstream_failed', message: 'Provider proxy upstream request failed.' } });
