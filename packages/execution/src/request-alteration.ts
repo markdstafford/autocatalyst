@@ -242,6 +242,12 @@ export interface ClaudeProcessLaunchResult {
 // buildClaudeProcessLaunchEnvironment
 // ---------------------------------------------------------------------------
 
+function serializeAnthropicCustomHeaders(headers: Readonly<Record<string, string>>): string {
+  return Object.entries(headers)
+    .map(([name, value]) => `${name}: ${value}`)
+    .join('\n');
+}
+
 export function buildClaudeProcessLaunchEnvironment(input: ClaudeProcessLaunchInput): ClaudeProcessLaunchResult {
   const { endpoint, credential, materializedEnvironment } = input;
   const degradedCapabilities: ProviderCapabilityDegradation[] = [];
@@ -285,7 +291,7 @@ export function buildClaudeProcessLaunchEnvironment(input: ClaudeProcessLaunchIn
   overlayEnv[credentialTarget] = credential;
   secretVarNames.add(credentialTarget);
 
-  // Custom headers (header rewrites + authHeaderName credential encoded as JSON)
+  // Custom headers (header rewrites + authHeaderName credential encoded as newline-delimited header lines)
   const customHeaders: Record<string, string> = {
     ...(endpoint.headersToRewrite ?? {})
   };
@@ -295,7 +301,7 @@ export function buildClaudeProcessLaunchEnvironment(input: ClaudeProcessLaunchIn
   }
 
   if (Object.keys(customHeaders).length > 0) {
-    overlayEnv['ANTHROPIC_CUSTOM_HEADERS'] = JSON.stringify(customHeaders);
+    overlayEnv['ANTHROPIC_CUSTOM_HEADERS'] = serializeAnthropicCustomHeaders(customHeaders);
     secretVarNames.add('ANTHROPIC_CUSTOM_HEADERS');
   }
 

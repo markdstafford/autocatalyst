@@ -265,7 +265,7 @@ describe('buildClaudeProcessLaunchEnvironment', () => {
     expect(result.secretVariableNames).toContain('ANTHROPIC_API_KEY');
   });
 
-  it('maps header rewrites to ANTHROPIC_CUSTOM_HEADERS as JSON string', () => {
+  it('maps header rewrites to ANTHROPIC_CUSTOM_HEADERS as newline-delimited header lines', () => {
     const input: ClaudeProcessLaunchInput = {
       endpoint: {
         headersToRewrite: { 'x-custom': 'value1', 'x-other': 'value2' }
@@ -274,9 +274,7 @@ describe('buildClaudeProcessLaunchEnvironment', () => {
       materializedEnvironment: { variables: {}, secretVariableNames: [] }
     };
     const result = buildClaudeProcessLaunchEnvironment(input);
-    const customHeaders = JSON.parse(result.environment['ANTHROPIC_CUSTOM_HEADERS'] as string) as Record<string, string>;
-    expect(customHeaders['x-custom']).toBe('value1');
-    expect(customHeaders['x-other']).toBe('value2');
+    expect(result.environment['ANTHROPIC_CUSTOM_HEADERS']).toBe('x-custom: value1\nx-other: value2');
   });
 
   it('maps timeout to API_TIMEOUT_MS bounded by maximum', () => {
@@ -387,10 +385,9 @@ describe('buildClaudeProcessLaunchEnvironment', () => {
       }
     });
 
-    expect(result.environment['ANTHROPIC_CUSTOM_HEADERS']).toBe(JSON.stringify({
-      'anthropic-beta': 'tools-2024-04-04',
-      'api-key': 'secret-grove-key'
-    }));
+    expect(result.environment['ANTHROPIC_CUSTOM_HEADERS']).toBe(
+      'anthropic-beta: tools-2024-04-04\napi-key: secret-grove-key'
+    );
     expect(result.secretVariableNames).toContain('ANTHROPIC_CUSTOM_HEADERS');
     expect(result.environment['ANTHROPIC_API_KEY']).toBe('secret-grove-key');
   });
@@ -428,9 +425,7 @@ describe('buildClaudeProcessLaunchEnvironment', () => {
       materializedEnvironment: { variables: {}, secretVariableNames: [] }
     });
 
-    const customHeaders = JSON.parse(result.environment['ANTHROPIC_CUSTOM_HEADERS'] as string) as Record<string, string>;
-    expect(customHeaders['api-key']).toBe('secret-grove-key');  // credential wins
-    expect(customHeaders['x-other']).toBe('keep-this');          // other rewrites preserved
+    expect(result.environment['ANTHROPIC_CUSTOM_HEADERS']).toBe('api-key: secret-grove-key\nx-other: keep-this');
   });
 
   it('stopgap limitation: does not strip SDK default headers from subprocess traffic', () => {
@@ -447,8 +442,7 @@ describe('buildClaudeProcessLaunchEnvironment', () => {
     });
 
     // The credential is injected via custom headers
-    const customHeaders = JSON.parse(result.environment['ANTHROPIC_CUSTOM_HEADERS'] as string) as Record<string, string>;
-    expect(customHeaders['api-key']).toBe('secret-grove-key');
+    expect(result.environment['ANTHROPIC_CUSTOM_HEADERS']).toBe('api-key: secret-grove-key');
 
     // The degradation metadata records that header stripping is unsupported in this mode
     const stripDegradation = result.degradedCapabilities.find((d) => d.capability === 'header_strip');
