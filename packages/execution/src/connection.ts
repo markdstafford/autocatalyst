@@ -214,11 +214,19 @@ export async function createAgentConnection(
             const body = rawBody !== undefined
               ? (typeof rawBody === 'string' ? rawBody : JSON.stringify(rawBody))
               : undefined;
-            return fetchImpl(proxiedUrl, {
-              method: request.method,
-              headers: request.headers as Record<string, string>,
-              ...(body !== undefined && { body })
-            });
+            const ctrl = new AbortController();
+            const timeoutMs = profile.endpoint.requestTimeoutMs ?? 120_000;
+            const timeoutId = setTimeout(() => ctrl.abort(), timeoutMs);
+            try {
+              return await fetchImpl(proxiedUrl, {
+                method: request.method,
+                headers: request.headers as Record<string, string>,
+                ...(body !== undefined && { body }),
+                signal: ctrl.signal
+              });
+            } finally {
+              clearTimeout(timeoutId);
+            }
           }
 
           const altered = applyRequestAlteration({

@@ -682,4 +682,41 @@ describe('createAgentConnection — proxy selection', () => {
       materializedEnvironment: { variables: {}, secretVariableNames: [] }
     })).rejects.toMatchObject({ code: 'unsupported_required_capability' });
   });
+
+  it('routes fetch transport through the proxy loopback URL when proxyMode is required', async () => {
+    const seen: Array<{ url: string; headers: Record<string, string> }> = [];
+    const connection = await createAgentConnection({
+      profile: {
+        mode: 'agent',
+        providerKind: 'anthropic',
+        adapterId: 'claude-adapter',
+        profileName: 'test-fetch-proxy',
+        model: { id: 'claude-3-5-haiku-20241022', displayName: 'Claude 3.5 Haiku' },
+        inferenceSettings: {},
+        endpoint: { baseUrl: 'https://gateway.example.test/anthropic', proxyMode: 'required' },
+        connectionMechanism: 'fetch_transport'
+      },
+      credentialReference: { required: false },
+      credentialResolver: { resolveCredential: async () => undefined },
+      telemetryContext: makeTelemetry(),
+      proxyFactory: async () => ({
+        baseUrl: 'http://127.0.0.1:45678',
+        startedAt: new Date().toISOString(),
+        requestCount: () => 0,
+        close: async () => undefined
+      }),
+      fetch: async (url, init) => {
+        seen.push({ url: String(url), headers: (init?.headers ?? {}) as Record<string, string> });
+        return new Response('{}', { status: 200 });
+      }
+    });
+
+    await connection.createFetchTransport().fetch({
+      url: 'https://gateway.example.test/anthropic/v1/messages',
+      method: 'POST',
+      headers: { 'content-type': 'application/json' }
+    });
+
+    expect(seen[0]?.url).toBe('http://127.0.0.1:45678/anthropic/v1/messages');
+  });
 });
