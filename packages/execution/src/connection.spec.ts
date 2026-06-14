@@ -59,7 +59,6 @@ function makeProcessProfile(): ResolvedAgentRunnerProfile {
     inferenceSettings: {},
     endpoint: {
       baseUrl: 'https://api.anthropic.com',
-      authHeaderName: 'x-api-key',
       authEnvironmentVariable: 'ANTHROPIC_API_KEY'
     },
     connectionMechanism: 'process_environment'
@@ -247,7 +246,7 @@ describe('createAgentConnection — process launch config availability', () => {
 
   it('createProcessLaunchConfig() succeeds for process_environment profile', async () => {
     const connection = await createAgentConnection(makeOptions({ profile: makeProcessProfile() }));
-    expect(() => connection.createProcessLaunchConfig(sampleInput)).not.toThrow();
+    await expect(connection.createProcessLaunchConfig(sampleInput)).resolves.toBeDefined();
   });
 
   it('createProcessLaunchConfig() throws ProviderConnectionError(unsupported_connection_mechanism) for fetch_transport profile', async () => {
@@ -255,7 +254,7 @@ describe('createAgentConnection — process launch config availability', () => {
 
     let thrown: unknown;
     try {
-      connection.createProcessLaunchConfig(sampleInput);
+      await connection.createProcessLaunchConfig(sampleInput);
     } catch (e) {
       thrown = e;
     }
@@ -469,7 +468,7 @@ describe('createAgentConnection — process launch config', () => {
 
   it('returns ProcessLaunchConfig with full environment for adapter use', async () => {
     const connection = await createAgentConnection(makeOptions({ profile: makeProcessProfile() }));
-    const config = connection.createProcessLaunchConfig(sampleInput);
+    const config = await connection.createProcessLaunchConfig(sampleInput);
 
     // Should have environment with ANTHROPIC_API_KEY set
     expect(config.environment['ANTHROPIC_API_KEY']).toBeDefined();
@@ -490,7 +489,7 @@ describe('createAgentConnection — process launch config', () => {
     const connection = await createAgentConnection(
       makeOptions({ profile: makeProcessProfile(), credentialResolver, logger })
     );
-    connection.createProcessLaunchConfig(sampleInput);
+    await connection.createProcessLaunchConfig(sampleInput);
 
     // Check logs do not contain the raw secret
     const logStr = JSON.stringify(entries);
@@ -517,7 +516,7 @@ describe('createAgentConnection — process launch config', () => {
     const connection = await createAgentConnection(
       makeOptions({ profile: makeProcessProfile(), credentialResolver })
     );
-    const config = connection.createProcessLaunchConfig(envWithProviderVars);
+    const config = await connection.createProcessLaunchConfig(envWithProviderVars);
 
     // Provider-owned key should be replaced by the resolved credential
     expect(config.environment['ANTHROPIC_API_KEY']).toBe('new-resolved-key');
@@ -537,7 +536,7 @@ describe('createAgentConnection — process launch config', () => {
     };
 
     const connection = await createAgentConnection(makeOptions({ profile: profileWithHeaderStrip }));
-    const config = connection.createProcessLaunchConfig(sampleInput);
+    const config = await connection.createProcessLaunchConfig(sampleInput);
 
     expect(config.degradedCapabilities).toHaveLength(1);
     expect(config.degradedCapabilities[0]?.capability).toBe('header_strip');
@@ -599,5 +598,237 @@ describe('createAgentConnection — missing required credentials classified', ()
         err.failureReason === 'provider_auth_failed'
       );
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test helpers for proxy tests
+// ---------------------------------------------------------------------------
+
+function makeProcessProfileWith(endpointOverrides: Partial<import('@autocatalyst/api-contract').RunnerEndpointSettings>): ResolvedAgentRunnerProfile {
+  const base = makeProcessProfile();
+  return {
+    ...base,
+    endpoint: { ...base.endpoint, ...endpointOverrides }
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Test: Proxy selection — process launch config uses loopback URL
+// ---------------------------------------------------------------------------
+
+describe('createAgentConnection — proxy selection', () => {
+  it('uses loopback base URL in Claude process launch config when proxyMode is required', async () => {
+    const connection = await createAgentConnection({
+      profile: makeProcessProfileWith({
+        baseUrl: 'https://gateway.example.test/anthropic',
+        authHeaderName: 'api-key',
+        proxyMode: 'required',
+        headersToStrip: ['x-api-key']
+      }),
+      credentialReference: { required: true, secretHandle: 'sec_123' },
+      credentialResolver: { resolveCredential: async () => 'secret-grove-key' },
+      telemetryContext: makeTelemetry(),
+      proxyFactory: async () => ({
+        baseUrl: 'http://127.0.0.1:45678',
+        startedAt: '2026-06-13T00:00:00.000Z',
+        requestCount: () => 0,
+        close: async () => undefined
+      })
+    });
+
+    const launch = await connection.createProcessLaunchConfig({
+      materializedEnvironment: { variables: {}, secretVariableNames: [] }
+    });
+
+    expect(launch.environment['ANTHROPIC_BASE_URL']).toBe('http://127.0.0.1:45678');
+    expect(launch.secretVariableNames).toContain('ANTHROPIC_CUSTOM_HEADERS');
+  });
+
+  it('starts proxy lazily once for parallel process launch config calls', async () => {
+    let starts = 0;
+    const connection = await createAgentConnection({
+      profile: makeProcessProfileWith({
+        baseUrl: 'https://gateway.example.test',
+        proxyMode: 'required'
+      }),
+      credentialReference: { required: false },
+      credentialResolver: { resolveCredential: async () => undefined },
+      telemetryContext: makeTelemetry(),
+      proxyFactory: async () => {
+        starts += 1;
+        return { baseUrl: 'http://127.0.0.1:45678', startedAt: new Date().toISOString(), requestCount: () => 0, close: async () => undefined };
+      }
+    });
+
+    await Promise.all([
+      connection.createProcessLaunchConfig({ materializedEnvironment: { variables: {}, secretVariableNames: [] } }),
+      connection.createProcessLaunchConfig({ materializedEnvironment: { variables: {}, secretVariableNames: [] } })
+    ]);
+
+    expect(starts).toBe(1);
+  });
+
+  it('fails required proxy mode when no upstream baseUrl is configured', async () => {
+    const connection = await createAgentConnection({
+      profile: makeProcessProfileWith({ baseUrl: undefined, proxyMode: 'required' }),
+      credentialReference: { required: false },
+      credentialResolver: { resolveCredential: async () => undefined },
+      telemetryContext: makeTelemetry()
+    });
+
+    await expect(connection.createProcessLaunchConfig({
+      materializedEnvironment: { variables: {}, secretVariableNames: [] }
+    })).rejects.toMatchObject({ code: 'unsupported_required_capability' });
+  });
+
+  it('auto-selects proxy for process_environment profile with authHeaderName only', async () => {
+    // Grove auth-only subprocess: only authHeaderName is set, proxyMode defaults to auto.
+    // Without this fix the stopgap path was used, which still injects ANTHROPIC_API_KEY
+    // alongside the auth header and can produce a grove 401.
+    let proxyStarted = false;
+    const connection = await createAgentConnection({
+      profile: makeProcessProfileWith({
+        baseUrl: 'https://gateway.example.test/anthropic',
+        authHeaderName: 'api-key'
+        // proxyMode intentionally absent — defaults to 'auto'
+      }),
+      credentialReference: { required: true, secretHandle: 'sec_grove' },
+      credentialResolver: { resolveCredential: async () => 'grove-key' },
+      telemetryContext: makeTelemetry(),
+      proxyFactory: async () => {
+        proxyStarted = true;
+        return { baseUrl: 'http://127.0.0.1:45679', startedAt: new Date().toISOString(), requestCount: () => 0, close: async () => undefined };
+      }
+    });
+
+    await connection.createProcessLaunchConfig({
+      materializedEnvironment: { variables: {}, secretVariableNames: [] }
+    });
+
+    expect(proxyStarted).toBe(true);
+  });
+
+  it('does not auto-select proxy for process_environment profile with no proxy-requiring capabilities', async () => {
+    let proxyStarted = false;
+    const connection = await createAgentConnection({
+      profile: {
+        mode: 'agent',
+        providerKind: 'anthropic',
+        adapterId: 'claude-adapter',
+        profileName: 'test-no-proxy',
+        model: { id: 'claude-3-5-haiku-20241022', displayName: 'Claude 3.5 Haiku' },
+        inferenceSettings: {},
+        endpoint: {
+          baseUrl: 'https://api.anthropic.com',
+          authEnvironmentVariable: 'ANTHROPIC_API_KEY'
+          // no authHeaderName, headersToStrip, logging, filters, or proxyMode
+        },
+        connectionMechanism: 'process_environment'
+      },
+      credentialReference: { required: false },
+      credentialResolver: { resolveCredential: async () => undefined },
+      telemetryContext: makeTelemetry(),
+      proxyFactory: async () => {
+        proxyStarted = true;
+        return { baseUrl: 'http://127.0.0.1:45680', startedAt: new Date().toISOString(), requestCount: () => 0, close: async () => undefined };
+      }
+    });
+
+    await connection.createProcessLaunchConfig({
+      materializedEnvironment: { variables: {}, secretVariableNames: [] }
+    });
+
+    expect(proxyStarted).toBe(false);
+  });
+
+  it('routes fetch transport through the proxy loopback URL when proxyMode is required', async () => {
+    const seen: Array<{ url: string; headers: Record<string, string> }> = [];
+    const connection = await createAgentConnection({
+      profile: {
+        mode: 'agent',
+        providerKind: 'anthropic',
+        adapterId: 'claude-adapter',
+        profileName: 'test-fetch-proxy',
+        model: { id: 'claude-3-5-haiku-20241022', displayName: 'Claude 3.5 Haiku' },
+        inferenceSettings: {},
+        endpoint: { baseUrl: 'https://gateway.example.test/anthropic', proxyMode: 'required' },
+        connectionMechanism: 'fetch_transport'
+      },
+      credentialReference: { required: false },
+      credentialResolver: { resolveCredential: async () => undefined },
+      telemetryContext: makeTelemetry(),
+      proxyFactory: async () => ({
+        baseUrl: 'http://127.0.0.1:45678',
+        startedAt: new Date().toISOString(),
+        requestCount: () => 0,
+        close: async () => undefined
+      }),
+      fetch: async (url, init) => {
+        seen.push({ url: String(url), headers: (init?.headers ?? {}) as Record<string, string> });
+        return new Response('{}', { status: 200 });
+      }
+    });
+
+    await connection.createFetchTransport().fetch({
+      url: 'https://gateway.example.test/anthropic/v1/messages',
+      method: 'POST',
+      headers: { 'content-type': 'application/json' }
+    });
+
+    // The base path /anthropic is stripped before rebasing so the loopback proxy
+    // can re-add it without doubling (https://gateway.example.test/anthropic/anthropic/...)
+    expect(seen[0]?.url).toBe('http://127.0.0.1:45678/v1/messages');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Test: Fetch transport log shape alignment
+// ---------------------------------------------------------------------------
+
+describe('createAgentConnection — fetch transport log shape', () => {
+  it('logs fetch transport attempts with proxy-compatible request and response fields', async () => {
+    const logs: Array<{ event: string; fields: unknown }> = [];
+    const profile: ResolvedAgentRunnerProfile = {
+      ...makeFetchProfile(),
+      endpoint: {
+        baseUrl: 'https://api.anthropic.com',
+        authHeaderName: 'api-key',
+        headersToStrip: ['x-api-key']
+      }
+    };
+    const connection = await createAgentConnection({
+      profile,
+      credentialReference: { required: true, secretHandle: 'sec_123' },
+      credentialResolver: { resolveCredential: async () => 'secret-grove-key' },
+      telemetryContext: makeTelemetry(),
+      logger: {
+        info: (event, fields) => logs.push({ event, fields }),
+        warn: (event, fields) => logs.push({ event, fields }),
+        error: (event, fields) => logs.push({ event, fields })
+      },
+      fetch: async () =>
+        new Response('{}', {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            authorization: 'Bearer secret-grove-key'
+          }
+        })
+    });
+
+    await connection.createFetchTransport().fetch({
+      url: 'https://api.anthropic.com/v1/messages',
+      method: 'POST',
+      headers: { 'x-api-key': 'sdk-default', 'content-type': 'application/json' },
+      body: { prompt: 'secret-grove-key' }
+    });
+
+    const serialized = JSON.stringify(logs);
+    expect(serialized).toContain('method');
+    expect(serialized).toContain('"url"');
+    expect(serialized).toContain('headers');
+    expect(serialized).toContain('status');
+    expect(serialized).not.toContain('secret-grove-key');
   });
 });

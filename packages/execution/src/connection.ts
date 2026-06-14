@@ -13,6 +13,8 @@ import {
 } from './agent-provider-adapter.js';
 import { ClassifiedProviderFailureError } from './errors.js';
 import { classifyProviderFailure } from './failure-reasons.js';
+import type { LoopbackProxyHandle, LoopbackProxyOptions } from './loopback-proxy.js';
+import { createLoopbackProxy } from './loopback-proxy.js';
 import type { ProviderRequest } from './request-alteration.js';
 import {
   applyRequestAlteration,
@@ -40,6 +42,8 @@ export interface ProviderConnectionLogger {
   error(event: string, fields: unknown): void;
 }
 
+type LoopbackProxyFactory = (options: LoopbackProxyOptions) => Promise<LoopbackProxyHandle>;
+
 export interface AgentConnectionFactoryOptions {
   readonly profile: ResolvedAgentRunnerProfile;
   readonly credentialReference: ResolvedAgentCredentialReference;
@@ -47,6 +51,45 @@ export interface AgentConnectionFactoryOptions {
   readonly telemetryContext: AgentConnectionTelemetryContext;
   readonly logger?: ProviderConnectionLogger;
   readonly fetch?: typeof globalThis.fetch;
+  readonly proxyFactory?: LoopbackProxyFactory;
+  readonly diagnosticRoot?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Proxy selection
+// ---------------------------------------------------------------------------
+
+function shouldUseProxy(profile: ResolvedAgentRunnerProfile): boolean {
+  const mode = profile.endpoint.proxyMode ?? 'auto';
+  if (mode === 'disabled') return false;
+  if (mode === 'required') return true;
+  if (profile.connectionMechanism === 'process_environment') {
+    return Boolean(
+      profile.endpoint.headersToStrip?.length ||
+      profile.endpoint.proxyRequestLogging?.enabled ||
+      profile.endpoint.headerValueFilters?.length ||
+      profile.endpoint.authHeaderName
+    );
+  }
+  return Boolean(profile.endpoint.proxyRequestLogging?.enabled && profile.mode === 'agent');
+}
+
+function rebaseRequestToProxy(requestUrl: string, proxyBaseUrl: string, upstreamBaseUrl: string): string {
+  const original = new URL(requestUrl);
+  const upstream = new URL(upstreamBaseUrl);
+  const proxy = new URL(proxyBaseUrl);
+  // Strip the upstream base path prefix so the loopback proxy can re-add it without doubling.
+  // e.g. original=/anthropic/v1/messages, upstreamBase=/anthropic → relative=/v1/messages
+  const upstreamBasePath = upstream.pathname.replace(/\/$/u, '');
+  let relativePath = original.pathname;
+  if (upstreamBasePath && relativePath.startsWith(upstreamBasePath)) {
+    relativePath = relativePath.slice(upstreamBasePath.length);
+    if (!relativePath.startsWith('/')) relativePath = `/${relativePath}`;
+  }
+  proxy.pathname = relativePath || '/';
+  proxy.search = original.search;
+  proxy.hash = original.hash;
+  return proxy.toString();
 }
 
 // ---------------------------------------------------------------------------
@@ -62,7 +105,9 @@ export async function createAgentConnection(
     credentialResolver,
     telemetryContext,
     logger,
-    fetch: fetchImpl = globalThis.fetch
+    fetch: fetchImpl = globalThis.fetch,
+    proxyFactory,
+    diagnosticRoot
   } = options;
 
   // ------------------------------------------------------------------
@@ -118,6 +163,47 @@ export async function createAgentConnection(
   };
 
   // ------------------------------------------------------------------
+  // Lazy proxy startup
+  // ------------------------------------------------------------------
+  let proxyPromise: Promise<LoopbackProxyHandle> | undefined;
+  let proxyHandle: LoopbackProxyHandle | undefined;
+  const factory = proxyFactory ?? createLoopbackProxy;
+
+  async function getProxyHandle(): Promise<LoopbackProxyHandle> {
+    if (!profile.endpoint.baseUrl) {
+      throw new ProviderConfigurationError(
+        'unsupported_required_capability',
+        'Proxy mode requires endpoint.baseUrl.',
+        safeLogContext
+      );
+    }
+    proxyPromise ??= factory({
+      upstreamBaseUrl: profile.endpoint.baseUrl,
+      endpoint: profile.endpoint,
+      ...(resolvedCredential !== undefined ? { credential: resolvedCredential } : {}),
+      logging: profile.endpoint.proxyRequestLogging?.enabled && diagnosticRoot
+        ? {
+            enabled: true,
+            diagnosticRoot,
+            ...(profile.endpoint.proxyRequestLogging.logDir !== undefined
+              ? { logDir: profile.endpoint.proxyRequestLogging.logDir }
+              : {}),
+            ...(profile.endpoint.proxyRequestLogging.bodyCaptureBytes !== undefined
+              ? { bodyCaptureBytes: profile.endpoint.proxyRequestLogging.bodyCaptureBytes }
+              : {})
+          }
+        : { enabled: false, diagnosticRoot: diagnosticRoot ?? '' },
+      ...(profile.endpoint.headerValueFilters !== undefined ? { headerValueFilters: profile.endpoint.headerValueFilters } : {}),
+      ...(logger !== undefined ? { logger } : {}),
+      telemetryContext,
+    }).then((handle) => {
+      proxyHandle = handle;
+      return handle;
+    });
+    return proxyPromise;
+  }
+
+  // ------------------------------------------------------------------
   // Return AgentConnection handle — credential stays in closure
   // ------------------------------------------------------------------
 
@@ -139,6 +225,29 @@ export async function createAgentConnection(
 
       return {
         async fetch(request: ProviderRequest): Promise<Response> {
+          // Proxy-aware path: rebase URL to loopback proxy, skip alteration (proxy owns policy)
+          if (shouldUseProxy(profile)) {
+            const proxy = await getProxyHandle();
+            const proxiedUrl = rebaseRequestToProxy(request.url, proxy.baseUrl, profile.endpoint.baseUrl ?? '');
+            const rawBody = request.body;
+            const body = rawBody !== undefined
+              ? (typeof rawBody === 'string' ? rawBody : JSON.stringify(rawBody))
+              : undefined;
+            const ctrl = new AbortController();
+            const timeoutMs = profile.endpoint.requestTimeoutMs ?? 120_000;
+            const timeoutId = setTimeout(() => ctrl.abort(), timeoutMs);
+            try {
+              return await fetchImpl(proxiedUrl, {
+                method: request.method,
+                headers: request.headers as Record<string, string>,
+                ...(body !== undefined && { body }),
+                signal: ctrl.signal
+              });
+            } finally {
+              clearTimeout(timeoutId);
+            }
+          }
+
           const altered = applyRequestAlteration({
             request,
             endpoint: profile.endpoint,
@@ -314,7 +423,7 @@ export async function createAgentConnection(
     // ----------------------------------------------------------------
     // createProcessLaunchConfig
     // ----------------------------------------------------------------
-    createProcessLaunchConfig(input: ProcessLaunchConfigInput): ProcessLaunchConfig {
+    async createProcessLaunchConfig(input: ProcessLaunchConfigInput): Promise<ProcessLaunchConfig> {
       if (profile.connectionMechanism !== 'process_environment') {
         throw new ProviderConnectionError(
           'unsupported_connection_mechanism',
@@ -325,8 +434,13 @@ export async function createAgentConnection(
 
       const credential = resolvedCredential ?? '';
 
+      // Use proxy base URL when proxy is selected
+      const launchEndpoint = shouldUseProxy(profile)
+        ? { ...profile.endpoint, baseUrl: (await getProxyHandle()).baseUrl }
+        : profile.endpoint;
+
       const launchResult = buildClaudeProcessLaunchEnvironment({
-        endpoint: profile.endpoint,
+        endpoint: launchEndpoint,
         credential,
         materializedEnvironment: input.materializedEnvironment
       });
@@ -350,6 +464,13 @@ export async function createAgentConnection(
         degradedCapabilities: launchResult.degradedCapabilities,
         redacted
       };
+    },
+
+    // ----------------------------------------------------------------
+    // close
+    // ----------------------------------------------------------------
+    async close(): Promise<void> {
+      if (proxyHandle) await proxyHandle.close();
     }
   };
 }

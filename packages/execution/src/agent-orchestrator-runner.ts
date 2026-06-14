@@ -31,6 +31,7 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
   let activeSession: AgentProviderSession | undefined;
   let sessionClosed = false;
   let adapterClosed = false;
+  let connectionClosed = false;
 
   return {
     async *run(input: RunnerRunInput): AsyncIterable<RunnerEvent> {
@@ -175,6 +176,10 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
       if (!adapterClosed && adapter.close !== undefined) {
         adapterClosed = true;
         await adapter.close!();
+      }
+      if (!connectionClosed) {
+        connectionClosed = true;
+        await connection.close();
       }
       return { status: 'closed' };
     }

@@ -192,7 +192,8 @@ function makeConnection(profile: ResolvedAgentRunnerProfile): AgentConnection {
         degradedCapabilities: [],
         redacted: {}
       };
-    }
+    },
+    close: vi.fn().mockResolvedValue(undefined)
   };
 }
 
@@ -509,6 +510,29 @@ describe('createAgentOrchestratorRunner', () => {
       // runner.close() must throw — the execution entry point wraps this
       // throw in a runner_close_failed RunnerProtocolError.
       await expect(runner.close()).rejects.toThrow('Session close failed');
+    });
+
+    it('calls connection.close() after session and adapter close', async () => {
+      const runId = 'run_test_1';
+      const { options } = makeOrchestratorOptions({ events: [makeTerminalEvent(runId)] });
+      const connectionCloseMock = options.connection.close as ReturnType<typeof vi.fn>;
+      const runner = createAgentOrchestratorRunner(options);
+      await collectEvents(runner, makeRunInput());
+      await runner.close();
+
+      expect(connectionCloseMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('calls connection.close() exactly once even when close() is called twice', async () => {
+      const runId = 'run_test_1';
+      const { options } = makeOrchestratorOptions({ events: [makeTerminalEvent(runId)] });
+      const connectionCloseMock = options.connection.close as ReturnType<typeof vi.fn>;
+      const runner = createAgentOrchestratorRunner(options);
+      await collectEvents(runner, makeRunInput());
+      await runner.close();
+      await runner.close();
+
+      expect(connectionCloseMock).toHaveBeenCalledTimes(1);
     });
 
     it('propagates adapter.close() failure from runner.close() on clean stream path', async () => {

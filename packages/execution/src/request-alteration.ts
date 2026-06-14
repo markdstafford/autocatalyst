@@ -285,9 +285,17 @@ export function buildClaudeProcessLaunchEnvironment(input: ClaudeProcessLaunchIn
   overlayEnv[credentialTarget] = credential;
   secretVarNames.add(credentialTarget);
 
-  // Custom headers (header rewrites encoded as JSON)
-  if (endpoint.headersToRewrite && Object.keys(endpoint.headersToRewrite).length > 0) {
-    overlayEnv['ANTHROPIC_CUSTOM_HEADERS'] = JSON.stringify(endpoint.headersToRewrite);
+  // Custom headers (header rewrites + authHeaderName credential encoded as JSON)
+  const customHeaders: Record<string, string> = {
+    ...(endpoint.headersToRewrite ?? {})
+  };
+
+  if (endpoint.authHeaderName !== undefined) {
+    customHeaders[endpoint.authHeaderName] = credential;
+  }
+
+  if (Object.keys(customHeaders).length > 0) {
+    overlayEnv['ANTHROPIC_CUSTOM_HEADERS'] = JSON.stringify(customHeaders);
     secretVarNames.add('ANTHROPIC_CUSTOM_HEADERS');
   }
 

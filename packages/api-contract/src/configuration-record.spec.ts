@@ -13,6 +13,7 @@ import {
   providerProfileSettingsSchema,
   configurationRecordSettingsSchema,
   roleDistinctRequirementSchema,
+  runnerEndpointSettingsSchema,
   updateConfigurationRecordRequestSchema,
   updateModelRoutingTableSettingsSchema
 } from './configuration-record.js';
@@ -356,5 +357,43 @@ describe('model routing table schemas', () => {
 
   it('updateModelRoutingTableSettingsSchema rejects empty patch', () => {
     expect(updateModelRoutingTableSettingsSchema.safeParse({}).success).toBe(false);
+  });
+});
+
+describe('proxy endpoint settings', () => {
+  it('accepts proxy endpoint additions without changing existing provider profile settings', () => {
+    const parsed = runnerEndpointSettingsSchema.parse({
+      baseUrl: 'https://gateway.example.test/anthropic',
+      authHeaderName: 'api-key',
+      proxyMode: 'required',
+      proxyRequestLogging: {
+        enabled: true,
+        logDir: 'run-123/session-abc',
+        bodyCaptureBytes: 65536
+      },
+      headerValueFilters: [
+        { headerName: 'anthropic-beta', removeValues: ['gateway-beta'] }
+      ]
+    });
+
+    expect(parsed.proxyMode).toBe('required');
+    expect(parsed.proxyRequestLogging?.enabled).toBe(true);
+    expect(parsed.headerValueFilters?.[0]?.removeValues).toEqual(['gateway-beta']);
+  });
+
+  it('rejects absolute or traversal logDir values at schema boundary', () => {
+    expect(() => runnerEndpointSettingsSchema.parse({
+      proxyRequestLogging: { enabled: true, logDir: '/tmp/provider-dumps' }
+    })).toThrow();
+
+    expect(() => runnerEndpointSettingsSchema.parse({
+      proxyRequestLogging: { enabled: true, logDir: '../outside' }
+    })).toThrow();
+  });
+
+  it('requires non-empty exact header value filter tokens', () => {
+    expect(() => runnerEndpointSettingsSchema.parse({
+      headerValueFilters: [{ headerName: 'anthropic-beta', removeValues: [] }]
+    })).toThrow();
   });
 });

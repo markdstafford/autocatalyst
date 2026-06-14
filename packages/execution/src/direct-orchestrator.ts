@@ -50,6 +50,7 @@ export function createDirectOrchestrator(options: CreateDirectOrchestratorOption
 
   let adapterClosed = false;
   let callCompleted = false;
+  let connectionClosed = false;
 
   const orchestrator: DirectOrchestrator = {
     async call<TSchema extends z.ZodTypeAny>(call: DirectCallRequest<TSchema>): Promise<DirectOrchestratorCallResult<z.infer<TSchema>>> {
@@ -250,6 +251,10 @@ export function createDirectOrchestrator(options: CreateDirectOrchestratorOption
       if (!adapterClosed && adapter.close !== undefined) {
         adapterClosed = true;
         await adapter.close();
+      }
+      if (!connectionClosed) {
+        connectionClosed = true;
+        await connection.close();
       }
     }
   };

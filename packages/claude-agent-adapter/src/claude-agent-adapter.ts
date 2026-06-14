@@ -280,27 +280,6 @@ export function createClaudeAgentAdapter(
         });
       }
 
-      // --------------------------------------------------------------
-      // Build process launch config (this is the seam to the connection
-      // layer, which produces connection-owned env vars).
-      // --------------------------------------------------------------
-      let launchConfig: ProcessLaunchConfig;
-      try {
-        launchConfig = connection.createProcessLaunchConfig({
-          materializedEnvironment: env.environment
-        });
-      } catch (err) {
-        safeLog('error', 'claude.adapter.launch_config_failed', {
-          runId,
-          step,
-          providerKind: profile.providerKind,
-          adapterId: claudeAgentAdapterId,
-          profileName: profile.profileName,
-          telemetryContext
-        });
-        throw err;
-      }
-
       // Resolve cwd from materialized workspace.
       const workspace = env.workspace;
       const cwd: string | undefined =
@@ -319,44 +298,6 @@ export function createClaudeAgentAdapter(
         runtimeSkillsCatalogRoot
       );
 
-      // The connection.environment IS the overlay; tests check that secret
-      // values do not leak out of launch logs. We DO NOT log the env map.
-      const launchEnv: Record<string, string> = { ...launchConfig.environment };
-
-      safeLog('info', 'claude.adapter.session_start', {
-        runId,
-        step,
-        providerKind: profile.providerKind,
-        adapterId: claudeAgentAdapterId,
-        profileName: profile.profileName,
-        configurationRecordId: profile.configurationRecordId,
-        model: profile.model.model,
-        mechanism: profile.connectionMechanism,
-        allowedToolsCount: allowedTools.length,
-        requestedSkillCount: env.skills.requested.length,
-        resolvedSkillPluginCount: skillPlugins.length,
-        cwdProvided: cwd !== undefined,
-        // Redacted summary the connection layer already prepared.
-        launchConfig: launchConfig.redacted
-      });
-
-      // --------------------------------------------------------------
-      // Build async event stream
-      // --------------------------------------------------------------
-      const degradedCapabilities: ProviderCapabilityDegradation[] = [
-        ...launchConfig.degradedCapabilities,
-        ...inferenceDegradations
-      ];
-
-      // Secrets we MUST scrub from any string content we forward.
-      const knownSecretValues: string[] = [];
-      for (const name of launchConfig.secretVariableNames) {
-        const v = launchConfig.environment[name];
-        if (typeof v === 'string' && v.length > 0) {
-          knownSecretValues.push(v);
-        }
-      }
-
       let metadataResolve!: (value: AgentProviderSessionMetadata) => void;
       let metadataReject!: (err: unknown) => void;
       const metadata = new Promise<AgentProviderSessionMetadata>((resolve, reject) => {
@@ -369,8 +310,69 @@ export function createClaudeAgentAdapter(
         let outcome: 'succeeded' | 'failed' | 'canceled' = 'succeeded';
         let tokenUsage: AgentTokenUsage = { available: false };
         let pendingResult: PendingResult | undefined;
+        // degradedCapabilities is populated after the launch config resolves;
+        // declared here so the finally block can always reference it.
+        let degradedCapabilities: ProviderCapabilityDegradation[] = [...inferenceDegradations];
 
         try {
+          // --------------------------------------------------------------
+          // Build process launch config (this is the seam to the connection
+          // layer, which produces connection-owned env vars). Awaited here
+          // so that Promise-returning implementations are supported.
+          // --------------------------------------------------------------
+          let launchConfig: ProcessLaunchConfig;
+          try {
+            launchConfig = await connection.createProcessLaunchConfig({
+              materializedEnvironment: env.environment
+            });
+          } catch (err) {
+            safeLog('error', 'claude.adapter.launch_config_failed', {
+              runId,
+              step,
+              providerKind: profile.providerKind,
+              adapterId: claudeAgentAdapterId,
+              profileName: profile.profileName,
+              telemetryContext
+            });
+            throw err;
+          }
+
+          // The connection.environment IS the overlay; tests check that secret
+          // values do not leak out of launch logs. We DO NOT log the env map.
+          const launchEnv: Record<string, string> = { ...launchConfig.environment };
+
+          safeLog('info', 'claude.adapter.session_start', {
+            runId,
+            step,
+            providerKind: profile.providerKind,
+            adapterId: claudeAgentAdapterId,
+            profileName: profile.profileName,
+            configurationRecordId: profile.configurationRecordId,
+            model: profile.model.model,
+            mechanism: profile.connectionMechanism,
+            allowedToolsCount: allowedTools.length,
+            requestedSkillCount: env.skills.requested.length,
+            resolvedSkillPluginCount: skillPlugins.length,
+            cwdProvided: cwd !== undefined,
+            // Redacted summary the connection layer already prepared.
+            launchConfig: launchConfig.redacted
+          });
+
+          // Merge connection-layer degradations now that we have the launch config.
+          degradedCapabilities = [
+            ...launchConfig.degradedCapabilities,
+            ...inferenceDegradations
+          ];
+
+          // Secrets we MUST scrub from any string content we forward.
+          const knownSecretValues: string[] = [];
+          for (const name of launchConfig.secretVariableNames) {
+            const v = launchConfig.environment[name];
+            if (typeof v === 'string' && v.length > 0) {
+              knownSecretValues.push(v);
+            }
+          }
+
           const native = launch({
             prompt,
             ...(cwd !== undefined ? { cwd } : {}),

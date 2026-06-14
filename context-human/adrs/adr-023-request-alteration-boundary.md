@@ -1,9 +1,11 @@
 ---
 created: 2026-06-05
-last_updated: 2026-06-06
+last_updated: 2026-06-14
 status: accepted
 decided_by: markdstafford
 superseded_by: null
+related:
+  - context-agent/decisions/loopback-proxy-supersedes-subprocess-header-exception.md
 ---
 
 # ADR-023: Per-endpoint request-alteration boundary
@@ -94,3 +96,14 @@ Handle provider-compatibility concerns above the `Runner` boundary, in the contr
 
 **Why not chosen:** It would pull provider-specific quirks into the control plane, which the plane
 boundary (ADR-003) exists to keep free of them.
+
+## Subsequent decisions
+
+**Loopback proxy supersedes subprocess header-control exception (2026-06-14)**
+
+ADR-023 originally accepted that Claude process-environment sessions could not strip SDK default
+headers or place credentials on arbitrary headers because the subprocess path had no in-process
+transport hook. The execution loopback proxy (feature: loopback-runner-proxy) removes that
+exception for cells that can be pointed at a loopback base URL. Auth-header injection, header
+stripping/filtering, and request dumps are now available through the proxy for process-environment
+sessions. See `context-agent/decisions/loopback-proxy-supersedes-subprocess-header-exception.md`.

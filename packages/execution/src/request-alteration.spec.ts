@@ -370,6 +370,91 @@ describe('buildClaudeProcessLaunchEnvironment', () => {
     expect(JSON.stringify(redacted)).not.toContain('secret-gateway-key');
     expect(JSON.stringify(redacted)).not.toContain('secret-default-key');
   });
+
+  it('adds authHeaderName credential to ANTHROPIC_CUSTOM_HEADERS for Claude process launch', () => {
+    const result = buildClaudeProcessLaunchEnvironment({
+      endpoint: {
+        baseUrl: 'https://gateway.example.test/anthropic',
+        authHeaderName: 'api-key',
+        headersToRewrite: {
+          'anthropic-beta': 'tools-2024-04-04'
+        }
+      },
+      credential: 'secret-grove-key',
+      materializedEnvironment: {
+        variables: { SAFE_FLAG: '1' },
+        secretVariableNames: []
+      }
+    });
+
+    expect(result.environment['ANTHROPIC_CUSTOM_HEADERS']).toBe(JSON.stringify({
+      'anthropic-beta': 'tools-2024-04-04',
+      'api-key': 'secret-grove-key'
+    }));
+    expect(result.secretVariableNames).toContain('ANTHROPIC_CUSTOM_HEADERS');
+    expect(result.environment['ANTHROPIC_API_KEY']).toBe('secret-grove-key');
+  });
+
+  it('redacts ANTHROPIC_CUSTOM_HEADERS when it carries an authHeaderName credential', () => {
+    const launchResult = buildClaudeProcessLaunchEnvironment({
+      endpoint: { authHeaderName: 'api-key' },
+      credential: 'secret-grove-key',
+      materializedEnvironment: {
+        variables: {},
+        secretVariableNames: []
+      }
+    });
+
+    const redacted = redactProcessLaunchConfigForLog({
+      launchResult,
+      knownSecretValues: ['secret-grove-key']
+    }) as { environment: Record<string, string>; secretVariableNames: string[] };
+
+    expect(redacted.environment['ANTHROPIC_CUSTOM_HEADERS']).toBe('[REDACTED]');
+    expect(redacted.secretVariableNames).toContain('ANTHROPIC_CUSTOM_HEADERS');
+    expect(JSON.stringify(redacted)).not.toContain('secret-grove-key');
+  });
+
+  it('authHeaderName credential wins over any static headersToRewrite entry with the same header name', () => {
+    const result = buildClaudeProcessLaunchEnvironment({
+      endpoint: {
+        authHeaderName: 'api-key',
+        headersToRewrite: {
+          'api-key': 'static-wrong-value',  // same header, should be overridden
+          'x-other': 'keep-this'
+        }
+      },
+      credential: 'secret-grove-key',
+      materializedEnvironment: { variables: {}, secretVariableNames: [] }
+    });
+
+    const customHeaders = JSON.parse(result.environment['ANTHROPIC_CUSTOM_HEADERS'] as string) as Record<string, string>;
+    expect(customHeaders['api-key']).toBe('secret-grove-key');  // credential wins
+    expect(customHeaders['x-other']).toBe('keep-this');          // other rewrites preserved
+  });
+
+  it('stopgap limitation: does not strip SDK default headers from subprocess traffic', () => {
+    // STOPGAP: ANTHROPIC_CUSTOM_HEADERS can add/replace the credential header,
+    // but cannot prevent the Claude SDK subprocess from sending its own default auth headers.
+    // The full loopback proxy is required when gateway-rejected SDK defaults must be stripped.
+    const result = buildClaudeProcessLaunchEnvironment({
+      endpoint: {
+        authHeaderName: 'api-key',
+        headersToStrip: ['x-api-key']  // strip is configured but cannot be honored here
+      },
+      credential: 'secret-grove-key',
+      materializedEnvironment: { variables: {}, secretVariableNames: [] }
+    });
+
+    // The credential is injected via custom headers
+    const customHeaders = JSON.parse(result.environment['ANTHROPIC_CUSTOM_HEADERS'] as string) as Record<string, string>;
+    expect(customHeaders['api-key']).toBe('secret-grove-key');
+
+    // The degradation metadata records that header stripping is unsupported in this mode
+    const stripDegradation = result.degradedCapabilities.find((d) => d.capability === 'header_strip');
+    expect(stripDegradation).toBeDefined();
+    // STOPGAP: The SDK subprocess will still send x-api-key; the proxy is required to strip it
+  });
 });
 
 // ---------------------------------------------------------------------------
