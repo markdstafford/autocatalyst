@@ -93,4 +93,26 @@ describe('applyProxyHeaderPolicy', () => {
     expect(result.headers['anthropic-beta']).toBeUndefined();
     expect(result.filteredHeaders).toContain('anthropic-beta');
   });
+
+  it('does not remove tokens that differ only in case from removeValues (token matching is case-sensitive)', () => {
+    const result = applyProxyHeaderPolicy({
+      headers: { 'anthropic-beta': 'Gateway-Beta, gateway-beta' },
+      endpoint: {},
+      headerValueFilters: [{ headerName: 'anthropic-beta', removeValues: ['gateway-beta'] }]
+    });
+    // 'Gateway-Beta' must NOT be removed (case-sensitive token match)
+    // 'gateway-beta' IS removed (exact match)
+    expect(result.headers['anthropic-beta']).toBe('Gateway-Beta');
+  });
+
+  it('matches filter headerName case-insensitively against incoming headers', () => {
+    const result = applyProxyHeaderPolicy({
+      headers: { 'anthropic-beta': 'foo, gateway-beta' },
+      endpoint: {},
+      // Filter uses mixed case header name — should still match 'anthropic-beta'
+      headerValueFilters: [{ headerName: 'Anthropic-Beta', removeValues: ['gateway-beta'] }]
+    });
+    expect(result.headers['anthropic-beta']).toBe('foo');
+    expect(result.filteredHeaders).toContain('anthropic-beta');
+  });
 });
