@@ -19,6 +19,7 @@ import type { ProviderRequest } from './request-alteration.js';
 import {
   applyRequestAlteration,
   buildClaudeProcessLaunchEnvironment,
+  defaultRequestTimeoutMs,
   isTransientProviderFailure,
   redactProcessLaunchConfigForLog,
   redactProviderRequestForLog,
@@ -234,7 +235,7 @@ export async function createAgentConnection(
               ? (typeof rawBody === 'string' ? rawBody : JSON.stringify(rawBody))
               : undefined;
             const ctrl = new AbortController();
-            const timeoutMs = profile.endpoint.requestTimeoutMs ?? 120_000;
+            const timeoutMs = profile.endpoint.requestTimeoutMs ?? defaultRequestTimeoutMs;
             const timeoutId = setTimeout(() => ctrl.abort(), timeoutMs);
             try {
               return await fetchImpl(proxiedUrl, {

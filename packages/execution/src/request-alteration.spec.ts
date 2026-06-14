@@ -131,6 +131,14 @@ describe('applyRequestAlteration — baseUrl parsing', () => {
 // 3. No-alteration pass-through
 // ---------------------------------------------------------------------------
 describe('applyRequestAlteration — no-alteration pass-through', () => {
+  it('allows fetch request timeout up to 600000 ms for long agent authoring runs', () => {
+    const result = applyRequestAlteration({
+      request: { url: 'https://api.anthropic.com/v1/messages', method: 'POST' },
+      endpoint: { requestTimeoutMs: 600_000 }
+    });
+    expect(result.timeoutMs).toBe(600_000);
+  });
+
   it('passes through unchanged request with safe default timeout and retry when endpoint is empty', () => {
     const result = applyRequestAlteration({
       request: {
@@ -285,6 +293,15 @@ describe('buildClaudeProcessLaunchEnvironment', () => {
     };
     const result = buildClaudeProcessLaunchEnvironment(input);
     expect(result.environment['API_TIMEOUT_MS']).toBe(String(maximumRequestTimeoutMs));
+  });
+
+  it('maps Claude API_TIMEOUT_MS up to 600000 ms before clamping', () => {
+    const result = buildClaudeProcessLaunchEnvironment({
+      endpoint: { requestTimeoutMs: 600_000 },
+      credential: 'cred',
+      materializedEnvironment: { variables: {}, secretVariableNames: [] }
+    });
+    expect(result.environment['API_TIMEOUT_MS']).toBe('600000');
   });
 
   it('maps retries to CLAUDE_CODE_MAX_RETRIES bounded by maximum', () => {
