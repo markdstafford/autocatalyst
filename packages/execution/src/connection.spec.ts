@@ -720,3 +720,54 @@ describe('createAgentConnection — proxy selection', () => {
     expect(seen[0]?.url).toBe('http://127.0.0.1:45678/anthropic/v1/messages');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Test: Fetch transport log shape alignment
+// ---------------------------------------------------------------------------
+
+describe('createAgentConnection — fetch transport log shape', () => {
+  it('logs fetch transport attempts with proxy-compatible request and response fields', async () => {
+    const logs: Array<{ event: string; fields: unknown }> = [];
+    const profile: ResolvedAgentRunnerProfile = {
+      ...makeFetchProfile(),
+      endpoint: {
+        baseUrl: 'https://api.anthropic.com',
+        authHeaderName: 'api-key',
+        headersToStrip: ['x-api-key']
+      }
+    };
+    const connection = await createAgentConnection({
+      profile,
+      credentialReference: { required: true, secretHandle: 'sec_123' },
+      credentialResolver: { resolveCredential: async () => 'secret-grove-key' },
+      telemetryContext: makeTelemetry(),
+      logger: {
+        info: (event, fields) => logs.push({ event, fields }),
+        warn: (event, fields) => logs.push({ event, fields }),
+        error: (event, fields) => logs.push({ event, fields })
+      },
+      fetch: async () =>
+        new Response('{}', {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            authorization: 'Bearer secret-grove-key'
+          }
+        })
+    });
+
+    await connection.createFetchTransport().fetch({
+      url: 'https://api.anthropic.com/v1/messages',
+      method: 'POST',
+      headers: { 'x-api-key': 'sdk-default', 'content-type': 'application/json' },
+      body: { prompt: 'secret-grove-key' }
+    });
+
+    const serialized = JSON.stringify(logs);
+    expect(serialized).toContain('method');
+    expect(serialized).toContain('"url"');
+    expect(serialized).toContain('headers');
+    expect(serialized).toContain('status');
+    expect(serialized).not.toContain('secret-grove-key');
+  });
+});
