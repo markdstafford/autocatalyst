@@ -22,7 +22,7 @@ export interface ProxyHeaderPolicyResult {
 
 // Hop-by-hop headers stripped regardless of endpoint settings
 const hopByHopHeaders = new Set([
-  'connection', 'content-length', 'host', 'keep-alive', 'proxy-authenticate',
+  'connection', 'host', 'keep-alive', 'proxy-authenticate',
   'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'
 ]);
 
