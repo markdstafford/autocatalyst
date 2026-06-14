@@ -139,7 +139,11 @@ export function composeAgentProviderAdapterRegistry(
       continue; // skip direct adapters and other non-agent bindings
     }
     const key = getAgentProviderAdapterKey(binding.providerKind, binding.adapterId);
-    if (registry.has(key)) {
+    const existing = registry.get(key);
+    if (existing !== undefined) {
+      if (existing === binding.adapter) {
+        continue;
+      }
       throw new ProviderConfigurationError(
         'duplicate_adapter',
         `Duplicate adapter registered for ${binding.providerKind}/${binding.adapterId}`,
@@ -180,7 +184,11 @@ export function composeDirectProviderAdapterRegistry(
       continue; // skip agent adapters — they don't have .call()
     }
     const key = getDirectProviderAdapterKey(binding.providerKind, binding.adapterId);
-    if (registry.has(key)) {
+    const existing = registry.get(key);
+    if (existing !== undefined) {
+      if (existing === binding.adapter) {
+        continue;
+      }
       throw new ProviderConfigurationError(
         'duplicate_adapter',
         `Duplicate direct adapter registered for ${binding.providerKind}/${binding.adapterId}`,

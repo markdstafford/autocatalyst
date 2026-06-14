@@ -269,6 +269,27 @@ describe('composeConfiguredProviders', () => {
       configurationRecordId: 'malicious'
     });
   });
+
+  it('can compose two provider profiles that share one adapter factory', async () => {
+    const adapter = validAdapter;
+    const result = await composeConfiguredProviders({
+      configurationRecords: [
+        makeProviderRecord({ id: 'cfg_grove_fast', providerKind: 'anthropic', adapterId: 'claude-agent-sdk', settings: { profileName: 'Grove fast' } }),
+        makeProviderRecord({ id: 'cfg_grove_deep', providerKind: 'anthropic', adapterId: 'claude-agent-sdk', settings: { profileName: 'Grove deep' } })
+      ],
+      registry: createExtensionRegistryCatalog([
+        { providerKind: 'anthropic', adapterId: 'claude-agent-sdk', displayName: 'Claude', capabilities: ['agent_session'] }
+      ]),
+      providerAdapters: new Map([
+        [buildProviderAdapterKey('anthropic', 'claude-agent-sdk'), () => adapter]
+      ])
+    });
+
+    expect(result.unresolved).toEqual([]);
+    expect(result.composed.map((binding) => binding.configurationRecordId)).toEqual(['cfg_grove_fast', 'cfg_grove_deep']);
+    const registry = composeAgentProviderAdapterRegistry({ composed: result.composed });
+    expect(registry.size).toBe(1);
+  });
 });
 
 describe('composeAgentProviderAdapterRegistry', () => {
@@ -323,12 +344,25 @@ describe('composeAgentProviderAdapterRegistry', () => {
     expect(directRegistry.get(getDirectProviderAdapterKey('anthropic', 'anthropic-direct'))).toBe(directAdapter);
   });
 
-  it('throws ProviderConfigurationError on duplicate (providerKind, adapterId) pair', () => {
+  it('deduplicates duplicate agent adapter bindings that share the same adapter instance', () => {
     const secondBinding = {
       providerKind: 'anthropic',
       adapterId: 'claude-agent-sdk',
       configurationRecordId: 'rec_003',
       adapter: validAdapter
+    };
+    const registry = composeAgentProviderAdapterRegistry({ composed: [validBinding, secondBinding] });
+    expect(registry.size).toBe(1);
+    expect(registry.get(getAgentProviderAdapterKey('anthropic', 'claude-agent-sdk'))).toBe(validAdapter);
+  });
+
+  it('throws ProviderConfigurationError when duplicate agent adapter bindings use different adapter instances', () => {
+    const differentAdapter = { ...validAdapter, startSession: validAdapter.startSession };
+    const secondBinding = {
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      configurationRecordId: 'rec_003',
+      adapter: differentAdapter
     };
     expect(() => composeAgentProviderAdapterRegistry({ composed: [validBinding, secondBinding] })).toThrow(
       expect.objectContaining({ name: 'ProviderConfigurationError', code: 'duplicate_adapter' })
