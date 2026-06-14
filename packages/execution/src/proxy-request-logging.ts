@@ -122,11 +122,12 @@ export async function createProxyRequestLogger(
     return makeNoopLogger(bodyCaptureBytes);
   }
 
-  // Try to chmod existing directory to 0o700 (best effort)
+  // Try to chmod existing directory to 0o700; if we cannot, disable logging
   try {
     await chmod(finalLogDir, 0o700);
   } catch {
-    // Best effort; if chmod fails, we still proceed (may not own the dir)
+    // Cannot ensure directory has safe permissions — disable logging
+    return makeNoopLogger(bodyCaptureBytes);
   }
 
   let logDisabled = false;
