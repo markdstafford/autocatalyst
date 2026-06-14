@@ -1,6 +1,5 @@
 import type { ConfigurationRecord } from '@autocatalyst/api-contract';
 import {
-  ProviderConfigurationError,
   getAgentProviderAdapterKey,
   getDirectProviderAdapterKey,
   type AgentProviderAdapter,
@@ -139,16 +138,8 @@ export function composeAgentProviderAdapterRegistry(
       continue; // skip direct adapters and other non-agent bindings
     }
     const key = getAgentProviderAdapterKey(binding.providerKind, binding.adapterId);
-    const existing = registry.get(key);
-    if (existing !== undefined) {
-      if (existing === binding.adapter) {
-        continue;
-      }
-      throw new ProviderConfigurationError(
-        'duplicate_adapter',
-        `Duplicate adapter registered for ${binding.providerKind}/${binding.adapterId}`,
-        { configurationRecordId: binding.configurationRecordId, providerKind: binding.providerKind, adapterId: binding.adapterId }
-      );
+    if (registry.has(key)) {
+      continue; // same (providerKind, adapterId) key — one adapter per type, regardless of instance
     }
     registry.set(key, binding.adapter);
   }
@@ -184,16 +175,8 @@ export function composeDirectProviderAdapterRegistry(
       continue; // skip agent adapters — they don't have .call()
     }
     const key = getDirectProviderAdapterKey(binding.providerKind, binding.adapterId);
-    const existing = registry.get(key);
-    if (existing !== undefined) {
-      if (existing === binding.adapter) {
-        continue;
-      }
-      throw new ProviderConfigurationError(
-        'duplicate_adapter',
-        `Duplicate direct adapter registered for ${binding.providerKind}/${binding.adapterId}`,
-        { configurationRecordId: binding.configurationRecordId, providerKind: binding.providerKind, adapterId: binding.adapterId }
-      );
+    if (registry.has(key)) {
+      continue; // same (providerKind, adapterId) key — one adapter per type, regardless of instance
     }
     registry.set(key, binding.adapter);
   }

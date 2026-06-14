@@ -356,7 +356,9 @@ describe('composeAgentProviderAdapterRegistry', () => {
     expect(registry.get(getAgentProviderAdapterKey('anthropic', 'claude-agent-sdk'))).toBe(validAdapter);
   });
 
-  it('throws ProviderConfigurationError when duplicate agent adapter bindings use different adapter instances', () => {
+  it('deduplicates duplicate agent adapter bindings that use different adapter instances for the same key', () => {
+    // Two provider profiles sharing the same (providerKind, adapterId) produce distinct adapter
+    // instances from the factory. Registry keeps the first and silently skips the second.
     const differentAdapter = { ...validAdapter, startSession: validAdapter.startSession };
     const secondBinding = {
       providerKind: 'anthropic',
@@ -364,8 +366,21 @@ describe('composeAgentProviderAdapterRegistry', () => {
       configurationRecordId: 'rec_003',
       adapter: differentAdapter
     };
-    expect(() => composeAgentProviderAdapterRegistry({ composed: [validBinding, secondBinding] })).toThrow(
-      expect.objectContaining({ name: 'ProviderConfigurationError', code: 'duplicate_adapter' })
-    );
+    const registry = composeAgentProviderAdapterRegistry({ composed: [validBinding, secondBinding] });
+    expect(registry.size).toBe(1);
+    expect(registry.get(getAgentProviderAdapterKey('anthropic', 'claude-agent-sdk'))).toBe(validAdapter);
+  });
+
+  it('handles two profiles backed by the same default factory without crashing', () => {
+    const makeAdapter = () => ({
+      providerKind: 'anthropic' as const,
+      adapterId: 'claude-agent-sdk' as const,
+      supportedConnectionMechanism: 'process_environment' as const,
+      startSession: async () => ({ events: (async function* () {})(), close: async () => {} })
+    });
+    const binding1 = { providerKind: 'anthropic', adapterId: 'claude-agent-sdk', configurationRecordId: 'cfg_a', adapter: makeAdapter() };
+    const binding2 = { providerKind: 'anthropic', adapterId: 'claude-agent-sdk', configurationRecordId: 'cfg_b', adapter: makeAdapter() };
+    const registry = composeAgentProviderAdapterRegistry({ composed: [binding1, binding2] });
+    expect(registry.size).toBe(1);
   });
 });

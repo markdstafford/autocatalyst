@@ -285,6 +285,33 @@ describe('buildClaudeProcessLaunchEnvironment', () => {
     expect(result.environment['ANTHROPIC_CUSTOM_HEADERS']).toBe('x-custom: value1\nx-other: value2');
   });
 
+  it('strips CR and LF from header values to prevent header-line injection', () => {
+    const input: ClaudeProcessLaunchInput = {
+      endpoint: {
+        headersToRewrite: { 'x-injected': 'value\r\nX-Evil: injected' }
+      },
+      credential: 'cred',
+      materializedEnvironment: { variables: {}, secretVariableNames: [] }
+    };
+    const result = buildClaudeProcessLaunchEnvironment(input);
+    const serialized = result.environment['ANTHROPIC_CUSTOM_HEADERS'];
+    expect(serialized).not.toContain('\r');
+    expect(serialized).not.toContain('\n');
+    expect(serialized).toBe('x-injected: valueX-Evil: injected');
+  });
+
+  it('strips CR and LF from authHeaderName credential to prevent header-line injection', () => {
+    const result = buildClaudeProcessLaunchEnvironment({
+      endpoint: { authHeaderName: 'api-key' },
+      credential: 'secret\r\nX-Evil: injected',
+      materializedEnvironment: { variables: {}, secretVariableNames: [] }
+    });
+    const serialized = result.environment['ANTHROPIC_CUSTOM_HEADERS'];
+    expect(serialized).not.toContain('\r');
+    expect(serialized).not.toContain('\n');
+    expect(serialized).toBe('api-key: secretX-Evil: injected');
+  });
+
   it('maps timeout to API_TIMEOUT_MS bounded by maximum', () => {
     const input: ClaudeProcessLaunchInput = {
       endpoint: { requestTimeoutMs: 999_999_999 }, // exceeds max

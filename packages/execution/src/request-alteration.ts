@@ -242,9 +242,13 @@ export interface ClaudeProcessLaunchResult {
 // buildClaudeProcessLaunchEnvironment
 // ---------------------------------------------------------------------------
 
+function sanitizeHeaderComponent(s: string): string {
+  return s.replace(/[\r\n]/g, '');
+}
+
 function serializeAnthropicCustomHeaders(headers: Readonly<Record<string, string>>): string {
   return Object.entries(headers)
-    .map(([name, value]) => `${name}: ${value}`)
+    .map(([name, value]) => `${sanitizeHeaderComponent(name)}: ${sanitizeHeaderComponent(value)}`)
     .join('\n');
 }
 
