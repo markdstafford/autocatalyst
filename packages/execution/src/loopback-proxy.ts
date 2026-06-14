@@ -145,7 +145,7 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
               ? parseCapturedBody(responseCapture.captured, contentType, { knownSecretValues })
               : undefined;
             const outputTokens = extractOutputTokens(parsedBody);
-            await logger.writeResponse(dumpId, {
+            void logger.writeResponse(dumpId, {
               timestamp: new Date().toISOString(),
               status: upstreamRes.statusCode ?? 200,
               headers: redactProxyHeaders({ direction: 'response', headers: upstreamRes.headers as Record<string, string>, knownSecretValues }),
@@ -158,7 +158,7 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
               body_capture_truncated: responseCapture?.truncated ?? false,
               ...(outputTokens !== undefined ? { output_tokens: outputTokens } : {}),
               stream_state: 'completed'
-            });
+            }).catch(() => undefined);
           }
         });
       }
@@ -170,14 +170,14 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
       });
     }
 
-    upstreamReq.on('error', async () => {
+    upstreamReq.on('error', () => {
       if (logger.enabled && dumpId) {
-        await logger.writeResponseError(dumpId, {
+        void logger.writeResponseError(dumpId, {
           timestamp: new Date().toISOString(),
           error_code: 'proxy_upstream_failed',
           elapsed_ms: Math.round(performance.now() - requestStartMs),
           upstream: { origin: new URL(upstreamBaseUrl).origin }
-        });
+        }).catch(() => undefined);
       }
       sendJsonError(res, 502, { error: { code: 'proxy_upstream_failed', message: 'Provider proxy upstream request failed.' } });
     });
@@ -192,23 +192,27 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
       if (logger.enabled) {
         requestCapture = captureBodyChunk(requestCapture, chunk, logger.bodyCaptureBytes);
       }
-      upstreamReq.write(chunk);
+      const ok = upstreamReq.write(chunk);
+      if (!ok) {
+        req.pause();
+        upstreamReq.once('drain', () => req.resume());
+      }
     });
 
-    req.on('end', async () => {
+    req.on('end', () => {
       if (logger.enabled && dumpId) {
         const contentType = req.headers['content-type'];
         const body = requestCapture
           ? parseCapturedBody(requestCapture.captured, contentType, { knownSecretValues })
           : undefined;
-        await logger.writeRequest(dumpId, {
+        void logger.writeRequest(dumpId, {
           timestamp: new Date(requestStartWallClock).toISOString(),
           method: req.method ?? 'GET',
           url: upstreamUrl.toString(),
           headers: redactProxyHeaders({ direction: 'request', headers: forwardHeaders, knownSecretValues }),
           body,
           body_capture_truncated: requestCapture?.truncated ?? false
-        });
+        }).catch(() => undefined);
       }
       upstreamReq.end();
     });
