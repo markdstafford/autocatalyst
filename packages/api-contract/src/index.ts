@@ -77,7 +77,10 @@ export {
   roleDistinctRequirementSchema,
   modelRoutingTableSettingsSchema,
   updateModelRoutingTableSettingsSchema,
-  modelRoutingErrorCodeSchema
+  modelRoutingErrorCodeSchema,
+  proxyModeSchema,
+  proxyRequestLoggingSettingsSchema,
+  headerValueFilterSettingsSchema
 } from './configuration-record.js';
 export type {
   ConfigurationRecord,
@@ -98,7 +101,10 @@ export type {
   RoleDistinctRequirement,
   ModelRoutingTableSettings,
   UpdateModelRoutingTableSettings,
-  ModelRoutingErrorCode
+  ModelRoutingErrorCode,
+  ProxyMode,
+  ProxyRequestLoggingSettings,
+  HeaderValueFilterSettings
 } from './configuration-record.js';
 
 export * from './domain-value-objects.js';
