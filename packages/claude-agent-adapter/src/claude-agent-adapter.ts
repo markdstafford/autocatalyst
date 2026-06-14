@@ -145,7 +145,6 @@ async function* realSDKLaunch(
   type QueryFn = (input: { prompt: string; options?: Record<string, unknown> }) => AsyncIterable<Record<string, unknown>>;
   let query: QueryFn;
   try {
-    // @ts-ignore -- optional peer dependency: absent in normal installs, typed when installed.
     const sdk = await import('@anthropic-ai/claude-agent-sdk') as { query: QueryFn };
     query = sdk.query;
   } catch {
