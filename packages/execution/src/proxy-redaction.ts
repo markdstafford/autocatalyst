@@ -8,6 +8,12 @@ export interface RedactProxyHeadersInput extends ProxyRedactionOptions {
   readonly headers: Readonly<Record<string, string | readonly string[] | undefined>>;
 }
 
+// Proxy dumps use lowercase [redacted] per the proxy design spec.
+// The direct-fetch path in request-alteration.ts uses [REDACTED] — both are intentional.
+
+// These header sets are intentionally different from the direct-fetch path in request-alteration.ts.
+// The proxy spec explicitly lists these headers; request-alteration.ts covers a different set
+// (e.g. x-auth-token, x-goog-api-key) by its own design.
 const requestSensitiveHeaders = new Set(['authorization', 'x-api-key', 'api-key']);
 const responseSensitiveHeaders = new Set(['set-cookie', 'authorization', 'www-authenticate', 'proxy-authenticate']);
 

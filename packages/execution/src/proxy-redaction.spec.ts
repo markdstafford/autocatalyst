@@ -45,4 +45,29 @@ describe('proxy redaction', () => {
       knownSecretValues: ['secret-token']
     })).toBe('before [redacted] after');
   });
+
+  it('supports additionalSensitiveHeaderNames for extended redaction', () => {
+    expect(redactProxyHeaders({
+      direction: 'request',
+      headers: {
+        'x-custom-token': 'secret-value',
+        'content-type': 'application/json'
+      },
+      additionalSensitiveHeaderNames: ['x-custom-token']
+    })).toEqual({
+      'x-custom-token': '[redacted]',
+      'content-type': 'application/json'
+    });
+  });
+
+  it('normalizes array-valued headers by joining with ", "', () => {
+    expect(redactProxyHeaders({
+      direction: 'response',
+      headers: {
+        'content-type': ['text/html', 'charset=utf-8']
+      }
+    })).toEqual({
+      'content-type': 'text/html, charset=utf-8'
+    });
+  });
 });
