@@ -145,6 +145,7 @@ async function* realSDKLaunch(
   type QueryFn = (input: { prompt: string; options?: Record<string, unknown> }) => AsyncIterable<Record<string, unknown>>;
   let query: QueryFn;
   try {
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment -- @ts-ignore is required here because @ts-expect-error triggers TS2578 (unused directive) when the optional peer is installed, making the suppression self-defeating
     // @ts-ignore -- optional peer: types unavailable until the package is installed
     const sdk = await import('@anthropic-ai/claude-agent-sdk') as { query: QueryFn };
     query = sdk.query;
