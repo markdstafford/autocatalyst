@@ -58,6 +58,24 @@ describe('createLoopbackProxy', () => {
     await upstream.close();
   });
 
+  it('rejects unsupported upstream schemes before the server starts', async () => {
+    await expect(
+      createLoopbackProxy({
+        upstreamBaseUrl: 'ftp://files.example.test/bucket',
+        endpoint: {},
+        telemetryContext: { runId: 'run_1', step: 'spec.author' }
+      })
+    ).rejects.toThrow(/proxy_invalid_upstream/u);
+
+    await expect(
+      createLoopbackProxy({
+        upstreamBaseUrl: 'ws://realtime.example.test',
+        endpoint: {},
+        telemetryContext: { runId: 'run_1', step: 'spec.author' }
+      })
+    ).rejects.toThrow(/proxy_invalid_upstream/u);
+  });
+
   it('returns a safe 502 JSON envelope on upstream transport failure', async () => {
     const proxy = await createLoopbackProxy({
       upstreamBaseUrl: 'http://127.0.0.1:9',
@@ -176,6 +194,31 @@ describe('createLoopbackProxy', () => {
     expect(upstreamChunksSent).toBeGreaterThan(0);
 
     upstreamEnd?.();
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('does not double-prefix upstream path when upstreamBaseUrl contains a path component', async () => {
+    // Regression: the loopback proxy should forward /v1/messages to
+    // upstream /anthropic/v1/messages, not /anthropic/anthropic/v1/messages.
+    const seen: Array<{ url?: string }> = [];
+    const upstream = await startFakeUpstream((req, res) => {
+      seen.push({ url: req.url });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    // upstream.baseUrl ends in /upstream (has a path); the proxy receives /v1/messages
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,  // e.g. http://127.0.0.1:PORT/upstream
+      endpoint: {},
+      telemetryContext: { runId: 'run_1', step: 'spec.author' }
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/v1/messages`);
+    expect(response.status).toBe(200);
+    // Upstream should see /upstream/v1/messages, not /upstream/upstream/v1/messages
+    expect(seen[0]?.url).toBe('/upstream/v1/messages');
+
     await proxy.close();
     await upstream.close();
   });

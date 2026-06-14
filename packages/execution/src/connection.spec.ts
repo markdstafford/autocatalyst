@@ -776,7 +776,9 @@ describe('createAgentConnection — proxy selection', () => {
       headers: { 'content-type': 'application/json' }
     });
 
-    expect(seen[0]?.url).toBe('http://127.0.0.1:45678/anthropic/v1/messages');
+    // The base path /anthropic is stripped before rebasing so the loopback proxy
+    // can re-add it without doubling (https://gateway.example.test/anthropic/anthropic/...)
+    expect(seen[0]?.url).toBe('http://127.0.0.1:45678/v1/messages');
   });
 });
 

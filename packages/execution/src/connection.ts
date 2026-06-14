@@ -74,10 +74,19 @@ function shouldUseProxy(profile: ResolvedAgentRunnerProfile): boolean {
   return Boolean(profile.endpoint.proxyRequestLogging?.enabled && profile.mode === 'agent');
 }
 
-function rebaseRequestToProxy(requestUrl: string, proxyBaseUrl: string): string {
+function rebaseRequestToProxy(requestUrl: string, proxyBaseUrl: string, upstreamBaseUrl: string): string {
   const original = new URL(requestUrl);
+  const upstream = new URL(upstreamBaseUrl);
   const proxy = new URL(proxyBaseUrl);
-  proxy.pathname = original.pathname;
+  // Strip the upstream base path prefix so the loopback proxy can re-add it without doubling.
+  // e.g. original=/anthropic/v1/messages, upstreamBase=/anthropic → relative=/v1/messages
+  const upstreamBasePath = upstream.pathname.replace(/\/$/u, '');
+  let relativePath = original.pathname;
+  if (upstreamBasePath && relativePath.startsWith(upstreamBasePath)) {
+    relativePath = relativePath.slice(upstreamBasePath.length);
+    if (!relativePath.startsWith('/')) relativePath = `/${relativePath}`;
+  }
+  proxy.pathname = relativePath || '/';
   proxy.search = original.search;
   proxy.hash = original.hash;
   return proxy.toString();
@@ -219,7 +228,7 @@ export async function createAgentConnection(
           // Proxy-aware path: rebase URL to loopback proxy, skip alteration (proxy owns policy)
           if (shouldUseProxy(profile)) {
             const proxy = await getProxyHandle();
-            const proxiedUrl = rebaseRequestToProxy(request.url, proxy.baseUrl);
+            const proxiedUrl = rebaseRequestToProxy(request.url, proxy.baseUrl, profile.endpoint.baseUrl ?? '');
             const rawBody = request.body;
             const body = rawBody !== undefined
               ? (typeof rawBody === 'string' ? rawBody : JSON.stringify(rawBody))

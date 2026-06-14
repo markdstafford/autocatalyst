@@ -55,8 +55,16 @@ function sendJsonError(res: http.ServerResponse, status: number, envelope: SafeP
 export async function createLoopbackProxy(options: LoopbackProxyOptions): Promise<LoopbackProxyHandle> {
   const { upstreamBaseUrl, endpoint, credential, headerValueFilters } = options;
 
-  // Validate upstream URL eagerly
-  new URL(upstreamBaseUrl);
+  // Validate upstream URL eagerly — must be http: or https: only
+  let parsedUpstream: URL;
+  try {
+    parsedUpstream = new URL(upstreamBaseUrl);
+  } catch {
+    throw new Error('proxy_invalid_upstream: Invalid upstream base URL');
+  }
+  if (parsedUpstream.protocol !== 'http:' && parsedUpstream.protocol !== 'https:') {
+    throw new Error(`proxy_invalid_upstream: Unsupported upstream scheme "${parsedUpstream.protocol}" — only http and https are allowed`);
+  }
 
   const knownSecretValues = credential !== undefined ? [credential] : [];
   const logger = await createProxyRequestLogger(
