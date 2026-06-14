@@ -26,7 +26,7 @@ describe('mapLoopbackUrlToUpstream', () => {
 });
 
 describe('applyProxyHeaderPolicy', () => {
-  it('strips hop-by-hop headers before forwarding', () => {
+  it('strips hop-by-hop headers before forwarding but preserves content-length', () => {
     const result = applyProxyHeaderPolicy({
       headers: {
         host: '127.0.0.1:41234',
@@ -36,8 +36,9 @@ describe('applyProxyHeaderPolicy', () => {
       },
       endpoint: {}
     });
-    expect(result.headers).toEqual({ 'content-type': 'application/json' });
-    expect(result.strippedHeaders).toEqual(expect.arrayContaining(['host', 'connection', 'content-length']));
+    expect(result.headers).toEqual({ 'content-length': '99', 'content-type': 'application/json' });
+    expect(result.strippedHeaders).toEqual(expect.arrayContaining(['host', 'connection']));
+    expect(result.strippedHeaders).not.toContain('content-length');
   });
 
   it('applies endpoint strip, exact token filters, additive rewrites, then auth injection', () => {

@@ -5,7 +5,7 @@ import type { JsonValue, RunnerEndpointSettings } from '@autocatalyst/api-contra
 // ---------------------------------------------------------------------------
 
 export const defaultRequestTimeoutMs = 60_000;
-export const maximumRequestTimeoutMs = 120_000;
+export const maximumRequestTimeoutMs = 600_000;
 export const defaultMaxRetries = 1;
 export const maximumMaxRetries = 5;
 export const transientHttpStatuses: readonly number[] = [408, 429, 500, 502, 503, 504];
@@ -242,6 +242,16 @@ export interface ClaudeProcessLaunchResult {
 // buildClaudeProcessLaunchEnvironment
 // ---------------------------------------------------------------------------
 
+function sanitizeHeaderComponent(s: string): string {
+  return s.replace(/[\r\n]/g, '');
+}
+
+function serializeAnthropicCustomHeaders(headers: Readonly<Record<string, string>>): string {
+  return Object.entries(headers)
+    .map(([name, value]) => `${sanitizeHeaderComponent(name)}: ${sanitizeHeaderComponent(value)}`)
+    .join('\n');
+}
+
 export function buildClaudeProcessLaunchEnvironment(input: ClaudeProcessLaunchInput): ClaudeProcessLaunchResult {
   const { endpoint, credential, materializedEnvironment } = input;
   const degradedCapabilities: ProviderCapabilityDegradation[] = [];
@@ -285,7 +295,7 @@ export function buildClaudeProcessLaunchEnvironment(input: ClaudeProcessLaunchIn
   overlayEnv[credentialTarget] = credential;
   secretVarNames.add(credentialTarget);
 
-  // Custom headers (header rewrites + authHeaderName credential encoded as JSON)
+  // Custom headers (header rewrites + authHeaderName credential encoded as newline-delimited header lines)
   const customHeaders: Record<string, string> = {
     ...(endpoint.headersToRewrite ?? {})
   };
@@ -295,7 +305,7 @@ export function buildClaudeProcessLaunchEnvironment(input: ClaudeProcessLaunchIn
   }
 
   if (Object.keys(customHeaders).length > 0) {
-    overlayEnv['ANTHROPIC_CUSTOM_HEADERS'] = JSON.stringify(customHeaders);
+    overlayEnv['ANTHROPIC_CUSTOM_HEADERS'] = serializeAnthropicCustomHeaders(customHeaders);
     secretVarNames.add('ANTHROPIC_CUSTOM_HEADERS');
   }
 

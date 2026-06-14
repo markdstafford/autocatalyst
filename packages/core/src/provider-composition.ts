@@ -1,6 +1,5 @@
 import type { ConfigurationRecord } from '@autocatalyst/api-contract';
 import {
-  ProviderConfigurationError,
   getAgentProviderAdapterKey,
   getDirectProviderAdapterKey,
   type AgentProviderAdapter,
@@ -140,11 +139,7 @@ export function composeAgentProviderAdapterRegistry(
     }
     const key = getAgentProviderAdapterKey(binding.providerKind, binding.adapterId);
     if (registry.has(key)) {
-      throw new ProviderConfigurationError(
-        'duplicate_adapter',
-        `Duplicate adapter registered for ${binding.providerKind}/${binding.adapterId}`,
-        { configurationRecordId: binding.configurationRecordId, providerKind: binding.providerKind, adapterId: binding.adapterId }
-      );
+      continue; // same (providerKind, adapterId) key — one adapter per type, regardless of instance
     }
     registry.set(key, binding.adapter);
   }
@@ -181,11 +176,7 @@ export function composeDirectProviderAdapterRegistry(
     }
     const key = getDirectProviderAdapterKey(binding.providerKind, binding.adapterId);
     if (registry.has(key)) {
-      throw new ProviderConfigurationError(
-        'duplicate_adapter',
-        `Duplicate direct adapter registered for ${binding.providerKind}/${binding.adapterId}`,
-        { configurationRecordId: binding.configurationRecordId, providerKind: binding.providerKind, adapterId: binding.adapterId }
-      );
+      continue; // same (providerKind, adapterId) key — one adapter per type, regardless of instance
     }
     registry.set(key, binding.adapter);
   }

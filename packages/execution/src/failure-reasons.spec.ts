@@ -34,6 +34,15 @@ describe('sanitized failure reason primitives', () => {
     expect(normalizeFailureReasonForPublicSurface('Execution failed: result_file_missing with raw path')).toBe('runner_failed_before_terminal_result');
   });
 
+  it('preserves Execution failed: result_json_invalid for public surface', () => {
+    const reason = 'Execution failed: result_json_invalid';
+    const normalized = normalizeFailureReasonForPublicSurface(reason);
+    expect(normalized).toBe('Execution failed: result_json_invalid');
+    // ensure no raw sensitive data leaks
+    expect(JSON.stringify({ normalized })).not.toContain('sk-ant');
+    expect(JSON.stringify({ normalized })).not.toContain('/Users/');
+  });
+
   it('normalizes unknown and unsafe values to runner_failed_before_terminal_result', () => {
     expect(normalizeFailureReasonForPublicSurface(sentinel)).toBe('runner_failed_before_terminal_result');
     expect(normalizeFailureReasonForPublicSurface('')).toBeUndefined();

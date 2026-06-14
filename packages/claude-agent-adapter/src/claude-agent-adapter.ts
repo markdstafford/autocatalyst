@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import type { RunnerEvent } from '@autocatalyst/api-contract';
@@ -88,6 +88,25 @@ export interface ClaudeAgentAdapterOptions {
 
 const PROGRESS_TOOL_NAMES = new Set(['update_plan', 'report_progress', 'notify']);
 
+const CLAUDE_TOOL_CATEGORY_MAP: Readonly<Record<string, readonly string[]>> = {
+  bash: ['Bash'],
+  filesystem: ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
+  lsp: []
+};
+
+function mapAllowedToolsForClaude(allowedTools: readonly string[]): string[] {
+  const mapped: string[] = [];
+  for (const tool of allowedTools) {
+    const replacement = CLAUDE_TOOL_CATEGORY_MAP[tool];
+    if (replacement !== undefined) {
+      mapped.push(...replacement);
+    } else {
+      mapped.push(tool);
+    }
+  }
+  return Array.from(new Set(mapped));
+}
+
 // Inference settings the Claude Agent SDK does NOT plumb into agent mode.
 // (Everything currently in the InferenceSettings schema falls into this set;
 // the SDK only exposes the model via the launch env / options, never
@@ -126,7 +145,8 @@ async function* realSDKLaunch(
   type QueryFn = (input: { prompt: string; options?: Record<string, unknown> }) => AsyncIterable<Record<string, unknown>>;
   let query: QueryFn;
   try {
-    // @ts-expect-error -- optional peer dependency: types unavailable until the package is installed
+    // eslint-disable-next-line @typescript-eslint/ban-ts-comment -- @ts-ignore is required here because @ts-expect-error triggers TS2578 (unused directive) when the optional peer is installed, making the suppression self-defeating
+    // @ts-ignore -- optional peer: types unavailable until the package is installed
     const sdk = await import('@anthropic-ai/claude-agent-sdk') as { query: QueryFn };
     query = sdk.query;
   } catch {
@@ -287,7 +307,7 @@ export function createClaudeAgentAdapter(
           ? workspace.scratchRoot
           : workspace.workspaceRoots[0];
 
-      const allowedTools = [...env.toolPolicy.allowedTools];
+      const allowedTools = mapAllowedToolsForClaude(env.toolPolicy.allowedTools);
       const prompt = env.context.task.prompt;
 
       // Materialize resolved skills into Claude SDK plugin descriptors.
@@ -651,10 +671,15 @@ async function maybeWriteResultFile(
   if (scratchRoot === undefined) return;
   const target = path.join(scratchRoot, 'step-result.json');
   try {
-    await mkdir(path.dirname(target), { recursive: true });
-    await writeFile(target, output, 'utf8');
+    await access(target);
+    return;
   } catch {
-    // Never surface raw filesystem error (which may carry host path).
+    // file does not exist, fall through to write
+  }
+  try {
+    await mkdir(path.dirname(target), { recursive: true });
+    await writeFile(target, output, { encoding: 'utf8', flag: 'wx' });
+  } catch {
     throw new Error('Claude adapter failed to write the step result file.');
   }
 }

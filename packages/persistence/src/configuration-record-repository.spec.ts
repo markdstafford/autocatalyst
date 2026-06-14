@@ -221,6 +221,98 @@ describe('DrizzleConfigurationRecordRepository', () => {
     });
   });
 
+  it('patches provider_profile endpoint, model, and inference settings fields', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const database = createSqliteDatabase({ path: databasePath });
+      await migrateSqliteDatabase(database);
+      const repository = new DrizzleConfigurationRecordRepository(database);
+
+      const created = await repository.create({
+        tenant: 'tenant_a',
+        kind: 'provider_profile',
+        providerKind: 'anthropic',
+        adapterId: 'claude-agent-sdk',
+        settings: {
+          profileName: 'Grove Claude',
+          credentialSecretHandle: 'sec_abcdefghijklmnopqrstuvwxyzABCDEF',
+          model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+          inferenceSettings: { temperature: 0.2 },
+          endpoint: { baseUrl: 'https://old.example.test', requestTimeoutMs: 30000 }
+        }
+      });
+
+      const updated = await repository.update('tenant_a', created.id, {
+        kind: 'provider_profile',
+        settings: {
+          endpoint: {
+            baseUrl: 'https://grove.example.test/anthropic',
+            authHeaderName: 'api-key',
+            proxyMode: 'required',
+            proxyRequestLogging: { enabled: true },
+            headerValueFilters: [
+              { headerName: 'anthropic-beta', removeValues: ['advisor-tool-2026-03-01'] }
+            ],
+            requestTimeoutMs: 600000
+          },
+          model: { provider: 'anthropic', model: 'claude-opus-4' },
+          inferenceSettings: { reasoningEffort: 'high' }
+        }
+      });
+
+      expect(updated?.kind).toBe('provider_profile');
+      if (updated?.kind !== 'provider_profile') throw new Error('wrong kind');
+      expect(updated.settings.endpoint).toEqual({
+        baseUrl: 'https://grove.example.test/anthropic',
+        authHeaderName: 'api-key',
+        proxyMode: 'required',
+        proxyRequestLogging: { enabled: true },
+        headerValueFilters: [
+          { headerName: 'anthropic-beta', removeValues: ['advisor-tool-2026-03-01'] }
+        ],
+        requestTimeoutMs: 600000
+      });
+      expect(updated.settings.model).toEqual({ provider: 'anthropic', model: 'claude-opus-4' });
+      expect(updated.settings.inferenceSettings).toEqual({ reasoningEffort: 'high' });
+
+      const found = await repository.findById('tenant_a', created.id);
+      expect(found).toEqual(updated);
+      database.close();
+    });
+  });
+
+  it('clears nullable provider_profile model, inferenceSettings, and endpoint fields', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const database = createSqliteDatabase({ path: databasePath });
+      await migrateSqliteDatabase(database);
+      const repository = new DrizzleConfigurationRecordRepository(database);
+
+      const created = await repository.create({
+        tenant: 'tenant_a',
+        kind: 'provider_profile',
+        providerKind: 'anthropic',
+        adapterId: 'claude-agent-sdk',
+        settings: {
+          profileName: 'Clearable',
+          model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+          inferenceSettings: { temperature: 0.1 },
+          endpoint: { baseUrl: 'https://gateway.example.test' }
+        }
+      });
+
+      const updated = await repository.update('tenant_a', created.id, {
+        kind: 'provider_profile',
+        settings: { model: null, inferenceSettings: null, endpoint: null }
+      });
+
+      expect(updated?.kind).toBe('provider_profile');
+      if (updated?.kind !== 'provider_profile') throw new Error('wrong kind');
+      expect(updated.settings.model).toBeUndefined();
+      expect(updated.settings.inferenceSettings).toBeUndefined();
+      expect(updated.settings.endpoint).toBeUndefined();
+      database.close();
+    });
+  });
+
   it('cross-tenant isolation: update and delete return null/false for records from a different tenant', async () => {
     await withTempDatabasePath(async (databasePath) => {
       const database = createSqliteDatabase({ path: databasePath });
