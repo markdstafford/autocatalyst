@@ -2,6 +2,8 @@ import { resolve } from 'node:path';
 
 import { defineConfig } from 'vite';
 
+import { sharedTestPool } from '../../vitest.shared';
+
 export default defineConfig({
   cacheDir: '../../node_modules/.vite/apps/control-plane',
   resolve: {
@@ -21,6 +23,7 @@ export default defineConfig({
     globals: false,
     include: ['src/**/*.spec.ts'],
     reporters: ['default'],
+    ...sharedTestPool,
     coverage: {
       reportsDirectory: '../../coverage/apps/control-plane'
     }

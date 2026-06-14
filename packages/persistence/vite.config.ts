@@ -2,6 +2,8 @@ import { resolve } from 'node:path';
 
 import { defineConfig } from 'vite';
 
+import { sharedTestPool } from '../../vitest.shared';
+
 export default defineConfig({
   cacheDir: '../../node_modules/.vite/packages/persistence',
   resolve: {
@@ -12,6 +14,7 @@ export default defineConfig({
     }
   },
   test: {
+    ...sharedTestPool,
     environment: 'node',
     globals: false,
     include: ['src/**/*.spec.ts'],
