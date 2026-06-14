@@ -565,6 +565,10 @@ export class DefaultOrchestrator implements Orchestrator {
       );
     }
 
+    if (stepDefinition?.waitingOn === 'system') {
+      return this.#dispatchSystemStep(input, run);
+    }
+
     if (this.#unitOfWork === undefined) {
       throw new OrchestratorError('persistence_failed', 'No unit of work configured.');
     }
@@ -614,6 +618,17 @@ export class DefaultOrchestrator implements Orchestrator {
         ...(checkpointResult !== undefined ? { checkpointResult } : {})
       });
     });
+  }
+
+  async #dispatchSystemStep(input: DispatchRunInput, run: Run): Promise<OrchestratedRunResult> {
+    if (run.currentStep === 'intake') {
+      return this.applyDirective({ runId: input.runId, directive: 'advance', tenant: input.tenant });
+    }
+
+    throw new OrchestratorError(
+      'invalid_transition',
+      `Step '${run.currentStep}' is waiting on a system handler that is not implemented.`
+    );
   }
 
   async tick(input: TickInput): Promise<TickResult> {
