@@ -204,9 +204,12 @@ function checkStatement(
   if (ts.isModuleDeclaration(node)) {
     // namespace/module — allow only when ambient or body holds only allowed declarations.
     if (hasDeclareModifier(node)) return [];
-    // Recurse into the module body — if it's a ModuleBlock, check statements.
+    // Recurse into the module body — ModuleBlock (normal namespace) or nested ModuleDeclaration (dotted A.B namespaces).
     if (node.body && ts.isModuleBlock(node.body)) {
       return node.body.statements.flatMap(s => checkStatement(s, altitude, normPath));
+    }
+    if (node.body && ts.isModuleDeclaration(node.body)) {
+      return checkStatement(node.body, altitude, normPath);
     }
     return [];
   }

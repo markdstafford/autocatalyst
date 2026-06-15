@@ -23,11 +23,7 @@ function withBlocking(
   if (finding.blocking === blocking && (reason === undefined || finding.blockingReason === reason)) {
     return finding;
   }
-  const next: ConvergenceRoundFinding = { ...finding, blocking };
-  if (reason !== undefined) {
-    (next as { blockingReason?: string }).blockingReason = reason;
-  }
-  return next;
+  return { ...finding, blocking, ...(reason !== undefined ? { blockingReason: reason } : {}) };
 }
 
 export function filterAltitudeFindings(input: FilterAltitudeFindingsInput): ConvergenceRoundFinding[] {
