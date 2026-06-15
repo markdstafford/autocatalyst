@@ -1943,7 +1943,9 @@ describe('DefaultOrchestrator.dispatch — reviewed step selection', () => {
     rounds: [],
     outcome: 'converged' as const,
     openFeedbackIds: [],
-    lastPositions: {}
+    lastPositions: {},
+    currentAltitude: 'build' as const,
+    acceptedCheckpoints: []
   };
 
   it('keeps spec.author on one-shot path even when convergence engine is present', async () => {
@@ -2208,7 +2210,9 @@ describe('reviewed step integration — transitions and checkpoint persistence',
     rounds: [],
     outcome: 'converged' as const,
     openFeedbackIds: [],
-    lastPositions: {}
+    lastPositions: {},
+    currentAltitude: 'build' as const,
+    acceptedCheckpoints: []
   };
 
   it('spec.author stays on one-shot path (not routed through convergence engine)', async () => {
