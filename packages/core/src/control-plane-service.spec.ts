@@ -169,7 +169,8 @@ function makeFakeFeedbackRepository(): FeedbackRepository {
     create: vi.fn(),
     findById: vi.fn(),
     listByRun: vi.fn().mockResolvedValue([] as readonly Feedback[]),
-    updateStatusAndAppendThread: vi.fn()
+    updateStatusAndAppendThread: vi.fn(),
+    appendThreadEntry: vi.fn()
   };
 }
 

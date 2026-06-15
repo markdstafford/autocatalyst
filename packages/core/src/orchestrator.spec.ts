@@ -1218,6 +1218,7 @@ function makeFakeFeedbackRepo(overrides: Partial<FeedbackRepository> = {}): Feed
     findById: vi.fn().mockResolvedValue(null),
     listByRun: vi.fn().mockResolvedValue([]),
     updateStatusAndAppendThread: vi.fn().mockResolvedValue(null),
+    appendThreadEntry: vi.fn().mockResolvedValue(null),
     ...overrides
   };
 }

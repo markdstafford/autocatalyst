@@ -988,6 +988,56 @@ describe('DrizzleDomainRepositories round-trip', () => {
     });
   });
 
+  it('feedback.appendThreadEntry appends a reply without changing status', async () => {
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'fb-append',
+        title: 'Feedback append reply'
+      });
+      const run = await repos.runs.create({
+        topicId: setup.topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false
+      });
+      const fb = await repos.feedback.create({
+        runId: run.id,
+        owner,
+        tenant: 'tenant_1',
+        target: 'artifact',
+        status: 'open',
+        title: 'Needs reply',
+        body: 'Initial body.',
+        thread: [{ id: 'thread_1', author: owner, body: 'Initial body.', createdAt: '2026-06-14T00:00:00.000Z' }]
+      });
+
+      const updated = await repos.feedback.appendThreadEntry({
+        feedbackId: fb.id,
+        threadEntry: {
+          id: 'thread_reply',
+          author: owner,
+          body: 'Reply body',
+          createdAt: '2026-06-15T12:00:00.000Z'
+        },
+        updatedAt: '2026-06-15T12:00:00.000Z'
+      });
+
+      expect(updated.status).toBe(fb.status);
+      expect(updated.thread).toHaveLength(2);
+      expect(updated.thread.at(-1)?.body).toBe('Reply body');
+      expect(updated.updatedAt).toBe('2026-06-15T12:00:00.000Z');
+
+      const reread = await repos.feedback.findById(fb.id);
+      expect(reread?.status).toBe('open');
+      expect(reread?.thread).toHaveLength(2);
+      expect(reread?.thread.at(-1)?.id).toBe('thread_reply');
+    });
+  });
+
   it('omits failureReason for newly created runs', async () => {
     await withRepositories(async (repos) => {
       const setup = await createProjectConversationAndTopic(repos, {

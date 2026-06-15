@@ -73,6 +73,7 @@ export type {
   CreateConversationTopicMessageAndRunInput,
   CreateConversationTopicMessageAndRunResult,
   FeedbackStatusTransitionPersistenceInput,
+  FeedbackThreadAppendPersistenceInput,
   FeedbackThreadEntryPersistenceInput,
   LifecycleRunStepInput,
   ListRunsByTenantOptions,
@@ -197,6 +198,8 @@ export {
   reopenFeedback,
   listBlockingFeedback,
   resolveApproverAddressedFeedback,
+  appendFeedbackThreadReply,
+  type AppendFeedbackThreadReplyInput,
   type FeedbackLifecycleDependencies
 } from './feedback-lifecycle.js';
 
