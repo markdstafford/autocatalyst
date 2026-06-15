@@ -83,7 +83,8 @@ export type {
   RecordRunStepTransitionResult,
   RunWorkspaceMetadata,
   RunWorkspaceMetadataRepository,
-  UpsertRunWorkspaceMetadataInput
+  UpsertRunWorkspaceMetadataInput,
+  UpdateRunStepCheckpointInput
 } from './domain-repositories.js';
 
 export { FeedbackConcurrentModificationError } from './domain-repositories.js';
