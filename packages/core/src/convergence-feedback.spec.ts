@@ -235,4 +235,41 @@ describe('createReviewerFeedback', () => {
     expect(result.feedback).toHaveLength(0);
     expect(Object.keys(result.findingsByFeedbackId)).toHaveLength(0);
   });
+
+  it('reviewer findings appear alongside human feedback in listByRun', async () => {
+    // Create a human feedback item (owner kind: 'human')
+    const humanFeedback = await repository.create({
+      runId: baseRun.id,
+      owner: runOwner,
+      tenant: baseRun.tenant,
+      target: 'artifact',
+      status: 'open',
+      title: 'Human feedback item',
+      body: 'Something a human noticed.',
+      thread: [{ id: 'thread_human_1', author: runOwner, body: 'Something a human noticed.', createdAt: '2026-06-15T10:00:00.000Z' }]
+    });
+
+    // Create reviewer feedback via createReviewerFeedback
+    const reviewerResult = await createReviewerFeedback({
+      run: { ...baseRun, currentStep: 'implementation.build' },
+      step: 'implementation.build',
+      reviewerPrincipal,
+      findings: [sampleFindings[0]],
+      repository,
+      clock: () => '2026-06-15T12:00:00.000Z'
+    });
+
+    // Call repository.listByRun(run.id)
+    const allFeedback = await repository.listByRun(baseRun.id);
+
+    // Assert both items are returned
+    expect(allFeedback).toHaveLength(2);
+    const ids = allFeedback.map((f) => f.id);
+    expect(ids).toContain(humanFeedback.id);
+    expect(ids).toContain(reviewerResult.feedback[0].id);
+
+    // Assert implementation finding uses target: 'implementation'
+    const reviewerFeedbackItem = allFeedback.find((f) => f.id === reviewerResult.feedback[0].id);
+    expect(reviewerFeedbackItem?.target).toBe('implementation');
+  });
 });
