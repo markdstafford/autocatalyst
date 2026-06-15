@@ -3,11 +3,18 @@
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "sourceRoot": "packages/core/src",
   "projectType": "library",
-  "tags": ["type:lib", "scope:core", "plane:control"],
+  "tags": [
+    "type:lib",
+    "scope:core",
+    "plane:control"
+  ],
   "targets": {
     "build": {
       "executor": "@nx/js:tsc",
-      "outputs": ["{options.outputPath}", "{options.outputPath}/index.d.ts"],
+      "outputs": [
+        "{options.outputPath}",
+        "{options.outputPath}/index.d.ts"
+      ],
       "options": {
         "outputPath": "packages/core/dist",
         "rootDir": "packages/core/src",
@@ -17,7 +24,9 @@
     },
     "lint": {
       "executor": "@nx/eslint:lint",
-      "outputs": ["{options.outputFile}"],
+      "outputs": [
+        "{options.outputFile}"
+      ],
       "options": {
         "lintFilePatterns": [
           "packages/core/src/**/*.ts",
@@ -27,10 +36,13 @@
       }
     },
     "test": {
-      "executor": "@nx/vite:test",
-      "outputs": ["{workspaceRoot}/coverage/packages/core"],
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/coverage/packages/core"
+      ],
       "options": {
-        "config": "packages/core/vite.config.ts"
+        "command": "vitest run",
+        "cwd": "packages/core"
       }
     }
   }

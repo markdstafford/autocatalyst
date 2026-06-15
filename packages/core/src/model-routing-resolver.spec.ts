@@ -449,7 +449,7 @@ describe('profile validation', () => {
     ).rejects.toMatchObject({ code: 'profile_incomplete' });
   });
 
-  it('throws profile_incomplete when inferenceSettings is undefined', async () => {
+  it('normalizes missing inferenceSettings to {} for active routes', async () => {
     const incompleteProfile: ConfigurationRecord = {
       ...claudeProfile,
       id: 'cfg_no_inf',
@@ -458,7 +458,7 @@ describe('profile validation', () => {
         profileName: 'Incomplete',
         credentialSecretHandle: 'sec_abcdefghijklmnopqrstuvwxyzABCDEF',
         model: { provider: 'anthropic', model: 'claude-sonnet-4' },
-        // no inferenceSettings
+        // no inferenceSettings — should be normalized to {}
         endpoint: {}
       }
     };
@@ -476,9 +476,8 @@ describe('profile validation', () => {
       configuration: makeReader([incompleteProfile, table])
     };
     const resolver = createModelRoutingResolver(opts);
-    await expect(
-      resolver.resolveAgentRoute({ tenant: 'tenant_b', step: 'impl', role: 'implementer' })
-    ).rejects.toMatchObject({ code: 'profile_incomplete' });
+    const result = await resolver.resolveAgentRoute({ tenant: 'tenant_b', step: 'impl', role: 'implementer' });
+    expect(result.profile.inferenceSettings).toEqual({});
   });
 
   it('does not throw profile_incomplete for inferenceSettings: {} (explicitly empty)', async () => {
@@ -489,7 +488,7 @@ describe('profile validation', () => {
     ).resolves.toMatchObject({ profileId: 'cfg_claude' });
   });
 
-  it('throws profile_incomplete when endpoint is missing', async () => {
+  it('normalizes missing endpoint to {} for active routes', async () => {
     const incompleteProfile: ConfigurationRecord = {
       ...claudeProfile,
       id: 'cfg_no_ep',
@@ -499,7 +498,7 @@ describe('profile validation', () => {
         credentialSecretHandle: 'sec_abcdefghijklmnopqrstuvwxyzABCDEF',
         model: { provider: 'anthropic', model: 'claude-sonnet-4' },
         inferenceSettings: {}
-        // no endpoint
+        // no endpoint — should be normalized to {}
       }
     };
     const table: ConfigurationRecord = {
@@ -516,9 +515,8 @@ describe('profile validation', () => {
       configuration: makeReader([incompleteProfile, table])
     };
     const resolver = createModelRoutingResolver(opts);
-    await expect(
-      resolver.resolveAgentRoute({ tenant: 'tenant_b', step: 'impl', role: 'implementer' })
-    ).rejects.toMatchObject({ code: 'profile_incomplete' });
+    const result = await resolver.resolveAgentRoute({ tenant: 'tenant_b', step: 'impl', role: 'implementer' });
+    expect(result.profile.endpoint).toEqual({});
   });
 
   it('throws profile_incomplete when credentialSecretHandle is missing', async () => {

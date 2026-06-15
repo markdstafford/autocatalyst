@@ -14,7 +14,8 @@ export type PolicyResourceDescriptor =
   | { readonly kind: 'run_steps'; readonly id: string; readonly path: '/v1/runs/:id/steps' }
   | { readonly kind: 'run_events'; readonly id: string; readonly path: '/v1/runs/:id/events' }
   | { readonly kind: 'run_spec'; readonly id: string; readonly path: '/v1/runs/:id/spec' }
-  | { readonly kind: 'run_feedback'; readonly id: string; readonly path: '/v1/runs/:id/feedback' };
+  | { readonly kind: 'run_feedback'; readonly id: string; readonly path: '/v1/runs/:id/feedback' }
+  | { readonly kind: 'run_feedback_thread'; readonly id: string; readonly path: '/v1/runs/:id/feedback/:feedbackId/thread' };
 
 export type PolicyAction =
   | 'probe_resource.create'
@@ -35,7 +36,8 @@ export type PolicyAction =
   | 'run.tick'
   | 'run_spec.read'
   | 'run_feedback.create'
-  | 'run_feedback.list';
+  | 'run_feedback.list'
+  | 'run_feedback.thread.append';
 
 export interface PolicyDecisionInput {
   readonly principal: Principal;

@@ -312,6 +312,17 @@ describe('orchestrator ingress methods', () => {
     expect((init?.headers as Record<string, string>)?.authorization).toBe('Bearer sdk-token');
   });
 
+  it('subscribeRunEvents appends ?replay=retained to the URL when replay option is set', async () => {
+    const mockFetch = vi.fn(async () =>
+      new Response('', { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    );
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
+    await client.subscribeRunEvents('run_1', { replay: 'retained' });
+    const [url] = mockFetch.mock.calls[0];
+    expect(String(url)).toContain('?replay=retained');
+    expect(String(url)).toContain('/v1/runs/run_1/events');
+  });
+
   it('subscribeRunEvents throws ControlPlaneClientError on non-ok response', async () => {
     const mockFetch = vi.fn(async () =>
       new Response(JSON.stringify({ error: { code: 'not_found', message: 'Run not found.' } }), {
@@ -488,6 +499,53 @@ describe('ControlPlaneClient.listRunFeedback', () => {
       fetch: mockFetch
     });
     await expect(client.listRunFeedback('run_1')).rejects.toBeInstanceOf(ControlPlaneClientError);
+  });
+});
+
+describe('ControlPlaneClient.appendRunFeedbackThreadReply', () => {
+  const feedbackItem = {
+    id: 'fb_1', runId: 'run_1',
+    owner: { kind: 'human', id: 'user_1', tenantId: 'tenant_1', displayName: 'Phoebe' },
+    tenant: 'tenant_1', target: 'artifact', status: 'open',
+    title: 'Scope unclear', body: 'Please clarify.',
+    thread: [
+      { id: 'th_1', author: { kind: 'human', id: 'user_1', tenantId: 'tenant_1', displayName: 'Phoebe' }, body: 'Please clarify.', createdAt: '2026-06-12T00:00:00.000Z' },
+      { id: 'th_2', author: { kind: 'human', id: 'user_1', tenantId: 'tenant_1', displayName: 'Phoebe' }, body: 'Reply', createdAt: '2026-06-14T00:00:00.000Z' }
+    ],
+    createdAt: '2026-06-12T00:00:00.000Z', updatedAt: '2026-06-14T00:00:00.000Z'
+  };
+
+  it('appendRunFeedbackThreadReply sends POST to the correct URL', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => feedbackItem
+    });
+    const client = createControlPlaneClient({
+      baseUrl: 'http://localhost:3000',
+      bearerToken: 'test-token',
+      fetch: mockFetch
+    });
+    const result = await client.appendRunFeedbackThreadReply('run_1', 'fb_1', { body: 'Reply' });
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.objectContaining({ href: expect.stringContaining('/v1/runs/run_1/feedback/fb_1/thread') }),
+      expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ authorization: 'Bearer test-token' }) })
+    );
+    expect(result.thread).toHaveLength(2);
+  });
+
+  it('throws ControlPlaneClientError on error response', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({ error: { code: 'not_found', message: 'Feedback not found.' } })
+    });
+    const client = createControlPlaneClient({
+      baseUrl: 'http://localhost:3000',
+      bearerToken: 'test-token',
+      fetch: mockFetch
+    });
+    await expect(client.appendRunFeedbackThreadReply('run_1', 'fb_missing', { body: 'Reply' })).rejects.toBeInstanceOf(ControlPlaneClientError);
   });
 });
 

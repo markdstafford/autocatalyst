@@ -69,6 +69,9 @@ function createFakeControlPlaneService(): ControlPlaneService {
     listRunFeedback: vi.fn(async () => {
       throw new Error('controlPlane.listRunFeedback not stubbed for this test');
     }),
+    appendRunFeedbackThreadReply: vi.fn(async () => {
+      throw new Error('controlPlane.appendRunFeedbackThreadReply not stubbed for this test');
+    }),
     tick: vi.fn(async () => ({ status: 'noop' as const }))
   };
 }
@@ -329,6 +332,325 @@ describe('registerControlPlaneRoutes', () => {
     server = app;
     const response = await app.inject({ method: 'DELETE', url: '/v1/configuration-records/cfg_missing', headers: authorization });
     expect(response.statusCode).toBe(404);
+  });
+
+  it('returns 422 when creating an active routing table that references a profile without model', async () => {
+    const profileWithoutModel = {
+      id: 'cfg_no_model',
+      tenant: 'tenant_dev',
+      kind: 'provider_profile',
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      settings: { profileName: 'No Model', credentialSecretHandle: 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef' },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const configRepo = {
+      create: vi.fn(async (input: { kind: string }) => ({ ...profileWithoutModel, kind: input.kind })),
+      list: vi.fn(async () => [profileWithoutModel]),
+      findById: vi.fn(async () => null),
+      update: vi.fn(async () => null),
+      delete: vi.fn(async () => false)
+    };
+    const { app, authorization } = await buildServer({ configurationRecords: configRepo });
+    server = app;
+    const response = await app.inject({
+      method: 'POST', url: '/v1/configuration-records', headers: authorization,
+      payload: {
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [{ id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_no_model' }]
+        }
+      }
+    });
+    expect(response.statusCode).toBe(422);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('profile_incomplete');
+  });
+
+  it('returns 422 when creating an active routing table that references a profile without credential', async () => {
+    const profileWithoutCredential = {
+      id: 'cfg_no_cred',
+      tenant: 'tenant_dev',
+      kind: 'provider_profile',
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      settings: {
+        profileName: 'No Cred',
+        model: { provider: 'anthropic', model: 'claude-sonnet-4' }
+      },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const configRepo = {
+      create: vi.fn(async (input: { kind: string }) => ({ ...profileWithoutCredential, kind: input.kind })),
+      list: vi.fn(async () => [profileWithoutCredential]),
+      findById: vi.fn(async () => null),
+      update: vi.fn(async () => null),
+      delete: vi.fn(async () => false)
+    };
+    const { app, authorization } = await buildServer({ configurationRecords: configRepo });
+    server = app;
+    const response = await app.inject({
+      method: 'POST', url: '/v1/configuration-records', headers: authorization,
+      payload: {
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [{ id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_no_cred' }]
+        }
+      }
+    });
+    expect(response.statusCode).toBe(422);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('profile_incomplete');
+  });
+
+  it('returns 422 when creating an active routing table that references a non-existent profile', async () => {
+    const configRepo = {
+      create: vi.fn(async (input: { kind: string }) => ({ id: 'cfg_new', tenant: 'tenant_dev', kind: input.kind, settings: {}, createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' })),
+      list: vi.fn(async () => []),
+      findById: vi.fn(async () => null),
+      update: vi.fn(async () => null),
+      delete: vi.fn(async () => false)
+    };
+    const { app, authorization } = await buildServer({ configurationRecords: configRepo });
+    server = app;
+    const response = await app.inject({
+      method: 'POST', url: '/v1/configuration-records', headers: authorization,
+      payload: {
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [{ id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_does_not_exist' }]
+        }
+      }
+    });
+    expect(response.statusCode).toBe(422);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('profile_not_found');
+  });
+
+  it('returns 422 when patching a routing table to active:true referencing a profile without model', async () => {
+    const profileWithoutModel = {
+      id: 'cfg_no_model',
+      tenant: 'tenant_dev',
+      kind: 'provider_profile',
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      settings: { profileName: 'No Model', credentialSecretHandle: 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef' },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const existingRoutingTable = {
+      id: 'tbl_existing',
+      tenant: 'tenant_dev',
+      kind: 'model_routing_table',
+      settings: {
+        active: false,
+        entries: [{ id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_no_model' }]
+      },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const configRepo = {
+      create: vi.fn(async () => existingRoutingTable),
+      list: vi.fn(async () => [profileWithoutModel, existingRoutingTable]),
+      findById: vi.fn(async (_tenant: string, id: string) => id === 'tbl_existing' ? existingRoutingTable : null),
+      update: vi.fn(async () => null),
+      delete: vi.fn(async () => false)
+    };
+    const { app, authorization } = await buildServer({ configurationRecords: configRepo });
+    server = app;
+    const response = await app.inject({
+      method: 'PATCH', url: '/v1/configuration-records/tbl_existing', headers: authorization,
+      payload: {
+        kind: 'model_routing_table',
+        settings: { active: true }
+      }
+    });
+    expect(response.statusCode).toBe(422);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('profile_incomplete');
+  });
+
+  it('returns 422 when patching a routing table to active:true referencing a profile without credential', async () => {
+    const profileWithoutCredential = {
+      id: 'cfg_no_credential',
+      tenant: 'tenant_dev',
+      kind: 'provider_profile',
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      settings: { profileName: 'No Credential', model: { provider: 'anthropic', model: 'claude-sonnet-4' } },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const existingRoutingTable = {
+      id: 'tbl_existing_nocred',
+      tenant: 'tenant_dev',
+      kind: 'model_routing_table',
+      settings: {
+        active: false,
+        entries: [{ id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_no_credential' }]
+      },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const configRepo = {
+      create: vi.fn(async () => existingRoutingTable),
+      list: vi.fn(async () => [profileWithoutCredential, existingRoutingTable]),
+      findById: vi.fn(async (_tenant: string, id: string) => id === 'tbl_existing_nocred' ? existingRoutingTable : null),
+      update: vi.fn(async () => null),
+      delete: vi.fn(async () => false)
+    };
+    const { app, authorization } = await buildServer({ configurationRecords: configRepo });
+    server = app;
+    const response = await app.inject({
+      method: 'PATCH', url: '/v1/configuration-records/tbl_existing_nocred', headers: authorization,
+      payload: {
+        kind: 'model_routing_table',
+        settings: { active: true }
+      }
+    });
+    expect(response.statusCode).toBe(422);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('profile_incomplete');
+  });
+
+  it('allows creating an active routing table when the referenced profile is complete', async () => {
+    const completeProfile = {
+      id: 'cfg_complete',
+      tenant: 'tenant_dev',
+      kind: 'provider_profile',
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      settings: {
+        profileName: 'Complete',
+        credentialSecretHandle: 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef',
+        model: { provider: 'anthropic', model: 'claude-sonnet-4' }
+      },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const routingTableRecord = {
+      id: 'tbl_new',
+      tenant: 'tenant_dev',
+      kind: 'model_routing_table',
+      settings: {
+        active: true,
+        entries: [{ id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_complete' }]
+      },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const configRepo = {
+      create: vi.fn(async () => routingTableRecord),
+      list: vi.fn(async () => [completeProfile]),
+      findById: vi.fn(async () => null),
+      update: vi.fn(async () => null),
+      delete: vi.fn(async () => false)
+    };
+    const { app, authorization } = await buildServer({ configurationRecords: configRepo });
+    server = app;
+    const response = await app.inject({
+      method: 'POST', url: '/v1/configuration-records', headers: authorization,
+      payload: {
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [{ id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_complete' }]
+        }
+      }
+    });
+    expect(response.statusCode).toBe(201);
+  });
+
+  it('returns 422 when patching a provider_profile to clear model while an active routing table references it', async () => {
+    const completeProfile = {
+      id: 'cfg_pp_model',
+      tenant: 'tenant_dev',
+      kind: 'provider_profile',
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      settings: {
+        profileName: 'Complete',
+        credentialSecretHandle: 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef',
+        model: { provider: 'anthropic', model: 'claude-sonnet-4' }
+      },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const activeRoutingTable = {
+      id: 'tbl_active_pp',
+      tenant: 'tenant_dev',
+      kind: 'model_routing_table',
+      settings: {
+        active: true,
+        entries: [{ id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_pp_model' }]
+      },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const configRepo = {
+      create: vi.fn(async () => completeProfile),
+      list: vi.fn(async () => [completeProfile, activeRoutingTable]),
+      findById: vi.fn(async (_tenant: string, id: string) => id === 'cfg_pp_model' ? completeProfile : null),
+      update: vi.fn(async () => null),
+      delete: vi.fn(async () => false)
+    };
+    const { app, authorization } = await buildServer({ configurationRecords: configRepo });
+    server = app;
+    const response = await app.inject({
+      method: 'PATCH', url: '/v1/configuration-records/cfg_pp_model', headers: authorization,
+      payload: {
+        kind: 'provider_profile',
+        settings: { model: null }
+      }
+    });
+    expect(response.statusCode).toBe(422);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('profile_incomplete');
+  });
+
+  it('returns 422 when patching a provider_profile to clear credential while an active routing table references it', async () => {
+    const completeProfile = {
+      id: 'cfg_pp_cred',
+      tenant: 'tenant_dev',
+      kind: 'provider_profile',
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      settings: {
+        profileName: 'Complete',
+        credentialSecretHandle: 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef',
+        model: { provider: 'anthropic', model: 'claude-sonnet-4' }
+      },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const activeRoutingTable = {
+      id: 'tbl_active_cred',
+      tenant: 'tenant_dev',
+      kind: 'model_routing_table',
+      settings: {
+        active: true,
+        entries: [{ id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_pp_cred' }]
+      },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const configRepo = {
+      create: vi.fn(async () => completeProfile),
+      list: vi.fn(async () => [completeProfile, activeRoutingTable]),
+      findById: vi.fn(async (_tenant: string, id: string) => id === 'cfg_pp_cred' ? completeProfile : null),
+      update: vi.fn(async () => null),
+      delete: vi.fn(async () => false)
+    };
+    const { app, authorization } = await buildServer({ configurationRecords: configRepo });
+    server = app;
+    const response = await app.inject({
+      method: 'PATCH', url: '/v1/configuration-records/cfg_pp_cred', headers: authorization,
+      payload: {
+        kind: 'provider_profile',
+        settings: { credentialSecretHandle: null }
+      }
+    });
+    expect(response.statusCode).toBe(422);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('profile_incomplete');
   });
 
   it('creates a secret handle via POST /v1/secrets', async () => {
@@ -649,6 +971,32 @@ describe('registerControlPlaneRoutes', () => {
     );
     expect(controlPlane.replayRunEvents).toHaveBeenCalledWith(
       expect.objectContaining({ runId: 'run_1', tenant: 'tenant_dev', lastEventId: 'evt_42' })
+    );
+    controller.abort();
+  });
+
+  it('passes replay=retained to the service when ?replay=retained is set', async () => {
+    const events: AsyncIterable<never> = { async *[Symbol.asyncIterator]() { /* no events */ } };
+    const subscription: RunEventSubscription = { events, close: () => {} };
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.subscribeRunEvents as ReturnType<typeof vi.fn>).mockResolvedValue(subscription);
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const address = app.server.address();
+    if (typeof address !== 'object' || address === null) {
+      throw new Error('Expected server address to be an object.');
+    }
+
+    const controller = new AbortController();
+    const response = await fetch(
+      `http://127.0.0.1:${(address as { port: number }).port}/v1/runs/run_1/events?replay=retained`,
+      { signal: controller.signal, headers: authorization }
+    );
+    await response.text();
+    expect(response.status).toBe(200);
+    expect(controlPlane.replayRunEvents).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'run_1', tenant: 'tenant_dev', replay: 'retained' })
     );
     controller.abort();
   });
@@ -1057,6 +1405,157 @@ describe('registerControlPlaneRoutes', () => {
     expect(sseResponse.body).toContain('"reason":"provider_auth_failed"');
     expect(sseResponse.body).toContain('"failureReason":"provider_auth_failed"');
     expectNoSentinels(sseResponse.body);
+  });
+
+  it('POST /v1/runs/:id/feedback/:feedbackId/thread appends a thread reply and returns 200', async () => {
+    const feedbackWithTwoReplies = {
+      ...specFeedback,
+      thread: [
+        {
+          id: 'thread_1',
+          author: hardcodedDevelopmentPrincipal,
+          body: 'Please add acceptance criteria to section 2.',
+          createdAt: '2026-06-08T00:00:00.000Z'
+        },
+        {
+          id: 'thread_2',
+          author: hardcodedDevelopmentPrincipal,
+          body: 'Reply body',
+          createdAt: '2026-06-14T00:00:00.000Z'
+        }
+      ]
+    };
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.appendRunFeedbackThreadReply as ReturnType<typeof vi.fn>).mockResolvedValue(feedbackWithTwoReplies);
+    const { app, authorization, policyCalls } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/feedback/fb_1/thread',
+      headers: authorization,
+      payload: { body: 'Reply body' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    const parsed = feedbackSchema.parse(response.json());
+    expect(parsed.thread).toHaveLength(2);
+    expect(controlPlane.appendRunFeedbackThreadReply).toHaveBeenCalledWith({
+      principal: hardcodedDevelopmentPrincipal,
+      tenant: 'tenant_dev',
+      runId: 'run_1',
+      feedbackId: 'fb_1',
+      body: 'Reply body'
+    });
+    expect(policyCalls).toContainEqual({
+      principal: hardcodedDevelopmentPrincipal,
+      action: 'run_feedback.thread.append',
+      resource: { kind: 'run_feedback_thread', id: 'run_1', path: '/v1/runs/:id/feedback/:feedbackId/thread' }
+    });
+  });
+
+  it('POST /v1/runs/:id/feedback/:feedbackId/thread returns 404 for unknown feedback', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.appendRunFeedbackThreadReply as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('not_found', 'Feedback not found.')
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/feedback/fb_missing/thread',
+      headers: authorization,
+      payload: { body: 'Reply body' }
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('not_found');
+  });
+
+  it('POST /v1/runs/:id/feedback/:feedbackId/thread returns 400 for invalid body', async () => {
+    const { app, authorization } = await buildServer();
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/feedback/fb_1/thread',
+      headers: authorization,
+      payload: { body: '' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('validation_error');
+  });
+
+  it('POST /v1/runs/:id/feedback/:feedbackId/thread maps unauthorized to 403', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.appendRunFeedbackThreadReply as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('unauthorized', 'Not authorized.')
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/feedback/fb_1/thread',
+      headers: authorization,
+      payload: { body: 'Reply body' }
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('forbidden');
+  });
+
+  it('POST /v1/runs/:id/feedback round-trips an artifact_range anchor with emoji codepoints', async () => {
+    const anchorRangeFeedback = {
+      ...specFeedback,
+      id: 'fbk_range_1',
+      title: 'Range anchor feedback',
+      body: 'Test emoji codepoints.',
+      anchor: {
+        kind: 'artifact_range' as const,
+        artifactId: 'art_spec_1',
+        from: 6,
+        to: 8,
+        quotedText: '😄x'
+      },
+      thread: [
+        {
+          id: 'thread_1',
+          author: hardcodedDevelopmentPrincipal,
+          body: 'Test emoji codepoints.',
+          createdAt: '2026-06-14T00:00:00.000Z'
+        }
+      ]
+    };
+
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.createRunFeedback as ReturnType<typeof vi.fn>).mockResolvedValue(anchorRangeFeedback);
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/feedback',
+      headers: authorization,
+      payload: {
+        target: 'artifact',
+        title: 'Range anchor feedback',
+        body: 'Test emoji codepoints.',
+        anchor: { kind: 'artifact_range', artifactId: 'art_spec_1', from: 6, to: 8, quotedText: '😄x' }
+      }
+    });
+
+    expect(response.statusCode).toBe(201);
+    const parsed = feedbackSchema.parse(response.json());
+    expect(parsed.anchor).toEqual({
+      kind: 'artifact_range',
+      artifactId: 'art_spec_1',
+      from: 6,
+      to: 8,
+      quotedText: '😄x'
+    });
   });
 
   it('exposes an SSE route with event-stream semantics', async () => {

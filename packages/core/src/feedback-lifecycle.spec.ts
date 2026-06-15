@@ -2,7 +2,7 @@ import { vi, describe, it, expect } from 'vitest';
 
 import type { Feedback, FeedbackStatus, FeedbackThreadEntry, NonModelPrincipal } from '@autocatalyst/api-contract';
 
-import type { FeedbackRepository, FeedbackStatusTransitionPersistenceInput } from './domain-repositories.js';
+import type { FeedbackRepository, FeedbackStatusTransitionPersistenceInput, FeedbackThreadAppendPersistenceInput } from './domain-repositories.js';
 import {
   createArtifactFeedback,
   addressFeedback,
@@ -11,6 +11,7 @@ import {
   reopenFeedback,
   listBlockingFeedback,
   resolveApproverAddressedFeedback,
+  appendFeedbackThreadReply,
   type FeedbackLifecycleDependencies
 } from './feedback-lifecycle.js';
 
@@ -52,6 +53,7 @@ function makeFeedbackDeps(overrides: FeedbackDepOverrides = {}): FeedbackLifecyc
     findById: ReturnType<typeof vi.fn>;
     listByRun: ReturnType<typeof vi.fn>;
     updateStatusAndAppendThread: ReturnType<typeof vi.fn>;
+    appendThreadEntry: ReturnType<typeof vi.fn>;
   };
 } {
   const defaultFeedback = feedbackItem({ id: 'fb_1', status: 'open' });
@@ -70,6 +72,13 @@ function makeFeedbackDeps(overrides: FeedbackDepOverrides = {}): FeedbackLifecyc
     return existing ? { ...existing, status: input.nextStatus } : defaultFeedback;
   });
 
+  const appendThreadEntryMock = vi.fn(async (input: FeedbackThreadAppendPersistenceInput) => {
+    const existing = await findByIdMock(input.feedbackId);
+    return existing
+      ? { ...existing, thread: [...(existing as Feedback).thread, input.threadEntry], updatedAt: input.updatedAt }
+      : defaultFeedback;
+  });
+
   const createMock = vi.fn(async (input: Parameters<FeedbackRepository['create']>[0]) => {
     return { ...input, id: 'fb_new', createdAt: '2026-06-11T10:00:00.000Z', updatedAt: '2026-06-11T10:00:00.000Z' } as Feedback;
   });
@@ -81,7 +90,8 @@ function makeFeedbackDeps(overrides: FeedbackDepOverrides = {}): FeedbackLifecyc
       create: createMock,
       findById: findByIdMock,
       listByRun: listByRunMock,
-      updateStatusAndAppendThread: updateMock
+      updateStatusAndAppendThread: updateMock,
+      appendThreadEntry: appendThreadEntryMock
     }
   };
 }
@@ -320,5 +330,42 @@ describe('resolveApproverAddressedFeedback', () => {
     await resolveApproverAddressedFeedback({ runId: 'run_1', target: 'artifact', approver: principal('phoebe') }, deps);
 
     expect(deps.feedback.updateStatusAndAppendThread).not.toHaveBeenCalled();
+  });
+});
+
+// ---- appendFeedbackThreadReply ----------------------------------------------
+
+describe('appendFeedbackThreadReply', () => {
+  it('appends a thread entry without changing feedback status', async () => {
+    const deps = makeFeedbackDeps({
+      ids: () => 'thread_reply_1',
+      clock: () => '2026-06-14T10:00:00.000Z'
+    });
+
+    const result = await appendFeedbackThreadReply(
+      { feedbackId: 'fb_1', actor: principal('alice'), body: 'Just a comment.' },
+      deps
+    );
+
+    expect(deps.feedback.appendThreadEntry).toHaveBeenCalledWith(expect.objectContaining({
+      feedbackId: 'fb_1',
+      threadEntry: expect.objectContaining({
+        id: 'thread_reply_1',
+        author: principal('alice'),
+        body: 'Just a comment.',
+        createdAt: '2026-06-14T10:00:00.000Z'
+      }),
+      updatedAt: '2026-06-14T10:00:00.000Z'
+    }));
+    expect(deps.feedback.updateStatusAndAppendThread).not.toHaveBeenCalled();
+    expect(result.status).toBe('open');
+  });
+
+  it('throws feedback_missing when the feedback item does not exist', async () => {
+    const deps = makeFeedbackDeps({ findById: null });
+
+    await expect(
+      appendFeedbackThreadReply({ feedbackId: 'fb_missing', actor: principal('alice'), body: 'comment' }, deps)
+    ).rejects.toMatchObject({ code: 'feedback_missing' });
   });
 });

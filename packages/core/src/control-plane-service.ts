@@ -13,7 +13,7 @@ import { createConversationWithFirstRunResponseSchema, runFeedbackListResponseSc
 
 import type { ArtifactRepository, FeedbackRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
-import { createArtifactFeedback } from './feedback-lifecycle.js';
+import { appendFeedbackThreadReply, createArtifactFeedback, FeedbackLifecycleError } from './feedback-lifecycle.js';
 import {
   OrchestratorError,
   type OrchestratedConversationResult,
@@ -114,6 +114,7 @@ export interface ServiceReplayRunEventsInput {
   readonly tenant: string;
   readonly runId: string;
   readonly lastEventId?: string;
+  readonly replay?: 'retained';
 }
 
 export interface ServiceTickInput {
@@ -153,6 +154,14 @@ export interface ServiceListRunFeedbackResult {
   readonly feedback: readonly Feedback[];
 }
 
+export interface AppendRunFeedbackThreadReplyInput {
+  readonly principal: Principal;
+  readonly tenant: string;
+  readonly runId: string;
+  readonly feedbackId: string;
+  readonly body: string;
+}
+
 // --- Service interface ---
 
 export interface ControlPlaneService {
@@ -168,6 +177,7 @@ export interface ControlPlaneService {
   getRunSpec(input: ServiceGetRunSpecInput): Promise<ServiceGetRunSpecResult>;
   createRunFeedback(input: ServiceCreateRunFeedbackInput): Promise<ServiceCreateRunFeedbackResult>;
   listRunFeedback(input: ServiceListRunFeedbackInput): Promise<ServiceListRunFeedbackResult>;
+  appendRunFeedbackThreadReply(input: AppendRunFeedbackThreadReplyInput): Promise<Feedback>;
 }
 
 // --- Constructor options ---
@@ -412,7 +422,8 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     return this.#events.replayAfter({
       runId: input.runId,
       tenant: input.tenant,
-      ...(input.lastEventId !== undefined ? { lastEventId: input.lastEventId } : {})
+      ...(input.lastEventId !== undefined ? { lastEventId: input.lastEventId } : {}),
+      ...(input.replay === 'retained' ? { replay: 'retained' as const } : {})
     });
   }
 
@@ -574,5 +585,41 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     }
 
     return runFeedbackListResponseSchema.parse({ feedback: feedbackItems });
+  }
+
+  async appendRunFeedbackThreadReply(input: AppendRunFeedbackThreadReplyInput): Promise<Feedback> {
+    const actor = requireNonModelPrincipal(input.principal);
+
+    const decision = await this.#policy.authorize({
+      principal: input.principal,
+      action: 'run_feedback.thread.append',
+      resource: { kind: 'run_feedback_thread', id: input.runId, path: '/v1/runs/:id/feedback/:feedbackId/thread' }
+    });
+    if (!decision.allowed) {
+      throw new ControlPlaneServiceError('forbidden', 'Not authorized to append feedback thread replies.');
+    }
+
+    const run = await this.#runs.findById(input.runId);
+    if (run === null || run.tenant !== input.tenant) {
+      throw new ControlPlaneServiceError('not_found', `Run '${input.runId}' not found.`);
+    }
+
+    const feedback = await this.#feedback.findById(input.feedbackId);
+    if (feedback === null || feedback.tenant !== input.tenant || feedback.runId !== run.id) {
+      throw new ControlPlaneServiceError('not_found', 'Feedback not found.');
+    }
+
+    try {
+      return await appendFeedbackThreadReply({
+        feedbackId: input.feedbackId,
+        actor,
+        body: input.body
+      }, this.#feedbackLifecycle);
+    } catch (error) {
+      if (error instanceof FeedbackLifecycleError && error.code === 'feedback_missing') {
+        throw new ControlPlaneServiceError('not_found', 'Feedback not found.');
+      }
+      throw persistenceFailed('Failed to append feedback thread reply.', error);
+    }
   }
 }

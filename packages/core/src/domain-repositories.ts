@@ -133,11 +133,18 @@ export class FeedbackConcurrentModificationError extends Error {
   }
 }
 
+export interface FeedbackThreadAppendPersistenceInput {
+  readonly feedbackId: string;
+  readonly threadEntry: FeedbackThreadEntryPersistenceInput;
+  readonly updatedAt: string;
+}
+
 export interface FeedbackRepository {
   create(input: CreateFeedbackInput): Promise<Feedback>;
   findById(id: string): Promise<Feedback | null>;
   listByRun(runId: string): Promise<readonly Feedback[]>;
   updateStatusAndAppendThread(input: FeedbackStatusTransitionPersistenceInput): Promise<Feedback>;
+  appendThreadEntry(input: FeedbackThreadAppendPersistenceInput): Promise<Feedback>;
 }
 
 export interface PublicationRepository {
