@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Artifact, Conversation, Feedback, Message, NonModelPrincipal, Run, RunStateTransitionEvent, RunStep, Topic } from '@autocatalyst/api-contract';
 
-import type { ConversationIngressRepository, FeedbackRepository, RunRepository, RunWorkspaceMetadataRepository } from './domain-repositories.js';
+import type { ConversationIngressRepository, FeedbackRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
 import { SpecReviewGateBlockedError } from './spec-review-gate.js';
 import { RunDispatchQueue } from './run-dispatch-queue.js';
@@ -17,6 +17,7 @@ import type { SpecAuthoringServiceDependencies } from './spec-authoring-service.
 import { SpecAuthoringError } from './spec-authoring-service.js';
 import type { SpecApprovalFinalizerDependencies } from './spec-approval-finalizer.js';
 import { ModelRoutingConfigurationError } from './model-routing-resolver.js';
+import type { ConvergenceEngine, ConvergenceEngineInput } from './convergence-engine.js';
 
 const timestamp = '2026-06-08T00:00:00.000Z';
 const owner = { id: 'user_1', kind: 'human' as const, tenantId: 'tenant_1', displayName: 'Ada' };
@@ -140,6 +141,16 @@ function makeRecordingPublisher(): { publisher: RunEventPublisher; events: RunSt
   };
 }
 
+function makeFakeRunStepRepo(overrides: Partial<RunStepRepository> = {}): RunStepRepository {
+  return {
+    create: vi.fn(),
+    findById: vi.fn().mockResolvedValue(null),
+    listByRun: vi.fn().mockResolvedValue([]),
+    updateCheckpoint: vi.fn().mockResolvedValue(makeRunStep()),
+    ...overrides
+  };
+}
+
 function makeOrchestrator(opts: {
   runs?: RunRepository;
   conversationIngress?: ConversationIngressRepository;
@@ -157,6 +168,8 @@ function makeOrchestrator(opts: {
   finalizeSpecApproval?: (input: unknown, deps: SpecApprovalFinalizerDependencies) => Promise<void>;
   specApprovalFinalizerDependencies?: SpecApprovalFinalizerDependencies;
   runWorkspaceMetadata?: RunWorkspaceMetadataRepository;
+  runSteps?: RunStepRepository;
+  convergenceEngine?: ConvergenceEngine;
   logger?: { warn: ReturnType<typeof vi.fn> };
   autoDispatch?: AutoDispatchOptions;
 } = {}) {
@@ -181,6 +194,8 @@ function makeOrchestrator(opts: {
     ...(opts.finalizeSpecApproval !== undefined ? { finalizeSpecApproval: opts.finalizeSpecApproval as typeof import('./spec-approval-finalizer.js').finalizeSpecApproval } : {}),
     ...(opts.specApprovalFinalizerDependencies !== undefined ? { specApprovalFinalizerDependencies: opts.specApprovalFinalizerDependencies } : {}),
     ...(opts.runWorkspaceMetadata !== undefined ? { runWorkspaceMetadata: opts.runWorkspaceMetadata } : {}),
+    ...(opts.runSteps !== undefined ? { runSteps: opts.runSteps } : {}),
+    ...(opts.convergenceEngine !== undefined ? { convergenceEngine: opts.convergenceEngine } : {}),
     ...(opts.logger !== undefined ? { logger: opts.logger } : {}),
     ...(opts.autoDispatch !== undefined ? { autoDispatch: opts.autoDispatch } : {})
   });
@@ -1905,5 +1920,235 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(unitRun).toHaveBeenCalledTimes(1);
     expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('Unknown run step'), expect.anything());
+  });
+});
+
+describe('DefaultOrchestrator.dispatch — reviewed step selection', () => {
+  function makeConvergenceEngine(result: Awaited<ReturnType<ConvergenceEngine['run']>>): { engine: ConvergenceEngine; calls: ConvergenceEngineInput[] } {
+    const calls: ConvergenceEngineInput[] = [];
+    const engine: ConvergenceEngine = {
+      run: vi.fn(async (input: ConvergenceEngineInput) => {
+        calls.push(input);
+        return result;
+      })
+    };
+    return { engine, calls };
+  }
+
+  const advanceCheckpoint = {
+    kind: 'convergence_review' as const,
+    step: 'spec.author',
+    maxRounds: 3,
+    routing: { distinct: true },
+    rounds: [],
+    outcome: 'converged' as const,
+    openFeedbackIds: [],
+    lastPositions: {}
+  };
+
+  it('delegates spec.author to convergence engine', async () => {
+    const existing = makeRun({ currentStep: 'spec.author' });
+    const updated = makeRun({ currentStep: 'spec.human_review' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'spec.human_review', phase: 'spec' });
+    const currentRunStep = makeRunStep({ step: 'spec.author', phase: 'spec' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const runSteps = makeFakeRunStepRepo({
+      listByRun: vi.fn().mockResolvedValue([currentRunStep])
+    });
+    const unitRun = vi.fn();
+    const { engine, calls } = makeConvergenceEngine({
+      workResult: { directive: 'advance', result: advanceCheckpoint as unknown as Readonly<Record<string, unknown>> },
+      checkpointResult: advanceCheckpoint
+    });
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      runSteps,
+      unitOfWork: { run: unitRun },
+      convergenceEngine: engine,
+      autoDispatch: { enabled: false }
+    });
+
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    expect(unitRun).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ runId: 'run_1', run: existing, tenant: 'tenant_1' });
+    expect(result.run.currentStep).toBe('spec.human_review');
+  });
+
+  it('delegates implementation.build to convergence engine', async () => {
+    const existing = makeRun({ currentStep: 'implementation.build' });
+    const updated = makeRun({ currentStep: 'implementation.human_review' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.human_review', phase: 'implementation' });
+    const currentRunStep = makeRunStep({ step: 'implementation.build', phase: 'implementation' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const runSteps = makeFakeRunStepRepo({
+      listByRun: vi.fn().mockResolvedValue([currentRunStep])
+    });
+    const unitRun = vi.fn();
+    const buildCheckpoint = { ...advanceCheckpoint, step: 'implementation.build' };
+    const { engine, calls } = makeConvergenceEngine({
+      workResult: { directive: 'advance', result: buildCheckpoint as unknown as Readonly<Record<string, unknown>> },
+      checkpointResult: buildCheckpoint
+    });
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      runSteps,
+      unitOfWork: { run: unitRun },
+      convergenceEngine: engine,
+      autoDispatch: { enabled: false }
+    });
+
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    expect(unitRun).not.toHaveBeenCalled();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ runId: 'run_1', run: existing, tenant: 'tenant_1' });
+    expect(result.run.currentStep).toBe('implementation.human_review');
+  });
+
+  it('keeps implementation.plan on one-shot path (no convergence engine)', async () => {
+    const existing = makeRun({ currentStep: 'implementation.plan' });
+    const updated = makeRun({ currentStep: 'implementation.build' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.build', phase: 'implementation' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const unitRun = vi.fn().mockResolvedValue({ directive: 'advance' });
+    const { engine, calls } = makeConvergenceEngine({
+      workResult: { directive: 'advance' },
+      checkpointResult: advanceCheckpoint
+    });
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      unitOfWork: { run: unitRun },
+      convergenceEngine: engine,
+      autoDispatch: { enabled: false }
+    });
+
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    // implementation.plan has only ['implementer'], not both roles — one-shot path
+    expect(calls).toHaveLength(0);
+    expect(unitRun).toHaveBeenCalledTimes(1);
+    expect(result.run.currentStep).toBe('implementation.build');
+  });
+
+  it('keeps pr.finalize on one-shot path (reviewer-only step)', async () => {
+    const existing = makeRun({ currentStep: 'pr.finalize' });
+    const updated = makeRun({ currentStep: 'pr.open' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'pr.open', phase: 'pr' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const unitRun = vi.fn().mockResolvedValue({ directive: 'advance' });
+    const { engine, calls } = makeConvergenceEngine({
+      workResult: { directive: 'advance' },
+      checkpointResult: advanceCheckpoint
+    });
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      unitOfWork: { run: unitRun },
+      convergenceEngine: engine,
+      autoDispatch: { enabled: false }
+    });
+
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    // pr.finalize has only ['reviewer'], not both roles — one-shot path
+    expect(calls).toHaveLength(0);
+    expect(unitRun).toHaveBeenCalledTimes(1);
+    expect(result.run.currentStep).toBe('pr.open');
+  });
+
+  it('applies returned convergence directives through centralized transition path', async () => {
+    const existing = makeRun({ currentStep: 'spec.author' });
+    const updated = makeRun({ currentStep: 'spec.human_review' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'spec.human_review', phase: 'spec' });
+    const currentRunStep = makeRunStep({ step: 'spec.author', phase: 'spec' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn()
+        .mockResolvedValueOnce(existing)
+        // applyDirective re-reads the run
+        .mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const runSteps = makeFakeRunStepRepo({
+      listByRun: vi.fn().mockResolvedValue([currentRunStep])
+    });
+    const { engine } = makeConvergenceEngine({
+      workResult: { directive: 'advance', result: advanceCheckpoint as unknown as Readonly<Record<string, unknown>> },
+      checkpointResult: advanceCheckpoint
+    });
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      runSteps,
+      convergenceEngine: engine,
+      autoDispatch: { enabled: false }
+    });
+
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    // The advance directive from convergence engine flowed through applyDirective
+    expect(recordTransition).toHaveBeenCalledTimes(1);
+    const transitionCall = recordTransition.mock.calls[0]?.[0];
+    // recordRunStepTransition receives { runId, currentStep, terminal, runStep, failureReason, ... }
+    expect(transitionCall?.currentStep).toBe('spec.human_review');
+    expect(result.run.currentStep).toBe('spec.human_review');
+  });
+
+  it('applies fail directive when convergence engine returns fail', async () => {
+    const existing = makeRun({ currentStep: 'spec.author' });
+    const failed = makeRun({ currentStep: 'failed', terminal: true });
+    const failedStep = makeRunStep({ step: 'failed' });
+    const currentRunStep = makeRunStep({ step: 'spec.author', phase: 'spec' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: failed, runStep: failedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn()
+        .mockResolvedValueOnce(existing)
+        .mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const runSteps = makeFakeRunStepRepo({
+      listByRun: vi.fn().mockResolvedValue([currentRunStep])
+    });
+    const failCheckpoint = { ...advanceCheckpoint, outcome: 'max_rounds' as const };
+    const { engine } = makeConvergenceEngine({
+      workResult: { directive: 'fail', reason: 'convergence_max_rounds' },
+      checkpointResult: failCheckpoint
+    });
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      runSteps,
+      convergenceEngine: engine,
+      autoDispatch: { enabled: false }
+    });
+
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    expect(result.run.currentStep).toBe('failed');
+    expect(result.run.terminal).toBe(true);
+    // recordRunStepTransition receives { currentStep, terminal, ... } — fail lands at 'failed'
+    const transitionCall = recordTransition.mock.calls[0]?.[0];
+    expect(transitionCall?.currentStep).toBe('failed');
   });
 });
