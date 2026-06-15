@@ -69,6 +69,9 @@ function createFakeControlPlaneService(): ControlPlaneService {
     listRunFeedback: vi.fn(async () => {
       throw new Error('controlPlane.listRunFeedback not stubbed for this test');
     }),
+    appendRunFeedbackThreadReply: vi.fn(async () => {
+      throw new Error('controlPlane.appendRunFeedbackThreadReply not stubbed for this test');
+    }),
     tick: vi.fn(async () => ({ status: 'noop' as const }))
   };
 }
@@ -1310,6 +1313,106 @@ describe('registerControlPlaneRoutes', () => {
     expect(sseResponse.body).toContain('"reason":"provider_auth_failed"');
     expect(sseResponse.body).toContain('"failureReason":"provider_auth_failed"');
     expectNoSentinels(sseResponse.body);
+  });
+
+  it('POST /v1/runs/:id/feedback/:feedbackId/thread appends a thread reply and returns 200', async () => {
+    const feedbackWithTwoReplies = {
+      ...specFeedback,
+      thread: [
+        {
+          id: 'thread_1',
+          author: hardcodedDevelopmentPrincipal,
+          body: 'Please add acceptance criteria to section 2.',
+          createdAt: '2026-06-08T00:00:00.000Z'
+        },
+        {
+          id: 'thread_2',
+          author: hardcodedDevelopmentPrincipal,
+          body: 'Reply body',
+          createdAt: '2026-06-14T00:00:00.000Z'
+        }
+      ]
+    };
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.appendRunFeedbackThreadReply as ReturnType<typeof vi.fn>).mockResolvedValue(feedbackWithTwoReplies);
+    const { app, authorization, policyCalls } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/feedback/fb_1/thread',
+      headers: authorization,
+      payload: { body: 'Reply body' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    const parsed = feedbackSchema.parse(response.json());
+    expect(parsed.thread).toHaveLength(2);
+    expect(controlPlane.appendRunFeedbackThreadReply).toHaveBeenCalledWith({
+      principal: hardcodedDevelopmentPrincipal,
+      tenant: 'tenant_dev',
+      runId: 'run_1',
+      feedbackId: 'fb_1',
+      body: 'Reply body'
+    });
+    expect(policyCalls).toContainEqual({
+      principal: hardcodedDevelopmentPrincipal,
+      action: 'run_feedback.thread.append',
+      resource: { kind: 'run_feedback', id: 'run_1', path: '/v1/runs/:id/feedback/:feedbackId/thread' }
+    });
+  });
+
+  it('POST /v1/runs/:id/feedback/:feedbackId/thread returns 404 for unknown feedback', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.appendRunFeedbackThreadReply as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('not_found', 'Feedback not found.')
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/feedback/fb_missing/thread',
+      headers: authorization,
+      payload: { body: 'Reply body' }
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('not_found');
+  });
+
+  it('POST /v1/runs/:id/feedback/:feedbackId/thread returns 400 for invalid body', async () => {
+    const { app, authorization } = await buildServer();
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/feedback/fb_1/thread',
+      headers: authorization,
+      payload: { body: '' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('validation_error');
+  });
+
+  it('POST /v1/runs/:id/feedback/:feedbackId/thread maps unauthorized to 403', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.appendRunFeedbackThreadReply as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('unauthorized', 'Not authorized.')
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/feedback/fb_1/thread',
+      headers: authorization,
+      payload: { body: 'Reply body' }
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('forbidden');
   });
 
   it('POST /v1/runs/:id/feedback round-trips an artifact_range anchor with emoji codepoints', async () => {

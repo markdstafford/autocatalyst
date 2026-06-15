@@ -891,3 +891,117 @@ describe('DefaultControlPlaneService.listRunFeedback', () => {
       .rejects.toMatchObject({ code: 'persistence_failed' });
   });
 });
+
+describe('DefaultControlPlaneService.appendRunFeedbackThreadReply', () => {
+  const baseFeedback: Feedback = {
+    id: 'fb_1',
+    runId: 'run_1',
+    owner,
+    tenant: 'tenant_1',
+    target: 'artifact' as const,
+    status: 'open' as const,
+    title: 'Scope unclear',
+    body: 'Please clarify.',
+    thread: [{ id: 'th_1', author: owner, body: 'Please clarify.', createdAt: timestamp }],
+    createdAt: timestamp,
+    updatedAt: timestamp
+  };
+
+  it('appends a thread reply and returns the updated feedback', async () => {
+    const feedbackWithReply: Feedback = {
+      ...baseFeedback,
+      thread: [
+        ...baseFeedback.thread,
+        { id: 'th_2', author: owner, body: 'A follow-up reply.', createdAt: timestamp }
+      ]
+    };
+    const feedbackRepo = makeFakeFeedbackRepository();
+    vi.spyOn(feedbackRepo, 'findById').mockResolvedValue(baseFeedback);
+    vi.spyOn(feedbackRepo, 'appendThreadEntry').mockResolvedValue(feedbackWithReply);
+    const service = makeServiceWithFeedback(feedbackRepo);
+    const result = await service.appendRunFeedbackThreadReply({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      feedbackId: 'fb_1',
+      body: 'A follow-up reply.'
+    });
+    expect(result.thread).toHaveLength(2);
+    expect(result.thread[1]?.body).toBe('A follow-up reply.');
+  });
+
+  it('rejects model principals', async () => {
+    const modelPrincipal = { kind: 'model' as const, id: 'model_1', tenantId: 'tenant_1' };
+    const service = makeService();
+    await expect(service.appendRunFeedbackThreadReply({
+      principal: modelPrincipal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      feedbackId: 'fb_1',
+      body: 'Reply'
+    })).rejects.toMatchObject({ code: 'unauthorized' });
+  });
+
+  it('returns not_found for missing run', async () => {
+    const service = makeService({ runs: makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(null) }) });
+    await expect(service.appendRunFeedbackThreadReply({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_missing',
+      feedbackId: 'fb_1',
+      body: 'Reply'
+    })).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('returns not_found for cross-tenant run', async () => {
+    const service = makeService();
+    await expect(service.appendRunFeedbackThreadReply({
+      principal,
+      tenant: 'tenant_other',
+      runId: 'run_1',
+      feedbackId: 'fb_1',
+      body: 'Reply'
+    })).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('returns not_found for missing feedback', async () => {
+    const feedbackRepo = makeFakeFeedbackRepository();
+    vi.spyOn(feedbackRepo, 'findById').mockResolvedValue(null);
+    const service = makeServiceWithFeedback(feedbackRepo);
+    await expect(service.appendRunFeedbackThreadReply({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      feedbackId: 'fb_missing',
+      body: 'Reply'
+    })).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('returns not_found for feedback belonging to a different run', async () => {
+    const feedbackFromOtherRun: Feedback = { ...baseFeedback, runId: 'run_other' };
+    const feedbackRepo = makeFakeFeedbackRepository();
+    vi.spyOn(feedbackRepo, 'findById').mockResolvedValue(feedbackFromOtherRun);
+    const service = makeServiceWithFeedback(feedbackRepo);
+    await expect(service.appendRunFeedbackThreadReply({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      feedbackId: 'fb_1',
+      body: 'Reply'
+    })).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('maps repository failures to persistence_failed', async () => {
+    const feedbackRepo = makeFakeFeedbackRepository();
+    vi.spyOn(feedbackRepo, 'findById').mockResolvedValue(baseFeedback);
+    vi.spyOn(feedbackRepo, 'appendThreadEntry').mockRejectedValue(new Error('db failure'));
+    const service = makeServiceWithFeedback(feedbackRepo);
+    await expect(service.appendRunFeedbackThreadReply({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      feedbackId: 'fb_1',
+      body: 'Reply'
+    })).rejects.toMatchObject({ code: 'persistence_failed' });
+  });
+});

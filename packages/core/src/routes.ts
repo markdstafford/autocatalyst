@@ -14,6 +14,8 @@ import {
   createConversationWithFirstRunRequestSchema,
   createProbeResourceRequestSchema,
   createProbeResourceSuccessStatusCode,
+  appendRunFeedbackThreadRequestSchema,
+  appendRunFeedbackThreadSuccessStatusCode,
   createRunFeedbackRequestSchema,
   createRunFeedbackSuccessStatusCode,
   createSecretRequestSchema,
@@ -47,6 +49,8 @@ import {
   runEventsSuccessStatusCode,
   runFeedbackListResponseSchema,
   runFeedbackPath,
+  runFeedbackThreadPath,
+  runFeedbackThreadParamsSchema,
   runIdParamsSchema,
   runSpecPath,
   runSpecResponseSchema,
@@ -55,6 +59,7 @@ import {
   secretCollectionPath,
   secretStoreLockedErrorCode,
   updateConfigurationRecordRequestSchema,
+  type AppendRunFeedbackThreadRequest,
   type ConfigurationRecordIdParams,
   type CreateConfigurationRecordRequest,
   type CreateConversationWithFirstRunRequest,
@@ -577,6 +582,42 @@ export async function registerControlPlaneRoutes(
           runId: params.id
         });
         await reply.status(listRunFeedbackSuccessStatusCode).send(runFeedbackListResponseSchema.parse(result));
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(reply, error);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    // Spec review: POST /v1/runs/:id/feedback/:feedbackId/thread
+    protectedApp.post(runFeedbackThreadPath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'run_feedback.thread.append', (request) => ({
+        kind: 'run_feedback' as const,
+        id: (request.params as { id: string }).id,
+        path: '/v1/runs/:id/feedback/:feedbackId/thread' as const
+      }))
+    }, async (request, reply) => {
+      let params: z.infer<typeof runFeedbackThreadParamsSchema>;
+      let body: AppendRunFeedbackThreadRequest;
+      try {
+        params = runFeedbackThreadParamsSchema.parse(request.params);
+        body = appendRunFeedbackThreadRequestSchema.parse(request.body);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const principal = requirePrincipalFromRequest(request);
+      try {
+        const feedback = await dependencies.controlPlane.appendRunFeedbackThreadReply({
+          principal,
+          tenant: principal.tenantId,
+          runId: params.id,
+          feedbackId: params.feedbackId,
+          body: body.body
+        });
+        await reply.status(appendRunFeedbackThreadSuccessStatusCode).send(feedbackSchema.parse(feedback));
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
           await handleControlPlaneServiceError(reply, error);

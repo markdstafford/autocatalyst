@@ -502,6 +502,53 @@ describe('ControlPlaneClient.listRunFeedback', () => {
   });
 });
 
+describe('ControlPlaneClient.appendRunFeedbackThreadReply', () => {
+  const feedbackItem = {
+    id: 'fb_1', runId: 'run_1',
+    owner: { kind: 'human', id: 'user_1', tenantId: 'tenant_1', displayName: 'Phoebe' },
+    tenant: 'tenant_1', target: 'artifact', status: 'open',
+    title: 'Scope unclear', body: 'Please clarify.',
+    thread: [
+      { id: 'th_1', author: { kind: 'human', id: 'user_1', tenantId: 'tenant_1', displayName: 'Phoebe' }, body: 'Please clarify.', createdAt: '2026-06-12T00:00:00.000Z' },
+      { id: 'th_2', author: { kind: 'human', id: 'user_1', tenantId: 'tenant_1', displayName: 'Phoebe' }, body: 'Reply', createdAt: '2026-06-14T00:00:00.000Z' }
+    ],
+    createdAt: '2026-06-12T00:00:00.000Z', updatedAt: '2026-06-14T00:00:00.000Z'
+  };
+
+  it('appendRunFeedbackThreadReply sends POST to the correct URL', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => feedbackItem
+    });
+    const client = createControlPlaneClient({
+      baseUrl: 'http://localhost:3000',
+      bearerToken: 'test-token',
+      fetch: mockFetch
+    });
+    const result = await client.appendRunFeedbackThreadReply('run_1', 'fb_1', { body: 'Reply' });
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.objectContaining({ href: expect.stringContaining('/v1/runs/run_1/feedback/fb_1/thread') }),
+      expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ authorization: 'Bearer test-token' }) })
+    );
+    expect(result.thread).toHaveLength(2);
+  });
+
+  it('throws ControlPlaneClientError on error response', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({ error: { code: 'not_found', message: 'Feedback not found.' } })
+    });
+    const client = createControlPlaneClient({
+      baseUrl: 'http://localhost:3000',
+      bearerToken: 'test-token',
+      fetch: mockFetch
+    });
+    await expect(client.appendRunFeedbackThreadReply('run_1', 'fb_missing', { body: 'Reply' })).rejects.toBeInstanceOf(ControlPlaneClientError);
+  });
+});
+
 describe('control-plane SDK client against a test server', () => {
   let testApp: ReturnType<typeof Fastify> | undefined;
 
