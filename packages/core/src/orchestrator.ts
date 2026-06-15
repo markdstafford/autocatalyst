@@ -41,6 +41,7 @@ import {
 } from './run-lifecycle.js';
 import { deriveRunTerminal, getRunStepDefinition } from './run-step-catalog.js';
 import { getRunWorkflowForWorkKind, type RunDirective } from './run-workflows.js';
+import { safeFailureReasonFromError } from './safe-failure-reason.js';
 
 // --- Error types ---
 
@@ -685,7 +686,7 @@ export class DefaultOrchestrator implements Orchestrator {
       tenant: run.tenant,
       currentStep: run.currentStep,
       code,
-      message: this.#safeFailureMessage(error)
+      errorName: error instanceof Error ? error.name : typeof error
     });
 
     if (this.#isExpectedAutoDispatchFailure(error)) {
@@ -708,8 +709,9 @@ export class DefaultOrchestrator implements Orchestrator {
       return;
     }
 
+    const publicReason = safeFailureReasonFromError(error) ?? 'auto_dispatch_failed';
     try {
-      await this.applyDirective({ runId: run.id, tenant: run.tenant, directive: 'fail', reason: 'auto_dispatch_failed' });
+      await this.applyDirective({ runId: run.id, tenant: run.tenant, directive: 'fail', reason: publicReason });
     } catch (failError) {
       const failCode = failError instanceof OrchestratorError ? failError.code : 'unexpected_error';
       if (failError instanceof OrchestratorError && this.#isExpectedAutoDispatchFailure(failError)) {

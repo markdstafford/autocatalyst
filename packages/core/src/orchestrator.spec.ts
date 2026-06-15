@@ -16,6 +16,7 @@ import {
 import type { SpecAuthoringServiceDependencies } from './spec-authoring-service.js';
 import { SpecAuthoringError } from './spec-authoring-service.js';
 import type { SpecApprovalFinalizerDependencies } from './spec-approval-finalizer.js';
+import { ModelRoutingConfigurationError } from './model-routing-resolver.js';
 
 const timestamp = '2026-06-08T00:00:00.000Z';
 const owner = { id: 'user_1', kind: 'human' as const, tenantId: 'tenant_1', displayName: 'Ada' };
@@ -674,6 +675,59 @@ describe('DefaultOrchestrator.createConversationWithFirstRun — auto-dispatch d
 
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(unitRun).not.toHaveBeenCalled();
+  });
+});
+
+describe('DefaultOrchestrator — auto-dispatch failure reasons', () => {
+  it('marks auto-dispatch failures with an allowlisted lower-level reason when available', async () => {
+    // The unit-of-work throws ModelRoutingConfigurationError — this escapes dispatch()
+    // and is caught by the .catch() in #scheduleAutoDispatch, invoking #handleAutoDispatchFailure.
+    // After Task 4, that handler maps the error to 'profile_incomplete' via safeFailureReasonFromError.
+    const specAuthorRun = makeRun({ currentStep: 'spec.author' });
+    const specAuthorStep = makeRunStep({ step: 'spec.author', phase: 'spec' });
+    const failedRun = makeRun({ currentStep: 'failed', terminal: true });
+    const failedStep = makeRunStep({ step: 'failed' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: failedRun, runStep: failedStep });
+
+    // runs.findById always returns the spec.author run (non-terminal) so that
+    // #handleAutoDispatchFailure's "is current still dispatchable?" check passes.
+    const runs = makeFakeRunRepo({
+      recordRunLifecycleStart: vi.fn().mockResolvedValue({ run: specAuthorRun, runStep: specAuthorStep }),
+      findById: vi.fn().mockResolvedValue(specAuthorRun),
+      recordRunStepTransition: recordTransition
+    });
+
+    // Unit-of-work throws rather than returning a fail directive — this causes dispatch() to throw,
+    // which propagates to #handleAutoDispatchFailure via the .catch() in #scheduleAutoDispatch.
+    const unitRun = vi.fn(async () => {
+      throw new ModelRoutingConfigurationError('profile_incomplete', 'raw configuration detail');
+    });
+    const unitOfWork: RunUnitOfWork = { run: unitRun };
+
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork });
+
+    // createRun starts the lifecycle at spec.author and then calls #scheduleAutoDispatch.
+    // Auto-dispatch fires dispatch() which calls the unit-of-work. The unit-of-work throws,
+    // causing dispatch() to reject, which triggers #handleAutoDispatchFailure.
+    await orchestrator.createRun({
+      topicId: 'topic_1',
+      owner,
+      tenant: 'tenant_1',
+      workKind: 'feature'
+    });
+
+    // Wait for the detached auto-dispatch (which throws) and the subsequent
+    // #handleAutoDispatchFailure to record the fail transition.
+    await vi.waitFor(() => expect(recordTransition).toHaveBeenCalled(), { timeout: 3000 });
+
+    // The failure reason recorded must be 'profile_incomplete', not 'auto_dispatch_failed'.
+    // recordRunStepTransition receives { runId, currentStep, terminal, runStep, failureReason }.
+    expect(recordTransition).toHaveBeenCalledWith(expect.objectContaining({
+      failureReason: 'profile_incomplete'
+    }));
+    expect(recordTransition).not.toHaveBeenCalledWith(expect.objectContaining({
+      failureReason: 'auto_dispatch_failed'
+    }));
   });
 });
 
