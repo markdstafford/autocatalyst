@@ -426,6 +426,48 @@ describe('registerControlPlaneRoutes', () => {
     expect(errorResponseSchema.parse(response.json()).error.code).toBe('profile_not_found');
   });
 
+  it('returns 422 when patching a routing table to active:true referencing a profile without model', async () => {
+    const profileWithoutModel = {
+      id: 'cfg_no_model',
+      tenant: 'tenant_dev',
+      kind: 'provider_profile',
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      settings: { profileName: 'No Model', credentialSecretHandle: 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef' },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const existingRoutingTable = {
+      id: 'tbl_existing',
+      tenant: 'tenant_dev',
+      kind: 'model_routing_table',
+      settings: {
+        active: false,
+        entries: [{ id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_no_model' }]
+      },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const configRepo = {
+      create: vi.fn(async () => existingRoutingTable),
+      list: vi.fn(async () => [profileWithoutModel, existingRoutingTable]),
+      findById: vi.fn(async (_tenant: string, id: string) => id === 'tbl_existing' ? existingRoutingTable : null),
+      update: vi.fn(async () => null),
+      delete: vi.fn(async () => false)
+    };
+    const { app, authorization } = await buildServer({ configurationRecords: configRepo });
+    server = app;
+    const response = await app.inject({
+      method: 'PATCH', url: '/v1/configuration-records/tbl_existing', headers: authorization,
+      payload: {
+        kind: 'model_routing_table',
+        settings: { active: true }
+      }
+    });
+    expect(response.statusCode).toBe(422);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('profile_incomplete');
+  });
+
   it('allows creating an active routing table when the referenced profile is complete', async () => {
     const completeProfile = {
       id: 'cfg_complete',
