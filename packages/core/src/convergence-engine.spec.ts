@@ -689,6 +689,60 @@ describe('createConvergenceEngine', () => {
     expect((out.workResult as { directive: 'fail'; reason: string }).reason).toBe('disposition_invalid');
   });
 
+  it('commit failure prevents reviewer dispatch', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1)
+      // No reviewer script entry — reviewer must NOT be called
+    ]);
+    const failingGit: RunWorkspaceGitPort = {
+      reviewerPolicy: new StubGit().reviewerPolicy,
+      async commitFiles() { throw new Error('git commit failed'); }
+    };
+    const engine = createConvergenceEngine({
+      dispatcher, git: failingGit,
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true)
+    });
+    // Commit failure propagates as a thrown error (not a structured fail result)
+    await expect(engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    })).rejects.toThrow('git commit failed');
+    // Reviewer was never dispatched
+    expect(dispatcher.calls.every(c => c.role === 'implementer')).toBe(true);
+  });
+
+  it('persisted feedback thread author matches the reviewer model principal', async () => {
+    const feedback = new InMemoryFeedbackRepo();
+    const customPrincipal: import('@autocatalyst/api-contract').Principal = {
+      id: 'custom-reviewer',
+      kind: 'model',
+      tenantId: 'tenant-1'
+    };
+    const blocker: ReviewerFinding = { title: 'Issue', body: 'Fix it.', severity: 'blocker' };
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'findings', findings: [blocker] }),
+      implResultAdvance(2, [{ feedbackId: 'fb_1', disposition: 'fixed', summary: 'done' }]),
+      reviewerResultDispatch(2, { status: 'satisfied' })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git: new StubGit(),
+      feedback,
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      reviewerPrincipal: customPrincipal
+    });
+    await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+    expect(feedback.created.length).toBeGreaterThan(0);
+    const firstFeedback = feedback.created[0]!;
+    expect(firstFeedback.thread[0]?.author).toEqual(customPrincipal);
+  });
+
   it('declined findings with valid reason are non-blocking for future rounds', async () => {
     const f: ReviewerFinding = { title: 'Style', body: 'consider renaming', severity: 'warning' };
     const dispatcher = new ScriptedDispatcher([
