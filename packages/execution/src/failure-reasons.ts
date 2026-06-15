@@ -5,6 +5,21 @@ export const knownFailureReasonCodes = [
   'runner_failed_before_terminal_result',
   'workspace_provisioning_failed',
   'result_file_missing',
+  'routing_table_missing',
+  'routing_table_ambiguous',
+  'route_not_found',
+  'duplicate_route',
+  'profile_not_found',
+  'profile_incomplete',
+  'route_mode_mismatch',
+  'adapter_unavailable',
+  'credential_reference_invalid',
+  'role_distinct_unsatisfied',
+  'mechanism_mismatch',
+  'process_launch_failed',
+  'timeout',
+  'non_transient_provider_failure',
+  'skill_materialization_failed',
   'schema_validation_failed'
 ] as const;
 

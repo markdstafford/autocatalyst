@@ -67,8 +67,23 @@ const feedbackAnchorFileRangeSchema = z.object({
   endLine: z.number().int().min(1)
 }).strict();
 
+const feedbackAnchorArtifactRangeSchema = z.object({
+  kind: z.literal('artifact_range'),
+  artifactId: z.string().min(1),
+  from: z.number().int().min(0).openapi({
+    description: 'Zero-based Unicode codepoint offset into the markdown string. Use [...str] to count codepoints in JavaScript.'
+  }),
+  to: z.number().int().min(1).openapi({
+    description: 'Exclusive zero-based Unicode codepoint offset. Must be greater than from.'
+  }),
+  quotedText: z.string().min(1).max(2000).optional().openapi({
+    description: 'Optional selected text excerpt, capped at 2000 characters. Offsets are authoritative.'
+  })
+}).strict();
+
 export const feedbackAnchorSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('artifact'), artifactId: z.string().min(1) }).strict(),
+  feedbackAnchorArtifactRangeSchema,
   feedbackAnchorFileRangeSchema,
   z.object({ kind: z.literal('message'), messageId: z.string().min(1) }).strict(),
   z.object({ kind: z.literal('run_step'), runStepId: z.string().min(1) }).strict(),
@@ -79,6 +94,13 @@ export const feedbackAnchorSchema = z.discriminatedUnion('kind', [
       code: z.ZodIssueCode.custom,
       message: 'endLine must be greater than or equal to startLine.',
       path: ['endLine']
+    });
+  }
+  if (anchor.kind === 'artifact_range' && anchor.to <= anchor.from) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'to must be greater than from.',
+      path: ['to']
     });
   }
 });

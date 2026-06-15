@@ -82,6 +82,7 @@ import type {
   DomainRepositories,
   FeedbackRepository,
   FeedbackStatusTransitionPersistenceInput,
+  FeedbackThreadAppendPersistenceInput,
   LifecycleRunStepInput,
   ListRunsByTenantOptions,
   MessageRepository,
@@ -940,6 +941,31 @@ export class DrizzleFeedbackRepository implements FeedbackRepository {
         .where(eq(feedback.id, input.feedbackId))
         .limit(1)
         .all()[0];
+      if (updated === undefined) {
+        throw new Error(`Feedback '${input.feedbackId}' does not exist after update.`);
+      }
+      return this.#rowToFeedback(updated);
+    });
+  }
+
+  async appendThreadEntry(input: FeedbackThreadAppendPersistenceInput): Promise<Feedback> {
+    return this.#database.drizzle.transaction((tx) => {
+      const rows = tx.select().from(feedback).where(eq(feedback.id, input.feedbackId)).limit(1).all();
+      const current = rows[0];
+      if (current === undefined) {
+        throw new Error(`Feedback '${input.feedbackId}' does not exist.`);
+      }
+      const existingThread = parseJsonValue(feedbackThreadSchema, current.threadJson);
+      const nextThread = [...existingThread, input.threadEntry];
+      tx.update(feedback)
+        .set({
+          threadJson: stringifyJsonValue(feedbackThreadSchema, nextThread),
+          updatedAt: input.updatedAt
+        })
+        .where(eq(feedback.id, input.feedbackId))
+        .run();
+      const updatedRows = tx.select().from(feedback).where(eq(feedback.id, input.feedbackId)).limit(1).all();
+      const updated = updatedRows[0];
       if (updated === undefined) {
         throw new Error(`Feedback '${input.feedbackId}' does not exist after update.`);
       }

@@ -495,11 +495,12 @@ describe('runner-cells: OpenAI direct dispatch', () => {
 
     const capturedTransitions: Array<{ checkpointResult?: JsonValue }> = [];
     const fakeRunRepo = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'implementation.plan' })),
       recordRunStepTransition: vi.fn().mockImplementation(async (input: { checkpointResult?: JsonValue }) => {
         capturedTransitions.push({ checkpointResult: input.checkpointResult });
         return {
-          run: makeRun({ currentStep: 'spec.author' }),
-          runStep: makeRunStep({ step: 'spec.author' })
+          run: makeRun({ currentStep: 'implementation.build' }),
+          runStep: makeRunStep({ step: 'implementation.build' })
         };
       })
     });
@@ -822,11 +823,12 @@ describe('runner-cells: direct mode through DefaultOrchestrator and createExecut
 
     const capturedTransitions: Array<{ checkpointResult?: JsonValue }> = [];
     const fakeRunRepo = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'implementation.plan' })),
       recordRunStepTransition: vi.fn().mockImplementation(async (input: { checkpointResult?: JsonValue }) => {
         capturedTransitions.push({ checkpointResult: input.checkpointResult });
         return {
-          run: makeRun({ currentStep: 'spec.author' }),
-          runStep: makeRunStep({ step: 'spec.author' })
+          run: makeRun({ currentStep: 'implementation.build' }),
+          runStep: makeRunStep({ step: 'implementation.build' })
         };
       })
     });

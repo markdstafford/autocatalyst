@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { ZodError } from 'zod';
+import { z, ZodError } from 'zod';
 
 import {
   activeRunConflictErrorCode,
@@ -14,6 +14,8 @@ import {
   createConversationWithFirstRunRequestSchema,
   createProbeResourceRequestSchema,
   createProbeResourceSuccessStatusCode,
+  appendRunFeedbackThreadRequestSchema,
+  appendRunFeedbackThreadSuccessStatusCode,
   createRunFeedbackRequestSchema,
   createRunFeedbackSuccessStatusCode,
   createSecretRequestSchema,
@@ -47,6 +49,8 @@ import {
   runEventsSuccessStatusCode,
   runFeedbackListResponseSchema,
   runFeedbackPath,
+  runFeedbackThreadPath,
+  runFeedbackThreadParamsSchema,
   runIdParamsSchema,
   runSpecPath,
   runSpecResponseSchema,
@@ -55,6 +59,7 @@ import {
   secretCollectionPath,
   secretStoreLockedErrorCode,
   updateConfigurationRecordRequestSchema,
+  type AppendRunFeedbackThreadRequest,
   type ConfigurationRecordIdParams,
   type CreateConfigurationRecordRequest,
   type CreateConversationWithFirstRunRequest,
@@ -86,6 +91,8 @@ import {
   type ProbeResourceRepository
 } from './probe-resource.js';
 import {
+  assertActiveRoutesReferenceDispatchableProfiles,
+  assertProviderProfileUpdateDoesNotBreakActiveRoutes,
   createConfigurationRecord,
   deleteConfigurationRecord,
   getConfigurationRecord,
@@ -274,6 +281,23 @@ export async function registerControlPlaneRoutes(
         await sendValidationError(reply, error);
         return;
       }
+      if (body.kind === 'model_routing_table') {
+        const existingRecords = await dependencies.configurationRecords.list(principal.tenantId);
+        const candidate = {
+          id: 'new',
+          tenant: principal.tenantId,
+          kind: body.kind,
+          settings: body.settings,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        } as import('@autocatalyst/api-contract').ConfigurationRecord;
+        try {
+          assertActiveRoutesReferenceDispatchableProfiles(existingRecords, candidate);
+        } catch (error) {
+          await reply.status(422).send(errorResponse(error instanceof Error ? error.message : 'validation_failed', 'Routing table references an incomplete or missing profile.'));
+          return;
+        }
+      }
       const record = configurationRecordResponseSchema.parse(
         await createConfigurationRecord(dependencies.configurationRecords, body)
       );
@@ -331,6 +355,40 @@ export async function registerControlPlaneRoutes(
       } catch (error) {
         await sendValidationError(reply, error);
         return;
+      }
+      if (body.kind === 'model_routing_table') {
+        const existingRecords = await dependencies.configurationRecords.list(principal.tenantId);
+        const existing = await dependencies.configurationRecords.findById(principal.tenantId, params.id);
+        const mergedSettings = existing !== null
+          ? { ...(existing.settings as object), ...(body.settings as object) }
+          : body.settings;
+        const candidate = {
+          id: params.id,
+          tenant: principal.tenantId,
+          kind: body.kind,
+          settings: mergedSettings,
+          createdAt: existing?.createdAt ?? new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        } as import('@autocatalyst/api-contract').ConfigurationRecord;
+        const otherRecords = existingRecords.filter((r) => r.id !== params.id);
+        try {
+          assertActiveRoutesReferenceDispatchableProfiles(otherRecords, candidate);
+        } catch (error) {
+          await reply.status(422).send(errorResponse(error instanceof Error ? error.message : 'validation_failed', 'Routing table references an incomplete or missing profile.'));
+          return;
+        }
+      } else if (body.kind === 'provider_profile') {
+        const existingRecords = await dependencies.configurationRecords.list(principal.tenantId);
+        const existing = await dependencies.configurationRecords.findById(principal.tenantId, params.id);
+        const existingSettings = existing?.kind === 'provider_profile' ? (existing.settings as Record<string, unknown>) : {};
+        const mergedSettings = { ...existingSettings, ...(body.settings as Record<string, unknown>) };
+        const otherRecords = existingRecords.filter((r) => r.id !== params.id);
+        try {
+          assertProviderProfileUpdateDoesNotBreakActiveRoutes(otherRecords, params.id, mergedSettings);
+        } catch (error) {
+          await reply.status(422).send(errorResponse(error instanceof Error ? error.message : 'validation_failed', 'Clearing dispatch-required fields while an active routing table references this profile is not allowed.'));
+          return;
+        }
       }
       const updated = await updateConfigurationRecord(dependencies.configurationRecords, principal.tenantId, params.id, body);
       if (updated === null) {
@@ -546,6 +604,42 @@ export async function registerControlPlaneRoutes(
       }
     });
 
+    // Spec review: POST /v1/runs/:id/feedback/:feedbackId/thread
+    protectedApp.post(runFeedbackThreadPath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'run_feedback.thread.append', (request) => ({
+        kind: 'run_feedback_thread' as const,
+        id: (request.params as { id: string }).id,
+        path: '/v1/runs/:id/feedback/:feedbackId/thread' as const
+      }))
+    }, async (request, reply) => {
+      let params: z.infer<typeof runFeedbackThreadParamsSchema>;
+      let body: AppendRunFeedbackThreadRequest;
+      try {
+        params = runFeedbackThreadParamsSchema.parse(request.params);
+        body = appendRunFeedbackThreadRequestSchema.parse(request.body);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const principal = requirePrincipalFromRequest(request);
+      try {
+        const feedback = await dependencies.controlPlane.appendRunFeedbackThreadReply({
+          principal,
+          tenant: principal.tenantId,
+          runId: params.id,
+          feedbackId: params.feedbackId,
+          body: body.body
+        });
+        await reply.status(appendRunFeedbackThreadSuccessStatusCode).send(feedbackSchema.parse(feedback));
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(reply, error);
+          return;
+        }
+        throw error;
+      }
+    });
+
     // Story 7: Get run
     protectedApp.get(`${runCollectionPath}/:id`, {
       preHandler: authorizePreHandler(dependencies.policy, 'run.read', (request) => ({
@@ -612,6 +706,10 @@ export async function registerControlPlaneRoutes(
       }
     });
 
+    const runEventsQuerySchema = z.object({
+      replay: z.enum(['retained']).optional()
+    }).strict();
+
     // Story 7: Stream run events (SSE)
     protectedApp.get(runEventsPath, {
       preHandler: authorizePreHandler(dependencies.policy, 'run_events.stream', (request) => ({
@@ -630,6 +728,14 @@ export async function registerControlPlaneRoutes(
       const principal = requirePrincipalFromRequest(request);
       const lastEventIdHeader = request.headers['last-event-id'];
       const lastEventId = typeof lastEventIdHeader === 'string' ? lastEventIdHeader : undefined;
+
+      let runEventsQuery: z.infer<typeof runEventsQuerySchema>;
+      try {
+        runEventsQuery = runEventsQuerySchema.parse(request.query);
+      } catch {
+        await reply.status(400).send({ error: { code: 'invalid_query', message: 'Invalid query parameters.' } });
+        return;
+      }
 
       // Subscribe FIRST to avoid losing events emitted while replay is computed.
       let subscription: RunEventSubscription;
@@ -654,7 +760,8 @@ export async function registerControlPlaneRoutes(
           principal,
           tenant: principal.tenantId,
           runId: params.id,
-          ...(lastEventId !== undefined ? { lastEventId } : {})
+          ...(lastEventId !== undefined ? { lastEventId } : {}),
+          ...(runEventsQuery.replay === 'retained' ? { replay: 'retained' as const } : {})
         });
       } catch (error) {
         subscription.close();

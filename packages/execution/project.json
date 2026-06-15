@@ -3,11 +3,17 @@
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "sourceRoot": "packages/execution/src",
   "projectType": "library",
-  "tags": ["type:lib", "scope:execution", "plane:execution"],
+  "tags": [
+    "type:lib",
+    "scope:execution",
+    "plane:execution"
+  ],
   "targets": {
     "build": {
       "executor": "@nx/js:tsc",
-      "outputs": ["{options.outputPath}"],
+      "outputs": [
+        "{options.outputPath}"
+      ],
       "options": {
         "outputPath": "packages/execution/dist",
         "main": "packages/execution/src/index.ts",
@@ -27,11 +33,15 @@
         "command": "node packages/execution/scripts/verify-dist-assets.mjs",
         "cwd": "{workspaceRoot}"
       },
-      "dependsOn": ["build"]
+      "dependsOn": [
+        "build"
+      ]
     },
     "lint": {
       "executor": "@nx/eslint:lint",
-      "outputs": ["{options.outputFile}"],
+      "outputs": [
+        "{options.outputFile}"
+      ],
       "options": {
         "lintFilePatterns": [
           "packages/execution/src/**/*.ts",
@@ -41,10 +51,13 @@
       }
     },
     "test": {
-      "executor": "@nx/vite:test",
-      "outputs": ["{workspaceRoot}/coverage/packages/execution"],
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/coverage/packages/execution"
+      ],
       "options": {
-        "config": "packages/execution/vite.config.ts"
+        "command": "vitest run",
+        "cwd": "packages/execution"
       }
     }
   }

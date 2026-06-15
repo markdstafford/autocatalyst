@@ -198,6 +198,41 @@ describe('InMemoryRetainedRunEventStore', () => {
     })).rejects.toThrow(/runId/);
   });
 
+  it('replayAfter with replay retained and no cursor returns all retained events', async () => {
+    const store = new InMemoryRetainedRunEventStore();
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_1') });
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_2') });
+    const result = await store.replayAfter({
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      replay: 'retained'
+    });
+    expect(result.status).toBe('ok');
+    expect((result as { events: unknown[] }).events).toHaveLength(2);
+  });
+
+  it('lastEventId takes precedence over replay retained', async () => {
+    const store = new InMemoryRetainedRunEventStore();
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_1') });
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_2') });
+    const result = await store.replayAfter({
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      lastEventId: 'evt_1',
+      replay: 'retained'
+    });
+    expect(result.status).toBe('ok');
+    expect((result as { events: unknown[] }).events).toHaveLength(1);
+  });
+
+  it('no-cursor replay without replay=retained still returns empty events (existing behavior)', async () => {
+    const store = new InMemoryRetainedRunEventStore();
+    await store.append({ scope: { runId: 'run_1', tenant: 'tenant_1' }, event: makeEvent('evt_1') });
+    const result = await store.replayAfter({ runId: 'run_1', tenant: 'tenant_1' });
+    expect(result.status).toBe('ok');
+    expect((result as { events: unknown[] }).events).toHaveLength(0);
+  });
+
   it('closes only the overflowing subscriber and leaves others healthy', async () => {
     const store = new InMemoryRetainedRunEventStore({ subscriberBufferSize: 2 });
     const sub1 = store.subscribe({ runId: 'run_1', tenant: 'tenant_1' });

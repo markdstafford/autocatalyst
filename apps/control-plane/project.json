@@ -3,11 +3,17 @@
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "sourceRoot": "apps/control-plane/src",
   "projectType": "application",
-  "tags": ["type:app", "scope:control-plane", "plane:control"],
+  "tags": [
+    "type:app",
+    "scope:control-plane",
+    "plane:control"
+  ],
   "targets": {
     "build": {
       "executor": "@nx/js:tsc",
-      "outputs": ["{options.outputPath}"],
+      "outputs": [
+        "{options.outputPath}"
+      ],
       "options": {
         "outputPath": "apps/control-plane/dist",
         "main": "apps/control-plane/src/main.ts",
@@ -16,7 +22,9 @@
     },
     "lint": {
       "executor": "@nx/eslint:lint",
-      "outputs": ["{options.outputFile}"],
+      "outputs": [
+        "{options.outputFile}"
+      ],
       "options": {
         "lintFilePatterns": [
           "apps/control-plane/src/**/*.ts",
@@ -26,15 +34,20 @@
       }
     },
     "test": {
-      "executor": "@nx/vite:test",
-      "outputs": ["{workspaceRoot}/coverage/apps/control-plane"],
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/coverage/apps/control-plane"
+      ],
       "options": {
-        "config": "apps/control-plane/vite.config.ts"
+        "command": "vitest run",
+        "cwd": "apps/control-plane"
       }
     },
     "serve": {
       "executor": "@nx/js:node",
-      "dependsOn": ["build"],
+      "dependsOn": [
+        "build"
+      ],
       "options": {
         "buildTarget": "control-plane:build"
       }

@@ -254,3 +254,27 @@ export async function resolveApproverAddressedFeedback(
     )
   );
 }
+
+export interface AppendFeedbackThreadReplyInput {
+  readonly feedbackId: string;
+  readonly actor: NonModelPrincipal;
+  readonly body: string;
+}
+
+export async function appendFeedbackThreadReply(
+  input: AppendFeedbackThreadReplyInput,
+  deps: FeedbackLifecycleDependencies
+): Promise<Feedback> {
+  await requireFeedback(input.feedbackId, deps);
+  const createdAt = deps.clock();
+  return deps.feedback.appendThreadEntry({
+    feedbackId: input.feedbackId,
+    threadEntry: {
+      id: deps.ids(),
+      author: input.actor,
+      body: input.body,
+      createdAt
+    },
+    updatedAt: createdAt
+  });
+}

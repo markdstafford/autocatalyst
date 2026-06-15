@@ -57,8 +57,11 @@ export interface AppendRunEventInput {
   readonly event: ClientRunEvent;
 }
 
+export type RunEventReplayMode = 'live_only' | 'retained';
+
 export interface ReplayRunEventsInput extends RunEventStoreScope {
   readonly lastEventId?: string;
+  readonly replay?: RunEventReplayMode;
 }
 
 export interface SubscribeRunEventsInput extends RunEventStoreScope {
@@ -146,6 +149,9 @@ export class InMemoryRetainedRunEventStore implements RunEventStore {
     const key = this.#scopeKey(input);
     const state = this.#scopes.get(key);
     if (input.lastEventId === undefined) {
+      if (input.replay === 'retained') {
+        return { status: 'ok', events: state?.events ?? [] };
+      }
       return { status: 'ok', events: [] };
     }
     if (state === undefined) {

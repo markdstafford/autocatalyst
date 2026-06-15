@@ -3,6 +3,11 @@ export interface WorkspaceRootConfig {
   readonly workspacesRoot: string;
 }
 
+export interface RealRunnerDispatchConfig {
+  readonly enabled: boolean;
+  readonly defaultProviderProfileId?: string;
+}
+
 export interface ControlPlaneAppConfig {
   readonly port: number;
   readonly databasePath: string;
@@ -10,6 +15,7 @@ export interface ControlPlaneAppConfig {
   readonly masterSecret: string;
   readonly runConcurrency: number;
   readonly workspaceRoots?: WorkspaceRootConfig;
+  readonly realRunnerDispatch?: RealRunnerDispatchConfig;
 }
 
 const DEFAULT_RUN_CONCURRENCY = 2;
@@ -79,6 +85,46 @@ function parseRunConcurrency(value: string | undefined): number {
   return concurrency;
 }
 
+function hasFlag(argv: readonly string[], name: string): boolean {
+  return argv.includes(name);
+}
+
+function parseBooleanEnv(value: string | undefined, envVarName: string): boolean {
+  if (value === undefined || value.trim().length === 0) return false;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === '1' || normalized === 'true' || normalized === 'yes') return true;
+  if (normalized === '0' || normalized === 'false' || normalized === 'no') return false;
+  throw new Error(`${envVarName} must be one of 1, true, yes, 0, false, or no.`);
+}
+
+function parseDefaultProviderProfileId(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  if (value.trim().length === 0) {
+    throw new Error('Default provider profile id must be non-empty when configured.');
+  }
+  return value;
+}
+
+function parseRealRunnerDispatch(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv
+): RealRunnerDispatchConfig | undefined {
+  const enabled = hasFlag(argv, '--real-dispatch') || parseBooleanEnv(env['AUTOCATALYST_REAL_DISPATCH'], 'AUTOCATALYST_REAL_DISPATCH');
+  const defaultProviderProfileId = parseDefaultProviderProfileId(
+    readFlag(argv, '--default-provider-profile-id') ?? env['AUTOCATALYST_DEFAULT_PROVIDER_PROFILE_ID']
+  );
+  if (!enabled) {
+    if (defaultProviderProfileId !== undefined) {
+      throw new Error('Default provider profile id requires real runner dispatch to be enabled.');
+    }
+    return undefined;
+  }
+  return {
+    enabled: true,
+    ...(defaultProviderProfileId !== undefined ? { defaultProviderProfileId } : {})
+  };
+}
+
 export function readControlPlaneAppConfig(
   argv: readonly string[] = process.argv.slice(2),
   env: NodeJS.ProcessEnv = process.env
@@ -91,6 +137,7 @@ export function readControlPlaneAppConfig(
   const reposRootValue = readFlag(argv, '--repos-root') ?? env['AUTOCATALYST_REPOS_ROOT'];
   const workspacesRootValue = readFlag(argv, '--workspaces-root') ?? env['AUTOCATALYST_WORKSPACES_ROOT'];
   const workspaceRoots = parseWorkspaceRoots(reposRootValue, workspacesRootValue);
+  const realRunnerDispatch = parseRealRunnerDispatch(argv, env);
 
   return {
     port: parsePort(portValue),
@@ -98,6 +145,7 @@ export function readControlPlaneAppConfig(
     bearerToken: parseBearerToken(bearerTokenValue),
     masterSecret: parseMasterSecret(masterSecretValue),
     runConcurrency: parseRunConcurrency(runConcurrencyValue),
-    ...(workspaceRoots !== undefined ? { workspaceRoots } : {})
+    ...(workspaceRoots !== undefined ? { workspaceRoots } : {}),
+    ...(realRunnerDispatch !== undefined ? { realRunnerDispatch } : {})
   };
 }

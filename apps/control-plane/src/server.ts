@@ -994,7 +994,12 @@ export async function createControlPlaneServer(
     specApprovalFinalizerDependencies,
     runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
     resolveWorkspaceContext: options.resolveWorkspaceContext ?? internalResolveWorkspaceContext,
-    ...(options.autoDispatch !== undefined ? { autoDispatch: options.autoDispatch } : {})
+    ...(options.autoDispatch !== undefined ? { autoDispatch: options.autoDispatch } : {}),
+    logger: {
+      warn(message: string, details?: unknown) {
+        console.warn(message, details);
+      }
+    }
   });
   const policy = options.policy ?? permissivePolicyDecisionPoint;
   const controlPlane = new DefaultControlPlaneService({

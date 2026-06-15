@@ -3,11 +3,17 @@
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "sourceRoot": "packages/api-contract/src",
   "projectType": "library",
-  "tags": ["type:lib", "scope:contract"],
+  "tags": [
+    "type:lib",
+    "scope:contract"
+  ],
   "targets": {
     "build": {
       "executor": "@nx/js:tsc",
-      "outputs": ["{options.outputPath}", "{options.outputPath}/index.d.ts"],
+      "outputs": [
+        "{options.outputPath}",
+        "{options.outputPath}/index.d.ts"
+      ],
       "options": {
         "outputPath": "packages/api-contract/dist",
         "rootDir": "packages/api-contract/src",
@@ -17,7 +23,9 @@
     },
     "lint": {
       "executor": "@nx/eslint:lint",
-      "outputs": ["{options.outputFile}"],
+      "outputs": [
+        "{options.outputFile}"
+      ],
       "options": {
         "lintFilePatterns": [
           "packages/api-contract/src/**/*.ts",
@@ -27,10 +35,13 @@
       }
     },
     "test": {
-      "executor": "@nx/vite:test",
-      "outputs": ["{workspaceRoot}/coverage/packages/api-contract"],
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/coverage/packages/api-contract"
+      ],
       "options": {
-        "config": "packages/api-contract/vite.config.ts"
+        "command": "vitest run",
+        "cwd": "packages/api-contract"
       }
     }
   }

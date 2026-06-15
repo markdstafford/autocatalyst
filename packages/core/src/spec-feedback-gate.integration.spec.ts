@@ -27,6 +27,7 @@ import type {
   ArtifactRepository,
   FeedbackRepository,
   FeedbackStatusTransitionPersistenceInput,
+  FeedbackThreadAppendPersistenceInput,
   LifecycleRunStepInput,
   RecordRunLifecycleStartInput,
   RecordRunLifecycleStartResult,
@@ -298,6 +299,18 @@ class InMemoryFeedbackRepository implements FeedbackRepository {
     const updated: Feedback = {
       ...existing,
       status: input.nextStatus,
+      thread: [...existing.thread, input.threadEntry],
+      updatedAt: input.updatedAt
+    };
+    this.#items.set(updated.id, updated);
+    return updated;
+  }
+
+  async appendThreadEntry(input: FeedbackThreadAppendPersistenceInput): Promise<Feedback> {
+    const existing = this.#items.get(input.feedbackId);
+    if (existing === undefined) throw new Error(`Feedback '${input.feedbackId}' not found.`);
+    const updated: Feedback = {
+      ...existing,
       thread: [...existing.thread, input.threadEntry],
       updatedAt: input.updatedAt
     };

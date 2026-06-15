@@ -223,34 +223,6 @@ async function resolveEntryToProfile(
       }
     );
   }
-  if (profileSettings.inferenceSettings === undefined) {
-    throw new ModelRoutingConfigurationError(
-      'profile_incomplete',
-      'Provider profile is missing explicit inferenceSettings.',
-      {
-        tenant,
-        ...(runId !== undefined ? { runId } : {}),
-        routingTableId,
-        routeId: entry.id,
-        profileId: entry.profileId,
-        ...(profileSettings.profileName !== undefined ? { profileName: profileSettings.profileName } : {})
-      }
-    );
-  }
-  if (profileSettings.endpoint === undefined) {
-    throw new ModelRoutingConfigurationError(
-      'profile_incomplete',
-      'Provider profile is missing explicit endpoint settings.',
-      {
-        tenant,
-        ...(runId !== undefined ? { runId } : {}),
-        routingTableId,
-        routeId: entry.id,
-        profileId: entry.profileId,
-        ...(profileSettings.profileName !== undefined ? { profileName: profileSettings.profileName } : {})
-      }
-    );
-  }
   if (profileSettings.credentialSecretHandle === undefined) {
     throw new ModelRoutingConfigurationError(
       'profile_incomplete',
@@ -350,8 +322,8 @@ async function resolveEntryToProfile(
     profileName: profileSettings.profileName,
     configurationRecordId: profileRecord.id,
     model: profileSettings.model,
-    inferenceSettings: profileSettings.inferenceSettings,
-    endpoint: profileSettings.endpoint,
+    inferenceSettings: profileSettings.inferenceSettings ?? {},
+    endpoint: profileSettings.endpoint ?? {},
     connectionMechanism
   };
 

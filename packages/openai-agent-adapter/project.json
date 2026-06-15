@@ -3,11 +3,17 @@
   "$schema": "../../node_modules/nx/schemas/project-schema.json",
   "sourceRoot": "packages/openai-agent-adapter/src",
   "projectType": "library",
-  "tags": ["type:lib", "scope:adapter", "plane:execution"],
+  "tags": [
+    "type:lib",
+    "scope:adapter",
+    "plane:execution"
+  ],
   "targets": {
     "build": {
       "executor": "@nx/js:tsc",
-      "outputs": ["{options.outputPath}"],
+      "outputs": [
+        "{options.outputPath}"
+      ],
       "options": {
         "outputPath": "packages/openai-agent-adapter/dist",
         "main": "packages/openai-agent-adapter/src/index.ts",
@@ -16,7 +22,9 @@
     },
     "lint": {
       "executor": "@nx/eslint:lint",
-      "outputs": ["{options.outputFile}"],
+      "outputs": [
+        "{options.outputFile}"
+      ],
       "options": {
         "lintFilePatterns": [
           "packages/openai-agent-adapter/src/**/*.ts",
@@ -26,10 +34,13 @@
       }
     },
     "test": {
-      "executor": "@nx/vite:test",
-      "outputs": ["{workspaceRoot}/coverage/packages/openai-agent-adapter"],
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/coverage/packages/openai-agent-adapter"
+      ],
       "options": {
-        "config": "packages/openai-agent-adapter/vite.config.ts"
+        "command": "vitest run",
+        "cwd": "packages/openai-agent-adapter"
       }
     }
   }

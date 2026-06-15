@@ -988,6 +988,56 @@ describe('DrizzleDomainRepositories round-trip', () => {
     });
   });
 
+  it('feedback.appendThreadEntry appends a reply without changing status', async () => {
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'fb-append',
+        title: 'Feedback append reply'
+      });
+      const run = await repos.runs.create({
+        topicId: setup.topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false
+      });
+      const fb = await repos.feedback.create({
+        runId: run.id,
+        owner,
+        tenant: 'tenant_1',
+        target: 'artifact',
+        status: 'open',
+        title: 'Needs reply',
+        body: 'Initial body.',
+        thread: [{ id: 'thread_1', author: owner, body: 'Initial body.', createdAt: '2026-06-14T00:00:00.000Z' }]
+      });
+
+      const updated = await repos.feedback.appendThreadEntry({
+        feedbackId: fb.id,
+        threadEntry: {
+          id: 'thread_reply',
+          author: owner,
+          body: 'Reply body',
+          createdAt: '2026-06-15T12:00:00.000Z'
+        },
+        updatedAt: '2026-06-15T12:00:00.000Z'
+      });
+
+      expect(updated.status).toBe(fb.status);
+      expect(updated.thread).toHaveLength(2);
+      expect(updated.thread.at(-1)?.body).toBe('Reply body');
+      expect(updated.updatedAt).toBe('2026-06-15T12:00:00.000Z');
+
+      const reread = await repos.feedback.findById(fb.id);
+      expect(reread?.status).toBe('open');
+      expect(reread?.thread).toHaveLength(2);
+      expect(reread?.thread.at(-1)?.id).toBe('thread_reply');
+    });
+  });
+
   it('omits failureReason for newly created runs', async () => {
     await withRepositories(async (repos) => {
       const setup = await createProjectConversationAndTopic(repos, {
@@ -1035,6 +1085,49 @@ describe('DrizzleDomainRepositories round-trip', () => {
 
       const found = await repos.runs.findById(run.id);
       expect(found?.failureReason).toBe('provider_auth_failed');
+    });
+  });
+
+  it('round-trips an artifact_range feedback anchor with emoji codepoints', async () => {
+    // "😄" is one Unicode codepoint (U+1F604) but two UTF-16 code units
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'art-range',
+        title: 'Artifact range'
+      });
+      const run = await repos.runs.create({
+        topicId: setup.topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false
+      });
+
+      const anchor = {
+        kind: 'artifact_range' as const,
+        artifactId: 'art_spec_1',
+        from: 6,
+        to: 8,
+        quotedText: '😄x'
+      };
+
+      const fb = await repos.feedback.create({
+        runId: run.id,
+        owner,
+        tenant: 'tenant_1',
+        target: 'artifact',
+        status: 'open',
+        title: 'Range feedback',
+        body: 'Test anchor round-trip.',
+        anchor,
+        thread: [{ id: 'thread_1', author: owner, body: 'Test anchor round-trip.', createdAt: '2026-06-14T00:00:00.000Z' }]
+      });
+
+      const found = await repos.feedback.findById(fb.id);
+      expect(found?.anchor).toEqual(anchor);
     });
   });
 

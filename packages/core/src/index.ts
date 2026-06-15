@@ -73,6 +73,7 @@ export type {
   CreateConversationTopicMessageAndRunInput,
   CreateConversationTopicMessageAndRunResult,
   FeedbackStatusTransitionPersistenceInput,
+  FeedbackThreadAppendPersistenceInput,
   FeedbackThreadEntryPersistenceInput,
   LifecycleRunStepInput,
   ListRunsByTenantOptions,
@@ -142,6 +143,8 @@ export type {
   ConsumeRunnerEventStreamResult
 } from './runner-event-stream.js';
 
+export { safeFailureReasonFromError } from './safe-failure-reason.js';
+
 export { createExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
 export type {
   ExecutionRunUnitOfWorkOptions,
@@ -195,6 +198,8 @@ export {
   reopenFeedback,
   listBlockingFeedback,
   resolveApproverAddressedFeedback,
+  appendFeedbackThreadReply,
+  type AppendFeedbackThreadReplyInput,
   type FeedbackLifecycleDependencies
 } from './feedback-lifecycle.js';
 

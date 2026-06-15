@@ -19,9 +19,12 @@ import {
   healthResponseSchema,
   probeResourceCollectionPath,
   probeResourceSchema,
+  appendRunFeedbackThreadRequestSchema,
+  appendRunFeedbackThreadSuccessStatusCode,
   createRunFeedbackRequestSchema,
   createRunFeedbackSuccessStatusCode,
   feedbackSchema,
+  runFeedbackThreadPath,
   getRunSpecSuccessStatusCode,
   listRunFeedbackSuccessStatusCode,
   runCollectionPath,
@@ -43,6 +46,7 @@ import {
   type CreateConversationWithFirstRunRequest,
   type CreateConversationWithFirstRunResponse,
   type CreateProbeResourceRequest,
+  type AppendRunFeedbackThreadRequest,
   type CreateRunFeedbackRequest,
   type CreateSecretRequest,
   type CreateSecretResponse,
@@ -82,11 +86,13 @@ export interface ControlPlaneClient {
   getRunSpec(id: string): Promise<RunSpecResponse>;
   createRunFeedback(id: string, request: CreateRunFeedbackRequest): Promise<Feedback>;
   listRunFeedback(id: string): Promise<RunFeedbackListResponse>;
+  appendRunFeedbackThreadReply(id: string, feedbackId: string, request: AppendRunFeedbackThreadRequest): Promise<Feedback>;
 }
 
 export interface RunEventsStreamOptions {
   readonly lastEventId?: string;
   readonly signal?: AbortSignal;
+  readonly replay?: 'retained';
 }
 
 export type RunEventsResponse = { readonly kind: 'response'; readonly response: Response };
@@ -302,8 +308,12 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
       if (options?.lastEventId !== undefined) {
         headers['last-event-id'] = options.lastEventId;
       }
+      const url = urlFor(baseUrl, runEventsPath.replace(':id', id));
+      if (options?.replay === 'retained') {
+        url.searchParams.set('replay', 'retained');
+      }
       const response = await fetchImplementation(
-        urlFor(baseUrl, runEventsPath.replace(':id', id)),
+        url,
         { method: 'GET', headers, ...(options?.signal !== undefined ? { signal: options.signal } : {}) }
       );
       if (!response.ok) {
@@ -352,6 +362,26 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
         throw new Error(`Expected ${listRunFeedbackSuccessStatusCode} from listRunFeedback, received ${response.status}.`);
       }
       return runFeedbackListResponseSchema.parse(await parseJson(response));
+    },
+
+    async appendRunFeedbackThreadReply(id, feedbackId, request) {
+      const body = appendRunFeedbackThreadRequestSchema.parse(request);
+      const path = runFeedbackThreadPath
+        .replace(':id', id)
+        .replace(':feedbackId', feedbackId);
+      const response = await fetchImplementation(
+        urlFor(baseUrl, path),
+        {
+          method: 'POST',
+          headers: protectedHeaders(bearerToken, { 'content-type': 'application/json' }),
+          body: JSON.stringify(body)
+        }
+      );
+      await throwForError(response);
+      if (response.status !== appendRunFeedbackThreadSuccessStatusCode) {
+        throw new Error(`Expected ${appendRunFeedbackThreadSuccessStatusCode} from appendRunFeedbackThreadReply, received ${response.status}.`);
+      }
+      return feedbackSchema.parse(await parseJson(response));
     }
   };
 }

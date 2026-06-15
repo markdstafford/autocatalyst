@@ -68,6 +68,67 @@ describe('domain value-object contracts', () => {
     expect(() => feedbackThreadSchema.parse([])).toThrow();
   });
 
+  describe('feedbackAnchorSchema — artifact_range', () => {
+    it('accepts a valid artifact_range anchor with required fields', () => {
+      expect(feedbackAnchorSchema.parse({
+        kind: 'artifact_range',
+        artifactId: 'art_1',
+        from: 3,
+        to: 8
+      })).toEqual({
+        kind: 'artifact_range',
+        artifactId: 'art_1',
+        from: 3,
+        to: 8
+      });
+    });
+
+    it('accepts artifact_range with optional quotedText', () => {
+      expect(feedbackAnchorSchema.parse({
+        kind: 'artifact_range',
+        artifactId: 'art_1',
+        from: 3,
+        to: 8,
+        quotedText: 'hello'
+      })).toMatchObject({ quotedText: 'hello' });
+    });
+
+    it('rejects artifact_range when to <= from', () => {
+      expect(() => feedbackAnchorSchema.parse({
+        kind: 'artifact_range',
+        artifactId: 'art_1',
+        from: 4,
+        to: 4
+      })).toThrow();
+
+      expect(() => feedbackAnchorSchema.parse({
+        kind: 'artifact_range',
+        artifactId: 'art_1',
+        from: 5,
+        to: 3
+      })).toThrow();
+    });
+
+    it('rejects artifact_range when quotedText exceeds 2000 characters', () => {
+      expect(() => feedbackAnchorSchema.parse({
+        kind: 'artifact_range',
+        artifactId: 'art_1',
+        from: 0,
+        to: 1,
+        quotedText: 'x'.repeat(2001)
+      })).toThrow();
+    });
+
+    it('rejects artifact_range when from is negative', () => {
+      expect(() => feedbackAnchorSchema.parse({
+        kind: 'artifact_range',
+        artifactId: 'art_1',
+        from: -1,
+        to: 1
+      })).toThrow();
+    });
+  });
+
   it('keeps session roles extensible while requiring lower snake case', () => {
     expect(sessionRoleSchema.parse('implementer')).toBe('implementer');
     expect(sessionRoleSchema.parse('future_mediator')).toBe('future_mediator');
