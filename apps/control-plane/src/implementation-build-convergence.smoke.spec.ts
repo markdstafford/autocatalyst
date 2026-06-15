@@ -37,11 +37,13 @@ import { promisify } from 'node:util';
 import { describe, expect, it } from 'vitest';
 
 import type {
+  ImplementationAltitude,
   ReviewerFinding,
   ReviewerResult
 } from '@autocatalyst/api-contract';
 import {
   createConvergenceEngine,
+  createLayeredConvergenceEngine,
   DefaultOrchestrator,
   getRunStepDefinition,
   getStepConvergencePolicy,
@@ -152,6 +154,106 @@ function makeRouting(): ModelRoutingResolver {
 interface FakeDispatcherOptions {
   readonly workspaceRepoRoot: string;
   readonly reviewerBehavior: 'satisfied' | 'always_warning';
+}
+
+/**
+ * Altitude-aware fake dispatcher for the layered convergence smoke tests.
+ * Writes altitude-appropriate TypeScript declarations at each non-build altitude
+ * and a real implementation at build altitude. The reviewer always returns
+ * `satisfied` unless `reviewerBehavior` says otherwise.
+ */
+interface AltitudeFakeDispatcherOptions {
+  readonly workspaceRepoRoot: string;
+  readonly reviewerBehavior: 'satisfied' | 'always_warning';
+  /** If set, writing this content at the specified altitude overrides the default content. */
+  readonly overrideAtAltitude?: {
+    readonly altitude: ImplementationAltitude;
+    readonly filename: string;
+    readonly content: string;
+  };
+}
+
+function createAltitudeFakeReviewedRoleDispatcher(
+  options: AltitudeFakeDispatcherOptions
+): ReviewedRoleDispatcher & { calls: RunRoleWorkInput[] } {
+  const calls: RunRoleWorkInput[] = [];
+
+  const warningFinding: ReviewerFinding = {
+    title: 'Add a regression test',
+    body: 'Cover the new branch with a unit test before advancing.',
+    severity: 'warning'
+  };
+
+  const altitudeContent: Record<ImplementationAltitude, { filename: string; content: string }> = {
+    layout: {
+      filename: 'src/widget.ts',
+      content: 'export declare const widgetId: string;\n'
+    },
+    public_api: {
+      filename: 'src/widget.ts',
+      content: 'export declare function createWidget(name: string): string;\n'
+    },
+    private_api: {
+      filename: 'src/internal.ts',
+      content: 'export declare function internalHelper(): void;\n'
+    },
+    build: {
+      filename: 'src/widget.ts',
+      content: [
+        'export const widgetId = "widget";',
+        'export function createWidget(name: string): string { return name; }',
+        ''
+      ].join('\n')
+    }
+  };
+
+  return {
+    calls,
+    async runRole(input: RunRoleWorkInput): Promise<ReviewedRoleDispatchResult> {
+      calls.push(input);
+
+      if (input.role === 'implementer') {
+        const altitude = (input.reviewContext?.altitudeContext?.altitude ?? 'build') as ImplementationAltitude;
+        const override = options.overrideAtAltitude;
+        let fileInfo = altitudeContent[altitude];
+        if (override !== undefined && override.altitude === altitude) {
+          fileInfo = { filename: override.filename, content: override.content };
+        }
+
+        const fs = await import('node:fs/promises');
+        const path = await import('node:path');
+        const fullPath = path.join(options.workspaceRepoRoot, fileInfo.filename);
+        const dir = path.dirname(fullPath);
+        await fs.mkdir(dir, { recursive: true });
+        await fs.writeFile(fullPath, fileInfo.content, 'utf-8');
+
+        const dispositions = (input.reviewContext?.requiredDispositions ?? []).map((req) => ({
+          feedbackId: req.feedbackId,
+          disposition: 'fixed' as const,
+          summary: `claimed fix in round ${input.round}`
+        }));
+
+        return {
+          workResult: { directive: 'advance', result: {} },
+          dispositions,
+          sessionId: `impl-session-${altitude}-${input.round}`,
+          lastPosition: `impl-pos-${altitude}-${input.round}`
+        };
+      }
+
+      // Reviewer
+      const reviewerResult: ReviewerResult = options.reviewerBehavior === 'satisfied'
+        ? { status: 'satisfied' }
+        : { status: 'findings', findings: [warningFinding] };
+
+      return {
+        workResult: { directive: 'advance', result: reviewerResult as unknown as Readonly<Record<string, unknown>> },
+        reviewerResult,
+        sessionId: `rev-session-${input.round}`,
+        lastPosition: `rev-pos-${input.round}`
+      };
+    }
+  };
 }
 
 /**
@@ -365,6 +467,65 @@ function buildOrchestrator(input: {
   return { orchestrator, close: () => database.close() };
 }
 
+function buildLayeredOrchestrator(input: {
+  readonly databasePath: string;
+  readonly workspacesRoot: string;
+  readonly workspaceRepoRoot: string;
+  readonly dispatcher: ReviewedRoleDispatcher;
+  readonly maxRounds?: number;
+  readonly depth?: 'build_only' | 'layout' | 'public_api' | 'full';
+}): { orchestrator: DefaultOrchestrator; close: () => void } {
+  const database = createSqliteDatabase({ path: input.databasePath });
+  const domainRepos = createDrizzleDomainRepositories(database);
+
+  const eventBus = new InMemoryRetainedRunEventStore({
+    maxEventsPerScope: 256,
+    maxExpiredIdsPerScope: 64,
+    subscriberBufferSize: 32
+  });
+  const dispatchQueue = new RunDispatchQueue({ maxConcurrent: 1 });
+
+  const runWorkspaceGit = createRunWorkspaceGitPort({ workspacesRoot: input.workspacesRoot });
+  const routing = makeRouting();
+
+  const convergenceEngine = createLayeredConvergenceEngine({
+    dispatcher: input.dispatcher,
+    git: runWorkspaceGit,
+    feedback: domainRepos.feedback,
+    runSteps: domainRepos.runSteps,
+    routing,
+    getPolicy: () => ({
+      maxRounds: input.maxRounds ?? 2,
+      depth: (input.depth ?? 'build_only') as 'build_only' | 'layout' | 'public_api' | 'full'
+    }),
+    logger: { warn: () => {} }
+  });
+
+  const resolveWorkspaceContext: WorkspaceContextResolver = async () => ({
+    workspaceRepoRoot: input.workspaceRepoRoot,
+    workspaceHandle: 'smoke-workspace'
+  });
+
+  const orchestrator = new DefaultOrchestrator({
+    runs: domainRepos.runs,
+    conversationIngress: {
+      createConversationTopicMessageAndRun: () => {
+        throw new Error('not used in smoke test');
+      }
+    },
+    events: eventBus,
+    dispatchQueue,
+    runSteps: domainRepos.runSteps,
+    runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
+    resolveWorkspaceContext,
+    convergenceEngine,
+    autoDispatch: { enabled: false },
+    logger: { warn: () => {} }
+  });
+
+  return { orchestrator, close: () => database.close() };
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -417,6 +578,149 @@ describe('implementation.build convergence — production-path smoke', () => {
           // No reviewer feedback was persisted (status: satisfied).
           const feedback = await repos.feedback.listByRun(runId);
           expect(feedback).toHaveLength(0);
+        } finally {
+          db.close();
+        }
+      } finally {
+        close();
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // New layered convergence engine tests
+  // ---------------------------------------------------------------------------
+
+  it('full ladder happy path: all four altitudes converge, 3 checkpoint refs captured', async () => {
+    await withScenario('ac-smoke-full-ladder', async ({ runId, workspacesRoot, workspaceRepoRoot, databasePath }) => {
+      const dispatcher = createAltitudeFakeReviewedRoleDispatcher({
+        workspaceRepoRoot,
+        reviewerBehavior: 'satisfied'
+      });
+      const { orchestrator, close } = buildLayeredOrchestrator({
+        databasePath, workspacesRoot, workspaceRepoRoot, dispatcher,
+        depth: 'full', maxRounds: 2
+      });
+      try {
+        const run = await orchestrator.dispatch({ runId, tenant: TENANT });
+        expect(run.run.currentStep).toBe('implementation.human_review');
+
+        const db = createSqliteDatabase({ path: databasePath });
+        const repos = createDrizzleDomainRepositories(db);
+        try {
+          const steps = await repos.runSteps.listByRun(runId);
+          const buildStep = steps.find((s) => s.step === 'implementation.build');
+          expect(buildStep).toBeDefined();
+          const checkpoint = buildStep?.checkpointResult as Record<string, unknown> | null;
+          expect(checkpoint).toMatchObject({
+            kind: 'convergence_review',
+            outcome: 'converged',
+            depth: 'full',
+            currentAltitude: 'build'
+          });
+          const acceptedCheckpoints = checkpoint?.['acceptedCheckpoints'] as Array<Record<string, unknown>>;
+          expect(acceptedCheckpoints).toHaveLength(3);
+          const altitudes = acceptedCheckpoints.map((c) => c['altitude']);
+          expect(altitudes).toContain('layout');
+          expect(altitudes).toContain('public_api');
+          expect(altitudes).toContain('private_api');
+        } finally {
+          db.close();
+        }
+      } finally {
+        close();
+      }
+    });
+  });
+
+  it('build drift: public_api export removed at build altitude triggers build_drift blocker', async () => {
+    await withScenario('ac-smoke-drift', async ({ runId, workspacesRoot, workspaceRepoRoot, databasePath }) => {
+      // At public_api: write createWidget export; at build: write a DIFFERENT file that does NOT
+      // include createWidget, triggering build drift detection.
+      const dispatcher = createAltitudeFakeReviewedRoleDispatcher({
+        workspaceRepoRoot,
+        reviewerBehavior: 'satisfied',
+        overrideAtAltitude: {
+          altitude: 'build',
+          filename: 'src/widget.ts',
+          // Deliberately omits createWidget — will trigger export_removed drift
+          content: 'export function somethingElse(): void {}\n'
+        }
+      });
+      const { orchestrator, close } = buildLayeredOrchestrator({
+        databasePath, workspacesRoot, workspaceRepoRoot, dispatcher,
+        depth: 'full', maxRounds: 1
+      });
+      try {
+        const run = await orchestrator.dispatch({ runId, tenant: TENANT });
+        expect(run.run.currentStep).toBe('implementation.awaiting_input');
+
+        const db = createSqliteDatabase({ path: databasePath });
+        const repos = createDrizzleDomainRepositories(db);
+        try {
+          const steps = await repos.runSteps.listByRun(runId);
+          const buildStep = steps.find((s) => s.step === 'implementation.build');
+          const checkpoint = buildStep?.checkpointResult as Record<string, unknown> | null;
+          const rounds = checkpoint?.['rounds'] as Array<Record<string, unknown>>;
+          // Find the build round
+          const buildRound = rounds?.find((r) => r['altitude'] === 'build');
+          expect(buildRound).toBeDefined();
+          const findings = buildRound?.['findings'] as Array<Record<string, unknown>>;
+          const driftFinding = findings?.find(
+            (f) => f['source'] === 'build_drift' && f['blocking'] === true
+          );
+          expect(driftFinding).toBeDefined();
+          expect(driftFinding?.['source']).toBe('build_drift');
+          expect(driftFinding?.['blocking']).toBe(true);
+          const titleLower = String(driftFinding?.['title'] ?? '').toLowerCase();
+          expect(titleLower).toMatch(/build.*drift|drift.*build/i);
+        } finally {
+          db.close();
+        }
+      } finally {
+        close();
+      }
+    });
+  });
+
+  it('early altitude contract violation: .spec.ts at layout blocks with altitude_contract finding', async () => {
+    await withScenario('ac-smoke-contract-violation', async ({ runId, workspacesRoot, workspaceRepoRoot, databasePath }) => {
+      // Override layout altitude to write a .spec.ts file — this triggers altitude_contract violation
+      const dispatcher = createAltitudeFakeReviewedRoleDispatcher({
+        workspaceRepoRoot,
+        reviewerBehavior: 'satisfied',
+        overrideAtAltitude: {
+          altitude: 'layout',
+          filename: 'src/widget.spec.ts',
+          content: 'export const x = 1;\n'
+        }
+      });
+      const { orchestrator, close } = buildLayeredOrchestrator({
+        databasePath, workspacesRoot, workspaceRepoRoot, dispatcher,
+        depth: 'full', maxRounds: 1
+      });
+      try {
+        const run = await orchestrator.dispatch({ runId, tenant: TENANT });
+        expect(run.run.currentStep).toBe('implementation.awaiting_input');
+
+        const db = createSqliteDatabase({ path: databasePath });
+        const repos = createDrizzleDomainRepositories(db);
+        try {
+          const steps = await repos.runSteps.listByRun(runId);
+          const buildStep = steps.find((s) => s.step === 'implementation.build');
+          const checkpoint = buildStep?.checkpointResult as Record<string, unknown> | null;
+          // Must still be at layout altitude — no checkpoint was accepted
+          expect(checkpoint?.['currentAltitude']).toBe('layout');
+          const acceptedCheckpoints = checkpoint?.['acceptedCheckpoints'] as unknown[];
+          expect(acceptedCheckpoints).toHaveLength(0);
+          const rounds = checkpoint?.['rounds'] as Array<Record<string, unknown>>;
+          const layoutRound = rounds?.[0];
+          expect(layoutRound).toBeDefined();
+          const findings = layoutRound?.['findings'] as Array<Record<string, unknown>>;
+          const contractViolation = findings?.[0];
+          expect(contractViolation?.['source']).toBe('altitude_contract');
+          expect(contractViolation?.['blocking']).toBe(true);
+          expect(contractViolation?.['category']).toBe('contract_violation');
         } finally {
           db.close();
         }

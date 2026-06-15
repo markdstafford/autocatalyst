@@ -638,6 +638,75 @@ describe('createLayeredConvergenceEngine', () => {
     );
   });
 
+  it('deterministic altitude_contract findings cannot be cleared by implementer decline dispositions', async () => {
+    // The implementer attempts to 'decline' an altitude_contract finding.
+    // Deterministic findings bypass findingsByFeedbackId tracking so they are
+    // not tracked as reviewer findings — dispositions targeting their feedbackId
+    // are simply ignored, and the finding re-emits on every round.
+    const git = new StubGit();
+    // Spec file triggers altitude_contract violation at layout altitude
+    git.filesAtRef = ['src/widget.spec.ts'];
+    git.fileContentByPath = { 'src/widget.spec.ts': 'export const x = 1;' };
+
+    const dispatcher = new ScriptedDispatcher([
+      // Round 1 — implementer advances with no dispositions
+      implResultAdvance(1, 'layout'),
+      reviewerResultDispatch(1, 'layout', { status: 'satisfied' }),
+      // Round 2 — implementer tries to 'decline' the deterministic finding
+      {
+        role: 'implementer',
+        round: 2,
+        altitude: 'layout',
+        result: {
+          workResult: { directive: 'advance', result: {} },
+          // The feedbackId used by deterministic findings is their deterministicKey
+          dispositions: [
+            {
+              feedbackId: 'altitude_contract:layout:src/widget.spec.ts:is_test_file',
+              disposition: 'declined' as const,
+              reason: 'not relevant'
+            }
+          ],
+          sessionId: 'impl-layout-2',
+          lastPosition: 'impl-pos-layout-2'
+        }
+      },
+      reviewerResultDispatch(2, 'layout', { status: 'satisfied' })
+    ]);
+
+    const engine = createLayeredConvergenceEngine({
+      dispatcher,
+      git,
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      // maxRounds=2 so round 2 exhausts the budget
+      getPolicy: () => policyOf('layout', 2)
+    });
+
+    const out = await engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow,
+      workspace
+    });
+
+    // Max rounds exhausted at layout altitude due to deterministic blocker re-emitting
+    expect(out.workResult.directive).toBe('needs_input');
+    // The layout altitude must still be blocking (not cleared by the decline)
+    const lastRound = out.checkpointResult.rounds[out.checkpointResult.rounds.length - 1];
+    expect(lastRound?.altitude).toBe('layout');
+    const altitudeContractFinding = lastRound?.findings.find(
+      (f) => f.source === 'altitude_contract' && f.blocking === true
+    );
+    expect(altitudeContractFinding).toBeDefined();
+    expect(altitudeContractFinding?.source).toBe('altitude_contract');
+    expect(altitudeContractFinding?.blocking).toBe(true);
+  });
+
   it('persists reviewer findings as feedback at early altitude', async () => {
     const feedback = new InMemoryFeedbackRepo();
     const layoutFinding: ReviewerFinding = {

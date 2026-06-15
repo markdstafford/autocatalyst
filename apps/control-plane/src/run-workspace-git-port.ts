@@ -35,8 +35,17 @@ function validateAltitude(altitude: CheckpointAltitude): void {
   }
 }
 
+/** A commit SHA (4–64 hex chars) used as a ref, e.g. for git ls-tree or git show. */
+const COMMIT_SHA_PATTERN = /^[a-f0-9]{4,64}$/i;
+
 function validateRef(ref: string): void {
-  if (typeof ref !== 'string' || !ref.startsWith('refs/')) {
+  if (typeof ref !== 'string') {
+    throw new Error('checkpoint_ref_invalid');
+  }
+  // Accept both symbolic refs (refs/...) and raw commit SHAs.
+  const isSymbolicRef = ref.startsWith('refs/');
+  const isCommitSha = COMMIT_SHA_PATTERN.test(ref);
+  if (!isSymbolicRef && !isCommitSha) {
     throw new Error('checkpoint_ref_invalid');
   }
   if (ref.includes('..') || ref.includes(' ') || ref.includes('\n')) {
