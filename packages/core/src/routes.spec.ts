@@ -468,6 +468,48 @@ describe('registerControlPlaneRoutes', () => {
     expect(errorResponseSchema.parse(response.json()).error.code).toBe('profile_incomplete');
   });
 
+  it('returns 422 when patching a routing table to active:true referencing a profile without credential', async () => {
+    const profileWithoutCredential = {
+      id: 'cfg_no_credential',
+      tenant: 'tenant_dev',
+      kind: 'provider_profile',
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      settings: { profileName: 'No Credential', model: { provider: 'anthropic', model: 'claude-sonnet-4' } },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const existingRoutingTable = {
+      id: 'tbl_existing_nocred',
+      tenant: 'tenant_dev',
+      kind: 'model_routing_table',
+      settings: {
+        active: false,
+        entries: [{ id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_no_credential' }]
+      },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const configRepo = {
+      create: vi.fn(async () => existingRoutingTable),
+      list: vi.fn(async () => [profileWithoutCredential, existingRoutingTable]),
+      findById: vi.fn(async (_tenant: string, id: string) => id === 'tbl_existing_nocred' ? existingRoutingTable : null),
+      update: vi.fn(async () => null),
+      delete: vi.fn(async () => false)
+    };
+    const { app, authorization } = await buildServer({ configurationRecords: configRepo });
+    server = app;
+    const response = await app.inject({
+      method: 'PATCH', url: '/v1/configuration-records/tbl_existing_nocred', headers: authorization,
+      payload: {
+        kind: 'model_routing_table',
+        settings: { active: true }
+      }
+    });
+    expect(response.statusCode).toBe(422);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('profile_incomplete');
+  });
+
   it('allows creating an active routing table when the referenced profile is complete', async () => {
     const completeProfile = {
       id: 'cfg_complete',
