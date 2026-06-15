@@ -82,7 +82,8 @@ describe('detectOscillation', () => {
       changedFileCount: 0,
       findings: [{ feedbackId: 'fb-1', title: 'Missing test', body: 'Add coverage for edge case.', severity: 'warning' as const, blocking: true, signature: 'sig-1' }],
       dispositions: [],
-      outcome: 'continue' as const
+      outcome: 'continue' as const,
+      altitude: 'build' as const
     }];
     expect(detectOscillation(previousRounds, ['sig-1'])).toBe(true);
   });
@@ -92,7 +93,7 @@ describe('detectOscillation', () => {
       { round: 1, changedFileCount: 0, findings: [
         { feedbackId: 'fb-1', title: 'A', body: 'B', severity: 'warning' as const, blocking: true, signature: 'sig-1' },
         { feedbackId: 'fb-2', title: 'C', body: 'D', severity: 'blocker' as const, blocking: true, signature: 'sig-2' }
-      ], dispositions: [], outcome: 'continue' as const }
+      ], dispositions: [], outcome: 'continue' as const, altitude: 'build' as const }
     ];
     // Current blocking set has 2 or more items (non-decreasing from round 1's 2)
     expect(detectOscillation(previousRounds, ['sig-1', 'sig-2', 'sig-3'])).toBe(true);

@@ -18,7 +18,7 @@ import {
   composeAgentProviderAdapterRegistry,
   composeDirectProviderAdapterRegistry,
   composeConfiguredProviders,
-  createConvergenceEngine,
+  createLayeredConvergenceEngine,
   createExecutionContextResolver,
   createExecutionRunUnitOfWork,
   createModelRoutingResolver,
@@ -1011,7 +1011,7 @@ export async function createControlPlaneServer(
       const reviewedExecutionDispatcher = createReviewedExecutionDispatcher({
         unitOfWork: executionUnitOfWork
       });
-      convergenceEngine = createConvergenceEngine({
+      convergenceEngine = createLayeredConvergenceEngine({
         dispatcher: reviewedExecutionDispatcher,
         git: runWorkspaceGit,
         feedback: domainRepos.feedback,

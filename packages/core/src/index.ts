@@ -229,6 +229,9 @@ export {
 
 export * from './convergence-engine.js';
 
+export { createLayeredConvergenceEngine } from './layered-convergence-engine.js';
+export type { LayeredConvergenceEngineOptions } from './layered-convergence-engine.js';
+
 export * from './reviewed-role-dispatcher.js';
 
 export * from './run-workspace-git.js';
