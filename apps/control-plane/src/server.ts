@@ -18,6 +18,7 @@ import {
   composeAgentProviderAdapterRegistry,
   composeDirectProviderAdapterRegistry,
   composeConfiguredProviders,
+  createConvergenceEngine,
   createExecutionContextResolver,
   createExecutionRunUnitOfWork,
   createModelRoutingResolver,
@@ -26,12 +27,14 @@ import {
   defaultExtensionRegistryCatalog,
   emptyProviderAdapterMap,
   ExecutionContextResolutionError,
+  getStepConvergencePolicy,
   InMemoryRetainedRunEventStore,
   ModelRoutingConfigurationError,
   permissivePolicyDecisionPoint,
   registerControlPlaneRoutes,
   RunDispatchQueue,
   type AutoDispatchOptions,
+  type ConvergenceEngine,
   type ControlPlaneService,
   type DomainRepositories,
   type ExecutionModeResolution,
@@ -53,6 +56,8 @@ import {
   type WorkspaceGitPort,
   type WorkspaceResolverInput
 } from '@autocatalyst/core';
+import { createReviewedExecutionDispatcher } from './reviewed-execution-dispatcher.js';
+import { createRunWorkspaceGitPort } from './run-workspace-git-port.js';
 import { loadSpecAuthorPromptInput, SpecAuthoringContextLoadError } from './spec-authoring-context-loader.js';
 import {
   createAgentConnection,
@@ -758,6 +763,10 @@ export async function createControlPlaneServer(
   // Build the real dispatch unit of work if requested. `options.unitOfWork`
   // always takes precedence.
   let resolvedUnitOfWork: RunUnitOfWork | undefined = options.unitOfWork;
+  // Convergence engine is composed only when we build the real dispatch unit of work.
+  // It needs the routing resolver, the execution-aware unit of work (for runWithCheckpoint),
+  // and a workspace git port — all of which are only available in the real-dispatch branch.
+  let convergenceEngine: ConvergenceEngine | undefined;
   if (resolvedUnitOfWork === undefined && realDispatchEnabled) {
     const profileId = options.realRunnerDispatch?.defaultProviderProfileId;
     const adapterRegistry = composeAgentProviderAdapterRegistry({
@@ -891,7 +900,7 @@ export async function createControlPlaneServer(
         runWorkspaceRootRegistry.set(runId, repoRoot);
       }
     });
-    resolvedUnitOfWork = createExecutionRunUnitOfWork({
+    const executionUnitOfWork = createExecutionRunUnitOfWork({
       execute: entryPoint,
       resolveContext: async (workInput) => {
         const workspace = await resolveWorkspaceInputForRun({
@@ -944,6 +953,32 @@ export async function createControlPlaneServer(
         })
       }
     });
+    resolvedUnitOfWork = executionUnitOfWork;
+
+    // Compose convergence-engine dependencies for reviewed producing steps.
+    // The workspace git port verifies commits stay inside the configured workspaces root;
+    // it is only available when workspaceRoots are configured by the caller.
+    if (options.workspaceRoots !== undefined) {
+      const runWorkspaceGit = createRunWorkspaceGitPort({
+        workspacesRoot: options.workspaceRoots.workspacesRoot
+      });
+      const reviewedExecutionDispatcher = createReviewedExecutionDispatcher({
+        unitOfWork: executionUnitOfWork
+      });
+      convergenceEngine = createConvergenceEngine({
+        dispatcher: reviewedExecutionDispatcher,
+        git: runWorkspaceGit,
+        feedback: domainRepos.feedback,
+        runSteps: domainRepos.runSteps,
+        routing: routingResolver,
+        getPolicy: getStepConvergencePolicy,
+        logger: {
+          warn(message: string, details?: unknown) {
+            console.warn(message, details);
+          }
+        }
+      });
+    }
   }
 
   const nodeFilesystem = createNodeWorkspaceFilesystem();
@@ -994,6 +1029,8 @@ export async function createControlPlaneServer(
     specApprovalFinalizerDependencies,
     runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
     resolveWorkspaceContext: options.resolveWorkspaceContext ?? internalResolveWorkspaceContext,
+    runSteps: domainRepos.runSteps,
+    ...(convergenceEngine !== undefined ? { convergenceEngine } : {}),
     ...(options.autoDispatch !== undefined ? { autoDispatch: options.autoDispatch } : {}),
     logger: {
       warn(message: string, details?: unknown) {

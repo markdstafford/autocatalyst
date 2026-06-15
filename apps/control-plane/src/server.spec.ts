@@ -292,6 +292,55 @@ describe('createControlPlaneServer (real runner dispatch composition)', () => {
     });
   });
 
+  it('composes convergence dependencies when realRunnerDispatch and workspaceRoots are configured', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      // Seed a provider profile so the registry has something to bind.
+      const seed = await createControlPlaneServer({
+        databasePath,
+        bearerToken: 'token',
+        masterSecret: 'correct-master-secret'
+      });
+      const createdResponse = await seed.inject({
+        method: 'POST',
+        url: configurationRecordCollectionPath,
+        headers: { authorization: 'Bearer token' },
+        payload: {
+          kind: 'provider_profile',
+          providerKind: claudeProviderKind,
+          adapterId: claudeAgentAdapterId,
+          settings: { profileName: 'default' }
+        }
+      });
+      expect(createdResponse.statusCode).toBe(createConfigurationRecordSuccessStatusCode);
+      const created = createdResponse.json() as { id: string };
+      await seed.close();
+
+      const workspacesRoot = await mkdtemp(join(tmpdir(), 'autocatalyst-workspaces-'));
+      const reposRoot = await mkdtemp(join(tmpdir(), 'autocatalyst-repos-'));
+      try {
+        // Booting with realRunnerDispatch enabled AND workspaceRoots configured
+        // exercises the convergence engine wiring path. A failure to compose the
+        // dispatcher, git port, or convergence engine would throw before listen.
+        const app = await createControlPlaneServer({
+          databasePath,
+          bearerToken: 'token',
+          masterSecret: 'correct-master-secret',
+          providerAdapters: new Map([[fakeClaudeKey, fakeClaudeAdapterFactory]]),
+          realRunnerDispatch: { enabled: true, defaultProviderProfileId: created.id },
+          workspaceRoots: { workspacesRoot, reposRoot }
+        });
+
+        const response = await app.inject({ method: 'GET', url: '/health' });
+        expect(response.statusCode).toBe(200);
+
+        await app.close();
+      } finally {
+        await rm(workspacesRoot, { recursive: true, force: true });
+        await rm(reposRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('createExplicitProfileResolver throws missing_profile when no matching record exists', async () => {
     const registry: AgentProviderAdapterRegistry = new Map([[fakeClaudeKey, fakeAdapter]]);
     const resolver = createExplicitProfileResolver({
