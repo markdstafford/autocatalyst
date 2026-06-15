@@ -19,12 +19,14 @@ import type { CompleteSpecAuthoringOutput, SpecAuthoringServiceDependencies } fr
 import { completeSpecAuthoring } from './spec-authoring-service.js';
 import type { SpecApprovalFinalizerDependencies } from './spec-approval-finalizer.js';
 import { finalizeSpecApproval } from './spec-approval-finalizer.js';
+import type { ConvergenceEngine } from './convergence-engine.js';
 
 import type {
   ConversationIngressRepository,
   CreateConversationTopicMessageAndRunResult,
   LifecycleRunStepInput,
   RunRepository,
+  RunStepRepository,
   RunWorkspaceMetadataRepository
 } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
@@ -39,7 +41,7 @@ import {
   startRunLifecycle,
   type RunLifecycleState
 } from './run-lifecycle.js';
-import { deriveRunTerminal, getRunStepDefinition } from './run-step-catalog.js';
+import { deriveRunTerminal, getRunStepDefinition, type RunStepDefinition } from './run-step-catalog.js';
 import { getRunWorkflowForWorkKind, type RunDirective } from './run-workflows.js';
 import { safeFailureReasonFromError } from './safe-failure-reason.js';
 
@@ -201,6 +203,8 @@ export interface DefaultOrchestratorOptions {
   readonly feedbackLifecycleDependencies?: FeedbackLifecycleDependencies;
   readonly finalizeSpecApproval?: typeof finalizeSpecApproval;
   readonly specApprovalFinalizerDependencies?: SpecApprovalFinalizerDependencies;
+  readonly runSteps?: RunStepRepository;
+  readonly convergenceEngine?: ConvergenceEngine;
   readonly autoDispatch?: AutoDispatchOptions;
 }
 
@@ -235,6 +239,8 @@ export class DefaultOrchestrator implements Orchestrator {
   readonly #feedbackLifecycleDependencies: FeedbackLifecycleDependencies | undefined;
   readonly #finalizeSpecApproval: typeof finalizeSpecApproval;
   readonly #specApprovalFinalizerDependencies: SpecApprovalFinalizerDependencies | undefined;
+  readonly #runSteps: RunStepRepository | undefined;
+  readonly #convergenceEngine: ConvergenceEngine | undefined;
   readonly #autoDispatchEnabled: boolean;
   readonly #autoDispatchInFlightRunIds = new Set<string>();
 
@@ -257,6 +263,8 @@ export class DefaultOrchestrator implements Orchestrator {
     this.#feedbackLifecycleDependencies = options.feedbackLifecycleDependencies;
     this.#finalizeSpecApproval = options.finalizeSpecApproval ?? finalizeSpecApproval;
     this.#specApprovalFinalizerDependencies = options.specApprovalFinalizerDependencies;
+    this.#runSteps = options.runSteps;
+    this.#convergenceEngine = options.convergenceEngine;
   }
 
   async createRun(input: CreateOrchestratedRunInput): Promise<OrchestratedRunResult> {
@@ -570,6 +578,60 @@ export class DefaultOrchestrator implements Orchestrator {
       return this.#dispatchSystemStep(input, run);
     }
 
+    if (stepDefinition !== null && this.#isReviewedProducingStep(stepDefinition) && this.#convergenceEngine !== undefined) {
+      const convergenceEngine = this.#convergenceEngine;
+      return this.#dispatchQueue.enqueue(async () => {
+        const workflow = getRunWorkflowForWorkKind(run.workKind);
+        if (workflow === null) {
+          throw new OrchestratorError('unknown_work_kind', `Unknown work kind '${run.workKind}'.`);
+        }
+        const runSteps = this.#runSteps !== undefined ? await this.#runSteps.listByRun(input.runId) : [];
+        const runStep = runSteps.find(s => s.step === run.currentStep) ?? {
+          id: `${input.runId}_step`,
+          runId: input.runId,
+          phase: stepDefinition.phase,
+          step: stepDefinition.id,
+          role: 'none' as const,
+          startedAt: this.#clock?.() ?? new Date().toISOString(),
+          endedAt: null,
+          durationMs: null,
+          occurrence: { index: 0, attempt: 1 },
+          checkpointResult: null
+        };
+        const resolvedWorkspace = this.#resolveWorkspaceContext !== undefined
+          ? await this.#resolveWorkspaceContext({ runId: input.runId }).catch(() => undefined)
+          : undefined;
+        const result = await convergenceEngine.run({
+          runId: input.runId,
+          run,
+          tenant: input.tenant,
+          runStep,
+          stepDefinition,
+          workflow,
+          ...(resolvedWorkspace !== undefined ? { workspace: resolvedWorkspace } : {})
+        });
+
+        if (result.workResult.directive === 'fail') {
+          const reason = result.workResult.reason;
+          return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason });
+        }
+        if (result.workResult.directive === 'needs_input') {
+          return this.applyDirective({
+            runId: input.runId,
+            directive: 'needs_input',
+            tenant: input.tenant,
+            checkpointResult: result.checkpointResult as unknown as JsonValue
+          });
+        }
+        return this.applyDirective({
+          runId: input.runId,
+          directive: 'advance',
+          tenant: input.tenant,
+          checkpointResult: result.checkpointResult as unknown as JsonValue
+        });
+      });
+    }
+
     if (this.#unitOfWork === undefined) {
       throw new OrchestratorError('persistence_failed', 'No unit of work configured.');
     }
@@ -619,6 +681,18 @@ export class DefaultOrchestrator implements Orchestrator {
         ...(checkpointResult !== undefined ? { checkpointResult } : {})
       });
     });
+  }
+
+  #isReviewedProducingStep(stepDefinition: RunStepDefinition): boolean {
+    // Scoped to implementation.build only. spec.author also carries both roles but has
+    // a spec-artifact completion step (#runSpecAuthoringCompletion) that must run after
+    // convergence — that wiring is tracked separately; until then keep it on the one-shot path.
+    return (
+      stepDefinition.id === 'implementation.build' &&
+      stepDefinition.waitingOn === 'ai' &&
+      stepDefinition.roles.includes('implementer') &&
+      stepDefinition.roles.includes('reviewer')
+    );
   }
 
   async #dispatchSystemStep(input: DispatchRunInput, run: Run): Promise<OrchestratedRunResult> {

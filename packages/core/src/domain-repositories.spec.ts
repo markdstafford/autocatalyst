@@ -1,7 +1,7 @@
 import { describe, it } from 'vitest';
 import { expectTypeOf } from 'vitest';
 import type { ConversationIngressRepository, CreateConversationTopicMessageAndRunInput, CreateConversationTopicMessageAndRunResult } from './domain-repositories.js';
-import type { FeedbackRepository, ArtifactRepository, FeedbackStatusTransitionPersistenceInput, FeedbackThreadEntryPersistenceInput, FeedbackConcurrentModificationError } from './domain-repositories.js';
+import type { FeedbackRepository, ArtifactRepository, FeedbackStatusTransitionPersistenceInput, FeedbackThreadEntryPersistenceInput, FeedbackConcurrentModificationError, RunStepRepository, UpdateRunStepCheckpointInput } from './domain-repositories.js';
 
 describe('domain-repositories types', () => {
   it('exports ConversationIngressRepository type', () => {
@@ -41,5 +41,14 @@ describe('extended domain repository types', () => {
   it('FeedbackConcurrentModificationError has feedback_concurrent_modification code', () => {
     const err = {} as FeedbackConcurrentModificationError;
     expectTypeOf(err.code).toEqualTypeOf<'feedback_concurrent_modification'>();
+  });
+
+  it('RunStepRepository exposes atomic checkpoint updates', () => {
+    const repo = {} as RunStepRepository;
+    expectTypeOf(repo.updateCheckpoint).toBeFunction();
+    expectTypeOf<UpdateRunStepCheckpointInput>().toHaveProperty('runStepId');
+    expectTypeOf<UpdateRunStepCheckpointInput>().toHaveProperty('runId');
+    expectTypeOf<UpdateRunStepCheckpointInput>().toHaveProperty('tenant');
+    expectTypeOf<UpdateRunStepCheckpointInput>().toHaveProperty('checkpointResult');
   });
 });

@@ -247,6 +247,12 @@ describe('ExecutionContextResolver', () => {
       expect(context.toolPolicy).toEqual({ allowedTools: ['bash', 'filesystem', 'lsp'], workspaceScope: 'declared_workspace' });
     });
 
+    it('produces empty allowedTools when toolPolicy.allowedTools is empty (reviewer read-only)', async () => {
+      const resolver = createExecutionContextResolver({ toolPolicy: { allowedTools: [] } });
+      const context = await resolver.resolve(makeInput(makeRun({ workKind: 'question', currentStep: 'respond' })));
+      expect(context.toolPolicy.allowedTools).toEqual([]);
+    });
+
     it('includes empty skill intent for steps with no mapped skills', async () => {
       const resolver = createExecutionContextResolver({});
       const context = await resolver.resolve(makeInput(makeRun({ workKind: 'question', currentStep: 'respond' })));

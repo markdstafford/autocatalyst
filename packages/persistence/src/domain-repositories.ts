@@ -35,6 +35,7 @@ import type {
 import {
   artifactSchema,
   channelReferenceSchema,
+  convergenceCheckpointSchema,
   conversationSchema,
   costSchema,
   createArtifactInputSchema,
@@ -100,7 +101,8 @@ import type {
   RunStepRepository,
   SessionRepository,
   TestResultRepository,
-  TopicRepository
+  TopicRepository,
+  UpdateRunStepCheckpointInput
 } from '@autocatalyst/core';
 import { FeedbackConcurrentModificationError } from '@autocatalyst/core';
 
@@ -1203,6 +1205,50 @@ export class DrizzleRunStepRepository implements RunStepRepository {
       .orderBy(asc(runSteps.startedAt), asc(runSteps.id))
       .all();
     return rows.map((row) => this.#rowToRunStep(row));
+  }
+
+  async updateCheckpoint(input: UpdateRunStepCheckpointInput): Promise<RunStep> {
+    const checkpoint = input.checkpointResult;
+    if (
+      checkpoint !== null &&
+      typeof checkpoint === 'object' &&
+      !Array.isArray(checkpoint) &&
+      (checkpoint as Record<string, unknown>)['kind'] === 'convergence_review'
+    ) {
+      convergenceCheckpointSchema.parse(checkpoint);
+    }
+
+    const parentRow = this.#database.drizzle
+      .select({ id: runSteps.id })
+      .from(runSteps)
+      .innerJoin(runs, eq(runSteps.runId, runs.id))
+      .where(and(eq(runSteps.id, input.runStepId), eq(runs.id, input.runId), eq(runs.tenant, input.tenant)))
+      .limit(1)
+      .all()[0];
+
+    if (parentRow === undefined) {
+      throw new Error(`RunStep '${input.runStepId}' not found for run '${input.runId}' and tenant '${input.tenant}'.`);
+    }
+
+    const checkpointResultJson = stringifyJsonValue(jsonValueSchema, input.checkpointResult);
+    this.#database.drizzle
+      .update(runSteps)
+      .set({ checkpointResultJson })
+      .where(eq(runSteps.id, input.runStepId))
+      .run();
+
+    const updatedRow = this.#database.drizzle
+      .select()
+      .from(runSteps)
+      .where(eq(runSteps.id, input.runStepId))
+      .limit(1)
+      .all()[0];
+
+    if (updatedRow === undefined) {
+      throw new Error(`RunStep '${input.runStepId}' not found after update.`);
+    }
+
+    return this.#rowToRunStep(updatedRow);
   }
 
   #rowToRunStep(row: typeof runSteps.$inferSelect): RunStep {

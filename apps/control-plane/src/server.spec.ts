@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, readdir, rm, symlink, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   configurationRecordCollectionPath,
@@ -17,16 +17,19 @@ import {
   type ProviderCompositionResult,
   type RunUnitOfWork
 } from '@autocatalyst/core';
+import type { ExecutionContext } from '@autocatalyst/api-contract';
 import {
   ProviderConfigurationError,
   type AgentProviderAdapter,
   type AgentProviderAdapterRegistry,
+  type AgentRunnerFactory,
   type AgentRunnerFactoryInput
 } from '@autocatalyst/execution';
 import { claudeAgentAdapterId, claudeProviderKind } from '@autocatalyst/claude-agent-adapter';
 
 import {
   createControlPlaneServer,
+  createDelegatingExecutionEntryPoint,
   createExplicitProfileResolver,
   createNodeWorkspaceFilesystem,
   logProviderCompositionDiagnostics,
@@ -292,6 +295,55 @@ describe('createControlPlaneServer (real runner dispatch composition)', () => {
     });
   });
 
+  it('composes convergence dependencies when realRunnerDispatch and workspaceRoots are configured', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      // Seed a provider profile so the registry has something to bind.
+      const seed = await createControlPlaneServer({
+        databasePath,
+        bearerToken: 'token',
+        masterSecret: 'correct-master-secret'
+      });
+      const createdResponse = await seed.inject({
+        method: 'POST',
+        url: configurationRecordCollectionPath,
+        headers: { authorization: 'Bearer token' },
+        payload: {
+          kind: 'provider_profile',
+          providerKind: claudeProviderKind,
+          adapterId: claudeAgentAdapterId,
+          settings: { profileName: 'default' }
+        }
+      });
+      expect(createdResponse.statusCode).toBe(createConfigurationRecordSuccessStatusCode);
+      const created = createdResponse.json() as { id: string };
+      await seed.close();
+
+      const workspacesRoot = await mkdtemp(join(tmpdir(), 'autocatalyst-workspaces-'));
+      const reposRoot = await mkdtemp(join(tmpdir(), 'autocatalyst-repos-'));
+      try {
+        // Booting with realRunnerDispatch enabled AND workspaceRoots configured
+        // exercises the convergence engine wiring path. A failure to compose the
+        // dispatcher, git port, or convergence engine would throw before listen.
+        const app = await createControlPlaneServer({
+          databasePath,
+          bearerToken: 'token',
+          masterSecret: 'correct-master-secret',
+          providerAdapters: new Map([[fakeClaudeKey, fakeClaudeAdapterFactory]]),
+          realRunnerDispatch: { enabled: true, defaultProviderProfileId: created.id },
+          workspaceRoots: { workspacesRoot, reposRoot }
+        });
+
+        const response = await app.inject({ method: 'GET', url: '/health' });
+        expect(response.statusCode).toBe(200);
+
+        await app.close();
+      } finally {
+        await rm(workspacesRoot, { recursive: true, force: true });
+        await rm(reposRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
   it('createExplicitProfileResolver throws missing_profile when no matching record exists', async () => {
     const registry: AgentProviderAdapterRegistry = new Map([[fakeClaudeKey, fakeAdapter]]);
     const resolver = createExplicitProfileResolver({
@@ -453,6 +505,79 @@ describe('createNodeWorkspaceFilesystem (symlink containment)', () => {
       });
       expect(contents).toContain('Normal spec');
     });
+  });
+});
+
+describe('createDelegatingExecutionEntryPoint — role routing', () => {
+  function makeMinimalContext(taskInputsRole?: string): ExecutionContext {
+    return {
+      run: { id: 'run_1', workKind: 'feature', currentStep: 'implementation.build', tenant: 'tenant_1' },
+      task: {
+        prompt: 'test prompt',
+        inputs: taskInputsRole !== undefined ? { role: taskInputsRole } : {}
+      },
+      workspaceIntent: { shape: 'none' },
+      secretBindings: [],
+      toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
+      skills: { requested: [], resolved: [] },
+      capabilityRequirements: {
+        shell: { kind: 'bash', required: false },
+        paths: { canonicalWorkspacePaths: false },
+        lsp: { requested: false }
+      }
+    };
+  }
+
+  it('passes role from task.inputs to factory, overriding resolveRole callback', async () => {
+    const capturedInputs: AgentRunnerFactoryInput[] = [];
+    const factory: AgentRunnerFactory = {
+      createRunner: vi.fn(async (input) => {
+        capturedInputs.push(input);
+        throw new Error('runner-not-needed');
+      })
+    };
+    const entryPoint = createDelegatingExecutionEntryPoint({
+      factory,
+      materialize: async () => { throw new Error('materialize-not-needed'); },
+      resolveRole: () => 'implementer' // would produce wrong role without the fix
+    });
+
+    try {
+      for await (const _ of entryPoint.execute({ context: makeMinimalContext('reviewer') })) {
+        // consume
+      }
+    } catch {
+      // expected — the mock factory throws
+    }
+
+    expect(capturedInputs).toHaveLength(1);
+    expect(capturedInputs[0]?.role).toBe('reviewer');
+  });
+
+  it('falls back to resolveRole callback when task.inputs has no role', async () => {
+    const capturedInputs: AgentRunnerFactoryInput[] = [];
+    const factory: AgentRunnerFactory = {
+      createRunner: vi.fn(async (input) => {
+        capturedInputs.push(input);
+        throw new Error('runner-not-needed');
+      })
+    };
+    const entryPoint = createDelegatingExecutionEntryPoint({
+      factory,
+      materialize: async () => { throw new Error('materialize-not-needed'); },
+      resolveRole: () => 'implementer'
+    });
+
+    try {
+      for await (const _ of entryPoint.execute({ context: makeMinimalContext() })) {
+        // consume
+      }
+    } catch {
+      // expected
+    }
+
+    expect(capturedInputs).toHaveLength(1);
+    expect(capturedInputs[0]?.role).toBe('implementer');
   });
 });
 

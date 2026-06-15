@@ -159,10 +159,19 @@ export interface PullRequestRepository {
   findByRun(runId: string): Promise<PullRequest | null>;
 }
 
+export interface UpdateRunStepCheckpointInput {
+  readonly runStepId: string;
+  readonly runId: string;
+  readonly tenant: string;
+  readonly checkpointResult: JsonValue;
+  readonly expectedUpdatedAt?: string;
+}
+
 export interface RunStepRepository {
   create(input: CreateRunStepInput): Promise<RunStep>;
   findById(id: string): Promise<RunStep | null>;
   listByRun(runId: string): Promise<readonly RunStep[]>;
+  updateCheckpoint(input: UpdateRunStepCheckpointInput): Promise<RunStep>;
 }
 
 export interface SessionRepository {
