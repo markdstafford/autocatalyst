@@ -178,8 +178,10 @@ export function createLayeredConvergenceEngine(
     let escalation: 'max_rounds' | 'oscillation' | undefined;
     // Track deterministic key → feedbackId within this altitude to enable deduplication.
     let deterministicFeedbackIdByKey: Readonly<Record<string, string>> = {};
-    // IDs of deterministic findings that were blocking in the prior round (for auto-resolution).
-    let prevDeterministicOpenIds: readonly string[] = [];
+    // Cumulative tracking across rounds within this altitude for deterministic checks.
+    // Ensures no-op rounds (commitSha === null) still re-run checks using the last known HEAD.
+    let lastHeadSha: string | null = null;
+    const altitudeChangedFilesSet = new Set<string>();
 
     for (let roundNumber = 1; roundNumber <= maxRounds; roundNumber++) {
       // 1) Implementer dispatch
@@ -279,19 +281,27 @@ export function createLayeredConvergenceEngine(
         allowEmpty: true
       });
 
+      // Update cumulative altitude tracking so no-op rounds can re-run deterministic checks.
+      if (commitResult.commitSha !== null) {
+        lastHeadSha = commitResult.commitSha;
+        for (const f of commitResult.changedFilePaths) {
+          altitudeChangedFilesSet.add(f);
+        }
+      }
+
       // 3) Deterministic findings: altitude contract (early) or build drift (build).
       let deterministicFindings: ConvergenceRoundFinding[] = [];
       if (
         altitude !== 'build' &&
-        commitResult.commitSha !== null &&
+        lastHeadSha !== null &&
+        altitudeChangedFilesSet.size > 0 &&
         input.workspace?.workspaceRepoRoot !== undefined
       ) {
         const repoRoot = input.workspace.workspaceRepoRoot;
-        const sha = commitResult.commitSha;
-        // Use only the files added/modified in the implementer's commit (the diff),
-        // not all tracked files at that ref. This enforces the spec's committed-diff
-        // contract so pre-existing files from earlier rounds don't block the current gate.
-        const changedFiles = commitResult.changedFilePaths;
+        const sha = lastHeadSha;
+        // Use the cumulative set of files changed across all rounds at this altitude.
+        // This ensures no-op rounds still re-check violations from prior rounds.
+        const changedFiles = Array.from(altitudeChangedFilesSet);
         const validatorFindings = await validateAltitudeContract({
           altitude: altitude as Exclude<ImplementationAltitude, 'build'>,
           headCommitSha: sha,
@@ -357,11 +367,11 @@ export function createLayeredConvergenceEngine(
       if (
         altitude === 'build' &&
         state.acceptedCheckpoints.length > 0 &&
-        commitResult.commitSha !== null &&
+        lastHeadSha !== null &&
         input.workspace?.workspaceRepoRoot !== undefined
       ) {
         const repoRoot = input.workspace.workspaceRepoRoot;
-        const sha = commitResult.commitSha;
+        const sha = lastHeadSha;
         const driftFindings = await validateBuildContractPreservation({
           workspaceRepoRoot: repoRoot,
           buildCommitSha: sha,
@@ -431,7 +441,7 @@ export function createLayeredConvergenceEngine(
       // 7) Persist deterministic findings as feedback (separate call so authoring uses system principal).
       // Pass deduplication state so re-emitted keys reuse existing feedback and stale keys are resolved.
       const persistedDeterministic =
-        deterministicFindings.length > 0 || prevDeterministicOpenIds.length > 0
+        deterministicFindings.length > 0 || Object.keys(deterministicFeedbackIdByKey).length > 0
           ? await createConvergenceFeedback({
               run: input.run,
               step: input.stepDefinition.id,
@@ -440,7 +450,6 @@ export function createLayeredConvergenceEngine(
               findings: deterministicFindings,
               repository: options.feedback,
               deterministicFeedbackIdByKey,
-              staleDeterministicFeedbackIds: prevDeterministicOpenIds,
               ...(options.clock !== undefined ? { clock: options.clock } : {}),
               ...(options.idGenerator !== undefined ? { idGenerator: options.idGenerator } : {})
             })
@@ -512,12 +521,6 @@ export function createLayeredConvergenceEngine(
           };
           return ctx;
         });
-
-      // Collect the deterministic feedback IDs that are open this round so the
-      // next round can auto-resolve any that are no longer emitted.
-      prevDeterministicOpenIds = persistedDeterministicFindings
-        .filter((f) => f.deterministicKey !== undefined)
-        .map((f) => f.feedbackId);
 
       // Persist a snapshot checkpoint after each round.
       const snapshotOutcome: ConvergenceOutcome = noBlocking
@@ -646,10 +649,13 @@ export function createLayeredConvergenceEngine(
 
       // Accepted at this altitude. If not the final altitude, capture a checkpoint ref.
       if (altitude !== finalAltitude) {
-        const lastRound = state.allRounds[state.allRounds.length - 1];
-        const commitSha = lastRound?.implementerCommitSha ?? null;
+        // Find the last non-null implementerCommitSha from rounds at the current altitude.
+        // A no-op accepting round has commitSha === null, so we must look back to the
+        // most recent round that actually committed something.
+        const altitudeRoundsForCurrent = state.allRounds.filter(r => r.altitude === altitude);
+        const lastCommitSha = altitudeRoundsForCurrent.slice().reverse().find(r => r.implementerCommitSha != null)?.implementerCommitSha ?? null;
         if (
-          commitSha !== null &&
+          lastCommitSha !== null &&
           input.workspace?.workspaceRepoRoot !== undefined
         ) {
           try {
@@ -657,7 +663,7 @@ export function createLayeredConvergenceEngine(
               runId: input.runId,
               workspaceRepoRoot: input.workspace.workspaceRepoRoot,
               altitude: altitude as Exclude<ImplementationAltitude, 'build'>,
-              commitSha
+              commitSha: lastCommitSha
             });
             state.acceptedCheckpoints.push({
               altitude: altitude as Exclude<ImplementationAltitude, 'build'>,

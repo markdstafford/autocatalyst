@@ -1,31 +1,38 @@
 /**
  * Deterministic smoke test for the implementation.build convergence path.
  *
- * What this exercises end-to-end through PRODUCTION code paths:
+ * REAL seams (production code paths exercised end-to-end):
  *   - DefaultOrchestrator.dispatch — selects the reviewed path for
  *     implementation.build (step has implementer+reviewer roles).
- *   - createConvergenceEngine — the REAL convergence engine drives the
- *     implementer/commit/reviewer loop, applies blocking-set rules, persists
- *     reviewer findings as Feedback, writes the convergence checkpoint to the
- *     RunStep, and emits the directive that the orchestrator applies.
- *   - createRunWorkspaceGitPort — REAL host git port: it shells out to `git`
- *     against a real temp workspace, verifies containment within the
- *     configured workspacesRoot, and produces real commits.
+ *   - createLayeredConvergenceEngine — the REAL layered engine drives the
+ *     altitude ladder, runs per-altitude implementer/commit/reviewer loops,
+ *     runs deterministic altitude-contract and build-drift validators, persists
+ *     findings as Feedback, captures host checkpoint refs, writes the convergence
+ *     checkpoint to the RunStep, and emits the directive that the orchestrator applies.
+ *   - createRunWorkspaceGitPort — REAL host git port: shells out to `git` against
+ *     a real temp workspace, verifies containment, produces real commits and
+ *     captures real refs/autocatalyst/... checkpoint refs.
  *   - Real SQLite persistence via createDrizzleDomainRepositories: runs, run
  *     steps, feedback, run workspace metadata.
+ *   - "altitude context" test also uses createReviewedExecutionDispatcher with a
+ *     scripted ExecutionRunUnitOfWork — the real dispatcher seam, scripted provider.
  *
- * The two faked seams (kept deterministic):
- *   - ReviewedRoleDispatcher: a deterministic fake that, for implementer
- *     calls, writes a real file into the temp workspace (so the host git port
- *     captures a real change) and returns advance; for reviewer calls returns
- *     either `satisfied` (happy path) or a fixed warning finding (stall path).
- *   - ModelRoutingResolver: an in-memory stub that returns two distinct
- *     profiles for implementer and reviewer — the engine still walks the
- *     production `resolveReviewedRoutes` code path and records routing.distinct.
+ * SCRIPTED seams (kept deterministic, not live provider calls):
+ *   - ReviewedRoleDispatcher: most tests use a deterministic fake that, for
+ *     implementer calls, writes a real file into the temp workspace and returns
+ *     advance; for reviewer calls returns either `satisfied` or a fixed warning.
+ *   - ExecutionRunUnitOfWork (altitude-context test only): scripted UoW wired
+ *     through the real createReviewedExecutionDispatcher; exercises real prompt
+ *     construction and altitude context passing without live API calls.
+ *   - ModelRoutingResolver: an in-memory stub that returns two distinct profiles.
+ *
+ * Live-provider coverage with real agents is in:
+ *   implementation-build-convergence-live.spec.ts (env-gated, skipped in CI).
  *
  * Assertions verify the run advances on the happy path, pauses with
- * waitingOn:human on the stall path, persists reviewer findings, and writes a
- * convergence_review checkpoint with the right shape.
+ * waitingOn:human on the stall/drift/contract paths, persists deterministic and
+ * reviewer findings, captures checkpoint refs, and writes a convergence_review
+ * checkpoint with the right altitude/depth/checkpoint shape.
  */
 
 import { execFile } from 'node:child_process';
@@ -202,7 +209,7 @@ function createAltitudeFakeReviewedRoleDispatcher(
     build: {
       filename: 'src/widget.ts',
       content: [
-        'export const widgetId = "widget";',
+        'export const widgetId: string = "widget";',
         'export function createWidget(name: string): string { return name; }',
         ''
       ].join('\n')
@@ -753,7 +760,7 @@ describe('implementation.build convergence — production-path smoke', () => {
         private_api: { filename: 'src/internal.ts', content: 'export declare function internalHelper(): void;\n' },
         build: {
           filename: 'src/widget.ts',
-          content: 'export const widgetId = "widget";\nexport function createWidget(name: string): string { return name; }\n'
+          content: 'export const widgetId: string = "widget";\nexport function createWidget(name: string): string { return name; }\n'
         }
       };
 

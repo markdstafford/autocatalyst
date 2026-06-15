@@ -787,3 +787,300 @@ describe('createLayeredConvergenceEngine - acceptedCheckpoints semantics', () =>
     expect(checkpoint.acceptedAt).toBe('2025-06-01T12:00:00.000Z');
   });
 });
+
+// ---------------------------------------------------------------------------
+// A ScriptedGit that returns a scripted sequence of commit results.
+// This lets tests simulate no-op rounds (commitSha === null).
+// ---------------------------------------------------------------------------
+
+interface ScriptedCommitResult {
+  readonly commitSha: string | null;
+  readonly changedFileCount: number;
+  readonly changedFilePaths: readonly string[];
+}
+
+class ScriptedGit extends StubGit {
+  private readonly commitResults: ScriptedCommitResult[];
+  private commitIndex = 0;
+
+  constructor(commitResults: ScriptedCommitResult[], opts?: {
+    filesAtRef?: readonly string[];
+    fileContentByPath?: Record<string, string | null>;
+  }) {
+    super();
+    this.commitResults = commitResults;
+    if (opts?.filesAtRef !== undefined) this.filesAtRef = opts.filesAtRef;
+    if (opts?.fileContentByPath !== undefined) this.fileContentByPath = opts.fileContentByPath;
+  }
+
+  override async commitFiles(input: RunWorkspaceCommitFilesInput): Promise<RunWorkspaceCommitResult> {
+    this.commits.push(input);
+    const result = this.commitResults[this.commitIndex] ?? {
+      commitSha: null,
+      changedFileCount: 0,
+      changedFilePaths: []
+    };
+    this.commitIndex += 1;
+    return result;
+  }
+}
+
+describe('createLayeredConvergenceEngine - no-op round regression tests', () => {
+  it('Bug 1 (RED): deterministic check still fires on no-op follow-up round after early-contract violation', async () => {
+    // Round 1: implementer commits a spec file (altitude_contract violation at layout),
+    // reviewer is satisfied (no reviewer findings). The deterministic check emits a blocker.
+    // Round 2: implementer makes NO changes (no-op commit, commitSha === null).
+    // Reviewer is satisfied. The deterministic check MUST still fire using accumulated
+    // altitude data — the violation must NOT silently clear.
+
+    const git = new ScriptedGit(
+      [
+        // Round 1 commit: changes a spec file — triggers altitude_contract violation
+        { commitSha: 'sha_r1', changedFileCount: 1, changedFilePaths: ['src/widget.spec.ts'] },
+        // Round 2 commit: no-op — implementer changes nothing
+        { commitSha: null, changedFileCount: 0, changedFilePaths: [] }
+      ],
+      {
+        filesAtRef: ['src/widget.spec.ts'],
+        fileContentByPath: { 'src/widget.spec.ts': 'export const x = 1;' }
+      }
+    );
+
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1, 'layout'),
+      reviewerResultDispatch(1, 'layout', { status: 'satisfied' }),
+      implResultAdvance(2, 'layout'),
+      reviewerResultDispatch(2, 'layout', { status: 'satisfied' })
+    ]);
+
+    const engine = createLayeredConvergenceEngine({
+      dispatcher,
+      git,
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      // maxRounds=2 so round 2 exhausts the budget
+      getPolicy: () => policyOf('layout', 2)
+    });
+
+    const out = await engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow,
+      workspace
+    });
+
+    // Must escalate — the altitude_contract violation from round 1 must persist into round 2
+    // even though round 2 was a no-op.
+    expect(out.workResult.directive).toBe('needs_input');
+    expect(out.checkpointResult.outcome).toBe('max_rounds');
+
+    // The last round must still have the blocking altitude_contract finding
+    const lastRound = out.checkpointResult.rounds[out.checkpointResult.rounds.length - 1];
+    expect(lastRound?.altitude).toBe('layout');
+    const contractFinding = lastRound?.findings.find(
+      (f) => f.source === 'altitude_contract' && f.blocking === true
+    );
+    expect(contractFinding).toBeDefined();
+  });
+
+  it('Bug 1 (ORANGE): deterministic build-drift check still fires on no-op follow-up round', async () => {
+    // Setup: layout altitude converges in round 1 (checkpoint captured).
+    // Build altitude round 1: implementer commits actual changes, reviewer is satisfied,
+    //   but drift validator finds a blocker (layout checkpoint file is missing at build ref).
+    //   The round ends with a blocking drift finding → must continue to round 2.
+    // Build altitude round 2: implementer makes NO changes (no-op, commitSha === null).
+    //   The build drift check MUST still fire using lastHeadSha (sha_build_r1).
+    //   If it fires, the drift finding persists and the engine escalates after max rounds.
+    //   If it silently clears (the bug), the engine would advance.
+
+    const layoutSha = 'sha_layout_r1';
+    const buildSha = 'sha_build_r1';
+    const layoutRef = `refs/autocatalyst/runs/run-1/layout`;
+
+    // commitFiles sequence: layout r1, build r1, build r2 (no-op)
+    const git = new ScriptedGit(
+      [
+        // Layout round 1: valid declaration file — no altitude_contract violation
+        { commitSha: layoutSha, changedFileCount: 1, changedFilePaths: ['src/types.ts'] },
+        // Build round 1: implementation commit
+        { commitSha: buildSha, changedFileCount: 1, changedFilePaths: ['src/impl.ts'] },
+        // Build round 2: no-op (implementer makes no changes)
+        { commitSha: null, changedFileCount: 0, changedFilePaths: [] }
+      ],
+      {
+        filesAtRef: [],
+        fileContentByPath: {
+          // Layout file is a pure type declaration — passes altitude_contract check at layout
+          'src/types.ts': 'export type Foo = { bar: string };'
+        }
+      }
+    );
+
+    // Track listFilesAtRef calls to verify the drift check fires in round 2.
+    const listFilesCallsByRef: string[] = [];
+    git.listFilesAtRef = async (input: ListFilesAtRefInput) => {
+      listFilesCallsByRef.push(input.ref);
+      if (input.ref === layoutRef) {
+        // Layout checkpoint has src/types.ts
+        return ['src/types.ts'];
+      }
+      if (input.ref === buildSha) {
+        // Build ref is missing src/types.ts → triggers source_path_removed drift finding
+        return ['src/impl.ts'];
+      }
+      return [];
+    };
+    // readFileAtRef: return content for types.ts at the layout ref
+    git.readFileAtRef = async (input: ReadFileAtRefInput) => {
+      if (input.path === 'src/types.ts') {
+        return 'export type Foo = { bar: string };';
+      }
+      return null;
+    };
+
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1, 'layout'),
+      reviewerResultDispatch(1, 'layout', { status: 'satisfied' }),
+      // Build round 1: reviewer satisfied — drift check is the only blocker
+      implResultAdvance(1, 'build'),
+      reviewerResultDispatch(1, 'build', { status: 'satisfied' }),
+      // Build round 2: implementer no-op, reviewer satisfied
+      implResultAdvance(2, 'build'),
+      reviewerResultDispatch(2, 'build', { status: 'satisfied' })
+    ]);
+
+    const engine = createLayeredConvergenceEngine({
+      dispatcher,
+      git,
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      // maxRounds=2 so round 2 exhausts the budget; drift persists → escalate
+      getPolicy: () => policyOf('layout', 2)
+    });
+
+    const out = await engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow,
+      workspace
+    });
+
+    // The build altitude must have run 2 rounds.
+    const buildRounds = out.checkpointResult.rounds.filter(r => r.altitude === 'build');
+    expect(buildRounds.length).toBe(2);
+
+    // The last build round is the no-op round.
+    const lastBuildRound = buildRounds[buildRounds.length - 1];
+    expect(lastBuildRound?.implementerCommitSha).toBeNull();
+
+    // The drift check MUST have fired in round 2 using lastHeadSha = sha_build_r1.
+    // validateBuildContractPreservation calls listFilesAtRef({ ref: buildCommitSha })
+    // and listFilesAtRef({ ref: checkpoint.ref }) per round.
+    // With the fix: round 1 calls it, round 2 calls it again (total ≥ 2 calls with sha_build_r1).
+    // Without the fix: round 2 skips the check → only 1 call with sha_build_r1.
+    const buildShaCallCount = listFilesCallsByRef.filter(ref => ref === buildSha).length;
+    expect(buildShaCallCount).toBeGreaterThanOrEqual(2);
+
+    // The drift finding must persist into round 2 (not silently clear).
+    const round2DriftFinding = buildRounds[1]?.findings.find(
+      f => f.source === 'build_drift' && f.blocking === true
+    );
+    expect(round2DriftFinding).toBeDefined();
+
+    // Escalation because drift persists through both rounds.
+    expect(out.workResult.directive).toBe('needs_input');
+  });
+
+  it('Bug 1 (checkpoint): no-op accepting round still captures checkpoint ref', async () => {
+    // Scenario: layout altitude runs 2 rounds.
+    // Round 1: implementer commits (sha_layout_r1), reviewer finds a blocker.
+    // Round 2: implementer makes NO changes (no-op, commitSha === null), reviewer is satisfied.
+    // The checkpoint ref must still be captured using sha_layout_r1 (last non-null
+    // implementerCommitSha from the layout altitude's rounds).
+
+    const git = new ScriptedGit(
+      [
+        // Layout round 1: actual commit with a valid declaration file (no altitude_contract violation)
+        { commitSha: 'sha_layout_r1', changedFileCount: 1, changedFilePaths: ['src/types.ts'] },
+        // Layout round 2: no-op (implementer says done, reviewer now satisfied)
+        { commitSha: null, changedFileCount: 0, changedFilePaths: [] },
+        // Build round 1: actual commit
+        { commitSha: 'sha_build_r1', changedFileCount: 1, changedFilePaths: ['src/impl.ts'] }
+      ],
+      {
+        fileContentByPath: {
+          // Pure type declaration — passes altitude_contract validator at layout
+          'src/types.ts': 'export type Foo = { bar: string };'
+        }
+      }
+    );
+
+    const layoutBlocker: ReviewerFinding = {
+      title: 'Missing module',
+      body: 'Add the module file.',
+      severity: 'blocker'
+    };
+
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1, 'layout'),
+      reviewerResultDispatch(1, 'layout', { status: 'findings', findings: [layoutBlocker] }),
+      // Round 2: implementer provides disposition for the reviewer blocker (fb_1 is the first feedback)
+      {
+        role: 'implementer',
+        round: 2,
+        altitude: 'layout',
+        result: {
+          workResult: { directive: 'advance', result: {} },
+          dispositions: [{ feedbackId: 'fb_1', disposition: 'fixed' as const, summary: 'Added the module file.' }],
+          sessionId: 'impl-layout-2',
+          lastPosition: 'impl-pos-layout-2'
+        }
+      },
+      reviewerResultDispatch(2, 'layout', { status: 'satisfied' }),
+      implResultAdvance(1, 'build'),
+      reviewerResultDispatch(1, 'build', { status: 'satisfied' })
+    ]);
+
+    const engine = createLayeredConvergenceEngine({
+      dispatcher,
+      git,
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      getPolicy: () => policyOf('layout', 3),
+      clock: () => '2025-06-01T12:00:00.000Z'
+    });
+
+    const out = await engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow,
+      workspace
+    });
+
+    // Engine must converge
+    expect(out.workResult.directive).toBe('advance');
+
+    // Checkpoint ref must be captured — even though the accepting round (round 2) was a no-op
+    expect(git.captures).toHaveLength(1);
+    expect(git.captures[0]?.altitude).toBe('layout');
+    // The captured commitSha must be the last non-null SHA from layout rounds (sha_layout_r1)
+    expect(git.captures[0]?.commitSha).toBe('sha_layout_r1');
+
+    // acceptedCheckpoints must include the layout checkpoint
+    expect(out.checkpointResult.acceptedCheckpoints).toHaveLength(1);
+    expect(out.checkpointResult.acceptedCheckpoints?.[0]?.altitude).toBe('layout');
+    expect(out.checkpointResult.acceptedCheckpoints?.[0]?.commitSha).toBe('sha_layout_r1');
+  });
+});

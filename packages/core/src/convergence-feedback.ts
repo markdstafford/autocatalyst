@@ -71,15 +71,10 @@ export interface ConvergenceFeedbackInput {
   /**
    * Map from deterministicKey → existing open feedbackId for deterministic findings
    * that were created in a prior round of the same altitude. When a key is present
-   * here, the existing feedback is reused instead of creating a duplicate.
+   * here, the existing feedback is reused instead of creating a duplicate. Keys
+   * that are NOT re-emitted this round are auto-resolved.
    */
   readonly deterministicFeedbackIdByKey?: Readonly<Record<string, string>>;
-  /**
-   * Feedback IDs of deterministic findings that were open in a prior round but are
-   * NOT re-emitted this round (the deterministic check has passed). These are
-   * auto-resolved with a system resolution reason.
-   */
-  readonly staleDeterministicFeedbackIds?: readonly string[];
 }
 
 export interface ConvergenceFeedbackResult {
@@ -115,31 +110,32 @@ export async function createConvergenceFeedback(
     }
   }
 
-  // Auto-resolve stale deterministic feedback whose key is no longer emitted.
-  if (input.staleDeterministicFeedbackIds !== undefined && input.staleDeterministicFeedbackIds.length > 0) {
-    const staleIds = input.staleDeterministicFeedbackIds.filter((id) => !emittedDeterministicKeys.has(id));
-    for (const staleId of staleIds) {
-      try {
-        const existing = await input.repository.findById(staleId);
-        if (existing !== null && existing.status === 'open') {
-          sequence += 1;
-          const threadId = input.idGenerator?.() ?? `thread_resolve_${sequence}`;
-          await input.repository.updateStatusAndAppendThread({
-            feedbackId: staleId,
-            expectedStatus: 'open',
-            nextStatus: 'resolved',
-            threadEntry: {
-              id: threadId,
-              author: sys,
-              body: 'Deterministic check passed — no longer blocking.',
-              createdAt: now
-            },
-            updatedAt: now
-          });
+  // Auto-resolve deterministic feedback whose key is no longer emitted this round.
+  if (input.deterministicFeedbackIdByKey !== undefined) {
+    for (const [key, feedbackId] of Object.entries(input.deterministicFeedbackIdByKey)) {
+      if (!emittedDeterministicKeys.has(key)) {
+        // This key was open in a previous round but not re-emitted — resolve it.
+        try {
+          const existing = await input.repository.findById(feedbackId);
+          if (existing !== null && existing.status === 'open') {
+            sequence += 1;
+            const threadId = input.idGenerator?.() ?? `thread_resolve_${sequence}`;
+            await input.repository.updateStatusAndAppendThread({
+              feedbackId,
+              expectedStatus: 'open',
+              nextStatus: 'resolved',
+              threadEntry: {
+                id: threadId,
+                author: sys,
+                body: 'Deterministic check passed — no longer blocking.',
+                createdAt: now
+              },
+              updatedAt: now
+            });
+          }
+        } catch {
+          // Best-effort.
         }
-      } catch {
-        // Best-effort: if resolution fails, the id is simply omitted from
-        // openFeedbackIds in the checkpoint (the engine handles that separately).
       }
     }
   }

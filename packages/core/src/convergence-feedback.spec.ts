@@ -37,8 +37,24 @@ class InMemoryFeedbackRepository implements FeedbackRepository {
     return [...this.store.values()].filter(f => f.runId === runId);
   }
 
-  async updateStatusAndAppendThread(): Promise<Feedback> {
-    throw new Error('not implemented');
+  async updateStatusAndAppendThread(input: {
+    feedbackId: string;
+    expectedStatus: string;
+    nextStatus: string;
+    threadEntry: { id: string; author: Principal; body: string; createdAt: string };
+    updatedAt: string;
+  }): Promise<Feedback> {
+    const existing = this.store.get(input.feedbackId);
+    if (existing === undefined) throw new Error('feedback_not_found');
+    if (existing.status !== input.expectedStatus) throw new Error('status_mismatch');
+    const updated: Feedback = {
+      ...existing,
+      status: input.nextStatus as Feedback['status'],
+      thread: [...existing.thread, input.threadEntry],
+      updatedAt: input.updatedAt
+    };
+    this.store.set(input.feedbackId, updated);
+    return updated;
   }
 
   async appendThreadEntry(): Promise<Feedback> {
@@ -366,5 +382,119 @@ describe('createConvergenceFeedback', () => {
     });
     const author = result.feedback[0].thread[0].author as Principal;
     expect(author.kind).toBe('system');
+  });
+
+  it('reuses same feedback ID when same deterministicKey emitted in consecutive rounds', async () => {
+    const run = { ...baseRun, currentStep: 'implementation.build' };
+    // Round 1: create feedback for key 'k1'
+    const round1 = await createConvergenceFeedback({
+      run,
+      step: 'implementation.build',
+      altitude: 'public_api',
+      round: 1,
+      findings: [deterministicFinding],
+      repository,
+      clock: () => '2026-06-15T12:00:00.000Z',
+      idGenerator: (() => { let n = 0; return () => `id_${++n}`; })()
+    });
+    expect(round1.feedback).toHaveLength(1);
+    const firstFeedbackId = round1.feedback[0].id;
+    const keyMap = round1.deterministicFeedbackIdByKey;
+    expect(Object.keys(keyMap)).toHaveLength(1);
+
+    // Round 2: same key re-emitted — pass deterministicFeedbackIdByKey from round 1
+    const round2 = await createConvergenceFeedback({
+      run,
+      step: 'implementation.build',
+      altitude: 'public_api',
+      round: 2,
+      findings: [deterministicFinding],
+      repository,
+      deterministicFeedbackIdByKey: keyMap,
+      clock: () => '2026-06-15T12:01:00.000Z',
+      idGenerator: (() => { let n = 100; return () => `id_${++n}`; })()
+    });
+
+    // Same feedback should be reused, not a new one created
+    expect(round2.feedback).toHaveLength(1);
+    expect(round2.feedback[0].id).toBe(firstFeedbackId);
+    expect(round2.feedback[0].status).toBe('open');
+
+    // Repository should still have only 1 feedback total
+    const allFeedback = await repository.listByRun(run.id);
+    expect(allFeedback).toHaveLength(1);
+  });
+
+  it('auto-resolves existing feedback when its deterministicKey is no longer emitted', async () => {
+    const run = { ...baseRun, currentStep: 'implementation.build' };
+    // Round 1: create feedback for key 'k1'
+    const round1 = await createConvergenceFeedback({
+      run,
+      step: 'implementation.build',
+      altitude: 'public_api',
+      round: 1,
+      findings: [deterministicFinding],
+      repository,
+      clock: () => '2026-06-15T12:00:00.000Z',
+      idGenerator: (() => { let n = 0; return () => `id_${++n}`; })()
+    });
+    const prevFeedbackId = round1.feedback[0].id;
+    const keyMap = round1.deterministicFeedbackIdByKey;
+
+    // Round 2: key 'k1' is NOT in findings (check passed), but pass deterministicFeedbackIdByKey
+    const round2 = await createConvergenceFeedback({
+      run,
+      step: 'implementation.build',
+      altitude: 'public_api',
+      round: 2,
+      findings: [], // no findings this round
+      repository,
+      deterministicFeedbackIdByKey: keyMap,
+      clock: () => '2026-06-15T12:01:00.000Z',
+      idGenerator: (() => { let n = 200; return () => `id_${++n}`; })()
+    });
+
+    // No new feedback should be created
+    expect(round2.feedback).toHaveLength(0);
+
+    // Previous feedback should now be resolved
+    const resolvedFeedback = await repository.findById(prevFeedbackId);
+    expect(resolvedFeedback).not.toBeNull();
+    expect(resolvedFeedback!.status).toBe('resolved');
+  });
+
+  it('does NOT resolve feedback when its deterministicKey is still emitted this round', async () => {
+    const run = { ...baseRun, currentStep: 'implementation.build' };
+    // Round 1: create feedback for key 'k1'
+    const round1 = await createConvergenceFeedback({
+      run,
+      step: 'implementation.build',
+      altitude: 'public_api',
+      round: 1,
+      findings: [deterministicFinding],
+      repository,
+      clock: () => '2026-06-15T12:00:00.000Z',
+      idGenerator: (() => { let n = 0; return () => `id_${++n}`; })()
+    });
+    const prevFeedbackId = round1.feedback[0].id;
+    const keyMap = round1.deterministicFeedbackIdByKey;
+
+    // Round 2: same key still in findings AND in deterministicFeedbackIdByKey
+    await createConvergenceFeedback({
+      run,
+      step: 'implementation.build',
+      altitude: 'public_api',
+      round: 2,
+      findings: [deterministicFinding],
+      repository,
+      deterministicFeedbackIdByKey: keyMap,
+      clock: () => '2026-06-15T12:01:00.000Z',
+      idGenerator: (() => { let n = 300; return () => `id_${++n}`; })()
+    });
+
+    // Feedback should still be open — not resolved
+    const feedbackAfter = await repository.findById(prevFeedbackId);
+    expect(feedbackAfter).not.toBeNull();
+    expect(feedbackAfter!.status).toBe('open');
   });
 });

@@ -669,6 +669,61 @@ describe.skipIf(!LIVE_ENABLED)('live implementation.build convergence e2e', () =
     });
   }, 120_000);
 
+  it('full-ladder descends both altitudes, captures layout checkpoint, and advances (live, depth: layout)', async () => {
+    await withLiveScenario('ac-live-ladder', async ({ runId, workspacesRoot, workspaceRepoRoot, databasePath }) => {
+      // Uses the same hello.txt happy-path scenario at depth: layout so the real dispatcher
+      // drives both the layout altitude (implementer writes + reviewer reviews) and the build
+      // altitude. The .txt file is outside the TypeScript altitude-contract validator scope so
+      // the early-altitude validator passes, the checkpoint ref is captured, and build converges.
+      const realDispatcher = await createLiveReviewedDispatcher({
+        workspacesRoot, workspaceRepoRoot, runId, scenario: 'happy'
+      });
+      const dispatcher = wrapWithCallTracking(realDispatcher);
+      const { orchestrator, close } = buildLiveOrchestrator({
+        databasePath, workspacesRoot, workspaceRepoRoot, dispatcher,
+        depth: 'layout'
+      });
+      try {
+        const result = await orchestrator.dispatch({ runId, tenant: TENANT });
+        expect(result.run.currentStep).toBe('implementation.human_review');
+
+        // Both altitudes were visited — real dispatcher received altitude context for each.
+        const altitudesSeen = new Set(
+          dispatcher.calls
+            .map((c) => c.reviewContext?.altitudeContext?.altitude)
+            .filter(Boolean)
+        );
+        expect(altitudesSeen.has('layout')).toBe(true);
+        expect(altitudesSeen.has('build')).toBe(true);
+
+        // Layout checkpoint ref was captured between altitudes.
+        const db = createSqliteDatabase({ path: databasePath });
+        const repos = createDrizzleDomainRepositories(db);
+        try {
+          const steps = await repos.runSteps.listByRun(runId);
+          const buildStep = steps.find((s) => s.step === 'implementation.build');
+          expect(buildStep).toBeDefined();
+          const checkpoint = buildStep?.checkpointResult as Record<string, unknown> | null;
+          expect(checkpoint).toMatchObject({
+            kind: 'convergence_review',
+            outcome: 'converged',
+            depth: 'layout',
+            currentAltitude: 'build'
+          });
+          const acceptedCheckpoints = checkpoint?.['acceptedCheckpoints'] as Array<Record<string, unknown>>;
+          expect(acceptedCheckpoints).toHaveLength(1);
+          expect(acceptedCheckpoints[0]?.['altitude']).toBe('layout');
+          expect(typeof acceptedCheckpoints[0]?.['ref']).toBe('string');
+          expect(typeof acceptedCheckpoints[0]?.['commitSha']).toBe('string');
+        } finally {
+          db.close();
+        }
+      } finally {
+        close();
+      }
+    });
+  }, 180_000);
+
   it('captured logs do not contain API key secrets', () => {
     // This assertion runs after the two dispatch tests have executed and
     // any console.warn calls have been captured. It verifies that none of

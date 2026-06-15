@@ -43,10 +43,15 @@ export function filterAltitudeFindings(input: FilterAltitudeFindingsInput): Conv
     }
     // Reviewer (or unknown-source) findings at early altitudes are scoped by category.
     const allowlist = earlyAllowlist[altitude];
-    if (finding.category !== undefined && allowlist.has(finding.category)) {
+    // No category → conservative: treat as in-scope (reviewer doesn't know better).
+    if (finding.category === undefined) {
       return finding;
     }
-    // No category, or category outside scope → demote.
+    // Category explicitly in scope → blocking.
+    if (allowlist.has(finding.category)) {
+      return finding;
+    }
+    // Category explicitly outside scope → demote.
     return withBlocking(finding, false, 'outside_altitude_scope');
   });
 }

@@ -80,10 +80,34 @@ describe('filterAltitudeFindings', () => {
     expect(result[0].blocking).toBe(true);
   });
 
-  it('treats reviewer findings without a category as outside scope at early altitudes', () => {
+  it('treats uncategorized reviewer blocker as in-scope (blocking) at layout altitude', () => {
     const result = filterAltitudeFindings({
-      altitude: 'private_api',
+      altitude: 'layout',
       findings: [f({ severity: 'blocker', source: 'reviewer', blocking: true })]
+    });
+    expect(result[0].blocking).toBe(true);
+  });
+
+  it('treats uncategorized reviewer warning as in-scope (blocking) at public_api altitude', () => {
+    const result = filterAltitudeFindings({
+      altitude: 'public_api',
+      findings: [f({ severity: 'warning', source: 'reviewer', blocking: true })]
+    });
+    expect(result[0].blocking).toBe(true);
+  });
+
+  it('keeps categorized reviewer blocker blocking when category is in altitude allowlist', () => {
+    const result = filterAltitudeFindings({
+      altitude: 'layout',
+      findings: [f({ severity: 'blocker', source: 'reviewer', category: 'layout', blocking: true })]
+    });
+    expect(result[0].blocking).toBe(true);
+  });
+
+  it('demotes categorized reviewer blocker when category is outside altitude allowlist', () => {
+    const result = filterAltitudeFindings({
+      altitude: 'layout',
+      findings: [f({ severity: 'blocker', source: 'reviewer', category: 'build', blocking: true })]
     });
     expect(result[0].blocking).toBe(false);
     expect(result[0].blockingReason).toBe('outside_altitude_scope');
