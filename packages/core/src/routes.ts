@@ -86,6 +86,7 @@ import {
   type ProbeResourceRepository
 } from './probe-resource.js';
 import {
+  assertActiveRoutesReferenceDispatchableProfiles,
   createConfigurationRecord,
   deleteConfigurationRecord,
   getConfigurationRecord,
@@ -274,6 +275,23 @@ export async function registerControlPlaneRoutes(
         await sendValidationError(reply, error);
         return;
       }
+      if (body.kind === 'model_routing_table') {
+        const existingRecords = await dependencies.configurationRecords.list(principal.tenantId);
+        const candidate = {
+          id: 'new',
+          tenant: principal.tenantId,
+          kind: body.kind,
+          settings: body.settings,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        } as import('@autocatalyst/api-contract').ConfigurationRecord;
+        try {
+          assertActiveRoutesReferenceDispatchableProfiles(existingRecords, candidate);
+        } catch (error) {
+          await reply.status(422).send(errorResponse(error instanceof Error ? error.message : 'validation_failed', 'Routing table references an incomplete or missing profile.'));
+          return;
+        }
+      }
       const record = configurationRecordResponseSchema.parse(
         await createConfigurationRecord(dependencies.configurationRecords, body)
       );
@@ -331,6 +349,28 @@ export async function registerControlPlaneRoutes(
       } catch (error) {
         await sendValidationError(reply, error);
         return;
+      }
+      if (body.kind === 'model_routing_table') {
+        const existingRecords = await dependencies.configurationRecords.list(principal.tenantId);
+        const existing = await dependencies.configurationRecords.findById(principal.tenantId, params.id);
+        const mergedSettings = existing !== null
+          ? { ...(existing.settings as object), ...(body.settings as object) }
+          : body.settings;
+        const candidate = {
+          id: params.id,
+          tenant: principal.tenantId,
+          kind: body.kind,
+          settings: mergedSettings,
+          createdAt: existing?.createdAt ?? new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        } as import('@autocatalyst/api-contract').ConfigurationRecord;
+        const otherRecords = existingRecords.filter((r) => r.id !== params.id);
+        try {
+          assertActiveRoutesReferenceDispatchableProfiles(otherRecords, candidate);
+        } catch (error) {
+          await reply.status(422).send(errorResponse(error instanceof Error ? error.message : 'validation_failed', 'Routing table references an incomplete or missing profile.'));
+          return;
+        }
       }
       const updated = await updateConfigurationRecord(dependencies.configurationRecords, principal.tenantId, params.id, body);
       if (updated === null) {

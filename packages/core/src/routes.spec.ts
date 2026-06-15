@@ -331,6 +331,149 @@ describe('registerControlPlaneRoutes', () => {
     expect(response.statusCode).toBe(404);
   });
 
+  it('returns 422 when creating an active routing table that references a profile without model', async () => {
+    const profileWithoutModel = {
+      id: 'cfg_no_model',
+      tenant: 'tenant_dev',
+      kind: 'provider_profile',
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      settings: { profileName: 'No Model', credentialSecretHandle: 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef' },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const configRepo = {
+      create: vi.fn(async (input: { kind: string }) => ({ ...profileWithoutModel, kind: input.kind })),
+      list: vi.fn(async () => [profileWithoutModel]),
+      findById: vi.fn(async () => null),
+      update: vi.fn(async () => null),
+      delete: vi.fn(async () => false)
+    };
+    const { app, authorization } = await buildServer({ configurationRecords: configRepo });
+    server = app;
+    const response = await app.inject({
+      method: 'POST', url: '/v1/configuration-records', headers: authorization,
+      payload: {
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [{ id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_no_model' }]
+        }
+      }
+    });
+    expect(response.statusCode).toBe(422);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('profile_incomplete');
+  });
+
+  it('returns 422 when creating an active routing table that references a profile without credential', async () => {
+    const profileWithoutCredential = {
+      id: 'cfg_no_cred',
+      tenant: 'tenant_dev',
+      kind: 'provider_profile',
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      settings: {
+        profileName: 'No Cred',
+        model: { provider: 'anthropic', model: 'claude-sonnet-4' }
+      },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const configRepo = {
+      create: vi.fn(async (input: { kind: string }) => ({ ...profileWithoutCredential, kind: input.kind })),
+      list: vi.fn(async () => [profileWithoutCredential]),
+      findById: vi.fn(async () => null),
+      update: vi.fn(async () => null),
+      delete: vi.fn(async () => false)
+    };
+    const { app, authorization } = await buildServer({ configurationRecords: configRepo });
+    server = app;
+    const response = await app.inject({
+      method: 'POST', url: '/v1/configuration-records', headers: authorization,
+      payload: {
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [{ id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_no_cred' }]
+        }
+      }
+    });
+    expect(response.statusCode).toBe(422);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('profile_incomplete');
+  });
+
+  it('returns 422 when creating an active routing table that references a non-existent profile', async () => {
+    const configRepo = {
+      create: vi.fn(async (input: { kind: string }) => ({ id: 'cfg_new', tenant: 'tenant_dev', kind: input.kind, settings: {}, createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z' })),
+      list: vi.fn(async () => []),
+      findById: vi.fn(async () => null),
+      update: vi.fn(async () => null),
+      delete: vi.fn(async () => false)
+    };
+    const { app, authorization } = await buildServer({ configurationRecords: configRepo });
+    server = app;
+    const response = await app.inject({
+      method: 'POST', url: '/v1/configuration-records', headers: authorization,
+      payload: {
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [{ id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_does_not_exist' }]
+        }
+      }
+    });
+    expect(response.statusCode).toBe(422);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('profile_not_found');
+  });
+
+  it('allows creating an active routing table when the referenced profile is complete', async () => {
+    const completeProfile = {
+      id: 'cfg_complete',
+      tenant: 'tenant_dev',
+      kind: 'provider_profile',
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      settings: {
+        profileName: 'Complete',
+        credentialSecretHandle: 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef',
+        model: { provider: 'anthropic', model: 'claude-sonnet-4' }
+      },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const routingTableRecord = {
+      id: 'tbl_new',
+      tenant: 'tenant_dev',
+      kind: 'model_routing_table',
+      settings: {
+        active: true,
+        entries: [{ id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_complete' }]
+      },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const configRepo = {
+      create: vi.fn(async () => routingTableRecord),
+      list: vi.fn(async () => [completeProfile]),
+      findById: vi.fn(async () => null),
+      update: vi.fn(async () => null),
+      delete: vi.fn(async () => false)
+    };
+    const { app, authorization } = await buildServer({ configurationRecords: configRepo });
+    server = app;
+    const response = await app.inject({
+      method: 'POST', url: '/v1/configuration-records', headers: authorization,
+      payload: {
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [{ id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_complete' }]
+        }
+      }
+    });
+    expect(response.statusCode).toBe(201);
+  });
+
   it('creates a secret handle via POST /v1/secrets', async () => {
     const { app, authorization, policyCalls } = await buildServer();
     server = app;
