@@ -1,11 +1,17 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  altitudeCheckpointRefSchema,
   convergenceCheckpointSchema,
+  convergenceFindingCategorySchema,
+  convergenceFindingSourceSchema,
   convergenceOutcomeSchema,
+  convergenceRoundFindingSchema,
   convergenceRoundOutcomeSchema,
   convergenceRoundRecordSchema,
   findingDispositionSchema,
+  implementationAltitudeSchema,
+  implementationConvergenceDepthSchema,
   reviewerFindingSchema,
   reviewerFindingSeveritySchema,
   reviewerResultSchema
@@ -157,5 +163,144 @@ describe('convergenceCheckpointSchema', () => {
 
   it('rejects checkpoint with invalid outcome value', () => {
     expect(() => convergenceCheckpointSchema.parse({ ...validCheckpoint, outcome: 'continue' })).toThrow();
+  });
+
+  it('accepts checkpoint with depth, currentAltitude, and acceptedCheckpoints', () => {
+    const result = convergenceCheckpointSchema.parse({
+      ...validCheckpoint,
+      depth: 'full' as const,
+      currentAltitude: 'public_api' as const,
+      acceptedCheckpoints: [
+        { altitude: 'layout' as const, ref: 'layout-ref-1', commitSha: 'sha1', acceptedAt: '2026-06-15T12:00:00.000Z' }
+      ]
+    });
+    expect(result.depth).toBe('full');
+    expect(result.currentAltitude).toBe('public_api');
+    expect(result.acceptedCheckpoints?.[0]?.altitude).toBe('layout');
+  });
+
+  it('rejects acceptedCheckpoints with build altitude', () => {
+    expect(() => convergenceCheckpointSchema.parse({
+      ...validCheckpoint,
+      acceptedCheckpoints: [
+        { altitude: 'build', ref: 'r', commitSha: 's', acceptedAt: '2026-06-15T12:00:00.000Z' }
+      ]
+    })).toThrow();
+  });
+});
+
+describe('implementationAltitudeSchema', () => {
+  it('accepts the four altitudes', () => {
+    for (const v of ['layout', 'public_api', 'private_api', 'build'] as const) {
+      expect(implementationAltitudeSchema.parse(v)).toBe(v);
+    }
+  });
+
+  it('rejects unknown altitudes', () => {
+    expect(() => implementationAltitudeSchema.parse('runtime')).toThrow();
+  });
+});
+
+describe('implementationConvergenceDepthSchema', () => {
+  it('accepts the four depths', () => {
+    for (const v of ['build_only', 'layout', 'public_api', 'full'] as const) {
+      expect(implementationConvergenceDepthSchema.parse(v)).toBe(v);
+    }
+  });
+
+  it('rejects unknown depths', () => {
+    expect(() => implementationConvergenceDepthSchema.parse('deep')).toThrow();
+  });
+});
+
+describe('convergenceFindingSourceSchema', () => {
+  it('accepts known sources', () => {
+    for (const v of ['reviewer', 'altitude_contract', 'build_drift'] as const) {
+      expect(convergenceFindingSourceSchema.parse(v)).toBe(v);
+    }
+  });
+});
+
+describe('convergenceFindingCategorySchema', () => {
+  it('accepts known categories', () => {
+    for (const v of ['layout', 'public_api', 'private_api', 'build', 'contract_violation', 'build_drift'] as const) {
+      expect(convergenceFindingCategorySchema.parse(v)).toBe(v);
+    }
+  });
+});
+
+describe('altitudeCheckpointRefSchema', () => {
+  it('accepts a valid checkpoint ref', () => {
+    const ref = altitudeCheckpointRefSchema.parse({
+      altitude: 'layout' as const,
+      ref: 'r',
+      commitSha: 's',
+      acceptedAt: '2026-06-15T12:00:00.000Z'
+    });
+    expect(ref.altitude).toBe('layout');
+  });
+
+  it('rejects build altitude in a checkpoint ref', () => {
+    expect(() => altitudeCheckpointRefSchema.parse({
+      altitude: 'build',
+      ref: 'r',
+      commitSha: 's',
+      acceptedAt: '2026-06-15T12:00:00.000Z'
+    })).toThrow();
+  });
+});
+
+describe('convergenceRoundFindingSchema with altitude metadata', () => {
+  const base = {
+    feedbackId: 'fb_1',
+    title: 'Layout violation',
+    body: 'symbol exposed at wrong layer',
+    severity: 'blocker' as const,
+    blocking: true,
+    signature: 'sig'
+  };
+
+  it('accepts optional altitude metadata', () => {
+    const result = convergenceRoundFindingSchema.parse({
+      ...base,
+      source: 'altitude_contract' as const,
+      altitude: 'layout' as const,
+      category: 'public_api' as const,
+      blockingReason: 'Public API drift',
+      deterministicKey: 'k1',
+      sourcePath: 'src/foo.ts',
+      symbolName: 'doStuff',
+      acceptedCheckpoint: { altitude: 'layout' as const, ref: 'r', commitSha: 's' }
+    });
+    expect(result.source).toBe('altitude_contract');
+    expect(result.altitude).toBe('layout');
+  });
+
+  it('accepts a finding without altitude metadata (legacy)', () => {
+    expect(() => convergenceRoundFindingSchema.parse(base)).not.toThrow();
+  });
+});
+
+describe('convergenceRoundRecordSchema altitude defaulting', () => {
+  const baseRound = {
+    round: 1,
+    changedFileCount: 0,
+    findings: [],
+    dispositions: [],
+    outcome: 'continue' as const
+  };
+
+  it('defaults altitude to build when absent (migration tolerance)', () => {
+    const r = convergenceRoundRecordSchema.parse(baseRound);
+    expect(r.altitude).toBe('build');
+  });
+
+  it('preserves explicit altitude', () => {
+    const r = convergenceRoundRecordSchema.parse({ ...baseRound, altitude: 'layout' });
+    expect(r.altitude).toBe('layout');
+  });
+
+  it('rejects an invalid altitude value', () => {
+    expect(() => convergenceRoundRecordSchema.parse({ ...baseRound, altitude: 'mid_air' })).toThrow();
   });
 });

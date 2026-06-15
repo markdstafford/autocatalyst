@@ -29,7 +29,7 @@ import type { RunWorkspaceGitPort } from './run-workspace-git.js';
 import { createReviewerFeedback } from './convergence-feedback.js';
 import type { RunStepDefinition, RunStepId } from './run-step-catalog.js';
 import type { RunWorkflowDefinition, RunDirective } from './run-workflows.js';
-import type { StepConvergencePolicy } from './convergence-policy.js';
+import type { ResolvedStepConvergencePolicy } from './convergence-policy.js';
 import { getStepConvergencePolicy } from './convergence-policy.js';
 import type { RunWorkResult, WorkspaceContext } from './orchestrator.js';
 
@@ -179,7 +179,7 @@ export interface ConvergenceEngineOptions {
   readonly feedback: FeedbackRepository;
   readonly runSteps: RunStepRepository;
   readonly routing: ModelRoutingResolver;
-  readonly getPolicy?: (workflow: RunWorkflowDefinition, step: RunStepId) => Required<StepConvergencePolicy>;
+  readonly getPolicy?: (workflow: RunWorkflowDefinition, step: RunStepId) => ResolvedStepConvergencePolicy;
   readonly logger?: { warn(message: string, details?: unknown): void };
   readonly clock?: () => string;
   readonly idGenerator?: () => string;
@@ -530,7 +530,8 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
         changedFileCount: commitResult.changedFileCount,
         findings: roundFindings,
         dispositions: implDispositions,
-        outcome
+        outcome,
+        altitude: 'build'
       };
       rounds.push(roundRecord);
 
