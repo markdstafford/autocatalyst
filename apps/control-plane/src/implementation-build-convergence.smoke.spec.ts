@@ -605,6 +605,11 @@ describe('implementation.build convergence — production-path smoke', () => {
         const run = await orchestrator.dispatch({ runId, tenant: TENANT });
         expect(run.run.currentStep).toBe('implementation.human_review');
 
+        // Convergence engine enforces read-only tool policy on all reviewer calls.
+        const reviewerCalls = dispatcher.calls.filter((c) => c.role === 'reviewer');
+        expect(reviewerCalls.length).toBeGreaterThan(0);
+        expect(reviewerCalls.every((c) => c.toolPolicyMode === 'read_only')).toBe(true);
+
         const db = createSqliteDatabase({ path: databasePath });
         const repos = createDrizzleDomainRepositories(db);
         try {

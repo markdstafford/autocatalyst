@@ -705,6 +705,8 @@ describe('createLayeredConvergenceEngine', () => {
     expect(altitudeContractFinding).toBeDefined();
     expect(altitudeContractFinding?.source).toBe('altitude_contract');
     expect(altitudeContractFinding?.blocking).toBe(true);
+    // openFeedbackIds tracks the blocking deterministic finding across rounds.
+    expect(out.checkpointResult.openFeedbackIds.length).toBeGreaterThanOrEqual(1);
   });
 
   it('persists reviewer findings as feedback at early altitude', async () => {

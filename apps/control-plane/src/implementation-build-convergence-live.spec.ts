@@ -30,6 +30,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Project } from '@autocatalyst/api-contract';
 import {
   createConvergenceEngine,
+  createLayeredConvergenceEngine,
   createExecutionContextResolver,
   createExecutionRunUnitOfWork,
   DefaultOrchestrator,
@@ -46,7 +47,8 @@ import {
   type RunWorkflowDefinition,
   type RunStepId,
   type StepConvergencePolicy,
-  type WorkspaceContextResolver
+  type WorkspaceContextResolver,
+  type ResolvedStepConvergencePolicy
 } from '@autocatalyst/core';
 import {
   claudeAgentAdapterId,
@@ -468,6 +470,9 @@ function buildLiveOrchestrator(input: {
   readonly workspaceRepoRoot: string;
   readonly dispatcher: ReviewedRoleDispatcher;
   readonly getPolicy?: (workflow: RunWorkflowDefinition, step: RunStepId) => Required<StepConvergencePolicy>;
+  // When depth is provided, uses createLayeredConvergenceEngine for altitude-aware convergence.
+  // Note: providers must enforce reviewer read-only access; skip this scenario if they do not.
+  readonly depth?: ResolvedStepConvergencePolicy['depth'];
 }): { orchestrator: DefaultOrchestrator; close: () => void } {
   const database = createSqliteDatabase({ path: input.databasePath });
   const domainRepos = createDrizzleDomainRepositories(database);
@@ -482,15 +487,26 @@ function buildLiveOrchestrator(input: {
   const runWorkspaceGit = createRunWorkspaceGitPort({ workspacesRoot: input.workspacesRoot });
   const routing = makeLiveRouting();
 
-  const convergenceEngine = createConvergenceEngine({
-    dispatcher: input.dispatcher,
-    git: runWorkspaceGit,
-    feedback: domainRepos.feedback,
-    runSteps: domainRepos.runSteps,
-    routing,
-    getPolicy: input.getPolicy ?? getStepConvergencePolicy,
-    logger: { warn: () => {} }
-  });
+  const resolvedDepth = input.depth;
+  const convergenceEngine = resolvedDepth !== undefined && resolvedDepth !== 'build_only'
+    ? createLayeredConvergenceEngine({
+        dispatcher: input.dispatcher,
+        git: runWorkspaceGit,
+        feedback: domainRepos.feedback,
+        runSteps: domainRepos.runSteps,
+        routing,
+        getPolicy: () => ({ maxRounds: 3, depth: resolvedDepth }),
+        logger: { warn: () => {} }
+      })
+    : createConvergenceEngine({
+        dispatcher: input.dispatcher,
+        git: runWorkspaceGit,
+        feedback: domainRepos.feedback,
+        runSteps: domainRepos.runSteps,
+        routing,
+        getPolicy: input.getPolicy ?? getStepConvergencePolicy,
+        logger: { warn: () => {} }
+      });
 
   const resolveWorkspaceContext: WorkspaceContextResolver = async () => ({
     workspaceRepoRoot: input.workspaceRepoRoot,
