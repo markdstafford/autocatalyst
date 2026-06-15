@@ -1,8 +1,6 @@
 import type { ExecutionContext, JsonValue } from '@autocatalyst/api-contract';
 import {
   RunnerProtocolError,
-  ExecutionMaterializationError,
-  isClassifiedProviderFailureError,
   type ExecutionBoundaryEvent,
   type DirectCallRequest,
   type DirectOrchestratorCallResult
@@ -11,6 +9,7 @@ import type { ExecutionEntryPoint } from '@autocatalyst/execution';
 import type { RunWorkInput, RunWorkResult, RunUnitOfWork } from './orchestrator.js';
 import { consumeRunnerEvents } from './runner-event-consumer.js';
 import { InMemoryRetainedRunEventStore, type RunEventStore } from './run-events.js';
+import { safeFailureReasonFromError } from './safe-failure-reason.js';
 
 export interface DirectStepWorkInput {
   readonly runId: string;
@@ -56,7 +55,16 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
       return inner.workResult;
     },
     async runWithCheckpoint(input: RunWorkInput): Promise<{ workResult: RunWorkResult; checkpointResult?: JsonValue }> {
-      const context = await options.resolveContext(input);
+      let context: ExecutionContext;
+      try {
+        context = await options.resolveContext(input);
+      } catch (error) {
+        const reason = safeFailureReasonFromError(error);
+        if (reason !== undefined) {
+          return { workResult: { directive: 'fail' as const, reason } };
+        }
+        throw error;
+      }
 
       // Resolve execution mode (default to agent for backward compat)
       const modeResolution = options.resolveExecutionMode !== undefined
@@ -117,15 +125,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
         if (error instanceof RunnerProtocolError) {
           throw error;
         }
-        if (isClassifiedProviderFailureError(error)) {
-          return { workResult: { directive: 'fail', reason: error.failureReason } };
-        }
-        let reason: string;
-        if (error instanceof ExecutionMaterializationError) {
-          reason = `Execution failed: ${error.code}`;
-        } else {
-          reason = 'Runner failed before terminal result.';
-        }
+        const reason = safeFailureReasonFromError(error) ?? 'Runner failed before terminal result.';
         return { workResult: { directive: 'fail', reason } };
       }
     }

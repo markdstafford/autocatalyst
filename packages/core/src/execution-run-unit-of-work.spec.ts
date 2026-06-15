@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ExecutionContext } from '@autocatalyst/api-contract';
 import type { ExecutionBoundaryEvent, ExecutionEntryPoint, ExecutionEntryPointInput, DirectCallRequest } from '@autocatalyst/execution';
-import { createExecutionEntryPoint, ClassifiedProviderFailureError, ExecutionMaterializationError, SkillCatalogResolutionError } from '@autocatalyst/execution';
+import { createExecutionEntryPoint, ClassifiedProviderFailureError, ExecutionMaterializationError, SkillCatalogResolutionError, ProviderConnectionError, ProviderConfigurationError } from '@autocatalyst/execution';
 import type { Runner, RunnerRunInput } from '@autocatalyst/execution';
+import { ModelRoutingConfigurationError } from './model-routing-resolver.js';
 import type { RunWorkInput } from './orchestrator.js';
 import { createExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
 import type { DirectStepExecutionPort } from './execution-run-unit-of-work.js';
@@ -262,6 +263,55 @@ describe('createExecutionRunUnitOfWork', () => {
       const result = await unitOfWork.run(makeInput());
       expect(result).toEqual({ directive: 'fail', reason: 'Runner failed before terminal result.' });
       expect(JSON.stringify(result)).not.toContain(sentinel);
+    });
+
+    it('returns profile_incomplete for model-routing configuration errors thrown from resolveContext', async () => {
+      const unit = createExecutionRunUnitOfWork({
+        resolveContext: async () => {
+          throw new ModelRoutingConfigurationError('profile_incomplete', 'raw internal detail');
+        },
+        execute: { execute: async function* () { /* not reached */ } } as unknown as ExecutionEntryPoint,
+        eventsStore: newStore()
+      });
+
+      await expect(unit.run(makeInput())).resolves.toEqual({
+        directive: 'fail',
+        reason: 'profile_incomplete'
+      });
+    });
+
+    it('returns process_launch_failed for provider connection errors thrown from execute', async () => {
+      const unit = createExecutionRunUnitOfWork({
+        resolveContext: async () => makeContext(),
+        execute: {
+          execute: async function* () {
+            throw new ProviderConnectionError('process_launch_failed', 'raw provider detail');
+          }
+        } as unknown as ExecutionEntryPoint,
+        eventsStore: newStore()
+      });
+
+      await expect(unit.run(makeInput())).resolves.toEqual({
+        directive: 'fail',
+        reason: 'process_launch_failed'
+      });
+    });
+
+    it('keeps classified provider failure reasons unchanged', async () => {
+      const unit = createExecutionRunUnitOfWork({
+        resolveContext: async () => makeContext(),
+        execute: {
+          execute: async function* () {
+            throw new ClassifiedProviderFailureError('provider_auth_failed');
+          }
+        } as unknown as ExecutionEntryPoint,
+        eventsStore: newStore()
+      });
+
+      await expect(unit.run(makeInput())).resolves.toEqual({
+        directive: 'fail',
+        reason: 'provider_auth_failed'
+      });
     });
 
     it('resolveContext throwing SkillCatalogResolutionError propagates and runner is never invoked', async () => {
