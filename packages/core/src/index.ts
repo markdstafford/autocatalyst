@@ -101,6 +101,8 @@ export {
 } from './run-step-catalog.js';
 export type { RunPhase, RunStepDefinition, RunStepId, RunStepRole, WaitingOn } from './run-step-catalog.js';
 
+export * from './convergence-policy.js';
+
 export {
   getRunWorkflowById,
   getRunWorkflowForWorkKind,

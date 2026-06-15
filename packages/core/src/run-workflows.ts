@@ -1,4 +1,7 @@
 import type { RunStepId } from './run-step-catalog.js';
+import type { StepConvergencePolicy } from './convergence-policy.js';
+
+export type { StepConvergencePolicy } from './convergence-policy.js';
 
 export const runWorkflowIds = ['feature', 'enhancement', 'bug', 'chore', 'file_issue', 'question'] as const;
 export type RunWorkflowId = typeof runWorkflowIds[number];
@@ -12,6 +15,7 @@ export interface RunWorkflowDefinition {
   readonly artifactKind?: RunArtifactKind;
   readonly steps: readonly RunStepId[];
   readonly transitions: WorkflowTransitionTable;
+  readonly convergence?: Readonly<Partial<Record<RunStepId, StepConvergencePolicy>>>;
 }
 
 function advanceTransitions(steps: readonly RunStepId[]): WorkflowTransitionTable {
