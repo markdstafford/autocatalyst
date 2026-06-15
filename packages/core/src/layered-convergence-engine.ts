@@ -64,6 +64,20 @@ function defaultReviewerPrincipal(tenant: string): Principal {
   return { id: 'reviewer', kind: 'model', tenantId: tenant };
 }
 
+const ALTITUDE_ALLOWED_WORK: Readonly<Record<ImplementationAltitude, string>> = {
+  layout: 'Define module layout and file structure only — no implementations or tests.',
+  public_api: 'Define public TypeScript type declarations only — no implementations or tests.',
+  private_api: 'Define private TypeScript type declarations only — no implementations or tests.',
+  build: 'Implement all functionality and add tests.'
+};
+
+const ALTITUDE_FINDING_CATEGORIES: Readonly<Record<ImplementationAltitude, readonly string[]>> = {
+  layout: ['layout', 'contract_violation'],
+  public_api: ['public_api', 'contract_violation'],
+  private_api: ['private_api', 'contract_violation'],
+  build: ['layout', 'public_api', 'private_api', 'build', 'contract_violation', 'build_drift']
+};
+
 function findingContextFromFeedback(
   feedback: Feedback,
   finding: ReviewerFinding
@@ -149,11 +163,12 @@ export function createLayeredConvergenceEngine(
   async function runAltitude(params: {
     readonly altitude: ImplementationAltitude;
     readonly maxRounds: number;
+    readonly depth: ResolvedStepConvergencePolicy['depth'];
     readonly input: ConvergenceEngineInput;
     readonly routes: ResolvedReviewedRoutes;
     readonly state: AltitudeLoopState;
   }): Promise<AltitudeLoopOutcome> {
-    const { altitude, maxRounds, input, routes, state } = params;
+    const { altitude, maxRounds, depth, input, routes, state } = params;
 
     const altitudeRounds: ConvergenceRoundRecord[] = [];
     const declinedSignatures: string[] = [];
@@ -170,7 +185,9 @@ export function createLayeredConvergenceEngine(
         altitudeContext: {
           altitude,
           altitudeRound: roundNumber,
-          acceptedCheckpoints: state.acceptedCheckpoints.map((c) => c)
+          acceptedCheckpoints: state.acceptedCheckpoints.map((c) => c),
+          allowedWork: ALTITUDE_ALLOWED_WORK[altitude],
+          findingCategories: ALTITUDE_FINDING_CATEGORIES[altitude]
         },
         ...(lastBlockingFindingContexts.length > 0
           ? {
@@ -299,7 +316,9 @@ export function createLayeredConvergenceEngine(
           altitudeContext: {
             altitude,
             altitudeRound: roundNumber,
-            acceptedCheckpoints: state.acceptedCheckpoints.map((c) => c)
+            acceptedCheckpoints: state.acceptedCheckpoints.map((c) => c),
+            allowedWork: ALTITUDE_ALLOWED_WORK[altitude],
+            findingCategories: ALTITUDE_FINDING_CATEGORIES[altitude]
           }
         },
         toolPolicyMode: 'read_only',
@@ -502,9 +521,7 @@ export function createLayeredConvergenceEngine(
         openFeedbackIds: collectOpenFeedbackIds(state.allRounds),
         lastImplementerLastPosition: state.lastImplementerLastPosition,
         lastReviewerLastPosition: state.lastReviewerLastPosition,
-        depth: params.input.workflow
-          ? getPolicy(input.workflow, input.stepDefinition.id).depth
-          : 'build_only',
+        depth,
         currentAltitude: altitude,
         acceptedCheckpoints: state.acceptedCheckpoints
       });
@@ -567,7 +584,7 @@ export function createLayeredConvergenceEngine(
     for (const altitude of ladder) {
       currentAltitude = altitude;
 
-      const altResult = await runAltitude({ altitude, maxRounds, input, routes, state });
+      const altResult = await runAltitude({ altitude, maxRounds, depth: policy.depth, input, routes, state });
 
       if (altResult.kind === 'failed') {
         const checkpoint = buildLayeredCheckpoint({

@@ -949,4 +949,25 @@ describe('escalation', () => {
     expect(out.workResult.directive).not.toBe('fail');
     expect(out.workResult.directive).toBe('needs_input');
   });
+
+  it('createConvergenceEngine is build-only: all rounds have altitude=build and dispatcher receives no altitudeContext', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'satisfied' })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      getPolicy: () => ({ maxRounds: 2 })
+    });
+    const out = await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+    expect(out.workResult.directive).toBe('advance');
+    expect(out.checkpointResult.rounds.every((r) => r.altitude === 'build')).toBe(true);
+    expect(dispatcher.calls.every((c) => c.reviewContext?.altitudeContext === undefined)).toBe(true);
+  });
 });
