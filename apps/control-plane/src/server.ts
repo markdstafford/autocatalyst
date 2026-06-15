@@ -944,7 +944,7 @@ export async function createControlPlaneServer(
           secretsAvailable: false,
           ...(workspace !== undefined ? { workspace } : {}),
           // Reviewer sessions must not receive write-capable tools.
-          ...(isReadOnlySession ? { toolPolicy: { allowedTools: [] as string[] } } : {}),
+          ...(isReadOnlySession ? { toolPolicy: { allowedTools: ['Read', 'Glob', 'Grep'] as string[] } } : {}),
           prompt: (input) => input.run.currentStep === 'spec.author' ? specAuthorContext?.prompt : undefined,
           taskInputs: (input) => {
             // Spec-authoring step gets its own task inputs.

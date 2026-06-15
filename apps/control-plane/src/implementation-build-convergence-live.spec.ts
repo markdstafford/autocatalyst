@@ -9,31 +9,29 @@
  * AUTOCATALYST_LIVE_IMPLEMENTATION_CONVERGENCE, so this suite never runs in CI.
  *
  * When enabled, this test uses the REAL convergence engine wired through
- * `DefaultOrchestrator` with a live AI provider — the same production path used
- * in `implementation-build-convergence.smoke.spec.ts`, except the
- * `ReviewedRoleDispatcher` is the real `ReviewedExecutionDispatcher` backed by
- * an actual model API call rather than the deterministic fake.
+ * `DefaultOrchestrator` with a live AI provider. The `ReviewedRoleDispatcher`
+ * is the real `ReviewedExecutionDispatcher` backed by actual API calls. The
+ * implementer writes/commits code and the reviewer assesses with read-only tools.
  *
  * Assertions:
  *   - Happy path: reviewer is satisfied → run advances to implementation.human_review
- *   - Forced stall: reviewer always returns findings → run pauses at implementation.awaiting_input
+ *   - Forced stall: maxRounds=1 + reviewer prompt instructs a warning → pauses at implementation.awaiting_input
  *   - Logs do not contain API key values from the environment
  */
 
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import type {
-  ReviewerFinding,
-  ReviewerResult
-} from '@autocatalyst/api-contract';
+import type { Project } from '@autocatalyst/api-contract';
 import {
   createConvergenceEngine,
+  createExecutionContextResolver,
+  createExecutionRunUnitOfWork,
   DefaultOrchestrator,
   getRunStepDefinition,
   getStepConvergencePolicy,
@@ -45,14 +43,36 @@ import {
   type ReviewedRoleDispatcher,
   type ReviewedRoleDispatchResult,
   type RunRoleWorkInput,
+  type RunWorkflowDefinition,
+  type RunStepId,
+  type StepConvergencePolicy,
   type WorkspaceContextResolver
 } from '@autocatalyst/core';
+import {
+  claudeAgentAdapterId,
+  claudeProviderKind,
+  createClaudeAgentAdapter
+} from '@autocatalyst/claude-agent-adapter';
+import {
+  createAgentConnection,
+  createAgentRunnerFactory,
+  createExecutionMaterializer,
+  getAgentProviderAdapterKey,
+  type ProviderCredentialResolver
+} from '@autocatalyst/execution';
+import {
+  openaiAgentAdapterId,
+  openaiProviderKind,
+  createOpenAIAgentAdapter
+} from '@autocatalyst/openai-agent-adapter';
 import {
   createDrizzleDomainRepositories,
   createSqliteDatabase,
   migrateSqliteDatabase
 } from '@autocatalyst/persistence';
 
+import { createDelegatingExecutionEntryPoint } from './server.js';
+import { createReviewedExecutionDispatcher } from './reviewed-execution-dispatcher.js';
 import { createRunWorkspaceGitPort } from './run-workspace-git-port.js';
 
 // ---------------------------------------------------------------------------
@@ -72,6 +92,24 @@ const execFileAsync = promisify(execFile);
 const TENANT = hardcodedDevelopmentPrincipal.tenantId;
 const OWNER = hardcodedDevelopmentPrincipal;
 
+// Stub project for ExecutionContext workspace provisioning.
+// The provisionWorkspace seam bypasses real provisioning, so only structural
+// validity of this object matters.
+const LIVE_TEST_PROJECT: Project = {
+  id: 'proj-live-test',
+  owner: OWNER,
+  tenant: TENANT,
+  displayName: 'Live Test Project',
+  repoUrl: 'https://github.test/live/test',
+  hostRepository: { provider: 'github', owner: 'live', name: 'test' },
+  workspaceRootOverride: null,
+  issueTrackerSetting: null,
+  codeHostSetting: null,
+  credentialRefs: [],
+  createdAt: new Date().toISOString(),
+  updatedAt: new Date().toISOString()
+};
+
 async function withTempDir<T>(prefix: string, run: (dir: string) => Promise<T>): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), prefix));
   try {
@@ -89,14 +127,12 @@ async function initGitRepo(repoRoot: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Routing stub: two distinct profiles so the engine walks resolveDistinctAgentRoutes.
-// In the live test the dispatcher is real, but the routing stub keeps the
-// profile resolution deterministic (and prevents secret leakage through
-// profile metadata by not forwarding real config record ids).
+// Routing stub: two distinct profiles for implementer/reviewer.
+// The credentialReference uses secretHandle so createAgentConnection resolves
+// the API key from the provided credentialResolver (env var closure).
 // ---------------------------------------------------------------------------
 
 function makeLiveRouting(): ModelRoutingResolver {
-  // Prefer Anthropic when available, fall back to OpenAI.
   const useAnthropic = process.env['ANTHROPIC_API_KEY'] !== undefined;
 
   const implResolution: ModelRoutingResolution = {
@@ -105,8 +141,8 @@ function makeLiveRouting(): ModelRoutingResolver {
     routingTableId: 'table_live',
     profile: {
       mode: 'agent',
-      providerKind: useAnthropic ? 'anthropic' : 'openai',
-      adapterId: useAnthropic ? 'claude-agent-sdk' : 'openai-agents-sdk',
+      providerKind: useAnthropic ? claudeProviderKind : openaiProviderKind,
+      adapterId: useAnthropic ? claudeAgentAdapterId : openaiAgentAdapterId,
       configurationRecordId: 'cfg_impl_live',
       profileName: 'impl-profile-live',
       model: useAnthropic
@@ -118,7 +154,7 @@ function makeLiveRouting(): ModelRoutingResolver {
     },
     credentialReference: {
       required: true,
-      authTarget: useAnthropic ? 'process_environment' : 'header'
+      secretHandle: 'live-api-key'
     }
   };
 
@@ -128,8 +164,8 @@ function makeLiveRouting(): ModelRoutingResolver {
     routingTableId: 'table_live',
     profile: {
       mode: 'agent',
-      providerKind: useAnthropic ? 'anthropic' : 'openai',
-      adapterId: useAnthropic ? 'claude-agent-sdk' : 'openai-agents-sdk',
+      providerKind: useAnthropic ? claudeProviderKind : openaiProviderKind,
+      adapterId: useAnthropic ? claudeAgentAdapterId : openaiAgentAdapterId,
       configurationRecordId: 'cfg_rev_live',
       profileName: 'rev-profile-live',
       model: useAnthropic
@@ -141,7 +177,7 @@ function makeLiveRouting(): ModelRoutingResolver {
     },
     credentialReference: {
       required: true,
-      authTarget: useAnthropic ? 'process_environment' : 'header'
+      secretHandle: 'live-api-key'
     }
   };
 
@@ -166,70 +202,163 @@ function makeLiveRouting(): ModelRoutingResolver {
 }
 
 // ---------------------------------------------------------------------------
-// Minimal task dispatcher: writes a real file for implementer, returns a
-// canned (but real-looking) reviewer result for reviewer.  This keeps the
-// test deterministic in the dispatcher layer while allowing the convergence
-// engine to exercise its production path with real routing resolution.
+// Real reviewed dispatcher backed by live AI API
 //
-// NOTE: In the full live-provider scenario, the dispatcher would be a real
-// ReviewedExecutionDispatcher backed by actual AI API calls. That wiring
-// requires provider configuration records in the database that this minimal
-// test doesn't seed. The test as written validates the convergence path, the
-// skip behavior, and log-secret-absence without needing live AI credentials
-// to be fully wired. The env-var gate still ensures the test only runs in
-// environments that explicitly opt in.
+// Replaces createMinimalLiveDispatcher. Uses createReviewedExecutionDispatcher
+// wired through createDelegatingExecutionEntryPoint so both the implementer
+// and reviewer sessions call the actual provider.
+//
+// The provisionWorkspace seam is injected to return the pre-existing temp
+// workspace so no real git clone is performed.
+//
+// `scenario: 'stall'` sets the reviewer prompt to always return a warning
+// finding, making the max_rounds outcome deterministic.
 // ---------------------------------------------------------------------------
 
-interface MinimalDispatcherOptions {
+interface LiveDispatcherOptions {
+  readonly workspacesRoot: string;
   readonly workspaceRepoRoot: string;
-  readonly reviewerBehavior: 'satisfied' | 'always_warning';
+  readonly runId: string;
+  readonly scenario: 'happy' | 'stall';
 }
 
-function createMinimalLiveDispatcher(
-  options: MinimalDispatcherOptions
-): ReviewedRoleDispatcher & { calls: RunRoleWorkInput[] } {
-  const calls: RunRoleWorkInput[] = [];
+async function createLiveReviewedDispatcher(
+  options: LiveDispatcherOptions
+): Promise<ReviewedRoleDispatcher> {
+  const { workspacesRoot, workspaceRepoRoot, runId, scenario } = options;
 
-  const warningFinding: ReviewerFinding = {
-    title: 'Live test: add a regression test',
-    body: 'Cover the new branch with a unit test before advancing.',
-    severity: 'warning'
+  const scratchRoot = join(workspacesRoot, 'scratch');
+  await mkdir(scratchRoot, { recursive: true });
+
+  const useAnthropic = process.env['ANTHROPIC_API_KEY'] !== undefined;
+
+  // Adapter registry — Claude or OpenAI based on which key is available.
+  const adapterKey = getAgentProviderAdapterKey(
+    useAnthropic ? claudeProviderKind : openaiProviderKind,
+    useAnthropic ? claudeAgentAdapterId : openaiAgentAdapterId
+  );
+  const adapterRegistry = new Map([
+    [adapterKey, useAnthropic ? createClaudeAgentAdapter() : createOpenAIAgentAdapter()]
+  ]);
+
+  // Credential resolver: return the API key from process.env for the 'live-api-key' handle.
+  const credentialResolver: ProviderCredentialResolver = {
+    async resolveCredential(_handle: string): Promise<string | undefined> {
+      return useAnthropic
+        ? process.env['ANTHROPIC_API_KEY']
+        : process.env['OPENAI_API_KEY'];
+    }
   };
 
+  // Routing stub for profile selection by role.
+  const routing = makeLiveRouting();
+
+  // Runner factory: resolves profile per role, creates real connection.
+  const runnerFactory = createAgentRunnerFactory({
+    adapters: adapterRegistry,
+    resolveProfile: async (factoryInput) => {
+      const distinct = await routing.resolveDistinctAgentRoutes({
+        tenant: TENANT,
+        runId: factoryInput.runId,
+        step: factoryInput.step,
+        roles: ['implementer', 'reviewer']
+      });
+      const role = factoryInput.role ?? 'implementer';
+      const resolution = distinct.resolutionsByRole[role as keyof typeof distinct.resolutionsByRole]
+        ?? distinct.resolutionsByRole['implementer'];
+      return { profile: resolution.profile, credentialReference: resolution.credentialReference };
+    },
+    createConnection: async (input) => createAgentConnection({
+      profile: input.profile,
+      credentialReference: input.credentialReference,
+      credentialResolver,
+      telemetryContext: input.telemetryContext
+    })
+  });
+
+  // Materializer: inject provisionWorkspace to return the pre-existing workspace.
+  const materializer = createExecutionMaterializer({
+    capabilities: { shellAvailable: true, lspAvailable: false },
+    provisionWorkspace: async () => ({
+      shape: 'two_roots' as const,
+      runId,
+      workspaceRoot: workspacesRoot,
+      runRoot: workspacesRoot,
+      repoRoot: workspaceRepoRoot,
+      scratchRoot,
+      hostRepositoryPath: workspaceRepoRoot,
+      branchName: 'main'
+    })
+  });
+
+  // Entry point: routes role from task.inputs.role so the runner factory
+  // receives the correct role on each round.
+  const entryPoint = createDelegatingExecutionEntryPoint({
+    factory: runnerFactory,
+    materialize: (context) => materializer.materialize(context)
+  });
+
+  // Unit of work: builds ExecutionContext directly, no DB lookups.
+  // Prompt and tool policy differ by role and scenario.
+  const unitOfWork = createExecutionRunUnitOfWork({
+    execute: entryPoint,
+    resolveContext: async (workInput) => {
+      const ri = workInput as RunRoleWorkInput;
+      const isReviewer = ri.role === 'reviewer';
+
+      const prompt = isReviewer
+        ? (scenario === 'stall'
+          ? 'You are reviewing code changes. Return ONLY the following JSON as your step result: {"status":"findings","findings":[{"title":"Stall test finding","body":"Always returned for forced stall test.","severity":"warning"}]}'
+          : 'Review the repository. If a file hello.txt exists with content starting with "Hello", return {"status":"satisfied"}. Otherwise return {"status":"findings","findings":[{"title":"Missing file","body":"Expected hello.txt was not found.","severity":"warning"}]}.')
+        : 'Create a file named hello.txt in the repository root with the content "Hello from the live convergence test". Stage and commit the file with a short commit message.';
+
+      return createExecutionContextResolver({
+        workspace: {
+          project: LIVE_TEST_PROJECT,
+          roots: { reposRoot: workspacesRoot, workspacesRoot },
+          topicSlug: 'live-test',
+          shortRunId: runId.slice(0, 8),
+          defaultBranch: 'main'
+        },
+        ...(isReviewer ? { toolPolicy: { allowedTools: ['Read', 'Glob', 'Grep'] } } : {}),
+        prompt,
+        taskInputs: (input) => {
+          const roleInput = input as RunRoleWorkInput;
+          return {
+            role: roleInput.role ?? 'implementer',
+            round: roleInput.round ?? 1,
+            ...(roleInput.role === 'reviewer'
+              ? { sessionMode: 'code_review', accessMode: 'read_only' }
+              : {})
+          };
+        },
+        // Disable skill resolution — implementation.build has no skill refs.
+        resolveSkills: async () => ({ requested: [], resolved: [] }),
+        capabilityRequirements: {
+          shell: { required: false },
+          paths: { canonicalWorkspacePaths: false },
+          lsp: { requested: false }
+        }
+      }).resolve(workInput);
+    }
+  });
+
+  return createReviewedExecutionDispatcher({ unitOfWork });
+}
+
+// ---------------------------------------------------------------------------
+// Tracking wrapper — counts role calls so tests can assert call patterns.
+// ---------------------------------------------------------------------------
+
+function wrapWithCallTracking(
+  dispatcher: ReviewedRoleDispatcher
+): ReviewedRoleDispatcher & { calls: RunRoleWorkInput[] } {
+  const calls: RunRoleWorkInput[] = [];
   return {
     calls,
     async runRole(input: RunRoleWorkInput): Promise<ReviewedRoleDispatchResult> {
       calls.push(input);
-
-      if (input.role === 'implementer') {
-        const fs = await import('node:fs/promises');
-        const filename = `live-round-${input.round}.txt`;
-        await fs.writeFile(
-          join(options.workspaceRepoRoot, filename),
-          `live implementer output for round ${input.round}\n`,
-          'utf-8'
-        );
-        return {
-          workResult: { directive: 'advance', result: {} },
-          sessionId: `live-impl-session-${input.round}`,
-          lastPosition: `live-impl-pos-${input.round}`
-        };
-      }
-
-      // Reviewer
-      const reviewerResult: ReviewerResult = options.reviewerBehavior === 'satisfied'
-        ? { status: 'satisfied' }
-        : { status: 'findings', findings: [warningFinding] };
-
-      return {
-        workResult: {
-          directive: 'advance',
-          result: reviewerResult as unknown as Readonly<Record<string, unknown>>
-        },
-        reviewerResult,
-        sessionId: `live-rev-session-${input.round}`,
-        lastPosition: `live-rev-pos-${input.round}`
-      };
+      return dispatcher.runRole(input);
     }
   };
 }
@@ -338,6 +467,7 @@ function buildLiveOrchestrator(input: {
   readonly workspacesRoot: string;
   readonly workspaceRepoRoot: string;
   readonly dispatcher: ReviewedRoleDispatcher;
+  readonly getPolicy?: (workflow: RunWorkflowDefinition, step: RunStepId) => Required<StepConvergencePolicy>;
 }): { orchestrator: DefaultOrchestrator; close: () => void } {
   const database = createSqliteDatabase({ path: input.databasePath });
   const domainRepos = createDrizzleDomainRepositories(database);
@@ -358,7 +488,7 @@ function buildLiveOrchestrator(input: {
     feedback: domainRepos.feedback,
     runSteps: domainRepos.runSteps,
     routing,
-    getPolicy: getStepConvergencePolicy,
+    getPolicy: input.getPolicy ?? getStepConvergencePolicy,
     logger: { warn: () => {} }
   });
 
@@ -427,10 +557,10 @@ describe.skipIf(!LIVE_ENABLED)('live implementation.build convergence e2e', () =
 
   it('happy path converges and advances to implementation.human_review', async () => {
     await withLiveScenario('ac-live-happy', async ({ runId, workspacesRoot, workspaceRepoRoot, databasePath }) => {
-      const dispatcher = createMinimalLiveDispatcher({
-        workspaceRepoRoot,
-        reviewerBehavior: 'satisfied'
+      const realDispatcher = await createLiveReviewedDispatcher({
+        workspacesRoot, workspaceRepoRoot, runId, scenario: 'happy'
       });
+      const dispatcher = wrapWithCallTracking(realDispatcher);
       const { orchestrator, close } = buildLiveOrchestrator({
         databasePath, workspacesRoot, workspaceRepoRoot, dispatcher
       });
@@ -476,12 +606,14 @@ describe.skipIf(!LIVE_ENABLED)('live implementation.build convergence e2e', () =
 
   it('forced stall reaches max rounds and pauses at implementation.awaiting_input', async () => {
     await withLiveScenario('ac-live-stall', async ({ runId, workspacesRoot, workspaceRepoRoot, databasePath }) => {
-      const dispatcher = createMinimalLiveDispatcher({
-        workspaceRepoRoot,
-        reviewerBehavior: 'always_warning'
+      const realDispatcher = await createLiveReviewedDispatcher({
+        workspacesRoot, workspaceRepoRoot, runId, scenario: 'stall'
       });
+      const dispatcher = wrapWithCallTracking(realDispatcher);
+      // maxRounds=1: after one implementer+reviewer round, stalls if reviewer returned findings.
       const { orchestrator, close } = buildLiveOrchestrator({
-        databasePath, workspacesRoot, workspaceRepoRoot, dispatcher
+        databasePath, workspacesRoot, workspaceRepoRoot, dispatcher,
+        getPolicy: () => ({ maxRounds: 1 })
       });
       try {
         const result = await orchestrator.dispatch({ runId, tenant: TENANT });
@@ -501,7 +633,7 @@ describe.skipIf(!LIVE_ENABLED)('live implementation.build convergence e2e', () =
           const feedback = await repos.feedback.listByRun(runId);
           expect(feedback.length).toBeGreaterThanOrEqual(1);
           for (const fb of feedback) {
-            expect(fb.title).toBe('Live test: add a regression test');
+            expect(fb.title).toBe('Stall test finding');
             expect(fb.tenant).toBe(TENANT);
           }
 

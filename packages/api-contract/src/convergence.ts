@@ -55,7 +55,7 @@ export type ReviewerResult = z.infer<typeof reviewerResultSchema>;
 export type FindingDisposition = z.infer<typeof findingDispositionSchema>;
 
 export const convergenceRoundOutcomeSchema = z.enum(['continue', 'converged', 'max_rounds', 'oscillation']);
-export const convergenceOutcomeSchema = z.enum(['converged', 'max_rounds', 'oscillation']);
+export const convergenceOutcomeSchema = z.enum(['converged', 'max_rounds', 'oscillation', 'needs_input']);
 export const convergenceRoutingWarningCodeSchema = z.enum(['role_distinct_unsatisfied']);
 
 export const convergenceRoundFindingSchema = reviewerFindingContextSchema.extend({

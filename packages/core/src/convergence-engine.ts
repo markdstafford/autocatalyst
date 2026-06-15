@@ -74,6 +74,8 @@ export function detectOscillation(
   const repeatedSignature = currentBlockingSignatures.some(sig => previousBlockingSignatures.includes(sig));
   if (repeatedSignature) return true;
 
+  // Intentionally conservative: escalates even when round N's blockers are entirely new/distinct
+  // from round N-1's. False positives pause for a human rather than ship unconverged work.
   if (currentBlockingSignatures.length >= previousBlockingSignatures.length && previousBlockingSignatures.length > 0) {
     return true;
   }
@@ -262,7 +264,7 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
     });
 
     // ---- State across rounds ----------------------------------------------
-    const reviewerPrincipal = options.reviewerPrincipal ?? defaultReviewerPrincipal(input.tenant);
+    let reviewerPrincipal = options.reviewerPrincipal ?? defaultReviewerPrincipal(input.tenant);
     const rounds: ConvergenceRoundRecord[] = [];
     const accumulatedDeclinedSignatures: string[] = [];
     // Map every persisted finding by feedbackId so future-round dispositions can resolve.
@@ -315,7 +317,7 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
             maxRounds,
             routes,
             rounds,
-            outcome: 'max_rounds',
+            outcome: 'needs_input',
             openFeedbackIds: collectOpenFeedbackIds(rounds, accumulatedDeclinedSignatures),
             lastImplementerLastPosition: implDispatch.lastPosition ?? lastImplementerLastPosition,
             lastReviewerLastPosition
@@ -413,6 +415,9 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
         route: routes.reviewerRoute
       });
       lastReviewerLastPosition = reviewDispatch.lastPosition ?? lastReviewerLastPosition;
+      if (reviewDispatch.modelPrincipal !== undefined) {
+        reviewerPrincipal = reviewDispatch.modelPrincipal;
+      }
 
       // 4) Validate reviewer result against schema.
       const rawResult = reviewDispatch.reviewerResult
@@ -636,16 +641,12 @@ function collectOpenFeedbackIds(
   rounds: readonly ConvergenceRoundRecord[],
   declinedSignatures: readonly string[]
 ): readonly string[] {
-  // A feedback is "open" if it appears in any round's findings, is blocking (not declined),
-  // and was not later marked declined via accumulated dispositions.
+  // Only report findings that are still blocking in the last reviewer pass.
+  // Earlier rounds' blockers that were fixed by a later implementer are not open.
+  const lastRound = rounds[rounds.length - 1];
+  if (lastRound === undefined) return [];
   const declined = new Set(declinedSignatures);
-  const open = new Set<string>();
-  for (const r of rounds) {
-    for (const f of r.findings) {
-      if (f.severity === 'info') continue;
-      if (declined.has(f.signature)) continue;
-      open.add(f.feedbackId);
-    }
-  }
-  return Array.from(open);
+  return lastRound.findings
+    .filter(f => f.severity !== 'info' && !declined.has(f.signature))
+    .map(f => f.feedbackId);
 }

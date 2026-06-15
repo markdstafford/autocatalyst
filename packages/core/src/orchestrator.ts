@@ -684,7 +684,11 @@ export class DefaultOrchestrator implements Orchestrator {
   }
 
   #isReviewedProducingStep(stepDefinition: RunStepDefinition): boolean {
+    // Scoped to implementation.build only. spec.author also carries both roles but has
+    // a spec-artifact completion step (#runSpecAuthoringCompletion) that must run after
+    // convergence — that wiring is tracked separately; until then keep it on the one-shot path.
     return (
+      stepDefinition.id === 'implementation.build' &&
       stepDefinition.waitingOn === 'ai' &&
       stepDefinition.roles.includes('implementer') &&
       stepDefinition.roles.includes('reviewer')
