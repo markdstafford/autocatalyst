@@ -392,6 +392,11 @@ describe('createLayeredConvergenceEngine', () => {
     expect(out.checkpointResult.acceptedCheckpoints?.[0]?.altitude).toBe('layout');
     expect(out.checkpointResult.rounds.find((r) => r.altitude === 'layout')).toBeDefined();
     expect(out.checkpointResult.rounds.find((r) => r.altitude === 'build')).toBeDefined();
+    // Both implementer and reviewer receive altitude context for each altitude.
+    expect(dispatcher.calls[0]?.reviewContext?.altitudeContext?.altitude).toBe('layout');
+    expect(dispatcher.calls[1]?.reviewContext?.altitudeContext?.altitude).toBe('layout');
+    expect(dispatcher.calls[2]?.reviewContext?.altitudeContext?.altitude).toBe('build');
+    expect(dispatcher.calls[3]?.reviewContext?.altitudeContext?.altitude).toBe('build');
   });
 
   it('full depth: all four altitudes converge, captures three refs, advances', async () => {
@@ -427,6 +432,9 @@ describe('createLayeredConvergenceEngine', () => {
     expect(git.captures.map((c) => c.altitude)).toEqual(['layout', 'public_api', 'private_api']);
     expect(out.checkpointResult.acceptedCheckpoints?.length).toBe(3);
     expect(out.checkpointResult.depth).toBe('full');
+    expect(
+      out.checkpointResult.rounds.map((round) => `${round.altitude}:${round.round}`)
+    ).toEqual(['layout:1', 'public_api:1', 'private_api:1', 'build:1']);
   });
 
   it('escalates with needs_input when early altitude exhausts max rounds before descending', async () => {
