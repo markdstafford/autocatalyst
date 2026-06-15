@@ -593,7 +593,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     const decision = await this.#policy.authorize({
       principal: input.principal,
       action: 'run_feedback.thread.append',
-      resource: { kind: 'run_feedback', id: input.runId, path: '/v1/runs/:id/feedback/:feedbackId/thread' }
+      resource: { kind: 'run_feedback_thread', id: input.runId, path: '/v1/runs/:id/feedback/:feedbackId/thread' }
     });
     if (!decision.allowed) {
       throw new ControlPlaneServiceError('forbidden', 'Not authorized to append feedback thread replies.');

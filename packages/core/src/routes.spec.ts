@@ -1358,7 +1358,7 @@ describe('registerControlPlaneRoutes', () => {
     expect(policyCalls).toContainEqual({
       principal: hardcodedDevelopmentPrincipal,
       action: 'run_feedback.thread.append',
-      resource: { kind: 'run_feedback', id: 'run_1', path: '/v1/runs/:id/feedback/:feedbackId/thread' }
+      resource: { kind: 'run_feedback_thread', id: 'run_1', path: '/v1/runs/:id/feedback/:feedbackId/thread' }
     });
   });
 

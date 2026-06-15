@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ExecutionContext } from '@autocatalyst/api-contract';
 import type { ExecutionBoundaryEvent, ExecutionEntryPoint, ExecutionEntryPointInput, DirectCallRequest } from '@autocatalyst/execution';
-import { createExecutionEntryPoint, ClassifiedProviderFailureError, ExecutionMaterializationError, SkillCatalogResolutionError, ProviderConnectionError, ProviderConfigurationError } from '@autocatalyst/execution';
+import { createExecutionEntryPoint, ClassifiedProviderFailureError, ExecutionMaterializationError, SkillCatalogResolutionError, ProviderConnectionError } from '@autocatalyst/execution';
 import type { Runner, RunnerRunInput } from '@autocatalyst/execution';
 import { ModelRoutingConfigurationError } from './model-routing-resolver.js';
 import type { RunWorkInput } from './orchestrator.js';
@@ -284,6 +284,7 @@ describe('createExecutionRunUnitOfWork', () => {
       const unit = createExecutionRunUnitOfWork({
         resolveContext: async () => makeContext(),
         execute: {
+          // eslint-disable-next-line require-yield
           execute: async function* () {
             throw new ProviderConnectionError('process_launch_failed', 'raw provider detail');
           }
@@ -301,6 +302,7 @@ describe('createExecutionRunUnitOfWork', () => {
       const unit = createExecutionRunUnitOfWork({
         resolveContext: async () => makeContext(),
         execute: {
+          // eslint-disable-next-line require-yield
           execute: async function* () {
             throw new ClassifiedProviderFailureError('provider_auth_failed');
           }

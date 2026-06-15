@@ -594,7 +594,7 @@ export async function registerControlPlaneRoutes(
     // Spec review: POST /v1/runs/:id/feedback/:feedbackId/thread
     protectedApp.post(runFeedbackThreadPath, {
       preHandler: authorizePreHandler(dependencies.policy, 'run_feedback.thread.append', (request) => ({
-        kind: 'run_feedback' as const,
+        kind: 'run_feedback_thread' as const,
         id: (request.params as { id: string }).id,
         path: '/v1/runs/:id/feedback/:feedbackId/thread' as const
       }))
