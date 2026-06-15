@@ -226,6 +226,8 @@ export {
   type SpecApprovalErrorCode
 } from './spec-approval-finalizer.js';
 
+export * from './convergence-engine.js';
+
 export * from './reviewed-role-dispatcher.js';
 
 export * from './run-workspace-git.js';

@@ -4,11 +4,28 @@ import {
   isBlockingFinding,
   computeCurrentBlockingSet,
   detectOscillation,
-  resolveReviewedRoutes
+  resolveReviewedRoutes,
+  createConvergenceEngine,
+  ConvergenceEngineConfigurationError
 } from './convergence-engine.js';
-import type { ReviewerFinding } from '@autocatalyst/api-contract';
+import type {
+  ConvergenceCheckpoint,
+  CreateFeedbackInput,
+  Feedback,
+  FindingDisposition,
+  JsonValue,
+  ReviewerFinding,
+  ReviewerResult,
+  Run,
+  RunStep
+} from '@autocatalyst/api-contract';
 import type { ModelRoutingResolver, ModelRoutingResolution } from './model-routing-resolver.js';
 import { ModelRoutingConfigurationError } from './model-routing-resolver.js';
+import type { FeedbackRepository, RunStepRepository, UpdateRunStepCheckpointInput } from './domain-repositories.js';
+import type { ReviewedRoleDispatcher, RunRoleWorkInput, ReviewedRoleDispatchResult } from './reviewed-role-dispatcher.js';
+import type { RunWorkspaceGitPort, RunWorkspaceCommitFilesInput, RunWorkspaceCommitResult } from './run-workspace-git.js';
+import type { RunStepDefinition } from './run-step-catalog.js';
+import type { RunWorkflowDefinition } from './run-workflows.js';
 
 const warnFinding: ReviewerFinding = { title: 'Missing test', body: 'Add coverage for edge case.', severity: 'warning' };
 const blockerFinding: ReviewerFinding = { title: 'Security hole', body: 'SQL injection risk.', severity: 'blocker' };
@@ -250,5 +267,414 @@ describe('resolveReviewedRoutes', () => {
         routing
       })
     ).rejects.toThrow(ModelRoutingConfigurationError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createConvergenceEngine
+// ---------------------------------------------------------------------------
+
+class InMemoryFeedbackRepo implements FeedbackRepository {
+  readonly created: Feedback[] = [];
+  private seq = 0;
+  async create(input: CreateFeedbackInput): Promise<Feedback> {
+    this.seq += 1;
+    const now = '2025-01-01T00:00:00.000Z';
+    const fb: Feedback = {
+      id: `fb_${this.seq}`,
+      runId: input.runId,
+      owner: input.owner,
+      tenant: input.tenant,
+      target: input.target,
+      status: input.status,
+      title: input.title,
+      body: input.body,
+      ...(input.anchor !== undefined ? { anchor: input.anchor } : {}),
+      thread: input.thread,
+      createdAt: now,
+      updatedAt: now
+    };
+    this.created.push(fb);
+    return fb;
+  }
+  async findById(): Promise<Feedback | null> { return null; }
+  async listByRun(): Promise<readonly Feedback[]> { return this.created; }
+  async updateStatusAndAppendThread(): Promise<Feedback> { throw new Error('not implemented'); }
+  async appendThreadEntry(): Promise<Feedback> { throw new Error('not implemented'); }
+}
+
+class StubRunStepRepo implements RunStepRepository {
+  readonly checkpoints: UpdateRunStepCheckpointInput[] = [];
+  async create(): Promise<RunStep> { throw new Error('not implemented'); }
+  async findById(): Promise<RunStep | null> { return null; }
+  async listByRun(): Promise<readonly RunStep[]> { return []; }
+  async updateCheckpoint(input: UpdateRunStepCheckpointInput): Promise<RunStep> {
+    this.checkpoints.push(input);
+    return {
+      id: input.runStepId,
+      runId: input.runId,
+      phase: 'implementation',
+      step: 'implementation.build',
+      role: 'implementer',
+      startedAt: '2025-01-01T00:00:00.000Z',
+      endedAt: null,
+      durationMs: null,
+      occurrence: { index: 0, attempt: 1 },
+      checkpointResult: input.checkpointResult
+    };
+  }
+}
+
+class StubGit implements RunWorkspaceGitPort {
+  readonly commits: RunWorkspaceCommitFilesInput[] = [];
+  changedFileCount = 1;
+  reviewerPolicy = {
+    fileAccess: 'read_only' as const,
+    gitAccess: 'read_only' as const,
+    forbiddenGitActions: ['commit'] as const
+  };
+  async commitFiles(input: RunWorkspaceCommitFilesInput): Promise<RunWorkspaceCommitResult> {
+    this.commits.push(input);
+    return { commitSha: `sha_${this.commits.length}`, changedFileCount: this.changedFileCount };
+  }
+}
+
+interface ScriptedDispatch {
+  readonly role: 'implementer' | 'reviewer';
+  readonly round: number;
+  readonly result: ReviewedRoleDispatchResult;
+}
+
+class ScriptedDispatcher implements ReviewedRoleDispatcher {
+  readonly calls: RunRoleWorkInput[] = [];
+  constructor(private readonly script: ScriptedDispatch[]) {}
+  async runRole(input: RunRoleWorkInput): Promise<ReviewedRoleDispatchResult> {
+    this.calls.push(input);
+    const match = this.script.find(s => s.role === input.role && s.round === input.round);
+    if (match === undefined) {
+      throw new Error(`No scripted response for role=${input.role} round=${input.round}`);
+    }
+    return match.result;
+  }
+}
+
+function makeRouting(distinct: boolean): ModelRoutingResolver {
+  const implResolution = makeResolution('impl');
+  const revResolution = makeResolution('rev');
+  if (distinct) {
+    return {
+      resolveAgentRoute: vi.fn(),
+      resolveDirectRoute: vi.fn(),
+      resolveDistinctAgentRoutes: vi.fn().mockResolvedValue({
+        step: 'implementation.build',
+        distinctBy: 'model',
+        resolutionsByRole: { implementer: implResolution, reviewer: revResolution }
+      })
+    };
+  }
+  return {
+    resolveAgentRoute: vi.fn().mockResolvedValueOnce(implResolution).mockResolvedValueOnce(revResolution),
+    resolveDirectRoute: vi.fn(),
+    resolveDistinctAgentRoutes: vi.fn().mockRejectedValue(
+      new ModelRoutingConfigurationError('role_distinct_unsatisfied', 'collision', { distinctBy: 'model' })
+    )
+  };
+}
+
+const stepDefBoth: RunStepDefinition = {
+  id: 'implementation.build',
+  phase: 'implementation',
+  waitingOn: 'ai',
+  roles: ['implementer', 'reviewer']
+};
+
+const stepDefImplementerOnly: RunStepDefinition = {
+  id: 'implementation.plan',
+  phase: 'implementation',
+  waitingOn: 'ai',
+  roles: ['implementer']
+};
+
+const fakeRun: Run = {
+  id: 'run-1',
+  topicId: 'topic-1',
+  owner: { id: 'owner-1', kind: 'human', tenantId: 'tenant-1' },
+  tenant: 'tenant-1',
+  workKind: 'feature',
+  currentStep: 'implementation.build',
+  terminal: false,
+  createdAt: '2025-01-01T00:00:00.000Z',
+  updatedAt: '2025-01-01T00:00:00.000Z'
+};
+
+const fakeRunStep: RunStep = {
+  id: 'run-step-1',
+  runId: 'run-1',
+  phase: 'implementation',
+  step: 'implementation.build',
+  role: 'implementer',
+  startedAt: '2025-01-01T00:00:00.000Z',
+  endedAt: null,
+  durationMs: null,
+  occurrence: { index: 0, attempt: 1 },
+  checkpointResult: null
+};
+
+const fakeWorkflow: RunWorkflowDefinition = {
+  id: 'feature',
+  workKind: 'feature',
+  steps: ['implementation.build', 'done'],
+  transitions: {
+    'implementation.build': { advance: 'done', needs_input: 'implementation.awaiting_input' }
+  }
+};
+
+function implResultAdvance(round: number, dispositions: FindingDisposition[] = []): ScriptedDispatch {
+  return {
+    role: 'implementer',
+    round,
+    result: {
+      workResult: { directive: 'advance', result: {} },
+      dispositions,
+      sessionId: `impl-session-${round}`,
+      lastPosition: `impl-pos-${round}`
+    }
+  };
+}
+
+function reviewerResultDispatch(round: number, result: ReviewerResult): ScriptedDispatch {
+  return {
+    role: 'reviewer',
+    round,
+    result: {
+      workResult: { directive: 'advance', result: result as unknown as Readonly<Record<string, unknown>> },
+      reviewerResult: result,
+      sessionId: `rev-session-${round}`,
+      lastPosition: `rev-pos-${round}`
+    }
+  };
+}
+
+describe('createConvergenceEngine', () => {
+  it('rejects when step lacks both implementer and reviewer roles', async () => {
+    const engine = createConvergenceEngine({
+      dispatcher: new ScriptedDispatcher([]),
+      git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true)
+    });
+    await expect(engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefImplementerOnly,
+      workflow: fakeWorkflow
+    })).rejects.toBeInstanceOf(ConvergenceEngineConfigurationError);
+  });
+
+  it('runs implementer BEFORE commit and commit BEFORE reviewer', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'satisfied' })
+    ]);
+    const git = new StubGit();
+    const engine = createConvergenceEngine({
+      dispatcher, git,
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true)
+    });
+    await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+    // Order: implementer call, then commit, then reviewer call.
+    expect(dispatcher.calls[0]?.role).toBe('implementer');
+    expect(git.commits.length).toBe(1);
+    expect(dispatcher.calls[1]?.role).toBe('reviewer');
+  });
+
+  it('host commits changed files after implementer execution', async () => {
+    const git = new StubGit();
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'satisfied' })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git,
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true)
+    });
+    await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow,
+      workspace: { workspaceRepoRoot: '/tmp/repo', workspaceHandle: 'h' }
+    });
+    expect(git.commits).toHaveLength(1);
+    expect(git.commits[0]?.workspaceRepoRoot).toBe('/tmp/repo');
+    expect(git.commits[0]?.runId).toBe('run-1');
+  });
+
+  it('returns fail when reviewer output does not validate against schema', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      {
+        role: 'reviewer',
+        round: 1,
+        result: {
+          workResult: { directive: 'advance', result: { wrong: 'shape' } },
+          sessionId: 'rev-1'
+        }
+      }
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true)
+    });
+    const out = await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+    expect(out.workResult.directive).toBe('fail');
+  });
+
+  it('persists reviewer findings as Feedback BEFORE convergence decision', async () => {
+    const feedback = new InMemoryFeedbackRepo();
+    const runSteps = new StubRunStepRepo();
+    const blocker: ReviewerFinding = { title: 'Missing test', body: 'Add coverage.', severity: 'blocker' };
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'findings', findings: [blocker] }),
+      // Round 2: implementer fixes, reviewer satisfied
+      implResultAdvance(2, [{ feedbackId: 'fb_1', disposition: 'fixed', summary: 'added' }]),
+      reviewerResultDispatch(2, { status: 'satisfied' })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git: new StubGit(),
+      feedback, runSteps,
+      routing: makeRouting(true)
+    });
+    await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+    // Feedback persisted before first checkpoint write.
+    expect(feedback.created.length).toBeGreaterThan(0);
+    expect(runSteps.checkpoints.length).toBeGreaterThan(0);
+  });
+
+  it('passes unresolved findings as required dispositions to next implementer round', async () => {
+    const blocker: ReviewerFinding = { title: 'Bug', body: 'Fix this.', severity: 'blocker' };
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'findings', findings: [blocker] }),
+      implResultAdvance(2, [{ feedbackId: 'fb_1', disposition: 'fixed', summary: 'ok' }]),
+      reviewerResultDispatch(2, { status: 'satisfied' })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true)
+    });
+    await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+    const round2Impl = dispatcher.calls.find(c => c.role === 'implementer' && c.round === 2);
+    expect(round2Impl?.reviewContext?.requiredDispositions?.length).toBe(1);
+    expect(round2Impl?.reviewContext?.requiredDispositions?.[0]?.feedbackId).toBe('fb_1');
+  });
+
+  it('writes convergence checkpoint after each reviewer pass', async () => {
+    const runSteps = new StubRunStepRepo();
+    const blocker: ReviewerFinding = { title: 'X', body: 'Y', severity: 'blocker' };
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'findings', findings: [blocker] }),
+      implResultAdvance(2, [{ feedbackId: 'fb_1', disposition: 'fixed', summary: 'ok' }]),
+      reviewerResultDispatch(2, { status: 'satisfied' })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps,
+      routing: makeRouting(true)
+    });
+    await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+    expect(runSteps.checkpoints).toHaveLength(2);
+  });
+
+  it('returns advance directive when no blocking findings remain', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'satisfied' })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true)
+    });
+    const out = await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+    expect(out.workResult.directive).toBe('advance');
+    expect(out.checkpointResult.outcome).toBe('converged');
+  });
+
+  it('fresh latest-pass blocker does NOT advance even after implementer claims to fix', async () => {
+    const blocker: ReviewerFinding = { title: 'New issue', body: 'New body', severity: 'blocker' };
+    // Round 1: produces blocker. Round 2: implementer "fixes" prior, reviewer reports a FRESH blocker.
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'findings', findings: [{ title: 'Old', body: 'Old', severity: 'blocker' }] }),
+      implResultAdvance(2, [{ feedbackId: 'fb_1', disposition: 'fixed', summary: 'ok' }]),
+      reviewerResultDispatch(2, { status: 'findings', findings: [blocker] }),
+      implResultAdvance(3, [{ feedbackId: 'fb_2', disposition: 'fixed', summary: 'ok' }]),
+      reviewerResultDispatch(3, { status: 'findings', findings: [blocker] })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true)
+    });
+    const out = await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+    expect(out.workResult.directive).not.toBe('advance');
+  });
+
+  it('declined findings with valid reason are non-blocking for future rounds', async () => {
+    const f: ReviewerFinding = { title: 'Style', body: 'consider renaming', severity: 'warning' };
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'findings', findings: [f] }),
+      implResultAdvance(2, [{ feedbackId: 'fb_1', disposition: 'declined', reason: 'out of scope' }]),
+      reviewerResultDispatch(2, { status: 'findings', findings: [f] })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true)
+    });
+    const out = await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+    // Round 2 reviewer reports same finding, but it's been declined → not blocking → advance.
+    expect(out.workResult.directive).toBe('advance');
   });
 });
