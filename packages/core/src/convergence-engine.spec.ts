@@ -764,6 +764,71 @@ describe('createConvergenceEngine', () => {
     // Round 2 reviewer reports same finding, but it's been declined → not blocking → advance.
     expect(out.workResult.directive).toBe('advance');
   });
+
+  it('fails when implementer omits all dispositions for required blocking findings in round 2', async () => {
+    const blocker: ReviewerFinding = { title: 'Auth bypass', body: 'Missing auth check.', severity: 'blocker' };
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'findings', findings: [blocker] }),
+      // Round 2: no dispositions at all — should fail with disposition_missing
+      implResultAdvance(2, []),
+      reviewerResultDispatch(2, { status: 'satisfied' })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true)
+    });
+    const out = await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+    expect(out.workResult.directive).toBe('fail');
+    expect((out.workResult as { directive: 'fail'; reason: string }).reason).toBe('disposition_missing');
+  });
+
+  it('fails when implementer provides partial dispositions missing one required finding', async () => {
+    const b1: ReviewerFinding = { title: 'Bug A', body: 'Fix A.', severity: 'blocker' };
+    const b2: ReviewerFinding = { title: 'Bug B', body: 'Fix B.', severity: 'warning' };
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'findings', findings: [b1, b2] }),
+      // Round 2: only disposes fb_1, not fb_2
+      implResultAdvance(2, [{ feedbackId: 'fb_1', disposition: 'fixed', summary: 'fixed A' }]),
+      reviewerResultDispatch(2, { status: 'satisfied' })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true)
+    });
+    const out = await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+    expect(out.workResult.directive).toBe('fail');
+    expect((out.workResult as { directive: 'fail'; reason: string }).reason).toBe('disposition_missing');
+  });
+
+  it('does not require dispositions in round 1 when there are no prior blocking findings', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'satisfied' })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true)
+    });
+    const out = await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+    expect(out.workResult.directive).toBe('advance');
+  });
 });
 
 describe('escalation', () => {
@@ -795,11 +860,12 @@ describe('escalation', () => {
   });
 
   it('returns needs_input with oscillation outcome when blocking set does not decrease', async () => {
-    // maxRounds: 3, same finding in both rounds triggers oscillation after round 2
+    // maxRounds: 3, same finding in both rounds triggers oscillation after round 2.
+    // Round 2 implementer must provide a disposition for the round-1 blocking finding.
     const dispatcher = new ScriptedDispatcher([
       implResultAdvance(1),
       reviewerResultDispatch(1, { status: 'findings', findings: [blockerFindingA] }),
-      implResultAdvance(2),
+      implResultAdvance(2, [{ feedbackId: 'fb_1', disposition: 'fixed', summary: 'attempted fix' }]),
       reviewerResultDispatch(2, { status: 'findings', findings: [blockerFindingA] })
     ]);
     const engine = createConvergenceEngine({

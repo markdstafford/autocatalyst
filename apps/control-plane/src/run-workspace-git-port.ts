@@ -24,7 +24,7 @@ export function createRunWorkspaceGitPort(options: RunWorkspaceGitPortOptions): 
       const changedFiles = statusOutput.trim().split('\n').filter(Boolean);
       const changedFileCount = changedFiles.length;
 
-      if (changedFileCount === 0 && !input.allowEmpty) {
+      if (changedFileCount === 0) {
         return { commitSha: null, changedFileCount: 0 };
       }
 

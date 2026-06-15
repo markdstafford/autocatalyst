@@ -51,6 +51,18 @@ describe('createRunWorkspaceGitPort', () => {
     expect(result.changedFileCount).toBe(0);
   });
 
+  it('returns null sha and 0 count when no changes and allowEmpty is true (does not fail)', async () => {
+    const port = createRunWorkspaceGitPort({ workspacesRoot: tmpdir() });
+    const result = await port.commitFiles({
+      runId: 'run-1',
+      workspaceRepoRoot: repoDir,
+      message: 'allow-empty convergence round',
+      allowEmpty: true
+    });
+    expect(result.commitSha).toBeNull();
+    expect(result.changedFileCount).toBe(0);
+  });
+
   it('rejects when workspace root is outside workspacesRoot', async () => {
     const port = createRunWorkspaceGitPort({ workspacesRoot: '/some/other/root' });
     await expect(port.commitFiles({

@@ -586,7 +586,7 @@ export class DefaultOrchestrator implements Orchestrator {
           throw new OrchestratorError('unknown_work_kind', `Unknown work kind '${run.workKind}'.`);
         }
         const runSteps = this.#runSteps !== undefined ? await this.#runSteps.listByRun(input.runId) : [];
-        const runStep = runSteps[0] ?? {
+        const runStep = runSteps.find(s => s.step === run.currentStep) ?? {
           id: `${input.runId}_step`,
           runId: input.runId,
           phase: stepDefinition.phase,

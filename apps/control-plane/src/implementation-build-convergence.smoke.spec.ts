@@ -186,8 +186,17 @@ function createFakeReviewedRoleDispatcher(options: FakeDispatcherOptions): Revie
           'utf-8'
         );
 
+        // In round 2+, the engine requires a disposition for every blocking finding
+        // carried forward from the previous reviewer pass.
+        const dispositions = (input.reviewContext?.requiredDispositions ?? []).map((req) => ({
+          feedbackId: req.feedbackId,
+          disposition: 'fixed' as const,
+          summary: `claimed fix in round ${input.round}`
+        }));
+
         return {
           workResult: { directive: 'advance', result: {} },
+          dispositions,
           sessionId: `impl-session-${input.round}`,
           lastPosition: `impl-pos-${input.round}`
         };

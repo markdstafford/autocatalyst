@@ -2151,6 +2151,43 @@ describe('DefaultOrchestrator.dispatch — reviewed step selection', () => {
     const transitionCall = recordTransition.mock.calls[0]?.[0];
     expect(transitionCall?.currentStep).toBe('failed');
   });
+
+  it('passes the run step matching currentStep (not the first run step) to convergence engine', async () => {
+    // Regression: orchestrator used runSteps[0] instead of runSteps.find(s => s.step === run.currentStep)
+    const existing = makeRun({ currentStep: 'implementation.build' });
+    const updated = makeRun({ currentStep: 'implementation.human_review' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.human_review', phase: 'implementation' });
+    // Earlier step that must NOT be picked
+    const priorRunStep = makeRunStep({ id: 'step_0', step: 'spec.author', phase: 'spec' });
+    const currentRunStep = makeRunStep({ id: 'step_1', step: 'implementation.build', phase: 'implementation' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    // listByRun returns prior step first — orchestrator must not pick it
+    const runSteps = makeFakeRunStepRepo({
+      listByRun: vi.fn().mockResolvedValue([priorRunStep, currentRunStep])
+    });
+    const buildCheckpoint = { ...advanceCheckpoint, step: 'implementation.build' };
+    const { engine, calls } = makeConvergenceEngine({
+      workResult: { directive: 'advance', result: buildCheckpoint as unknown as Readonly<Record<string, unknown>> },
+      checkpointResult: buildCheckpoint
+    });
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      runSteps,
+      convergenceEngine: engine,
+      autoDispatch: { enabled: false }
+    });
+
+    await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    expect(calls).toHaveLength(1);
+    // The convergence engine must receive the implementation.build step, not spec.author
+    expect(calls[0]?.runStep.step).toBe('implementation.build');
+  });
 });
 
 describe('reviewed step integration — transitions and checkpoint persistence', () => {

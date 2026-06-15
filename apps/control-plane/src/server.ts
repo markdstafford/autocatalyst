@@ -368,7 +368,7 @@ const stepResultContractRegistry = registerSpecAuthorResultContract(
   createStepResultContractRegistry()
 );
 
-function createDelegatingExecutionEntryPoint(input: {
+export function createDelegatingExecutionEntryPoint(input: {
   readonly factory: AgentRunnerFactory;
   readonly materialize: (context: ExecutionContext) => Promise<MaterializedExecutionEnvironment>;
   readonly resolveRole?: (step: string) => string;
@@ -415,13 +415,17 @@ function createDelegatingExecutionEntryPoint(input: {
 
   return {
     async *execute(entryInput: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
+      // Prefer the role injected into task inputs by the convergence dispatcher;
+      // fall back to the resolveRole callback for non-convergence steps.
+      const taskInputRole = entryInput.context.task?.inputs?.['role'];
+      const resolvedRole = typeof taskInputRole === 'string'
+        ? taskInputRole
+        : resolveRole !== undefined ? resolveRole(entryInput.context.run.currentStep) : undefined;
       const runnerFactoryInput: AgentRunnerFactoryInput = {
         runId: entryInput.context.run.id,
         step: entryInput.context.run.currentStep,
         tenant: entryInput.context.run.tenant,
-        ...(resolveRole !== undefined
-          ? { role: resolveRole(entryInput.context.run.currentStep) }
-          : {})
+        ...(resolvedRole !== undefined ? { role: resolvedRole } : {})
       };
       const runner = await input.factory.createRunner(runnerFactoryInput);
       const perRunEntryPoint = createExecutionEntryPoint({
@@ -935,9 +939,12 @@ export async function createControlPlaneServer(
           }
         }
 
+        const isReadOnlySession = (workInput as RunRoleWorkInput).toolPolicyMode === 'read_only';
         return createExecutionContextResolver({
           secretsAvailable: false,
           ...(workspace !== undefined ? { workspace } : {}),
+          // Reviewer sessions must not receive write-capable tools.
+          ...(isReadOnlySession ? { toolPolicy: { allowedTools: [] as string[] } } : {}),
           prompt: (input) => input.run.currentStep === 'spec.author' ? specAuthorContext?.prompt : undefined,
           taskInputs: (input) => {
             // Spec-authoring step gets its own task inputs.

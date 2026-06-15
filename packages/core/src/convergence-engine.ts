@@ -361,6 +361,28 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
         }
         implDispositions.push(parsedDisposition.data);
       }
+
+      // In later rounds, require a disposition for every carried-forward blocking finding.
+      if (roundNumber > 1 && lastBlockingFindingContexts.length > 0) {
+        const disposedFeedbackIds = new Set(implDispositions.map(d => d.feedbackId));
+        const missing = lastBlockingFindingContexts.filter(c => !disposedFeedbackIds.has(c.feedbackId));
+        if (missing.length > 0) {
+          return {
+            workResult: { directive: 'fail', reason: 'disposition_missing' },
+            checkpointResult: buildCheckpoint({
+              step: input.stepDefinition.id,
+              maxRounds,
+              routes,
+              rounds,
+              outcome: 'max_rounds',
+              openFeedbackIds: collectOpenFeedbackIds(rounds, accumulatedDeclinedSignatures),
+              lastImplementerLastPosition: implDispatch.lastPosition ?? lastImplementerLastPosition,
+              lastReviewerLastPosition
+            })
+          };
+        }
+      }
+
       const newlyDeclined = declinedSignaturesFromDispositions(implDispositions, findingsByFeedbackId);
       for (const sig of newlyDeclined) {
         if (!accumulatedDeclinedSignatures.includes(sig)) accumulatedDeclinedSignatures.push(sig);
