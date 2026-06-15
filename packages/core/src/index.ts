@@ -83,7 +83,8 @@ export type {
   RecordRunStepTransitionResult,
   RunWorkspaceMetadata,
   RunWorkspaceMetadataRepository,
-  UpsertRunWorkspaceMetadataInput
+  UpsertRunWorkspaceMetadataInput,
+  UpdateRunStepCheckpointInput
 } from './domain-repositories.js';
 
 export { FeedbackConcurrentModificationError } from './domain-repositories.js';
@@ -100,6 +101,8 @@ export {
   terminalSteps
 } from './run-step-catalog.js';
 export type { RunPhase, RunStepDefinition, RunStepId, RunStepRole, WaitingOn } from './run-step-catalog.js';
+
+export * from './convergence-policy.js';
 
 export {
   getRunWorkflowById,
@@ -223,6 +226,12 @@ export {
   type SpecApprovalFinalizerDependencies,
   type SpecApprovalErrorCode
 } from './spec-approval-finalizer.js';
+
+export * from './convergence-engine.js';
+
+export * from './reviewed-role-dispatcher.js';
+
+export * from './run-workspace-git.js';
 
 export {
   SpecAuthorContextError,

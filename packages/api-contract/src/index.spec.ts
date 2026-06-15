@@ -94,4 +94,14 @@ describe('api-contract barrel', () => {
     expect(apiContract.specAuthorFrontmatterSchema).toBeDefined();
     expect(apiContract.specArtifactKindSchema).toBeDefined();
   });
+
+  it('exports convergence review contracts from the package root', () => {
+    expect(apiContract.reviewerFindingSeveritySchema).toBeDefined();
+    expect(apiContract.reviewerFindingSchema).toBeDefined();
+    expect(apiContract.reviewerFindingContextSchema).toBeDefined();
+    expect(apiContract.reviewerResultSchema).toBeDefined();
+    expect(apiContract.findingDispositionSchema).toBeDefined();
+    expect(apiContract.convergenceRoundRecordSchema).toBeDefined();
+    expect(apiContract.convergenceCheckpointSchema).toBeDefined();
+  });
 });

@@ -68,4 +68,17 @@ describe('core barrel', () => {
     expect(core.assertSpecReviewGateCanAdvance).toBeTypeOf('function');
     expect(core.finalizeSpecApproval).toBeTypeOf('function');
   });
+
+  it('exports reviewed role dispatcher contract version', async () => {
+    const core = await import('./index.js');
+    expect(core.reviewedRoleDispatcherContractVersion).toBe('reviewed-role-dispatcher.v1');
+  });
+
+  it('exports default reviewer workspace policy', async () => {
+    const core = await import('./index.js');
+    expect(core.defaultReviewerWorkspacePolicy).toMatchObject({ fileAccess: 'read_only', gitAccess: 'read_only' });
+    expect(core.defaultReviewerWorkspacePolicy.forbiddenGitActions).toEqual(
+      expect.arrayContaining(['commit', 'push', 'merge', 'checkout', 'switch', 'reset', 'rebase'])
+    );
+  });
 });

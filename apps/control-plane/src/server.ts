@@ -18,6 +18,7 @@ import {
   composeAgentProviderAdapterRegistry,
   composeDirectProviderAdapterRegistry,
   composeConfiguredProviders,
+  createConvergenceEngine,
   createExecutionContextResolver,
   createExecutionRunUnitOfWork,
   createModelRoutingResolver,
@@ -26,12 +27,14 @@ import {
   defaultExtensionRegistryCatalog,
   emptyProviderAdapterMap,
   ExecutionContextResolutionError,
+  getStepConvergencePolicy,
   InMemoryRetainedRunEventStore,
   ModelRoutingConfigurationError,
   permissivePolicyDecisionPoint,
   registerControlPlaneRoutes,
   RunDispatchQueue,
   type AutoDispatchOptions,
+  type ConvergenceEngine,
   type ControlPlaneService,
   type DomainRepositories,
   type ExecutionModeResolution,
@@ -51,8 +54,11 @@ import {
   type WorkspaceContextResolver,
   type WorkspaceFileSystemPort,
   type WorkspaceGitPort,
-  type WorkspaceResolverInput
+  type WorkspaceResolverInput,
+  type RunRoleWorkInput
 } from '@autocatalyst/core';
+import { createReviewedExecutionDispatcher } from './reviewed-execution-dispatcher.js';
+import { createRunWorkspaceGitPort } from './run-workspace-git-port.js';
 import { loadSpecAuthorPromptInput, SpecAuthoringContextLoadError } from './spec-authoring-context-loader.js';
 import {
   createAgentConnection,
@@ -362,7 +368,7 @@ const stepResultContractRegistry = registerSpecAuthorResultContract(
   createStepResultContractRegistry()
 );
 
-function createDelegatingExecutionEntryPoint(input: {
+export function createDelegatingExecutionEntryPoint(input: {
   readonly factory: AgentRunnerFactory;
   readonly materialize: (context: ExecutionContext) => Promise<MaterializedExecutionEnvironment>;
   readonly resolveRole?: (step: string) => string;
@@ -409,13 +415,17 @@ function createDelegatingExecutionEntryPoint(input: {
 
   return {
     async *execute(entryInput: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
+      // Prefer the role injected into task inputs by the convergence dispatcher;
+      // fall back to the resolveRole callback for non-convergence steps.
+      const taskInputRole = entryInput.context.task?.inputs?.['role'];
+      const resolvedRole = typeof taskInputRole === 'string'
+        ? taskInputRole
+        : resolveRole !== undefined ? resolveRole(entryInput.context.run.currentStep) : undefined;
       const runnerFactoryInput: AgentRunnerFactoryInput = {
         runId: entryInput.context.run.id,
         step: entryInput.context.run.currentStep,
         tenant: entryInput.context.run.tenant,
-        ...(resolveRole !== undefined
-          ? { role: resolveRole(entryInput.context.run.currentStep) }
-          : {})
+        ...(resolvedRole !== undefined ? { role: resolvedRole } : {})
       };
       const runner = await input.factory.createRunner(runnerFactoryInput);
       const perRunEntryPoint = createExecutionEntryPoint({
@@ -758,6 +768,10 @@ export async function createControlPlaneServer(
   // Build the real dispatch unit of work if requested. `options.unitOfWork`
   // always takes precedence.
   let resolvedUnitOfWork: RunUnitOfWork | undefined = options.unitOfWork;
+  // Convergence engine is composed only when we build the real dispatch unit of work.
+  // It needs the routing resolver, the execution-aware unit of work (for runWithCheckpoint),
+  // and a workspace git port — all of which are only available in the real-dispatch branch.
+  let convergenceEngine: ConvergenceEngine | undefined;
   if (resolvedUnitOfWork === undefined && realDispatchEnabled) {
     const profileId = options.realRunnerDispatch?.defaultProviderProfileId;
     const adapterRegistry = composeAgentProviderAdapterRegistry({
@@ -891,7 +905,7 @@ export async function createControlPlaneServer(
         runWorkspaceRootRegistry.set(runId, repoRoot);
       }
     });
-    resolvedUnitOfWork = createExecutionRunUnitOfWork({
+    const executionUnitOfWork = createExecutionRunUnitOfWork({
       execute: entryPoint,
       resolveContext: async (workInput) => {
         const workspace = await resolveWorkspaceInputForRun({
@@ -925,11 +939,52 @@ export async function createControlPlaneServer(
           }
         }
 
+        const isReadOnlySession = (workInput as RunRoleWorkInput).toolPolicyMode === 'read_only';
         return createExecutionContextResolver({
           secretsAvailable: false,
           ...(workspace !== undefined ? { workspace } : {}),
+          // Reviewer sessions must not receive write-capable tools.
+          ...(isReadOnlySession ? { toolPolicy: { allowedTools: ['Read', 'Glob', 'Grep'] as string[] } } : {}),
           prompt: (input) => input.run.currentStep === 'spec.author' ? specAuthorContext?.prompt : undefined,
-          taskInputs: (input) => input.run.currentStep === 'spec.author' ? specAuthorContext?.taskInputs as Record<string, unknown> | undefined : undefined
+          taskInputs: (input) => {
+            // Spec-authoring step gets its own task inputs.
+            if (input.run.currentStep === 'spec.author') {
+              return specAuthorContext?.taskInputs as Record<string, unknown> | undefined;
+            }
+
+            // Reviewed role sessions: inject role/round and review context so
+            // the agent knows its position in the convergence loop. This is
+            // an agent-quality hint — the security boundary is tool policy, not prompt text.
+            const roleInput = input as RunRoleWorkInput;
+            if (roleInput.role !== undefined && roleInput.round !== undefined) {
+              const base: Record<string, unknown> = {
+                role: roleInput.role,
+                round: roleInput.round
+              };
+
+              if (roleInput.role === 'reviewer') {
+                base['sessionMode'] = 'code_review';
+                base['accessMode'] = 'read_only';
+              }
+
+              if (roleInput.role === 'implementer' && roleInput.reviewContext !== undefined) {
+                const { reviewContext } = roleInput;
+                if (reviewContext.previousFindings !== undefined && reviewContext.previousFindings.length > 0) {
+                  base['previousFindings'] = reviewContext.previousFindings;
+                }
+                if (reviewContext.requiredDispositions !== undefined && reviewContext.requiredDispositions.length > 0) {
+                  base['requiredDispositions'] = reviewContext.requiredDispositions;
+                }
+                if (reviewContext.previousRounds !== undefined && reviewContext.previousRounds.length > 0) {
+                  base['previousRoundCount'] = reviewContext.previousRounds.length;
+                }
+              }
+
+              return base;
+            }
+
+            return undefined;
+          }
         }).resolve(workInput);
       },
       ...(options.resolveExecutionMode !== undefined && { resolveExecutionMode: options.resolveExecutionMode }),
@@ -944,6 +999,32 @@ export async function createControlPlaneServer(
         })
       }
     });
+    resolvedUnitOfWork = executionUnitOfWork;
+
+    // Compose convergence-engine dependencies for reviewed producing steps.
+    // The workspace git port verifies commits stay inside the configured workspaces root;
+    // it is only available when workspaceRoots are configured by the caller.
+    if (options.workspaceRoots !== undefined) {
+      const runWorkspaceGit = createRunWorkspaceGitPort({
+        workspacesRoot: options.workspaceRoots.workspacesRoot
+      });
+      const reviewedExecutionDispatcher = createReviewedExecutionDispatcher({
+        unitOfWork: executionUnitOfWork
+      });
+      convergenceEngine = createConvergenceEngine({
+        dispatcher: reviewedExecutionDispatcher,
+        git: runWorkspaceGit,
+        feedback: domainRepos.feedback,
+        runSteps: domainRepos.runSteps,
+        routing: routingResolver,
+        getPolicy: getStepConvergencePolicy,
+        logger: {
+          warn(message: string, details?: unknown) {
+            console.warn(message, details);
+          }
+        }
+      });
+    }
   }
 
   const nodeFilesystem = createNodeWorkspaceFilesystem();
@@ -994,6 +1075,8 @@ export async function createControlPlaneServer(
     specApprovalFinalizerDependencies,
     runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
     resolveWorkspaceContext: options.resolveWorkspaceContext ?? internalResolveWorkspaceContext,
+    runSteps: domainRepos.runSteps,
+    ...(convergenceEngine !== undefined ? { convergenceEngine } : {}),
     ...(options.autoDispatch !== undefined ? { autoDispatch: options.autoDispatch } : {}),
     logger: {
       warn(message: string, details?: unknown) {

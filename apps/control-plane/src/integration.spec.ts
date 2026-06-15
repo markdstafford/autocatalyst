@@ -2769,6 +2769,26 @@ describe('real feature dispatch workspace context', () => {
           });
           expect(cfgInj.statusCode).toBe(201);
           profileId = configurationRecordResponseSchema.parse(cfgInj.json()).id;
+
+          // Seed a routing table so reviewed producing steps (e.g. spec.author) can
+          // resolve implementer + reviewer routes through the convergence engine that
+          // is now composed into production dispatch.
+          const routingInj = await bootstrap.inject({
+            method: 'POST',
+            url: '/v1/configuration-records',
+            headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+            payload: {
+              kind: 'model_routing_table',
+              settings: {
+                active: true,
+                entries: [
+                  { id: 'rt_spec_author_impl', route: { mode: 'agent', step: 'spec.author', role: 'implementer' }, profileId },
+                  { id: 'rt_spec_author_rev', route: { mode: 'agent', step: 'spec.author', role: 'reviewer' }, profileId }
+                ]
+              }
+            }
+          });
+          expect(routingInj.statusCode).toBe(201);
         } finally {
           await bootstrap.close();
         }
@@ -2912,6 +2932,26 @@ describe('spec authoring dispatch context', () => {
           });
           expect(cfgInj.statusCode).toBe(201);
           profileId = configurationRecordResponseSchema.parse(cfgInj.json()).id;
+
+          // Seed a routing table so reviewed producing steps (e.g. spec.author) can
+          // resolve implementer + reviewer routes through the convergence engine that
+          // is now composed into production dispatch.
+          const routingInj = await bootstrap.inject({
+            method: 'POST',
+            url: '/v1/configuration-records',
+            headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+            payload: {
+              kind: 'model_routing_table',
+              settings: {
+                active: true,
+                entries: [
+                  { id: 'rt_spec_author_impl', route: { mode: 'agent', step: 'spec.author', role: 'implementer' }, profileId },
+                  { id: 'rt_spec_author_rev', route: { mode: 'agent', step: 'spec.author', role: 'reviewer' }, profileId }
+                ]
+              }
+            }
+          });
+          expect(routingInj.statusCode).toBe(201);
         } finally {
           await bootstrap.close();
         }
