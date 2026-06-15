@@ -114,6 +114,7 @@ export interface ServiceReplayRunEventsInput {
   readonly tenant: string;
   readonly runId: string;
   readonly lastEventId?: string;
+  readonly replay?: 'retained';
 }
 
 export interface ServiceTickInput {
@@ -412,7 +413,8 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     return this.#events.replayAfter({
       runId: input.runId,
       tenant: input.tenant,
-      ...(input.lastEventId !== undefined ? { lastEventId: input.lastEventId } : {})
+      ...(input.lastEventId !== undefined ? { lastEventId: input.lastEventId } : {}),
+      ...(input.replay === 'retained' ? { replay: 'retained' as const } : {})
     });
   }
 

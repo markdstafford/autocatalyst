@@ -87,6 +87,7 @@ export interface ControlPlaneClient {
 export interface RunEventsStreamOptions {
   readonly lastEventId?: string;
   readonly signal?: AbortSignal;
+  readonly replay?: 'retained';
 }
 
 export type RunEventsResponse = { readonly kind: 'response'; readonly response: Response };
@@ -302,8 +303,12 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
       if (options?.lastEventId !== undefined) {
         headers['last-event-id'] = options.lastEventId;
       }
+      const url = urlFor(baseUrl, runEventsPath.replace(':id', id));
+      if (options?.replay === 'retained') {
+        url.searchParams.set('replay', 'retained');
+      }
       const response = await fetchImplementation(
-        urlFor(baseUrl, runEventsPath.replace(':id', id)),
+        url,
         { method: 'GET', headers, ...(options?.signal !== undefined ? { signal: options.signal } : {}) }
       );
       if (!response.ok) {

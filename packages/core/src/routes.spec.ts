@@ -880,6 +880,32 @@ describe('registerControlPlaneRoutes', () => {
     controller.abort();
   });
 
+  it('passes replay=retained to the service when ?replay=retained is set', async () => {
+    const events: AsyncIterable<never> = { async *[Symbol.asyncIterator]() { /* no events */ } };
+    const subscription: RunEventSubscription = { events, close: () => {} };
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.subscribeRunEvents as ReturnType<typeof vi.fn>).mockResolvedValue(subscription);
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+    await app.listen({ port: 0, host: '127.0.0.1' });
+    const address = app.server.address();
+    if (typeof address !== 'object' || address === null) {
+      throw new Error('Expected server address to be an object.');
+    }
+
+    const controller = new AbortController();
+    const response = await fetch(
+      `http://127.0.0.1:${(address as { port: number }).port}/v1/runs/run_1/events?replay=retained`,
+      { signal: controller.signal, headers: authorization }
+    );
+    await response.text();
+    expect(response.status).toBe(200);
+    expect(controlPlane.replayRunEvents).toHaveBeenCalledWith(
+      expect.objectContaining({ runId: 'run_1', tenant: 'tenant_dev', replay: 'retained' })
+    );
+    controller.abort();
+  });
+
   it('GET /v1/runs/:id/events writes event/id/data SSE frames for each published event', async () => {
     const timestamp = '2026-06-08T00:00:00.000Z';
     const run = { id: 'run_1', topicId: 'topic_1', owner: hardcodedDevelopmentPrincipal, tenant: 'tenant_dev', workKind: 'feature', currentStep: 'intake', terminal: false, createdAt: timestamp, updatedAt: timestamp };

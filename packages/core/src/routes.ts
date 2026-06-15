@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import { ZodError } from 'zod';
+import { z, ZodError } from 'zod';
 
 import {
   activeRunConflictErrorCode,
@@ -652,6 +652,10 @@ export async function registerControlPlaneRoutes(
       }
     });
 
+    const runEventsQuerySchema = z.object({
+      replay: z.enum(['retained']).optional()
+    }).strict();
+
     // Story 7: Stream run events (SSE)
     protectedApp.get(runEventsPath, {
       preHandler: authorizePreHandler(dependencies.policy, 'run_events.stream', (request) => ({
@@ -670,6 +674,14 @@ export async function registerControlPlaneRoutes(
       const principal = requirePrincipalFromRequest(request);
       const lastEventIdHeader = request.headers['last-event-id'];
       const lastEventId = typeof lastEventIdHeader === 'string' ? lastEventIdHeader : undefined;
+
+      let runEventsQuery: z.infer<typeof runEventsQuerySchema>;
+      try {
+        runEventsQuery = runEventsQuerySchema.parse(request.query);
+      } catch {
+        await reply.status(400).send({ error: { code: 'invalid_query', message: 'Invalid query parameters.' } });
+        return;
+      }
 
       // Subscribe FIRST to avoid losing events emitted while replay is computed.
       let subscription: RunEventSubscription;
@@ -694,7 +706,8 @@ export async function registerControlPlaneRoutes(
           principal,
           tenant: principal.tenantId,
           runId: params.id,
-          ...(lastEventId !== undefined ? { lastEventId } : {})
+          ...(lastEventId !== undefined ? { lastEventId } : {}),
+          ...(runEventsQuery.replay === 'retained' ? { replay: 'retained' as const } : {})
         });
       } catch (error) {
         subscription.close();

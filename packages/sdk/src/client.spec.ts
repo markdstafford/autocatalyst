@@ -312,6 +312,17 @@ describe('orchestrator ingress methods', () => {
     expect((init?.headers as Record<string, string>)?.authorization).toBe('Bearer sdk-token');
   });
 
+  it('subscribeRunEvents appends ?replay=retained to the URL when replay option is set', async () => {
+    const mockFetch = vi.fn(async () =>
+      new Response('', { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    );
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
+    await client.subscribeRunEvents('run_1', { replay: 'retained' });
+    const [url] = mockFetch.mock.calls[0];
+    expect(String(url)).toContain('?replay=retained');
+    expect(String(url)).toContain('/v1/runs/run_1/events');
+  });
+
   it('subscribeRunEvents throws ControlPlaneClientError on non-ok response', async () => {
     const mockFetch = vi.fn(async () =>
       new Response(JSON.stringify({ error: { code: 'not_found', message: 'Run not found.' } }), {
