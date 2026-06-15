@@ -337,6 +337,18 @@ class StubGit implements RunWorkspaceGitPort {
     this.commits.push(input);
     return { commitSha: `sha_${this.commits.length}`, changedFileCount: this.changedFileCount };
   }
+  async captureCheckpointRef(input: { runId: string; altitude: string; commitSha: string }) {
+    return {
+      ref: `refs/autocatalyst/runs/${input.runId}/implementation.build/${input.altitude}`,
+      commitSha: input.commitSha
+    };
+  }
+  async readFileAtRef(): Promise<string | null> {
+    return null;
+  }
+  async listFilesAtRef(): Promise<readonly string[]> {
+    return [];
+  }
 }
 
 interface ScriptedDispatch {
@@ -696,7 +708,10 @@ describe('createConvergenceEngine', () => {
     ]);
     const failingGit: RunWorkspaceGitPort = {
       reviewerPolicy: new StubGit().reviewerPolicy,
-      async commitFiles() { throw new Error('git commit failed'); }
+      async commitFiles() { throw new Error('git commit failed'); },
+      async captureCheckpointRef() { throw new Error('not used'); },
+      async readFileAtRef() { return null; },
+      async listFilesAtRef() { return []; }
     };
     const engine = createConvergenceEngine({
       dispatcher, git: failingGit,
