@@ -176,6 +176,10 @@ export function createLayeredConvergenceEngine(
     let lastReviewerFindingContexts: ReviewerFindingContext[] = [];
     let lastBlockingFindingContexts: ReviewerFindingContext[] = [];
     let escalation: 'max_rounds' | 'oscillation' | undefined;
+    // Track deterministic key → feedbackId within this altitude to enable deduplication.
+    let deterministicFeedbackIdByKey: Readonly<Record<string, string>> = {};
+    // IDs of deterministic findings that were blocking in the prior round (for auto-resolution).
+    let prevDeterministicOpenIds: readonly string[] = [];
 
     for (let roundNumber = 1; roundNumber <= maxRounds; roundNumber++) {
       // 1) Implementer dispatch
@@ -284,19 +288,14 @@ export function createLayeredConvergenceEngine(
       ) {
         const repoRoot = input.workspace.workspaceRepoRoot;
         const sha = commitResult.commitSha;
-        let files: readonly string[] = [];
-        try {
-          files = await options.git.listFilesAtRef({ workspaceRepoRoot: repoRoot, ref: sha });
-        } catch (err) {
-          options.logger?.warn('layered convergence listFilesAtRef failed', {
-            altitude,
-            errorName: err instanceof Error ? err.name : typeof err
-          });
-        }
+        // Use only the files added/modified in the implementer's commit (the diff),
+        // not all tracked files at that ref. This enforces the spec's committed-diff
+        // contract so pre-existing files from earlier rounds don't block the current gate.
+        const changedFiles = commitResult.changedFilePaths;
         const validatorFindings = await validateAltitudeContract({
           altitude: altitude as Exclude<ImplementationAltitude, 'build'>,
           headCommitSha: sha,
-          changedFiles: files,
+          changedFiles,
           readFileAtRef: (path) =>
             options.git.readFileAtRef({ workspaceRepoRoot: repoRoot, ref: sha, path })
         });
@@ -403,7 +402,7 @@ export function createLayeredConvergenceEngine(
               ...(options.clock !== undefined ? { clock: options.clock } : {}),
               ...(options.idGenerator !== undefined ? { idGenerator: options.idGenerator } : {})
             })
-          : { feedback: [] as readonly Feedback[], updatedFindings: [] as readonly ConvergenceRoundFinding[] };
+          : { feedback: [] as readonly Feedback[], updatedFindings: [] as readonly ConvergenceRoundFinding[], deterministicFeedbackIdByKey: {} as Record<string, string> };
 
       // Map persisted feedback back to original reviewer findings by sequence order.
       const persistedReviewerFindings: ConvergenceRoundFinding[] = [];
@@ -430,8 +429,9 @@ export function createLayeredConvergenceEngine(
       }
 
       // 7) Persist deterministic findings as feedback (separate call so authoring uses system principal).
+      // Pass deduplication state so re-emitted keys reuse existing feedback and stale keys are resolved.
       const persistedDeterministic =
-        deterministicFindings.length > 0
+        deterministicFindings.length > 0 || prevDeterministicOpenIds.length > 0
           ? await createConvergenceFeedback({
               run: input.run,
               step: input.stepDefinition.id,
@@ -439,10 +439,15 @@ export function createLayeredConvergenceEngine(
               round: roundNumber,
               findings: deterministicFindings,
               repository: options.feedback,
+              deterministicFeedbackIdByKey,
+              staleDeterministicFeedbackIds: prevDeterministicOpenIds,
               ...(options.clock !== undefined ? { clock: options.clock } : {}),
               ...(options.idGenerator !== undefined ? { idGenerator: options.idGenerator } : {})
             })
-          : { feedback: [] as readonly Feedback[], updatedFindings: [] as readonly ConvergenceRoundFinding[] };
+          : { feedback: [] as readonly Feedback[], updatedFindings: [] as readonly ConvergenceRoundFinding[], deterministicFeedbackIdByKey: {} as Record<string, string> };
+
+      // Update deduplication state for next round.
+      deterministicFeedbackIdByKey = persistedDeterministic.deterministicFeedbackIdByKey;
 
       const persistedDeterministicFindings: ConvergenceRoundFinding[] = [
         ...persistedDeterministic.updatedFindings
@@ -507,6 +512,12 @@ export function createLayeredConvergenceEngine(
           };
           return ctx;
         });
+
+      // Collect the deterministic feedback IDs that are open this round so the
+      // next round can auto-resolve any that are no longer emitted.
+      prevDeterministicOpenIds = persistedDeterministicFindings
+        .filter((f) => f.deterministicKey !== undefined)
+        .map((f) => f.feedbackId);
 
       // Persist a snapshot checkpoint after each round.
       const snapshotOutcome: ConvergenceOutcome = noBlocking

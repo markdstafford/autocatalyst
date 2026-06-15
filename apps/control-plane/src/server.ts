@@ -980,6 +980,19 @@ export async function createControlPlaneServer(
                 }
               }
 
+              // Forward altitude context for both implementer and reviewer sessions so
+              // the agent knows which altitude it is executing at, what work is allowed,
+              // and what checkpoints exist. This is an agent-quality hint only —
+              // the security boundary is tool policy, not prompt text.
+              const altCtx = roleInput.reviewContext?.altitudeContext;
+              if (altCtx !== undefined) {
+                base['altitude'] = altCtx.altitude;
+                base['altitudeRound'] = altCtx.altitudeRound;
+                base['allowedWork'] = altCtx.allowedWork;
+                base['acceptedCheckpoints'] = altCtx.acceptedCheckpoints;
+                base['findingCategories'] = altCtx.findingCategories;
+              }
+
               return base;
             }
 

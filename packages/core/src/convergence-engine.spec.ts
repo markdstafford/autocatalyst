@@ -336,7 +336,7 @@ class StubGit implements RunWorkspaceGitPort {
   };
   async commitFiles(input: RunWorkspaceCommitFilesInput): Promise<RunWorkspaceCommitResult> {
     this.commits.push(input);
-    return { commitSha: `sha_${this.commits.length}`, changedFileCount: this.changedFileCount };
+    return { commitSha: `sha_${this.commits.length}`, changedFileCount: this.changedFileCount, changedFilePaths: [] };
   }
   async captureCheckpointRef(input: { runId: string; altitude: string; commitSha: string }) {
     return {

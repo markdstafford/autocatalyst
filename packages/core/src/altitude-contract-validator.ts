@@ -225,6 +225,14 @@ function checkStatement(
   ];
 }
 
+function hasTsParseErrors(sourceFile: ts.SourceFile): boolean {
+  // parseDiagnostics is an internal TypeScript API not exposed in the public types,
+  // but it is stable and populated by createSourceFile (unlike getSyntacticDiagnostics
+  // which requires a full program). We access it via cast to detect malformed TypeScript.
+  const internal = sourceFile as unknown as { parseDiagnostics?: ReadonlyArray<{ category: number }> };
+  return (internal.parseDiagnostics?.length ?? 0) > 0;
+}
+
 function validateTsFile(
   sourceText: string,
   altitude: CheckpointAltitude,
@@ -234,6 +242,17 @@ function validateTsFile(
   try {
     sourceFile = ts.createSourceFile(normPath, sourceText, ts.ScriptTarget.Latest, true);
   } catch {
+    return [
+      makeFinding({
+        altitude,
+        normPath,
+        ruleId: 'parse_failure',
+        title: 'Early altitude contract violation',
+        body: `Could not parse ${normPath} as TypeScript; resolve syntax errors before checkpointing at altitude ${altitude}.`
+      })
+    ];
+  }
+  if (hasTsParseErrors(sourceFile)) {
     return [
       makeFinding({
         altitude,

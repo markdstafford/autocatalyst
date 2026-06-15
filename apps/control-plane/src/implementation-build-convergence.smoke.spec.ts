@@ -50,6 +50,7 @@ import {
   hardcodedDevelopmentPrincipal,
   InMemoryRetainedRunEventStore,
   RunDispatchQueue,
+  type ExecutionRunUnitOfWork,
   type ModelRoutingResolver,
   type ModelRoutingResolution,
   type ReviewedRoleDispatcher,
@@ -57,6 +58,7 @@ import {
   type RunRoleWorkInput,
   type WorkspaceContextResolver
 } from '@autocatalyst/core';
+import { createReviewedExecutionDispatcher } from './reviewed-execution-dispatcher.js';
 import {
   createDrizzleDomainRepositories,
   createSqliteDatabase,
@@ -735,6 +737,80 @@ describe('implementation.build convergence — production-path smoke', () => {
         } finally {
           db.close();
         }
+      } finally {
+        close();
+      }
+    });
+  });
+
+  it('altitude context flows through real reviewed-execution dispatcher seam', async () => {
+    await withScenario('ac-smoke-rev-exec', async ({ runId, workspacesRoot, workspaceRepoRoot, databasePath }) => {
+      const capturedInputs: RunRoleWorkInput[] = [];
+
+      const altitudeFiles: Record<string, { filename: string; content: string }> = {
+        layout: { filename: 'src/widget.ts', content: 'export declare const widgetId: string;\n' },
+        public_api: { filename: 'src/widget.ts', content: 'export declare function createWidget(name: string): string;\n' },
+        private_api: { filename: 'src/internal.ts', content: 'export declare function internalHelper(): void;\n' },
+        build: {
+          filename: 'src/widget.ts',
+          content: 'export const widgetId = "widget";\nexport function createWidget(name: string): string { return name; }\n'
+        }
+      };
+
+      const scriptedUow: ExecutionRunUnitOfWork = {
+        async run(input) {
+          const { workResult } = await this.runWithCheckpoint(input);
+          return workResult;
+        },
+        async runWithCheckpoint(input) {
+          const roleInput = input as RunRoleWorkInput;
+          capturedInputs.push(roleInput);
+
+          if (roleInput.role === 'implementer') {
+            const altitude = roleInput.reviewContext?.altitudeContext?.altitude ?? 'build';
+            const fileInfo = altitudeFiles[altitude] ?? altitudeFiles['build']!;
+            const fs = await import('node:fs/promises');
+            const path = await import('node:path');
+            const fullPath = path.join(workspaceRepoRoot, fileInfo.filename);
+            await fs.mkdir(path.dirname(fullPath), { recursive: true });
+            await fs.writeFile(fullPath, fileInfo.content, 'utf-8');
+            return {
+              workResult: { directive: 'advance' as const, result: {} },
+              checkpointResult: { dispositions: [] }
+            };
+          }
+
+          // Reviewer: return a well-formed satisfied result the dispatcher can parse.
+          return {
+            workResult: { directive: 'advance' as const, result: { status: 'satisfied' } },
+            checkpointResult: { status: 'satisfied' }
+          };
+        }
+      };
+
+      const dispatcher = createReviewedExecutionDispatcher({ unitOfWork: scriptedUow });
+      const { orchestrator, close } = buildLayeredOrchestrator({
+        databasePath, workspacesRoot, workspaceRepoRoot, dispatcher,
+        depth: 'full', maxRounds: 2
+      });
+      try {
+        const run = await orchestrator.dispatch({ runId, tenant: TENANT });
+        expect(run.run.currentStep).toBe('implementation.human_review');
+
+        // Every call through the real dispatcher received altitude context.
+        expect(capturedInputs.length).toBeGreaterThan(0);
+        for (const captured of capturedInputs) {
+          expect(captured.reviewContext?.altitudeContext?.altitude).toBeDefined();
+          expect(captured.reviewContext?.altitudeContext?.altitudeRound).toBeGreaterThanOrEqual(1);
+          expect(captured.reviewContext?.altitudeContext?.allowedWork).toBeDefined();
+        }
+
+        // The full ladder was walked: layout and build are both visited.
+        const altitudesSeen = new Set(
+          capturedInputs.map((c) => c.reviewContext?.altitudeContext?.altitude)
+        );
+        expect(altitudesSeen.has('layout')).toBe(true);
+        expect(altitudesSeen.has('build')).toBe(true);
       } finally {
         close();
       }

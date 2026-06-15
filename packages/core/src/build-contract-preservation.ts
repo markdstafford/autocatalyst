@@ -136,11 +136,17 @@ function stripMemberBody(member: ts.ClassElement): ts.ClassElement {
 }
 
 function tryParse(sourcePath: string, source: string): ts.SourceFile | null {
+  let sf: ts.SourceFile;
   try {
-    return ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true);
+    sf = ts.createSourceFile(sourcePath, source, ts.ScriptTarget.Latest, true);
   } catch {
     return null;
   }
+  // parseDiagnostics is an internal TypeScript API populated by createSourceFile;
+  // we access it via cast because ts.createSourceFile does not throw on syntax errors.
+  const internal = sf as unknown as { parseDiagnostics?: ReadonlyArray<{ category: number }> };
+  if ((internal.parseDiagnostics?.length ?? 0) > 0) return null;
+  return sf;
 }
 
 function extractEntries(
@@ -394,8 +400,17 @@ async function compareFileAgainstCheckpoint(
     for (const entry of checkpointPrivate) {
       const buildEntry = buildByName.get(entry.symbolName);
       if (!buildEntry) {
-        // A removed private helper isn't a contract break by itself — the public
-        // surface is what matters. Skip.
+        findings.push(
+          makeFinding({
+            checkpointAltitude: altitude,
+            sourcePath,
+            ruleId: 'private_helper_removed',
+            symbolName: entry.symbolName,
+            title: 'Build contract drift: private helper removed',
+            body: `Private helper '${entry.symbolName}' in ${normalizePath(sourcePath)} was accepted at the ${altitude} checkpoint but is missing at the build ref.`,
+            acceptedCheckpoint: checkpoint
+          })
+        );
         continue;
       }
       if (

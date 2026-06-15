@@ -81,13 +81,24 @@ export function createRunWorkspaceGitPort(options: RunWorkspaceGitPortOptions): 
       const changedFileCount = changedFiles.length;
 
       if (changedFileCount === 0) {
-        return { commitSha: null, changedFileCount: 0 };
+        return { commitSha: null, changedFileCount: 0, changedFilePaths: [] };
       }
 
       await execFileAsync('git', ['add', '--all'], { cwd: input.workspaceRepoRoot });
       await execFileAsync('git', ['commit', '-m', input.message], { cwd: input.workspaceRepoRoot });
       const { stdout: sha } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: input.workspaceRepoRoot });
-      return { commitSha: sha.trim(), changedFileCount };
+      const commitSha = sha.trim();
+
+      // Use git diff-tree to get only the files added or modified in this specific commit
+      // (excludes deletions, renames are captured as the new path via --diff-filter=ACMR).
+      const { stdout: diffOutput } = await execFileAsync(
+        'git',
+        ['diff-tree', '--no-commit-id', '-r', '--name-only', '--diff-filter=ACMR', commitSha],
+        { cwd: input.workspaceRepoRoot }
+      );
+      const changedFilePaths = diffOutput.trim().split('\n').filter(Boolean);
+
+      return { commitSha, changedFileCount, changedFilePaths };
     },
 
     async captureCheckpointRef(input: CaptureCheckpointRefInput): Promise<CaptureCheckpointRefResult> {

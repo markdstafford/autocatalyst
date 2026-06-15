@@ -98,6 +98,7 @@ class StubGit implements RunWorkspaceGitPort {
   readonly commits: RunWorkspaceCommitFilesInput[] = [];
   readonly captures: CaptureCheckpointRefInput[] = [];
   changedFileCount = 1;
+  changedFilePaths: readonly string[] = [];
   captureShouldThrow = false;
   filesAtRef: readonly string[] = [];
   fileContentByPath: Record<string, string | null> = {};
@@ -108,7 +109,7 @@ class StubGit implements RunWorkspaceGitPort {
   };
   async commitFiles(input: RunWorkspaceCommitFilesInput): Promise<RunWorkspaceCommitResult> {
     this.commits.push(input);
-    return { commitSha: `sha_${this.commits.length}`, changedFileCount: this.changedFileCount };
+    return { commitSha: `sha_${this.commits.length}`, changedFileCount: this.changedFileCount, changedFilePaths: this.changedFilePaths };
   }
   async captureCheckpointRef(input: CaptureCheckpointRefInput): Promise<CaptureCheckpointRefResult> {
     this.captures.push(input);
@@ -453,6 +454,7 @@ describe('createLayeredConvergenceEngine', () => {
     // Make the layout file a test file so the deterministic altitude validator emits a blocker.
     const git = new StubGit();
     git.filesAtRef = ['src/foo.spec.ts'];
+    git.changedFilePaths = ['src/foo.spec.ts'];
     git.fileContentByPath = { 'src/foo.spec.ts': 'export const x = 1;' };
     const engine = createLayeredConvergenceEngine({
       dispatcher,
@@ -646,6 +648,7 @@ describe('createLayeredConvergenceEngine', () => {
     const git = new StubGit();
     // Spec file triggers altitude_contract violation at layout altitude
     git.filesAtRef = ['src/widget.spec.ts'];
+    git.changedFilePaths = ['src/widget.spec.ts'];
     git.fileContentByPath = { 'src/widget.spec.ts': 'export const x = 1;' };
 
     const dispatcher = new ScriptedDispatcher([

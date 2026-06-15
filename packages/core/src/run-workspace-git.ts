@@ -10,6 +10,8 @@ export interface RunWorkspaceCommitFilesInput {
 export interface RunWorkspaceCommitResult {
   readonly commitSha: string | null;
   readonly changedFileCount: number;
+  /** Paths of files added or modified in the commit (excludes deletions). Empty when commitSha is null. */
+  readonly changedFilePaths: readonly string[];
 }
 
 export interface ReviewerWorkspacePolicy {
