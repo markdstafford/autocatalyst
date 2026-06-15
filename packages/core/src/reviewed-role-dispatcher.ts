@@ -1,5 +1,7 @@
 import type { JsonValue } from '@autocatalyst/api-contract';
 import type {
+  AltitudeCheckpointRef,
+  ImplementationAltitude,
   ReviewerFindingContext,
   ReviewerFindingSeverity,
   ReviewerResult,
@@ -13,6 +15,14 @@ export const reviewedRoleDispatcherContractVersion = 'reviewed-role-dispatcher.v
 
 export type ToolPolicyMode = 'write' | 'read_only';
 
+export interface AltitudeReviewContext {
+  readonly altitude: ImplementationAltitude;
+  readonly altitudeRound: number;
+  readonly allowedWork?: string;
+  readonly acceptedCheckpoints?: readonly AltitudeCheckpointRef[];
+  readonly findingCategories?: readonly string[];
+}
+
 export interface ReviewContext {
   readonly previousFindings?: readonly ReviewerFindingContext[];
   readonly requiredDispositions?: readonly {
@@ -23,6 +33,7 @@ export interface ReviewContext {
   }[];
   readonly previousRounds?: readonly ConvergenceRoundRecord[];
   readonly routingDistinct?: boolean;
+  readonly altitudeContext?: AltitudeReviewContext;
 }
 
 export interface RunRoleWorkInput extends RunWorkInput {

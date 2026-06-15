@@ -1,3 +1,5 @@
+import type { ImplementationAltitude } from '@autocatalyst/api-contract';
+
 export interface RunWorkspaceCommitFilesInput {
   readonly runId: string;
   readonly workspaceRepoRoot: string;
@@ -8,6 +10,8 @@ export interface RunWorkspaceCommitFilesInput {
 export interface RunWorkspaceCommitResult {
   readonly commitSha: string | null;
   readonly changedFileCount: number;
+  /** Paths of files added or modified in the commit (excludes deletions). Empty when commitSha is null. */
+  readonly changedFilePaths: readonly string[];
 }
 
 export interface ReviewerWorkspacePolicy {
@@ -22,7 +26,40 @@ export const defaultReviewerWorkspacePolicy: ReviewerWorkspacePolicy = {
   forbiddenGitActions: ['commit', 'push', 'merge', 'checkout', 'switch', 'reset', 'rebase']
 } as const;
 
+/**
+ * Altitudes that can be checkpointed as host-owned refs between altitude gates.
+ * The terminal `'build'` altitude is excluded — it is never checkpointed because
+ * it is the final convergence target rather than an intermediate gate.
+ */
+export type CheckpointAltitude = Exclude<ImplementationAltitude, 'build'>;
+
+export interface CaptureCheckpointRefInput {
+  readonly runId: string;
+  readonly workspaceRepoRoot: string;
+  readonly altitude: CheckpointAltitude;
+  readonly commitSha: string;
+}
+
+export interface CaptureCheckpointRefResult {
+  readonly ref: string;
+  readonly commitSha: string;
+}
+
+export interface ReadFileAtRefInput {
+  readonly workspaceRepoRoot: string;
+  readonly ref: string;
+  readonly path: string;
+}
+
+export interface ListFilesAtRefInput {
+  readonly workspaceRepoRoot: string;
+  readonly ref: string;
+}
+
 export interface RunWorkspaceGitPort {
   commitFiles(input: RunWorkspaceCommitFilesInput): Promise<RunWorkspaceCommitResult>;
+  captureCheckpointRef(input: CaptureCheckpointRefInput): Promise<CaptureCheckpointRefResult>;
+  readFileAtRef(input: ReadFileAtRefInput): Promise<string | null>;
+  listFilesAtRef(input: ListFilesAtRefInput): Promise<readonly string[]>;
   readonly reviewerPolicy: ReviewerWorkspacePolicy;
 }

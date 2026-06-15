@@ -58,12 +58,45 @@ export const convergenceRoundOutcomeSchema = z.enum(['continue', 'converged', 'm
 export const convergenceOutcomeSchema = z.enum(['converged', 'max_rounds', 'oscillation', 'needs_input']);
 export const convergenceRoutingWarningCodeSchema = z.enum(['role_distinct_unsatisfied']);
 
-export const convergenceRoundFindingSchema = reviewerFindingContextSchema.extend({
-  blocking: z.boolean(),
-  signature: z.string().min(1)
+export const implementationAltitudeSchema = z.enum(['layout', 'public_api', 'private_api', 'build']);
+export const implementationConvergenceDepthSchema = z.enum(['build_only', 'layout', 'public_api', 'full']);
+export const convergenceFindingSourceSchema = z.enum(['reviewer', 'altitude_contract', 'build_drift']);
+export const convergenceFindingCategorySchema = z.enum([
+  'layout',
+  'public_api',
+  'private_api',
+  'build',
+  'contract_violation',
+  'build_drift'
+]);
+
+const nonBuildAltitudeSchema = z.enum(['layout', 'public_api', 'private_api']);
+
+export const altitudeCheckpointRefSchema = z.object({
+  altitude: nonBuildAltitudeSchema,
+  ref: z.string().min(1),
+  commitSha: z.string().min(1),
+  acceptedAt: z.string().datetime()
 }).strict();
 
-export const convergenceRoundRecordSchema = z.object({
+export const convergenceRoundFindingSchema = reviewerFindingContextSchema.extend({
+  blocking: z.boolean(),
+  signature: z.string().min(1),
+  source: convergenceFindingSourceSchema.optional(),
+  altitude: implementationAltitudeSchema.optional(),
+  category: convergenceFindingCategorySchema.optional(),
+  blockingReason: z.string().min(1).optional(),
+  deterministicKey: z.string().min(1).optional(),
+  sourcePath: z.string().min(1).optional(),
+  symbolName: z.string().min(1).optional(),
+  acceptedCheckpoint: z.object({
+    altitude: implementationAltitudeSchema,
+    ref: z.string().min(1),
+    commitSha: z.string().min(1)
+  }).strict().optional()
+}).strict();
+
+const convergenceRoundRecordBaseSchema = z.object({
   round: z.number().int().min(1),
   implementerSessionId: z.string().min(1).optional(),
   reviewerSessionId: z.string().min(1).optional(),
@@ -71,8 +104,23 @@ export const convergenceRoundRecordSchema = z.object({
   changedFileCount: z.number().int().min(0),
   findings: z.array(convergenceRoundFindingSchema),
   dispositions: z.array(findingDispositionSchema),
-  outcome: convergenceRoundOutcomeSchema
+  outcome: convergenceRoundOutcomeSchema,
+  altitude: implementationAltitudeSchema
 }).strict();
+
+// Migration tolerance: existing round records lack `altitude` — default it to 'build'.
+export const convergenceRoundRecordSchema = z.preprocess(
+  (value) => {
+    if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+      const obj = value as Record<string, unknown>;
+      if (obj['altitude'] === undefined) {
+        return { ...obj, altitude: 'build' };
+      }
+    }
+    return value;
+  },
+  convergenceRoundRecordBaseSchema
+);
 
 export const convergenceCheckpointSchema = z.object({
   kind: z.literal('convergence_review'),
@@ -89,7 +137,10 @@ export const convergenceCheckpointSchema = z.object({
   lastPositions: z.object({
     implementer: z.string().min(1).optional(),
     reviewer: z.string().min(1).optional()
-  }).strict()
+  }).strict(),
+  depth: implementationConvergenceDepthSchema.optional(),
+  currentAltitude: implementationAltitudeSchema.optional(),
+  acceptedCheckpoints: z.array(altitudeCheckpointRefSchema).optional()
 }).strict();
 
 export type ConvergenceRoundOutcome = z.infer<typeof convergenceRoundOutcomeSchema>;
@@ -98,3 +149,8 @@ export type ConvergenceRoutingWarningCode = z.infer<typeof convergenceRoutingWar
 export type ConvergenceRoundFinding = z.infer<typeof convergenceRoundFindingSchema>;
 export type ConvergenceRoundRecord = z.infer<typeof convergenceRoundRecordSchema>;
 export type ConvergenceCheckpoint = z.infer<typeof convergenceCheckpointSchema>;
+export type ImplementationAltitude = z.infer<typeof implementationAltitudeSchema>;
+export type ImplementationConvergenceDepth = z.infer<typeof implementationConvergenceDepthSchema>;
+export type ConvergenceFindingSource = z.infer<typeof convergenceFindingSourceSchema>;
+export type ConvergenceFindingCategory = z.infer<typeof convergenceFindingCategorySchema>;
+export type AltitudeCheckpointRef = z.infer<typeof altitudeCheckpointRefSchema>;

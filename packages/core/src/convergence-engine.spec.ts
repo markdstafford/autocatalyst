@@ -82,7 +82,8 @@ describe('detectOscillation', () => {
       changedFileCount: 0,
       findings: [{ feedbackId: 'fb-1', title: 'Missing test', body: 'Add coverage for edge case.', severity: 'warning' as const, blocking: true, signature: 'sig-1' }],
       dispositions: [],
-      outcome: 'continue' as const
+      outcome: 'continue' as const,
+      altitude: 'build' as const
     }];
     expect(detectOscillation(previousRounds, ['sig-1'])).toBe(true);
   });
@@ -92,7 +93,7 @@ describe('detectOscillation', () => {
       { round: 1, changedFileCount: 0, findings: [
         { feedbackId: 'fb-1', title: 'A', body: 'B', severity: 'warning' as const, blocking: true, signature: 'sig-1' },
         { feedbackId: 'fb-2', title: 'C', body: 'D', severity: 'blocker' as const, blocking: true, signature: 'sig-2' }
-      ], dispositions: [], outcome: 'continue' as const }
+      ], dispositions: [], outcome: 'continue' as const, altitude: 'build' as const }
     ];
     // Current blocking set has 2 or more items (non-decreasing from round 1's 2)
     expect(detectOscillation(previousRounds, ['sig-1', 'sig-2', 'sig-3'])).toBe(true);
@@ -335,7 +336,19 @@ class StubGit implements RunWorkspaceGitPort {
   };
   async commitFiles(input: RunWorkspaceCommitFilesInput): Promise<RunWorkspaceCommitResult> {
     this.commits.push(input);
-    return { commitSha: `sha_${this.commits.length}`, changedFileCount: this.changedFileCount };
+    return { commitSha: `sha_${this.commits.length}`, changedFileCount: this.changedFileCount, changedFilePaths: [] };
+  }
+  async captureCheckpointRef(input: { runId: string; altitude: string; commitSha: string }) {
+    return {
+      ref: `refs/autocatalyst/runs/${input.runId}/implementation.build/${input.altitude}`,
+      commitSha: input.commitSha
+    };
+  }
+  async readFileAtRef(): Promise<string | null> {
+    return null;
+  }
+  async listFilesAtRef(): Promise<readonly string[]> {
+    return [];
   }
 }
 
@@ -696,7 +709,10 @@ describe('createConvergenceEngine', () => {
     ]);
     const failingGit: RunWorkspaceGitPort = {
       reviewerPolicy: new StubGit().reviewerPolicy,
-      async commitFiles() { throw new Error('git commit failed'); }
+      async commitFiles() { throw new Error('git commit failed'); },
+      async captureCheckpointRef() { throw new Error('not used'); },
+      async readFileAtRef() { return null; },
+      async listFilesAtRef() { return []; }
     };
     const engine = createConvergenceEngine({
       dispatcher, git: failingGit,
@@ -932,5 +948,26 @@ describe('escalation', () => {
     expect(out.workResult.directive).not.toBe('advance');
     expect(out.workResult.directive).not.toBe('fail');
     expect(out.workResult.directive).toBe('needs_input');
+  });
+
+  it('createConvergenceEngine is build-only: all rounds have altitude=build and dispatcher receives no altitudeContext', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'satisfied' })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      getPolicy: () => ({ maxRounds: 2 })
+    });
+    const out = await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+    expect(out.workResult.directive).toBe('advance');
+    expect(out.checkpointResult.rounds.every((r) => r.altitude === 'build')).toBe(true);
+    expect(dispatcher.calls.every((c) => c.reviewContext?.altitudeContext === undefined)).toBe(true);
   });
 });

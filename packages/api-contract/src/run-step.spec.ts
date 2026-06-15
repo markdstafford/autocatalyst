@@ -65,6 +65,66 @@ describe('run-step contract extensions', () => {
     expect(runStepListResponseSchema.parse(response)).toEqual(response);
   });
 
+  it('accepts a convergence_review checkpointResult that conforms to the convergence schema', () => {
+    const now = new Date().toISOString();
+    const response = {
+      steps: [
+        {
+          id: 'step_1',
+          runId: 'run_1',
+          phase: null,
+          step: 'implementation.build',
+          role: 'implementer' as const,
+          startedAt: now,
+          endedAt: now,
+          durationMs: 10,
+          occurrence: { index: 0, attempt: 1 },
+          checkpointResult: {
+            kind: 'convergence_review',
+            step: 'implementation.build',
+            maxRounds: 3,
+            routing: { distinct: true },
+            rounds: [],
+            outcome: 'converged',
+            openFeedbackIds: [],
+            lastPositions: {}
+          }
+        }
+      ]
+    };
+    expect(() => runStepListResponseSchema.parse(response)).not.toThrow();
+  });
+
+  it('rejects a convergence_review checkpointResult that violates the convergence schema', () => {
+    const now = new Date().toISOString();
+    const response = {
+      steps: [
+        {
+          id: 'step_1',
+          runId: 'run_1',
+          phase: null,
+          step: 'implementation.build',
+          role: 'implementer' as const,
+          startedAt: now,
+          endedAt: now,
+          durationMs: 10,
+          occurrence: { index: 0, attempt: 1 },
+          checkpointResult: {
+            kind: 'convergence_review',
+            step: 'implementation.build',
+            maxRounds: 3,
+            routing: { distinct: true },
+            rounds: [],
+            outcome: 'not_a_real_outcome',
+            openFeedbackIds: [],
+            lastPositions: {}
+          }
+        }
+      ]
+    };
+    expect(() => runStepListResponseSchema.parse(response)).toThrow();
+  });
+
   it('rejects a run step missing checkpointResult', () => {
     const now = new Date().toISOString();
     expect(() => runStepListResponseSchema.parse({

@@ -30,6 +30,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { Project } from '@autocatalyst/api-contract';
 import {
   createConvergenceEngine,
+  createLayeredConvergenceEngine,
   createExecutionContextResolver,
   createExecutionRunUnitOfWork,
   DefaultOrchestrator,
@@ -46,7 +47,8 @@ import {
   type RunWorkflowDefinition,
   type RunStepId,
   type StepConvergencePolicy,
-  type WorkspaceContextResolver
+  type WorkspaceContextResolver,
+  type ResolvedStepConvergencePolicy
 } from '@autocatalyst/core';
 import {
   claudeAgentAdapterId,
@@ -468,6 +470,9 @@ function buildLiveOrchestrator(input: {
   readonly workspaceRepoRoot: string;
   readonly dispatcher: ReviewedRoleDispatcher;
   readonly getPolicy?: (workflow: RunWorkflowDefinition, step: RunStepId) => Required<StepConvergencePolicy>;
+  // When depth is provided, uses createLayeredConvergenceEngine for altitude-aware convergence.
+  // Note: providers must enforce reviewer read-only access; skip this scenario if they do not.
+  readonly depth?: ResolvedStepConvergencePolicy['depth'];
 }): { orchestrator: DefaultOrchestrator; close: () => void } {
   const database = createSqliteDatabase({ path: input.databasePath });
   const domainRepos = createDrizzleDomainRepositories(database);
@@ -482,15 +487,27 @@ function buildLiveOrchestrator(input: {
   const runWorkspaceGit = createRunWorkspaceGitPort({ workspacesRoot: input.workspacesRoot });
   const routing = makeLiveRouting();
 
-  const convergenceEngine = createConvergenceEngine({
-    dispatcher: input.dispatcher,
-    git: runWorkspaceGit,
-    feedback: domainRepos.feedback,
-    runSteps: domainRepos.runSteps,
-    routing,
-    getPolicy: input.getPolicy ?? getStepConvergencePolicy,
-    logger: { warn: () => {} }
-  });
+  const resolvedDepth = input.depth;
+  // build_only (or absent) uses the legacy build-only engine for backward compatibility.
+  const convergenceEngine = resolvedDepth !== undefined && resolvedDepth !== 'build_only'
+    ? createLayeredConvergenceEngine({
+        dispatcher: input.dispatcher,
+        git: runWorkspaceGit,
+        feedback: domainRepos.feedback,
+        runSteps: domainRepos.runSteps,
+        routing,
+        getPolicy: () => ({ maxRounds: 3, depth: resolvedDepth }),
+        logger: { warn: () => {} }
+      })
+    : createConvergenceEngine({
+        dispatcher: input.dispatcher,
+        git: runWorkspaceGit,
+        feedback: domainRepos.feedback,
+        runSteps: domainRepos.runSteps,
+        routing,
+        getPolicy: input.getPolicy ?? getStepConvergencePolicy,
+        logger: { warn: () => {} }
+      });
 
   const resolveWorkspaceContext: WorkspaceContextResolver = async () => ({
     workspaceRepoRoot: input.workspaceRepoRoot,
@@ -651,6 +668,61 @@ describe.skipIf(!LIVE_ENABLED)('live implementation.build convergence e2e', () =
       }
     });
   }, 120_000);
+
+  it('full-ladder descends both altitudes, captures layout checkpoint, and advances (live, depth: layout)', async () => {
+    await withLiveScenario('ac-live-ladder', async ({ runId, workspacesRoot, workspaceRepoRoot, databasePath }) => {
+      // Uses the same hello.txt happy-path scenario at depth: layout so the real dispatcher
+      // drives both the layout altitude (implementer writes + reviewer reviews) and the build
+      // altitude. The .txt file is outside the TypeScript altitude-contract validator scope so
+      // the early-altitude validator passes, the checkpoint ref is captured, and build converges.
+      const realDispatcher = await createLiveReviewedDispatcher({
+        workspacesRoot, workspaceRepoRoot, runId, scenario: 'happy'
+      });
+      const dispatcher = wrapWithCallTracking(realDispatcher);
+      const { orchestrator, close } = buildLiveOrchestrator({
+        databasePath, workspacesRoot, workspaceRepoRoot, dispatcher,
+        depth: 'layout'
+      });
+      try {
+        const result = await orchestrator.dispatch({ runId, tenant: TENANT });
+        expect(result.run.currentStep).toBe('implementation.human_review');
+
+        // Both altitudes were visited — real dispatcher received altitude context for each.
+        const altitudesSeen = new Set(
+          dispatcher.calls
+            .map((c) => c.reviewContext?.altitudeContext?.altitude)
+            .filter(Boolean)
+        );
+        expect(altitudesSeen.has('layout')).toBe(true);
+        expect(altitudesSeen.has('build')).toBe(true);
+
+        // Layout checkpoint ref was captured between altitudes.
+        const db = createSqliteDatabase({ path: databasePath });
+        const repos = createDrizzleDomainRepositories(db);
+        try {
+          const steps = await repos.runSteps.listByRun(runId);
+          const buildStep = steps.find((s) => s.step === 'implementation.build');
+          expect(buildStep).toBeDefined();
+          const checkpoint = buildStep?.checkpointResult as Record<string, unknown> | null;
+          expect(checkpoint).toMatchObject({
+            kind: 'convergence_review',
+            outcome: 'converged',
+            depth: 'layout',
+            currentAltitude: 'build'
+          });
+          const acceptedCheckpoints = checkpoint?.['acceptedCheckpoints'] as Array<Record<string, unknown>>;
+          expect(acceptedCheckpoints).toHaveLength(1);
+          expect(acceptedCheckpoints[0]?.['altitude']).toBe('layout');
+          expect(typeof acceptedCheckpoints[0]?.['ref']).toBe('string');
+          expect(typeof acceptedCheckpoints[0]?.['commitSha']).toBe('string');
+        } finally {
+          db.close();
+        }
+      } finally {
+        close();
+      }
+    });
+  }, 180_000);
 
   it('captured logs do not contain API key secrets', () => {
     // This assertion runs after the two dispatch tests have executed and

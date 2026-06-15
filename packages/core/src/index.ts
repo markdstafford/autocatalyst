@@ -229,9 +229,41 @@ export {
 
 export * from './convergence-engine.js';
 
+export { createLayeredConvergenceEngine } from './layered-convergence-engine.js';
+export type { LayeredConvergenceEngineOptions } from './layered-convergence-engine.js';
+
 export * from './reviewed-role-dispatcher.js';
 
 export * from './run-workspace-git.js';
+
+export { validateAltitudeContract } from './altitude-contract-validator.js';
+export type { ValidateAltitudeContractInput } from './altitude-contract-validator.js';
+
+export {
+  validateBuildContractPreservation,
+  extractPublicContracts,
+  extractPrivateContracts,
+  canonicalizeSignature
+} from './build-contract-preservation.js';
+export type {
+  ValidateBuildContractInput,
+  ExtractedContract,
+  ExtractedContractEntry
+} from './build-contract-preservation.js';
+
+export { filterAltitudeFindings } from './layered-finding-filter.js';
+export type { FilterAltitudeFindingsInput } from './layered-finding-filter.js';
+
+export {
+  createConvergenceFeedback,
+  createReviewerFeedback
+} from './convergence-feedback.js';
+export type {
+  ConvergenceFeedbackInput,
+  ConvergenceFeedbackResult,
+  ReviewerFeedbackCreationInput,
+  ReviewerFeedbackCreationResult
+} from './convergence-feedback.js';
 
 export {
   SpecAuthorContextError,
