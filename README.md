@@ -18,6 +18,12 @@ a sequence of issues, each a vertically complete capability that lands as one pu
 - [`context-human/concepts/`](context-human/concepts/index.md) — the architectural contracts.
 - [`context-human/adrs/`](context-human/adrs/index.md) — the architecture decision records.
 
+## Real runner dispatch
+
+Real runner dispatch is opt-in for the control-plane entrypoint. See
+[`docs/operators/real-dispatch.md`](docs/operators/real-dispatch.md) for startup flags, environment
+variables, and a Grove-backed Claude Agent SDK provider-profile example.
+
 ## Contributing
 
 Autocatalyst is in early development and is not accepting external contributions yet. See

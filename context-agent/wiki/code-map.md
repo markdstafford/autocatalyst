@@ -29,6 +29,10 @@ Last updated: 2026-06-14 (real-dispatch startup config)
 - `tools/boundary-tests/` — committed lint-level boundary assertions. The invalid fixture is excluded from normal
   package lint and is checked only by `pnpm test:boundaries`.
 
+## Operator docs
+
+- `docs/operators/real-dispatch.md` — startup guide for real runner dispatch: env vars, CLI flags, and a Grove-backed Claude Agent SDK provider-profile example with `authHeaderName: "api-key"` and `requestTimeoutMs: 600000`.
+
 ## Key entry points
 
 - Root workspace metadata: `package.json`, `pnpm-workspace.yaml`, `.npmrc`.
