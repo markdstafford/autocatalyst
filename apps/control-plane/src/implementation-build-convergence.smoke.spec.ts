@@ -43,6 +43,7 @@ import type {
 import {
   createConvergenceEngine,
   DefaultOrchestrator,
+  getRunStepDefinition,
   getStepConvergencePolicy,
   hardcodedDevelopmentPrincipal,
   InMemoryRetainedRunEventStore,
@@ -428,7 +429,8 @@ describe('implementation.build convergence — production-path smoke', () => {
         const result = await orchestrator.dispatch({ runId, tenant: TENANT });
         // implementation.build has needs_input -> implementation.awaiting_input.
         expect(result.run.currentStep).toBe('implementation.awaiting_input');
-        // implementation.awaiting_input is waitingOn: human.
+        // implementation.awaiting_input is waitingOn: human (derived from step catalog).
+        expect(getRunStepDefinition(result.run.currentStep)?.waitingOn).toBe('human');
         expect(result.runStep.step).toBe('implementation.awaiting_input');
 
         // Reviewer was called for every implementer round; the engine ran the
