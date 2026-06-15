@@ -54,7 +54,8 @@ import {
   type WorkspaceContextResolver,
   type WorkspaceFileSystemPort,
   type WorkspaceGitPort,
-  type WorkspaceResolverInput
+  type WorkspaceResolverInput,
+  type RunRoleWorkInput
 } from '@autocatalyst/core';
 import { createReviewedExecutionDispatcher } from './reviewed-execution-dispatcher.js';
 import { createRunWorkspaceGitPort } from './run-workspace-git-port.js';
@@ -938,7 +939,45 @@ export async function createControlPlaneServer(
           secretsAvailable: false,
           ...(workspace !== undefined ? { workspace } : {}),
           prompt: (input) => input.run.currentStep === 'spec.author' ? specAuthorContext?.prompt : undefined,
-          taskInputs: (input) => input.run.currentStep === 'spec.author' ? specAuthorContext?.taskInputs as Record<string, unknown> | undefined : undefined
+          taskInputs: (input) => {
+            // Spec-authoring step gets its own task inputs.
+            if (input.run.currentStep === 'spec.author') {
+              return specAuthorContext?.taskInputs as Record<string, unknown> | undefined;
+            }
+
+            // Reviewed role sessions: inject role/round and review context so
+            // the agent knows its position in the convergence loop. This is
+            // an agent-quality hint — the security boundary is tool policy, not prompt text.
+            const roleInput = input as RunRoleWorkInput;
+            if (roleInput.role !== undefined && roleInput.round !== undefined) {
+              const base: Record<string, unknown> = {
+                role: roleInput.role,
+                round: roleInput.round
+              };
+
+              if (roleInput.role === 'reviewer') {
+                base['sessionMode'] = 'code_review';
+                base['accessMode'] = 'read_only';
+              }
+
+              if (roleInput.role === 'implementer' && roleInput.reviewContext !== undefined) {
+                const { reviewContext } = roleInput;
+                if (reviewContext.previousFindings !== undefined && reviewContext.previousFindings.length > 0) {
+                  base['previousFindings'] = reviewContext.previousFindings;
+                }
+                if (reviewContext.requiredDispositions !== undefined && reviewContext.requiredDispositions.length > 0) {
+                  base['requiredDispositions'] = reviewContext.requiredDispositions;
+                }
+                if (reviewContext.previousRounds !== undefined && reviewContext.previousRounds.length > 0) {
+                  base['previousRoundCount'] = reviewContext.previousRounds.length;
+                }
+              }
+
+              return base;
+            }
+
+            return undefined;
+          }
         }).resolve(workInput);
       },
       ...(options.resolveExecutionMode !== undefined && { resolveExecutionMode: options.resolveExecutionMode }),

@@ -360,7 +360,146 @@ describe('createReviewedExecutionDispatcher', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 7. Sanitized failures — no secrets in error data
+  // 7. Context injection — reviewContext and reviewer policy forwarding
+  // ---------------------------------------------------------------------------
+
+  describe('context injection', () => {
+    it('passes role, round, and previousFindings to implementer in review context', async () => {
+      const uow = makeMockUnitOfWork();
+      const dispatcher = createReviewedExecutionDispatcher({ unitOfWork: uow });
+
+      const reviewContext = {
+        previousFindings: [
+          {
+            feedbackId: 'fb_1',
+            title: 'Missing null check',
+            body: 'The function does not check for null.',
+            severity: 'blocker' as const
+          }
+        ]
+      };
+      const input = makeRoleInput('implementer', 2, { reviewContext });
+      await dispatcher.runRole(input);
+
+      const callArg = (uow.runWithCheckpoint as ReturnType<typeof vi.fn>).mock.calls[0][0] as RunRoleWorkInput;
+      expect(callArg.role).toBe('implementer');
+      expect(callArg.round).toBe(2);
+      expect(callArg.reviewContext).toEqual(reviewContext);
+      expect(callArg.reviewContext?.previousFindings).toHaveLength(1);
+      expect(callArg.reviewContext?.previousFindings?.[0]).toMatchObject({
+        feedbackId: 'fb_1',
+        severity: 'blocker'
+      });
+    });
+
+    it('passes read-only reviewer policy signal to reviewer dispatch', async () => {
+      const uow = makeMockUnitOfWork();
+      const dispatcher = createReviewedExecutionDispatcher({ unitOfWork: uow });
+
+      const input = makeRoleInput('reviewer', 1);
+      await dispatcher.runRole(input);
+
+      const callArg = (uow.runWithCheckpoint as ReturnType<typeof vi.fn>).mock.calls[0][0] as RunRoleWorkInput & {
+        reviewerPolicy?: { fileAccess: string; gitAccess: string };
+      };
+      expect(callArg.reviewerPolicy).toEqual({ fileAccess: 'read_only', gitAccess: 'read_only' });
+    });
+
+    it('does not set reviewerPolicy for implementer dispatch', async () => {
+      const uow = makeMockUnitOfWork();
+      const dispatcher = createReviewedExecutionDispatcher({ unitOfWork: uow });
+
+      const input = makeRoleInput('implementer', 1);
+      await dispatcher.runRole(input);
+
+      const callArg = (uow.runWithCheckpoint as ReturnType<typeof vi.fn>).mock.calls[0][0] as RunRoleWorkInput & {
+        reviewerPolicy?: unknown;
+      };
+      expect(callArg.reviewerPolicy).toBeUndefined();
+    });
+
+    it('lastPosition in result does not include raw secrets or credentials', async () => {
+      // The lastPosition is sourced from checkpoint data parsed through safeSessionMetadataSchema.
+      // The schema only allows a plain string — it cannot contain structured credential fields.
+      // Verify the string value is passed through as-is (no expansion of secrets).
+      const checkpoint = {
+        lastPosition: 'cursor_abc123'
+      };
+      const uow = makeMockUnitOfWork({ directive: 'advance' }, checkpoint);
+      const dispatcher = createReviewedExecutionDispatcher({ unitOfWork: uow });
+
+      const result = await dispatcher.runRole(makeRoleInput('implementer'));
+
+      expect(result.lastPosition).toBe('cursor_abc123');
+      // A raw secret value should never appear in the lastPosition.
+      expect(result.lastPosition).not.toMatch(/sk-[a-zA-Z0-9]/u);
+      expect(result.lastPosition).not.toMatch(/bearer /iu);
+    });
+
+    it('modelPrincipal in result contains only safe identity fields, not credential data', async () => {
+      const checkpoint = {
+        modelPrincipal: {
+          id: 'claude-sonnet-4',
+          kind: 'model',
+          tenantId: tenant,
+          displayName: 'Claude Sonnet 4'
+        }
+      };
+      const uow = makeMockUnitOfWork({ directive: 'advance' }, checkpoint);
+      const dispatcher = createReviewedExecutionDispatcher({ unitOfWork: uow });
+
+      const result = await dispatcher.runRole(makeRoleInput('reviewer'));
+
+      // Safe identity fields are present
+      expect(result.modelPrincipal?.id).toBe('claude-sonnet-4');
+      expect(result.modelPrincipal?.kind).toBe('model');
+      expect(result.modelPrincipal?.tenantId).toBe(tenant);
+      // No additional credential-like fields leak through (strict schema)
+      expect(Object.keys(result.modelPrincipal ?? {})).not.toContain('apiKey');
+      expect(Object.keys(result.modelPrincipal ?? {})).not.toContain('secret');
+      expect(Object.keys(result.modelPrincipal ?? {})).not.toContain('token');
+    });
+
+    it('forwards reviewContext with previousRounds to the underlying unit of work', async () => {
+      const uow = makeMockUnitOfWork();
+      const dispatcher = createReviewedExecutionDispatcher({ unitOfWork: uow });
+
+      const reviewContext = {
+        previousRounds: [
+          {
+            round: 1,
+            implementerSessionId: 'sess_impl_1',
+            reviewerSessionId: 'sess_rev_1',
+            changedFileCount: 3,
+            findings: [
+              {
+                feedbackId: 'fb_1',
+                title: 'Bug',
+                severity: 'blocker' as const,
+                body: 'Fix this',
+                blocking: true,
+                signature: 'sig_abc'
+              }
+            ],
+            dispositions: [],
+            outcome: 'continue' as const
+          }
+        ]
+      };
+      const input = makeRoleInput('implementer', 2, { reviewContext });
+      await dispatcher.runRole(input);
+
+      const callArg = (uow.runWithCheckpoint as ReturnType<typeof vi.fn>).mock.calls[0][0] as RunRoleWorkInput;
+      expect(callArg.reviewContext?.previousRounds).toHaveLength(1);
+      expect(callArg.reviewContext?.previousRounds?.[0]).toMatchObject({
+        round: 1,
+        outcome: 'continue'
+      });
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 8. Sanitized failures — no secrets in error data
   // ---------------------------------------------------------------------------
 
   describe('sanitized failure handling', () => {
