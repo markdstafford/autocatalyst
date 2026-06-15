@@ -224,6 +224,8 @@ export {
   type SpecApprovalErrorCode
 } from './spec-approval-finalizer.js';
 
+export * from './reviewed-role-dispatcher.js';
+
 export {
   SpecAuthorContextError,
   assertSupportedSpecAuthorWorkKind,

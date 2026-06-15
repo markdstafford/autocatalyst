@@ -68,4 +68,9 @@ describe('core barrel', () => {
     expect(core.assertSpecReviewGateCanAdvance).toBeTypeOf('function');
     expect(core.finalizeSpecApproval).toBeTypeOf('function');
   });
+
+  it('exports reviewed role dispatcher contract version', async () => {
+    const core = await import('./index.js');
+    expect(core.reviewedRoleDispatcherContractVersion).toBe('reviewed-role-dispatcher.v1');
+  });
 });
