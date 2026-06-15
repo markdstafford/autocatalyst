@@ -233,6 +233,23 @@ export * from './reviewed-role-dispatcher.js';
 
 export * from './run-workspace-git.js';
 
+export { validateAltitudeContract } from './altitude-contract-validator.js';
+export type { ValidateAltitudeContractInput } from './altitude-contract-validator.js';
+
+export { filterAltitudeFindings } from './layered-finding-filter.js';
+export type { FilterAltitudeFindingsInput } from './layered-finding-filter.js';
+
+export {
+  createConvergenceFeedback,
+  createReviewerFeedback
+} from './convergence-feedback.js';
+export type {
+  ConvergenceFeedbackInput,
+  ConvergenceFeedbackResult,
+  ReviewerFeedbackCreationInput,
+  ReviewerFeedbackCreationResult
+} from './convergence-feedback.js';
+
 export {
   SpecAuthorContextError,
   assertSupportedSpecAuthorWorkKind,

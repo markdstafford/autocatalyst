@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import type { Feedback, NonModelPrincipal, Principal, Run } from '@autocatalyst/api-contract';
+import type { ConvergenceRoundFinding, Feedback, NonModelPrincipal, Principal, Run } from '@autocatalyst/api-contract';
 import type { ReviewerFinding } from '@autocatalyst/api-contract';
 import type { CreateFeedbackInput, FeedbackRepository } from './domain-repositories.js';
-import { createReviewerFeedback } from './convergence-feedback.js';
+import { createConvergenceFeedback, createReviewerFeedback } from './convergence-feedback.js';
 
 class InMemoryFeedbackRepository implements FeedbackRepository {
   private store = new Map<string, Feedback>();
@@ -271,5 +271,100 @@ describe('createReviewerFeedback', () => {
     // Assert implementation finding uses target: 'implementation'
     const reviewerFeedbackItem = allFeedback.find((f) => f.id === reviewerResult.feedback[0].id);
     expect(reviewerFeedbackItem?.target).toBe('implementation');
+  });
+});
+
+describe('createConvergenceFeedback', () => {
+  let repository: InMemoryFeedbackRepository;
+
+  beforeEach(() => {
+    repository = new InMemoryFeedbackRepository();
+  });
+
+  const reviewerFinding: ConvergenceRoundFinding = {
+    feedbackId: 'placeholder_1',
+    title: 'Reviewer-found issue',
+    body: 'Reviewer body.',
+    severity: 'blocker',
+    blocking: true,
+    signature: 'sig_reviewer_1',
+    source: 'reviewer',
+    category: 'public_api'
+  };
+
+  const deterministicFinding: ConvergenceRoundFinding = {
+    feedbackId: 'placeholder_det',
+    title: 'Early altitude contract violation',
+    body: 'Function in src/foo.ts has an executable body.',
+    severity: 'blocker',
+    blocking: true,
+    signature: 'altitude_contract:public_api:src/foo.ts:has_function_body',
+    source: 'altitude_contract',
+    category: 'contract_violation',
+    altitude: 'public_api',
+    deterministicKey: 'altitude_contract:public_api:src/foo.ts:has_function_body',
+    sourcePath: 'src/foo.ts'
+  };
+
+  it('creates feedback for reviewer findings with the reviewer principal as thread author', async () => {
+    const result = await createConvergenceFeedback({
+      run: { ...baseRun, currentStep: 'implementation.build' },
+      step: 'implementation.build',
+      altitude: 'public_api',
+      round: 1,
+      findings: [reviewerFinding],
+      reviewerPrincipal,
+      repository,
+      clock: () => '2026-06-15T12:00:00.000Z'
+    });
+    expect(result.feedback).toHaveLength(1);
+    expect(result.feedback[0].thread[0].author).toEqual(reviewerPrincipal);
+  });
+
+  it('creates feedback for deterministic findings with a system principal as thread author', async () => {
+    const result = await createConvergenceFeedback({
+      run: { ...baseRun, currentStep: 'implementation.build' },
+      step: 'implementation.build',
+      altitude: 'public_api',
+      round: 1,
+      findings: [deterministicFinding],
+      reviewerPrincipal,
+      repository,
+      clock: () => '2026-06-15T12:00:00.000Z'
+    });
+    expect(result.feedback).toHaveLength(1);
+    const author = result.feedback[0].thread[0].author as Principal;
+    expect(author.kind).toBe('system');
+    expect(author.id).toBe('system');
+    expect(author.tenantId).toBe(baseRun.tenant);
+  });
+
+  it('sets feedbackId on the returned findings to the persisted feedback id', async () => {
+    const result = await createConvergenceFeedback({
+      run: { ...baseRun, currentStep: 'implementation.build' },
+      step: 'implementation.build',
+      altitude: 'public_api',
+      round: 1,
+      findings: [reviewerFinding, deterministicFinding],
+      reviewerPrincipal,
+      repository,
+      clock: () => '2026-06-15T12:00:00.000Z'
+    });
+    expect(result.updatedFindings).toHaveLength(2);
+    expect(result.updatedFindings[0].feedbackId).toBe(result.feedback[0].id);
+    expect(result.updatedFindings[1].feedbackId).toBe(result.feedback[1].id);
+  });
+
+  it('falls back to system principal for reviewer findings when no reviewerPrincipal is supplied', async () => {
+    const result = await createConvergenceFeedback({
+      run: { ...baseRun, currentStep: 'implementation.build' },
+      step: 'implementation.build',
+      round: 1,
+      findings: [reviewerFinding],
+      repository,
+      clock: () => '2026-06-15T12:00:00.000Z'
+    });
+    const author = result.feedback[0].thread[0].author as Principal;
+    expect(author.kind).toBe('system');
   });
 });
