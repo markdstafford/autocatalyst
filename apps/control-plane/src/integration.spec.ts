@@ -68,6 +68,11 @@ async function withTempDatabasePath(run: (databasePath: string) => Promise<void>
 }
 
 describe('control-plane integration', () => {
+  it('has the Claude Agent SDK available for the built-in Claude cell', async () => {
+    const sdk = await import('@anthropic-ai/claude-agent-sdk');
+    expect(sdk).toBeDefined();
+  });
+
   it('checks health, creates and reads a probe resource, and survives restart', async () => {
     await withTempDatabasePath(async (databasePath) => {
       const first = await startControlPlaneServer({ autoDispatch: { enabled: false },
