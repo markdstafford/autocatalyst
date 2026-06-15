@@ -570,7 +570,7 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
     const hasNeedsInputEdge = transitions[input.stepDefinition.id]?.['needs_input'] !== undefined;
     const workResult: RunWorkResult = hasNeedsInputEdge
       ? { directive: 'needs_input', question: `Convergence escalated: ${finalOutcome}` }
-      : { directive: 'fail', reason: `convergence_${finalOutcome}` };
+      : { directive: 'fail', reason: 'workflow_escalation_edge_missing' };
 
     return { workResult, checkpointResult: checkpoint };
   }

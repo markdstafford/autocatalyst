@@ -711,3 +711,106 @@ describe('createConvergenceEngine', () => {
     expect(out.workResult.directive).toBe('advance');
   });
 });
+
+describe('escalation', () => {
+  const blockerFindingA: ReviewerFinding = { title: 'Security hole', body: 'SQL injection risk.', severity: 'blocker' };
+
+  it('returns needs_input with max_rounds outcome when max rounds exhausted', async () => {
+    // maxRounds: 1 via getPolicy override
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'findings', findings: [blockerFindingA] })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      getPolicy: () => ({ maxRounds: 1 })
+    });
+    const out = await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+    expect(out.workResult.directive).toBe('needs_input');
+    expect(out.checkpointResult.outcome).toBe('max_rounds');
+    expect(out.checkpointResult.openFeedbackIds.length).toBeGreaterThan(0);
+    // lastPositions should be populated from the last sessions
+    expect(out.checkpointResult.lastPositions.implementer).toBe('impl-pos-1');
+    expect(out.checkpointResult.lastPositions.reviewer).toBe('rev-pos-1');
+  });
+
+  it('returns needs_input with oscillation outcome when blocking set does not decrease', async () => {
+    // maxRounds: 3, same finding in both rounds triggers oscillation after round 2
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'findings', findings: [blockerFindingA] }),
+      implResultAdvance(2),
+      reviewerResultDispatch(2, { status: 'findings', findings: [blockerFindingA] })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      getPolicy: () => ({ maxRounds: 3 })
+    });
+    const out = await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+    expect(out.workResult.directive).toBe('needs_input');
+    expect(out.checkpointResult.outcome).toBe('oscillation');
+  });
+
+  it('returns fail with workflow_escalation_edge_missing when needs_input edge not in workflow', async () => {
+    // A workflow with no needs_input edge from implementation.build
+    const workflowNoEscalation: RunWorkflowDefinition = {
+      id: 'feature',
+      workKind: 'feature',
+      steps: ['implementation.build', 'done'],
+      transitions: {
+        'implementation.build': { advance: 'done' }
+        // Note: no needs_input edge
+      }
+    };
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'findings', findings: [blockerFindingA] })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      getPolicy: () => ({ maxRounds: 1 })
+    });
+    const out = await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: workflowNoEscalation
+    });
+    expect(out.workResult.directive).toBe('fail');
+    expect((out.workResult as { directive: 'fail'; reason: string }).reason).toBe('workflow_escalation_edge_missing');
+  });
+
+  it('max-round escalation does not return advance or fail the run normally', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'findings', findings: [blockerFindingA] })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      getPolicy: () => ({ maxRounds: 1 })
+    });
+    const out = await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+    expect(out.workResult.directive).not.toBe('advance');
+    expect(out.workResult.directive).not.toBe('fail');
+    expect(out.workResult.directive).toBe('needs_input');
+  });
+});
