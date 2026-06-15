@@ -230,7 +230,7 @@ describe('createRunWorkspaceGitPort', () => {
     })).rejects.toThrow('checkpoint_ref_invalid');
   });
 
-  it('readFileAtRef rejects refs that do not start with refs/', async () => {
+  it('readFileAtRef rejects refs that are neither refs/... nor raw commit SHAs', async () => {
     const port = createRunWorkspaceGitPort({ workspacesRoot: tmpdir() });
     await expect(port.readFileAtRef({
       workspaceRepoRoot: repoDir,
@@ -239,7 +239,7 @@ describe('createRunWorkspaceGitPort', () => {
     })).rejects.toThrow('checkpoint_ref_invalid');
   });
 
-  it('listFilesAtRef rejects refs that do not start with refs/', async () => {
+  it('listFilesAtRef rejects refs that are neither refs/... nor raw commit SHAs', async () => {
     const port = createRunWorkspaceGitPort({ workspacesRoot: tmpdir() });
     await expect(port.listFilesAtRef({
       workspaceRepoRoot: repoDir,

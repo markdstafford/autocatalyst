@@ -488,6 +488,7 @@ function buildLiveOrchestrator(input: {
   const routing = makeLiveRouting();
 
   const resolvedDepth = input.depth;
+  // build_only (or absent) uses the legacy build-only engine for backward compatibility.
   const convergenceEngine = resolvedDepth !== undefined && resolvedDepth !== 'build_only'
     ? createLayeredConvergenceEngine({
         dispatcher: input.dispatcher,

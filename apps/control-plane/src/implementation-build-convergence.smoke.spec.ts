@@ -679,6 +679,12 @@ describe('implementation.build convergence — production-path smoke', () => {
           expect(driftFinding?.['blocking']).toBe(true);
           const titleLower = String(driftFinding?.['title'] ?? '').toLowerCase();
           expect(titleLower).toMatch(/build.*drift|drift.*build/i);
+
+          // Deterministic drift finding was persisted as Feedback through the production path.
+          const feedback = await repos.feedback.listByRun(runId);
+          expect(
+            feedback.some((fb) => fb.target === 'implementation' && /build.*drift|drift.*build/i.test(fb.title))
+          ).toBe(true);
         } finally {
           db.close();
         }
