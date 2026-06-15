@@ -259,4 +259,73 @@ describe('readControlPlaneAppConfig', () => {
       })
     ).toThrow('Workspace root values must be non-empty when configured.');
   });
+
+  it('enables real runner dispatch from AUTOCATALYST_REAL_DISPATCH truthy values', () => {
+    for (const value of ['1', 'true', 'yes']) {
+      expect(readControlPlaneAppConfig([], {
+        CONTROL_PLANE_PORT: '3000',
+        CONTROL_PLANE_DATABASE_PATH: ':memory:',
+        CONTROL_PLANE_BEARER_TOKEN: 'token',
+        CONTROL_PLANE_MASTER_SECRET: 'secret',
+        AUTOCATALYST_REAL_DISPATCH: value
+      }).realRunnerDispatch).toEqual({ enabled: true });
+    }
+  });
+
+  it('enables real runner dispatch from --real-dispatch even when env is false', () => {
+    expect(readControlPlaneAppConfig(['--real-dispatch'], {
+      CONTROL_PLANE_PORT: '3000',
+      CONTROL_PLANE_DATABASE_PATH: ':memory:',
+      CONTROL_PLANE_BEARER_TOKEN: 'token',
+      CONTROL_PLANE_MASTER_SECRET: 'secret',
+      AUTOCATALYST_REAL_DISPATCH: 'false'
+    }).realRunnerDispatch).toEqual({ enabled: true });
+  });
+
+  it('rejects unsupported real-dispatch env values without echoing them', () => {
+    expect(() => readControlPlaneAppConfig([], {
+      CONTROL_PLANE_PORT: '3000',
+      CONTROL_PLANE_DATABASE_PATH: ':memory:',
+      CONTROL_PLANE_BEARER_TOKEN: 'token',
+      CONTROL_PLANE_MASTER_SECRET: 'secret',
+      AUTOCATALYST_REAL_DISPATCH: 'secret-token-value'
+    })).toThrow('AUTOCATALYST_REAL_DISPATCH must be one of 1, true, yes, 0, false, or no.');
+  });
+
+  it('reads default provider profile id from env and flag when real dispatch is enabled', () => {
+    expect(readControlPlaneAppConfig(['--real-dispatch', '--default-provider-profile-id', 'cfg_flag'], {
+      CONTROL_PLANE_PORT: '3000',
+      CONTROL_PLANE_DATABASE_PATH: ':memory:',
+      CONTROL_PLANE_BEARER_TOKEN: 'token',
+      CONTROL_PLANE_MASTER_SECRET: 'secret',
+      AUTOCATALYST_DEFAULT_PROVIDER_PROFILE_ID: 'cfg_env'
+    }).realRunnerDispatch).toEqual({ enabled: true, defaultProviderProfileId: 'cfg_flag' });
+  });
+
+  it('rejects blank default provider profile ids', () => {
+    expect(() => readControlPlaneAppConfig(['--real-dispatch', '--default-provider-profile-id', '   '], {
+      CONTROL_PLANE_PORT: '3000',
+      CONTROL_PLANE_DATABASE_PATH: ':memory:',
+      CONTROL_PLANE_BEARER_TOKEN: 'token',
+      CONTROL_PLANE_MASTER_SECRET: 'secret'
+    })).toThrow('Default provider profile id must be non-empty when configured.');
+  });
+
+  it('rejects default provider profile id unless real dispatch is enabled', () => {
+    expect(() => readControlPlaneAppConfig(['--default-provider-profile-id', 'cfg_1'], {
+      CONTROL_PLANE_PORT: '3000',
+      CONTROL_PLANE_DATABASE_PATH: ':memory:',
+      CONTROL_PLANE_BEARER_TOKEN: 'token',
+      CONTROL_PLANE_MASTER_SECRET: 'secret'
+    })).toThrow('Default provider profile id requires real runner dispatch to be enabled.');
+  });
+
+  it('leaves real runner dispatch undefined by default', () => {
+    expect(readControlPlaneAppConfig([], {
+      CONTROL_PLANE_PORT: '3000',
+      CONTROL_PLANE_DATABASE_PATH: ':memory:',
+      CONTROL_PLANE_BEARER_TOKEN: 'token',
+      CONTROL_PLANE_MASTER_SECRET: 'secret'
+    }).realRunnerDispatch).toBeUndefined();
+  });
 });
