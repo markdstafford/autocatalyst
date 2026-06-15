@@ -92,6 +92,7 @@ import {
 } from './probe-resource.js';
 import {
   assertActiveRoutesReferenceDispatchableProfiles,
+  assertProviderProfileUpdateDoesNotBreakActiveRoutes,
   createConfigurationRecord,
   deleteConfigurationRecord,
   getConfigurationRecord,
@@ -374,6 +375,18 @@ export async function registerControlPlaneRoutes(
           assertActiveRoutesReferenceDispatchableProfiles(otherRecords, candidate);
         } catch (error) {
           await reply.status(422).send(errorResponse(error instanceof Error ? error.message : 'validation_failed', 'Routing table references an incomplete or missing profile.'));
+          return;
+        }
+      } else if (body.kind === 'provider_profile') {
+        const existingRecords = await dependencies.configurationRecords.list(principal.tenantId);
+        const existing = await dependencies.configurationRecords.findById(principal.tenantId, params.id);
+        const existingSettings = existing?.kind === 'provider_profile' ? (existing.settings as Record<string, unknown>) : {};
+        const mergedSettings = { ...existingSettings, ...(body.settings as Record<string, unknown>) };
+        const otherRecords = existingRecords.filter((r) => r.id !== params.id);
+        try {
+          assertProviderProfileUpdateDoesNotBreakActiveRoutes(otherRecords, params.id, mergedSettings);
+        } catch (error) {
+          await reply.status(422).send(errorResponse(error instanceof Error ? error.message : 'validation_failed', 'Clearing dispatch-required fields while an active routing table references this profile is not allowed.'));
           return;
         }
       }

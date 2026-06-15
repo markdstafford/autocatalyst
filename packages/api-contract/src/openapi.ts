@@ -60,7 +60,11 @@ import {
   runFeedbackListResponseSchema,
   createRunFeedbackSuccessStatusCode,
   listRunFeedbackSuccessStatusCode,
-  feedbackSchema
+  feedbackSchema,
+  runFeedbackThreadPath,
+  appendRunFeedbackThreadRequestSchema,
+  appendRunFeedbackThreadSuccessStatusCode,
+  runFeedbackThreadParamsSchema
 } from './feedback.js';
 
 extendZodWithOpenApi(z);
@@ -118,6 +122,8 @@ export function generateOpenApiDocument(): OpenApiDocument {
   const CreateRunFeedbackRequest = registry.register('CreateRunFeedbackRequest', createRunFeedbackRequestSchema);
   const RunFeedbackListResponse = registry.register('RunFeedbackListResponse', runFeedbackListResponseSchema);
   const Feedback = registry.register('Feedback', feedbackSchema);
+  const AppendRunFeedbackThreadRequest = registry.register('AppendRunFeedbackThreadRequest', appendRunFeedbackThreadRequestSchema);
+  const RunFeedbackThreadParams = registry.register('RunFeedbackThreadParams', runFeedbackThreadParamsSchema);
 
   registry.registerPath({
     method: 'get',
@@ -334,7 +340,14 @@ export function generateOpenApiDocument(): OpenApiDocument {
     method: 'get',
     path: '/v1/runs/{id}/events',
     tags: ['runs'],
-    request: { params: RunIdParams },
+    request: {
+      params: RunIdParams,
+      query: z.object({
+        replay: z.enum(['retained']).optional().openapi({
+          description: 'When set to "retained", replay all retained events for the run from the beginning before streaming live events. Omit to receive live events only (default).'
+        })
+      })
+    },
     responses: {
       200: {
         description: 'SSE stream of run state transition events.',
@@ -390,6 +403,23 @@ export function generateOpenApiDocument(): OpenApiDocument {
       [listRunFeedbackSuccessStatusCode]: jsonResponse(RunFeedbackListResponse, 'Feedback items for the run.'),
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
       404: jsonResponse(ErrorResponse, 'Run not found.')
+    }
+  });
+
+  // POST /v1/runs/{id}/feedback/{feedbackId}/thread
+  registry.registerPath({
+    method: 'post',
+    path: runFeedbackThreadPath.replace(':id', '{id}').replace(':feedbackId', '{feedbackId}') as '/v1/runs/{id}/feedback/{feedbackId}/thread',
+    tags: ['runs'],
+    request: {
+      params: RunFeedbackThreadParams,
+      body: { content: { 'application/json': { schema: AppendRunFeedbackThreadRequest } } }
+    },
+    responses: {
+      [appendRunFeedbackThreadSuccessStatusCode]: jsonResponse(Feedback, 'Updated feedback item with appended thread reply.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      400: jsonResponse(ErrorResponse, 'Validation error.'),
+      404: jsonResponse(ErrorResponse, 'Run or feedback item not found.')
     }
   });
 

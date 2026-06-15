@@ -561,6 +561,98 @@ describe('registerControlPlaneRoutes', () => {
     expect(response.statusCode).toBe(201);
   });
 
+  it('returns 422 when patching a provider_profile to clear model while an active routing table references it', async () => {
+    const completeProfile = {
+      id: 'cfg_pp_model',
+      tenant: 'tenant_dev',
+      kind: 'provider_profile',
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      settings: {
+        profileName: 'Complete',
+        credentialSecretHandle: 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef',
+        model: { provider: 'anthropic', model: 'claude-sonnet-4' }
+      },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const activeRoutingTable = {
+      id: 'tbl_active_pp',
+      tenant: 'tenant_dev',
+      kind: 'model_routing_table',
+      settings: {
+        active: true,
+        entries: [{ id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_pp_model' }]
+      },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const configRepo = {
+      create: vi.fn(async () => completeProfile),
+      list: vi.fn(async () => [completeProfile, activeRoutingTable]),
+      findById: vi.fn(async (_tenant: string, id: string) => id === 'cfg_pp_model' ? completeProfile : null),
+      update: vi.fn(async () => null),
+      delete: vi.fn(async () => false)
+    };
+    const { app, authorization } = await buildServer({ configurationRecords: configRepo });
+    server = app;
+    const response = await app.inject({
+      method: 'PATCH', url: '/v1/configuration-records/cfg_pp_model', headers: authorization,
+      payload: {
+        kind: 'provider_profile',
+        settings: { model: null }
+      }
+    });
+    expect(response.statusCode).toBe(422);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('profile_incomplete');
+  });
+
+  it('returns 422 when patching a provider_profile to clear credential while an active routing table references it', async () => {
+    const completeProfile = {
+      id: 'cfg_pp_cred',
+      tenant: 'tenant_dev',
+      kind: 'provider_profile',
+      providerKind: 'anthropic',
+      adapterId: 'claude-agent-sdk',
+      settings: {
+        profileName: 'Complete',
+        credentialSecretHandle: 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef',
+        model: { provider: 'anthropic', model: 'claude-sonnet-4' }
+      },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const activeRoutingTable = {
+      id: 'tbl_active_cred',
+      tenant: 'tenant_dev',
+      kind: 'model_routing_table',
+      settings: {
+        active: true,
+        entries: [{ id: 'r1', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: 'cfg_pp_cred' }]
+      },
+      createdAt: '2026-06-08T00:00:00.000Z',
+      updatedAt: '2026-06-08T00:00:00.000Z'
+    };
+    const configRepo = {
+      create: vi.fn(async () => completeProfile),
+      list: vi.fn(async () => [completeProfile, activeRoutingTable]),
+      findById: vi.fn(async (_tenant: string, id: string) => id === 'cfg_pp_cred' ? completeProfile : null),
+      update: vi.fn(async () => null),
+      delete: vi.fn(async () => false)
+    };
+    const { app, authorization } = await buildServer({ configurationRecords: configRepo });
+    server = app;
+    const response = await app.inject({
+      method: 'PATCH', url: '/v1/configuration-records/cfg_pp_cred', headers: authorization,
+      payload: {
+        kind: 'provider_profile',
+        settings: { credentialSecretHandle: null }
+      }
+    });
+    expect(response.statusCode).toBe(422);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('profile_incomplete');
+  });
+
   it('creates a secret handle via POST /v1/secrets', async () => {
     const { app, authorization, policyCalls } = await buildServer();
     server = app;

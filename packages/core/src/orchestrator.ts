@@ -491,7 +491,7 @@ export class DefaultOrchestrator implements Orchestrator {
         try {
           workspaceContext = await this.#resolveWorkspaceContext({ runId: input.runId });
         } catch (cause) {
-          this.#logger?.warn('Failed to resolve workspace context for spec approval finalization.', { runId: input.runId, cause });
+          this.#logger?.warn('Failed to resolve workspace context for spec approval finalization.', { runId: input.runId, ...this.#safeCause(cause) });
           throw new OrchestratorError('persistence_failed', 'Failed to resolve workspace context for spec approval.', { cause });
         }
         try {
@@ -505,7 +505,7 @@ export class DefaultOrchestrator implements Orchestrator {
             this.#specApprovalFinalizerDependencies
           );
         } catch (cause) {
-          this.#logger?.warn('Spec approval finalization failed.', { runId: input.runId, cause });
+          this.#logger?.warn('Spec approval finalization failed.', { runId: input.runId, ...this.#safeCause(cause) });
           throw new OrchestratorError('persistence_failed', 'Failed to finalize spec approval.', { cause });
         }
       }
@@ -741,6 +741,19 @@ export class DefaultOrchestrator implements Orchestrator {
     return typeof error;
   }
 
+  #safeCause(error: unknown): { errorName: string; code?: string } {
+    if (error instanceof OrchestratorError) {
+      return { errorName: error.name, code: error.code };
+    }
+    if (error instanceof Error && 'code' in error && typeof (error as { code: unknown }).code === 'string') {
+      return { errorName: error.name, code: (error as { code: string }).code };
+    }
+    if (error instanceof Error) {
+      return { errorName: error.name };
+    }
+    return { errorName: typeof error };
+  }
+
   #isExpectedAutoDispatchFailure(error: unknown): boolean {
     return error instanceof OrchestratorError && (
       error.code === 'missing_run' ||
@@ -764,7 +777,7 @@ export class DefaultOrchestrator implements Orchestrator {
     try {
       workspaceContext = await this.#resolveWorkspaceContext({ runId });
     } catch (cause) {
-      this.#logger?.warn('Failed to resolve workspace context for spec.author completion.', { runId, cause });
+      this.#logger?.warn('Failed to resolve workspace context for spec.author completion.', { runId, ...this.#safeCause(cause) });
       return { kind: 'failed' };
     }
 
@@ -793,14 +806,14 @@ export class DefaultOrchestrator implements Orchestrator {
             createdAt: this.#clock?.() ?? new Date().toISOString()
           });
         } catch (persistCause) {
-          this.#logger?.warn('Failed to persist workspace metadata for run; failing spec.author completion.', { runId, cause: persistCause });
+          this.#logger?.warn('Failed to persist workspace metadata for run; failing spec.author completion.', { runId, ...this.#safeCause(persistCause) });
           return { kind: 'failed' };
         }
       }
 
       return { kind: 'ok', checkpointResult: output.checkpointResult };
     } catch (cause) {
-      this.#logger?.warn('spec.author completion service failed.', { runId, cause });
+      this.#logger?.warn('spec.author completion service failed.', { runId, ...this.#safeCause(cause) });
       return { kind: 'failed' };
     }
   }
@@ -835,7 +848,7 @@ export class DefaultOrchestrator implements Orchestrator {
     } catch (error) {
       // Post-commit append failures must not fail the API call — the lifecycle
       // already advanced; we just lose the live stream notification.
-      this.#logger?.warn('Failed to append run state transition event after commit.', { error, runId: args.runId });
+      this.#logger?.warn('Failed to append run state transition event after commit.', { runId: args.runId, ...this.#safeCause(error) });
     }
   }
 

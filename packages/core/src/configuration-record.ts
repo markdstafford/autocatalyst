@@ -42,6 +42,36 @@ export function assertActiveRoutesReferenceDispatchableProfiles(
   }
 }
 
+export function assertProviderProfileUpdateDoesNotBreakActiveRoutes(
+  records: readonly ConfigurationRecord[],
+  profileId: string,
+  mergedProfileSettings: Record<string, unknown>
+): void {
+  const activeRoutingTables = records.filter((r) => {
+    if (r.kind !== 'model_routing_table') return false;
+    const s = r.settings as Record<string, unknown>;
+    return s['active'] === true;
+  });
+
+  for (const routingTable of activeRoutingTables) {
+    const entries = (routingTable.settings as Record<string, unknown>)['entries'];
+    if (!Array.isArray(entries)) continue;
+    const referencesThisProfile = entries.some((entry) => {
+      if (typeof entry !== 'object' || entry === null) return false;
+      const e = entry as { enabled?: boolean; profileId?: string };
+      return e.enabled !== false && e.profileId === profileId;
+    });
+    if (!referencesThisProfile) continue;
+
+    if (!mergedProfileSettings['model']) {
+      throw new Error('profile_incomplete');
+    }
+    if (!mergedProfileSettings['credentialSecretHandle']) {
+      throw new Error('profile_incomplete');
+    }
+  }
+}
+
 export type CreateConfigurationRecordInput = CreateConfigurationRecordRequest;
 export type UpdateConfigurationRecordInput = UpdateConfigurationRecordRequest;
 

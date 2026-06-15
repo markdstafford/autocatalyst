@@ -105,4 +105,27 @@ describe('OpenAPI generation', () => {
     expect(operation?.responses?.['401']).toBeDefined();
     expect(operation?.responses?.['403']).toBeDefined();
   });
+
+  it('documents replay=retained query parameter for GET /v1/runs/{id}/events', () => {
+    const document = generateOpenApiDocument();
+    const operation = document.paths['/v1/runs/{id}/events']?.get as
+      | { parameters?: { name: string; in: string; schema?: { enum?: string[] } }[] }
+      | undefined;
+    expect(operation).toBeDefined();
+    const replayParam = operation?.parameters?.find((p) => p.name === 'replay' && p.in === 'query');
+    expect(replayParam).toBeDefined();
+    expect(replayParam?.schema?.enum).toContain('retained');
+  });
+
+  it('documents POST /v1/runs/{id}/feedback/{feedbackId}/thread', () => {
+    const document = generateOpenApiDocument();
+    const operation = document.paths['/v1/runs/{id}/feedback/{feedbackId}/thread']?.post as
+      | { responses?: Record<string, unknown>; tags?: string[] }
+      | undefined;
+    expect(operation).toBeDefined();
+    expect(operation?.tags).toContain('runs');
+    expect(operation?.responses?.['200']).toBeDefined();
+    expect(operation?.responses?.['401']).toBeDefined();
+    expect(operation?.responses?.['404']).toBeDefined();
+  });
 });
