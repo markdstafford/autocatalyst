@@ -275,7 +275,6 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
     let lastImplementerLastPosition: string | undefined;
     let lastReviewerLastPosition: string | undefined;
     let escalation: ConvergenceEscalationReason | undefined;
-    let convergedThisRound = false;
 
     for (let roundNumber = 1; roundNumber <= maxRounds; roundNumber++) {
       // 1) Implementer
@@ -511,7 +510,6 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
       let outcome: ConvergenceRoundOutcome;
       if (noBlocking) {
         outcome = 'converged';
-        convergedThisRound = true;
       } else if (roundNumber >= maxRounds) {
         outcome = 'max_rounds';
         escalation = 'max_rounds';
@@ -579,9 +577,7 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
     }
 
     // Loop exited without converging — escalate.
-    const finalOutcome: ConvergenceOutcome = convergedThisRound
-      ? 'converged'
-      : (escalation ?? 'max_rounds');
+    const finalOutcome: ConvergenceOutcome = escalation ?? 'max_rounds';
     const checkpoint = buildCheckpoint({
       step: input.stepDefinition.id,
       maxRounds,
