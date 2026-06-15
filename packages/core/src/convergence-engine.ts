@@ -14,7 +14,7 @@ import type {
   Run,
   RunStep
 } from '@autocatalyst/api-contract';
-import { reviewerResultSchema } from '@autocatalyst/api-contract';
+import { reviewerResultSchema, findingDispositionSchema } from '@autocatalyst/api-contract';
 import type {
   ModelRoutingResolver,
   ModelRoutingResolution
@@ -339,8 +339,28 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
       }
       lastImplementerLastPosition = implDispatch.lastPosition ?? lastImplementerLastPosition;
 
-      // Track declined dispositions from implementer so they become non-blocking going forward.
-      const implDispositions = implDispatch.dispositions ?? [];
+      // Validate and track declined dispositions from implementer so they become non-blocking going forward.
+      const rawImplDispositions = implDispatch.dispositions ?? [];
+      const implDispositions: FindingDisposition[] = [];
+      for (const raw of rawImplDispositions) {
+        const parsedDisposition = findingDispositionSchema.safeParse(raw);
+        if (!parsedDisposition.success) {
+          return {
+            workResult: { directive: 'fail', reason: 'disposition_invalid' },
+            checkpointResult: buildCheckpoint({
+              step: input.stepDefinition.id,
+              maxRounds,
+              routes,
+              rounds,
+              outcome: 'max_rounds',
+              openFeedbackIds: collectOpenFeedbackIds(rounds, accumulatedDeclinedSignatures),
+              lastImplementerLastPosition: implDispatch.lastPosition ?? lastImplementerLastPosition,
+              lastReviewerLastPosition
+            })
+          };
+        }
+        implDispositions.push(parsedDisposition.data);
+      }
       const newlyDeclined = declinedSignaturesFromDispositions(implDispositions, findingsByFeedbackId);
       for (const sig of newlyDeclined) {
         if (!accumulatedDeclinedSignatures.includes(sig)) accumulatedDeclinedSignatures.push(sig);

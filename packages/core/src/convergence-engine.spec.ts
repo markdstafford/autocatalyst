@@ -656,6 +656,39 @@ describe('createConvergenceEngine', () => {
     expect(out.workResult.directive).not.toBe('advance');
   });
 
+  it('fails when implementer returns invalid dispositions', async () => {
+    // Set up a scenario where there are previous blocking findings
+    const blocker: ReviewerFinding = { title: 'Security hole', body: 'SQL injection risk.', severity: 'blocker' };
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'findings', findings: [blocker] }),
+      // Round 2: implementer returns a 'declined' disposition with an empty reason — invalid per schema
+      {
+        role: 'implementer',
+        round: 2,
+        result: {
+          workResult: { directive: 'advance', result: {} },
+          dispositions: [{ feedbackId: 'fb_1', disposition: 'declined', reason: '' }],
+          sessionId: 'impl-session-2',
+          lastPosition: 'impl-pos-2'
+        }
+      },
+      reviewerResultDispatch(2, { status: 'satisfied' })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher, git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true)
+    });
+    const out = await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+    expect(out.workResult.directive).toBe('fail');
+    expect((out.workResult as { directive: 'fail'; reason: string }).reason).toBe('disposition_invalid');
+  });
+
   it('declined findings with valid reason are non-blocking for future rounds', async () => {
     const f: ReviewerFinding = { title: 'Style', body: 'consider renaming', severity: 'warning' };
     const dispatcher = new ScriptedDispatcher([
