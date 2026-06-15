@@ -226,6 +226,8 @@ export {
 
 export * from './reviewed-role-dispatcher.js';
 
+export * from './run-workspace-git.js';
+
 export {
   SpecAuthorContextError,
   assertSupportedSpecAuthorWorkKind,
