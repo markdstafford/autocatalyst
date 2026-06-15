@@ -1164,4 +1164,156 @@ describe('DrizzleDomainRepositories round-trip', () => {
       expect(found?.failureReason).toBeUndefined();
     });
   });
+
+  it('runSteps.updateCheckpoint stores a convergence checkpoint and preserves other fields', async () => {
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'cp-store',
+        title: 'Checkpoint store'
+      });
+      const run = await repos.runs.create({
+        topicId: setup.topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'implementation.build',
+        terminal: false
+      });
+      const step = await repos.runSteps.create({
+        runId: run.id,
+        phase: 'implementation',
+        step: 'implementation.build',
+        role: 'implementer',
+        startedAt: '2026-06-15T00:00:00.000Z',
+        endedAt: null,
+        durationMs: null,
+        occurrence: { index: 0, attempt: 1 }
+      });
+      expect(step.checkpointResult).toBeNull();
+
+      const checkpoint = {
+        kind: 'convergence_review' as const,
+        step: 'implementation.build',
+        maxRounds: 3,
+        routing: { distinct: true, distinctBy: 'model' as const },
+        rounds: [],
+        outcome: 'converged' as const,
+        openFeedbackIds: [],
+        lastPositions: {}
+      };
+
+      const updated = await repos.runSteps.updateCheckpoint({
+        runStepId: step.id,
+        runId: run.id,
+        tenant: 'tenant_1',
+        checkpointResult: checkpoint
+      });
+
+      expect(updated.id).toBe(step.id);
+      expect(updated.runId).toBe(run.id);
+      expect(updated.step).toBe('implementation.build');
+      expect(updated.occurrence).toEqual(step.occurrence);
+      expect(updated.checkpointResult).toEqual(checkpoint);
+
+      const reread = await repos.runSteps.findById(step.id);
+      expect(reread?.checkpointResult).toEqual(checkpoint);
+    });
+  });
+
+  it('runSteps.updateCheckpoint rejects when run step does not belong to tenant or run', async () => {
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'cp-reject',
+        title: 'Checkpoint reject'
+      });
+      const run = await repos.runs.create({
+        topicId: setup.topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'implementation.build',
+        terminal: false
+      });
+      const step = await repos.runSteps.create({
+        runId: run.id,
+        phase: 'implementation',
+        step: 'implementation.build',
+        role: 'implementer',
+        startedAt: '2026-06-15T00:00:00.000Z',
+        endedAt: null,
+        durationMs: null,
+        occurrence: { index: 0, attempt: 1 }
+      });
+      const checkpoint = {
+        kind: 'convergence_review' as const,
+        step: 'implementation.build',
+        maxRounds: 3,
+        routing: { distinct: true, distinctBy: 'model' as const },
+        rounds: [],
+        outcome: 'converged' as const,
+        openFeedbackIds: [],
+        lastPositions: {}
+      };
+
+      await expect(
+        repos.runSteps.updateCheckpoint({
+          runStepId: step.id,
+          runId: run.id,
+          tenant: 'tenant_other',
+          checkpointResult: checkpoint
+        })
+      ).rejects.toThrow();
+
+      await expect(
+        repos.runSteps.updateCheckpoint({
+          runStepId: step.id,
+          runId: 'run_nonexistent',
+          tenant: 'tenant_1',
+          checkpointResult: checkpoint
+        })
+      ).rejects.toThrow();
+    });
+  });
+
+  it('runSteps.updateCheckpoint rejects invalid convergence checkpoint JSON', async () => {
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'cp-invalid',
+        title: 'Checkpoint invalid'
+      });
+      const run = await repos.runs.create({
+        topicId: setup.topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'implementation.build',
+        terminal: false
+      });
+      const step = await repos.runSteps.create({
+        runId: run.id,
+        phase: 'implementation',
+        step: 'implementation.build',
+        role: 'implementer',
+        startedAt: '2026-06-15T00:00:00.000Z',
+        endedAt: null,
+        durationMs: null,
+        occurrence: { index: 0, attempt: 1 }
+      });
+
+      await expect(
+        repos.runSteps.updateCheckpoint({
+          runStepId: step.id,
+          runId: run.id,
+          tenant: 'tenant_1',
+          checkpointResult: { kind: 'convergence_review', step: '', maxRounds: 0 }
+        })
+      ).rejects.toThrow();
+    });
+  });
 });
