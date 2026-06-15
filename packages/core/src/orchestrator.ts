@@ -636,7 +636,24 @@ export class DefaultOrchestrator implements Orchestrator {
     if (input.runId === undefined) {
       return { status: 'noop' };
     }
-    await this.dispatch({ runId: input.runId, tenant: input.tenant });
+    let result = await this.dispatch({ runId: input.runId, tenant: input.tenant });
+
+    // Chain through any further system steps the dispatch advanced into, then dispatch
+    // the first AI step. This lets tick() drive a freshly-created run (which starts at
+    // the 'intake' system step) into its first real unit of work.
+    while (!result.run.terminal) {
+      const nextStepDef = getRunStepDefinition(result.run.currentStep);
+      if (nextStepDef?.waitingOn !== 'system') break;
+      result = await this.dispatch({ runId: input.runId, tenant: input.tenant });
+    }
+
+    if (!result.run.terminal) {
+      const currentStepDef = getRunStepDefinition(result.run.currentStep);
+      if (currentStepDef?.waitingOn === 'ai') {
+        await this.dispatch({ runId: input.runId, tenant: input.tenant });
+      }
+    }
+
     return { status: 'dispatched', runId: input.runId };
   }
 
@@ -671,8 +688,6 @@ export class DefaultOrchestrator implements Orchestrator {
       .catch((error: unknown) => this.#handleAutoDispatchFailure(run, error))
       .finally(() => {
         this.#autoDispatchInFlightRunIds.delete(run.id);
-        // Only chain to the next step when the run actually advanced. A dispatch that leaves
-        // the run on the same step must not reschedule, or auto-dispatch would spin.
         if (dispatchResult !== undefined && dispatchResult.run.currentStep !== run.currentStep) {
           this.#scheduleAutoDispatch(dispatchResult.run);
         }

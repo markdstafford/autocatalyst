@@ -349,7 +349,7 @@ describe('control-plane-service auto-dispatch integration (SQLite + real orchest
       );
 
       expect(finalRun.currentStep).toBe('spec.human_review');
-      expect(unitRun).toHaveBeenCalledTimes(2);
+      expect(unitRun).toHaveBeenCalledTimes(1);
 
       const listedRuns = await controlPlane.listRuns({
         principal: hardcodedDevelopmentPrincipal,

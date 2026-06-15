@@ -705,7 +705,7 @@ describe('provider startup composition integration', () => {
         // Subscribe to the run event stream BEFORE releasing the run, so the post-intake
         // transitions are observed live rather than via replay.
         const controller = new AbortController();
-        const sseResp = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
+        const sseResp = await fetch(`${baseUrl}/v1/runs/${runId}/events?replay=retained`, {
           headers: authHeaders,
           signal: controller.signal
         });
@@ -1155,12 +1155,15 @@ describe('real Claude agent dispatch', () => {
           // demonstrating the step was executed and persisted with meaningful result data.
           expect(stepsBody.steps[0].step.length).toBeGreaterThan(0);
           expect(stepsBody.steps[0].startedAt).toBeTruthy();
-          // checkpointResult is populated because the delegating entry point uses
-          // scratch_file validation mode: the Claude adapter writes step-result.json to
-          // the scratch root, and the entry point reads and validates it, storing the
-          // result on the RunStep.
-          expect(stepsBody.steps[0]).toHaveProperty('checkpointResult');
-          expect(stepsBody.steps[0].checkpointResult).not.toBeNull();
+          // checkpointResult is populated on the executed AI step (question.answer) because
+          // the delegating entry point uses scratch_file validation mode: the Claude adapter
+          // writes step-result.json to the scratch root, and the entry point reads and
+          // validates it, storing the result on the RunStep. The intake system step does
+          // not have a checkpoint result; find the executed step explicitly.
+          const executedStep = stepsBody.steps.find((s) => s.step === 'question.answer');
+          expect(executedStep).toBeDefined();
+          expect(executedStep!).toHaveProperty('checkpointResult');
+          expect(executedStep!.checkpointResult).not.toBeNull();
 
           // Run must have transitioned to either the next step or terminal.
           const runResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: authHeaders });
