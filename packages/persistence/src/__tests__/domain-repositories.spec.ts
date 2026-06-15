@@ -1038,6 +1038,49 @@ describe('DrizzleDomainRepositories round-trip', () => {
     });
   });
 
+  it('round-trips an artifact_range feedback anchor with emoji codepoints', async () => {
+    // "😄" is one Unicode codepoint (U+1F604) but two UTF-16 code units
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'art-range',
+        title: 'Artifact range'
+      });
+      const run = await repos.runs.create({
+        topicId: setup.topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false
+      });
+
+      const anchor = {
+        kind: 'artifact_range' as const,
+        artifactId: 'art_spec_1',
+        from: 6,
+        to: 8,
+        quotedText: '😄x'
+      };
+
+      const fb = await repos.feedback.create({
+        runId: run.id,
+        owner,
+        tenant: 'tenant_1',
+        target: 'artifact',
+        status: 'open',
+        title: 'Range feedback',
+        body: 'Test anchor round-trip.',
+        anchor,
+        thread: [{ id: 'thread_1', author: owner, body: 'Test anchor round-trip.', createdAt: '2026-06-14T00:00:00.000Z' }]
+      });
+
+      const found = await repos.feedback.findById(fb.id);
+      expect(found?.anchor).toEqual(anchor);
+    });
+  });
+
   it('clears stale failureReason when a transition targets a non-failed state', async () => {
     await withRepositories(async (repos) => {
       const setup = await createProjectConversationAndTopic(repos, {

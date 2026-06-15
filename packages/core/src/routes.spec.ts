@@ -1312,6 +1312,57 @@ describe('registerControlPlaneRoutes', () => {
     expectNoSentinels(sseResponse.body);
   });
 
+  it('POST /v1/runs/:id/feedback round-trips an artifact_range anchor with emoji codepoints', async () => {
+    const anchorRangeFeedback = {
+      ...specFeedback,
+      id: 'fbk_range_1',
+      title: 'Range anchor feedback',
+      body: 'Test emoji codepoints.',
+      anchor: {
+        kind: 'artifact_range' as const,
+        artifactId: 'art_spec_1',
+        from: 6,
+        to: 8,
+        quotedText: '😄x'
+      },
+      thread: [
+        {
+          id: 'thread_1',
+          author: hardcodedDevelopmentPrincipal,
+          body: 'Test emoji codepoints.',
+          createdAt: '2026-06-14T00:00:00.000Z'
+        }
+      ]
+    };
+
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.createRunFeedback as ReturnType<typeof vi.fn>).mockResolvedValue(anchorRangeFeedback);
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/feedback',
+      headers: authorization,
+      payload: {
+        target: 'artifact',
+        title: 'Range anchor feedback',
+        body: 'Test emoji codepoints.',
+        anchor: { kind: 'artifact_range', artifactId: 'art_spec_1', from: 6, to: 8, quotedText: '😄x' }
+      }
+    });
+
+    expect(response.statusCode).toBe(201);
+    const parsed = feedbackSchema.parse(response.json());
+    expect(parsed.anchor).toEqual({
+      kind: 'artifact_range',
+      artifactId: 'art_spec_1',
+      from: 6,
+      to: 8,
+      quotedText: '😄x'
+    });
+  });
+
   it('exposes an SSE route with event-stream semantics', async () => {
     const { app, authorization } = await buildServer();
     server = app;
