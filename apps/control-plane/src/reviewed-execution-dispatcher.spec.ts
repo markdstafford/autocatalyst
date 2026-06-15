@@ -499,7 +499,50 @@ describe('createReviewedExecutionDispatcher', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // 8. Sanitized failures — no secrets in error data
+  // 8. Reviewer read-only enforcement — explicit violation and policy error
+  // ---------------------------------------------------------------------------
+
+  describe('reviewer read-only enforcement', () => {
+    it('dispatcher overrides toolPolicyMode to read_only when reviewer passes write explicitly', async () => {
+      const uow = makeMockUnitOfWork();
+      const dispatcher = createReviewedExecutionDispatcher({ unitOfWork: uow });
+
+      // Attempt to dispatch reviewer with write — should be silently overridden.
+      const input = makeRoleInput('reviewer', 1, { toolPolicyMode: 'write' });
+      await dispatcher.runRole(input);
+
+      const callArg = (uow.runWithCheckpoint as ReturnType<typeof vi.fn>).mock.calls[0][0] as RunRoleWorkInput;
+      // The dispatcher must override the caller-supplied 'write' with 'read_only'.
+      expect(callArg.toolPolicyMode).toBe('read_only');
+    });
+
+    it('returns sanitized fail directive when unit of work throws a policy-rejection error for reviewer read-only', async () => {
+      // Simulate a provider that rejects a read-only policy constraint (e.g. an
+      // adapter that does not support the read_only toolPolicyMode). The raw error
+      // message must NOT appear in the fail reason — only a safe code is allowed.
+      const policyError = new Error('read_only policy not supported by this provider: secret-provider-key=xyz');
+      const uow: ExecutionRunUnitOfWork = {
+        run: vi.fn(),
+        runWithCheckpoint: vi.fn().mockRejectedValue(policyError)
+      };
+      const dispatcher = createReviewedExecutionDispatcher({ unitOfWork: uow });
+
+      const result = await dispatcher.runRole(makeRoleInput('reviewer', 1));
+
+      expect(result.workResult.directive).toBe('fail');
+      if (result.workResult.directive === 'fail') {
+        // No raw error message, no credential-like strings in the reason.
+        expect(result.workResult.reason).not.toContain('secret-provider-key=xyz');
+        expect(result.workResult.reason).not.toContain('not supported by this provider');
+        // The reason must be a non-empty string (a safe code or safe phrase).
+        expect(typeof result.workResult.reason).toBe('string');
+        expect(result.workResult.reason.length).toBeGreaterThan(0);
+      }
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // 9. Sanitized failures — no secrets in error data
   // ---------------------------------------------------------------------------
 
   describe('sanitized failure handling', () => {

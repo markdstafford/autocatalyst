@@ -381,6 +381,7 @@ describe('implementation.build convergence — production-path smoke', () => {
         // Session role/round/route info flowed through the dispatcher input.
         expect(dispatcher.calls[0]?.routeProfileId).toBe('profile_impl');
         expect(dispatcher.calls[1]?.routeProfileId).toBe('profile_rev');
+        // Convergence engine enforces read-only tool policy on reviewer calls.
         expect(dispatcher.calls[1]?.toolPolicyMode).toBe('read_only');
 
         // Inspect persisted state with a fresh db handle.

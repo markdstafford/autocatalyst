@@ -1,9 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdtemp, writeFile, rm, readFile } from 'node:fs/promises';
+import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
 import { createRunWorkspaceGitPort } from './run-workspace-git-port.js';
 
 const execFileAsync = promisify(execFile);
@@ -66,5 +67,46 @@ describe('createRunWorkspaceGitPort', () => {
     expect(port.reviewerPolicy.forbiddenGitActions).toEqual(
       expect.arrayContaining(['commit', 'push', 'merge', 'checkout', 'switch', 'reset', 'rebase'])
     );
+  });
+
+  // ---------------------------------------------------------------------------
+  // Containment and dangerous-operation code inspection
+  // ---------------------------------------------------------------------------
+
+  it('commitFiles rejects workspaceRepoRoot inside workspacesRoot when containment check fails', async () => {
+    // Use a dedicated temp dir as workspacesRoot that does NOT contain repoDir.
+    const otherRoot = await mkdtemp(join(tmpdir(), 'ac-other-root-'));
+    try {
+      const port = createRunWorkspaceGitPort({ workspacesRoot: otherRoot });
+      await expect(port.commitFiles({
+        runId: 'run-containment',
+        workspaceRepoRoot: repoDir,
+        message: 'containment check'
+      })).rejects.toThrow('workspace_containment_violation');
+    } finally {
+      await rm(otherRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('run-workspace-git-port implementation does not contain branch-switching, push, merge, or rebase git commands', async () => {
+    // Code-inspection test: read the implementation source and assert that
+    // dangerous mutating git commands (push, merge, rebase, checkout, switch)
+    // are not present. The only git commands the port is allowed to run are
+    // status, add, commit, and rev-parse.
+    const implPath = resolve(
+      fileURLToPath(import.meta.url),
+      '../run-workspace-git-port.ts'
+    );
+    const source = await readFile(implPath, 'utf-8');
+
+    // These git sub-commands must not appear in the implementation source.
+    const forbiddenCommands = ['git push', 'git merge', 'git rebase', 'git checkout', 'git switch', 'git branch -D'];
+    for (const cmd of forbiddenCommands) {
+      expect(source).not.toContain(cmd);
+    }
+
+    // These safe commands must be present (sanity-check that we are reading the right file).
+    expect(source).toContain("'commit'");
+    expect(source).toContain("'status'");
   });
 });
