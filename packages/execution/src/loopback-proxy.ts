@@ -206,7 +206,7 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
               const retryAfterHeader = upstreamRes.headers['retry-after'];
               const retryAfter = Array.isArray(retryAfterHeader) ? retryAfterHeader[0] : retryAfterHeader;
               upstreamRes.resume(); // drain
-              const delayMs = computeRetryDelayMs({ attemptNumber, retryAfter, jitter: jitterFn() });
+              const delayMs = computeRetryDelayMs({ attemptNumber, retryAfter, jitter: jitterFn(), requestTimeoutMs: timeoutMs });
               void sleepFn(delayMs).then(attempt);
               return;
             }

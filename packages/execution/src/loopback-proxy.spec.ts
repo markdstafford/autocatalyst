@@ -351,6 +351,36 @@ describe('createLoopbackProxy', () => {
     await upstream.close();
   });
 
+  it('honors Retry-After: 30 up to requestTimeoutMs without capping at 5s', async () => {
+    let attempts = 0;
+    const sleeps: number[] = [];
+    const upstream = await startFakeUpstream((req, res) => {
+      attempts += 1;
+      req.resume();
+      if (attempts === 1) {
+        res.writeHead(429, { 'retry-after': '30' });
+        res.end('retry later');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: { maxRetries: 1 },
+      requestTimeoutMs: 600_000,
+      telemetryContext: { runId: 'run_1', step: 'spec.author' },
+      sleep: async (ms) => { sleeps.push(ms); },
+      jitter: () => 0
+    });
+    const response = await fetch(`${proxy.baseUrl}/v1/messages`, { method: 'POST', body: '{}' });
+    expect(response.status).toBe(200);
+    // Should be 30000ms, not capped at the old 5000ms hard limit
+    expect(sleeps).toEqual([30_000]);
+    await proxy.close();
+    await upstream.close();
+  });
+
   it('rejects request bodies above the retry replay buffer cap without forwarding upstream', async () => {
     let attempts = 0;
     const upstream = await startFakeUpstream((req, res) => { attempts += 1; req.resume(); res.end('{}'); });
