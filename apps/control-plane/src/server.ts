@@ -928,9 +928,12 @@ export async function createControlPlaneServer(
       capabilities: { shellAvailable: false, lspAvailable: false }
     });
     const stepResultContractRegistry = registerReviewerResultContract(
-      registerSpecAuthorResultContract(createStepResultContractRegistry(), {
-        trustedSpeccedBy: options.specAuthorIdentity
-      })
+      registerSpecAuthorResultContract(
+        createStepResultContractRegistry(),
+        options.specAuthorIdentity !== undefined
+          ? { trustedSpeccedBy: options.specAuthorIdentity }
+          : {}
+      )
     );
     const entryPoint = createDelegatingExecutionEntryPoint({
       factory: runnerFactory,
