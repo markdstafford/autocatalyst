@@ -177,8 +177,14 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
       // Set to true only once we call res.writeHead() to commit headers to the downstream client.
       // At that point the response body may already be streaming and we can no longer send an error envelope.
       let responseCommitted = false;
+      let clientDisconnected = false;
+
+      res.on('close', () => {
+        clientDisconnected = true;
+      });
 
       function attempt(): void {
+        if (clientDisconnected) return;
         attemptNumber += 1;
         // Prevents both the response callback and the error handler from both acting on the same attempt
         // (e.g. socket close fires concurrently with the response callback for a transient status).

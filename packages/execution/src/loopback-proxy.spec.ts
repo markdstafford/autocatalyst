@@ -460,6 +460,65 @@ describe('createLoopbackProxy', () => {
     await upstream.close();
   });
 
+  it('cancels pending retry when downstream client disconnects during sleep', async () => {
+    let attempts = 0;
+    const upstream = await startFakeUpstream((req, res) => {
+      attempts += 1;
+      req.resume();
+      res.writeHead(429, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'overloaded' }));
+    });
+
+    // Capture the sleep resolve callback so we can emit res 'close' before it resolves
+    let resolveSleep: (() => void) | undefined;
+    let proxyRes: http.ServerResponse | undefined;
+
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: { maxRetries: 1 },
+      telemetryContext: { runId: 'run_1', step: 'spec.author' },
+      sleep: () => new Promise<void>((resolve) => { resolveSleep = resolve; }),
+      jitter: () => 0
+    });
+
+    // Intercept the server's request event to capture res before the handler runs
+    const server = (proxy as unknown as { server?: http.Server }).server;
+
+    // Make a request but don't await it — we'll disconnect during sleep
+    const ctrl = new AbortController();
+    const fetchPromise = fetch(`${proxy.baseUrl}/v1/messages`, {
+      method: 'POST',
+      body: '{}',
+      signal: ctrl.signal
+    });
+
+    // Wait until the sleep is registered (after first 429)
+    await new Promise<void>((resolve) => {
+      const poll = setInterval(() => {
+        if (resolveSleep !== undefined) { clearInterval(poll); resolve(); }
+      }, 5);
+    });
+
+    // Abort the downstream client connection
+    ctrl.abort();
+    try { await fetchPromise; } catch { /* expected AbortError */ }
+
+    // Allow a tick for the 'close' event to propagate
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+    // Now resolve the sleep — attempt() should be a no-op
+    resolveSleep!();
+
+    // Allow a tick for the scheduled attempt() to run (if it were going to)
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+    // Upstream should only have been called once (the 429), not a second time
+    expect(attempts).toBe(1);
+
+    await proxy.close();
+    await upstream.close();
+  });
+
   it('retries pre-header transport errors and succeeds on second attempt', async () => {
     let attempts = 0;
     const net = await import('node:net');
