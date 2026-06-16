@@ -1,15 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Artifact, Conversation, Feedback, Message, NonModelPrincipal, Run, RunStateTransitionEvent, RunStep, Topic } from '@autocatalyst/api-contract';
+import type { RunReplyRequest } from '@autocatalyst/api-contract';
 
 import type { ConversationIngressRepository, FeedbackRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
 import { SpecReviewGateBlockedError } from './spec-review-gate.js';
+import { HumanReviewGateError } from './human-review-gate.js';
 import { RunDispatchQueue } from './run-dispatch-queue.js';
 import { InMemoryRunEventBus, type RunEventPublisher } from './run-events.js';
 import {
   DefaultOrchestrator,
   OrchestratorError,
   type AutoDispatchOptions,
+  type ReplyToRunInput,
   type RunUnitOfWork,
   type WorkspaceContextResolver
 } from './orchestrator.js';
@@ -2433,5 +2436,273 @@ describe('reviewed step integration — transitions and checkpoint persistence',
     const transitionCall = recordTransition.mock.calls[0]?.[0];
     expect(transitionCall?.checkpointResult).toBeDefined();
     expect(transitionCall?.checkpointResult).toMatchObject({ kind: 'convergence_review', outcome: 'converged' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// replyToRun helpers
+// ---------------------------------------------------------------------------
+
+function makeFakeFeedbackRepo2(items: Feedback[] = []): FeedbackRepository {
+  const store: Feedback[] = [...items];
+  return {
+    create: vi.fn(async (input) => {
+      const item = { id: `fb_${store.length + 1}`, ...input, createdAt: timestamp, updatedAt: timestamp } as Feedback;
+      store.push(item);
+      return item;
+    }),
+    findById: vi.fn(async (id) => store.find(f => f.id === id) ?? null),
+    listByRun: vi.fn(async (_runId) => [...store]),
+    updateStatusAndAppendThread: vi.fn(async (input) => {
+      const item = store.find(f => f.id === input.feedbackId);
+      if (!item) throw new Error('Not found');
+      const updated = { ...item, status: input.nextStatus, thread: [...item.thread, input.threadEntry], updatedAt: input.updatedAt };
+      const idx = store.findIndex(f => f.id === input.feedbackId);
+      store[idx] = updated;
+      return updated;
+    }),
+    appendThreadEntry: vi.fn()
+  };
+}
+
+function makeFeedbackLifecycleDeps(items: Feedback[] = []): FeedbackLifecycleDependencies & { feedback: FeedbackRepository } {
+  return {
+    feedback: makeFakeFeedbackRepo2(items),
+    ids: () => `id_${Math.random().toString(36).slice(2)}`,
+    clock: () => timestamp
+  };
+}
+
+function makeOpenImplementationFeedback(): Feedback {
+  return {
+    id: 'fb_open_1',
+    runId: 'run_1',
+    owner,
+    tenant: 'tenant_1',
+    target: 'implementation',
+    status: 'open',
+    title: 'Change this',
+    body: 'Some body',
+    thread: [],
+    createdAt: timestamp,
+    updatedAt: timestamp
+  } as Feedback;
+}
+
+describe('DefaultOrchestrator.replyToRun', () => {
+  // --- spec.human_review approve ---
+
+  it('spec gate approval — advances run from spec.human_review and returns advance classification', async () => {
+    const existing = makeRun({ currentStep: 'spec.human_review' });
+    const updated = makeRun({ currentStep: 'implementation.plan' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.plan', phase: 'implementation' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const feedbackLifecycleDependencies = makeFeedbackLifecycleDeps();
+    const specApprovalFinalizerDependencies = makeDefaultApprovalFinalDeps();
+    const resolveWorkspaceContext = vi.fn().mockResolvedValue({ workspaceRepoRoot: '/tmp', workspaceHandle: 'ws_1' });
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      feedbackLifecycleDependencies,
+      specApprovalFinalizerDependencies,
+      resolveWorkspaceContext
+    });
+
+    const input: ReplyToRunInput = {
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      principal: principal('phoebe'),
+      request: { kind: 'approve' }
+    };
+
+    const result = await orchestrator.replyToRun(input);
+
+    expect(result.run.currentStep).toBe('implementation.plan');
+    expect(result.classification).toEqual({ directive: 'advance', target: 'artifact' });
+  });
+
+  // --- implementation.human_review feedback ---
+
+  it('implementation gate feedback — revises run and returns revise classification with createdFeedbackId', async () => {
+    const existing = makeRun({ currentStep: 'implementation.human_review' });
+    const updated = makeRun({ currentStep: 'implementation.build' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.build', phase: 'implementation' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const feedbackLifecycleDependencies = makeFeedbackLifecycleDeps();
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      feedbackLifecycleDependencies
+    });
+
+    const request: RunReplyRequest = {
+      kind: 'feedback',
+      title: 'Fix the tests',
+      body: 'The tests are broken'
+    };
+
+    const input: ReplyToRunInput = {
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      principal: principal('phoebe'),
+      request
+    };
+
+    const result = await orchestrator.replyToRun(input);
+
+    expect(result.run.currentStep).toBe('implementation.build');
+    expect(result.classification.directive).toBe('revise');
+    expect(result.classification.target).toBe('implementation');
+    expect(result.classification.createdFeedbackId).toBeDefined();
+    expect(typeof result.classification.createdFeedbackId).toBe('string');
+  });
+
+  // --- implementation.human_review approval blocked by open feedback ---
+
+  it('implementation gate approval blocked by open feedback — throws invalid_transition with feedback_gate_blocked details', async () => {
+    const openFeedback = makeOpenImplementationFeedback();
+    const existing = makeRun({ currentStep: 'implementation.human_review' });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: vi.fn()
+    });
+    // Provide open implementation feedback — it will block the gate
+    const feedbackLifecycleDependencies = makeFeedbackLifecycleDeps([openFeedback]);
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      feedbackLifecycleDependencies
+    });
+
+    const input: ReplyToRunInput = {
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      principal: principal('phoebe'),
+      request: { kind: 'approve' }
+    };
+
+    await expect(orchestrator.replyToRun(input)).rejects.toMatchObject({
+      name: 'OrchestratorError',
+      code: 'invalid_transition'
+    });
+
+    try {
+      await orchestrator.replyToRun(input);
+      throw new Error('expected to throw');
+    } catch (error) {
+      expect(error).toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition' });
+      const err = error as { details: unknown };
+      expect(err.details).toMatchObject({ code: 'feedback_gate_blocked' });
+    }
+  });
+
+  // --- serialization: two concurrent feedback replies ---
+
+  it('two concurrent feedback replies to the same run are serialized — run transitions happen in order', async () => {
+    const existing = makeRun({ currentStep: 'implementation.human_review' });
+    const reviseRun = makeRun({ currentStep: 'implementation.build' });
+    const reviseStep = makeRunStep({ id: 'step_2', step: 'implementation.build', phase: 'implementation' });
+
+    const executionOrder: string[] = [];
+
+    // Record transition fires in order — first and second call both succeed
+    let callCount = 0;
+    const recordTransition = vi.fn(async () => {
+      callCount++;
+      executionOrder.push(`transition_${callCount}`);
+      return { run: reviseRun, runStep: reviseStep };
+    });
+
+    // findById always returns the existing run
+    const findById = vi.fn().mockResolvedValue(existing);
+    const runs = makeFakeRunRepo({ findById, recordRunStepTransition: recordTransition });
+    const feedbackLifecycleDependencies = makeFeedbackLifecycleDeps();
+
+    const { orchestrator } = makeOrchestrator({ runs, feedbackLifecycleDependencies });
+
+    const request: RunReplyRequest = { kind: 'feedback', title: 'Fix', body: 'Please fix' };
+    const reply = () => orchestrator.replyToRun({ runId: 'run_1', tenant: 'tenant_1', principal: principal('phoebe'), request });
+
+    // Start two concurrent replies — the queue serializes them
+    const [r1, r2] = await Promise.allSettled([reply(), reply()]);
+
+    // Both succeed (same mock state)
+    expect(r1.status).toBe('fulfilled');
+    expect(r2.status).toBe('fulfilled');
+
+    // Transitions run strictly in order — NOT interleaved
+    expect(executionOrder).toEqual(['transition_1', 'transition_2']);
+  });
+
+  // --- missing run ---
+
+  it('throws missing_run when run does not exist', async () => {
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(null) });
+    const feedbackLifecycleDependencies = makeFeedbackLifecycleDeps();
+    const { orchestrator } = makeOrchestrator({ runs, feedbackLifecycleDependencies });
+
+    await expect(
+      orchestrator.replyToRun({ runId: 'run_x', tenant: 'tenant_1', principal: principal('phoebe'), request: { kind: 'approve' } })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'missing_run' });
+  });
+
+  // --- terminal run ---
+
+  it('throws terminal_run when run is already terminal', async () => {
+    const existing = makeRun({ currentStep: 'done', terminal: true });
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(existing) });
+    const feedbackLifecycleDependencies = makeFeedbackLifecycleDeps();
+    const { orchestrator } = makeOrchestrator({ runs, feedbackLifecycleDependencies });
+
+    await expect(
+      orchestrator.replyToRun({ runId: 'run_1', tenant: 'tenant_1', principal: principal('phoebe'), request: { kind: 'approve' } })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'terminal_run' });
+  });
+
+  // --- guidance reply at human_review gate ---
+
+  it('throws invalid_transition when guidance reply sent to human_review gate', async () => {
+    const existing = makeRun({ currentStep: 'implementation.human_review' });
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(existing) });
+    const feedbackLifecycleDependencies = makeFeedbackLifecycleDeps();
+    const { orchestrator } = makeOrchestrator({ runs, feedbackLifecycleDependencies });
+
+    await expect(
+      orchestrator.replyToRun({ runId: 'run_1', tenant: 'tenant_1', principal: principal('phoebe'), request: { kind: 'guidance', body: 'Go here' } })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition' });
+  });
+
+  // --- non-gate step ---
+
+  it('throws invalid_transition when run is not at a gate step', async () => {
+    const existing = makeRun({ currentStep: 'spec.author' });
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(existing) });
+    const feedbackLifecycleDependencies = makeFeedbackLifecycleDeps();
+    const { orchestrator } = makeOrchestrator({ runs, feedbackLifecycleDependencies });
+
+    await expect(
+      orchestrator.replyToRun({ runId: 'run_1', tenant: 'tenant_1', principal: principal('phoebe'), request: { kind: 'approve' } })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition' });
+  });
+
+  // --- missing feedbackLifecycleDependencies ---
+
+  it('throws persistence_failed when feedbackLifecycleDependencies not configured', async () => {
+    const existing = makeRun({ currentStep: 'implementation.human_review' });
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(existing) });
+    // No feedbackLifecycleDependencies
+    const { orchestrator } = makeOrchestrator({ runs });
+
+    await expect(
+      orchestrator.replyToRun({ runId: 'run_1', tenant: 'tenant_1', principal: principal('phoebe'), request: { kind: 'approve' } })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'persistence_failed' });
   });
 });

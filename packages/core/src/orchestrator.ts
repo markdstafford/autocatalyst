@@ -5,6 +5,8 @@ import type {
   Message,
   NonModelPrincipal,
   Run,
+  RunReplyClassification,
+  RunReplyRequest,
   RunStateTransitionKind,
   RunStep,
   SpecAuthorResult,
@@ -30,8 +32,14 @@ import type {
   RunWorkspaceMetadataRepository
 } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
-import { listBlockingFeedback, resolveApproverAddressedFeedback } from './feedback-lifecycle.js';
+import { createGateFeedback, listBlockingFeedback, resolveApproverAddressedFeedback } from './feedback-lifecycle.js';
 import { assertSpecReviewGateCanAdvance, SpecReviewGateBlockedError } from './spec-review-gate.js';
+import {
+  assertHumanReviewGateCanAdvance,
+  getHumanReviewGateFeedbackTarget,
+  isHumanReviewGateStep,
+  HumanReviewGateError
+} from './human-review-gate.js';
 import { type RunDispatchQueue } from './run-dispatch-queue.js';
 import { createRunStateTransitionEvent, type RunEventStore } from './run-events.js';
 import {
@@ -161,6 +169,17 @@ export interface OrchestratedConversationResult {
   readonly runStep: RunStep;
 }
 
+export interface ReplyToRunInput {
+  readonly runId: string;
+  readonly tenant: string;
+  readonly principal: NonModelPrincipal;
+  readonly request: RunReplyRequest;
+}
+
+export interface ReplyToRunResult extends OrchestratedRunResult {
+  readonly classification: RunReplyClassification;
+}
+
 // --- Orchestrator interface ---
 
 export interface Orchestrator {
@@ -169,6 +188,7 @@ export interface Orchestrator {
   applyDirective(input: ApplyOrchestratedDirectiveInput): Promise<OrchestratedRunResult>;
   dispatch(input: DispatchRunInput): Promise<OrchestratedRunResult>;
   tick(input: TickInput): Promise<TickResult>;
+  replyToRun(input: ReplyToRunInput): Promise<ReplyToRunResult>;
 }
 
 // --- Spec authoring completion ---
@@ -735,6 +755,77 @@ export class DefaultOrchestrator implements Orchestrator {
     }
 
     return { status: 'dispatched', runId: input.runId };
+  }
+
+  async replyToRun(input: ReplyToRunInput): Promise<ReplyToRunResult> {
+    return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
+      const run = await this.#runs.findById(input.runId);
+      if (run === null) throw new OrchestratorError('missing_run', `Run '${input.runId}' does not exist.`);
+      if (run.tenant !== input.tenant) throw new OrchestratorError('forbidden', `Run '${input.runId}' does not belong to tenant '${input.tenant}'.`);
+      if (run.terminal) throw new OrchestratorError('terminal_run', `Run '${input.runId}' is terminal.`);
+
+      if (isHumanReviewGateStep(run.currentStep)) {
+        return this.#replyToHumanReviewGate({ ...input, run });
+      }
+
+      const currentStepDef = getRunStepDefinition(run.currentStep);
+      if (currentStepDef?.waitingOn === 'human') {
+        throw new OrchestratorError('invalid_transition', `Step '${run.currentStep}' does not support this reply kind.`);
+      }
+      throw new OrchestratorError('invalid_transition', `Run '${input.runId}' is not waiting on human input.`);
+    });
+  }
+
+  async #replyToHumanReviewGate(input: ReplyToRunInput & { readonly run: Run }): Promise<ReplyToRunResult> {
+    if (input.request.kind === 'guidance') {
+      throw new OrchestratorError('invalid_transition', `Guidance replies are only supported at implementation.awaiting_input.`);
+    }
+    if (this.#feedbackLifecycleDependencies === undefined) {
+      throw new OrchestratorError('persistence_failed', 'Feedback lifecycle dependencies required for human review replies.');
+    }
+
+    const target = getHumanReviewGateFeedbackTarget(input.run.currentStep);
+
+    if (input.request.kind === 'feedback') {
+      const feedback = await createGateFeedback({
+        runId: input.run.id,
+        owner: input.run.owner,
+        tenant: input.run.tenant,
+        principal: input.principal,
+        target,
+        title: input.request.title,
+        body: input.request.body,
+        ...(input.request.anchor !== undefined ? { anchor: input.request.anchor } : {})
+      }, this.#feedbackLifecycleDependencies);
+      const moved = await this.applyDirective({ runId: input.runId, tenant: input.tenant, directive: 'revise', origin: 'human', principal: input.principal });
+      return { ...moved, classification: { directive: 'revise', target, createdFeedbackId: feedback.id } };
+    }
+
+    // approve
+    // For spec.human_review: applyDirective already handles co-resolution, gate check, and finalizer.
+    // For implementation.human_review: we must do co-resolution and gate check here since applyDirective doesn't handle them.
+    if (input.run.currentStep === 'implementation.human_review') {
+      await resolveApproverAddressedFeedback(
+        { runId: input.run.id, target, approver: input.principal },
+        this.#feedbackLifecycleDependencies
+      );
+      try {
+        await assertHumanReviewGateCanAdvance({ run: input.run, target }, {
+          listBlockingFeedback: (listInput) => listBlockingFeedback(listInput, this.#feedbackLifecycleDependencies!)
+        });
+      } catch (error) {
+        if (error instanceof HumanReviewGateError && error.code === 'feedback_gate_blocked') {
+          throw new OrchestratorError('invalid_transition', 'Feedback blocks review approval.', {
+            cause: error,
+            details: { code: 'feedback_gate_blocked', blockingFeedbackIds: error.blockingFeedbackIds }
+          });
+        }
+        throw error;
+      }
+    }
+
+    const moved = await this.applyDirective({ runId: input.runId, tenant: input.tenant, directive: 'advance', origin: 'human', principal: input.principal });
+    return { ...moved, classification: { directive: 'advance', target } };
   }
 
   #shouldAutoDispatch(run: Run): boolean {
