@@ -108,7 +108,12 @@ function altitudeLines(input: ImplementationBuildPromptInput): readonly string[]
 
 function requiredDispositionLines(input: ImplementationBuildPromptInput): readonly string[] {
   const dispositions = input.reviewContext?.requiredDispositions ?? [];
-  if (dispositions.length === 0) return ['- Required dispositions: none for this round.'];
+  if (dispositions.length === 0) {
+    return [
+      '- Required dispositions: none for this round.',
+      '- Always write `step-result.json` when advancing. Write `{}` when there are no dispositions.'
+    ];
+  }
   return [
     '- Required dispositions:',
     ...dispositions.map((finding) => `  - ${finding.feedbackId} [${finding.severity}] ${finding.title}: ${finding.body}`),

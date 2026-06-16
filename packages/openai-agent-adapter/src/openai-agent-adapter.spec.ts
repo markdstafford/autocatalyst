@@ -364,6 +364,49 @@ describe('createOpenAIAgentAdapter — session startup', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Reviewer read-only workspace enforcement (seam-driven)
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — reviewer workspace policy', () => {
+  it('mounts workspace roots read-only in the SandboxAgent manifest for reviewer sessions', async () => {
+    const capturedManifests: Array<unknown> = [];
+    const { run } = makeRunSession([assistantItem('ok')]);
+    // makeTelemetry() already uses role: 'reviewer'; makeSessionInput('two_roots') gives
+    // workspaceRoots: ['/tmp/ac/repo', '/tmp/ac/scratch'].
+    const input = makeSessionInput('two_roots');
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession: (sessionInput) => { capturedManifests.push(sessionInput.manifest); return run(sessionInput); },
+      sandboxClientFactory: () => fakeSandboxHandle()
+    });
+    await collectEvents((await adapter.startSession(input)).events);
+
+    expect(capturedManifests).toHaveLength(1);
+    const grants = (capturedManifests[0] as { extraPathGrants: Array<{ path: string; readOnly: boolean }> }).extraPathGrants;
+    const workspaceGrants = grants.filter((g) => g.path === '/tmp/ac/repo' || g.path === '/tmp/ac/scratch');
+    expect(workspaceGrants).toHaveLength(2);
+    expect(workspaceGrants.every((g) => g.readOnly)).toBe(true);
+  });
+
+  it('mounts workspace roots writable in the SandboxAgent manifest for implementer sessions', async () => {
+    const capturedManifests: Array<unknown> = [];
+    const { run } = makeRunSession([assistantItem('ok')]);
+    const base = makeSessionInput('two_roots');
+    const input = { ...base, telemetryContext: { ...base.telemetryContext, role: 'implementer' } };
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession: (sessionInput) => { capturedManifests.push(sessionInput.manifest); return run(sessionInput); },
+      sandboxClientFactory: () => fakeSandboxHandle()
+    });
+    await collectEvents((await adapter.startSession(input)).events);
+
+    expect(capturedManifests).toHaveLength(1);
+    const grants = (capturedManifests[0] as { extraPathGrants: Array<{ path: string; readOnly: boolean }> }).extraPathGrants;
+    const workspaceGrants = grants.filter((g) => g.path === '/tmp/ac/repo' || g.path === '/tmp/ac/scratch');
+    expect(workspaceGrants).toHaveLength(2);
+    expect(workspaceGrants.every((g) => !g.readOnly)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Skill materialization (seam-driven)
 // ---------------------------------------------------------------------------
 

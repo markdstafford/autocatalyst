@@ -72,6 +72,19 @@ describe('implementation-build context builders', () => {
     expect(prompt).toContain('Do not push, merge, or open PRs');
   });
 
+  it('always includes a step-result.json output instruction in the implementer prompt even when no dispositions are required', () => {
+    const prompt = buildImplementationBuildPrompt({
+      ...baseInput,
+      role: 'implementer',
+      reviewContext: {
+        altitudeContext: { altitude: 'build', altitudeRound: 1 }
+      }
+    });
+
+    expect(prompt).toContain('step-result.json');
+    expect(prompt).toContain('{}');
+  });
+
   it('builds a read-only reviewer prompt with exact reviewerResultSchema examples', () => {
     const prompt = buildImplementationBuildPrompt(baseInput);
 

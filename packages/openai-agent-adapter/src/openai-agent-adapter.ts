@@ -460,14 +460,15 @@ function assertWorkspaceRootsDoNotEscape(workspace: OpenAIWorkspaceSandboxConfig
 function buildWorkspaceManifest(
   workspace: OpenAIWorkspaceSandboxConfig,
   environment: Readonly<Record<string, string>>,
-  skillMounts: ReadonlyArray<{ readonly hostPath: string; readonly sandboxPath: string }> = []
+  skillMounts: ReadonlyArray<{ readonly hostPath: string; readonly sandboxPath: string }> = [],
+  workspaceReadOnly = false
 ): Manifest {
   const entries: Record<string, ReturnType<typeof localDir>> = {};
   const grants: Array<{ path: string; readOnly: boolean }> = [];
   for (const root of workspace.workspaceRoots) {
     const logicalName = path.basename(root) || 'root';
     entries[logicalName] = localDir({ src: root });
-    grants.push({ path: root, readOnly: false });
+    grants.push({ path: root, readOnly: workspaceReadOnly });
   }
   for (const mount of skillMounts) {
     // Use a stable key derived from the sandbox path, preserving the path
@@ -638,7 +639,12 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
  */
 function makeDefaultSandboxClientFactory(workspaceBaseDir?: string): OpenAISandboxClientFactory {
   return async (factoryInput): Promise<OpenAISandboxClientHandle> => {
-    const manifest = buildWorkspaceManifest(factoryInput.workspace, factoryInput.environment, factoryInput.skillMounts ?? []);
+    const manifest = buildWorkspaceManifest(
+      factoryInput.workspace,
+      factoryInput.environment,
+      factoryInput.skillMounts ?? [],
+      factoryInput.telemetryContext.role === 'reviewer'
+    );
     let client: UnixLocalSandboxClient;
     let session: SandboxSessionLike;
     try {
@@ -803,8 +809,15 @@ export function createOpenAIAgentAdapter(
 
       // The manifest the run driver hands to the SandboxAgent mirrors the one the
       // client used to open the session, so defaultManifest matches the session
-      // (including skill mounts).
-      const manifest = buildWorkspaceManifest(workspace, safeEnvironment, skillMaterialization.mounts);
+      // (including skill mounts). Reviewer sessions get read-only workspace roots
+      // so the SandboxAgent cannot write outside the scratch root even if the agent
+      // attempts file modifications.
+      const manifest = buildWorkspaceManifest(
+        workspace,
+        safeEnvironment,
+        skillMaterialization.mounts,
+        input.telemetryContext.role === 'reviewer'
+      );
 
       // Build the system instructions, appending the skill discovery hint when skills are staged.
       const baseInstructions = input.runInput.environment.context.task.prompt;
