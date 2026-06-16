@@ -3,6 +3,7 @@ import {
   ProviderConfigurationError,
   ProviderConnectionError,
   isClassifiedProviderFailureError,
+  classifyProviderFailure,
   formatExecutionFailureReason,
   makeSanitizedFailureReason,
   type SanitizedFailureReason
@@ -24,6 +25,16 @@ export function safeFailureReasonFromError(error: unknown): SanitizedFailureReas
   }
   if (error instanceof ExecutionMaterializationError) {
     return formatExecutionFailureReason(error.code);
+  }
+  const shaped = error as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
+  const classified = classifyProviderFailure({
+    ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
+    ...(typeof shaped.statusCode === 'number' ? { statusCode: shaped.statusCode } : {}),
+    code: shaped.code,
+    errorName: shaped.name
+  });
+  if (classified !== undefined) {
+    return classified;
   }
   return undefined;
 }

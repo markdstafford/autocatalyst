@@ -181,6 +181,49 @@ async function collectSseUntilFailureReason(
 }
 
 // ---------------------------------------------------------------------------
+// Fake adapter that throws a raw provider-shaped error (transient)
+// ---------------------------------------------------------------------------
+
+/**
+ * Creates an AgentProviderAdapter whose events generator throws a plain
+ * provider-shaped error (status: 429, name: 'ProviderApiError') that contains
+ * sensitive information in its message and code fields.
+ *
+ * Importantly, this does NOT use ClassifiedProviderFailureError — it exercises
+ * the safeFailureReasonFromError path that classifies by structural fields only
+ * (error.status, error.name), never error.message or error.code value.
+ */
+function createTransientFailingAdapter(): { adapter: AgentProviderAdapter; releaseGate: () => void } {
+  let releaseGate: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => { releaseGate = resolve; });
+
+  const overloaded = Object.assign(new Error('API Error: Overloaded sk-test-secret /Users/mark/private'), {
+    status: 429,
+    name: 'ProviderApiError',
+    code: 'sk-test-secret'
+  });
+  const metadataPromise = Promise.reject<never>(overloaded);
+  metadataPromise.catch(() => undefined);
+
+  const adapter: AgentProviderAdapter = {
+    providerKind: FAKE_PROVIDER_KIND,
+    adapterId: FAKE_ADAPTER_ID,
+    supportedConnectionMechanism: 'fetch_transport',
+    startSession(_input: AgentProviderSessionInput): AgentProviderSession {
+      return {
+        events: (async function* (): AsyncGenerator<never> {
+          await gate;
+          yield await Promise.reject<never>(overloaded);
+        })(),
+        metadata: metadataPromise
+      };
+    }
+  };
+
+  return { adapter, releaseGate };
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -349,6 +392,152 @@ describe('sanitized failure reason — end-to-end acceptance', () => {
           const stepsText = JSON.stringify(await stepsResp.json());
           expect(stepsText).not.toContain(SENTINEL_CREDENTIAL);
           expectNoSentinels(stepsText);
+        } finally {
+          await handle.close();
+        }
+      });
+    }
+  );
+
+  it(
+    'classifies raw provider-shaped error (status 429) as transient_provider_failure and never leaks sensitive message content',
+    { timeout: 30000 },
+    async () => {
+      await withTempDatabasePath(async (databasePath) => {
+        const { projectId } = await seedProject(databasePath);
+        const authHeaders = { authorization: `Bearer ${BEARER_TOKEN}` };
+
+        // Phase 1: bootstrap — create a secret and configuration record pointing at the
+        // fake openai adapter (same as the provider_auth_failed test).
+        const bootstrap = await createControlPlaneServer({
+          autoDispatch: { enabled: false },
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET
+        });
+
+        let profileId: string;
+        try {
+          const secretResp = await bootstrap.inject({
+            method: 'POST',
+            url: '/v1/secrets',
+            headers: authHeaders,
+            payload: { value: SENTINEL_CREDENTIAL }
+          });
+          expect(secretResp.statusCode).toBe(201);
+          const { handle: secretHandle } = createSecretResponseSchema.parse(secretResp.json());
+          expect(secretHandle).toMatch(/^sec_/u);
+
+          const cfgResp = await bootstrap.inject({
+            method: 'POST',
+            url: '/v1/configuration-records',
+            headers: authHeaders,
+            payload: {
+              kind: 'provider_profile',
+              providerKind: FAKE_PROVIDER_KIND,
+              adapterId: FAKE_ADAPTER_ID,
+              settings: {
+                profileName: 'transient-failing-profile',
+                credentialSecretHandle: secretHandle,
+                endpoint: { baseUrl: 'https://api.example.test' }
+              }
+            }
+          });
+          expect(cfgResp.statusCode).toBe(201);
+          profileId = configurationRecordResponseSchema.parse(cfgResp.json()).id;
+        } finally {
+          await bootstrap.close();
+        }
+
+        // Phase 2: real-dispatch server with the transient-failing adapter injected.
+        // The adapter throws a raw error with status:429 and a message containing
+        // secrets — safeFailureReasonFromError must classify it as
+        // 'transient_provider_failure' without leaking the message.
+        const { adapter: transientFailingAdapter, releaseGate } = createTransientFailingAdapter();
+        const handle = await startControlPlaneServer({
+          port: 0,
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET,
+          runConcurrency: 1,
+          realRunnerDispatch: {
+            enabled: true,
+            defaultProviderProfileId: profileId
+          },
+          providerAdapters: new Map([
+            [
+              buildProviderAdapterKey(FAKE_PROVIDER_KIND, FAKE_ADAPTER_ID),
+              () => transientFailingAdapter
+            ]
+          ])
+        });
+
+        try {
+          const baseUrl = `http://127.0.0.1:${handle.port}`;
+          const fetchHeaders = { authorization: `Bearer ${BEARER_TOKEN}` };
+
+          // Create the run via the HTTP conversations API.
+          const createResp = await fetch(`${baseUrl}/v1/conversations`, {
+            method: 'POST',
+            headers: { ...fetchHeaders, 'content-type': 'application/json' },
+            body: JSON.stringify({
+              projectId,
+              identity: 'transient-failure-integration-test',
+              topic: { title: 'Trigger transient provider failure' },
+              submission: { kind: 'free_form', body: 'what is the answer?', workKind: 'question' }
+            })
+          });
+          expect(createResp.status).toBe(201);
+          const createBody = (await createResp.json()) as { run: { id: string } };
+          const runId = createBody.run.id;
+          expect(runId).toMatch(/^run_/u);
+
+          // Open SSE stream before releasing the gate.
+          const sseController = new AbortController();
+          const sseResp = await fetch(`${baseUrl}/v1/runs/${runId}/events`, {
+            headers: fetchHeaders,
+            signal: sseController.signal
+          });
+          expect(sseResp.status).toBe(200);
+          expect(sseResp.headers.get('content-type')).toMatch(/^text\/event-stream/u);
+
+          // Release the gate so the fake adapter can emit the transient failure.
+          releaseGate();
+
+          // Collect SSE until we see the transient failure reason.
+          const sseBody = await collectSseUntilFailureReason(
+            sseResp,
+            '"transient_provider_failure"',
+            sseController
+          );
+
+          // --- Assertion 1: GET /v1/runs/:id returns transient_provider_failure ---
+          const getRunResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: fetchHeaders });
+          expect(getRunResp.status).toBe(200);
+          const runBody = (await getRunResp.json()) as {
+            terminal: boolean;
+            currentStep: string;
+            failureReason?: string;
+          };
+          expect(runBody.terminal).toBe(true);
+          expect(runBody.currentStep).toBe('failed');
+          expect(runBody.failureReason).toBe('transient_provider_failure');
+
+          // --- Assertion 2: SSE stream contains the transient failure reason fields ---
+          expect(sseBody).toContain('"reason":"transient_provider_failure"');
+          expect(sseBody).toContain('"failureReason":"transient_provider_failure"');
+
+          // --- Assertion 3: sensitive content from error.message must not appear ---
+          expect(sseBody).not.toContain('API Error: Overloaded');
+          expect(sseBody).not.toContain('sk-test-secret');
+          expect(sseBody).not.toContain('/Users/mark/private');
+
+          // Sentinel credential must not appear on any surface
+          const getRunText = JSON.stringify(runBody);
+          expect(getRunText).not.toContain(SENTINEL_CREDENTIAL);
+          expectNoSentinels(getRunText);
+          expect(sseBody).not.toContain(SENTINEL_CREDENTIAL);
+          expectNoSentinels(sseBody);
         } finally {
           await handle.close();
         }

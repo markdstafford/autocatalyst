@@ -754,6 +754,30 @@ describe('createLayeredConvergenceEngine', () => {
   });
 });
 
+describe('createLayeredConvergenceEngine — reviewer dispatch failures', () => {
+  it('preserves layered reviewer fail reasons before parsing reviewer output', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1, 'build'),
+      { role: 'reviewer', round: 1, altitude: 'build', result: { workResult: { directive: 'fail', reason: 'transient_provider_failure' }, lastPosition: 'layered-reviewer-pos-1' } }
+    ]);
+    const engine = createLayeredConvergenceEngine({ dispatcher, git: new StubGit(), feedback: new InMemoryFeedbackRepo(), runSteps: new StubRunStepRepo(), routing: makeRouting(true), getPolicy: () => ({ maxRounds: 2, depth: 'build_only' }) });
+    const out = await engine.run({ runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep, stepDefinition: stepDefBoth, workflow: fakeWorkflow });
+    expect(out.workResult).toEqual({ directive: 'fail', reason: 'transient_provider_failure' });
+    expect(out.checkpointResult.lastPositions?.reviewer).toBe('layered-reviewer-pos-1');
+  });
+
+  it('preserves layered reviewer needs_input before parsing reviewer output', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1, 'build'),
+      { role: 'reviewer', round: 1, altitude: 'build', result: { workResult: { directive: 'needs_input', question: 'Reviewer needs a recovered provider session.' }, lastPosition: 'layered-reviewer-pos-2' } }
+    ]);
+    const engine = createLayeredConvergenceEngine({ dispatcher, git: new StubGit(), feedback: new InMemoryFeedbackRepo(), runSteps: new StubRunStepRepo(), routing: makeRouting(true), getPolicy: () => ({ maxRounds: 2, depth: 'build_only' }) });
+    const out = await engine.run({ runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep, stepDefinition: stepDefBoth, workflow: fakeWorkflow });
+    expect(out.workResult).toEqual({ directive: 'needs_input', question: 'Reviewer needs a recovered provider session.' });
+    expect(out.checkpointResult.outcome).toBe('needs_input');
+  });
+});
+
 describe('createLayeredConvergenceEngine - acceptedCheckpoints semantics', () => {
   it('acceptedCheckpoints contain ref, commitSha, acceptedAt', async () => {
     const dispatcher = new ScriptedDispatcher([

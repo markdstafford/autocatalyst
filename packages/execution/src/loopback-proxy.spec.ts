@@ -256,4 +256,300 @@ describe('createLoopbackProxy', () => {
     await proxy.close();
     await upstream.close();
   });
+
+  it('retries a transient 429 response and succeeds on a later replayable attempt', async () => {
+    let attempts = 0;
+    const bodies: string[] = [];
+    const upstream = await startFakeUpstream((req, res) => {
+      attempts += 1;
+      let body = '';
+      req.on('data', (chunk: Buffer) => { body += chunk.toString('utf8'); });
+      req.on('end', () => {
+        bodies.push(body);
+        if (attempts === 1) {
+          res.writeHead(429, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: 'overloaded' }));
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, attempts }));
+      });
+    });
+    const sleeps: number[] = [];
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: { maxRetries: 2 },
+      telemetryContext: { runId: 'run_1', step: 'spec.author' },
+      sleep: async (ms) => { sleeps.push(ms); },
+      jitter: () => 0
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ prompt: 'hello' })
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ ok: true, attempts: 2 });
+    expect(attempts).toBe(2);
+    expect(bodies).toEqual([JSON.stringify({ prompt: 'hello' }), JSON.stringify({ prompt: 'hello' })]);
+    expect(sleeps).toEqual([250]);
+
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('returns a safe 502 envelope after transient retry exhaustion', async () => {
+    let attempts = 0;
+    const upstream = await startFakeUpstream((req, res) => {
+      attempts += 1;
+      req.resume();
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'temporary' }));
+    });
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: { maxRetries: 1 },
+      telemetryContext: { runId: 'run_1', step: 'implementation.build', role: 'reviewer' },
+      sleep: async () => undefined,
+      jitter: () => 0
+    });
+    const response = await fetch(`${proxy.baseUrl}/v1/messages`, { method: 'POST', body: '{}' });
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: { code: 'proxy_upstream_failed', message: 'Provider proxy upstream request failed.' } });
+    expect(attempts).toBe(2);
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('honors bounded Retry-After before retrying', async () => {
+    let attempts = 0;
+    const sleeps: number[] = [];
+    const upstream = await startFakeUpstream((req, res) => {
+      attempts += 1;
+      req.resume();
+      if (attempts === 1) {
+        res.writeHead(429, { 'retry-after': '2' });
+        res.end('retry later');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: { maxRetries: 1 },
+      telemetryContext: { runId: 'run_1', step: 'spec.author' },
+      sleep: async (ms) => { sleeps.push(ms); },
+      jitter: () => 0
+    });
+    const response = await fetch(`${proxy.baseUrl}/v1/messages`, { method: 'POST', body: '{}' });
+    expect(response.status).toBe(200);
+    expect(sleeps).toEqual([2000]);
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('honors Retry-After: 30 up to requestTimeoutMs without capping at 5s', async () => {
+    let attempts = 0;
+    const sleeps: number[] = [];
+    const upstream = await startFakeUpstream((req, res) => {
+      attempts += 1;
+      req.resume();
+      if (attempts === 1) {
+        res.writeHead(429, { 'retry-after': '30' });
+        res.end('retry later');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: { maxRetries: 1 },
+      requestTimeoutMs: 600_000,
+      telemetryContext: { runId: 'run_1', step: 'spec.author' },
+      sleep: async (ms) => { sleeps.push(ms); },
+      jitter: () => 0
+    });
+    const response = await fetch(`${proxy.baseUrl}/v1/messages`, { method: 'POST', body: '{}' });
+    expect(response.status).toBe(200);
+    // Should be 30000ms, not capped at the old 5000ms hard limit
+    expect(sleeps).toEqual([30_000]);
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('rejects request bodies above the retry replay buffer cap without forwarding upstream', async () => {
+    let attempts = 0;
+    const upstream = await startFakeUpstream((req, res) => { attempts += 1; req.resume(); res.end('{}'); });
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: { maxRetries: 1 },
+      telemetryContext: { runId: 'run_1', step: 'spec.author' },
+      requestBodyBufferLimitBytes: 4
+    });
+    const response = await fetch(`${proxy.baseUrl}/v1/messages`, { method: 'POST', body: '12345' });
+    expect(response.status).toBe(413);
+    expect(await response.json()).toEqual({ error: { code: 'proxy_request_body_too_large', message: 'Provider proxy request body exceeded retry buffer limit.' } });
+    expect(attempts).toBe(0);
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('does not retry after response streaming has started', async () => {
+    let attempts = 0;
+    const upstream = await startFakeUpstream((_req, res) => {
+      attempts += 1;
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      // Flush chunk-1 first, THEN destroy — this ensures the proxy receives headers+data
+      // before the socket reset, triggering the "streaming started" guard
+      res.write('chunk-1\n', () => {
+        res.destroy(new Error('stream failed after first byte'));
+      });
+    });
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: { maxRetries: 3 },
+      telemetryContext: { runId: 'run_1', step: 'implementation.build', role: 'reviewer' },
+      sleep: async () => undefined
+    });
+    try {
+      await fetch(`${proxy.baseUrl}/stream`);
+    } catch {
+      // fetch aborts when upstream destroys mid-stream; the attempt count is what matters
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    expect(attempts).toBe(1);
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('returns a safe 502 when a transient 429 retry is followed by a pre-header socket error', async () => {
+    // Regression: responseCommitted was set to true by the 429 response callback even for
+    // transient responses. When the next retry attempt hit a transport error, the error handler
+    // saw responseCommitted=true and returned early, leaving the client request hanging.
+    let attempts = 0;
+    const upstream = await startFakeUpstream((req, res) => {
+      attempts += 1;
+      req.resume();
+      if (attempts === 1) {
+        res.writeHead(429, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'overloaded' }));
+        return;
+      }
+      // Destroy socket before writing any response headers (pre-header transport error)
+      req.socket.destroy();
+    });
+
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: { maxRetries: 1 },
+      telemetryContext: { runId: 'run_1', step: 'spec.author' },
+      sleep: async () => undefined,
+      jitter: () => 0
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/test`, { method: 'POST', body: '{}' });
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: { code: 'proxy_upstream_failed', message: 'Provider proxy upstream request failed.' } });
+    expect(attempts).toBe(2);
+
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('cancels pending retry when downstream client disconnects during sleep', async () => {
+    let attempts = 0;
+    const upstream = await startFakeUpstream((req, res) => {
+      attempts += 1;
+      req.resume();
+      res.writeHead(429, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'overloaded' }));
+    });
+
+    // Capture the sleep resolve callback so we can abort during sleep
+    let resolveSleep: (() => void) | undefined;
+
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: { maxRetries: 1 },
+      telemetryContext: { runId: 'run_1', step: 'spec.author' },
+      sleep: () => new Promise<void>((resolve) => { resolveSleep = resolve; }),
+      jitter: () => 0
+    });
+
+    // Make a request but don't await it — we'll disconnect during sleep
+    const ctrl = new AbortController();
+    const fetchPromise = fetch(`${proxy.baseUrl}/v1/messages`, {
+      method: 'POST',
+      body: '{}',
+      signal: ctrl.signal
+    });
+
+    // Wait until the sleep is registered (after first 429)
+    await new Promise<void>((resolve) => {
+      const poll = setInterval(() => {
+        if (resolveSleep !== undefined) { clearInterval(poll); resolve(); }
+      }, 5);
+    });
+
+    // Abort the downstream client connection
+    ctrl.abort();
+    try { await fetchPromise; } catch { /* expected AbortError */ }
+
+    // Allow a tick for the 'close' event to propagate
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+    // Now resolve the sleep — attempt() should be a no-op
+    resolveSleep!();
+
+    // Allow a tick for the scheduled attempt() to run (if it were going to)
+    await new Promise<void>((resolve) => setTimeout(resolve, 20));
+
+    // Upstream should only have been called once (the 429), not a second time
+    expect(attempts).toBe(1);
+
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('retries pre-header transport errors and succeeds on second attempt', async () => {
+    let attempts = 0;
+    const net = await import('node:net');
+    const rawServer = net.createServer((socket) => {
+      attempts += 1;
+      if (attempts === 1) {
+        socket.destroy();
+        return;
+      }
+      let data = '';
+      socket.on('data', (chunk: Buffer) => {
+        data += chunk.toString();
+        if (data.includes('\r\n\r\n')) {
+          socket.write('HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: 10\r\n\r\n{"ok":true}');
+          socket.end();
+        }
+      });
+    });
+    rawServer.listen(0, '127.0.0.1');
+    await new Promise<void>((resolve) => rawServer.once('listening', resolve));
+    const { port } = rawServer.address() as { port: number };
+
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: `http://127.0.0.1:${port}/upstream`,
+      endpoint: { maxRetries: 1 },
+      telemetryContext: { runId: 'run_1', step: 'spec.author' },
+      sleep: async () => undefined,
+      jitter: () => 0
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/test`, { method: 'POST', body: '{}' });
+    expect(response.status).toBe(200);
+    expect(attempts).toBe(2);
+
+    await proxy.close();
+    await new Promise<void>((resolve) => rawServer.close(() => resolve()));
+  });
 });

@@ -253,6 +253,24 @@ describe('createExecutionRunUnitOfWork', () => {
       expect(result).toEqual({ directive: 'fail', reason: 'provider_auth_failed' });
     });
 
+    it('maps provider-shaped transient status errors to transient_provider_failure without raw message text', async () => {
+      const raw = Object.assign(new Error('API Error: Overloaded sk-test-secret /Users/mark/private'), {
+        status: 429,
+        code: 'sk-test-secret',
+        name: 'ProviderApiError'
+      });
+      const unitOfWork = createExecutionRunUnitOfWork({
+        resolveContext: async () => makeContext(),
+        execute: makeFakeThrowingEntryPoint(raw),
+        eventsStore: newStore()
+      });
+
+      const result = await unitOfWork.run(makeInput());
+      expect(result).toEqual({ directive: 'fail', reason: 'transient_provider_failure' });
+      expect(JSON.stringify(result)).not.toContain('sk-test-secret');
+      expect(JSON.stringify(result)).not.toContain('/Users/mark/private');
+    });
+
     it('does not copy raw provider errors into fail reasons', async () => {
       const sentinel = 'sk-test-secret';
       const unitOfWork = createExecutionRunUnitOfWork({

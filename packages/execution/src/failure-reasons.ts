@@ -1,3 +1,5 @@
+import { transientHttpStatuses } from './request-alteration.js';
+
 export const knownFailureReasonCodes = [
   'provider_auth_failed',
   'spec_authoring_failed',
@@ -20,7 +22,14 @@ export const knownFailureReasonCodes = [
   'timeout',
   'non_transient_provider_failure',
   'skill_materialization_failed',
-  'schema_validation_failed'
+  'schema_validation_failed',
+  'transient_provider_failure',
+  'reviewer_result_missing',
+  'reviewer_result_invalid',
+  'disposition_missing',
+  'disposition_invalid',
+  'workflow_escalation_edge_missing',
+  'checkpoint_capture_failed',
 ] as const;
 
 export type KnownFailureReasonCode = typeof knownFailureReasonCodes[number];
@@ -68,6 +77,8 @@ const authCodes = new Set([
   'permission_denied'
 ]);
 
+const transientProviderHttpStatuses = new Set(transientHttpStatuses);
+
 const authErrorNames = new Set([
   'AuthenticationError',
   'APIAuthenticationError',
@@ -107,6 +118,7 @@ export function formatExecutionFailureReason(code: string): SanitizedFailureReas
 export function classifyProviderFailure(input: ProviderFailureClassificationInput): KnownFailureReasonCode | undefined {
   const status = input.status ?? input.statusCode;
   if (status === 401) return 'provider_auth_failed';
+  if (status !== undefined && transientProviderHttpStatuses.has(status)) return 'transient_provider_failure';
 
   const code = typeof input.code === 'string' ? input.code : undefined;
   if (code !== undefined && authCodes.has(code.toLowerCase())) return 'provider_auth_failed';

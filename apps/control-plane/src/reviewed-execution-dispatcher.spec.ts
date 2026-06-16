@@ -582,6 +582,29 @@ describe('createReviewedExecutionDispatcher', () => {
       }
     });
 
+    it('maps thrown provider-shaped transient errors to transient_provider_failure without raw details', async () => {
+      const rawError = Object.assign(new Error('API Error: Overloaded sk-test-secret /Users/mark/private'), {
+        status: 429,
+        name: 'ProviderApiError',
+        code: 'sk-test-secret'
+      });
+      const dispatcher = createReviewedExecutionDispatcher({
+        unitOfWork: {
+          run: vi.fn(),
+          async runWithCheckpoint() {
+            throw rawError;
+          }
+        }
+      });
+
+      const result = await dispatcher.runRole(makeRoleInput('reviewer'));
+
+      expect(result.workResult).toEqual({ directive: 'fail', reason: 'transient_provider_failure' });
+      expect(JSON.stringify(result)).not.toContain('sk-test-secret');
+      expect(JSON.stringify(result)).not.toContain('/Users/mark/private');
+      expect(JSON.stringify(result)).not.toContain('API Error: Overloaded');
+    });
+
     it('returns the sanitized reason string for classified provider failures', async () => {
       const { ClassifiedProviderFailureError } = await import('@autocatalyst/execution');
       // provider_auth_failed is a known KnownFailureReasonCode accepted by ClassifiedProviderFailureError.
