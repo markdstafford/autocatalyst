@@ -948,6 +948,41 @@ describe('createConvergenceEngine', () => {
   });
 });
 
+describe('createConvergenceEngine — reviewer dispatch failures', () => {
+  it('preserves reviewer fail reasons instead of converting them to reviewer_result_missing', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      { role: 'reviewer', round: 1, result: { workResult: { directive: 'fail', reason: 'transient_provider_failure' }, lastPosition: 'reviewer-pos-1' } }
+    ]);
+    const engine = createConvergenceEngine({ dispatcher, git: new StubGit(), feedback: new InMemoryFeedbackRepo(), runSteps: new StubRunStepRepo(), routing: makeRouting(true) });
+    const out = await engine.run({ runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep, stepDefinition: stepDefBoth, workflow: fakeWorkflow });
+    expect(out.workResult).toEqual({ directive: 'fail', reason: 'transient_provider_failure' });
+    expect(out.checkpointResult.lastPositions?.reviewer).toBe('reviewer-pos-1');
+  });
+
+  it('preserves reviewer needs_input instead of converting it to reviewer_result_missing', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      { role: 'reviewer', round: 1, result: { workResult: { directive: 'needs_input', question: 'Reviewer needs provider access restored.' }, lastPosition: 'reviewer-pos-2' } }
+    ]);
+    const engine = createConvergenceEngine({ dispatcher, git: new StubGit(), feedback: new InMemoryFeedbackRepo(), runSteps: new StubRunStepRepo(), routing: makeRouting(true) });
+    const out = await engine.run({ runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep, stepDefinition: stepDefBoth, workflow: fakeWorkflow });
+    expect(out.workResult).toEqual({ directive: 'needs_input', question: 'Reviewer needs provider access restored.' });
+    expect(out.checkpointResult.outcome).toBe('needs_input');
+  });
+
+  it('still returns reviewer_result_missing when reviewer advances with no result field and no reviewerResult', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      // directive='advance' with no result field and no reviewerResult → rawResult will be undefined
+      { role: 'reviewer', round: 1, result: { workResult: { directive: 'advance', result: undefined as unknown as Readonly<Record<string, unknown>> } } }
+    ]);
+    const engine = createConvergenceEngine({ dispatcher, git: new StubGit(), feedback: new InMemoryFeedbackRepo(), runSteps: new StubRunStepRepo(), routing: makeRouting(true) });
+    const out = await engine.run({ runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep, stepDefinition: stepDefBoth, workflow: fakeWorkflow });
+    expect(out.workResult).toEqual({ directive: 'fail', reason: 'reviewer_result_missing' });
+  });
+});
+
 describe('escalation', () => {
   const blockerFindingA: ReviewerFinding = { title: 'Security hole', body: 'SQL injection risk.', severity: 'blocker' };
 

@@ -447,6 +447,38 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
         reviewerPrincipal = reviewDispatch.modelPrincipal;
       }
 
+      if (reviewDispatch.workResult.directive === 'fail') {
+        return {
+          workResult: reviewDispatch.workResult,
+          checkpointResult: buildCheckpoint({
+            step: input.stepDefinition.id,
+            maxRounds,
+            routes,
+            rounds,
+            outcome: 'max_rounds',
+            openFeedbackIds: collectOpenFeedbackIds(rounds, accumulatedDeclinedSignatures),
+            lastImplementerLastPosition,
+            lastReviewerLastPosition
+          })
+        };
+      }
+
+      if (reviewDispatch.workResult.directive === 'needs_input') {
+        return {
+          workResult: reviewDispatch.workResult,
+          checkpointResult: buildCheckpoint({
+            step: input.stepDefinition.id,
+            maxRounds,
+            routes,
+            rounds,
+            outcome: 'needs_input',
+            openFeedbackIds: collectOpenFeedbackIds(rounds, accumulatedDeclinedSignatures),
+            lastImplementerLastPosition,
+            lastReviewerLastPosition
+          })
+        };
+      }
+
       // 4) Validate reviewer result against schema.
       const rawResult = reviewDispatch.reviewerResult
         ?? (reviewDispatch.workResult.directive === 'advance'
