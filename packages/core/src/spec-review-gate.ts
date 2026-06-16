@@ -1,4 +1,4 @@
-import type { Run, Feedback } from '@autocatalyst/api-contract';
+import type { Run, Feedback, FeedbackTarget } from '@autocatalyst/api-contract';
 import { assertHumanReviewGateCanAdvance, HumanReviewGateError } from './human-review-gate.js';
 
 export class SpecReviewGateBlockedError extends Error {
@@ -14,7 +14,7 @@ export class SpecReviewGateBlockedError extends Error {
 
 export async function assertSpecReviewGateCanAdvance(
   input: { readonly run: Run },
-  deps: { readonly listBlockingFeedback: (input: { readonly runId: string; readonly target: 'artifact' }) => Promise<readonly Feedback[]> }
+  deps: { readonly listBlockingFeedback: (input: { readonly runId: string; readonly target: FeedbackTarget }) => Promise<readonly Feedback[]> }
 ): Promise<void> {
   try {
     await assertHumanReviewGateCanAdvance({ run: input.run, target: 'artifact' }, deps);

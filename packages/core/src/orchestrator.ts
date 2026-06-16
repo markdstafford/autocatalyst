@@ -817,6 +817,9 @@ export class DefaultOrchestrator implements Orchestrator {
       throw new OrchestratorError('persistence_failed', 'Feedback lifecycle dependencies required for human review replies.');
     }
 
+    if (!isHumanReviewGateStep(input.run.currentStep)) {
+      throw new OrchestratorError('invalid_transition', `Reply not supported for step '${input.run.currentStep}'.`);
+    }
     const target = getHumanReviewGateFeedbackTarget(input.run.currentStep);
 
     if (input.request.kind === 'feedback') {

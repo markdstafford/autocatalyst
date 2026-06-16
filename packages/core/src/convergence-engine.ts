@@ -297,7 +297,7 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
           feedbackId: fb.id,
           title: fb.title,
           body: fb.body,
-          severity: 'error' as const
+          severity: 'blocker' as const
         }));
       }
     }
