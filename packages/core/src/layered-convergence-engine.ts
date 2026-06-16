@@ -340,6 +340,14 @@ export function createLayeredConvergenceEngine(
         state.reviewerPrincipal = reviewDispatch.modelPrincipal;
       }
 
+      if (reviewDispatch.workResult.directive === 'fail') {
+        return { kind: 'failed', workResult: reviewDispatch.workResult };
+      }
+
+      if (reviewDispatch.workResult.directive === 'needs_input') {
+        return { kind: 'failed', workResult: reviewDispatch.workResult };
+      }
+
       // Validate reviewer result
       const rawResult =
         reviewDispatch.reviewerResult ??
@@ -606,7 +614,7 @@ export function createLayeredConvergenceEngine(
           maxRounds,
           routes,
           rounds: state.allRounds,
-          outcome: 'max_rounds',
+          outcome: altResult.workResult.directive === 'needs_input' ? 'needs_input' : 'max_rounds',
           openFeedbackIds: collectOpenFeedbackIds(state.allRounds),
           lastImplementerLastPosition: state.lastImplementerLastPosition,
           lastReviewerLastPosition: state.lastReviewerLastPosition,

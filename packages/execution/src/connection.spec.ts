@@ -310,7 +310,7 @@ describe('createAgentConnection — fetch transport applies alteration', () => {
 // ---------------------------------------------------------------------------
 
 describe('createAgentConnection — fetch retry', () => {
-  it('stops at max retries and throws ProviderConnectionError(retry_exhausted)', async () => {
+  it('stops at max retries and throws ProviderConnectionError(transient_provider_failure)', async () => {
     // 429 is transient — should retry and eventually exhaust
     const mockFetch = vi.fn().mockResolvedValue(new Response('rate limited', { status: 429 }));
 
@@ -337,7 +337,7 @@ describe('createAgentConnection — fetch retry', () => {
     }
 
     expect(thrown).toBeInstanceOf(ProviderConnectionError);
-    expect((thrown as ProviderConnectionError).code).toBe('retry_exhausted');
+    expect((thrown as ProviderConnectionError).code).toBe('transient_provider_failure');
 
     // The known secret must NOT appear in the error message or safeDetails
     const errorStr = JSON.stringify(thrown);
@@ -707,6 +707,32 @@ describe('createAgentConnection — proxy selection', () => {
     });
 
     expect(proxyStarted).toBe(true);
+  });
+
+  it('passes bounded timeout and retry policy into the loopback proxy', async () => {
+    const proxyOptions: import('./loopback-proxy.js').LoopbackProxyOptions[] = [];
+
+    const connection = await createAgentConnection({
+      profile: makeProcessProfileWith({
+        baseUrl: 'https://gateway.example.test/anthropic',
+        proxyMode: 'required',
+        requestTimeoutMs: 999999,
+        maxRetries: 99
+      }),
+      credentialReference: { required: true, secretHandle: 'sec_123' },
+      credentialResolver: { resolveCredential: async () => 'secret-grove-key' },
+      telemetryContext: { runId: 'run_1', step: 'spec.author' },
+      proxyFactory: async (options) => {
+        proxyOptions.push(options);
+        return { baseUrl: 'http://127.0.0.1:45678', startedAt: '2025-01-01T00:00:00.000Z', requestCount: () => 0, close: async () => undefined };
+      }
+    });
+
+    await connection.createProcessLaunchConfig({ materializedEnvironment: { variables: {}, secretVariableNames: [] } });
+
+    expect(proxyOptions[0]?.requestTimeoutMs).toBe(600000);
+    expect(proxyOptions[0]?.retryPolicy?.maxRetries).toBe(5);
+    expect(proxyOptions[0]?.retryPolicy?.transientHttpStatuses).toEqual([408, 429, 500, 502, 503, 504, 529]);
   });
 
   it('does not auto-select proxy for process_environment profile with no proxy-requiring capabilities', async () => {

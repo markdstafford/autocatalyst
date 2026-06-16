@@ -8,7 +8,7 @@ export const defaultRequestTimeoutMs = 60_000;
 export const maximumRequestTimeoutMs = 600_000;
 export const defaultMaxRetries = 1;
 export const maximumMaxRetries = 5;
-export const transientHttpStatuses: readonly number[] = [408, 429, 500, 502, 503, 504];
+export const transientHttpStatuses: readonly number[] = [408, 429, 500, 502, 503, 504, 529];
 
 export const claudeProviderOwnedEnvironmentVariables: readonly string[] = [
   'ANTHROPIC_BASE_URL',
@@ -79,6 +79,56 @@ export interface RequestAlterationOptions {
   readonly endpoint: RunnerEndpointSettings;
   readonly credential?: string;
   readonly authScheme?: 'Bearer' | 'raw';
+}
+
+// ---------------------------------------------------------------------------
+// Retry policy helpers
+// ---------------------------------------------------------------------------
+
+export const defaultRetryBaseDelayMs = 250;
+export const maximumRetryDelayMs = 5_000;
+
+export interface ResolvedRetryPolicy extends RetryPolicy {
+  readonly baseDelayMs: number;
+  readonly maximumDelayMs: number;
+}
+
+export function resolveRetryPolicy(endpoint: RunnerEndpointSettings): ResolvedRetryPolicy {
+  const rawRetries = endpoint.maxRetries ?? defaultMaxRetries;
+  const maxRetries = Math.max(0, Math.min(rawRetries, maximumMaxRetries));
+  return {
+    maxRetries,
+    transientHttpStatuses,
+    baseDelayMs: defaultRetryBaseDelayMs,
+    maximumDelayMs: maximumRetryDelayMs
+  };
+}
+
+export function parseRetryAfterMs(value: string | undefined, nowMs: number = Date.now(), requestTimeoutMs: number = maximumRequestTimeoutMs): number | undefined {
+  if (value === undefined || value.trim().length === 0) return undefined;
+  const numericSeconds = Number(value);
+  if (Number.isFinite(numericSeconds) && numericSeconds >= 0) {
+    return Math.min(Math.round(numericSeconds * 1000), requestTimeoutMs);
+  }
+  const dateMs = Date.parse(value);
+  if (Number.isNaN(dateMs)) return undefined;
+  return Math.min(Math.max(0, dateMs - nowMs), requestTimeoutMs);
+}
+
+export function computeRetryDelayMs(input: {
+  readonly attemptNumber: number;
+  readonly retryAfter?: string;
+  readonly jitter?: number;
+  readonly nowMs?: number;
+  readonly requestTimeoutMs?: number;
+}): number {
+  const retryAfterMs = parseRetryAfterMs(input.retryAfter, input.nowMs ?? Date.now(), input.requestTimeoutMs);
+  if (retryAfterMs !== undefined) return retryAfterMs;
+  const boundedAttempt = Math.max(1, input.attemptNumber);
+  const base = defaultRetryBaseDelayMs * Math.pow(2, boundedAttempt - 1);
+  const bounded = Math.min(base, maximumRetryDelayMs);
+  const jitter = Math.max(0, Math.min(input.jitter ?? Math.random(), 1));
+  return Math.min(Math.round(bounded + bounded * 0.5 * jitter), maximumRetryDelayMs);
 }
 
 // ---------------------------------------------------------------------------

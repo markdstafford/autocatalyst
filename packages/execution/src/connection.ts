@@ -21,9 +21,11 @@ import {
   buildClaudeProcessLaunchEnvironment,
   defaultRequestTimeoutMs,
   isTransientProviderFailure,
+  maximumRequestTimeoutMs,
   redactProcessLaunchConfigForLog,
   redactProviderRequestForLog,
-  redactProviderResponseForLog
+  redactProviderResponseForLog,
+  resolveRetryPolicy
 } from './request-alteration.js';
 
 // Re-export the types that callers expect from connection.ts
@@ -197,6 +199,8 @@ export async function createAgentConnection(
       ...(profile.endpoint.headerValueFilters !== undefined ? { headerValueFilters: profile.endpoint.headerValueFilters } : {}),
       ...(logger !== undefined ? { logger } : {}),
       telemetryContext,
+      requestTimeoutMs: Math.min(profile.endpoint.requestTimeoutMs ?? defaultRequestTimeoutMs, maximumRequestTimeoutMs),
+      retryPolicy: resolveRetryPolicy(profile.endpoint),
     }).then((handle) => {
       proxyHandle = handle;
       return handle;
@@ -306,7 +310,7 @@ export async function createAgentConnection(
 
               if (attemptNumber > maxRetries) {
                 throw new ProviderConnectionError(
-                  'retry_exhausted',
+                  'transient_provider_failure',
                   `Provider request failed after ${maxRetries} retries (transport error).`,
                   { ...safeLogContext, attempts: attemptNumber }
                 );
@@ -359,7 +363,7 @@ export async function createAgentConnection(
 
               if (attemptNumber > maxRetries) {
                 throw new ProviderConnectionError(
-                  'retry_exhausted',
+                  'transient_provider_failure',
                   `Provider request failed after ${maxRetries} retries (last status: ${status}).`,
                   { ...safeLogContext, attempts: attemptNumber, lastStatusCode: status }
                 );
@@ -413,7 +417,7 @@ export async function createAgentConnection(
 
           // Should not be reachable — safety net
           throw new ProviderConnectionError(
-            'retry_exhausted',
+            'transient_provider_failure',
             `Provider request failed after ${maxRetries} retries (status: ${lastStatus ?? 'unknown'}).`,
             { ...safeLogContext, attempts: attemptNumber, lastStatusCode: lastStatus }
           );

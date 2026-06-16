@@ -6,15 +6,18 @@ import {
   applyRequestAlteration,
   buildClaudeProcessLaunchEnvironment,
   claudeProviderOwnedEnvironmentVariables,
+  computeRetryDelayMs,
   defaultMaxRetries,
   defaultRequestTimeoutMs,
   isTransientProviderFailure,
   maximumMaxRetries,
   maximumRequestTimeoutMs,
+  parseRetryAfterMs,
   ProviderAlterationError,
   redactProcessLaunchConfigForLog,
   redactProviderRequestForLog,
   redactProviderResponseForLog,
+  resolveRetryPolicy,
   validateHttpHeaderName,
   type ClaudeProcessLaunchInput,
   type ClaudeProcessLaunchResult,
@@ -177,7 +180,7 @@ describe('validateHttpHeaderName', () => {
 // 5. Retry classification
 // ---------------------------------------------------------------------------
 describe('isTransientProviderFailure', () => {
-  it.each([408, 429, 500, 502, 503, 504])('returns true for HTTP %s', (status) => {
+  it.each([408, 429, 500, 502, 503, 504, 529])('returns true for HTTP %s', (status) => {
     expect(isTransientProviderFailure({ kind: 'http_status', status })).toBe(true);
   });
 
@@ -618,5 +621,43 @@ describe('redaction — known secrets must not appear in log projections', () =>
       knownSecretValues: [KNOWN_SECRET]
     });
     expect(JSON.stringify(redacted).includes(KNOWN_SECRET)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Retry policy helpers
+// ---------------------------------------------------------------------------
+describe('retry policy helpers', () => {
+  it('resolves bounded retry policy from endpoint settings', () => {
+    expect(resolveRetryPolicy({}).maxRetries).toBe(1);
+    expect(resolveRetryPolicy({ maxRetries: 99 }).maxRetries).toBe(5);
+    expect(resolveRetryPolicy({ maxRetries: -1 }).maxRetries).toBe(0);
+    expect(resolveRetryPolicy({ maxRetries: 2 }).transientHttpStatuses).toEqual([408, 429, 500, 502, 503, 504, 529]);
+  });
+
+  it('parses bounded Retry-After values', () => {
+    expect(parseRetryAfterMs('2', Date.parse('2025-01-01T00:00:00.000Z'))).toBe(2000);
+    // With an explicit 5s cap (old maximumRetryDelayMs behavior), large values are capped
+    expect(parseRetryAfterMs('999', Date.parse('2025-01-01T00:00:00.000Z'), 5_000)).toBe(5000);
+    expect(parseRetryAfterMs('Wed, 01 Jan 2025 00:00:03 GMT', Date.parse('2025-01-01T00:00:00.000Z'))).toBe(3000);
+    expect(parseRetryAfterMs('not a date', Date.parse('2025-01-01T00:00:00.000Z'))).toBeUndefined();
+  });
+
+  it('honors Retry-After up to requestTimeoutMs instead of hard 5s cap', () => {
+    // With a 600s request timeout, a Retry-After: 30 should return 30000ms (not capped at 5s)
+    expect(parseRetryAfterMs('30', Date.now(), 600_000)).toBe(30_000);
+    // With a 20s request timeout, a Retry-After: 30 is capped at the timeout
+    expect(parseRetryAfterMs('30', Date.now(), 20_000)).toBe(20_000);
+    // Date-format Retry-After also uses requestTimeoutMs cap
+    const nowMs = Date.parse('2025-01-01T00:00:00.000Z');
+    expect(parseRetryAfterMs('Wed, 01 Jan 2025 00:00:30 GMT', nowMs, 600_000)).toBe(30_000);
+    expect(parseRetryAfterMs('Wed, 01 Jan 2025 00:00:30 GMT', nowMs, 20_000)).toBe(20_000);
+  });
+
+  it('computes bounded exponential retry delays with deterministic jitter', () => {
+    expect(computeRetryDelayMs({ attemptNumber: 1, jitter: 0, nowMs: 0 })).toBe(250);
+    expect(computeRetryDelayMs({ attemptNumber: 2, jitter: 0.5, nowMs: 0 })).toBe(625);
+    expect(computeRetryDelayMs({ attemptNumber: 20, jitter: 1, nowMs: 0 })).toBe(5000);
+    expect(computeRetryDelayMs({ attemptNumber: 1, retryAfter: '1', jitter: 1, nowMs: 0 })).toBe(1000);
   });
 });

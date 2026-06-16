@@ -1248,6 +1248,82 @@ describe('registerControlPlaneRoutes', () => {
     });
   });
 
+  it('GET /v1/runs/:id serializes reviewer_result_missing and SSE delivers matching transition.reason', async () => {
+    const timestamp = '2026-06-08T00:00:00.000Z';
+    const failedRun: Run = {
+      id: 'run_reviewer_missing_1',
+      topicId: 'topic_1',
+      owner: hardcodedDevelopmentPrincipal,
+      tenant: 'tenant_dev',
+      workKind: 'feature',
+      currentStep: 'failed',
+      terminal: true,
+      failureReason: 'reviewer_result_missing',
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    const runStep = {
+      id: 'step_1',
+      runId: 'run_reviewer_missing_1',
+      phase: null,
+      step: 'failed',
+      role: 'none',
+      startedAt: timestamp,
+      endedAt: null,
+      durationMs: null,
+      occurrence: { index: 0, attempt: 1 },
+      checkpointResult: null
+    };
+    const failTransitionEvent = {
+      id: 'evt_reviewer_missing_1',
+      type: 'run_state_transition' as const,
+      runId: 'run_reviewer_missing_1',
+      transition: { directive: 'fail' as const, fromStep: 'spec.author', toStep: 'failed', reason: 'reviewer_result_missing' },
+      run: failedRun,
+      runStep,
+      tenant: 'tenant_dev',
+      createdAt: timestamp
+    };
+
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.getRun as ReturnType<typeof vi.fn>).mockResolvedValue({ run: failedRun });
+    (controlPlane.subscribeRunEvents as ReturnType<typeof vi.fn>).mockResolvedValue({
+      events: { async *[Symbol.asyncIterator]() { /* no events */ } },
+      close: vi.fn()
+    });
+    (controlPlane.replayRunEvents as ReturnType<typeof vi.fn>).mockResolvedValue({
+      status: 'ok' as const,
+      events: [failTransitionEvent]
+    });
+
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    // GET /v1/runs/:id — must include failureReason
+    const getResponse = await app.inject({
+      method: 'GET',
+      url: '/v1/runs/run_reviewer_missing_1',
+      headers: authorization
+    });
+    expect(getResponse.statusCode).toBe(200);
+    expect(getResponse.json().failureReason).toBe('reviewer_result_missing');
+    expectNoSentinels(getResponse.body);
+
+    // GET /v1/runs/:id/events (SSE via inject) — must contain reason and failureReason
+    const sseResponse = await app.inject({
+      method: 'GET',
+      url: '/v1/runs/run_reviewer_missing_1/events',
+      headers: authorization
+    });
+    expect(sseResponse.statusCode).toBe(200);
+    expect(sseResponse.body).toContain('event: run_state_transition');
+    expect(sseResponse.body).toContain('"reason":"reviewer_result_missing"');
+    expect(sseResponse.body).toContain('"failureReason":"reviewer_result_missing"');
+    expect(sseResponse.body).not.toContain('API Error: Overloaded');
+    expect(sseResponse.body).not.toContain('sk-test-secret');
+    expectNoSentinels(sseResponse.body);
+  });
+
   it('POST /v1/runs/:id/feedback returns 400 for invalid body (non-artifact target)', async () => {
     const { app, authorization } = await buildServer();
     server = app;
