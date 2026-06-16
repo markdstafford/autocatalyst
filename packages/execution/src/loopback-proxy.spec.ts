@@ -385,7 +385,11 @@ describe('createLoopbackProxy', () => {
       telemetryContext: { runId: 'run_1', step: 'implementation.build', role: 'reviewer' },
       sleep: async () => undefined
     });
-    try { await fetch(`${proxy.baseUrl}/stream`); } catch { }
+    try {
+      await fetch(`${proxy.baseUrl}/stream`);
+    } catch {
+      // fetch aborts when upstream destroys mid-stream; the attempt count is what matters
+    }
     await new Promise<void>((resolve) => setTimeout(resolve, 50));
     expect(attempts).toBe(1);
     await proxy.close();
