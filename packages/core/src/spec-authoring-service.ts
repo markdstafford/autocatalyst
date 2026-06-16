@@ -1,5 +1,7 @@
 import type { Artifact, ArtifactKind, Run, SpecAuthorResult } from '@autocatalyst/api-contract';
 import type { ArtifactRepository } from './domain-repositories.js';
+import { addressOpenFeedbackForRunTarget } from './feedback-lifecycle.js';
+import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
 import { parseSpecFrontmatter, renderCommittedSpecMarkdown } from './spec-frontmatter.js';
 
 export type SpecAuthoringErrorCode =
@@ -48,6 +50,7 @@ export interface SpecAuthoringServiceDependencies {
   readonly filesystem: WorkspaceFileSystemPort;
   readonly git: WorkspaceGitPort;
   readonly clock?: () => string;
+  readonly feedbackLifecycle?: FeedbackLifecycleDependencies;
 }
 
 export interface CompleteSpecAuthoringInput {
@@ -181,6 +184,15 @@ export async function completeSpecAuthoring(
     }
   } catch (cause) {
     throw new SpecAuthoringError('spec_artifact_persistence_failed', 'Failed to persist spec artifact.', { cause });
+  }
+
+  if (deps.feedbackLifecycle !== undefined) {
+    await addressOpenFeedbackForRunTarget({
+      runId: run.id,
+      target: 'artifact',
+      actor: run.owner,
+      body: 'Addressed during spec revision.'
+    }, deps.feedbackLifecycle);
   }
 
   return {

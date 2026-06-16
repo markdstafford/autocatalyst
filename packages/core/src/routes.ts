@@ -3,6 +3,10 @@ import { z, ZodError } from 'zod';
 
 import {
   activeRunConflictErrorCode,
+  createRunReplySuccessStatusCode,
+  runRepliesPath,
+  runReplyRequestSchema,
+  runReplyResponseSchema,
   configurationRecordCollectionPath,
   configurationRecordIdParamsSchema,
   configurationRecordListResponseSchema,
@@ -69,6 +73,7 @@ import {
   type ErrorResponse,
   type ProbeResourceIdParams,
   type RunIdParams,
+  type RunReplyRequest,
   type UpdateConfigurationRecordRequest
 } from '@autocatalyst/api-contract';
 
@@ -133,6 +138,15 @@ async function handleControlPlaneServiceError(
       return;
     case 'persistence_failed':
       await reply.status(500).send(errorResponse('internal_error', 'Internal server error.'));
+      return;
+    case 'invalid_transition':
+      await reply.status(400).send(errorResponse('invalid_transition', error.message, error.details));
+      return;
+    case 'unsupported_pause':
+      await reply.status(409).send(errorResponse('unsupported_pause', error.message, error.details));
+      return;
+    case 'conflict':
+      await reply.status(409).send(errorResponse('conflict', error.message, error.details));
       return;
     default:
       await reply.status(500).send(errorResponse('internal_error', 'Internal server error.'));
@@ -631,6 +645,41 @@ export async function registerControlPlaneRoutes(
           body: body.body
         });
         await reply.status(appendRunFeedbackThreadSuccessStatusCode).send(feedbackSchema.parse(feedback));
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(reply, error);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    // Resume paused run: POST /v1/runs/:id/replies
+    protectedApp.post(runRepliesPath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'run_replies.create', (request) => ({
+        kind: 'run_replies' as const,
+        id: (request.params as { id: string }).id,
+        path: '/v1/runs/:id/replies' as const
+      }))
+    }, async (request, reply) => {
+      let params: RunIdParams;
+      let body: RunReplyRequest;
+      try {
+        params = runIdParamsSchema.parse(request.params);
+        body = runReplyRequestSchema.parse(request.body);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const principal = requirePrincipalFromRequest(request);
+      try {
+        const result = await dependencies.controlPlane.replyToRun({
+          principal,
+          tenant: principal.tenantId,
+          runId: params.id,
+          request: body
+        });
+        await reply.status(createRunReplySuccessStatusCode).send(runReplyResponseSchema.parse(result));
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
           await handleControlPlaneServiceError(reply, error);

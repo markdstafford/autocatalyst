@@ -23,6 +23,7 @@ import {
   appendRunFeedbackThreadSuccessStatusCode,
   createRunFeedbackRequestSchema,
   createRunFeedbackSuccessStatusCode,
+  createRunReplySuccessStatusCode,
   feedbackSchema,
   runFeedbackThreadPath,
   getRunSpecSuccessStatusCode,
@@ -32,6 +33,9 @@ import {
   runFeedbackListResponseSchema,
   runFeedbackPath,
   runListResponseSchema,
+  runRepliesPath,
+  runReplyRequestSchema,
+  runReplyResponseSchema,
   runResourcePath,
   runSchema,
   runSpecPath,
@@ -49,6 +53,8 @@ import {
   type AppendRunFeedbackThreadRequest,
   type CreateRunFeedbackRequest,
   type CreateSecretRequest,
+  type RunReplyRequest,
+  type RunReplyResponse,
   type CreateSecretResponse,
   type ErrorResponse,
   type Feedback,
@@ -87,6 +93,7 @@ export interface ControlPlaneClient {
   createRunFeedback(id: string, request: CreateRunFeedbackRequest): Promise<Feedback>;
   listRunFeedback(id: string): Promise<RunFeedbackListResponse>;
   appendRunFeedbackThreadReply(id: string, feedbackId: string, request: AppendRunFeedbackThreadRequest): Promise<Feedback>;
+  replyToRun(id: string, request: RunReplyRequest): Promise<RunReplyResponse>;
 }
 
 export interface RunEventsStreamOptions {
@@ -382,6 +389,23 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
         throw new Error(`Expected ${appendRunFeedbackThreadSuccessStatusCode} from appendRunFeedbackThreadReply, received ${response.status}.`);
       }
       return feedbackSchema.parse(await parseJson(response));
+    },
+
+    async replyToRun(id, request) {
+      const body = runReplyRequestSchema.parse(request);
+      const response = await fetchImplementation(
+        urlFor(baseUrl, runRepliesPath.replace(':id', id)),
+        {
+          method: 'POST',
+          headers: protectedHeaders(bearerToken, { 'content-type': 'application/json' }),
+          body: JSON.stringify(body)
+        }
+      );
+      await throwForError(response);
+      if (response.status !== createRunReplySuccessStatusCode) {
+        throw new Error(`Expected ${createRunReplySuccessStatusCode} from replyToRun, received ${response.status}.`);
+      }
+      return runReplyResponseSchema.parse(await parseJson(response));
     }
   };
 }

@@ -27,6 +27,8 @@ import type {
 } from './reviewed-role-dispatcher.js';
 import type { RunWorkspaceGitPort } from './run-workspace-git.js';
 import { createReviewerFeedback } from './convergence-feedback.js';
+import { addressOpenFeedbackForRunTarget } from './feedback-lifecycle.js';
+import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
 import type { RunStepDefinition, RunStepId } from './run-step-catalog.js';
 import type { RunWorkflowDefinition, RunDirective } from './run-workflows.js';
 import type { ResolvedStepConvergencePolicy } from './convergence-policy.js';
@@ -184,6 +186,7 @@ export interface ConvergenceEngineOptions {
   readonly clock?: () => string;
   readonly idGenerator?: () => string;
   readonly reviewerPrincipal?: Principal;
+  readonly feedbackLifecycle?: FeedbackLifecycleDependencies;
 }
 
 export interface ConvergenceEngineInput {
@@ -194,6 +197,7 @@ export interface ConvergenceEngineInput {
   readonly stepDefinition: RunStepDefinition;
   readonly workflow: RunWorkflowDefinition;
   readonly workspace?: WorkspaceContext;
+  readonly humanGuidance?: string;
 }
 
 export type ConvergenceEscalationReason = 'max_rounds' | 'oscillation';
@@ -276,9 +280,33 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
     let lastReviewerLastPosition: string | undefined;
     let escalation: ConvergenceEscalationReason | undefined;
 
+    // ---- Construct feedbackLifecycle deps if possible ----------------------
+    const feedbackLifecycleDeps: FeedbackLifecycleDependencies | undefined =
+      options.idGenerator !== undefined && options.clock !== undefined
+        ? { feedback: options.feedback, ids: options.idGenerator, clock: options.clock }
+        : options.feedbackLifecycle;
+
+    // Load open implementation feedback from human revisions to seed round 1 context.
+    if (feedbackLifecycleDeps !== undefined) {
+      const openHumanFeedback = await options.feedback.listByRun(input.runId);
+      const openImpl = openHumanFeedback.filter(
+        fb => fb.target === 'implementation' && fb.status === 'open'
+      );
+      if (openImpl.length > 0) {
+        lastBlockingFindingContexts = openImpl.map(fb => ({
+          feedbackId: fb.id,
+          title: fb.title,
+          body: fb.body,
+          severity: 'blocker' as const
+        }));
+      }
+    }
+
+    let humanGuidance: string | undefined = input.humanGuidance;
+
     for (let roundNumber = 1; roundNumber <= maxRounds; roundNumber++) {
       // 1) Implementer
-      const implReviewContext = lastBlockingFindingContexts.length > 0
+      const implReviewContext = lastBlockingFindingContexts.length > 0 || humanGuidance !== undefined
         ? {
             previousRounds: rounds.map(r => r),
             previousFindings: lastReviewerFindingContexts,
@@ -288,7 +316,8 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
               severity: c.severity,
               body: c.body
             })),
-            routingDistinct: routes.routingInfo.distinct
+            routingDistinct: routes.routingInfo.distinct,
+            ...(humanGuidance !== undefined ? { humanGuidance } : {})
           }
         : {
             previousRounds: rounds.map(r => r),
@@ -565,6 +594,15 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
 
       // 9) Decide loop continuation
       if (noBlocking) {
+        // Address open human-provided implementation feedback now that convergence succeeded.
+        if (feedbackLifecycleDeps !== undefined) {
+          await addressOpenFeedbackForRunTarget({
+            runId: input.runId,
+            target: 'implementation',
+            actor: input.run.owner,
+            body: 'Addressed during implementation revision.'
+          }, feedbackLifecycleDeps);
+        }
         return {
           workResult: { directive: 'advance', result: checkpoint as unknown as Readonly<Record<string, unknown>> },
           checkpointResult: checkpoint
@@ -573,6 +611,8 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
       if (escalation !== undefined) {
         break;
       }
+      // Clear humanGuidance after round 1 so it is not re-sent to subsequent rounds.
+      humanGuidance = undefined;
       // Else continue to next round.
     }
 
