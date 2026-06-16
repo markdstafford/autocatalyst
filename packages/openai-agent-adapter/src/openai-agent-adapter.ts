@@ -636,6 +636,12 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
  * Default sandbox client factory: builds a per-session UnixLocalSandboxClient
  * (with the validated NoopSnapshotSpec bound to it) and opens a session over the
  * manifest that materializes the run's workspace roots.
+ *
+ * Reviewer workspace immutability is enforced by two complementary mechanisms:
+ *   1. extraPathGrants readOnly: true for reviewer sessions (set below via workspaceReadOnly).
+ *   2. NoopSnapshotSpec (validated at session start): no snapshot is ever taken, so no
+ *      in-sandbox writes can propagate back to the host workspace after the session closes.
+ * Tests in openai-agent-adapter.spec.ts verify this invariant at the behavioral level.
  */
 function makeDefaultSandboxClientFactory(workspaceBaseDir?: string): OpenAISandboxClientFactory {
   return async (factoryInput): Promise<OpenAISandboxClientHandle> => {

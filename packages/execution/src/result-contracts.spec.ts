@@ -136,6 +136,29 @@ describe('spec author result contract registration', () => {
 
     expect(parsed.frontmatter.specced_by).toBe('autocatalyst');
   });
+
+  it('stamps trustedSpeccedBy with the provided GitHub username instead of the service fallback', () => {
+    const registry = registerSpecAuthorResultContract(createStepResultContractRegistry(), {
+      trustedSpeccedBy: 'markdstafford'
+    });
+    const resolution = registry.resolve({ step: 'spec.author', schemaId: SPEC_AUTHOR_SCHEMA_ID });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+
+    const parsed = resolution.contract.schema.parse({
+      kind: 'feature_spec',
+      slug: 'github-identity',
+      relativePath: 'context-human/specs/feature-github-identity.md',
+      frontmatter: {
+        created: '2026-06-16',
+        last_updated: '2026-06-16',
+        status: 'draft'
+      },
+      body: '# GitHub identity\n\nBody.'
+    });
+
+    expect(parsed.frontmatter.specced_by).toBe('markdstafford');
+  });
 });
 
 describe('reviewer result contract registration', () => {

@@ -328,4 +328,23 @@ describe('readControlPlaneAppConfig', () => {
       CONTROL_PLANE_MASTER_SECRET: 'secret'
     }).realRunnerDispatch).toBeUndefined();
   });
+
+  it('reads specAuthorIdentity from GITHUB_LOGIN env var', () => {
+    expect(readControlPlaneAppConfig([], {
+      CONTROL_PLANE_PORT: '3000',
+      CONTROL_PLANE_DATABASE_PATH: ':memory:',
+      CONTROL_PLANE_BEARER_TOKEN: 'token',
+      CONTROL_PLANE_MASTER_SECRET: 'secret',
+      GITHUB_LOGIN: 'markdstafford'
+    }).specAuthorIdentity).toBe('markdstafford');
+  });
+
+  it('leaves specAuthorIdentity undefined when GITHUB_LOGIN is absent', () => {
+    expect(readControlPlaneAppConfig([], {
+      CONTROL_PLANE_PORT: '3000',
+      CONTROL_PLANE_DATABASE_PATH: ':memory:',
+      CONTROL_PLANE_BEARER_TOKEN: 'token',
+      CONTROL_PLANE_MASTER_SECRET: 'secret'
+    }).specAuthorIdentity).toBeUndefined();
+  });
 });

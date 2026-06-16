@@ -70,6 +70,7 @@ import {
   createStepResultContractRegistry,
   registerReviewerResultContract,
   registerSpecAuthorResultContract,
+  type StepResultContractRegistry,
   REVIEWER_RESULT_SCHEMA_ID,
   SPEC_AUTHOR_SCHEMA_ID,
   ProviderConfigurationError,
@@ -175,6 +176,11 @@ export interface ControlPlaneServerOptions {
    * `realRunnerDispatch` is not enabled.
    */
   readonly convergenceEngine?: ConvergenceEngine;
+  /**
+   * GitHub username or service identity to stamp as specced_by on spec.author results.
+   * Derived from the authenticated PAT login when available. Falls back to 'autocatalyst'.
+   */
+  readonly specAuthorIdentity?: string;
 }
 
 const DEFAULT_RUN_CONCURRENCY = 2;
@@ -373,13 +379,15 @@ export function createRoutingProfileResolver(options: {
   };
 }
 
-// Registry with contracts for all steps that have typed result schemas.
-// Other steps fall back to the generic unknown/any pass-through validation.
-const stepResultContractRegistry = registerReviewerResultContract(
+// Default registry used by tests and as fallback. Uses 'autocatalyst' as specced_by.
+const defaultStepResultContractRegistry = registerReviewerResultContract(
   registerSpecAuthorResultContract(createStepResultContractRegistry())
 );
 
-export function resolveScratchResultValidationConfig(context: ExecutionContext) {
+export function resolveScratchResultValidationConfig(
+  context: ExecutionContext,
+  registry: StepResultContractRegistry = defaultStepResultContractRegistry
+) {
   const step = context.run.currentStep;
   const workKind = context.run.workKind;
   const role = context.task.inputs['role'];
@@ -387,7 +395,7 @@ export function resolveScratchResultValidationConfig(context: ExecutionContext) 
   if (step === 'spec.author' && (workKind === 'feature' || workKind === 'enhancement')) {
     return {
       mode: 'scratch_file' as const,
-      contractRegistry: stepResultContractRegistry,
+      contractRegistry: registry,
       step: 'spec.author',
       schemaId: SPEC_AUTHOR_SCHEMA_ID,
       resultFile: 'step-result.json'
@@ -397,7 +405,7 @@ export function resolveScratchResultValidationConfig(context: ExecutionContext) 
   if (step === 'implementation.build' && role === 'reviewer') {
     return {
       mode: 'scratch_file' as const,
-      contractRegistry: stepResultContractRegistry,
+      contractRegistry: registry,
       step: 'implementation.build',
       schemaId: REVIEWER_RESULT_SCHEMA_ID,
       resultFile: 'step-result.json'
@@ -417,6 +425,7 @@ export function createDelegatingExecutionEntryPoint(input: {
   readonly materialize: (context: ExecutionContext) => Promise<MaterializedExecutionEnvironment>;
   readonly resolveRole?: (step: string) => string;
   readonly onWorkspaceRootResolved?: (runId: string, repoRoot: string) => void;
+  readonly registry?: StepResultContractRegistry;
 }): ExecutionEntryPoint {
   const { resolveRole } = input;
   /**
@@ -475,7 +484,7 @@ export function createDelegatingExecutionEntryPoint(input: {
       const perRunEntryPoint = createExecutionEntryPoint({
         runner,
         materialize: materializeWithScratch,
-        resultValidation: (entryInput) => resolveScratchResultValidationConfig(entryInput.context)
+        resultValidation: (entryInput) => resolveScratchResultValidationConfig(entryInput.context, input.registry)
       });
       yield* perRunEntryPoint.execute(entryInput);
     }
@@ -918,6 +927,11 @@ export async function createControlPlaneServer(
     const materializer = createExecutionMaterializer({
       capabilities: { shellAvailable: false, lspAvailable: false }
     });
+    const stepResultContractRegistry = registerReviewerResultContract(
+      registerSpecAuthorResultContract(createStepResultContractRegistry(), {
+        trustedSpeccedBy: options.specAuthorIdentity
+      })
+    );
     const entryPoint = createDelegatingExecutionEntryPoint({
       factory: runnerFactory,
       materialize: (context) => materializer.materialize(context),
@@ -928,7 +942,8 @@ export async function createControlPlaneServer(
       },
       onWorkspaceRootResolved: (runId, repoRoot) => {
         runWorkspaceRootRegistry.set(runId, repoRoot);
-      }
+      },
+      registry: stepResultContractRegistry
     });
     const executionUnitOfWork = createExecutionRunUnitOfWork({
       execute: entryPoint,
@@ -951,7 +966,10 @@ export async function createControlPlaneServer(
               tenantId: workInput.tenant,
               repositories: domainRepos
             });
-            specAuthorContext = buildSpecAuthorContext(promptInput);
+            specAuthorContext = buildSpecAuthorContext({
+              ...promptInput,
+              ...(options.specAuthorIdentity !== undefined ? { specAuthorIdentity: options.specAuthorIdentity } : {})
+            });
           } catch (error) {
             if (error instanceof SpecAuthoringContextLoadError) {
               throw new ExecutionContextResolutionError(

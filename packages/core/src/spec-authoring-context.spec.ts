@@ -150,6 +150,23 @@ describe('spec-authoring context builders', () => {
     expect(inputs.request.text).toContain('real spec authoring prompt');
   });
 
+  it('stamps trustedSpeccedBy from specAuthorIdentity when provided', () => {
+    const inputs = buildSpecAuthorTaskInputs({ ...baseInput, specAuthorIdentity: 'markdstafford' });
+    expect(inputs.outputContract.frontmatter.trustedSpeccedBy).toBe('markdstafford');
+  });
+
+  it('includes the specAuthorIdentity value in the prompt text', () => {
+    const prompt = buildSpecAuthorPrompt({ ...baseInput, specAuthorIdentity: 'markdstafford' });
+    expect(prompt).toContain('stamp `frontmatter.specced_by` as `markdstafford`');
+  });
+
+  it('defaults trustedSpeccedBy to autocatalyst when specAuthorIdentity is omitted', () => {
+    const inputs = buildSpecAuthorTaskInputs(baseInput);
+    expect(inputs.outputContract.frontmatter.trustedSpeccedBy).toBe('autocatalyst');
+    const prompt = buildSpecAuthorPrompt(baseInput);
+    expect(prompt).toContain('stamp `frontmatter.specced_by` as `autocatalyst`');
+  });
+
   it('builds enhancement-specific kind and path rules', () => {
     const inputs = buildSpecAuthorTaskInputs({
       ...baseInput,
