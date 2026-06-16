@@ -60,7 +60,7 @@ export interface ImplementationBuildTaskInputs {
     readonly findingCategories?: readonly string[];
   };
   readonly previousFindings?: readonly ReviewerFindingContext[];
-  readonly requiredDispositions?: readonly ImplementationBuildReviewContext['requiredDispositions'];
+  readonly requiredDispositions?: ImplementationBuildReviewContext['requiredDispositions'];
   readonly previousRoundCount?: number;
   readonly humanGuidance?: string;
   readonly outputContract?: {

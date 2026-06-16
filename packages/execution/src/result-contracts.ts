@@ -92,7 +92,7 @@ function assertTrustedSpeccedBy(value: string): string {
   return value;
 }
 
-export function stampSpecAuthorResultIdentity(candidate: unknown, trustedSpeccedBy = SYSTEM_SPEC_AUTHOR_SPECCED_BY): unknown {
+export function stampSpecAuthorResultIdentity(candidate: unknown, trustedSpeccedBy: string = SYSTEM_SPEC_AUTHOR_SPECCED_BY): unknown {
   const stampedIdentity = assertTrustedSpeccedBy(trustedSpeccedBy);
   if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) {
     return candidate;
