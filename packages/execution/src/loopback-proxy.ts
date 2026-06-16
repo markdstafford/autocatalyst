@@ -174,12 +174,16 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
 
       // Retry loop
       let attemptNumber = 0;
-      // Set to true once we have entered the upstream response callback for a non-transient response.
-      // Once set, we must never retry even if a transport error fires on the request object.
+      // Set to true only once we call res.writeHead() to commit headers to the downstream client.
+      // At that point the response body may already be streaming and we can no longer send an error envelope.
       let responseCommitted = false;
 
       function attempt(): void {
         attemptNumber += 1;
+        // Prevents both the response callback and the error handler from both acting on the same attempt
+        // (e.g. socket close fires concurrently with the response callback for a transient status).
+        // Reset per-attempt so that a fresh attempt after a transient retry can still be handled.
+        let attemptResponseHandled = false;
 
         // Update content-length to match buffered body
         const attemptHeaders = { ...forwardHeaders, 'content-length': String(bodyBuffer.length) };
@@ -191,9 +195,8 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
             headers: attemptHeaders
           },
           (upstreamRes) => {
-            // Mark committed immediately — even for transient responses we must not also retry
-            // via the transport error path if the socket closes concurrently
-            responseCommitted = true;
+            if (attemptResponseHandled) return;
+            attemptResponseHandled = true;
 
             const status = upstreamRes.statusCode ?? 200;
             const isTransient = retryPolicy.transientHttpStatuses.includes(status);
@@ -214,7 +217,8 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
               return;
             }
 
-            // Non-transient or first successful response — stream to client
+            // Non-transient — commit to downstream client. After this point we cannot retry.
+            responseCommitted = true;
             const safeHeaders: Record<string, string | string[]> = {};
             for (const [name, value] of Object.entries(upstreamRes.headers)) {
               if (!hopByHopResponseHeaders.has(name.toLowerCase()) && value !== undefined) {
@@ -305,7 +309,9 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
         });
 
         upstreamReq.on('error', () => {
-          if (responseCommitted) return; // already streaming to client, cannot retry
+          if (attemptResponseHandled) return; // response callback already owns this attempt
+          if (responseCommitted) return; // already writing to client, cannot send error envelope
+          attemptResponseHandled = true;
           if (attemptNumber <= maxRetries) {
             if (logger.enabled && dumpId) {
               void logger.writeResponseError(dumpId, {

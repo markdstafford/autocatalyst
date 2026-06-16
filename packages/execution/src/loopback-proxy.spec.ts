@@ -396,6 +396,40 @@ describe('createLoopbackProxy', () => {
     await upstream.close();
   });
 
+  it('returns a safe 502 when a transient 429 retry is followed by a pre-header socket error', async () => {
+    // Regression: responseCommitted was set to true by the 429 response callback even for
+    // transient responses. When the next retry attempt hit a transport error, the error handler
+    // saw responseCommitted=true and returned early, leaving the client request hanging.
+    let attempts = 0;
+    const upstream = await startFakeUpstream((req, res) => {
+      attempts += 1;
+      req.resume();
+      if (attempts === 1) {
+        res.writeHead(429, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'overloaded' }));
+        return;
+      }
+      // Destroy socket before writing any response headers (pre-header transport error)
+      req.socket.destroy();
+    });
+
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: { maxRetries: 1 },
+      telemetryContext: { runId: 'run_1', step: 'spec.author' },
+      sleep: async () => undefined,
+      jitter: () => 0
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/test`, { method: 'POST', body: '{}' });
+    expect(response.status).toBe(502);
+    expect(await response.json()).toEqual({ error: { code: 'proxy_upstream_failed', message: 'Provider proxy upstream request failed.' } });
+    expect(attempts).toBe(2);
+
+    await proxy.close();
+    await upstream.close();
+  });
+
   it('retries pre-header transport errors and succeeds on second attempt', async () => {
     let attempts = 0;
     const net = await import('node:net');
