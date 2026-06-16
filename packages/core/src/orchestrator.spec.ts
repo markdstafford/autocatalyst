@@ -1334,7 +1334,8 @@ describe('DefaultOrchestrator.applyDirective — spec.human_review gate guard', 
       runId: 'run_1',
       tenant: 'tenant_1',
       directive: 'advance',
-      principal: principal('phoebe')
+      principal: principal('phoebe'),
+      origin: 'human'
     });
 
     expect(resolveApproverAddressedFeedbackFn).toHaveBeenCalledTimes(1);
@@ -1353,7 +1354,8 @@ describe('DefaultOrchestrator.applyDirective — spec.human_review gate guard', 
       runId: 'run_1',
       tenant: 'tenant_1',
       directive: 'advance',
-      principal: phoebe
+      principal: phoebe,
+      origin: 'human'
     });
 
     expect(resolveApproverAddressedFeedbackFn).toHaveBeenCalledWith(
@@ -1371,7 +1373,8 @@ describe('DefaultOrchestrator.applyDirective — spec.human_review gate guard', 
     await orchestrator.applyDirective({
       runId: 'run_1',
       tenant: 'tenant_1',
-      directive: 'advance'
+      directive: 'advance',
+      origin: 'human'
     });
 
     expect(resolveApproverAddressedFeedbackFn).toHaveBeenCalledWith(
@@ -1394,7 +1397,8 @@ describe('DefaultOrchestrator.applyDirective — spec.human_review gate guard', 
         runId: 'run_1',
         tenant: 'tenant_1',
         directive: 'advance',
-        principal: principal('phoebe')
+        principal: principal('phoebe'),
+        origin: 'human'
       })
     ).rejects.toMatchObject({
       name: 'OrchestratorError',
@@ -1417,7 +1421,8 @@ describe('DefaultOrchestrator.applyDirective — spec.human_review gate guard', 
         runId: 'run_1',
         tenant: 'tenant_1',
         directive: 'advance',
-        principal: principal('phoebe')
+        principal: principal('phoebe'),
+        origin: 'human'
       });
       throw new Error('expected to throw');
     } catch (error) {
@@ -1546,7 +1551,8 @@ describe('DefaultOrchestrator.applyDirective — spec approval finalizer', () =>
       runId: 'run_1',
       directive: 'advance',
       tenant: 'tenant_1',
-      principal: principal('phoebe')
+      principal: principal('phoebe'),
+      origin: 'human'
     });
 
     expect(finalizeSpecApprovalFn).toHaveBeenCalledTimes(1);
@@ -1575,7 +1581,7 @@ describe('DefaultOrchestrator.applyDirective — spec approval finalizer', () =>
     });
 
     await expect(
-      orchestrator.applyDirective({ runId: 'run_1', directive: 'advance', tenant: 'tenant_1' })
+      orchestrator.applyDirective({ runId: 'run_1', directive: 'advance', tenant: 'tenant_1', origin: 'human' })
     ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'persistence_failed' });
 
     expect(finalizeSpecApprovalFn).not.toHaveBeenCalled();
@@ -1606,7 +1612,8 @@ describe('DefaultOrchestrator.applyDirective — spec approval finalizer', () =>
       orchestrator.applyDirective({
         runId: 'run_1',
         directive: 'advance',
-        tenant: 'tenant_1'
+        tenant: 'tenant_1',
+        origin: 'human'
       })
     ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'persistence_failed' });
 
@@ -2380,6 +2387,18 @@ describe('reviewed step integration — transitions and checkpoint persistence',
     expect(calls).toHaveLength(0);
     expect(unitRun).toHaveBeenCalledTimes(1);
     expect(result.run.currentStep).toBe('implementation.build');
+  });
+
+  it('keeps runner-origin advance blocked at implementation human review', async () => {
+    const existing = makeRun({ currentStep: 'implementation.human_review' });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing)
+    });
+    const { orchestrator } = makeOrchestrator({ runs });
+
+    await expect(
+      orchestrator.applyDirective({ runId: 'run_1', directive: 'advance', tenant: 'tenant_1', origin: 'runner' })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition' });
   });
 
   it('convergence checkpoint is stored on the run step after successful advance', async () => {

@@ -131,6 +131,7 @@ export interface ApplyOrchestratedDirectiveInput {
   readonly checkpointResult?: JsonValue;
   readonly principal?: NonModelPrincipal;
   readonly reason?: string;
+  readonly origin?: 'runner' | 'human' | 'system';
 }
 
 export interface DispatchRunInput {
@@ -435,11 +436,12 @@ export class DefaultOrchestrator implements Orchestrator {
       ? normalizeFailureReasonForPublicSurface(input.reason)
       : undefined;
 
-    // Defense-in-depth: block any advance directive when the run is already at a human gate,
-    // unless it is spec.human_review (which has its own gate-check block below).
-    // A stale concurrent dispatch can reach applyDirective after the run has moved to a human
-    // step; this guard prevents it from leapfrogging the gate.
-    if (input.directive === 'advance' && existing.currentStep !== 'spec.human_review') {
+    const origin = input.origin ?? 'runner';
+
+    // Defense-in-depth: block any advance directive from runner origin when run is at a human gate.
+    // spec.human_review is excluded here because it was originally handled as a special case before
+    // full human-origin support was added; now both gates are guarded by the origin check.
+    if (origin === 'runner' && input.directive === 'advance') {
       const currentStepDef = getRunStepDefinition(existing.currentStep);
       if (currentStepDef !== null && currentStepDef.waitingOn === 'human') {
         throw new OrchestratorError(
@@ -580,7 +582,7 @@ export class DefaultOrchestrator implements Orchestrator {
 
     if (stepDefinition !== null && this.#isReviewedProducingStep(stepDefinition) && this.#convergenceEngine !== undefined) {
       const convergenceEngine = this.#convergenceEngine;
-      return this.#dispatchQueue.enqueue(async () => {
+      return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
         const workflow = getRunWorkflowForWorkKind(run.workKind);
         if (workflow === null) {
           throw new OrchestratorError('unknown_work_kind', `Unknown work kind '${run.workKind}'.`);
@@ -613,21 +615,23 @@ export class DefaultOrchestrator implements Orchestrator {
 
         if (result.workResult.directive === 'fail') {
           const reason = result.workResult.reason;
-          return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason });
+          return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason, origin: 'runner' });
         }
         if (result.workResult.directive === 'needs_input') {
           return this.applyDirective({
             runId: input.runId,
             directive: 'needs_input',
             tenant: input.tenant,
-            checkpointResult: result.checkpointResult as unknown as JsonValue
+            checkpointResult: result.checkpointResult as unknown as JsonValue,
+            origin: 'runner'
           });
         }
         return this.applyDirective({
           runId: input.runId,
           directive: 'advance',
           tenant: input.tenant,
-          checkpointResult: result.checkpointResult as unknown as JsonValue
+          checkpointResult: result.checkpointResult as unknown as JsonValue,
+          origin: 'runner'
         });
       });
     }
@@ -637,10 +641,10 @@ export class DefaultOrchestrator implements Orchestrator {
     }
     const unitOfWork = this.#unitOfWork;
 
-    return this.#dispatchQueue.enqueue(async () => {
+    return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
       const result = await unitOfWork.run({ runId: input.runId, run, tenant: input.tenant });
       if (result.directive === 'fail') {
-        return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason: result.reason });
+        return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason: result.reason, origin: 'runner' });
       }
       if (result.directive === 'needs_input') {
         const workflow = getRunWorkflowForWorkKind(run.workKind);
@@ -659,13 +663,14 @@ export class DefaultOrchestrator implements Orchestrator {
       if (result.directive === 'advance' && run.currentStep === 'spec.author' && (run.workKind === 'feature' || run.workKind === 'enhancement')) {
         const completionResult = await this.#runSpecAuthoringCompletion(input.runId, run, result.result);
         if (completionResult.kind === 'failed') {
-          return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason: 'spec_authoring_failed' });
+          return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason: 'spec_authoring_failed', origin: 'runner' });
         }
         return this.applyDirective({
           runId: input.runId,
           directive: 'advance',
           tenant: input.tenant,
-          checkpointResult: completionResult.checkpointResult as JsonValue
+          checkpointResult: completionResult.checkpointResult as JsonValue,
+          origin: 'runner'
         });
       }
 
@@ -678,7 +683,8 @@ export class DefaultOrchestrator implements Orchestrator {
         runId: input.runId,
         directive,
         tenant: input.tenant,
-        ...(checkpointResult !== undefined ? { checkpointResult } : {})
+        ...(checkpointResult !== undefined ? { checkpointResult } : {}),
+        origin: 'runner'
       });
     });
   }
@@ -697,7 +703,7 @@ export class DefaultOrchestrator implements Orchestrator {
 
   async #dispatchSystemStep(input: DispatchRunInput, run: Run): Promise<OrchestratedRunResult> {
     if (run.currentStep === 'intake') {
-      return this.applyDirective({ runId: input.runId, directive: 'advance', tenant: input.tenant });
+      return this.applyDirective({ runId: input.runId, directive: 'advance', tenant: input.tenant, origin: 'system' });
     }
 
     throw new OrchestratorError(

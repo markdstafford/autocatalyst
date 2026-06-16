@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { RunDispatchQueue } from './run-dispatch-queue.js';
 
 describe('RunDispatchQueue constructor', () => {
@@ -241,5 +241,35 @@ describe('RunDispatchQueue enqueue', () => {
     await Promise.resolve();
     expect(queue.activeCount).toBe(0);
     expect(queue.queuedCount).toBe(0);
+  });
+});
+
+describe('RunDispatchQueue enqueueForRun', () => {
+  it('serializes work with the same run id while allowing different run ids to proceed', async () => {
+    const queue = new RunDispatchQueue({ maxConcurrent: 2 });
+    const order: string[] = [];
+    let releaseRun1First!: () => void;
+
+    const first = queue.enqueueForRun('run_1', async () => {
+      order.push('run_1:first:start');
+      await new Promise<void>(resolve => { releaseRun1First = resolve; });
+      order.push('run_1:first:end');
+      return 'first';
+    });
+    const second = queue.enqueueForRun('run_1', async () => {
+      order.push('run_1:second:start');
+      return 'second';
+    });
+    const other = queue.enqueueForRun('run_2', async () => {
+      order.push('run_2:start');
+      return 'other';
+    });
+
+    await vi.waitFor(() => expect(order).toContain('run_2:start'));
+    expect(order).not.toContain('run_1:second:start');
+    releaseRun1First();
+
+    await expect(Promise.all([first, second, other])).resolves.toEqual(['first', 'second', 'other']);
+    expect(order.indexOf('run_1:first:end')).toBeLessThan(order.indexOf('run_1:second:start'));
   });
 });
