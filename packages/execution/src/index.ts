@@ -20,13 +20,18 @@ export {
 export {
   createStepResultContractRegistry,
   resolveStepResultContract,
-  SPEC_AUTHOR_SCHEMA_ID,
   registerSpecAuthorResultContract,
+  registerReviewerResultContract,
+  SPEC_AUTHOR_SCHEMA_ID,
+  REVIEWER_RESULT_SCHEMA_ID,
+  SYSTEM_SPEC_AUTHOR_SPECCED_BY,
+  stampSpecAuthorResultIdentity,
   type StepResultContractDefinition,
   type StepResultContractRegistry,
   type StepResultContractResolver,
   type StepResultContractResolution,
-  type StepResultContractResolutionFailure
+  type StepResultContractResolutionFailure,
+  type SpecAuthorResultContractOptions
 } from './result-contracts.js';
 
 export {

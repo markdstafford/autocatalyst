@@ -284,3 +284,17 @@ export type {
   SpecAuthorSupportedWorkKind,
   SpecAuthorTaskInputs
 } from './spec-authoring-context.js';
+
+export {
+  buildImplementationBuildContext,
+  buildImplementationBuildPrompt,
+  buildImplementationBuildTaskInputs
+} from './implementation-build-context.js';
+export type {
+  ImplementationBuildApprovedSpecContext,
+  ImplementationBuildContext,
+  ImplementationBuildPromptInput,
+  ImplementationBuildReviewContext,
+  ImplementationBuildRole,
+  ImplementationBuildTaskInputs
+} from './implementation-build-context.js';

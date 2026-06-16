@@ -16,6 +16,8 @@ export interface ControlPlaneAppConfig {
   readonly runConcurrency: number;
   readonly workspaceRoots?: WorkspaceRootConfig;
   readonly realRunnerDispatch?: RealRunnerDispatchConfig;
+  /** GitHub username to stamp as specced_by on spec.author results. Read from GITHUB_LOGIN env var. */
+  readonly specAuthorIdentity?: string;
 }
 
 const DEFAULT_RUN_CONCURRENCY = 2;
@@ -138,6 +140,7 @@ export function readControlPlaneAppConfig(
   const workspacesRootValue = readFlag(argv, '--workspaces-root') ?? env['AUTOCATALYST_WORKSPACES_ROOT'];
   const workspaceRoots = parseWorkspaceRoots(reposRootValue, workspacesRootValue);
   const realRunnerDispatch = parseRealRunnerDispatch(argv, env);
+  const specAuthorIdentity = env['GITHUB_LOGIN']?.trim() || undefined;
 
   return {
     port: parsePort(portValue),
@@ -146,6 +149,7 @@ export function readControlPlaneAppConfig(
     masterSecret: parseMasterSecret(masterSecretValue),
     runConcurrency: parseRunConcurrency(runConcurrencyValue),
     ...(workspaceRoots !== undefined ? { workspaceRoots } : {}),
-    ...(realRunnerDispatch !== undefined ? { realRunnerDispatch } : {})
+    ...(realRunnerDispatch !== undefined ? { realRunnerDispatch } : {}),
+    ...(specAuthorIdentity !== undefined ? { specAuthorIdentity } : {})
   };
 }

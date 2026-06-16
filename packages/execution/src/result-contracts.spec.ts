@@ -1,12 +1,14 @@
 import { z } from 'zod';
 import { describe, expect, it } from 'vitest';
 
-import { specAuthorResultSchema } from '@autocatalyst/api-contract';
 import {
+  SPEC_AUTHOR_SCHEMA_ID,
+  REVIEWER_RESULT_SCHEMA_ID,
   createStepResultContractRegistry,
   resolveStepResultContract,
+  registerReviewerResultContract,
   registerSpecAuthorResultContract,
-  SPEC_AUTHOR_SCHEMA_ID
+  SYSTEM_SPEC_AUTHOR_SPECCED_BY
 } from './result-contracts.js';
 
 const schema = z.object({ artifact: z.string() }).strict();
@@ -72,7 +74,6 @@ describe('spec author result contract registration', () => {
     expect(resolution.status).toBe('resolved');
     if (resolution.status !== 'resolved') return;
     expect(resolution.contract.schemaId).toBe('autocatalyst.spec_author.v1');
-    expect(resolution.contract.schema).toBe(specAuthorResultSchema);
   });
 
   it('keeps unknown schemaIds in the existing failure path', () => {
@@ -91,5 +92,100 @@ describe('spec author result contract registration', () => {
     expect(resolution.status).toBe('failed');
     if (resolution.status !== 'failed') return;
     expect(resolution.code).toBe('result_contract_missing');
+  });
+
+  it('stamps omitted model specced_by with the trusted service identity before validation', () => {
+    const registry = registerSpecAuthorResultContract(createStepResultContractRegistry());
+    const resolution = registry.resolve({ step: 'spec.author', schemaId: SPEC_AUTHOR_SCHEMA_ID });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+
+    const parsed = resolution.contract.schema.parse({
+      kind: 'feature_spec',
+      slug: 'real-prompts',
+      relativePath: 'context-human/specs/feature-real-prompts.md',
+      frontmatter: {
+        created: '2026-06-16',
+        last_updated: '2026-06-16',
+        status: 'draft'
+      },
+      body: '# Real prompts\n\nBody.'
+    });
+
+    expect(parsed.frontmatter.specced_by).toBe(SYSTEM_SPEC_AUTHOR_SPECCED_BY);
+  });
+
+  it('overwrites invalid model specced_by with the trusted service identity before validation', () => {
+    const registry = registerSpecAuthorResultContract(createStepResultContractRegistry());
+    const resolution = registry.resolve({ step: 'spec.author', schemaId: SPEC_AUTHOR_SCHEMA_ID });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+
+    const parsed = resolution.contract.schema.parse({
+      kind: 'feature_spec',
+      slug: 'identity-stamping',
+      relativePath: 'context-human/specs/feature-identity-stamping.md',
+      frontmatter: {
+        created: '2026-06-16',
+        last_updated: '2026-06-16',
+        status: 'draft',
+        specced_by: 'autocatalyst:mm:planning'
+      },
+      body: '# Identity stamping\n\nBody.'
+    });
+
+    expect(parsed.frontmatter.specced_by).toBe('autocatalyst');
+  });
+
+  it('stamps trustedSpeccedBy with the provided GitHub username instead of the service fallback', () => {
+    const registry = registerSpecAuthorResultContract(createStepResultContractRegistry(), {
+      trustedSpeccedBy: 'markdstafford'
+    });
+    const resolution = registry.resolve({ step: 'spec.author', schemaId: SPEC_AUTHOR_SCHEMA_ID });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+
+    const parsed = resolution.contract.schema.parse({
+      kind: 'feature_spec',
+      slug: 'github-identity',
+      relativePath: 'context-human/specs/feature-github-identity.md',
+      frontmatter: {
+        created: '2026-06-16',
+        last_updated: '2026-06-16',
+        status: 'draft'
+      },
+      body: '# GitHub identity\n\nBody.'
+    });
+
+    expect(parsed.frontmatter.specced_by).toBe('markdstafford');
+  });
+});
+
+describe('reviewer result contract registration', () => {
+  it('exports REVIEWER_RESULT_SCHEMA_ID as autocatalyst.reviewer_result.v1', () => {
+    expect(REVIEWER_RESULT_SCHEMA_ID).toBe('autocatalyst.reviewer_result.v1');
+  });
+
+  it('registers autocatalyst.reviewer_result.v1 for implementation.build', () => {
+    const registry = registerReviewerResultContract(createStepResultContractRegistry());
+    const resolution = registry.resolve({ step: 'implementation.build', schemaId: REVIEWER_RESULT_SCHEMA_ID });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+    expect(resolution.contract.schemaId).toBe('autocatalyst.reviewer_result.v1');
+    expect(resolution.contract.resultFile).toBe('step-result.json');
+  });
+
+  it('rejects invalid reviewer result shapes', () => {
+    const registry = registerReviewerResultContract(createStepResultContractRegistry());
+    const resolution = registry.resolve({ step: 'implementation.build', schemaId: REVIEWER_RESULT_SCHEMA_ID });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+    expect(() => resolution.contract.schema.parse({
+      kind: 'feature_spec',
+      slug: 'wrong-shape',
+      relativePath: 'context-human/specs/feature-wrong-shape.md',
+      frontmatter: { created: '2026-06-16', last_updated: '2026-06-16', status: 'draft', specced_by: 'autocatalyst' },
+      body: '# Wrong shape'
+    })).toThrow();
   });
 });

@@ -33,6 +33,7 @@ import {
   createExplicitProfileResolver,
   createNodeWorkspaceFilesystem,
   logProviderCompositionDiagnostics,
+  resolveScratchResultValidationConfig,
   startControlPlaneServer
 } from './server.js';
 
@@ -578,6 +579,29 @@ describe('createDelegatingExecutionEntryPoint — role routing', () => {
 
     expect(capturedInputs).toHaveLength(1);
     expect(capturedInputs[0]?.role).toBe('implementer');
+  });
+
+  it('selects the reviewer result contract for implementation.build reviewer sessions', () => {
+    const context = makeMinimalContext('reviewer');
+    const config = resolveScratchResultValidationConfig(context);
+
+    expect(config).toMatchObject({
+      mode: 'scratch_file',
+      step: 'implementation.build',
+      schemaId: 'autocatalyst.reviewer_result.v1',
+      resultFile: 'step-result.json'
+    });
+  });
+
+  it('uses generic scratch validation for implementation.build implementer sessions', () => {
+    const context = makeMinimalContext('implementer');
+    const config = resolveScratchResultValidationConfig(context);
+
+    expect(config).toMatchObject({
+      mode: 'scratch_file',
+      schemaId: 'any',
+      resultFile: 'step-result.json'
+    });
   });
 });
 

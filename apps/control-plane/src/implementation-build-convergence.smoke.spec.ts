@@ -71,6 +71,11 @@ import {
   createSqliteDatabase,
   migrateSqliteDatabase
 } from '@autocatalyst/persistence';
+import {
+  REVIEWER_RESULT_SCHEMA_ID,
+  createStepResultContractRegistry,
+  registerReviewerResultContract
+} from '@autocatalyst/execution';
 
 import { createRunWorkspaceGitPort } from './run-workspace-git-port.js';
 
@@ -878,5 +883,43 @@ describe('implementation.build convergence — production-path smoke', () => {
         close();
       }
     });
+  });
+});
+
+describe('reviewer result contract — schema boundary', () => {
+  it('registered reviewerResultSchema rejects a feature_spec-shaped result', () => {
+    const registry = registerReviewerResultContract(createStepResultContractRegistry());
+    const resolution = registry.resolve({
+      step: 'implementation.build',
+      schemaId: REVIEWER_RESULT_SCHEMA_ID
+    });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+
+    expect(() => resolution.contract.schema.parse({
+      kind: 'feature_spec',
+      slug: 'wrong-shape',
+      relativePath: 'context-human/specs/feature-wrong-shape.md',
+      frontmatter: {
+        created: '2026-06-16',
+        last_updated: '2026-06-16',
+        status: 'draft',
+        specced_by: 'autocatalyst'
+      },
+      body: '# Wrong shape'
+    })).toThrow();
+  });
+
+  it('registered reviewerResultSchema accepts a satisfied verdict', () => {
+    const registry = registerReviewerResultContract(createStepResultContractRegistry());
+    const resolution = registry.resolve({
+      step: 'implementation.build',
+      schemaId: REVIEWER_RESULT_SCHEMA_ID
+    });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+
+    const result = resolution.contract.schema.parse({ status: 'satisfied', findings: [] });
+    expect(result).toMatchObject({ status: 'satisfied' });
   });
 });

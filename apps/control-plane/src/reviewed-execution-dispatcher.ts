@@ -125,18 +125,10 @@ export function createReviewedExecutionDispatcher(
       // the execution pipeline. The task input keys use a namespaced prefix to
       // avoid collisions with step-level task inputs defined by the caller.
       //
-      // NOTE: The current ExecutionRunUnitOfWork accepts RunWorkInput directly.
-      // Role and round are injected as metadata that downstream resolvers
-      // (execution context, entry point) can read when they support it.
-      // Today these are logged/recorded through session persistence by the
-      // session repository; the execution entry point reads `role` from
-      // AgentRunnerFactoryInput which is derived from resolveRole in the
-      // delegating entry point wired in server.ts.
-      //
-      // For this adapter we pass the effective role and round through the
-      // RunWorkInput so integrators that wire a role-aware resolveContext can
-      // apply them. The base implementation ignores unknown keys, so this is
-      // safe even when the underlying resolver has not been updated yet.
+      // Role, round, and review context are carried through RunWorkInput so the
+      // production execution context resolver can build role-aware prompts,
+      // task inputs, result-contract selection, and reviewer read-only tool
+      // policy. Unknown keys remain safe for simpler test resolvers.
       const augmentedInput = {
         ...input,
         // Signal the effective tool policy for downstream context resolvers.

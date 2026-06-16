@@ -64,6 +64,13 @@ describe('spec authoring schemas', () => {
     expect(() => specArtifactKindSchema.parse('bug_triage')).toThrow();
   });
 
+  it('rejects invalid committed specced_by identities', () => {
+    expect(() => specAuthorFrontmatterSchema.parse({
+      ...validFrontmatter,
+      specced_by: 'autocatalyst:mm:planning'
+    })).toThrow();
+  });
+
   it('rejects enhancement result with feature path', () => {
     expect(() => specAuthorResultSchema.parse({
       kind: 'enhancement_spec',
