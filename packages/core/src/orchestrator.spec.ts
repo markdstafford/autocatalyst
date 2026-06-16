@@ -2733,4 +2733,96 @@ describe('DefaultOrchestrator.replyToRun', () => {
       orchestrator.replyToRun({ runId: 'run_1', tenant: 'tenant_1', principal: principal('phoebe'), request: { kind: 'approve' } })
     ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'persistence_failed' });
   });
+
+  // --- implementation.awaiting_input guidance ---
+
+  it('records convergence guidance and advances awaiting input to implementation.build', async () => {
+    const awaitingStep = makeRunStep({
+      id: 'step_awaiting',
+      step: 'implementation.awaiting_input',
+      checkpointResult: {
+        pause: { kind: 'convergence_escalation', producingStep: 'implementation.build' }
+      }
+    });
+    const existing = makeRun({ currentStep: 'implementation.awaiting_input' });
+    const advanced = makeRun({ currentStep: 'implementation.build' });
+    const advancedStep = makeRunStep({ id: 'step_2', step: 'implementation.build', phase: 'implementation' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: advanced, runStep: advancedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const runSteps = makeFakeRunStepRepo({
+      listByRun: vi.fn().mockResolvedValue([awaitingStep]),
+      updateCheckpoint: vi.fn().mockResolvedValue(awaitingStep)
+    });
+
+    const { orchestrator } = makeOrchestrator({ runs, runSteps });
+
+    const result = await orchestrator.replyToRun({
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      principal: principal('phoebe'),
+      request: { kind: 'guidance', body: 'Prefer public API; do not broaden auth.' }
+    });
+
+    expect(result.classification).toEqual({ directive: 'advance', pauseKind: 'convergence_escalation' });
+    expect(result.run.currentStep).toBe('implementation.build');
+    expect(runSteps.updateCheckpoint).toHaveBeenCalledOnce();
+    const updateCall = (runSteps.updateCheckpoint as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    const cp = updateCall?.checkpointResult as { pause: { kind: string; humanGuidance: string } };
+    expect(cp.pause.kind).toBe('convergence_escalation');
+    expect(cp.pause.humanGuidance).toBe('Prefer public API; do not broaden auth.');
+  });
+
+  it('throws invalid_transition when non-guidance reply sent to implementation.awaiting_input', async () => {
+    const awaitingStep = makeRunStep({
+      id: 'step_awaiting',
+      step: 'implementation.awaiting_input',
+      checkpointResult: {
+        pause: { kind: 'convergence_escalation', producingStep: 'implementation.build' }
+      }
+    });
+    const existing = makeRun({ currentStep: 'implementation.awaiting_input' });
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(existing) });
+    const runSteps = makeFakeRunStepRepo({
+      listByRun: vi.fn().mockResolvedValue([awaitingStep])
+    });
+
+    const { orchestrator } = makeOrchestrator({ runs, runSteps });
+
+    await expect(
+      orchestrator.replyToRun({ runId: 'run_1', tenant: 'tenant_1', principal: principal('phoebe'), request: { kind: 'approve' } })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition' });
+  });
+
+  it('throws persistence_failed when runSteps not configured and run is at awaiting_input', async () => {
+    const existing = makeRun({ currentStep: 'implementation.awaiting_input' });
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(existing) });
+    // No runSteps
+    const { orchestrator } = makeOrchestrator({ runs });
+
+    await expect(
+      orchestrator.replyToRun({ runId: 'run_1', tenant: 'tenant_1', principal: principal('phoebe'), request: { kind: 'guidance', body: 'fix it' } })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'persistence_failed' });
+  });
+
+  it('throws invalid_transition for unsupported pause kind at implementation.awaiting_input', async () => {
+    const awaitingStep = makeRunStep({
+      id: 'step_awaiting',
+      step: 'implementation.awaiting_input',
+      checkpointResult: null  // null checkpoint = not a convergence escalation
+    });
+    const existing = makeRun({ currentStep: 'implementation.awaiting_input' });
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(existing) });
+    const runSteps = makeFakeRunStepRepo({
+      listByRun: vi.fn().mockResolvedValue([awaitingStep])
+    });
+
+    const { orchestrator } = makeOrchestrator({ runs, runSteps });
+
+    await expect(
+      orchestrator.replyToRun({ runId: 'run_1', tenant: 'tenant_1', principal: principal('phoebe'), request: { kind: 'guidance', body: 'fix it' } })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition', details: { code: 'unsupported_pause' } });
+  });
 });

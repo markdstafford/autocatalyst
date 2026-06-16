@@ -197,6 +197,7 @@ export interface ConvergenceEngineInput {
   readonly stepDefinition: RunStepDefinition;
   readonly workflow: RunWorkflowDefinition;
   readonly workspace?: WorkspaceContext;
+  readonly humanGuidance?: string;
 }
 
 export type ConvergenceEscalationReason = 'max_rounds' | 'oscillation';
@@ -301,9 +302,11 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
       }
     }
 
+    let humanGuidance: string | undefined = input.humanGuidance;
+
     for (let roundNumber = 1; roundNumber <= maxRounds; roundNumber++) {
       // 1) Implementer
-      const implReviewContext = lastBlockingFindingContexts.length > 0
+      const implReviewContext = lastBlockingFindingContexts.length > 0 || humanGuidance !== undefined
         ? {
             previousRounds: rounds.map(r => r),
             previousFindings: lastReviewerFindingContexts,
@@ -313,7 +316,8 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
               severity: c.severity,
               body: c.body
             })),
-            routingDistinct: routes.routingInfo.distinct
+            routingDistinct: routes.routingInfo.distinct,
+            ...(humanGuidance !== undefined ? { humanGuidance } : {})
           }
         : {
             previousRounds: rounds.map(r => r),
@@ -607,6 +611,8 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
       if (escalation !== undefined) {
         break;
       }
+      // Clear humanGuidance after round 1 so it is not re-sent to subsequent rounds.
+      humanGuidance = undefined;
       // Else continue to next round.
     }
 

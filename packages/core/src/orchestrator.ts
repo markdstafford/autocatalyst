@@ -22,6 +22,11 @@ import { completeSpecAuthoring } from './spec-authoring-service.js';
 import type { SpecApprovalFinalizerDependencies } from './spec-approval-finalizer.js';
 import { finalizeSpecApproval } from './spec-approval-finalizer.js';
 import type { ConvergenceEngine } from './convergence-engine.js';
+import {
+  ConvergenceCheckpointError,
+  getConvergenceEscalationPause,
+  recordConvergenceEscalationGuidance
+} from './convergence-checkpoint.js';
 
 import type {
   ConversationIngressRepository,
@@ -635,6 +640,14 @@ export class DefaultOrchestrator implements Orchestrator {
           occurrence: { index: 0, attempt: 1 },
           checkpointResult: null
         };
+        const awaitingInputStep = [...runSteps].reverse().find(s => s.step === 'implementation.awaiting_input' && s.endedAt !== null);
+        const humanGuidance: string | undefined = (() => {
+          if (awaitingInputStep?.checkpointResult == null) return undefined;
+          const cp = awaitingInputStep.checkpointResult as { pause?: { kind?: string; humanGuidance?: string } };
+          return cp.pause?.kind === 'convergence_escalation' && typeof cp.pause.humanGuidance === 'string'
+            ? cp.pause.humanGuidance
+            : undefined;
+        })();
         const resolvedWorkspace = this.#resolveWorkspaceContext !== undefined
           ? await this.#resolveWorkspaceContext({ runId: input.runId }).catch(() => undefined)
           : undefined;
@@ -645,7 +658,8 @@ export class DefaultOrchestrator implements Orchestrator {
           runStep,
           stepDefinition,
           workflow,
-          ...(resolvedWorkspace !== undefined ? { workspace: resolvedWorkspace } : {})
+          ...(resolvedWorkspace !== undefined ? { workspace: resolvedWorkspace } : {}),
+          ...(humanGuidance !== undefined ? { humanGuidance } : {})
         });
 
         if (result.workResult.directive === 'fail') {
@@ -783,6 +797,10 @@ export class DefaultOrchestrator implements Orchestrator {
         return this.#replyToHumanReviewGate({ ...input, run });
       }
 
+      if (run.currentStep === 'implementation.awaiting_input') {
+        return this.#replyToAwaitingInput({ ...input, run });
+      }
+
       const currentStepDef = getRunStepDefinition(run.currentStep);
       if (currentStepDef?.waitingOn === 'human') {
         throw new OrchestratorError('invalid_transition', `Step '${run.currentStep}' does not support this reply kind.`);
@@ -841,6 +859,40 @@ export class DefaultOrchestrator implements Orchestrator {
 
     const moved = await this.applyDirective({ runId: input.runId, tenant: input.tenant, directive: 'advance', origin: 'human', principal: input.principal });
     return { ...moved, classification: { directive: 'advance', target } };
+  }
+
+  async #replyToAwaitingInput(input: ReplyToRunInput & { readonly run: Run }): Promise<ReplyToRunResult> {
+    if (input.request.kind !== 'guidance') {
+      throw new OrchestratorError('invalid_transition', 'Only guidance replies are supported at implementation.awaiting_input.');
+    }
+    if (this.#runSteps === undefined) {
+      throw new OrchestratorError('persistence_failed', 'Run step repository required for awaiting-input replies.');
+    }
+    let pause: { runStep: RunStep };
+    try {
+      pause = await getConvergenceEscalationPause(
+        { run: input.run, expectedStepId: 'implementation.awaiting_input' },
+        { runSteps: this.#runSteps }
+      );
+      await recordConvergenceEscalationGuidance(
+        { run: input.run, runStep: pause.runStep, guidance: input.request.body },
+        { runSteps: this.#runSteps }
+      );
+    } catch (error) {
+      if (error instanceof ConvergenceCheckpointError && error.code === 'invalid_pause') {
+        throw new OrchestratorError('invalid_transition', 'Unsupported awaiting-input pause.', { details: { code: 'unsupported_pause' }, cause: error });
+      }
+      throw error;
+    }
+    // Advance WITHOUT passing checkpointResult — the guidance is already stored on the awaiting_input step
+    const moved = await this.applyDirective({
+      runId: input.runId,
+      tenant: input.tenant,
+      directive: 'advance',
+      origin: 'human',
+      principal: input.principal
+    });
+    return { ...moved, classification: { directive: 'advance', pauseKind: 'convergence_escalation' } };
   }
 
   #shouldAutoDispatch(run: Run): boolean {
