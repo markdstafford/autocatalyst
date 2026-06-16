@@ -28,6 +28,25 @@ describe('sanitized failure reason primitives', () => {
     expect(normalizeFailureReasonForPublicSurface('schema_validation_failed')).toBe('schema_validation_failed');
   });
 
+  it('preserves safe convergence and transient provider failure codes', () => {
+    const safeCodes = [
+      'transient_provider_failure',
+      'reviewer_result_missing',
+      'reviewer_result_invalid',
+      'disposition_missing',
+      'disposition_invalid',
+      'workflow_escalation_edge_missing',
+      'checkpoint_capture_failed'
+    ] as const;
+
+    for (const code of safeCodes) {
+      expect(knownFailureReasonCodes).toContain(code);
+      expect(normalizeFailureReasonForPublicSurface(code)).toBe(code);
+      expect(makeSanitizedFailureReason(code)).toBe(code);
+      expect(formatExecutionFailureReason(code)).toBe(code);
+    }
+  });
+
   it('preserves exact legacy safe phrases only', () => {
     expect(knownSafeFailurePhrases).toContain('Runner failed before terminal result.');
     expect(normalizeFailureReasonForPublicSurface('Execution failed: result_file_missing')).toBe('Execution failed: result_file_missing');
@@ -71,8 +90,24 @@ describe('sanitized failure reason primitives', () => {
       errorName: sentinel,
       providerKind: 'openai'
     });
-    expect(reason).toBeUndefined();
+    expect(reason).toBe('transient_provider_failure');
     expect(JSON.stringify({ reason })).not.toContain('sk-live-secret');
+  });
+
+  it('classifies transient provider HTTP statuses without copying raw details', () => {
+    for (const status of [408, 429, 500, 502, 503, 504]) {
+      expect(classifyProviderFailure({ status })).toBe('transient_provider_failure');
+      expect(classifyProviderFailure({ statusCode: status })).toBe('transient_provider_failure');
+    }
+
+    const classified = classifyProviderFailure({
+      status: 429,
+      code: 'sk-test-secret /Users/mark/private raw SDK diagnostic',
+      errorName: 'authorization: Bearer sec_secret_handle_value',
+      providerKind: 'anthropic'
+    });
+    expect(classified).toBe('transient_provider_failure');
+    expectNoSentinels(JSON.stringify({ classified }));
   });
 
   it('creates branded sanitized reasons only for allowlisted values', () => {
