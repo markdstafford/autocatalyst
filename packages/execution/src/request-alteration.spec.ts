@@ -180,7 +180,7 @@ describe('validateHttpHeaderName', () => {
 // 5. Retry classification
 // ---------------------------------------------------------------------------
 describe('isTransientProviderFailure', () => {
-  it.each([408, 429, 500, 502, 503, 504])('returns true for HTTP %s', (status) => {
+  it.each([408, 429, 500, 502, 503, 504, 529])('returns true for HTTP %s', (status) => {
     expect(isTransientProviderFailure({ kind: 'http_status', status })).toBe(true);
   });
 
@@ -632,7 +632,7 @@ describe('retry policy helpers', () => {
     expect(resolveRetryPolicy({}).maxRetries).toBe(1);
     expect(resolveRetryPolicy({ maxRetries: 99 }).maxRetries).toBe(5);
     expect(resolveRetryPolicy({ maxRetries: -1 }).maxRetries).toBe(0);
-    expect(resolveRetryPolicy({ maxRetries: 2 }).transientHttpStatuses).toEqual([408, 429, 500, 502, 503, 504]);
+    expect(resolveRetryPolicy({ maxRetries: 2 }).transientHttpStatuses).toEqual([408, 429, 500, 502, 503, 504, 529]);
   });
 
   it('parses bounded Retry-After values', () => {

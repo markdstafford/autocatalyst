@@ -95,7 +95,7 @@ describe('sanitized failure reason primitives', () => {
   });
 
   it('classifies transient provider HTTP statuses without copying raw details', () => {
-    for (const status of [408, 429, 500, 502, 503, 504]) {
+    for (const status of [408, 429, 500, 502, 503, 504, 529]) {
       expect(classifyProviderFailure({ status })).toBe('transient_provider_failure');
       expect(classifyProviderFailure({ statusCode: status })).toBe('transient_provider_failure');
     }

@@ -8,7 +8,7 @@ export const defaultRequestTimeoutMs = 60_000;
 export const maximumRequestTimeoutMs = 600_000;
 export const defaultMaxRetries = 1;
 export const maximumMaxRetries = 5;
-export const transientHttpStatuses: readonly number[] = [408, 429, 500, 502, 503, 504];
+export const transientHttpStatuses: readonly number[] = [408, 429, 500, 502, 503, 504, 529];
 
 export const claudeProviderOwnedEnvironmentVariables: readonly string[] = [
   'ANTHROPIC_BASE_URL',

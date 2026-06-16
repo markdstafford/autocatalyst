@@ -732,7 +732,7 @@ describe('createAgentConnection — proxy selection', () => {
 
     expect(proxyOptions[0]?.requestTimeoutMs).toBe(600000);
     expect(proxyOptions[0]?.retryPolicy?.maxRetries).toBe(5);
-    expect(proxyOptions[0]?.retryPolicy?.transientHttpStatuses).toEqual([408, 429, 500, 502, 503, 504]);
+    expect(proxyOptions[0]?.retryPolicy?.transientHttpStatuses).toEqual([408, 429, 500, 502, 503, 504, 529]);
   });
 
   it('does not auto-select proxy for process_environment profile with no proxy-requiring capabilities', async () => {

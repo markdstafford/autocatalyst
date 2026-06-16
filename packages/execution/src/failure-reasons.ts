@@ -1,3 +1,5 @@
+import { transientHttpStatuses } from './request-alteration.js';
+
 export const knownFailureReasonCodes = [
   'provider_auth_failed',
   'spec_authoring_failed',
@@ -75,7 +77,7 @@ const authCodes = new Set([
   'permission_denied'
 ]);
 
-const transientProviderHttpStatuses = new Set([408, 429, 500, 502, 503, 504]);
+const transientProviderHttpStatuses = new Set(transientHttpStatuses);
 
 const authErrorNames = new Set([
   'AuthenticationError',
