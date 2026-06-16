@@ -502,6 +502,51 @@ describe('ControlPlaneClient.listRunFeedback', () => {
   });
 });
 
+describe('ControlPlaneClient.replyToRun', () => {
+  const replyRun = {
+    id: 'run_1', topicId: 'topic_1',
+    owner: { kind: 'human' as const, id: 'user_1', tenantId: 'org_1' },
+    tenant: 'org_1', workKind: 'feature', currentStep: 'implementation.plan',
+    waitingOn: 'system' as const,
+    terminal: false,
+    createdAt: '2026-06-08T00:00:00.000Z', updatedAt: '2026-06-08T00:00:00.000Z'
+  };
+
+  it('sends and parses run replies', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      run: replyRun,
+      classification: { directive: 'advance', target: 'artifact' }
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const client = createControlPlaneClient({ baseUrl: 'https://api.test', bearerToken: 'token', fetch });
+
+    const response = await client.replyToRun('run_1', { kind: 'approve', body: 'Looks good.' });
+
+    expect(fetch).toHaveBeenCalledWith(new URL('https://api.test/v1/runs/run_1/replies'), expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ kind: 'approve', body: 'Looks good.' })
+    }));
+    expect(response.classification).toEqual({ directive: 'advance', target: 'artifact' });
+  });
+
+  it('validates reply requests before sending', async () => {
+    const fetch = vi.fn();
+    const client = createControlPlaneClient({ baseUrl: 'https://api.test', bearerToken: 'token', fetch });
+
+    await expect(client.replyToRun('run_1', { kind: 'answer', body: 'No movement.' } as never)).rejects.toThrow();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('propagates non-2xx reply errors', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ error: { code: 'invalid_transition', message: 'Unsupported reply kind.' } }), {
+      status: 400,
+      headers: { 'content-type': 'application/json' }
+    }));
+    const client = createControlPlaneClient({ baseUrl: 'https://api.test', bearerToken: 'token', fetch });
+
+    await expect(client.replyToRun('run_1', { kind: 'guidance', body: 'Use option A.' })).rejects.toMatchObject({ status: 400 });
+  });
+});
+
 describe('ControlPlaneClient.appendRunFeedbackThreadReply', () => {
   const feedbackItem = {
     id: 'fb_1', runId: 'run_1',
