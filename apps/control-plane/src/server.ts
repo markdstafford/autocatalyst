@@ -14,6 +14,7 @@ import { sessionRoleSchema } from '@autocatalyst/api-contract';
 import type { ConfigurationRecord, Conversation, ExecutionContext, Project, ProviderProfileSettings, Topic } from '@autocatalyst/api-contract';
 import {
   buildProviderAdapterKey,
+  buildImplementationBuildContext,
   buildSpecAuthorContext,
   composeAgentProviderAdapterRegistry,
   composeDirectProviderAdapterRegistry,
@@ -67,7 +68,9 @@ import {
   createExecutionEntryPoint,
   createExecutionMaterializer,
   createStepResultContractRegistry,
+  registerReviewerResultContract,
   registerSpecAuthorResultContract,
+  REVIEWER_RESULT_SCHEMA_ID,
   SPEC_AUTHOR_SCHEMA_ID,
   ProviderConfigurationError,
   type AgentConnection,
@@ -372,9 +375,42 @@ export function createRoutingProfileResolver(options: {
 
 // Registry with contracts for all steps that have typed result schemas.
 // Other steps fall back to the generic unknown/any pass-through validation.
-const stepResultContractRegistry = registerSpecAuthorResultContract(
-  createStepResultContractRegistry()
+const stepResultContractRegistry = registerReviewerResultContract(
+  registerSpecAuthorResultContract(createStepResultContractRegistry())
 );
+
+export function resolveScratchResultValidationConfig(context: ExecutionContext) {
+  const step = context.run.currentStep;
+  const workKind = context.run.workKind;
+  const role = context.task.inputs['role'];
+
+  if (step === 'spec.author' && (workKind === 'feature' || workKind === 'enhancement')) {
+    return {
+      mode: 'scratch_file' as const,
+      contractRegistry: stepResultContractRegistry,
+      step: 'spec.author',
+      schemaId: SPEC_AUTHOR_SCHEMA_ID,
+      resultFile: 'step-result.json'
+    };
+  }
+
+  if (step === 'implementation.build' && role === 'reviewer') {
+    return {
+      mode: 'scratch_file' as const,
+      contractRegistry: stepResultContractRegistry,
+      step: 'implementation.build',
+      schemaId: REVIEWER_RESULT_SCHEMA_ID,
+      resultFile: 'step-result.json'
+    };
+  }
+
+  return {
+    mode: 'scratch_file' as const,
+    schema: z.unknown(),
+    schemaId: 'any',
+    resultFile: 'step-result.json'
+  };
+}
 
 export function createDelegatingExecutionEntryPoint(input: {
   readonly factory: AgentRunnerFactory;
@@ -439,27 +475,7 @@ export function createDelegatingExecutionEntryPoint(input: {
       const perRunEntryPoint = createExecutionEntryPoint({
         runner,
         materialize: materializeWithScratch,
-        resultValidation: (entryInput) => {
-          const step = entryInput.context.run.currentStep;
-          const workKind = entryInput.context.run.workKind;
-          // Only apply the spec-authoring contract for feature/enhancement workflows.
-          // Bug and file_issue also include spec.author but produce a different result shape.
-          if (step === 'spec.author' && (workKind === 'feature' || workKind === 'enhancement')) {
-            return {
-              mode: 'scratch_file' as const,
-              contractRegistry: stepResultContractRegistry,
-              step: 'spec.author',
-              schemaId: SPEC_AUTHOR_SCHEMA_ID,
-              resultFile: 'step-result.json'
-            };
-          }
-          return {
-            mode: 'scratch_file' as const,
-            schema: z.unknown(),
-            schemaId: 'any',
-            resultFile: 'step-result.json'
-          };
-        }
+        resultValidation: (entryInput) => resolveScratchResultValidationConfig(entryInput.context)
       });
       yield* perRunEntryPoint.execute(entryInput);
     }
@@ -949,16 +965,66 @@ export async function createControlPlaneServer(
         }
 
         const isReadOnlySession = (workInput as RunRoleWorkInput).toolPolicyMode === 'read_only';
+
+        const roleInput = workInput as RunRoleWorkInput;
+        const isImplementationBuildRoleSession =
+          workInput.run.currentStep === 'implementation.build' &&
+          roleInput.role !== undefined &&
+          roleInput.round !== undefined;
+
+        let implementationBuildContext: ReturnType<typeof buildImplementationBuildContext> | undefined;
+        if (isImplementationBuildRoleSession) {
+          let approvedSpec: {
+            kind: 'feature_spec' | 'enhancement_spec';
+            relativePath: string;
+            cachedStatus?: string;
+          } | undefined;
+
+          if (workInput.run.workKind === 'feature' || workInput.run.workKind === 'enhancement') {
+            try {
+              const artifact = await domainRepos.artifacts.findByRunAndKind({
+                runId: workInput.run.id,
+                kind: workInput.run.workKind === 'feature' ? 'feature_spec' : 'enhancement_spec'
+              });
+              if (artifact !== null && artifact !== undefined) {
+                approvedSpec = {
+                  kind: workInput.run.workKind === 'feature' ? 'feature_spec' : 'enhancement_spec',
+                  relativePath: artifact.location,
+                  ...(artifact.cachedStatus !== undefined ? { cachedStatus: String(artifact.cachedStatus) } : {})
+                };
+              }
+            } catch {
+              // Approved spec is optional; continue without it if lookup fails.
+            }
+          }
+
+          implementationBuildContext = buildImplementationBuildContext({
+            run: workInput.run,
+            role: roleInput.role as 'implementer' | 'reviewer',
+            round: roleInput.round,
+            ...(approvedSpec !== undefined ? { approvedSpec } : {}),
+            ...(roleInput.reviewContext !== undefined ? { reviewContext: roleInput.reviewContext } : {})
+          });
+        }
+
         return createExecutionContextResolver({
           secretsAvailable: false,
           ...(workspace !== undefined ? { workspace } : {}),
           // Reviewer sessions must not receive write-capable tools.
           ...(isReadOnlySession ? { toolPolicy: { allowedTools: ['Read', 'Glob', 'Grep'] as string[] } } : {}),
-          prompt: (input) => input.run.currentStep === 'spec.author' ? specAuthorContext?.prompt : undefined,
+          prompt: (input) => {
+            if (input.run.currentStep === 'spec.author') return specAuthorContext?.prompt;
+            if (input.run.currentStep === 'implementation.build') return implementationBuildContext?.prompt;
+            return undefined;
+          },
           taskInputs: (input) => {
             // Spec-authoring step gets its own task inputs.
             if (input.run.currentStep === 'spec.author') {
               return specAuthorContext?.taskInputs as Record<string, unknown> | undefined;
+            }
+
+            if (input.run.currentStep === 'implementation.build' && implementationBuildContext !== undefined) {
+              return implementationBuildContext.taskInputs as unknown as Record<string, unknown>;
             }
 
             // Reviewed role sessions: inject role/round and review context so
