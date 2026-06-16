@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,13 +25,16 @@ import {
   runListResponseSchema,
   runReplyResponseSchema,
   runSchema,
-  runSpecResponseSchema
+  runSpecResponseSchema,
+  runStepListResponseSchema
 } from '@autocatalyst/api-contract';
 import {
   buildProviderAdapterKey,
   createExtensionRegistryCatalog,
   hardcodedDevelopmentPrincipal,
+  markFeedbackWontFix,
   type ControlPlaneService,
+  type FeedbackLifecycleDependencies,
   type PolicyDecisionInput,
   type ProviderCompositionResult,
   type RunUnitOfWork
@@ -3295,4 +3299,205 @@ describe('run replies integration', () => {
       }
     });
   });
+});
+
+// ---------------------------------------------------------------------------
+// Full interactive loop: spec approve → traverse implementation steps → impl
+// feedback revise → re-run → approve → advances out of implementation gate
+// ---------------------------------------------------------------------------
+
+// Poll until a run reaches a specific step or times out.
+async function pollForStep(
+  inject: (opts: { method: string; url: string; headers: Record<string, string> }) => Promise<{ statusCode: number; json(): unknown }>,
+  runId: string,
+  bearerToken: string,
+  targetStep: string,
+  timeoutMs: number
+): Promise<{ currentStep: string; terminal: boolean; waitingOn?: string }> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const resp = await inject({
+      method: 'GET',
+      url: `/v1/runs/${runId}`,
+      headers: { authorization: `Bearer ${bearerToken}` }
+    });
+    const run = runSchema.parse(resp.json());
+    if (run.currentStep === targetStep) {
+      return run;
+    }
+    if (run.terminal) {
+      throw new Error(`Run terminated at '${run.currentStep}' before reaching '${targetStep}'.`);
+    }
+    await new Promise<void>((resolve) => { setTimeout(resolve, 100); });
+  }
+  throw new Error(`Timed out (${timeoutMs}ms) waiting for run to reach '${targetStep}'.`);
+}
+
+describe('run replies full loop integration', () => {
+  it(
+    'spec approve auto-traverses implementation.plan → implementation.build → implementation.human_review, ' +
+    'feedback revise re-runs implementation.build, approve advances out of implementation gate',
+    { timeout: 60_000 },
+    async () => {
+      await withTempDatabasePath(async (databasePath) => {
+        const tempDir = await mkdtemp(join(tmpdir(), 'reply-full-loop-'));
+        try {
+          // Git repo so the spec approval finalizer can commit frontmatter.
+          await execFileAsync('git', ['init', '--initial-branch=main'], { cwd: tempDir });
+          await execFileAsync('git', ['config', 'user.email', 'integration@example.test'], { cwd: tempDir });
+          await execFileAsync('git', ['config', 'user.name', 'Autocatalyst Integration'], { cwd: tempDir });
+
+          const { runId } = await seedSpecReviewScenario(databasePath, tempDir);
+
+          // Commit the spec so the finalizer has a clean git base.
+          await execFileAsync('git', ['add', '.'], { cwd: tempDir });
+          await execFileAsync('git', ['commit', '-m', 'seed spec for full-loop test'], { cwd: tempDir });
+
+          // Stub unit of work: always advances.
+          // implementation.build falls through to this path because no convergenceEngine is injected
+          // when a unitOfWork is provided — the condition in dispatch() requires BOTH to be set.
+          const unitOfWork: RunUnitOfWork = { run: async () => ({ directive: 'advance' as const }) };
+
+          // autoDispatch is enabled by default; no explicit option needed.
+          const app = await createControlPlaneServer({
+            databasePath,
+            bearerToken: BEARER_TOKEN,
+            masterSecret: MASTER_SECRET,
+            unitOfWork
+          });
+          try {
+            // Confirm start state.
+            const initialResp = await app.inject({
+              method: 'GET',
+              url: `/v1/runs/${runId}`,
+              headers: { authorization: `Bearer ${BEARER_TOKEN}` }
+            });
+            expect(initialResp.statusCode).toBe(200);
+            const initialRun = runSchema.parse(initialResp.json());
+            expect(initialRun.currentStep).toBe('spec.human_review');
+            expect(initialRun.waitingOn).toBe('human');
+
+            // ── Phase 1: Approve spec gate ──────────────────────────────────
+            const approveSpecResp = await app.inject({
+              method: 'POST',
+              url: `/v1/runs/${runId}/replies`,
+              headers: {
+                authorization: `Bearer ${BEARER_TOKEN}`,
+                'content-type': 'application/json'
+              },
+              payload: { kind: 'approve', body: 'Spec looks good.' }
+            });
+            expect(approveSpecResp.statusCode).toBe(200);
+            const approveSpecBody = runReplyResponseSchema.parse(approveSpecResp.json());
+            expect(approveSpecBody.classification.directive).toBe('advance');
+            expect(approveSpecBody.classification.target).toBe('artifact');
+
+            // Auto-dispatch now runs implementation.plan (deterministic passthrough) then
+            // implementation.build (stub unit of work → advance) and stops at
+            // implementation.human_review (waitingOn: human).
+            const runAtImplReview = await pollForStep(
+              (opts) => app.inject(opts),
+              runId,
+              BEARER_TOKEN,
+              'implementation.human_review',
+              20_000
+            );
+            expect(runAtImplReview.currentStep).toBe('implementation.human_review');
+            expect(runAtImplReview.waitingOn).toBe('human');
+
+            // Verify both implementation.plan and implementation.build appear in step history.
+            const stepsResp = await app.inject({
+              method: 'GET',
+              url: `/v1/runs/${runId}/steps`,
+              headers: { authorization: `Bearer ${BEARER_TOKEN}` }
+            });
+            expect(stepsResp.statusCode).toBe(200);
+            const stepsBody = runStepListResponseSchema.parse(stepsResp.json());
+            const visitedStepIds = stepsBody.steps.map((s) => s.step);
+            expect(visitedStepIds).toContain('implementation.plan');
+            expect(visitedStepIds).toContain('implementation.build');
+
+            // ── Phase 2: Send implementation feedback → revise ──────────────
+            const feedbackResp = await app.inject({
+              method: 'POST',
+              url: `/v1/runs/${runId}/replies`,
+              headers: {
+                authorization: `Bearer ${BEARER_TOKEN}`,
+                'content-type': 'application/json'
+              },
+              payload: {
+                kind: 'feedback',
+                title: 'Add null input handling',
+                body: 'Please handle the case where the primary input is null or undefined.'
+              }
+            });
+            expect(feedbackResp.statusCode).toBe(200);
+            const feedbackBody = runReplyResponseSchema.parse(feedbackResp.json());
+            expect(feedbackBody.classification.directive).toBe('revise');
+            expect(feedbackBody.classification.target).toBe('implementation');
+            expect(feedbackBody.classification.createdFeedbackId).toBeDefined();
+
+            // Auto-dispatch re-runs implementation.build (stub → advance) and returns to the gate.
+            await pollForStep(
+              (opts) => app.inject(opts),
+              runId,
+              BEARER_TOKEN,
+              'implementation.human_review',
+              20_000
+            );
+
+            // The stub unit of work does not address feedback, so mark the open implementation
+            // feedback as wont_fix to unblock approval — this mirrors producer disposition.
+            const resolveDb = createSqliteDatabase({ path: databasePath });
+            try {
+              const resolveRepos = createDrizzleDomainRepositories(resolveDb);
+              const allFeedback = await resolveRepos.feedback.listByRun(runId);
+              const openImplFeedback = allFeedback.filter(
+                (f) => f.target === 'implementation' && f.status === 'open'
+              );
+              expect(openImplFeedback.length).toBeGreaterThan(0);
+              const feedbackDeps: FeedbackLifecycleDependencies = {
+                feedback: resolveRepos.feedback,
+                ids: () => randomUUID(),
+                clock: () => new Date().toISOString()
+              };
+              for (const fb of openImplFeedback) {
+                await markFeedbackWontFix(
+                  {
+                    feedbackId: fb.id,
+                    actor: hardcodedDevelopmentPrincipal,
+                    body: 'Intentionally deferred in stub convergence run.'
+                  },
+                  feedbackDeps
+                );
+              }
+            } finally {
+              resolveDb.close();
+            }
+
+            // ── Phase 3: Approve implementation gate → advances out ──────────
+            const approveImplResp = await app.inject({
+              method: 'POST',
+              url: `/v1/runs/${runId}/replies`,
+              headers: {
+                authorization: `Bearer ${BEARER_TOKEN}`,
+                'content-type': 'application/json'
+              },
+              payload: { kind: 'approve', body: 'Implementation approved.' }
+            });
+            expect(approveImplResp.statusCode).toBe(200);
+            const approveImplBody = runReplyResponseSchema.parse(approveImplResp.json());
+            expect(approveImplBody.classification.directive).toBe('advance');
+            expect(approveImplBody.classification.target).toBe('implementation');
+            // Run has advanced out of the implementation gate toward the docs/pr phase.
+            expect(approveImplBody.run.currentStep).not.toBe('implementation.human_review');
+          } finally {
+            await app.close();
+          }
+        } finally {
+          await rm(tempDir, { recursive: true, force: true });
+        }
+      });
+    }
+  );
 });

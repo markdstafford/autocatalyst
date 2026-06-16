@@ -464,8 +464,8 @@ export class DefaultOrchestrator implements Orchestrator {
     const origin = input.origin ?? 'runner';
 
     // Defense-in-depth: block any advance directive from runner origin when run is at a human gate.
-    // spec.human_review is excluded here because it was originally handled as a special case before
-    // full human-origin support was added; now both gates are guarded by the origin check.
+    // Both spec.human_review and implementation.human_review are caught by this guard via
+    // waitingOn === 'human'. Only a human-origin directive (from replyToRun) may advance them.
     if (origin === 'runner' && input.directive === 'advance') {
       const currentStepDef = getRunStepDefinition(existing.currentStep);
       if (currentStepDef !== null && currentStepDef.waitingOn === 'human') {
@@ -606,7 +606,8 @@ export class DefaultOrchestrator implements Orchestrator {
     }
 
     // implementation.plan deterministic passthrough: records an explicit checkpoint and advances
-    // to implementation.build without dispatching an AI prompt.
+    // to implementation.build without dispatching an AI prompt. Planning is intentionally a no-op
+    // for issue 63; a real plan step is tracked for a future issue.
     if (run.currentStep === 'implementation.plan') {
       return this.#dispatchQueue.enqueueForRun(input.runId, async () => this.applyDirective({
         runId: input.runId,

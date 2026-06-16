@@ -1,23 +1,21 @@
 /**
- * Opt-in e2e proof for the interactive run reply flow.
+ * Opt-in e2e proof for the spec-gate approve reply with a real HTTP server.
  *
- * This proof is opt-in because live provider behavior and credentials are not
- * guaranteed in CI. Deterministic integration coverage in integration specs
- * remains the required default validation.
+ * SCOPE: This file proves the spec-approval reply path (classification, spec
+ * approval finalizer, and transition out of spec.human_review). It does NOT
+ * drive the full interactive loop — the deterministic full-loop proof lives in
+ * integration.spec.ts under the "run replies full loop integration" describe block.
+ *
+ * A live-provider end-to-end that crosses the spec gate into real implementation
+ * convergence (autoDispatch on) is not yet available in CI. To add it, extend
+ * this file with autoDispatch enabled and a real provider profile so the run
+ * actually traverses implementation.plan → implementation.build → the gate.
  *
  * Enable with:
  *   AUTOCATALYST_RUN_LIVE_REPLY_E2E=1
  *
  * All tests are SKIPPED unless the flag is set. CI never sets this variable,
  * so this suite never runs in CI.
- *
- * When enabled, the test uses the real HTTP server wired through
- * `createControlPlaneServer` with `app.inject()` to drive the approve reply
- * path. No live AI provider is required — the approve path is deterministic
- * and exercises only the classification + transition logic.
- *
- * NOTE: Full production-path proof (real AI dispatch after human unpauses) requires
- * real AI providers — see implementation-build-convergence-live.spec.ts for reference.
  */
 
 import { execFile } from 'node:child_process';
@@ -160,8 +158,8 @@ async function seedRunAtSpecHumanReview(
 // E2E suite
 // ---------------------------------------------------------------------------
 
-(liveReplyE2eEnabled ? describe : describe.skip)('interactive run replies e2e', () => {
-  it('drives spec approval through HTTP replies', { timeout: 300_000 }, async () => {
+(liveReplyE2eEnabled ? describe : describe.skip)('interactive run replies e2e (spec gate only)', () => {
+  it('drives spec approval through the HTTP reply endpoint and verifies transition', { timeout: 300_000 }, async () => {
     await withTempDatabasePath(async (databasePath) => {
       const tempDir = await mkdtemp(join(tmpdir(), 'reply-e2e-ws-'));
       try {
