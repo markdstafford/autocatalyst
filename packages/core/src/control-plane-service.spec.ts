@@ -1121,6 +1121,26 @@ describe('DefaultControlPlaneService.replyToRun', () => {
     })).rejects.toMatchObject({ code: 'invalid_transition' });
   });
 
+  it('throws conflict (409) when orchestrator signals feedback_gate_blocked on approval', async () => {
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'implementation.human_review' }))
+    });
+    const orchestrator = makeFakeOrchestrator({
+      replyToRun: vi.fn().mockRejectedValue(
+        new OrchestratorError('invalid_transition', 'Feedback blocks review approval.', {
+          details: { code: 'feedback_gate_blocked', blockingFeedbackIds: ['fb_1'] }
+        })
+      )
+    });
+    const service = makeService({ orchestrator, runs });
+    await expect(service.replyToRun({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      request: { kind: 'approve' }
+    })).rejects.toMatchObject({ code: 'conflict' });
+  });
+
   it('throws unsupported_pause when orchestrator signals an unsupported pause kind', async () => {
     const runs = makeFakeRunRepo({
       findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'implementation.awaiting_input' }))

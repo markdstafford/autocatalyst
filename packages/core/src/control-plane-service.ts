@@ -664,7 +664,13 @@ export class DefaultControlPlaneService implements ControlPlaneService {
         if (error.details !== null && typeof error.details === 'object' && (error.details as { code?: unknown }).code === 'unsupported_pause') {
           throw new ControlPlaneServiceError('unsupported_pause', 'Unsupported human pause.', { cause: error });
         }
-        if (error.code === 'invalid_transition') throw new ControlPlaneServiceError('invalid_transition', error.message, { details: error.details, cause: error });
+        if (error.code === 'invalid_transition') {
+          const details = error.details as { code?: unknown } | null;
+          if (details !== null && typeof details === 'object' && details.code === 'feedback_gate_blocked') {
+            throw new ControlPlaneServiceError('conflict', error.message, { details: error.details, cause: error });
+          }
+          throw new ControlPlaneServiceError('invalid_transition', error.message, { details: error.details, cause: error });
+        }
         if (error.code === 'terminal_run') throw new ControlPlaneServiceError('conflict', error.message, { cause: error });
         throw new ControlPlaneServiceError(mapOrchestratorErrorCode(error.code), error.message, { details: error.details, cause: error });
       }

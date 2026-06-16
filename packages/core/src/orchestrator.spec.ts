@@ -2746,15 +2746,16 @@ describe('DefaultOrchestrator.replyToRun', () => {
     });
     const existing = makeRun({ currentStep: 'implementation.awaiting_input' });
     const advanced = makeRun({ currentStep: 'implementation.build' });
-    const advancedStep = makeRunStep({ id: 'step_2', step: 'implementation.build', phase: 'implementation' });
+    const advancedStep = makeRunStep({ id: 'step_build', step: 'implementation.build', phase: 'implementation' });
     const recordTransition = vi.fn().mockResolvedValue({ run: advanced, runStep: advancedStep });
     const runs = makeFakeRunRepo({
       findById: vi.fn().mockResolvedValue(existing),
       recordRunStepTransition: recordTransition
     });
+    const updateCheckpoint = vi.fn().mockResolvedValue(awaitingStep);
     const runSteps = makeFakeRunStepRepo({
       listByRun: vi.fn().mockResolvedValue([awaitingStep]),
-      updateCheckpoint: vi.fn().mockResolvedValue(awaitingStep)
+      updateCheckpoint
     });
 
     const { orchestrator } = makeOrchestrator({ runs, runSteps });
@@ -2768,11 +2769,70 @@ describe('DefaultOrchestrator.replyToRun', () => {
 
     expect(result.classification).toEqual({ directive: 'advance', pauseKind: 'convergence_escalation' });
     expect(result.run.currentStep).toBe('implementation.build');
-    expect(runSteps.updateCheckpoint).toHaveBeenCalledOnce();
-    const updateCall = (runSteps.updateCheckpoint as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
-    const cp = updateCall?.checkpointResult as { pause: { kind: string; humanGuidance: string } };
-    expect(cp.pause.kind).toBe('convergence_escalation');
-    expect(cp.pause.humanGuidance).toBe('Prefer public API; do not broaden auth.');
+
+    // First call: recordConvergenceEscalationGuidance stamps awaiting_input step
+    const firstCall = updateCheckpoint.mock.calls[0]?.[0];
+    expect(firstCall?.runStepId).toBe('step_awaiting');
+    const awaitingCp = firstCall?.checkpointResult as { pause: { kind: string; humanGuidance: string } };
+    expect(awaitingCp.pause.kind).toBe('convergence_escalation');
+    expect(awaitingCp.pause.humanGuidance).toBe('Prefer public API; do not broaden auth.');
+
+    // Second call: #replyToAwaitingInput stamps the new implementation.build step
+    // so build dispatch reads guidance from the current execution context.
+    expect(updateCheckpoint).toHaveBeenCalledTimes(2);
+    const secondCall = updateCheckpoint.mock.calls[1]?.[0];
+    expect(secondCall?.runStepId).toBe('step_build');
+    const buildCp = secondCall?.checkpointResult as { resumedFromAwaitingInputStepId: string; humanGuidance: string };
+    expect(buildCp.resumedFromAwaitingInputStepId).toBe('step_awaiting');
+    expect(buildCp.humanGuidance).toBe('Prefer public API; do not broaden auth.');
+  });
+
+  it('build dispatch reads humanGuidance from current build step checkpoint', async () => {
+    const buildStep = makeRunStep({
+      id: 'step_build',
+      step: 'implementation.build',
+      phase: 'implementation',
+      checkpointResult: {
+        resumedFromAwaitingInputStepId: 'step_awaiting',
+        humanGuidance: 'Use the public API path only.'
+      }
+    });
+    const existing = makeRun({ currentStep: 'implementation.build' });
+    const convergedRun = makeRun({ currentStep: 'implementation.human_review' });
+    const convergedStep = makeRunStep({ step: 'implementation.human_review', phase: 'implementation' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: convergedRun, runStep: convergedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const runSteps = makeFakeRunStepRepo({
+      listByRun: vi.fn().mockResolvedValue([buildStep])
+    });
+    const capturedGuidance: (string | undefined)[] = [];
+    const validCheckpoint = {
+      kind: 'convergence_review' as const,
+      step: 'implementation.build',
+      maxRounds: 3,
+      routing: { distinct: true },
+      rounds: [],
+      outcome: 'converged' as const,
+      openFeedbackIds: [],
+      lastPositions: {},
+      currentAltitude: 'build' as const,
+      acceptedCheckpoints: []
+    };
+    const fakeConvergenceEngine: ConvergenceEngine = {
+      run: vi.fn(async (engineInput: ConvergenceEngineInput) => {
+        capturedGuidance.push(engineInput.humanGuidance);
+        return { workResult: { directive: 'advance' as const }, checkpointResult: validCheckpoint };
+      })
+    };
+
+    const { orchestrator } = makeOrchestrator({ runs, runSteps, convergenceEngine: fakeConvergenceEngine, autoDispatch: { enabled: false } });
+
+    await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    expect(capturedGuidance[0]).toBe('Use the public API path only.');
   });
 
   it('throws invalid_transition when non-guidance reply sent to implementation.awaiting_input', async () => {

@@ -640,13 +640,27 @@ export class DefaultOrchestrator implements Orchestrator {
           occurrence: { index: 0, attempt: 1 },
           checkpointResult: null
         };
-        const awaitingInputStep = [...runSteps].reverse().find(s => s.step === 'implementation.awaiting_input' && s.endedAt !== null);
+        // Read guidance from the current build step checkpoint (stamped during guidance reply).
+        // If the checkpoint carries resumedFromAwaitingInputStepId, follow the reference to load
+        // the guidance from that specific pause step rather than searching all history.
         const humanGuidance: string | undefined = (() => {
-          if (awaitingInputStep?.checkpointResult == null) return undefined;
-          const cp = awaitingInputStep.checkpointResult as { pause?: { kind?: string; humanGuidance?: string } };
-          return cp.pause?.kind === 'convergence_escalation' && typeof cp.pause.humanGuidance === 'string'
-            ? cp.pause.humanGuidance
-            : undefined;
+          const buildCp = runStep.checkpointResult as {
+            humanGuidance?: string;
+            resumedFromAwaitingInputStepId?: string;
+          } | null;
+          if (buildCp === null || typeof buildCp !== 'object') return undefined;
+          if (typeof buildCp.humanGuidance === 'string') return buildCp.humanGuidance;
+          if (typeof buildCp.resumedFromAwaitingInputStepId === 'string') {
+            const pauseStepId = buildCp.resumedFromAwaitingInputStepId;
+            const pauseStep = runSteps.find(s => s.id === pauseStepId);
+            if (pauseStep !== undefined) {
+              const cp = pauseStep.checkpointResult as { pause?: { kind?: string; humanGuidance?: string } } | null;
+              if (cp?.pause?.kind === 'convergence_escalation' && typeof cp.pause.humanGuidance === 'string') {
+                return cp.pause.humanGuidance;
+              }
+            }
+          }
+          return undefined;
         })();
         const resolvedWorkspace = this.#resolveWorkspaceContext !== undefined
           ? await this.#resolveWorkspaceContext({ runId: input.runId }).catch(() => undefined)
@@ -887,13 +901,25 @@ export class DefaultOrchestrator implements Orchestrator {
       }
       throw error;
     }
-    // Advance WITHOUT passing checkpointResult — the guidance is already stored on the awaiting_input step
     const moved = await this.applyDirective({
       runId: input.runId,
       tenant: input.tenant,
       directive: 'advance',
       origin: 'human',
       principal: input.principal
+    });
+    // Stamp guidance on the new implementation.build step so build dispatch reads it from
+    // the current execution context rather than searching all historical awaiting_input steps.
+    // The per-run queue ensures auto-dispatch reads the stamped checkpoint (it is queued
+    // behind this replyToRun operation and cannot start until the lock is released).
+    await this.#runSteps!.updateCheckpoint({
+      runStepId: moved.runStep.id,
+      runId: input.runId,
+      tenant: input.run.tenant,
+      checkpointResult: {
+        resumedFromAwaitingInputStepId: pause.runStep.id,
+        humanGuidance: input.request.body
+      }
     });
     return { ...moved, classification: { directive: 'advance', pauseKind: 'convergence_escalation' } };
   }
