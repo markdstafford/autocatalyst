@@ -6,10 +6,12 @@ import type {
   NonModelPrincipal,
   Principal,
   Run,
+  RunReplyRequest,
+  RunReplyResponse,
   RunSpecResponse,
   RunStep
 } from '@autocatalyst/api-contract';
-import { createConversationWithFirstRunResponseSchema, runFeedbackListResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
+import { createConversationWithFirstRunResponseSchema, runFeedbackListResponseSchema, runReplyResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
 
 import type { ArtifactRepository, FeedbackRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
@@ -35,7 +37,10 @@ export type ControlPlaneServiceErrorCode =
   | 'intake_routing_error'
   | 'active_run_conflict'
   | 'persistence_failed'
-  | 'unauthorized';
+  | 'unauthorized'
+  | 'conflict'
+  | 'invalid_transition'
+  | 'unsupported_pause';
 
 export interface ControlPlaneServiceConflictDetails {
   readonly topicId: string;
@@ -162,6 +167,13 @@ export interface AppendRunFeedbackThreadReplyInput {
   readonly body: string;
 }
 
+export interface ServiceReplyToRunInput {
+  readonly principal: Principal;
+  readonly tenant: string;
+  readonly runId: string;
+  readonly request: RunReplyRequest;
+}
+
 // --- Service interface ---
 
 export interface ControlPlaneService {
@@ -178,6 +190,7 @@ export interface ControlPlaneService {
   createRunFeedback(input: ServiceCreateRunFeedbackInput): Promise<ServiceCreateRunFeedbackResult>;
   listRunFeedback(input: ServiceListRunFeedbackInput): Promise<ServiceListRunFeedbackResult>;
   appendRunFeedbackThreadReply(input: AppendRunFeedbackThreadReplyInput): Promise<Feedback>;
+  replyToRun(input: ServiceReplyToRunInput): Promise<RunReplyResponse>;
 }
 
 // --- Constructor options ---
@@ -620,6 +633,42 @@ export class DefaultControlPlaneService implements ControlPlaneService {
         throw new ControlPlaneServiceError('not_found', 'Feedback not found.');
       }
       throw persistenceFailed('Failed to append feedback thread reply.', error);
+    }
+  }
+
+  async replyToRun(input: ServiceReplyToRunInput): Promise<RunReplyResponse> {
+    const decision = await this.#policy.authorize({
+      principal: input.principal,
+      action: 'run_replies.create',
+      resource: { kind: 'run_replies', id: input.runId, path: '/v1/runs/:id/replies' }
+    });
+    if (!decision.allowed) throw new ControlPlaneServiceError('forbidden', 'Not authorized to reply to runs.');
+
+    const principal = requireNonModelPrincipal(input.principal);
+    const run = await this.#runs.findById(input.runId);
+    if (run === null || run.tenant !== input.tenant) throw new ControlPlaneServiceError('not_found', `Run '${input.runId}' not found.`);
+    if (run.terminal) throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' is terminal.`);
+    const stepDefinition = getRunStepDefinition(run.currentStep);
+    if (stepDefinition?.waitingOn !== 'human') throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' is not waiting on human input.`);
+
+    try {
+      const result = await this.#orchestrator.replyToRun({
+        runId: input.runId,
+        tenant: input.tenant,
+        principal,
+        request: input.request
+      });
+      return runReplyResponseSchema.parse({ run: mapRunToApiRun(result.run), classification: result.classification });
+    } catch (error) {
+      if (error instanceof OrchestratorError) {
+        if (error.details !== null && typeof error.details === 'object' && (error.details as { code?: unknown }).code === 'unsupported_pause') {
+          throw new ControlPlaneServiceError('unsupported_pause', 'Unsupported human pause.', { cause: error });
+        }
+        if (error.code === 'invalid_transition') throw new ControlPlaneServiceError('invalid_transition', error.message, { details: error.details, cause: error });
+        if (error.code === 'terminal_run') throw new ControlPlaneServiceError('conflict', error.message, { cause: error });
+        throw new ControlPlaneServiceError(mapOrchestratorErrorCode(error.code), error.message, { details: error.details, cause: error });
+      }
+      throw error;
     }
   }
 }

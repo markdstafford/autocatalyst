@@ -16,6 +16,7 @@ import {
   probeResourceSchema,
   runFeedbackListResponseSchema,
   runListResponseSchema,
+  runReplyResponseSchema,
   runSpecResponseSchema,
   type ProbeResource,
   type Run
@@ -71,6 +72,9 @@ function createFakeControlPlaneService(): ControlPlaneService {
     }),
     appendRunFeedbackThreadReply: vi.fn(async () => {
       throw new Error('controlPlane.appendRunFeedbackThreadReply not stubbed for this test');
+    }),
+    replyToRun: vi.fn(async () => {
+      throw new Error('controlPlane.replyToRun not stubbed for this test');
     }),
     tick: vi.fn(async () => ({ status: 'noop' as const }))
   };
@@ -1556,6 +1560,121 @@ describe('registerControlPlaneRoutes', () => {
       to: 8,
       quotedText: '😄x'
     });
+  });
+
+  it('POST /v1/runs/:id/replies returns 200 with classification on success', async () => {
+    const replyResponse = {
+      run: {
+        id: 'run_1',
+        topicId: 'topic_1',
+        owner: hardcodedDevelopmentPrincipal,
+        tenant: 'tenant_dev',
+        workKind: 'feature',
+        currentStep: 'spec.human_review',
+        terminal: false,
+        waitingOn: 'human',
+        createdAt: '2026-06-08T00:00:00.000Z',
+        updatedAt: '2026-06-08T00:00:00.000Z'
+      },
+      classification: { directive: 'advance' as const, target: 'artifact' as const }
+    };
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.replyToRun as ReturnType<typeof vi.fn>).mockResolvedValue(replyResponse);
+    const { app, authorization, policyCalls } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/replies',
+      headers: authorization,
+      payload: { kind: 'approve' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(runReplyResponseSchema.parse(response.json())).toMatchObject({ classification: { directive: 'advance', target: 'artifact' } });
+    expect(controlPlane.replyToRun).toHaveBeenCalledWith({
+      principal: hardcodedDevelopmentPrincipal,
+      tenant: 'tenant_dev',
+      runId: 'run_1',
+      request: { kind: 'approve' }
+    });
+    expect(policyCalls).toContainEqual({
+      principal: hardcodedDevelopmentPrincipal,
+      action: 'run_replies.create',
+      resource: { kind: 'run_replies', id: 'run_1', path: '/v1/runs/:id/replies' }
+    });
+  });
+
+  it('POST /v1/runs/:id/replies maps conflict error to 409', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.replyToRun as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('conflict', 'Run is terminal.')
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/replies',
+      headers: authorization,
+      payload: { kind: 'guidance', body: 'Use A.' }
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('conflict');
+  });
+
+  it('POST /v1/runs/:id/replies maps invalid_transition error to 400', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.replyToRun as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('invalid_transition', 'Feedback blocks review approval.')
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/replies',
+      headers: authorization,
+      payload: { kind: 'approve' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('invalid_transition');
+  });
+
+  it('POST /v1/runs/:id/replies returns 400 for invalid body', async () => {
+    const { app, authorization } = await buildServer();
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/replies',
+      headers: authorization,
+      payload: { kind: 'unknown_kind' }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('validation_error');
+  });
+
+  it('POST /v1/runs/:id/replies returns 404 when run is not found', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.replyToRun as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('not_found', "Run 'missing' not found.")
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/missing/replies',
+      headers: authorization,
+      payload: { kind: 'approve' }
+    });
+
+    expect(response.statusCode).toBe(404);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('not_found');
   });
 
   it('exposes an SSE route with event-stream semantics', async () => {
