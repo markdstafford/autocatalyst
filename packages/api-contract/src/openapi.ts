@@ -66,6 +66,12 @@ import {
   appendRunFeedbackThreadSuccessStatusCode,
   runFeedbackThreadParamsSchema
 } from './feedback.js';
+import {
+  createRunReplySuccessStatusCode,
+  runRepliesPath,
+  runReplyRequestSchema,
+  runReplyResponseSchema
+} from './run-replies.js';
 
 extendZodWithOpenApi(z);
 
@@ -124,6 +130,9 @@ export function generateOpenApiDocument(): OpenApiDocument {
   const Feedback = registry.register('Feedback', feedbackSchema);
   const AppendRunFeedbackThreadRequest = registry.register('AppendRunFeedbackThreadRequest', appendRunFeedbackThreadRequestSchema);
   const RunFeedbackThreadParams = registry.register('RunFeedbackThreadParams', runFeedbackThreadParamsSchema);
+  const RunReplyRequest = registry.register('RunReplyRequest', runReplyRequestSchema);
+  const RunReplyResponse = registry.register('RunReplyResponse', runReplyResponseSchema);
+  const RunReplyParams = registry.register('RunReplyParams', z.object({ id: z.string().min(1) }).strict());
 
   registry.registerPath({
     method: 'get',
@@ -420,6 +429,32 @@ export function generateOpenApiDocument(): OpenApiDocument {
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
       400: jsonResponse(ErrorResponse, 'Validation error.'),
       404: jsonResponse(ErrorResponse, 'Run or feedback item not found.')
+    }
+  });
+
+  // POST /v1/runs/{id}/replies
+  registry.registerPath({
+    method: 'post',
+    path: runRepliesPath.replace(':id', '{id}') as '/v1/runs/{id}/replies',
+    summary: 'Reply to a paused run',
+    description: 'Accepts a structured human reply for supported human-waiting run steps.',
+    request: {
+      params: RunReplyParams,
+      body: {
+        content: {
+          'application/json': {
+            schema: RunReplyRequest
+          }
+        }
+      }
+    },
+    responses: {
+      [createRunReplySuccessStatusCode]: jsonResponse(RunReplyResponse, 'Reply accepted and run transition committed.'),
+      400: { description: 'Malformed request or invalid reply for the supported pause.' },
+      403: { description: 'Unauthorized principal or model principal.' },
+      404: { description: 'Run not found.' },
+      409: { description: 'Run is terminal, not waiting on a human, blocked by feedback, changed step, or unsupported pause.' },
+      500: { description: 'Unexpected internal failure.' }
     }
   });
 

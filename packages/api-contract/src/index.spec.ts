@@ -22,7 +22,10 @@ import {
   runnerTerminalHandoffResultSchema,
   runnerTerminalStepResultSchema,
   stepResultContractSchema,
-  stepResultSchemaIdSchema
+  stepResultSchemaIdSchema,
+  runRepliesPath,
+  createRunReplySuccessStatusCode,
+  runReplyRequestSchema
 } from './index.js';
 
 import * as apiContract from './index.js';
@@ -103,5 +106,11 @@ describe('api-contract barrel', () => {
     expect(apiContract.findingDispositionSchema).toBeDefined();
     expect(apiContract.convergenceRoundRecordSchema).toBeDefined();
     expect(apiContract.convergenceCheckpointSchema).toBeDefined();
+  });
+
+  it('exports run reply contract symbols', () => {
+    expect(runRepliesPath).toBe('/v1/runs/:id/replies');
+    expect(createRunReplySuccessStatusCode).toBe(200);
+    expect(runReplyRequestSchema.parse({ kind: 'approve' })).toEqual({ kind: 'approve' });
   });
 });

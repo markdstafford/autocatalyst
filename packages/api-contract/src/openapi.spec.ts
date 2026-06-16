@@ -128,4 +128,17 @@ describe('OpenAPI generation', () => {
     expect(operation?.responses?.['401']).toBeDefined();
     expect(operation?.responses?.['404']).toBeDefined();
   });
+
+  it('documents the run replies endpoint', () => {
+    const document = generateOpenApiDocument();
+    const operation = document.paths['/v1/runs/{id}/replies']?.post;
+
+    expect(operation).toBeDefined();
+    expect((operation as { responses?: Record<string, unknown> })?.responses?.['200']).toBeDefined();
+    expect((operation as { responses?: Record<string, unknown> })?.responses?.['400']).toBeDefined();
+    expect((operation as { responses?: Record<string, unknown> })?.responses?.['403']).toBeDefined();
+    expect((operation as { responses?: Record<string, unknown> })?.responses?.['404']).toBeDefined();
+    expect((operation as { responses?: Record<string, unknown> })?.responses?.['409']).toBeDefined();
+    expect((operation as { responses?: Record<string, unknown> })?.responses?.['500']).toBeDefined();
+  });
 });
