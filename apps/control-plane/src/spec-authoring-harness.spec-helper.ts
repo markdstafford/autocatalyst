@@ -5,7 +5,7 @@ import type { RunnerEvent } from '@autocatalyst/api-contract';
 
 import type { Runner, RunnerCloseResult, RunnerRunInput } from '@autocatalyst/execution';
 
-export type SpecAuthoringHarnessMode = 'conformant' | 'mismatched_path' | 'invalid_json' | 'empty_body';
+export type SpecAuthoringHarnessMode = 'conformant' | 'mismatched_path' | 'invalid_json' | 'empty_body' | 'omitted_specced_by' | 'invalid_specced_by';
 
 export interface SpecAuthoringHarnessRecord {
   readonly prompt: string;
@@ -183,6 +183,40 @@ async function writeResultFile(input: {
         specced_by: 'autocatalyst'
       },
       body: '   ' // whitespace-only — fails z.string().trim().min(1)
+    };
+    await writeFile(resultPath, JSON.stringify(result), 'utf8');
+    return;
+  }
+
+  if (mode === 'omitted_specced_by') {
+    const result = {
+      kind: expectedKind,
+      slug,
+      relativePath: `${expectedPathPrefix}${slug}.md`,
+      frontmatter: {
+        created: '2026-06-16',
+        last_updated: '2026-06-16',
+        status: 'draft'
+        // specced_by omitted intentionally — system should stamp it
+      },
+      body: `# Feature: Harness E2E Test (omitted specced_by)\n\n## Overview\n\nThis spec omits specced_by.\n\n## Task list\n\n- [ ] Implement harness\n`
+    };
+    await writeFile(resultPath, JSON.stringify(result), 'utf8');
+    return;
+  }
+
+  if (mode === 'invalid_specced_by') {
+    const result = {
+      kind: expectedKind,
+      slug,
+      relativePath: `${expectedPathPrefix}${slug}.md`,
+      frontmatter: {
+        created: '2026-06-16',
+        last_updated: '2026-06-16',
+        status: 'draft',
+        specced_by: 'autocatalyst:mm:planning'  // invalid — system should stamp to 'autocatalyst'
+      },
+      body: `# Feature: Harness E2E Test (invalid specced_by)\n\n## Overview\n\nThis spec has an invalid specced_by.\n\n## Task list\n\n- [ ] Implement harness\n`
     };
     await writeFile(resultPath, JSON.stringify(result), 'utf8');
     return;
