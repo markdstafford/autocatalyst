@@ -545,6 +545,28 @@ describe('ControlPlaneClient.replyToRun', () => {
 
     await expect(client.replyToRun('run_1', { kind: 'guidance', body: 'Use option A.' })).rejects.toMatchObject({ status: 400 });
   });
+
+  it('parses guidance reply responses', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      run: replyRun,
+      classification: { directive: 'advance', pauseKind: 'convergence_escalation' }
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const client = createControlPlaneClient({ baseUrl: 'https://api.test', bearerToken: 'token', fetch });
+
+    const response = await client.replyToRun('run_1', { kind: 'guidance', body: 'Use A.' });
+
+    expect(response.classification).toMatchObject({ directive: 'advance', pauseKind: 'convergence_escalation' });
+  });
+
+  it('rejects invalid reply responses', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({
+      run: replyRun,
+      classification: { directive: 'jump' }
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const client = createControlPlaneClient({ baseUrl: 'https://api.test', bearerToken: 'token', fetch });
+
+    await expect(client.replyToRun('run_1', { kind: 'approve' })).rejects.toThrow();
+  });
 });
 
 describe('ControlPlaneClient.appendRunFeedbackThreadReply', () => {

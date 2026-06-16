@@ -1643,6 +1643,25 @@ describe('registerControlPlaneRoutes', () => {
     expect(errorResponseSchema.parse(response.json()).error.code).toBe('invalid_transition');
   });
 
+  it('POST /v1/runs/:id/replies maps unsupported_pause error to 409', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.replyToRun as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('unsupported_pause', 'Unsupported human pause.')
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/replies',
+      headers: authorization,
+      payload: { kind: 'guidance', body: 'Use option A.' }
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('unsupported_pause');
+  });
+
   it('POST /v1/runs/:id/replies returns 400 for invalid body', async () => {
     const { app, authorization } = await buildServer();
     server = app;
