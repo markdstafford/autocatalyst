@@ -1,5 +1,5 @@
-import type { Run } from '@autocatalyst/api-contract';
-import type { Feedback } from '@autocatalyst/api-contract';
+import type { Run, Feedback } from '@autocatalyst/api-contract';
+import { assertHumanReviewGateCanAdvance, HumanReviewGateError } from './human-review-gate.js';
 
 export class SpecReviewGateBlockedError extends Error {
   readonly code: 'feedback_gate_blocked' | 'spec_review_invalid_step';
@@ -16,11 +16,13 @@ export async function assertSpecReviewGateCanAdvance(
   input: { readonly run: Run },
   deps: { readonly listBlockingFeedback: (input: { readonly runId: string; readonly target: 'artifact' }) => Promise<readonly Feedback[]> }
 ): Promise<void> {
-  if (input.run.currentStep !== 'spec.human_review') {
-    throw new SpecReviewGateBlockedError('spec_review_invalid_step', 'Spec review gate can only run at spec.human_review.');
-  }
-  const blocking = await deps.listBlockingFeedback({ runId: input.run.id, target: 'artifact' });
-  if (blocking.length > 0) {
-    throw new SpecReviewGateBlockedError('feedback_gate_blocked', 'Artifact feedback blocks spec approval.', blocking.map((item) => item.id));
+  try {
+    await assertHumanReviewGateCanAdvance({ run: input.run, target: 'artifact' }, deps);
+  } catch (error) {
+    if (error instanceof HumanReviewGateError) {
+      const code = error.code === 'feedback_gate_blocked' ? 'feedback_gate_blocked' : 'spec_review_invalid_step';
+      throw new SpecReviewGateBlockedError(code, error.message, error.blockingFeedbackIds);
+    }
+    throw error;
   }
 }
