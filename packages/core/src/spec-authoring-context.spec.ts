@@ -129,6 +129,9 @@ describe('spec-authoring context builders', () => {
     expect(prompt).toContain('relativePath');
     expect(prompt).toContain('frontmatter');
     expect(prompt).toContain('body');
+    expect(prompt).toContain('The system will stamp `frontmatter.specced_by`');
+    expect(prompt).toContain('Do not invent `specced_by`');
+    expect(prompt).not.toContain('Frontmatter must include `created`, `last_updated`, `status: "draft"`, and `specced_by`');
   });
 
   it('builds feature task inputs with schema id, exact file rules, issue guidance, and chronological messages', () => {
@@ -139,10 +142,29 @@ describe('spec-authoring context builders', () => {
     expect(inputs.outputContract.expectedPathPrefix).toBe('context-human/specs/feature-');
     expect(inputs.outputContract.expectedRelativePathPattern).toBe('context-human/specs/feature-<slug>.md');
     expect(inputs.outputContract.frontmatter.status).toBe('draft');
+    expect(inputs.outputContract.frontmatter.required).toEqual(['created', 'last_updated', 'status']);
+    expect(inputs.outputContract.frontmatter.trustedSpeccedBy).toBe('autocatalyst');
     expect(inputs.outputContract.frontmatter.issue).toEqual({ requiredWhenPresentOnRun: true, type: 'positive integer' });
     expect(inputs.run.issueNumber).toBe(46);
     expect(inputs.conversation?.messages.map((m) => m.id)).toEqual(['message_1', 'message_2']);
     expect(inputs.request.text).toContain('real spec authoring prompt');
+  });
+
+  it('stamps trustedSpeccedBy from specAuthorIdentity when provided', () => {
+    const inputs = buildSpecAuthorTaskInputs({ ...baseInput, specAuthorIdentity: 'markdstafford' });
+    expect(inputs.outputContract.frontmatter.trustedSpeccedBy).toBe('markdstafford');
+  });
+
+  it('includes the specAuthorIdentity value in the prompt text', () => {
+    const prompt = buildSpecAuthorPrompt({ ...baseInput, specAuthorIdentity: 'markdstafford' });
+    expect(prompt).toContain('stamp `frontmatter.specced_by` as `markdstafford`');
+  });
+
+  it('defaults trustedSpeccedBy to autocatalyst when specAuthorIdentity is omitted', () => {
+    const inputs = buildSpecAuthorTaskInputs(baseInput);
+    expect(inputs.outputContract.frontmatter.trustedSpeccedBy).toBe('autocatalyst');
+    const prompt = buildSpecAuthorPrompt(baseInput);
+    expect(prompt).toContain('stamp `frontmatter.specced_by` as `autocatalyst`');
   });
 
   it('builds enhancement-specific kind and path rules', () => {

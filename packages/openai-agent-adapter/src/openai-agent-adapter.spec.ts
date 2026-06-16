@@ -364,6 +364,49 @@ describe('createOpenAIAgentAdapter — session startup', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Reviewer read-only workspace enforcement (seam-driven)
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — reviewer workspace policy', () => {
+  it('mounts workspace roots read-only in the SandboxAgent manifest for reviewer sessions', async () => {
+    const capturedManifests: Array<unknown> = [];
+    const { run } = makeRunSession([assistantItem('ok')]);
+    // makeTelemetry() already uses role: 'reviewer'; makeSessionInput('two_roots') gives
+    // workspaceRoots: ['/tmp/ac/repo', '/tmp/ac/scratch'].
+    const input = makeSessionInput('two_roots');
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession: (sessionInput) => { capturedManifests.push(sessionInput.manifest); return run(sessionInput); },
+      sandboxClientFactory: () => fakeSandboxHandle()
+    });
+    await collectEvents((await adapter.startSession(input)).events);
+
+    expect(capturedManifests).toHaveLength(1);
+    const grants = (capturedManifests[0] as { extraPathGrants: Array<{ path: string; readOnly: boolean }> }).extraPathGrants;
+    const workspaceGrants = grants.filter((g) => g.path === '/tmp/ac/repo' || g.path === '/tmp/ac/scratch');
+    expect(workspaceGrants).toHaveLength(2);
+    expect(workspaceGrants.every((g) => g.readOnly)).toBe(true);
+  });
+
+  it('mounts workspace roots writable in the SandboxAgent manifest for implementer sessions', async () => {
+    const capturedManifests: Array<unknown> = [];
+    const { run } = makeRunSession([assistantItem('ok')]);
+    const base = makeSessionInput('two_roots');
+    const input = { ...base, telemetryContext: { ...base.telemetryContext, role: 'implementer' } };
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession: (sessionInput) => { capturedManifests.push(sessionInput.manifest); return run(sessionInput); },
+      sandboxClientFactory: () => fakeSandboxHandle()
+    });
+    await collectEvents((await adapter.startSession(input)).events);
+
+    expect(capturedManifests).toHaveLength(1);
+    const grants = (capturedManifests[0] as { extraPathGrants: Array<{ path: string; readOnly: boolean }> }).extraPathGrants;
+    const workspaceGrants = grants.filter((g) => g.path === '/tmp/ac/repo' || g.path === '/tmp/ac/scratch');
+    expect(workspaceGrants).toHaveLength(2);
+    expect(workspaceGrants.every((g) => !g.readOnly)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Skill materialization (seam-driven)
 // ---------------------------------------------------------------------------
 
@@ -898,6 +941,64 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
       expect(metadata.tokenUsage.available).toBe(true);
 
       await session.close?.();
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// Reviewer read-only behavioral guarantee
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — reviewer workspace immutability (behavioral)', () => {
+  it('leaves host workspace files unchanged after a reviewer session even when the sandbox executes a write command', async () => {
+    // This test proves the read-only invariant through two complementary mechanisms:
+    //   1. extraPathGrants readOnly: true tells the sandbox client the source is read-only.
+    //   2. NoopSnapshotSpec guarantees no sync-back from sandbox to host after the session.
+    // Together they ensure the reviewer cannot mutate the workspace even if in-sandbox
+    // writes succeed inside the materialized sandbox copy.
+    const sandbox = await import('@openai/agents/sandbox');
+    const local = await import('@openai/agents/sandbox/local');
+
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'ac-reviewer-ro-'));
+    const repoRoot = path.join(tmp, 'repo');
+    const sandboxBase = path.join(tmp, 'sbx');
+    await mkdir(repoRoot, { recursive: true });
+    await mkdir(sandboxBase, { recursive: true });
+
+    const sentinelFile = path.join(repoRoot, 'workspace.txt');
+    await writeFile(sentinelFile, 'original_content\n');
+
+    try {
+      const snapshot = new sandbox.NoopSnapshotSpec();
+      expect(sandbox.isNoopSnapshotSpec(snapshot)).toBe(true);
+
+      const { localDir, Manifest } = sandbox;
+      const manifest = new Manifest({
+        root: '/workspace',
+        entries: { repo: localDir({ src: repoRoot }) },
+        extraPathGrants: [{ path: repoRoot, readOnly: true }]
+      });
+
+      const client = new local.UnixLocalSandboxClient({
+        workspaceBaseDir: sandboxBase,
+        snapshot
+      });
+      const session = await client.create(manifest);
+
+      // Attempt a write through the sandbox exec path — same mechanism a SandboxAgent
+      // bash tool call would use. The write targets the sandbox copy of the file.
+      if (session.exec) {
+        await session.exec({ cmd: 'echo mutated > /workspace/repo/workspace.txt' });
+      }
+
+      await session.close?.();
+
+      // Host file must be unchanged regardless of what happened inside the sandbox.
+      // NoopSnapshotSpec ensures no snapshot is taken and no sync-back occurs.
+      const hostContent = await readFile(sentinelFile, 'utf8');
+      expect(hostContent.trim()).toBe('original_content');
     } finally {
       await rm(tmp, { recursive: true, force: true });
     }

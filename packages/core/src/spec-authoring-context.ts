@@ -42,6 +42,8 @@ export interface SpecAuthorPromptInput {
   readonly messages?: readonly Message[];
   readonly request: SpecAuthorRequestContext;
   readonly linkedIssue?: SpecAuthorLinkedIssueContext;
+  /** GitHub username or service identity to stamp as specced_by. Defaults to 'autocatalyst'. */
+  readonly specAuthorIdentity?: string;
 }
 
 export interface SpecAuthorOutputContractInput {
@@ -57,7 +59,8 @@ export interface SpecAuthorOutputContractInput {
   };
   readonly frontmatter: {
     readonly status: 'draft';
-    readonly required: readonly ['created', 'last_updated', 'status', 'specced_by'];
+    readonly required: readonly ['created', 'last_updated', 'status'];
+    readonly trustedSpeccedBy: string;
     readonly issue: { readonly requiredWhenPresentOnRun: true; readonly type: 'positive integer' };
   };
   readonly body: { readonly minLength: 1; readonly description: 'Markdown spec body, not a path or prose summary' };
@@ -180,7 +183,7 @@ function expectedPrefixFor(workKind: SpecAuthorSupportedWorkKind): 'feature' | '
   return workKind === 'feature' ? 'feature' : 'enhancement';
 }
 
-function outputContractFor(workKind: SpecAuthorSupportedWorkKind): SpecAuthorOutputContractInput {
+function outputContractFor(workKind: SpecAuthorSupportedWorkKind, specAuthorIdentity?: string): SpecAuthorOutputContractInput {
   const prefix = expectedPrefixFor(workKind);
   return {
     schemaId: 'autocatalyst.spec_author.v1',
@@ -195,7 +198,8 @@ function outputContractFor(workKind: SpecAuthorSupportedWorkKind): SpecAuthorOut
     },
     frontmatter: {
       status: 'draft',
-      required: ['created', 'last_updated', 'status', 'specced_by'],
+      required: ['created', 'last_updated', 'status'],
+      trustedSpeccedBy: specAuthorIdentity ?? 'autocatalyst',
       issue: { requiredWhenPresentOnRun: true, type: 'positive integer' }
     },
     body: { minLength: 1, description: 'Markdown spec body, not a path or prose summary' }
@@ -208,7 +212,7 @@ function sortMessages(messages: readonly Message[] | undefined): readonly Messag
 
 export function buildSpecAuthorPrompt(input: SpecAuthorPromptInput): string {
   const workKind = validateInput(input);
-  const contract = outputContractFor(workKind);
+  const contract = outputContractFor(workKind, input.specAuthorIdentity);
   const issueLine = input.linkedIssue !== undefined
     ? `Linked issue: #${input.linkedIssue.number}${input.linkedIssue.title !== undefined ? ` — ${input.linkedIssue.title}` : ''}`
     : 'Linked issue: none supplied.';
@@ -238,7 +242,9 @@ export function buildSpecAuthorPrompt(input: SpecAuthorPromptInput): string {
     `- Use kind: ${contract.expectedKind}.`,
     `- Use relativePath pattern: ${contract.expectedRelativePathPattern}.`,
     '- The JSON result must contain exactly the schema fields `kind`, `slug`, `relativePath`, `frontmatter`, and `body`.',
-    '- Frontmatter must include `created`, `last_updated`, `status: "draft"`, and `specced_by`; include integer `issue` when the run has a linked issue.',
+    '- Frontmatter must include `created`, `last_updated`, and `status: "draft"`; include integer `issue` when the run has a linked issue.',
+    `- The system will stamp \`frontmatter.specced_by\` as \`${contract.frontmatter.trustedSpeccedBy}\` before validation and commit.`,
+    '- Do not invent `specced_by`, and do not include model, skill, run, or prose identity strings for that field.',
     '- `body` must contain the non-empty Markdown spec body, not only a file path or prose summary.',
     '',
     'Run context:',
@@ -303,7 +309,7 @@ export function buildSpecAuthorTaskInputs(input: SpecAuthorPromptInput): SpecAut
       classification: workKind,
       ...(input.linkedIssue !== undefined ? { linkedIssue: input.linkedIssue } : {})
     },
-    outputContract: outputContractFor(workKind),
+    outputContract: outputContractFor(workKind, input.specAuthorIdentity),
     bodyContract: {
       required: true,
       requiresCompleteTopLevelTaskList: true,
