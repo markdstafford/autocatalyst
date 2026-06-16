@@ -29,11 +29,13 @@ import {
   runStepListResponseSchema
 } from '@autocatalyst/api-contract';
 import {
+  addressFeedback,
   buildProviderAdapterKey,
   createExtensionRegistryCatalog,
   hardcodedDevelopmentPrincipal,
-  markFeedbackWontFix,
   type ControlPlaneService,
+  type ConvergenceEngine,
+  type ConvergenceEngineInput,
   type FeedbackLifecycleDependencies,
   type PolicyDecisionInput,
   type ProviderCompositionResult,
@@ -3353,17 +3355,53 @@ describe('run replies full loop integration', () => {
           await execFileAsync('git', ['add', '.'], { cwd: tempDir });
           await execFileAsync('git', ['commit', '-m', 'seed spec for full-loop test'], { cwd: tempDir });
 
-          // Stub unit of work: always advances.
-          // implementation.build falls through to this path because no convergenceEngine is injected
-          // when a unitOfWork is provided — the condition in dispatch() requires BOTH to be set.
+          // Stub unit of work: handles non-convergence steps (e.g. spec.author passthrough).
           const unitOfWork: RunUnitOfWork = { run: async () => ({ directive: 'advance' as const }) };
+
+          // Deterministic convergence engine: wired through the normal orchestrator dispatch path
+          // for implementation.build. Reads open implementation feedback, marks each as addressed
+          // (producer disposition), and returns advance — proving the production reply →
+          // implementation.build rerun → feedback disposition loop without live AI providers.
+          const convergenceDb = createSqliteDatabase({ path: databasePath });
+          const convergenceRepos = createDrizzleDomainRepositories(convergenceDb);
+          const convergenceFeedbackDeps: FeedbackLifecycleDependencies = {
+            feedback: convergenceRepos.feedback,
+            ids: () => randomUUID(),
+            clock: () => new Date().toISOString()
+          };
+          const convergenceEngine: ConvergenceEngine = {
+            async run(input: ConvergenceEngineInput) {
+              const all = await convergenceRepos.feedback.listByRun(input.runId);
+              const openImpl = all.filter(f => f.target === 'implementation' && f.status === 'open');
+              for (const fb of openImpl) {
+                await addressFeedback(
+                  { feedbackId: fb.id, actor: hardcodedDevelopmentPrincipal, body: 'Addressed during deterministic convergence.' },
+                  convergenceFeedbackDeps
+                );
+              }
+              return {
+                workResult: { directive: 'advance' as const },
+                checkpointResult: {
+                  kind: 'convergence_review' as const,
+                  step: input.stepDefinition.id,
+                  maxRounds: 1,
+                  routing: { distinct: true },
+                  rounds: [],
+                  outcome: 'converged' as const,
+                  openFeedbackIds: [],
+                  lastPositions: {}
+                }
+              };
+            }
+          };
 
           // autoDispatch is enabled by default; no explicit option needed.
           const app = await createControlPlaneServer({
             databasePath,
             bearerToken: BEARER_TOKEN,
             masterSecret: MASTER_SECRET,
-            unitOfWork
+            unitOfWork,
+            convergenceEngine
           });
           try {
             // Confirm start state.
@@ -3437,7 +3475,9 @@ describe('run replies full loop integration', () => {
             expect(feedbackBody.classification.target).toBe('implementation');
             expect(feedbackBody.classification.createdFeedbackId).toBeDefined();
 
-            // Auto-dispatch re-runs implementation.build (stub → advance) and returns to the gate.
+            // Auto-dispatch re-runs implementation.build through the deterministic convergence
+            // engine, which marks the open implementation feedback as addressed (producer
+            // disposition), then returns to the gate.
             await pollForStep(
               (opts) => app.inject(opts),
               runId,
@@ -3446,34 +3486,12 @@ describe('run replies full loop integration', () => {
               20_000
             );
 
-            // The stub unit of work does not address feedback, so mark the open implementation
-            // feedback as wont_fix to unblock approval — this mirrors producer disposition.
-            const resolveDb = createSqliteDatabase({ path: databasePath });
-            try {
-              const resolveRepos = createDrizzleDomainRepositories(resolveDb);
-              const allFeedback = await resolveRepos.feedback.listByRun(runId);
-              const openImplFeedback = allFeedback.filter(
-                (f) => f.target === 'implementation' && f.status === 'open'
-              );
-              expect(openImplFeedback.length).toBeGreaterThan(0);
-              const feedbackDeps: FeedbackLifecycleDependencies = {
-                feedback: resolveRepos.feedback,
-                ids: () => randomUUID(),
-                clock: () => new Date().toISOString()
-              };
-              for (const fb of openImplFeedback) {
-                await markFeedbackWontFix(
-                  {
-                    feedbackId: fb.id,
-                    actor: hardcodedDevelopmentPrincipal,
-                    body: 'Intentionally deferred in stub convergence run.'
-                  },
-                  feedbackDeps
-                );
-              }
-            } finally {
-              resolveDb.close();
-            }
+            // Verify that the convergence engine dispositioned the feedback — it must now be
+            // addressed (not open), so approval is unblocked through the normal gate check.
+            const allFeedback = await convergenceRepos.feedback.listByRun(runId);
+            const dispositionedImpl = allFeedback.filter(f => f.target === 'implementation');
+            expect(dispositionedImpl.length).toBeGreaterThan(0);
+            expect(dispositionedImpl.every(f => f.status !== 'open')).toBe(true);
 
             // ── Phase 3: Approve implementation gate → advances out ──────────
             const approveImplResp = await app.inject({
@@ -3493,6 +3511,7 @@ describe('run replies full loop integration', () => {
             expect(approveImplBody.run.currentStep).not.toBe('implementation.human_review');
           } finally {
             await app.close();
+            convergenceDb.close();
           }
         } finally {
           await rm(tempDir, { recursive: true, force: true });
