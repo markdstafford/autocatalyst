@@ -469,9 +469,8 @@ describe('createLoopbackProxy', () => {
       res.end(JSON.stringify({ error: 'overloaded' }));
     });
 
-    // Capture the sleep resolve callback so we can emit res 'close' before it resolves
+    // Capture the sleep resolve callback so we can abort during sleep
     let resolveSleep: (() => void) | undefined;
-    let proxyRes: http.ServerResponse | undefined;
 
     const proxy = await createLoopbackProxy({
       upstreamBaseUrl: upstream.baseUrl,
@@ -480,9 +479,6 @@ describe('createLoopbackProxy', () => {
       sleep: () => new Promise<void>((resolve) => { resolveSleep = resolve; }),
       jitter: () => 0
     });
-
-    // Intercept the server's request event to capture res before the handler runs
-    const server = (proxy as unknown as { server?: http.Server }).server;
 
     // Make a request but don't await it — we'll disconnect during sleep
     const ctrl = new AbortController();
