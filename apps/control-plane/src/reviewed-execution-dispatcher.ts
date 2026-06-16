@@ -155,7 +155,7 @@ export function createReviewedExecutionDispatcher(
         checkpointResult = result.checkpointResult;
       } catch (error) {
         // Sanitize unexpected throws through the existing failure path.
-        const reason = safeFailureReasonFromError(error) ?? 'Reviewed dispatch failed: unexpected_error';
+        const reason = safeFailureReasonFromError(error) ?? 'runner_failed_before_terminal_result';
         return {
           workResult: { directive: 'fail', reason }
         };
