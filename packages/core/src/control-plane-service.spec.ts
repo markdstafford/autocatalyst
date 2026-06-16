@@ -101,6 +101,7 @@ function makeFakeOrchestrator(overrides?: Partial<Orchestrator>): Orchestrator {
     applyDirective: vi.fn(),
     dispatch: vi.fn(),
     tick: vi.fn().mockResolvedValue({ status: 'noop' }),
+    replyToRun: vi.fn(),
     ...overrides
   } as Orchestrator;
 }
@@ -1003,5 +1004,160 @@ describe('DefaultControlPlaneService.appendRunFeedbackThreadReply', () => {
       feedbackId: 'fb_1',
       body: 'Reply'
     })).rejects.toMatchObject({ code: 'persistence_failed' });
+  });
+});
+
+describe('DefaultControlPlaneService.replyToRun', () => {
+  it('authorizes and delegates run replies to the orchestrator', async () => {
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'spec.human_review' }))
+    });
+    const orchestrator = makeFakeOrchestrator({
+      replyToRun: vi.fn().mockResolvedValue({
+        run: makeRun({ currentStep: 'spec.human_review' }),
+        runStep: makeRunStep({ step: 'spec.human_review' }),
+        classification: { directive: 'advance', target: 'artifact' }
+      })
+    });
+    const service = makeService({ orchestrator, runs });
+
+    const result = await service.replyToRun({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      request: { kind: 'approve' }
+    });
+
+    expect(result.classification).toEqual({ directive: 'advance', target: 'artifact' });
+    expect(orchestrator.replyToRun).toHaveBeenCalledTimes(1);
+  });
+
+  it('throws forbidden when policy denies', async () => {
+    const service = makeService({ policy: makeDenyPolicy() });
+    await expect(service.replyToRun({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      request: { kind: 'approve' }
+    })).rejects.toMatchObject({ code: 'forbidden' });
+  });
+
+  it('rejects model principals', async () => {
+    const modelPrincipal = { kind: 'model' as const, id: 'model_1', tenantId: 'tenant_1' };
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'spec.human_review' }))
+    });
+    const service = makeService({ runs });
+    await expect(service.replyToRun({
+      principal: modelPrincipal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      request: { kind: 'approve' }
+    })).rejects.toMatchObject({ code: 'unauthorized' });
+  });
+
+  it('throws not_found when the run is missing', async () => {
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(null) });
+    const service = makeService({ runs });
+    await expect(service.replyToRun({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_missing',
+      request: { kind: 'approve' }
+    })).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('throws not_found for cross-tenant run', async () => {
+    const service = makeService();
+    await expect(service.replyToRun({
+      principal,
+      tenant: 'tenant_other',
+      runId: 'run_1',
+      request: { kind: 'approve' }
+    })).rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('throws conflict when run is terminal', async () => {
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'done', terminal: true }))
+    });
+    const service = makeService({ runs });
+    await expect(service.replyToRun({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      request: { kind: 'approve' }
+    })).rejects.toMatchObject({ code: 'conflict' });
+  });
+
+  it('throws conflict when run is not at a human-waiting step', async () => {
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'implementation.build' }))
+    });
+    const service = makeService({ runs });
+    await expect(service.replyToRun({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      request: { kind: 'approve' }
+    })).rejects.toMatchObject({ code: 'conflict' });
+  });
+
+  it('throws invalid_transition when feedback gate blocks the reply', async () => {
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'spec.human_review' }))
+    });
+    const orchestrator = makeFakeOrchestrator({
+      replyToRun: vi.fn().mockRejectedValue(
+        new OrchestratorError('invalid_transition', 'Feedback blocks review approval.')
+      )
+    });
+    const service = makeService({ orchestrator, runs });
+    await expect(service.replyToRun({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      request: { kind: 'approve' }
+    })).rejects.toMatchObject({ code: 'invalid_transition' });
+  });
+
+  it('throws conflict (409) when orchestrator signals feedback_gate_blocked on approval', async () => {
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'implementation.human_review' }))
+    });
+    const orchestrator = makeFakeOrchestrator({
+      replyToRun: vi.fn().mockRejectedValue(
+        new OrchestratorError('invalid_transition', 'Feedback blocks review approval.', {
+          details: { code: 'feedback_gate_blocked', blockingFeedbackIds: ['fb_1'] }
+        })
+      )
+    });
+    const service = makeService({ orchestrator, runs });
+    await expect(service.replyToRun({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      request: { kind: 'approve' }
+    })).rejects.toMatchObject({ code: 'conflict' });
+  });
+
+  it('throws unsupported_pause when orchestrator signals an unsupported pause kind', async () => {
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'implementation.awaiting_input' }))
+    });
+    const orchestrator = makeFakeOrchestrator({
+      replyToRun: vi.fn().mockRejectedValue(
+        new OrchestratorError('invalid_transition', 'Unsupported awaiting-input pause.', {
+          details: { code: 'unsupported_pause' }
+        })
+      )
+    });
+    const service = makeService({ orchestrator, runs });
+    await expect(service.replyToRun({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      request: { kind: 'guidance', body: 'Use option A.' }
+    })).rejects.toMatchObject({ code: 'unsupported_pause' });
   });
 });

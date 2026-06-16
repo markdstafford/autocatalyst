@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -22,14 +23,20 @@ import {
   probeResourceSchema,
   runFeedbackListResponseSchema,
   runListResponseSchema,
+  runReplyResponseSchema,
   runSchema,
-  runSpecResponseSchema
+  runSpecResponseSchema,
+  runStepListResponseSchema
 } from '@autocatalyst/api-contract';
 import {
+  addressFeedback,
   buildProviderAdapterKey,
   createExtensionRegistryCatalog,
   hardcodedDevelopmentPrincipal,
   type ControlPlaneService,
+  type ConvergenceEngine,
+  type ConvergenceEngineInput,
+  type FeedbackLifecycleDependencies,
   type PolicyDecisionInput,
   type ProviderCompositionResult,
   type RunUnitOfWork
@@ -3052,4 +3059,464 @@ describe('spec authoring dispatch context', () => {
       }
     });
   });
+});
+
+// ---------------------------------------------------------------------------
+// Run replies integration: POST /v1/runs/:id/replies through the full stack
+// ---------------------------------------------------------------------------
+
+async function seedRunAtImplementationHumanReview(databasePath: string): Promise<{ runId: string }> {
+  const seedDb = createSqliteDatabase({ path: databasePath });
+  await migrateSqliteDatabase(seedDb);
+  const seedRepos = createDrizzleDomainRepositories(seedDb);
+
+  const project = await seedRepos.projects.create({
+    owner: hardcodedDevelopmentPrincipal,
+    tenant: hardcodedDevelopmentPrincipal.tenantId,
+    displayName: 'Reply Impl HR Project',
+    repoUrl: 'https://example.test/reply-impl-hr',
+    hostRepository: { provider: 'github', owner: 'test', name: 'reply-impl-hr' },
+    workspaceRootOverride: null,
+    issueTrackerSetting: null,
+    codeHostSetting: null,
+    credentialRefs: []
+  });
+  const conversation = await seedRepos.conversations.create({
+    projectId: project.id,
+    owner: hardcodedDevelopmentPrincipal,
+    tenant: hardcodedDevelopmentPrincipal.tenantId,
+    identity: 'reply-impl-hr',
+    activeTopicId: null
+  });
+  const topic = await seedRepos.topics.create({
+    conversationId: conversation.id,
+    owner: hardcodedDevelopmentPrincipal,
+    tenant: hardcodedDevelopmentPrincipal.tenantId,
+    title: 'Reply impl HR topic',
+    kind: 'main'
+  });
+  const run = await seedRepos.runs.create({
+    topicId: topic.id,
+    owner: hardcodedDevelopmentPrincipal,
+    tenant: hardcodedDevelopmentPrincipal.tenantId,
+    workKind: 'chore',
+    currentStep: 'implementation.human_review',
+    terminal: false
+  });
+  seedDb.close();
+  return { runId: run.id };
+}
+
+async function seedRunAtAwaitingInputWithConvergenceEscalation(
+  databasePath: string
+): Promise<{ runId: string }> {
+  const seedDb = createSqliteDatabase({ path: databasePath });
+  await migrateSqliteDatabase(seedDb);
+  const seedRepos = createDrizzleDomainRepositories(seedDb);
+
+  const project = await seedRepos.projects.create({
+    owner: hardcodedDevelopmentPrincipal,
+    tenant: hardcodedDevelopmentPrincipal.tenantId,
+    displayName: 'Reply Awaiting Input Project',
+    repoUrl: 'https://example.test/reply-awaiting',
+    hostRepository: { provider: 'github', owner: 'test', name: 'reply-awaiting' },
+    workspaceRootOverride: null,
+    issueTrackerSetting: null,
+    codeHostSetting: null,
+    credentialRefs: []
+  });
+  const conversation = await seedRepos.conversations.create({
+    projectId: project.id,
+    owner: hardcodedDevelopmentPrincipal,
+    tenant: hardcodedDevelopmentPrincipal.tenantId,
+    identity: 'reply-awaiting',
+    activeTopicId: null
+  });
+  const topic = await seedRepos.topics.create({
+    conversationId: conversation.id,
+    owner: hardcodedDevelopmentPrincipal,
+    tenant: hardcodedDevelopmentPrincipal.tenantId,
+    title: 'Reply awaiting input topic',
+    kind: 'main'
+  });
+  const run = await seedRepos.runs.create({
+    topicId: topic.id,
+    owner: hardcodedDevelopmentPrincipal,
+    tenant: hardcodedDevelopmentPrincipal.tenantId,
+    workKind: 'chore',
+    currentStep: 'implementation.awaiting_input',
+    terminal: false
+  });
+
+  const runStep = await seedRepos.runSteps.create({
+    runId: run.id,
+    phase: 'implementation',
+    step: 'implementation.awaiting_input',
+    role: 'implementer',
+    startedAt: new Date().toISOString(),
+    endedAt: null,
+    durationMs: null,
+    occurrence: { index: 0, attempt: 1, key: 'impl-awaiting-input-0' }
+  });
+  await seedRepos.runSteps.updateCheckpoint({
+    runStepId: runStep.id,
+    runId: run.id,
+    tenant: hardcodedDevelopmentPrincipal.tenantId,
+    checkpointResult: { pause: { kind: 'convergence_escalation', producingStep: 'implementation.build' } }
+  });
+
+  seedDb.close();
+  return { runId: run.id };
+}
+
+describe('run replies integration', () => {
+  it('POST /v1/runs/:id/replies with approve advances a run paused at spec.human_review', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const tempDir = await mkdtemp(join(tmpdir(), 'reply-spec-approve-'));
+      try {
+        // Initialize git in tempDir so the spec approval finalizer can commit frontmatter.
+        await execFileAsync('git', ['init', '--initial-branch=main'], { cwd: tempDir });
+        await execFileAsync('git', ['config', 'user.email', 'integration@example.test'], { cwd: tempDir });
+        await execFileAsync('git', ['config', 'user.name', 'Autocatalyst Integration'], { cwd: tempDir });
+
+        const { runId } = await seedSpecReviewScenario(databasePath, tempDir);
+
+        // Commit the seeded spec file so the finalizer's commit-on-modify path has a clean base.
+        await execFileAsync('git', ['add', '.'], { cwd: tempDir });
+        await execFileAsync('git', ['commit', '-m', 'seed spec'], { cwd: tempDir });
+
+        const app = await createControlPlaneServer({
+          autoDispatch: { enabled: false },
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET
+        });
+        try {
+          const resp = await app.inject({
+            method: 'POST',
+            url: `/v1/runs/${runId}/replies`,
+            headers: {
+              authorization: `Bearer ${BEARER_TOKEN}`,
+              'content-type': 'application/json'
+            },
+            payload: { kind: 'approve' }
+          });
+          expect(resp.statusCode).toBe(200);
+          const body = runReplyResponseSchema.parse(resp.json());
+          expect(body.classification.directive).toBe('advance');
+          expect(body.classification.target).toBe('artifact');
+          expect(body.run.id).toBe(runId);
+          expect(body.run.currentStep).not.toBe('spec.human_review');
+        } finally {
+          await app.close();
+        }
+      } finally {
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('POST /v1/runs/:id/replies with feedback at implementation.human_review classifies target=implementation', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const { runId } = await seedRunAtImplementationHumanReview(databasePath);
+
+      const app = await createControlPlaneServer({
+        autoDispatch: { enabled: false },
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET
+      });
+      try {
+        const resp = await app.inject({
+          method: 'POST',
+          url: `/v1/runs/${runId}/replies`,
+          headers: {
+            authorization: `Bearer ${BEARER_TOKEN}`,
+            'content-type': 'application/json'
+          },
+          payload: {
+            kind: 'feedback',
+            title: 'Implementation needs error handling',
+            body: 'The build does not handle the failure case for missing config.'
+          }
+        });
+        expect(resp.statusCode).toBe(200);
+        const body = runReplyResponseSchema.parse(resp.json());
+        expect(body.classification.directive).toBe('revise');
+        expect(body.classification.target).toBe('implementation');
+        expect(body.classification.createdFeedbackId).toBeDefined();
+      } finally {
+        await app.close();
+      }
+    });
+  });
+
+  it('POST /v1/runs/:id/replies with guidance at implementation.awaiting_input classifies pauseKind=convergence_escalation', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const { runId } = await seedRunAtAwaitingInputWithConvergenceEscalation(databasePath);
+
+      const app = await createControlPlaneServer({
+        autoDispatch: { enabled: false },
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET
+      });
+      try {
+        const resp = await app.inject({
+          method: 'POST',
+          url: `/v1/runs/${runId}/replies`,
+          headers: {
+            authorization: `Bearer ${BEARER_TOKEN}`,
+            'content-type': 'application/json'
+          },
+          payload: {
+            kind: 'guidance',
+            body: 'Prefer the public API option and document the trade-off in the PR.'
+          }
+        });
+        expect(resp.statusCode).toBe(200);
+        const body = runReplyResponseSchema.parse(resp.json());
+        expect(body.classification.directive).toBe('advance');
+        expect(body.classification.pauseKind).toBe('convergence_escalation');
+
+        // Verify guidance was persisted to the awaiting_input run step's checkpoint.
+        const verifyDb = createSqliteDatabase({ path: databasePath });
+        try {
+          const verifyRepos = createDrizzleDomainRepositories(verifyDb);
+          const steps = await verifyRepos.runSteps.listByRun(runId);
+          const awaitingStep = steps.find((s) => s.step === 'implementation.awaiting_input');
+          expect(awaitingStep).toBeDefined();
+          const checkpoint = awaitingStep!.checkpointResult as
+            | { pause?: { kind?: string; humanGuidance?: string } }
+            | null;
+          expect(checkpoint?.pause?.kind).toBe('convergence_escalation');
+          expect(checkpoint?.pause?.humanGuidance).toBe(
+            'Prefer the public API option and document the trade-off in the PR.'
+          );
+        } finally {
+          verifyDb.close();
+        }
+      } finally {
+        await app.close();
+      }
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Full interactive loop: spec approve → traverse implementation steps → impl
+// feedback revise → re-run → approve → advances out of implementation gate
+// ---------------------------------------------------------------------------
+
+// Poll until a run reaches a specific step or times out.
+async function pollForStep(
+  inject: (opts: { method: string; url: string; headers: Record<string, string> }) => Promise<{ statusCode: number; json(): unknown }>,
+  runId: string,
+  bearerToken: string,
+  targetStep: string,
+  timeoutMs: number
+): Promise<{ currentStep: string; terminal: boolean; waitingOn?: string }> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const resp = await inject({
+      method: 'GET',
+      url: `/v1/runs/${runId}`,
+      headers: { authorization: `Bearer ${bearerToken}` }
+    });
+    const run = runSchema.parse(resp.json());
+    if (run.currentStep === targetStep) {
+      return run;
+    }
+    if (run.terminal) {
+      throw new Error(`Run terminated at '${run.currentStep}' before reaching '${targetStep}'.`);
+    }
+    await new Promise<void>((resolve) => { setTimeout(resolve, 100); });
+  }
+  throw new Error(`Timed out (${timeoutMs}ms) waiting for run to reach '${targetStep}'.`);
+}
+
+describe('run replies full loop integration', () => {
+  it(
+    'spec approve auto-traverses implementation.plan → implementation.build → implementation.human_review, ' +
+    'feedback revise re-runs implementation.build, approve advances out of implementation gate',
+    { timeout: 60_000 },
+    async () => {
+      await withTempDatabasePath(async (databasePath) => {
+        const tempDir = await mkdtemp(join(tmpdir(), 'reply-full-loop-'));
+        try {
+          // Git repo so the spec approval finalizer can commit frontmatter.
+          await execFileAsync('git', ['init', '--initial-branch=main'], { cwd: tempDir });
+          await execFileAsync('git', ['config', 'user.email', 'integration@example.test'], { cwd: tempDir });
+          await execFileAsync('git', ['config', 'user.name', 'Autocatalyst Integration'], { cwd: tempDir });
+
+          const { runId } = await seedSpecReviewScenario(databasePath, tempDir);
+
+          // Commit the spec so the finalizer has a clean git base.
+          await execFileAsync('git', ['add', '.'], { cwd: tempDir });
+          await execFileAsync('git', ['commit', '-m', 'seed spec for full-loop test'], { cwd: tempDir });
+
+          // Stub unit of work: handles non-convergence steps (e.g. spec.author passthrough).
+          const unitOfWork: RunUnitOfWork = { run: async () => ({ directive: 'advance' as const }) };
+
+          // Deterministic convergence engine: wired through the normal orchestrator dispatch path
+          // for implementation.build. Reads open implementation feedback, marks each as addressed
+          // (producer disposition), and returns advance — proving the production reply →
+          // implementation.build rerun → feedback disposition loop without live AI providers.
+          const convergenceDb = createSqliteDatabase({ path: databasePath });
+          const convergenceRepos = createDrizzleDomainRepositories(convergenceDb);
+          const convergenceFeedbackDeps: FeedbackLifecycleDependencies = {
+            feedback: convergenceRepos.feedback,
+            ids: () => randomUUID(),
+            clock: () => new Date().toISOString()
+          };
+          const convergenceEngine: ConvergenceEngine = {
+            async run(input: ConvergenceEngineInput) {
+              const all = await convergenceRepos.feedback.listByRun(input.runId);
+              const openImpl = all.filter(f => f.target === 'implementation' && f.status === 'open');
+              for (const fb of openImpl) {
+                await addressFeedback(
+                  { feedbackId: fb.id, actor: hardcodedDevelopmentPrincipal, body: 'Addressed during deterministic convergence.' },
+                  convergenceFeedbackDeps
+                );
+              }
+              return {
+                workResult: { directive: 'advance' as const },
+                checkpointResult: {
+                  kind: 'convergence_review' as const,
+                  step: input.stepDefinition.id,
+                  maxRounds: 1,
+                  routing: { distinct: true },
+                  rounds: [],
+                  outcome: 'converged' as const,
+                  openFeedbackIds: [],
+                  lastPositions: {}
+                }
+              };
+            }
+          };
+
+          // autoDispatch is enabled by default; no explicit option needed.
+          const app = await createControlPlaneServer({
+            databasePath,
+            bearerToken: BEARER_TOKEN,
+            masterSecret: MASTER_SECRET,
+            unitOfWork,
+            convergenceEngine
+          });
+          try {
+            // Confirm start state.
+            const initialResp = await app.inject({
+              method: 'GET',
+              url: `/v1/runs/${runId}`,
+              headers: { authorization: `Bearer ${BEARER_TOKEN}` }
+            });
+            expect(initialResp.statusCode).toBe(200);
+            const initialRun = runSchema.parse(initialResp.json());
+            expect(initialRun.currentStep).toBe('spec.human_review');
+            expect(initialRun.waitingOn).toBe('human');
+
+            // ── Phase 1: Approve spec gate ──────────────────────────────────
+            const approveSpecResp = await app.inject({
+              method: 'POST',
+              url: `/v1/runs/${runId}/replies`,
+              headers: {
+                authorization: `Bearer ${BEARER_TOKEN}`,
+                'content-type': 'application/json'
+              },
+              payload: { kind: 'approve', body: 'Spec looks good.' }
+            });
+            expect(approveSpecResp.statusCode).toBe(200);
+            const approveSpecBody = runReplyResponseSchema.parse(approveSpecResp.json());
+            expect(approveSpecBody.classification.directive).toBe('advance');
+            expect(approveSpecBody.classification.target).toBe('artifact');
+
+            // Auto-dispatch now runs implementation.plan (deterministic passthrough) then
+            // implementation.build (stub unit of work → advance) and stops at
+            // implementation.human_review (waitingOn: human).
+            const runAtImplReview = await pollForStep(
+              (opts) => app.inject(opts),
+              runId,
+              BEARER_TOKEN,
+              'implementation.human_review',
+              20_000
+            );
+            expect(runAtImplReview.currentStep).toBe('implementation.human_review');
+            expect(runAtImplReview.waitingOn).toBe('human');
+
+            // Verify both implementation.plan and implementation.build appear in step history.
+            const stepsResp = await app.inject({
+              method: 'GET',
+              url: `/v1/runs/${runId}/steps`,
+              headers: { authorization: `Bearer ${BEARER_TOKEN}` }
+            });
+            expect(stepsResp.statusCode).toBe(200);
+            const stepsBody = runStepListResponseSchema.parse(stepsResp.json());
+            const visitedStepIds = stepsBody.steps.map((s) => s.step);
+            expect(visitedStepIds).toContain('implementation.plan');
+            expect(visitedStepIds).toContain('implementation.build');
+
+            // ── Phase 2: Send implementation feedback → revise ──────────────
+            const feedbackResp = await app.inject({
+              method: 'POST',
+              url: `/v1/runs/${runId}/replies`,
+              headers: {
+                authorization: `Bearer ${BEARER_TOKEN}`,
+                'content-type': 'application/json'
+              },
+              payload: {
+                kind: 'feedback',
+                title: 'Add null input handling',
+                body: 'Please handle the case where the primary input is null or undefined.'
+              }
+            });
+            expect(feedbackResp.statusCode).toBe(200);
+            const feedbackBody = runReplyResponseSchema.parse(feedbackResp.json());
+            expect(feedbackBody.classification.directive).toBe('revise');
+            expect(feedbackBody.classification.target).toBe('implementation');
+            expect(feedbackBody.classification.createdFeedbackId).toBeDefined();
+
+            // Auto-dispatch re-runs implementation.build through the deterministic convergence
+            // engine, which marks the open implementation feedback as addressed (producer
+            // disposition), then returns to the gate.
+            await pollForStep(
+              (opts) => app.inject(opts),
+              runId,
+              BEARER_TOKEN,
+              'implementation.human_review',
+              20_000
+            );
+
+            // Verify that the convergence engine dispositioned the feedback — it must now be
+            // addressed (not open), so approval is unblocked through the normal gate check.
+            const allFeedback = await convergenceRepos.feedback.listByRun(runId);
+            const dispositionedImpl = allFeedback.filter(f => f.target === 'implementation');
+            expect(dispositionedImpl.length).toBeGreaterThan(0);
+            expect(dispositionedImpl.every(f => f.status !== 'open')).toBe(true);
+
+            // ── Phase 3: Approve implementation gate → advances out ──────────
+            const approveImplResp = await app.inject({
+              method: 'POST',
+              url: `/v1/runs/${runId}/replies`,
+              headers: {
+                authorization: `Bearer ${BEARER_TOKEN}`,
+                'content-type': 'application/json'
+              },
+              payload: { kind: 'approve', body: 'Implementation approved.' }
+            });
+            expect(approveImplResp.statusCode).toBe(200);
+            const approveImplBody = runReplyResponseSchema.parse(approveImplResp.json());
+            expect(approveImplBody.classification.directive).toBe('advance');
+            expect(approveImplBody.classification.target).toBe('implementation');
+            // Run has advanced out of the implementation gate toward the docs/pr phase.
+            expect(approveImplBody.run.currentStep).not.toBe('implementation.human_review');
+          } finally {
+            await app.close();
+            convergenceDb.close();
+          }
+        } finally {
+          await rm(tempDir, { recursive: true, force: true });
+        }
+      });
+    }
+  );
 });

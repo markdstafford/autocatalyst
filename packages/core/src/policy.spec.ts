@@ -14,6 +14,16 @@ describe('policy decision point', () => {
     ).resolves.toEqual({ allowed: true });
   });
 
+  it('allows policy decisions for run reply creation', async () => {
+    const decision = await permissivePolicyDecisionPoint.authorize({
+      principal: { kind: 'human', id: 'user_1', tenantId: 'tenant_1' },
+      action: 'run_replies.create',
+      resource: { kind: 'run_replies', id: 'run_1', path: '/v1/runs/:id/replies' }
+    });
+
+    expect(decision).toEqual({ allowed: true });
+  });
+
   it('routes authorization through an injectable policy', async () => {
     const authorize = vi.fn(async () => ({ allowed: true as const }));
     await authorizeRequest(

@@ -34,6 +34,7 @@ export interface ReviewContext {
   readonly previousRounds?: readonly ConvergenceRoundRecord[];
   readonly routingDistinct?: boolean;
   readonly altitudeContext?: AltitudeReviewContext;
+  readonly humanGuidance?: string;
 }
 
 export interface RunRoleWorkInput extends RunWorkInput {

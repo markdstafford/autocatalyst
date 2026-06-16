@@ -1,4 +1,4 @@
-import type { CreateFeedbackInput, Feedback, FeedbackAnchor, FeedbackStatus, NonModelPrincipal } from '@autocatalyst/api-contract';
+import type { CreateFeedbackInput, Feedback, FeedbackAnchor, FeedbackStatus, FeedbackTarget, NonModelPrincipal } from '@autocatalyst/api-contract';
 
 import type { FeedbackRepository } from './domain-repositories.js';
 
@@ -49,6 +49,35 @@ function requireStatus(feedback: Feedback, expectedStatus: FeedbackStatus): void
 
 // ---- Use cases --------------------------------------------------------------
 
+export interface CreateGateFeedbackInput {
+  readonly runId: string;
+  readonly owner: NonModelPrincipal;
+  readonly tenant: string;
+  readonly principal: NonModelPrincipal;
+  readonly target: FeedbackTarget;
+  readonly title: string;
+  readonly body: string;
+  readonly anchor?: FeedbackAnchor;
+}
+
+export async function createGateFeedback(
+  input: CreateGateFeedbackInput,
+  deps: FeedbackLifecycleDependencies
+): Promise<Feedback> {
+  const createInput: CreateFeedbackInput = {
+    runId: input.runId,
+    owner: input.owner,
+    tenant: input.tenant,
+    target: input.target,
+    status: 'open',
+    title: input.title,
+    body: input.body,
+    ...(input.anchor !== undefined ? { anchor: input.anchor } : {}),
+    thread: [{ id: deps.ids(), author: input.principal, body: input.body, createdAt: deps.clock() }]
+  };
+  return deps.feedback.create(createInput);
+}
+
 export interface CreateArtifactFeedbackInput {
   readonly runId: string;
   readonly owner: NonModelPrincipal;
@@ -63,26 +92,7 @@ export async function createArtifactFeedback(
   input: CreateArtifactFeedbackInput,
   deps: FeedbackLifecycleDependencies
 ): Promise<Feedback> {
-  const createInput: CreateFeedbackInput = {
-    runId: input.runId,
-    owner: input.owner,
-    tenant: input.tenant,
-    target: 'artifact',
-    status: 'open',
-    title: input.title,
-    body: input.body,
-    ...(input.anchor !== undefined ? { anchor: input.anchor } : {}),
-    thread: [
-      {
-        id: deps.ids(),
-        author: input.principal,
-        body: input.body,
-        createdAt: deps.clock()
-      }
-    ]
-  };
-
-  return deps.feedback.create(createInput);
+  return createGateFeedback({ ...input, target: 'artifact' }, deps);
 }
 
 export interface AddressFeedbackInput {
@@ -205,7 +215,7 @@ export async function reopenFeedback(
 
 export interface ListBlockingFeedbackInput {
   readonly runId: string;
-  readonly target: 'artifact';
+  readonly target: FeedbackTarget;
 }
 
 export async function listBlockingFeedback(
@@ -220,7 +230,7 @@ export async function listBlockingFeedback(
 
 export interface ResolveApproverAddressedFeedbackInput {
   readonly runId: string;
-  readonly target: 'artifact';
+  readonly target: FeedbackTarget;
   readonly approver: NonModelPrincipal;
 }
 
@@ -253,6 +263,15 @@ export async function resolveApproverAddressedFeedback(
       })
     )
   );
+}
+
+export async function addressOpenFeedbackForRunTarget(
+  input: { readonly runId: string; readonly target: FeedbackTarget; readonly actor: NonModelPrincipal; readonly body: string },
+  deps: FeedbackLifecycleDependencies
+): Promise<readonly Feedback[]> {
+  const all = await deps.feedback.listByRun(input.runId);
+  const open = all.filter(item => item.target === input.target && item.status === 'open');
+  return Promise.all(open.map(item => addressFeedback({ feedbackId: item.id, actor: input.actor, body: input.body }, deps)));
 }
 
 export interface AppendFeedbackThreadReplyInput {

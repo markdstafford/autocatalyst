@@ -549,14 +549,15 @@ describe('spec feedback gate integration', () => {
       runId: harness.run.id,
       tenant: harness.run.tenant,
       directive: 'advance',
-      principal: phoebe
+      principal: phoebe,
+      origin: 'human'
     })).rejects.toMatchObject({ code: 'invalid_transition', details: expect.objectContaining({ code: 'feedback_gate_blocked' }) });
 
     // 3. Mark won't fix → reopen → try to advance again → still blocked
     const enzo = principal('enzo');
     await markFeedbackWontFix({ feedbackId: fb.id, actor: enzo, body: 'Deferred until revise support exists.' }, harness.feedbackDeps);
     await reopenFeedback({ feedbackId: fb.id, actor: phoebe, body: 'Deferral is not acceptable for this gate.' }, harness.feedbackDeps);
-    await expect(harness.orchestrator.applyDirective({ runId: harness.run.id, tenant: harness.run.tenant, directive: 'advance', principal: phoebe }))
+    await expect(harness.orchestrator.applyDirective({ runId: harness.run.id, tenant: harness.run.tenant, directive: 'advance', principal: phoebe, origin: 'human' }))
       .rejects.toMatchObject({ code: 'invalid_transition' });
 
     // 4. Address the feedback → advance should succeed now
@@ -565,7 +566,8 @@ describe('spec feedback gate integration', () => {
       runId: harness.run.id,
       tenant: harness.run.tenant,
       directive: 'advance',
-      principal: phoebe  // phoebe originated the feedback, so her advance resolves it
+      principal: phoebe,  // phoebe originated the feedback, so her advance resolves it
+      origin: 'human'
     });
     expect(approved.run.currentStep).toBe('implementation.plan');
 
@@ -628,7 +630,8 @@ describe('spec feedback gate integration', () => {
       runId: harness.run.id,
       tenant: harness.run.tenant,
       directive: 'advance',
-      principal: { id: 'phoebe', kind: 'human', tenantId: 'tenant_1' }
+      principal: { id: 'phoebe', kind: 'human', tenantId: 'tenant_1' },
+      origin: 'human'
     });
     expect(approved.run.currentStep).toBe('implementation.plan');
 

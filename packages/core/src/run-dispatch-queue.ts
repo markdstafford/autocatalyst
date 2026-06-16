@@ -6,6 +6,7 @@ export class RunDispatchQueue {
   readonly #maxConcurrent: number;
   #activeCount = 0;
   readonly #queue: Array<() => void> = [];
+  readonly #runTails = new Map<string, Promise<unknown>>();
 
   constructor(options: RunDispatchQueueOptions) {
     if (!Number.isInteger(options.maxConcurrent) || options.maxConcurrent <= 0) {
@@ -40,6 +41,20 @@ export class RunDispatchQueue {
         this.#queue.push(run);
       }
     });
+  }
+
+  enqueueForRun<T>(runId: string, work: () => Promise<T>): Promise<T> {
+    const previous = this.#runTails.get(runId) ?? Promise.resolve();
+    const next = previous.catch(() => undefined).then(() => this.enqueue(work));
+    const tail = next.finally(() => {
+      if (this.#runTails.get(runId) === tail) {
+        this.#runTails.delete(runId);
+      }
+    });
+    // Suppress unhandled rejection on the stored tail chain — callers hold `next` and handle errors there.
+    tail.catch(() => undefined);
+    this.#runTails.set(runId, tail);
+    return next;
   }
 
   #drain(): void {

@@ -164,6 +164,14 @@ export interface ControlPlaneServerOptions {
    * deterministically through `tick` pass `{ enabled: false }` to keep manual control.
    */
   readonly autoDispatch?: AutoDispatchOptions;
+  /**
+   * Injectable convergence engine for integration tests. When provided, this engine is used for
+   * implementation.build dispatch instead of the real layered convergence engine. Allows tests
+   * to drive the full orchestrator dispatch path (including feedback disposition side effects)
+   * without requiring live AI providers. Only effective when `unitOfWork` is also provided or when
+   * `realRunnerDispatch` is not enabled.
+   */
+  readonly convergenceEngine?: ConvergenceEngine;
 }
 
 const DEFAULT_RUN_CONCURRENCY = 2;
@@ -771,8 +779,9 @@ export async function createControlPlaneServer(
   // Convergence engine is composed only when we build the real dispatch unit of work.
   // It needs the routing resolver, the execution-aware unit of work (for runWithCheckpoint),
   // and a workspace git port — all of which are only available in the real-dispatch branch.
-  let convergenceEngine: ConvergenceEngine | undefined;
-  if (resolvedUnitOfWork === undefined && realDispatchEnabled) {
+  // An explicitly injected convergenceEngine (e.g. from integration tests) takes priority.
+  let convergenceEngine: ConvergenceEngine | undefined = options.convergenceEngine;
+  if (convergenceEngine === undefined && resolvedUnitOfWork === undefined && realDispatchEnabled) {
     const profileId = options.realRunnerDispatch?.defaultProviderProfileId;
     const adapterRegistry = composeAgentProviderAdapterRegistry({
       composed: providerCompositionResult.composed

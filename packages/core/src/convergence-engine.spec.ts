@@ -21,7 +21,7 @@ import type {
 } from '@autocatalyst/api-contract';
 import type { ModelRoutingResolver, ModelRoutingResolution } from './model-routing-resolver.js';
 import { ModelRoutingConfigurationError } from './model-routing-resolver.js';
-import type { FeedbackRepository, RunStepRepository, UpdateRunStepCheckpointInput } from './domain-repositories.js';
+import type { FeedbackRepository, FeedbackStatusTransitionPersistenceInput, RunStepRepository, UpdateRunStepCheckpointInput } from './domain-repositories.js';
 import type { ReviewedRoleDispatcher, RunRoleWorkInput, ReviewedRoleDispatchResult } from './reviewed-role-dispatcher.js';
 import type { RunWorkspaceGitPort, RunWorkspaceCommitFilesInput, RunWorkspaceCommitResult } from './run-workspace-git.js';
 import type { RunStepDefinition } from './run-step-catalog.js';
@@ -844,6 +844,107 @@ describe('createConvergenceEngine', () => {
       stepDefinition: stepDefBoth, workflow: fakeWorkflow
     });
     expect(out.workResult.directive).toBe('advance');
+  });
+
+  it('passes open implementation feedback into round 1 and marks it addressed after convergence', async () => {
+    // A fuller feedback repo that supports findById and updateStatusAndAppendThread.
+    class FullFeedbackRepo implements FeedbackRepository {
+      private store = new Map<string, Feedback>();
+      private seq = 0;
+
+      seed(fb: Feedback): void {
+        this.store.set(fb.id, fb);
+      }
+
+      async create(input: CreateFeedbackInput): Promise<Feedback> {
+        this.seq += 1;
+        const now = '2025-01-01T00:00:00.000Z';
+        const fb: Feedback = {
+          id: `fb_created_${this.seq}`,
+          runId: input.runId,
+          owner: input.owner,
+          tenant: input.tenant,
+          target: input.target,
+          status: input.status,
+          title: input.title,
+          body: input.body,
+          ...(input.anchor !== undefined ? { anchor: input.anchor } : {}),
+          thread: input.thread,
+          createdAt: now,
+          updatedAt: now
+        };
+        this.store.set(fb.id, fb);
+        return fb;
+      }
+
+      async findById(id: string): Promise<Feedback | null> {
+        return this.store.get(id) ?? null;
+      }
+
+      async listByRun(): Promise<readonly Feedback[]> {
+        return [...this.store.values()];
+      }
+
+      async updateStatusAndAppendThread(input: FeedbackStatusTransitionPersistenceInput): Promise<Feedback> {
+        const existing = this.store.get(input.feedbackId);
+        if (existing === undefined) throw new Error('not found');
+        const updated: Feedback = { ...existing, status: input.nextStatus, updatedAt: input.updatedAt };
+        this.store.set(input.feedbackId, updated);
+        return updated;
+      }
+
+      async appendThreadEntry(): Promise<Feedback> { throw new Error('not implemented'); }
+    }
+
+    const now = '2025-01-01T00:00:00.000Z';
+    const openImplFeedback: Feedback = {
+      id: 'fb_human_impl',
+      runId: 'run-1',
+      owner: { id: 'owner-1', kind: 'human', tenantId: 'tenant-1' },
+      tenant: 'tenant-1',
+      target: 'implementation',
+      status: 'open',
+      title: 'Revise the approach',
+      body: 'Please use a different algorithm.',
+      thread: [],
+      createdAt: now,
+      updatedAt: now
+    };
+
+    const feedback = new FullFeedbackRepo();
+    feedback.seed(openImplFeedback);
+
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      reviewerResultDispatch(1, { status: 'satisfied' })
+    ]);
+
+    const engine = createConvergenceEngine({
+      dispatcher,
+      git: new StubGit(),
+      feedback,
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      idGenerator: (() => { let n = 0; return () => `id_${++n}`; })(),
+      clock: () => now
+    });
+
+    const out = await engine.run({
+      runId: 'run-1', run: fakeRun, tenant: 'tenant-1', runStep: fakeRunStep,
+      stepDefinition: stepDefBoth, workflow: fakeWorkflow
+    });
+
+    // Convergence succeeded.
+    expect(out.workResult.directive).toBe('advance');
+
+    // Round 1 implementer received the open feedback as a required disposition context.
+    const round1Impl = dispatcher.calls.find(c => c.role === 'implementer' && c.round === 1);
+    expect(round1Impl?.reviewContext?.requiredDispositions?.length).toBeGreaterThan(0);
+    expect(round1Impl?.reviewContext?.requiredDispositions?.[0]?.feedbackId).toBe('fb_human_impl');
+
+    // Feedback is now addressed.
+    const updated = await feedback.findById('fb_human_impl');
+    expect(updated?.status).toBe('addressed');
   });
 });
 

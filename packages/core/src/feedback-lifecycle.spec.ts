@@ -5,12 +5,14 @@ import type { Feedback, FeedbackStatus, FeedbackThreadEntry, NonModelPrincipal }
 import type { FeedbackRepository, FeedbackStatusTransitionPersistenceInput, FeedbackThreadAppendPersistenceInput } from './domain-repositories.js';
 import {
   createArtifactFeedback,
+  createGateFeedback,
   addressFeedback,
   markFeedbackWontFix,
   resolveFeedback,
   reopenFeedback,
   listBlockingFeedback,
   resolveApproverAddressedFeedback,
+  addressOpenFeedbackForRunTarget,
   appendFeedbackThreadReply,
   type FeedbackLifecycleDependencies
 } from './feedback-lifecycle.js';
@@ -330,6 +332,100 @@ describe('resolveApproverAddressedFeedback', () => {
     await resolveApproverAddressedFeedback({ runId: 'run_1', target: 'artifact', approver: principal('phoebe') }, deps);
 
     expect(deps.feedback.updateStatusAndAppendThread).not.toHaveBeenCalled();
+  });
+});
+
+// ---- createGateFeedback -----------------------------------------------------
+
+describe('createGateFeedback', () => {
+  it('creates gate feedback for implementation target with the replying principal as first thread author', async () => {
+    const deps = makeFeedbackDeps();
+    deps.feedback.create.mockResolvedValue({
+      id: 'fb_impl',
+      runId: 'run_1',
+      owner: principal('owner'),
+      tenant: 'tenant_1',
+      target: 'implementation',
+      status: 'open',
+      title: 'Fix retry handling',
+      body: 'Please add a retry-safe resume path.',
+      thread: [{ id: 'thread_1', author: principal('reviewer_1'), body: 'Please add a retry-safe resume path.', createdAt: '2026-06-15T00:00:00.000Z' }],
+      createdAt: '2026-06-15T00:00:00.000Z',
+      updatedAt: '2026-06-15T00:00:00.000Z'
+    });
+
+    const feedback = await createGateFeedback({
+      runId: 'run_1',
+      owner: principal('owner'),
+      tenant: 'tenant_1',
+      principal: principal('reviewer_1'),
+      target: 'implementation',
+      title: 'Fix retry handling',
+      body: 'Please add a retry-safe resume path.'
+    }, deps);
+
+    expect(feedback.target).toBe('implementation');
+    expect(feedback.status).toBe('open');
+    const createCall = deps.feedback.create.mock.calls[0]?.[0] as { thread?: Array<{ author: { id: string } }> };
+    expect(createCall?.thread?.[0]?.author.id).toBe('reviewer_1');
+  });
+});
+
+// ---- listBlockingFeedback by target -----------------------------------------
+
+describe('listBlockingFeedback by target', () => {
+  it('lists only open and addressed feedback matching the target', async () => {
+    const deps = makeFeedbackDeps({
+      listByRun: [
+        feedbackItem({ id: 'artifact_open', target: 'artifact', status: 'open' }),
+        feedbackItem({ id: 'impl_addressed', target: 'implementation', status: 'addressed' }),
+        feedbackItem({ id: 'impl_resolved', target: 'implementation', status: 'resolved' })
+      ]
+    });
+
+    const blocking = await listBlockingFeedback({ runId: 'run_1', target: 'implementation' }, deps);
+    expect(blocking.map(f => f.id)).toEqual(['impl_addressed']);
+  });
+});
+
+// ---- addressOpenFeedbackForRunTarget ----------------------------------------
+
+describe('addressOpenFeedbackForRunTarget', () => {
+  it('addresses all open feedback for the given target', async () => {
+    const deps = makeFeedbackDeps({
+      listByRun: [
+        feedbackItem({ id: 'fb_open_impl', target: 'implementation', status: 'open' }),
+        feedbackItem({ id: 'fb_open_artifact', target: 'artifact', status: 'open' }),
+        feedbackItem({ id: 'fb_addressed_impl', target: 'implementation', status: 'addressed' })
+      ]
+    });
+
+    await addressOpenFeedbackForRunTarget({
+      runId: 'run_1',
+      target: 'implementation',
+      actor: principal('agent'),
+      body: 'Automated address.'
+    }, deps);
+
+    expect(deps.feedback.updateStatusAndAppendThread).toHaveBeenCalledTimes(1);
+    expect(deps.feedback.updateStatusAndAppendThread).toHaveBeenCalledWith(expect.objectContaining({ feedbackId: 'fb_open_impl' }));
+  });
+
+  it('returns empty array when no open feedback matches target', async () => {
+    const deps = makeFeedbackDeps({
+      listByRun: [
+        feedbackItem({ id: 'fb_resolved', target: 'implementation', status: 'resolved' })
+      ]
+    });
+
+    const result = await addressOpenFeedbackForRunTarget({
+      runId: 'run_1',
+      target: 'implementation',
+      actor: principal('agent'),
+      body: 'No-op.'
+    }, deps);
+
+    expect(result).toEqual([]);
   });
 });
 

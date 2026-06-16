@@ -1,15 +1,18 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Artifact, Conversation, Feedback, Message, NonModelPrincipal, Run, RunStateTransitionEvent, RunStep, Topic } from '@autocatalyst/api-contract';
+import type { RunReplyRequest } from '@autocatalyst/api-contract';
 
 import type { ConversationIngressRepository, FeedbackRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
 import { SpecReviewGateBlockedError } from './spec-review-gate.js';
+import { HumanReviewGateError } from './human-review-gate.js';
 import { RunDispatchQueue } from './run-dispatch-queue.js';
 import { InMemoryRunEventBus, type RunEventPublisher } from './run-events.js';
 import {
   DefaultOrchestrator,
   OrchestratorError,
   type AutoDispatchOptions,
+  type ReplyToRunInput,
   type RunUnitOfWork,
   type WorkspaceContextResolver
 } from './orchestrator.js';
@@ -512,9 +515,9 @@ describe('DefaultOrchestrator.dispatch', () => {
   });
 
   it('invokes unit of work and applies the resulting advance directive', async () => {
-    const existing = makeRun({ currentStep: 'implementation.plan' });
-    const updated = makeRun({ currentStep: 'implementation.build' });
-    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.build', phase: 'implementation' });
+    const existing = makeRun({ currentStep: 'pr.finalize' });
+    const updated = makeRun({ currentStep: 'pr.open' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'pr.open', phase: 'pr' });
     const findById = vi.fn().mockResolvedValue(existing);
     const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
     const runs = makeFakeRunRepo({
@@ -535,9 +538,37 @@ describe('DefaultOrchestrator.dispatch', () => {
     expect(unitArg.tenant).toBe('tenant_1');
     // Orchestrator (not the unit) recorded the transition
     expect(recordTransition).toHaveBeenCalledTimes(1);
-    expect(result.run.currentStep).toBe('implementation.build');
+    expect(result.run.currentStep).toBe('pr.open');
     expect(events).toHaveLength(1);
     expect(events[0]?.transition.directive).toBe('advance');
+  });
+
+  it('dispatches implementation.plan with an explicit passthrough checkpoint before implementation.build', async () => {
+    const runAtPlan = makeRun({ currentStep: 'implementation.plan', workKind: 'feature' });
+    const runStep = makeRunStep({ step: 'implementation.plan', phase: 'implementation' });
+
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(runAtPlan),
+      recordRunStepTransition: vi.fn().mockResolvedValue({
+        run: makeRun({ currentStep: 'implementation.build' }),
+        runStep: makeRunStep({ step: 'implementation.build' })
+      })
+    });
+
+    const unitOfWork = { run: vi.fn() };
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork, autoDispatch: { enabled: false } });
+
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    expect(result.run.currentStep).toBe('implementation.build');
+    expect(unitOfWork.run).not.toHaveBeenCalled();
+
+    // Verify the checkpoint was recorded in the transition
+    const transitionCall = (runs.recordRunStepTransition as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(transitionCall?.checkpointResult).toMatchObject({
+      kind: 'implementation_plan_passthrough',
+      reason: 'issue_63_reply_ingress_uses_existing_build_convergence'
+    });
   });
 
   it('applies fail directive through lifecycle when unit of work returns fail (queue slot released)', async () => {
@@ -1334,7 +1365,8 @@ describe('DefaultOrchestrator.applyDirective — spec.human_review gate guard', 
       runId: 'run_1',
       tenant: 'tenant_1',
       directive: 'advance',
-      principal: principal('phoebe')
+      principal: principal('phoebe'),
+      origin: 'human'
     });
 
     expect(resolveApproverAddressedFeedbackFn).toHaveBeenCalledTimes(1);
@@ -1353,7 +1385,8 @@ describe('DefaultOrchestrator.applyDirective — spec.human_review gate guard', 
       runId: 'run_1',
       tenant: 'tenant_1',
       directive: 'advance',
-      principal: phoebe
+      principal: phoebe,
+      origin: 'human'
     });
 
     expect(resolveApproverAddressedFeedbackFn).toHaveBeenCalledWith(
@@ -1371,7 +1404,8 @@ describe('DefaultOrchestrator.applyDirective — spec.human_review gate guard', 
     await orchestrator.applyDirective({
       runId: 'run_1',
       tenant: 'tenant_1',
-      directive: 'advance'
+      directive: 'advance',
+      origin: 'human'
     });
 
     expect(resolveApproverAddressedFeedbackFn).toHaveBeenCalledWith(
@@ -1394,7 +1428,8 @@ describe('DefaultOrchestrator.applyDirective — spec.human_review gate guard', 
         runId: 'run_1',
         tenant: 'tenant_1',
         directive: 'advance',
-        principal: principal('phoebe')
+        principal: principal('phoebe'),
+        origin: 'human'
       })
     ).rejects.toMatchObject({
       name: 'OrchestratorError',
@@ -1417,7 +1452,8 @@ describe('DefaultOrchestrator.applyDirective — spec.human_review gate guard', 
         runId: 'run_1',
         tenant: 'tenant_1',
         directive: 'advance',
-        principal: principal('phoebe')
+        principal: principal('phoebe'),
+        origin: 'human'
       });
       throw new Error('expected to throw');
     } catch (error) {
@@ -1546,7 +1582,8 @@ describe('DefaultOrchestrator.applyDirective — spec approval finalizer', () =>
       runId: 'run_1',
       directive: 'advance',
       tenant: 'tenant_1',
-      principal: principal('phoebe')
+      principal: principal('phoebe'),
+      origin: 'human'
     });
 
     expect(finalizeSpecApprovalFn).toHaveBeenCalledTimes(1);
@@ -1575,7 +1612,7 @@ describe('DefaultOrchestrator.applyDirective — spec approval finalizer', () =>
     });
 
     await expect(
-      orchestrator.applyDirective({ runId: 'run_1', directive: 'advance', tenant: 'tenant_1' })
+      orchestrator.applyDirective({ runId: 'run_1', directive: 'advance', tenant: 'tenant_1', origin: 'human' })
     ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'persistence_failed' });
 
     expect(finalizeSpecApprovalFn).not.toHaveBeenCalled();
@@ -1606,7 +1643,8 @@ describe('DefaultOrchestrator.applyDirective — spec approval finalizer', () =>
       orchestrator.applyDirective({
         runId: 'run_1',
         directive: 'advance',
-        tenant: 'tenant_1'
+        tenant: 'tenant_1',
+        origin: 'human'
       })
     ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'persistence_failed' });
 
@@ -2016,7 +2054,7 @@ describe('DefaultOrchestrator.dispatch — reviewed step selection', () => {
     expect(result.run.currentStep).toBe('implementation.human_review');
   });
 
-  it('keeps implementation.plan on one-shot path (no convergence engine)', async () => {
+  it('keeps implementation.plan on passthrough path (no convergence engine, no unit of work)', async () => {
     const existing = makeRun({ currentStep: 'implementation.plan' });
     const updated = makeRun({ currentStep: 'implementation.build' });
     const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.build', phase: 'implementation' });
@@ -2040,9 +2078,9 @@ describe('DefaultOrchestrator.dispatch — reviewed step selection', () => {
 
     const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
 
-    // implementation.plan has only ['implementer'], not both roles — one-shot path
+    // implementation.plan uses deterministic passthrough — neither convergence engine nor unit of work
     expect(calls).toHaveLength(0);
-    expect(unitRun).toHaveBeenCalledTimes(1);
+    expect(unitRun).not.toHaveBeenCalled();
     expect(result.run.currentStep).toBe('implementation.build');
   });
 
@@ -2352,7 +2390,7 @@ describe('reviewed step integration — transitions and checkpoint persistence',
     expect(transitionCall?.currentStep).toBe('implementation.awaiting_input');
   });
 
-  it('implementation.plan stays on one-shot path when convergence engine is present', async () => {
+  it('implementation.plan uses passthrough (not convergence engine) when convergence engine is present', async () => {
     const existing = makeRun({ currentStep: 'implementation.plan' });
     const updated = makeRun({ currentStep: 'implementation.build' });
     const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.build', phase: 'implementation' });
@@ -2376,10 +2414,22 @@ describe('reviewed step integration — transitions and checkpoint persistence',
 
     const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
 
-    // implementation.plan has only ['implementer'], not both roles — must NOT use convergence engine
+    // implementation.plan uses deterministic passthrough — must NOT use convergence engine or unit of work
     expect(calls).toHaveLength(0);
-    expect(unitRun).toHaveBeenCalledTimes(1);
+    expect(unitRun).not.toHaveBeenCalled();
     expect(result.run.currentStep).toBe('implementation.build');
+  });
+
+  it('keeps runner-origin advance blocked at implementation human review', async () => {
+    const existing = makeRun({ currentStep: 'implementation.human_review' });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing)
+    });
+    const { orchestrator } = makeOrchestrator({ runs });
+
+    await expect(
+      orchestrator.applyDirective({ runId: 'run_1', directive: 'advance', tenant: 'tenant_1', origin: 'runner' })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition' });
   });
 
   it('convergence checkpoint is stored on the run step after successful advance', async () => {
@@ -2414,5 +2464,425 @@ describe('reviewed step integration — transitions and checkpoint persistence',
     const transitionCall = recordTransition.mock.calls[0]?.[0];
     expect(transitionCall?.checkpointResult).toBeDefined();
     expect(transitionCall?.checkpointResult).toMatchObject({ kind: 'convergence_review', outcome: 'converged' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// replyToRun helpers
+// ---------------------------------------------------------------------------
+
+function makeFakeFeedbackRepo2(items: Feedback[] = []): FeedbackRepository {
+  const store: Feedback[] = [...items];
+  return {
+    create: vi.fn(async (input) => {
+      const item = { id: `fb_${store.length + 1}`, ...input, createdAt: timestamp, updatedAt: timestamp } as Feedback;
+      store.push(item);
+      return item;
+    }),
+    findById: vi.fn(async (id) => store.find(f => f.id === id) ?? null),
+    listByRun: vi.fn(async (_runId) => [...store]),
+    updateStatusAndAppendThread: vi.fn(async (input) => {
+      const item = store.find(f => f.id === input.feedbackId);
+      if (!item) throw new Error('Not found');
+      const updated = { ...item, status: input.nextStatus, thread: [...item.thread, input.threadEntry], updatedAt: input.updatedAt };
+      const idx = store.findIndex(f => f.id === input.feedbackId);
+      store[idx] = updated;
+      return updated;
+    }),
+    appendThreadEntry: vi.fn()
+  };
+}
+
+function makeFeedbackLifecycleDeps(items: Feedback[] = []): FeedbackLifecycleDependencies & { feedback: FeedbackRepository } {
+  return {
+    feedback: makeFakeFeedbackRepo2(items),
+    ids: () => `id_${Math.random().toString(36).slice(2)}`,
+    clock: () => timestamp
+  };
+}
+
+function makeOpenImplementationFeedback(): Feedback {
+  return {
+    id: 'fb_open_1',
+    runId: 'run_1',
+    owner,
+    tenant: 'tenant_1',
+    target: 'implementation',
+    status: 'open',
+    title: 'Change this',
+    body: 'Some body',
+    thread: [],
+    createdAt: timestamp,
+    updatedAt: timestamp
+  } as Feedback;
+}
+
+describe('DefaultOrchestrator.replyToRun', () => {
+  // --- spec.human_review approve ---
+
+  it('spec gate approval — advances run from spec.human_review and returns advance classification', async () => {
+    const existing = makeRun({ currentStep: 'spec.human_review' });
+    const updated = makeRun({ currentStep: 'implementation.plan' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.plan', phase: 'implementation' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const feedbackLifecycleDependencies = makeFeedbackLifecycleDeps();
+    const specApprovalFinalizerDependencies = makeDefaultApprovalFinalDeps();
+    const resolveWorkspaceContext = vi.fn().mockResolvedValue({ workspaceRepoRoot: '/tmp', workspaceHandle: 'ws_1' });
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      feedbackLifecycleDependencies,
+      specApprovalFinalizerDependencies,
+      resolveWorkspaceContext
+    });
+
+    const input: ReplyToRunInput = {
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      principal: principal('phoebe'),
+      request: { kind: 'approve' }
+    };
+
+    const result = await orchestrator.replyToRun(input);
+
+    expect(result.run.currentStep).toBe('implementation.plan');
+    expect(result.classification).toEqual({ directive: 'advance', target: 'artifact' });
+  });
+
+  // --- implementation.human_review feedback ---
+
+  it('implementation gate feedback — revises run and returns revise classification with createdFeedbackId', async () => {
+    const existing = makeRun({ currentStep: 'implementation.human_review' });
+    const updated = makeRun({ currentStep: 'implementation.build' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.build', phase: 'implementation' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const feedbackLifecycleDependencies = makeFeedbackLifecycleDeps();
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      feedbackLifecycleDependencies
+    });
+
+    const request: RunReplyRequest = {
+      kind: 'feedback',
+      title: 'Fix the tests',
+      body: 'The tests are broken'
+    };
+
+    const input: ReplyToRunInput = {
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      principal: principal('phoebe'),
+      request
+    };
+
+    const result = await orchestrator.replyToRun(input);
+
+    expect(result.run.currentStep).toBe('implementation.build');
+    expect(result.classification.directive).toBe('revise');
+    expect(result.classification.target).toBe('implementation');
+    expect(result.classification.createdFeedbackId).toBeDefined();
+    expect(typeof result.classification.createdFeedbackId).toBe('string');
+  });
+
+  // --- implementation.human_review approval blocked by open feedback ---
+
+  it('implementation gate approval blocked by open feedback — throws invalid_transition with feedback_gate_blocked details', async () => {
+    const openFeedback = makeOpenImplementationFeedback();
+    const existing = makeRun({ currentStep: 'implementation.human_review' });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: vi.fn()
+    });
+    // Provide open implementation feedback — it will block the gate
+    const feedbackLifecycleDependencies = makeFeedbackLifecycleDeps([openFeedback]);
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      feedbackLifecycleDependencies
+    });
+
+    const input: ReplyToRunInput = {
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      principal: principal('phoebe'),
+      request: { kind: 'approve' }
+    };
+
+    await expect(orchestrator.replyToRun(input)).rejects.toMatchObject({
+      name: 'OrchestratorError',
+      code: 'invalid_transition'
+    });
+
+    try {
+      await orchestrator.replyToRun(input);
+      throw new Error('expected to throw');
+    } catch (error) {
+      expect(error).toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition' });
+      const err = error as { details: unknown };
+      expect(err.details).toMatchObject({ code: 'feedback_gate_blocked' });
+    }
+  });
+
+  // --- serialization: two concurrent feedback replies ---
+
+  it('two concurrent feedback replies to the same run are serialized — run transitions happen in order', async () => {
+    const existing = makeRun({ currentStep: 'implementation.human_review' });
+    const reviseRun = makeRun({ currentStep: 'implementation.build' });
+    const reviseStep = makeRunStep({ id: 'step_2', step: 'implementation.build', phase: 'implementation' });
+
+    const executionOrder: string[] = [];
+
+    // Record transition fires in order — first and second call both succeed
+    let callCount = 0;
+    const recordTransition = vi.fn(async () => {
+      callCount++;
+      executionOrder.push(`transition_${callCount}`);
+      return { run: reviseRun, runStep: reviseStep };
+    });
+
+    // findById always returns the existing run
+    const findById = vi.fn().mockResolvedValue(existing);
+    const runs = makeFakeRunRepo({ findById, recordRunStepTransition: recordTransition });
+    const feedbackLifecycleDependencies = makeFeedbackLifecycleDeps();
+
+    const { orchestrator } = makeOrchestrator({ runs, feedbackLifecycleDependencies });
+
+    const request: RunReplyRequest = { kind: 'feedback', title: 'Fix', body: 'Please fix' };
+    const reply = () => orchestrator.replyToRun({ runId: 'run_1', tenant: 'tenant_1', principal: principal('phoebe'), request });
+
+    // Start two concurrent replies — the queue serializes them
+    const [r1, r2] = await Promise.allSettled([reply(), reply()]);
+
+    // Both succeed (same mock state)
+    expect(r1.status).toBe('fulfilled');
+    expect(r2.status).toBe('fulfilled');
+
+    // Transitions run strictly in order — NOT interleaved
+    expect(executionOrder).toEqual(['transition_1', 'transition_2']);
+  });
+
+  // --- missing run ---
+
+  it('throws missing_run when run does not exist', async () => {
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(null) });
+    const feedbackLifecycleDependencies = makeFeedbackLifecycleDeps();
+    const { orchestrator } = makeOrchestrator({ runs, feedbackLifecycleDependencies });
+
+    await expect(
+      orchestrator.replyToRun({ runId: 'run_x', tenant: 'tenant_1', principal: principal('phoebe'), request: { kind: 'approve' } })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'missing_run' });
+  });
+
+  // --- terminal run ---
+
+  it('throws terminal_run when run is already terminal', async () => {
+    const existing = makeRun({ currentStep: 'done', terminal: true });
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(existing) });
+    const feedbackLifecycleDependencies = makeFeedbackLifecycleDeps();
+    const { orchestrator } = makeOrchestrator({ runs, feedbackLifecycleDependencies });
+
+    await expect(
+      orchestrator.replyToRun({ runId: 'run_1', tenant: 'tenant_1', principal: principal('phoebe'), request: { kind: 'approve' } })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'terminal_run' });
+  });
+
+  // --- guidance reply at human_review gate ---
+
+  it('throws invalid_transition when guidance reply sent to human_review gate', async () => {
+    const existing = makeRun({ currentStep: 'implementation.human_review' });
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(existing) });
+    const feedbackLifecycleDependencies = makeFeedbackLifecycleDeps();
+    const { orchestrator } = makeOrchestrator({ runs, feedbackLifecycleDependencies });
+
+    await expect(
+      orchestrator.replyToRun({ runId: 'run_1', tenant: 'tenant_1', principal: principal('phoebe'), request: { kind: 'guidance', body: 'Go here' } })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition' });
+  });
+
+  // --- non-gate step ---
+
+  it('throws invalid_transition when run is not at a gate step', async () => {
+    const existing = makeRun({ currentStep: 'spec.author' });
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(existing) });
+    const feedbackLifecycleDependencies = makeFeedbackLifecycleDeps();
+    const { orchestrator } = makeOrchestrator({ runs, feedbackLifecycleDependencies });
+
+    await expect(
+      orchestrator.replyToRun({ runId: 'run_1', tenant: 'tenant_1', principal: principal('phoebe'), request: { kind: 'approve' } })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition' });
+  });
+
+  // --- missing feedbackLifecycleDependencies ---
+
+  it('throws persistence_failed when feedbackLifecycleDependencies not configured', async () => {
+    const existing = makeRun({ currentStep: 'implementation.human_review' });
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(existing) });
+    // No feedbackLifecycleDependencies
+    const { orchestrator } = makeOrchestrator({ runs });
+
+    await expect(
+      orchestrator.replyToRun({ runId: 'run_1', tenant: 'tenant_1', principal: principal('phoebe'), request: { kind: 'approve' } })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'persistence_failed' });
+  });
+
+  // --- implementation.awaiting_input guidance ---
+
+  it('records convergence guidance and advances awaiting input to implementation.build', async () => {
+    const awaitingStep = makeRunStep({
+      id: 'step_awaiting',
+      step: 'implementation.awaiting_input',
+      checkpointResult: {
+        pause: { kind: 'convergence_escalation', producingStep: 'implementation.build' }
+      }
+    });
+    const existing = makeRun({ currentStep: 'implementation.awaiting_input' });
+    const advanced = makeRun({ currentStep: 'implementation.build' });
+    const advancedStep = makeRunStep({ id: 'step_build', step: 'implementation.build', phase: 'implementation' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: advanced, runStep: advancedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const updateCheckpoint = vi.fn().mockResolvedValue(awaitingStep);
+    const runSteps = makeFakeRunStepRepo({
+      listByRun: vi.fn().mockResolvedValue([awaitingStep]),
+      updateCheckpoint
+    });
+
+    const { orchestrator } = makeOrchestrator({ runs, runSteps });
+
+    const result = await orchestrator.replyToRun({
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      principal: principal('phoebe'),
+      request: { kind: 'guidance', body: 'Prefer public API; do not broaden auth.' }
+    });
+
+    expect(result.classification).toEqual({ directive: 'advance', pauseKind: 'convergence_escalation' });
+    expect(result.run.currentStep).toBe('implementation.build');
+
+    // First call: recordConvergenceEscalationGuidance stamps awaiting_input step
+    const firstCall = updateCheckpoint.mock.calls[0]?.[0];
+    expect(firstCall?.runStepId).toBe('step_awaiting');
+    const awaitingCp = firstCall?.checkpointResult as { pause: { kind: string; humanGuidance: string } };
+    expect(awaitingCp.pause.kind).toBe('convergence_escalation');
+    expect(awaitingCp.pause.humanGuidance).toBe('Prefer public API; do not broaden auth.');
+
+    // Second call: #replyToAwaitingInput stamps the new implementation.build step
+    // so build dispatch reads guidance from the current execution context.
+    expect(updateCheckpoint).toHaveBeenCalledTimes(2);
+    const secondCall = updateCheckpoint.mock.calls[1]?.[0];
+    expect(secondCall?.runStepId).toBe('step_build');
+    const buildCp = secondCall?.checkpointResult as { resumedFromAwaitingInputStepId: string; humanGuidance: string };
+    expect(buildCp.resumedFromAwaitingInputStepId).toBe('step_awaiting');
+    expect(buildCp.humanGuidance).toBe('Prefer public API; do not broaden auth.');
+  });
+
+  it('build dispatch reads humanGuidance from current build step checkpoint', async () => {
+    const buildStep = makeRunStep({
+      id: 'step_build',
+      step: 'implementation.build',
+      phase: 'implementation',
+      checkpointResult: {
+        resumedFromAwaitingInputStepId: 'step_awaiting',
+        humanGuidance: 'Use the public API path only.'
+      }
+    });
+    const existing = makeRun({ currentStep: 'implementation.build' });
+    const convergedRun = makeRun({ currentStep: 'implementation.human_review' });
+    const convergedStep = makeRunStep({ step: 'implementation.human_review', phase: 'implementation' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: convergedRun, runStep: convergedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const runSteps = makeFakeRunStepRepo({
+      listByRun: vi.fn().mockResolvedValue([buildStep])
+    });
+    const capturedGuidance: (string | undefined)[] = [];
+    const validCheckpoint = {
+      kind: 'convergence_review' as const,
+      step: 'implementation.build',
+      maxRounds: 3,
+      routing: { distinct: true },
+      rounds: [],
+      outcome: 'converged' as const,
+      openFeedbackIds: [],
+      lastPositions: {},
+      currentAltitude: 'build' as const,
+      acceptedCheckpoints: []
+    };
+    const fakeConvergenceEngine: ConvergenceEngine = {
+      run: vi.fn(async (engineInput: ConvergenceEngineInput) => {
+        capturedGuidance.push(engineInput.humanGuidance);
+        return { workResult: { directive: 'advance' as const }, checkpointResult: validCheckpoint };
+      })
+    };
+
+    const { orchestrator } = makeOrchestrator({ runs, runSteps, convergenceEngine: fakeConvergenceEngine, autoDispatch: { enabled: false } });
+
+    await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    expect(capturedGuidance[0]).toBe('Use the public API path only.');
+  });
+
+  it('throws invalid_transition when non-guidance reply sent to implementation.awaiting_input', async () => {
+    const awaitingStep = makeRunStep({
+      id: 'step_awaiting',
+      step: 'implementation.awaiting_input',
+      checkpointResult: {
+        pause: { kind: 'convergence_escalation', producingStep: 'implementation.build' }
+      }
+    });
+    const existing = makeRun({ currentStep: 'implementation.awaiting_input' });
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(existing) });
+    const runSteps = makeFakeRunStepRepo({
+      listByRun: vi.fn().mockResolvedValue([awaitingStep])
+    });
+
+    const { orchestrator } = makeOrchestrator({ runs, runSteps });
+
+    await expect(
+      orchestrator.replyToRun({ runId: 'run_1', tenant: 'tenant_1', principal: principal('phoebe'), request: { kind: 'approve' } })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition' });
+  });
+
+  it('throws persistence_failed when runSteps not configured and run is at awaiting_input', async () => {
+    const existing = makeRun({ currentStep: 'implementation.awaiting_input' });
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(existing) });
+    // No runSteps
+    const { orchestrator } = makeOrchestrator({ runs });
+
+    await expect(
+      orchestrator.replyToRun({ runId: 'run_1', tenant: 'tenant_1', principal: principal('phoebe'), request: { kind: 'guidance', body: 'fix it' } })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'persistence_failed' });
+  });
+
+  it('throws invalid_transition for unsupported pause kind at implementation.awaiting_input', async () => {
+    const awaitingStep = makeRunStep({
+      id: 'step_awaiting',
+      step: 'implementation.awaiting_input',
+      checkpointResult: null  // null checkpoint = not a convergence escalation
+    });
+    const existing = makeRun({ currentStep: 'implementation.awaiting_input' });
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(existing) });
+    const runSteps = makeFakeRunStepRepo({
+      listByRun: vi.fn().mockResolvedValue([awaitingStep])
+    });
+
+    const { orchestrator } = makeOrchestrator({ runs, runSteps });
+
+    await expect(
+      orchestrator.replyToRun({ runId: 'run_1', tenant: 'tenant_1', principal: principal('phoebe'), request: { kind: 'guidance', body: 'fix it' } })
+    ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition', details: { code: 'unsupported_pause' } });
   });
 });

@@ -495,12 +495,12 @@ describe('runner-cells: OpenAI direct dispatch', () => {
 
     const capturedTransitions: Array<{ checkpointResult?: JsonValue }> = [];
     const fakeRunRepo = makeFakeRunRepo({
-      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'implementation.plan' })),
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'implementation.build' })),
       recordRunStepTransition: vi.fn().mockImplementation(async (input: { checkpointResult?: JsonValue }) => {
         capturedTransitions.push({ checkpointResult: input.checkpointResult });
         return {
-          run: makeRun({ currentStep: 'implementation.build' }),
-          runStep: makeRunStep({ step: 'implementation.build' })
+          run: makeRun({ currentStep: 'implementation.human_review' }),
+          runStep: makeRunStep({ step: 'implementation.human_review' })
         };
       })
     });
@@ -823,12 +823,12 @@ describe('runner-cells: direct mode through DefaultOrchestrator and createExecut
 
     const capturedTransitions: Array<{ checkpointResult?: JsonValue }> = [];
     const fakeRunRepo = makeFakeRunRepo({
-      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'implementation.plan' })),
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'implementation.build' })),
       recordRunStepTransition: vi.fn().mockImplementation(async (input: { checkpointResult?: JsonValue }) => {
         capturedTransitions.push({ checkpointResult: input.checkpointResult });
         return {
-          run: makeRun({ currentStep: 'implementation.build' }),
-          runStep: makeRunStep({ step: 'implementation.build' })
+          run: makeRun({ currentStep: 'implementation.human_review' }),
+          runStep: makeRunStep({ step: 'implementation.human_review' })
         };
       })
     });

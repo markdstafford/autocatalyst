@@ -5,6 +5,8 @@ import type {
   Message,
   NonModelPrincipal,
   Run,
+  RunReplyClassification,
+  RunReplyRequest,
   RunStateTransitionKind,
   RunStep,
   SpecAuthorResult,
@@ -20,6 +22,11 @@ import { completeSpecAuthoring } from './spec-authoring-service.js';
 import type { SpecApprovalFinalizerDependencies } from './spec-approval-finalizer.js';
 import { finalizeSpecApproval } from './spec-approval-finalizer.js';
 import type { ConvergenceEngine } from './convergence-engine.js';
+import {
+  ConvergenceCheckpointError,
+  getConvergenceEscalationPause,
+  recordConvergenceEscalationGuidance
+} from './convergence-checkpoint.js';
 
 import type {
   ConversationIngressRepository,
@@ -30,8 +37,14 @@ import type {
   RunWorkspaceMetadataRepository
 } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
-import { listBlockingFeedback, resolveApproverAddressedFeedback } from './feedback-lifecycle.js';
+import { createGateFeedback, listBlockingFeedback, resolveApproverAddressedFeedback } from './feedback-lifecycle.js';
 import { assertSpecReviewGateCanAdvance, SpecReviewGateBlockedError } from './spec-review-gate.js';
+import {
+  assertHumanReviewGateCanAdvance,
+  getHumanReviewGateFeedbackTarget,
+  isHumanReviewGateStep,
+  HumanReviewGateError
+} from './human-review-gate.js';
 import { type RunDispatchQueue } from './run-dispatch-queue.js';
 import { createRunStateTransitionEvent, type RunEventStore } from './run-events.js';
 import {
@@ -131,6 +144,7 @@ export interface ApplyOrchestratedDirectiveInput {
   readonly checkpointResult?: JsonValue;
   readonly principal?: NonModelPrincipal;
   readonly reason?: string;
+  readonly origin?: 'runner' | 'human' | 'system';
 }
 
 export interface DispatchRunInput {
@@ -160,6 +174,17 @@ export interface OrchestratedConversationResult {
   readonly runStep: RunStep;
 }
 
+export interface ReplyToRunInput {
+  readonly runId: string;
+  readonly tenant: string;
+  readonly principal: NonModelPrincipal;
+  readonly request: RunReplyRequest;
+}
+
+export interface ReplyToRunResult extends OrchestratedRunResult {
+  readonly classification: RunReplyClassification;
+}
+
 // --- Orchestrator interface ---
 
 export interface Orchestrator {
@@ -168,6 +193,7 @@ export interface Orchestrator {
   applyDirective(input: ApplyOrchestratedDirectiveInput): Promise<OrchestratedRunResult>;
   dispatch(input: DispatchRunInput): Promise<OrchestratedRunResult>;
   tick(input: TickInput): Promise<TickResult>;
+  replyToRun(input: ReplyToRunInput): Promise<ReplyToRunResult>;
 }
 
 // --- Spec authoring completion ---
@@ -435,11 +461,12 @@ export class DefaultOrchestrator implements Orchestrator {
       ? normalizeFailureReasonForPublicSurface(input.reason)
       : undefined;
 
-    // Defense-in-depth: block any advance directive when the run is already at a human gate,
-    // unless it is spec.human_review (which has its own gate-check block below).
-    // A stale concurrent dispatch can reach applyDirective after the run has moved to a human
-    // step; this guard prevents it from leapfrogging the gate.
-    if (input.directive === 'advance' && existing.currentStep !== 'spec.human_review') {
+    const origin = input.origin ?? 'runner';
+
+    // Defense-in-depth: block any advance directive from runner origin when run is at a human gate.
+    // Both spec.human_review and implementation.human_review are caught by this guard via
+    // waitingOn === 'human'. Only a human-origin directive (from replyToRun) may advance them.
+    if (origin === 'runner' && input.directive === 'advance') {
       const currentStepDef = getRunStepDefinition(existing.currentStep);
       if (currentStepDef !== null && currentStepDef.waitingOn === 'human') {
         throw new OrchestratorError(
@@ -578,9 +605,25 @@ export class DefaultOrchestrator implements Orchestrator {
       return this.#dispatchSystemStep(input, run);
     }
 
+    // implementation.plan deterministic passthrough: records an explicit checkpoint and advances
+    // to implementation.build without dispatching an AI prompt. Planning is intentionally a no-op
+    // for issue 63; a real plan step is tracked for a future issue.
+    if (run.currentStep === 'implementation.plan') {
+      return this.#dispatchQueue.enqueueForRun(input.runId, async () => this.applyDirective({
+        runId: input.runId,
+        tenant: input.tenant,
+        directive: 'advance',
+        origin: 'system',
+        checkpointResult: {
+          kind: 'implementation_plan_passthrough',
+          reason: 'issue_63_reply_ingress_uses_existing_build_convergence'
+        }
+      }));
+    }
+
     if (stepDefinition !== null && this.#isReviewedProducingStep(stepDefinition) && this.#convergenceEngine !== undefined) {
       const convergenceEngine = this.#convergenceEngine;
-      return this.#dispatchQueue.enqueue(async () => {
+      return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
         const workflow = getRunWorkflowForWorkKind(run.workKind);
         if (workflow === null) {
           throw new OrchestratorError('unknown_work_kind', `Unknown work kind '${run.workKind}'.`);
@@ -598,6 +641,28 @@ export class DefaultOrchestrator implements Orchestrator {
           occurrence: { index: 0, attempt: 1 },
           checkpointResult: null
         };
+        // Read guidance from the current build step checkpoint (stamped during guidance reply).
+        // If the checkpoint carries resumedFromAwaitingInputStepId, follow the reference to load
+        // the guidance from that specific pause step rather than searching all history.
+        const humanGuidance: string | undefined = (() => {
+          const buildCp = runStep.checkpointResult as {
+            humanGuidance?: string;
+            resumedFromAwaitingInputStepId?: string;
+          } | null;
+          if (buildCp === null || typeof buildCp !== 'object') return undefined;
+          if (typeof buildCp.humanGuidance === 'string') return buildCp.humanGuidance;
+          if (typeof buildCp.resumedFromAwaitingInputStepId === 'string') {
+            const pauseStepId = buildCp.resumedFromAwaitingInputStepId;
+            const pauseStep = runSteps.find(s => s.id === pauseStepId);
+            if (pauseStep !== undefined) {
+              const cp = pauseStep.checkpointResult as { pause?: { kind?: string; humanGuidance?: string } } | null;
+              if (cp?.pause?.kind === 'convergence_escalation' && typeof cp.pause.humanGuidance === 'string') {
+                return cp.pause.humanGuidance;
+              }
+            }
+          }
+          return undefined;
+        })();
         const resolvedWorkspace = this.#resolveWorkspaceContext !== undefined
           ? await this.#resolveWorkspaceContext({ runId: input.runId }).catch(() => undefined)
           : undefined;
@@ -608,26 +673,29 @@ export class DefaultOrchestrator implements Orchestrator {
           runStep,
           stepDefinition,
           workflow,
-          ...(resolvedWorkspace !== undefined ? { workspace: resolvedWorkspace } : {})
+          ...(resolvedWorkspace !== undefined ? { workspace: resolvedWorkspace } : {}),
+          ...(humanGuidance !== undefined ? { humanGuidance } : {})
         });
 
         if (result.workResult.directive === 'fail') {
           const reason = result.workResult.reason;
-          return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason });
+          return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason, origin: 'runner' });
         }
         if (result.workResult.directive === 'needs_input') {
           return this.applyDirective({
             runId: input.runId,
             directive: 'needs_input',
             tenant: input.tenant,
-            checkpointResult: result.checkpointResult as unknown as JsonValue
+            checkpointResult: result.checkpointResult as unknown as JsonValue,
+            origin: 'runner'
           });
         }
         return this.applyDirective({
           runId: input.runId,
           directive: 'advance',
           tenant: input.tenant,
-          checkpointResult: result.checkpointResult as unknown as JsonValue
+          checkpointResult: result.checkpointResult as unknown as JsonValue,
+          origin: 'runner'
         });
       });
     }
@@ -637,10 +705,10 @@ export class DefaultOrchestrator implements Orchestrator {
     }
     const unitOfWork = this.#unitOfWork;
 
-    return this.#dispatchQueue.enqueue(async () => {
+    return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
       const result = await unitOfWork.run({ runId: input.runId, run, tenant: input.tenant });
       if (result.directive === 'fail') {
-        return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason: result.reason });
+        return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason: result.reason, origin: 'runner' });
       }
       if (result.directive === 'needs_input') {
         const workflow = getRunWorkflowForWorkKind(run.workKind);
@@ -659,13 +727,14 @@ export class DefaultOrchestrator implements Orchestrator {
       if (result.directive === 'advance' && run.currentStep === 'spec.author' && (run.workKind === 'feature' || run.workKind === 'enhancement')) {
         const completionResult = await this.#runSpecAuthoringCompletion(input.runId, run, result.result);
         if (completionResult.kind === 'failed') {
-          return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason: 'spec_authoring_failed' });
+          return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason: 'spec_authoring_failed', origin: 'runner' });
         }
         return this.applyDirective({
           runId: input.runId,
           directive: 'advance',
           tenant: input.tenant,
-          checkpointResult: completionResult.checkpointResult as JsonValue
+          checkpointResult: completionResult.checkpointResult as JsonValue,
+          origin: 'runner'
         });
       }
 
@@ -678,7 +747,8 @@ export class DefaultOrchestrator implements Orchestrator {
         runId: input.runId,
         directive,
         tenant: input.tenant,
-        ...(checkpointResult !== undefined ? { checkpointResult } : {})
+        ...(checkpointResult !== undefined ? { checkpointResult } : {}),
+        origin: 'runner'
       });
     });
   }
@@ -697,7 +767,7 @@ export class DefaultOrchestrator implements Orchestrator {
 
   async #dispatchSystemStep(input: DispatchRunInput, run: Run): Promise<OrchestratedRunResult> {
     if (run.currentStep === 'intake') {
-      return this.applyDirective({ runId: input.runId, directive: 'advance', tenant: input.tenant });
+      return this.applyDirective({ runId: input.runId, directive: 'advance', tenant: input.tenant, origin: 'system' });
     }
 
     throw new OrchestratorError(
@@ -729,6 +799,130 @@ export class DefaultOrchestrator implements Orchestrator {
     }
 
     return { status: 'dispatched', runId: input.runId };
+  }
+
+  async replyToRun(input: ReplyToRunInput): Promise<ReplyToRunResult> {
+    return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
+      const run = await this.#runs.findById(input.runId);
+      if (run === null) throw new OrchestratorError('missing_run', `Run '${input.runId}' does not exist.`);
+      if (run.tenant !== input.tenant) throw new OrchestratorError('forbidden', `Run '${input.runId}' does not belong to tenant '${input.tenant}'.`);
+      if (run.terminal) throw new OrchestratorError('terminal_run', `Run '${input.runId}' is terminal.`);
+
+      if (isHumanReviewGateStep(run.currentStep)) {
+        return this.#replyToHumanReviewGate({ ...input, run });
+      }
+
+      if (run.currentStep === 'implementation.awaiting_input') {
+        return this.#replyToAwaitingInput({ ...input, run });
+      }
+
+      const currentStepDef = getRunStepDefinition(run.currentStep);
+      if (currentStepDef?.waitingOn === 'human') {
+        throw new OrchestratorError('invalid_transition', `Step '${run.currentStep}' does not support this reply kind.`);
+      }
+      throw new OrchestratorError('invalid_transition', `Run '${input.runId}' is not waiting on human input.`);
+    });
+  }
+
+  async #replyToHumanReviewGate(input: ReplyToRunInput & { readonly run: Run }): Promise<ReplyToRunResult> {
+    if (input.request.kind === 'guidance') {
+      throw new OrchestratorError('invalid_transition', `Guidance replies are only supported at implementation.awaiting_input.`);
+    }
+    if (this.#feedbackLifecycleDependencies === undefined) {
+      throw new OrchestratorError('persistence_failed', 'Feedback lifecycle dependencies required for human review replies.');
+    }
+
+    if (!isHumanReviewGateStep(input.run.currentStep)) {
+      throw new OrchestratorError('invalid_transition', `Reply not supported for step '${input.run.currentStep}'.`);
+    }
+    const target = getHumanReviewGateFeedbackTarget(input.run.currentStep);
+
+    if (input.request.kind === 'feedback') {
+      const feedback = await createGateFeedback({
+        runId: input.run.id,
+        owner: input.run.owner,
+        tenant: input.run.tenant,
+        principal: input.principal,
+        target,
+        title: input.request.title,
+        body: input.request.body,
+        ...(input.request.anchor !== undefined ? { anchor: input.request.anchor } : {})
+      }, this.#feedbackLifecycleDependencies);
+      const moved = await this.applyDirective({ runId: input.runId, tenant: input.tenant, directive: 'revise', origin: 'human', principal: input.principal });
+      return { ...moved, classification: { directive: 'revise', target, createdFeedbackId: feedback.id } };
+    }
+
+    // approve
+    // For spec.human_review: applyDirective already handles co-resolution, gate check, and finalizer.
+    // For implementation.human_review: we must do co-resolution and gate check here since applyDirective doesn't handle them.
+    if (input.run.currentStep === 'implementation.human_review') {
+      await resolveApproverAddressedFeedback(
+        { runId: input.run.id, target, approver: input.principal },
+        this.#feedbackLifecycleDependencies
+      );
+      try {
+        await assertHumanReviewGateCanAdvance({ run: input.run, target }, {
+          listBlockingFeedback: (listInput) => listBlockingFeedback(listInput, this.#feedbackLifecycleDependencies!)
+        });
+      } catch (error) {
+        if (error instanceof HumanReviewGateError && error.code === 'feedback_gate_blocked') {
+          throw new OrchestratorError('invalid_transition', 'Feedback blocks review approval.', {
+            cause: error,
+            details: { code: 'feedback_gate_blocked', blockingFeedbackIds: error.blockingFeedbackIds }
+          });
+        }
+        throw error;
+      }
+    }
+
+    const moved = await this.applyDirective({ runId: input.runId, tenant: input.tenant, directive: 'advance', origin: 'human', principal: input.principal });
+    return { ...moved, classification: { directive: 'advance', target } };
+  }
+
+  async #replyToAwaitingInput(input: ReplyToRunInput & { readonly run: Run }): Promise<ReplyToRunResult> {
+    if (input.request.kind !== 'guidance') {
+      throw new OrchestratorError('invalid_transition', 'Only guidance replies are supported at implementation.awaiting_input.');
+    }
+    if (this.#runSteps === undefined) {
+      throw new OrchestratorError('persistence_failed', 'Run step repository required for awaiting-input replies.');
+    }
+    let pause: { runStep: RunStep };
+    try {
+      pause = await getConvergenceEscalationPause(
+        { run: input.run, expectedStepId: 'implementation.awaiting_input' },
+        { runSteps: this.#runSteps }
+      );
+      await recordConvergenceEscalationGuidance(
+        { run: input.run, runStep: pause.runStep, guidance: input.request.body },
+        { runSteps: this.#runSteps }
+      );
+    } catch (error) {
+      if (error instanceof ConvergenceCheckpointError && error.code === 'invalid_pause') {
+        throw new OrchestratorError('invalid_transition', 'Unsupported awaiting-input pause.', { details: { code: 'unsupported_pause' }, cause: error });
+      }
+      throw error;
+    }
+    const moved = await this.applyDirective({
+      runId: input.runId,
+      tenant: input.tenant,
+      directive: 'advance',
+      origin: 'human',
+      principal: input.principal
+    });
+    // Stamp guidance on the new implementation.build step so build dispatch reads it from
+    // the current execution context rather than searching all historical awaiting_input steps.
+    // The per-run queue ensures auto-dispatch reads the stamped checkpoint (it is queued
+    // behind this replyToRun operation and cannot start until the lock is released).
+    await this.#runSteps!.updateCheckpoint({
+      runStepId: moved.runStep.id,
+      runId: input.runId,
+      tenant: input.run.tenant,
+      checkpointResult: {
+        resumedFromAwaitingInputStepId: pause.runStep.id,
+        humanGuidance: input.request.body
+      }
+    });
+    return { ...moved, classification: { directive: 'advance', pauseKind: 'convergence_escalation' } };
   }
 
   #shouldAutoDispatch(run: Run): boolean {
