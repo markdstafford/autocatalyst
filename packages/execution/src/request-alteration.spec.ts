@@ -6,15 +6,18 @@ import {
   applyRequestAlteration,
   buildClaudeProcessLaunchEnvironment,
   claudeProviderOwnedEnvironmentVariables,
+  computeRetryDelayMs,
   defaultMaxRetries,
   defaultRequestTimeoutMs,
   isTransientProviderFailure,
   maximumMaxRetries,
   maximumRequestTimeoutMs,
+  parseRetryAfterMs,
   ProviderAlterationError,
   redactProcessLaunchConfigForLog,
   redactProviderRequestForLog,
   redactProviderResponseForLog,
+  resolveRetryPolicy,
   validateHttpHeaderName,
   type ClaudeProcessLaunchInput,
   type ClaudeProcessLaunchResult,
@@ -618,5 +621,31 @@ describe('redaction — known secrets must not appear in log projections', () =>
       knownSecretValues: [KNOWN_SECRET]
     });
     expect(JSON.stringify(redacted).includes(KNOWN_SECRET)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Retry policy helpers
+// ---------------------------------------------------------------------------
+describe('retry policy helpers', () => {
+  it('resolves bounded retry policy from endpoint settings', () => {
+    expect(resolveRetryPolicy({}).maxRetries).toBe(1);
+    expect(resolveRetryPolicy({ maxRetries: 99 }).maxRetries).toBe(5);
+    expect(resolveRetryPolicy({ maxRetries: -1 }).maxRetries).toBe(0);
+    expect(resolveRetryPolicy({ maxRetries: 2 }).transientHttpStatuses).toEqual([408, 429, 500, 502, 503, 504]);
+  });
+
+  it('parses bounded Retry-After values', () => {
+    expect(parseRetryAfterMs('2', Date.parse('2025-01-01T00:00:00.000Z'))).toBe(2000);
+    expect(parseRetryAfterMs('999', Date.parse('2025-01-01T00:00:00.000Z'))).toBe(5000);
+    expect(parseRetryAfterMs('Wed, 01 Jan 2025 00:00:03 GMT', Date.parse('2025-01-01T00:00:00.000Z'))).toBe(3000);
+    expect(parseRetryAfterMs('not a date', Date.parse('2025-01-01T00:00:00.000Z'))).toBeUndefined();
+  });
+
+  it('computes bounded exponential retry delays with deterministic jitter', () => {
+    expect(computeRetryDelayMs({ attemptNumber: 1, jitter: 0, nowMs: 0 })).toBe(250);
+    expect(computeRetryDelayMs({ attemptNumber: 2, jitter: 0.5, nowMs: 0 })).toBe(625);
+    expect(computeRetryDelayMs({ attemptNumber: 20, jitter: 1, nowMs: 0 })).toBe(5000);
+    expect(computeRetryDelayMs({ attemptNumber: 1, retryAfter: '1', jitter: 1, nowMs: 0 })).toBe(1000);
   });
 });
