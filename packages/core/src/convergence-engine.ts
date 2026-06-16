@@ -27,6 +27,8 @@ import type {
 } from './reviewed-role-dispatcher.js';
 import type { RunWorkspaceGitPort } from './run-workspace-git.js';
 import { createReviewerFeedback } from './convergence-feedback.js';
+import { addressOpenFeedbackForRunTarget } from './feedback-lifecycle.js';
+import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
 import type { RunStepDefinition, RunStepId } from './run-step-catalog.js';
 import type { RunWorkflowDefinition, RunDirective } from './run-workflows.js';
 import type { ResolvedStepConvergencePolicy } from './convergence-policy.js';
@@ -184,6 +186,7 @@ export interface ConvergenceEngineOptions {
   readonly clock?: () => string;
   readonly idGenerator?: () => string;
   readonly reviewerPrincipal?: Principal;
+  readonly feedbackLifecycle?: FeedbackLifecycleDependencies;
 }
 
 export interface ConvergenceEngineInput {
@@ -275,6 +278,28 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
     let lastImplementerLastPosition: string | undefined;
     let lastReviewerLastPosition: string | undefined;
     let escalation: ConvergenceEscalationReason | undefined;
+
+    // ---- Construct feedbackLifecycle deps if possible ----------------------
+    const feedbackLifecycleDeps: FeedbackLifecycleDependencies | undefined =
+      options.idGenerator !== undefined && options.clock !== undefined
+        ? { feedback: options.feedback, ids: options.idGenerator, clock: options.clock }
+        : options.feedbackLifecycle;
+
+    // Load open implementation feedback from human revisions to seed round 1 context.
+    if (feedbackLifecycleDeps !== undefined) {
+      const openHumanFeedback = await options.feedback.listByRun(input.runId);
+      const openImpl = openHumanFeedback.filter(
+        fb => fb.target === 'implementation' && fb.status === 'open'
+      );
+      if (openImpl.length > 0) {
+        lastBlockingFindingContexts = openImpl.map(fb => ({
+          feedbackId: fb.id,
+          title: fb.title,
+          body: fb.body,
+          severity: 'error' as const
+        }));
+      }
+    }
 
     for (let roundNumber = 1; roundNumber <= maxRounds; roundNumber++) {
       // 1) Implementer
@@ -565,6 +590,15 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
 
       // 9) Decide loop continuation
       if (noBlocking) {
+        // Address open human-provided implementation feedback now that convergence succeeded.
+        if (feedbackLifecycleDeps !== undefined) {
+          await addressOpenFeedbackForRunTarget({
+            runId: input.runId,
+            target: 'implementation',
+            actor: input.run.owner,
+            body: 'Addressed during implementation revision.'
+          }, feedbackLifecycleDeps);
+        }
         return {
           workResult: { directive: 'advance', result: checkpoint as unknown as Readonly<Record<string, unknown>> },
           checkpointResult: checkpoint

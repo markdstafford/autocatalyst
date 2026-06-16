@@ -360,6 +360,84 @@ describe('completeSpecAuthoring side effects', () => {
   });
 });
 
+describe('completeSpecAuthoring feedback disposition', () => {
+  it('marks consumed artifact feedback addressed when spec authoring incorporates revision input', async () => {
+    const renderedMarkdown = '---\ncreated: 2026-06-11\nlast_updated: 2026-06-11\nstatus: draft\nissue: 39\nspecced_by: autocatalyst\n---\n# Feature spec\n\nBody content.\n';
+    const artifact = {
+      id: 'artifact_1',
+      runId: 'run_1',
+      owner: { kind: 'human', id: 'user_1', tenantId: 'tenant_1' },
+      tenant: 'tenant_1',
+      kind: 'feature_spec',
+      canonicalRecord: 'file',
+      location: 'context-human/specs/feature-artifact-feedback-gate.md',
+      cachedStatus: 'draft',
+      linkedIssue: { provider: 'github', number: 39, url: 'https://example.test/39' },
+      publicationRefs: [],
+      createdAt: '2026-06-11T00:00:00.000Z',
+      updatedAt: '2026-06-11T00:00:00.000Z'
+    };
+
+    // In-memory feedback store with one open artifact feedback item.
+    const now = '2026-06-11T00:00:00.000Z';
+    const feedbackData: import('@autocatalyst/api-contract').Feedback = {
+      id: 'fb_artifact',
+      runId: 'run_1',
+      owner: { kind: 'human', id: 'user_1', tenantId: 'tenant_1' },
+      tenant: 'tenant_1',
+      target: 'artifact',
+      status: 'open',
+      title: 'Add failure mode',
+      body: 'Add failure mode.',
+      thread: [],
+      createdAt: now,
+      updatedAt: now
+    };
+
+    const feedbackStore = new Map<string, import('@autocatalyst/api-contract').Feedback>([
+      ['fb_artifact', feedbackData]
+    ]);
+
+    const feedbackRepo: import('./feedback-lifecycle.js').FeedbackLifecycleDependencies['feedback'] = {
+      create: vi.fn(),
+      findById: async (id: string) => feedbackStore.get(id) ?? null,
+      listByRun: async () => [...feedbackStore.values()],
+      updateStatusAndAppendThread: async (input) => {
+        const existing = feedbackStore.get(input.feedbackId);
+        if (existing === undefined) throw new Error('not found');
+        const updated = { ...existing, status: input.nextStatus, updatedAt: input.updatedAt };
+        feedbackStore.set(input.feedbackId, updated as typeof existing);
+        return updated as typeof existing;
+      },
+      appendThreadEntry: vi.fn()
+    };
+
+    const deps = makeDeps({
+      filesystem: {
+        writeFile: vi.fn(async () => undefined),
+        readFile: vi.fn(async () => renderedMarkdown)
+      },
+      artifacts: {
+        create: vi.fn(async () => artifact),
+        findById: vi.fn(),
+        listByRun: vi.fn(),
+        findByRunAndKind: vi.fn(async () => null),
+        updateCachedStatus: vi.fn()
+      },
+      feedbackLifecycle: {
+        feedback: feedbackRepo,
+        ids: () => 'thread_1',
+        clock: () => now
+      }
+    });
+
+    await completeSpecAuthoring(makeInput(), deps);
+
+    const updated = await feedbackRepo.findById('fb_artifact');
+    expect(updated?.status).toBe('addressed');
+  });
+});
+
 describe('CompleteSpecAuthoringInput type', () => {
   it('accepts required fields', () => {
     const input: CompleteSpecAuthoringInput = {
