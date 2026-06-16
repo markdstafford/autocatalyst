@@ -515,9 +515,9 @@ describe('DefaultOrchestrator.dispatch', () => {
   });
 
   it('invokes unit of work and applies the resulting advance directive', async () => {
-    const existing = makeRun({ currentStep: 'implementation.plan' });
-    const updated = makeRun({ currentStep: 'implementation.build' });
-    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.build', phase: 'implementation' });
+    const existing = makeRun({ currentStep: 'pr.finalize' });
+    const updated = makeRun({ currentStep: 'pr.open' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'pr.open', phase: 'pr' });
     const findById = vi.fn().mockResolvedValue(existing);
     const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
     const runs = makeFakeRunRepo({
@@ -538,9 +538,37 @@ describe('DefaultOrchestrator.dispatch', () => {
     expect(unitArg.tenant).toBe('tenant_1');
     // Orchestrator (not the unit) recorded the transition
     expect(recordTransition).toHaveBeenCalledTimes(1);
-    expect(result.run.currentStep).toBe('implementation.build');
+    expect(result.run.currentStep).toBe('pr.open');
     expect(events).toHaveLength(1);
     expect(events[0]?.transition.directive).toBe('advance');
+  });
+
+  it('dispatches implementation.plan with an explicit passthrough checkpoint before implementation.build', async () => {
+    const runAtPlan = makeRun({ currentStep: 'implementation.plan', workKind: 'feature' });
+    const runStep = makeRunStep({ step: 'implementation.plan', phase: 'implementation' });
+
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(runAtPlan),
+      recordRunStepTransition: vi.fn().mockResolvedValue({
+        run: makeRun({ currentStep: 'implementation.build' }),
+        runStep: makeRunStep({ step: 'implementation.build' })
+      })
+    });
+
+    const unitOfWork = { run: vi.fn() };
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork, autoDispatch: { enabled: false } });
+
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    expect(result.run.currentStep).toBe('implementation.build');
+    expect(unitOfWork.run).not.toHaveBeenCalled();
+
+    // Verify the checkpoint was recorded in the transition
+    const transitionCall = (runs.recordRunStepTransition as ReturnType<typeof vi.fn>).mock.calls[0]?.[0];
+    expect(transitionCall?.checkpointResult).toMatchObject({
+      kind: 'implementation_plan_passthrough',
+      reason: 'issue_63_reply_ingress_uses_existing_build_convergence'
+    });
   });
 
   it('applies fail directive through lifecycle when unit of work returns fail (queue slot released)', async () => {
@@ -2026,7 +2054,7 @@ describe('DefaultOrchestrator.dispatch — reviewed step selection', () => {
     expect(result.run.currentStep).toBe('implementation.human_review');
   });
 
-  it('keeps implementation.plan on one-shot path (no convergence engine)', async () => {
+  it('keeps implementation.plan on passthrough path (no convergence engine, no unit of work)', async () => {
     const existing = makeRun({ currentStep: 'implementation.plan' });
     const updated = makeRun({ currentStep: 'implementation.build' });
     const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.build', phase: 'implementation' });
@@ -2050,9 +2078,9 @@ describe('DefaultOrchestrator.dispatch — reviewed step selection', () => {
 
     const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
 
-    // implementation.plan has only ['implementer'], not both roles — one-shot path
+    // implementation.plan uses deterministic passthrough — neither convergence engine nor unit of work
     expect(calls).toHaveLength(0);
-    expect(unitRun).toHaveBeenCalledTimes(1);
+    expect(unitRun).not.toHaveBeenCalled();
     expect(result.run.currentStep).toBe('implementation.build');
   });
 
@@ -2362,7 +2390,7 @@ describe('reviewed step integration — transitions and checkpoint persistence',
     expect(transitionCall?.currentStep).toBe('implementation.awaiting_input');
   });
 
-  it('implementation.plan stays on one-shot path when convergence engine is present', async () => {
+  it('implementation.plan uses passthrough (not convergence engine) when convergence engine is present', async () => {
     const existing = makeRun({ currentStep: 'implementation.plan' });
     const updated = makeRun({ currentStep: 'implementation.build' });
     const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.build', phase: 'implementation' });
@@ -2386,9 +2414,9 @@ describe('reviewed step integration — transitions and checkpoint persistence',
 
     const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
 
-    // implementation.plan has only ['implementer'], not both roles — must NOT use convergence engine
+    // implementation.plan uses deterministic passthrough — must NOT use convergence engine or unit of work
     expect(calls).toHaveLength(0);
-    expect(unitRun).toHaveBeenCalledTimes(1);
+    expect(unitRun).not.toHaveBeenCalled();
     expect(result.run.currentStep).toBe('implementation.build');
   });
 

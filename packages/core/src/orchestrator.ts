@@ -600,6 +600,21 @@ export class DefaultOrchestrator implements Orchestrator {
       return this.#dispatchSystemStep(input, run);
     }
 
+    // implementation.plan deterministic passthrough: records an explicit checkpoint and advances
+    // to implementation.build without dispatching an AI prompt.
+    if (run.currentStep === 'implementation.plan') {
+      return this.#dispatchQueue.enqueueForRun(input.runId, async () => this.applyDirective({
+        runId: input.runId,
+        tenant: input.tenant,
+        directive: 'advance',
+        origin: 'system',
+        checkpointResult: {
+          kind: 'implementation_plan_passthrough',
+          reason: 'issue_63_reply_ingress_uses_existing_build_convergence'
+        }
+      }));
+    }
+
     if (stepDefinition !== null && this.#isReviewedProducingStep(stepDefinition) && this.#convergenceEngine !== undefined) {
       const convergenceEngine = this.#convergenceEngine;
       return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
