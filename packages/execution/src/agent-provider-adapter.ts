@@ -120,6 +120,7 @@ export type ProviderConnectionErrorCode =
   | 'unsupported_connection_mechanism'
   | 'timeout'
   | 'retry_exhausted'
+  | 'transient_provider_failure'
   | 'non_transient_provider_failure'
   | 'process_launch_failed';
 

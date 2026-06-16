@@ -306,7 +306,7 @@ export async function createAgentConnection(
 
               if (attemptNumber > maxRetries) {
                 throw new ProviderConnectionError(
-                  'retry_exhausted',
+                  'transient_provider_failure',
                   `Provider request failed after ${maxRetries} retries (transport error).`,
                   { ...safeLogContext, attempts: attemptNumber }
                 );
@@ -359,7 +359,7 @@ export async function createAgentConnection(
 
               if (attemptNumber > maxRetries) {
                 throw new ProviderConnectionError(
-                  'retry_exhausted',
+                  'transient_provider_failure',
                   `Provider request failed after ${maxRetries} retries (last status: ${status}).`,
                   { ...safeLogContext, attempts: attemptNumber, lastStatusCode: status }
                 );
@@ -413,7 +413,7 @@ export async function createAgentConnection(
 
           // Should not be reachable — safety net
           throw new ProviderConnectionError(
-            'retry_exhausted',
+            'transient_provider_failure',
             `Provider request failed after ${maxRetries} retries (status: ${lastStatus ?? 'unknown'}).`,
             { ...safeLogContext, attempts: attemptNumber, lastStatusCode: lastStatus }
           );

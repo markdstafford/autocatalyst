@@ -62,4 +62,9 @@ describe('consumeRunnerEvents — fail reason normalization', () => {
     const result = await consumeEvents([makeTerminalEvent('advance', { result: { ok: true } })]);
     expect(result.workResult).toEqual({ directive: 'advance', result: { ok: true } });
   });
+
+  it('preserves transient_provider_failure terminal fail reasons', async () => {
+    const result = await consumeEvents([makeTerminalEvent('fail', { reason: 'transient_provider_failure' })]);
+    expect(result.workResult).toEqual({ directive: 'fail', reason: 'transient_provider_failure' });
+  });
 });

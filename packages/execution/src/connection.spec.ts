@@ -310,7 +310,7 @@ describe('createAgentConnection — fetch transport applies alteration', () => {
 // ---------------------------------------------------------------------------
 
 describe('createAgentConnection — fetch retry', () => {
-  it('stops at max retries and throws ProviderConnectionError(retry_exhausted)', async () => {
+  it('stops at max retries and throws ProviderConnectionError(transient_provider_failure)', async () => {
     // 429 is transient — should retry and eventually exhaust
     const mockFetch = vi.fn().mockResolvedValue(new Response('rate limited', { status: 429 }));
 
@@ -337,7 +337,7 @@ describe('createAgentConnection — fetch retry', () => {
     }
 
     expect(thrown).toBeInstanceOf(ProviderConnectionError);
-    expect((thrown as ProviderConnectionError).code).toBe('retry_exhausted');
+    expect((thrown as ProviderConnectionError).code).toBe('transient_provider_failure');
 
     // The known secret must NOT appear in the error message or safeDetails
     const errorStr = JSON.stringify(thrown);
