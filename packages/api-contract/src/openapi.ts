@@ -436,6 +436,7 @@ export function generateOpenApiDocument(): OpenApiDocument {
   registry.registerPath({
     method: 'post',
     path: runRepliesPath.replace(':id', '{id}') as '/v1/runs/{id}/replies',
+    tags: ['runs'],
     summary: 'Reply to a paused run',
     description: 'Accepts a structured human reply for supported human-waiting run steps.',
     request: {
@@ -450,11 +451,11 @@ export function generateOpenApiDocument(): OpenApiDocument {
     },
     responses: {
       [createRunReplySuccessStatusCode]: jsonResponse(RunReplyResponse, 'Reply accepted and run transition committed.'),
-      400: { description: 'Malformed request or invalid reply for the supported pause.' },
-      403: { description: 'Unauthorized principal or model principal.' },
-      404: { description: 'Run not found.' },
-      409: { description: 'Run is terminal, not waiting on a human, blocked by feedback, changed step, or unsupported pause.' },
-      500: { description: 'Unexpected internal failure.' }
+      400: jsonResponse(ErrorResponse, 'Malformed request or invalid reply for the supported pause.'),
+      403: jsonResponse(ErrorResponse, 'Unauthorized principal or model principal.'),
+      404: jsonResponse(ErrorResponse, 'Run not found.'),
+      409: jsonResponse(ErrorResponse, 'Run is terminal, not waiting on a human, blocked by feedback, changed step, or unsupported pause.'),
+      500: jsonResponse(ErrorResponse, 'Unexpected internal failure.')
     }
   });
 
