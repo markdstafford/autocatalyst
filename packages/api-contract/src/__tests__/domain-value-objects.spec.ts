@@ -53,6 +53,8 @@ describe('domain value-object contracts', () => {
     expect(trackedIssueSchema.parse({ number: 12, title: 'Add persistence', state: 'open', url: 'https://example.test/issues/12' })).toEqual({
       number: 12,
       title: 'Add persistence',
+      body: '',
+      labels: [],
       state: 'open',
       url: 'https://example.test/issues/12'
     });

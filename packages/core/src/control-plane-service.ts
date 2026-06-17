@@ -13,9 +13,11 @@ import type {
 } from '@autocatalyst/api-contract';
 import { createConversationWithFirstRunResponseSchema, runFeedbackListResponseSchema, runReplyResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
 
-import type { ArtifactRepository, FeedbackRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository } from './domain-repositories.js';
+import type { ArtifactRepository, FeedbackRepository, ProjectRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
 import { appendFeedbackThreadReply, createArtifactFeedback, FeedbackLifecycleError } from './feedback-lifecycle.js';
+import type { IssueReferenceIntakeResolver, ResolvedConversationCreate } from './issue-reference-intake.js';
+import { IssueReferenceIntakeError } from './issue-reference-intake.js';
 import {
   OrchestratorError,
   type OrchestratedConversationResult,
@@ -206,6 +208,8 @@ export interface DefaultControlPlaneServiceOptions {
   readonly runWorkspaceMetadata: RunWorkspaceMetadataRepository;
   readonly workspaceFilesystem: WorkspaceFileSystemPort;
   readonly feedbackLifecycle: FeedbackLifecycleDependencies;
+  readonly projects: ProjectRepository;
+  readonly issueReferenceIntakeResolver: IssueReferenceIntakeResolver;
 }
 
 // --- Implementation ---
@@ -259,6 +263,8 @@ export class DefaultControlPlaneService implements ControlPlaneService {
   readonly #runWorkspaceMetadata: RunWorkspaceMetadataRepository;
   readonly #workspaceFilesystem: WorkspaceFileSystemPort;
   readonly #feedbackLifecycle: FeedbackLifecycleDependencies;
+  readonly #projects: ProjectRepository;
+  readonly #issueReferenceIntakeResolver: IssueReferenceIntakeResolver;
 
   constructor(options: DefaultControlPlaneServiceOptions) {
     this.#orchestrator = options.orchestrator;
@@ -271,6 +277,8 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     this.#runWorkspaceMetadata = options.runWorkspaceMetadata;
     this.#workspaceFilesystem = options.workspaceFilesystem;
     this.#feedbackLifecycle = options.feedbackLifecycle;
+    this.#projects = options.projects;
+    this.#issueReferenceIntakeResolver = options.issueReferenceIntakeResolver;
   }
 
   async createConversationWithFirstRun(
@@ -290,6 +298,33 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     // for ensuring this invariant before invoking the service.
     const ownerPrincipal = input.principal as NonModelPrincipal;
 
+    // Load project for intake resolution
+    const project = await this.#projects.findById(request.projectId);
+    if (project === null || project.tenant !== input.tenant) {
+      throw new ControlPlaneServiceError(
+        'intake_routing_error',
+        `Project '${request.projectId}' is not accessible.`
+      );
+    }
+
+    // Resolve intake (issue reference lookup, work-kind settlement)
+    let resolved: ResolvedConversationCreate;
+    try {
+      resolved = await this.#issueReferenceIntakeResolver.resolve({
+        submission: request.submission,
+        project,
+        tenant: input.tenant
+      });
+    } catch (error: unknown) {
+      if (error instanceof IssueReferenceIntakeError) {
+        throw new ControlPlaneServiceError('intake_routing_error', error.message, {
+          ...(error.safeDetails !== undefined ? { details: error.safeDetails } : {}),
+          cause: error
+        });
+      }
+      throw error;
+    }
+
     let result: OrchestratedConversationResult;
     try {
       result = await this.#orchestrator.createConversationWithFirstRun({
@@ -299,12 +334,10 @@ export class DefaultControlPlaneService implements ControlPlaneService {
         identity: request.identity,
         ...(request.channel !== undefined ? { channel: request.channel } : {}),
         topic: { title: request.topic.title },
-        ...(request.submission.body !== undefined
-          ? { message: { body: request.submission.body } }
-          : {}),
-        workKind: request.submission.workKind,
-        ...(request.submission.trackedIssue !== undefined
-          ? { trackedIssue: request.submission.trackedIssue }
+        message: { body: resolved.messageBody },
+        workKind: resolved.workKind,
+        ...(resolved.trackedIssue !== undefined
+          ? { trackedIssue: resolved.trackedIssue }
           : {})
       });
     } catch (error) {

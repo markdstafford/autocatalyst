@@ -10,11 +10,13 @@ import { z } from 'zod';
 import type { RunnerStepCheckpointEvent } from '@autocatalyst/api-contract';
 import {
   DefaultControlPlaneService,
+  DefaultIssueReferenceIntakeResolver,
   DefaultOrchestrator,
   InMemoryRunEventBus,
   OrchestratorError,
   RunDispatchQueue,
   SpecAuthoringServiceDependencies,
+  StaticIssueTrackerRegistry,
   buildSpecAuthorContext,
   createExecutionContextResolver,
   createExecutionRunUnitOfWork,
@@ -43,6 +45,13 @@ import { loadSpecAuthorPromptInput, SpecAuthoringContextLoadError } from './spec
 import { createSpecAuthoringHarness } from './spec-authoring-harness.spec-helper.js';
 
 const execFileAsync = promisify(execFile);
+
+// Empty registry — will return tracker_not_found for issue_reference submissions,
+// but passes cleanly for explicit workKind (free_form) submissions used in these tests.
+function makePassThroughIntakeResolver(): DefaultIssueReferenceIntakeResolver {
+  const trackerRegistry = new StaticIssueTrackerRegistry({});
+  return new DefaultIssueReferenceIntakeResolver({ registry: trackerRegistry });
+}
 
 async function git(args: readonly string[], cwd?: string): Promise<string> {
   const result = await execFileAsync('git', args as string[], { cwd, windowsHide: true });
@@ -184,7 +193,9 @@ describe('control-plane-service integration (SQLite + real orchestrator + real e
         feedback: domainRepos.feedback,
         runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
         workspaceFilesystem: { writeFile: vi.fn(), readFile: vi.fn().mockResolvedValue('') },
-        feedbackLifecycle: { feedback: domainRepos.feedback, ids: () => 'id', clock: () => new Date().toISOString() }
+        feedbackLifecycle: { feedback: domainRepos.feedback, ids: () => 'id', clock: () => new Date().toISOString() },
+        projects: domainRepos.projects,
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
       });
 
       // Create a project so the conversation ingress has a valid project.
@@ -311,7 +322,9 @@ describe('control-plane-service auto-dispatch integration (SQLite + real orchest
         feedback: domainRepos.feedback,
         runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
         workspaceFilesystem: { writeFile: vi.fn(), readFile: vi.fn().mockResolvedValue('') },
-        feedbackLifecycle: { feedback: domainRepos.feedback, ids: () => 'id', clock: () => new Date().toISOString() }
+        feedbackLifecycle: { feedback: domainRepos.feedback, ids: () => 'id', clock: () => new Date().toISOString() },
+        projects: domainRepos.projects,
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
       });
 
       const project = await domainRepos.projects.create({
@@ -469,7 +482,9 @@ describe('execution boundary integration (real StubRunner through two-root works
         feedback: domainRepos.feedback,
         runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
         workspaceFilesystem: { writeFile: vi.fn(), readFile: vi.fn().mockResolvedValue('') },
-        feedbackLifecycle: { feedback: domainRepos.feedback, ids: () => 'id', clock: () => new Date().toISOString() }
+        feedbackLifecycle: { feedback: domainRepos.feedback, ids: () => 'id', clock: () => new Date().toISOString() },
+        projects: domainRepos.projects,
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
       });
 
       // Create conversation + first run
@@ -605,7 +620,9 @@ describe('execution boundary integration (real StubRunner through two-root works
         feedback: domainRepos.feedback,
         runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
         workspaceFilesystem: { writeFile: vi.fn(), readFile: vi.fn().mockResolvedValue('') },
-        feedbackLifecycle: { feedback: domainRepos.feedback, ids: () => 'id', clock: () => new Date().toISOString() }
+        feedbackLifecycle: { feedback: domainRepos.feedback, ids: () => 'id', clock: () => new Date().toISOString() },
+        projects: domainRepos.projects,
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
       });
 
       const createResp = await controlPlane.createConversationWithFirstRun({
@@ -1025,7 +1042,9 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
           feedback: domainRepos.feedback,
           ids: () => `id_${Math.random().toString(36).slice(2)}`,
           clock: () => new Date().toISOString()
-        }
+        },
+        projects: domainRepos.projects,
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
       });
 
       // Tick once — the run is already at spec.author, so this executes the spec authoring step
@@ -1257,7 +1276,9 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
           feedback: domainRepos.feedback,
           ids: () => `id_${Math.random().toString(36).slice(2)}`,
           clock: () => new Date().toISOString()
-        }
+        },
+        projects: domainRepos.projects,
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
       });
 
       await controlPlane.tick({
@@ -1464,7 +1485,9 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
           feedback: domainRepos.feedback,
           ids: () => `id_${Math.random().toString(36).slice(2)}`,
           clock: () => new Date().toISOString()
-        }
+        },
+        projects: domainRepos.projects,
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
       });
 
       await controlPlane.tick({
@@ -1658,7 +1681,9 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
           feedback: domainRepos.feedback,
           ids: () => `id_${Math.random().toString(36).slice(2)}`,
           clock: () => new Date().toISOString()
-        }
+        },
+        projects: domainRepos.projects,
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
       });
 
       // Single tick — harness writes mismatched JSON, schema validation fails → fail directive
@@ -1840,7 +1865,9 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
           feedback: domainRepos.feedback,
           ids: () => `id_${Math.random().toString(36).slice(2)}`,
           clock: () => new Date().toISOString()
-        }
+        },
+        projects: domainRepos.projects,
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
       });
 
       // Normal create — starts at intake, auto-dispatch fires for each step

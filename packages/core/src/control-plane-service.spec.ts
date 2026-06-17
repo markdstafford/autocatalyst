@@ -4,12 +4,15 @@ import type {
   CreateConversationWithFirstRunRequest,
   Feedback,
   Principal,
+  Project,
   Run,
   RunStep
 } from '@autocatalyst/api-contract';
 
 import { ControlPlaneServiceError, DefaultControlPlaneService } from './control-plane-service.js';
-import type { ArtifactRepository, FeedbackRepository, RunRepository, RunStepRepository, RunWorkspaceMetadata, RunWorkspaceMetadataRepository } from './domain-repositories.js';
+import type { ArtifactRepository, FeedbackRepository, ProjectRepository, RunRepository, RunStepRepository, RunWorkspaceMetadata, RunWorkspaceMetadataRepository } from './domain-repositories.js';
+import { IssueReferenceIntakeError } from './issue-reference-intake.js';
+import type { IssueReferenceIntakeResolver } from './issue-reference-intake.js';
 import type { Orchestrator, OrchestratedConversationResult } from './orchestrator.js';
 import { OrchestratorError } from './orchestrator.js';
 import { permissivePolicyDecisionPoint, type PolicyDecisionPoint } from './policy.js';
@@ -189,6 +192,44 @@ function makeFakeWorkspaceFilesystem(content?: string): WorkspaceFileSystemPort 
   };
 }
 
+const baseProject: Project = {
+  id: 'proj_1',
+  owner,
+  tenant: 'tenant_1',
+  displayName: 'Test Project',
+  repoUrl: 'https://github.com/test/repo',
+  hostRepository: { provider: 'github', owner: 'test', name: 'repo' },
+  workspaceRootOverride: null,
+  issueTrackerSetting: null,
+  codeHostSetting: null,
+  credentialRefs: [],
+  createdAt: timestamp,
+  updatedAt: timestamp
+};
+
+function makeFakeProjectRepository(project: Project | null = baseProject): ProjectRepository {
+  return {
+    create: vi.fn(),
+    findById: vi.fn().mockResolvedValue(project)
+  };
+}
+
+function makePassThroughResolver(): IssueReferenceIntakeResolver {
+  return {
+    resolve: vi.fn().mockImplementation(async (input: { submission: { kind: string; body: string; workKind?: string; trackedIssue?: unknown } }) => {
+      const sub = input.submission;
+      if (sub.kind === 'free_form' || sub.kind === 'question' || sub.kind === 'list_to_file') {
+        return {
+          workKind: sub.workKind ?? 'feature',
+          ...(sub.trackedIssue !== undefined ? { trackedIssue: sub.trackedIssue } : {}),
+          messageBody: sub.body
+        };
+      }
+      return { workKind: 'feature', messageBody: sub.body };
+    })
+  };
+}
+
 function makeService(options?: {
   orchestrator?: Orchestrator;
   runs?: RunRepository;
@@ -198,6 +239,8 @@ function makeService(options?: {
   artifacts?: ArtifactRepository;
   runWorkspaceMetadata?: RunWorkspaceMetadataRepository;
   workspaceFilesystem?: WorkspaceFileSystemPort;
+  projects?: ProjectRepository;
+  issueReferenceIntakeResolver?: IssueReferenceIntakeResolver;
 }) {
   return new DefaultControlPlaneService({
     orchestrator: options?.orchestrator ?? makeFakeOrchestrator(),
@@ -213,7 +256,9 @@ function makeService(options?: {
       feedback: makeFakeFeedbackRepository(),
       ids: () => 'id_1',
       clock: () => timestamp
-    }
+    },
+    projects: options?.projects ?? makeFakeProjectRepository(),
+    issueReferenceIntakeResolver: options?.issueReferenceIntakeResolver ?? makePassThroughResolver()
   });
 }
 
@@ -314,6 +359,105 @@ describe('DefaultControlPlaneService.createConversationWithFirstRun', () => {
     await expect(
       service.createConversationWithFirstRun({ principal, tenant: 'tenant_1', request: baseRequest })
     ).rejects.toMatchObject({ code: 'persistence_failed' });
+  });
+});
+
+describe('DefaultControlPlaneService.createConversationWithFirstRun intake', () => {
+  it('calls intake resolver with the submission and project', async () => {
+    const resolver = makePassThroughResolver();
+    const service = makeService({ issueReferenceIntakeResolver: resolver });
+    await service.createConversationWithFirstRun({ principal, tenant: 'tenant_1', request: baseRequest });
+    expect(resolver.resolve).toHaveBeenCalledWith(expect.objectContaining({
+      submission: baseRequest.submission,
+      project: expect.objectContaining({ id: 'proj_1' }),
+      tenant: 'tenant_1'
+    }));
+  });
+
+  it('passes resolver-settled workKind and trackedIssue to orchestrator', async () => {
+    const orchestrator = makeFakeOrchestrator();
+    const trackedIssue = {
+      provider: 'github' as const,
+      repository: { owner: 'test', name: 'repo' },
+      number: 42,
+      title: 'fix: do thing',
+      url: 'https://github.com/test/repo/issues/42',
+      labels: ['bug']
+    };
+    const resolver: IssueReferenceIntakeResolver = {
+      resolve: vi.fn().mockResolvedValue({
+        workKind: 'bug',
+        trackedIssue,
+        messageBody: 'resolved body'
+      })
+    };
+    const service = makeService({ orchestrator, issueReferenceIntakeResolver: resolver });
+    await service.createConversationWithFirstRun({ principal, tenant: 'tenant_1', request: baseRequest });
+    expect(orchestrator.createConversationWithFirstRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workKind: 'bug',
+        trackedIssue,
+        message: { body: 'resolved body' }
+      })
+    );
+  });
+
+  it('preserves the first inbound message body for free-form issue-reference requests', async () => {
+    const orchestrator = makeFakeOrchestrator();
+    const issueRefRequest: CreateConversationWithFirstRunRequest = {
+      projectId: 'proj_1',
+      identity: 'I',
+      topic: { title: 'T' },
+      submission: {
+        kind: 'free_form',
+        body: 'please look at issue #7',
+        workKind: 'feature'
+      }
+    };
+    const resolver: IssueReferenceIntakeResolver = {
+      resolve: vi.fn().mockResolvedValue({
+        workKind: 'feature',
+        messageBody: 'please look at issue #7'
+      })
+    };
+    const service = makeService({ orchestrator, issueReferenceIntakeResolver: resolver });
+    await service.createConversationWithFirstRun({ principal, tenant: 'tenant_1', request: issueRefRequest });
+    expect(orchestrator.createConversationWithFirstRun).toHaveBeenCalledWith(
+      expect.objectContaining({ message: { body: 'please look at issue #7' } })
+    );
+  });
+
+  it('returns intake_routing_error when resolver refuses and does not call orchestrator', async () => {
+    const resolver: IssueReferenceIntakeResolver = {
+      resolve: vi.fn().mockRejectedValue(
+        new IssueReferenceIntakeError('work_kind_unresolved', 'Cannot settle work kind.')
+      )
+    };
+    const orchestrator = makeFakeOrchestrator();
+    const service = makeService({ orchestrator, issueReferenceIntakeResolver: resolver });
+    await expect(
+      service.createConversationWithFirstRun({ principal, tenant: 'tenant_1', request: baseRequest })
+    ).rejects.toMatchObject({ code: 'intake_routing_error' });
+    expect(orchestrator.createConversationWithFirstRun).not.toHaveBeenCalled();
+  });
+
+  it('returns intake_routing_error when project not found', async () => {
+    const orchestrator = makeFakeOrchestrator();
+    const service = makeService({ orchestrator, projects: makeFakeProjectRepository(null) });
+    await expect(
+      service.createConversationWithFirstRun({ principal, tenant: 'tenant_1', request: baseRequest })
+    ).rejects.toMatchObject({ code: 'intake_routing_error' });
+    expect(orchestrator.createConversationWithFirstRun).not.toHaveBeenCalled();
+  });
+
+  it('returns intake_routing_error when project tenant does not match', async () => {
+    const otherTenantProject: Project = { ...baseProject, tenant: 'tenant_2', owner: { ...owner, tenantId: 'tenant_2' } };
+    const orchestrator = makeFakeOrchestrator();
+    const service = makeService({ orchestrator, projects: makeFakeProjectRepository(otherTenantProject) });
+    await expect(
+      service.createConversationWithFirstRun({ principal, tenant: 'tenant_1', request: baseRequest })
+    ).rejects.toMatchObject({ code: 'intake_routing_error' });
+    expect(orchestrator.createConversationWithFirstRun).not.toHaveBeenCalled();
   });
 });
 
@@ -777,7 +921,9 @@ function makeServiceWithFeedback(feedbackRepo: FeedbackRepository): DefaultContr
       feedback: feedbackRepo,
       ids: () => 'id_1',
       clock: () => timestamp
-    }
+    },
+    projects: makeFakeProjectRepository(),
+    issueReferenceIntakeResolver: makePassThroughResolver()
   });
 }
 

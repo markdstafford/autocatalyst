@@ -11,6 +11,7 @@ export default defineConfig({
       '@autocatalyst/api-contract': resolve(__dirname, '../../packages/api-contract/src/index.ts'),
       '@autocatalyst/anthropic-direct-adapter': resolve(__dirname, '../../packages/anthropic-direct-adapter/src/index.ts'),
       '@autocatalyst/claude-agent-adapter': resolve(__dirname, '../../packages/claude-agent-adapter/src/index.ts'),
+      '@autocatalyst/github-issue-tracker-adapter': resolve(__dirname, '../../packages/github-issue-tracker-adapter/src/index.ts'),
       '@autocatalyst/core': resolve(__dirname, '../../packages/core/src/index.ts'),
       '@autocatalyst/execution': resolve(__dirname, '../../packages/execution/src/index.ts'),
       '@autocatalyst/openai-agent-adapter': resolve(__dirname, '../../packages/openai-agent-adapter/src/index.ts'),

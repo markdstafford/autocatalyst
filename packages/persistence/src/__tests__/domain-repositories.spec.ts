@@ -291,6 +291,78 @@ describe('DrizzleDomainRepositories round-trip', () => {
     });
   });
 
+  it('reads legacy tracked issue JSON (no body/labels) with defaults body="" and labels=[]', async () => {
+    await withRepositories(async (repos, database) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'legacy-tracked-issue',
+        title: 'Legacy tracked issue topic'
+      });
+      const run = await repos.runs.create({
+        topicId: setup.topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false
+      });
+
+      // Overwrite tracked_issue_json with a legacy payload (no body, no labels). This
+      // simulates a row written before the TrackedIssue contract was enriched.
+      const legacyJson = JSON.stringify({
+        number: 11,
+        title: 'Legacy Issue',
+        state: 'open',
+        url: 'https://example.test/issues/11'
+      });
+      asInternalSqliteDatabase(database).client
+        .prepare('UPDATE runs SET tracked_issue_json = ? WHERE id = ?')
+        .run(legacyJson, run.id);
+
+      const reread = await repos.runs.findById(run.id);
+      expect(reread?.trackedIssue).toBeDefined();
+      expect(reread?.trackedIssue?.number).toBe(11);
+      expect(reread?.trackedIssue?.title).toBe('Legacy Issue');
+      expect(reread?.trackedIssue?.state).toBe('open');
+      // Defaults from the preprocess schema
+      expect(reread?.trackedIssue?.body).toBe('');
+      expect(reread?.trackedIssue?.labels).toEqual([]);
+    });
+  });
+
+  it('round-trips an enriched tracked issue (with body and labels) unchanged', async () => {
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'enriched-tracked-issue',
+        title: 'Enriched tracked issue topic'
+      });
+      const enriched = {
+        number: 71,
+        title: 'feat: enriched',
+        body: 'Full body text',
+        labels: ['feature', 'backend'],
+        state: 'open' as const,
+        url: 'https://example.test/issues/71'
+      };
+      const run = await repos.runs.create({
+        topicId: setup.topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false,
+        trackedIssue: enriched
+      });
+      expect(run.trackedIssue).toEqual(enriched);
+
+      const reread = await repos.runs.findById(run.id);
+      expect(reread?.trackedIssue).toEqual(enriched);
+    });
+  });
+
   it('creates run-owned records and reads them back', async () => {
     await withRepositories(async (repos) => {
       const project = await repos.projects.create({

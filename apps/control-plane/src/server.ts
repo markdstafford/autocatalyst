@@ -24,6 +24,7 @@ import {
   createExecutionRunUnitOfWork,
   createModelRoutingResolver,
   DefaultControlPlaneService,
+  DefaultIssueReferenceIntakeResolver,
   DefaultOrchestrator,
   defaultExtensionRegistryCatalog,
   emptyProviderAdapterMap,
@@ -34,6 +35,7 @@ import {
   permissivePolicyDecisionPoint,
   registerControlPlaneRoutes,
   RunDispatchQueue,
+  StaticIssueTrackerRegistry,
   type AutoDispatchOptions,
   type ConvergenceEngine,
   type ControlPlaneService,
@@ -58,6 +60,7 @@ import {
   type WorkspaceResolverInput,
   type RunRoleWorkInput
 } from '@autocatalyst/core';
+import { GitHubIssueTracker } from '@autocatalyst/github-issue-tracker-adapter';
 import { createReviewedExecutionDispatcher } from './reviewed-execution-dispatcher.js';
 import { createRunWorkspaceGitPort } from './run-workspace-git-port.js';
 import { loadSpecAuthorPromptInput, SpecAuthoringContextLoadError } from './spec-authoring-context-loader.js';
@@ -181,6 +184,15 @@ export interface ControlPlaneServerOptions {
    * Derived from the authenticated PAT login when available. Falls back to 'autocatalyst'.
    */
   readonly specAuthorIdentity?: string;
+  /**
+   * Injectable GitHub issue tracker options for integration tests.
+   * When provided, `executablePath` overrides the default `gh` binary path.
+   * Do not pass token values here; credentials are always resolved through `SecretResolver`.
+   */
+  readonly githubIssueTracker?: {
+    readonly executablePath?: string;
+    readonly timeoutMs?: number;
+  };
 }
 
 const DEFAULT_RUN_CONCURRENCY = 2;
@@ -1194,6 +1206,13 @@ export async function createControlPlaneServer(
     }
   });
   const policy = options.policy ?? permissivePolicyDecisionPoint;
+  const githubTracker = new GitHubIssueTracker({
+    secretResolver: secretStore,
+    ...(options.githubIssueTracker?.executablePath !== undefined ? { executablePath: options.githubIssueTracker.executablePath } : {}),
+    ...(options.githubIssueTracker?.timeoutMs !== undefined ? { timeoutMs: options.githubIssueTracker.timeoutMs } : {})
+  });
+  const trackerRegistry = new StaticIssueTrackerRegistry({ github: githubTracker });
+  const issueReferenceIntakeResolver = new DefaultIssueReferenceIntakeResolver({ registry: trackerRegistry });
   const controlPlane = new DefaultControlPlaneService({
     orchestrator,
     runs: domainRepos.runs,
@@ -1204,7 +1223,9 @@ export async function createControlPlaneServer(
     feedback: domainRepos.feedback,
     runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
     workspaceFilesystem: nodeFilesystem,
-    feedbackLifecycle: feedbackLifecycleDependencies
+    feedbackLifecycle: feedbackLifecycleDependencies,
+    projects: domainRepos.projects,
+    issueReferenceIntakeResolver
   });
   options.onControlPlaneReady?.(controlPlane);
 

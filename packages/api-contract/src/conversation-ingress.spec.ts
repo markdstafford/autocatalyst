@@ -3,8 +3,12 @@ import { describe, expect, it } from 'vitest';
 import {
   conversationCollectionPath,
   createConversationSuccessStatusCode,
+  createConversationSubmissionSchema,
   createConversationWithFirstRunRequestSchema,
   createConversationWithFirstRunResponseSchema,
+  explicitWorkSubmissionSchema,
+  freeFormSubmissionSchema,
+  issueReferenceSubmissionSchema,
   submissionKindSchema
 } from './conversation-ingress.js';
 
@@ -22,14 +26,14 @@ const validRequest = {
   submission: {
     kind: 'issue_reference',
     body: 'please work on issue 15',
-    workKind: 'feature',
-    trackedIssue: {
-      number: 15,
-      title: 'feat: add orchestrator ingress',
-      state: 'open',
-      url: 'https://github.com/example/repo/issues/15'
-    }
+    issue: { number: 15 }
   }
+};
+
+const baseRequest = {
+  projectId: 'proj_123',
+  identity: 'Issue 71',
+  topic: { title: 'Work on issue 71' }
 };
 
 describe('conversation-ingress contract', () => {
@@ -77,12 +81,11 @@ describe('conversation-ingress contract', () => {
     expect(() => createConversationWithFirstRunRequestSchema.parse(rest)).toThrow();
   });
 
-  it('requires submission.workKind', () => {
-    const { workKind: _omit, ...submissionRest } = validRequest.submission;
+  it('requires workKind for question submissions', () => {
     expect(() =>
       createConversationWithFirstRunRequestSchema.parse({
         ...validRequest,
-        submission: submissionRest
+        submission: { kind: 'question', body: 'What is the plan?' }
       })
     ).toThrow();
   });
@@ -90,16 +93,6 @@ describe('conversation-ingress contract', () => {
   it('allows omitting channel', () => {
     const { channel: _omit, ...rest } = validRequest;
     expect(() => createConversationWithFirstRunRequestSchema.parse(rest)).not.toThrow();
-  });
-
-  it('allows omitting trackedIssue in submission', () => {
-    const { trackedIssue: _omit, ...submissionRest } = validRequest.submission;
-    expect(() =>
-      createConversationWithFirstRunRequestSchema.parse({
-        ...validRequest,
-        submission: submissionRest
-      })
-    ).not.toThrow();
   });
 
   it('rejects extra fields in request (strict)', () => {
@@ -156,6 +149,13 @@ describe('conversation-ingress contract', () => {
       }
     };
     expect(createConversationWithFirstRunResponseSchema.parse(validResponse)).toEqual(validResponse);
+  });
+
+  it('exports sub-schemas for issue_reference, free_form, and explicit work submissions', () => {
+    expect(issueReferenceSubmissionSchema).toBeDefined();
+    expect(freeFormSubmissionSchema).toBeDefined();
+    expect(explicitWorkSubmissionSchema).toBeDefined();
+    expect(createConversationSubmissionSchema).toBeDefined();
   });
 
   it('allows an optional message in the response', () => {
@@ -216,5 +216,48 @@ describe('conversation-ingress contract', () => {
       }
     };
     expect(createConversationWithFirstRunResponseSchema.parse(validResponse)).toEqual(validResponse);
+  });
+});
+
+describe('createConversationWithFirstRunRequestSchema submissions', () => {
+  it('accepts structured issue references without workKind or trackedIssue', () => {
+    expect(createConversationWithFirstRunRequestSchema.parse({
+      ...baseRequest,
+      submission: {
+        kind: 'issue_reference',
+        body: 'please work on issue 71',
+        issue: { number: 71 }
+      }
+    }).submission).toEqual({
+      kind: 'issue_reference',
+      body: 'please work on issue 71',
+      issue: { number: 71 }
+    });
+  });
+
+  it('accepts text-only free_form so intake can recognize issue references', () => {
+    expect(createConversationWithFirstRunRequestSchema.parse({
+      ...baseRequest,
+      submission: { kind: 'free_form', body: 'work on issue #71' }
+    }).submission).toEqual({ kind: 'free_form', body: 'work on issue #71' });
+  });
+
+  it('keeps explicit non-issue submissions valid with required workKind', () => {
+    expect(createConversationWithFirstRunRequestSchema.parse({
+      ...baseRequest,
+      identity: 'Question',
+      submission: { kind: 'question', body: 'What is the plan?', workKind: 'question' }
+    }).submission).toEqual({ kind: 'question', body: 'What is the plan?', workKind: 'question' });
+  });
+
+  it('rejects missing issue numbers and extra branch properties', () => {
+    expect(() => createConversationWithFirstRunRequestSchema.parse({
+      ...baseRequest,
+      submission: { kind: 'issue_reference', body: 'issue please', issue: {} }
+    })).toThrow();
+    expect(() => createConversationWithFirstRunRequestSchema.parse({
+      ...baseRequest,
+      submission: { kind: 'issue_reference', body: 'issue please', issue: { number: 71 }, trackedIssue: {} }
+    })).toThrow();
   });
 });

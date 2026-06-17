@@ -25,7 +25,11 @@ import {
   stepResultSchemaIdSchema,
   runRepliesPath,
   createRunReplySuccessStatusCode,
-  runReplyRequestSchema
+  runReplyRequestSchema,
+  issueReferenceSubmissionSchema,
+  freeFormSubmissionSchema,
+  explicitWorkSubmissionSchema,
+  createConversationSubmissionSchema
 } from './index.js';
 
 import * as apiContract from './index.js';
@@ -112,5 +116,12 @@ describe('api-contract barrel', () => {
     expect(runRepliesPath).toBe('/v1/runs/:id/replies');
     expect(createRunReplySuccessStatusCode).toBe(200);
     expect(runReplyRequestSchema.parse({ kind: 'approve' })).toEqual({ kind: 'approve' });
+  });
+
+  it('exports issue-reference conversation submission schemas', () => {
+    expect(issueReferenceSubmissionSchema.parse({ kind: 'issue_reference', body: 'issue 71', issue: { number: 71 } }).kind).toBe('issue_reference');
+    expect(freeFormSubmissionSchema.parse({ kind: 'free_form', body: 'work on issue #71' }).kind).toBe('free_form');
+    expect(explicitWorkSubmissionSchema.parse({ kind: 'question', body: 'question', workKind: 'question' }).kind).toBe('question');
+    expect(createConversationSubmissionSchema.parse({ kind: 'free_form', body: 'work on issue #71' }).kind).toBe('free_form');
   });
 });
