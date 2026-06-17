@@ -79,9 +79,16 @@ const prClosedWithMergedAtJson = JSON.stringify({
   mergedAt: '2026-01-01T00:00:00Z'
 });
 
+const PR_URL = 'https://github.com/myorg/myrepo/pull/73';
+
 describe('GitHubCodeHostAdapter.create', () => {
-  it('pushes the branch, calls gh pr create with --repo, and maps OPEN → open', async () => {
-    const { fn, calls } = makeFakeExecuteGh({ responses: [{ stdout: prOpenJson, truncated: false }] });
+  it('pushes the branch, calls gh pr create (no --json) then gh pr view, and maps OPEN → open', async () => {
+    const { fn, calls } = makeFakeExecuteGh({
+      responses: [
+        { stdout: PR_URL, truncated: false },          // create returns URL
+        { stdout: prOpenJson, truncated: false }        // view returns PR JSON
+      ]
+    });
     const git = makeGit();
     const adapter = createGitHubCodeHostAdapter({ executeGh: fn, git });
 
@@ -100,24 +107,53 @@ describe('GitHubCodeHostAdapter.create', () => {
       branch: 'run/abc',
       remote: 'origin'
     });
-    expect(calls).toHaveLength(1);
-    const args = calls[0]!.args;
-    expect(args[0]).toBe('pr');
-    expect(args[1]).toBe('create');
-    expect(args).toContain('--repo');
-    expect(args[args.indexOf('--repo') + 1]).toBe('myorg/myrepo');
-    expect(args[args.indexOf('--base') + 1]).toBe('main');
-    expect(args[args.indexOf('--head') + 1]).toBe('run/abc');
-    expect(args[args.indexOf('--title') + 1]).toBe('feat: thing');
-    expect(args[args.indexOf('--body') + 1]).toBe('body text');
-    expect(args).toContain('--json');
+    expect(calls).toHaveLength(2);
+
+    // First call: gh pr create — no --json flag
+    const createArgs = calls[0]!.args;
+    expect(createArgs[0]).toBe('pr');
+    expect(createArgs[1]).toBe('create');
+    expect(createArgs).toContain('--repo');
+    expect(createArgs[createArgs.indexOf('--repo') + 1]).toBe('myorg/myrepo');
+    expect(createArgs[createArgs.indexOf('--base') + 1]).toBe('main');
+    expect(createArgs[createArgs.indexOf('--head') + 1]).toBe('run/abc');
+    expect(createArgs[createArgs.indexOf('--title') + 1]).toBe('feat: thing');
+    expect(createArgs[createArgs.indexOf('--body') + 1]).toBe('body text');
+    expect(createArgs).not.toContain('--json');
+
+    // Second call: gh pr view <number> --json
+    const viewArgs = calls[1]!.args;
+    expect(viewArgs[0]).toBe('pr');
+    expect(viewArgs[1]).toBe('view');
+    expect(viewArgs[2]).toBe('73');
+    expect(viewArgs).toContain('--repo');
+    expect(viewArgs[viewArgs.indexOf('--repo') + 1]).toBe('myorg/myrepo');
+    expect(viewArgs).toContain('--json');
+
     expect(result).toEqual({
       provider: 'github',
       number: 73,
-      url: 'https://github.com/myorg/myrepo/pull/73',
+      url: PR_URL,
       state: 'open',
       branch: 'run/abc'
     });
+  });
+
+  it('throws unsafe_provider_error when gh pr create returns a non-PR URL', async () => {
+    const { fn } = makeFakeExecuteGh({
+      responses: [{ stdout: 'https://github.com/myorg/myrepo/issues/5', truncated: false }]
+    });
+    const adapter = createGitHubCodeHostAdapter({ executeGh: fn, git: makeGit() });
+    await expect(
+      adapter.create({
+        target: makeTarget(),
+        workspaceRepoRoot: '/tmp/repo',
+        branch: 'run/abc',
+        baseBranch: 'main',
+        content: { title: 't', body: 'b' },
+        credential: makeCredential()
+      })
+    ).rejects.toMatchObject({ name: 'CodeHostError', code: 'unsafe_provider_error' });
   });
 });
 
@@ -308,7 +344,8 @@ describe('GitHubCodeHostAdapter error handling', () => {
   it('every gh pr command includes an explicit --repo owner/name', async () => {
     const { fn, calls } = makeFakeExecuteGh({
       responses: [
-        { stdout: prOpenJson, truncated: false },           // create
+        { stdout: PR_URL, truncated: false },               // create: returns URL
+        { stdout: prOpenJson, truncated: false },           // create: view after create
         { stdout: prOpenJson, truncated: false },           // read
         { stdout: '[]', truncated: false },                 // findByBranch
         { stdout: '', truncated: false },                   // update

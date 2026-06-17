@@ -89,7 +89,7 @@ function makeFakeGh(initial: { branch: string }): FakeGhHandle {
       state.createdPr = true;
       state.prState = 'OPEN';
       state.mergedAt = null;
-      return { stdout: buildPrJson(), truncated: false };
+      return { stdout: PR_URL, truncated: false };
     }
     if (action === 'view') {
       return { stdout: buildPrJson(), truncated: false };

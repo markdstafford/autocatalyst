@@ -15,7 +15,9 @@ import type { ConfigurationRecord, Conversation, ExecutionContext, Project, Prov
 import {
   buildProviderAdapterKey,
   buildImplementationBuildContext,
+  buildPullRequestFinalizePrompt,
   buildSpecAuthorContext,
+  isCumulativeImplementationSummary,
   composeAgentProviderAdapterRegistry,
   composeDirectProviderAdapterRegistry,
   composeConfiguredProviders,
@@ -1040,6 +1042,57 @@ export async function createControlPlaneServer(
           });
         }
 
+        // Load pr.finalize prompt context
+        let prFinalizePrompt: string | undefined;
+        if (workInput.run.currentStep === 'pr.finalize') {
+          try {
+            const runSteps = await domainRepos.runSteps.listByRun(workInput.runId);
+            let cumulativeSummary: import('@autocatalyst/core').CumulativeImplementationSummary | undefined;
+            for (const step of [...runSteps].reverse()) {
+              if (step.step === 'implementation.build' && step.checkpointResult !== null) {
+                const checkpoint = step.checkpointResult as { cumulativeSummary?: unknown };
+                const candidate = checkpoint?.cumulativeSummary;
+                if (isCumulativeImplementationSummary(candidate)) {
+                  cumulativeSummary = candidate;
+                  break;
+                }
+              }
+            }
+
+            if (cumulativeSummary !== undefined) {
+              const workspaceMeta = await domainRepos.runWorkspaceMetadata.findByRunId(workInput.runId);
+              const branch = workspaceMeta?.workspaceHandle ?? workInput.run.id;
+              const workspacePath = workspace?.workspaceRepoRoot ?? '';
+
+              let specArtifactPath: string | undefined;
+              if (workInput.run.workKind === 'feature' || workInput.run.workKind === 'enhancement') {
+                try {
+                  const artifact = await domainRepos.artifacts.findByRunAndKind({
+                    runId: workInput.run.id,
+                    kind: workInput.run.workKind === 'feature' ? 'feature_spec' : 'enhancement_spec'
+                  });
+                  if (artifact !== null && artifact !== undefined) {
+                    specArtifactPath = artifact.location;
+                  }
+                } catch {
+                  // Optional — continue without spec path
+                }
+              }
+
+              prFinalizePrompt = buildPullRequestFinalizePrompt({
+                runId: workInput.runId,
+                workKind: workInput.run.workKind,
+                branch,
+                workspacePath,
+                ...(specArtifactPath !== undefined ? { specArtifactPath } : {}),
+                cumulativeSummary
+              });
+            }
+          } catch {
+            // Non-fatal — session will run without a pre-built prompt
+          }
+        }
+
         return createExecutionContextResolver({
           secretsAvailable: false,
           ...(workspace !== undefined ? { workspace } : {}),
@@ -1048,6 +1101,7 @@ export async function createControlPlaneServer(
           prompt: (input) => {
             if (input.run.currentStep === 'spec.author') return specAuthorContext?.prompt;
             if (input.run.currentStep === 'implementation.build') return implementationBuildContext?.prompt;
+            if (input.run.currentStep === 'pr.finalize') return prFinalizePrompt;
             return undefined;
           },
           taskInputs: (input) => {

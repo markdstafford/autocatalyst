@@ -60,24 +60,41 @@ class GitHubCodeHostAdapter implements CodeHostPort {
       remote: 'origin'
     });
 
-    const args = [
+    const createArgs = [
       'pr', 'create',
       '--repo', repo,
       '--base', input.baseBranch,
       '--head', input.branch,
       '--title', input.content.title,
-      '--body', input.content.body,
-      '--json', PR_JSON_FIELDS
+      '--body', input.content.body
     ];
 
-    const stdout = await this.runGh(args, input.credential.token, {
+    const createStdout = await this.runGh(createArgs, input.credential.token, {
       provider: 'github',
       repository: repo,
       branch: input.branch
     });
 
-    const parsed = this.parseJson(stdout, { provider: 'github', repository: repo, branch: input.branch });
-    return this.toFacts(parsed, { provider: 'github', repository: repo, branch: input.branch });
+    const prUrl = createStdout.trim();
+    const numberMatch = /\/pull\/(\d+)/.exec(prUrl);
+    if (numberMatch === null || numberMatch[1] === undefined) {
+      throw new CodeHostError(
+        'unsafe_provider_error',
+        'GitHub pr create did not return a valid pull-request URL.',
+        { provider: 'github', repository: repo, branch: input.branch }
+      );
+    }
+    const prNumber = parseInt(numberMatch[1], 10);
+
+    const viewDetails = { provider: 'github', repository: repo, number: prNumber };
+    const viewArgs = [
+      'pr', 'view', String(prNumber),
+      '--repo', repo,
+      '--json', PR_JSON_FIELDS
+    ];
+    const viewStdout = await this.runGh(viewArgs, input.credential.token, viewDetails);
+    const parsed = this.parseJson(viewStdout, viewDetails);
+    return this.toFacts(parsed, viewDetails);
   }
 
   async read(input: ReadCodeHostPullRequestInput): Promise<CodeHostPullRequestFacts> {

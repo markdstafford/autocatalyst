@@ -50,6 +50,7 @@ import type {
 import type { CodeHostCredential } from './code-host.js';
 import type { CodeHostRegistry } from './code-host-registry.js';
 import { handlePullRequestOpen } from './pr-open-handler.js';
+import { buildCumulativeImplementationSummary } from './implementation-summary.js';
 import {
   detectPullRequestMerges,
   type PullRequestStatusReconciliationResult
@@ -212,6 +213,7 @@ export interface Orchestrator {
   dispatch(input: DispatchRunInput): Promise<OrchestratedRunResult>;
   tick(input: TickInput): Promise<TickResult>;
   replyToRun(input: ReplyToRunInput): Promise<ReplyToRunResult>;
+  detectMerges(tenant: string): Promise<PullRequestStatusReconciliationResult>;
 }
 
 // --- Spec authoring completion ---
@@ -726,11 +728,29 @@ export class DefaultOrchestrator implements Orchestrator {
             origin: 'runner'
           });
         }
+        const convergenceClock = this.#clock ?? (() => new Date().toISOString());
+        let enrichedCheckpoint: unknown = result.checkpointResult;
+        if (result.checkpointResult.rounds.length > 0) {
+          try {
+            const cumulativeSummary = buildCumulativeImplementationSummary({
+              rounds: result.checkpointResult.rounds.map(r => ({
+                fixSummary: r.findings
+                  .filter(f => f.blocking)
+                  .map(f => f.title)
+                  .join('; ') || undefined
+              })),
+              completedAt: convergenceClock()
+            });
+            enrichedCheckpoint = { ...result.checkpointResult, cumulativeSummary };
+          } catch {
+            // Non-fatal: pr-open-handler will surface a clear error if summary is missing
+          }
+        }
         return this.applyDirective({
           runId: input.runId,
           directive: 'advance',
           tenant: input.tenant,
-          checkpointResult: result.checkpointResult as unknown as JsonValue,
+          checkpointResult: enrichedCheckpoint as unknown as JsonValue,
           origin: 'runner'
         });
       });
@@ -742,7 +762,11 @@ export class DefaultOrchestrator implements Orchestrator {
     const unitOfWork = this.#unitOfWork;
 
     return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
-      const result = await unitOfWork.run({ runId: input.runId, run, tenant: input.tenant });
+      const baseWorkInput: RunWorkInput = { runId: input.runId, run, tenant: input.tenant };
+      const workInput: RunWorkInput = run.currentStep === 'pr.finalize'
+        ? { ...baseWorkInput, toolPolicyMode: 'read_only' } as unknown as RunWorkInput
+        : baseWorkInput;
+      const result = await unitOfWork.run(workInput);
       if (result.directive === 'fail') {
         return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason: result.reason, origin: 'runner' });
       }
@@ -985,6 +1009,11 @@ export class DefaultOrchestrator implements Orchestrator {
   }
 
   async tick(input: TickInput): Promise<TickResult> {
+    // Detect merges as a background side-effect on every tick; failures are swallowed.
+    if (this.#pullRequestOpenDependencies !== undefined) {
+      this.detectMerges(input.tenant).catch(() => undefined);
+    }
+
     if (input.runId === undefined) {
       return { status: 'noop' };
     }
