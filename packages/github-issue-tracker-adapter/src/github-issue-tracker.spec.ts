@@ -163,4 +163,60 @@ describe('GitHubIssueTracker', () => {
       expect(JSON.stringify(e.safeDetails ?? {})).not.toContain(SENTINEL_TOKEN);
     }
   });
+
+  it('maps SecretResolutionError to tracker_credential_missing', async () => {
+    const { SecretResolutionError } = await import('@autocatalyst/core');
+    const tracker = new GitHubIssueTracker({
+      secretResolver: {
+        resolveSecret: vi.fn().mockRejectedValue(
+          new SecretResolutionError('missing_secret', 'not found', { handle: 'cred_1' })
+        )
+      },
+      executeGhFn: vi.fn()
+    });
+
+    await expect(tracker.read({
+      target: { provider: 'github', repository: { owner: 'o', name: 'r' }, credentialRef: { id: 'cred_1', purpose: 'issue_tracker' } },
+      issueNumber: 71
+    })).rejects.toMatchObject({ code: 'tracker_credential_missing' });
+  });
+
+  it('maps schema validation failure to tracker_response_invalid', async () => {
+    const badOutput = JSON.stringify({
+      number: 71,
+      // missing title, body, labels, state, url
+    });
+
+    const tracker = new GitHubIssueTracker({
+      secretResolver: { resolveSecret: vi.fn().mockResolvedValue(SENTINEL_TOKEN) },
+      executeGhFn: async () => ({ stdout: badOutput, truncated: false })
+    });
+
+    await expect(tracker.read({
+      target: { provider: 'github', repository: { owner: 'o', name: 'r' }, credentialRef: { id: 'c', purpose: 'issue_tracker' } },
+      issueNumber: 71
+    })).rejects.toMatchObject({ code: 'tracker_response_invalid' });
+  });
+
+  it('passes explicit --repo owner/name and does not use cwd', async () => {
+    let capturedArgs: string[] = [];
+
+    const tracker = new GitHubIssueTracker({
+      secretResolver: { resolveSecret: vi.fn().mockResolvedValue(SENTINEL_TOKEN) },
+      executeGhFn: async (input) => {
+        capturedArgs = [...input.args];
+        return { stdout: realisticGhOutput, truncated: false };
+      }
+    });
+
+    await tracker.read({
+      target: { provider: 'github', repository: { owner: 'testowner', name: 'testrepo' }, credentialRef: { id: 'c', purpose: 'issue_tracker' } },
+      issueNumber: 42
+    });
+
+    expect(capturedArgs).toContain('--repo');
+    const repoIdx = capturedArgs.indexOf('--repo');
+    expect(capturedArgs[repoIdx + 1]).toBe('testowner/testrepo');
+    expect(capturedArgs).toContain('42');
+  });
 });
