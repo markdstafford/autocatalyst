@@ -976,6 +976,8 @@ describe('implementation.build convergence — near-miss reviewer tolerance', ()
       try {
         const result = await orchestrator.dispatch({ runId, tenant: TENANT });
 
+        expect(calls.map((c) => c.role)).toEqual(['implementer', 'reviewer']);
+
         // The run should advance past the implementation gate.
         expect(result.run.currentStep).not.toBe('implementation.build');
 
