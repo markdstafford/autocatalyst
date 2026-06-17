@@ -59,9 +59,9 @@ export interface SpecAuthorOutputContractInput {
   };
   readonly frontmatter: {
     readonly status: 'draft';
-    readonly required: readonly ['created', 'last_updated', 'status'];
+    readonly systemStamped: readonly ['created', 'last_updated', 'status', 'issue', 'specced_by'];
     readonly trustedSpeccedBy: string;
-    readonly issue: { readonly requiredWhenPresentOnRun: true; readonly type: 'positive integer' };
+    readonly issue: { readonly stampedWhenPresentOnRun: true; readonly type: 'positive integer' };
   };
   readonly body: { readonly minLength: 1; readonly description: 'Markdown spec body, not a path or prose summary' };
 }
@@ -198,9 +198,9 @@ function outputContractFor(workKind: SpecAuthorSupportedWorkKind, specAuthorIden
     },
     frontmatter: {
       status: 'draft',
-      required: ['created', 'last_updated', 'status'],
+      systemStamped: ['created', 'last_updated', 'status', 'issue', 'specced_by'],
       trustedSpeccedBy: specAuthorIdentity ?? 'autocatalyst',
-      issue: { requiredWhenPresentOnRun: true, type: 'positive integer' }
+      issue: { stampedWhenPresentOnRun: true, type: 'positive integer' }
     },
     body: { minLength: 1, description: 'Markdown spec body, not a path or prose summary' }
   };
@@ -242,9 +242,12 @@ export function buildSpecAuthorPrompt(input: SpecAuthorPromptInput): string {
     `- Use kind: ${contract.expectedKind}.`,
     `- Use relativePath pattern: ${contract.expectedRelativePathPattern}.`,
     '- The JSON result must contain exactly the schema fields `kind`, `slug`, `relativePath`, `frontmatter`, and `body`.',
-    '- Frontmatter must include `created`, `last_updated`, and `status: "draft"`; include integer `issue` when the run has a linked issue.',
-    `- The system will stamp \`frontmatter.specced_by\` as \`${contract.frontmatter.trustedSpeccedBy}\` before validation and commit.`,
-    '- Do not invent `specced_by`, and do not include model, skill, run, or prose identity strings for that field.',
+    '- The model-authored JSON may include `frontmatter`, but the model does not own system frontmatter fields.',
+    `- The system will stamp \`frontmatter.created\`, \`frontmatter.last_updated\`, \`frontmatter.status\`, \`frontmatter.issue\`, and \`frontmatter.specced_by\` before validation and commit.`,
+    `- The stamped \`frontmatter.status\` is \`${contract.frontmatter.status}\`; the stamped \`frontmatter.specced_by\` is \`${contract.frontmatter.trustedSpeccedBy}\`.`,
+    '- The system stamps `frontmatter.issue` only when this run has a linked issue.',
+    '- Do not invent `created`, `last_updated`, `status`, `issue`, or `specced_by`.',
+    '- Do not include model, skill, run, or prose identity strings for system-stamped fields.',
     '- `body` must contain the non-empty Markdown spec body, not only a file path or prose summary.',
     '',
     'Run context:',
