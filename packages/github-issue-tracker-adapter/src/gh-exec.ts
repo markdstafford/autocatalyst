@@ -43,8 +43,15 @@ export async function executeGh(input: GhExecInput): Promise<GhExecResult> {
   const { args, token, executablePath = 'gh', timeoutMs = 30_000 } = input;
 
   try {
+    // Minimal child environment — only runtime vars gh needs, not the full control-plane env.
+    const childEnv: Record<string, string> = { GH_TOKEN: token };
+    for (const key of ['PATH', 'HOME', 'USERPROFILE', 'SYSTEMROOT', 'TEMP', 'TMP']) {
+      const val = process.env[key];
+      if (val !== undefined) childEnv[key] = val;
+    }
+
     const { stdout } = await execFileAsync(executablePath, [...args], {
-      env: { ...process.env, GH_TOKEN: token },
+      env: childEnv,
       timeout: timeoutMs,
       maxBuffer: MAX_STDOUT_BYTES + 1,
       shell: false
