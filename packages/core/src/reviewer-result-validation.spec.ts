@@ -37,6 +37,9 @@ describe('validateReviewerResult', () => {
       normalized: true,
       correctedAttempts: 0
     });
+    if (result.status === 'valid') {
+      expect(result.events.some((event) => event.kind === 'normalized')).toBe(true);
+    }
   });
 
   it('normalizes empty findings to a satisfied reviewer result', async () => {
@@ -51,6 +54,9 @@ describe('validateReviewerResult', () => {
       value: { status: 'satisfied', findings: [] },
       normalized: true
     });
+    if (result.status === 'valid') {
+      expect(result.events.some((event) => event.kind === 'normalized')).toBe(true);
+    }
   });
 
   it('uses correction for an initially invalid reviewer result', async () => {
@@ -69,6 +75,9 @@ describe('validateReviewerResult', () => {
     });
 
     expect(result).toMatchObject({ status: 'valid', correctedAttempts: 1, normalized: false });
+    if (result.status === 'valid') {
+      expect(result.events.some((event) => event.kind === 'corrected')).toBe(true);
+    }
     expect(requests).toHaveLength(1);
     expect(requests[0]).toMatchObject({
       runId: 'run_1',
@@ -93,6 +102,9 @@ describe('validateReviewerResult', () => {
     });
 
     expect(result).toMatchObject({ status: 'failed', reason: 'reviewer_result_invalid' });
+    if (result.status === 'failed') {
+      expect(result.events.length).toBeGreaterThan(0);
+    }
     expect(JSON.stringify(result)).not.toContain('/Users/operator/private-output.json');
     expect(JSON.stringify(result)).not.toContain('provider-token-123');
   });
@@ -105,5 +117,8 @@ describe('validateReviewerResult', () => {
     });
 
     expect(result).toMatchObject({ status: 'failed', reason: 'reviewer_result_invalid' });
+    if (result.status === 'failed') {
+      expect(result.events.length).toBeGreaterThan(0);
+    }
   });
 });
