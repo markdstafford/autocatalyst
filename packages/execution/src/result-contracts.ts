@@ -85,6 +85,8 @@ export const REVIEWER_RESULT_SCHEMA_ID = 'autocatalyst.reviewer_result.v1' as co
 
 export interface SpecAuthorResultContractOptions {
   readonly trustedSpeccedBy?: string;
+  readonly clock?: () => string;
+  readonly trackedIssueNumber?: number;
 }
 
 function assertTrustedSpeccedBy(value: string): string {
@@ -92,8 +94,44 @@ function assertTrustedSpeccedBy(value: string): string {
   return value;
 }
 
-export function stampSpecAuthorResultIdentity(candidate: unknown, trustedSpeccedBy: string = SYSTEM_SPEC_AUTHOR_SPECCED_BY): unknown {
-  const stampedIdentity = assertTrustedSpeccedBy(trustedSpeccedBy);
+function assertTrackedIssueNumber(value: number): number {
+  specAuthorFrontmatterSchema.pick({ issue: true }).parse({ issue: value });
+  return value;
+}
+
+function todayFromClock(clock: () => string): string {
+  const today = clock().slice(0, 10);
+  specAuthorFrontmatterSchema.pick({ created: true, last_updated: true }).parse({
+    created: today,
+    last_updated: today
+  });
+  return today;
+}
+
+function resolveSpecAuthorStampOptions(options: SpecAuthorResultContractOptions = {}): {
+  readonly trustedSpeccedBy: string;
+  readonly clock: () => string;
+  readonly trackedIssueNumber?: number;
+} {
+  return {
+    trustedSpeccedBy: assertTrustedSpeccedBy(options.trustedSpeccedBy ?? SYSTEM_SPEC_AUTHOR_SPECCED_BY),
+    clock: options.clock ?? (() => new Date().toISOString()),
+    ...(options.trackedIssueNumber !== undefined
+      ? { trackedIssueNumber: assertTrackedIssueNumber(options.trackedIssueNumber) }
+      : {})
+  };
+}
+
+export function stampSpecAuthorResultIdentity(
+  candidate: unknown,
+  optionsOrTrustedSpeccedBy: SpecAuthorResultContractOptions | string = {}
+): unknown {
+  const options = typeof optionsOrTrustedSpeccedBy === 'string'
+    ? { trustedSpeccedBy: optionsOrTrustedSpeccedBy }
+    : optionsOrTrustedSpeccedBy;
+  const stampOptions = resolveSpecAuthorStampOptions(options);
+  const today = todayFromClock(stampOptions.clock);
+
   if (typeof candidate !== 'object' || candidate === null || Array.isArray(candidate)) {
     return candidate;
   }
@@ -102,33 +140,47 @@ export function stampSpecAuthorResultIdentity(candidate: unknown, trustedSpecced
   if (typeof frontmatter !== 'object' || frontmatter === null || Array.isArray(frontmatter)) {
     return candidate;
   }
+
+  const { issue: _discardedIssue, ...modelFrontmatter } = frontmatter as Record<string, unknown>;
+  void _discardedIssue;
+
   return {
     ...record,
     frontmatter: {
-      ...(frontmatter as Record<string, unknown>),
-      specced_by: stampedIdentity
+      ...modelFrontmatter,
+      created: today,
+      last_updated: today,
+      status: 'draft',
+      ...(stampOptions.trackedIssueNumber !== undefined ? { issue: stampOptions.trackedIssueNumber } : {}),
+      specced_by: stampOptions.trustedSpeccedBy
     }
   };
 }
 
-function createSystemStampedSpecAuthorResultSchema(trustedSpeccedBy: string) {
+function createSystemStampedSpecAuthorResultSchema(options: SpecAuthorResultContractOptions = {}) {
   return z.preprocess(
-    (candidate) => stampSpecAuthorResultIdentity(candidate, trustedSpeccedBy),
+    (candidate) => stampSpecAuthorResultIdentity(candidate, options),
     specAuthorResultSchema
   );
+}
+
+export function createSpecAuthorResultContract(
+  options: SpecAuthorResultContractOptions = {}
+): StepResultContractDefinition {
+  const stampOptions = resolveSpecAuthorStampOptions(options);
+  return {
+    step: 'spec.author',
+    schemaId: SPEC_AUTHOR_SCHEMA_ID,
+    schema: createSystemStampedSpecAuthorResultSchema(stampOptions),
+    resultFile: 'step-result.json'
+  };
 }
 
 export function registerSpecAuthorResultContract(
   registry: StepResultContractRegistry,
   options: SpecAuthorResultContractOptions = {}
 ): StepResultContractRegistry {
-  const trustedSpeccedBy = assertTrustedSpeccedBy(options.trustedSpeccedBy ?? SYSTEM_SPEC_AUTHOR_SPECCED_BY);
-  return registry.register({
-    step: 'spec.author',
-    schemaId: SPEC_AUTHOR_SCHEMA_ID,
-    schema: createSystemStampedSpecAuthorResultSchema(trustedSpeccedBy),
-    resultFile: 'step-result.json'
-  });
+  return registry.register(createSpecAuthorResultContract(options));
 }
 
 export function registerReviewerResultContract(
