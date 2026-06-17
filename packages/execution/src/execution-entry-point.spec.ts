@@ -1005,11 +1005,13 @@ describe('createExecutionEntryPoint — spec.author result contract', () => {
     }
   });
 
-  it('invalid frontmatter status fails schema validation', async () => {
+  it('model-provided invalid frontmatter status is overridden by system stamping and advances', async () => {
     const context = makeSpecAuthorContext();
     const scratchRoot = await mkdtemp(path.join(tmpdir(), 'spec-author-badstatus-'));
     try {
-      // 'in_progress' is not a valid committedSpecStatusSchema value
+      // 'in_progress' is not a valid committedSpecStatusSchema value, but 'status' is now a
+      // system-owned field: stampSpecAuthorResultIdentity always overwrites it with 'draft'.
+      // The result should advance rather than fail schema validation.
       const badStatusResult = {
         ...conformantSpecAuthorResult,
         frontmatter: { ...conformantSpecAuthorResult.frontmatter, status: 'in_progress' }
@@ -1044,10 +1046,7 @@ describe('createExecutionEntryPoint — spec.author result contract', () => {
 
       const terminal = events.find((e) => e.type === 'runner_terminal_result') as ExecutionTerminalResultEvent | undefined;
       expect(terminal).toBeDefined();
-      expect(terminal?.result.directive).toBe('fail');
-      if (terminal?.result.directive === 'fail') {
-        expect(terminal.result.reason).toContain('schema_validation_failed');
-      }
+      expect(terminal?.result.directive).toBe('advance');
     } finally {
       await rm(scratchRoot, { recursive: true, force: true });
     }

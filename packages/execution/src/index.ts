@@ -19,6 +19,7 @@ export {
 
 export {
   createStepResultContractRegistry,
+  createSpecAuthorResultContract,
   resolveStepResultContract,
   registerSpecAuthorResultContract,
   registerReviewerResultContract,

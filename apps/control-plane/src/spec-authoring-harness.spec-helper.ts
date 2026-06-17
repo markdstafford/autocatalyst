@@ -5,7 +5,17 @@ import type { RunnerEvent } from '@autocatalyst/api-contract';
 
 import type { Runner, RunnerCloseResult, RunnerRunInput } from '@autocatalyst/execution';
 
-export type SpecAuthoringHarnessMode = 'conformant' | 'mismatched_path' | 'invalid_json' | 'empty_body' | 'omitted_specced_by' | 'invalid_specced_by';
+export type SpecAuthoringHarnessMode =
+  | 'conformant'
+  | 'mismatched_path'
+  | 'invalid_json'
+  | 'empty_body'
+  | 'omitted_specced_by'
+  | 'invalid_specced_by'
+  | 'omitted_system_frontmatter'
+  | 'iso_timestamp_system_frontmatter'
+  | 'misstated_system_frontmatter'
+  | 'invented_issue';
 
 export interface SpecAuthoringHarnessRecord {
   readonly prompt: string;
@@ -130,6 +140,8 @@ async function writeResultFile(input: {
   const expectedPathPrefix = (outputContract?.['expectedPathPrefix'] as string | undefined) ?? 'context-human/specs/feature-';
 
   const slug = 'harness-e2e-test';
+  const runInput = taskInputs['run'] as Record<string, unknown> | undefined;
+  const issueNumber = typeof runInput?.['issueNumber'] === 'number' ? runInput['issueNumber'] : undefined;
 
   if (mode === 'conformant') {
     const result = {
@@ -217,6 +229,72 @@ async function writeResultFile(input: {
         specced_by: 'autocatalyst:mm:planning'  // invalid — system should stamp to 'autocatalyst'
       },
       body: `# Feature: Harness E2E Test (invalid specced_by)\n\n## Overview\n\nThis spec has an invalid specced_by.\n\n## Task list\n\n- [ ] Implement harness\n`
+    };
+    await writeFile(resultPath, JSON.stringify(result), 'utf8');
+    return;
+  }
+
+  if (mode === 'omitted_system_frontmatter') {
+    const result = {
+      kind: expectedKind,
+      slug,
+      relativePath: `${expectedPathPrefix}${slug}.md`,
+      frontmatter: {},
+      body: `# Feature: Harness E2E Test (omitted system frontmatter)\n\n## Overview\n\nThis spec omits all system-owned frontmatter.\n\n## Task list\n\n- [ ] Implement harness\n`
+    };
+    await writeFile(resultPath, JSON.stringify(result), 'utf8');
+    return;
+  }
+
+  if (mode === 'iso_timestamp_system_frontmatter') {
+    const result = {
+      kind: expectedKind,
+      slug,
+      relativePath: `${expectedPathPrefix}${slug}.md`,
+      frontmatter: {
+        created: '2026-06-17T20:17:59Z',
+        last_updated: '2026-06-17T20:17:59Z',
+        status: 'approved',
+        ...(issueNumber !== undefined ? { issue: issueNumber + 100 } : {}),
+        specced_by: 'autocatalyst:mm:planning'
+      },
+      body: `# Feature: Harness E2E Test (ISO timestamp frontmatter)\n\n## Overview\n\nThis spec uses timestamp-shaped dates.\n\n## Task list\n\n- [ ] Implement harness\n`
+    };
+    await writeFile(resultPath, JSON.stringify(result), 'utf8');
+    return;
+  }
+
+  if (mode === 'misstated_system_frontmatter') {
+    const result = {
+      kind: expectedKind,
+      slug,
+      relativePath: `${expectedPathPrefix}${slug}.md`,
+      frontmatter: {
+        created: '2020-01-01',
+        last_updated: '2020-01-01',
+        status: 'complete',
+        issue: 999,
+        specced_by: 'bad identity with spaces'
+      },
+      body: `# Feature: Harness E2E Test (misstated system frontmatter)\n\n## Overview\n\nThis spec misstates system-owned frontmatter.\n\n## Task list\n\n- [ ] Implement harness\n`
+    };
+    await writeFile(resultPath, JSON.stringify(result), 'utf8');
+    return;
+  }
+
+  if (mode === 'invented_issue') {
+    const result = {
+      kind: expectedKind,
+      slug,
+      relativePath: `${expectedPathPrefix}${slug}.md`,
+      frontmatter: {
+        created: '2020-01-01',
+        last_updated: '2020-01-01',
+        status: 'approved',
+        issue: 999,
+        specced_by: 'not valid identity'
+      },
+      body: `# Feature: Harness E2E Test (invented issue)\n\n## Overview\n\nThis spec invents an issue number for a run with no linked issue.\n\n## Task list\n\n- [ ] Implement harness\n`
     };
     await writeFile(resultPath, JSON.stringify(result), 'utf8');
     return;

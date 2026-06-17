@@ -8,6 +8,7 @@ import {
   resolveStepResultContract,
   registerReviewerResultContract,
   registerSpecAuthorResultContract,
+  stampSpecAuthorResultIdentity,
   SYSTEM_SPEC_AUTHOR_SPECCED_BY
 } from './result-contracts.js';
 
@@ -158,6 +159,116 @@ describe('spec author result contract registration', () => {
     });
 
     expect(parsed.frontmatter.specced_by).toBe('markdstafford');
+  });
+
+  it('stamps omitted system-owned frontmatter before validation', () => {
+    const registry = registerSpecAuthorResultContract(createStepResultContractRegistry(), {
+      clock: () => '2026-06-17T20:17:59.000Z',
+      trackedIssueNumber: 76
+    });
+    const resolution = registry.resolve({ step: 'spec.author', schemaId: SPEC_AUTHOR_SCHEMA_ID });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+
+    const parsed = resolution.contract.schema.parse({
+      kind: 'feature_spec',
+      slug: 'system-frontmatter',
+      relativePath: 'context-human/specs/feature-system-frontmatter.md',
+      frontmatter: {},
+      body: '# System frontmatter\n\nBody.'
+    });
+
+    expect(parsed.frontmatter).toMatchObject({
+      created: '2026-06-17',
+      last_updated: '2026-06-17',
+      status: 'draft',
+      issue: 76,
+      specced_by: SYSTEM_SPEC_AUTHOR_SPECCED_BY
+    });
+  });
+
+  it('overwrites ISO timestamp dates with date-only values from the injected clock', () => {
+    const registry = registerSpecAuthorResultContract(createStepResultContractRegistry(), {
+      clock: () => '2026-06-18T01:02:03.000Z'
+    });
+    const resolution = registry.resolve({ step: 'spec.author', schemaId: SPEC_AUTHOR_SCHEMA_ID });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+
+    const parsed = resolution.contract.schema.parse({
+      kind: 'feature_spec',
+      slug: 'date-stamping',
+      relativePath: 'context-human/specs/feature-date-stamping.md',
+      frontmatter: {
+        created: '2026-06-17T20:17:59Z',
+        last_updated: '2026-06-17T20:17:59Z',
+        status: 'approved',
+        specced_by: 'autocatalyst:mm:planning'
+      },
+      body: '# Date stamping\n\nBody.'
+    });
+
+    expect(parsed.frontmatter.created).toBe('2026-06-18');
+    expect(parsed.frontmatter.last_updated).toBe('2026-06-18');
+    expect(parsed.frontmatter.status).toBe('draft');
+    expect(parsed.frontmatter.specced_by).toBe(SYSTEM_SPEC_AUTHOR_SPECCED_BY);
+  });
+
+  it('stamps tracked issue over omitted or misstated model issue values', () => {
+    const registry = registerSpecAuthorResultContract(createStepResultContractRegistry(), {
+      clock: () => '2026-06-17T00:00:00.000Z',
+      trackedIssueNumber: 76
+    });
+    const resolution = registry.resolve({ step: 'spec.author', schemaId: SPEC_AUTHOR_SCHEMA_ID });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+
+    const parsed = resolution.contract.schema.parse({
+      kind: 'feature_spec',
+      slug: 'issue-stamping',
+      relativePath: 'context-human/specs/feature-issue-stamping.md',
+      frontmatter: {
+        created: '2026-06-01',
+        last_updated: '2026-06-01',
+        status: 'complete',
+        issue: 999,
+        specced_by: 'bad identity with spaces'
+      },
+      body: '# Issue stamping\n\nBody.'
+    });
+
+    expect(parsed.frontmatter.issue).toBe(76);
+    expect(parsed.frontmatter.status).toBe('draft');
+  });
+
+  it('omits a model-invented issue when the run has no tracked issue', () => {
+    const registry = registerSpecAuthorResultContract(createStepResultContractRegistry(), {
+      clock: () => '2026-06-17T00:00:00.000Z'
+    });
+    const resolution = registry.resolve({ step: 'spec.author', schemaId: SPEC_AUTHOR_SCHEMA_ID });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+
+    const parsed = resolution.contract.schema.parse({
+      kind: 'feature_spec',
+      slug: 'no-issue-stamping',
+      relativePath: 'context-human/specs/feature-no-issue-stamping.md',
+      frontmatter: {
+        issue: 88
+      },
+      body: '# No issue stamping\n\nBody.'
+    });
+
+    expect(parsed.frontmatter.issue).toBeUndefined();
+    expect(parsed.frontmatter.created).toBe('2026-06-17');
+    expect(parsed.frontmatter.last_updated).toBe('2026-06-17');
+    expect(parsed.frontmatter.status).toBe('draft');
+  });
+
+  it('leaves non-object result candidates on the normal schema failure path', () => {
+    expect(stampSpecAuthorResultIdentity('not an object', {
+      clock: () => '2026-06-17T00:00:00.000Z'
+    })).toBe('not an object');
   });
 });
 

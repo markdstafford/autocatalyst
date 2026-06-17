@@ -78,6 +78,7 @@ import {
   createDirectCallFactory,
   createExecutionEntryPoint,
   createExecutionMaterializer,
+  createSpecAuthorResultContract,
   createStepResultContractRegistry,
   registerReviewerResultContract,
   registerSpecAuthorResultContract,
@@ -414,18 +415,49 @@ const defaultStepResultContractRegistry = registerReviewerResultContract(
   registerSpecAuthorResultContract(createStepResultContractRegistry())
 );
 
+export interface ScratchResultValidationOptions {
+  readonly clock?: () => string;
+}
+
+function readPositiveInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+function readSpecAuthorTrackedIssueNumber(context: ExecutionContext): number | undefined {
+  const runInput = context.task.inputs['run'];
+  if (typeof runInput !== 'object' || runInput === null || Array.isArray(runInput)) return undefined;
+  return readPositiveInteger((runInput as Record<string, unknown>)['issueNumber']);
+}
+
+function readSpecAuthorTrustedSpeccedBy(context: ExecutionContext): string | undefined {
+  const outputContract = context.task.inputs['outputContract'];
+  if (typeof outputContract !== 'object' || outputContract === null || Array.isArray(outputContract)) return undefined;
+  const frontmatter = (outputContract as Record<string, unknown>)['frontmatter'];
+  if (typeof frontmatter !== 'object' || frontmatter === null || Array.isArray(frontmatter)) return undefined;
+  const trustedSpeccedBy = (frontmatter as Record<string, unknown>)['trustedSpeccedBy'];
+  return typeof trustedSpeccedBy === 'string' && trustedSpeccedBy.length > 0 ? trustedSpeccedBy : undefined;
+}
+
 export function resolveScratchResultValidationConfig(
   context: ExecutionContext,
-  registry: StepResultContractRegistry = defaultStepResultContractRegistry
+  registry: StepResultContractRegistry = defaultStepResultContractRegistry,
+  options: ScratchResultValidationOptions = {}
 ) {
   const step = context.run.currentStep;
   const workKind = context.run.workKind;
   const role = context.task.inputs['role'];
 
   if (step === 'spec.author' && (workKind === 'feature' || workKind === 'enhancement')) {
+    const trustedSpeccedBy = readSpecAuthorTrustedSpeccedBy(context);
+    const trackedIssueNumber = readSpecAuthorTrackedIssueNumber(context);
+    const contract = createSpecAuthorResultContract({
+      ...(trustedSpeccedBy !== undefined ? { trustedSpeccedBy } : {}),
+      ...(options.clock !== undefined ? { clock: options.clock } : {}),
+      ...(trackedIssueNumber !== undefined ? { trackedIssueNumber } : {})
+    });
     return {
       mode: 'scratch_file' as const,
-      contractRegistry: registry,
+      contract,
       step: 'spec.author',
       schemaId: SPEC_AUTHOR_SCHEMA_ID,
       resultFile: 'step-result.json'

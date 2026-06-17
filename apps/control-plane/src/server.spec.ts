@@ -20,6 +20,7 @@ import {
 import type { ExecutionContext } from '@autocatalyst/api-contract';
 import {
   ProviderConfigurationError,
+  SPEC_AUTHOR_SCHEMA_ID,
   type AgentProviderAdapter,
   type AgentProviderAdapterRegistry,
   type AgentRunnerFactory,
@@ -603,6 +604,72 @@ describe('createDelegatingExecutionEntryPoint — role routing', () => {
       schemaId: 'any',
       resultFile: 'step-result.json'
     });
+  });
+
+  it('creates a per-run spec.author contract with tracked issue from task inputs', () => {
+    const context = makeMinimalContext('implementer');
+    context.run.currentStep = 'spec.author';
+    context.run.workKind = 'feature';
+    context.task.inputs = {
+      run: { issueNumber: 76 },
+      outputContract: { frontmatter: { trustedSpeccedBy: 'markdstafford' } }
+    };
+
+    const config = resolveScratchResultValidationConfig(context, undefined, {
+      clock: () => '2026-06-17T12:34:56.000Z'
+    });
+
+    expect(config).toMatchObject({
+      mode: 'scratch_file',
+      step: 'spec.author',
+      schemaId: SPEC_AUTHOR_SCHEMA_ID,
+      resultFile: 'step-result.json'
+    });
+    expect('contract' in config).toBe(true);
+    if (!('contract' in config) || config.contract === undefined) return;
+
+    const parsed = config.contract.schema.parse({
+      kind: 'feature_spec',
+      slug: 'server-stamping',
+      relativePath: 'context-human/specs/feature-server-stamping.md',
+      frontmatter: {},
+      body: '# Server stamping\n\nBody.'
+    });
+
+    expect(parsed.frontmatter).toMatchObject({
+      created: '2026-06-17',
+      last_updated: '2026-06-17',
+      status: 'draft',
+      issue: 76,
+      specced_by: 'markdstafford'
+    });
+  });
+
+  it('omits invented issue when spec.author task inputs have no issue number', () => {
+    const context = makeMinimalContext('implementer');
+    context.run.currentStep = 'spec.author';
+    context.run.workKind = 'enhancement';
+    context.task.inputs = {
+      outputContract: { frontmatter: { trustedSpeccedBy: 'autocatalyst' } }
+    };
+
+    const config = resolveScratchResultValidationConfig(context, undefined, {
+      clock: () => '2026-06-18T00:00:00.000Z'
+    });
+
+    expect('contract' in config).toBe(true);
+    if (!('contract' in config) || config.contract === undefined) return;
+
+    const parsed = config.contract.schema.parse({
+      kind: 'enhancement_spec',
+      slug: 'no-issue',
+      relativePath: 'context-human/specs/enhancement-no-issue.md',
+      frontmatter: { issue: 123 },
+      body: '# No issue\n\nBody.'
+    });
+
+    expect(parsed.frontmatter.issue).toBeUndefined();
+    expect(parsed.frontmatter.created).toBe('2026-06-18');
   });
 });
 
