@@ -28,7 +28,11 @@ import {
   type ProcessLaunchConfig,
   type ResolvedAgentRunnerProfile
 } from '@autocatalyst/execution';
-import { createRoutingProfileResolver } from './server.js';
+import {
+  createDefaultProviderProfileFallbackRoutingResolver,
+  createExplicitProfileResolver,
+  createRoutingProfileResolver
+} from './server.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -492,6 +496,214 @@ describe('model routing integration (real SQLite DB + mocked adapters)', () => {
       } catch (err) {
         expect(err).toBeInstanceOf(ModelRoutingConfigurationError);
       }
+    });
+  });
+
+  it('falls back to the explicit default profile for reviewed routes when no active routing table exists', async () => {
+    await withTempDb(async (repo) => {
+      const claude = await repo.create(CLAUDE_PROFILE);
+      const resolver = createModelRoutingResolver({
+        configuration: configurationReaderFor(repo),
+        agentAdapters,
+        directAdapters
+      });
+      const explicitFallback = createExplicitProfileResolver({
+        defaultProviderProfileId: claude.id,
+        listRecords: () => repo.list(TENANT),
+        registry: agentAdapters
+      });
+      const fallbackRouting = createDefaultProviderProfileFallbackRoutingResolver({
+        resolver,
+        fallback: explicitFallback
+      });
+
+      await expect(
+        fallbackRouting.resolveDistinctAgentRoutes({
+          tenant: TENANT,
+          runId: 'run_reviewed_fallback',
+          step: 'implementation.build',
+          roles: ['implementer', 'reviewer']
+        })
+      ).rejects.toMatchObject({
+        name: 'ModelRoutingConfigurationError',
+        code: 'role_distinct_unsatisfied',
+        safeDetails: {
+          tenant: TENANT,
+          runId: 'run_reviewed_fallback',
+          step: 'implementation.build',
+          roles: ['implementer', 'reviewer'],
+          distinctBy: 'profile'
+        }
+      });
+
+      const implementer = await fallbackRouting.resolveAgentRoute({
+        tenant: TENANT,
+        runId: 'run_reviewed_fallback',
+        step: 'implementation.build',
+        role: 'implementer'
+      });
+      const reviewer = await fallbackRouting.resolveAgentRoute({
+        tenant: TENANT,
+        runId: 'run_reviewed_fallback',
+        step: 'implementation.build',
+        role: 'reviewer'
+      });
+
+      expect(implementer.profileId).toBe(claude.id);
+      expect(reviewer.profileId).toBe(claude.id);
+      expect(implementer.routingTableId).toBe('default_provider_profile_fallback');
+      expect(reviewer.routingTableId).toBe('default_provider_profile_fallback');
+      expect(implementer.routeId).toBe('default_provider_profile_fallback:implementation.build:implementer');
+      expect(reviewer.routeId).toBe('default_provider_profile_fallback:implementation.build:reviewer');
+      expect(implementer.profile.configurationRecordId).toBe(claude.id);
+      expect(reviewer.profile.configurationRecordId).toBe(claude.id);
+    });
+  });
+
+  it('uses active routing table entries before the default profile fallback', async () => {
+    await withTempDb(async (repo) => {
+      const claude = await repo.create(CLAUDE_PROFILE);
+      const openai = await repo.create(OPENAI_PROFILE);
+      await repo.create({
+        tenant: TENANT,
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [
+            { id: 'rt_build_impl', route: { mode: 'agent', step: 'implementation.build', role: 'implementer' }, profileId: openai.id }
+          ]
+        }
+      });
+
+      const resolver = createModelRoutingResolver({
+        configuration: configurationReaderFor(repo),
+        agentAdapters,
+        directAdapters
+      });
+      const fallbackRouting = createDefaultProviderProfileFallbackRoutingResolver({
+        resolver,
+        fallback: createExplicitProfileResolver({
+          defaultProviderProfileId: claude.id,
+          listRecords: () => repo.list(TENANT),
+          registry: agentAdapters
+        })
+      });
+
+      const result = await fallbackRouting.resolveAgentRoute({
+        tenant: TENANT,
+        runId: 'run_active_table_precedence',
+        step: 'implementation.build',
+        role: 'implementer'
+      });
+
+      expect(result.profileId).toBe(openai.id);
+      expect(result.routeId).toBe('rt_build_impl');
+      expect(result.routingTableId).not.toBe('default_provider_profile_fallback');
+      expect(result.profile.providerKind).toBe('openai');
+    });
+  });
+
+  it('does not hide active-table profile_not_found errors behind the default fallback', async () => {
+    await withTempDb(async (repo) => {
+      const claude = await repo.create(CLAUDE_PROFILE);
+      await repo.create({
+        tenant: TENANT,
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [
+            {
+              id: 'rt_missing_profile',
+              route: { mode: 'agent', step: 'implementation.build', role: 'implementer' },
+              profileId: 'cfg_missing_profile_for_active_route'
+            }
+          ]
+        }
+      });
+
+      const resolver = createModelRoutingResolver({
+        configuration: configurationReaderFor(repo),
+        agentAdapters,
+        directAdapters
+      });
+      const fallbackRouting = createDefaultProviderProfileFallbackRoutingResolver({
+        resolver,
+        fallback: createExplicitProfileResolver({
+          defaultProviderProfileId: claude.id,
+          listRecords: () => repo.list(TENANT),
+          registry: agentAdapters
+        })
+      });
+
+      await expect(
+        fallbackRouting.resolveAgentRoute({
+          tenant: TENANT,
+          runId: 'run_profile_not_found',
+          step: 'implementation.build',
+          role: 'implementer'
+        })
+      ).rejects.toMatchObject({
+        name: 'ModelRoutingConfigurationError',
+        code: 'profile_not_found',
+        safeDetails: {
+          tenant: TENANT,
+          runId: 'run_profile_not_found',
+          routeId: 'rt_missing_profile',
+          profileId: 'cfg_missing_profile_for_active_route'
+        }
+      });
+    });
+  });
+
+  it('does not mask role_distinct_unsatisfied from an active routing table', async () => {
+    await withTempDb(async (repo) => {
+      const claude = await repo.create(CLAUDE_PROFILE);
+      await repo.create({
+        tenant: TENANT,
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [
+            { id: 'rt_build_impl', route: { mode: 'agent', step: 'implementation.build', role: 'implementer' }, profileId: claude.id },
+            { id: 'rt_build_rev', route: { mode: 'agent', step: 'implementation.build', role: 'reviewer' }, profileId: claude.id }
+          ],
+          roleDistinctRequirements: [
+            { step: 'implementation.build', mode: 'agent', roles: ['implementer', 'reviewer'], distinctBy: 'profile' }
+          ]
+        }
+      });
+
+      const resolver = createModelRoutingResolver({
+        configuration: configurationReaderFor(repo),
+        agentAdapters,
+        directAdapters
+      });
+      const fallbackRouting = createDefaultProviderProfileFallbackRoutingResolver({
+        resolver,
+        fallback: createExplicitProfileResolver({
+          defaultProviderProfileId: claude.id,
+          listRecords: () => repo.list(TENANT),
+          registry: agentAdapters
+        })
+      });
+
+      await expect(
+        fallbackRouting.resolveDistinctAgentRoutes({
+          tenant: TENANT,
+          runId: 'run_distinct_unsatisfied',
+          step: 'implementation.build',
+          roles: ['implementer', 'reviewer']
+        })
+      ).rejects.toMatchObject({
+        name: 'ModelRoutingConfigurationError',
+        code: 'role_distinct_unsatisfied',
+        safeDetails: {
+          tenant: TENANT,
+          runId: 'run_distinct_unsatisfied',
+          step: 'implementation.build',
+          distinctBy: 'profile'
+        }
+      });
     });
   });
 });

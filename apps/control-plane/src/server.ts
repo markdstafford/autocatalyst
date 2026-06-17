@@ -48,7 +48,9 @@ import {
   type ExtensionRegistryCatalog,
   type FeedbackLifecycleDependencies,
   type HealthDependencyChecker,
+  type ModelRoutingDistinctResolution,
   type ModelRoutingResolver,
+  type ModelRoutingResolution,
   type PolicyDecisionPoint,
   type ProviderAdapterFactory,
   type ProviderAdapterMap,
@@ -406,6 +408,86 @@ export function createRoutingProfileResolver(options: {
         step: factoryInput.step
       });
       return { profile: resolution.profile, credentialReference: resolution.credentialReference };
+    }
+  };
+}
+
+/**
+ * Wraps a ModelRoutingResolver so convergence route resolution uses the configured
+ * default provider profile when no active routing table exists for the tenant.
+ * Only catches ModelRoutingConfigurationError with code === 'routing_table_missing';
+ * all other routing errors propagate unchanged.
+ *
+ * For resolveDistinctAgentRoutes, a missing routing table is converted into
+ * role_distinct_unsatisfied so the convergence engine's existing downgrade path
+ * records routingInfo.distinct: false instead of failing outright.
+ */
+export function createDefaultProviderProfileFallbackRoutingResolver(input: {
+  readonly resolver: ModelRoutingResolver;
+  readonly fallback: (factoryInput: AgentRunnerFactoryInput) => Promise<AgentProfileResolution>;
+}): ModelRoutingResolver {
+  const fallbackResolution = async (args: {
+    readonly tenant: string;
+    readonly runId?: string;
+    readonly step: string;
+    readonly role: string;
+  }): Promise<ModelRoutingResolution> => {
+    const resolved = await input.fallback({
+      runId: args.runId ?? 'default_provider_profile_fallback',
+      tenant: args.tenant,
+      step: args.step,
+      role: args.role
+    });
+
+    return {
+      profile: resolved.profile,
+      credentialReference: resolved.credentialReference,
+      routeId: `default_provider_profile_fallback:${args.step}:${args.role}`,
+      profileId: resolved.profile.configurationRecordId ?? 'default_provider_profile_fallback',
+      routingTableId: 'default_provider_profile_fallback'
+    };
+  };
+
+  const isMissingRoutingTable = (err: unknown): err is ModelRoutingConfigurationError =>
+    err instanceof ModelRoutingConfigurationError && err.code === 'routing_table_missing';
+
+  return {
+    async resolveAgentRoute(routeInput) {
+      try {
+        return await input.resolver.resolveAgentRoute(routeInput);
+      } catch (err) {
+        if (!isMissingRoutingTable(err)) throw err;
+        return fallbackResolution({
+          tenant: routeInput.tenant,
+          ...(routeInput.runId !== undefined ? { runId: routeInput.runId } : {}),
+          step: routeInput.step,
+          role: routeInput.role
+        });
+      }
+    },
+
+    async resolveDirectRoute(routeInput) {
+      return input.resolver.resolveDirectRoute(routeInput);
+    },
+
+    async resolveDistinctAgentRoutes(routeInput): Promise<ModelRoutingDistinctResolution> {
+      try {
+        return await input.resolver.resolveDistinctAgentRoutes(routeInput);
+      } catch (err) {
+        if (!isMissingRoutingTable(err)) throw err;
+        throw new ModelRoutingConfigurationError(
+          'role_distinct_unsatisfied',
+          'Default provider profile fallback cannot satisfy distinct reviewed routing without an active routing table.',
+          {
+            tenant: routeInput.tenant,
+            ...(routeInput.runId !== undefined ? { runId: routeInput.runId } : {}),
+            step: routeInput.step,
+            roles: routeInput.roles,
+            distinctBy: routeInput.distinctBy ?? 'profile',
+            routingTableId: 'default_provider_profile_fallback'
+          }
+        );
+      }
     }
   };
 }
@@ -913,6 +995,13 @@ export async function createControlPlaneServer(
         })
       : undefined;
 
+    const convergenceRoutingResolver = explicitProfileFallback !== undefined
+      ? createDefaultProviderProfileFallbackRoutingResolver({
+          resolver: routingResolver,
+          fallback: explicitProfileFallback
+        })
+      : routingResolver;
+
     const resolveProfile = async (
       factoryInput: AgentRunnerFactoryInput
     ): Promise<AgentProfileResolution> => {
@@ -1254,7 +1343,7 @@ export async function createControlPlaneServer(
         git: runWorkspaceGit,
         feedback: domainRepos.feedback,
         runSteps: domainRepos.runSteps,
-        routing: routingResolver,
+        routing: convergenceRoutingResolver,
         getPolicy: getStepConvergencePolicy,
         logger: {
           warn(message: string, details?: unknown) {

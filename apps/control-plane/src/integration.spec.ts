@@ -2940,9 +2940,8 @@ describe('workspace metadata persistence for chore runs', () => {
           expect(cfgInj.statusCode).toBe(201);
           profileId = configurationRecordResponseSchema.parse(cfgInj.json()).id;
 
-          // implementation.build goes through the convergence engine, which calls
-          // resolveReviewedRoutes. That throws routing_table_missing (not
-          // role_distinct_unsatisfied), so a routing table must exist for both roles.
+          // Keep an active routing table in this test to prove configured routing
+          // still takes precedence over the defaultProviderProfileId fallback.
           const routingInj = await bootstrap.inject({
             method: 'POST',
             url: '/v1/configuration-records',
@@ -3068,6 +3067,151 @@ describe('workspace metadata persistence for chore runs', () => {
           } finally {
             verifyDb.close();
           }
+        } finally {
+          await handle.close();
+        }
+      } finally {
+        await rm(tempRoot, { recursive: true, force: true });
+      }
+    });
+  });
+
+  it('dispatches implementation.build through defaultProviderProfileId when no routing table exists', { timeout: 60000 }, async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const tempRoot = await mkdtemp(join(tmpdir(), 'autocatalyst-convergence-fallback-'));
+      const reposRoot = join(tempRoot, 'repos');
+      const workspacesRoot = join(tempRoot, 'workspaces');
+      await mkdir(reposRoot, { recursive: true });
+      await mkdir(workspacesRoot, { recursive: true });
+
+      try {
+        const hostRepoPath = await createLocalGitRepository(tempRoot);
+        const { projectId } = await seedFeatureProject({ databasePath, repoUrl: `file://${hostRepoPath}` });
+
+        const bootstrap = await createControlPlaneServer({
+          autoDispatch: { enabled: false },
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET
+        });
+        let profileId: string;
+        try {
+          const secretInj = await bootstrap.inject({
+            method: 'POST',
+            url: '/v1/secrets',
+            headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+            payload: { value: 'fake-openai-api-key' }
+          });
+          expect(secretInj.statusCode).toBe(201);
+          const { handle: credentialHandle } = createSecretResponseSchema.parse(secretInj.json());
+
+          const cfgInj = await bootstrap.inject({
+            method: 'POST',
+            url: '/v1/configuration-records',
+            headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+            payload: {
+              kind: 'provider_profile',
+              providerKind: 'openai',
+              adapterId: 'openai-agents-sdk',
+              settings: {
+                profileName: 'integration-openai-convergence-fallback',
+                credentialSecretHandle: credentialHandle,
+                model: { provider: 'openai', model: 'gpt-4.1' }
+              }
+            }
+          });
+          expect(cfgInj.statusCode).toBe(201);
+          profileId = configurationRecordResponseSchema.parse(cfgInj.json()).id;
+          // No routing table is created — this exercises the defaultProviderProfileId fallback path.
+        } finally {
+          await bootstrap.close();
+        }
+
+        const capturedSessions: Array<{ step: string | undefined; role: string | undefined }> = [];
+        const fakeOpenAIAdapter = createOpenAIAgentAdapter();
+        fakeOpenAIAdapter.startSession = async (input) => {
+          const runId = input.telemetryContext.runId;
+          const step = input.telemetryContext.step;
+          capturedSessions.push({ step, role: input.telemetryContext.role });
+          async function* events(): AsyncIterable<import('@autocatalyst/execution').RunnerEvent> {
+            yield {
+              id: `evt_${capturedSessions.length}`,
+              runId,
+              step: step ?? 'implementation.build',
+              importance: 'normal',
+              createdAt: new Date().toISOString(),
+              type: 'runner_terminal_result',
+              result: { directive: 'advance' }
+            } as import('@autocatalyst/execution').RunnerEvent;
+          }
+          return {
+            events: events(),
+            metadata: Promise.resolve({
+              outcome: 'succeeded' as const,
+              launchMechanism: 'fetch_transport' as const,
+              degradedCapabilities: [],
+              tokenUsage: { available: false } as const
+            })
+          };
+        };
+
+        let controlPlane: ControlPlaneService | undefined;
+        const handle = await startControlPlaneServer({
+          autoDispatch: { enabled: false },
+          port: 0,
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET,
+          runConcurrency: 1,
+          workspaceRoots: { reposRoot, workspacesRoot },
+          realRunnerDispatch: { enabled: true, defaultProviderProfileId: profileId },
+          providerAdapters: new Map([
+            [
+              buildProviderAdapterKey('openai', 'openai-agents-sdk'),
+              () => fakeOpenAIAdapter
+            ]
+          ]),
+          onControlPlaneReady: (service) => { controlPlane = service; }
+        });
+
+        try {
+          if (controlPlane === undefined) throw new Error('control-plane not exposed');
+          const baseUrl = `http://127.0.0.1:${handle.port}`;
+          const authHeaders = { authorization: `Bearer ${BEARER_TOKEN}` };
+
+          const createResp = await fetch(`${baseUrl}/v1/conversations`, {
+            method: 'POST',
+            headers: { ...authHeaders, 'content-type': 'application/json' },
+            body: JSON.stringify({
+              projectId,
+              identity: 'chore-convergence-fallback-test',
+              topic: { title: 'Chore: exercise convergence fallback' },
+              submission: { kind: 'free_form', body: 'please exercise convergence fallback', workKind: 'chore' }
+            })
+          });
+          expect(createResp.status).toBe(201);
+          const runId = ((await createResp.json()) as { run: { id: string } }).run.id;
+
+          await controlPlane.tick({
+            principal: hardcodedDevelopmentPrincipal,
+            tenant: hardcodedDevelopmentPrincipal.tenantId,
+            runId
+          });
+          await controlPlane.tick({
+            principal: hardcodedDevelopmentPrincipal,
+            tenant: hardcodedDevelopmentPrincipal.tenantId,
+            runId
+          });
+
+          expect(capturedSessions).toContainEqual({
+            step: 'implementation.build',
+            role: 'implementer'
+          });
+
+          const runResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: authHeaders });
+          expect(runResp.status).toBe(200);
+          const runBody = runSchema.parse(await runResp.json());
+          expect(runBody.failureReason).not.toBe('routing_table_missing');
         } finally {
           await handle.close();
         }
