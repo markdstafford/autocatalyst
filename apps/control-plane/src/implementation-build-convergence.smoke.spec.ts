@@ -978,8 +978,8 @@ describe('implementation.build convergence — near-miss reviewer tolerance', ()
 
         expect(calls.map((c) => c.role)).toEqual(['implementer', 'reviewer']);
 
-        // The run should advance past the implementation gate.
-        expect(result.run.currentStep).not.toBe('implementation.build');
+        // The run should advance past the implementation gate to the human-review gate.
+        expect(result.run.currentStep).toBe('implementation.human_review');
 
         // Verify the checkpoint records a converged outcome.
         const db = createSqliteDatabase({ path: databasePath });
