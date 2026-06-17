@@ -12,7 +12,7 @@
     "build": "nx run-many -t build",
     "lint": "nx run-many -t lint",
     "test": "nx run-many -t test",
-    "test:boundaries": "node tools/boundary-tests/assert-execution-boundary.mjs",
+    "test:boundaries": "node tools/boundary-tests/assert-execution-boundary.mjs && node tools/boundary-tests/assert-gh-issue-read-boundary.mjs",
     "validate": "pnpm nx run-many -t build lint test && pnpm test:boundaries"
   },
   "dependencies": {
