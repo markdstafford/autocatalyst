@@ -124,6 +124,13 @@ describe('reviewerResultNormalizer', () => {
     expect(normalizeReviewer('')).toEqual({ status: 'unchanged' });
   });
 
+  it('leaves non-plain objects unchanged — Date, Map, and class instances must not be normalized', () => {
+    expect(normalizeReviewer(new Date())).toEqual({ status: 'unchanged' });
+    expect(normalizeReviewer(new Map())).toEqual({ status: 'unchanged' });
+    class Review {}
+    expect(normalizeReviewer(new Review())).toEqual({ status: 'unchanged' });
+  });
+
   it('is schema-specific and is included in the default registry', () => {
     expect(normalizeReviewer({}, 'terminal-handoff.v1')).toEqual({ status: 'unchanged' });
 

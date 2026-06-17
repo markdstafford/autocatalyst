@@ -107,7 +107,9 @@ export function createResultNormalizerRegistry(normalizers: readonly ResultNorma
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value as object) as unknown;
+  return proto === Object.prototype || proto === null;
 }
 
 export const reviewerResultNormalizer: ResultNormalizer = {
