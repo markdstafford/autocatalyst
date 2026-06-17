@@ -26,6 +26,7 @@ import type { ReviewedRoleDispatcher, RunRoleWorkInput, ReviewedRoleDispatchResu
 import type { RunWorkspaceGitPort, RunWorkspaceCommitFilesInput, RunWorkspaceCommitResult } from './run-workspace-git.js';
 import type { RunStepDefinition } from './run-step-catalog.js';
 import type { RunWorkflowDefinition } from './run-workflows.js';
+import type { ResultCorrectionRequest } from '@autocatalyst/execution';
 
 const warnFinding: ReviewerFinding = { title: 'Missing test', body: 'Add coverage for edge case.', severity: 'warning' };
 const blockerFinding: ReviewerFinding = { title: 'Security hole', body: 'SQL injection risk.', severity: 'blocker' };
@@ -451,6 +452,19 @@ function implResultAdvance(round: number, dispositions: FindingDisposition[] = [
       dispositions,
       sessionId: `impl-session-${round}`,
       lastPosition: `impl-pos-${round}`
+    }
+  };
+}
+
+function rawReviewerResultDispatch(round: number, result: unknown): ScriptedDispatch {
+  return {
+    role: 'reviewer',
+    round,
+    result: {
+      workResult: { directive: 'advance', result: result as Readonly<Record<string, unknown>> },
+      reviewerResult: result,
+      sessionId: `rev-${round}`,
+      lastPosition: `reviewer-pos-${round}`
     }
   };
 }
@@ -1105,5 +1119,150 @@ describe('escalation', () => {
     expect(out.workResult.directive).toBe('advance');
     expect(out.checkpointResult.rounds.every((r) => r.altitude === 'build')).toBe(true);
     expect(dispatcher.calls.every((c) => c.reviewContext?.altitudeContext === undefined)).toBe(true);
+  });
+});
+
+describe('createConvergenceEngine — reviewer result tolerance', () => {
+  it('converges when reviewer returns an empty object', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      rawReviewerResultDispatch(1, {})
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher,
+      git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true)
+    });
+
+    const out = await engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow
+    });
+
+    expect(out.workResult.directive).toBe('advance');
+    expect(out.checkpointResult.rounds[0]?.findings).toEqual([]);
+  });
+
+  it('converges when reviewer returns only empty findings', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      rawReviewerResultDispatch(1, { findings: [] })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher,
+      git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true)
+    });
+
+    const out = await engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow
+    });
+
+    expect(out.workResult.directive).toBe('advance');
+    expect(out.checkpointResult.rounds[0]?.findings).toEqual([]);
+  });
+
+  it('routes ambiguous reviewer output to configured correction and continues after success', async () => {
+    const correctionRequests: ResultCorrectionRequest[] = [];
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      rawReviewerResultDispatch(1, { findings: [{ title: 'Missing status', body: 'Ambiguous.', severity: 'blocker' }] })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher,
+      git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      reviewerResultMaxCorrectionAttempts: 1,
+      reviewerResultCorrectionRequester: {
+        async requestCorrection(request) {
+          correctionRequests.push(request);
+          return { status: 'satisfied', findings: [] };
+        }
+      }
+    });
+
+    const out = await engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow
+    });
+
+    expect(out.workResult.directive).toBe('advance');
+    expect(correctionRequests.map((request) => request.attempt)).toEqual([1]);
+  });
+
+  it('fails with reviewer_result_invalid after correction exhaustion', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      rawReviewerResultDispatch(1, { status: 'unknown' })
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher,
+      git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      reviewerResultMaxCorrectionAttempts: 1,
+      reviewerResultCorrectionRequester: {
+        async requestCorrection() {
+          return { status: 'unknown' };
+        }
+      }
+    });
+
+    const out = await engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow
+    });
+
+    expect(out.workResult).toEqual({ directive: 'fail', reason: 'reviewer_result_invalid' });
+  });
+
+  it('keeps role_distinct_unsatisfied non-fatal while using reviewer tolerance', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1),
+      rawReviewerResultDispatch(1, {})
+    ]);
+    const engine = createConvergenceEngine({
+      dispatcher,
+      git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(false)
+    });
+
+    const out = await engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow
+    });
+
+    expect(out.workResult.directive).toBe('advance');
+    expect(out.checkpointResult.routing.warningCode).toBe('role_distinct_unsatisfied');
   });
 });

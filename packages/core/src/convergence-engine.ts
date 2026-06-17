@@ -14,7 +14,9 @@ import type {
   Run,
   RunStep
 } from '@autocatalyst/api-contract';
-import { reviewerResultSchema, findingDispositionSchema } from '@autocatalyst/api-contract';
+import { findingDispositionSchema } from '@autocatalyst/api-contract';
+import type { ResultCorrectionRequester, ResultNormalizer, ResultNormalizerRegistry } from '@autocatalyst/execution';
+import { validateReviewerResult } from './reviewer-result-validation.js';
 import type {
   ModelRoutingResolver,
   ModelRoutingResolution
@@ -187,6 +189,9 @@ export interface ConvergenceEngineOptions {
   readonly idGenerator?: () => string;
   readonly reviewerPrincipal?: Principal;
   readonly feedbackLifecycle?: FeedbackLifecycleDependencies;
+  readonly reviewerResultCorrectionRequester?: ResultCorrectionRequester;
+  readonly reviewerResultMaxCorrectionAttempts?: number;
+  readonly reviewerResultNormalizers?: ResultNormalizerRegistry | readonly ResultNormalizer[];
 }
 
 export interface ConvergenceEngineInput {
@@ -499,10 +504,23 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
           })
         };
       }
-      const parsed = reviewerResultSchema.safeParse(rawResult);
-      if (!parsed.success) {
+      const reviewerValidation = await validateReviewerResult({
+        runId: input.runId,
+        step: input.stepDefinition.id,
+        rawResult,
+        ...(options.reviewerResultCorrectionRequester !== undefined
+          ? { correctionRequester: options.reviewerResultCorrectionRequester }
+          : {}),
+        ...(options.reviewerResultMaxCorrectionAttempts !== undefined
+          ? { maxCorrectionAttempts: options.reviewerResultMaxCorrectionAttempts }
+          : {}),
+        ...(options.reviewerResultNormalizers !== undefined
+          ? { normalizers: options.reviewerResultNormalizers }
+          : {})
+      });
+      if (reviewerValidation.status === 'failed') {
         return {
-          workResult: { directive: 'fail', reason: 'reviewer_result_invalid' },
+          workResult: { directive: 'fail', reason: reviewerValidation.reason },
           checkpointResult: buildCheckpoint({
             step: input.stepDefinition.id,
             maxRounds,
@@ -515,7 +533,7 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
           })
         };
       }
-      const reviewerResult: ReviewerResult = parsed.data;
+      const reviewerResult: ReviewerResult = reviewerValidation.value;
       const findings: readonly ReviewerFinding[] = reviewerResult.status === 'findings' ? reviewerResult.findings : [];
 
       // 5) Persist reviewer findings as Feedback BEFORE convergence decision.
