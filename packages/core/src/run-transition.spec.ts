@@ -6,7 +6,7 @@ import { runWorkflows } from './run-workflows.js';
 describe('nextWorkflowStep', () => {
   it('advances through the feature ordinary path', () => {
     const workflow = runWorkflows.feature;
-    const expected = ['intake', 'spec.author', 'spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'docs.update', 'docs.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'];
+    const expected = ['intake', 'spec.author', 'spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'];
     for (let index = 0; index < expected.length - 1; index += 1) {
       expect(nextWorkflowStep(workflow, expected[index], 'advance')).toMatchObject({
         ok: true,
@@ -21,7 +21,6 @@ describe('nextWorkflowStep', () => {
   it('uses workflow data for revise edges', () => {
     expect(nextWorkflowStep(runWorkflows.feature, 'spec.human_review', 'revise')).toMatchObject({ ok: true, to: 'spec.author' });
     expect(nextWorkflowStep(runWorkflows.feature, 'implementation.human_review', 'revise')).toMatchObject({ ok: true, to: 'implementation.build' });
-    expect(nextWorkflowStep(runWorkflows.feature, 'docs.human_review', 'revise')).toMatchObject({ ok: true, to: 'docs.update' });
     expect(nextWorkflowStep(runWorkflows.feature, 'pr.finalize', 'revise')).toMatchObject({ ok: true, to: 'implementation.human_review' });
     expect(nextWorkflowStep(runWorkflows.bug, 'pr.human_review', 'revise')).toMatchObject({ ok: true, to: 'pr.finalize' });
   });

@@ -19,6 +19,8 @@ import {
 import type { SpecAuthoringServiceDependencies } from './spec-authoring-service.js';
 import { SpecAuthoringError } from './spec-authoring-service.js';
 import type { SpecApprovalFinalizerDependencies } from './spec-approval-finalizer.js';
+import type { SpecFreezeDependencies, freezeRunSpecForPullRequest as freezeRunSpecForPullRequestFn } from './spec-freeze.js';
+import { SpecFreezeError } from './spec-freeze.js';
 import { ModelRoutingConfigurationError } from './model-routing-resolver.js';
 import type { ConvergenceEngine, ConvergenceEngineInput } from './convergence-engine.js';
 
@@ -170,6 +172,8 @@ function makeOrchestrator(opts: {
   feedbackLifecycleDependencies?: FeedbackLifecycleDependencies;
   finalizeSpecApproval?: (input: unknown, deps: SpecApprovalFinalizerDependencies) => Promise<void>;
   specApprovalFinalizerDependencies?: SpecApprovalFinalizerDependencies;
+  freezeRunSpecForPullRequest?: typeof freezeRunSpecForPullRequestFn;
+  specFreezeDependencies?: SpecFreezeDependencies;
   runWorkspaceMetadata?: RunWorkspaceMetadataRepository;
   runSteps?: RunStepRepository;
   convergenceEngine?: ConvergenceEngine;
@@ -196,6 +200,8 @@ function makeOrchestrator(opts: {
     ...(opts.feedbackLifecycleDependencies !== undefined ? { feedbackLifecycleDependencies: opts.feedbackLifecycleDependencies } : {}),
     ...(opts.finalizeSpecApproval !== undefined ? { finalizeSpecApproval: opts.finalizeSpecApproval as typeof import('./spec-approval-finalizer.js').finalizeSpecApproval } : {}),
     ...(opts.specApprovalFinalizerDependencies !== undefined ? { specApprovalFinalizerDependencies: opts.specApprovalFinalizerDependencies } : {}),
+    ...(opts.freezeRunSpecForPullRequest !== undefined ? { freezeRunSpecForPullRequest: opts.freezeRunSpecForPullRequest } : {}),
+    ...(opts.specFreezeDependencies !== undefined ? { specFreezeDependencies: opts.specFreezeDependencies } : {}),
     ...(opts.runWorkspaceMetadata !== undefined ? { runWorkspaceMetadata: opts.runWorkspaceMetadata } : {}),
     ...(opts.runSteps !== undefined ? { runSteps: opts.runSteps } : {}),
     ...(opts.convergenceEngine !== undefined ? { convergenceEngine: opts.convergenceEngine } : {}),
@@ -524,7 +530,10 @@ describe('DefaultOrchestrator.dispatch', () => {
       findById,
       recordRunStepTransition: recordTransition
     });
-    const unitRun = vi.fn().mockResolvedValue({ directive: 'advance' });
+    const unitRun = vi.fn().mockResolvedValue({
+      directive: 'advance',
+      result: { directive: 'advance', reconciledSummary: 'ok', titleSubject: 'feat', validationSummary: [], findings: [] }
+    });
     const unitOfWork: RunUnitOfWork = { run: unitRun };
     const { publisher, events } = makeRecordingPublisher();
     const { orchestrator } = makeOrchestrator({ runs, unitOfWork, events: publisher, autoDispatch: { enabled: false } });
@@ -541,6 +550,121 @@ describe('DefaultOrchestrator.dispatch', () => {
     expect(result.run.currentStep).toBe('pr.open');
     expect(events).toHaveLength(1);
     expect(events[0]?.transition.directive).toBe('advance');
+  });
+
+  it('runs deterministic spec freeze before advancing to pr.open on pr.finalize advance', async () => {
+    const existing = makeRun({ currentStep: 'pr.finalize', workKind: 'feature' });
+    const updated = makeRun({ currentStep: 'pr.open' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'pr.open', phase: 'pr' });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep })
+    });
+    const unitRun = vi.fn().mockResolvedValue({
+      directive: 'advance',
+      result: { directive: 'advance', reconciledSummary: 'ok', titleSubject: 'feat', validationSummary: [], findings: [] }
+    });
+    const freeze = vi.fn().mockResolvedValue({ artifactPath: 'p', shippedAt: 't', commitSha: 'sha' });
+    const freezeDeps = {} as SpecFreezeDependencies;
+    const resolveWorkspaceContext: WorkspaceContextResolver = vi.fn().mockResolvedValue({
+      workspaceRepoRoot: '/tmp/repo',
+      workspaceHandle: 'wsh'
+    });
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      unitOfWork: { run: unitRun },
+      autoDispatch: { enabled: false },
+      freezeRunSpecForPullRequest: freeze,
+      specFreezeDependencies: freezeDeps,
+      resolveWorkspaceContext
+    });
+
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    // Freeze was invoked exactly once with the resolved workspace root and the current run.
+    expect(freeze).toHaveBeenCalledTimes(1);
+    const freezeCall = freeze.mock.calls[0]!;
+    expect((freezeCall[0] as { workspaceRepoRoot: string }).workspaceRepoRoot).toBe('/tmp/repo');
+    expect((freezeCall[0] as { run: Run }).run.id).toBe('run_1');
+    expect(freezeCall[1]).toBe(freezeDeps);
+
+    // Advance to pr.open succeeded.
+    expect(result.run.currentStep).toBe('pr.open');
+  });
+
+  it('does NOT run spec freeze when pr.finalize result is revise', async () => {
+    const existing = makeRun({ currentStep: 'pr.finalize', workKind: 'feature' });
+    const updated = makeRun({ currentStep: 'implementation.human_review' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.human_review', phase: 'implementation' });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep })
+    });
+    const unitRun = vi.fn().mockResolvedValue({
+      directive: 'advance',
+      result: {
+        directive: 'revise',
+        reconciledSummary: 'needs work',
+        titleSubject: 'feat',
+        validationSummary: [],
+        findings: [{ severity: 'blocker', summary: 'oops' }]
+      }
+    });
+    const freeze = vi.fn().mockResolvedValue({ artifactPath: 'p', shippedAt: 't', commitSha: null });
+    const resolveWorkspaceContext: WorkspaceContextResolver = vi.fn().mockResolvedValue({
+      workspaceRepoRoot: '/tmp/repo',
+      workspaceHandle: 'wsh'
+    });
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      unitOfWork: { run: unitRun },
+      autoDispatch: { enabled: false },
+      freezeRunSpecForPullRequest: freeze,
+      specFreezeDependencies: {} as SpecFreezeDependencies,
+      resolveWorkspaceContext
+    });
+
+    await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    expect(freeze).not.toHaveBeenCalled();
+  });
+
+  it('fails the run with reason spec_freeze_failed when the spec freeze throws on pr.finalize advance', async () => {
+    const existing = makeRun({ currentStep: 'pr.finalize', workKind: 'feature' });
+    const failed = makeRun({ currentStep: 'failed', terminal: true });
+    const failedStep = makeRunStep({ step: 'failed' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: failed, runStep: failedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const unitRun = vi.fn().mockResolvedValue({
+      directive: 'advance',
+      result: { directive: 'advance', reconciledSummary: 'ok', titleSubject: 'feat', validationSummary: [], findings: [] }
+    });
+    const freeze = vi.fn().mockRejectedValue(new SpecFreezeError('boom'));
+    const resolveWorkspaceContext: WorkspaceContextResolver = vi.fn().mockResolvedValue({
+      workspaceRepoRoot: '/tmp/repo',
+      workspaceHandle: 'wsh'
+    });
+    const logger = { warn: vi.fn() };
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      unitOfWork: { run: unitRun },
+      autoDispatch: { enabled: false },
+      freezeRunSpecForPullRequest: freeze,
+      specFreezeDependencies: {} as SpecFreezeDependencies,
+      resolveWorkspaceContext,
+      logger
+    });
+
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    expect(freeze).toHaveBeenCalledTimes(1);
+    // Run was failed with the sanitized reason — not advanced to pr.open.
+    expect(result.run.currentStep).toBe('failed');
+    const transitionCall = recordTransition.mock.calls[0]?.[0];
+    expect(transitionCall?.failureReason).toBe('spec_freeze_failed');
   });
 
   it('dispatches implementation.plan with an explicit passthrough checkpoint before implementation.build', async () => {
@@ -977,7 +1101,7 @@ describe('DefaultOrchestrator.dispatch — system steps', () => {
   });
 
   it('refuses runner dispatch for unsupported system side-effect steps', async () => {
-    const existing = makeRun({ currentStep: 'pr.open' });
+    const existing = makeRun({ currentStep: 'issues.file', workKind: 'file_issue' });
     const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(existing) });
     const unitRun = vi.fn();
     const unitOfWork: RunUnitOfWork = { run: unitRun };
@@ -2093,7 +2217,10 @@ describe('DefaultOrchestrator.dispatch — reviewed step selection', () => {
       findById: vi.fn().mockResolvedValue(existing),
       recordRunStepTransition: recordTransition
     });
-    const unitRun = vi.fn().mockResolvedValue({ directive: 'advance' });
+    const unitRun = vi.fn().mockResolvedValue({
+      directive: 'advance',
+      result: { directive: 'advance', reconciledSummary: 'ok', titleSubject: 'feat', validationSummary: [], findings: [] }
+    });
     const { engine, calls } = makeConvergenceEngine({
       workResult: { directive: 'advance' },
       checkpointResult: advanceCheckpoint
