@@ -7,6 +7,7 @@ import type {
   ConvergenceOutcome,
   Feedback,
   FindingDisposition,
+  JsonValue,
   Principal,
   ReviewerFinding,
   ReviewerFindingContext,
@@ -631,7 +632,7 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
           runStepId: input.runStep.id,
           runId: input.runId,
           tenant: input.tenant,
-          checkpointResult: checkpoint as unknown as import('@autocatalyst/api-contract').JsonValue
+          checkpointResult: checkpoint as unknown as JsonValue
         });
       } catch (err) {
         options.logger?.warn('convergence checkpoint persistence failed', {

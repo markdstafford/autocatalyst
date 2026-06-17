@@ -2,18 +2,16 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   findingSignature,
   isBlockingFinding,
-  computeCurrentBlockingSet,
   detectOscillation,
   resolveReviewedRoutes,
   createConvergenceEngine,
   ConvergenceEngineConfigurationError
 } from './convergence-engine.js';
 import type {
-  ConvergenceCheckpoint,
   CreateFeedbackInput,
   Feedback,
   FindingDisposition,
-  JsonValue,
+  Principal,
   ReviewerFinding,
   ReviewerResult,
   Run,
@@ -745,7 +743,7 @@ describe('createConvergenceEngine', () => {
 
   it('persisted feedback thread author matches the reviewer model principal', async () => {
     const feedback = new InMemoryFeedbackRepo();
-    const customPrincipal: import('@autocatalyst/api-contract').Principal = {
+    const customPrincipal: Principal = {
       id: 'custom-reviewer',
       kind: 'model',
       tenantId: 'tenant-1'
