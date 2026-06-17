@@ -54,8 +54,8 @@ export const trackedIssueSchema = z.preprocess((value) => {
   const record = value as Record<string, unknown>;
   return {
     ...record,
-    body: record.body === undefined ? '' : record.body,
-    labels: record.labels === undefined ? [] : record.labels
+    body: record['body'] === undefined ? '' : record['body'],
+    labels: record['labels'] === undefined ? [] : record['labels']
   };
 }, trackedIssueCanonicalSchema);
 

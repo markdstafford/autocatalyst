@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { SecretResolutionError } from '@autocatalyst/core';
 import { GitHubIssueTracker } from './github-issue-tracker.js';
 import type { GitHubIssueTrackerOptions } from './github-issue-tracker.js';
 
@@ -165,7 +166,6 @@ describe('GitHubIssueTracker', () => {
   });
 
   it('maps SecretResolutionError to tracker_credential_missing', async () => {
-    const { SecretResolutionError } = await import('@autocatalyst/core');
     const tracker = new GitHubIssueTracker({
       secretResolver: {
         resolveSecret: vi.fn().mockRejectedValue(

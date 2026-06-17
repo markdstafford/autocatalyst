@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@autocatalyst/core": "*",
-    "@autocatalyst/api-contract": "*"
+    "@autocatalyst/api-contract": "*",
+    "zod": "^3.25.64"
   }
 }
