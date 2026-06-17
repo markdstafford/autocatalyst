@@ -54,8 +54,6 @@ describe('feature run lifecycle integration', () => {
         ['advance', 'implementation.human_review'],
         ['revise', 'implementation.build'],
         ['advance', 'implementation.human_review'],
-        ['advance', 'docs.update'],
-        ['advance', 'docs.human_review'],
         ['advance', 'pr.finalize'],
         ['advance', 'pr.open'],
         ['advance', 'pr.human_review'],
@@ -85,8 +83,6 @@ describe('feature run lifecycle integration', () => {
         'implementation.human_review',
         'implementation.build',
         'implementation.human_review',
-        'docs.update',
-        'docs.human_review',
         'pr.finalize',
         'pr.open',
         'pr.human_review',
@@ -94,7 +90,7 @@ describe('feature run lifecycle integration', () => {
       ];
 
       expect(stepRows.map((s) => s.step)).toEqual(expectedSteps);
-      expect(stepRows.map((s) => s.occurrence.index)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
+      expect(stepRows.map((s) => s.occurrence.index)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 
       const secondBuildVisit = stepRows.find((s) => s.step === 'implementation.build' && s.occurrence.index === 6);
       expect(secondBuildVisit?.occurrence.attempt).toBe(2);
@@ -151,8 +147,8 @@ describe('feature run lifecycle integration', () => {
       });
 
       let state = featureStart;
-      // 11 advances: intake→done without any revise
-      const advanceCount = 11;
+      // 9 advances: intake→done without any revise
+      const advanceCount = 9;
       for (let i = 0; i < advanceCount; i++) {
         state = await applyRunDirective({ runs: repos.runs, runId: state.run.id, directive: 'advance' });
       }

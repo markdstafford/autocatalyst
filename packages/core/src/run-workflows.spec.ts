@@ -9,10 +9,10 @@ import {
 } from './run-workflows.js';
 
 const expectedPaths = {
-  feature: ['intake', 'spec.author', 'spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'docs.update', 'docs.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'],
-  enhancement: ['intake', 'spec.author', 'spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'docs.update', 'docs.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'],
-  bug: ['intake', 'spec.author', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'docs.update', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'],
-  chore: ['intake', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'docs.update', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'],
+  feature: ['intake', 'spec.author', 'spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'],
+  enhancement: ['intake', 'spec.author', 'spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'],
+  bug: ['intake', 'spec.author', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'],
+  chore: ['intake', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'],
   file_issue: ['intake', 'spec.author', 'issues.file', 'done'],
   question: ['intake', 'question.answer', 'done']
 } as const;
@@ -47,7 +47,6 @@ describe('run workflows', () => {
   it('keeps revise and needs_input behavior in workflow transition tables', () => {
     expect(runWorkflows.feature.transitions['spec.human_review']?.revise).toBe('spec.author');
     expect(runWorkflows.feature.transitions['implementation.human_review']?.revise).toBe('implementation.build');
-    expect(runWorkflows.feature.transitions['docs.human_review']?.revise).toBe('docs.update');
     expect(runWorkflows.feature.transitions['pr.finalize']?.revise).toBe('implementation.human_review');
     expect(runWorkflows.feature.transitions['pr.human_review']?.revise).toBe('pr.finalize');
     expect(runWorkflows.feature.transitions['spec.author']?.needs_input).toBe('spec.awaiting_input');
@@ -69,5 +68,61 @@ describe('run workflows', () => {
         }
       }
     }
+  });
+});
+
+describe('B1 workflow paths', () => {
+  it('feature workflow skips docs phase', () => {
+    expect(runWorkflows.feature.steps).toEqual([
+      'intake', 'spec.author', 'spec.human_review', 'implementation.plan',
+      'implementation.build', 'implementation.human_review',
+      'pr.finalize', 'pr.open', 'pr.human_review', 'done'
+    ]);
+  });
+
+  it('enhancement workflow matches feature', () => {
+    expect(runWorkflows.enhancement.steps).toEqual(runWorkflows.feature.steps);
+  });
+
+  it('bug workflow skips docs phase', () => {
+    expect(runWorkflows.bug.steps).toEqual([
+      'intake', 'spec.author', 'implementation.plan', 'implementation.build',
+      'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'
+    ]);
+  });
+
+  it('chore workflow skips docs phase', () => {
+    expect(runWorkflows.chore.steps).toEqual([
+      'intake', 'implementation.plan', 'implementation.build',
+      'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'
+    ]);
+  });
+
+  it('file_issue workflow has no pr.finalize', () => {
+    expect(runWorkflows.file_issue.steps).not.toContain('pr.finalize');
+  });
+
+  it('question workflow has no pr.finalize', () => {
+    expect(runWorkflows.question.steps).not.toContain('pr.finalize');
+  });
+
+  it('feature: implementation.human_review advances to pr.finalize', () => {
+    expect(runWorkflows.feature.transitions['implementation.human_review']?.advance).toBe('pr.finalize');
+  });
+
+  it('feature: pr.finalize revise returns to implementation.human_review', () => {
+    expect(runWorkflows.feature.transitions['pr.finalize']?.revise).toBe('implementation.human_review');
+  });
+
+  it('feature: pr.open advances to pr.human_review', () => {
+    expect(runWorkflows.feature.transitions['pr.open']?.advance).toBe('pr.human_review');
+  });
+
+  it('bug: implementation.human_review advances to pr.finalize', () => {
+    expect(runWorkflows.bug.transitions['implementation.human_review']?.advance).toBe('pr.finalize');
+  });
+
+  it('chore: implementation.human_review advances to pr.finalize', () => {
+    expect(runWorkflows.chore.transitions['implementation.human_review']?.advance).toBe('pr.finalize');
   });
 });

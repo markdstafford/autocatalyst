@@ -1,0 +1,37 @@
+{
+  "name": "github-code-host-adapter",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/github-code-host-adapter/src",
+  "projectType": "library",
+  "tags": ["type:lib", "scope:adapter", "plane:control"],
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "packages/github-code-host-adapter/dist",
+        "main": "packages/github-code-host-adapter/src/index.ts",
+        "tsConfig": "packages/github-code-host-adapter/tsconfig.lib.json"
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "outputs": ["{options.outputFile}"],
+      "options": {
+        "lintFilePatterns": [
+          "packages/github-code-host-adapter/src/**/*.ts",
+          "packages/github-code-host-adapter/project.json",
+          "packages/github-code-host-adapter/package.json"
+        ]
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "outputs": ["{workspaceRoot}/coverage/packages/github-code-host-adapter"],
+      "options": {
+        "command": "vitest run",
+        "cwd": "packages/github-code-host-adapter"
+      }
+    }
+  }
+}
