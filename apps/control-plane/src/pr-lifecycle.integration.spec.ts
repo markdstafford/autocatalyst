@@ -8,10 +8,12 @@ import {
   defaultReviewerWorkspacePolicy,
   hardcodedDevelopmentPrincipal,
   type CodeHostCredential,
+  type ConvergenceEngine,
   type PullRequestOpenWiringDependencies,
   type RunUnitOfWork,
   type SpecFreezeDependencies
 } from '@autocatalyst/core';
+import type { ConvergenceCheckpoint } from '@autocatalyst/api-contract';
 import {
   createDrizzleDomainRepositories,
   createSqliteDatabase,
@@ -576,5 +578,253 @@ describe('PR lifecycle integration: blocker path', () => {
       }
     },
     20000
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Test 3 — summary from convergence rounds (proves the real folding path)
+// ---------------------------------------------------------------------------
+
+describe('PR lifecycle integration: PR body from convergence-round folding', () => {
+  it(
+    'builds PR body from implementer disposition summaries through real orchestrator folding, not injected summary',
+    async () => {
+      const now = '2026-06-17T00:00:00.000Z';
+      const database = createSqliteDatabase({ path: ':memory:' });
+      await migrateSqliteDatabase(database);
+      const domainRepos = createDrizzleDomainRepositories(database);
+
+      const project = await domainRepos.projects.create({
+        owner,
+        tenant: 'tenant_dev',
+        displayName: 'Folding Test Project',
+        repoUrl: `https://github.com/${REPO_SLUG}`,
+        hostRepository: { provider: 'github', owner: REPO_OWNER, name: REPO_NAME, url: `https://github.com/${REPO_SLUG}` },
+        workspaceRootOverride: null,
+        issueTrackerSetting: null,
+        codeHostSetting: { provider: 'github', credentialRef: { id: 'cred_1', purpose: 'code_host' } },
+        credentialRefs: []
+      });
+
+      // Run starts at implementation.build — no pre-formed cumulative summary injected.
+      // The orchestrator must build the summary from the convergence rounds.
+      const seed = await new (await import('@autocatalyst/persistence')).DrizzleConversationIngressRepository(database)
+        .createConversationTopicMessageAndRun({
+          conversation: {
+            projectId: project.id,
+            owner,
+            tenant: 'tenant_dev',
+            identity: 'folding-test',
+            activeTopicId: null
+          },
+          topic: {
+            owner,
+            tenant: 'tenant_dev',
+            title: 'Folding Test Topic',
+            kind: 'main'
+          },
+          message: {
+            owner,
+            tenant: 'tenant_dev',
+            author: owner,
+            direction: 'inbound',
+            body: 'prove summary folding'
+          },
+          run: {
+            owner,
+            tenant: 'tenant_dev',
+            workKind: 'feature',
+            currentStep: 'implementation.build',
+            terminal: false
+          },
+          runStep: {
+            phase: 'implementation',
+            step: 'implementation.build',
+            role: 'none',
+            startedAt: now,
+            endedAt: null,
+            durationMs: null
+          }
+        });
+
+      const runId = seed.run.id;
+      const branch = `feature/${runId.slice(0, 8)}`;
+
+      await domainRepos.runWorkspaceMetadata.upsert({
+        runId,
+        workspaceHandle: branch,
+        workspaceRepoRoot: '/tmp/fake-workspace',
+        createdAt: now
+      });
+
+      // The disposition summary is what the implementer wrote — this must appear in the PR body.
+      const IMPL_SUMMARY_ROUND1 = 'Added JWT authentication middleware with token refresh';
+      const IMPL_SUMMARY_ROUND2 = 'Fixed token expiry edge case in refresh flow';
+      const CHANGED_FILES_ROUND1 = 4;
+      const CHANGED_FILES_ROUND2 = 2;
+
+      // Mock convergence engine returns two rounds with implementer disposition summaries.
+      // The orchestrator's folding logic builds the cumulative summary from these dispositions.
+      const convergenceCheckpoint: ConvergenceCheckpoint = {
+        kind: 'convergence_review',
+        step: 'implementation.build',
+        maxRounds: 3,
+        routing: { distinct: false },
+        rounds: [
+          {
+            round: 1,
+            changedFileCount: CHANGED_FILES_ROUND1,
+            findings: [],
+            dispositions: [
+              { disposition: 'fixed', feedbackId: 'fb_round1', summary: IMPL_SUMMARY_ROUND1 }
+            ],
+            outcome: 'continue',
+            altitude: 'build'
+          },
+          {
+            round: 2,
+            changedFileCount: CHANGED_FILES_ROUND2,
+            findings: [],
+            dispositions: [
+              { disposition: 'fixed', feedbackId: 'fb_round2', summary: IMPL_SUMMARY_ROUND2 }
+            ],
+            outcome: 'converged',
+            altitude: 'build'
+          }
+        ],
+        outcome: 'converged',
+        openFeedbackIds: [],
+        lastPositions: {}
+      };
+
+      const mockConvergenceEngine: ConvergenceEngine = {
+        run: async () => ({
+          workResult: { directive: 'advance' },
+          checkpointResult: convergenceCheckpoint
+        })
+      };
+
+      // pr.finalize returns a clean result without a reconciled summary —
+      // the body must be sourced entirely from the folded cumulative summary.
+      const unitOfWork: RunUnitOfWork = {
+        run: async ({ run: r }) => {
+          if (r.currentStep === 'pr.finalize') {
+            return {
+              directive: 'advance',
+              result: {
+                directive: 'advance' as const,
+                titleSubject: 'add JWT auth middleware',
+                validationSummary: [] as string[],
+                findings: [] as Array<{ severity: 'blocker' | 'warning' | 'info'; summary: string; target?: string }>
+              }
+            };
+          }
+          return { directive: 'advance' };
+        }
+      };
+
+      const fakeGh = makeFakeGh({ branch });
+      const adapter = createGitHubCodeHostAdapter({
+        executeGh: fakeGh.executeGh,
+        git: { pushBranch: vi.fn().mockResolvedValue(undefined) }
+      });
+      const codeHosts = createCodeHostRegistry([
+        { provider: 'github', create: () => adapter }
+      ]);
+      const resolveCredential = async (_ref: unknown): Promise<CodeHostCredential> => ({ token: TEST_TOKEN });
+      const pullRequestOpenDependencies: PullRequestOpenWiringDependencies = {
+        conversations: domainRepos.conversations,
+        topics: domainRepos.topics,
+        projects: domainRepos.projects,
+        pullRequests: domainRepos.pullRequests,
+        codeHosts,
+        resolveCredential
+      };
+
+      const specFreezeDependencies = makeSpecFreezeDeps({
+        artifactPath: 'context-human/specs/feature-folding.md'
+      });
+
+      const eventBus = new InMemoryRunEventBus();
+      const dispatchQueue = new RunDispatchQueue({ maxConcurrent: 2 });
+      const orchestrator = new DefaultOrchestrator({
+        runs: domainRepos.runs,
+        conversationIngress: new (await import('@autocatalyst/persistence')).DrizzleConversationIngressRepository(database),
+        events: eventBus,
+        dispatchQueue,
+        unitOfWork,
+        autoDispatch: { enabled: true },
+        runSteps: domainRepos.runSteps,
+        runWorkspaceMetadata: domainRepos.runWorkspaceMetadata,
+        specFreezeDependencies,
+        pullRequestOpenDependencies,
+        convergenceEngine: mockConvergenceEngine,
+        feedbackLifecycleDependencies: {
+          feedback: domainRepos.feedback,
+          ids: () => `fb_${Math.random().toString(36).slice(2)}`,
+          clock: () => now
+        },
+        resolveWorkspaceContext: async () => ({
+          workspaceRepoRoot: '/tmp/fake-workspace',
+          workspaceHandle: branch
+        }),
+        clock: () => now
+      });
+
+      try {
+        // Dispatch implementation.build — the convergence engine returns rounds with dispositions,
+        // and the orchestrator folds them into a cumulative summary before advancing.
+        await orchestrator.dispatch({ runId, tenant: 'tenant_dev' });
+
+        // Wait until auto-dispatch moves the run past implementation.build → implementation.human_review
+        await waitFor(
+          async () => {
+            const r = await domainRepos.runs.findById(runId);
+            if (r === null) throw new Error('run missing');
+            return r;
+          },
+          (r) => r.currentStep === 'implementation.human_review',
+          7000,
+          'implementation.human_review after build'
+        );
+
+        // Human advances implementation.human_review → pr.finalize → pr.open
+        await orchestrator.applyDirective({
+          runId,
+          directive: 'advance',
+          tenant: 'tenant_dev',
+          origin: 'human',
+          principal: hardcodedDevelopmentPrincipal
+        });
+
+        // Wait for pr.open to complete and reach pr.human_review
+        await waitFor(
+          async () => {
+            const r = await domainRepos.runs.findById(runId);
+            if (r === null) throw new Error('run missing');
+            return r;
+          },
+          (r) => r.currentStep === 'pr.human_review',
+          7000,
+          'pr.human_review after folded summary'
+        );
+
+        // Assert the PR body contains both round disposition summaries — not reviewer finding titles.
+        const createCall = fakeGh.calls.find((c) => c.args[0] === 'pr' && c.args[1] === 'create');
+        expect(createCall, 'gh pr create must have been called').toBeDefined();
+        const bodyIdx = createCall!.args.indexOf('--body');
+        const body = createCall!.args[bodyIdx + 1] ?? '';
+
+        // Both rounds' implementer descriptions must appear in the PR body.
+        expect(body).toContain(IMPL_SUMMARY_ROUND1);
+        expect(body).toContain(IMPL_SUMMARY_ROUND2);
+        // The changed-file entries come from changedFileCount, not reviewer findings.
+        expect(body).toContain(`round 1: ${CHANGED_FILES_ROUND1} file(s) changed`);
+        expect(body).toContain(`round 2: ${CHANGED_FILES_ROUND2} file(s) changed`);
+      } finally {
+        database.close();
+      }
+    },
+    25000
   );
 });

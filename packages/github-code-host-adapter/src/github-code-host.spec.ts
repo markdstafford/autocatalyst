@@ -242,6 +242,21 @@ describe('GitHubCodeHostAdapter.findByBranch', () => {
       code: 'ambiguous_branch_match'
     });
   });
+
+  it('returns the open PR when one open and one closed PR share the same branch (squash-and-delete recovery)', async () => {
+    // A stale closed PR from a previous squash merge alongside a new open one must not
+    // block recovery — only multiple open matches are ambiguous.
+    const stdout = JSON.stringify([
+      { number: 75, url: 'https://github.com/myorg/myrepo/pull/75', state: 'OPEN', headRefName: 'run/abc', mergedAt: null },
+      { number: 73, url: 'https://github.com/myorg/myrepo/pull/73', state: 'CLOSED', headRefName: 'run/abc', mergedAt: null }
+    ]);
+    const { fn } = makeFakeExecuteGh({ responses: [{ stdout, truncated: false }] });
+    const adapter = createGitHubCodeHostAdapter({ executeGh: fn, git: makeGit() });
+    const result = await adapter.findByBranch(input);
+    expect(result).not.toBeNull();
+    expect(result!.number).toBe(75);
+    expect(result!.state).toBe('open');
+  });
 });
 
 describe('GitHubCodeHostAdapter.update', () => {

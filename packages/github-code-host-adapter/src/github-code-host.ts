@@ -160,15 +160,32 @@ class GitHubCodeHostAdapter implements CodeHostPort {
       return null;
     }
 
-    if (exactMatches.length > 1) {
+    // Prefer open PRs: a stale closed/merged PR on the same branch (e.g. squash-and-delete
+    // followed by branch reuse) must not block recovery when a single open PR exists.
+    const openMatches = exactMatches.filter(item => item.state === 'OPEN');
+
+    if (openMatches.length === 1) {
+      return this.toFacts(openMatches[0]!, { provider: 'github', repository: repo, branch: input.headBranch });
+    }
+
+    if (openMatches.length > 1) {
       throw new CodeHostError(
         'ambiguous_branch_match',
-        'Multiple GitHub pull requests share the same head branch.',
+        'Multiple open GitHub pull requests share the same head branch.',
         { provider: 'github', repository: repo, branch: input.headBranch }
       );
     }
 
-    return this.toFacts(exactMatches[0]!, { provider: 'github', repository: repo, branch: input.headBranch });
+    // No open matches — return the single non-open match if unambiguous, else fail.
+    if (exactMatches.length === 1) {
+      return this.toFacts(exactMatches[0]!, { provider: 'github', repository: repo, branch: input.headBranch });
+    }
+
+    throw new CodeHostError(
+      'ambiguous_branch_match',
+      'Multiple GitHub pull requests share the same head branch.',
+      { provider: 'github', repository: repo, branch: input.headBranch }
+    );
   }
 
   async update(input: UpdateCodeHostPullRequestInput): Promise<void> {

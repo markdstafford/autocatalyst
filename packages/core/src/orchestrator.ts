@@ -733,12 +733,18 @@ export class DefaultOrchestrator implements Orchestrator {
         if (result.checkpointResult.rounds.length > 0) {
           try {
             const cumulativeSummary = buildCumulativeImplementationSummary({
-              rounds: result.checkpointResult.rounds.map(r => ({
-                fixSummary: r.findings
-                  .filter(f => f.blocking)
-                  .map(f => f.title)
-                  .join('; ') || undefined
-              })),
+              rounds: result.checkpointResult.rounds.map(r => {
+                const fixSummaryText = r.dispositions
+                  .filter(d => d.disposition === 'fixed')
+                  .map(d => d.summary)
+                  .join('; ');
+                return {
+                  ...(fixSummaryText ? { fixSummary: fixSummaryText } : {}),
+                  changedFiles: r.changedFileCount > 0
+                    ? [`round ${r.round}: ${r.changedFileCount} file(s) changed`]
+                    : []
+                };
+              }),
               completedAt: convergenceClock()
             });
             enrichedCheckpoint = { ...result.checkpointResult, cumulativeSummary };
