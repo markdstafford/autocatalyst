@@ -171,6 +171,9 @@ importers:
       '@autocatalyst/core':
         specifier: '*'
         version: link:../core
+      zod:
+        specifier: ^3.25.64
+        version: 3.25.76
 
   packages/openai-agent-adapter:
     dependencies:

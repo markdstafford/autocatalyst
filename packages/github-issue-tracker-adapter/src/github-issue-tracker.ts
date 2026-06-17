@@ -132,14 +132,20 @@ export class GitHubIssueTracker implements IssueTrackerPort {
 
     const gh = ghResult.data;
 
-    // Normalize to TrackedIssue
-    return trackedIssueSchema.parse({
-      number: gh.number,
-      title: gh.title,
-      body: gh.body ?? '',
-      labels: gh.labels.map(l => l.name),
-      state: normalizeState(gh.state),
-      url: gh.url
-    });
+    // Normalize to TrackedIssue — wrap so any schema failure maps to tracker_response_invalid
+    try {
+      return trackedIssueSchema.parse({
+        number: gh.number,
+        title: gh.title,
+        body: gh.body ?? '',
+        labels: gh.labels.map(l => l.name),
+        state: normalizeState(gh.state),
+        url: gh.url
+      });
+    } catch {
+      throw new IssueTrackerError('tracker_response_invalid', 'GitHub response could not be mapped to a tracked issue.', {
+        safeDetails: { provider: 'github', repository: repo, issueNumber }
+      });
+    }
   }
 }
