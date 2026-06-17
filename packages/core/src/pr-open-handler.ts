@@ -229,7 +229,20 @@ export async function handlePullRequestOpen(
     throw new PullRequestOpenHandlerError('missing_credential', 'Failed to resolve code-host credential.', { cause });
   }
 
-  const codeHostPort: CodeHostPort = deps.codeHosts.get(binding.target.provider);
+  let codeHostPort: CodeHostPort;
+  try {
+    codeHostPort = deps.codeHosts.get(binding.target.provider);
+  } catch (cause) {
+    if (isCodeHostError(cause)) {
+      throw new PullRequestOpenHandlerError('code_host_error', `Unsupported code-host provider (${cause.code}).`, {
+        cause,
+        details: { code: cause.code }
+      });
+    }
+    throw new PullRequestOpenHandlerError('code_host_error', 'Failed to resolve code-host provider.', {
+      cause: cause instanceof Error ? new Error(cause.name) : undefined
+    });
+  }
 
   // 3. Idempotency: if a local PR is already recorded, refresh state from the provider.
   const existingPullRequest = await deps.pullRequests.findByRun(runId);

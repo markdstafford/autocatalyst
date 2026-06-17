@@ -157,6 +157,7 @@ function makeDeps(opts: {
   readBehavior?: () => Promise<CodeHostPullRequestFacts>;
   findByBranchBehavior?: () => Promise<CodeHostPullRequestFacts | null>;
   pullRequestCreateBehavior?: () => Promise<PullRequest>;
+  codeHostsGetBehavior?: () => CodeHostPort;
 } = {}): DepHandles {
   const run = opts.run ?? makeRun();
   const runs: RunRepository = {
@@ -237,7 +238,7 @@ function makeDeps(opts: {
     merge: vi.fn()
   };
   const codeHosts: CodeHostRegistry = {
-    get: vi.fn().mockReturnValue(codeHostPort)
+    get: opts.codeHostsGetBehavior ? vi.fn().mockImplementation(opts.codeHostsGetBehavior) : vi.fn().mockReturnValue(codeHostPort)
   };
   const eventsAppend = vi.fn().mockResolvedValue(undefined);
   const events: RunEventPublisher = {
@@ -602,5 +603,18 @@ describe('handlePullRequestOpen', () => {
       });
       expect(applyDirective).not.toHaveBeenCalled();
     });
+  });
+
+  it('throws code_host_error when the registry does not support the provider', async () => {
+    const { deps, create } = makeDeps({
+      codeHostsGetBehavior: () => {
+        throw new CodeHostError('unsupported_provider', 'No adapter registered for github.');
+      }
+    });
+    await expect(handlePullRequestOpen('run_1', 'tenant_1', deps)).rejects.toMatchObject({
+      name: 'PullRequestOpenHandlerError',
+      code: 'code_host_error'
+    });
+    expect(create).not.toHaveBeenCalled();
   });
 });
