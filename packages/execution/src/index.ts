@@ -50,6 +50,7 @@ export {
 export {
   createResultNormalizerRegistry,
   defaultResultNormalizers,
+  reviewerResultNormalizer,
   createFilenameAliasNormalizer,
   createUrlWrappedIdentifierNormalizer,
   type ResultNormalizer,

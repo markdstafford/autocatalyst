@@ -14,7 +14,9 @@ import type {
   ReviewerResult,
   Run
 } from '@autocatalyst/api-contract';
-import { findingDispositionSchema, reviewerResultSchema } from '@autocatalyst/api-contract';
+import { findingDispositionSchema } from '@autocatalyst/api-contract';
+import type { ResultCorrectionRequester, ResultNormalizer, ResultNormalizerRegistry } from '@autocatalyst/execution';
+import { validateReviewerResult } from './reviewer-result-validation.js';
 import type { ModelRoutingResolver } from './model-routing-resolver.js';
 import type { FeedbackRepository, RunStepRepository } from './domain-repositories.js';
 import type {
@@ -62,6 +64,9 @@ export interface LayeredConvergenceEngineOptions {
    *  became available during provisioning (e.g. chore/bug runs whose workspace is
    *  cloned on-demand rather than resolved from a pre-existing registry entry). */
   readonly workspaceContextRefresher?: (runId: string) => Promise<WorkspaceContext | undefined>;
+  readonly reviewerResultCorrectionRequester?: ResultCorrectionRequester;
+  readonly reviewerResultMaxCorrectionAttempts?: number;
+  readonly reviewerResultNormalizers?: ResultNormalizerRegistry | readonly ResultNormalizer[];
 }
 
 function defaultReviewerPrincipal(tenant: string): Principal {
@@ -375,14 +380,27 @@ export function createLayeredConvergenceEngine(
           workResult: { directive: 'fail', reason: 'reviewer_result_missing' }
         };
       }
-      const parsedReviewer = reviewerResultSchema.safeParse(rawResult);
-      if (!parsedReviewer.success) {
+      const reviewerValidation = await validateReviewerResult({
+        runId: input.runId,
+        step: input.stepDefinition.id,
+        rawResult,
+        ...(options.reviewerResultCorrectionRequester !== undefined
+          ? { correctionRequester: options.reviewerResultCorrectionRequester }
+          : {}),
+        ...(options.reviewerResultMaxCorrectionAttempts !== undefined
+          ? { maxCorrectionAttempts: options.reviewerResultMaxCorrectionAttempts }
+          : {}),
+        ...(options.reviewerResultNormalizers !== undefined
+          ? { normalizers: options.reviewerResultNormalizers }
+          : {})
+      });
+      if (reviewerValidation.status === 'failed') {
         return {
           kind: 'failed',
-          workResult: { directive: 'fail', reason: 'reviewer_result_invalid' }
+          workResult: { directive: 'fail', reason: reviewerValidation.reason }
         };
       }
-      const reviewerResult: ReviewerResult = parsedReviewer.data;
+      const reviewerResult: ReviewerResult = reviewerValidation.value;
       const reviewerFindings: readonly ReviewerFinding[] =
         reviewerResult.status === 'findings' ? reviewerResult.findings : [];
 

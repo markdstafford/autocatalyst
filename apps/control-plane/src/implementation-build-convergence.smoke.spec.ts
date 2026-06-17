@@ -923,3 +923,87 @@ describe('reviewer result contract — schema boundary', () => {
     expect(result).toMatchObject({ status: 'satisfied' });
   });
 });
+
+describe('implementation.build convergence — near-miss reviewer tolerance', () => {
+  it('advances when reviewer returns a near-miss empty object result', async () => {
+    await withScenario('ac-smoke-near-miss', async ({ runId, workspacesRoot, workspaceRepoRoot, databasePath }) => {
+      const calls: RunRoleWorkInput[] = [];
+
+      const nearMissDispatcher: ReviewedRoleDispatcher = {
+        async runRole(input: RunRoleWorkInput): Promise<ReviewedRoleDispatchResult> {
+          calls.push(input);
+
+          if (input.role === 'implementer') {
+            const fs = await import('node:fs/promises');
+            const filename = `round-${input.round}.txt`;
+            const { join: pathJoin } = await import('node:path');
+            await fs.writeFile(
+              pathJoin(workspaceRepoRoot, filename),
+              `implementer output for round ${input.round}\n`,
+              'utf-8'
+            );
+            const dispositions = (input.reviewContext?.requiredDispositions ?? []).map((req) => ({
+              feedbackId: req.feedbackId,
+              disposition: 'fixed' as const,
+              summary: `claimed fix in round ${input.round}`
+            }));
+            return {
+              workResult: { directive: 'advance', result: {} },
+              dispositions,
+              sessionId: `impl-session-${input.round}`,
+              lastPosition: `impl-pos-${input.round}`
+            };
+          }
+
+          // Reviewer returns a near-miss empty object — normalizer recovers this to satisfied.
+          return {
+            workResult: { directive: 'advance', result: {} as Readonly<Record<string, unknown>> },
+            reviewerResult: {},
+            sessionId: 'reviewer-near-miss-session',
+            lastPosition: 'reviewer-near-miss-position'
+          };
+        }
+      };
+
+      const { orchestrator, close } = buildLayeredOrchestrator({
+        databasePath,
+        workspacesRoot,
+        workspaceRepoRoot,
+        dispatcher: nearMissDispatcher,
+        depth: 'build_only'
+      });
+
+      try {
+        const result = await orchestrator.dispatch({ runId, tenant: TENANT });
+
+        expect(calls.map((c) => c.role)).toEqual(['implementer', 'reviewer']);
+
+        // The run should advance past the implementation gate to the human-review gate.
+        expect(result.run.currentStep).toBe('implementation.human_review');
+
+        // Verify the checkpoint records a converged outcome.
+        const db = createSqliteDatabase({ path: databasePath });
+        const repos = createDrizzleDomainRepositories(db);
+        try {
+          const steps = await repos.runSteps.listByRun(runId);
+          const buildStep = steps.find((s) => s.step === 'implementation.build');
+          expect(buildStep).toBeDefined();
+
+          const checkpoint = buildStep?.checkpointResult as Record<string, unknown> | null;
+          expect(checkpoint).toMatchObject({
+            kind: 'convergence_review',
+            outcome: 'converged'
+          });
+
+          const rounds = checkpoint?.['rounds'] as readonly Record<string, unknown>[];
+          expect(rounds.length).toBeGreaterThanOrEqual(1);
+          expect(rounds[0]?.['findings']).toEqual([]);
+        } finally {
+          db.close();
+        }
+      } finally {
+        close();
+      }
+    });
+  });
+});

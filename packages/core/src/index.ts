@@ -107,6 +107,14 @@ export type { RunPhase, RunStepDefinition, RunStepId, RunStepRole, WaitingOn } f
 export * from './convergence-policy.js';
 
 export {
+  validateReviewerResult,
+  type ValidateReviewerResultInput,
+  type ReviewerResultValidationOutcome,
+  type ReviewerResultValidationSuccess,
+  type ReviewerResultValidationFailure
+} from './reviewer-result-validation.js';
+
+export {
   getRunWorkflowById,
   getRunWorkflowForWorkKind,
   isKnownRunWorkflowId,

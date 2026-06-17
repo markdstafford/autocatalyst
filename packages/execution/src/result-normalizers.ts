@@ -1,4 +1,5 @@
 import type { ResultToleranceEvent, StepResultValidationFailureCode } from './result-tolerance.js';
+import { REVIEWER_RESULT_SCHEMA_ID } from './result-contracts.js';
 
 export interface ResultNormalizerInput {
   readonly candidate: unknown;
@@ -105,7 +106,44 @@ export function createResultNormalizerRegistry(normalizers: readonly ResultNorma
   return registry;
 }
 
-export const defaultResultNormalizers: readonly ResultNormalizer[] = [];
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value as object) as unknown;
+  return proto === Object.prototype || proto === null;
+}
+
+export const reviewerResultNormalizer: ResultNormalizer = {
+  id: 'reviewer-result-clean-review',
+  description: 'Normalizes deterministic clean-review near misses for reviewer results.',
+  normalize(input) {
+    if (input.schemaId !== REVIEWER_RESULT_SCHEMA_ID) return { status: 'unchanged' };
+    if (!isPlainObject(input.candidate)) return { status: 'unchanged' };
+
+    const keys = Object.keys(input.candidate);
+    if (keys.length === 0) {
+      return {
+        status: 'changed',
+        candidate: { status: 'satisfied', findings: [] },
+        message: 'Normalized empty reviewer result to satisfied clean review.'
+      };
+    }
+
+    if (keys.length === 1 && Object.prototype.hasOwnProperty.call(input.candidate, 'findings')) {
+      const findings = input.candidate['findings'];
+      if (Array.isArray(findings) && findings.length === 0) {
+        return {
+          status: 'changed',
+          candidate: { status: 'satisfied', findings: [] },
+          message: 'Normalized empty reviewer findings to satisfied clean review.'
+        };
+      }
+    }
+
+    return { status: 'unchanged' };
+  }
+};
+
+export const defaultResultNormalizers: readonly ResultNormalizer[] = [reviewerResultNormalizer];
 
 export function createFilenameAliasNormalizer(options: FilenameAliasNormalizerOptions): ResultNormalizer {
   if (Object.keys(options.aliases).length === 0) {

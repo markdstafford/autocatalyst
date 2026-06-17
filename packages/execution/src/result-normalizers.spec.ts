@@ -3,8 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   createFilenameAliasNormalizer,
   createResultNormalizerRegistry,
-  createUrlWrappedIdentifierNormalizer
+  createUrlWrappedIdentifierNormalizer,
+  defaultResultNormalizers,
+  reviewerResultNormalizer
 } from './result-normalizers.js';
+import { REVIEWER_RESULT_SCHEMA_ID } from './result-contracts.js';
 
 describe('result normalizers', () => {
   it('applies registered normalizers in order without changing pipeline control flow', () => {
@@ -78,5 +81,80 @@ describe('result normalizers', () => {
 
     const ambiguous = normalizer.normalize({ candidate: { issueId: 'https://example.test/issues/ISSUE-22/also/ISSUE-23' }, step: 'implement', schemaId: 'terminal-handoff.v1', attempt: 0 });
     expect(ambiguous.status).toBe('ambiguous');
+  });
+});
+
+describe('reviewerResultNormalizer', () => {
+  const normalizeReviewer = (candidate: unknown, schemaId = REVIEWER_RESULT_SCHEMA_ID) =>
+    reviewerResultNormalizer.normalize({
+      candidate,
+      step: 'implementation.build',
+      schemaId,
+      attempt: 0
+    });
+
+  it('normalizes an empty object to a satisfied reviewer result', () => {
+    expect(normalizeReviewer({})).toEqual({
+      status: 'changed',
+      candidate: { status: 'satisfied', findings: [] },
+      message: 'Normalized empty reviewer result to satisfied clean review.'
+    });
+  });
+
+  it('normalizes an object containing only empty findings to a satisfied reviewer result', () => {
+    expect(normalizeReviewer({ findings: [] })).toEqual({
+      status: 'changed',
+      candidate: { status: 'satisfied', findings: [] },
+      message: 'Normalized empty reviewer findings to satisfied clean review.'
+    });
+  });
+
+  it('leaves already-statused reviewer results for schema validation', () => {
+    const alreadyStatused = { status: 'satisfied', findings: [] };
+    expect(normalizeReviewer(alreadyStatused)).toEqual({ status: 'unchanged' });
+    expect(normalizeReviewer({ status: 'unknown', findings: [] })).toEqual({ status: 'unchanged' });
+  });
+
+  it('leaves ambiguous or malformed reviewer candidates unchanged', () => {
+    expect(normalizeReviewer({ findings: [{ title: 'Missing status', body: 'Ambiguous.', severity: 'blocker' }] }))
+      .toEqual({ status: 'unchanged' });
+    expect(normalizeReviewer({ findings: 'none' })).toEqual({ status: 'unchanged' });
+    expect(normalizeReviewer([{ findings: [] }])).toEqual({ status: 'unchanged' });
+    expect(normalizeReviewer(null)).toEqual({ status: 'unchanged' });
+    expect(normalizeReviewer('')).toEqual({ status: 'unchanged' });
+  });
+
+  it('leaves non-plain objects unchanged — Date, Map, and class instances must not be normalized', () => {
+    expect(normalizeReviewer(new Date())).toEqual({ status: 'unchanged' });
+    expect(normalizeReviewer(new Map())).toEqual({ status: 'unchanged' });
+    class Review {}
+    expect(normalizeReviewer(new Review())).toEqual({ status: 'unchanged' });
+  });
+
+  it('is schema-specific and is included in the default registry', () => {
+    expect(normalizeReviewer({}, 'terminal-handoff.v1')).toEqual({ status: 'unchanged' });
+
+    const registry = createResultNormalizerRegistry(defaultResultNormalizers);
+    const output = registry.normalize({
+      candidate: {},
+      step: 'implementation.build',
+      schemaId: REVIEWER_RESULT_SCHEMA_ID,
+      attempt: 0
+    });
+
+    expect(defaultResultNormalizers).toContain(reviewerResultNormalizer);
+    expect(output).toMatchObject({
+      candidate: { status: 'satisfied', findings: [] },
+      normalized: true,
+      ambiguous: false,
+      failed: false
+    });
+    expect(output.events).toEqual([
+      {
+        kind: 'normalized',
+        normalizerId: 'reviewer-result-clean-review',
+        message: 'Normalized empty reviewer result to satisfied clean review.'
+      }
+    ]);
   });
 });

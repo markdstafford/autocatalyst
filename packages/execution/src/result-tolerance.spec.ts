@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 
 import { validateStepResult } from './result-tolerance.js';
 import { createFilenameAliasNormalizer, createResultNormalizerRegistry } from './result-normalizers.js';
+import { reviewerResultSchema } from '@autocatalyst/api-contract';
+import { REVIEWER_RESULT_SCHEMA_ID } from './result-contracts.js';
 
 const schema = z.object({ filename: z.string(), optionalSignal: z.string().optional() }).strict();
 
@@ -117,5 +119,61 @@ describe('validateStepResult', () => {
     });
 
     expect(result).toMatchObject({ status: 'valid', degraded: false, degradedPaths: [] });
+  });
+
+  it('validates an empty reviewer result after default reviewer normalization', async () => {
+    const result = await validateStepResult({
+      runId: 'run_1',
+      step: 'implementation.build',
+      schemaId: REVIEWER_RESULT_SCHEMA_ID,
+      schema: reviewerResultSchema,
+      candidate: {}
+    });
+
+    expect(result).toMatchObject({
+      status: 'valid',
+      normalized: true,
+      correctedAttempts: 0
+    });
+    if (result.status === 'valid') {
+      expect(result.value).toEqual({ status: 'satisfied', findings: [] });
+      expect(result.events.some((event) => event.kind === 'normalized')).toBe(true);
+    }
+  });
+
+  it('validates empty reviewer findings after default reviewer normalization', async () => {
+    const result = await validateStepResult({
+      runId: 'run_1',
+      step: 'implementation.build',
+      schemaId: REVIEWER_RESULT_SCHEMA_ID,
+      schema: reviewerResultSchema,
+      candidate: { findings: [] }
+    });
+
+    expect(result).toMatchObject({ status: 'valid', normalized: true });
+    if (result.status === 'valid') {
+      expect(result.value).toEqual({ status: 'satisfied', findings: [] });
+    }
+  });
+
+  it('does not normalize ambiguous reviewer findings before correction', async () => {
+    const attempts: number[] = [];
+    const result = await validateStepResult({
+      runId: 'run_1',
+      step: 'implementation.build',
+      schemaId: REVIEWER_RESULT_SCHEMA_ID,
+      schema: reviewerResultSchema,
+      candidate: { findings: [{ title: 'Missing status', body: 'Ambiguous.', severity: 'blocker' }] },
+      maxCorrectionAttempts: 1,
+      correctionRequester: {
+        async requestCorrection(request) {
+          attempts.push(request.attempt);
+          return { status: 'satisfied', findings: [] };
+        }
+      }
+    });
+
+    expect(result).toMatchObject({ status: 'valid', normalized: false, correctedAttempts: 1 });
+    expect(attempts).toEqual([1]);
   });
 });
