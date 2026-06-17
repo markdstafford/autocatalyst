@@ -87,4 +87,12 @@ describe('core barrel', () => {
     expect(new IssueTrackerError('tracker_not_configured', 'No tracker configured.').code).toBe('tracker_not_configured');
     expect(new StaticIssueTrackerRegistry({}).get('github')).toBeNull();
   });
+
+  it('exports issue reference intake resolver and error', async () => {
+    const core = await import('./index.js');
+    expect(core.DefaultIssueReferenceIntakeResolver).toBeTypeOf('function');
+    expect(core.IssueReferenceIntakeError).toBeTypeOf('function');
+    const err = new core.IssueReferenceIntakeError('work_kind_unresolved', 'test');
+    expect(err.code).toBe('work_kind_unresolved');
+  });
 });
