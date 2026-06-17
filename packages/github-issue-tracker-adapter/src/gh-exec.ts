@@ -33,7 +33,9 @@ export class GhExecError extends Error {
     super(message);
     this.name = 'GhExecError';
     this.code = code;
-    this.safeDetails = safeDetails;
+    if (safeDetails !== undefined) {
+      this.safeDetails = safeDetails;
+    }
   }
 }
 

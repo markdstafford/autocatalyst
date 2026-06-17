@@ -55,8 +55,12 @@ export class GitHubIssueTracker implements IssueTrackerPort {
   constructor(options: GitHubIssueTrackerOptions) {
     this.#secretResolver = options.secretResolver;
     this.#executeGhFn = options.executeGhFn ?? executeGh;
-    this.#executablePath = options.executablePath;
-    this.#timeoutMs = options.timeoutMs;
+    if (options.executablePath !== undefined) {
+      this.#executablePath = options.executablePath;
+    }
+    if (options.timeoutMs !== undefined) {
+      this.#timeoutMs = options.timeoutMs;
+    }
   }
 
   async read(input: ReadTrackedIssueInput): Promise<TrackedIssue> {
@@ -93,8 +97,8 @@ export class GitHubIssueTracker implements IssueTrackerPort {
       const result = await this.#executeGhFn({
         args: ['issue', 'view', String(issueNumber), '--repo', repo, '--json', 'number,title,body,labels,state,url'],
         token,
-        executablePath: this.#executablePath,
-        timeoutMs: this.#timeoutMs
+        ...(this.#executablePath !== undefined ? { executablePath: this.#executablePath } : {}),
+        ...(this.#timeoutMs !== undefined ? { timeoutMs: this.#timeoutMs } : {})
       });
       stdout = result.stdout;
     } catch (error: unknown) {
