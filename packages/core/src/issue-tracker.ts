@@ -43,6 +43,8 @@ export class IssueTrackerError extends Error {
     super(message, options?.cause !== undefined ? { cause: options.cause } : undefined);
     this.name = 'IssueTrackerError';
     this.code = code;
-    this.safeDetails = options?.safeDetails;
+    if (options?.safeDetails !== undefined) {
+      this.safeDetails = options.safeDetails;
+    }
   }
 }

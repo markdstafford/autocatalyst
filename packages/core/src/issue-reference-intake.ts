@@ -20,7 +20,9 @@ export class IssueReferenceIntakeError extends Error {
     super(message);
     this.name = 'IssueReferenceIntakeError';
     this.code = code;
-    this.safeDetails = safeDetails;
+    if (safeDetails !== undefined) {
+      this.safeDetails = safeDetails;
+    }
   }
 }
 
@@ -161,7 +163,7 @@ export class DefaultIssueReferenceIntakeResolver implements IssueReferenceIntake
         }
         return {
           workKind: submission.workKind,
-          trackedIssue: submission.trackedIssue,
+          ...(submission.trackedIssue !== undefined ? { trackedIssue: submission.trackedIssue } : {}),
           messageBody: submission.body
         };
       }
@@ -169,7 +171,7 @@ export class DefaultIssueReferenceIntakeResolver implements IssueReferenceIntake
       // question / list_to_file — explicit workKind path
       return {
         workKind: submission.workKind,
-        trackedIssue: submission.trackedIssue,
+        ...(submission.trackedIssue !== undefined ? { trackedIssue: submission.trackedIssue } : {}),
         messageBody: submission.body
       };
     }
