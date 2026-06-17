@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -56,7 +56,8 @@ import {
   createDrizzleDomainRepositories,
   createSqliteDatabase,
   DrizzleConversationIngressRepository,
-  migrateSqliteDatabase
+  migrateSqliteDatabase,
+  SqliteSecretStore
 } from '@autocatalyst/persistence';
 
 import { createFakeLaunchHarness } from './fake-claude-agent-sdk-harness.spec-helper.js';
@@ -2892,6 +2893,191 @@ describe('real feature dispatch workspace context', () => {
   });
 });
 
+describe('workspace metadata persistence for chore runs', () => {
+  it('persists workspace metadata with correct branchName (not runId) for chore run through production dispatch', { timeout: 60000 }, async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const tempRoot = await mkdtemp(join(tmpdir(), 'autocatalyst-chore-workspace-'));
+      const reposRoot = join(tempRoot, 'repos');
+      const workspacesRoot = join(tempRoot, 'workspaces');
+      await mkdir(reposRoot, { recursive: true });
+      await mkdir(workspacesRoot, { recursive: true });
+
+      try {
+        const hostRepoPath = await createLocalGitRepository(tempRoot);
+        const { projectId } = await seedFeatureProject({ databasePath, repoUrl: `file://${hostRepoPath}` });
+
+        const bootstrap = await createControlPlaneServer({ autoDispatch: { enabled: false },
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET
+        });
+        let profileId: string;
+        try {
+          const secretInj = await bootstrap.inject({
+            method: 'POST',
+            url: '/v1/secrets',
+            headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+            payload: { value: 'fake-openai-api-key' }
+          });
+          expect(secretInj.statusCode).toBe(201);
+          const { handle: credentialHandle } = createSecretResponseSchema.parse(secretInj.json());
+
+          const cfgInj = await bootstrap.inject({
+            method: 'POST',
+            url: '/v1/configuration-records',
+            headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+            payload: {
+              kind: 'provider_profile',
+              providerKind: 'openai',
+              adapterId: 'openai-agents-sdk',
+              settings: {
+                profileName: 'integration-openai-chore',
+                credentialSecretHandle: credentialHandle,
+                model: { provider: 'openai', model: 'gpt-4.1' }
+              }
+            }
+          });
+          expect(cfgInj.statusCode).toBe(201);
+          profileId = configurationRecordResponseSchema.parse(cfgInj.json()).id;
+
+          // implementation.build goes through the convergence engine, which calls
+          // resolveReviewedRoutes. That throws routing_table_missing (not
+          // role_distinct_unsatisfied), so a routing table must exist for both roles.
+          const routingInj = await bootstrap.inject({
+            method: 'POST',
+            url: '/v1/configuration-records',
+            headers: { authorization: `Bearer ${BEARER_TOKEN}` },
+            payload: {
+              kind: 'model_routing_table',
+              settings: {
+                active: true,
+                entries: [
+                  { id: 'rt_build_impl', route: { mode: 'agent', step: 'implementation.build', role: 'implementer' }, profileId },
+                  { id: 'rt_build_rev', route: { mode: 'agent', step: 'implementation.build', role: 'reviewer' }, profileId }
+                ]
+              }
+            }
+          });
+          expect(routingInj.statusCode).toBe(201);
+        } finally {
+          await bootstrap.close();
+        }
+
+        // Captures the branchName supplied to the adapter at workspace materialization time.
+        let capturedBranchName: string | undefined;
+        const fakeOpenAIAdapter = createOpenAIAgentAdapter();
+        fakeOpenAIAdapter.startSession = async (input) => {
+          const runId = input.telemetryContext.runId;
+          const step = input.telemetryContext.step ?? 'implementation.plan';
+          const workspace = input.runInput.environment.workspace;
+          if (workspace.shape === 'two_roots') {
+            capturedBranchName = workspace.branchName;
+          }
+          async function* events(): AsyncIterable<RunnerEvent> {
+            yield {
+              id: 'evt_chore_terminal',
+              runId,
+              step,
+              importance: 'normal',
+              createdAt: new Date().toISOString(),
+              type: 'runner_terminal_result',
+              result: { directive: 'advance' }
+            } as RunnerEvent;
+          }
+          return {
+            events: events(),
+            metadata: Promise.resolve({
+              outcome: 'succeeded' as const,
+              launchMechanism: 'fetch_transport' as const,
+              degradedCapabilities: [],
+              tokenUsage: { available: false } as const
+            })
+          };
+        };
+
+        let controlPlane: ControlPlaneService | undefined;
+        const handle = await startControlPlaneServer({ autoDispatch: { enabled: false },
+          port: 0,
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET,
+          runConcurrency: 1,
+          workspaceRoots: { reposRoot, workspacesRoot },
+          realRunnerDispatch: { enabled: true, defaultProviderProfileId: profileId },
+          providerAdapters: new Map([
+            [
+              buildProviderAdapterKey('openai', 'openai-agents-sdk'),
+              () => fakeOpenAIAdapter
+            ]
+          ]),
+          onControlPlaneReady: (service) => { controlPlane = service; }
+        });
+
+        try {
+          if (controlPlane === undefined) throw new Error('control-plane not exposed');
+          const baseUrl = `http://127.0.0.1:${handle.port}`;
+          const authHeaders = { authorization: `Bearer ${BEARER_TOKEN}` };
+
+          // Create a chore run (skips spec.author entirely — first AI step is implementation.plan).
+          const createResp = await fetch(`${baseUrl}/v1/conversations`, {
+            method: 'POST',
+            headers: { ...authHeaders, 'content-type': 'application/json' },
+            body: JSON.stringify({
+              projectId,
+              identity: 'chore-workspace-metadata-test',
+              topic: { title: 'Refactor: update build scripts' },
+              submission: { kind: 'free_form', body: 'please update the build scripts', workKind: 'chore' }
+            })
+          });
+          expect(createResp.status).toBe(201);
+          const runId = ((await createResp.json()) as { run: { id: string } }).run.id;
+
+          // Tick 1: chore run starts at 'intake'. The tick processes intake (system step),
+          // then dispatches implementation.plan as a passthrough (waitingOn: 'ai'), leaving
+          // the run at implementation.build.
+          await controlPlane.tick({
+            principal: hardcodedDevelopmentPrincipal,
+            tenant: hardcodedDevelopmentPrincipal.tenantId,
+            runId
+          });
+
+          // Tick 2: dispatches implementation.build through the convergence engine, which
+          // provisions the workspace and calls startSession on the adapter.
+          await controlPlane.tick({
+            principal: hardcodedDevelopmentPrincipal,
+            tenant: hardcodedDevelopmentPrincipal.tenantId,
+            runId
+          });
+
+          // The adapter should have received a two_roots workspace and captured the branch name.
+          expect(capturedBranchName).toBeDefined();
+          expect(capturedBranchName).toMatch(/^chore\//u);
+          expect(capturedBranchName).not.toBe(runId);
+
+          // Workspace metadata must be persisted in DB with the actual branch name, not the runId.
+          // This is what pr.open later reads to know which branch to push.
+          const verifyDb = createSqliteDatabase({ path: databasePath });
+          try {
+            const verifyRepos = createDrizzleDomainRepositories(verifyDb);
+            const meta = await verifyRepos.runWorkspaceMetadata.findByRunId(runId);
+            expect(meta).not.toBeNull();
+            expect(meta!.workspaceHandle).toMatch(/^chore\//u);
+            expect(meta!.workspaceHandle).not.toBe(runId);
+            // The branch name stored in DB must match what the adapter received.
+            expect(meta!.workspaceHandle).toBe(capturedBranchName);
+          } finally {
+            verifyDb.close();
+          }
+        } finally {
+          await handle.close();
+        }
+      } finally {
+        await rm(tempRoot, { recursive: true, force: true });
+      }
+    });
+  });
+});
+
 describe('spec authoring dispatch context', () => {
   it('supplies real prompt and taskInputs for spec.author step in production dispatch', { timeout: 60000 }, async () => {
     await withTempDatabasePath(async (databasePath) => {
@@ -3515,6 +3701,217 @@ describe('run replies full loop integration', () => {
           }
         } finally {
           await rm(tempDir, { recursive: true, force: true });
+        }
+      });
+    }
+  );
+});
+
+// ---------------------------------------------------------------------------
+// PR lifecycle through the booted control-plane server.
+//
+// Guards the production wiring: createControlPlaneServer must itself construct and
+// pass pullRequestOpenDependencies (code-host adapter + registry + credential resolver)
+// and specFreezeDependencies to the orchestrator. The other PR-lifecycle tests build a
+// DefaultOrchestrator directly with hand-supplied deps, so they cannot catch the deps
+// being absent from the real server path. This test drives a run from the implementation
+// gate through pr.finalize → spec freeze → pr.open against the booted server with a fake
+// `gh` (via the `codeHost.executablePath` seam) and a real git repo + bare remote, and
+// asserts a PR record is persisted and the spec was frozen — neither of which can happen
+// unless the server wired both dependency sets.
+// ---------------------------------------------------------------------------
+
+describe('PR lifecycle through the booted control-plane server', () => {
+  it(
+    'createControlPlaneServer wires pull-request and spec-freeze deps: an approved implementation ' +
+    'freezes the spec, opens a PR through the code-host adapter, and persists the PR record',
+    { timeout: 60_000 },
+    async () => {
+      await withTempDatabasePath(async (databasePath) => {
+        // The run's workspace repo must sit under workspacesRoot (containment check in the
+        // run-workspace git port), so create the repo and the bare remote inside it.
+        const workspacesRoot = await mkdtemp(join(tmpdir(), 'pr-server-ws-'));
+        const reposRoot = await mkdtemp(join(tmpdir(), 'pr-server-repos-'));
+        const ghDir = await mkdtemp(join(tmpdir(), 'pr-server-gh-'));
+        const repoRoot = join(workspacesRoot, 'run-repo');
+        const bareRemote = join(workspacesRoot, 'origin.git');
+        const BRANCH = 'feature/pr-server-boot';
+        const PR_URL = 'https://github.com/testorg/testrepo/pull/4321';
+        try {
+          // 1. Real git repo with a bare remote so the code-host adapter's `git push` succeeds.
+          await execFileAsync('git', ['init', '--bare', bareRemote]);
+          await execFileAsync('git', ['init', '--initial-branch=main', repoRoot]);
+          await execFileAsync('git', ['config', 'user.email', 'pr@example.test'], { cwd: repoRoot });
+          await execFileAsync('git', ['config', 'user.name', 'PR Lifecycle'], { cwd: repoRoot });
+          await execFileAsync('git', ['remote', 'add', 'origin', bareRemote], { cwd: repoRoot });
+          await mkdir(join(repoRoot, 'context-human', 'specs'), { recursive: true });
+          await writeFile(join(repoRoot, 'context-human', 'specs', 'enhancement-pr-server.md'), SPEC_MARKDOWN, 'utf-8');
+          await execFileAsync('git', ['add', '.'], { cwd: repoRoot });
+          await execFileAsync('git', ['commit', '-m', 'seed spec'], { cwd: repoRoot });
+          await execFileAsync('git', ['checkout', '-b', BRANCH], { cwd: repoRoot });
+
+          // 2. Fake `gh` covering the code-host PR verbs — no real network. Matched on the first
+          //    two args so PR body text can never collide with a verb pattern.
+          const prViewJson = JSON.stringify({ number: 4321, url: PR_URL, state: 'OPEN', headRefName: BRANCH, mergedAt: null });
+          const fakeGh = join(ghDir, 'fake-gh');
+          await writeFile(
+            fakeGh,
+            `#!/bin/sh\ncase "$1 $2" in\n  "pr list") echo '[]' ;;\n  "pr create") echo '${PR_URL}' ;;\n  "pr view") echo '${prViewJson}' ;;\n  *) echo "unexpected gh args: $*" 1>&2; exit 1 ;;\nesac\n`,
+            'utf-8'
+          );
+          await chmod(fakeGh, 0o755);
+
+          // 3. Seed: project with a code-host setting + stored credential, a run paused at the
+          //    implementation gate, an approved spec artifact, workspace metadata pointing at the
+          //    repo, and an implementation.build checkpoint carrying the cumulative summary the
+          //    PR body is sourced from.
+          const now = new Date().toISOString();
+          const seedDb = createSqliteDatabase({ path: databasePath });
+          await migrateSqliteDatabase(seedDb);
+          const seedRepos = createDrizzleDomainRepositories(seedDb);
+          const secretStore = new SqliteSecretStore(seedDb);
+          await secretStore.unlock(MASTER_SECRET);
+          const { handle } = await secretStore.createSecret({ value: 'ghp_fake_pr_token' });
+
+          const project = await seedRepos.projects.create({
+            owner: hardcodedDevelopmentPrincipal,
+            tenant: hardcodedDevelopmentPrincipal.tenantId,
+            displayName: 'PR Server Boot Project',
+            repoUrl: 'https://github.com/testorg/testrepo',
+            hostRepository: { provider: 'github', owner: 'testorg', name: 'testrepo' },
+            workspaceRootOverride: null,
+            issueTrackerSetting: null,
+            codeHostSetting: { provider: 'github', credentialRef: { id: handle, purpose: 'code_host' } },
+            credentialRefs: [{ id: handle, purpose: 'code_host', label: 'Code Host Token' }]
+          });
+          const conversation = await seedRepos.conversations.create({
+            projectId: project.id,
+            owner: hardcodedDevelopmentPrincipal,
+            tenant: hardcodedDevelopmentPrincipal.tenantId,
+            identity: 'pr-server-boot',
+            activeTopicId: null
+          });
+          const topic = await seedRepos.topics.create({
+            conversationId: conversation.id,
+            owner: hardcodedDevelopmentPrincipal,
+            tenant: hardcodedDevelopmentPrincipal.tenantId,
+            title: 'PR server boot',
+            kind: 'main'
+          });
+          const run = await seedRepos.runs.create({
+            topicId: topic.id,
+            owner: hardcodedDevelopmentPrincipal,
+            tenant: hardcodedDevelopmentPrincipal.tenantId,
+            workKind: 'enhancement',
+            currentStep: 'implementation.human_review',
+            terminal: false
+          });
+          await seedRepos.artifacts.create({
+            runId: run.id,
+            owner: hardcodedDevelopmentPrincipal,
+            tenant: hardcodedDevelopmentPrincipal.tenantId,
+            kind: 'enhancement_spec',
+            canonicalRecord: 'file',
+            location: 'context-human/specs/enhancement-pr-server.md',
+            cachedStatus: 'approved',
+            publicationRefs: []
+          });
+          await seedRepos.runWorkspaceMetadata.upsert({
+            runId: run.id,
+            workspaceHandle: BRANCH,
+            workspaceRepoRoot: repoRoot,
+            createdAt: now
+          });
+          const buildStep = await seedRepos.runSteps.create({
+            runId: run.id,
+            phase: 'implementation',
+            step: 'implementation.build',
+            role: 'none',
+            startedAt: now,
+            endedAt: now,
+            durationMs: 1,
+            occurrence: { index: 0, attempt: 1 }
+          });
+          await seedRepos.runSteps.updateCheckpoint({
+            runStepId: buildStep.id,
+            runId: run.id,
+            tenant: hardcodedDevelopmentPrincipal.tenantId,
+            checkpointResult: {
+              kind: 'cumulative_implementation_summary',
+              cumulativeSummary: 'Added the PR lifecycle.',
+              changedFiles: ['round 1: 3 file(s) changed'],
+              validationSummary: ['tests pass'],
+              followUps: [],
+              nonGoals: [],
+              sourceRoundCount: 1,
+              completedAt: now
+            } as unknown as Parameters<typeof seedRepos.runSteps.updateCheckpoint>[0]['checkpointResult']
+          });
+          seedDb.close();
+
+          // 4. Boot the REAL server. We deliberately do NOT inject pullRequestOpenDependencies or
+          //    specFreezeDependencies — createControlPlaneServer must construct them. The unitOfWork
+          //    only supplies the canned pr.finalize reviewer verdict (clean), as a live model would.
+          const unitOfWork: RunUnitOfWork = {
+            run: async ({ run: r }) =>
+              r.currentStep === 'pr.finalize'
+                ? {
+                    directive: 'advance' as const,
+                    result: { directive: 'advance', titleSubject: 'add PR lifecycle', validationSummary: [], findings: [] }
+                  }
+                : { directive: 'advance' as const }
+          };
+
+          const app = await createControlPlaneServer({
+            databasePath,
+            bearerToken: BEARER_TOKEN,
+            masterSecret: MASTER_SECRET,
+            workspaceRoots: { workspacesRoot, reposRoot },
+            codeHost: { executablePath: fakeGh },
+            unitOfWork
+          });
+          try {
+            // Approve the implementation gate; auto-dispatch then runs pr.finalize → spec freeze →
+            // pr.open and halts at pr.human_review.
+            const approve = await app.inject({
+              method: 'POST',
+              url: `/v1/runs/${run.id}/replies`,
+              headers: { authorization: `Bearer ${BEARER_TOKEN}`, 'content-type': 'application/json' },
+              payload: { kind: 'approve', body: 'Implementation looks good.' }
+            });
+            expect(approve.statusCode).toBe(200);
+
+            const halted = await pollForStep((opts) => app.inject(opts), run.id, BEARER_TOKEN, 'pr.human_review', 30_000);
+            expect(halted.currentStep).toBe('pr.human_review');
+            expect(halted.terminal).toBe(false);
+
+            // Verify via a fresh connection. A persisted, open PR record can only exist if the server
+            // constructed pullRequestOpenDependencies (adapter + registry + credential resolver) and
+            // drove pr.open through them.
+            const verifyDb = createSqliteDatabase({ path: databasePath });
+            const verifyRepos = createDrizzleDomainRepositories(verifyDb);
+            try {
+              const pr = await verifyRepos.pullRequests.findByRun(run.id);
+              expect(pr).not.toBeNull();
+              expect(pr?.state).toBe('open');
+              expect(pr?.provider).toBe('github');
+              expect(pr?.number).toBe(4321);
+              expect(pr?.url).toBe(PR_URL);
+
+              // The spec artifact's cached status flips to `published` only when spec freeze runs,
+              // which proves specFreezeDependencies were wired and invoked before pr.open.
+              const artifact = await verifyRepos.artifacts.findByRunAndKind({ runId: run.id, kind: 'enhancement_spec' });
+              expect(artifact?.cachedStatus).toBe('published');
+            } finally {
+              verifyDb.close();
+            }
+          } finally {
+            await app.close();
+          }
+        } finally {
+          await rm(workspacesRoot, { recursive: true, force: true });
+          await rm(reposRoot, { recursive: true, force: true });
+          await rm(ghDir, { recursive: true, force: true });
         }
       });
     }

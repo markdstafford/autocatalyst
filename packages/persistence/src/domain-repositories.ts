@@ -86,6 +86,7 @@ import type {
   FeedbackStatusTransitionPersistenceInput,
   FeedbackThreadAppendPersistenceInput,
   LifecycleRunStepInput,
+  ListOpenPullRequestsInput,
   ListRunsByTenantOptions,
   MessageRepository,
   ProjectRepository,
@@ -103,6 +104,7 @@ import type {
   SessionRepository,
   TestResultRepository,
   TopicRepository,
+  UpdatePullRequestStateInput,
   UpdateRunStepCheckpointInput
 } from '@autocatalyst/core';
 import { FeedbackConcurrentModificationError } from '@autocatalyst/core';
@@ -1143,6 +1145,50 @@ export class DrizzlePullRequestRepository implements PullRequestRepository {
     const rows = this.#database.drizzle.select().from(pullRequests).where(eq(pullRequests.runId, runId)).limit(1).all();
     const row = rows[0];
     return row === undefined ? null : this.#rowToPullRequest(row);
+  }
+
+  async updateState(input: UpdatePullRequestStateInput): Promise<PullRequest> {
+    return this.#database.drizzle.transaction((tx) => {
+      const current = tx
+        .select()
+        .from(pullRequests)
+        .where(and(eq(pullRequests.runId, input.runId), eq(pullRequests.tenant, input.tenant)))
+        .limit(1)
+        .all()[0];
+      if (current === undefined) {
+        throw new Error(`PullRequest for run '${input.runId}' and tenant '${input.tenant}' does not exist.`);
+      }
+      if (input.expectedState !== undefined && current.state !== input.expectedState) {
+        throw new Error(
+          `PullRequest state mismatch: expected '${input.expectedState}' but found '${current.state}'.`
+        );
+      }
+      tx.update(pullRequests)
+        .set({ state: input.state, updatedAt: input.updatedAt })
+        .where(eq(pullRequests.id, current.id))
+        .run();
+      const updated = tx
+        .select()
+        .from(pullRequests)
+        .where(eq(pullRequests.id, current.id))
+        .limit(1)
+        .all()[0];
+      if (updated === undefined) {
+        throw new Error(`PullRequest '${current.id}' does not exist after update.`);
+      }
+      return this.#rowToPullRequest(updated);
+    });
+  }
+
+  async listOpen(input: ListOpenPullRequestsInput): Promise<readonly PullRequest[]> {
+    const rows = this.#database.drizzle
+      .select()
+      .from(pullRequests)
+      .where(and(eq(pullRequests.tenant, input.tenant), eq(pullRequests.state, 'open')))
+      .orderBy(asc(pullRequests.createdAt), asc(pullRequests.id))
+      .limit(input.limit)
+      .all();
+    return rows.map((row) => this.#rowToPullRequest(row));
   }
 
   #rowToPullRequest(row: typeof pullRequests.$inferSelect): PullRequest {

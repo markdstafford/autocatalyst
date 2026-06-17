@@ -23,7 +23,8 @@ import {
   type AgentProviderAdapter,
   type AgentProviderAdapterRegistry,
   type AgentRunnerFactory,
-  type AgentRunnerFactoryInput
+  type AgentRunnerFactoryInput,
+  type Runner
 } from '@autocatalyst/execution';
 import { claudeAgentAdapterId, claudeProviderKind } from '@autocatalyst/claude-agent-adapter';
 
@@ -602,6 +603,156 @@ describe('createDelegatingExecutionEntryPoint — role routing', () => {
       schemaId: 'any',
       resultFile: 'step-result.json'
     });
+  });
+});
+
+describe('createDelegatingExecutionEntryPoint — onWorkspaceRootResolved branchName propagation', () => {
+  function makeContext(runId = 'run_1'): ExecutionContext {
+    return {
+      run: { id: runId, workKind: 'chore', currentStep: 'implementation.build', tenant: 'tenant_1' },
+      task: { prompt: 'test prompt', inputs: {} },
+      workspaceIntent: { shape: 'none' },
+      secretBindings: [],
+      toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
+      skills: { requested: [], resolved: [] },
+      capabilityRequirements: {
+        shell: { kind: 'bash', required: false },
+        paths: { canonicalWorkspacePaths: false },
+        lsp: { requested: false }
+      }
+    };
+  }
+
+  function makeNoopRunner(): Runner {
+    return {
+      run: async function*() { /* yields no events */ },
+      close: async () => ({ status: 'closed' as const })
+    };
+  }
+
+  it('passes repoRoot and branchName to onWorkspaceRootResolved for two_roots workspaces', async () => {
+    const capturedCalls: { runId: string; repoRoot: string; branchName: string }[] = [];
+
+    const materialize = async (ctx: ExecutionContext) => ({
+      context: ctx,
+      workspace: {
+        shape: 'two_roots' as const,
+        repoRoot: '/workspace/repo',
+        scratchRoot: '/workspace/scratch',
+        branchName: 'chore/clean-up-Abc12345',
+        workspaceRoots: ['/workspace/repo', '/workspace/scratch']
+      },
+      environment: { variables: {}, secretVariableNames: [] },
+      toolPolicy: { allowedTools: [], workspaceRoots: ['/workspace/repo', '/workspace/scratch'] },
+      skills: { requested: [], resolved: [] },
+      capabilities: {
+        shell: { kind: 'bash' as const, available: false },
+        paths: { repoRoot: '/workspace/repo', scratchRoot: '/workspace/scratch' },
+        lsp: { requested: false, available: false }
+      }
+    });
+
+    // createRunner must succeed so execution reaches materialize inside createExecutionEntryPoint.
+    const factory: AgentRunnerFactory = {
+      createRunner: vi.fn(async () => makeNoopRunner())
+    };
+
+    const entryPoint = createDelegatingExecutionEntryPoint({
+      factory,
+      materialize,
+      onWorkspaceRootResolved: (runId, repoRoot, branchName) => {
+        capturedCalls.push({ runId, repoRoot, branchName });
+      }
+    });
+
+    for await (const _ of entryPoint.execute({ context: makeContext('run_chore_1') })) { /* consume */ }
+
+    expect(capturedCalls).toHaveLength(1);
+    expect(capturedCalls[0]).toEqual({
+      runId: 'run_chore_1',
+      repoRoot: '/workspace/repo',
+      branchName: 'chore/clean-up-Abc12345'
+    });
+    // Critical: branchName must not be the runId
+    expect(capturedCalls[0]?.branchName).not.toBe('run_chore_1');
+  });
+
+  it('onWorkspaceRootResolved is NOT called for non-two_roots workspaces', async () => {
+    const capturedCalls: unknown[] = [];
+
+    const materialize = async (ctx: ExecutionContext) => ({
+      context: ctx,
+      workspace: { shape: 'none' as const, workspaceRoots: [] },
+      environment: { variables: {}, secretVariableNames: [] },
+      toolPolicy: { allowedTools: [], workspaceRoots: [] },
+      skills: { requested: [], resolved: [] },
+      capabilities: {
+        shell: { kind: 'bash' as const, available: false },
+        paths: {},
+        lsp: { requested: false, available: false }
+      }
+    });
+
+    const factory: AgentRunnerFactory = {
+      createRunner: vi.fn(async () => makeNoopRunner())
+    };
+
+    const entryPoint = createDelegatingExecutionEntryPoint({
+      factory,
+      materialize,
+      onWorkspaceRootResolved: (...args) => { capturedCalls.push(args); }
+    });
+
+    for await (const _ of entryPoint.execute({ context: makeContext() })) { /* consume */ }
+
+    expect(capturedCalls).toHaveLength(0);
+  });
+
+  it('awaits an async onWorkspaceRootResolved callback before runner.run() is called', async () => {
+    const order: string[] = [];
+
+    const materialize = async (ctx: ExecutionContext) => {
+      order.push('materialize');
+      return {
+        context: ctx,
+        workspace: {
+          shape: 'two_roots' as const,
+          repoRoot: '/r',
+          scratchRoot: '/s',
+          branchName: 'feature/test-Abc12345',
+          workspaceRoots: ['/r', '/s']
+        },
+        environment: { variables: {}, secretVariableNames: [] },
+        toolPolicy: { allowedTools: [], workspaceRoots: [] },
+        skills: { requested: [], resolved: [] },
+        capabilities: {
+          shell: { kind: 'bash' as const, available: false },
+          paths: { repoRoot: '/r', scratchRoot: '/s' },
+          lsp: { requested: false, available: false }
+        }
+      };
+    };
+
+    const factory: AgentRunnerFactory = {
+      createRunner: vi.fn(async () => ({
+        run: async function*() { order.push('runner-run-started'); },
+        close: async () => ({ status: 'closed' as const })
+      } satisfies Runner))
+    };
+
+    const entryPoint = createDelegatingExecutionEntryPoint({
+      factory,
+      materialize,
+      onWorkspaceRootResolved: async (_runId, _repoRoot, _branchName) => {
+        await Promise.resolve(); // yield to event loop
+        order.push('callback-resolved');
+      }
+    });
+
+    for await (const _ of entryPoint.execute({ context: makeContext() })) { /* consume */ }
+
+    // callback-resolved must appear before runner-run-started (callback is awaited before runner runs)
+    expect(order).toEqual(['materialize', 'callback-resolved', 'runner-run-started']);
   });
 });
 

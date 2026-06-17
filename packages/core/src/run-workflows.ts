@@ -24,9 +24,9 @@ function advanceTransitions(steps: readonly RunStepId[]): WorkflowTransitionTabl
   ) as WorkflowTransitionTable;
 }
 
-const featureSteps = ['intake', 'spec.author', 'spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'docs.update', 'docs.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'] as const satisfies readonly RunStepId[];
-const bugSteps = ['intake', 'spec.author', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'docs.update', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'] as const satisfies readonly RunStepId[];
-const choreSteps = ['intake', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'docs.update', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'] as const satisfies readonly RunStepId[];
+const featureSteps = ['intake', 'spec.author', 'spec.human_review', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'] as const satisfies readonly RunStepId[];
+const bugSteps = ['intake', 'spec.author', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'] as const satisfies readonly RunStepId[];
+const choreSteps = ['intake', 'implementation.plan', 'implementation.build', 'implementation.human_review', 'pr.finalize', 'pr.open', 'pr.human_review', 'done'] as const satisfies readonly RunStepId[];
 const fileIssueSteps = ['intake', 'spec.author', 'issues.file', 'done'] as const satisfies readonly RunStepId[];
 const questionSteps = ['intake', 'question.answer', 'done'] as const satisfies readonly RunStepId[];
 
@@ -43,7 +43,6 @@ const featureLikeTransitions: WorkflowTransitionTable = {
   'implementation.build': { ...featureAdvanceTransitions['implementation.build'], needs_input: 'implementation.awaiting_input' },
   'implementation.awaiting_input': { advance: 'implementation.build' },
   'implementation.human_review': { ...featureAdvanceTransitions['implementation.human_review'], revise: 'implementation.build' },
-  'docs.human_review': { ...featureAdvanceTransitions['docs.human_review'], revise: 'docs.update' },
   'pr.finalize': { ...featureAdvanceTransitions['pr.finalize'], revise: 'implementation.human_review' },
   'pr.human_review': { ...featureAdvanceTransitions['pr.human_review'], revise: 'pr.finalize' }
 };

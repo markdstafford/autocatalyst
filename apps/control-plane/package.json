@@ -8,6 +8,7 @@
     "@autocatalyst/anthropic-direct-adapter": "workspace:*",
     "@autocatalyst/api-contract": "workspace:*",
     "@autocatalyst/claude-agent-adapter": "workspace:*",
+    "@autocatalyst/github-code-host-adapter": "workspace:*",
     "@autocatalyst/github-issue-tracker-adapter": "workspace:*",
     "@autocatalyst/core": "workspace:*",
     "@autocatalyst/execution": "workspace:*",

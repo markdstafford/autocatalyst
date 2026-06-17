@@ -153,10 +153,25 @@ export interface PublicationRepository {
   listByRun(runId: string): Promise<readonly Publication[]>;
 }
 
+export interface UpdatePullRequestStateInput {
+  readonly runId: string;
+  readonly tenant: string;
+  readonly state: PullRequest['state'];
+  readonly updatedAt: string;
+  readonly expectedState?: PullRequest['state'];
+}
+
+export interface ListOpenPullRequestsInput {
+  readonly tenant: string;
+  readonly limit: number;
+}
+
 export interface PullRequestRepository {
   create(input: CreatePullRequestInput): Promise<PullRequest>;
   findById(id: string): Promise<PullRequest | null>;
   findByRun(runId: string): Promise<PullRequest | null>;
+  updateState(input: UpdatePullRequestStateInput): Promise<PullRequest>;
+  listOpen(input: ListOpenPullRequestsInput): Promise<readonly PullRequest[]>;
 }
 
 export interface UpdateRunStepCheckpointInput {

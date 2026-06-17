@@ -58,6 +58,10 @@ export interface LayeredConvergenceEngineOptions {
   readonly clock?: () => string;
   readonly idGenerator?: () => string;
   readonly reviewerPrincipal?: Principal;
+  /** Called after the first implementer dispatch to pick up workspace context that
+   *  became available during provisioning (e.g. chore/bug runs whose workspace is
+   *  cloned on-demand rather than resolved from a pre-existing registry entry). */
+  readonly workspaceContextRefresher?: (runId: string) => Promise<WorkspaceContext | undefined>;
 }
 
 function defaultReviewerPrincipal(tenant: string): Principal {
@@ -151,7 +155,7 @@ interface AltitudeLoopState {
 }
 
 type AltitudeLoopOutcome =
-  | { readonly kind: 'accepted' }
+  | { readonly kind: 'accepted'; readonly resolvedWorkspace: WorkspaceContext | undefined }
   | { readonly kind: 'escalated'; readonly reason: 'max_rounds' | 'oscillation' }
   | { readonly kind: 'failed'; readonly workResult: RunWorkResult };
 
@@ -169,6 +173,11 @@ export function createLayeredConvergenceEngine(
     readonly state: AltitudeLoopState;
   }): Promise<AltitudeLoopOutcome> {
     const { altitude, maxRounds, depth, input, routes, state } = params;
+
+    // May start as undefined for runs whose workspace is provisioned during the first
+    // implementer dispatch (e.g. chore/bug runs). Refreshed via workspaceContextRefresher
+    // after the first implementer dispatch so subsequent git operations have a valid root.
+    let resolvedWorkspace: WorkspaceContext | undefined = input.workspace;
 
     const altitudeRounds: ConvergenceRoundRecord[] = [];
     const declinedSignatures: string[] = [];
@@ -233,6 +242,12 @@ export function createLayeredConvergenceEngine(
       state.lastImplementerLastPosition =
         implDispatch.lastPosition ?? state.lastImplementerLastPosition;
 
+      // Workspace may have been provisioned during the implementer dispatch for runs
+      // that clone on-demand (chore/bug). Refresh once so git operations below have a root.
+      if (resolvedWorkspace === undefined && options.workspaceContextRefresher !== undefined) {
+        resolvedWorkspace = await options.workspaceContextRefresher(input.runId).catch(() => undefined);
+      }
+
       // Validate dispositions
       const rawImplDispositions = implDispatch.dispositions ?? [];
       const implDispositions: FindingDisposition[] = [];
@@ -276,7 +291,7 @@ export function createLayeredConvergenceEngine(
       const commitMessage = `convergence(${input.stepDefinition.id}): ${altitude} round ${roundNumber} implementer`;
       const commitResult = await options.git.commitFiles({
         runId: input.runId,
-        workspaceRepoRoot: input.workspace?.workspaceRepoRoot ?? '',
+        workspaceRepoRoot: resolvedWorkspace?.workspaceRepoRoot ?? '',
         message: commitMessage,
         allowEmpty: true
       });
@@ -295,9 +310,9 @@ export function createLayeredConvergenceEngine(
         altitude !== 'build' &&
         lastHeadSha !== null &&
         altitudeChangedFilesSet.size > 0 &&
-        input.workspace?.workspaceRepoRoot !== undefined
+        resolvedWorkspace?.workspaceRepoRoot !== undefined
       ) {
-        const repoRoot = input.workspace.workspaceRepoRoot;
+        const repoRoot = resolvedWorkspace!.workspaceRepoRoot;
         const sha = lastHeadSha;
         // Use the cumulative set of files changed across all rounds at this altitude.
         // This ensures no-op rounds still re-check violations from prior rounds.
@@ -376,9 +391,9 @@ export function createLayeredConvergenceEngine(
         altitude === 'build' &&
         state.acceptedCheckpoints.length > 0 &&
         lastHeadSha !== null &&
-        input.workspace?.workspaceRepoRoot !== undefined
+        resolvedWorkspace?.workspaceRepoRoot !== undefined
       ) {
-        const repoRoot = input.workspace.workspaceRepoRoot;
+        const repoRoot = resolvedWorkspace!.workspaceRepoRoot;
         const sha = lastHeadSha;
         const driftFindings = await validateBuildContractPreservation({
           workspaceRepoRoot: repoRoot,
@@ -564,7 +579,7 @@ export function createLayeredConvergenceEngine(
         });
       }
 
-      if (noBlocking) return { kind: 'accepted' };
+      if (noBlocking) return { kind: 'accepted', resolvedWorkspace };
       if (escalation !== undefined) return { kind: 'escalated', reason: escalation };
     }
 
@@ -662,14 +677,15 @@ export function createLayeredConvergenceEngine(
         // most recent round that actually committed something.
         const altitudeRoundsForCurrent = state.allRounds.filter(r => r.altitude === altitude);
         const lastCommitSha = altitudeRoundsForCurrent.slice().reverse().find(r => r.implementerCommitSha != null)?.implementerCommitSha ?? null;
+        const altWorkspace = altResult.resolvedWorkspace;
         if (
           lastCommitSha !== null &&
-          input.workspace?.workspaceRepoRoot !== undefined
+          altWorkspace?.workspaceRepoRoot !== undefined
         ) {
           try {
             const refResult = await options.git.captureCheckpointRef({
               runId: input.runId,
-              workspaceRepoRoot: input.workspace.workspaceRepoRoot,
+              workspaceRepoRoot: altWorkspace.workspaceRepoRoot,
               altitude: altitude as Exclude<ImplementationAltitude, 'build'>,
               commitSha: lastCommitSha
             });

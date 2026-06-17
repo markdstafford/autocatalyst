@@ -140,7 +140,8 @@ export const convergenceCheckpointSchema = z.object({
   }).strict(),
   depth: implementationConvergenceDepthSchema.optional(),
   currentAltitude: implementationAltitudeSchema.optional(),
-  acceptedCheckpoints: z.array(altitudeCheckpointRefSchema).optional()
+  acceptedCheckpoints: z.array(altitudeCheckpointRefSchema).optional(),
+  cumulativeSummary: z.unknown().optional()
 }).strict();
 
 export type ConvergenceRoundOutcome = z.infer<typeof convergenceRoundOutcomeSchema>;

@@ -21,7 +21,14 @@ import type { CompleteSpecAuthoringOutput, SpecAuthoringServiceDependencies } fr
 import { completeSpecAuthoring } from './spec-authoring-service.js';
 import type { SpecApprovalFinalizerDependencies } from './spec-approval-finalizer.js';
 import { finalizeSpecApproval } from './spec-approval-finalizer.js';
+import type { SpecFreezeDependencies } from './spec-freeze.js';
+import { freezeRunSpecForPullRequest, SpecFreezeError } from './spec-freeze.js';
 import type { ConvergenceEngine } from './convergence-engine.js';
+import {
+  buildPullRequestFinalizeCheckpoint,
+  feedbackInputsFromPullRequestFinalizeFindings,
+  parsePullRequestFinalizeResult
+} from './pr-finalize.js';
 import {
   ConvergenceCheckpointError,
   getConvergenceEscalationPause,
@@ -30,12 +37,24 @@ import {
 
 import type {
   ConversationIngressRepository,
+  ConversationRepository,
   CreateConversationTopicMessageAndRunResult,
   LifecycleRunStepInput,
+  ProjectRepository,
+  PullRequestRepository,
   RunRepository,
   RunStepRepository,
-  RunWorkspaceMetadataRepository
+  RunWorkspaceMetadataRepository,
+  TopicRepository
 } from './domain-repositories.js';
+import type { CodeHostCredential } from './code-host.js';
+import type { CodeHostRegistry } from './code-host-registry.js';
+import { handlePullRequestOpen } from './pr-open-handler.js';
+import { buildCumulativeImplementationSummary } from './implementation-summary.js';
+import {
+  detectPullRequestMerges,
+  type PullRequestStatusReconciliationResult
+} from './pr-lifecycle.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
 import { createGateFeedback, listBlockingFeedback, resolveApproverAddressedFeedback } from './feedback-lifecycle.js';
 import { assertSpecReviewGateCanAdvance, SpecReviewGateBlockedError } from './spec-review-gate.js';
@@ -194,6 +213,7 @@ export interface Orchestrator {
   dispatch(input: DispatchRunInput): Promise<OrchestratedRunResult>;
   tick(input: TickInput): Promise<TickResult>;
   replyToRun(input: ReplyToRunInput): Promise<ReplyToRunResult>;
+  detectMerges(tenant: string): Promise<PullRequestStatusReconciliationResult>;
 }
 
 // --- Spec authoring completion ---
@@ -229,9 +249,21 @@ export interface DefaultOrchestratorOptions {
   readonly feedbackLifecycleDependencies?: FeedbackLifecycleDependencies;
   readonly finalizeSpecApproval?: typeof finalizeSpecApproval;
   readonly specApprovalFinalizerDependencies?: SpecApprovalFinalizerDependencies;
+  readonly freezeRunSpecForPullRequest?: typeof freezeRunSpecForPullRequest;
+  readonly specFreezeDependencies?: SpecFreezeDependencies;
   readonly runSteps?: RunStepRepository;
   readonly convergenceEngine?: ConvergenceEngine;
   readonly autoDispatch?: AutoDispatchOptions;
+  readonly pullRequestOpenDependencies?: PullRequestOpenWiringDependencies;
+}
+
+export interface PullRequestOpenWiringDependencies {
+  readonly conversations: ConversationRepository;
+  readonly topics: TopicRepository;
+  readonly projects: ProjectRepository;
+  readonly pullRequests: PullRequestRepository;
+  readonly codeHosts: CodeHostRegistry;
+  readonly resolveCredential: (ref: unknown) => Promise<CodeHostCredential>;
 }
 
 function defaultIsActiveRunConflict(error: unknown): boolean {
@@ -265,8 +297,11 @@ export class DefaultOrchestrator implements Orchestrator {
   readonly #feedbackLifecycleDependencies: FeedbackLifecycleDependencies | undefined;
   readonly #finalizeSpecApproval: typeof finalizeSpecApproval;
   readonly #specApprovalFinalizerDependencies: SpecApprovalFinalizerDependencies | undefined;
+  readonly #freezeRunSpecForPullRequest: typeof freezeRunSpecForPullRequest;
+  readonly #specFreezeDependencies: SpecFreezeDependencies | undefined;
   readonly #runSteps: RunStepRepository | undefined;
   readonly #convergenceEngine: ConvergenceEngine | undefined;
+  readonly #pullRequestOpenDependencies: PullRequestOpenWiringDependencies | undefined;
   readonly #autoDispatchEnabled: boolean;
   readonly #autoDispatchInFlightRunIds = new Set<string>();
 
@@ -289,8 +324,11 @@ export class DefaultOrchestrator implements Orchestrator {
     this.#feedbackLifecycleDependencies = options.feedbackLifecycleDependencies;
     this.#finalizeSpecApproval = options.finalizeSpecApproval ?? finalizeSpecApproval;
     this.#specApprovalFinalizerDependencies = options.specApprovalFinalizerDependencies;
+    this.#freezeRunSpecForPullRequest = options.freezeRunSpecForPullRequest ?? freezeRunSpecForPullRequest;
+    this.#specFreezeDependencies = options.specFreezeDependencies;
     this.#runSteps = options.runSteps;
     this.#convergenceEngine = options.convergenceEngine;
+    this.#pullRequestOpenDependencies = options.pullRequestOpenDependencies;
   }
 
   async createRun(input: CreateOrchestratedRunInput): Promise<OrchestratedRunResult> {
@@ -690,11 +728,40 @@ export class DefaultOrchestrator implements Orchestrator {
             origin: 'runner'
           });
         }
+        const convergenceClock = this.#clock ?? (() => new Date().toISOString());
+        let enrichedCheckpoint: unknown = result.checkpointResult;
+        if (result.checkpointResult.rounds.length > 0) {
+          try {
+            const cumulativeSummary = buildCumulativeImplementationSummary({
+              rounds: result.checkpointResult.rounds.map(r => {
+                const fixSummaryText = r.dispositions
+                  .filter(d => d.disposition === 'fixed')
+                  .map(d => d.summary)
+                  .join('; ');
+                // For clean convergence rounds with no reviewer findings, generate a
+                // minimal fallback so pr.finalize has an implementation description
+                // to reconcile rather than an empty summary.
+                const effectiveSummary = fixSummaryText ||
+                  (r.findings.length === 0 ? `Round ${r.round}: implementation passed review` : '');
+                return {
+                  ...(effectiveSummary ? { fixSummary: effectiveSummary } : {}),
+                  changedFiles: r.changedFileCount > 0
+                    ? [`round ${r.round}: ${r.changedFileCount} file(s) changed`]
+                    : []
+                };
+              }),
+              completedAt: convergenceClock()
+            });
+            enrichedCheckpoint = { ...result.checkpointResult, cumulativeSummary };
+          } catch {
+            // Non-fatal: pr-open-handler will surface a clear error if summary is missing
+          }
+        }
         return this.applyDirective({
           runId: input.runId,
           directive: 'advance',
           tenant: input.tenant,
-          checkpointResult: result.checkpointResult as unknown as JsonValue,
+          checkpointResult: enrichedCheckpoint as unknown as JsonValue,
           origin: 'runner'
         });
       });
@@ -706,7 +773,11 @@ export class DefaultOrchestrator implements Orchestrator {
     const unitOfWork = this.#unitOfWork;
 
     return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
-      const result = await unitOfWork.run({ runId: input.runId, run, tenant: input.tenant });
+      const baseWorkInput: RunWorkInput = { runId: input.runId, run, tenant: input.tenant };
+      const workInput: RunWorkInput = run.currentStep === 'pr.finalize'
+        ? { ...baseWorkInput, toolPolicyMode: 'read_only' } as unknown as RunWorkInput
+        : baseWorkInput;
+      const result = await unitOfWork.run(workInput);
       if (result.directive === 'fail') {
         return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason: result.reason, origin: 'runner' });
       }
@@ -721,6 +792,110 @@ export class DefaultOrchestrator implements Orchestrator {
             `Step '${run.currentStep}' in workflow '${run.workKind}' has no 'needs_input' edge.`
           );
         }
+      }
+
+      // For pr.finalize advance: parse the reviewer result. A `revise` directive routes
+      // back to implementation.human_review and records Feedback for any blockers/warnings.
+      // An `advance` directive stores a sanitized checkpoint and advances toward pr.open.
+      // T-009 will insert a deterministic spec freeze before the advance is applied.
+      if (result.directive === 'advance' && run.currentStep === 'pr.finalize') {
+        let parsed;
+        try {
+          parsed = parsePullRequestFinalizeResult(result.result);
+        } catch (cause) {
+          this.#logger?.warn('pr.finalize result failed validation.', { runId: input.runId, ...this.#safeCause(cause) });
+          return this.applyDirective({
+            runId: input.runId,
+            directive: 'fail',
+            tenant: input.tenant,
+            reason: 'pr_finalize_invalid_result',
+            origin: 'runner'
+          });
+        }
+
+        if (parsed.directive === 'revise') {
+          if (this.#feedbackLifecycleDependencies !== undefined) {
+            const feedbackInputs = feedbackInputsFromPullRequestFinalizeFindings(
+              input.runId,
+              run.tenant,
+              run.owner,
+              parsed.findings,
+              {
+                ids: this.#feedbackLifecycleDependencies.ids,
+                clock: this.#feedbackLifecycleDependencies.clock
+              }
+            );
+            for (const fbInput of feedbackInputs) {
+              try {
+                await this.#feedbackLifecycleDependencies.feedback.create(fbInput);
+              } catch (cause) {
+                this.#logger?.warn('Failed to persist pr.finalize feedback.', { runId: input.runId, ...this.#safeCause(cause) });
+              }
+            }
+          }
+          return this.applyDirective({
+            runId: input.runId,
+            directive: 'revise',
+            tenant: input.tenant,
+            checkpointResult: buildPullRequestFinalizeCheckpoint(parsed, this.#clock !== undefined ? { clock: this.#clock } : {}),
+            origin: 'runner'
+          });
+        }
+
+        // Deterministic spec freeze before advancing to pr.open. Only spec-bearing workflows
+        // (feature/enhancement) carry a spec artifact; other workflows skip the freeze.
+        // Freeze failure becomes a `fail` directive with reason `spec_freeze_failed` so the
+        // run never advances to pr.open with an unfrozen spec.
+        const isSpecBearingWorkflow = run.workKind === 'feature' || run.workKind === 'enhancement';
+        if (isSpecBearingWorkflow && this.#specFreezeDependencies !== undefined) {
+          if (this.#resolveWorkspaceContext === undefined) {
+            this.#logger?.warn('Spec freeze configured without workspace context resolver.', { runId: input.runId });
+            return this.applyDirective({
+              runId: input.runId,
+              directive: 'fail',
+              tenant: input.tenant,
+              reason: 'spec_freeze_failed',
+              origin: 'runner'
+            });
+          }
+          let workspaceContext: WorkspaceContext;
+          try {
+            workspaceContext = await this.#resolveWorkspaceContext({ runId: input.runId });
+          } catch (cause) {
+            this.#logger?.warn('Failed to resolve workspace context for spec freeze.', { runId: input.runId, ...this.#safeCause(cause) });
+            return this.applyDirective({
+              runId: input.runId,
+              directive: 'fail',
+              tenant: input.tenant,
+              reason: 'spec_freeze_failed',
+              origin: 'runner'
+            });
+          }
+          try {
+            await this.#freezeRunSpecForPullRequest(
+              { run, workspaceRepoRoot: workspaceContext.workspaceRepoRoot },
+              this.#specFreezeDependencies
+            );
+          } catch (cause) {
+            const safeCode = cause instanceof SpecFreezeError ? cause.code : 'spec_freeze_failed';
+            this.#logger?.warn('Spec freeze failed before pr.open.', { runId: input.runId, code: safeCode, ...this.#safeCause(cause) });
+            return this.applyDirective({
+              runId: input.runId,
+              directive: 'fail',
+              tenant: input.tenant,
+              reason: 'spec_freeze_failed',
+              origin: 'runner'
+            });
+          }
+        }
+
+        return this.applyDirective({
+          runId: input.runId,
+          directive: 'advance',
+          tenant: input.tenant,
+          checkpointResult: buildPullRequestFinalizeCheckpoint(parsed, this.#clock !== undefined ? { clock: this.#clock } : {}),
+          origin: 'runner'
+        });
       }
 
       // For spec.author advance: run completion service before persisting transition.
@@ -770,13 +945,86 @@ export class DefaultOrchestrator implements Orchestrator {
       return this.applyDirective({ runId: input.runId, directive: 'advance', tenant: input.tenant, origin: 'system' });
     }
 
+    if (run.currentStep === 'pr.open') {
+      if (
+        this.#pullRequestOpenDependencies === undefined ||
+        this.#runSteps === undefined ||
+        this.#runWorkspaceMetadata === undefined
+      ) {
+        throw new OrchestratorError(
+          'persistence_failed',
+          'Pull-request open dependencies are not configured.'
+        );
+      }
+      const prDeps = this.#pullRequestOpenDependencies;
+      const runSteps = this.#runSteps;
+      const runWorkspaceMetadata = this.#runWorkspaceMetadata;
+      return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
+        try {
+          return await handlePullRequestOpen(input.runId, input.tenant, {
+            runs: this.#runs,
+            conversations: prDeps.conversations,
+            topics: prDeps.topics,
+            projects: prDeps.projects,
+            pullRequests: prDeps.pullRequests,
+            runSteps,
+            runWorkspaceMetadata,
+            codeHosts: prDeps.codeHosts,
+            resolveCredential: prDeps.resolveCredential,
+            events: this.#events,
+            applyDirective: (directiveInput) => this.applyDirective(directiveInput),
+            clock: this.#clock ?? (() => new Date().toISOString())
+          });
+        } catch (cause) {
+          const safeCode = (cause as { code?: string } | null)?.code;
+          this.#logger?.warn('pr.open handler failed.', { runId: input.runId, code: safeCode, ...this.#safeCause(cause) });
+          return this.applyDirective({
+            runId: input.runId,
+            directive: 'fail',
+            tenant: input.tenant,
+            reason: typeof safeCode === 'string' ? `pr_open_${safeCode}` : 'pr_open_failed',
+            origin: 'system'
+          });
+        }
+      });
+    }
+
     throw new OrchestratorError(
       'invalid_transition',
       `Step '${run.currentStep}' is waiting on a system handler that is not implemented.`
     );
   }
 
+  async detectMerges(tenant: string): Promise<PullRequestStatusReconciliationResult> {
+    if (this.#pullRequestOpenDependencies === undefined) {
+      throw new OrchestratorError(
+        'persistence_failed',
+        'Pull-request lifecycle dependencies are not configured.'
+      );
+    }
+    const prDeps = this.#pullRequestOpenDependencies;
+    return detectPullRequestMerges(
+      { tenant, maxCount: 50, timeoutMs: 30_000 },
+      {
+        runs: this.#runs,
+        conversations: prDeps.conversations,
+        topics: prDeps.topics,
+        projects: prDeps.projects,
+        pullRequests: prDeps.pullRequests,
+        codeHosts: prDeps.codeHosts,
+        resolveCredential: prDeps.resolveCredential,
+        applyDirective: (directiveInput) => this.applyDirective(directiveInput),
+        ...(this.#clock !== undefined ? { clock: this.#clock } : {})
+      }
+    );
+  }
+
   async tick(input: TickInput): Promise<TickResult> {
+    // Detect merges as a background side-effect on every tick; failures are swallowed.
+    if (this.#pullRequestOpenDependencies !== undefined) {
+      this.detectMerges(input.tenant).catch(() => undefined);
+    }
+
     if (input.runId === undefined) {
       return { status: 'noop' };
     }

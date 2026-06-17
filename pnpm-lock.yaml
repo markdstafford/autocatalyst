@@ -93,6 +93,9 @@ importers:
       '@autocatalyst/execution':
         specifier: workspace:*
         version: link:../../packages/execution
+      '@autocatalyst/github-code-host-adapter':
+        specifier: workspace:*
+        version: link:../../packages/github-code-host-adapter
       '@autocatalyst/github-issue-tracker-adapter':
         specifier: workspace:*
         version: link:../../packages/github-issue-tracker-adapter
@@ -162,6 +165,15 @@ importers:
       zod:
         specifier: ^3.0.0
         version: 3.25.76
+
+  packages/github-code-host-adapter:
+    dependencies:
+      '@autocatalyst/core':
+        specifier: '*'
+        version: link:../core
+      '@autocatalyst/github-issue-tracker-adapter':
+        specifier: '*'
+        version: link:../github-issue-tracker-adapter
 
   packages/github-issue-tracker-adapter:
     dependencies:
