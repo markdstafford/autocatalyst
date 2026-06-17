@@ -388,7 +388,9 @@ describe('handlePullRequestOpen', () => {
   });
 
   it('maps code-host create failures to code_host_error and does not persist a PR record', async () => {
+    const FAKE_TOKEN = 'ghp_FAKE_SECRET_TOKEN_XYZ';
     const { deps, pullRequestCreate, applyDirective } = makeDeps({
+      resolveCredential: async () => ({ token: FAKE_TOKEN }),
       createBehavior: async () => {
         throw new CodeHostError('provider_unavailable', 'GitHub returned 503.', { provider: 'github' });
       }
@@ -405,6 +407,10 @@ describe('handlePullRequestOpen', () => {
     expect((caught as PullRequestOpenHandlerError).details).toMatchObject({ code: 'provider_unavailable' });
     expect(pullRequestCreate).not.toHaveBeenCalled();
     expect(applyDirective).not.toHaveBeenCalled();
+    // Safety: error message and serialized details must not expose the credential token.
+    const err = caught as PullRequestOpenHandlerError;
+    expect(err.message).not.toContain(FAKE_TOKEN);
+    expect(JSON.stringify(err.details)).not.toContain(FAKE_TOKEN);
   });
 
   it('throws missing_pr_finalize_checkpoint when no pr.finalize step is present', async () => {
