@@ -376,14 +376,22 @@ describe('handlePullRequestOpen', () => {
   });
 
   it('throws missing_credential when credential resolution fails (and does not leak any cause message)', async () => {
+    const SENSITIVE_CAUSE = 'upstream failure with sensitive context';
     const { deps, create } = makeDeps({
-      resolveCredential: async () => { throw new Error('upstream failure with sensitive context'); }
+      resolveCredential: async () => { throw new Error(SENSITIVE_CAUSE); }
     });
 
-    await expect(handlePullRequestOpen('run_1', 'tenant_1', deps)).rejects.toMatchObject({
-      name: 'PullRequestOpenHandlerError',
-      code: 'missing_credential'
-    });
+    let caught: unknown;
+    try {
+      await handlePullRequestOpen('run_1', 'tenant_1', deps);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PullRequestOpenHandlerError);
+    const err = caught as PullRequestOpenHandlerError;
+    expect(err.code).toBe('missing_credential');
+    expect(err.message).not.toContain(SENSITIVE_CAUSE);
+    expect(JSON.stringify(err.details ?? {})).not.toContain(SENSITIVE_CAUSE);
     expect(create).not.toHaveBeenCalled();
   });
 
