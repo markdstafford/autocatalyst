@@ -2592,6 +2592,63 @@ describe('reviewed step integration — transitions and checkpoint persistence',
     expect(transitionCall?.checkpointResult).toBeDefined();
     expect(transitionCall?.checkpointResult).toMatchObject({ kind: 'convergence_review', outcome: 'converged' });
   });
+
+  it('clean first-round convergence (no findings, no dispositions) produces a non-empty cumulativeSummary', async () => {
+    // Regression: a clean first-round convergence has no fixed dispositions, so the cumulative
+    // summary previously had an empty narrative. The orchestrator must generate a fallback.
+    const existing = makeRun({ currentStep: 'implementation.build' });
+    const updated = makeRun({ currentStep: 'implementation.human_review' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.human_review', phase: 'implementation' });
+    const currentRunStep = makeRunStep({ step: 'implementation.build', phase: 'implementation' });
+    const cleanRoundCheckpoint = {
+      kind: 'convergence_review' as const,
+      step: 'implementation.build',
+      maxRounds: 3,
+      routing: { distinct: true },
+      rounds: [
+        {
+          round: 1,
+          changedFileCount: 5,
+          findings: [],
+          dispositions: [],
+          outcome: 'converged' as const,
+          altitude: 'build' as const
+        }
+      ],
+      outcome: 'converged' as const,
+      openFeedbackIds: [],
+      lastPositions: {}
+    };
+    const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const runSteps = makeFakeRunStepRepo({
+      listByRun: vi.fn().mockResolvedValue([currentRunStep])
+    });
+    const { engine } = makeConvergenceEngine({
+      workResult: { directive: 'advance', result: cleanRoundCheckpoint as unknown as Readonly<Record<string, unknown>> },
+      checkpointResult: cleanRoundCheckpoint
+    });
+
+    const { orchestrator } = makeOrchestrator({
+      runs,
+      runSteps,
+      convergenceEngine: engine,
+      clock: () => '2026-06-17T00:00:00.000Z',
+      autoDispatch: { enabled: false }
+    });
+
+    await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    const transitionCall = recordTransition.mock.calls[0]?.[0];
+    const checkpoint = transitionCall?.checkpointResult as { cumulativeSummary?: { cumulativeSummary?: string } };
+    expect(checkpoint?.cumulativeSummary).toBeDefined();
+    // Must have a non-empty implementation narrative, not just an empty string
+    expect(checkpoint?.cumulativeSummary?.cumulativeSummary).toBeTruthy();
+    expect(checkpoint?.cumulativeSummary?.cumulativeSummary).toContain('Round 1');
+  });
 });
 
 // ---------------------------------------------------------------------------

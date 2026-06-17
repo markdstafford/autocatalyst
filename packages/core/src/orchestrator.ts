@@ -738,8 +738,13 @@ export class DefaultOrchestrator implements Orchestrator {
                   .filter(d => d.disposition === 'fixed')
                   .map(d => d.summary)
                   .join('; ');
+                // For clean convergence rounds with no reviewer findings, generate a
+                // minimal fallback so pr.finalize has an implementation description
+                // to reconcile rather than an empty summary.
+                const effectiveSummary = fixSummaryText ||
+                  (r.findings.length === 0 ? `Round ${r.round}: implementation passed review` : '');
                 return {
-                  ...(fixSummaryText ? { fixSummary: fixSummaryText } : {}),
+                  ...(effectiveSummary ? { fixSummary: effectiveSummary } : {}),
                   changedFiles: r.changedFileCount > 0
                     ? [`round ${r.round}: ${r.changedFileCount} file(s) changed`]
                     : []

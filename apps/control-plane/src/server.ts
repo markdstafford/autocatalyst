@@ -21,6 +21,7 @@ import {
   composeAgentProviderAdapterRegistry,
   composeDirectProviderAdapterRegistry,
   composeConfiguredProviders,
+  createCodeHostRegistry,
   createLayeredConvergenceEngine,
   createExecutionContextResolver,
   createExecutionRunUnitOfWork,
@@ -39,6 +40,7 @@ import {
   RunDispatchQueue,
   StaticIssueTrackerRegistry,
   type AutoDispatchOptions,
+  type CodeHostCredential,
   type ConvergenceEngine,
   type ControlPlaneService,
   type DomainRepositories,
@@ -51,18 +53,22 @@ import {
   type ProviderAdapterFactory,
   type ProviderAdapterMap,
   type ProviderCompositionResult,
+  type PullRequestOpenWiringDependencies,
   type RetainedRunEventStoreOptions,
   type RunUnitOfWork,
   type RunWorkInput,
+  type RunWorkspaceGitPort,
   type SpecAuthoringServiceDependencies,
   type SpecApprovalFinalizerDependencies,
+  type SpecFreezeDependencies,
   type WorkspaceContextResolver,
   type WorkspaceFileSystemPort,
   type WorkspaceGitPort,
   type WorkspaceResolverInput,
   type RunRoleWorkInput
 } from '@autocatalyst/core';
-import { GitHubIssueTracker } from '@autocatalyst/github-issue-tracker-adapter';
+import { GitHubIssueTracker, executeGh } from '@autocatalyst/github-issue-tracker-adapter';
+import { createGitHubCodeHostAdapter, type SafeGitExecutor } from '@autocatalyst/github-code-host-adapter';
 import { createReviewedExecutionDispatcher } from './reviewed-execution-dispatcher.js';
 import { createRunWorkspaceGitPort } from './run-workspace-git-port.js';
 import { loadSpecAuthorPromptInput, SpecAuthoringContextLoadError } from './spec-authoring-context-loader.js';
@@ -812,6 +818,15 @@ export async function createControlPlaneServer(
     };
   }
 
+  // Workspace git port is created whenever workspaceRoots are configured. It is used
+  // both by the convergence engine (when realDispatch is enabled) and by specFreezeDependencies.
+  let runWorkspaceGit: RunWorkspaceGitPort | undefined;
+  if (options.workspaceRoots !== undefined) {
+    runWorkspaceGit = createRunWorkspaceGitPort({
+      workspacesRoot: options.workspaceRoots.workspacesRoot
+    });
+  }
+
   // Build the real dispatch unit of work if requested. `options.unitOfWork`
   // always takes precedence.
   let resolvedUnitOfWork: RunUnitOfWork | undefined = options.unitOfWork;
@@ -1062,7 +1077,7 @@ export async function createControlPlaneServer(
             if (cumulativeSummary !== undefined) {
               const workspaceMeta = await domainRepos.runWorkspaceMetadata.findByRunId(workInput.runId);
               const branch = workspaceMeta?.workspaceHandle ?? workInput.run.id;
-              const workspacePath = workspace?.workspaceRepoRoot ?? '';
+              const workspacePath = workspaceMeta?.workspaceRepoRoot ?? '';
 
               let specArtifactPath: string | undefined;
               if (workInput.run.workKind === 'feature' || workInput.run.workKind === 'enhancement') {
@@ -1179,10 +1194,7 @@ export async function createControlPlaneServer(
     // Compose convergence-engine dependencies for reviewed producing steps.
     // The workspace git port verifies commits stay inside the configured workspaces root;
     // it is only available when workspaceRoots are configured by the caller.
-    if (options.workspaceRoots !== undefined) {
-      const runWorkspaceGit = createRunWorkspaceGitPort({
-        workspacesRoot: options.workspaceRoots.workspacesRoot
-      });
+    if (runWorkspaceGit !== undefined) {
       const reviewedExecutionDispatcher = createReviewedExecutionDispatcher({
         unitOfWork: executionUnitOfWork
       });
@@ -1204,6 +1216,55 @@ export async function createControlPlaneServer(
 
   const nodeFilesystem = createNodeWorkspaceFilesystem();
   const nodeGit = createNodeWorkspaceGit();
+
+  // Spec freeze dependencies: require RunWorkspaceGitPort (available when workspaceRoots configured).
+  const specFreezeDependencies: SpecFreezeDependencies | undefined =
+    runWorkspaceGit !== undefined
+      ? {
+          artifacts: domainRepos.artifacts,
+          filesystem: nodeFilesystem,
+          git: runWorkspaceGit,
+          clock: () => new Date().toISOString()
+        }
+      : undefined;
+
+  // Code-host adapter and registry for pr.open and merge detection.
+  const safeGitExecutorForCodeHost: SafeGitExecutor = {
+    async pushBranch(input) {
+      await execFileAsync('git', ['push', input.remote ?? 'origin', input.branch], {
+        cwd: input.workspaceRepoRoot,
+        ...(input.timeoutMs !== undefined ? { timeout: input.timeoutMs } : {})
+      });
+    }
+  };
+
+  const githubCodeHostAdapter = createGitHubCodeHostAdapter({
+    executeGh,
+    git: safeGitExecutorForCodeHost
+  });
+
+  const codeHostRegistry = createCodeHostRegistry([
+    { provider: 'github', create: () => githubCodeHostAdapter }
+  ]);
+
+  const pullRequestOpenDependencies: PullRequestOpenWiringDependencies = {
+    conversations: domainRepos.conversations,
+    topics: domainRepos.topics,
+    projects: domainRepos.projects,
+    pullRequests: domainRepos.pullRequests,
+    codeHosts: codeHostRegistry,
+    resolveCredential: async (ref): Promise<CodeHostCredential> => {
+      const credRef = ref as { id?: unknown };
+      if (typeof credRef?.id !== 'string' || credRef.id.length === 0) {
+        throw new Error('Invalid credential reference: missing id field.');
+      }
+      const token = await secretStore.resolveSecret(credRef.id);
+      if (token === undefined || token.length === 0) {
+        throw new Error('Secret not found for code-host credential.');
+      }
+      return { token, secretRef: credRef.id };
+    }
+  };
 
   const feedbackLifecycleDependencies: FeedbackLifecycleDependencies = {
     feedback: domainRepos.feedback,
@@ -1253,6 +1314,8 @@ export async function createControlPlaneServer(
     runSteps: domainRepos.runSteps,
     ...(convergenceEngine !== undefined ? { convergenceEngine } : {}),
     ...(options.autoDispatch !== undefined ? { autoDispatch: options.autoDispatch } : {}),
+    ...(specFreezeDependencies !== undefined ? { specFreezeDependencies } : {}),
+    pullRequestOpenDependencies,
     logger: {
       warn(message: string, details?: unknown) {
         console.warn(message, details);
