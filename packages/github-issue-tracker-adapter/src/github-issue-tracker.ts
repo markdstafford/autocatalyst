@@ -87,7 +87,7 @@ export class GitHubIssueTracker implements IssueTrackerPort {
       token = await this.#secretResolver.resolveSecret(target.credentialRef.id);
     } catch {
       throw new IssueTrackerError('tracker_credential_missing', 'Failed to resolve GitHub tracker credential.', {
-        safeDetails: { provider: 'github', credentialId: target.credentialRef.id }
+        safeDetails: { provider: 'github' }
       });
     }
 

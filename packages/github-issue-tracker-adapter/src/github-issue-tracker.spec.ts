@@ -181,6 +181,30 @@ describe('GitHubIssueTracker', () => {
     })).rejects.toMatchObject({ code: 'tracker_credential_missing' });
   });
 
+  it('does not leak secret handle in error messages or safe details on credential resolution failure', async () => {
+    const SENTINEL_HANDLE = 'sentinel-handle-xyz';
+    const tracker = new GitHubIssueTracker({
+      secretResolver: {
+        resolveSecret: vi.fn().mockRejectedValue(
+          new SecretResolutionError('missing_secret', 'not found', { handle: SENTINEL_HANDLE })
+        )
+      },
+      executeGhFn: vi.fn()
+    });
+
+    try {
+      await tracker.read({
+        target: { provider: 'github', repository: { owner: 'o', name: 'r' }, credentialRef: { id: SENTINEL_HANDLE, purpose: 'issue_tracker' } },
+        issueNumber: 71
+      });
+      expect.fail('should have thrown');
+    } catch (error: unknown) {
+      expect(String(error)).not.toContain(SENTINEL_HANDLE);
+      const e = error as { safeDetails?: unknown };
+      expect(JSON.stringify(e.safeDetails ?? {})).not.toContain(SENTINEL_HANDLE);
+    }
+  });
+
   it('maps schema validation failure to tracker_response_invalid', async () => {
     const badOutput = JSON.stringify({
       number: 71,

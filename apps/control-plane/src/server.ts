@@ -1208,8 +1208,8 @@ export async function createControlPlaneServer(
   const policy = options.policy ?? permissivePolicyDecisionPoint;
   const githubTracker = new GitHubIssueTracker({
     secretResolver: secretStore,
-    executablePath: options.githubIssueTracker?.executablePath,
-    timeoutMs: options.githubIssueTracker?.timeoutMs
+    ...(options.githubIssueTracker?.executablePath !== undefined ? { executablePath: options.githubIssueTracker.executablePath } : {}),
+    ...(options.githubIssueTracker?.timeoutMs !== undefined ? { timeoutMs: options.githubIssueTracker.timeoutMs } : {})
   });
   const trackerRegistry = new StaticIssueTrackerRegistry({ github: githubTracker });
   const issueReferenceIntakeResolver = new DefaultIssueReferenceIntakeResolver({ registry: trackerRegistry });

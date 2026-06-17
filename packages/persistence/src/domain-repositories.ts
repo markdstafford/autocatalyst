@@ -30,7 +30,8 @@ import type {
   RunStep,
   Session,
   TestResult,
-  Topic
+  Topic,
+  TrackedIssue
 } from '@autocatalyst/api-contract';
 import {
   artifactSchema,
@@ -151,6 +152,20 @@ const projectSettingReferenceSchema = z.object({
 const credentialReferenceArraySchema = z.array(credentialReferenceSchema);
 const publicationRefsSchema = z.array(z.string().min(1));
 const feedbackRefsSchema = z.array(z.string().min(1));
+
+// Legacy-tolerant reader for persisted trackedIssue/linkedIssue JSON from before body/labels were added.
+const persistedTrackedIssueSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+    const record = value as Record<string, unknown>;
+    return {
+      ...record,
+      body: record['body'] === undefined ? '' : record['body'],
+      labels: record['labels'] === undefined ? [] : record['labels']
+    };
+  },
+  trackedIssueSchema
+) as z.ZodType<TrackedIssue, z.ZodTypeDef, unknown>;
 
 const occurrenceSchema = z.object({
   index: z.number().int().min(0),
@@ -613,7 +628,7 @@ export class DrizzleRunRepository implements RunRepository {
   }
 
   #rowToRun(row: typeof runs.$inferSelect): Run {
-    const trackedIssue = parseNullableJsonValue(trackedIssueSchema, row.trackedIssueJson);
+    const trackedIssue = parseNullableJsonValue(persistedTrackedIssueSchema, row.trackedIssueJson);
     const testingGuideResult = parseNullableJsonValue(testingGuideResultSchema, row.testingGuideResultJson);
     return validateEntity(runSchema, {
       id: row.id,
@@ -826,7 +841,7 @@ export class DrizzleArtifactRepository implements ArtifactRepository {
   }
 
   #rowToArtifact(row: typeof artifacts.$inferSelect): Artifact {
-    const linkedIssue = parseNullableJsonValue(trackedIssueSchema, row.linkedIssueJson);
+    const linkedIssue = parseNullableJsonValue(persistedTrackedIssueSchema, row.linkedIssueJson);
     return validateEntity(artifactSchema, {
       id: row.id,
       runId: row.runId,

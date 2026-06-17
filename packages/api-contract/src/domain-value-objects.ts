@@ -38,26 +38,31 @@ export const costSchema = z.object({
   tokens: tokenBreakdownSchema
 }).strict();
 
-const trackedIssueCanonicalSchema = z.object({
+export type TrackedIssue = {
+  number: number;
+  title: string;
+  body: string;
+  labels: string[];
+  state: 'open' | 'closed' | 'merged' | 'unknown';
+  url: string;
+};
+
+export const trackedIssueSchema = z.object({
   number: z.number().int().min(1),
   title: z.string().min(1),
-  body: z.string(),
-  labels: z.array(z.string().min(1)),
+  body: z.string().optional(),
+  labels: z.array(z.string().min(1)).optional(),
   state: z.enum(['open', 'closed', 'merged', 'unknown']),
   url: z.string().url()
-}).strict();
-
-export const trackedIssueSchema = z.preprocess((value) => {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
-    return value;
-  }
-  const record = value as Record<string, unknown>;
-  return {
-    ...record,
-    body: record['body'] === undefined ? '' : record['body'],
-    labels: record['labels'] === undefined ? [] : record['labels']
-  };
-}, trackedIssueCanonicalSchema);
+}).strict()
+  .transform((v): TrackedIssue => ({
+    number: v.number,
+    title: v.title,
+    body: v.body ?? '',
+    labels: v.labels ?? [],
+    state: v.state,
+    url: v.url
+  }));
 
 export const credentialReferenceSchema = z.object({
   id: z.string().min(1),
@@ -187,7 +192,6 @@ export type NonModelPrincipal = z.infer<typeof nonModelPrincipalSchema>;
 export type ModelIdentity = z.infer<typeof modelIdentitySchema>;
 export type TokenBreakdown = z.infer<typeof tokenBreakdownSchema>;
 export type Cost = z.infer<typeof costSchema>;
-export type TrackedIssue = z.infer<typeof trackedIssueSchema>;
 export type CredentialReference = z.infer<typeof credentialReferenceSchema>;
 export type ChannelReference = z.infer<typeof channelReferenceSchema>;
 export type FeedbackAnchor = z.infer<typeof feedbackAnchorSchema>;
