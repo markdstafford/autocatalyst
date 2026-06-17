@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { IssueTrackerError, StaticIssueTrackerRegistry } from './index.js';
 import {
   buildProviderAdapterKey,
   composeConfiguredProviders,
@@ -80,5 +81,18 @@ describe('core barrel', () => {
     expect(core.defaultReviewerWorkspacePolicy.forbiddenGitActions).toEqual(
       expect.arrayContaining(['commit', 'push', 'merge', 'checkout', 'switch', 'reset', 'rebase'])
     );
+  });
+
+  it('exports tracker error and registry construction', () => {
+    expect(new IssueTrackerError('tracker_not_configured', 'No tracker configured.').code).toBe('tracker_not_configured');
+    expect(new StaticIssueTrackerRegistry({}).get('github')).toBeNull();
+  });
+
+  it('exports issue reference intake resolver and error', async () => {
+    const core = await import('./index.js');
+    expect(core.DefaultIssueReferenceIntakeResolver).toBeTypeOf('function');
+    expect(core.IssueReferenceIntakeError).toBeTypeOf('function');
+    const err = new core.IssueReferenceIntakeError('work_kind_unresolved', 'test');
+    expect(err.code).toBe('work_kind_unresolved');
   });
 });

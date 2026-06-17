@@ -1,0 +1,37 @@
+{
+  "name": "github-issue-tracker-adapter",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/github-issue-tracker-adapter/src",
+  "projectType": "library",
+  "tags": ["type:lib", "scope:adapter", "plane:control"],
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "outputs": ["{options.outputPath}"],
+      "options": {
+        "outputPath": "packages/github-issue-tracker-adapter/dist",
+        "main": "packages/github-issue-tracker-adapter/src/index.ts",
+        "tsConfig": "packages/github-issue-tracker-adapter/tsconfig.lib.json"
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "outputs": ["{options.outputFile}"],
+      "options": {
+        "lintFilePatterns": [
+          "packages/github-issue-tracker-adapter/src/**/*.ts",
+          "packages/github-issue-tracker-adapter/project.json",
+          "packages/github-issue-tracker-adapter/package.json"
+        ]
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "outputs": ["{workspaceRoot}/coverage/packages/github-issue-tracker-adapter"],
+      "options": {
+        "command": "vitest run",
+        "cwd": "packages/github-issue-tracker-adapter"
+      }
+    }
+  }
+}

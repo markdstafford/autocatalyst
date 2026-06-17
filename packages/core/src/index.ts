@@ -298,3 +298,17 @@ export type {
   ImplementationBuildRole,
   ImplementationBuildTaskInputs
 } from './implementation-build-context.js';
+
+export { IssueTrackerError } from './issue-tracker.js';
+export type { IssueTrackerErrorCode, IssueTrackerErrorOptions, IssueTrackerPort, IssueTrackerTarget, ReadTrackedIssueInput } from './issue-tracker.js';
+export { StaticIssueTrackerRegistry } from './issue-tracker-registry.js';
+export type { IssueTrackerRegistry } from './issue-tracker-registry.js';
+
+export { DefaultIssueReferenceIntakeResolver, IssueReferenceIntakeError } from './issue-reference-intake.js';
+export type {
+  IssueReferenceIntakeErrorCode,
+  IssueReferenceIntakeResolver,
+  ResolveConversationCreateInput,
+  ResolvedConversationCreate,
+  DefaultIssueReferenceIntakeResolverOptions
+} from './issue-reference-intake.js';

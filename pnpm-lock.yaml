@@ -93,6 +93,9 @@ importers:
       '@autocatalyst/execution':
         specifier: workspace:*
         version: link:../../packages/execution
+      '@autocatalyst/github-issue-tracker-adapter':
+        specifier: workspace:*
+        version: link:../../packages/github-issue-tracker-adapter
       '@autocatalyst/openai-agent-adapter':
         specifier: workspace:*
         version: link:../../packages/openai-agent-adapter
@@ -158,6 +161,18 @@ importers:
         version: link:../api-contract
       zod:
         specifier: ^3.0.0
+        version: 3.25.76
+
+  packages/github-issue-tracker-adapter:
+    dependencies:
+      '@autocatalyst/api-contract':
+        specifier: '*'
+        version: link:../api-contract
+      '@autocatalyst/core':
+        specifier: '*'
+        version: link:../core
+      zod:
+        specifier: ^3.25.64
         version: 3.25.76
 
   packages/openai-agent-adapter:
