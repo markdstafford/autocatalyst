@@ -38,12 +38,26 @@ export const costSchema = z.object({
   tokens: tokenBreakdownSchema
 }).strict();
 
-export const trackedIssueSchema = z.object({
+const trackedIssueCanonicalSchema = z.object({
   number: z.number().int().min(1),
   title: z.string().min(1),
+  body: z.string(),
+  labels: z.array(z.string().min(1)),
   state: z.enum(['open', 'closed', 'merged', 'unknown']),
   url: z.string().url()
 }).strict();
+
+export const trackedIssueSchema = z.preprocess((value) => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  return {
+    ...record,
+    body: record.body === undefined ? '' : record.body,
+    labels: record.labels === undefined ? [] : record.labels
+  };
+}, trackedIssueCanonicalSchema);
 
 export const credentialReferenceSchema = z.object({
   id: z.string().min(1),
