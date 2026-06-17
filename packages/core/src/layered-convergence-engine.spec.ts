@@ -26,6 +26,7 @@ import type {
   RunRoleWorkInput,
   ReviewedRoleDispatchResult
 } from './reviewed-role-dispatcher.js';
+import type { ResultCorrectionRequest } from '@autocatalyst/execution';
 import type {
   RunWorkspaceGitPort,
   RunWorkspaceCommitFilesInput,
@@ -287,6 +288,24 @@ function reviewerResultDispatch(
     altitude,
     result: {
       workResult: { directive: 'advance', result: result as unknown as Readonly<Record<string, unknown>> },
+      reviewerResult: result,
+      sessionId: `rev-${altitude}-${round}`,
+      lastPosition: `rev-pos-${altitude}-${round}`
+    }
+  };
+}
+
+function rawLayeredReviewerResultDispatch(
+  round: number,
+  altitude: string,
+  result: unknown
+): ScriptedDispatch {
+  return {
+    role: 'reviewer',
+    round,
+    altitude,
+    result: {
+      workResult: { directive: 'advance', result: result as Readonly<Record<string, unknown>> },
       reviewerResult: result,
       sessionId: `rev-${altitude}-${round}`,
       lastPosition: `rev-pos-${altitude}-${round}`
@@ -1106,5 +1125,155 @@ describe('createLayeredConvergenceEngine - no-op round regression tests', () => 
     expect(out.checkpointResult.acceptedCheckpoints).toHaveLength(1);
     expect(out.checkpointResult.acceptedCheckpoints?.[0]?.altitude).toBe('layout');
     expect(out.checkpointResult.acceptedCheckpoints?.[0]?.commitSha).toBe('sha_layout_r1');
+  });
+});
+
+describe('createLayeredConvergenceEngine — reviewer result tolerance', () => {
+  it('converges at build altitude when reviewer returns an empty object', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1, 'build'),
+      rawLayeredReviewerResultDispatch(1, 'build', {})
+    ]);
+    const engine = createLayeredConvergenceEngine({
+      dispatcher,
+      git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      getPolicy: () => ({ maxRounds: 2, depth: 'build_only' })
+    });
+
+    const out = await engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow
+    });
+
+    expect(out.workResult.directive).toBe('advance');
+    expect(out.checkpointResult.rounds[0]?.findings).toEqual([]);
+  });
+
+  it('converges at build altitude when reviewer returns only empty findings', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1, 'build'),
+      rawLayeredReviewerResultDispatch(1, 'build', { findings: [] })
+    ]);
+    const engine = createLayeredConvergenceEngine({
+      dispatcher,
+      git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      getPolicy: () => ({ maxRounds: 2, depth: 'build_only' })
+    });
+
+    const out = await engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow
+    });
+
+    expect(out.workResult.directive).toBe('advance');
+    expect(out.checkpointResult.rounds[0]?.findings).toEqual([]);
+  });
+
+  it('routes layered ambiguous reviewer output to configured correction and continues', async () => {
+    const correctionRequests: ResultCorrectionRequest[] = [];
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1, 'build'),
+      rawLayeredReviewerResultDispatch(1, 'build', { findings: [{ title: 'Missing status', body: 'Ambiguous.', severity: 'blocker' }] })
+    ]);
+    const engine = createLayeredConvergenceEngine({
+      dispatcher,
+      git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      getPolicy: () => ({ maxRounds: 2, depth: 'build_only' }),
+      reviewerResultMaxCorrectionAttempts: 1,
+      reviewerResultCorrectionRequester: {
+        async requestCorrection(request) {
+          correctionRequests.push(request);
+          return { status: 'satisfied', findings: [] };
+        }
+      }
+    });
+
+    const out = await engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow
+    });
+
+    expect(out.workResult.directive).toBe('advance');
+    expect(correctionRequests.map((request) => request.attempt)).toEqual([1]);
+  });
+
+  it('fails layered convergence with reviewer_result_invalid after correction exhaustion', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1, 'build'),
+      rawLayeredReviewerResultDispatch(1, 'build', { status: 'unknown' })
+    ]);
+    const engine = createLayeredConvergenceEngine({
+      dispatcher,
+      git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      getPolicy: () => ({ maxRounds: 2, depth: 'build_only' }),
+      reviewerResultMaxCorrectionAttempts: 1,
+      reviewerResultCorrectionRequester: {
+        async requestCorrection() {
+          return { status: 'unknown' };
+        }
+      }
+    });
+
+    const out = await engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow
+    });
+
+    expect(out.workResult).toEqual({ directive: 'fail', reason: 'reviewer_result_invalid' });
+  });
+
+  it('keeps layered role_distinct_unsatisfied non-fatal while using reviewer tolerance', async () => {
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1, 'build'),
+      rawLayeredReviewerResultDispatch(1, 'build', {})
+    ]);
+    const engine = createLayeredConvergenceEngine({
+      dispatcher,
+      git: new StubGit(),
+      feedback: new InMemoryFeedbackRepo(),
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(false),
+      getPolicy: () => ({ maxRounds: 2, depth: 'build_only' })
+    });
+
+    const out = await engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow
+    });
+
+    expect(out.workResult.directive).toBe('advance');
+    expect(out.checkpointResult.routing.warningCode).toBe('role_distinct_unsatisfied');
   });
 });
