@@ -1,7 +1,7 @@
 ---
 created: 2026-06-17
 last_updated: 2026-06-17
-status: implementing
+status: complete
 issue: 75
 specced_by: autocatalyst
 ---
