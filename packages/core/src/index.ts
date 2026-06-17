@@ -81,9 +81,11 @@ export type {
   RecordRunLifecycleStartResult,
   RecordRunStepTransitionInput,
   RecordRunStepTransitionResult,
+  ListOpenPullRequestsInput,
   RunWorkspaceMetadata,
   RunWorkspaceMetadataRepository,
   UpsertRunWorkspaceMetadataInput,
+  UpdatePullRequestStateInput,
   UpdateRunStepCheckpointInput
 } from './domain-repositories.js';
 
@@ -227,6 +229,8 @@ export {
   type SpecApprovalErrorCode
 } from './spec-approval-finalizer.js';
 
+export * from './spec-freeze.js';
+
 export * from './convergence-engine.js';
 
 export { createLayeredConvergenceEngine } from './layered-convergence-engine.js';
@@ -304,6 +308,9 @@ export type { IssueTrackerErrorCode, IssueTrackerErrorOptions, IssueTrackerPort,
 export { StaticIssueTrackerRegistry } from './issue-tracker-registry.js';
 export type { IssueTrackerRegistry } from './issue-tracker-registry.js';
 
+export * from './code-host.js';
+export * from './code-host-registry.js';
+
 export { DefaultIssueReferenceIntakeResolver, IssueReferenceIntakeError } from './issue-reference-intake.js';
 export type {
   IssueReferenceIntakeErrorCode,
@@ -312,3 +319,10 @@ export type {
   ResolvedConversationCreate,
   DefaultIssueReferenceIntakeResolverOptions
 } from './issue-reference-intake.js';
+
+export * from './conventional-title.js';
+export * from './implementation-summary.js';
+export * from './pr-content.js';
+export * from './pr-finalize.js';
+export * from './pr-open-handler.js';
+export * from './pr-lifecycle.js';
