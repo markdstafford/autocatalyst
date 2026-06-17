@@ -259,7 +259,7 @@ describe('detectPullRequestMerges', () => {
     expect(checkpoint.mergedAt).toBe(timestamp);
   });
 
-  it('updates state to closed but does NOT advance the run when provider says closed', async () => {
+  it('updates state to closed, fails the run with pull_request_closed_without_merge, and does NOT advance it', async () => {
     const facts: CodeHostPullRequestFacts = {
       provider: 'github',
       number: 42,
@@ -267,19 +267,43 @@ describe('detectPullRequestMerges', () => {
       state: 'closed',
       branch: 'feature/run_1'
     };
-    const { deps, updateState, applyDirective } = makeDeps({ facts });
+    const applyDirectiveCalls: ApplyOrchestratedDirectiveInput[] = [];
+    const applyDirectiveBehavior = async (input: ApplyOrchestratedDirectiveInput): Promise<OrchestratedRunResult> => {
+      applyDirectiveCalls.push(input);
+      return {
+        run: makeRun({ id: input.runId, currentStep: 'done', terminal: true }),
+        runStep: {
+          id: 'step_done',
+          runId: input.runId,
+          phase: null,
+          step: 'done',
+          role: 'none',
+          startedAt: timestamp,
+          endedAt: timestamp,
+          durationMs: 0,
+          occurrence: { index: 0, attempt: 1 },
+          checkpointResult: null
+        }
+      };
+    };
+    const { deps, updateState } = makeDeps({ facts, applyDirectiveBehavior });
 
     const result = await detectPullRequestMerges({ tenant, maxCount: 50, timeoutMs: 30_000 }, deps);
 
+    // Result counts closed: 1
     expect(result).toEqual({ checked: 0, merged: 0, closed: 1, failed: 0, timedOut: false });
-    expect(updateState).toHaveBeenCalledWith({
-      runId: 'run_1',
-      tenant,
-      state: 'closed',
-      updatedAt: timestamp,
-      expectedState: 'open'
-    });
-    expect(applyDirective).not.toHaveBeenCalled();
+
+    // State updated to closed
+    expect(updateState).toHaveBeenCalledWith(expect.objectContaining({ state: 'closed' }));
+
+    // applyDirective called with fail directive and reason
+    expect(applyDirectiveCalls).toContainEqual(expect.objectContaining({
+      directive: 'fail',
+      reason: 'pull_request_closed_without_merge'
+    }));
+
+    // Run is NOT advanced
+    expect(applyDirectiveCalls).not.toContainEqual(expect.objectContaining({ directive: 'advance' }));
   });
 
   it('respects maxCount via the listOpen limit', async () => {

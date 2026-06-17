@@ -174,6 +174,17 @@ async function reconcileSinglePullRequest(
     } catch {
       return { kind: 'failed' };
     }
+    try {
+      await deps.applyDirective({
+        runId: pr.runId,
+        tenant: pr.tenant,
+        directive: 'fail',
+        origin: 'system',
+        reason: 'pull_request_closed_without_merge'
+      });
+    } catch {
+      return { kind: 'failed' };
+    }
     return { kind: 'closed' };
   }
 

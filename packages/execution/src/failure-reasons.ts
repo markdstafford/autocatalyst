@@ -30,6 +30,9 @@ export const knownFailureReasonCodes = [
   'disposition_invalid',
   'workflow_escalation_edge_missing',
   'checkpoint_capture_failed',
+  'pr_finalize_invalid_result',
+  'spec_freeze_failed',
+  'pull_request_closed_without_merge',
 ] as const;
 
 export type KnownFailureReasonCode = typeof knownFailureReasonCodes[number];
