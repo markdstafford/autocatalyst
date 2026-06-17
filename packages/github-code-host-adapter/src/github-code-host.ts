@@ -1,4 +1,4 @@
-import { GhExecError } from '@autocatalyst/github-issue-tracker-adapter';
+import { GhExecError, executeGh as defaultExecuteGh } from '@autocatalyst/github-issue-tracker-adapter';
 import type { GhExecInput, GhExecResult } from '@autocatalyst/github-issue-tracker-adapter';
 import type {
   CodeHostPort,
@@ -27,7 +27,12 @@ export interface SafeGitExecutor {
 }
 
 export interface GitHubCodeHostAdapterOptions {
-  readonly executeGh: ExecuteGhFunction;
+  /**
+   * The `gh` execution helper. Optional: defaults to the shared `executeGh` so the composition
+   * root never needs to import the helper itself (keeping `gh` usage inside the adapter boundary).
+   * Tests may inject a fake to avoid a real subprocess.
+   */
+  readonly executeGh?: ExecuteGhFunction;
   readonly git: SafeGitExecutor;
   readonly ghExecutablePath?: string;
   readonly timeoutMs?: number;
@@ -250,7 +255,8 @@ class GitHubCodeHostAdapter implements CodeHostPort {
     safeDetails: Record<string, unknown>
   ): Promise<string> {
     try {
-      const result = await this.options.executeGh({
+      const exec = this.options.executeGh ?? defaultExecuteGh;
+      const result = await exec({
         args,
         token,
         ...(this.options.ghExecutablePath !== undefined ? { executablePath: this.options.ghExecutablePath } : {}),

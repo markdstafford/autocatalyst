@@ -67,7 +67,7 @@ import {
   type WorkspaceResolverInput,
   type RunRoleWorkInput
 } from '@autocatalyst/core';
-import { GitHubIssueTracker, executeGh } from '@autocatalyst/github-issue-tracker-adapter';
+import { GitHubIssueTracker } from '@autocatalyst/github-issue-tracker-adapter';
 import { createGitHubCodeHostAdapter, type SafeGitExecutor } from '@autocatalyst/github-code-host-adapter';
 import { createReviewedExecutionDispatcher } from './reviewed-execution-dispatcher.js';
 import { createRunWorkspaceGitPort } from './run-workspace-git-port.js';
@@ -198,6 +198,16 @@ export interface ControlPlaneServerOptions {
    * Do not pass token values here; credentials are always resolved through `SecretResolver`.
    */
   readonly githubIssueTracker?: {
+    readonly executablePath?: string;
+    readonly timeoutMs?: number;
+  };
+  /**
+   * Injectable GitHub code-host options for integration tests.
+   * When provided, `executablePath` overrides the default `gh` binary path used for
+   * pull-request create/read/find/merge. Do not pass token values here; credentials are
+   * always resolved through the secret store.
+   */
+  readonly codeHost?: {
     readonly executablePath?: string;
     readonly timeoutMs?: number;
   };
@@ -444,7 +454,7 @@ export function createDelegatingExecutionEntryPoint(input: {
   readonly factory: AgentRunnerFactory;
   readonly materialize: (context: ExecutionContext) => Promise<MaterializedExecutionEnvironment>;
   readonly resolveRole?: (step: string) => string;
-  readonly onWorkspaceRootResolved?: (runId: string, repoRoot: string) => void;
+  readonly onWorkspaceRootResolved?: (runId: string, repoRoot: string, branchName: string) => void | Promise<void>;
   readonly registry?: StepResultContractRegistry;
 }): ExecutionEntryPoint {
   const { resolveRole } = input;
@@ -453,15 +463,16 @@ export function createDelegatingExecutionEntryPoint(input: {
    * For workspace shapes that do not provision a scratch root (e.g. 'none' for
    * question runs), a temporary directory is created so the Claude adapter can
    * write step-result.json and scratch_file validation can read it back.
-   * Also registers the repo root for two_roots workspaces so spec authoring can
-   * resolve the workspace path without importing execution internals.
+   * Also registers the repo root and branch name for two_roots workspaces so spec
+   * authoring, approval finalization, and pr.open can resolve the workspace path
+   * and branch without importing execution internals.
    */
   async function materializeWithScratch(
     context: ExecutionContext
   ): Promise<MaterializedExecutionEnvironment> {
     const env = await input.materialize(context);
     if (env.workspace.shape === 'two_roots') {
-      input.onWorkspaceRootResolved?.(context.run.id, env.workspace.repoRoot);
+      await input.onWorkspaceRootResolved?.(context.run.id, env.workspace.repoRoot, env.workspace.branchName);
       return env;
     }
     if (env.workspace.shape !== 'none') {
@@ -718,10 +729,10 @@ export async function createControlPlaneServer(
     maxConcurrent: options.runConcurrency ?? DEFAULT_RUN_CONCURRENCY
   });
 
-  // Registry that maps runId → repoRoot for two_roots workspaces.
-  // Populated during materialization so spec authoring and approval can resolve the
-  // workspace path without importing execution internals.
-  const runWorkspaceRootRegistry = new Map<string, string>();
+  // Registry that maps runId → { repoRoot, branchName } for two_roots workspaces.
+  // Populated during materialization so spec authoring, approval, and pr.open can
+  // resolve the workspace path and branch without importing execution internals.
+  const runWorkspaceRootRegistry = new Map<string, { repoRoot: string; branchName: string }>();
 
   // ---------------------------------------------------------------------------
   // Workspace input helpers (used in resolveContext below)
@@ -972,8 +983,16 @@ export async function createControlPlaneServer(
         void step;
         return 'implementer';
       },
-      onWorkspaceRootResolved: (runId, repoRoot) => {
-        runWorkspaceRootRegistry.set(runId, repoRoot);
+      onWorkspaceRootResolved: async (runId, repoRoot, branchName) => {
+        runWorkspaceRootRegistry.set(runId, { repoRoot, branchName });
+        // Eagerly persist workspace metadata for all two_roots runs (including bug/chore
+        // that skip spec.author and would otherwise have no persistent workspace record).
+        await domainRepos.runWorkspaceMetadata.upsert({
+          runId,
+          workspaceHandle: branchName,
+          workspaceRepoRoot: repoRoot,
+          createdAt: new Date().toISOString()
+        });
       },
       registry: stepResultContractRegistry
     });
@@ -1209,6 +1228,11 @@ export async function createControlPlaneServer(
           warn(message: string, details?: unknown) {
             console.warn(message, details);
           }
+        },
+        workspaceContextRefresher: async (runId) => {
+          const cached = runWorkspaceRootRegistry.get(runId);
+          if (cached === undefined) return undefined;
+          return { workspaceRepoRoot: cached.repoRoot, workspaceHandle: cached.branchName };
         }
       });
     }
@@ -1238,9 +1262,13 @@ export async function createControlPlaneServer(
     }
   };
 
+  // The adapter owns the shared gh helper internally, so the composition root never imports it
+  // (keeping gh usage inside the adapter boundary). Tests override the binary path through
+  // `codeHost.executablePath`.
   const githubCodeHostAdapter = createGitHubCodeHostAdapter({
-    executeGh,
-    git: safeGitExecutorForCodeHost
+    git: safeGitExecutorForCodeHost,
+    ...(options.codeHost?.executablePath !== undefined ? { ghExecutablePath: options.codeHost.executablePath } : {}),
+    ...(options.codeHost?.timeoutMs !== undefined ? { timeoutMs: options.codeHost.timeoutMs } : {})
   });
 
   const codeHostRegistry = createCodeHostRegistry([
@@ -1286,12 +1314,13 @@ export async function createControlPlaneServer(
     clock: () => new Date().toISOString()
   };
 
-  // Resolve workspace root: try in-memory registry first (populated during materialization),
+  // Resolve workspace context: try in-memory registry first (populated during materialization),
   // then fall back to the persistent run_workspace_metadata store for post-restart recovery.
+  // workspaceHandle is the git branch name, not the runId.
   const internalResolveWorkspaceContext: WorkspaceContextResolver = async ({ runId }) => {
-    const repoRoot = runWorkspaceRootRegistry.get(runId);
-    if (repoRoot !== undefined) {
-      return { workspaceRepoRoot: repoRoot, workspaceHandle: runId };
+    const cached = runWorkspaceRootRegistry.get(runId);
+    if (cached !== undefined) {
+      return { workspaceRepoRoot: cached.repoRoot, workspaceHandle: cached.branchName };
     }
     const persisted = await domainRepos.runWorkspaceMetadata.findByRunId(runId);
     if (persisted !== null) {
