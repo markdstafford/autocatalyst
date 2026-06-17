@@ -394,21 +394,6 @@ const prFinalizeAdvanceResult = {
   findings: [] as Array<{ severity: 'blocker' | 'warning' | 'info'; summary: string; target?: string }>
 };
 
-const prFinalizeBlockerResult = {
-  directive: 'advance' as const, // pr.finalize returns 'advance' as the work-result directive,
-  // but the embedded directive value 'revise' steers the orchestrator
-  reconciledSummary: undefined,
-  titleSubject: undefined,
-  validationSummary: [] as string[],
-  findings: [
-    {
-      severity: 'blocker' as const,
-      summary: 'The auth module does not handle expired tokens.',
-      target: 'implementation'
-    }
-  ]
-};
-
 const prFinalizeReviseResult = {
   directive: 'revise' as const,
   validationSummary: [] as string[],
