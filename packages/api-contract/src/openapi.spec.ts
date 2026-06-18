@@ -155,5 +155,9 @@ describe('OpenAPI generation', () => {
     expect(operation?.responses?.['403']).toBeDefined();
     expect(operation?.responses?.['500']).toBeDefined();
     expect(operation?.security).toEqual([{ bearerAuth: [] }]);
+    expect(
+      (document.components as { securitySchemes?: Record<string, unknown> } | undefined)
+        ?.securitySchemes?.['bearerAuth']
+    ).toBeDefined();
   });
 });

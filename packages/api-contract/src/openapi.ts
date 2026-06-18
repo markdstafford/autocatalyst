@@ -101,6 +101,11 @@ function jsonResponse(schema: z.ZodTypeAny, description: string) {
 export function generateOpenApiDocument(): OpenApiDocument {
   const registry = new OpenAPIRegistry();
 
+  registry.registerComponent('securitySchemes', 'bearerAuth', {
+    type: 'http',
+    scheme: 'bearer'
+  });
+
   const HealthResponse = registry.register('HealthResponse', healthResponseSchema);
   const ErrorResponse = registry.register('ErrorResponse', errorResponseSchema);
   const CreateProbeResourceRequest = registry.register(
