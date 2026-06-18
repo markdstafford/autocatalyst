@@ -11,7 +11,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import { z } from 'zod';
 
 import { sessionRoleSchema } from '@autocatalyst/api-contract';
-import type { ConfigurationRecord, Conversation, ExecutionContext, Project, ProviderProfileSettings, Topic } from '@autocatalyst/api-contract';
+import type { ConfigurationRecord, Conversation, ExecutionContext, NonModelPrincipal, Project, ProviderProfileSettings, Topic } from '@autocatalyst/api-contract';
 import {
   buildProviderAdapterKey,
   buildImplementationBuildContext,
@@ -136,7 +136,8 @@ import {
   migrateSqliteDatabase
 } from '@autocatalyst/persistence';
 
-import type { ControlPlaneAppConfig } from './config.js';
+import type { ControlPlaneAppConfig, PullRequestReconciliationTickerConfig } from './config.js';
+import { createPullRequestReconciliationTicker } from './pr-reconciliation-ticker.js';
 
 export interface RealRunnerDispatchOptions {
   readonly enabled: boolean;
@@ -216,6 +217,12 @@ export interface ControlPlaneServerOptions {
     readonly executablePath?: string;
     readonly timeoutMs?: number;
   };
+  /**
+   * Optional background ticker that calls reconcilePullRequests on a fixed interval.
+   * When provided and `enabled` is true, the ticker is started after the server is
+   * composed and stopped automatically on `onClose`.
+   */
+  readonly pullRequestReconciliationTicker?: PullRequestReconciliationTickerConfig;
 }
 
 const DEFAULT_RUN_CONCURRENCY = 2;
@@ -1514,6 +1521,24 @@ export async function createControlPlaneServer(
     controlPlane
   });
 
+  if (options.pullRequestReconciliationTicker?.enabled === true) {
+    const tickerTenant = options.pullRequestReconciliationTicker.tenant;
+    const systemPrincipal: NonModelPrincipal = {
+      kind: 'system',
+      id: 'principal_system_reconciliation',
+      tenantId: tickerTenant
+    };
+    const ticker = createPullRequestReconciliationTicker({
+      controlPlane: controlPlane,
+      principal: systemPrincipal,
+      tenant: tickerTenant,
+      intervalMs: options.pullRequestReconciliationTicker.intervalMs,
+      logger: { warn: (msg, details) => { app.log.warn({ ...details as object }, msg); } }
+    });
+    ticker.start();
+    app.addHook('onClose', async () => { ticker.stop(); });
+  }
+
   app.addHook('onClose', async () => {
     database.close();
   });
@@ -1536,7 +1561,8 @@ export async function startControlPlaneServer(
       logProviderCompositionDiagnostics(result, console);
     },
     ...(config.unitOfWork !== undefined ? { unitOfWork: config.unitOfWork } : {}),
-    ...(config.onControlPlaneReady !== undefined ? { onControlPlaneReady: config.onControlPlaneReady } : {})
+    ...(config.onControlPlaneReady !== undefined ? { onControlPlaneReady: config.onControlPlaneReady } : {}),
+    ...(config.pullRequestReconciliationTicker !== undefined ? { pullRequestReconciliationTicker: config.pullRequestReconciliationTicker } : {})
   });
 
   await app.listen({ port: config.port, host: '127.0.0.1' });
