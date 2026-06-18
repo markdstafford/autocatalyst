@@ -8,6 +8,12 @@ export interface RealRunnerDispatchConfig {
   readonly defaultProviderProfileId?: string;
 }
 
+export interface PullRequestReconciliationTickerConfig {
+  readonly enabled: boolean;
+  readonly intervalMs: number;
+  readonly tenant: string;
+}
+
 export interface ControlPlaneAppConfig {
   readonly port: number;
   readonly databasePath: string;
@@ -18,6 +24,7 @@ export interface ControlPlaneAppConfig {
   readonly realRunnerDispatch?: RealRunnerDispatchConfig;
   /** GitHub username to stamp as specced_by on spec.author results. Read from GITHUB_LOGIN env var. */
   readonly specAuthorIdentity?: string;
+  readonly pullRequestReconciliationTicker?: PullRequestReconciliationTickerConfig;
 }
 
 const DEFAULT_RUN_CONCURRENCY = 2;
@@ -127,6 +134,30 @@ function parseRealRunnerDispatch(
   };
 }
 
+function parsePullRequestReconciliationTicker(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv
+): PullRequestReconciliationTickerConfig | undefined {
+  const enabled = hasFlag(argv, '--pr-reconcile-ticker') || parseBooleanEnv(env['AUTOCATALYST_PR_RECONCILE_TICKER'], 'AUTOCATALYST_PR_RECONCILE_TICKER');
+  if (!enabled) return undefined;
+
+  const intervalRaw = readFlag(argv, '--pr-reconcile-interval-ms') ?? env['AUTOCATALYST_PR_RECONCILE_INTERVAL_MS'];
+  if (intervalRaw === undefined || intervalRaw.trim().length === 0) {
+    throw new Error('AUTOCATALYST_PR_RECONCILE_INTERVAL_MS or --pr-reconcile-interval-ms is required when the PR reconciliation ticker is enabled.');
+  }
+  const intervalMs = Number(intervalRaw);
+  if (!Number.isInteger(intervalMs) || intervalMs < 1) {
+    throw new Error('AUTOCATALYST_PR_RECONCILE_INTERVAL_MS must be a positive integer.');
+  }
+
+  const tenant = readFlag(argv, '--pr-reconcile-tenant') ?? env['AUTOCATALYST_PR_RECONCILE_TENANT'];
+  if (tenant === undefined || tenant.trim().length === 0) {
+    throw new Error('AUTOCATALYST_PR_RECONCILE_TENANT or --pr-reconcile-tenant is required when the PR reconciliation ticker is enabled.');
+  }
+
+  return { enabled: true, intervalMs, tenant };
+}
+
 export function readControlPlaneAppConfig(
   argv: readonly string[] = process.argv.slice(2),
   env: NodeJS.ProcessEnv = process.env
@@ -141,6 +172,7 @@ export function readControlPlaneAppConfig(
   const workspaceRoots = parseWorkspaceRoots(reposRootValue, workspacesRootValue);
   const realRunnerDispatch = parseRealRunnerDispatch(argv, env);
   const specAuthorIdentity = env['GITHUB_LOGIN']?.trim() || undefined;
+  const pullRequestReconciliationTicker = parsePullRequestReconciliationTicker(argv, env);
 
   return {
     port: parsePort(portValue),
@@ -150,6 +182,7 @@ export function readControlPlaneAppConfig(
     runConcurrency: parseRunConcurrency(runConcurrencyValue),
     ...(workspaceRoots !== undefined ? { workspaceRoots } : {}),
     ...(realRunnerDispatch !== undefined ? { realRunnerDispatch } : {}),
-    ...(specAuthorIdentity !== undefined ? { specAuthorIdentity } : {})
+    ...(specAuthorIdentity !== undefined ? { specAuthorIdentity } : {}),
+    ...(pullRequestReconciliationTicker !== undefined ? { pullRequestReconciliationTicker } : {})
   };
 }

@@ -5,6 +5,7 @@ import type {
   Feedback,
   Principal,
   Project,
+  ReconcilePullRequestsResponse,
   Run,
   RunStep
 } from '@autocatalyst/api-contract';
@@ -105,6 +106,7 @@ function makeFakeOrchestrator(overrides?: Partial<Orchestrator>): Orchestrator {
     dispatch: vi.fn(),
     tick: vi.fn().mockResolvedValue({ status: 'noop' }),
     replyToRun: vi.fn(),
+    detectMerges: vi.fn().mockResolvedValue({ checked: 0, merged: 0, closed: 0, failed: 0, timedOut: false }),
     ...overrides
   } as Orchestrator;
 }
@@ -1305,5 +1307,54 @@ describe('DefaultControlPlaneService.replyToRun', () => {
       runId: 'run_1',
       request: { kind: 'guidance', body: 'Use option A.' }
     })).rejects.toMatchObject({ code: 'unsupported_pause' });
+  });
+});
+
+describe('DefaultControlPlaneService.reconcilePullRequests', () => {
+  const reconcilePrincipal = { kind: 'human' as const, id: 'user_1', tenantId: 'tenant_1', displayName: 'Ada' };
+
+  it('calls orchestrator.detectMerges with the tenant and returns the result', async () => {
+    const expectedResult: ReconcilePullRequestsResponse = { checked: 3, merged: 1, closed: 0, failed: 0, timedOut: false };
+    const orchestrator = makeFakeOrchestrator({
+      detectMerges: vi.fn().mockResolvedValue(expectedResult)
+    });
+    const service = makeService({ orchestrator });
+    const result = await service.reconcilePullRequests({ principal: reconcilePrincipal, tenant: 'tenant_1' });
+    expect(orchestrator.detectMerges).toHaveBeenCalledWith('tenant_1');
+    expect(orchestrator.tick).not.toHaveBeenCalled();
+    expect(orchestrator.dispatch).not.toHaveBeenCalled();
+    expect(result).toEqual(expectedResult);
+  });
+
+  it('throws forbidden when policy denies and does not call orchestrator', async () => {
+    const orchestrator = makeFakeOrchestrator();
+    const service = makeService({ policy: makeDenyPolicy(), orchestrator });
+    await expect(
+      service.reconcilePullRequests({ principal: reconcilePrincipal, tenant: 'tenant_1' })
+    ).rejects.toMatchObject({ code: 'forbidden' });
+    expect(orchestrator.detectMerges).not.toHaveBeenCalled();
+    expect(orchestrator.tick).not.toHaveBeenCalled();
+    expect(orchestrator.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('throws forbidden when tenant does not match principal tenantId and does not call orchestrator', async () => {
+    const orchestrator = makeFakeOrchestrator();
+    const service = makeService({ orchestrator });
+    await expect(
+      service.reconcilePullRequests({ principal: reconcilePrincipal, tenant: 'tenant_other' })
+    ).rejects.toMatchObject({ code: 'forbidden' });
+    expect(orchestrator.detectMerges).not.toHaveBeenCalled();
+    expect(orchestrator.tick).not.toHaveBeenCalled();
+    expect(orchestrator.dispatch).not.toHaveBeenCalled();
+  });
+
+  it('maps OrchestratorError to ControlPlaneServiceError with persistence_failed code', async () => {
+    const orchestrator = makeFakeOrchestrator({
+      detectMerges: vi.fn().mockRejectedValue(new OrchestratorError('persistence_failed', 'DB exploded'))
+    });
+    const service = makeService({ orchestrator });
+    await expect(
+      service.reconcilePullRequests({ principal: reconcilePrincipal, tenant: 'tenant_1' })
+    ).rejects.toMatchObject({ code: 'persistence_failed' });
   });
 });

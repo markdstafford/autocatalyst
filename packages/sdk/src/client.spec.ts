@@ -616,6 +616,42 @@ describe('ControlPlaneClient.appendRunFeedbackThreadReply', () => {
   });
 });
 
+describe('ControlPlaneClient.reconcilePullRequests', () => {
+  it('sends POST to /v1/pull-requests/reconcile with bearer token and returns parsed response', async () => {
+    const reconciliationResponse = { checked: 5, merged: 2, closed: 1, failed: 0, timedOut: false };
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => reconciliationResponse
+    });
+    const client = createControlPlaneClient({
+      baseUrl: 'http://localhost:3000',
+      bearerToken: 'test-token',
+      fetch: mockFetch
+    });
+    const result = await client.reconcilePullRequests();
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.objectContaining({ href: expect.stringContaining('/v1/pull-requests/reconcile') }),
+      expect.objectContaining({ method: 'POST', headers: expect.objectContaining({ authorization: 'Bearer test-token' }) })
+    );
+    expect(result).toEqual(reconciliationResponse);
+  });
+
+  it('throws ControlPlaneClientError on non-ok response', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 403,
+      json: async () => ({ error: { code: 'forbidden', message: 'Forbidden.' } })
+    });
+    const client = createControlPlaneClient({
+      baseUrl: 'http://localhost:3000',
+      bearerToken: 'test-token',
+      fetch: mockFetch
+    });
+    await expect(client.reconcilePullRequests()).rejects.toBeInstanceOf(ControlPlaneClientError);
+  });
+});
+
 describe('control-plane SDK client against a test server', () => {
   let testApp: ReturnType<typeof Fastify> | undefined;
 

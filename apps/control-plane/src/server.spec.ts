@@ -839,6 +839,87 @@ describe('createDelegatingExecutionEntryPoint — onWorkspaceRootResolved branch
   });
 });
 
+describe('createControlPlaneServer — pull request reconciliation ticker', () => {
+  it('does not start a ticker when pullRequestReconciliationTicker is not provided', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const reconcileCalls: unknown[] = [];
+      const app = await createControlPlaneServer({
+        databasePath,
+        bearerToken: 'token',
+        masterSecret: 'correct-master-secret',
+        onControlPlaneReady: (service) => {
+          // Spy on reconcilePullRequests to detect any calls
+          const original = service.reconcilePullRequests.bind(service);
+          service.reconcilePullRequests = async (input) => {
+            reconcileCalls.push(input);
+            return original(input);
+          };
+        }
+      });
+
+      // Give any timer a chance to fire
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(reconcileCalls).toHaveLength(0);
+
+      await app.close();
+    });
+  });
+
+  it('does not start a ticker when pullRequestReconciliationTicker.enabled is false', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const reconcileCalls: unknown[] = [];
+      const app = await createControlPlaneServer({
+        databasePath,
+        bearerToken: 'token',
+        masterSecret: 'correct-master-secret',
+        pullRequestReconciliationTicker: { enabled: false, intervalMs: 10, tenant: 'tenant_dev' },
+        onControlPlaneReady: (service) => {
+          const original = service.reconcilePullRequests.bind(service);
+          service.reconcilePullRequests = async (input) => {
+            reconcileCalls.push(input);
+            return original(input);
+          };
+        }
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(reconcileCalls).toHaveLength(0);
+
+      await app.close();
+    });
+  });
+
+  it('starts a ticker and reconciliation is called on interval when enabled', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const reconcileCalls: unknown[] = [];
+      const app = await createControlPlaneServer({
+        databasePath,
+        bearerToken: 'token',
+        masterSecret: 'correct-master-secret',
+        pullRequestReconciliationTicker: { enabled: true, intervalMs: 30, tenant: 'tenant_dev' },
+        onControlPlaneReady: (service) => {
+          const original = service.reconcilePullRequests.bind(service);
+          service.reconcilePullRequests = async (input) => {
+            reconcileCalls.push(input);
+            return original(input);
+          };
+        }
+      });
+
+      // Wait for at least one interval to fire
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      expect(reconcileCalls.length).toBeGreaterThanOrEqual(1);
+
+      await app.close();
+
+      // After close, no more calls should be made
+      const callsAtClose = reconcileCalls.length;
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(reconcileCalls.length).toBe(callsAtClose);
+    });
+  });
+});
+
 describe('logProviderCompositionDiagnostics', () => {
   it('logs sanitized summary, composed, warning, and unresolved diagnostics', () => {
     const infoMessages: string[] = [];

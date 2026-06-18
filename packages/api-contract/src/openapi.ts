@@ -72,6 +72,11 @@ import {
   runReplyRequestSchema,
   runReplyResponseSchema
 } from './run-replies.js';
+import {
+  pullRequestReconciliationPath,
+  pullRequestReconciliationResponseSchema,
+  reconcilePullRequestsSuccessStatusCode
+} from './pr-reconciliation.js';
 
 extendZodWithOpenApi(z);
 
@@ -95,6 +100,11 @@ function jsonResponse(schema: z.ZodTypeAny, description: string) {
 
 export function generateOpenApiDocument(): OpenApiDocument {
   const registry = new OpenAPIRegistry();
+
+  registry.registerComponent('securitySchemes', 'bearerAuth', {
+    type: 'http',
+    scheme: 'bearer'
+  });
 
   const HealthResponse = registry.register('HealthResponse', healthResponseSchema);
   const ErrorResponse = registry.register('ErrorResponse', errorResponseSchema);
@@ -133,6 +143,7 @@ export function generateOpenApiDocument(): OpenApiDocument {
   const RunReplyRequest = registry.register('RunReplyRequest', runReplyRequestSchema);
   const RunReplyResponse = registry.register('RunReplyResponse', runReplyResponseSchema);
   const RunReplyParams = registry.register('RunReplyParams', z.object({ id: z.string().min(1) }).strict());
+  const PullRequestReconciliationResponse = registry.register('PullRequestReconciliationResponse', pullRequestReconciliationResponseSchema);
 
   registry.registerPath({
     method: 'get',
@@ -456,6 +467,20 @@ export function generateOpenApiDocument(): OpenApiDocument {
       404: jsonResponse(ErrorResponse, 'Run not found.'),
       409: jsonResponse(ErrorResponse, 'Run is terminal, not waiting on a human, blocked by feedback, changed step, or unsupported pause.'),
       500: jsonResponse(ErrorResponse, 'Unexpected internal failure.')
+    }
+  });
+
+  // POST /v1/pull-requests/reconcile
+  registry.registerPath({
+    method: 'post',
+    path: pullRequestReconciliationPath,
+    tags: ['pull-requests'],
+    security: [{ bearerAuth: [] }],
+    responses: {
+      [reconcilePullRequestsSuccessStatusCode]: jsonResponse(PullRequestReconciliationResponse, 'Reconciliation summary.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      403: jsonResponse(ErrorResponse, 'Forbidden.'),
+      500: jsonResponse(ErrorResponse, 'Internal server error.')
     }
   });
 
