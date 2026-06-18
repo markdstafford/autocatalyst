@@ -29,7 +29,10 @@ import {
   issueReferenceSubmissionSchema,
   freeFormSubmissionSchema,
   explicitWorkSubmissionSchema,
-  createConversationSubmissionSchema
+  createConversationSubmissionSchema,
+  pullRequestReconciliationPath,
+  reconcilePullRequestsSuccessStatusCode,
+  pullRequestReconciliationResponseSchema
 } from './index.js';
 
 import * as apiContract from './index.js';
@@ -123,5 +126,11 @@ describe('api-contract barrel', () => {
     expect(freeFormSubmissionSchema.parse({ kind: 'free_form', body: 'work on issue #71' }).kind).toBe('free_form');
     expect(explicitWorkSubmissionSchema.parse({ kind: 'question', body: 'question', workKind: 'question' }).kind).toBe('question');
     expect(createConversationSubmissionSchema.parse({ kind: 'free_form', body: 'work on issue #71' }).kind).toBe('free_form');
+  });
+
+  it('exports pull-request reconciliation contract symbols', () => {
+    expect(pullRequestReconciliationPath).toBe('/v1/pull-requests/reconcile');
+    expect(reconcilePullRequestsSuccessStatusCode).toBe(200);
+    expect(pullRequestReconciliationResponseSchema.parse({ checked: 0, merged: 0, closed: 0, failed: 0, timedOut: false })).toEqual({ checked: 0, merged: 0, closed: 0, failed: 0, timedOut: false });
   });
 });

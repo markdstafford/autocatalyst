@@ -11,7 +11,8 @@ import type {
   RunSpecResponse,
   RunStep
 } from '@autocatalyst/api-contract';
-import { createConversationWithFirstRunResponseSchema, runFeedbackListResponseSchema, runReplyResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
+import { createConversationWithFirstRunResponseSchema, pullRequestReconciliationResponseSchema, runFeedbackListResponseSchema, runReplyResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
+import type { ReconcilePullRequestsResponse } from '@autocatalyst/api-contract';
 
 import type { ArtifactRepository, FeedbackRepository, ProjectRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
@@ -176,6 +177,13 @@ export interface ServiceReplyToRunInput {
   readonly request: RunReplyRequest;
 }
 
+export interface ServiceReconcilePullRequestsInput {
+  readonly principal: NonModelPrincipal;
+  readonly tenant: string;
+}
+
+export type ServiceReconcilePullRequestsResult = ReconcilePullRequestsResponse;
+
 // --- Service interface ---
 
 export interface ControlPlaneService {
@@ -193,6 +201,7 @@ export interface ControlPlaneService {
   listRunFeedback(input: ServiceListRunFeedbackInput): Promise<ServiceListRunFeedbackResult>;
   appendRunFeedbackThreadReply(input: AppendRunFeedbackThreadReplyInput): Promise<Feedback>;
   replyToRun(input: ServiceReplyToRunInput): Promise<RunReplyResponse>;
+  reconcilePullRequests(input: ServiceReconcilePullRequestsInput): Promise<ServiceReconcilePullRequestsResult>;
 }
 
 // --- Constructor options ---
@@ -666,6 +675,28 @@ export class DefaultControlPlaneService implements ControlPlaneService {
         throw new ControlPlaneServiceError('not_found', 'Feedback not found.');
       }
       throw persistenceFailed('Failed to append feedback thread reply.', error);
+    }
+  }
+
+  async reconcilePullRequests(input: ServiceReconcilePullRequestsInput): Promise<ServiceReconcilePullRequestsResult> {
+    const decision = await this.#policy.authorize({
+      principal: input.principal,
+      action: 'pull_request.reconcile',
+      resource: { kind: 'pull_request_reconciliation', path: '/v1/pull-requests/reconcile' }
+    });
+    if (!decision.allowed) throw new ControlPlaneServiceError('forbidden', 'Not authorized to reconcile pull requests.');
+    if (input.tenant !== input.principal.tenantId) throw new ControlPlaneServiceError('forbidden', 'Tenant not accessible.');
+
+    try {
+      return pullRequestReconciliationResponseSchema.parse(await this.#orchestrator.detectMerges(input.tenant));
+    } catch (error) {
+      if (error instanceof OrchestratorError) {
+        throw new ControlPlaneServiceError(mapOrchestratorErrorCode(error.code), error.message, {
+          ...(error.details !== undefined ? { details: error.details } : {}),
+          cause: error
+        });
+      }
+      throw error;
     }
   }
 
