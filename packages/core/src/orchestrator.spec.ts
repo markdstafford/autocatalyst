@@ -666,6 +666,54 @@ describe('DefaultOrchestrator.dispatch', () => {
     expect(transitionCall?.failureReason).toBe('spec_freeze_failed');
   });
 
+  it('tolerates {} as pr.finalize result — normalizer produces a clean advance and run advances to pr.open', async () => {
+    const existing = makeRun({ currentStep: 'pr.finalize' });
+    const updated = makeRun({ currentStep: 'pr.open' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'pr.open', phase: 'pr' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const unitRun = vi.fn().mockResolvedValue({
+      directive: 'advance',
+      result: {} // empty object — normalizer should produce a clean advance result
+    });
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork: { run: unitRun }, autoDispatch: { enabled: false } });
+
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    // Should advance to pr.open — not fail with pr_finalize_invalid_result.
+    expect(result.run.currentStep).toBe('pr.open');
+    expect(recordTransition).toHaveBeenCalledTimes(1);
+    const call = recordTransition.mock.calls[0]?.[0];
+    expect(call?.failureReason).toBeUndefined();
+  });
+
+  it('fails with pr_finalize_invalid_result when pr.finalize result has an unknown directive', async () => {
+    const existing = makeRun({ currentStep: 'pr.finalize' });
+    const failed = makeRun({ currentStep: 'failed', terminal: true });
+    const failedStep = makeRunStep({ step: 'failed' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: failed, runStep: failedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const unitRun = vi.fn().mockResolvedValue({
+      directive: 'advance',
+      result: { directive: 'unknown_directive' } // invalid — no normalizer can fix this
+    });
+    const logger = { warn: vi.fn() };
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork: { run: unitRun }, autoDispatch: { enabled: false }, logger });
+
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    // Should fail the run with pr_finalize_invalid_result.
+    expect(result.run.currentStep).toBe('failed');
+    const call = recordTransition.mock.calls[0]?.[0];
+    expect(call?.failureReason).toBe('pr_finalize_invalid_result');
+  });
+
   it('dispatches implementation.plan with an explicit passthrough checkpoint before implementation.build', async () => {
     const runAtPlan = makeRun({ currentStep: 'implementation.plan', workKind: 'feature' });
 

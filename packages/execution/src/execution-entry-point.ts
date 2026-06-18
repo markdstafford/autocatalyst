@@ -328,7 +328,8 @@ function resolveScratchFileContract(
 
 function listNormalizers(value: ResultNormalizerRegistry | readonly ResultNormalizer[] | undefined): readonly ResultNormalizer[] {
   if (value === undefined) return [];
-  return Array.isArray(value) ? value : value.normalizers;
+  if (Array.isArray(value)) return value;
+  return (value as ResultNormalizerRegistry).normalizers;
 }
 
 function composeNormalizers(
