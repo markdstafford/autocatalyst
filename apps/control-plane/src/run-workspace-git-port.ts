@@ -64,6 +64,29 @@ function validatePath(path: string): void {
   }
 }
 
+// Broader ref pattern for diffs: allows branch names, remote-tracking refs, and SHAs.
+const DIFF_REF_PATTERN = /^[A-Za-z0-9._/\-]+$/;
+
+function validateDiffRef(ref: string | undefined): void {
+  if (ref === undefined) return;
+  if (typeof ref !== 'string' || ref.length === 0) throw new Error('changed_files_ref_invalid');
+  if (ref.includes('..') || ref.includes(' ') || ref.includes('\n') || ref.startsWith('-')) {
+    throw new Error('changed_files_ref_invalid');
+  }
+  if (!DIFF_REF_PATTERN.test(ref)) throw new Error('changed_files_ref_invalid');
+}
+
+function normalizeDiffPath(raw: string): string {
+  const normalized = raw.replace(/\\/gu, '/').trim();
+  if (normalized.length === 0 || normalized.startsWith('/')) {
+    throw new Error('changed_files_path_invalid');
+  }
+  if (normalized.split('/').some((s) => s.length === 0 || s === '.' || s === '..')) {
+    throw new Error('changed_files_path_invalid');
+  }
+  return normalized;
+}
+
 async function assertContainment(workspacesRoot: string, workspaceRepoRoot: string): Promise<void> {
   const normalizedRoot = await realpath(workspacesRoot).catch(() => workspacesRoot);
   const normalizedRepo = await realpath(workspaceRepoRoot).catch(() => workspaceRepoRoot);
@@ -135,32 +158,46 @@ export function createRunWorkspaceGitPort(options: RunWorkspaceGitPortOptions): 
     },
 
     async getChangedFiles(input: GetChangedFilesInput): Promise<readonly ChangedFileEntry[]> {
-      validateRef(input.baseRef);
+      validateDiffRef(input.baseRef);
       if (input.headRef !== undefined) {
-        validateRef(input.headRef);
+        validateDiffRef(input.headRef);
       }
       await assertContainment(options.workspacesRoot, input.workspaceRepoRoot);
+
       const head = input.headRef ?? 'HEAD';
       const { stdout } = await execFileAsync(
         'git',
-        ['diff', '--name-status', '-M', `${input.baseRef}...${head}`],
+        ['diff', '--name-status', '--find-renames', input.baseRef, head],
         { cwd: input.workspaceRepoRoot }
       );
-      const entries: ChangedFileEntry[] = [];
+
+      const entries = new Map<string, ChangedFileEntry>();
       for (const line of stdout.trim().split('\n').filter(Boolean)) {
         const parts = line.split('\t');
         const statusChar = parts[0]?.[0];
+        let entry: ChangedFileEntry | null = null;
+
         if (statusChar === 'A') {
-          entries.push({ path: parts[1]!, status: 'added' });
-        } else if (statusChar === 'M') {
-          entries.push({ path: parts[1]!, status: 'modified' });
+          const path = normalizeDiffPath(parts[1] ?? '');
+          entry = { path, status: 'added' };
+        } else if (statusChar === 'M' || statusChar === 'T') {
+          const path = normalizeDiffPath(parts[1] ?? '');
+          entry = { path, status: 'modified' };
         } else if (statusChar === 'D') {
-          entries.push({ path: parts[1]!, status: 'deleted' });
+          const path = normalizeDiffPath(parts[1] ?? '');
+          entry = { path, status: 'deleted' };
         } else if (statusChar === 'R') {
-          entries.push({ path: parts[2]!, status: 'renamed', previousPath: parts[1] });
+          const previousPath = normalizeDiffPath(parts[1] ?? '');
+          const path = normalizeDiffPath(parts[2] ?? '');
+          entry = { path, status: 'renamed', previousPath };
+        }
+
+        if (entry !== null) {
+          entries.set(entry.path, entry);
         }
       }
-      return entries;
+
+      return [...entries.values()].sort((a, b) => a.path.localeCompare(b.path));
     }
   };
 }
