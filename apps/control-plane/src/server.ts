@@ -1533,7 +1533,7 @@ export async function createControlPlaneServer(
       principal: systemPrincipal,
       tenant: tickerTenant,
       intervalMs: options.pullRequestReconciliationTicker.intervalMs,
-      logger: { warn: (msg, details) => { app.log.warn({ ...details as object }, msg); } }
+      logger: { warn: (msg, details) => { app.log.warn({ ...(details !== null && typeof details === 'object' ? details as Record<string, unknown> : {}) }, msg); } }
     });
     ticker.start();
     app.addHook('onClose', async () => { ticker.stop(); });
