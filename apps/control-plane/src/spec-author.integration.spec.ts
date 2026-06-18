@@ -24,8 +24,6 @@ import {
   createExecutionEntryPoint,
   createExecutionMaterializer,
   createSpecAuthorResultContract,
-  createStepResultContractRegistry,
-  registerSpecAuthorResultContract,
   SPEC_AUTHOR_SCHEMA_ID
 } from '@autocatalyst/execution';
 import {
