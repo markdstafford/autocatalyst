@@ -100,6 +100,10 @@ export function deriveChangedPathSubject(changedFiles: readonly string[]): strin
   return 'update changed implementation files';
 }
 
+// Matches legacy orchestrator placeholder text generated for clean implementation rounds.
+// Must stay in sync with LEGACY_TEXT_PLACEHOLDER_PATTERN in pr-content.ts.
+const LEGACY_TEXT_PLACEHOLDER_PATTERN = /^round\s+\d+:\s*implementation passed review$/iu;
+
 export function deriveConventionalTitle(input: DeriveConventionalTitleInput): string | null {
   const type = getConventionalTitleType(input.workKind);
   if (type === null) return null;
@@ -107,7 +111,7 @@ export function deriveConventionalTitle(input: DeriveConventionalTitleInput): st
   // Fallback subject source order:
   // 1. titleSubject
   // 2. first sentence/heading from reconciledSummary
-  // 3. first sentence/heading from cumulativeSummary
+  // 3. first sentence/heading from cumulativeSummary (unless it is a legacy placeholder)
   // 4. derived from changedFiles
   // 5. 'complete approved implementation'
   let subject: string | null = null;
@@ -116,7 +120,7 @@ export function deriveConventionalTitle(input: DeriveConventionalTitleInput): st
   } else if (input.reconciledSummary) {
     subject = extractFirstSentenceOrHeading(input.reconciledSummary);
   }
-  if (!subject && input.cumulativeSummary) {
+  if (!subject && input.cumulativeSummary && !LEGACY_TEXT_PLACEHOLDER_PATTERN.test(input.cumulativeSummary.trim())) {
     subject = extractFirstSentenceOrHeading(input.cumulativeSummary);
   }
   if (!subject && input.changedFiles !== undefined) {

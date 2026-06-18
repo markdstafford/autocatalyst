@@ -637,6 +637,57 @@ describe('handlePullRequestOpen', () => {
     });
   });
 
+  it('replaces "Round N: implementation passed review" placeholder summary with a path-derived fallback', async () => {
+    const placeholderCheckpoint = {
+      ...cumulativeSummaryCheckpoint,
+      cumulativeSummary: 'Round 1: implementation passed review',
+      changedFiles: []
+    };
+    const { deps, create } = makeDeps({
+      runSteps: [
+        makeRunStep({ id: 'step_build', step: 'implementation.build', checkpointResult: placeholderCheckpoint as unknown as RunStep['checkpointResult'] }),
+        makeRunStep({ id: 'step_fin', step: 'pr.finalize', checkpointResult: finalizeCheckpoint as unknown as RunStep['checkpointResult'] })
+      ],
+      changedFiles: [
+        { path: 'packages/core/src/pr-open-handler.ts', status: 'modified' }
+      ]
+    });
+
+    await handlePullRequestOpen('run_1', 'tenant_1', deps);
+
+    const content = create.mock.calls[0]?.[0].content;
+    expect(content.title).not.toMatch(/implementation passed review/iu);
+    expect(content.title).not.toMatch(/round \d+/iu);
+    expect(content.body).not.toContain('implementation passed review');
+    expect(content.body).not.toMatch(/round \d+/iu);
+    // Should use path-derived fallback instead
+    expect(content.body).toContain('packages/core/src/pr-open-handler.ts');
+  });
+
+  it('does not replace a real summary with the placeholder guard — only filters exact placeholder text', async () => {
+    const realSummaryCheckpoint = {
+      ...cumulativeSummaryCheckpoint,
+      cumulativeSummary: 'Added a feature.'
+    };
+    const noReconciledFinalize = {
+      ...finalizeCheckpoint,
+      reconciledSummary: null,
+      titleSubject: null
+    };
+    const { deps, create } = makeDeps({
+      runSteps: [
+        makeRunStep({ id: 'step_build', step: 'implementation.build', checkpointResult: realSummaryCheckpoint as unknown as RunStep['checkpointResult'] }),
+        makeRunStep({ id: 'step_fin', step: 'pr.finalize', checkpointResult: noReconciledFinalize as unknown as RunStep['checkpointResult'] })
+      ]
+    });
+
+    await handlePullRequestOpen('run_1', 'tenant_1', deps);
+
+    const content = create.mock.calls[0]?.[0].content;
+    // The real summary must be preserved and not replaced by a placeholder fallback
+    expect(content.body).toContain('Added a feature.');
+  });
+
   it('throws code_host_error when the registry does not support the provider', async () => {
     const { deps, create } = makeDeps({
       codeHostsGetBehavior: () => {

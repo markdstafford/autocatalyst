@@ -4,6 +4,7 @@ import type { PullRequestContent } from './code-host.js';
 import { deriveConventionalTitle } from './conventional-title.js';
 
 const LEGACY_COUNT_PLACEHOLDER_PATTERN = /^(?:round\s+\d+:\s*)?\d+\s+file\(s\) changed$/iu;
+export const LEGACY_TEXT_PLACEHOLDER_PATTERN = /^round\s+\d+:\s*implementation passed review$/iu;
 
 function normalizeRenderableChangedFile(path: string): string | null {
   const normalized = path.replace(/\\/gu, '/').replace(/^\.\//u, '').trim();
@@ -45,7 +46,10 @@ export function buildPullRequestContent(input: BuildPullRequestContentInput): Pu
     throw new Error(`Work kind '${input.workKind}' does not produce a pull request.`);
   }
 
-  const summaryText = input.reconciledSummary?.trim() || input.cumulativeSummary.cumulativeSummary;
+  const rawCumulativeSummary = LEGACY_TEXT_PLACEHOLDER_PATTERN.test(input.cumulativeSummary.cumulativeSummary.trim())
+    ? ''
+    : input.cumulativeSummary.cumulativeSummary;
+  const summaryText = input.reconciledSummary?.trim() || rawCumulativeSummary;
 
   const sections: string[] = [];
 

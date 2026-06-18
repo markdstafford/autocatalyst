@@ -176,6 +176,19 @@ describe('deriveConventionalTitle', () => {
     expect(title).not.toContain('implementation passed review');
     expect(title).not.toContain('file(s) changed');
   });
+
+  it('does not use "Round N: implementation passed review" as the title subject', () => {
+    // This text was previously synthesized by orchestrator.ts for clean rounds;
+    // old checkpoints may still contain it. It must not appear in the PR title.
+    const title = deriveConventionalTitle({
+      workKind: 'feature',
+      cumulativeSummary: 'Round 1: implementation passed review',
+      changedFiles: ['packages/core/src/orchestrator.ts']
+    });
+
+    expect(title).not.toMatch(/implementation passed review/iu);
+    expect(title).not.toMatch(/round \d+/iu);
+  });
 });
 
 describe('deriveChangedPathSubject', () => {

@@ -15,7 +15,7 @@ import type { CodeHostCredential, CodeHostPort, CodeHostPullRequestFacts, CodeHo
 import { CodeHostError, isCodeHostError } from './code-host.js';
 import type { CodeHostRegistry } from './code-host-registry.js';
 import type { RunEventPublisher } from './run-events.js';
-import { buildPullRequestContent } from './pr-content.js';
+import { buildPullRequestContent, LEGACY_TEXT_PLACEHOLDER_PATTERN } from './pr-content.js';
 import {
   mergeChangedFiles,
   requireCumulativeImplementationSummary,
@@ -188,9 +188,11 @@ function buildRenderableCumulativeSummary(input: {
 }): CumulativeImplementationSummary {
   const changedFiles = mergeChangedFiles(input.cumulativeSummary.changedFiles, input.diffPaths);
   const fallbackSummary = summarizeChangedPaths(changedFiles);
+  const existingSummary = input.cumulativeSummary.cumulativeSummary.trim();
+  const isPlaceholder = LEGACY_TEXT_PLACEHOLDER_PATTERN.test(existingSummary);
   return {
     ...input.cumulativeSummary,
-    cumulativeSummary: input.cumulativeSummary.cumulativeSummary.trim() || fallbackSummary,
+    cumulativeSummary: (existingSummary && !isPlaceholder) ? existingSummary : fallbackSummary,
     changedFiles
   };
 }
