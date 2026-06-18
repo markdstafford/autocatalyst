@@ -815,11 +815,19 @@ describe('PR lifecycle integration: PR body from convergence-round folding', () 
       // The disposition summary is what the implementer wrote — this must appear in the PR body.
       const IMPL_SUMMARY_ROUND1 = 'Added JWT authentication middleware with token refresh';
       const IMPL_SUMMARY_ROUND2 = 'Fixed token expiry edge case in refresh flow';
-      const CHANGED_FILES_ROUND1 = 4;
-      const CHANGED_FILES_ROUND2 = 2;
+      const CHANGED_FILES_ROUND1 = [
+        'packages/core/src/auth.ts',
+        'packages/core/src/auth.spec.ts',
+        'packages/core/src/jwt.ts',
+        'packages/core/src/jwt.spec.ts'
+      ];
+      const CHANGED_FILES_ROUND2 = [
+        'packages/core/src/auth.ts',
+        'packages/core/src/token-expiry.ts'
+      ];
 
-      // Mock convergence engine returns two rounds with implementer disposition summaries.
-      // The orchestrator's folding logic builds the cumulative summary from these dispositions.
+      // Mock convergence engine returns two rounds with implementer disposition summaries
+      // and real changed file paths. The orchestrator folds them into a cumulative summary.
       const convergenceCheckpoint: ConvergenceCheckpoint = {
         kind: 'convergence_review',
         step: 'implementation.build',
@@ -828,7 +836,8 @@ describe('PR lifecycle integration: PR body from convergence-round folding', () 
         rounds: [
           {
             round: 1,
-            changedFileCount: CHANGED_FILES_ROUND1,
+            changedFileCount: CHANGED_FILES_ROUND1.length,
+            changedFilePaths: CHANGED_FILES_ROUND1,
             findings: [],
             dispositions: [
               { disposition: 'fixed', feedbackId: 'fb_round1', summary: IMPL_SUMMARY_ROUND1 }
@@ -838,7 +847,8 @@ describe('PR lifecycle integration: PR body from convergence-round folding', () 
           },
           {
             round: 2,
-            changedFileCount: CHANGED_FILES_ROUND2,
+            changedFileCount: CHANGED_FILES_ROUND2.length,
+            changedFilePaths: CHANGED_FILES_ROUND2,
             findings: [],
             dispositions: [
               { disposition: 'fixed', feedbackId: 'fb_round2', summary: IMPL_SUMMARY_ROUND2 }
@@ -973,9 +983,13 @@ describe('PR lifecycle integration: PR body from convergence-round folding', () 
         // Both rounds' implementer descriptions must appear in the PR body.
         expect(body).toContain(IMPL_SUMMARY_ROUND1);
         expect(body).toContain(IMPL_SUMMARY_ROUND2);
-        // The changed-file entries come from changedFileCount, not reviewer findings.
-        expect(body).toContain(`round 1: ${CHANGED_FILES_ROUND1} file(s) changed`);
-        expect(body).toContain(`round 2: ${CHANGED_FILES_ROUND2} file(s) changed`);
+        // Changed files must appear as real repository-relative paths, not count placeholders.
+        expect(body).toContain('packages/core/src/auth.ts');
+        expect(body).toContain('packages/core/src/jwt.ts');
+        expect(body).toContain('packages/core/src/token-expiry.ts');
+        // Placeholder strings must not appear.
+        expect(body).not.toMatch(/round \d+: \d+ file\(s\) changed/u);
+        expect(body).not.toContain('implementation passed review');
       } finally {
         database.close();
       }

@@ -86,7 +86,7 @@ export function buildImplementationSummaryRoundInputs(
       .filter((disposition) => disposition.disposition === 'fixed')
       .map((disposition) => disposition.summary.trim())
       .filter((summary) => summary.length > 0);
-    const changedFiles = mergeChangedFiles(round.changedFilePaths);
+    const changedFiles = mergeChangedFiles(round.changedFilePaths ?? []);
     return {
       ...(fixedSummaries.length > 0 ? { fixSummary: fixedSummaries.join('; ') } : {}),
       ...(changedFiles.length > 0 ? { changedFiles } : {})

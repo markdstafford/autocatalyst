@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { and, asc, count, desc, eq, isNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type {
@@ -1660,7 +1660,10 @@ export class DrizzleRunWorkspaceMetadataRepository implements RunWorkspaceMetada
         set: {
           workspaceHandle: input.workspaceHandle,
           workspaceRepoRoot: input.workspaceRepoRoot,
-          provisionedBaseRef: input.provisionedBaseRef ?? null
+          // Preserve an existing non-null provisionedBaseRef so idempotent re-materializations
+          // (which may reconstruct an approximate ref) do not overwrite the exact ref captured
+          // during first provisioning.
+          provisionedBaseRef: sql`COALESCE(${runWorkspaceMetadata.provisionedBaseRef}, ${input.provisionedBaseRef ?? null})`
         }
       })
       .run();
