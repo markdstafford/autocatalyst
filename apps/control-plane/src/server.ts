@@ -71,7 +71,7 @@ import {
   type RunRoleWorkInput
 } from '@autocatalyst/core';
 import { GitHubIssueTracker } from '@autocatalyst/github-issue-tracker-adapter';
-import { createGitHubCodeHostAdapter, type SafeGitExecutor } from '@autocatalyst/github-code-host-adapter';
+import { createGitHubCodeHostAdapter, type ExecuteGhFunction, type SafeGitExecutor } from '@autocatalyst/github-code-host-adapter';
 import { createReviewedExecutionDispatcher } from './reviewed-execution-dispatcher.js';
 import { createRunWorkspaceGitPort } from './run-workspace-git-port.js';
 import { loadSpecAuthorPromptInput, SpecAuthoringContextLoadError } from './spec-authoring-context-loader.js';
@@ -212,11 +212,19 @@ export interface ControlPlaneServerOptions {
    * When provided, `executablePath` overrides the default `gh` binary path used for
    * pull-request create/read/find/merge. Do not pass token values here; credentials are
    * always resolved through the secret store.
+   * `executeGh` fully replaces the gh subprocess; when set, `executablePath` and `timeoutMs`
+   * are ignored.
    */
   readonly codeHost?: {
     readonly executablePath?: string;
     readonly timeoutMs?: number;
+    readonly executeGh?: ExecuteGhFunction;
   };
+  /**
+   * Injectable credential resolver for integration tests. When provided, replaces the
+   * default secret-store lookup so tests can supply a credential without a live secret store.
+   */
+  readonly resolveCredential?: (ref: unknown) => Promise<CodeHostCredential>;
   /**
    * Optional background ticker that calls reconcilePullRequests on a fixed interval.
    * When provided and `enabled` is true, the ticker is started after the server is
@@ -1398,11 +1406,16 @@ export async function createControlPlaneServer(
 
   // The adapter owns the shared gh helper internally, so the composition root never imports it
   // (keeping gh usage inside the adapter boundary). Tests override the binary path through
-  // `codeHost.executablePath`.
+  // `codeHost.executablePath`, or inject a full fake via `codeHost.executeGh`.
   const githubCodeHostAdapter = createGitHubCodeHostAdapter({
     git: safeGitExecutorForCodeHost,
-    ...(options.codeHost?.executablePath !== undefined ? { ghExecutablePath: options.codeHost.executablePath } : {}),
-    ...(options.codeHost?.timeoutMs !== undefined ? { timeoutMs: options.codeHost.timeoutMs } : {})
+    ...(options.codeHost?.executeGh !== undefined
+      ? { executeGh: options.codeHost.executeGh }
+      : {
+          ...(options.codeHost?.executablePath !== undefined ? { ghExecutablePath: options.codeHost.executablePath } : {}),
+          ...(options.codeHost?.timeoutMs !== undefined ? { timeoutMs: options.codeHost.timeoutMs } : {})
+        }
+    )
   });
 
   const codeHostRegistry = createCodeHostRegistry([
@@ -1415,7 +1428,7 @@ export async function createControlPlaneServer(
     projects: domainRepos.projects,
     pullRequests: domainRepos.pullRequests,
     codeHosts: codeHostRegistry,
-    resolveCredential: async (ref): Promise<CodeHostCredential> => {
+    resolveCredential: options.resolveCredential ?? (async (ref): Promise<CodeHostCredential> => {
       const credRef = ref as { id?: unknown };
       if (typeof credRef?.id !== 'string' || credRef.id.length === 0) {
         throw new Error('Invalid credential reference: missing id field.');
@@ -1425,7 +1438,7 @@ export async function createControlPlaneServer(
         throw new Error('Secret not found for code-host credential.');
       }
       return { token, secretRef: credRef.id };
-    }
+    })
   };
 
   const feedbackLifecycleDependencies: FeedbackLifecycleDependencies = {

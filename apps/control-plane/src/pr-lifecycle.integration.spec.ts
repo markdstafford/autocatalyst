@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   DefaultControlPlaneService,
@@ -39,6 +42,7 @@ import type { GhExecInput, GhExecResult } from '@autocatalyst/github-issue-track
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import { createPullRequestReconciliationTicker } from './pr-reconciliation-ticker.js';
+import { createControlPlaneServer } from './server.js';
 
 // ---------------------------------------------------------------------------
 // Test fixtures shared across the suites
@@ -1055,67 +1059,137 @@ describe('PR lifecycle integration: endpoint-driven reconciliation', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Test 5 — ticker-driven reconciliation
+// Test 5 — ticker-driven reconciliation via createControlPlaneServer
 // ---------------------------------------------------------------------------
 
 describe('PR lifecycle integration: ticker-driven reconciliation', () => {
-  it('advances run from pr.human_review to done via background ticker', async () => {
-    const unitOfWork: RunUnitOfWork = {
-      run: async ({ run }) => {
-        if (run.currentStep === 'pr.finalize') {
-          return { directive: 'advance', result: prFinalizeAdvanceResult };
-        }
-        return { directive: 'advance' };
-      }
-    };
+  it('advances run from pr.human_review to done via background ticker (createControlPlaneServer)', async () => {
+    const now = '2026-06-17T00:00:00.000Z';
+    const fakeGh = makeFakeGh({ branch: 'feature/ticker-integration' });
+    fakeGh.state.createdPr = true;
+    fakeGh.setMerged();
 
-    const harness = await setupLifecycle({ unitOfWork });
-    let app: FastifyInstance | undefined;
-    try {
-      const { orchestrator, domainRepos, fakeGh, run: runRef } = harness;
+    const tempDir = await mkdtemp(join(tmpdir(), 'ac-ticker-integration-'));
+    const dbPath = join(tempDir, 'ticker-test.sqlite');
+    let runId = '';
 
-      await orchestrator.applyDirective({
-        runId: runRef.id,
-        directive: 'advance',
+    {
+      const seedDb = createSqliteDatabase({ path: dbPath });
+      await migrateSqliteDatabase(seedDb);
+      const seedRepos = createDrizzleDomainRepositories(seedDb);
+
+      const project = await seedRepos.projects.create({
+        owner,
         tenant: 'tenant_dev',
-        origin: 'human',
-        principal: hardcodedDevelopmentPrincipal
+        displayName: 'Ticker Integration Project',
+        repoUrl: `https://github.com/${REPO_SLUG}`,
+        hostRepository: { provider: 'github', owner: REPO_OWNER, name: REPO_NAME, url: `https://github.com/${REPO_SLUG}` },
+        workspaceRootOverride: null,
+        issueTrackerSetting: null,
+        codeHostSetting: { provider: 'github', credentialRef: { id: 'cred_ticker_test', purpose: 'code_host' } },
+        credentialRefs: []
       });
 
-      await waitFor(
-        async () => {
-          const r = await domainRepos.runs.findById(runRef.id);
-          if (r === null) throw new Error('run missing');
-          return r;
-        },
-        (r) => r.currentStep === 'pr.human_review',
-        7000,
-        'pr.human_review'
-      );
+      const seed = await new DrizzleConversationIngressRepository(seedDb)
+        .createConversationTopicMessageAndRun({
+          conversation: {
+            projectId: project.id,
+            owner,
+            tenant: 'tenant_dev',
+            identity: 'ticker-integration-test',
+            activeTopicId: null
+          },
+          topic: { owner, tenant: 'tenant_dev', title: 'Ticker Integration Topic', kind: 'main' },
+          message: { owner, tenant: 'tenant_dev', author: owner, direction: 'inbound', body: 'ticker integration' },
+          run: { owner, tenant: 'tenant_dev', workKind: 'feature', currentStep: 'pr.human_review', terminal: false },
+          runStep: {
+            phase: 'pr',
+            step: 'pr.human_review',
+            role: 'none',
+            startedAt: now,
+            endedAt: null,
+            durationMs: null
+          }
+        });
+      runId = seed.run.id;
+      const branch = `feature/${runId.slice(0, 8)}`;
 
-      fakeGh.setMerged();
-
-      app = await buildReconcileApp(harness, {
-        ticker: { enabled: true, intervalMs: 50, tenant: 'tenant_dev' }
+      const buildStep = await seedRepos.runSteps.create({
+        runId,
+        phase: 'implementation',
+        step: 'implementation.build',
+        role: 'none',
+        startedAt: now,
+        endedAt: now,
+        durationMs: 1000,
+        occurrence: { index: 0, attempt: 1 }
+      });
+      await seedRepos.runSteps.updateCheckpoint({
+        runStepId: buildStep.id,
+        runId,
+        tenant: 'tenant_dev',
+        checkpointResult: {
+          kind: 'cumulative_implementation_summary',
+          cumulativeSummary: 'Added ticker test feature.',
+          changedFiles: ['src/ticker.ts'],
+          validationSummary: ['All tests pass'],
+          followUps: [],
+          nonGoals: [],
+          sourceRoundCount: 1,
+          completedAt: now
+        } as unknown as Parameters<typeof seedRepos.runSteps.updateCheckpoint>[0]['checkpointResult']
       });
 
-      await waitFor(
+      await seedRepos.runWorkspaceMetadata.upsert({
+        runId,
+        workspaceHandle: branch,
+        workspaceRepoRoot: '/tmp/fake-workspace',
+        createdAt: now
+      });
+
+      await seedRepos.pullRequests.create({
+        runId,
+        owner,
+        tenant: 'tenant_dev',
+        provider: 'github',
+        number: PR_NUMBER,
+        url: PR_URL,
+        state: 'open',
+        branch
+      });
+
+      seedDb.close();
+    }
+
+    const TICKER_BEARER_TOKEN = 'ticker-integration-bearer-token';
+    const app = await createControlPlaneServer({
+      databasePath: dbPath,
+      bearerToken: TICKER_BEARER_TOKEN,
+      masterSecret: 'ticker-integration-master-secret',
+      codeHost: { executeGh: fakeGh.executeGh },
+      resolveCredential: async () => ({ token: TEST_TOKEN }),
+      pullRequestReconciliationTicker: { enabled: true, intervalMs: 50, tenant: 'tenant_dev' }
+    });
+
+    try {
+      const finalRun = await waitFor(
         async () => {
-          const r = await domainRepos.runs.findById(runRef.id);
-          if (r === null) throw new Error('run missing');
-          return r;
+          const response = await app.inject({
+            method: 'GET',
+            url: `/v1/runs/${runId}`,
+            headers: { authorization: `Bearer ${TICKER_BEARER_TOKEN}` }
+          });
+          return response.json() as { currentStep: string; terminal: boolean };
         },
         (r) => r.terminal === true && r.currentStep === 'done',
         7000,
-        'done via ticker'
+        'done via createControlPlaneServer ticker'
       );
-
-      const mergedPr = await domainRepos.pullRequests.findByRun(runRef.id);
-      expect(mergedPr).not.toBeNull();
-      expect(mergedPr!.state).toBe('merged');
+      expect(finalRun.currentStep).toBe('done');
+      expect(finalRun.terminal).toBe(true);
     } finally {
-      if (app !== undefined) await app.close();
-      harness.database.close();
+      await app.close();
+      await rm(tempDir, { recursive: true, force: true });
     }
   }, 20000);
 });
