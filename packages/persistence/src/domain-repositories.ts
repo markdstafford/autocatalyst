@@ -1652,13 +1652,15 @@ export class DrizzleRunWorkspaceMetadataRepository implements RunWorkspaceMetada
         runId: input.runId,
         workspaceHandle: input.workspaceHandle,
         workspaceRepoRoot: input.workspaceRepoRoot,
+        provisionedBaseRef: input.provisionedBaseRef ?? null,
         createdAt: input.createdAt
       })
       .onConflictDoUpdate({
         target: runWorkspaceMetadata.runId,
         set: {
           workspaceHandle: input.workspaceHandle,
-          workspaceRepoRoot: input.workspaceRepoRoot
+          workspaceRepoRoot: input.workspaceRepoRoot,
+          provisionedBaseRef: input.provisionedBaseRef ?? null
         }
       })
       .run();
@@ -1677,6 +1679,7 @@ export class DrizzleRunWorkspaceMetadataRepository implements RunWorkspaceMetada
       runId: row.runId,
       workspaceHandle: row.workspaceHandle,
       workspaceRepoRoot: row.workspaceRepoRoot,
+      provisionedBaseRef: row.provisionedBaseRef ?? null,
       createdAt: row.createdAt
     };
   }
