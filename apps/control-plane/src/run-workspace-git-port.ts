@@ -5,7 +5,9 @@ import {
   defaultReviewerWorkspacePolicy,
   type CaptureCheckpointRefInput,
   type CaptureCheckpointRefResult,
+  type ChangedFileEntry,
   type CheckpointAltitude,
+  type GetChangedFilesInput,
   type ListFilesAtRefInput,
   type ReadFileAtRefInput,
   type RunWorkspaceGitPort
@@ -130,6 +132,35 @@ export function createRunWorkspaceGitPort(options: RunWorkspaceGitPortOptions): 
       await assertContainment(options.workspacesRoot, input.workspaceRepoRoot);
       const { stdout } = await execFileAsync('git', ['ls-tree', '-r', '--name-only', input.ref], { cwd: input.workspaceRepoRoot });
       return stdout.trim().split('\n').filter(Boolean);
+    },
+
+    async getChangedFiles(input: GetChangedFilesInput): Promise<readonly ChangedFileEntry[]> {
+      validateRef(input.baseRef);
+      if (input.headRef !== undefined) {
+        validateRef(input.headRef);
+      }
+      await assertContainment(options.workspacesRoot, input.workspaceRepoRoot);
+      const head = input.headRef ?? 'HEAD';
+      const { stdout } = await execFileAsync(
+        'git',
+        ['diff', '--name-status', '-M', `${input.baseRef}...${head}`],
+        { cwd: input.workspaceRepoRoot }
+      );
+      const entries: ChangedFileEntry[] = [];
+      for (const line of stdout.trim().split('\n').filter(Boolean)) {
+        const parts = line.split('\t');
+        const statusChar = parts[0]?.[0];
+        if (statusChar === 'A') {
+          entries.push({ path: parts[1]!, status: 'added' });
+        } else if (statusChar === 'M') {
+          entries.push({ path: parts[1]!, status: 'modified' });
+        } else if (statusChar === 'D') {
+          entries.push({ path: parts[1]!, status: 'deleted' });
+        } else if (statusChar === 'R') {
+          entries.push({ path: parts[2]!, status: 'renamed', previousPath: parts[1] });
+        }
+      }
+      return entries;
     }
   };
 }
