@@ -16,8 +16,14 @@ import { CodeHostError, isCodeHostError } from './code-host.js';
 import type { CodeHostRegistry } from './code-host-registry.js';
 import type { RunEventPublisher } from './run-events.js';
 import { buildPullRequestContent } from './pr-content.js';
-import { requireCumulativeImplementationSummary, type CumulativeImplementationSummary } from './implementation-summary.js';
+import {
+  mergeChangedFiles,
+  requireCumulativeImplementationSummary,
+  summarizeChangedPaths,
+  type CumulativeImplementationSummary
+} from './implementation-summary.js';
 import type { ApplyOrchestratedDirectiveInput, OrchestratedRunResult } from './orchestrator.js';
+import type { RunWorkspaceGitPort } from './run-workspace-git.js';
 
 // --- Error type ---
 
@@ -74,6 +80,7 @@ export interface PullRequestOpenHandlerDependencies {
   readonly events: RunEventPublisher;
   readonly applyDirective: (input: ApplyOrchestratedDirectiveInput) => Promise<OrchestratedRunResult>;
   readonly clock: () => string;
+  readonly runWorkspaceGit: Pick<RunWorkspaceGitPort, 'getChangedFiles'>;
 }
 
 // --- Checkpoint shape ---
@@ -171,6 +178,21 @@ async function emitPullRequestOpenedEvent(
   } catch {
     // Swallow — event emission must not break the handler.
   }
+}
+
+// --- Helpers ---
+
+function buildRenderableCumulativeSummary(input: {
+  readonly cumulativeSummary: CumulativeImplementationSummary;
+  readonly diffPaths: readonly string[];
+}): CumulativeImplementationSummary {
+  const changedFiles = mergeChangedFiles(input.cumulativeSummary.changedFiles, input.diffPaths);
+  const fallbackSummary = summarizeChangedPaths(changedFiles);
+  return {
+    ...input.cumulativeSummary,
+    cumulativeSummary: input.cumulativeSummary.cumulativeSummary.trim() || fallbackSummary,
+    changedFiles
+  };
 }
 
 // --- Handler ---
@@ -351,16 +373,36 @@ export async function handlePullRequestOpen(
     );
   }
 
-  // 6. Build PR content.
+  // 6. Recover final branch diff paths and build renderable summary.
+  const baseRef = workspaceMeta.provisionedBaseRef?.trim() || binding.baseBranch;
+  let diffPaths: readonly string[] = [];
+  try {
+    const diffEntries = await deps.runWorkspaceGit.getChangedFiles({
+      workspaceRepoRoot: workspaceMeta.workspaceRepoRoot,
+      baseRef
+    });
+    diffPaths = diffEntries.map((entry) => entry.path);
+  } catch (cause) {
+    if (cumulativeSummary.cumulativeSummary.trim().length === 0 && cumulativeSummary.changedFiles.length === 0) {
+      throw new PullRequestOpenHandlerError(
+        'missing_implementation_summary',
+        `Unable to recover changed files for run '${runId}'.`,
+        { cause: cause instanceof Error ? new Error(cause.message) : undefined }
+      );
+    }
+  }
+  const renderableSummary = buildRenderableCumulativeSummary({ cumulativeSummary, diffPaths });
+
+  // 7. Build PR content.
   const content = buildPullRequestContent({
     workKind: run.workKind,
     issueUrl: run.trackedIssue?.url ?? null,
-    cumulativeSummary,
+    cumulativeSummary: renderableSummary,
     reconciledSummary: finalize.reconciledSummary,
     titleSubject: finalize.titleSubject
   });
 
-  // 7. findByBranch recovery decision table (before create).
+  // 8. findByBranch recovery decision table (before create).
   let providerExisting: CodeHostPullRequestFacts | null = null;
   try {
     providerExisting = await codeHostPort.findByBranch({
@@ -415,7 +457,7 @@ export async function handlePullRequestOpen(
     });
   }
 
-  // 8. Create the PR via the code-host port.
+  // 9. Create the PR via the code-host port.
   let facts: CodeHostPullRequestFacts;
   try {
     facts = await codeHostPort.create({
@@ -471,7 +513,7 @@ export async function handlePullRequestOpen(
     );
   }
 
-  // 9. Persist the PR record. On persistence failure, retry findByBranch.
+  // 10. Persist the PR record. On persistence failure, retry findByBranch.
   let persisted: PullRequest;
   try {
     persisted = await deps.pullRequests.create({
@@ -522,7 +564,7 @@ export async function handlePullRequestOpen(
     }
   }
 
-  // 10. Emit the runner_notification event with safe facts only.
+  // 11. Emit the runner_notification event with safe facts only.
   await emitPullRequestOpenedEvent(deps, runId, tenant, {
     url: persisted.url,
     provider: persisted.provider,
@@ -530,7 +572,7 @@ export async function handlePullRequestOpen(
     branch: persisted.branch
   });
 
-  // 11. Advance to pr.human_review with a checkpoint carrying safe PR facts.
+  // 12. Advance to pr.human_review with a checkpoint carrying safe PR facts.
   return advanceWithCheckpoint(deps, run, tenant, {
     kind: 'pull_request_open',
     provider: persisted.provider,

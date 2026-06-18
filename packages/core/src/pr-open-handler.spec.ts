@@ -15,6 +15,7 @@ import type {
   TopicRepository
 } from './domain-repositories.js';
 import type { RunEventPublisher } from './run-events.js';
+import type { ChangedFileEntry, RunWorkspaceGitPort } from './run-workspace-git.js';
 
 const owner: NonModelPrincipal = { id: 'user_1', kind: 'human', tenantId: 'tenant_1', displayName: 'Ada' };
 const timestamp = '2026-06-08T00:00:00.000Z';
@@ -144,6 +145,7 @@ interface DepHandles {
   readonly pullRequestCreate: ReturnType<typeof vi.fn>;
   readonly pullRequestUpdateState: ReturnType<typeof vi.fn>;
   readonly eventsAppend: ReturnType<typeof vi.fn>;
+  readonly getChangedFiles: ReturnType<typeof vi.fn>;
 }
 
 function makeDeps(opts: {
@@ -158,6 +160,14 @@ function makeDeps(opts: {
   findByBranchBehavior?: () => Promise<CodeHostPullRequestFacts | null>;
   pullRequestCreateBehavior?: () => Promise<PullRequest>;
   codeHostsGetBehavior?: () => CodeHostPort;
+  changedFiles?: readonly ChangedFileEntry[];
+  workspaceMetadata?: {
+    runId: string;
+    workspaceHandle: string;
+    workspaceRepoRoot: string;
+    provisionedBaseRef?: string | null;
+    createdAt: string;
+  };
 } = {}): DepHandles {
   const run = opts.run ?? makeRun();
   const runs: RunRepository = {
@@ -213,13 +223,14 @@ function makeDeps(opts: {
   };
   const runWorkspaceMetadata: RunWorkspaceMetadataRepository = {
     upsert: vi.fn(),
-    findByRunId: vi.fn().mockResolvedValue({
+    findByRunId: vi.fn().mockResolvedValue(opts.workspaceMetadata ?? {
       runId: 'run_1',
       workspaceHandle: 'feature/run_1',
       workspaceRepoRoot: '/tmp/ws',
       createdAt: timestamp
     })
   };
+  const getChangedFiles = vi.fn().mockResolvedValue(opts.changedFiles ?? []);
   const facts: CodeHostPullRequestFacts = opts.facts ?? {
     provider: 'github',
     number: 42,
@@ -252,6 +263,8 @@ function makeDeps(opts: {
   }));
   const resolveCredential = opts.resolveCredential ?? (async () => ({ token: 'TOKEN_FOR_TEST' }));
 
+  const runWorkspaceGit: Pick<RunWorkspaceGitPort, 'getChangedFiles'> = { getChangedFiles };
+
   return {
     deps: {
       runs,
@@ -265,7 +278,8 @@ function makeDeps(opts: {
       resolveCredential,
       events,
       applyDirective,
-      clock: () => timestamp
+      clock: () => timestamp,
+      runWorkspaceGit
     },
     applyDirective,
     create,
@@ -273,7 +287,8 @@ function makeDeps(opts: {
     findByBranch,
     pullRequestCreate,
     pullRequestUpdateState,
-    eventsAppend
+    eventsAppend,
+    getChangedFiles
   };
 }
 
@@ -630,5 +645,42 @@ describe('handlePullRequestOpen', () => {
       code: 'code_host_error'
     });
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it('merges final branch diff paths into PR content before creation', async () => {
+    const { deps, create, getChangedFiles } = makeDeps({
+      changedFiles: [
+        { path: 'packages/core/src/pr-open-handler.ts', status: 'modified' },
+        { path: 'packages/core/src/pr-content.ts', status: 'added' }
+      ]
+    });
+
+    await handlePullRequestOpen('run_1', 'tenant_1', deps);
+
+    expect(getChangedFiles).toHaveBeenCalledWith({
+      workspaceRepoRoot: expect.any(String),
+      baseRef: expect.any(String)
+    });
+    const body = create.mock.calls[0]?.[0].content.body as string;
+    expect(body).toContain('- `packages/core/src/pr-content.ts`');
+    expect(body).toContain('- `packages/core/src/pr-open-handler.ts`');
+    expect(body).not.toMatch(/round \d+/iu);
+    expect(body).not.toContain('file(s) changed');
+  });
+
+  it('uses provisionedBaseRef before binding base branch for diff recovery', async () => {
+    const { deps, getChangedFiles } = makeDeps({
+      workspaceMetadata: {
+        runId: 'run_1',
+        workspaceHandle: 'feature/run_1',
+        workspaceRepoRoot: '/tmp/ws',
+        provisionedBaseRef: 'refs/remotes/origin/main',
+        createdAt: timestamp
+      }
+    });
+
+    await handlePullRequestOpen('run_1', 'tenant_1', deps);
+
+    expect(getChangedFiles.mock.calls[0]?.[0].baseRef).toBe('refs/remotes/origin/main');
   });
 });

@@ -1409,6 +1409,7 @@ export async function createControlPlaneServer(
     projects: domainRepos.projects,
     pullRequests: domainRepos.pullRequests,
     codeHosts: codeHostRegistry,
+    ...(runWorkspaceGit !== undefined ? { runWorkspaceGit } : {}),
     resolveCredential: async (ref): Promise<CodeHostCredential> => {
       const credRef = ref as { id?: unknown };
       if (typeof credRef?.id !== 'string' || credRef.id.length === 0) {
