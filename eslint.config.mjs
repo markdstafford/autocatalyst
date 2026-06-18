@@ -90,6 +90,29 @@ export default [
       ]
     }
   },
+  // The control-plane app hosts the Claude adapter's optional peer dependency
+  // and verifies SDK availability through a dynamic import in its integration
+  // suite. @nx/dependency-checks does not treat that dynamic import as usage.
+  {
+    files: ['apps/control-plane/package.json'],
+    languageOptions: {
+      parser: jsoncParser
+    },
+    plugins: { '@nx': nxPlugin },
+    rules: {
+      '@nx/dependency-checks': [
+        'error',
+        {
+          ignoredFiles: [
+            '{projectRoot}/vite.config.ts',
+            '{projectRoot}/vitest.config.ts',
+            '{projectRoot}/drizzle.config.ts'
+          ],
+          ignoredDependencies: ['@anthropic-ai/claude-agent-sdk']
+        }
+      ]
+    }
+  },
   // The OpenAI agent adapter declares @openai/agents, `openai`, and `zod` as
   // real dependencies and imports them statically, so @nx/dependency-checks
   // detects them without an override (the default rule above applies).

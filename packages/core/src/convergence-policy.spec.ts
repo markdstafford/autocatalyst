@@ -4,8 +4,26 @@ import {
   defaultConvergenceDepth,
   getStepConvergencePolicy,
   getImplementationAltitudeLadder,
-  StepConvergencePolicyError
+  StepConvergencePolicyError,
+  type StepConvergencePolicy
 } from './convergence-policy.js';
+import type { RunStepId } from './run-step-catalog.js';
+import type { RunWorkflowDefinition } from './run-workflows.js';
+
+type TestWorkflowConvergence = Readonly<Partial<Record<RunStepId, StepConvergencePolicy | {
+  readonly maxRounds?: unknown;
+  readonly depth?: unknown;
+}>>>;
+
+function makeWorkflow(convergence?: TestWorkflowConvergence): RunWorkflowDefinition {
+  return {
+    id: 'feature',
+    workKind: 'feature',
+    steps: [],
+    transitions: {},
+    ...(convergence !== undefined ? { convergence } : {})
+  } as unknown as RunWorkflowDefinition;
+}
 
 describe('convergence policy', () => {
   it('defaultConvergenceMaxRounds is 3', () => {
@@ -17,65 +35,40 @@ describe('convergence policy', () => {
   });
 
   it('returns default policy when workflow has no convergence data', () => {
-    const workflow = { id: 'feature', steps: [], transitions: {} } as any;
+    const workflow = makeWorkflow();
     const policy = getStepConvergencePolicy(workflow, 'implementation.build');
     expect(policy.maxRounds).toBe(3);
     expect(policy.depth).toBe('build_only');
   });
 
   it('returns configured max rounds when workflow has convergence data for step', () => {
-    const workflow = {
-      id: 'feature',
-      steps: [],
-      transitions: {},
-      convergence: { 'implementation.build': { maxRounds: 2 } }
-    } as any;
+    const workflow = makeWorkflow({ 'implementation.build': { maxRounds: 2 } });
     const policy = getStepConvergencePolicy(workflow, 'implementation.build');
     expect(policy.maxRounds).toBe(2);
     expect(policy.depth).toBe('build_only');
   });
 
   it('returns default for step not in convergence data', () => {
-    const workflow = {
-      id: 'feature',
-      steps: [],
-      transitions: {},
-      convergence: { 'implementation.build': { maxRounds: 2 } }
-    } as any;
+    const workflow = makeWorkflow({ 'implementation.build': { maxRounds: 2 } });
     const policy = getStepConvergencePolicy(workflow, 'spec.author');
     expect(policy.maxRounds).toBe(3);
     expect(policy.depth).toBe('build_only');
   });
 
   it('returns configured depth', () => {
-    const workflow = {
-      id: 'feature',
-      steps: [],
-      transitions: {},
-      convergence: { 'implementation.build': { depth: 'full' } }
-    } as any;
+    const workflow = makeWorkflow({ 'implementation.build': { depth: 'full' } });
     const policy = getStepConvergencePolicy(workflow, 'implementation.build');
     expect(policy.depth).toBe('full');
     expect(policy.maxRounds).toBe(3);
   });
 
   it('throws StepConvergencePolicyError on invalid depth', () => {
-    const workflow = {
-      id: 'feature',
-      steps: [],
-      transitions: {},
-      convergence: { 'implementation.build': { depth: 'bogus' } }
-    } as any;
+    const workflow = makeWorkflow({ 'implementation.build': { depth: 'bogus' } });
     expect(() => getStepConvergencePolicy(workflow, 'implementation.build')).toThrow(StepConvergencePolicyError);
   });
 
   it('throws StepConvergencePolicyError on invalid maxRounds', () => {
-    const workflow = {
-      id: 'feature',
-      steps: [],
-      transitions: {},
-      convergence: { 'implementation.build': { maxRounds: 0 } }
-    } as any;
+    const workflow = makeWorkflow({ 'implementation.build': { maxRounds: 0 } });
     expect(() => getStepConvergencePolicy(workflow, 'implementation.build')).toThrow(StepConvergencePolicyError);
   });
 });

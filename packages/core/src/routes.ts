@@ -64,6 +64,7 @@ import {
   secretStoreLockedErrorCode,
   updateConfigurationRecordRequestSchema,
   type AppendRunFeedbackThreadRequest,
+  type ConfigurationRecord,
   type ConfigurationRecordIdParams,
   type CreateConfigurationRecordRequest,
   type CreateConversationWithFirstRunRequest,
@@ -304,7 +305,7 @@ export async function registerControlPlaneRoutes(
           settings: body.settings,
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
-        } as import('@autocatalyst/api-contract').ConfigurationRecord;
+        } as ConfigurationRecord;
         try {
           assertActiveRoutesReferenceDispatchableProfiles(existingRecords, candidate);
         } catch (error) {
@@ -383,7 +384,7 @@ export async function registerControlPlaneRoutes(
           settings: mergedSettings,
           createdAt: existing?.createdAt ?? new Date().toISOString(),
           updatedAt: new Date().toISOString()
-        } as import('@autocatalyst/api-contract').ConfigurationRecord;
+        } as ConfigurationRecord;
         const otherRecords = existingRecords.filter((r) => r.id !== params.id);
         try {
           assertActiveRoutesReferenceDispatchableProfiles(otherRecords, candidate);

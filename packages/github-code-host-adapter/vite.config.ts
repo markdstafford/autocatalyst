@@ -7,7 +7,9 @@ export default defineConfig({
   cacheDir: '../../node_modules/.vite/packages/github-code-host-adapter',
   resolve: {
     alias: {
+      '@autocatalyst/api-contract': resolve(__dirname, '../api-contract/src/index.ts'),
       '@autocatalyst/core': resolve(__dirname, '../core/src/index.ts'),
+      '@autocatalyst/execution': resolve(__dirname, '../execution/src/index.ts'),
       '@autocatalyst/github-issue-tracker-adapter': resolve(__dirname, '../github-issue-tracker-adapter/src/index.ts')
     }
   },

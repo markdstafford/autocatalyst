@@ -3133,7 +3133,7 @@ describe('workspace metadata persistence for chore runs', () => {
           const runId = input.telemetryContext.runId;
           const step = input.telemetryContext.step;
           capturedSessions.push({ step, role: input.telemetryContext.role });
-          async function* events(): AsyncIterable<import('@autocatalyst/execution').RunnerEvent> {
+          async function* events(): AsyncIterable<RunnerEvent> {
             yield {
               id: `evt_${capturedSessions.length}`,
               runId,
@@ -3142,7 +3142,7 @@ describe('workspace metadata persistence for chore runs', () => {
               createdAt: new Date().toISOString(),
               type: 'runner_terminal_result',
               result: { directive: 'advance' }
-            } as import('@autocatalyst/execution').RunnerEvent;
+            } as RunnerEvent;
           }
           return {
             events: events(),

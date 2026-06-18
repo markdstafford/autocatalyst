@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { JsonValue } from '@autocatalyst/api-contract';
 import type { ExecutionRunUnitOfWork, RunWorkInput, RunWorkResult } from '@autocatalyst/core';
 import type { RunRoleWorkInput } from '@autocatalyst/core';
+import { ClassifiedProviderFailureError } from '@autocatalyst/execution';
 
 import { createReviewedExecutionDispatcher } from './reviewed-execution-dispatcher.js';
 
@@ -606,7 +607,6 @@ describe('createReviewedExecutionDispatcher', () => {
     });
 
     it('returns the sanitized reason string for classified provider failures', async () => {
-      const { ClassifiedProviderFailureError } = await import('@autocatalyst/execution');
       // provider_auth_failed is a known KnownFailureReasonCode accepted by ClassifiedProviderFailureError.
       const err = new ClassifiedProviderFailureError('provider_auth_failed');
       const uow: ExecutionRunUnitOfWork = {

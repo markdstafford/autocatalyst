@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ConfigurationRecord } from '@autocatalyst/api-contract';
+import type { ConfigurationRecord, ModelRoutingTableSettings, ProviderProfileSettings } from '@autocatalyst/api-contract';
 import { getAgentProviderAdapterKey } from '@autocatalyst/execution';
+import type { AgentProviderAdapterRegistry, DirectProviderAdapterRegistry } from '@autocatalyst/execution';
 
 import {
   ModelRoutingConfigurationError,
@@ -56,7 +57,7 @@ function makeAgentRegistry(...adapters: ReturnType<typeof makeAgentAdapter>[]) {
   for (const adapter of adapters) {
     map.set(getAgentProviderAdapterKey(adapter.providerKind, adapter.adapterId), adapter);
   }
-  return map as unknown as import('@autocatalyst/execution').AgentProviderAdapterRegistry;
+  return map as unknown as AgentProviderAdapterRegistry;
 }
 
 function makeDirectRegistry(...adapters: ReturnType<typeof makeDirectAdapter>[]) {
@@ -64,7 +65,7 @@ function makeDirectRegistry(...adapters: ReturnType<typeof makeDirectAdapter>[])
   for (const adapter of adapters) {
     map.set(getAgentProviderAdapterKey(adapter.providerKind, adapter.adapterId), adapter);
   }
-  return map as unknown as import('@autocatalyst/execution').DirectProviderAdapterRegistry;
+  return map as unknown as DirectProviderAdapterRegistry;
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +216,7 @@ describe('resolveAgentRoute — table loading', () => {
     const inactiveTable: ConfigurationRecord = {
       ...routingTable,
       id: 'tbl_inactive',
-      settings: { ...routingTable.settings as import('@autocatalyst/api-contract').ModelRoutingTableSettings, active: false }
+      settings: { ...routingTable.settings as ModelRoutingTableSettings, active: false }
     };
     const opts: CreateModelRoutingResolverOptions = {
       ...makeDefaultOptions(),
@@ -340,7 +341,7 @@ describe('route errors', () => {
           { id: 'r_a', route: { mode: 'direct', step: 'classify' }, profileId: 'cfg_direct' },
           { id: 'r_b', route: { mode: 'direct', step: 'classify' }, profileId: 'cfg_direct' }
         ]
-      } as import('@autocatalyst/api-contract').ModelRoutingTableSettings
+      } as ModelRoutingTableSettings
     } as ConfigurationRecord;
 
     const opts: CreateModelRoutingResolverOptions = {
@@ -405,7 +406,7 @@ describe('profile validation', () => {
       ...routingTable,
       id: 'tbl_other',
       tenant: 'tenant_b',
-      settings: { ...routingTable.settings as import('@autocatalyst/api-contract').ModelRoutingTableSettings, active: false }
+      settings: { ...routingTable.settings as ModelRoutingTableSettings, active: false }
     };
     const opts: CreateModelRoutingResolverOptions = {
       ...makeDefaultOptions(),
@@ -910,7 +911,7 @@ describe('resolveDistinctAgentRoutes', () => {
       id: 'cfg_claude2_b',
       tenant: 'tenant_b',
       settings: {
-        ...claudeProfile.settings as import('@autocatalyst/api-contract').ProviderProfileSettings,
+        ...claudeProfile.settings as ProviderProfileSettings,
         model: { provider: 'anthropic', model: 'claude-opus-4' } // different model
       }
     };
@@ -978,7 +979,7 @@ describe('resolveDistinctAgentRoutes', () => {
       id: 'cfg_claude2_b',
       tenant: 'tenant_b',
       settings: {
-        ...claudeProfile.settings as import('@autocatalyst/api-contract').ProviderProfileSettings,
+        ...claudeProfile.settings as ProviderProfileSettings,
         model: { provider: 'anthropic', model: 'claude-sonnet-4' } // same model, different profile
       }
     };

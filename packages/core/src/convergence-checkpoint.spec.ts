@@ -3,8 +3,7 @@ import type { Run, RunStep } from '@autocatalyst/api-contract';
 import type { RunStepRepository, UpdateRunStepCheckpointInput } from './domain-repositories.js';
 import {
   getConvergenceEscalationPause,
-  recordConvergenceEscalationGuidance,
-  ConvergenceCheckpointError
+  recordConvergenceEscalationGuidance
 } from './convergence-checkpoint.js';
 
 const timestamp = '2026-01-01T00:00:00.000Z';

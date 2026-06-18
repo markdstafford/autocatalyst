@@ -5,7 +5,6 @@ import type { RunReplyRequest } from '@autocatalyst/api-contract';
 import type { ConversationIngressRepository, FeedbackRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
 import { SpecReviewGateBlockedError } from './spec-review-gate.js';
-import { HumanReviewGateError } from './human-review-gate.js';
 import { RunDispatchQueue } from './run-dispatch-queue.js';
 import { InMemoryRunEventBus, type RunEventPublisher } from './run-events.js';
 import {
@@ -669,7 +668,6 @@ describe('DefaultOrchestrator.dispatch', () => {
 
   it('dispatches implementation.plan with an explicit passthrough checkpoint before implementation.build', async () => {
     const runAtPlan = makeRun({ currentStep: 'implementation.plan', workKind: 'feature' });
-    const runStep = makeRunStep({ step: 'implementation.plan', phase: 'implementation' });
 
     const runs = makeFakeRunRepo({
       findById: vi.fn().mockResolvedValue(runAtPlan),

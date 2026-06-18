@@ -8,11 +8,11 @@ import type {
   Feedback,
   FindingDisposition,
   ImplementationAltitude,
+  JsonValue,
   Principal,
   ReviewerFinding,
   ReviewerFindingContext,
-  ReviewerResult,
-  Run
+  ReviewerResult
 } from '@autocatalyst/api-contract';
 import { findingDispositionSchema } from '@autocatalyst/api-contract';
 import type { ResultCorrectionRequester, ResultNormalizer, ResultNormalizerRegistry } from '@autocatalyst/execution';
@@ -29,7 +29,7 @@ import { createConvergenceFeedback } from './convergence-feedback.js';
 import { validateAltitudeContract } from './altitude-contract-validator.js';
 import { validateBuildContractPreservation } from './build-contract-preservation.js';
 import { filterAltitudeFindings } from './layered-finding-filter.js';
-import type { RunStepDefinition, RunStepId } from './run-step-catalog.js';
+import type { RunStepId } from './run-step-catalog.js';
 import type { RunDirective, RunWorkflowDefinition } from './run-workflows.js';
 import type { ResolvedStepConvergencePolicy } from './convergence-policy.js';
 import { getStepConvergencePolicy, getImplementationAltitudeLadder } from './convergence-policy.js';
@@ -585,7 +585,7 @@ export function createLayeredConvergenceEngine(
           runStepId: input.runStep.id,
           runId: input.runId,
           tenant: input.tenant,
-          checkpointResult: snapshot as unknown as import('@autocatalyst/api-contract').JsonValue
+          checkpointResult: snapshot as unknown as JsonValue
         });
       } catch (err) {
         options.logger?.warn('layered convergence checkpoint persistence failed', {
