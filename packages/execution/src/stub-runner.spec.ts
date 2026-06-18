@@ -102,7 +102,7 @@ describe('StubRunner', () => {
   it('includes workspace shape and capability facts in checkpoint', async () => {
     const runner = new StubRunner();
     const env = makeEnvironment({
-      workspace: { shape: 'two_roots', repoRoot: '/tmp/repo', scratchRoot: '/tmp/scratch', branchName: 'main', workspaceRoots: ['/tmp/repo', '/tmp/scratch'] },
+      workspace: { shape: 'two_roots', repoRoot: '/tmp/repo', scratchRoot: '/tmp/scratch', branchName: 'main', provisionedBaseRef: 'origin/main', workspaceRoots: ['/tmp/repo', '/tmp/scratch'] },
       capabilities: { shell: { kind: 'bash', available: true }, paths: { repoRoot: '/tmp/repo', scratchRoot: '/tmp/scratch' }, lsp: { requested: true, available: false } }
     });
     const events = [];

@@ -1118,7 +1118,7 @@ export async function createControlPlaneServer(
           runId,
           workspaceHandle: branchName,
           workspaceRepoRoot: repoRoot,
-          provisionedBaseRef,
+          provisionedBaseRef: provisionedBaseRef ?? null,
           createdAt: new Date().toISOString()
         });
       },

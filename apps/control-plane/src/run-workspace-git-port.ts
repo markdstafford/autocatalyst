@@ -65,7 +65,7 @@ function validatePath(path: string): void {
 }
 
 // Broader ref pattern for diffs: allows branch names, remote-tracking refs, and SHAs.
-const DIFF_REF_PATTERN = /^[A-Za-z0-9._/\-]+$/;
+const DIFF_REF_PATTERN = /^[A-Za-z0-9._/-]+$/;
 
 function validateDiffRef(ref: string | undefined): void {
   if (ref === undefined) return;

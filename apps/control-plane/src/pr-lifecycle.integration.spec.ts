@@ -1,4 +1,10 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { createRunWorkspaceGitPort } from './run-workspace-git-port.js';
 
 import {
   DefaultOrchestrator,
@@ -995,5 +1001,133 @@ describe('PR lifecycle integration: PR body from convergence-round folding', () 
       }
     },
     25000
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Test 4 — real git port with real temp repo (proves production wiring)
+// ---------------------------------------------------------------------------
+
+const execFileAsync = promisify(execFile);
+
+async function initGitRepo(dir: string): Promise<void> {
+  await execFileAsync('git', ['init'], { cwd: dir });
+  await execFileAsync('git', ['config', 'user.email', 'test@test.com'], { cwd: dir });
+  await execFileAsync('git', ['config', 'user.name', 'Test'], { cwd: dir });
+}
+
+describe('PR lifecycle integration: real git port proves production wiring', () => {
+  it(
+    'opens a PR whose body contains file paths from a real git diff (no mocks for getChangedFiles)',
+    async () => {
+      // Step 1: create a real temporary git repo
+      const realRepoDir = await mkdtemp(join(tmpdir(), 'ac-pr-lifecycle-real-git-'));
+      try {
+        await initGitRepo(realRepoDir);
+
+        // Step 2: make a base commit so we have a parent to diff against
+        await writeFile(join(realRepoDir, 'README.md'), '# base\n');
+        await execFileAsync('git', ['add', '--all'], { cwd: realRepoDir });
+        await execFileAsync('git', ['commit', '-m', 'base commit'], { cwd: realRepoDir });
+        const { stdout: baseShaRaw } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: realRepoDir });
+        const baseSha = baseShaRaw.trim();
+
+        // Step 3: add real files that should appear in the PR body
+        const REAL_FILES = [
+          'packages/auth/src/login.ts',
+          'packages/auth/src/logout.ts'
+        ];
+        await execFileAsync('git', ['config', 'core.protectNTFS', 'false'], { cwd: realRepoDir }).catch(() => undefined);
+        // Create nested directories and files
+        const { mkdir } = await import('node:fs/promises');
+        await mkdir(join(realRepoDir, 'packages', 'auth', 'src'), { recursive: true });
+        await writeFile(join(realRepoDir, 'packages', 'auth', 'src', 'login.ts'), 'export function login() {}\n');
+        await writeFile(join(realRepoDir, 'packages', 'auth', 'src', 'logout.ts'), 'export function logout() {}\n');
+        await execFileAsync('git', ['add', '--all'], { cwd: realRepoDir });
+        await execFileAsync('git', ['commit', '-m', 'add auth module'], { cwd: realRepoDir });
+
+        // Step 4: use the real port
+        const realPort = createRunWorkspaceGitPort({ workspacesRoot: tmpdir() });
+
+        // Step 5 & 6: set up the harness with real port, real workspaceRepoRoot, and provisionedBaseRef
+        const unitOfWork: RunUnitOfWork = {
+          run: async ({ run: r }) => {
+            if (r.currentStep === 'pr.finalize') {
+              // Sparse {} — no title, no summary, no findings.
+              return { directive: 'advance', result: {} };
+            }
+            return { directive: 'advance' };
+          }
+        };
+
+        const harness = await setupLifecycle({ unitOfWork, runWorkspaceGit: realPort });
+
+        // Override the workspace metadata to point at the real repo and real base SHA
+        const { domainRepos, run: runRef, branch } = harness;
+        const now = '2026-06-17T00:00:00.000Z';
+        await domainRepos.runWorkspaceMetadata.upsert({
+          runId: runRef.id,
+          workspaceHandle: branch,
+          workspaceRepoRoot: realRepoDir,
+          provisionedBaseRef: baseSha,
+          createdAt: now
+        });
+
+        try {
+          const { orchestrator, fakeGh } = harness;
+
+          // Step 7: run the PR lifecycle with sparse {} pr.finalize
+          await orchestrator.applyDirective({
+            runId: runRef.id,
+            directive: 'advance',
+            tenant: 'tenant_dev',
+            origin: 'human',
+            principal: hardcodedDevelopmentPrincipal
+          });
+
+          await waitFor(
+            async () => {
+              const r = await domainRepos.runs.findById(runRef.id);
+              if (r === null) throw new Error('run missing');
+              return r;
+            },
+            (r) => r.currentStep === 'pr.human_review' || r.terminal === true,
+            10000,
+            'pr.human_review or terminal'
+          );
+
+          // Step 8 & 9: assert that real git diff paths appear in PR body
+          const createCall = fakeGh.calls.find((c) => c.args[0] === 'pr' && c.args[1] === 'create');
+          expect(createCall, 'gh pr create must have been called').toBeDefined();
+
+          const titleIdx = createCall!.args.indexOf('--title');
+          const title = createCall!.args[titleIdx + 1] ?? '';
+
+          // Title must be a conventional commit title — not a placeholder.
+          expect(title).toMatch(/^feat: /u);
+          expect(title).not.toMatch(/round \d+/iu);
+          expect(title).not.toContain('implementation passed review');
+          expect(title).not.toContain('file(s) changed');
+
+          const bodyIdx = createCall!.args.indexOf('--body');
+          const body = createCall!.args[bodyIdx + 1] ?? '';
+
+          // Body must contain the EXACT paths from the real git diff.
+          expect(body).toContain(`- \`${REAL_FILES[0]}\``);
+          expect(body).toContain(`- \`${REAL_FILES[1]}\``);
+
+          // Body must not contain placeholder text.
+          expect(body).not.toMatch(/round \d+/iu);
+          expect(body).not.toContain('implementation passed review');
+          expect(body).not.toContain('file(s) changed');
+        } finally {
+          harness.database.close();
+        }
+      } finally {
+        // Step 10: clean up the temp dir
+        await rm(realRepoDir, { recursive: true, force: true });
+      }
+    },
+    20000
   );
 });

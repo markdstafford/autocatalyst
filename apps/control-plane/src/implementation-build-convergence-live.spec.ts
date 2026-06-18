@@ -289,7 +289,8 @@ async function createLiveReviewedDispatcher(
       repoRoot: workspaceRepoRoot,
       scratchRoot,
       hostRepositoryPath: workspaceRepoRoot,
-      branchName: 'main'
+      branchName: 'main',
+      provisionedBaseRef: 'origin/main'
     })
   });
 
