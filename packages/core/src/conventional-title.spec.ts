@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deriveConventionalTitle, formatConventionalTitle, getConventionalTitleType, normalizeConventionalSubject } from './conventional-title.js';
+import { deriveChangedPathSubject, deriveConventionalTitle, formatConventionalTitle, getConventionalTitleType, normalizeConventionalSubject } from './conventional-title.js';
 
 describe('getConventionalTitleType', () => {
   it('maps feature and enhancement to feat', () => {
@@ -126,5 +126,84 @@ describe('deriveConventionalTitle', () => {
   it('falls back to complete approved implementation on chore with no summary', () => {
     const result = deriveConventionalTitle({ workKind: 'chore', titleSubject: '' });
     expect(result).toBe('chore: complete approved implementation');
+  });
+
+  it('derives changed-path subject when final review and cumulative summary are absent', () => {
+    expect(deriveConventionalTitle({
+      workKind: 'enhancement',
+      changedFiles: ['packages/core/src/pr-open-handler.ts', 'packages/core/src/pr-content.ts']
+    })).toBe('feat: update core PR content handling');
+  });
+
+  it('keeps titleSubject and reconciledSummary precedence over changed paths', () => {
+    expect(deriveConventionalTitle({
+      workKind: 'enhancement',
+      titleSubject: 'preserve final review title',
+      reconciledSummary: 'Use reconciled summary.',
+      cumulativeSummary: '',
+      changedFiles: ['packages/core/src/pr-open-handler.ts']
+    })).toBe('feat: preserve final review title');
+
+    expect(deriveConventionalTitle({
+      workKind: 'enhancement',
+      reconciledSummary: 'Use reconciled summary.',
+      cumulativeSummary: '',
+      changedFiles: ['packages/core/src/pr-open-handler.ts']
+    })).toBe('feat: use reconciled summary');
+  });
+
+  it('falls back to generic subject when no summary or changed paths exist', () => {
+    expect(deriveConventionalTitle({ workKind: 'enhancement', cumulativeSummary: '', changedFiles: [] }))
+      .toBe('feat: complete approved implementation');
+  });
+
+  it('prefers real cumulative summary over changed-path fallback', () => {
+    expect(deriveConventionalTitle({
+      workKind: 'enhancement',
+      cumulativeSummary: 'Preserves real implementation change text.',
+      changedFiles: ['packages/core/src/pr-content.ts']
+    })).toBe('feat: preserves real implementation change text');
+  });
+
+  it('does not produce count-only or round placeholder titles', () => {
+    const title = deriveConventionalTitle({
+      workKind: 'enhancement',
+      cumulativeSummary: '',
+      changedFiles: ['packages/core/src/orchestrator.ts']
+    });
+
+    expect(title).not.toMatch(/round \d+/iu);
+    expect(title).not.toContain('implementation passed review');
+    expect(title).not.toContain('file(s) changed');
+  });
+});
+
+describe('deriveChangedPathSubject', () => {
+  it('returns null for empty array', () => {
+    expect(deriveChangedPathSubject([])).toBeNull();
+  });
+
+  it('returns single-file subject for one file', () => {
+    expect(deriveChangedPathSubject(['packages/core/src/foo.ts'])).toBe('update packages/core/src/foo.ts');
+  });
+
+  it('returns package-specific PR subject when paths include pr- filenames', () => {
+    expect(deriveChangedPathSubject(['packages/core/src/pr-open-handler.ts', 'packages/core/src/pr-content.ts']))
+      .toBe('update core PR content handling');
+  });
+
+  it('returns package-scoped subject for non-PR files in single package', () => {
+    expect(deriveChangedPathSubject(['packages/core/src/foo.ts', 'packages/core/src/bar.ts']))
+      .toBe('update core package changes');
+  });
+
+  it('returns top-level joined subject for two top-level dirs', () => {
+    expect(deriveChangedPathSubject(['packages/core/src/foo.ts', 'scripts/build.sh']))
+      .toBe('update packages and scripts changes');
+  });
+
+  it('returns generic subject for many top-level dirs', () => {
+    expect(deriveChangedPathSubject(['a/foo.ts', 'b/bar.ts', 'c/baz.ts']))
+      .toBe('update changed implementation files');
   });
 });
