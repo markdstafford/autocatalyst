@@ -40,6 +40,26 @@ export function requireCumulativeImplementationSummary(value: unknown): Cumulati
   return value;
 }
 
+export function normalizeRepositoryPath(path: string): string | null {
+  const normalized = path.replace(/\\/gu, '/').replace(/^\.\//u, '').trim();
+  if (normalized.length === 0) return null;
+  if (normalized.startsWith('/')) return null;
+  const segments = normalized.split('/');
+  if (segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')) return null;
+  return segments.join('/');
+}
+
+export function mergeChangedFiles(...sources: ReadonlyArray<readonly string[]>): readonly string[] {
+  const paths = new Set<string>();
+  for (const source of sources) {
+    for (const path of source) {
+      const normalized = normalizeRepositoryPath(path);
+      if (normalized !== null) paths.add(normalized);
+    }
+  }
+  return [...paths].sort((a, b) => a.localeCompare(b));
+}
+
 export function buildCumulativeImplementationSummary(input: {
   readonly rounds: readonly ImplementationSummaryRoundInput[];
   readonly completedAt: string;
@@ -76,7 +96,7 @@ export function buildCumulativeImplementationSummary(input: {
   return {
     kind: 'cumulative_implementation_summary',
     cumulativeSummary: summaryParts.join('\n\n'),
-    changedFiles: [...changedFilesSet],
+    changedFiles: mergeChangedFiles([...changedFilesSet]),
     validationSummary: [...validationSet],
     followUps: [...followUpsSet],
     nonGoals: [...nonGoalsSet],

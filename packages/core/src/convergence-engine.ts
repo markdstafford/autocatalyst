@@ -30,6 +30,7 @@ import type {
 } from './reviewed-role-dispatcher.js';
 import type { RunWorkspaceGitPort } from './run-workspace-git.js';
 import { createReviewerFeedback } from './convergence-feedback.js';
+import { mergeChangedFiles } from './implementation-summary.js';
 import { addressOpenFeedbackForRunTarget } from './feedback-lifecycle.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
 import type { RunStepDefinition, RunStepId } from './run-step-catalog.js';
@@ -606,6 +607,7 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
         ...(reviewDispatch.sessionId !== undefined ? { reviewerSessionId: reviewDispatch.sessionId } : {}),
         ...(commitResult.commitSha !== null ? { implementerCommitSha: commitResult.commitSha } : { implementerCommitSha: null }),
         changedFileCount: commitResult.changedFileCount,
+        changedFilePaths: mergeChangedFiles(commitResult.changedFilePaths),
         findings: roundFindings,
         dispositions: implDispositions,
         outcome,

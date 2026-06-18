@@ -28,7 +28,7 @@ describe('buildCumulativeImplementationSummary', () => {
 
     expect(summary.cumulativeSummary).toContain('Added project import flow');
     expect(summary.cumulativeSummary).toContain('Fixed expired tracker token handling');
-    expect(summary.changedFiles).toEqual(['packages/core/src/import.ts', 'packages/core/src/auth.ts']);
+    expect(summary.changedFiles).toEqual(['packages/core/src/auth.ts', 'packages/core/src/import.ts']);
     expect(summary.sourceRoundCount).toBe(2);
     expect(summary.followUps).toContain('Live provider smoke remains opt-in.');
     expect(summary.validationSummary).toContain('pnpm nx test core');
