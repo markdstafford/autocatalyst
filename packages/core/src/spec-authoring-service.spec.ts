@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { Feedback, Run, SpecAuthorResult } from '@autocatalyst/api-contract';
 import {
   SpecAuthoringError,
   completeSpecAuthoring,
@@ -17,7 +18,7 @@ function makeRun(overrides: Record<string, unknown> = {}) {
     terminal: false,
     trackedIssue: undefined,
     ...overrides
-  } as unknown as import('@autocatalyst/api-contract').Run;
+  } as unknown as Run;
 }
 
 function makeResult(overrides: Record<string, unknown> = {}) {
@@ -34,7 +35,7 @@ function makeResult(overrides: Record<string, unknown> = {}) {
     },
     body: '# Feature spec\n\nBody content.',
     ...overrides
-  } as unknown as import('@autocatalyst/api-contract').SpecAuthorResult;
+  } as unknown as SpecAuthorResult;
 }
 
 function makeDeps(overrides: Record<string, unknown> = {}) {
@@ -380,7 +381,7 @@ describe('completeSpecAuthoring feedback disposition', () => {
 
     // In-memory feedback store with one open artifact feedback item.
     const now = '2026-06-11T00:00:00.000Z';
-    const feedbackData: import('@autocatalyst/api-contract').Feedback = {
+    const feedbackData: Feedback = {
       id: 'fb_artifact',
       runId: 'run_1',
       owner: { kind: 'human', id: 'user_1', tenantId: 'tenant_1' },
@@ -394,7 +395,7 @@ describe('completeSpecAuthoring feedback disposition', () => {
       updatedAt: now
     };
 
-    const feedbackStore = new Map<string, import('@autocatalyst/api-contract').Feedback>([
+    const feedbackStore = new Map<string, Feedback>([
       ['fb_artifact', feedbackData]
     ]);
 
