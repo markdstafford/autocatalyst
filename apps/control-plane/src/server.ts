@@ -18,6 +18,7 @@ import {
   buildPullRequestFinalizePrompt,
   buildSpecAuthorContext,
   isCumulativeImplementationSummary,
+  type CumulativeImplementationSummary,
   composeAgentProviderAdapterRegistry,
   composeDirectProviderAdapterRegistry,
   composeConfiguredProviders,
@@ -1202,7 +1203,7 @@ export async function createControlPlaneServer(
         if (workInput.run.currentStep === 'pr.finalize') {
           try {
             const runSteps = await domainRepos.runSteps.listByRun(workInput.runId);
-            let cumulativeSummary: import('@autocatalyst/core').CumulativeImplementationSummary | undefined;
+            let cumulativeSummary: CumulativeImplementationSummary | undefined;
             for (const step of [...runSteps].reverse()) {
               if (step.step === 'implementation.build' && step.checkpointResult !== null) {
                 const checkpoint = step.checkpointResult as { cumulativeSummary?: unknown };

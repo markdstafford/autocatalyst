@@ -5,14 +5,17 @@ import {
   reviewerResultSchema
 } from '@autocatalyst/api-contract';
 import type {
+  FindingDisposition,
   JsonValue,
-  Principal
+  Principal,
+  ReviewerResult
 } from '@autocatalyst/api-contract';
 import type {
   ExecutionRunUnitOfWork,
   ReviewedRoleDispatchResult,
   ReviewedRoleDispatcher,
-  RunRoleWorkInput
+  RunRoleWorkInput,
+  RunWorkResult
 } from '@autocatalyst/core';
 import { safeFailureReasonFromError } from '@autocatalyst/core';
 
@@ -58,7 +61,7 @@ function parseSafeSessionMetadata(checkpoint: JsonValue | undefined): {
 
 // Lenient reviewer result parser — returns undefined on any parse failure so
 // callers can distinguish a well-formed reviewer output from raw checkpoint data.
-function parseReviewerResult(checkpoint: JsonValue | undefined): import('@autocatalyst/api-contract').ReviewerResult | undefined {
+function parseReviewerResult(checkpoint: JsonValue | undefined): ReviewerResult | undefined {
   if (checkpoint === null || checkpoint === undefined) {
     return undefined;
   }
@@ -69,7 +72,7 @@ function parseReviewerResult(checkpoint: JsonValue | undefined): import('@autoca
 // Lenient dispositions parser — returns undefined when no valid dispositions array is found.
 function parseDispositions(
   checkpoint: JsonValue | undefined
-): import('@autocatalyst/api-contract').FindingDisposition[] | undefined {
+): FindingDisposition[] | undefined {
   if (checkpoint === null || checkpoint === undefined) {
     return undefined;
   }
@@ -80,7 +83,7 @@ function parseDispositions(
   if (!Array.isArray(raw)) {
     return undefined;
   }
-  const result: import('@autocatalyst/api-contract').FindingDisposition[] = [];
+  const result: FindingDisposition[] = [];
   for (const item of raw) {
     const parsed = findingDispositionSchema.safeParse(item);
     if (!parsed.success) {
@@ -139,7 +142,7 @@ export function createReviewedExecutionDispatcher(
       };
 
       let checkpointResult: JsonValue | undefined;
-      let workResult: import('@autocatalyst/core').RunWorkResult;
+      let workResult: RunWorkResult;
 
       try {
         const result = await unitOfWork.runWithCheckpoint(augmentedInput);
