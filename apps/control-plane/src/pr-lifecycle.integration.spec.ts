@@ -11,6 +11,7 @@ import {
   type ConvergenceEngine,
   type PullRequestOpenWiringDependencies,
   type RunUnitOfWork,
+  type RunWorkspaceGitPort,
   type SpecFreezeDependencies
 } from '@autocatalyst/core';
 import type { ConvergenceCheckpoint } from '@autocatalyst/api-contract';
@@ -225,6 +226,7 @@ interface LifecycleHarness {
 
 async function setupLifecycle(opts: {
   unitOfWork: RunUnitOfWork;
+  runWorkspaceGit?: Pick<RunWorkspaceGitPort, 'getChangedFiles'>;
 }): Promise<LifecycleHarness> {
   const now = '2026-06-17T00:00:00.000Z';
   const database = createSqliteDatabase({ path: ':memory:' });
@@ -342,7 +344,8 @@ async function setupLifecycle(opts: {
     projects: domainRepos.projects,
     pullRequests: domainRepos.pullRequests,
     codeHosts,
-    resolveCredential
+    resolveCredential,
+    ...(opts.runWorkspaceGit !== undefined ? { runWorkspaceGit: opts.runWorkspaceGit } : {})
   };
 
   const specFreezeDependencies = makeSpecFreezeDeps({
@@ -580,6 +583,93 @@ describe('PR lifecycle integration: pr.finalize {} recovery', () => {
       }
     },
     10000
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Test 1c — sparse {} finalize with real git-port paths
+// ---------------------------------------------------------------------------
+
+const SPARSE_FINALIZE_PATHS = [
+  'packages/core/src/pr-content.ts',
+  'packages/core/src/pr-open-handler.ts'
+] as const;
+
+describe('PR lifecycle integration: sparse {} finalize opens PR with real content', () => {
+  it(
+    'opens a PR with a conventional title and real file paths from getChangedFiles when pr.finalize returns {}',
+    async () => {
+      const fakeRunWorkspaceGit: Pick<RunWorkspaceGitPort, 'getChangedFiles'> = {
+        getChangedFiles: vi.fn().mockResolvedValue([
+          { path: SPARSE_FINALIZE_PATHS[0], status: 'modified' },
+          { path: SPARSE_FINALIZE_PATHS[1], status: 'modified' }
+        ])
+      };
+
+      const unitOfWork: RunUnitOfWork = {
+        run: async ({ run }) => {
+          if (run.currentStep === 'pr.finalize') {
+            // Sparse {} — no title, no summary, no findings.
+            return { directive: 'advance', result: {} };
+          }
+          return { directive: 'advance' };
+        }
+      };
+
+      const harness = await setupLifecycle({ unitOfWork, runWorkspaceGit: fakeRunWorkspaceGit });
+      try {
+        const { orchestrator, domainRepos, fakeGh, run: runRef } = harness;
+
+        await orchestrator.applyDirective({
+          runId: runRef.id,
+          directive: 'advance',
+          tenant: 'tenant_dev',
+          origin: 'human',
+          principal: hardcodedDevelopmentPrincipal
+        });
+
+        const haltedRun = await waitFor(
+          async () => {
+            const r = await domainRepos.runs.findById(runRef.id);
+            if (r === null) throw new Error('run missing');
+            return r;
+          },
+          (r) => r.currentStep === 'pr.human_review' || r.terminal === true,
+          7000,
+          'pr.human_review or terminal'
+        );
+
+        expect(haltedRun.terminal).toBe(false);
+        expect(haltedRun.currentStep).toBe('pr.human_review');
+
+        const createCall = fakeGh.calls.find((c) => c.args[0] === 'pr' && c.args[1] === 'create');
+        expect(createCall, 'gh pr create must have been called').toBeDefined();
+
+        const titleIdx = createCall!.args.indexOf('--title');
+        const title = createCall!.args[titleIdx + 1] ?? '';
+
+        // Title must be a conventional commit title derived from changed paths — not a placeholder.
+        expect(title).toMatch(/^feat: /u);
+        expect(title).not.toMatch(/round \d+/iu);
+        expect(title).not.toContain('implementation passed review');
+        expect(title).not.toContain('file(s) changed');
+
+        const bodyIdx = createCall!.args.indexOf('--body');
+        const body = createCall!.args[bodyIdx + 1] ?? '';
+
+        // Body must include the real git-port paths.
+        expect(body).toContain(`- \`${SPARSE_FINALIZE_PATHS[0]}\``);
+        expect(body).toContain(`- \`${SPARSE_FINALIZE_PATHS[1]}\``);
+
+        // Body must not contain legacy placeholder text.
+        expect(body).not.toMatch(/round \d+/iu);
+        expect(body).not.toContain('implementation passed review');
+        expect(body).not.toContain('file(s) changed');
+      } finally {
+        harness.database.close();
+      }
+    },
+    15000
   );
 });
 
