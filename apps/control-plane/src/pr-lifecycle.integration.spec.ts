@@ -1,21 +1,32 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  DefaultControlPlaneService,
   DefaultOrchestrator,
   InMemoryRunEventBus,
   RunDispatchQueue,
   createCodeHostRegistry,
   defaultReviewerWorkspacePolicy,
   hardcodedDevelopmentPrincipal,
+  permissivePolicyDecisionPoint,
+  registerControlPlaneRoutes,
   type CodeHostCredential,
   type ConvergenceEngine,
   type PullRequestOpenWiringDependencies,
   type RunUnitOfWork,
-  type SpecFreezeDependencies
+  type SpecFreezeDependencies,
+  type WorkspaceFileSystemPort
 } from '@autocatalyst/core';
-import type { ConvergenceCheckpoint } from '@autocatalyst/api-contract';
+import type { ConvergenceCheckpoint, NonModelPrincipal } from '@autocatalyst/api-contract';
+import {
+  pullRequestReconciliationPath,
+  reconcilePullRequestsSuccessStatusCode
+} from '@autocatalyst/api-contract';
 import {
   DrizzleConversationIngressRepository,
+  DrizzleConfigurationRecordRepository,
+  DrizzleProbeResourceRepository,
+  SqliteSecretStore,
   createDrizzleDomainRepositories,
   createSqliteDatabase,
   migrateSqliteDatabase
@@ -25,6 +36,9 @@ import {
   type ExecuteGhFunction
 } from '@autocatalyst/github-code-host-adapter';
 import type { GhExecInput, GhExecResult } from '@autocatalyst/github-issue-tracker-adapter';
+import Fastify, { type FastifyInstance } from 'fastify';
+
+import { createPullRequestReconciliationTicker } from './pr-reconciliation-ticker.js';
 
 // ---------------------------------------------------------------------------
 // Test fixtures shared across the suites
@@ -38,6 +52,7 @@ const owner = {
 };
 
 const TEST_TOKEN = 'ghp_TEST_TOKEN_123';
+const RECONCILE_TEST_BEARER_TOKEN = 'reconcile-test-bearer-token';
 const REPO_OWNER = 'testorg';
 const REPO_NAME = 'testrepo';
 const REPO_SLUG = `${REPO_OWNER}/${REPO_NAME}`;
@@ -60,6 +75,7 @@ interface FakeGhHandle {
   readonly state: FakeGhState;
   readonly calls: { args: readonly string[]; token: string }[];
   setMerged(): void;
+  setClosed(): void;
 }
 
 function makeFakeGh(initial: { branch: string }): FakeGhHandle {
@@ -122,6 +138,10 @@ function makeFakeGh(initial: { branch: string }): FakeGhHandle {
     setMerged(): void {
       state.prState = 'MERGED';
       state.mergedAt = '2026-06-17T00:00:00.000Z';
+    },
+    setClosed(): void {
+      state.prState = 'CLOSED';
+      state.mergedAt = null;
     }
   };
 }
@@ -892,4 +912,293 @@ describe('PR lifecycle integration: PR body from convergence-round folding', () 
     },
     25000
   );
+});
+
+// ---------------------------------------------------------------------------
+// Helper — build a Fastify app wrapping the control plane service
+// ---------------------------------------------------------------------------
+
+async function buildReconcileApp(
+  harness: LifecycleHarness,
+  opts?: { ticker?: { enabled: true; intervalMs: number; tenant: string } }
+): Promise<FastifyInstance> {
+  const now = '2026-06-17T00:00:00.000Z';
+  const policy = permissivePolicyDecisionPoint;
+  const eventBus = new InMemoryRunEventBus();
+
+  const controlPlane = new DefaultControlPlaneService({
+    orchestrator: harness.orchestrator,
+    runs: harness.domainRepos.runs,
+    runSteps: harness.domainRepos.runSteps,
+    events: eventBus,
+    policy,
+    artifacts: harness.domainRepos.artifacts,
+    feedback: harness.domainRepos.feedback,
+    runWorkspaceMetadata: harness.domainRepos.runWorkspaceMetadata,
+    // stub — filesystem is unused by the reconciliation code path
+    workspaceFilesystem: { readFile: async () => '', writeFile: async () => undefined } as unknown as WorkspaceFileSystemPort,
+    feedbackLifecycle: {
+      feedback: harness.domainRepos.feedback,
+      ids: () => `fb_${Math.random().toString(36).slice(2)}`,
+      clock: () => now
+    },
+    projects: harness.domainRepos.projects,
+    issueReferenceIntakeResolver: { resolve: async () => ({ kind: 'error' as const, code: 'tracker_not_found' as const }) }
+  });
+
+  const app = Fastify({ logger: false });
+  await registerControlPlaneRoutes(app, {
+    health: { isDatabaseReachable: async () => true },
+    auth: { bearerToken: RECONCILE_TEST_BEARER_TOKEN },
+    policy,
+    probeResources: new DrizzleProbeResourceRepository(harness.database),
+    configurationRecords: new DrizzleConfigurationRecordRepository(harness.database),
+    secrets: new SqliteSecretStore(harness.database),
+    controlPlane
+  });
+
+  if (opts?.ticker?.enabled === true) {
+    const systemPrincipal: NonModelPrincipal = {
+      kind: 'system',
+      id: 'principal_system_reconciliation',
+      tenantId: opts.ticker.tenant
+    };
+    const ticker = createPullRequestReconciliationTicker({
+      controlPlane,
+      principal: systemPrincipal,
+      tenant: opts.ticker.tenant,
+      intervalMs: opts.ticker.intervalMs
+    });
+    ticker.start();
+    app.addHook('onClose', async () => { ticker.stop(); });
+  }
+
+  return app;
+}
+
+// ---------------------------------------------------------------------------
+// Test 4 — endpoint-driven reconciliation
+// ---------------------------------------------------------------------------
+
+describe('PR lifecycle integration: endpoint-driven reconciliation', () => {
+  it('advances run from pr.human_review to done via POST /v1/pull-requests/reconcile', async () => {
+    const unitOfWork: RunUnitOfWork = {
+      run: async ({ run }) => {
+        if (run.currentStep === 'pr.finalize') {
+          return { directive: 'advance', result: prFinalizeAdvanceResult };
+        }
+        return { directive: 'advance' };
+      }
+    };
+
+    const harness = await setupLifecycle({ unitOfWork });
+    let app: FastifyInstance | undefined;
+    try {
+      const { orchestrator, domainRepos, fakeGh, run: runRef } = harness;
+
+      await orchestrator.applyDirective({
+        runId: runRef.id,
+        directive: 'advance',
+        tenant: 'tenant_dev',
+        origin: 'human',
+        principal: hardcodedDevelopmentPrincipal
+      });
+
+      await waitFor(
+        async () => {
+          const r = await domainRepos.runs.findById(runRef.id);
+          if (r === null) throw new Error('run missing');
+          return r;
+        },
+        (r) => r.currentStep === 'pr.human_review',
+        7000,
+        'pr.human_review'
+      );
+
+      const openPr = await domainRepos.pullRequests.findByRun(runRef.id);
+      expect(openPr).not.toBeNull();
+      expect(openPr!.state).toBe('open');
+
+      fakeGh.setMerged();
+
+      app = await buildReconcileApp(harness);
+      const authorization = { authorization: `Bearer ${RECONCILE_TEST_BEARER_TOKEN}` };
+      const response = await app.inject({
+        method: 'POST',
+        url: pullRequestReconciliationPath,
+        headers: authorization
+      });
+
+      expect(response.statusCode).toBe(reconcilePullRequestsSuccessStatusCode);
+      expect(response.json()).toEqual({ checked: 0, merged: 1, closed: 0, failed: 0, timedOut: false });
+      expect(response.body).not.toContain(TEST_TOKEN);
+
+      await waitFor(
+        async () => {
+          const r = await domainRepos.runs.findById(runRef.id);
+          if (r === null) throw new Error('run missing');
+          return r;
+        },
+        (r) => r.terminal === true && r.currentStep === 'done',
+        5000,
+        'done'
+      );
+
+      const mergedPr = await domainRepos.pullRequests.findByRun(runRef.id);
+      expect(mergedPr).not.toBeNull();
+      expect(mergedPr!.state).toBe('merged');
+    } finally {
+      if (app !== undefined) await app.close();
+      harness.database.close();
+    }
+  }, 20000);
+});
+
+// ---------------------------------------------------------------------------
+// Test 5 — ticker-driven reconciliation
+// ---------------------------------------------------------------------------
+
+describe('PR lifecycle integration: ticker-driven reconciliation', () => {
+  it('advances run from pr.human_review to done via background ticker', async () => {
+    const unitOfWork: RunUnitOfWork = {
+      run: async ({ run }) => {
+        if (run.currentStep === 'pr.finalize') {
+          return { directive: 'advance', result: prFinalizeAdvanceResult };
+        }
+        return { directive: 'advance' };
+      }
+    };
+
+    const harness = await setupLifecycle({ unitOfWork });
+    let app: FastifyInstance | undefined;
+    try {
+      const { orchestrator, domainRepos, fakeGh, run: runRef } = harness;
+
+      await orchestrator.applyDirective({
+        runId: runRef.id,
+        directive: 'advance',
+        tenant: 'tenant_dev',
+        origin: 'human',
+        principal: hardcodedDevelopmentPrincipal
+      });
+
+      await waitFor(
+        async () => {
+          const r = await domainRepos.runs.findById(runRef.id);
+          if (r === null) throw new Error('run missing');
+          return r;
+        },
+        (r) => r.currentStep === 'pr.human_review',
+        7000,
+        'pr.human_review'
+      );
+
+      fakeGh.setMerged();
+
+      app = await buildReconcileApp(harness, {
+        ticker: { enabled: true, intervalMs: 50, tenant: 'tenant_dev' }
+      });
+
+      await waitFor(
+        async () => {
+          const r = await domainRepos.runs.findById(runRef.id);
+          if (r === null) throw new Error('run missing');
+          return r;
+        },
+        (r) => r.terminal === true && r.currentStep === 'done',
+        7000,
+        'done via ticker'
+      );
+
+      const mergedPr = await domainRepos.pullRequests.findByRun(runRef.id);
+      expect(mergedPr).not.toBeNull();
+      expect(mergedPr!.state).toBe('merged');
+    } finally {
+      if (app !== undefined) await app.close();
+      harness.database.close();
+    }
+  }, 20000);
+});
+
+// ---------------------------------------------------------------------------
+// Test 6 — closed-without-merge containment
+// ---------------------------------------------------------------------------
+
+describe('PR lifecycle integration: closed-without-merge containment', () => {
+  it('records closed state and fails run when PR is closed without merge', async () => {
+    const unitOfWork: RunUnitOfWork = {
+      run: async ({ run }) => {
+        if (run.currentStep === 'pr.finalize') {
+          return { directive: 'advance', result: prFinalizeAdvanceResult };
+        }
+        return { directive: 'advance' };
+      }
+    };
+
+    const harness = await setupLifecycle({ unitOfWork });
+    let app: FastifyInstance | undefined;
+    try {
+      const { orchestrator, domainRepos, fakeGh, run: runRef } = harness;
+
+      await orchestrator.applyDirective({
+        runId: runRef.id,
+        directive: 'advance',
+        tenant: 'tenant_dev',
+        origin: 'human',
+        principal: hardcodedDevelopmentPrincipal
+      });
+
+      await waitFor(
+        async () => {
+          const r = await domainRepos.runs.findById(runRef.id);
+          if (r === null) throw new Error('run missing');
+          return r;
+        },
+        (r) => r.currentStep === 'pr.human_review',
+        7000,
+        'pr.human_review'
+      );
+
+      const openPr = await domainRepos.pullRequests.findByRun(runRef.id);
+      expect(openPr).not.toBeNull();
+      expect(openPr!.state).toBe('open');
+
+      fakeGh.setClosed();
+
+      app = await buildReconcileApp(harness);
+      const authorization = { authorization: `Bearer ${RECONCILE_TEST_BEARER_TOKEN}` };
+      const response = await app.inject({
+        method: 'POST',
+        url: pullRequestReconciliationPath,
+        headers: authorization
+      });
+
+      expect(response.statusCode).toBe(reconcilePullRequestsSuccessStatusCode);
+      expect(response.json()).toMatchObject({ checked: 0, merged: 0, closed: 1 });
+      expect(response.body).not.toContain(TEST_TOKEN);
+
+      await waitFor(
+        async () => {
+          const r = await domainRepos.runs.findById(runRef.id);
+          if (r === null) throw new Error('run missing');
+          return r;
+        },
+        (r) => r.terminal === true,
+        5000,
+        'terminal run after closed PR'
+      );
+
+      const finalRun = await domainRepos.runs.findById(runRef.id);
+      expect(finalRun).not.toBeNull();
+      expect(finalRun!.currentStep).not.toBe('done');
+      expect(finalRun!.failureReason).toBe('pull_request_closed_without_merge');
+
+      const closedPr = await domainRepos.pullRequests.findByRun(runRef.id);
+      expect(closedPr).not.toBeNull();
+      expect(closedPr!.state).toBe('closed');
+    } finally {
+      if (app !== undefined) await app.close();
+      harness.database.close();
+    }
+  }, 20000);
 });
