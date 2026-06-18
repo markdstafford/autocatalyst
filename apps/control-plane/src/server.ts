@@ -83,6 +83,7 @@ import {
   createExecutionMaterializer,
   createSpecAuthorResultContract,
   createStepResultContractRegistry,
+  registerPullRequestFinalizeResultContract,
   registerReviewerResultContract,
   registerSpecAuthorResultContract,
   type StepResultContractRegistry,
@@ -494,8 +495,10 @@ export function createDefaultProviderProfileFallbackRoutingResolver(input: {
 }
 
 // Default registry used by tests and as fallback. Uses 'autocatalyst' as specced_by.
-const defaultStepResultContractRegistry = registerReviewerResultContract(
-  registerSpecAuthorResultContract(createStepResultContractRegistry())
+const defaultStepResultContractRegistry = registerPullRequestFinalizeResultContract(
+  registerReviewerResultContract(
+    registerSpecAuthorResultContract(createStepResultContractRegistry())
+  )
 );
 
 export interface ScratchResultValidationOptions {
@@ -1089,12 +1092,14 @@ export async function createControlPlaneServer(
     const materializer = createExecutionMaterializer({
       capabilities: { shellAvailable: false, lspAvailable: false }
     });
-    const stepResultContractRegistry = registerReviewerResultContract(
-      registerSpecAuthorResultContract(
-        createStepResultContractRegistry(),
-        options.specAuthorIdentity !== undefined
-          ? { trustedSpeccedBy: options.specAuthorIdentity }
-          : {}
+    const stepResultContractRegistry = registerPullRequestFinalizeResultContract(
+      registerReviewerResultContract(
+        registerSpecAuthorResultContract(
+          createStepResultContractRegistry(),
+          options.specAuthorIdentity !== undefined
+            ? { trustedSpeccedBy: options.specAuthorIdentity }
+            : {}
+        )
       )
     );
     const entryPoint = createDelegatingExecutionEntryPoint({

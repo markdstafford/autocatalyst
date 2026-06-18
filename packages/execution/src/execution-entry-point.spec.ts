@@ -771,6 +771,86 @@ describe('createExecutionEntryPoint — resultValidation', () => {
       await rm(scratchRoot, { recursive: true, force: true });
     }
   });
+
+  it('scratch_file mode: contract normalizers run before config normalizers', async () => {
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'ep-norm-compose-'));
+    try {
+      const resultFile = 'step-result.json';
+      // Write raw payload — both normalizers need to run to produce valid output
+      const rawPayload = {};
+      await writeFile(path.join(scratchRoot, resultFile), JSON.stringify(rawPayload), 'utf8');
+
+      const context = makeContext();
+      const env: MaterializedExecutionEnvironment = {
+        ...makeMaterializedEnv(context),
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      };
+      const materialize = vi.fn().mockResolvedValue(env);
+      const runner = makeFakeRunner([makeTerminalEvent()]);
+
+      const order: string[] = [];
+
+      const contractNormalizer = {
+        id: 'contract-test-normalizer',
+        description: 'Adds fromContract flag',
+        normalize(input: { candidate: unknown }) {
+          order.push('contract');
+          return {
+            status: 'changed' as const,
+            candidate: { ...(input.candidate as object), fromContract: true },
+            message: 'added fromContract'
+          };
+        }
+      };
+
+      const configNormalizer = {
+        id: 'config-test-normalizer',
+        description: 'Adds fromConfig flag',
+        normalize(input: { candidate: unknown }) {
+          order.push('config');
+          return {
+            status: 'changed' as const,
+            candidate: { ...(input.candidate as object), fromConfig: true },
+            message: 'added fromConfig'
+          };
+        }
+      };
+
+      const schema = z.object({ fromContract: z.literal(true), fromConfig: z.literal(true) }).strict();
+
+      const entryPoint = createExecutionEntryPoint({
+        runner,
+        materialize,
+        resultValidation: {
+          mode: 'scratch_file',
+          contract: {
+            step: 'implement',
+            schemaId: 'compose-test.v1',
+            schema,
+            resultFile,
+            normalizers: [contractNormalizer]
+          },
+          normalizers: [configNormalizer]
+        }
+      });
+
+      const events: ExecutionBoundaryEvent[] = [];
+      for await (const event of entryPoint.execute({ context })) {
+        events.push(event);
+      }
+
+      const terminal = events.find((e) => e.type === 'runner_terminal_result') as ExecutionTerminalResultEvent | undefined;
+      expect(terminal).toBeDefined();
+      expect(terminal?.result.directive).toBe('advance');
+      if (terminal?.result.directive === 'advance') {
+        expect(terminal.result.result).toMatchObject({ fromContract: true, fromConfig: true });
+      }
+      // Contract normalizer ran first, then config normalizer
+      expect(order).toEqual(['contract', 'config']);
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

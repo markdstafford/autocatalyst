@@ -1,5 +1,11 @@
 import type { ResultToleranceEvent, StepResultValidationFailureCode } from './result-tolerance.js';
-import { REVIEWER_RESULT_SCHEMA_ID } from './result-contracts.js';
+import {
+  PR_FINALIZE_SCHEMA_ID,
+  REVIEWER_RESULT_SCHEMA_ID,
+  SPEC_AUTHOR_SCHEMA_ID,
+  stampSpecAuthorResultIdentity,
+  type SpecAuthorResultContractOptions
+} from './result-contracts.js';
 
 export interface ResultNormalizerInput {
   readonly candidate: unknown;
@@ -111,6 +117,87 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   const proto = Object.getPrototypeOf(value as object) as unknown;
   return proto === Object.prototype || proto === null;
 }
+
+const allowedModelSpecFrontmatterKeys = new Set(['implemented_by', 'supersedes', 'superseded_by']);
+const systemOwnedSpecFrontmatterKeys = new Set(['created', 'last_updated', 'status', 'issue', 'specced_by']);
+
+function sanitizeSpecAuthorFrontmatter(candidate: unknown): unknown {
+  if (!isPlainObject(candidate)) return candidate;
+  const frontmatter = candidate['frontmatter'];
+  if (!isPlainObject(frontmatter)) return candidate;
+
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(frontmatter)) {
+    if (systemOwnedSpecFrontmatterKeys.has(key)) continue;
+    if (!allowedModelSpecFrontmatterKeys.has(key)) continue;
+    if (value === null) continue;
+    sanitized[key] = value;
+  }
+
+  return { ...candidate, frontmatter: sanitized };
+}
+
+export function createSpecAuthorFrontmatterNormalizer(
+  options: SpecAuthorResultContractOptions = {}
+): ResultNormalizer {
+  return {
+    id: 'spec-author-frontmatter-contract',
+    description: 'Drops model-owned stray frontmatter, removes optional nulls, and stamps system-owned spec frontmatter.',
+    normalize(input) {
+      if (input.schemaId !== SPEC_AUTHOR_SCHEMA_ID) return { status: 'unchanged' };
+      const sanitized = sanitizeSpecAuthorFrontmatter(input.candidate);
+      const stamped = stampSpecAuthorResultIdentity(sanitized, options);
+      if (stamped === input.candidate) return { status: 'unchanged' };
+      return {
+        status: 'changed',
+        candidate: stamped,
+        message: 'Normalized spec.author frontmatter to the system-owned contract.'
+      };
+    }
+  };
+}
+
+function hasOnlyKeys(candidate: Record<string, unknown>, keys: readonly string[]): boolean {
+  const allowed = new Set(keys);
+  return Object.keys(candidate).every((key) => allowed.has(key));
+}
+
+export const prFinalizeCleanResultNormalizer: ResultNormalizer = {
+  id: 'pr-finalize-clean-result',
+  description: 'Normalizes deterministic clean pr.finalize omission-only results.',
+  normalize(input) {
+    if (input.schemaId !== PR_FINALIZE_SCHEMA_ID) return { status: 'unchanged' };
+    if (!isPlainObject(input.candidate)) return { status: 'unchanged' };
+
+    const candidate = input.candidate;
+    const keys = Object.keys(candidate);
+    if (keys.length === 0) {
+      return {
+        status: 'changed',
+        candidate: { directive: 'advance', findings: [] },
+        message: 'Normalized empty pr.finalize result to clean advance.'
+      };
+    }
+
+    if (keys.length === 1 && Array.isArray(candidate['findings']) && candidate['findings'].length === 0) {
+      return {
+        status: 'changed',
+        candidate: { directive: 'advance', findings: [] },
+        message: 'Normalized empty pr.finalize findings to clean advance.'
+      };
+    }
+
+    if (hasOnlyKeys(candidate, ['validationSummary']) && Array.isArray(candidate['validationSummary']) && candidate['validationSummary'].length === 0) {
+      return {
+        status: 'changed',
+        candidate: { directive: 'advance', validationSummary: [], findings: [] },
+        message: 'Normalized omission-only pr.finalize result to clean advance.'
+      };
+    }
+
+    return { status: 'unchanged' };
+  }
+};
 
 export const reviewerResultNormalizer: ResultNormalizer = {
   id: 'reviewer-result-clean-review',

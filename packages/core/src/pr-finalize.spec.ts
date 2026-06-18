@@ -169,6 +169,13 @@ describe('feedbackInputsFromPullRequestFinalizeFindings', () => {
   });
 });
 
+describe('parsePullRequestFinalizeResult (deprecated strict parser)', () => {
+  it('still rejects {} and unknown fields', () => {
+    expect(() => parsePullRequestFinalizeResult({})).toThrow(/Invalid pr\.finalize result/);
+    expect(() => parsePullRequestFinalizeResult({ directive: 'advance', unknown: true })).toThrow(/Invalid pr\.finalize result/);
+  });
+});
+
 describe('buildPullRequestFinalizeCheckpoint', () => {
   it('returns a checkpoint with the expected structure for advance', () => {
     const checkpoint = buildPullRequestFinalizeCheckpoint(

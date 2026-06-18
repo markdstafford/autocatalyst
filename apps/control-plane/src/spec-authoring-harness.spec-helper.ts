@@ -15,7 +15,8 @@ export type SpecAuthoringHarnessMode =
   | 'omitted_system_frontmatter'
   | 'iso_timestamp_system_frontmatter'
   | 'misstated_system_frontmatter'
-  | 'invented_issue';
+  | 'invented_issue'
+  | 'stray_frontmatter';
 
 export interface SpecAuthoringHarnessRecord {
   readonly prompt: string;
@@ -295,6 +296,26 @@ async function writeResultFile(input: {
         specced_by: 'not valid identity'
       },
       body: `# Feature: Harness E2E Test (invented issue)\n\n## Overview\n\nThis spec invents an issue number for a run with no linked issue.\n\n## Task list\n\n- [ ] Implement harness\n`
+    };
+    await writeFile(resultPath, JSON.stringify(result), 'utf8');
+    return;
+  }
+
+  if (mode === 'stray_frontmatter') {
+    const result = {
+      kind: expectedKind,
+      slug,
+      relativePath: `${expectedPathPrefix}${slug}.md`,
+      frontmatter: {
+        created: '1999-01-01',
+        last_updated: '1999-01-01',
+        status: 'complete',
+        issue_url: 'https://github.com/owner/repo/issues/83',
+        implemented_by: null,
+        extra: 'should-be-removed',
+        specced_by: 'some-model'
+      },
+      body: `# Feature: Harness E2E Test (stray frontmatter)\n\n## Overview\n\nThis spec has stray frontmatter that should be normalized.\n\n## Task list\n\n- [ ] Implement harness\n`
     };
     await writeFile(resultPath, JSON.stringify(result), 'utf8');
     return;

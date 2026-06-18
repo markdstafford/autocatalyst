@@ -1,8 +1,9 @@
-import { z } from 'zod';
-
-import type { CreateFeedbackInput, JsonValue, NonModelPrincipal } from '@autocatalyst/api-contract';
+import type { CreateFeedbackInput, JsonValue, NonModelPrincipal, PullRequestFinalizeFinding, PullRequestFinalizeResult } from '@autocatalyst/api-contract';
+import { prFinalizeResultSchema } from '@autocatalyst/api-contract';
 
 import type { CumulativeImplementationSummary } from './implementation-summary.js';
+
+export type { PullRequestFinalizeFinding, PullRequestFinalizeResult };
 
 export interface PullRequestFinalizePromptInput {
   readonly runId: string;
@@ -12,27 +13,6 @@ export interface PullRequestFinalizePromptInput {
   readonly specArtifactPath?: string | null;
   readonly cumulativeSummary: CumulativeImplementationSummary;
 }
-
-const prFinalizeFindingSchema = z
-  .object({
-    severity: z.enum(['blocker', 'warning', 'info']),
-    summary: z.string().min(1),
-    target: z.string().min(1).optional()
-  })
-  .strict();
-
-const prFinalizeResultSchema = z
-  .object({
-    directive: z.enum(['advance', 'revise']),
-    reconciledSummary: z.string().optional(),
-    titleSubject: z.string().optional(),
-    validationSummary: z.array(z.string()).optional(),
-    findings: z.array(prFinalizeFindingSchema).default([])
-  })
-  .strict();
-
-export type PullRequestFinalizeFinding = z.infer<typeof prFinalizeFindingSchema>;
-export type PullRequestFinalizeResult = z.infer<typeof prFinalizeResultSchema>;
 
 export function buildPullRequestFinalizePrompt(input: PullRequestFinalizePromptInput): string {
   const summarySection = [
@@ -112,6 +92,11 @@ For a revise result (blockers found):
 Only return "revise" if there is a material or user-visible blocker. Warnings and info findings should still allow "advance".`;
 }
 
+/**
+ * @deprecated Use validatePullRequestFinalizeResult for AI-step candidates so
+ * normalization and correction run before workflow logic. This strict parser is
+ * for direct-call or already-tolerated compatibility paths only.
+ */
 export function parsePullRequestFinalizeResult(value: unknown): PullRequestFinalizeResult {
   const result = prFinalizeResultSchema.safeParse(value);
   if (!result.success) {

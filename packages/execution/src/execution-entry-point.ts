@@ -239,15 +239,24 @@ async function buildTerminalBoundaryEvent(input: BuildTerminalInput): Promise<Ex
     return makeFailTerminal(rawTerminal, `Execution failed: ${read.code}`);
   }
 
+  const normalizers = composeNormalizers(contract.normalizers, config.normalizers);
   const validation = await validateStepResult({
     runId: input.runId,
     step: contract.step,
     schemaId: contract.schemaId,
     schema: contract.schema,
     candidate: read.value,
-    ...(config.normalizers !== undefined ? { normalizers: config.normalizers } : {}),
-    ...(config.correctionRequester !== undefined ? { correctionRequester: config.correctionRequester } : {}),
-    ...(config.maxCorrectionAttempts !== undefined ? { maxCorrectionAttempts: config.maxCorrectionAttempts } : {}),
+    ...(normalizers !== undefined ? { normalizers } : {}),
+    ...(config.correctionRequester !== undefined
+      ? { correctionRequester: config.correctionRequester }
+      : contract.correctionRequester !== undefined
+        ? { correctionRequester: contract.correctionRequester }
+        : {}),
+    ...(config.maxCorrectionAttempts !== undefined
+      ? { maxCorrectionAttempts: config.maxCorrectionAttempts }
+      : contract.maxCorrectionAttempts !== undefined
+        ? { maxCorrectionAttempts: contract.maxCorrectionAttempts }
+        : {}),
     ...(config.degradationPolicy !== undefined
       ? { degradationPolicy: config.degradationPolicy }
       : contract.degradationPolicy !== undefined
@@ -315,6 +324,20 @@ function resolveScratchFileContract(
     };
   }
   return { kind: 'failed', code: 'result_contract_missing' };
+}
+
+function listNormalizers(value: ResultNormalizerRegistry | readonly ResultNormalizer[] | undefined): readonly ResultNormalizer[] {
+  if (value === undefined) return [];
+  if (Array.isArray(value)) return value;
+  return (value as ResultNormalizerRegistry).normalizers;
+}
+
+function composeNormalizers(
+  contractNormalizers: ResultNormalizerRegistry | readonly ResultNormalizer[] | undefined,
+  configNormalizers: ResultNormalizerRegistry | readonly ResultNormalizer[] | undefined
+): readonly ResultNormalizer[] | undefined {
+  const composed = [...listNormalizers(contractNormalizers), ...listNormalizers(configNormalizers)];
+  return composed.length > 0 ? composed : undefined;
 }
 
 function makeFailTerminal(rawTerminal: RawTerminalEvent, reason: string): ExecutionTerminalResultEvent {

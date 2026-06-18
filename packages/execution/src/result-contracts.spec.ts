@@ -1,13 +1,16 @@
 import { z } from 'zod';
 import { describe, expect, it } from 'vitest';
+import { prFinalizeResultSchema } from '@autocatalyst/api-contract';
 
 import {
   SPEC_AUTHOR_SCHEMA_ID,
   REVIEWER_RESULT_SCHEMA_ID,
+  PR_FINALIZE_SCHEMA_ID,
   createStepResultContractRegistry,
   resolveStepResultContract,
   registerReviewerResultContract,
   registerSpecAuthorResultContract,
+  registerPullRequestFinalizeResultContract,
   stampSpecAuthorResultIdentity,
   SYSTEM_SPEC_AUTHOR_SPECCED_BY
 } from './result-contracts.js';
@@ -61,6 +64,30 @@ describe('step result contract registry', () => {
       expect(result.safeMessage).toBe('Unknown step result contract for step and schemaId.');
       expect(JSON.stringify(result)).not.toContain('/');
     }
+  });
+
+  it('stores contract-owned normalizers and validation policy', () => {
+    const normalizer = { id: 'n', description: 'n', normalize: () => ({ status: 'unchanged' as const }) };
+    const correctionRequester = { requestCorrection: async () => ({ ok: true }) };
+    const registry = createStepResultContractRegistry([
+      {
+        step: 'example.step',
+        schemaId: 'example.v1',
+        schema,
+        normalizers: [normalizer],
+        correctionRequester,
+        maxCorrectionAttempts: 1,
+        degradationPolicy: { optionalPaths: [['optional']] }
+      }
+    ]);
+
+    const resolution = registry.resolve({ step: 'example.step', schemaId: 'example.v1' });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+    expect(resolution.contract.normalizers).toEqual([normalizer]);
+    expect(resolution.contract.correctionRequester).toBe(correctionRequester);
+    expect(resolution.contract.maxCorrectionAttempts).toBe(1);
+    expect(resolution.contract.degradationPolicy).toEqual({ optionalPaths: [['optional']] });
   });
 });
 
@@ -269,6 +296,66 @@ describe('spec author result contract registration', () => {
     expect(stampSpecAuthorResultIdentity('not an object', {
       clock: () => '2026-06-17T00:00:00.000Z'
     })).toBe('not an object');
+  });
+
+  it('attaches the spec-author frontmatter normalizer by default', () => {
+    const registry = registerSpecAuthorResultContract(createStepResultContractRegistry(), {
+      clock: () => '2026-06-18T00:00:00.000Z'
+    });
+    const resolution = registry.resolve({ step: 'spec.author', schemaId: SPEC_AUTHOR_SCHEMA_ID });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+    expect(Array.isArray(resolution.contract.normalizers)).toBe(true);
+    expect((resolution.contract.normalizers as readonly { id: string }[])[0]?.id).toBe('spec-author-frontmatter-contract');
+  });
+
+  it('propagates spec-author correction and validation policy options', () => {
+    const normalizer = { id: 'custom-spec-author', description: 'custom', normalize: () => ({ status: 'unchanged' as const }) };
+    const correctionRequester = { requestCorrection: async () => ({}) };
+    const registry = registerSpecAuthorResultContract(createStepResultContractRegistry(), {
+      normalizers: [normalizer],
+      correctionRequester,
+      maxCorrectionAttempts: 1,
+      degradationPolicy: { optionalPaths: [['frontmatter', 'implemented_by']] }
+    });
+    const resolution = registry.resolve({ step: 'spec.author', schemaId: SPEC_AUTHOR_SCHEMA_ID });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+    expect(resolution.contract.normalizers).toEqual([normalizer]);
+    expect(resolution.contract.correctionRequester).toBe(correctionRequester);
+    expect(resolution.contract.maxCorrectionAttempts).toBe(1);
+    expect(resolution.contract.degradationPolicy).toEqual({ optionalPaths: [['frontmatter', 'implemented_by']] });
+  });
+});
+
+describe('pr.finalize result contract registration', () => {
+  it('exports PR_FINALIZE_SCHEMA_ID as autocatalyst.pr_finalize.v1', () => {
+    expect(PR_FINALIZE_SCHEMA_ID).toBe('autocatalyst.pr_finalize.v1');
+  });
+
+  it('registers a default pr.finalize contract with the clean-result normalizer', () => {
+    const registry = registerPullRequestFinalizeResultContract(createStepResultContractRegistry());
+    const resolution = registry.resolve({ step: 'pr.finalize', schemaId: PR_FINALIZE_SCHEMA_ID });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+    expect(resolution.contract.schema).toBe(prFinalizeResultSchema);
+    expect((resolution.contract.normalizers as readonly { id: string }[])[0]?.id).toBe('pr-finalize-clean-result');
+  });
+
+  it('propagates PR-finalize policy and rejects duplicate registrations', () => {
+    const correctionRequester = { requestCorrection: async () => ({ directive: 'advance', findings: [] }) };
+    const registry = registerPullRequestFinalizeResultContract(createStepResultContractRegistry(), {
+      correctionRequester,
+      maxCorrectionAttempts: 1,
+      degradationPolicy: { optionalPaths: [['titleSubject']] }
+    });
+    const resolution = registry.resolve({ step: 'pr.finalize', schemaId: PR_FINALIZE_SCHEMA_ID });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+    expect(resolution.contract.correctionRequester).toBe(correctionRequester);
+    expect(resolution.contract.maxCorrectionAttempts).toBe(1);
+    expect(resolution.contract.degradationPolicy).toEqual({ optionalPaths: [['titleSubject']] });
+    expect(() => registerPullRequestFinalizeResultContract(registry)).toThrow(/Duplicate step result contract/);
   });
 });
 

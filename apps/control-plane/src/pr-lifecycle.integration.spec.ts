@@ -520,6 +520,70 @@ describe('PR lifecycle integration: happy path', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Test 1b — pr.finalize {} recovery
+// ---------------------------------------------------------------------------
+
+describe('PR lifecycle integration: pr.finalize {} recovery', () => {
+  it(
+    'recovers from empty {} pr.finalize result and advances toward pr.open',
+    async () => {
+      const unitOfWork: RunUnitOfWork = {
+        run: async ({ run }) => {
+          if (run.currentStep === 'pr.finalize') {
+            // {} means "no blockers" — should normalize to { directive: 'advance', findings: [] }
+            return { directive: 'advance', result: {} };
+          }
+          return { directive: 'advance' };
+        }
+      };
+
+      const harness = await setupLifecycle({ unitOfWork });
+      try {
+        const { orchestrator, domainRepos, run: runRef } = harness;
+
+        await orchestrator.applyDirective({
+          runId: runRef.id,
+          directive: 'advance',
+          tenant: 'tenant_dev',
+          origin: 'human',
+          principal: hardcodedDevelopmentPrincipal
+        });
+
+        // Should advance past pr.finalize without pr_finalize_invalid_result
+        const haltedRun = await waitFor(
+          async () => {
+            const r = await domainRepos.runs.findById(runRef.id);
+            if (r === null) throw new Error('run missing');
+            return r;
+          },
+          (r) => r.currentStep === 'pr.human_review' || r.terminal === true,
+          7000,
+          'pr.human_review or terminal'
+        );
+
+        // Must not have failed with pr_finalize_invalid_result
+        expect(haltedRun.terminal).toBe(false);
+        expect(haltedRun.currentStep).toBe('pr.human_review');
+        expect((haltedRun as { failureReason?: string }).failureReason).toBeUndefined();
+
+        // The pr.finalize checkpoint should contain the validated clean advance result
+        const runSteps = await domainRepos.runSteps.listByRun(runRef.id);
+        const prFinalizeStep = runSteps.find((s) => s.step === 'pr.finalize');
+        expect(prFinalizeStep).toBeDefined();
+        if (prFinalizeStep?.checkpointResult !== null && prFinalizeStep?.checkpointResult !== undefined) {
+          const checkpoint = prFinalizeStep.checkpointResult as { directive?: string; findings?: unknown[] };
+          expect(checkpoint.directive).toBe('advance');
+          expect(checkpoint.findings).toEqual([]);
+        }
+      } finally {
+        harness.database.close();
+      }
+    },
+    10000
+  );
+});
+
+// ---------------------------------------------------------------------------
 // Test 2 — blocker path
 // ---------------------------------------------------------------------------
 
