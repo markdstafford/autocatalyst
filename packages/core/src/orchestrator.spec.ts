@@ -714,6 +714,30 @@ describe('DefaultOrchestrator.dispatch', () => {
     expect(call?.failureReason).toBe('pr_finalize_invalid_result');
   });
 
+  it('fails with pr_finalize_invalid_result when pr.finalize result has advance+blocker (contradictory — must not open PR)', async () => {
+    const existing = makeRun({ currentStep: 'pr.finalize' });
+    const failed = makeRun({ currentStep: 'failed', terminal: true });
+    const failedStep = makeRunStep({ step: 'failed' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: failed, runStep: failedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const unitRun = vi.fn().mockResolvedValue({
+      directive: 'advance',
+      result: { directive: 'advance', findings: [{ severity: 'blocker', summary: 'Must fix before merge' }] }
+    });
+    const logger = { warn: vi.fn() };
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork: { run: unitRun }, autoDispatch: { enabled: false }, logger });
+
+    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+
+    // advance+blocker is contradictory — should fail, never open a PR
+    expect(result.run.currentStep).toBe('failed');
+    const call = recordTransition.mock.calls[0]?.[0];
+    expect(call?.failureReason).toBe('pr_finalize_invalid_result');
+  });
+
   it('dispatches implementation.plan with an explicit passthrough checkpoint before implementation.build', async () => {
     const runAtPlan = makeRun({ currentStep: 'implementation.plan', workKind: 'feature' });
 

@@ -54,4 +54,28 @@ describe('validatePullRequestFinalizeResult', () => {
     if (outcome.status !== 'failed') return;
     expect(outcome.reason).toBe('pr_finalize_invalid_result');
   });
+
+  it('fails contradictory advance+blocker result safely — ambiguous and must not be guessed', async () => {
+    const outcome = await validatePullRequestFinalizeResult({
+      runId: 'run_pr_6',
+      rawResult: { directive: 'advance', findings: [{ severity: 'blocker', summary: 'Must fix before merge' }] },
+      maxCorrectionAttempts: 0
+    });
+    expect(outcome.status).toBe('failed');
+    if (outcome.status !== 'failed') return;
+    expect(outcome.reason).toBe('pr_finalize_invalid_result');
+  });
+
+  it('does not fail advance result with only warning/info findings', async () => {
+    const outcome = await validatePullRequestFinalizeResult({
+      runId: 'run_pr_7',
+      rawResult: {
+        directive: 'advance',
+        findings: [{ severity: 'warning', summary: 'Minor style concern' }, { severity: 'info', summary: 'FYI' }]
+      }
+    });
+    expect(outcome.status).toBe('valid');
+    if (outcome.status !== 'valid') return;
+    expect(outcome.value.directive).toBe('advance');
+  });
 });
