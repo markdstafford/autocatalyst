@@ -8,7 +8,8 @@ import {
   configurationRecordCollectionPath,
   createConfigurationRecordSuccessStatusCode,
   degradedHealthStatusCode,
-  healthResponseSchema
+  healthResponseSchema,
+  type RunnerEvent
 } from '@autocatalyst/api-contract';
 import {
   buildProviderAdapterKey,
@@ -46,6 +47,16 @@ async function withTempDatabasePath(run: (databasePath: string) => Promise<void>
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+}
+
+function emptyAsyncIterable<T>(): AsyncIterable<T> {
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        next: async (): Promise<IteratorResult<T>> => ({ done: true, value: undefined as never })
+      };
+    }
+  };
 }
 
 describe('createControlPlaneServer', () => {
@@ -692,7 +703,7 @@ describe('createDelegatingExecutionEntryPoint — onWorkspaceRootResolved branch
 
   function makeNoopRunner(): Runner {
     return {
-      run: async function*() { /* yields no events */ },
+      run: () => emptyAsyncIterable<RunnerEvent>(),
       close: async () => ({ status: 'closed' as const })
     };
   }
@@ -802,7 +813,10 @@ describe('createDelegatingExecutionEntryPoint — onWorkspaceRootResolved branch
 
     const factory: AgentRunnerFactory = {
       createRunner: vi.fn(async () => ({
-        run: async function*() { order.push('runner-run-started'); },
+        run: () => {
+          order.push('runner-run-started');
+          return emptyAsyncIterable<RunnerEvent>();
+        },
         close: async () => ({ status: 'closed' as const })
       } satisfies Runner))
     };
