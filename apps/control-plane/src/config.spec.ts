@@ -347,4 +347,93 @@ describe('readControlPlaneAppConfig', () => {
       CONTROL_PLANE_MASTER_SECRET: 'secret'
     }).specAuthorIdentity).toBeUndefined();
   });
+
+  it('leaves pullRequestReconciliationTicker undefined by default', () => {
+    expect(readControlPlaneAppConfig([], {
+      CONTROL_PLANE_PORT: '3000',
+      CONTROL_PLANE_DATABASE_PATH: ':memory:',
+      CONTROL_PLANE_BEARER_TOKEN: 'token',
+      CONTROL_PLANE_MASTER_SECRET: 'secret'
+    }).pullRequestReconciliationTicker).toBeUndefined();
+  });
+
+  it('parses pullRequestReconciliationTicker from env vars when ticker is enabled', () => {
+    expect(readControlPlaneAppConfig([], {
+      CONTROL_PLANE_PORT: '3000',
+      CONTROL_PLANE_DATABASE_PATH: ':memory:',
+      CONTROL_PLANE_BEARER_TOKEN: 'token',
+      CONTROL_PLANE_MASTER_SECRET: 'secret',
+      AUTOCATALYST_PR_RECONCILE_TICKER: 'true',
+      AUTOCATALYST_PR_RECONCILE_INTERVAL_MS: '30000',
+      AUTOCATALYST_PR_RECONCILE_TENANT: 'tenant_dev'
+    }).pullRequestReconciliationTicker).toEqual({ enabled: true, intervalMs: 30000, tenant: 'tenant_dev' });
+  });
+
+  it('parses pullRequestReconciliationTicker from CLI flags', () => {
+    expect(readControlPlaneAppConfig(
+      ['--pr-reconcile-ticker', '--pr-reconcile-interval-ms', '5000', '--pr-reconcile-tenant', 'tenant_dev'],
+      {
+        CONTROL_PLANE_PORT: '3000',
+        CONTROL_PLANE_DATABASE_PATH: ':memory:',
+        CONTROL_PLANE_BEARER_TOKEN: 'token',
+        CONTROL_PLANE_MASTER_SECRET: 'secret'
+      }
+    ).pullRequestReconciliationTicker).toEqual({ enabled: true, intervalMs: 5000, tenant: 'tenant_dev' });
+  });
+
+  it('throws for invalid boolean value for AUTOCATALYST_PR_RECONCILE_TICKER', () => {
+    expect(() => readControlPlaneAppConfig([], {
+      CONTROL_PLANE_PORT: '3000',
+      CONTROL_PLANE_DATABASE_PATH: ':memory:',
+      CONTROL_PLANE_BEARER_TOKEN: 'token',
+      CONTROL_PLANE_MASTER_SECRET: 'secret',
+      AUTOCATALYST_PR_RECONCILE_TICKER: 'maybe'
+    })).toThrow('AUTOCATALYST_PR_RECONCILE_TICKER must be one of 1, true, yes, 0, false, or no.');
+  });
+
+  it('throws when ticker is enabled but interval is missing', () => {
+    expect(() => readControlPlaneAppConfig([], {
+      CONTROL_PLANE_PORT: '3000',
+      CONTROL_PLANE_DATABASE_PATH: ':memory:',
+      CONTROL_PLANE_BEARER_TOKEN: 'token',
+      CONTROL_PLANE_MASTER_SECRET: 'secret',
+      AUTOCATALYST_PR_RECONCILE_TICKER: 'true',
+      AUTOCATALYST_PR_RECONCILE_TENANT: 'tenant_dev'
+    })).toThrow('AUTOCATALYST_PR_RECONCILE_INTERVAL_MS or --pr-reconcile-interval-ms is required when the PR reconciliation ticker is enabled.');
+  });
+
+  it('throws when ticker is enabled but interval is zero', () => {
+    expect(() => readControlPlaneAppConfig([], {
+      CONTROL_PLANE_PORT: '3000',
+      CONTROL_PLANE_DATABASE_PATH: ':memory:',
+      CONTROL_PLANE_BEARER_TOKEN: 'token',
+      CONTROL_PLANE_MASTER_SECRET: 'secret',
+      AUTOCATALYST_PR_RECONCILE_TICKER: 'true',
+      AUTOCATALYST_PR_RECONCILE_INTERVAL_MS: '0',
+      AUTOCATALYST_PR_RECONCILE_TENANT: 'tenant_dev'
+    })).toThrow('AUTOCATALYST_PR_RECONCILE_INTERVAL_MS must be a positive integer.');
+  });
+
+  it('throws when ticker is enabled but interval is not a number', () => {
+    expect(() => readControlPlaneAppConfig([], {
+      CONTROL_PLANE_PORT: '3000',
+      CONTROL_PLANE_DATABASE_PATH: ':memory:',
+      CONTROL_PLANE_BEARER_TOKEN: 'token',
+      CONTROL_PLANE_MASTER_SECRET: 'secret',
+      AUTOCATALYST_PR_RECONCILE_TICKER: 'true',
+      AUTOCATALYST_PR_RECONCILE_INTERVAL_MS: 'abc',
+      AUTOCATALYST_PR_RECONCILE_TENANT: 'tenant_dev'
+    })).toThrow('AUTOCATALYST_PR_RECONCILE_INTERVAL_MS must be a positive integer.');
+  });
+
+  it('throws when ticker is enabled but tenant is missing', () => {
+    expect(() => readControlPlaneAppConfig([], {
+      CONTROL_PLANE_PORT: '3000',
+      CONTROL_PLANE_DATABASE_PATH: ':memory:',
+      CONTROL_PLANE_BEARER_TOKEN: 'token',
+      CONTROL_PLANE_MASTER_SECRET: 'secret',
+      AUTOCATALYST_PR_RECONCILE_TICKER: 'true',
+      AUTOCATALYST_PR_RECONCILE_INTERVAL_MS: '5000'
+    })).toThrow('AUTOCATALYST_PR_RECONCILE_TENANT or --pr-reconcile-tenant is required when the PR reconciliation ticker is enabled.');
+  });
 });

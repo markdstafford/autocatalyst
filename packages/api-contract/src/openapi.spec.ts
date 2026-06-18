@@ -141,4 +141,23 @@ describe('OpenAPI generation', () => {
     expect((operation as { responses?: Record<string, unknown> })?.responses?.['409']).toBeDefined();
     expect((operation as { responses?: Record<string, unknown> })?.responses?.['500']).toBeDefined();
   });
+
+  it('documents POST /v1/pull-requests/reconcile', () => {
+    const document = generateOpenApiDocument();
+    const operation = document.paths['/v1/pull-requests/reconcile']?.post as
+      | { responses?: Record<string, unknown>; tags?: string[]; security?: unknown[] }
+      | undefined;
+
+    expect(operation).toBeDefined();
+    expect(operation?.tags).toContain('pull-requests');
+    expect(operation?.responses?.['200']).toBeDefined();
+    expect(operation?.responses?.['401']).toBeDefined();
+    expect(operation?.responses?.['403']).toBeDefined();
+    expect(operation?.responses?.['500']).toBeDefined();
+    expect(operation?.security).toEqual([{ bearerAuth: [] }]);
+    expect(
+      (document.components as { securitySchemes?: Record<string, unknown> } | undefined)
+        ?.securitySchemes?.['bearerAuth']
+    ).toBeDefined();
+  });
 });

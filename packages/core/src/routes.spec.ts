@@ -14,6 +14,9 @@ import {
   principalDiagnosticResponseSchema,
   probeResourceCollectionPath,
   probeResourceSchema,
+  pullRequestReconciliationPath,
+  pullRequestReconciliationResponseSchema,
+  reconcilePullRequestsSuccessStatusCode,
   runFeedbackListResponseSchema,
   runListResponseSchema,
   runReplyResponseSchema,
@@ -76,6 +79,7 @@ function createFakeControlPlaneService(): ControlPlaneService {
     replyToRun: vi.fn(async () => {
       throw new Error('controlPlane.replyToRun not stubbed for this test');
     }),
+    reconcilePullRequests: vi.fn().mockResolvedValue({ checked: 0, merged: 0, closed: 0, failed: 0, timedOut: false }),
     tick: vi.fn(async () => ({ status: 'noop' as const }))
   };
 }
@@ -1795,5 +1799,116 @@ describe('registerControlPlaneRoutes', () => {
     expect(response.headers.get('cache-control')).toContain('no-cache');
 
     controller.abort(); // Close the SSE connection cleanly
+  });
+
+  describe('POST /v1/pull-requests/reconcile', () => {
+    it('returns 200 with reconciliation summary and calls service with principal and tenant', async () => {
+      const controlPlane = createFakeControlPlaneService();
+      (controlPlane.reconcilePullRequests as ReturnType<typeof vi.fn>).mockResolvedValue({ checked: 3, merged: 1, closed: 1, failed: 0, timedOut: false });
+      const { app, authorization, policyCalls } = await buildServer({ controlPlane });
+      server = app;
+
+      const response = await app.inject({
+        method: 'POST',
+        url: pullRequestReconciliationPath,
+        headers: authorization
+      });
+
+      expect(response.statusCode).toBe(reconcilePullRequestsSuccessStatusCode);
+      expect(pullRequestReconciliationResponseSchema.parse(response.json())).toEqual({ checked: 3, merged: 1, closed: 1, failed: 0, timedOut: false });
+      expect(controlPlane.reconcilePullRequests).toHaveBeenCalledWith({
+        principal: hardcodedDevelopmentPrincipal,
+        tenant: hardcodedDevelopmentPrincipal.tenantId
+      });
+      expect(policyCalls).toContainEqual({
+        principal: hardcodedDevelopmentPrincipal,
+        action: 'pull_request.reconcile',
+        resource: { kind: 'pull_request_reconciliation', path: '/v1/pull-requests/reconcile' }
+      });
+    });
+
+    it('returns 401 when no auth header is provided', async () => {
+      const { app } = await buildServer();
+      server = app;
+
+      const response = await app.inject({
+        method: 'POST',
+        url: pullRequestReconciliationPath
+      });
+
+      expect(response.statusCode).toBe(401);
+      expect(errorResponseSchema.parse(response.json()).error.code).toBe('unauthorized');
+    });
+
+    it('ignores body fields and does not leak attacker-provided token', async () => {
+      const { app, authorization } = await buildServer();
+      server = app;
+
+      const response = await app.inject({
+        method: 'POST',
+        url: pullRequestReconciliationPath,
+        headers: authorization,
+        payload: { tenant: 'attacker_tenant', runId: 'run_attacker', token: 'ghp_TEST_TOKEN_123' }
+      });
+
+      expect(response.statusCode).toBe(reconcilePullRequestsSuccessStatusCode);
+      expect(response.body).not.toContain('ghp_TEST_TOKEN_123');
+    });
+
+    it('returns 500 sanitized response when service throws persistence_failed', async () => {
+      const controlPlane = createFakeControlPlaneService();
+      (controlPlane.reconcilePullRequests as ReturnType<typeof vi.fn>).mockRejectedValue(
+        new ControlPlaneServiceError('persistence_failed', 'DB connection failed at /internal/path.')
+      );
+      const { app, authorization } = await buildServer({ controlPlane });
+      server = app;
+
+      const response = await app.inject({
+        method: 'POST',
+        url: pullRequestReconciliationPath,
+        headers: authorization
+      });
+
+      expect(response.statusCode).toBe(500);
+      const parsed = errorResponseSchema.parse(response.json());
+      expect(parsed.error.code).toBe('internal_error');
+      expect(parsed.error.message).toBe('Internal server error.');
+      expect(response.body).not.toContain('/internal/path');
+    });
+
+    it('returns 403 when policy denies the request', async () => {
+      const { app, authorization } = await buildServer({
+        policy: { authorize: async () => ({ allowed: false }) }
+      });
+      server = app;
+
+      const response = await app.inject({
+        method: 'POST',
+        url: pullRequestReconciliationPath,
+        headers: authorization
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(errorResponseSchema.parse(response.json()).error.code).toBe('forbidden');
+    });
+
+    it('returns 403 when an authenticated model principal calls the route', async () => {
+      const { app, authorization } = await buildServer({
+        auth: {
+          bearerToken: 'test-token',
+          resolvePrincipal: async () => ({ id: 'principal_model_123', kind: 'model' as const, tenantId: 'tenant_dev' })
+        }
+      });
+      server = app;
+
+      const response = await app.inject({
+        method: 'POST',
+        url: pullRequestReconciliationPath,
+        headers: authorization
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(errorResponseSchema.parse(response.json()).error.code).toBe('forbidden');
+    });
   });
 });
