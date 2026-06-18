@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  prFinalizeResultSchema,
   runnerTerminalHandoffResultSchema,
   runnerTerminalStepResultSchema,
   stepResultContractSchema,
@@ -54,5 +55,30 @@ describe('step result contracts', () => {
     });
 
     expect(parsed.result.result).toEqual({ validated: true });
+  });
+});
+
+describe('prFinalizeResultSchema', () => {
+  it('accepts strict advance and revise PR finalize results', () => {
+    expect(prFinalizeResultSchema.parse({ directive: 'advance' })).toEqual({
+      directive: 'advance',
+      findings: []
+    });
+
+    expect(prFinalizeResultSchema.parse({
+      directive: 'revise',
+      findings: [{ severity: 'blocker', summary: 'Remove a secret', target: 'implementation' }]
+    })).toEqual({
+      directive: 'revise',
+      findings: [{ severity: 'blocker', summary: 'Remove a secret', target: 'implementation' }]
+    });
+  });
+
+  it('rejects unknown fields and malformed findings', () => {
+    expect(() => prFinalizeResultSchema.parse({ directive: 'advance', unknown: true })).toThrow();
+    expect(() => prFinalizeResultSchema.parse({
+      directive: 'revise',
+      findings: [{ severity: 'critical', summary: 'Bad severity' }]
+    })).toThrow();
   });
 });

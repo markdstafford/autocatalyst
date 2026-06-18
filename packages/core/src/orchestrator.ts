@@ -26,9 +26,9 @@ import { freezeRunSpecForPullRequest, SpecFreezeError } from './spec-freeze.js';
 import type { ConvergenceEngine } from './convergence-engine.js';
 import {
   buildPullRequestFinalizeCheckpoint,
-  feedbackInputsFromPullRequestFinalizeFindings,
-  parsePullRequestFinalizeResult
+  feedbackInputsFromPullRequestFinalizeFindings
 } from './pr-finalize.js';
+import { validatePullRequestFinalizeResult } from './pr-finalize-result-validation.js';
 import {
   ConvergenceCheckpointError,
   getConvergenceEscalationPause,
@@ -794,24 +794,23 @@ export class DefaultOrchestrator implements Orchestrator {
         }
       }
 
-      // For pr.finalize advance: parse the reviewer result. A `revise` directive routes
-      // back to implementation.human_review and records Feedback for any blockers/warnings.
-      // An `advance` directive stores a sanitized checkpoint and advances toward pr.open.
-      // T-009 will insert a deterministic spec freeze before the advance is applied.
+      // For pr.finalize advance: validate through the tolerance pipeline (normalizes {} to clean advance,
+      // then validates). A `revise` directive routes back to implementation.human_review and records
+      // Feedback for any blockers/warnings. An `advance` directive stores a sanitized checkpoint and
+      // advances toward pr.open. T-009 will insert a deterministic spec freeze before the advance is applied.
       if (result.directive === 'advance' && run.currentStep === 'pr.finalize') {
-        let parsed;
-        try {
-          parsed = parsePullRequestFinalizeResult(result.result);
-        } catch (cause) {
-          this.#logger?.warn('pr.finalize result failed validation.', { runId: input.runId, ...this.#safeCause(cause) });
+        const validation = await validatePullRequestFinalizeResult({ runId: input.runId, rawResult: result.result });
+        if (validation.status === 'failed') {
+          this.#logger?.warn('pr.finalize result failed validation.', { runId: input.runId, reason: validation.reason });
           return this.applyDirective({
             runId: input.runId,
             directive: 'fail',
             tenant: input.tenant,
-            reason: 'pr_finalize_invalid_result',
+            reason: validation.reason,
             origin: 'runner'
           });
         }
+        const parsed = validation.value;
 
         if (parsed.directive === 'revise') {
           if (this.#feedbackLifecycleDependencies !== undefined) {

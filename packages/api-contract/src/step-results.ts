@@ -37,3 +37,34 @@ export const runnerTerminalHandoffResultSchema = z.object({
 export type RunnerTerminalStepResult = z.infer<typeof runnerTerminalStepResultSchema>;
 export type RunnerTerminalHandoffResult = z.infer<typeof runnerTerminalHandoffResultSchema>;
 export type StepResultContract = z.infer<typeof stepResultContractSchema>;
+
+export const prFinalizeFindingSchema = z
+  .object({
+    severity: z.enum(['blocker', 'warning', 'info']),
+    summary: z.string().min(1),
+    target: z.string().min(1).optional()
+  })
+  .strict();
+
+export const prFinalizeResultSchema = z
+  .object({
+    directive: z.enum(['advance', 'revise']),
+    reconciledSummary: z.string().optional(),
+    titleSubject: z.string().optional(),
+    validationSummary: z.array(z.string()).optional(),
+    findings: z.array(prFinalizeFindingSchema).default([])
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    // advance + blocker findings is contradictory and must not be guessed; route to correction then fail safely
+    if (value.directive === 'advance' && value.findings.some(f => f.severity === 'blocker')) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['directive'],
+        message: 'advance directive is contradicted by blocker findings; result is ambiguous.'
+      });
+    }
+  });
+
+export type PullRequestFinalizeFinding = z.infer<typeof prFinalizeFindingSchema>;
+export type PullRequestFinalizeResult = z.infer<typeof prFinalizeResultSchema>;
