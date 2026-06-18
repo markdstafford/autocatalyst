@@ -45,6 +45,7 @@ export type ProvisionWorkspaceResult =
       readonly scratchRoot: string;
       readonly hostRepositoryPath: string;
       readonly branchName: string;
+      readonly provisionedBaseRef: string;
     };
 
 export type WorkspaceProvisioningErrorCode =

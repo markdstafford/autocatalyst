@@ -25,7 +25,7 @@ function environmentWithScratch(scratchRoot: string, repoRoot?: string): Materia
     context: stubContext,
     workspace: repoRoot === undefined
       ? { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
-      : { shape: 'two_roots', repoRoot, scratchRoot, branchName: 'run/run_1', workspaceRoots: [repoRoot, scratchRoot] },
+      : { shape: 'two_roots', repoRoot, scratchRoot, branchName: 'run/run_1', provisionedBaseRef: 'origin/main', workspaceRoots: [repoRoot, scratchRoot] },
     environment: { variables: {}, secretVariableNames: [] },
     toolPolicy: { allowedTools: [], workspaceRoots: [scratchRoot] },
     skills: { requested: [], resolved: [] },

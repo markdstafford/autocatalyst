@@ -102,6 +102,7 @@ const convergenceRoundRecordBaseSchema = z.object({
   reviewerSessionId: z.string().min(1).optional(),
   implementerCommitSha: z.string().min(1).nullable().optional(),
   changedFileCount: z.number().int().min(0),
+  changedFilePaths: z.array(z.string().min(1)).default([]).readonly(),
   findings: z.array(convergenceRoundFindingSchema),
   dispositions: z.array(findingDispositionSchema),
   outcome: convergenceRoundOutcomeSchema,

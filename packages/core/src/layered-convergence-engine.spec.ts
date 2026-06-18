@@ -34,7 +34,9 @@ import type {
   CaptureCheckpointRefInput,
   CaptureCheckpointRefResult,
   ReadFileAtRefInput,
-  ListFilesAtRefInput
+  ListFilesAtRefInput,
+  ChangedFileEntry,
+  GetChangedFilesInput
 } from './run-workspace-git.js';
 import type { RunStepDefinition } from './run-step-catalog.js';
 import type { RunWorkflowDefinition } from './run-workflows.js';
@@ -127,6 +129,9 @@ class StubGit implements RunWorkspaceGitPort {
   }
   async listFilesAtRef(_input: ListFilesAtRefInput): Promise<readonly string[]> {
     return this.filesAtRef;
+  }
+  async getChangedFiles(_input: GetChangedFilesInput): Promise<readonly ChangedFileEntry[]> {
+    return [];
   }
 }
 

@@ -112,4 +112,70 @@ describe('buildPullRequestContent', () => {
       titleSubject: 'Add project import.'
     })).toThrow(MissingCumulativeImplementationSummaryError);
   });
+
+  it('renders real changed paths and filters legacy count-only placeholders', () => {
+    const content = buildPullRequestContent({
+      workKind: 'enhancement',
+      cumulativeSummary: {
+        kind: 'cumulative_implementation_summary',
+        cumulativeSummary: 'Updates PR content fallback.',
+        changedFiles: [
+          'round 1: 3 file(s) changed',
+          '3 file(s) changed',
+          'packages/core/src/pr-content.ts'
+        ],
+        validationSummary: [],
+        followUps: [],
+        nonGoals: [],
+        sourceRoundCount: 1,
+        completedAt: '2026-06-18T00:00:00.000Z'
+      }
+    });
+
+    expect(content.body).toContain('- `packages/core/src/pr-content.ts`');
+    expect(content.body).not.toContain('round 1: 3 file(s) changed');
+    expect(content.body).not.toContain('3 file(s) changed');
+  });
+
+  it('passes changed files into title fallback when summary text is empty', () => {
+    const content = buildPullRequestContent({
+      workKind: 'enhancement',
+      cumulativeSummary: {
+        kind: 'cumulative_implementation_summary',
+        cumulativeSummary: '',
+        changedFiles: ['packages/core/src/pr-open-handler.ts'],
+        validationSummary: [],
+        followUps: [],
+        nonGoals: [],
+        sourceRoundCount: 1,
+        completedAt: '2026-06-18T00:00:00.000Z'
+      }
+    });
+
+    expect(content.title).toBe('feat: update packages/core/src/pr-open-handler.ts');
+    expect(content.body).not.toMatch(/round \d+/iu);
+    expect(content.body).not.toContain('implementation passed review');
+    expect(content.body).not.toContain('file(s) changed');
+  });
+
+  it('uses reconciled summary for body while keeping real changed files', () => {
+    const content = buildPullRequestContent({
+      workKind: 'enhancement',
+      reconciledSummary: 'Reviewer-refined summary.',
+      cumulativeSummary: {
+        kind: 'cumulative_implementation_summary',
+        cumulativeSummary: 'Fallback summary.',
+        changedFiles: ['packages/core/src/pr-content.ts'],
+        validationSummary: [],
+        followUps: [],
+        nonGoals: [],
+        sourceRoundCount: 1,
+        completedAt: '2026-06-18T00:00:00.000Z'
+      }
+    });
+
+    expect(content.body).toContain('Reviewer-refined summary.');
+    expect(content.body).not.toContain('Fallback summary.');
+    expect(content.body).toContain('- `packages/core/src/pr-content.ts`');
+  });
 });

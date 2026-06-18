@@ -2663,9 +2663,10 @@ describe('reviewed step integration — transitions and checkpoint persistence',
     expect(transitionCall?.checkpointResult).toMatchObject({ kind: 'convergence_review', outcome: 'converged' });
   });
 
-  it('clean first-round convergence (no findings, no dispositions) produces a non-empty cumulativeSummary', async () => {
-    // Regression: a clean first-round convergence has no fixed dispositions, so the cumulative
-    // summary previously had an empty narrative. The orchestrator must generate a fallback.
+  it('clean first-round convergence (no findings, no dispositions) attaches cumulativeSummary without placeholder text', async () => {
+    // T-011: The orchestrator must not synthesize placeholder strings like "Round N: implementation
+    // passed review" or "N file(s) changed". A clean round with no dispositions and no changed paths
+    // produces an attached cumulativeSummary object with an empty narrative.
     const existing = makeRun({ currentStep: 'implementation.build' });
     const updated = makeRun({ currentStep: 'implementation.human_review' });
     const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.human_review', phase: 'implementation' });
@@ -2679,6 +2680,7 @@ describe('reviewed step integration — transitions and checkpoint persistence',
         {
           round: 1,
           changedFileCount: 5,
+          changedFilePaths: ['packages/core/src/foo.ts'],
           findings: [],
           dispositions: [],
           outcome: 'converged' as const,
@@ -2713,11 +2715,15 @@ describe('reviewed step integration — transitions and checkpoint persistence',
     await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
 
     const transitionCall = recordTransition.mock.calls[0]?.[0];
-    const checkpoint = transitionCall?.checkpointResult as { cumulativeSummary?: { cumulativeSummary?: string } };
+    const checkpoint = transitionCall?.checkpointResult as { cumulativeSummary?: { cumulativeSummary?: string; changedFiles?: string[] } };
     expect(checkpoint?.cumulativeSummary).toBeDefined();
-    // Must have a non-empty implementation narrative, not just an empty string
-    expect(checkpoint?.cumulativeSummary?.cumulativeSummary).toBeTruthy();
-    expect(checkpoint?.cumulativeSummary?.cumulativeSummary).toContain('Round 1');
+    // Clean rounds produce no placeholder narrative — cumulativeSummary text is empty
+    expect(checkpoint?.cumulativeSummary?.cumulativeSummary).toBe('');
+    // But real changed paths are propagated
+    expect(checkpoint?.cumulativeSummary?.changedFiles).toEqual(['packages/core/src/foo.ts']);
+    // No placeholder strings
+    expect(checkpoint?.cumulativeSummary?.cumulativeSummary).not.toMatch(/round \d+/iu);
+    expect(checkpoint?.cumulativeSummary?.cumulativeSummary).not.toContain('implementation passed review');
   });
 });
 

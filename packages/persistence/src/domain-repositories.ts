@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { and, asc, count, desc, eq, isNull } from 'drizzle-orm';
+import { and, asc, count, desc, eq, isNull, sql } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type {
@@ -1652,13 +1652,18 @@ export class DrizzleRunWorkspaceMetadataRepository implements RunWorkspaceMetada
         runId: input.runId,
         workspaceHandle: input.workspaceHandle,
         workspaceRepoRoot: input.workspaceRepoRoot,
+        provisionedBaseRef: input.provisionedBaseRef ?? null,
         createdAt: input.createdAt
       })
       .onConflictDoUpdate({
         target: runWorkspaceMetadata.runId,
         set: {
           workspaceHandle: input.workspaceHandle,
-          workspaceRepoRoot: input.workspaceRepoRoot
+          workspaceRepoRoot: input.workspaceRepoRoot,
+          // Preserve an existing non-null provisionedBaseRef so idempotent re-materializations
+          // (which may reconstruct an approximate ref) do not overwrite the exact ref captured
+          // during first provisioning.
+          provisionedBaseRef: sql`COALESCE(${runWorkspaceMetadata.provisionedBaseRef}, ${input.provisionedBaseRef ?? null})`
         }
       })
       .run();
@@ -1677,6 +1682,7 @@ export class DrizzleRunWorkspaceMetadataRepository implements RunWorkspaceMetada
       runId: row.runId,
       workspaceHandle: row.workspaceHandle,
       workspaceRepoRoot: row.workspaceRepoRoot,
+      provisionedBaseRef: row.provisionedBaseRef ?? null,
       createdAt: row.createdAt
     };
   }

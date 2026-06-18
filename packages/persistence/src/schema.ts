@@ -228,6 +228,7 @@ export const runWorkspaceMetadata = sqliteTable('run_workspace_metadata', {
   runId: text('run_id').primaryKey().references(() => runs.id),
   workspaceHandle: text('workspace_handle').notNull(),
   workspaceRepoRoot: text('workspace_repo_root').notNull(),
+  provisionedBaseRef: text('provisioned_base_ref'),
   createdAt: text('created_at').notNull()
 });
 

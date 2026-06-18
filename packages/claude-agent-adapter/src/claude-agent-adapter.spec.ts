@@ -116,6 +116,7 @@ function makeSessionInput(args: {
           repoRoot: args.repoRoot,
           scratchRoot: args.scratchRoot,
           branchName: 'work',
+          provisionedBaseRef: 'origin/main',
           workspaceRoots: [args.repoRoot, args.scratchRoot]
         }
       : {

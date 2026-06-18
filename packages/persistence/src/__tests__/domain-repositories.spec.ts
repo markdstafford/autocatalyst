@@ -1439,6 +1439,67 @@ describe('DrizzleDomainRepositories round-trip', () => {
     });
   });
 
+  it('persists and hydrates provisionedBaseRef for run workspace metadata', async () => {
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'run-base-ref',
+        title: 'Base ref topic'
+      });
+      const run = await repos.runs.create({
+        topicId: setup.topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false
+      });
+
+      await repos.runWorkspaceMetadata.upsert({
+        runId: run.id,
+        workspaceHandle: 'enhancement/topic/run_base_ref',
+        workspaceRepoRoot: '/tmp/workspaces/run_base_ref/repo',
+        provisionedBaseRef: 'origin/main',
+        createdAt: '2026-06-18T00:00:00.000Z'
+      });
+
+      await expect(repos.runWorkspaceMetadata.findByRunId(run.id)).resolves.toMatchObject({
+        runId: run.id,
+        provisionedBaseRef: 'origin/main'
+      });
+    });
+  });
+
+  it('hydrates null provisionedBaseRef when omitted for legacy callers', async () => {
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'run-legacy-base-ref',
+        title: 'Legacy base ref topic'
+      });
+      const run = await repos.runs.create({
+        topicId: setup.topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false
+      });
+
+      await repos.runWorkspaceMetadata.upsert({
+        runId: run.id,
+        workspaceHandle: 'enhancement/topic/run_legacy_base_ref',
+        workspaceRepoRoot: '/tmp/workspaces/run_legacy_base_ref/repo',
+        createdAt: '2026-06-18T00:00:00.000Z'
+      });
+
+      const metadata = await repos.runWorkspaceMetadata.findByRunId(run.id);
+      expect(metadata?.provisionedBaseRef ?? null).toBeNull();
+    });
+  });
+
   it('runSteps.updateCheckpoint rejects invalid convergence checkpoint JSON', async () => {
     await withRepositories(async (repos) => {
       const setup = await createProjectConversationAndTopic(repos, {
