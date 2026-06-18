@@ -161,6 +161,7 @@ function makeDeps(opts: {
   pullRequestCreateBehavior?: () => Promise<PullRequest>;
   codeHostsGetBehavior?: () => CodeHostPort;
   changedFiles?: readonly ChangedFileEntry[];
+  changedFilesBehavior?: () => Promise<readonly ChangedFileEntry[]>;
   workspaceMetadata?: {
     runId: string;
     workspaceHandle: string;
@@ -230,7 +231,9 @@ function makeDeps(opts: {
       createdAt: timestamp
     })
   };
-  const getChangedFiles = vi.fn().mockResolvedValue(opts.changedFiles ?? []);
+  const getChangedFiles = opts.changedFilesBehavior
+    ? vi.fn().mockImplementation(opts.changedFilesBehavior)
+    : vi.fn().mockResolvedValue(opts.changedFiles ?? []);
   const facts: CodeHostPullRequestFacts = opts.facts ?? {
     provider: 'github',
     number: 42,
@@ -682,5 +685,23 @@ describe('handlePullRequestOpen', () => {
     await handlePullRequestOpen('run_1', 'tenant_1', deps);
 
     expect(getChangedFiles.mock.calls[0]?.[0].baseRef).toBe('refs/remotes/origin/main');
+  });
+
+  it('continues without diff paths when persisted real summary data is already usable', async () => {
+    // Arrange: getChangedFiles throws, but summary has real data
+    const { deps, create, getChangedFiles } = makeDeps({
+      changedFilesBehavior: async () => { throw new Error('changed_files_ref_invalid'); }
+    });
+
+    await handlePullRequestOpen('run_1', 'tenant_1', deps);
+
+    expect(getChangedFiles).toHaveBeenCalledTimes(1);
+    const content = create.mock.calls[0]?.[0].content;
+    // Title should come from the persisted cumulative summary (not throw)
+    expect(content.title).toMatch(/^feat: /u);
+    // Body should contain the persisted changed files from the summary
+    expect(content.body).not.toMatch(/round \d+/iu);
+    expect(content.body).not.toContain('implementation passed review');
+    expect(content.body).not.toContain('file(s) changed');
   });
 });
