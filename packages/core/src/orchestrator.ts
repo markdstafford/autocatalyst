@@ -50,7 +50,7 @@ import type {
 import type { CodeHostCredential } from './code-host.js';
 import type { CodeHostRegistry } from './code-host-registry.js';
 import { handlePullRequestOpen } from './pr-open-handler.js';
-import { buildCumulativeImplementationSummary } from './implementation-summary.js';
+import { buildCumulativeImplementationSummary, buildImplementationSummaryRoundInputs } from './implementation-summary.js';
 import {
   detectPullRequestMerges,
   type PullRequestStatusReconciliationResult
@@ -733,23 +733,7 @@ export class DefaultOrchestrator implements Orchestrator {
         if (result.checkpointResult.rounds.length > 0) {
           try {
             const cumulativeSummary = buildCumulativeImplementationSummary({
-              rounds: result.checkpointResult.rounds.map(r => {
-                const fixSummaryText = r.dispositions
-                  .filter(d => d.disposition === 'fixed')
-                  .map(d => d.summary)
-                  .join('; ');
-                // For clean convergence rounds with no reviewer findings, generate a
-                // minimal fallback so pr.finalize has an implementation description
-                // to reconcile rather than an empty summary.
-                const effectiveSummary = fixSummaryText ||
-                  (r.findings.length === 0 ? `Round ${r.round}: implementation passed review` : '');
-                return {
-                  ...(effectiveSummary ? { fixSummary: effectiveSummary } : {}),
-                  changedFiles: r.changedFileCount > 0
-                    ? [`round ${r.round}: ${r.changedFileCount} file(s) changed`]
-                    : []
-                };
-              }),
+              rounds: buildImplementationSummaryRoundInputs(result.checkpointResult.rounds),
               completedAt: convergenceClock()
             });
             enrichedCheckpoint = { ...result.checkpointResult, cumulativeSummary };

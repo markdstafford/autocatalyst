@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   MissingCumulativeImplementationSummaryError,
   buildCumulativeImplementationSummary,
+  buildImplementationSummaryRoundInputs,
   isCumulativeImplementationSummary,
-  requireCumulativeImplementationSummary
+  requireCumulativeImplementationSummary,
+  summarizeChangedPaths
 } from './implementation-summary.js';
 
 describe('buildCumulativeImplementationSummary', () => {
@@ -102,5 +104,70 @@ describe('requireCumulativeImplementationSummary', () => {
   it('throws MissingCumulativeImplementationSummaryError for invalid input', () => {
     expect(() => requireCumulativeImplementationSummary(null)).toThrow(MissingCumulativeImplementationSummaryError);
     expect(() => requireCumulativeImplementationSummary({ kind: 'other' })).toThrow(MissingCumulativeImplementationSummaryError);
+  });
+});
+
+describe('buildImplementationSummaryRoundInputs', () => {
+  it('maps fixed dispositions and changed paths only', () => {
+    const rounds = buildImplementationSummaryRoundInputs([{
+      round: 1,
+      changedFileCount: 2,
+      changedFilePaths: ['packages/core/src/pr-content.ts', 'packages/core/src/orchestrator.ts'],
+      findings: [],
+      dispositions: [{ feedbackId: 'fb_1', disposition: 'fixed', summary: 'Fixed PR content fallback.' }],
+      outcome: 'converged',
+      altitude: 'build'
+    }]);
+
+    expect(rounds).toEqual([{
+      fixSummary: 'Fixed PR content fallback.',
+      changedFiles: ['packages/core/src/orchestrator.ts', 'packages/core/src/pr-content.ts']
+    }]);
+  });
+
+  it('omits clean round placeholder text', () => {
+    const rounds = buildImplementationSummaryRoundInputs([{
+      round: 1,
+      changedFileCount: 0,
+      changedFilePaths: [],
+      findings: [],
+      dispositions: [],
+      outcome: 'converged',
+      altitude: 'build'
+    }]);
+
+    expect(rounds).toEqual([{}]);
+  });
+});
+
+describe('summarizeChangedPaths', () => {
+  it('creates bounded deterministic fallback summary text', () => {
+    expect(summarizeChangedPaths(['a.ts'])).toBe('Updates a.ts.');
+    expect(summarizeChangedPaths(['a.ts', 'b.ts', 'c.ts', 'd.ts']))
+      .toBe('Updates 4 files: a.ts, b.ts, c.ts, and d.ts.');
+    expect(summarizeChangedPaths([])).toBe('');
+  });
+});
+
+describe('no placeholder strings from clean rounds', () => {
+  it('does not produce known placeholder strings for clean rounds', () => {
+    const roundInputs = buildImplementationSummaryRoundInputs([{
+      round: 1,
+      changedFileCount: 3,
+      changedFilePaths: ['packages/core/src/pr-content.ts'],
+      findings: [],
+      dispositions: [],
+      outcome: 'converged',
+      altitude: 'build'
+    }]);
+    const summary = buildCumulativeImplementationSummary({
+      rounds: roundInputs,
+      completedAt: '2026-06-18T00:00:00.000Z'
+    });
+
+    expect(summary.cumulativeSummary).not.toMatch(/round \d+/iu);
+    expect(summary.cumulativeSummary).not.toContain('implementation passed review');
+    expect(summary.changedFiles.join('\n')).not.toContain('file(s) changed');
+    expect(summary.changedFiles).toEqual(['packages/core/src/pr-content.ts']);
   });
 });
