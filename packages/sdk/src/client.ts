@@ -28,6 +28,9 @@ import {
   runFeedbackThreadPath,
   getRunSpecSuccessStatusCode,
   listRunFeedbackSuccessStatusCode,
+  pullRequestReconciliationPath,
+  pullRequestReconciliationResponseSchema,
+  reconcilePullRequestsSuccessStatusCode,
   runCollectionPath,
   runEventsPath,
   runFeedbackListResponseSchema,
@@ -53,6 +56,7 @@ import {
   type AppendRunFeedbackThreadRequest,
   type CreateRunFeedbackRequest,
   type CreateSecretRequest,
+  type ReconcilePullRequestsResponse,
   type RunReplyRequest,
   type RunReplyResponse,
   type CreateSecretResponse,
@@ -94,6 +98,7 @@ export interface ControlPlaneClient {
   listRunFeedback(id: string): Promise<RunFeedbackListResponse>;
   appendRunFeedbackThreadReply(id: string, feedbackId: string, request: AppendRunFeedbackThreadRequest): Promise<Feedback>;
   replyToRun(id: string, request: RunReplyRequest): Promise<RunReplyResponse>;
+  reconcilePullRequests(): Promise<ReconcilePullRequestsResponse>;
 }
 
 export interface RunEventsStreamOptions {
@@ -406,6 +411,18 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
         throw new Error(`Expected ${createRunReplySuccessStatusCode} from replyToRun, received ${response.status}.`);
       }
       return runReplyResponseSchema.parse(await parseJson(response));
+    },
+
+    async reconcilePullRequests() {
+      const response = await fetchImplementation(urlFor(baseUrl, pullRequestReconciliationPath), {
+        method: 'POST',
+        headers: protectedHeaders(bearerToken)
+      });
+      await throwForError(response);
+      if (response.status !== reconcilePullRequestsSuccessStatusCode) {
+        throw new Error(`Expected ${reconcilePullRequestsSuccessStatusCode} from reconcilePullRequests, received ${response.status}.`);
+      }
+      return pullRequestReconciliationResponseSchema.parse(await parseJson(response));
     }
   };
 }

@@ -45,6 +45,9 @@ import {
   probeResourceCollectionPath,
   probeResourceIdParamsSchema,
   probeResourceSchema,
+  pullRequestReconciliationPath,
+  pullRequestReconciliationResponseSchema,
+  reconcilePullRequestsSuccessStatusCode,
   runCollectionPath,
   clientRunEventSchema,
   formatRunEventFrameName,
@@ -73,6 +76,7 @@ import {
   type CreateSecretRequest,
   type ErrorResponse,
   type ProbeResourceIdParams,
+  type ReconcilePullRequestsResponse,
   type RunIdParams,
   type RunReplyRequest,
   type UpdateConfigurationRecordRequest
@@ -681,6 +685,30 @@ export async function registerControlPlaneRoutes(
           request: body
         });
         await reply.status(createRunReplySuccessStatusCode).send(runReplyResponseSchema.parse(result));
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(reply, error);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    // PR reconciliation: POST /v1/pull-requests/reconcile
+    protectedApp.post(pullRequestReconciliationPath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'pull_request.reconcile', () => ({
+        kind: 'pull_request_reconciliation' as const,
+        path: '/v1/pull-requests/reconcile' as const
+      }))
+    }, async (request, reply) => {
+      const principal = requirePrincipalFromRequest(request);
+      if (principal.kind === 'model') {
+        await reply.status(403).send(errorResponse(forbiddenErrorCode, 'Forbidden.'));
+        return;
+      }
+      try {
+        const result: ReconcilePullRequestsResponse = await dependencies.controlPlane.reconcilePullRequests({ principal, tenant: principal.tenantId });
+        await reply.status(reconcilePullRequestsSuccessStatusCode).send(pullRequestReconciliationResponseSchema.parse(result));
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
           await handleControlPlaneServiceError(reply, error);
