@@ -15,6 +15,7 @@ import {
 } from '@autocatalyst/core';
 import type { ConvergenceCheckpoint } from '@autocatalyst/api-contract';
 import {
+  DrizzleConversationIngressRepository,
   createDrizzleDomainRepositories,
   createSqliteDatabase,
   migrateSqliteDatabase
@@ -246,7 +247,7 @@ async function setupLifecycle(opts: {
   // 2. Seed the run directly at implementation.human_review using the ingress.
   // We will manually insert prior step records (notably implementation.build)
   // with the cumulative summary checkpoint so the pr.open handler can find it.
-  const seed = await new (await import('@autocatalyst/persistence')).DrizzleConversationIngressRepository(database)
+  const seed = await new DrizzleConversationIngressRepository(database)
     .createConversationTopicMessageAndRun({
       conversation: {
         projectId: project.id,
@@ -352,7 +353,7 @@ async function setupLifecycle(opts: {
   const dispatchQueue = new RunDispatchQueue({ maxConcurrent: 2 });
   const orchestrator = new DefaultOrchestrator({
     runs: domainRepos.runs,
-    conversationIngress: new (await import('@autocatalyst/persistence')).DrizzleConversationIngressRepository(database),
+    conversationIngress: new DrizzleConversationIngressRepository(database),
     events: eventBus,
     dispatchQueue,
     unitOfWork: opts.unitOfWork,
@@ -608,7 +609,7 @@ describe('PR lifecycle integration: PR body from convergence-round folding', () 
 
       // Run starts at implementation.build — no pre-formed cumulative summary injected.
       // The orchestrator must build the summary from the convergence rounds.
-      const seed = await new (await import('@autocatalyst/persistence')).DrizzleConversationIngressRepository(database)
+      const seed = await new DrizzleConversationIngressRepository(database)
         .createConversationTopicMessageAndRun({
           conversation: {
             projectId: project.id,
@@ -749,7 +750,7 @@ describe('PR lifecycle integration: PR body from convergence-round folding', () 
       const dispatchQueue = new RunDispatchQueue({ maxConcurrent: 2 });
       const orchestrator = new DefaultOrchestrator({
         runs: domainRepos.runs,
-        conversationIngress: new (await import('@autocatalyst/persistence')).DrizzleConversationIngressRepository(database),
+        conversationIngress: new DrizzleConversationIngressRepository(database),
         events: eventBus,
         dispatchQueue,
         unitOfWork,
