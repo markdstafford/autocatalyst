@@ -1891,5 +1891,24 @@ describe('registerControlPlaneRoutes', () => {
       expect(response.statusCode).toBe(403);
       expect(errorResponseSchema.parse(response.json()).error.code).toBe('forbidden');
     });
+
+    it('returns 403 when an authenticated model principal calls the route', async () => {
+      const { app, authorization } = await buildServer({
+        auth: {
+          bearerToken: 'test-token',
+          resolvePrincipal: async () => ({ id: 'principal_model_123', kind: 'model' as const, tenantId: 'tenant_dev' })
+        }
+      });
+      server = app;
+
+      const response = await app.inject({
+        method: 'POST',
+        url: pullRequestReconciliationPath,
+        headers: authorization
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(errorResponseSchema.parse(response.json()).error.code).toBe('forbidden');
+    });
   });
 });

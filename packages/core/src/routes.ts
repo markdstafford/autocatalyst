@@ -698,7 +698,7 @@ export async function registerControlPlaneRoutes(
     protectedApp.post(pullRequestReconciliationPath, {
       preHandler: authorizePreHandler(dependencies.policy, 'pull_request.reconcile', () => ({
         kind: 'pull_request_reconciliation' as const,
-        path: '/v1/pull-requests/reconcile' as const
+        path: pullRequestReconciliationPath
       }))
     }, async (request, reply) => {
       const principal = requirePrincipalFromRequest(request);
