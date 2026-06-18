@@ -5,7 +5,7 @@ export type MaterializedSkillIntent = SkillIntent;
 export type MaterializedWorkspace =
   | { readonly shape: 'none'; readonly workspaceRoots: readonly string[] }
   | { readonly shape: 'scratch_only'; readonly scratchRoot: string; readonly workspaceRoots: readonly string[] }
-  | { readonly shape: 'two_roots'; readonly repoRoot: string; readonly scratchRoot: string; readonly branchName: string; readonly workspaceRoots: readonly string[] };
+  | { readonly shape: 'two_roots'; readonly repoRoot: string; readonly scratchRoot: string; readonly branchName: string; readonly provisionedBaseRef: string; readonly workspaceRoots: readonly string[] };
 
 export interface MaterializedExecutionEnvironment {
   readonly context: ExecutionContext;

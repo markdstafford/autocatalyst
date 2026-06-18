@@ -28,6 +28,7 @@ import type { RunWorkspaceGitPort } from './run-workspace-git.js';
 import { createConvergenceFeedback } from './convergence-feedback.js';
 import { validateAltitudeContract } from './altitude-contract-validator.js';
 import { validateBuildContractPreservation } from './build-contract-preservation.js';
+import { mergeChangedFiles } from './implementation-summary.js';
 import { filterAltitudeFindings } from './layered-finding-filter.js';
 import type { RunStepId } from './run-step-catalog.js';
 import type { RunDirective, RunWorkflowDefinition } from './run-workflows.js';
@@ -541,6 +542,7 @@ export function createLayeredConvergenceEngine(
           ? { implementerCommitSha: commitResult.commitSha }
           : { implementerCommitSha: null }),
         changedFileCount: commitResult.changedFileCount,
+        changedFilePaths: mergeChangedFiles(commitResult.changedFilePaths),
         findings: filtered,
         dispositions: implDispositions,
         outcome,

@@ -587,7 +587,7 @@ export function createDelegatingExecutionEntryPoint(input: {
   readonly factory: AgentRunnerFactory;
   readonly materialize: (context: ExecutionContext) => Promise<MaterializedExecutionEnvironment>;
   readonly resolveRole?: (step: string) => string;
-  readonly onWorkspaceRootResolved?: (runId: string, repoRoot: string, branchName: string) => void | Promise<void>;
+  readonly onWorkspaceRootResolved?: (runId: string, repoRoot: string, branchName: string, provisionedBaseRef?: string) => void | Promise<void>;
   readonly registry?: StepResultContractRegistry;
 }): ExecutionEntryPoint {
   const { resolveRole } = input;
@@ -605,7 +605,7 @@ export function createDelegatingExecutionEntryPoint(input: {
   ): Promise<MaterializedExecutionEnvironment> {
     const env = await input.materialize(context);
     if (env.workspace.shape === 'two_roots') {
-      await input.onWorkspaceRootResolved?.(context.run.id, env.workspace.repoRoot, env.workspace.branchName);
+      await input.onWorkspaceRootResolved?.(context.run.id, env.workspace.repoRoot, env.workspace.branchName, env.workspace.provisionedBaseRef);
       return env;
     }
     if (env.workspace.shape !== 'none') {
@@ -1125,7 +1125,7 @@ export async function createControlPlaneServer(
         void step;
         return 'implementer';
       },
-      onWorkspaceRootResolved: async (runId, repoRoot, branchName) => {
+      onWorkspaceRootResolved: async (runId, repoRoot, branchName, provisionedBaseRef) => {
         runWorkspaceRootRegistry.set(runId, { repoRoot, branchName });
         // Eagerly persist workspace metadata for all two_roots runs (including bug/chore
         // that skip spec.author and would otherwise have no persistent workspace record).
@@ -1133,6 +1133,7 @@ export async function createControlPlaneServer(
           runId,
           workspaceHandle: branchName,
           workspaceRepoRoot: repoRoot,
+          provisionedBaseRef: provisionedBaseRef ?? null,
           createdAt: new Date().toISOString()
         });
       },
@@ -1428,6 +1429,7 @@ export async function createControlPlaneServer(
     projects: domainRepos.projects,
     pullRequests: domainRepos.pullRequests,
     codeHosts: codeHostRegistry,
+    ...(runWorkspaceGit !== undefined ? { runWorkspaceGit } : {}),
     resolveCredential: options.resolveCredential ?? (async (ref): Promise<CodeHostCredential> => {
       const credRef = ref as { id?: unknown };
       if (typeof credRef?.id !== 'string' || credRef.id.length === 0) {

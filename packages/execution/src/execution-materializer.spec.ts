@@ -93,7 +93,8 @@ describe('createExecutionMaterializer', () => {
         repoRoot: '/tmp/workspaces/acme/widgets/run_1/repo',
         scratchRoot: '/tmp/workspaces/acme/widgets/run_1/scratch',
         hostRepositoryPath: '/tmp/repos/acme/widgets',
-        branchName: 'feature/widgets-abc123'
+        branchName: 'feature/widgets-abc123',
+        provisionedBaseRef: 'origin/main'
       });
       const materializer = createExecutionMaterializer({ provisionWorkspace: mockProvision });
       const context = makeContext({ workspaceIntent: { shape: 'two_roots', provisioning } });
@@ -280,7 +281,8 @@ describe('createExecutionMaterializer', () => {
         repoRoot: '/tmp/ws/run_1/repo',
         scratchRoot: '/tmp/ws/run_1/scratch',
         hostRepositoryPath: '/tmp/repos/acme/widgets',
-        branchName: 'feature/test-abc123'
+        branchName: 'feature/test-abc123',
+        provisionedBaseRef: 'origin/main'
       });
       const materializer = createExecutionMaterializer({ provisionWorkspace: mockProvision });
       const context = makeContext({ workspaceIntent: { shape: 'two_roots', provisioning } });

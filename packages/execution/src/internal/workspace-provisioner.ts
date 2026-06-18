@@ -137,6 +137,7 @@ export function createWorkspaceProvisioner(dependencies: WorkspaceProvisionerDep
           topicSlug: request.topicSlug,
           shortRunId: request.shortRunId
         });
+        const baseRef = request.defaultBranch !== undefined ? `origin/${request.defaultBranch}` : 'origin/main';
         await verifyBranch({ driver, repoRoot: paths.repoRoot, expectedBranch: branchName });
         return {
           shape: 'two_roots',
@@ -146,7 +147,8 @@ export function createWorkspaceProvisioner(dependencies: WorkspaceProvisionerDep
           repoRoot: paths.repoRoot,
           scratchRoot: paths.scratchRoot,
           hostRepositoryPath: paths.hostRepositoryPath,
-          branchName
+          branchName,
+          provisionedBaseRef: baseRef
         };
       }
 
@@ -230,7 +232,8 @@ export function createWorkspaceProvisioner(dependencies: WorkspaceProvisionerDep
         repoRoot: paths.repoRoot,
         scratchRoot: paths.scratchRoot,
         hostRepositoryPath: paths.hostRepositoryPath,
-        branchName
+        branchName,
+        provisionedBaseRef: baseRef
       };
     }
   };

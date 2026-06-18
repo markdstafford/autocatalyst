@@ -56,10 +56,25 @@ export interface ListFilesAtRefInput {
   readonly ref: string;
 }
 
+export type ChangedFileStatus = 'added' | 'modified' | 'renamed' | 'deleted';
+
+export interface ChangedFileEntry {
+  readonly path: string;
+  readonly status: ChangedFileStatus;
+  readonly previousPath?: string;
+}
+
+export interface GetChangedFilesInput {
+  readonly workspaceRepoRoot: string;
+  readonly baseRef: string;
+  readonly headRef?: string;
+}
+
 export interface RunWorkspaceGitPort {
   commitFiles(input: RunWorkspaceCommitFilesInput): Promise<RunWorkspaceCommitResult>;
   captureCheckpointRef(input: CaptureCheckpointRefInput): Promise<CaptureCheckpointRefResult>;
   readFileAtRef(input: ReadFileAtRefInput): Promise<string | null>;
   listFilesAtRef(input: ListFilesAtRefInput): Promise<readonly string[]>;
+  getChangedFiles(input: GetChangedFilesInput): Promise<readonly ChangedFileEntry[]>;
   readonly reviewerPolicy: ReviewerWorkspacePolicy;
 }

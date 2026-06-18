@@ -205,6 +205,7 @@ export interface UpsertRunWorkspaceMetadataInput {
   readonly runId: string;
   readonly workspaceHandle: string;
   readonly workspaceRepoRoot: string;
+  readonly provisionedBaseRef?: string | null;
   readonly createdAt: string;
 }
 
@@ -212,6 +213,7 @@ export interface RunWorkspaceMetadata {
   readonly runId: string;
   readonly workspaceHandle: string;
   readonly workspaceRepoRoot: string;
+  readonly provisionedBaseRef?: string | null;
   readonly createdAt: string;
 }
 

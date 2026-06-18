@@ -104,7 +104,8 @@ describe('workspace provisioning integration', () => {
       repoRoot,
       scratchRoot,
       hostRepositoryPath,
-      branchName: 'feature/hello-world-Abc123'
+      branchName: 'feature/hello-world-Abc123',
+      provisionedBaseRef: expect.any(String)
     });
     await expect(fs.stat(hostRepositoryPath)).resolves.toMatchObject({});
     await expect(fs.stat(repoRoot)).resolves.toMatchObject({});

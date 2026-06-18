@@ -304,3 +304,52 @@ describe('convergenceRoundRecordSchema altitude defaulting', () => {
     expect(() => convergenceRoundRecordSchema.parse({ ...baseRound, altitude: 'mid_air' })).toThrow();
   });
 });
+
+describe('convergenceRoundRecordSchema changedFilePaths', () => {
+  it('defaults missing changedFilePaths on legacy convergence rounds', () => {
+    const parsed = convergenceRoundRecordSchema.parse({
+      round: 1,
+      changedFileCount: 2,
+      findings: [],
+      dispositions: [],
+      outcome: 'converged'
+    });
+
+    expect(parsed.altitude).toBe('build');
+    expect(parsed.changedFilePaths).toEqual([]);
+  });
+
+  it('accepts readonly changedFilePaths on convergence rounds', () => {
+    const parsed = convergenceRoundRecordSchema.parse({
+      round: 1,
+      changedFileCount: 2,
+      changedFilePaths: ['packages/core/src/orchestrator.ts', 'packages/core/src/pr-content.ts'],
+      findings: [],
+      dispositions: [],
+      outcome: 'converged',
+      altitude: 'build'
+    });
+
+    expect(parsed.changedFilePaths).toEqual([
+      'packages/core/src/orchestrator.ts',
+      'packages/core/src/pr-content.ts'
+    ]);
+  });
+
+  it('reports invalid changedFilePaths entries at the nested entry path', () => {
+    const result = convergenceRoundRecordSchema.safeParse({
+      round: 1,
+      changedFileCount: 1,
+      changedFilePaths: [''],
+      findings: [],
+      dispositions: [],
+      outcome: 'converged',
+      altitude: 'build'
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.path).toEqual(['changedFilePaths', 0]);
+    }
+  });
+});

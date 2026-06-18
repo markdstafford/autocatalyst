@@ -718,6 +718,7 @@ describe('createDelegatingExecutionEntryPoint — onWorkspaceRootResolved branch
         repoRoot: '/workspace/repo',
         scratchRoot: '/workspace/scratch',
         branchName: 'chore/clean-up-Abc12345',
+        provisionedBaseRef: 'origin/main',
         workspaceRoots: ['/workspace/repo', '/workspace/scratch']
       },
       environment: { variables: {}, secretVariableNames: [] },
@@ -798,6 +799,7 @@ describe('createDelegatingExecutionEntryPoint — onWorkspaceRootResolved branch
           repoRoot: '/r',
           scratchRoot: '/s',
           branchName: 'feature/test-Abc12345',
+          provisionedBaseRef: 'origin/main',
           workspaceRoots: ['/r', '/s']
         },
         environment: { variables: {}, secretVariableNames: [] },

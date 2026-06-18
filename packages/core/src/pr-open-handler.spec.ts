@@ -15,6 +15,7 @@ import type {
   TopicRepository
 } from './domain-repositories.js';
 import type { RunEventPublisher } from './run-events.js';
+import type { ChangedFileEntry, RunWorkspaceGitPort } from './run-workspace-git.js';
 
 const owner: NonModelPrincipal = { id: 'user_1', kind: 'human', tenantId: 'tenant_1', displayName: 'Ada' };
 const timestamp = '2026-06-08T00:00:00.000Z';
@@ -144,6 +145,7 @@ interface DepHandles {
   readonly pullRequestCreate: ReturnType<typeof vi.fn>;
   readonly pullRequestUpdateState: ReturnType<typeof vi.fn>;
   readonly eventsAppend: ReturnType<typeof vi.fn>;
+  readonly getChangedFiles: ReturnType<typeof vi.fn>;
 }
 
 function makeDeps(opts: {
@@ -158,6 +160,15 @@ function makeDeps(opts: {
   findByBranchBehavior?: () => Promise<CodeHostPullRequestFacts | null>;
   pullRequestCreateBehavior?: () => Promise<PullRequest>;
   codeHostsGetBehavior?: () => CodeHostPort;
+  changedFiles?: readonly ChangedFileEntry[];
+  changedFilesBehavior?: () => Promise<readonly ChangedFileEntry[]>;
+  workspaceMetadata?: {
+    runId: string;
+    workspaceHandle: string;
+    workspaceRepoRoot: string;
+    provisionedBaseRef?: string | null;
+    createdAt: string;
+  };
 } = {}): DepHandles {
   const run = opts.run ?? makeRun();
   const runs: RunRepository = {
@@ -213,13 +224,16 @@ function makeDeps(opts: {
   };
   const runWorkspaceMetadata: RunWorkspaceMetadataRepository = {
     upsert: vi.fn(),
-    findByRunId: vi.fn().mockResolvedValue({
+    findByRunId: vi.fn().mockResolvedValue(opts.workspaceMetadata ?? {
       runId: 'run_1',
       workspaceHandle: 'feature/run_1',
       workspaceRepoRoot: '/tmp/ws',
       createdAt: timestamp
     })
   };
+  const getChangedFiles = opts.changedFilesBehavior
+    ? vi.fn().mockImplementation(opts.changedFilesBehavior)
+    : vi.fn().mockResolvedValue(opts.changedFiles ?? []);
   const facts: CodeHostPullRequestFacts = opts.facts ?? {
     provider: 'github',
     number: 42,
@@ -252,6 +266,8 @@ function makeDeps(opts: {
   }));
   const resolveCredential = opts.resolveCredential ?? (async () => ({ token: 'TOKEN_FOR_TEST' }));
 
+  const runWorkspaceGit: Pick<RunWorkspaceGitPort, 'getChangedFiles'> = { getChangedFiles };
+
   return {
     deps: {
       runs,
@@ -265,7 +281,8 @@ function makeDeps(opts: {
       resolveCredential,
       events,
       applyDirective,
-      clock: () => timestamp
+      clock: () => timestamp,
+      runWorkspaceGit
     },
     applyDirective,
     create,
@@ -273,7 +290,8 @@ function makeDeps(opts: {
     findByBranch,
     pullRequestCreate,
     pullRequestUpdateState,
-    eventsAppend
+    eventsAppend,
+    getChangedFiles
   };
 }
 
@@ -619,6 +637,57 @@ describe('handlePullRequestOpen', () => {
     });
   });
 
+  it('replaces "Round N: implementation passed review" placeholder summary with a path-derived fallback', async () => {
+    const placeholderCheckpoint = {
+      ...cumulativeSummaryCheckpoint,
+      cumulativeSummary: 'Round 1: implementation passed review',
+      changedFiles: []
+    };
+    const { deps, create } = makeDeps({
+      runSteps: [
+        makeRunStep({ id: 'step_build', step: 'implementation.build', checkpointResult: placeholderCheckpoint as unknown as RunStep['checkpointResult'] }),
+        makeRunStep({ id: 'step_fin', step: 'pr.finalize', checkpointResult: finalizeCheckpoint as unknown as RunStep['checkpointResult'] })
+      ],
+      changedFiles: [
+        { path: 'packages/core/src/pr-open-handler.ts', status: 'modified' }
+      ]
+    });
+
+    await handlePullRequestOpen('run_1', 'tenant_1', deps);
+
+    const content = create.mock.calls[0]?.[0].content;
+    expect(content.title).not.toMatch(/implementation passed review/iu);
+    expect(content.title).not.toMatch(/round \d+/iu);
+    expect(content.body).not.toContain('implementation passed review');
+    expect(content.body).not.toMatch(/round \d+/iu);
+    // Should use path-derived fallback instead
+    expect(content.body).toContain('packages/core/src/pr-open-handler.ts');
+  });
+
+  it('does not replace a real summary with the placeholder guard — only filters exact placeholder text', async () => {
+    const realSummaryCheckpoint = {
+      ...cumulativeSummaryCheckpoint,
+      cumulativeSummary: 'Added a feature.'
+    };
+    const noReconciledFinalize = {
+      ...finalizeCheckpoint,
+      reconciledSummary: null,
+      titleSubject: null
+    };
+    const { deps, create } = makeDeps({
+      runSteps: [
+        makeRunStep({ id: 'step_build', step: 'implementation.build', checkpointResult: realSummaryCheckpoint as unknown as RunStep['checkpointResult'] }),
+        makeRunStep({ id: 'step_fin', step: 'pr.finalize', checkpointResult: noReconciledFinalize as unknown as RunStep['checkpointResult'] })
+      ]
+    });
+
+    await handlePullRequestOpen('run_1', 'tenant_1', deps);
+
+    const content = create.mock.calls[0]?.[0].content;
+    // The real summary must be preserved and not replaced by a placeholder fallback
+    expect(content.body).toContain('Added a feature.');
+  });
+
   it('throws code_host_error when the registry does not support the provider', async () => {
     const { deps, create } = makeDeps({
       codeHostsGetBehavior: () => {
@@ -630,5 +699,60 @@ describe('handlePullRequestOpen', () => {
       code: 'code_host_error'
     });
     expect(create).not.toHaveBeenCalled();
+  });
+
+  it('merges final branch diff paths into PR content before creation', async () => {
+    const { deps, create, getChangedFiles } = makeDeps({
+      changedFiles: [
+        { path: 'packages/core/src/pr-open-handler.ts', status: 'modified' },
+        { path: 'packages/core/src/pr-content.ts', status: 'added' }
+      ]
+    });
+
+    await handlePullRequestOpen('run_1', 'tenant_1', deps);
+
+    expect(getChangedFiles).toHaveBeenCalledWith({
+      workspaceRepoRoot: expect.any(String),
+      baseRef: expect.any(String)
+    });
+    const body = create.mock.calls[0]?.[0].content.body as string;
+    expect(body).toContain('- `packages/core/src/pr-content.ts`');
+    expect(body).toContain('- `packages/core/src/pr-open-handler.ts`');
+    expect(body).not.toMatch(/round \d+/iu);
+    expect(body).not.toContain('file(s) changed');
+  });
+
+  it('uses provisionedBaseRef before binding base branch for diff recovery', async () => {
+    const { deps, getChangedFiles } = makeDeps({
+      workspaceMetadata: {
+        runId: 'run_1',
+        workspaceHandle: 'feature/run_1',
+        workspaceRepoRoot: '/tmp/ws',
+        provisionedBaseRef: 'refs/remotes/origin/main',
+        createdAt: timestamp
+      }
+    });
+
+    await handlePullRequestOpen('run_1', 'tenant_1', deps);
+
+    expect(getChangedFiles.mock.calls[0]?.[0].baseRef).toBe('refs/remotes/origin/main');
+  });
+
+  it('continues without diff paths when persisted real summary data is already usable', async () => {
+    // Arrange: getChangedFiles throws, but summary has real data
+    const { deps, create, getChangedFiles } = makeDeps({
+      changedFilesBehavior: async () => { throw new Error('changed_files_ref_invalid'); }
+    });
+
+    await handlePullRequestOpen('run_1', 'tenant_1', deps);
+
+    expect(getChangedFiles).toHaveBeenCalledTimes(1);
+    const content = create.mock.calls[0]?.[0].content;
+    // Title should come from the persisted cumulative summary (not throw)
+    expect(content.title).toMatch(/^feat: /u);
+    // Body should contain the persisted changed files from the summary
+    expect(content.body).not.toMatch(/round \d+/iu);
+    expect(content.body).not.toContain('implementation passed review');
+    expect(content.body).not.toContain('file(s) changed');
   });
 });

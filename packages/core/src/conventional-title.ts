@@ -61,28 +61,70 @@ function extractFirstSentenceOrHeading(text: string): string | null {
   return null;
 }
 
-export function deriveConventionalTitle(input: {
+export interface DeriveConventionalTitleInput {
   readonly workKind: string;
   readonly titleSubject?: string | null;
   readonly reconciledSummary?: string | null;
   readonly cumulativeSummary?: string | null;
-}): string | null {
+  readonly changedFiles?: readonly string[];
+}
+
+function normalizeTitlePath(path: string): string | null {
+  const normalized = path.replace(/\\/gu, '/').replace(/^\.\//u, '').trim();
+  if (normalized.length === 0 || normalized.startsWith('/')) return null;
+  if (normalized.split('/').some((segment) => segment.length === 0 || segment === '.' || segment === '..')) return null;
+  return normalized;
+}
+
+export function deriveChangedPathSubject(changedFiles: readonly string[]): string | null {
+  const paths = [...new Set(changedFiles.map(normalizeTitlePath).filter((path): path is string => path !== null))]
+    .sort((a, b) => a.localeCompare(b));
+  if (paths.length === 0) return null;
+  if (paths.length === 1) return `update ${paths[0]!}`;
+
+  const packageNames = new Set<string>();
+  const topLevel = new Set<string>();
+  for (const path of paths) {
+    const parts = path.split('/');
+    topLevel.add(parts[0]!);
+    if (parts[0] === 'packages' && parts[1] !== undefined) packageNames.add(parts[1]);
+  }
+  if (topLevel.size === 1 && topLevel.has('packages') && packageNames.size === 1) {
+    const packageName = [...packageNames][0]!;
+    if (paths.some((path) => path.includes('pr-') || path.includes('pull-request'))) {
+      return `update ${packageName} PR content handling`;
+    }
+    return `update ${packageName} package changes`;
+  }
+  if (topLevel.size <= 2) return `update ${[...topLevel].sort().join(' and ')} changes`;
+  return 'update changed implementation files';
+}
+
+// Matches legacy orchestrator placeholder text generated for clean implementation rounds.
+// Must stay in sync with LEGACY_TEXT_PLACEHOLDER_PATTERN in pr-content.ts.
+const LEGACY_TEXT_PLACEHOLDER_PATTERN = /^round\s+\d+:\s*implementation passed review$/iu;
+
+export function deriveConventionalTitle(input: DeriveConventionalTitleInput): string | null {
   const type = getConventionalTitleType(input.workKind);
   if (type === null) return null;
 
   // Fallback subject source order:
   // 1. titleSubject
   // 2. first sentence/heading from reconciledSummary
-  // 3. first sentence/heading from cumulativeSummary
-  // 4. 'complete approved implementation'
+  // 3. first sentence/heading from cumulativeSummary (unless it is a legacy placeholder)
+  // 4. derived from changedFiles
+  // 5. 'complete approved implementation'
   let subject: string | null = null;
   if (input.titleSubject && input.titleSubject.trim()) {
     subject = input.titleSubject.trim();
   } else if (input.reconciledSummary) {
     subject = extractFirstSentenceOrHeading(input.reconciledSummary);
   }
-  if (!subject && input.cumulativeSummary) {
+  if (!subject && input.cumulativeSummary && !LEGACY_TEXT_PLACEHOLDER_PATTERN.test(input.cumulativeSummary.trim())) {
     subject = extractFirstSentenceOrHeading(input.cumulativeSummary);
+  }
+  if (!subject && input.changedFiles !== undefined) {
+    subject = deriveChangedPathSubject(input.changedFiles);
   }
   if (!subject) {
     subject = 'complete approved implementation';

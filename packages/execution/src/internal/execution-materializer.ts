@@ -99,6 +99,7 @@ export function createExecutionMaterializer(options: ExecutionMaterializerOption
             repoRoot: result.repoRoot,
             scratchRoot: result.scratchRoot,
             branchName: result.branchName,
+            provisionedBaseRef: result.provisionedBaseRef,
             workspaceRoots: [result.repoRoot, result.scratchRoot]
           };
         }

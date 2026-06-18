@@ -1,3 +1,5 @@
+import type { ConvergenceRoundRecord } from '@autocatalyst/api-contract';
+
 export interface ImplementationSummaryRoundInput {
   readonly fixSummary?: string;
   readonly changedFiles?: readonly string[];
@@ -40,6 +42,58 @@ export function requireCumulativeImplementationSummary(value: unknown): Cumulati
   return value;
 }
 
+export function normalizeRepositoryPath(path: string): string | null {
+  const normalized = path.replace(/\\/gu, '/').replace(/^\.\//u, '').trim();
+  if (normalized.length === 0) return null;
+  if (normalized.startsWith('/')) return null;
+  const segments = normalized.split('/');
+  if (segments.some((segment) => segment.length === 0 || segment === '.' || segment === '..')) return null;
+  return segments.join('/');
+}
+
+export function mergeChangedFiles(...sources: ReadonlyArray<readonly string[]>): readonly string[] {
+  const paths = new Set<string>();
+  for (const source of sources) {
+    for (const path of source) {
+      const normalized = normalizeRepositoryPath(path);
+      if (normalized !== null) paths.add(normalized);
+    }
+  }
+  return [...paths].sort((a, b) => a.localeCompare(b));
+}
+
+function formatPathList(paths: readonly string[]): string {
+  if (paths.length === 1) return paths[0]!;
+  if (paths.length === 2) return `${paths[0]!} and ${paths[1]!}`;
+  return `${paths.slice(0, -1).join(', ')}, and ${paths[paths.length - 1]!}`;
+}
+
+export function summarizeChangedPaths(changedFiles: readonly string[]): string {
+  const normalized = mergeChangedFiles(changedFiles);
+  if (normalized.length === 0) return '';
+  const listed = normalized.slice(0, 5);
+  if (normalized.length <= 5) {
+    return `Updates ${normalized.length === 1 ? listed[0] : `${normalized.length} files: ${formatPathList(listed)}`}.`;
+  }
+  return `Updates ${normalized.length} files including ${formatPathList(listed)}.`;
+}
+
+export function buildImplementationSummaryRoundInputs(
+  rounds: readonly ConvergenceRoundRecord[]
+): readonly ImplementationSummaryRoundInput[] {
+  return rounds.map((round) => {
+    const fixedSummaries = round.dispositions
+      .filter((disposition) => disposition.disposition === 'fixed')
+      .map((disposition) => disposition.summary.trim())
+      .filter((summary) => summary.length > 0);
+    const changedFiles = mergeChangedFiles(round.changedFilePaths ?? []);
+    return {
+      ...(fixedSummaries.length > 0 ? { fixSummary: fixedSummaries.join('; ') } : {}),
+      ...(changedFiles.length > 0 ? { changedFiles } : {})
+    };
+  });
+}
+
 export function buildCumulativeImplementationSummary(input: {
   readonly rounds: readonly ImplementationSummaryRoundInput[];
   readonly completedAt: string;
@@ -76,7 +130,7 @@ export function buildCumulativeImplementationSummary(input: {
   return {
     kind: 'cumulative_implementation_summary',
     cumulativeSummary: summaryParts.join('\n\n'),
-    changedFiles: [...changedFilesSet],
+    changedFiles: mergeChangedFiles([...changedFilesSet]),
     validationSummary: [...validationSet],
     followUps: [...followUpsSet],
     nonGoals: [...nonGoalsSet],

@@ -282,6 +282,32 @@ describe('workspace provisioner', () => {
     expect(driver.calls.some((call) => call.startsWith('removeDirectory:'))).toBe(false);
   });
 
+  it('returns provisionedBaseRef for new two_roots workspaces', async () => {
+    const driver = new FakeWorkspaceDriver();
+    const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
+
+    const result = await provisioner.provisionWorkspace(makeRequest({ defaultBranch: 'main' }));
+
+    expect(result.shape).toBe('two_roots');
+    if (result.shape === 'two_roots') {
+      expect(result.provisionedBaseRef).toBe('origin/main');
+    }
+  });
+
+  it('returns provisionedBaseRef for existing idempotent two_roots workspaces', async () => {
+    const driver = new FakeWorkspaceDriver();
+    driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123'));
+    driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123/repo'));
+    const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
+
+    const result = await provisioner.provisionWorkspace(makeRequest({ defaultBranch: 'main' }));
+
+    expect(result.shape).toBe('two_roots');
+    if (result.shape === 'two_roots') {
+      expect(result.provisionedBaseRef).toBe('origin/main');
+    }
+  });
+
   it('preserves the original failure when directory prune fails during rollback', async () => {
     const driver = new FakeWorkspaceDriver();
     driver.failOnCall = `mkdirp:${path.resolve('/tmp/workspaces/acme/widgets/run_123/scratch')}`;

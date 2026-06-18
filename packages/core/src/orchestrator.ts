@@ -49,8 +49,9 @@ import type {
 } from './domain-repositories.js';
 import type { CodeHostCredential } from './code-host.js';
 import type { CodeHostRegistry } from './code-host-registry.js';
+import type { RunWorkspaceGitPort } from './run-workspace-git.js';
 import { handlePullRequestOpen } from './pr-open-handler.js';
-import { buildCumulativeImplementationSummary } from './implementation-summary.js';
+import { buildCumulativeImplementationSummary, buildImplementationSummaryRoundInputs } from './implementation-summary.js';
 import {
   detectPullRequestMerges,
   type PullRequestStatusReconciliationResult
@@ -264,6 +265,7 @@ export interface PullRequestOpenWiringDependencies {
   readonly pullRequests: PullRequestRepository;
   readonly codeHosts: CodeHostRegistry;
   readonly resolveCredential: (ref: unknown) => Promise<CodeHostCredential>;
+  readonly runWorkspaceGit?: Pick<RunWorkspaceGitPort, 'getChangedFiles'>;
 }
 
 function defaultIsActiveRunConflict(error: unknown): boolean {
@@ -733,23 +735,7 @@ export class DefaultOrchestrator implements Orchestrator {
         if (result.checkpointResult.rounds.length > 0) {
           try {
             const cumulativeSummary = buildCumulativeImplementationSummary({
-              rounds: result.checkpointResult.rounds.map(r => {
-                const fixSummaryText = r.dispositions
-                  .filter(d => d.disposition === 'fixed')
-                  .map(d => d.summary)
-                  .join('; ');
-                // For clean convergence rounds with no reviewer findings, generate a
-                // minimal fallback so pr.finalize has an implementation description
-                // to reconcile rather than an empty summary.
-                const effectiveSummary = fixSummaryText ||
-                  (r.findings.length === 0 ? `Round ${r.round}: implementation passed review` : '');
-                return {
-                  ...(effectiveSummary ? { fixSummary: effectiveSummary } : {}),
-                  changedFiles: r.changedFileCount > 0
-                    ? [`round ${r.round}: ${r.changedFileCount} file(s) changed`]
-                    : []
-                };
-              }),
+              rounds: buildImplementationSummaryRoundInputs(result.checkpointResult.rounds),
               completedAt: convergenceClock()
             });
             enrichedCheckpoint = { ...result.checkpointResult, cumulativeSummary };
@@ -960,6 +946,9 @@ export class DefaultOrchestrator implements Orchestrator {
       const runWorkspaceMetadata = this.#runWorkspaceMetadata;
       return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
         try {
+          const noopRunWorkspaceGit: Pick<RunWorkspaceGitPort, 'getChangedFiles'> = {
+            async getChangedFiles() { return []; }
+          };
           return await handlePullRequestOpen(input.runId, input.tenant, {
             runs: this.#runs,
             conversations: prDeps.conversations,
@@ -972,7 +961,8 @@ export class DefaultOrchestrator implements Orchestrator {
             resolveCredential: prDeps.resolveCredential,
             events: this.#events,
             applyDirective: (directiveInput) => this.applyDirective(directiveInput),
-            clock: this.#clock ?? (() => new Date().toISOString())
+            clock: this.#clock ?? (() => new Date().toISOString()),
+            runWorkspaceGit: prDeps.runWorkspaceGit ?? noopRunWorkspaceGit
           });
         } catch (cause) {
           const safeCode = (cause as { code?: string } | null)?.code;

@@ -21,7 +21,7 @@ import type { ModelRoutingResolver, ModelRoutingResolution } from './model-routi
 import { ModelRoutingConfigurationError } from './model-routing-resolver.js';
 import type { FeedbackRepository, FeedbackStatusTransitionPersistenceInput, RunStepRepository, UpdateRunStepCheckpointInput } from './domain-repositories.js';
 import type { ReviewedRoleDispatcher, RunRoleWorkInput, ReviewedRoleDispatchResult } from './reviewed-role-dispatcher.js';
-import type { RunWorkspaceGitPort, RunWorkspaceCommitFilesInput, RunWorkspaceCommitResult } from './run-workspace-git.js';
+import type { RunWorkspaceGitPort, RunWorkspaceCommitFilesInput, RunWorkspaceCommitResult, ChangedFileEntry, GetChangedFilesInput } from './run-workspace-git.js';
 import type { RunStepDefinition } from './run-step-catalog.js';
 import type { RunWorkflowDefinition } from './run-workflows.js';
 import type { ResultCorrectionRequest } from '@autocatalyst/execution';
@@ -347,6 +347,9 @@ class StubGit implements RunWorkspaceGitPort {
     return null;
   }
   async listFilesAtRef(): Promise<readonly string[]> {
+    return [];
+  }
+  async getChangedFiles(_input: GetChangedFilesInput): Promise<readonly ChangedFileEntry[]> {
     return [];
   }
 }
@@ -724,7 +727,8 @@ describe('createConvergenceEngine', () => {
       async commitFiles() { throw new Error('git commit failed'); },
       async captureCheckpointRef() { throw new Error('not used'); },
       async readFileAtRef() { return null; },
-      async listFilesAtRef() { return []; }
+      async listFilesAtRef() { return []; },
+      async getChangedFiles() { return []; }
     };
     const engine = createConvergenceEngine({
       dispatcher, git: failingGit,

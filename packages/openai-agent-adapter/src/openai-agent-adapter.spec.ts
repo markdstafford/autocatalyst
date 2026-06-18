@@ -75,7 +75,7 @@ function makeSessionInput(
   const repoRoot = roots?.repoRoot ?? '/tmp/ac/repo';
   const scratchRoot = roots?.scratchRoot ?? '/tmp/ac/scratch';
   const workspace = workspaceShape === 'two_roots'
-    ? { shape: 'two_roots' as const, repoRoot, scratchRoot, branchName: 'feature/run', workspaceRoots: [repoRoot, scratchRoot] }
+    ? { shape: 'two_roots' as const, repoRoot, scratchRoot, branchName: 'feature/run', provisionedBaseRef: 'origin/main', workspaceRoots: [repoRoot, scratchRoot] }
     : workspaceShape === 'scratch_only'
       ? { shape: 'scratch_only' as const, scratchRoot, workspaceRoots: [scratchRoot] }
       : { shape: 'none' as const, workspaceRoots: [] };
@@ -331,6 +331,7 @@ describe('createOpenAIAgentAdapter — session startup', () => {
       repoRoot: '/tmp/ac/repo',
       scratchRoot: '/tmp/ac/escapes',
       branchName: 'b',
+      provisionedBaseRef: 'origin/main',
       workspaceRoots: ['/tmp/ac/repo']
     };
     const adapter = createOpenAIAgentAdapter({ runAgentSession: run, sandboxClientFactory: () => fakeSandboxHandle() });
@@ -898,7 +899,7 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
               skills: { requested: [], resolved: [] },
               capabilityRequirements: { shell: { kind: 'bash', required: false }, paths: { canonicalWorkspacePaths: true }, lsp: { requested: false } }
             },
-            workspace: { shape: 'two_roots', repoRoot, scratchRoot, branchName: 'feature/x', workspaceRoots: [repoRoot, scratchRoot] },
+            workspace: { shape: 'two_roots', repoRoot, scratchRoot, branchName: 'feature/x', provisionedBaseRef: 'origin/main', workspaceRoots: [repoRoot, scratchRoot] },
             environment: { variables: { SAFE_ENV: 'v', OPENAI_API_KEY: FAKE_SECRET }, secretVariableNames: ['OPENAI_API_KEY'] },
             toolPolicy: { allowedTools: ['bash'], workspaceRoots: [repoRoot, scratchRoot] },
             skills: { requested: [], resolved: [] },

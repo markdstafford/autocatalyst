@@ -291,4 +291,73 @@ describe('createRunWorkspaceGitPort', () => {
       await rm(otherRoot, { recursive: true, force: true });
     }
   });
+
+  // ---------------------------------------------------------------------------
+  // getChangedFiles
+  // ---------------------------------------------------------------------------
+
+  describe('getChangedFiles', () => {
+    it('returns added, modified, deleted, and renamed repository-relative paths', async () => {
+      const port = createRunWorkspaceGitPort({ workspacesRoot: tmpdir() });
+
+      // Setup: create base commit
+      await writeFile(join(repoDir, 'modified.txt'), 'before');
+      await writeFile(join(repoDir, 'deleted.txt'), 'delete me');
+      await writeFile(join(repoDir, 'renamed-old.txt'), 'rename me');
+      await execFileAsync('git', ['add', '--all'], { cwd: repoDir });
+      await execFileAsync('git', ['commit', '-m', 'base'], { cwd: repoDir });
+      const { stdout: baseShaRaw } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: repoDir });
+
+      // Make changes: add, modify, delete, rename
+      await writeFile(join(repoDir, 'added.txt'), 'new');
+      await writeFile(join(repoDir, 'modified.txt'), 'after');
+      await rm(join(repoDir, 'deleted.txt'));
+      await execFileAsync('git', ['mv', 'renamed-old.txt', 'renamed-new.txt'], { cwd: repoDir });
+      await execFileAsync('git', ['add', '--all'], { cwd: repoDir });
+      await execFileAsync('git', ['commit', '-m', 'changes'], { cwd: repoDir });
+      const { stdout: headShaRaw } = await execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: repoDir });
+
+      const result = await port.getChangedFiles({
+        workspaceRepoRoot: repoDir,
+        baseRef: baseShaRaw.trim(),
+        headRef: headShaRaw.trim()
+      });
+
+      expect(result).toEqual(expect.arrayContaining([
+        { path: 'added.txt', status: 'added' },
+        { path: 'deleted.txt', status: 'deleted' },
+        { path: 'modified.txt', status: 'modified' },
+        { path: 'renamed-new.txt', status: 'renamed', previousPath: 'renamed-old.txt' }
+      ]));
+      expect(result).toHaveLength(4);
+    });
+
+    it('rejects workspace roots outside containment', async () => {
+      const otherRoot = await mkdtemp(join(tmpdir(), 'ac-other-'));
+      try {
+        const port = createRunWorkspaceGitPort({ workspacesRoot: otherRoot });
+        await expect(port.getChangedFiles({ workspaceRepoRoot: repoDir, baseRef: 'HEAD' }))
+          .rejects.toThrow('workspace_containment_violation');
+      } finally {
+        await rm(otherRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('rejects unsafe refs with changed_files_ref_invalid', async () => {
+      const port = createRunWorkspaceGitPort({ workspacesRoot: tmpdir() });
+      await expect(port.getChangedFiles({ workspaceRepoRoot: repoDir, baseRef: '../main' }))
+        .rejects.toThrow('changed_files_ref_invalid');
+      await expect(port.getChangedFiles({ workspaceRepoRoot: repoDir, baseRef: '--output=/tmp/leak' }))
+        .rejects.toThrow('changed_files_ref_invalid');
+    });
+
+    it('handles valid branch-style refs like origin/main', async () => {
+      // Just verify validateDiffRef accepts this pattern (actual git call will fail without that remote)
+      const port = createRunWorkspaceGitPort({ workspacesRoot: tmpdir() });
+      // This should NOT throw changed_files_ref_invalid — it's a valid ref format
+      // The git call itself may fail because origin/main doesn't exist in test repo
+      const result = port.getChangedFiles({ workspaceRepoRoot: repoDir, baseRef: 'origin/main' });
+      await expect(result).rejects.not.toThrow('changed_files_ref_invalid');
+    });
+  });
 });
