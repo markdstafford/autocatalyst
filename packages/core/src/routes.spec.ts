@@ -1875,5 +1875,21 @@ describe('registerControlPlaneRoutes', () => {
       expect(parsed.error.message).toBe('Internal server error.');
       expect(response.body).not.toContain('/internal/path');
     });
+
+    it('returns 403 when policy denies the request', async () => {
+      const { app, authorization } = await buildServer({
+        policy: { authorize: async () => ({ allowed: false }) }
+      });
+      server = app;
+
+      const response = await app.inject({
+        method: 'POST',
+        url: pullRequestReconciliationPath,
+        headers: authorization
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(errorResponseSchema.parse(response.json()).error.code).toBe('forbidden');
+    });
   });
 });
