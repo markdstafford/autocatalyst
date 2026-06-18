@@ -1,7 +1,7 @@
 ---
 created: 2026-06-17
 last_updated: 2026-06-18
-status: implementing
+status: complete
 issue: 85
 issue_url: [https://github.com/markdstafford/autocatalyst/issues/85](https://github.com/markdstafford/autocatalyst/issues/85)
 specced_by: autocatalyst
