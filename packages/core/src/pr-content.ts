@@ -3,6 +3,22 @@ import { MissingCumulativeImplementationSummaryError } from './implementation-su
 import type { PullRequestContent } from './code-host.js';
 import { deriveConventionalTitle } from './conventional-title.js';
 
+const LEGACY_COUNT_PLACEHOLDER_PATTERN = /^(?:round\s+\d+:\s*)?\d+\s+file\(s\) changed$/iu;
+
+function normalizeRenderableChangedFile(path: string): string | null {
+  const normalized = path.replace(/\\/gu, '/').replace(/^\.\//u, '').trim();
+  if (normalized.length === 0) return null;
+  if (LEGACY_COUNT_PLACEHOLDER_PATTERN.test(normalized)) return null;
+  if (normalized.startsWith('/')) return null;
+  if (normalized.split('/').some((segment) => segment.length === 0 || segment === '.' || segment === '..')) return null;
+  return normalized;
+}
+
+function renderableChangedFiles(paths: readonly string[]): readonly string[] {
+  return [...new Set(paths.map(normalizeRenderableChangedFile).filter((path): path is string => path !== null))]
+    .sort((a, b) => a.localeCompare(b));
+}
+
 export interface BuildPullRequestContentInput {
   readonly workKind: string;
   readonly issueUrl?: string | null;
@@ -16,11 +32,13 @@ export function buildPullRequestContent(input: BuildPullRequestContentInput): Pu
     throw new MissingCumulativeImplementationSummaryError();
   }
 
+  const changedFiles = renderableChangedFiles(input.cumulativeSummary.changedFiles);
   const title = deriveConventionalTitle({
     workKind: input.workKind,
     titleSubject: input.titleSubject ?? null,
     reconciledSummary: input.reconciledSummary ?? null,
-    cumulativeSummary: input.cumulativeSummary.cumulativeSummary
+    cumulativeSummary: input.cumulativeSummary.cumulativeSummary,
+    changedFiles
   });
 
   if (title === null) {
@@ -38,9 +56,9 @@ export function buildPullRequestContent(input: BuildPullRequestContentInput): Pu
     sections.push(`\n**Issue:** ${input.issueUrl}`);
   }
 
-  if (input.cumulativeSummary.changedFiles.length > 0) {
+  if (changedFiles.length > 0) {
     sections.push('\n## Changed files\n');
-    sections.push(input.cumulativeSummary.changedFiles.map((f) => `- \`${f}\``).join('\n'));
+    sections.push(changedFiles.map((f) => `- \`${f}\``).join('\n'));
   }
 
   if (input.cumulativeSummary.validationSummary.length > 0) {
