@@ -3,11 +3,13 @@ import { describe, expect, it } from 'vitest';
 import {
   createFilenameAliasNormalizer,
   createResultNormalizerRegistry,
+  createSpecAuthorFrontmatterNormalizer,
   createUrlWrappedIdentifierNormalizer,
   defaultResultNormalizers,
+  prFinalizeCleanResultNormalizer,
   reviewerResultNormalizer
 } from './result-normalizers.js';
-import { REVIEWER_RESULT_SCHEMA_ID } from './result-contracts.js';
+import { PR_FINALIZE_SCHEMA_ID, REVIEWER_RESULT_SCHEMA_ID, SPEC_AUTHOR_SCHEMA_ID } from './result-contracts.js';
 
 describe('result normalizers', () => {
   it('applies registered normalizers in order without changing pipeline control flow', () => {
@@ -156,5 +158,90 @@ describe('reviewerResultNormalizer', () => {
         message: 'Normalized empty reviewer result to satisfied clean review.'
       }
     ]);
+  });
+});
+
+describe('createSpecAuthorFrontmatterNormalizer', () => {
+  const normalize = (candidate: unknown, schemaId = SPEC_AUTHOR_SCHEMA_ID) => createSpecAuthorFrontmatterNormalizer({
+    clock: () => '2026-06-18T12:00:00.000Z',
+    trustedSpeccedBy: 'autocatalyst',
+    trackedIssueNumber: 83
+  }).normalize({ candidate, step: 'spec.author', schemaId, attempt: 0 });
+
+  it('drops stray frontmatter keys, removes optional nulls, and stamps system-owned fields', () => {
+    const result = normalize({
+      kind: 'feature_spec',
+      slug: 'tolerant-results',
+      relativePath: 'context-human/specs/feature-tolerant-results.md',
+      frontmatter: {
+        created: '1999-01-01',
+        last_updated: '1999-01-01',
+        status: 'complete',
+        issue: 999,
+        issue_url: 'https://example.test/issue/999',
+        implemented_by: null,
+        supersedes: 'old-spec',
+        extra: 'remove me',
+        specced_by: 'model'
+      },
+      body: '# Tolerant results\n\nBody.'
+    });
+
+    expect(result.status).toBe('changed');
+    if (result.status !== 'changed') return;
+    expect(result.candidate).toMatchObject({
+      frontmatter: {
+        created: '2026-06-18',
+        last_updated: '2026-06-18',
+        status: 'draft',
+        issue: 83,
+        supersedes: 'old-spec',
+        specced_by: 'autocatalyst'
+      }
+    });
+    expect(JSON.stringify(result.candidate)).not.toContain('issue_url');
+    expect(JSON.stringify(result.candidate)).not.toContain('implemented_by');
+    expect(JSON.stringify(result.candidate)).not.toContain('extra');
+  });
+
+  it('is schema-id gated and leaves invalid top-level fields for schema validation', () => {
+    const candidate = { frontmatter: { extra: 'x' }, body: 7 };
+    expect(normalize(candidate, 'other.schema')).toEqual({ status: 'unchanged' });
+
+    const result = normalize(candidate);
+    expect(result.status).toBe('changed');
+    if (result.status !== 'changed') return;
+    expect((result.candidate as { body: unknown }).body).toBe(7);
+  });
+});
+
+describe('prFinalizeCleanResultNormalizer', () => {
+  const normalize = (candidate: unknown, schemaId = PR_FINALIZE_SCHEMA_ID) =>
+    prFinalizeCleanResultNormalizer.normalize({ candidate, step: 'pr.finalize', schemaId, attempt: 0 });
+
+  it('normalizes omission-only clean PR-finalize results', () => {
+    expect(normalize({})).toEqual({
+      status: 'changed',
+      candidate: { directive: 'advance', findings: [] },
+      message: 'Normalized empty pr.finalize result to clean advance.'
+    });
+    expect(normalize({ findings: [] })).toEqual({
+      status: 'changed',
+      candidate: { directive: 'advance', findings: [] },
+      message: 'Normalized empty pr.finalize findings to clean advance.'
+    });
+    expect(normalize({ validationSummary: [] })).toEqual({
+      status: 'changed',
+      candidate: { directive: 'advance', validationSummary: [], findings: [] },
+      message: 'Normalized omission-only pr.finalize result to clean advance.'
+    });
+  });
+
+  it('does not guess ambiguous or contradictory candidates', () => {
+    expect(normalize({ unexpected: true })).toEqual({ status: 'unchanged' });
+    expect(normalize({ directive: 'ship', findings: [] })).toEqual({ status: 'unchanged' });
+    expect(normalize({ findings: [{ severity: 'blocker', summary: 'Fix' }] })).toEqual({ status: 'unchanged' });
+    expect(normalize({ directive: 'advance', findings: [{ severity: 'blocker', summary: 'Fix' }] })).toEqual({ status: 'unchanged' });
+    expect(normalize({}, 'other.schema')).toEqual({ status: 'unchanged' });
   });
 });

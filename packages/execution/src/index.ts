@@ -20,11 +20,14 @@ export {
 export {
   createStepResultContractRegistry,
   createSpecAuthorResultContract,
+  createPullRequestFinalizeResultContract,
   resolveStepResultContract,
   registerSpecAuthorResultContract,
   registerReviewerResultContract,
+  registerPullRequestFinalizeResultContract,
   SPEC_AUTHOR_SCHEMA_ID,
   REVIEWER_RESULT_SCHEMA_ID,
+  PR_FINALIZE_SCHEMA_ID,
   SYSTEM_SPEC_AUTHOR_SPECCED_BY,
   stampSpecAuthorResultIdentity,
   type StepResultContractDefinition,
@@ -32,7 +35,8 @@ export {
   type StepResultContractResolver,
   type StepResultContractResolution,
   type StepResultContractResolutionFailure,
-  type SpecAuthorResultContractOptions
+  type SpecAuthorResultContractOptions,
+  type PullRequestFinalizeResultContractOptions
 } from './result-contracts.js';
 
 export {
@@ -52,6 +56,8 @@ export {
   createResultNormalizerRegistry,
   defaultResultNormalizers,
   reviewerResultNormalizer,
+  createSpecAuthorFrontmatterNormalizer,
+  prFinalizeCleanResultNormalizer,
   createFilenameAliasNormalizer,
   createUrlWrappedIdentifierNormalizer,
   type ResultNormalizer,

@@ -1,6 +1,10 @@
 import { z } from 'zod';
 import type { ResultDegradationPolicy, ResultValidationIssue } from './result-tolerance.js';
+import type { ResultCorrectionRequester } from './result-correction.js';
+import type { ResultNormalizer, ResultNormalizerRegistry } from './result-normalizers.js';
+import { createSpecAuthorFrontmatterNormalizer, prFinalizeCleanResultNormalizer } from './result-normalizers.js';
 import {
+  prFinalizeResultSchema,
   reviewerResultSchema,
   specAuthorFrontmatterSchema,
   specAuthorResultSchema
@@ -11,6 +15,9 @@ export interface StepResultContractDefinition<TSchema extends z.ZodTypeAny = z.Z
   readonly schemaId: string;
   readonly schema: TSchema;
   readonly resultFile?: string;
+  readonly normalizers?: ResultNormalizerRegistry | readonly ResultNormalizer[];
+  readonly correctionRequester?: ResultCorrectionRequester;
+  readonly maxCorrectionAttempts?: number;
   readonly degradationPolicy?: ResultDegradationPolicy;
 }
 
@@ -82,11 +89,16 @@ export function resolveStepResultContract(input: {
 export const SPEC_AUTHOR_SCHEMA_ID = 'autocatalyst.spec_author.v1' as const;
 export const SYSTEM_SPEC_AUTHOR_SPECCED_BY = 'autocatalyst' as const;
 export const REVIEWER_RESULT_SCHEMA_ID = 'autocatalyst.reviewer_result.v1' as const;
+export const PR_FINALIZE_SCHEMA_ID = 'autocatalyst.pr_finalize.v1' as const;
 
 export interface SpecAuthorResultContractOptions {
   readonly trustedSpeccedBy?: string;
   readonly clock?: () => string;
   readonly trackedIssueNumber?: number;
+  readonly normalizers?: ResultNormalizerRegistry | readonly ResultNormalizer[];
+  readonly correctionRequester?: ResultCorrectionRequester;
+  readonly maxCorrectionAttempts?: number;
+  readonly degradationPolicy?: ResultDegradationPolicy;
 }
 
 function assertTrustedSpeccedBy(value: string): string {
@@ -172,7 +184,11 @@ export function createSpecAuthorResultContract(
     step: 'spec.author',
     schemaId: SPEC_AUTHOR_SCHEMA_ID,
     schema: createSystemStampedSpecAuthorResultSchema(stampOptions),
-    resultFile: 'step-result.json'
+    resultFile: 'step-result.json',
+    normalizers: options.normalizers ?? [createSpecAuthorFrontmatterNormalizer(stampOptions)],
+    ...(options.correctionRequester !== undefined ? { correctionRequester: options.correctionRequester } : {}),
+    ...(options.maxCorrectionAttempts !== undefined ? { maxCorrectionAttempts: options.maxCorrectionAttempts } : {}),
+    ...(options.degradationPolicy !== undefined ? { degradationPolicy: options.degradationPolicy } : {})
   };
 }
 
@@ -181,6 +197,36 @@ export function registerSpecAuthorResultContract(
   options: SpecAuthorResultContractOptions = {}
 ): StepResultContractRegistry {
   return registry.register(createSpecAuthorResultContract(options));
+}
+
+export interface PullRequestFinalizeResultContractOptions {
+  readonly resultFile?: string;
+  readonly normalizers?: ResultNormalizerRegistry | readonly ResultNormalizer[];
+  readonly correctionRequester?: ResultCorrectionRequester;
+  readonly maxCorrectionAttempts?: number;
+  readonly degradationPolicy?: ResultDegradationPolicy;
+}
+
+export function createPullRequestFinalizeResultContract(
+  options: PullRequestFinalizeResultContractOptions = {}
+): StepResultContractDefinition {
+  return {
+    step: 'pr.finalize',
+    schemaId: PR_FINALIZE_SCHEMA_ID,
+    schema: prFinalizeResultSchema,
+    ...(options.resultFile !== undefined ? { resultFile: options.resultFile } : {}),
+    normalizers: options.normalizers ?? [prFinalizeCleanResultNormalizer],
+    ...(options.correctionRequester !== undefined ? { correctionRequester: options.correctionRequester } : {}),
+    ...(options.maxCorrectionAttempts !== undefined ? { maxCorrectionAttempts: options.maxCorrectionAttempts } : {}),
+    ...(options.degradationPolicy !== undefined ? { degradationPolicy: options.degradationPolicy } : {})
+  };
+}
+
+export function registerPullRequestFinalizeResultContract(
+  registry: StepResultContractRegistry,
+  options: PullRequestFinalizeResultContractOptions = {}
+): StepResultContractRegistry {
+  return registry.register(createPullRequestFinalizeResultContract(options));
 }
 
 export function registerReviewerResultContract(
