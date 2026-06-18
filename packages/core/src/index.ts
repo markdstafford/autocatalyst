@@ -332,5 +332,12 @@ export * from './conventional-title.js';
 export * from './implementation-summary.js';
 export * from './pr-content.js';
 export * from './pr-finalize.js';
+export {
+  validatePullRequestFinalizeResult,
+  type ValidatePullRequestFinalizeResultInput,
+  type PullRequestFinalizeResultValidationOutcome,
+  type PullRequestFinalizeResultValidationSuccess,
+  type PullRequestFinalizeResultValidationFailure
+} from './pr-finalize-result-validation.js';
 export * from './pr-open-handler.js';
 export * from './pr-lifecycle.js';
