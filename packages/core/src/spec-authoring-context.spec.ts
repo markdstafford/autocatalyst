@@ -214,4 +214,29 @@ describe('spec-authoring context builders', () => {
     expect(inputs.bodyContract.requiresCompleteTopLevelTaskList).toBe(true);
     expect(inputs.bodyContract.taskListPlaceholderAllowed).toBe(false);
   });
+
+  it('delivers open human revision feedback into the prompt and task inputs', () => {
+    const revisionFeedback = [
+      { title: 'Tighten the error taxonomy', body: 'Enumerate every error code in the spec.' },
+      { title: 'Add a rollback story', body: 'The task list omits rollback handling.' }
+    ];
+    const prompt = buildSpecAuthorPrompt({ ...baseInput, revisionFeedback });
+    expect(prompt).toContain('Revision requests');
+    expect(prompt).toContain('MUST address every item');
+    expect(prompt).toContain('Tighten the error taxonomy: Enumerate every error code in the spec.');
+    expect(prompt).toContain('Add a rollback story: The task list omits rollback handling.');
+
+    const inputs = buildSpecAuthorTaskInputs({ ...baseInput, revisionFeedback });
+    expect(inputs.revisionFeedback).toEqual(revisionFeedback);
+  });
+
+  it('omits the revision section when there is no open human feedback', () => {
+    const prompt = buildSpecAuthorPrompt(baseInput);
+    expect(prompt).not.toContain('Revision requests');
+    const inputs = buildSpecAuthorTaskInputs(baseInput);
+    expect(inputs.revisionFeedback).toBeUndefined();
+
+    const emptyPrompt = buildSpecAuthorPrompt({ ...baseInput, revisionFeedback: [] });
+    expect(emptyPrompt).not.toContain('Revision requests');
+  });
 });

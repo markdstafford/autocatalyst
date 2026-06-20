@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Conversation, Message, Project, Run, Topic } from '@autocatalyst/api-contract';
+import type { Conversation, Feedback, Message, Project, Run, Topic } from '@autocatalyst/api-contract';
 import type { DomainRepositories } from '@autocatalyst/core';
 
 import {
@@ -96,13 +96,15 @@ function makeRepos(overrides: Partial<{
   conversation: Conversation | null;
   project: Project | null;
   messages: readonly Message[];
+  feedback: readonly Feedback[];
 }>): DomainRepositories {
   const {
     run: runResult = run,
     topic: topicResult = topic,
     conversation: conversationResult = conversation,
     project: projectResult = project,
-    messages: messagesResult = [inboundMessage]
+    messages: messagesResult = [inboundMessage],
+    feedback: feedbackResult = []
   } = overrides;
 
   return {
@@ -122,7 +124,9 @@ function makeRepos(overrides: Partial<{
       listByTopic: vi.fn().mockResolvedValue(messagesResult)
     } as unknown as DomainRepositories['messages'],
     artifacts: {} as unknown as DomainRepositories['artifacts'],
-    feedback: {} as unknown as DomainRepositories['feedback'],
+    feedback: {
+      listByRun: vi.fn().mockResolvedValue(feedbackResult)
+    } as unknown as DomainRepositories['feedback'],
     publications: {} as unknown as DomainRepositories['publications'],
     pullRequests: {} as unknown as DomainRepositories['pullRequests'],
     runSteps: {} as unknown as DomainRepositories['runSteps'],
@@ -435,5 +439,62 @@ describe('SpecAuthoringContextLoadError', () => {
   it('is an instance of Error', () => {
     const error = new SpecAuthoringContextLoadError('run_not_found', 'Run not found.');
     expect(error).toBeInstanceOf(Error);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: revision feedback delivery (spec.human_review --revise--> spec.author)
+// ---------------------------------------------------------------------------
+
+describe('loadSpecAuthorPromptInput — revision feedback', () => {
+  function feedbackRecord(overrides: Partial<Feedback>): Feedback {
+    return {
+      id: 'fb_1',
+      runId: 'run_1',
+      owner,
+      tenant: 'tenant_dev',
+      target: 'artifact',
+      status: 'open',
+      title: 'Tighten the error taxonomy',
+      body: 'Enumerate every error code in the spec.',
+      thread: [{ id: 't_1', author: owner, body: 'Enumerate every error code in the spec.', createdAt: '2026-06-13T00:02:00.000Z' }],
+      createdAt: '2026-06-13T00:02:00.000Z',
+      updatedAt: '2026-06-13T00:02:00.000Z',
+      ...overrides
+    } as Feedback;
+  }
+
+  it('delivers open human artifact feedback as revisionFeedback', async () => {
+    const request = makeRequest({
+      repositories: makeRepos({ feedback: [feedbackRecord({})] })
+    });
+    const result = await loadSpecAuthorPromptInput(request);
+    expect(result.revisionFeedback).toEqual([
+      { title: 'Tighten the error taxonomy', body: 'Enumerate every error code in the spec.' }
+    ]);
+  });
+
+  it('excludes non-open, non-human, and non-artifact feedback', async () => {
+    const modelPrincipal = { kind: 'model' as const, id: 'reviewer', tenantId: 'tenant_dev' };
+    const request = makeRequest({
+      repositories: makeRepos({
+        feedback: [
+          feedbackRecord({ id: 'fb_addressed', status: 'addressed' }),
+          feedbackRecord({ id: 'fb_impl_target', target: 'implementation' }),
+          feedbackRecord({
+            id: 'fb_model_author',
+            thread: [{ id: 't', author: modelPrincipal, body: 'x', createdAt: '2026-06-13T00:02:00.000Z' }]
+          })
+        ]
+      })
+    });
+    const result = await loadSpecAuthorPromptInput(request);
+    expect(result.revisionFeedback).toBeUndefined();
+  });
+
+  it('omits revisionFeedback entirely when there is no open feedback', async () => {
+    const request = makeRequest({ repositories: makeRepos({ feedback: [] }) });
+    const result = await loadSpecAuthorPromptInput(request);
+    expect(result.revisionFeedback).toBeUndefined();
   });
 });
