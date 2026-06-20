@@ -34,6 +34,13 @@ export interface SpecAuthorLinkedIssueContext {
   readonly labels?: readonly string[];
 }
 
+/** An open human change-request to act on when re-authoring a spec after a
+ *  `spec.human_review --revise--> spec.author` transition. */
+export interface SpecAuthorRevisionFeedback {
+  readonly title: string;
+  readonly body: string;
+}
+
 export interface SpecAuthorPromptInput {
   readonly run: Run;
   readonly project?: Project;
@@ -42,6 +49,9 @@ export interface SpecAuthorPromptInput {
   readonly messages?: readonly Message[];
   readonly request: SpecAuthorRequestContext;
   readonly linkedIssue?: SpecAuthorLinkedIssueContext;
+  /** Open human change-requests from a spec.human_review revise reply. When present, the author
+   *  must address each item in the revised spec. */
+  readonly revisionFeedback?: readonly SpecAuthorRevisionFeedback[];
   /** GitHub username or service identity to stamp as specced_by. Defaults to 'autocatalyst'. */
   readonly specAuthorIdentity?: string;
 }
@@ -99,6 +109,8 @@ export interface SpecAuthorTaskInputs {
     readonly classification: SpecAuthorSupportedWorkKind;
     readonly linkedIssue?: SpecAuthorLinkedIssueContext;
   };
+  /** Open human change-requests the author must address when revising the spec. */
+  readonly revisionFeedback?: readonly SpecAuthorRevisionFeedback[];
   readonly outputContract: SpecAuthorOutputContractInput;
   readonly bodyContract: {
     readonly required: true;
@@ -219,6 +231,15 @@ export function buildSpecAuthorPrompt(input: SpecAuthorPromptInput): string {
   const messageLines = sortMessages(input.messages).map(
     (m) => `- [${m.createdAt}] ${m.direction}${m.intent !== undefined ? `/${m.intent}` : ''}: ${m.body}`
   );
+  const revisionFeedback = input.revisionFeedback ?? [];
+  const revisionLines =
+    revisionFeedback.length > 0
+      ? [
+          '',
+          'Revision requests (open human review feedback — you MUST address every item in the revised spec):',
+          ...revisionFeedback.map((f) => `- ${f.title}: ${f.body}`)
+        ]
+      : [];
 
   return [
     `You are authoring the ${workKind} spec for Autocatalyst run ${input.run.id}.`,
@@ -261,6 +282,7 @@ export function buildSpecAuthorPrompt(input: SpecAuthorPromptInput): string {
     '',
     'Conversation messages, chronological:',
     ...(messageLines.length > 0 ? messageLines : ['- none supplied']),
+    ...revisionLines,
     '',
     'Return no alternate result shape.'
   ].join('\n');
@@ -312,6 +334,9 @@ export function buildSpecAuthorTaskInputs(input: SpecAuthorPromptInput): SpecAut
       classification: workKind,
       ...(input.linkedIssue !== undefined ? { linkedIssue: input.linkedIssue } : {})
     },
+    ...(input.revisionFeedback !== undefined && input.revisionFeedback.length > 0
+      ? { revisionFeedback: input.revisionFeedback.map((f) => ({ title: f.title, body: f.body })) }
+      : {}),
     outputContract: outputContractFor(workKind, input.specAuthorIdentity),
     bodyContract: {
       required: true,

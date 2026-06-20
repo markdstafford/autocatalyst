@@ -18,6 +18,7 @@ import type {
 import { ModelRoutingConfigurationError } from './model-routing-resolver.js';
 import type {
   FeedbackRepository,
+  FeedbackStatusTransitionPersistenceInput,
   RunStepRepository,
   UpdateRunStepCheckpointInput
 } from './domain-repositories.js';
@@ -1280,5 +1281,234 @@ describe('createLayeredConvergenceEngine — reviewer result tolerance', () => {
 
     expect(out.workResult.directive).toBe('advance');
     expect(out.checkpointResult.routing.warningCode).toBe('role_distinct_unsatisfied');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Human revise feedback (implementation.human_review --revise--> implementation.build)
+// ---------------------------------------------------------------------------
+
+describe('createLayeredConvergenceEngine — open human implementation feedback', () => {
+  // Supports the status transition the addressing path needs (findById + updateStatusAndAppendThread).
+  class FullFeedbackRepo implements FeedbackRepository {
+    private store = new Map<string, Feedback>();
+    private seq = 0;
+    readonly created: Feedback[] = [];
+
+    seed(fb: Feedback): void {
+      this.store.set(fb.id, fb);
+    }
+    async create(input: CreateFeedbackInput): Promise<Feedback> {
+      this.seq += 1;
+      const now = '2025-01-01T00:00:00.000Z';
+      const fb: Feedback = {
+        id: `fb_created_${this.seq}`,
+        runId: input.runId,
+        owner: input.owner,
+        tenant: input.tenant,
+        target: input.target,
+        status: input.status,
+        title: input.title,
+        body: input.body,
+        ...(input.anchor !== undefined ? { anchor: input.anchor } : {}),
+        thread: input.thread,
+        createdAt: now,
+        updatedAt: now
+      };
+      this.store.set(fb.id, fb);
+      this.created.push(fb);
+      return fb;
+    }
+    async findById(id: string): Promise<Feedback | null> {
+      return this.store.get(id) ?? null;
+    }
+    async listByRun(): Promise<readonly Feedback[]> {
+      return [...this.store.values()];
+    }
+    async updateStatusAndAppendThread(input: FeedbackStatusTransitionPersistenceInput): Promise<Feedback> {
+      const existing = this.store.get(input.feedbackId);
+      if (existing === undefined) throw new Error('not found');
+      const updated: Feedback = {
+        ...existing,
+        status: input.nextStatus,
+        thread: [...existing.thread, input.threadEntry],
+        updatedAt: input.updatedAt
+      };
+      this.store.set(input.feedbackId, updated);
+      return updated;
+    }
+    async appendThreadEntry(): Promise<Feedback> { throw new Error('not implemented'); }
+  }
+
+  function openHumanImplementationFeedback(): Feedback {
+    const now = '2025-01-01T00:00:00.000Z';
+    return {
+      id: 'fb_human_impl',
+      runId: 'run-1',
+      owner: { id: 'owner-1', kind: 'human', tenantId: 'tenant-1' },
+      tenant: 'tenant-1',
+      target: 'implementation',
+      status: 'open',
+      title: 'Revise the approach',
+      body: 'Please use a different algorithm.',
+      thread: [
+        {
+          id: 'thread_human_1',
+          author: { id: 'owner-1', kind: 'human', tenantId: 'tenant-1' },
+          body: 'Please use a different algorithm.',
+          createdAt: now
+        }
+      ],
+      createdAt: now,
+      updatedAt: now
+    };
+  }
+
+  it('delivers open human feedback as a required disposition and marks it addressed once the implementer addresses it', async () => {
+    const feedback = new FullFeedbackRepo();
+    feedback.seed(openHumanImplementationFeedback());
+
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1, 'build', [
+        { feedbackId: 'fb_human_impl', disposition: 'fixed', summary: 'Switched to the requested algorithm.' }
+      ]),
+      reviewerResultDispatch(1, 'build', { status: 'satisfied' })
+    ]);
+    const git = new StubGit();
+    git.changedFileCount = 2;
+    git.changedFilePaths = ['src/algorithm.ts', 'src/algorithm.spec.ts'];
+
+    const engine = createLayeredConvergenceEngine({
+      dispatcher,
+      git,
+      feedback,
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      getPolicy: () => policyOf('build_only'),
+      clock: () => '2025-01-02T00:00:00.000Z',
+      idGenerator: (() => { let n = 0; return () => `gen_${++n}`; })()
+    });
+
+    const out = await engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow
+    });
+
+    // (a) The build round received the feedback as a required disposition.
+    const round1Impl = dispatcher.calls.find((c) => c.role === 'implementer' && c.round === 1);
+    const required = round1Impl?.reviewContext?.requiredDispositions ?? [];
+    expect(required.map((r) => r.feedbackId)).toContain('fb_human_impl');
+
+    // (b) The implementer addressed it: the round committed a non-empty change set.
+    expect(out.workResult.directive).toBe('advance');
+    const round1 = out.checkpointResult.rounds.find((r) => r.round === 1);
+    expect(round1?.changedFilePaths.length ?? 0).toBeGreaterThan(0);
+    expect(round1?.dispositions.some((d) => d.feedbackId === 'fb_human_impl')).toBe(true);
+
+    // (c) The feedback is no longer open — it is addressed (the approval gate resolves it later).
+    const updated = await feedback.findById('fb_human_impl');
+    expect(updated?.status).toBe('addressed');
+
+    // No open implementation feedback remains in the converged checkpoint.
+    expect(out.checkpointResult.openFeedbackIds).not.toContain('fb_human_impl');
+  });
+
+  it('does not advance out of implementation.build while open human feedback is left unaddressed', async () => {
+    const feedback = new FullFeedbackRepo();
+    feedback.seed(openHumanImplementationFeedback());
+
+    // Implementer makes no change set and files no disposition across all rounds.
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1, 'build'),
+      reviewerResultDispatch(1, 'build', { status: 'satisfied' }),
+      implResultAdvance(2, 'build'),
+      reviewerResultDispatch(2, 'build', { status: 'satisfied' })
+    ]);
+    const git = new StubGit();
+    git.changedFileCount = 0;
+    git.changedFilePaths = [];
+
+    const engine = createLayeredConvergenceEngine({
+      dispatcher,
+      git,
+      feedback,
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      getPolicy: () => policyOf('build_only', 2)
+    });
+
+    const out = await engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow
+    });
+
+    // The run must not advance: a zero-change round cannot converge while feedback is open.
+    expect(out.workResult.directive).not.toBe('advance');
+
+    // The feedback is still open — never silently closed.
+    const updated = await feedback.findById('fb_human_impl');
+    expect(updated?.status).toBe('open');
+  });
+
+  it('resolves the reviewer feedback it authored once convergence succeeds, so it cannot block the human gate', async () => {
+    const feedback = new FullFeedbackRepo();
+    const reviewerBlocker: ReviewerFinding = {
+      title: 'Missing null check',
+      body: 'Guard against a null handle before use.',
+      severity: 'blocker'
+    };
+
+    // Round 1: reviewer raises a blocker (engine persists it as open, model-authored feedback).
+    // Round 2: implementer disposes it 'fixed' and the reviewer is satisfied → convergence.
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1, 'build'),
+      reviewerResultDispatch(1, 'build', { status: 'findings', findings: [reviewerBlocker] }),
+      {
+        role: 'implementer',
+        round: 2,
+        altitude: 'build',
+        result: {
+          workResult: { directive: 'advance', result: {} },
+          dispositions: [{ feedbackId: 'fb_created_1', disposition: 'fixed' as const, summary: 'Added the null guard.' }],
+          sessionId: 'impl-build-2',
+          lastPosition: 'impl-pos-build-2'
+        }
+      },
+      reviewerResultDispatch(2, 'build', { status: 'satisfied' })
+    ]);
+
+    const engine = createLayeredConvergenceEngine({
+      dispatcher,
+      git: new StubGit(),
+      feedback,
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      getPolicy: () => policyOf('build_only', 3),
+      clock: () => '2025-01-02T00:00:00.000Z'
+    });
+
+    const out = await engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow
+    });
+
+    expect(out.workResult.directive).toBe('advance');
+
+    // The reviewer feedback the engine created must not be left open (it would block
+    // implementation.human_review). It is resolved by convergence.
+    const reviewerFeedback = await feedback.findById('fb_created_1');
+    expect(reviewerFeedback?.status).toBe('resolved');
   });
 });

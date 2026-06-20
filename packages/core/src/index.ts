@@ -293,6 +293,7 @@ export type {
   SpecAuthorOutputContractInput,
   SpecAuthorPromptInput,
   SpecAuthorRequestContext,
+  SpecAuthorRevisionFeedback,
   SpecAuthorSupportedWorkKind,
   SpecAuthorTaskInputs
 } from './spec-authoring-context.js';

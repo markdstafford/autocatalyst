@@ -6,6 +6,7 @@ import {
   type DomainRepositories,
   type SpecAuthorLinkedIssueContext,
   type SpecAuthorPromptInput,
+  type SpecAuthorRevisionFeedback,
   type SpecAuthorSupportedWorkKind
 } from '@autocatalyst/core';
 
@@ -124,6 +125,14 @@ export async function loadSpecAuthorPromptInput(request: LoadSpecAuthorPromptInp
     throw new SpecAuthoringContextLoadError('missing_request_context', 'Spec authoring context has no actionable request text.', toSafeDetails({ runId: request.runId }));
   }
 
+  // Open, human-authored artifact feedback (a spec.human_review revise reply) must be delivered to
+  // the author so the revised spec actually addresses the change request. Reviewer/system feedback
+  // (non-human authors) is excluded.
+  const allFeedback = await request.repositories.feedback.listByRun(run.id);
+  const revisionFeedback: SpecAuthorRevisionFeedback[] = allFeedback
+    .filter((fb) => fb.target === 'artifact' && fb.status === 'open' && fb.thread[0]?.author.kind === 'human')
+    .map((fb) => ({ title: fb.title, body: fb.body }));
+
   return {
     run,
     project,
@@ -131,6 +140,7 @@ export async function loadSpecAuthorPromptInput(request: LoadSpecAuthorPromptInp
     topic,
     messages,
     request: { text, classification: run.workKind as SpecAuthorSupportedWorkKind },
-    ...(linkedIssue !== undefined ? { linkedIssue } : {})
+    ...(linkedIssue !== undefined ? { linkedIssue } : {}),
+    ...(revisionFeedback.length > 0 ? { revisionFeedback } : {})
   };
 }
