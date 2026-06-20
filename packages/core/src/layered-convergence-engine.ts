@@ -158,6 +158,10 @@ interface AltitudeLoopState {
   lastImplementerLastPosition: string | undefined;
   lastReviewerLastPosition: string | undefined;
   reviewerPrincipal: Principal;
+  /** Feedback the engine authored from reviewer findings across every altitude. These are
+   *  AI-internal convergence artifacts (target: implementation, author: model) and must be
+   *  resolved once the engine fully converges, or they would block the human review gate. */
+  readonly createdReviewerFeedbackIds: Set<string>;
 }
 
 type AltitudeLoopOutcome =
@@ -170,6 +174,38 @@ export function createLayeredConvergenceEngine(
 ): ConvergenceEngine {
   const getPolicy = options.getPolicy ?? getStepConvergencePolicy;
   const clock = options.clock ?? (() => new Date().toISOString());
+
+  // Resolve the reviewer/system feedback the engine authored during convergence. Called only on
+  // full convergence: the loop reached a no-blocking state, so every reviewer finding was either
+  // fixed or declined and the records are settled. Left open they would block implementation.human_review
+  // (the gate matches open|addressed by target, with no author distinction). open -> resolved is a
+  // raw CAS the persistence layer permits; best-effort so a resolution failure cannot crash a run.
+  const resolveEngineReviewerFeedback = async (
+    feedbackIds: Iterable<string>,
+    tenant: string
+  ): Promise<void> => {
+    const systemPrincipal: Principal = { id: 'system', kind: 'system', tenantId: tenant };
+    for (const feedbackId of feedbackIds) {
+      try {
+        const existing = await options.feedback.findById(feedbackId);
+        if (existing === null || existing.status !== 'open') continue;
+        await options.feedback.updateStatusAndAppendThread({
+          feedbackId,
+          expectedStatus: 'open',
+          nextStatus: 'resolved',
+          threadEntry: {
+            id: options.idGenerator?.() ?? `thread_reviewer_resolved_${feedbackId}`,
+            author: systemPrincipal,
+            body: 'Resolved by implementation convergence.',
+            createdAt: clock()
+          },
+          updatedAt: clock()
+        });
+      } catch {
+        // Best-effort.
+      }
+    }
+  };
 
   async function runAltitude(params: {
     readonly altitude: ImplementationAltitude;
@@ -532,6 +568,7 @@ export function createLayeredConvergenceEngine(
         const fb = persistedReviewer.feedback[i]!;
         const originalFinding = reviewerFindings[i]!;
         findingsByFeedbackId.set(fb.id, originalFinding);
+        state.createdReviewerFeedbackIds.add(fb.id);
         const sig = findingSignature(originalFinding);
         const blocking = isBlockingFinding(originalFinding, declinedSignatures);
         persistedReviewerFindings.push({
@@ -719,7 +756,8 @@ export function createLayeredConvergenceEngine(
       acceptedCheckpoints: [],
       lastImplementerLastPosition: undefined,
       lastReviewerLastPosition: undefined,
-      reviewerPrincipal: options.reviewerPrincipal ?? defaultReviewerPrincipal(input.tenant)
+      reviewerPrincipal: options.reviewerPrincipal ?? defaultReviewerPrincipal(input.tenant),
+      createdReviewerFeedbackIds: new Set<string>()
     };
 
     let currentAltitude: ImplementationAltitude = ladder[0]!;
@@ -863,7 +901,10 @@ export function createLayeredConvergenceEngine(
       }
     }
 
-    // All altitudes accepted
+    // All altitudes accepted. Resolve the reviewer feedback the engine authored so stale open
+    // convergence artifacts do not block the human review gate the run now advances toward.
+    await resolveEngineReviewerFeedback(state.createdReviewerFeedbackIds, input.tenant);
+
     const checkpoint = buildLayeredCheckpoint({
       step: input.stepDefinition.id,
       maxRounds,

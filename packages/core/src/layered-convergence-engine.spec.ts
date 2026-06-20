@@ -1457,4 +1457,58 @@ describe('createLayeredConvergenceEngine — open human implementation feedback'
     const updated = await feedback.findById('fb_human_impl');
     expect(updated?.status).toBe('open');
   });
+
+  it('resolves the reviewer feedback it authored once convergence succeeds, so it cannot block the human gate', async () => {
+    const feedback = new FullFeedbackRepo();
+    const reviewerBlocker: ReviewerFinding = {
+      title: 'Missing null check',
+      body: 'Guard against a null handle before use.',
+      severity: 'blocker'
+    };
+
+    // Round 1: reviewer raises a blocker (engine persists it as open, model-authored feedback).
+    // Round 2: implementer disposes it 'fixed' and the reviewer is satisfied → convergence.
+    const dispatcher = new ScriptedDispatcher([
+      implResultAdvance(1, 'build'),
+      reviewerResultDispatch(1, 'build', { status: 'findings', findings: [reviewerBlocker] }),
+      {
+        role: 'implementer',
+        round: 2,
+        altitude: 'build',
+        result: {
+          workResult: { directive: 'advance', result: {} },
+          dispositions: [{ feedbackId: 'fb_created_1', disposition: 'fixed' as const, summary: 'Added the null guard.' }],
+          sessionId: 'impl-build-2',
+          lastPosition: 'impl-pos-build-2'
+        }
+      },
+      reviewerResultDispatch(2, 'build', { status: 'satisfied' })
+    ]);
+
+    const engine = createLayeredConvergenceEngine({
+      dispatcher,
+      git: new StubGit(),
+      feedback,
+      runSteps: new StubRunStepRepo(),
+      routing: makeRouting(true),
+      getPolicy: () => policyOf('build_only', 3),
+      clock: () => '2025-01-02T00:00:00.000Z'
+    });
+
+    const out = await engine.run({
+      runId: 'run-1',
+      run: fakeRun,
+      tenant: 'tenant-1',
+      runStep: fakeRunStep,
+      stepDefinition: stepDefBoth,
+      workflow: fakeWorkflow
+    });
+
+    expect(out.workResult.directive).toBe('advance');
+
+    // The reviewer feedback the engine created must not be left open (it would block
+    // implementation.human_review). It is resolved by convergence.
+    const reviewerFeedback = await feedback.findById('fb_created_1');
+    expect(reviewerFeedback?.status).toBe('resolved');
+  });
 });
