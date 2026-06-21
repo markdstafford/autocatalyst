@@ -22,6 +22,8 @@ import type { ExecutionContext } from '@autocatalyst/api-contract';
 import {
   ProviderConfigurationError,
   SPEC_AUTHOR_SCHEMA_ID,
+  REVIEWER_RESULT_SCHEMA_ID,
+  IMPLEMENTER_DISPOSITIONS_SCHEMA_ID,
   type AgentProviderAdapter,
   type AgentProviderAdapterRegistry,
   type AgentRunnerFactory,
@@ -523,12 +525,21 @@ describe('createNodeWorkspaceFilesystem (symlink containment)', () => {
 });
 
 describe('createDelegatingExecutionEntryPoint — role routing', () => {
-  function makeMinimalContext(taskInputsRole?: string): ExecutionContext {
+  function makeMinimalContext(taskInputsRole?: string, round = 1): ExecutionContext {
+    const inputs: Record<string, unknown> = {};
+    if (taskInputsRole !== undefined) {
+      inputs['role'] = taskInputsRole;
+      inputs['round'] = round;
+      inputs['outputContract'] = {
+        schemaId: taskInputsRole === 'reviewer' ? REVIEWER_RESULT_SCHEMA_ID : IMPLEMENTER_DISPOSITIONS_SCHEMA_ID,
+        resultFile: `implementation-build-round-${round}-${taskInputsRole}-result.json`
+      };
+    }
     return {
       run: { id: 'run_1', workKind: 'feature', currentStep: 'implementation.build', tenant: 'tenant_1' },
       task: {
         prompt: 'test prompt',
-        inputs: taskInputsRole !== undefined ? { role: taskInputsRole } : {}
+        inputs
       },
       workspaceIntent: { shape: 'none' },
       secretBindings: [],
@@ -594,27 +605,39 @@ describe('createDelegatingExecutionEntryPoint — role routing', () => {
     expect(capturedInputs[0]?.role).toBe('implementer');
   });
 
-  it('selects the reviewer result contract for implementation.build reviewer sessions', () => {
-    const context = makeMinimalContext('reviewer');
+  it('selects the reviewer result contract and the per-round reviewer file for reviewer sessions', () => {
+    const context = makeMinimalContext('reviewer', 2);
     const config = resolveScratchResultValidationConfig(context);
 
     expect(config).toMatchObject({
       mode: 'scratch_file',
       step: 'implementation.build',
-      schemaId: 'autocatalyst.reviewer_result.v1',
-      resultFile: 'step-result.json'
+      schemaId: REVIEWER_RESULT_SCHEMA_ID,
+      resultFile: 'implementation-build-round-2-reviewer-result.json'
     });
   });
 
-  it('uses generic scratch validation for implementation.build implementer sessions', () => {
-    const context = makeMinimalContext('implementer');
+  it('selects the implementer dispositions contract and the per-round implementer file for implementer sessions', () => {
+    const context = makeMinimalContext('implementer', 2);
     const config = resolveScratchResultValidationConfig(context);
 
     expect(config).toMatchObject({
       mode: 'scratch_file',
-      schemaId: 'any',
-      resultFile: 'step-result.json'
+      step: 'implementation.build',
+      schemaId: IMPLEMENTER_DISPOSITIONS_SCHEMA_ID,
+      resultFile: 'implementation-build-round-2-implementer-result.json'
     });
+  });
+
+  it('never crosses the two contracts: reviewer and implementer rounds resolve to distinct files and schemas', () => {
+    const reviewer = resolveScratchResultValidationConfig(makeMinimalContext('reviewer', 1));
+    const implementer = resolveScratchResultValidationConfig(makeMinimalContext('implementer', 1));
+
+    expect('resultFile' in reviewer && 'resultFile' in implementer).toBe(true);
+    if (!('resultFile' in reviewer) || !('resultFile' in implementer)) return;
+    expect(reviewer.resultFile).not.toBe(implementer.resultFile);
+    expect(reviewer.schemaId).toBe(REVIEWER_RESULT_SCHEMA_ID);
+    expect(implementer.schemaId).toBe(IMPLEMENTER_DISPOSITIONS_SCHEMA_ID);
   });
 
   it('creates a per-run spec.author contract with tracked issue from task inputs', () => {

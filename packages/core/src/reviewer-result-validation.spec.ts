@@ -24,22 +24,14 @@ describe('validateReviewerResult', () => {
     }
   });
 
-  it('normalizes an empty object to a satisfied reviewer result', async () => {
+  it('rejects an empty object as invalid instead of fabricating a satisfied reviewer result', async () => {
     const result = await validateReviewerResult({
       runId: 'run_1',
       step: 'implementation.build',
       rawResult: {}
     });
 
-    expect(result).toMatchObject({
-      status: 'valid',
-      value: { status: 'satisfied', findings: [] },
-      normalized: true,
-      correctedAttempts: 0
-    });
-    if (result.status === 'valid') {
-      expect(result.events.some((event) => event.kind === 'normalized')).toBe(true);
-    }
+    expect(result).toMatchObject({ status: 'failed', reason: 'reviewer_result_invalid' });
   });
 
   it('normalizes empty findings to a satisfied reviewer result', async () => {

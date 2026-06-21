@@ -4,6 +4,7 @@ import type { ResultCorrectionRequester } from './result-correction.js';
 import type { ResultNormalizer, ResultNormalizerRegistry } from './result-normalizers.js';
 import { createSpecAuthorFrontmatterNormalizer, prFinalizeCleanResultNormalizer } from './result-normalizers.js';
 import {
+  implementerDispositionsResultSchema,
   prFinalizeResultSchema,
   reviewerResultSchema,
   specAuthorFrontmatterSchema,
@@ -89,6 +90,7 @@ export function resolveStepResultContract(input: {
 export const SPEC_AUTHOR_SCHEMA_ID = 'autocatalyst.spec_author.v1' as const;
 export const SYSTEM_SPEC_AUTHOR_SPECCED_BY = 'autocatalyst' as const;
 export const REVIEWER_RESULT_SCHEMA_ID = 'autocatalyst.reviewer_result.v1' as const;
+export const IMPLEMENTER_DISPOSITIONS_SCHEMA_ID = 'autocatalyst.implementer_dispositions.v1' as const;
 export const PR_FINALIZE_SCHEMA_ID = 'autocatalyst.pr_finalize.v1' as const;
 
 export interface SpecAuthorResultContractOptions {
@@ -236,6 +238,21 @@ export function registerReviewerResultContract(
     step: 'implementation.build',
     schemaId: REVIEWER_RESULT_SCHEMA_ID,
     schema: reviewerResultSchema,
+    resultFile: 'step-result.json'
+  });
+}
+
+// The implementer's per-round disposition result. Registered under its own
+// schema id for the same step as the reviewer contract so the two roles are
+// validated against distinct contracts and can never be crossed. The concrete
+// per-round result file is supplied by the boundary validation config.
+export function registerImplementerDispositionsResultContract(
+  registry: StepResultContractRegistry
+): StepResultContractRegistry {
+  return registry.register({
+    step: 'implementation.build',
+    schemaId: IMPLEMENTER_DISPOSITIONS_SCHEMA_ID,
+    schema: implementerDispositionsResultSchema,
     resultFile: 'step-result.json'
   });
 }

@@ -4,7 +4,8 @@ import type { Run } from '@autocatalyst/api-contract';
 import {
   buildImplementationBuildContext,
   buildImplementationBuildPrompt,
-  buildImplementationBuildTaskInputs
+  buildImplementationBuildTaskInputs,
+  implementationBuildResultFile
 } from './implementation-build-context.js';
 import type { ImplementationBuildPromptInput } from './implementation-build-context.js';
 
@@ -70,54 +71,77 @@ describe('implementation-build context builders', () => {
     expect(prompt).toContain('"dispositions"');
     expect(prompt).toContain('Do not create branches');
     expect(prompt).toContain('Do not push, merge, or open PRs');
+    // The implementer writes its own per-round result file, not the shared step-result.json.
+    expect(prompt).toContain('implementation-build-round-1-implementer-result.json');
+    expect(prompt).not.toContain('step-result.json');
   });
 
-  it('always includes a step-result.json output instruction in the implementer prompt even when no dispositions are required', () => {
+  it('names the implementer per-round result file and keeps the no-disposition instruction', () => {
     const prompt = buildImplementationBuildPrompt({
       ...baseInput,
       role: 'implementer',
+      round: 2,
       reviewContext: {
         altitudeContext: { altitude: 'build', altitudeRound: 1 }
       }
     });
 
-    expect(prompt).toContain('step-result.json');
+    expect(prompt).toContain('implementation-build-round-2-implementer-result.json');
     expect(prompt).toContain('{}');
   });
 
-  it('builds a read-only reviewer prompt with exact reviewerResultSchema examples', () => {
+  it('builds a read-only reviewer prompt that records the verdict from the final message', () => {
     const prompt = buildImplementationBuildPrompt(baseInput);
 
     expect(prompt).not.toContain('Complete the implementation.build step.');
     expect(prompt).toContain('You are the reviewer for `implementation.build`');
     expect(prompt).toContain('read-only');
-    expect(prompt).toContain('Write `step-result.json`');
+    // The reviewer cannot write files; it must not be told to write one.
+    expect(prompt).not.toContain('step-result.json');
+    expect(prompt).toContain('final message');
     expect(prompt).toContain('"status": "satisfied"');
     expect(prompt).toContain('"status": "findings"');
     expect(prompt).toContain('Do not emit a feature_spec');
     expect(prompt).toContain('Do not write patches');
   });
 
-  it('builds reviewer task inputs with the reviewer result contract id', () => {
+  it('builds reviewer task inputs with the reviewer result contract id and per-round result file', () => {
     const inputs = buildImplementationBuildTaskInputs(baseInput);
 
     expect(inputs.role).toBe('reviewer');
     expect(inputs.round).toBe(1);
     expect(inputs.outputContract).toEqual({
       schemaId: 'autocatalyst.reviewer_result.v1',
-      resultFile: 'step-result.json',
+      resultFile: 'implementation-build-round-1-reviewer-result.json',
       statusValues: ['satisfied', 'findings']
     });
     expect(inputs.reviewMode).toEqual({ accessMode: 'read_only', mayModifyWorkspace: false });
     expect(inputs.approvedSpec?.relativePath).toBe('context-human/specs/feature-real-prompts.md');
   });
 
-  it('builds implementer task inputs without a reviewer output contract', () => {
+  it('builds implementer task inputs with the disposition contract and per-round result file', () => {
     const inputs = buildImplementationBuildTaskInputs({ ...baseInput, role: 'implementer' });
 
     expect(inputs.role).toBe('implementer');
-    expect(inputs.outputContract).toBeUndefined();
+    expect(inputs.outputContract).toEqual({
+      schemaId: 'autocatalyst.implementer_dispositions.v1',
+      resultFile: 'implementation-build-round-1-implementer-result.json'
+    });
     expect(inputs.reviewMode).toBeUndefined();
+  });
+
+  it('gives every (round, role) a distinct result file name, ordered step then round then role', () => {
+    expect(implementationBuildResultFile('implementer', 1)).toBe('implementation-build-round-1-implementer-result.json');
+    expect(implementationBuildResultFile('reviewer', 1)).toBe('implementation-build-round-1-reviewer-result.json');
+    expect(implementationBuildResultFile('implementer', 2)).toBe('implementation-build-round-2-implementer-result.json');
+
+    const names = new Set([
+      implementationBuildResultFile('implementer', 1),
+      implementationBuildResultFile('reviewer', 1),
+      implementationBuildResultFile('implementer', 2),
+      implementationBuildResultFile('reviewer', 2)
+    ]);
+    expect(names.size).toBe(4);
   });
 
   it('returns prompt and task inputs together', () => {

@@ -301,7 +301,8 @@ export type {
 export {
   buildImplementationBuildContext,
   buildImplementationBuildPrompt,
-  buildImplementationBuildTaskInputs
+  buildImplementationBuildTaskInputs,
+  implementationBuildResultFile
 } from './implementation-build-context.js';
 export type {
   ImplementationBuildApprovedSpecContext,

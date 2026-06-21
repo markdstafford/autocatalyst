@@ -95,12 +95,8 @@ describe('reviewerResultNormalizer', () => {
       attempt: 0
     });
 
-  it('normalizes an empty object to a satisfied reviewer result', () => {
-    expect(normalizeReviewer({})).toEqual({
-      status: 'changed',
-      candidate: { status: 'satisfied', findings: [] },
-      message: 'Normalized empty reviewer result to satisfied clean review.'
-    });
+  it('leaves an empty object unchanged so a missing verdict is a real fault, not a fabricated satisfied', () => {
+    expect(normalizeReviewer({})).toEqual({ status: 'unchanged' });
   });
 
   it('normalizes an object containing only empty findings to a satisfied reviewer result', () => {
@@ -134,11 +130,11 @@ describe('reviewerResultNormalizer', () => {
   });
 
   it('is schema-specific and is included in the default registry', () => {
-    expect(normalizeReviewer({}, 'terminal-handoff.v1')).toEqual({ status: 'unchanged' });
+    expect(normalizeReviewer({ findings: [] }, 'terminal-handoff.v1')).toEqual({ status: 'unchanged' });
 
     const registry = createResultNormalizerRegistry(defaultResultNormalizers);
     const output = registry.normalize({
-      candidate: {},
+      candidate: { findings: [] },
       step: 'implementation.build',
       schemaId: REVIEWER_RESULT_SCHEMA_ID,
       attempt: 0
@@ -155,7 +151,7 @@ describe('reviewerResultNormalizer', () => {
       {
         kind: 'normalized',
         normalizerId: 'reviewer-result-clean-review',
-        message: 'Normalized empty reviewer result to satisfied clean review.'
+        message: 'Normalized empty reviewer findings to satisfied clean review.'
       }
     ]);
   });

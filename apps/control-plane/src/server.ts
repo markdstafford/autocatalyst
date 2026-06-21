@@ -85,9 +85,11 @@ import {
   createStepResultContractRegistry,
   registerPullRequestFinalizeResultContract,
   registerReviewerResultContract,
+  registerImplementerDispositionsResultContract,
   registerSpecAuthorResultContract,
   type StepResultContractRegistry,
   REVIEWER_RESULT_SCHEMA_ID,
+  IMPLEMENTER_DISPOSITIONS_SCHEMA_ID,
   SPEC_AUTHOR_SCHEMA_ID,
   ProviderConfigurationError,
   type AgentConnection,
@@ -511,8 +513,10 @@ export function createDefaultProviderProfileFallbackRoutingResolver(input: {
 
 // Default registry used by tests and as fallback. Uses 'autocatalyst' as specced_by.
 const defaultStepResultContractRegistry = registerPullRequestFinalizeResultContract(
-  registerReviewerResultContract(
-    registerSpecAuthorResultContract(createStepResultContractRegistry())
+  registerImplementerDispositionsResultContract(
+    registerReviewerResultContract(
+      registerSpecAuthorResultContract(createStepResultContractRegistry())
+    )
   )
 );
 
@@ -537,6 +541,13 @@ function readSpecAuthorTrustedSpeccedBy(context: ExecutionContext): string | und
   if (typeof frontmatter !== 'object' || frontmatter === null || Array.isArray(frontmatter)) return undefined;
   const trustedSpeccedBy = (frontmatter as Record<string, unknown>)['trustedSpeccedBy'];
   return typeof trustedSpeccedBy === 'string' && trustedSpeccedBy.length > 0 ? trustedSpeccedBy : undefined;
+}
+
+function readImplementationBuildResultFile(context: ExecutionContext): string | undefined {
+  const outputContract = context.task.inputs['outputContract'];
+  if (typeof outputContract !== 'object' || outputContract === null || Array.isArray(outputContract)) return undefined;
+  const resultFile = (outputContract as Record<string, unknown>)['resultFile'];
+  return typeof resultFile === 'string' && resultFile.length > 0 ? resultFile : undefined;
 }
 
 export function resolveScratchResultValidationConfig(
@@ -565,13 +576,18 @@ export function resolveScratchResultValidationConfig(
     };
   }
 
-  if (step === 'implementation.build' && role === 'reviewer') {
+  if (step === 'implementation.build' && (role === 'reviewer' || role === 'implementer')) {
+    // Each role/round validates its own immutable result file against its own
+    // contract, so the implementer's dispositions and the reviewer's verdict are
+    // never crossed. The concrete file name is set by the context builder's
+    // output contract; fall back to the shared file only if it is absent.
+    const resultFile = readImplementationBuildResultFile(context) ?? 'step-result.json';
     return {
       mode: 'scratch_file' as const,
       contractRegistry: registry,
       step: 'implementation.build',
-      schemaId: REVIEWER_RESULT_SCHEMA_ID,
-      resultFile: 'step-result.json'
+      schemaId: role === 'reviewer' ? REVIEWER_RESULT_SCHEMA_ID : IMPLEMENTER_DISPOSITIONS_SCHEMA_ID,
+      resultFile
     };
   }
 

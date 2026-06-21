@@ -5,10 +5,12 @@ import { prFinalizeResultSchema } from '@autocatalyst/api-contract';
 import {
   SPEC_AUTHOR_SCHEMA_ID,
   REVIEWER_RESULT_SCHEMA_ID,
+  IMPLEMENTER_DISPOSITIONS_SCHEMA_ID,
   PR_FINALIZE_SCHEMA_ID,
   createStepResultContractRegistry,
   resolveStepResultContract,
   registerReviewerResultContract,
+  registerImplementerDispositionsResultContract,
   registerSpecAuthorResultContract,
   registerPullRequestFinalizeResultContract,
   stampSpecAuthorResultIdentity,
@@ -385,5 +387,30 @@ describe('reviewer result contract registration', () => {
       frontmatter: { created: '2026-06-16', last_updated: '2026-06-16', status: 'draft', specced_by: 'autocatalyst' },
       body: '# Wrong shape'
     })).toThrow();
+  });
+});
+
+describe('implementer dispositions result contract registration', () => {
+  it('exports IMPLEMENTER_DISPOSITIONS_SCHEMA_ID as autocatalyst.implementer_dispositions.v1', () => {
+    expect(IMPLEMENTER_DISPOSITIONS_SCHEMA_ID).toBe('autocatalyst.implementer_dispositions.v1');
+  });
+
+  it('registers the implementer dispositions contract for implementation.build', () => {
+    const registry = registerImplementerDispositionsResultContract(createStepResultContractRegistry());
+    const resolution = registry.resolve({ step: 'implementation.build', schemaId: IMPLEMENTER_DISPOSITIONS_SCHEMA_ID });
+    expect(resolution.status).toBe('resolved');
+    if (resolution.status !== 'resolved') return;
+    expect(resolution.contract.schemaId).toBe('autocatalyst.implementer_dispositions.v1');
+  });
+
+  it('accepts an empty object and a dispositions array, and rejects a reviewer verdict', () => {
+    const registry = registerImplementerDispositionsResultContract(createStepResultContractRegistry());
+    const resolution = registry.resolve({ step: 'implementation.build', schemaId: IMPLEMENTER_DISPOSITIONS_SCHEMA_ID });
+    if (resolution.status !== 'resolved') throw new Error('expected resolved contract');
+    expect(resolution.contract.schema.parse({})).toEqual({});
+    expect(resolution.contract.schema.parse({
+      dispositions: [{ feedbackId: 'fb_1', disposition: 'fixed', summary: 'Done.' }]
+    })).toMatchObject({ dispositions: [{ disposition: 'fixed' }] });
+    expect(() => resolution.contract.schema.parse({ status: 'satisfied', findings: [] })).toThrow();
   });
 });

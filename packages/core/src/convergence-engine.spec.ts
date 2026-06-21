@@ -1125,7 +1125,7 @@ describe('escalation', () => {
 });
 
 describe('createConvergenceEngine — reviewer result tolerance', () => {
-  it('converges when reviewer returns an empty object', async () => {
+  it('fails instead of fabricating a satisfied verdict when the reviewer returns an empty object', async () => {
     const dispatcher = new ScriptedDispatcher([
       implResultAdvance(1),
       rawReviewerResultDispatch(1, {})
@@ -1147,8 +1147,7 @@ describe('createConvergenceEngine — reviewer result tolerance', () => {
       workflow: fakeWorkflow
     });
 
-    expect(out.workResult.directive).toBe('advance');
-    expect(out.checkpointResult.rounds[0]?.findings).toEqual([]);
+    expect(out.workResult).toEqual({ directive: 'fail', reason: 'reviewer_result_invalid' });
   });
 
   it('converges when reviewer returns only empty findings', async () => {
@@ -1242,10 +1241,10 @@ describe('createConvergenceEngine — reviewer result tolerance', () => {
     expect(out.workResult).toEqual({ directive: 'fail', reason: 'reviewer_result_invalid' });
   });
 
-  it('keeps role_distinct_unsatisfied non-fatal while using reviewer tolerance', async () => {
+  it('keeps role_distinct_unsatisfied non-fatal for a satisfied reviewer verdict', async () => {
     const dispatcher = new ScriptedDispatcher([
       implResultAdvance(1),
-      rawReviewerResultDispatch(1, {})
+      reviewerResultDispatch(1, { status: 'satisfied' })
     ]);
     const engine = createConvergenceEngine({
       dispatcher,

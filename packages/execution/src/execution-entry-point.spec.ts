@@ -347,7 +347,15 @@ import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { z } from 'zod';
-import { registerSpecAuthorResultContract, createStepResultContractRegistry, SPEC_AUTHOR_SCHEMA_ID } from './result-contracts.js';
+import {
+  registerSpecAuthorResultContract,
+  registerReviewerResultContract,
+  registerImplementerDispositionsResultContract,
+  createStepResultContractRegistry,
+  SPEC_AUTHOR_SCHEMA_ID,
+  REVIEWER_RESULT_SCHEMA_ID,
+  IMPLEMENTER_DISPOSITIONS_SCHEMA_ID
+} from './result-contracts.js';
 
 describe('createExecutionEntryPoint — resultValidation', () => {
   it('mode: none preserves terminal directive shape', async () => {
@@ -1221,3 +1229,100 @@ describe('createExecutionEntryPoint — spec.author result contract', () => {
   });
 });
 
+
+describe('createExecutionEntryPoint — implementation.build per-round result files', () => {
+  const reviewerRegistry = registerImplementerDispositionsResultContract(
+    registerReviewerResultContract(createStepResultContractRegistry())
+  );
+
+  function makeBuildContext(): ExecutionContext {
+    const context = makeContext();
+    context.run.currentStep = 'implementation.build';
+    return context;
+  }
+
+  async function runWithScratch(args: {
+    readonly scratchRoot: string;
+    readonly schemaId: string;
+    readonly resultFile: string;
+  }): Promise<ExecutionTerminalResultEvent | undefined> {
+    const context = makeBuildContext();
+    const env: MaterializedExecutionEnvironment = {
+      ...makeMaterializedEnv(context),
+      workspace: { shape: 'scratch_only', scratchRoot: args.scratchRoot, workspaceRoots: [args.scratchRoot] }
+    };
+    const terminal = { ...makeTerminalEvent(), step: 'implementation.build' as const };
+    const entryPoint = createExecutionEntryPoint({
+      runner: makeFakeRunner([terminal]),
+      materialize: vi.fn().mockResolvedValue(env),
+      resultValidation: {
+        mode: 'scratch_file',
+        step: 'implementation.build',
+        schemaId: args.schemaId,
+        contractRegistry: reviewerRegistry,
+        resultFile: args.resultFile,
+        maxCorrectionAttempts: 0
+      }
+    });
+    const collected: ExecutionBoundaryEvent[] = [];
+    for await (const event of entryPoint.execute({ context })) collected.push(event);
+    const out = collected[0];
+    return out?.type === 'runner_terminal_result' ? out : undefined;
+  }
+
+  it('validates the implementer disposition file as a disposition and the reviewer verdict file against the reviewer contract — never crossed', async () => {
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'ep-build-'));
+    try {
+      const implementerFile = 'implementation-build-round-1-implementer-result.json';
+      const reviewerFile = 'implementation-build-round-1-reviewer-result.json';
+      const dispositions = { dispositions: [{ feedbackId: 'fb_1', disposition: 'fixed', summary: 'Addressed.' }] };
+      const verdict = { status: 'findings', findings: [{ title: 'Gap', body: 'Add coverage.', severity: 'blocker' }] };
+      await writeFile(path.join(scratchRoot, implementerFile), JSON.stringify(dispositions), 'utf8');
+      await writeFile(path.join(scratchRoot, reviewerFile), JSON.stringify(verdict), 'utf8');
+
+      const implementer = await runWithScratch({ scratchRoot, schemaId: IMPLEMENTER_DISPOSITIONS_SCHEMA_ID, resultFile: implementerFile });
+      expect(implementer?.result.directive).toBe('advance');
+      expect(implementer?.result.result).toEqual(dispositions);
+
+      const reviewer = await runWithScratch({ scratchRoot, schemaId: REVIEWER_RESULT_SCHEMA_ID, resultFile: reviewerFile });
+      expect(reviewer?.result.directive).toBe('advance');
+      expect(reviewer?.result.result).toEqual(verdict);
+
+      // Cross the contracts: the implementer's disposition file must NOT validate
+      // against the reviewer contract (this is the revise-round crash).
+      const crossed = await runWithScratch({ scratchRoot, schemaId: REVIEWER_RESULT_SCHEMA_ID, resultFile: implementerFile });
+      expect(crossed?.result.directive).toBe('fail');
+      expect(crossed?.result.reason).toContain('schema_validation_failed');
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('treats a missing reviewer verdict as a real fault, never a fabricated satisfied review', async () => {
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'ep-build-'));
+    try {
+      const terminal = await runWithScratch({
+        scratchRoot,
+        schemaId: REVIEWER_RESULT_SCHEMA_ID,
+        resultFile: 'implementation-build-round-1-reviewer-result.json'
+      });
+      expect(terminal?.result.directive).toBe('fail');
+      expect(terminal?.result.result).toBeUndefined();
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not fabricate a satisfied verdict from an empty reviewer result file', async () => {
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'ep-build-'));
+    try {
+      const reviewerFile = 'implementation-build-round-1-reviewer-result.json';
+      await writeFile(path.join(scratchRoot, reviewerFile), JSON.stringify({}), 'utf8');
+      const terminal = await runWithScratch({ scratchRoot, schemaId: REVIEWER_RESULT_SCHEMA_ID, resultFile: reviewerFile });
+      expect(terminal?.result.directive).toBe('fail');
+      expect(terminal?.result.reason).toContain('schema_validation_failed');
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+});
