@@ -48,11 +48,20 @@ export const findingDispositionSchema = z.discriminatedUnion('disposition', [
   declinedFindingDispositionSchema
 ]);
 
+// The implementer's per-round result. An empty object means "no dispositions
+// this round"; otherwise it carries the dispositions for the findings it
+// addressed. Strict so a reviewer verdict can never validate as an implementer
+// result (and vice versa) — the two contracts are never crossed.
+export const implementerDispositionsResultSchema = z.object({
+  dispositions: z.array(findingDispositionSchema).optional()
+}).strict();
+
 export type ReviewerFindingSeverity = z.infer<typeof reviewerFindingSeveritySchema>;
 export type ReviewerFinding = z.infer<typeof reviewerFindingSchema>;
 export type ReviewerFindingContext = z.infer<typeof reviewerFindingContextSchema>;
 export type ReviewerResult = z.infer<typeof reviewerResultSchema>;
 export type FindingDisposition = z.infer<typeof findingDispositionSchema>;
+export type ImplementerDispositionsResult = z.infer<typeof implementerDispositionsResultSchema>;
 
 export const convergenceRoundOutcomeSchema = z.enum(['continue', 'converged', 'max_rounds', 'oscillation']);
 export const convergenceOutcomeSchema = z.enum(['converged', 'max_rounds', 'oscillation', 'needs_input']);

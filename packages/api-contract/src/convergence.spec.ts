@@ -10,6 +10,7 @@ import {
   convergenceRoundOutcomeSchema,
   convergenceRoundRecordSchema,
   findingDispositionSchema,
+  implementerDispositionsResultSchema,
   implementationAltitudeSchema,
   implementationConvergenceDepthSchema,
   reviewerFindingSchema,
@@ -83,6 +84,29 @@ describe('findingDispositionSchema', () => {
   it('accepts declined disposition with non-empty reason', () => {
     const result = findingDispositionSchema.parse({ feedbackId: 'fb_3', disposition: 'declined', reason: 'Not applicable.' });
     expect(result.disposition).toBe('declined');
+  });
+});
+
+describe('implementerDispositionsResultSchema', () => {
+  it('accepts an empty object for a no-feedback round', () => {
+    expect(implementerDispositionsResultSchema.parse({})).toEqual({});
+  });
+
+  it('accepts a dispositions array of valid dispositions', () => {
+    const result = implementerDispositionsResultSchema.parse({
+      dispositions: [{ feedbackId: 'fb_1', disposition: 'fixed', summary: 'Addressed the finding.' }]
+    });
+    expect(result.dispositions?.[0]).toMatchObject({ disposition: 'fixed' });
+  });
+
+  it('rejects an invalid disposition entry', () => {
+    expect(() =>
+      implementerDispositionsResultSchema.parse({ dispositions: [{ feedbackId: 'fb_1', disposition: 'fixed' }] })
+    ).toThrow();
+  });
+
+  it('rejects a reviewer verdict so the two contracts are never crossed', () => {
+    expect(() => implementerDispositionsResultSchema.parse({ status: 'satisfied', findings: [] })).toThrow();
   });
 });
 

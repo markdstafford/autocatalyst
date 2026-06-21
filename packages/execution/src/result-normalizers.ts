@@ -201,20 +201,15 @@ export const prFinalizeCleanResultNormalizer: ResultNormalizer = {
 
 export const reviewerResultNormalizer: ResultNormalizer = {
   id: 'reviewer-result-clean-review',
-  description: 'Normalizes deterministic clean-review near misses for reviewer results.',
+  description: 'Normalizes the reviewer-authored "no findings" near miss; never fabricates a verdict from an empty result.',
   normalize(input) {
     if (input.schemaId !== REVIEWER_RESULT_SCHEMA_ID) return { status: 'unchanged' };
     if (!isPlainObject(input.candidate)) return { status: 'unchanged' };
 
+    // An empty object is left unchanged on purpose: it means the reviewer never
+    // authored a verdict, which must surface as a real fault during schema
+    // validation — not be fabricated into a satisfied review.
     const keys = Object.keys(input.candidate);
-    if (keys.length === 0) {
-      return {
-        status: 'changed',
-        candidate: { status: 'satisfied', findings: [] },
-        message: 'Normalized empty reviewer result to satisfied clean review.'
-      };
-    }
-
     if (keys.length === 1 && Object.prototype.hasOwnProperty.call(input.candidate, 'findings')) {
       const findings = input.candidate['findings'];
       if (Array.isArray(findings) && findings.length === 0) {

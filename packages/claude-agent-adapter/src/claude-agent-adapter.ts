@@ -660,6 +660,27 @@ function buildTerminalResult(args: {
   };
 }
 
+// The result file the agent's final output is captured into. Defaults to the
+// shared step-result.json, but honors the per-(step, role, round) file named by
+// the task's output contract so each role/round gets its own immutable result
+// file. This is also how a read-only reviewer's verdict is recorded: it cannot
+// write files, so its final message is captured into its own result file here.
+function resolveResultFileName(
+  env: AgentProviderSessionInput['runInput']['environment']
+): string {
+  const inputs = env.context?.task?.inputs as Record<string, unknown> | undefined;
+  const outputContract = inputs?.['outputContract'];
+  if (
+    typeof outputContract === 'object' &&
+    outputContract !== null &&
+    !Array.isArray(outputContract)
+  ) {
+    const resultFile = (outputContract as Record<string, unknown>)['resultFile'];
+    if (typeof resultFile === 'string' && resultFile.length > 0) return resultFile;
+  }
+  return 'step-result.json';
+}
+
 async function maybeWriteResultFile(
   env: AgentProviderSessionInput['runInput']['environment'],
   output: string | undefined
@@ -669,7 +690,7 @@ async function maybeWriteResultFile(
   const scratchRoot =
     'scratchRoot' in workspace ? workspace.scratchRoot : undefined;
   if (scratchRoot === undefined) return;
-  const target = path.join(scratchRoot, 'step-result.json');
+  const target = path.join(scratchRoot, resolveResultFileName(env));
   try {
     await access(target);
     return;

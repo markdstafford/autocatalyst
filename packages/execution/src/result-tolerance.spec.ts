@@ -121,24 +121,17 @@ describe('validateStepResult', () => {
     expect(result).toMatchObject({ status: 'valid', degraded: false, degradedPaths: [] });
   });
 
-  it('validates an empty reviewer result after default reviewer normalization', async () => {
+  it('fails an empty reviewer result instead of fabricating a satisfied verdict', async () => {
     const result = await validateStepResult({
       runId: 'run_1',
       step: 'implementation.build',
       schemaId: REVIEWER_RESULT_SCHEMA_ID,
       schema: reviewerResultSchema,
-      candidate: {}
+      candidate: {},
+      maxCorrectionAttempts: 0
     });
 
-    expect(result).toMatchObject({
-      status: 'valid',
-      normalized: true,
-      correctedAttempts: 0
-    });
-    if (result.status === 'valid') {
-      expect(result.value).toEqual({ status: 'satisfied', findings: [] });
-      expect(result.events.some((event) => event.kind === 'normalized')).toBe(true);
-    }
+    expect(result).toMatchObject({ status: 'failed', code: 'schema_validation_failed' });
   });
 
   it('validates empty reviewer findings after default reviewer normalization', async () => {

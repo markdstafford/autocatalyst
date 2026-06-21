@@ -9,6 +9,20 @@ import type {
 
 export type ImplementationBuildRole = 'implementer' | 'reviewer';
 
+export const REVIEWER_RESULT_SCHEMA_ID = 'autocatalyst.reviewer_result.v1' as const;
+export const IMPLEMENTER_DISPOSITIONS_SCHEMA_ID = 'autocatalyst.implementer_dispositions.v1' as const;
+
+/**
+ * The immutable result file for one (step, role, round). One file per role and
+ * round means the implementer's dispositions and the reviewer's verdict are
+ * never written to — or validated against — the same file, and no result is
+ * ever overwritten or clobbered. The name is ordered least-to-most specific:
+ * step, then round, then role.
+ */
+export function implementationBuildResultFile(role: ImplementationBuildRole, round: number): string {
+  return `implementation-build-round-${round}-${role}-result.json`;
+}
+
 export interface ImplementationBuildApprovedSpecContext {
   readonly kind: Extract<ArtifactKind, 'feature_spec' | 'enhancement_spec'>;
   readonly relativePath: string;
@@ -64,9 +78,9 @@ export interface ImplementationBuildTaskInputs {
   readonly previousRoundCount?: number;
   readonly humanGuidance?: string;
   readonly outputContract?: {
-    readonly schemaId: 'autocatalyst.reviewer_result.v1';
-    readonly resultFile: 'step-result.json';
-    readonly statusValues: readonly ['satisfied', 'findings'];
+    readonly schemaId: typeof REVIEWER_RESULT_SCHEMA_ID | typeof IMPLEMENTER_DISPOSITIONS_SCHEMA_ID;
+    readonly resultFile: string;
+    readonly statusValues?: readonly ['satisfied', 'findings'];
   };
   readonly reviewMode?: {
     readonly accessMode: 'read_only';
@@ -107,17 +121,18 @@ function altitudeLines(input: ImplementationBuildPromptInput): readonly string[]
 }
 
 function requiredDispositionLines(input: ImplementationBuildPromptInput): readonly string[] {
+  const resultFile = implementationBuildResultFile('implementer', input.round);
   const dispositions = input.reviewContext?.requiredDispositions ?? [];
   if (dispositions.length === 0) {
     return [
       '- Required dispositions: none for this round.',
-      '- Always write `step-result.json` when advancing. Write `{}` when there are no dispositions.'
+      `- Always write \`${resultFile}\` when advancing. Write \`{}\` when there are no dispositions.`
     ];
   }
   return [
     '- Required dispositions:',
     ...dispositions.map((finding) => `  - ${finding.feedbackId} [${finding.severity}] ${finding.title}: ${finding.body}`),
-    '- When advancing, write `step-result.json` with `{ "dispositions": [{ "feedbackId": "...", "disposition": "fixed", "summary": "..." }] }` for fixed findings or `{ "feedbackId": "...", "disposition": "declined", "reason": "..." }` for declined findings.'
+    `- When advancing, write \`${resultFile}\` with \`{ "dispositions": [{ "feedbackId": "...", "disposition": "fixed", "summary": "..." }] }\` for fixed findings or \`{ "feedbackId": "...", "disposition": "declined", "reason": "..." }\` for declined findings.`
   ];
 }
 
@@ -168,13 +183,14 @@ export function buildImplementationBuildPrompt(input: ImplementationBuildPromptI
     '- Do not write patches, do not commit, and do not change files.',
     '',
     'Output contract:',
-    '- Write `step-result.json` matching `autocatalyst.reviewer_result.v1`.',
-    '- If satisfied, write exactly this shape: `{ "status": "satisfied", "findings": [] }`.',
-    '- If there are findings, write `{ "status": "findings", "findings": [{ "title": "...", "body": "...", "severity": "blocker" }] }`.',
+    '- You are read-only and cannot write files. Your verdict is recorded from your final message.',
+    '- End your turn with exactly one JSON object matching `autocatalyst.reviewer_result.v1` as your final message, and nothing else.',
+    '- If satisfied, your final message must be exactly: `{ "status": "satisfied", "findings": [] }`.',
+    '- If there are findings, it must be `{ "status": "findings", "findings": [{ "title": "...", "body": "...", "severity": "blocker" }] }`.',
     '- Finding severity must be `blocker`, `warning`, or `info`.',
     '- Do not emit a feature_spec, enhancement_spec, task list, prose-only review, implementation summary, or patch.',
     '',
-    'Advance only after `step-result.json` exists with one of the two valid reviewer shapes.'
+    'Produce no verdict and the round is recorded as a fault — it is never treated as a satisfied review.'
   ].join('\n');
 }
 
@@ -203,14 +219,21 @@ export function buildImplementationBuildTaskInputs(input: ImplementationBuildPro
     ...(input.reviewContext?.requiredDispositions !== undefined && input.reviewContext.requiredDispositions.length > 0 ? { requiredDispositions: input.reviewContext.requiredDispositions } : {}),
     ...(input.reviewContext?.previousRounds !== undefined && input.reviewContext.previousRounds.length > 0 ? { previousRoundCount: input.reviewContext.previousRounds.length } : {}),
     ...(input.reviewContext?.humanGuidance !== undefined ? { humanGuidance: input.reviewContext.humanGuidance } : {}),
-    ...(input.role === 'reviewer' ? {
-      outputContract: {
-        schemaId: 'autocatalyst.reviewer_result.v1',
-        resultFile: 'step-result.json',
-        statusValues: ['satisfied', 'findings']
-      } as const,
-      reviewMode: { accessMode: 'read_only', mayModifyWorkspace: false } as const
-    } : {}),
+    ...(input.role === 'reviewer'
+      ? {
+          outputContract: {
+            schemaId: REVIEWER_RESULT_SCHEMA_ID,
+            resultFile: implementationBuildResultFile('reviewer', input.round),
+            statusValues: ['satisfied', 'findings']
+          } as const,
+          reviewMode: { accessMode: 'read_only', mayModifyWorkspace: false } as const
+        }
+      : {
+          outputContract: {
+            schemaId: IMPLEMENTER_DISPOSITIONS_SCHEMA_ID,
+            resultFile: implementationBuildResultFile('implementer', input.round)
+          } as const
+        }),
     runtimeOwnership: {
       currentBranchOnly: true,
       prohibitBranchCreation: true,
