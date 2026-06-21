@@ -104,6 +104,7 @@ function makeSessionInput(args: {
   secretVariableNames?: string[];
   scratchRoot?: string;
   repoRoot?: string;
+  taskInputs?: Record<string, unknown>;
 } = {}): { input: AgentProviderSessionInput; recorder: ConnectionRecorder } {
   const profile = args.profile ?? makeProfile();
   const recorder = makeConnection(profile);
@@ -131,7 +132,7 @@ function makeSessionInput(args: {
       environment: {
         context: {
           run: { id: 'run_1', workKind: 'feature', currentStep: 'implement', tenant: 'tenant_1' },
-          task: { prompt: args.prompt ?? 'Build the feature', inputs: {} },
+          task: { prompt: args.prompt ?? 'Build the feature', inputs: args.taskInputs ?? {} },
           workspaceIntent: { shape: 'none' },
           secretBindings: [],
           toolPolicy: { allowedTools: args.allowedTools ?? ['bash'], workspaceScope: 'declared_workspace' },
@@ -496,6 +497,30 @@ describe('createClaudeAgentAdapter — terminal result', () => {
       await collect(session.events);
 
       await expect(readFile(target, 'utf8')).resolves.toBe('{"kind":"feature_spec","slug":"kept"}');
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('captures the final output into the per-round result file named by the output contract', async () => {
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'claude-adapter-scratch-'));
+    try {
+      const resultFile = 'implementation-build-round-1-reviewer-result.json';
+      const { input } = makeSessionInput({
+        scratchRoot,
+        taskInputs: { role: 'reviewer', round: 1, outputContract: { resultFile } }
+      });
+      const { launch } = fakeLaunch([
+        { type: 'result', result: { output: '{"status":"satisfied","findings":[]}' } }
+      ]);
+      const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch });
+      const session = await adapter.startSession(input);
+      await collect(session.events);
+
+      await expect(readFile(path.join(scratchRoot, resultFile), 'utf8'))
+        .resolves.toBe('{"status":"satisfied","findings":[]}');
+      // The shared step-result.json is never created.
+      await expect(readFile(path.join(scratchRoot, 'step-result.json'), 'utf8')).rejects.toThrow();
     } finally {
       await rm(scratchRoot, { recursive: true, force: true });
     }

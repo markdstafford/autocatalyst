@@ -1135,7 +1135,7 @@ describe('createLayeredConvergenceEngine - no-op round regression tests', () => 
 });
 
 describe('createLayeredConvergenceEngine — reviewer result tolerance', () => {
-  it('converges at build altitude when reviewer returns an empty object', async () => {
+  it('fails instead of fabricating a satisfied verdict when the reviewer returns an empty object', async () => {
     const dispatcher = new ScriptedDispatcher([
       implResultAdvance(1, 'build'),
       rawLayeredReviewerResultDispatch(1, 'build', {})
@@ -1158,8 +1158,7 @@ describe('createLayeredConvergenceEngine — reviewer result tolerance', () => {
       workflow: fakeWorkflow
     });
 
-    expect(out.workResult.directive).toBe('advance');
-    expect(out.checkpointResult.rounds[0]?.findings).toEqual([]);
+    expect(out.workResult).toEqual({ directive: 'fail', reason: 'reviewer_result_invalid' });
   });
 
   it('converges at build altitude when reviewer returns only empty findings', async () => {
@@ -1256,10 +1255,10 @@ describe('createLayeredConvergenceEngine — reviewer result tolerance', () => {
     expect(out.workResult).toEqual({ directive: 'fail', reason: 'reviewer_result_invalid' });
   });
 
-  it('keeps layered role_distinct_unsatisfied non-fatal while using reviewer tolerance', async () => {
+  it('keeps layered role_distinct_unsatisfied non-fatal for a satisfied reviewer verdict', async () => {
     const dispatcher = new ScriptedDispatcher([
       implResultAdvance(1, 'build'),
-      rawLayeredReviewerResultDispatch(1, 'build', {})
+      rawLayeredReviewerResultDispatch(1, 'build', { status: 'satisfied', findings: [] })
     ]);
     const engine = createLayeredConvergenceEngine({
       dispatcher,

@@ -924,12 +924,12 @@ describe('reviewer result contract — schema boundary', () => {
   });
 });
 
-describe('implementation.build convergence — near-miss reviewer tolerance', () => {
-  it('advances when reviewer returns a near-miss empty object result', async () => {
-    await withScenario('ac-smoke-near-miss', async ({ runId, workspacesRoot, workspaceRepoRoot, databasePath }) => {
+describe('implementation.build convergence — reviewer verdict is required', () => {
+  it('does not advance to human review when the reviewer returns an empty object instead of a verdict', async () => {
+    await withScenario('ac-smoke-no-verdict', async ({ runId, workspacesRoot, workspaceRepoRoot, databasePath }) => {
       const calls: RunRoleWorkInput[] = [];
 
-      const nearMissDispatcher: ReviewedRoleDispatcher = {
+      const noVerdictDispatcher: ReviewedRoleDispatcher = {
         async runRole(input: RunRoleWorkInput): Promise<ReviewedRoleDispatchResult> {
           calls.push(input);
 
@@ -955,12 +955,13 @@ describe('implementation.build convergence — near-miss reviewer tolerance', ()
             };
           }
 
-          // Reviewer returns a near-miss empty object — normalizer recovers this to satisfied.
+          // Reviewer produces no verdict (empty object). This must surface as a
+          // fault, never be fabricated into a satisfied review that advances.
           return {
             workResult: { directive: 'advance', result: {} as Readonly<Record<string, unknown>> },
             reviewerResult: {},
-            sessionId: 'reviewer-near-miss-session',
-            lastPosition: 'reviewer-near-miss-position'
+            sessionId: 'reviewer-no-verdict-session',
+            lastPosition: 'reviewer-no-verdict-position'
           };
         }
       };
@@ -969,7 +970,7 @@ describe('implementation.build convergence — near-miss reviewer tolerance', ()
         databasePath,
         workspacesRoot,
         workspaceRepoRoot,
-        dispatcher: nearMissDispatcher,
+        dispatcher: noVerdictDispatcher,
         depth: 'build_only'
       });
 
@@ -978,26 +979,17 @@ describe('implementation.build convergence — near-miss reviewer tolerance', ()
 
         expect(calls.map((c) => c.role)).toEqual(['implementer', 'reviewer']);
 
-        // The run should advance past the implementation gate to the human-review gate.
-        expect(result.run.currentStep).toBe('implementation.human_review');
+        // The run must NOT reach the human-review gate on a fabricated pass.
+        expect(result.run.currentStep).not.toBe('implementation.human_review');
 
-        // Verify the checkpoint records a converged outcome.
+        // The build step must not record a converged outcome without a verdict.
         const db = createSqliteDatabase({ path: databasePath });
         const repos = createDrizzleDomainRepositories(db);
         try {
           const steps = await repos.runSteps.listByRun(runId);
           const buildStep = steps.find((s) => s.step === 'implementation.build');
-          expect(buildStep).toBeDefined();
-
           const checkpoint = buildStep?.checkpointResult as Record<string, unknown> | null;
-          expect(checkpoint).toMatchObject({
-            kind: 'convergence_review',
-            outcome: 'converged'
-          });
-
-          const rounds = checkpoint?.['rounds'] as readonly Record<string, unknown>[];
-          expect(rounds.length).toBeGreaterThanOrEqual(1);
-          expect(rounds[0]?.['findings']).toEqual([]);
+          expect(checkpoint?.['outcome']).not.toBe('converged');
         } finally {
           db.close();
         }
