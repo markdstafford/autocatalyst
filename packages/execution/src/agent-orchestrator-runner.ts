@@ -8,7 +8,7 @@ import type {
   ResolvedAgentRunnerProfile
 } from './agent-provider-adapter.js';
 import { ProviderConfigurationError } from './agent-provider-adapter.js';
-import type { Runner, RunnerCloseResult, RunnerRunInput } from './runner.js';
+import type { Runner, RunnerCloseResult, RunnerRunInput, RunnerSessionMetadata } from './runner.js';
 import { RunnerProtocolError } from './runner.js';
 
 export interface AgentOrchestratorTelemetryEmitter {
@@ -32,6 +32,9 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
   let sessionClosed = false;
   let adapterClosed = false;
   let connectionClosed = false;
+
+  // Cached safe session metadata — populated in the run() finally block.
+  let cachedSessionMetadata: RunnerSessionMetadata | null = null;
 
   return {
     async *run(input: RunnerRunInput): AsyncIterable<RunnerEvent> {
@@ -57,6 +60,7 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
       }
 
       const startedAt = clock();
+      const startedAtIso = new Date(startedAt).toISOString();
 
       telemetry?.emit('agent_orchestrator_session_start', {
         runId: telemetryContext.runId,
@@ -149,20 +153,59 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
         // and its catch block suppresses the close error when a stream error is
         // already in flight.
 
-        const durationMs = clock() - startedAt;
+        const endedAtMs = clock();
+        const endedAtIso = new Date(endedAtMs).toISOString();
+        const durationMs = endedAtMs - startedAt;
+        // Local outcome takes priority when stream errored; use session metadata otherwise.
+        const resolvedOutcome = outcome === 'failed' ? outcome : (metadata?.outcome ?? outcome);
         telemetry?.emit('agent_orchestrator_session_end', {
           runId: telemetryContext.runId,
           phase: telemetryContext.phase,
           step: telemetryContext.step,
           durationMs,
-          outcome: metadata?.outcome ?? outcome,
+          outcome: resolvedOutcome,
           launchMechanism: metadata?.launchMechanism,
           assistantTurnCount,
           toolCallCount,
           degradedCapabilities: metadata?.degradedCapabilities ?? [],
           tokenUsage: metadata?.tokenUsage ?? { available: false }
         });
+
+        // Cache safe session metadata for getSessionMetadata()
+        const sessionModel = metadata?.model ?? profile.model;
+        const mappedOutcome: RunnerSessionMetadata['outcome'] =
+          resolvedOutcome === 'canceled' ? 'cancelled' : resolvedOutcome;
+        const tokenUsage = metadata?.tokenUsage;
+        // Normalize token counts to the strict TokenBreakdown shape: all four fields
+        // required. The adapter may produce a looser shape (e.g. { input, output, total }
+        // without cacheRead/cacheWrite), so we fill defaults to avoid schema validation
+        // failures when the event is verified at the execution boundary.
+        const normalizedTokens =
+          tokenUsage?.available === true && tokenUsage.tokens !== undefined
+            ? {
+                input: (tokenUsage.tokens as Record<string, unknown>)['input'] as number ?? 0,
+                output: (tokenUsage.tokens as Record<string, unknown>)['output'] as number ?? 0,
+                cacheRead: (tokenUsage.tokens as Record<string, unknown>)['cacheRead'] as number ?? 0,
+                cacheWrite: (tokenUsage.tokens as Record<string, unknown>)['cacheWrite'] as number ?? 0
+              }
+            : undefined;
+        cachedSessionMetadata = {
+          model: sessionModel,
+          inferenceSettings: profile.inferenceSettings,
+          startedAt: startedAtIso,
+          endedAt: endedAtIso,
+          outcome: mappedOutcome,
+          ...(normalizedTokens !== undefined
+            ? { tokens: normalizedTokens, usageAvailable: true }
+            : { usageAvailable: tokenUsage?.available ?? false }),
+          assistantTurnCount,
+          toolCallCount
+        };
       }
+    },
+
+    async getSessionMetadata(): Promise<RunnerSessionMetadata | null> {
+      return cachedSessionMetadata;
     },
 
     async close(): Promise<RunnerCloseResult> {

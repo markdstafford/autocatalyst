@@ -29,6 +29,13 @@ export const createPullRequestInputSchema = z.object({
   branch: z.string().min(1)
 }).strict().superRefine(requireTenantMatchesOwner);
 
+export const runPullRequestPath = '/v1/runs/:id/pull-request' as const;
+export const getRunPullRequestSuccessStatusCode = 200 as const;
+export const runPullRequestResponseSchema = z.object({
+  pullRequest: pullRequestSchema
+}).strict();
+export type RunPullRequestResponse = z.infer<typeof runPullRequestResponseSchema>;
+
 export type PullRequestState = z.infer<typeof pullRequestStateSchema>;
 export type PullRequest = z.infer<typeof pullRequestSchema>;
 export type CreatePullRequestInput = z.infer<typeof createPullRequestInputSchema>;

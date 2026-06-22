@@ -7,7 +7,7 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-import Fastify, { type FastifyInstance } from 'fastify';
+import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyServerOptions } from 'fastify';
 import { z } from 'zod';
 
 import { sessionRoleSchema } from '@autocatalyst/api-contract';
@@ -233,6 +233,18 @@ export interface ControlPlaneServerOptions {
    * composed and stopped automatically on `onClose`.
    */
   readonly pullRequestReconciliationTicker?: PullRequestReconciliationTickerConfig;
+  /**
+   * Optional Fastify logger configuration. When not provided, defaults to `false`
+   * (no logging), preserving the existing behavior. Tests can inject a custom
+   * logger to capture log entries for assertions.
+   */
+  readonly logger?: FastifyServerOptions['logger'];
+  /**
+   * Optional pre-constructed Fastify-compatible logger instance. When provided,
+   * replaces pino and allows tests to capture log entries directly. Mutually
+   * exclusive with `logger`.
+   */
+  readonly loggerInstance?: FastifyBaseLogger;
 }
 
 const DEFAULT_RUN_CONCURRENCY = 2;
@@ -880,7 +892,9 @@ export async function createControlPlaneServer(
   });
   await options.onProviderComposition?.(providerCompositionResult);
 
-  const app = Fastify({ logger: false });
+  const app = options.loggerInstance !== undefined
+    ? Fastify({ loggerInstance: options.loggerInstance })
+    : Fastify({ logger: options.logger ?? false });
 
   const domainRepos = createDrizzleDomainRepositories(database);
   const conversationIngress = new DrizzleConversationIngressRepository(database);
@@ -1163,8 +1177,21 @@ export async function createControlPlaneServer(
       },
       registry: stepResultContractRegistry
     });
+    const safeSessionLogger = {
+      warn(fields: Record<string, unknown>, message: string) {
+        const { runId, step, role, errorName, errorCode } = fields;
+        console.warn({ runId, step, role, errorName, ...(errorCode !== undefined ? { errorCode } : {}) }, message);
+      },
+      error(fields: Record<string, unknown>, message: string) {
+        const { runId, step, role, errorName, errorCode } = fields;
+        console.error({ runId, step, role, errorName, ...(errorCode !== undefined ? { errorCode } : {}) }, message);
+      }
+    };
+
     const executionUnitOfWork = createExecutionRunUnitOfWork({
       execute: entryPoint,
+      sessions: domainRepos.sessions,
+      logger: safeSessionLogger,
       resolveContext: async (workInput) => {
         const workspace = await resolveWorkspaceInputForRun({
           workInput,
@@ -1545,7 +1572,9 @@ export async function createControlPlaneServer(
     workspaceFilesystem: nodeFilesystem,
     feedbackLifecycle: feedbackLifecycleDependencies,
     projects: domainRepos.projects,
-    issueReferenceIntakeResolver
+    issueReferenceIntakeResolver,
+    pullRequests: domainRepos.pullRequests,
+    sessions: domainRepos.sessions
   });
   options.onControlPlaneReady?.(controlPlane);
 

@@ -833,4 +833,90 @@ describe('createAgentOrchestratorRunner', () => {
       expect((collected[0] as RunnerTerminalResultEvent).result.directive).toBe('fail');
     });
   });
+
+  describe('getSessionMetadata', () => {
+    it('returns null before run() has been called', async () => {
+      const { options } = makeOrchestratorOptions();
+      const runner = createAgentOrchestratorRunner(options);
+      const metadata = await runner.getSessionMetadata!();
+      expect(metadata).toBeNull();
+    });
+
+    it('returns safe session metadata after successful run', async () => {
+      const runId = 'run_test_1';
+      const { options } = makeOrchestratorOptions({
+        events: [makeAssistantTurnEvent(runId), makeToolActivityEvent(runId), makeTerminalEvent(runId)],
+        sessionMetadata: {
+          tokenUsage: { available: true, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 } }
+        }
+      });
+      const runner = createAgentOrchestratorRunner(options);
+      await collectEvents(runner, makeRunInput());
+
+      const metadata = await runner.getSessionMetadata!();
+      expect(metadata).not.toBeNull();
+      expect(metadata!.model).toEqual({ provider: 'test', model: 'test-model' });
+      expect(metadata!.inferenceSettings).toEqual({});
+      expect(typeof metadata!.startedAt).toBe('string');
+      expect(typeof metadata!.endedAt).toBe('string');
+      expect(metadata!.outcome).toBe('succeeded');
+      expect(metadata!.tokens).toEqual({ input: 10, output: 5, cacheRead: 0, cacheWrite: 0 });
+      expect(metadata!.usageAvailable).toBe(true);
+      expect(metadata!.assistantTurnCount).toBe(1);
+      expect(metadata!.toolCallCount).toBe(1);
+    });
+
+    it('returns outcome failed when run throws', async () => {
+      const runId = 'run_test_1';
+      const { options } = makeOrchestratorOptions({
+        events: [makeAssistantTurnEvent(runId)],
+        streamError: new Error('Stream died')
+      });
+      const runner = createAgentOrchestratorRunner(options);
+
+      try {
+        await collectEvents(runner, makeRunInput());
+      } catch {
+        // expected
+      }
+
+      const metadata = await runner.getSessionMetadata!();
+      expect(metadata).not.toBeNull();
+      expect(metadata!.outcome).toBe('failed');
+    });
+
+    it('metadata does not contain provider messages or raw errors', async () => {
+      const runId = 'run_test_1';
+      const SECRET_SENTINEL = 'ULTRA_SECRET_CREDENTIAL_VALUE';
+      const { options } = makeOrchestratorOptions({
+        events: [makeTerminalEvent(runId)]
+      });
+      const runner = createAgentOrchestratorRunner(options);
+      await collectEvents(runner, makeRunInput());
+
+      const metadata = await runner.getSessionMetadata!();
+      expect(metadata).not.toBeNull();
+      expect(JSON.stringify(metadata)).not.toContain(SECRET_SENTINEL);
+    });
+
+    it('startedAt and endedAt are valid ISO 8601 datetime strings', async () => {
+      const runId = 'run_test_1';
+      // Use a real clock for this test to get actual ISO strings
+      const realClockOptions: CreateAgentOrchestratorRunnerOptions = {
+        ...makeOrchestratorOptions({ events: [makeTerminalEvent(runId)] }).options,
+        clock: Date.now
+      };
+      const runner = createAgentOrchestratorRunner(realClockOptions);
+      await collectEvents(runner, makeRunInput());
+
+      const metadata = await runner.getSessionMetadata!();
+      expect(metadata).not.toBeNull();
+      // Check that startedAt and endedAt are valid ISO strings
+      expect(() => new Date(metadata!.startedAt)).not.toThrow();
+      expect(new Date(metadata!.startedAt).toISOString()).toBe(metadata!.startedAt);
+      expect(metadata!.endedAt).not.toBeNull();
+      expect(() => new Date(metadata!.endedAt!)).not.toThrow();
+      expect(new Date(metadata!.endedAt!).toISOString()).toBe(metadata!.endedAt);
+    });
+  });
 });

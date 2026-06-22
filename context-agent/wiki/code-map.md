@@ -131,6 +131,29 @@ Spec review routes (added by spec-review API surface enhancement):
 - `GET /v1/runs/:id/feedback` — lists all feedback for the run scoped to the caller's tenant. Policy resource: `run_feedback`/`run_feedback.list`. Returns 200 with `{ feedback: Feedback[] }`.
 - `POST /v1/runs/:id/feedback/:feedbackId/thread` — appends a reply to an existing feedback item's thread without changing the feedback status. Policy resource: `run_feedback.thread.append`. Returns 200 with the updated `Feedback`. Body schema: `appendFeedbackThreadRequestSchema` (`{ body }`). Implemented in `packages/core/src/feedback-lifecycle.ts` (`appendFeedbackThreadReply`) and `packages/persistence/src/domain-repositories.ts` (`DrizzleFeedbackRepository.appendFeedbackThread`); exposed via `packages/sdk/src/client.ts` (`appendFeedbackThread(runId, feedbackId, request)`).
 
+Run observability routes (added by durable run activity and pull-request observability enhancement):
+
+- `GET /v1/runs/:id/pull-request` — returns the pull request associated with the run. Policy action/resource: `runPullRequestReadPolicyAction` / `runPullRequestPolicyResourceKind` (exported from `packages/core/src/routes.ts`). 404 if missing or cross-tenant child resource; 403 if cross-tenant run. Response schema: `runPullRequestResponseSchema` from `packages/api-contract/src/pull-request.ts` (`runPullRequestPath`, `getRunPullRequestSuccessStatusCode`, `RunPullRequestResponse`). Service method: `ControlPlaneService.getRunPullRequest` in `packages/core/src/control-plane-service.ts` (hides missing/cross-tenant child as 404).
+- `GET /v1/runs/:id/sessions` — lists execution sessions for a run. Policy action/resource: `runSessionsListPolicyAction` / `runSessionsPolicyResourceKind` (exported from `packages/core/src/routes.ts`). 404/403 like above. Response schema: `runSessionListResponseSchema` from `packages/api-contract/src/session.ts` (`runSessionsPath`, `listRunSessionsSuccessStatusCode`, `RunSessionListResponse`). Service method: `ControlPlaneService.listRunSessions` in `packages/core/src/control-plane-service.ts`.
+
+Policy additions: `packages/core/src/policy.ts` `PolicyAction` now includes `'run_pull_request.read'` and `'run_sessions.list'`; `PolicyResourceDescriptor` includes `run_pull_request` and `run_sessions` variants.
+
+Safe 5xx logging: `packages/core/src/routes.ts` exports `SafeServerErrorLogFields` and logs sanitized error details for 5xx faults (no stack traces or internal details leak to callers).
+
+SDK surface: `packages/sdk/src/client.ts` exposes `getRunPullRequest(runId)` and `listRunSessions(runId)`.
+
+Execution session recorder: `packages/core/src/execution-session-recorder.ts` (new) — maps execution metadata to durable `Session` rows with zero-equivalent degraded usage; persistence failures are sanitized (no crash, degraded behavior only). Wired into `packages/core/src/execution-run-unit-of-work.ts` which records sessions for real agent/direct sessions (when `sessions` option is provided) and skips deterministic non-model steps.
+
+Run observability test files:
+- `packages/api-contract/src/run-observability.spec.ts` — contract schema tests
+- `packages/core/src/control-plane-service.run-observability.spec.ts` — service layer unit tests
+- `packages/core/src/routes.run-observability.spec.ts` — route handler unit tests
+- `packages/sdk/src/client.run-observability.spec.ts` — SDK client unit tests
+- `packages/core/src/execution-session-recorder.spec.ts` — session recorder unit tests
+- `packages/core/src/execution-run-unit-of-work.session-persistence.spec.ts` — unit-of-work session wiring tests
+- `apps/control-plane/src/reviewed-execution-dispatcher.session-persistence.spec.ts` — dispatcher session persistence tests
+- `apps/control-plane/src/pr-lifecycle.run-observability.integration.spec.ts` — integration coverage for PR lifecycle observability
+
 Failure reason test coverage: `packages/core/src/routes.spec.ts` covers GET/SSE serialization of matching failure reasons. `apps/control-plane/src/run-failure-reason.integration.spec.ts` drives create → auto-dispatch → provider-auth failure through production dispatch and asserts `provider_auth_failed` on GET and SSE plus no-leak sentinels.
 
 Provider composition test seams:

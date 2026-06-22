@@ -343,3 +343,5 @@ export {
 } from './pr-finalize-result-validation.js';
 export * from './pr-open-handler.js';
 export * from './pr-lifecycle.js';
+
+export * from './execution-session-recorder.js';

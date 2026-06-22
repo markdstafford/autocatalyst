@@ -196,7 +196,9 @@ describe('control-plane-service integration (SQLite + real orchestrator + real e
         workspaceFilesystem: { writeFile: vi.fn(), readFile: vi.fn().mockResolvedValue('') },
         feedbackLifecycle: { feedback: domainRepos.feedback, ids: () => 'id', clock: () => new Date().toISOString() },
         projects: domainRepos.projects,
-        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver(),
+        pullRequests: domainRepos.pullRequests,
+        sessions: domainRepos.sessions
       });
 
       // Create a project so the conversation ingress has a valid project.
@@ -325,7 +327,9 @@ describe('control-plane-service auto-dispatch integration (SQLite + real orchest
         workspaceFilesystem: { writeFile: vi.fn(), readFile: vi.fn().mockResolvedValue('') },
         feedbackLifecycle: { feedback: domainRepos.feedback, ids: () => 'id', clock: () => new Date().toISOString() },
         projects: domainRepos.projects,
-        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver(),
+        pullRequests: domainRepos.pullRequests,
+        sessions: domainRepos.sessions
       });
 
       const project = await domainRepos.projects.create({
@@ -485,7 +489,9 @@ describe('execution boundary integration (real StubRunner through two-root works
         workspaceFilesystem: { writeFile: vi.fn(), readFile: vi.fn().mockResolvedValue('') },
         feedbackLifecycle: { feedback: domainRepos.feedback, ids: () => 'id', clock: () => new Date().toISOString() },
         projects: domainRepos.projects,
-        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver(),
+        pullRequests: domainRepos.pullRequests,
+        sessions: domainRepos.sessions
       });
 
       // Create conversation + first run
@@ -623,7 +629,9 @@ describe('execution boundary integration (real StubRunner through two-root works
         workspaceFilesystem: { writeFile: vi.fn(), readFile: vi.fn().mockResolvedValue('') },
         feedbackLifecycle: { feedback: domainRepos.feedback, ids: () => 'id', clock: () => new Date().toISOString() },
         projects: domainRepos.projects,
-        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver(),
+        pullRequests: domainRepos.pullRequests,
+        sessions: domainRepos.sessions
       });
 
       const createResp = await controlPlane.createConversationWithFirstRun({
@@ -1045,7 +1053,9 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
           clock: () => new Date().toISOString()
         },
         projects: domainRepos.projects,
-        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver(),
+        pullRequests: domainRepos.pullRequests,
+        sessions: domainRepos.sessions
       });
 
       // Tick once — the run is already at spec.author, so this executes the spec authoring step
@@ -1279,7 +1289,9 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
           clock: () => new Date().toISOString()
         },
         projects: domainRepos.projects,
-        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver(),
+        pullRequests: domainRepos.pullRequests,
+        sessions: domainRepos.sessions
       });
 
       await controlPlane.tick({
@@ -1488,7 +1500,9 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
           clock: () => new Date().toISOString()
         },
         projects: domainRepos.projects,
-        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver(),
+        pullRequests: domainRepos.pullRequests,
+        sessions: domainRepos.sessions
       });
 
       await controlPlane.tick({
@@ -1684,7 +1698,9 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
           clock: () => new Date().toISOString()
         },
         projects: domainRepos.projects,
-        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver(),
+        pullRequests: domainRepos.pullRequests,
+        sessions: domainRepos.sessions
       });
 
       // Single tick — harness writes mismatched JSON, schema validation fails → fail directive
@@ -1868,7 +1884,9 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
           clock: () => new Date().toISOString()
         },
         projects: domainRepos.projects,
-        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver(),
+        pullRequests: domainRepos.pullRequests,
+        sessions: domainRepos.sessions
       });
 
       // Normal create — starts at intake, auto-dispatch fires for each step
@@ -2116,7 +2134,9 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
           clock: fixedClock
         },
         projects: domainRepos.projects,
-        issueReferenceIntakeResolver: makePassThroughIntakeResolver()
+        issueReferenceIntakeResolver: makePassThroughIntakeResolver(),
+        pullRequests: domainRepos.pullRequests,
+        sessions: domainRepos.sessions
       });
 
       await controlPlane.tick({

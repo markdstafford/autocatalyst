@@ -1220,7 +1220,7 @@ describe('registerControlPlaneRoutes', () => {
     expect(response.statusCode).toBe(500);
     const parsed = errorResponseSchema.parse(response.json());
     expect(parsed.error.code).toBe('internal_error');
-    expect(parsed.error.message).toBe('Internal server error.');
+    expect(parsed.error.message).toBe('An internal server error occurred.');
     expect(response.body).not.toContain('/absolute/path');
   });
 
@@ -1872,7 +1872,7 @@ describe('registerControlPlaneRoutes', () => {
       expect(response.statusCode).toBe(500);
       const parsed = errorResponseSchema.parse(response.json());
       expect(parsed.error.code).toBe('internal_error');
-      expect(parsed.error.message).toBe('Internal server error.');
+      expect(parsed.error.message).toBe('An internal server error occurred.');
       expect(response.body).not.toContain('/internal/path');
     });
 
