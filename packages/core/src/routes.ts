@@ -31,9 +31,11 @@ import {
   eventsStreamPath,
   feedbackSchema,
   forbiddenErrorCode,
+  getRunPullRequestSuccessStatusCode,
   getRunSpecSuccessStatusCode,
   getRunSuccessStatusCode,
   listRunFeedbackSuccessStatusCode,
+  listRunSessionsSuccessStatusCode,
   listRunsSuccessStatusCode,
   runListResponseSchema,
   healthResponseSchema,
@@ -59,6 +61,10 @@ import {
   runFeedbackThreadPath,
   runFeedbackThreadParamsSchema,
   runIdParamsSchema,
+  runPullRequestPath,
+  runPullRequestResponseSchema,
+  runSessionListResponseSchema,
+  runSessionsPath,
   runSpecPath,
   runSpecResponseSchema,
   runStepListResponseSchema,
@@ -78,7 +84,9 @@ import {
   type ProbeResourceIdParams,
   type ReconcilePullRequestsResponse,
   type RunIdParams,
+  type RunPullRequestResponse,
   type RunReplyRequest,
+  type RunSessionListResponse,
   type UpdateConfigurationRecordRequest
 } from '@autocatalyst/api-contract';
 
@@ -112,6 +120,11 @@ import {
 } from './configuration-record.js';
 import { createSecret, SecretStoreLockedError, type SecretStore } from './secret.js';
 import type { RunEventSubscription } from './run-events.js';
+
+export const runPullRequestReadPolicyAction = 'run_pull_request.read' as const;
+export const runPullRequestPolicyResourceKind = 'run_pull_request' as const;
+export const runSessionsListPolicyAction = 'run_sessions.list' as const;
+export const runSessionsPolicyResourceKind = 'run_sessions' as const;
 
 export interface ControlPlaneRouteDependencies {
   readonly health: HealthDependencyChecker;
@@ -709,6 +722,70 @@ export async function registerControlPlaneRoutes(
       try {
         const result: ReconcilePullRequestsResponse = await dependencies.controlPlane.reconcilePullRequests({ principal, tenant: principal.tenantId });
         await reply.status(reconcilePullRequestsSuccessStatusCode).send(pullRequestReconciliationResponseSchema.parse(result));
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(reply, error);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    // Run observability: GET /v1/runs/:id/pull-request
+    protectedApp.get(runPullRequestPath, {
+      preHandler: authorizePreHandler(dependencies.policy, runPullRequestReadPolicyAction, (request) => ({
+        kind: runPullRequestPolicyResourceKind,
+        id: (request.params as { id: string }).id,
+        path: '/v1/runs/:id/pull-request' as const
+      }))
+    }, async (request, reply) => {
+      let params: RunIdParams;
+      try {
+        params = runIdParamsSchema.parse(request.params);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const principal = requirePrincipalFromRequest(request);
+      try {
+        const result: RunPullRequestResponse = await dependencies.controlPlane.getRunPullRequest({
+          principal,
+          tenant: principal.tenantId,
+          runId: params.id
+        });
+        await reply.status(getRunPullRequestSuccessStatusCode).send(runPullRequestResponseSchema.parse(result));
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(reply, error);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    // Run observability: GET /v1/runs/:id/sessions
+    protectedApp.get(runSessionsPath, {
+      preHandler: authorizePreHandler(dependencies.policy, runSessionsListPolicyAction, (request) => ({
+        kind: runSessionsPolicyResourceKind,
+        id: (request.params as { id: string }).id,
+        path: '/v1/runs/:id/sessions' as const
+      }))
+    }, async (request, reply) => {
+      let params: RunIdParams;
+      try {
+        params = runIdParamsSchema.parse(request.params);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const principal = requirePrincipalFromRequest(request);
+      try {
+        const result: RunSessionListResponse = await dependencies.controlPlane.listRunSessions({
+          principal,
+          tenant: principal.tenantId,
+          runId: params.id
+        });
+        await reply.status(listRunSessionsSuccessStatusCode).send(runSessionListResponseSchema.parse(result));
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
           await handleControlPlaneServiceError(reply, error);
