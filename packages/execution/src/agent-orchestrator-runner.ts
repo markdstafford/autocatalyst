@@ -176,14 +176,27 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
         const mappedOutcome: RunnerSessionMetadata['outcome'] =
           resolvedOutcome === 'canceled' ? 'cancelled' : resolvedOutcome;
         const tokenUsage = metadata?.tokenUsage;
+        // Normalize token counts to the strict TokenBreakdown shape: all four fields
+        // required. The adapter may produce a looser shape (e.g. { input, output, total }
+        // without cacheRead/cacheWrite), so we fill defaults to avoid schema validation
+        // failures when the event is verified at the execution boundary.
+        const normalizedTokens =
+          tokenUsage?.available === true && tokenUsage.tokens !== undefined
+            ? {
+                input: (tokenUsage.tokens as Record<string, unknown>)['input'] as number ?? 0,
+                output: (tokenUsage.tokens as Record<string, unknown>)['output'] as number ?? 0,
+                cacheRead: (tokenUsage.tokens as Record<string, unknown>)['cacheRead'] as number ?? 0,
+                cacheWrite: (tokenUsage.tokens as Record<string, unknown>)['cacheWrite'] as number ?? 0
+              }
+            : undefined;
         cachedSessionMetadata = {
           model: sessionModel,
           inferenceSettings: profile.inferenceSettings,
           startedAt: startedAtIso,
           endedAt: endedAtIso,
           outcome: mappedOutcome,
-          ...(tokenUsage?.available === true && tokenUsage.tokens !== undefined
-            ? { tokens: tokenUsage.tokens, usageAvailable: true }
+          ...(normalizedTokens !== undefined
+            ? { tokens: normalizedTokens, usageAvailable: true }
             : { usageAvailable: tokenUsage?.available ?? false }),
           assistantTurnCount,
           toolCallCount
