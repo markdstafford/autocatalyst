@@ -1477,7 +1477,8 @@ export async function createControlPlaneServer(
     artifacts: domainRepos.artifacts,
     filesystem: nodeFilesystem,
     git: nodeGit,
-    clock: () => new Date().toISOString()
+    clock: () => new Date().toISOString(),
+    feedbackLifecycle: feedbackLifecycleDependencies
   };
 
   const specApprovalFinalizerDependencies: SpecApprovalFinalizerDependencies = {
