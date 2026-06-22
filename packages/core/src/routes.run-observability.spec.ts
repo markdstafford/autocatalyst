@@ -471,13 +471,12 @@ describe('run observability routes', () => {
       expect(sanitizedSerialized).not.toContain('/Users/testuser');
     });
 
-    it('unexpected route error → 500 generic client response', async () => {
-      // Test that unexpected errors (not ControlPlaneServiceError) produce 500 safely
-      // without using loggerInstance (which has Fastify 5 setErrorHandler quirks with custom loggers)
+    it('unexpected route error → 500 generic client response + log entry', async () => {
+      const { logger, entries } = createCapturingLogger();
       const controlPlane = createFakeControlPlaneService();
       vi.mocked(controlPlane.listRunSessions).mockRejectedValue(new Error('unexpected boom'));
 
-      const { app, authorization } = await buildServer({ controlPlane });
+      const { app, authorization } = await buildServer({ controlPlane }, logger);
       server = app;
 
       const response = await app.inject({
@@ -487,6 +486,16 @@ describe('run observability routes', () => {
       });
 
       expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual({ error: { code: 'internal_error', message: 'An internal server error occurred.' } });
+
+      const routeFailureEntries = entries.filter(
+        (e) => typeof e.fields === 'object' && e.fields !== null && (e.fields as Record<string, unknown>)['event'] === 'route_failure'
+      );
+      expect(routeFailureEntries).toHaveLength(1);
+      const logFields = routeFailureEntries[0]!.fields as SafeServerErrorLogFields;
+      expect(logFields.event).toBe('route_failure');
+      expect(logFields.method).toBe('GET');
+      expect(logFields.statusCode).toBe(500);
     });
   });
 });

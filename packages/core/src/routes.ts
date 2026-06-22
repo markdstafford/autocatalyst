@@ -255,6 +255,22 @@ export async function registerControlPlaneRoutes(
   app: FastifyInstance,
   dependencies: ControlPlaneRouteDependencies
 ): Promise<void> {
+  // Register error handler before plugin registration so child plugin route contexts
+  // inherit it at route-registration time (Fastify captures context.errorHandler
+  // during plugin setup; handlers registered after register() are too late).
+  app.setErrorHandler(async (error, request, reply) => {
+    if (error instanceof ZodError) {
+      await sendValidationError(reply, error);
+      return;
+    }
+    try {
+      logServerFault(request, 500, error);
+    } catch {
+      // swallow logging errors so the response is always sent
+    }
+    await reply.status(500).send(errorResponse('internal_error', 'An internal server error occurred.'));
+  });
+
   // PUBLIC: Health check (no auth)
   app.get('/health', async (_request, reply) => {
     const health = healthResponseSchema.parse(await getHealth(dependencies.health));
@@ -1026,18 +1042,5 @@ export async function registerControlPlaneRoutes(
 
       return reply;
     });
-  });
-
-  app.setErrorHandler(async (error, request, reply) => {
-    if (error instanceof ZodError) {
-      await sendValidationError(reply, error);
-      return;
-    }
-    try {
-      logServerFault(request, 500, error);
-    } catch {
-      // swallow logging errors so the response is always sent
-    }
-    await reply.status(500).send(errorResponse('internal_error', 'An internal server error occurred.'));
   });
 }
