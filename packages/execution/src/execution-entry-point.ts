@@ -18,7 +18,25 @@ import { readScratchStepResultFile } from './result-file.js';
 import type { ResultNormalizer, ResultNormalizerRegistry } from './result-normalizers.js';
 import { validateStepResult, type ResultDegradationPolicy } from './result-tolerance.js';
 import { RunnerProtocolError } from './runner.js';
-import type { Runner } from './runner.js';
+import type { Runner, RunnerSessionMetadata } from './runner.js';
+
+/**
+ * Thrown when the execution stream fails before emitting a terminal event and the runner has
+ * cached session metadata from the failed session. Callers can extract `sessionMetadata` to
+ * persist a failed durable session row without losing the original `cause` error for reason
+ * classification.
+ */
+export class PreTerminalRunnerFailure extends Error {
+  override readonly cause: unknown;
+  readonly sessionMetadata: RunnerSessionMetadata;
+
+  constructor(cause: unknown, sessionMetadata: RunnerSessionMetadata) {
+    super('Runner failed before terminal result.');
+    this.name = 'PreTerminalRunnerFailure';
+    this.cause = cause;
+    this.sessionMetadata = sessionMetadata;
+  }
+}
 
 export interface ExecutionEntryPointInput {
   readonly context: ExecutionContext;
@@ -128,6 +146,13 @@ export function createExecutionEntryPoint(options: CreateExecutionEntryPointOpti
         throw closeProtocolError;
       }
       if (streamError !== undefined) {
+        // If the runner cached session metadata during the failed stream, wrap the error so
+        // callers (e.g. execution-run-unit-of-work) can persist a failed durable session row.
+        // getSessionMetadata() is called after close() to match the successful-path ordering.
+        const failedMeta = await options.runner.getSessionMetadata?.().catch(() => null) ?? null;
+        if (failedMeta !== null) {
+          throw new PreTerminalRunnerFailure(streamError, failedMeta);
+        }
         throw streamError;
       }
 

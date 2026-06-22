@@ -154,7 +154,12 @@ function routePattern(request: FastifyRequest): string {
 function safeStack(error: unknown): string | undefined {
   if (!(error instanceof Error) || typeof error.stack !== 'string') return undefined;
   return error.stack
-    .replace(/\/Users\/[^\s)]+/gu, '[workspace-path]')
+    // Strip the first line (error name + message) — errorName is already in the structured log
+    // fields and the raw message may contain provider/subprocess/workspace details.
+    .replace(/^[^\n]*\n?/, '')
+    // Redact absolute filesystem paths. Covers /Users, /workspace, /tmp, /home, /var and other
+    // common roots while avoiding URL path segments like /v1/runs/... which start with digits.
+    .replace(/\/(Users|workspace|tmp|home|var|opt|root|proc|app|srv|mnt|usr|etc|run|dev|sys)\/[^\s)"']+/gu, '[filesystem-path]')
     .replace(/Bearer\s+[A-Za-z0-9._~+/-]+/giu, 'Bearer [redacted]')
     .replace(/SECRET_SENTINEL/gu, '[redacted]');
 }

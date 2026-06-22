@@ -443,11 +443,11 @@ describe('run observability routes', () => {
     it('does not include sensitive data (secret sentinels, absolute paths) in route_failure log fields', async () => {
       const { logger, entries } = createCapturingLogger();
       const controlPlane = createFakeControlPlaneService();
-      // Use a persistence_failed error containing sensitive data in the stack trace
+      // Use a persistence_failed error with sensitive data in both message line and stack frames
       const persistenceError = new ControlPlaneServiceError('persistence_failed', 'DB failure.');
-      // Simulate a stack with a path and redacted sentinel
+      // Stack includes: raw message line, /Users path, /workspace path, token sentinel, Bearer token
       Object.defineProperty(persistenceError, 'stack', {
-        value: 'Error: DB failure.\n    at /Users/testuser/project/src/file.ts:1:1\n    with SECRET_SENTINEL\n    with Bearer secrettoken123'
+        value: 'ControlPlaneServiceError: DB failure with /workspace/sensitive/detail.\n    at /Users/testuser/project/src/file.ts:1:1\n    at /workspace/project/src/service.ts:50:10\n    with SECRET_SENTINEL\n    with Bearer secrettoken123'
       });
       vi.mocked(controlPlane.listRunSessions).mockRejectedValue(persistenceError);
 
@@ -465,9 +465,15 @@ describe('run observability routes', () => {
       );
       expect(routeFailureEntries).toHaveLength(1);
       const sanitizedSerialized = JSON.stringify(routeFailureEntries);
+      // Token sentinels must not appear
       expect(sanitizedSerialized).not.toContain('SECRET_SENTINEL');
       expect(sanitizedSerialized).not.toContain('Bearer secret');
+      // /Users paths must be redacted
       expect(sanitizedSerialized).not.toContain('/Users/testuser');
+      // Non-/Users absolute paths must also be redacted
+      expect(sanitizedSerialized).not.toContain('/workspace/project/src');
+      // Raw message line must not appear in the stack (message may contain workspace paths or provider details)
+      expect(sanitizedSerialized).not.toContain('DB failure with /workspace/sensitive/detail');
     });
 
     it('unexpected route error → 500 generic client response + log entry', async () => {

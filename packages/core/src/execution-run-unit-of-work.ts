@@ -1,6 +1,7 @@
 import type { ExecutionContext, JsonValue } from '@autocatalyst/api-contract';
 import {
   RunnerProtocolError,
+  PreTerminalRunnerFailure,
   type ExecutionBoundaryEvent,
   type DirectCallRequest,
   type DirectOrchestratorCallResult
@@ -204,7 +205,51 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
         if (error instanceof RunnerProtocolError) {
           throw error;
         }
-        const reason = safeFailureReasonFromError(error) ?? 'Runner failed before terminal result.';
+        // For pre-terminal runner failures, try to record a failed session row from the cached
+        // metadata before returning. Persistence failures here are logged but must not replace
+        // the original sanitized terminal reason.
+        const preTerminalMeta = error instanceof PreTerminalRunnerFailure ? error.sessionMetadata : undefined;
+        const actualError = error instanceof PreTerminalRunnerFailure ? error.cause : error;
+        const reason = safeFailureReasonFromError(actualError) ?? 'Runner failed before terminal result.';
+
+        if (options.sessions !== undefined && preTerminalMeta !== undefined) {
+          try {
+            await recordExecutionSession(
+              { sessions: options.sessions, ...(options.logger !== undefined ? { logger: options.logger } : {}) },
+              {
+                runId: input.runId,
+                phase: derivePhase(input),
+                step: input.run.currentStep,
+                role: deriveRole(input) as 'implementer' | 'reviewer',
+                round: deriveRound(input),
+                startedAt: preTerminalMeta.startedAt,
+                endedAt: preTerminalMeta.endedAt,
+                outcome: 'failed',
+                model: preTerminalMeta.model,
+                inferenceSettings: preTerminalMeta.inferenceSettings,
+                ...(preTerminalMeta.usageAvailable === true && preTerminalMeta.tokens !== undefined
+                  ? { tokens: preTerminalMeta.tokens, usageAvailable: true }
+                  : { usageAvailable: false }),
+                ...(preTerminalMeta.assistantTurnCount !== undefined ? { assistantTurnCount: preTerminalMeta.assistantTurnCount } : {}),
+                ...(preTerminalMeta.toolCallCount !== undefined ? { toolCallCount: preTerminalMeta.toolCallCount } : {})
+              }
+            );
+          } catch (recordError) {
+            options.logger?.error(
+              {
+                runId: input.runId,
+                step: input.run.currentStep,
+                role: deriveRole(input),
+                errorName: recordError instanceof Error ? recordError.name : 'UnknownError',
+                ...(recordError instanceof ExecutionSessionRecordingError && recordError.code !== undefined
+                  ? { errorCode: recordError.code }
+                  : {})
+              },
+              'Failed to record session for pre-terminal runner failure; original failure reason preserved.'
+            );
+          }
+        }
+
         return { workResult: { directive: 'fail', reason } };
       }
 

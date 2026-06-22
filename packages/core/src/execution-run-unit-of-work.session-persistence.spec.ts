@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import type { ExecutionContext } from '@autocatalyst/api-contract';
-import type { ExecutionBoundaryEvent, ExecutionEntryPoint, ExecutionEntryPointInput } from '@autocatalyst/execution';
+import type { ExecutionBoundaryEvent, ExecutionEntryPoint, ExecutionEntryPointInput, RunnerSessionMetadata } from '@autocatalyst/execution';
+import { PreTerminalRunnerFailure } from '@autocatalyst/execution';
 import type { Session } from '@autocatalyst/api-contract';
 import type { SessionRepository } from './domain-repositories.js';
 import type { RunWorkInput, RunWorkResult } from './orchestrator.js';
@@ -411,6 +412,97 @@ describe('execution-run-unit-of-work session persistence', () => {
 
     const result = await unitOfWork.run(makeRoleInput('implementer', 1));
     expect(result).toEqual({ directive: 'fail', reason: 'session_persistence_failed' });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Pre-terminal runner failure — INIT-2 regression
+  // ---------------------------------------------------------------------------
+
+  it('records a failed session row when the runner throws before emitting a terminal event', async () => {
+    const sessions = makeSessions();
+    // Simulate an entry point that carries pre-terminal metadata (as execution-entry-point
+    // does when the runner throws mid-stream and getSessionMetadata() returns cached data).
+    const preTerminalMeta: RunnerSessionMetadata = {
+      ...baseSessionMetadata,
+      outcome: 'failed'
+    };
+    const cause = new Error('adapter crash');
+    const preTerminalFailure = new PreTerminalRunnerFailure(cause, preTerminalMeta);
+
+    const throwingEntryPoint: ExecutionEntryPoint = {
+      execute(_input: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
+        return (async function* () {
+          throw preTerminalFailure;
+        })();
+      }
+    };
+
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: throwingEntryPoint,
+      resolveContext: async () => makeContext(),
+      eventsStore: newStore(),
+      sessions
+    });
+
+    const result = await unitOfWork.run(makeRoleInput('implementer', 1));
+
+    // The dispatch must still fail with a sanitized reason.
+    expect(result.directive).toBe('fail');
+    // A failed session row must have been recorded despite the pre-terminal throw.
+    expect(sessions.create).toHaveBeenCalledOnce();
+    const call = (sessions.create as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(call).toMatchObject({
+      runId,
+      step: 'implementation.build',
+      role: 'implementer',
+      round: 1,
+      outcome: 'failed'
+    });
+  });
+
+  it('preserves original failure reason and logs safely when pre-terminal session persistence fails', async () => {
+    const sessions = makeSessions({
+      create: vi.fn().mockRejectedValue(new Error('DB write failed'))
+    });
+    const logger = { warn: vi.fn(), error: vi.fn() };
+    const preTerminalMeta: RunnerSessionMetadata = {
+      ...baseSessionMetadata,
+      outcome: 'failed'
+    };
+    const cause = new Error('adapter crash before terminal');
+    const preTerminalFailure = new PreTerminalRunnerFailure(cause, preTerminalMeta);
+
+    const throwingEntryPoint: ExecutionEntryPoint = {
+      execute(_input: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
+        return (async function* () {
+          throw preTerminalFailure;
+        })();
+      }
+    };
+
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: throwingEntryPoint,
+      resolveContext: async () => makeContext(),
+      eventsStore: newStore(),
+      sessions,
+      logger
+    });
+
+    const result = await unitOfWork.run(makeRoleInput('implementer', 1));
+
+    // Original reason preserved — not replaced by session_persistence_failed.
+    expect(result.directive).toBe('fail');
+    expect((result as { reason?: string }).reason).not.toBe('session_persistence_failed');
+    // The persistence failure must be logged with only safe fields.
+    expect(logger.error).toHaveBeenCalled();
+    for (const call of (logger.error as ReturnType<typeof vi.fn>).mock.calls) {
+      const logFields = call[0] as Record<string, unknown>;
+      expect(logFields).toHaveProperty('runId');
+      expect(logFields).toHaveProperty('step');
+      expect(logFields).toHaveProperty('role');
+      expect(logFields).toHaveProperty('errorName');
+      expect(JSON.stringify(logFields)).not.toContain('DB write failed');
+    }
   });
 });
 

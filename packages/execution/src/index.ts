@@ -111,7 +111,8 @@ export {
   type Runner,
   type RunnerCloseResult,
   type RunnerProtocolErrorCode,
-  type RunnerRunInput
+  type RunnerRunInput,
+  type RunnerSessionMetadata
 } from './runner.js';
 
 export {
@@ -239,6 +240,7 @@ export {
 
 export {
   createExecutionEntryPoint,
+  PreTerminalRunnerFailure,
   type CreateExecutionEntryPointOptions,
   type ExecutionEntryPoint,
   type ExecutionEntryPointInput
