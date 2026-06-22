@@ -249,7 +249,7 @@ describe('completeSpecAuthoring side effects', () => {
     expect(output.committedPath).toBe('context-human/specs/feature-artifact-feedback-gate.md');
   });
 
-  it('recovers existing artifact when findByRunAndKind returns one', async () => {
+  it('recovers existing artifact without write or commit when existing file content is unchanged', async () => {
     const existingArtifact = {
       id: 'artifact_existing',
       runId: 'run_1',
@@ -263,7 +263,7 @@ describe('completeSpecAuthoring side effects', () => {
       createdAt: '2026-06-11T00:00:00.000Z',
       updatedAt: '2026-06-11T00:00:00.000Z'
     };
-    const renderedMarkdown = '---\ncreated: 2026-06-11\nlast_updated: 2026-06-11\nstatus: draft\nspecced_by: autocatalyst\n---\n# Feature spec\n\nBody content.\n';
+    const renderedMarkdown = '---\ncreated: 2026-06-11\nlast_updated: 2026-06-11\nstatus: draft\nissue: 39\nspecced_by: autocatalyst\n---\n# Feature spec\n\nBody content.\n';
     const deps = makeDeps({
       filesystem: {
         writeFile: vi.fn(async () => undefined),
@@ -279,8 +279,103 @@ describe('completeSpecAuthoring side effects', () => {
     });
 
     const output = await completeSpecAuthoring(makeInput(), deps);
+
     expect(output.artifactCreated).toBe('recovered');
     expect(output.artifact.id).toBe('artifact_existing');
+    expect(deps.filesystem.readFile).toHaveBeenCalledWith({
+      workspaceRepoRoot: '/tmp/repo',
+      relativePath: 'context-human/specs/feature-artifact-feedback-gate.md'
+    });
+    expect(deps.filesystem.writeFile).not.toHaveBeenCalled();
+    expect(deps.git.commitFiles).not.toHaveBeenCalled();
+    expect(deps.artifacts.create).not.toHaveBeenCalled();
+  });
+
+  it('rewrites, validates, and commits when an existing artifact file differs from revised content', async () => {
+    const calls: string[] = [];
+    const existingArtifact = {
+      id: 'artifact_existing',
+      runId: 'run_1',
+      owner: { kind: 'human', id: 'user_1', tenantId: 'tenant_1' },
+      tenant: 'tenant_1',
+      kind: 'feature_spec',
+      canonicalRecord: 'file',
+      location: 'context-human/specs/feature-artifact-feedback-gate.md',
+      cachedStatus: 'draft',
+      publicationRefs: [],
+      createdAt: '2026-06-11T00:00:00.000Z',
+      updatedAt: '2026-06-11T00:00:00.000Z'
+    };
+    const previousMarkdown = '---\ncreated: 2026-06-11\nlast_updated: 2026-06-11\nstatus: draft\nissue: 39\nspecced_by: autocatalyst\n---\n# Feature spec\n\nOld content.\n';
+    const revisedMarkdown = '---\ncreated: 2026-06-11\nlast_updated: 2026-06-11\nstatus: draft\nissue: 39\nspecced_by: autocatalyst\n---\n# Feature spec\n\nBody content.\n';
+    const deps = makeDeps({
+      filesystem: {
+        writeFile: vi.fn(async () => { calls.push('writeFile'); }),
+        readFile: vi
+          .fn()
+          .mockImplementationOnce(async () => { calls.push('readExistingFile'); return previousMarkdown; })
+          .mockImplementationOnce(async () => { calls.push('readWrittenFile'); return revisedMarkdown; })
+      },
+      git: {
+        commitFiles: vi.fn(async () => { calls.push('commitFiles'); return {}; })
+      },
+      artifacts: {
+        create: vi.fn(),
+        findById: vi.fn(),
+        listByRun: vi.fn(),
+        findByRunAndKind: vi.fn(async () => { calls.push('findByRunAndKind'); return existingArtifact; }),
+        updateCachedStatus: vi.fn()
+      }
+    });
+
+    const output = await completeSpecAuthoring(makeInput(), deps);
+
+    expect(calls).toEqual(['findByRunAndKind', 'readExistingFile', 'writeFile', 'readWrittenFile', 'commitFiles']);
+    expect(deps.filesystem.writeFile).toHaveBeenCalledWith({
+      workspaceRepoRoot: '/tmp/repo',
+      relativePath: 'context-human/specs/feature-artifact-feedback-gate.md',
+      contents: revisedMarkdown
+    });
+    expect(deps.git.commitFiles).toHaveBeenCalledWith({
+      workspaceRepoRoot: '/tmp/repo',
+      relativePaths: ['context-human/specs/feature-artifact-feedback-gate.md'],
+      message: 'docs: revise feature spec artifact-feedback-gate'
+    });
+    expect(output.artifactCreated).toBe('recovered');
+    expect(output.artifact.id).toBe('artifact_existing');
+    expect(deps.artifacts.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects an existing artifact whose location differs from the result path before file writes', async () => {
+    const existingArtifact = {
+      id: 'artifact_existing',
+      runId: 'run_1',
+      owner: { kind: 'human', id: 'user_1', tenantId: 'tenant_1' },
+      tenant: 'tenant_1',
+      kind: 'feature_spec',
+      canonicalRecord: 'file',
+      location: 'context-human/specs/feature-other-path.md',
+      cachedStatus: 'draft',
+      publicationRefs: [],
+      createdAt: '2026-06-11T00:00:00.000Z',
+      updatedAt: '2026-06-11T00:00:00.000Z'
+    };
+    const deps = makeDeps({
+      artifacts: {
+        create: vi.fn(),
+        findById: vi.fn(),
+        listByRun: vi.fn(),
+        findByRunAndKind: vi.fn(async () => existingArtifact),
+        updateCachedStatus: vi.fn()
+      }
+    });
+
+    await expect(completeSpecAuthoring(makeInput(), deps)).rejects.toMatchObject({
+      code: 'spec_artifact_location_mismatch'
+    });
+    expect(deps.filesystem.readFile).not.toHaveBeenCalled();
+    expect(deps.filesystem.writeFile).not.toHaveBeenCalled();
+    expect(deps.git.commitFiles).not.toHaveBeenCalled();
     expect(deps.artifacts.create).not.toHaveBeenCalled();
   });
 
