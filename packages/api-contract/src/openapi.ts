@@ -499,7 +499,7 @@ export function generateOpenApiDocument(): OpenApiDocument {
   // GET /v1/runs/{id}/pull-request
   registry.registerPath({
     method: 'get',
-    path: runPullRequestPath.replace(':id', '{id}'),
+    path: runPullRequestPath.replace(':id', '{id}') as '/v1/runs/{id}/pull-request',
     tags: ['runs'],
     request: { params: RunIdParams },
     security: [{ bearerAuth: [] }],
@@ -515,7 +515,7 @@ export function generateOpenApiDocument(): OpenApiDocument {
   // GET /v1/runs/{id}/sessions
   registry.registerPath({
     method: 'get',
-    path: runSessionsPath.replace(':id', '{id}'),
+    path: runSessionsPath.replace(':id', '{id}') as '/v1/runs/{id}/sessions',
     tags: ['runs'],
     request: { params: RunIdParams },
     security: [{ bearerAuth: [] }],
