@@ -1163,8 +1163,21 @@ export async function createControlPlaneServer(
       },
       registry: stepResultContractRegistry
     });
+    const safeSessionLogger = {
+      warn(fields: Record<string, unknown>, message: string) {
+        const { runId, step, role, errorName, errorCode } = fields;
+        console.warn({ runId, step, role, errorName, ...(errorCode !== undefined ? { errorCode } : {}) }, message);
+      },
+      error(fields: Record<string, unknown>, message: string) {
+        const { runId, step, role, errorName, errorCode } = fields;
+        console.error({ runId, step, role, errorName, ...(errorCode !== undefined ? { errorCode } : {}) }, message);
+      }
+    };
+
     const executionUnitOfWork = createExecutionRunUnitOfWork({
       execute: entryPoint,
+      sessions: domainRepos.sessions,
+      logger: safeSessionLogger,
       resolveContext: async (workInput) => {
         const workspace = await resolveWorkspaceInputForRun({
           workInput,

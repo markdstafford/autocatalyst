@@ -7,9 +7,16 @@ import {
 } from '@autocatalyst/execution';
 import type { ExecutionEntryPoint } from '@autocatalyst/execution';
 import type { RunWorkInput, RunWorkResult, RunUnitOfWork } from './orchestrator.js';
+import type { RunRoleWorkInput } from './reviewed-role-dispatcher.js';
 import { consumeRunnerEvents } from './runner-event-consumer.js';
 import { InMemoryRetainedRunEventStore, type RunEventStore } from './run-events.js';
 import { safeFailureReasonFromError } from './safe-failure-reason.js';
+import {
+  recordExecutionSession,
+  ExecutionSessionRecordingError,
+  type ExecutionSessionRecorderLogger
+} from './execution-session-recorder.js';
+import type { SessionRepository } from './domain-repositories.js';
 
 export interface DirectStepWorkInput {
   readonly runId: string;
@@ -38,6 +45,10 @@ export interface ExecutionRunUnitOfWorkOptions {
   readonly eventsStore?: RunEventStore;
   /** Optional passthrough observer for each validated boundary event (used by integration tests). */
   readonly onEvent?: (event: ExecutionBoundaryEvent) => void | Promise<void>;
+  /** Optional session repository for durable session recording. */
+  readonly sessions?: SessionRepository;
+  /** Optional logger for session recording errors (only logs runId, step, role, error name/code). */
+  readonly logger?: ExecutionSessionRecorderLogger;
 }
 
 export type ExecutionRunUnitOfWorkResult = RunWorkResult & {
@@ -47,6 +58,41 @@ export type ExecutionRunUnitOfWorkResult = RunWorkResult & {
 export interface ExecutionRunUnitOfWork extends RunUnitOfWork {
   runWithCheckpoint(input: RunWorkInput): Promise<{ workResult: RunWorkResult; checkpointResult?: JsonValue }>;
 }
+
+// ---------------------------------------------------------------------------
+// Dispatch context helpers
+// ---------------------------------------------------------------------------
+
+function deriveRole(input: RunWorkInput): string {
+  const roleInput = input as RunRoleWorkInput;
+  return typeof roleInput.role === 'string' && roleInput.role.length > 0 ? roleInput.role : 'implementer';
+}
+
+function deriveRound(input: RunWorkInput): number {
+  const roleInput = input as RunRoleWorkInput;
+  return typeof roleInput.round === 'number' && roleInput.round > 0 ? roleInput.round : 1;
+}
+
+function derivePhase(input: RunWorkInput): string | null {
+  // Use the step's phase prefix (first segment before the dot), or null if not present.
+  const step = input.run.currentStep;
+  const dotIndex = step.indexOf('.');
+  return dotIndex > 0 ? step.slice(0, dotIndex) : null;
+}
+
+type SessionOutcomeKind = 'succeeded' | 'failed' | 'cancelled' | 'timeout' | 'needs_input';
+
+function deriveAgentOutcome(workResult: RunWorkResult): SessionOutcomeKind {
+  switch (workResult.directive) {
+    case 'advance': return 'succeeded';
+    case 'needs_input': return 'needs_input';
+    case 'fail': return 'failed';
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
 
 export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOptions): ExecutionRunUnitOfWork {
   return {
@@ -82,6 +128,38 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
             step: input.run.currentStep,
             directCall: modeResolution.directCall
           });
+
+          // Record session for direct mode when sessions repo and model are available.
+          if (options.sessions !== undefined && directResult.metadata.model !== undefined) {
+            const meta = directResult.metadata;
+            const nowIso = new Date().toISOString();
+            try {
+              await recordExecutionSession(
+                { sessions: options.sessions, logger: options.logger },
+                {
+                  runId: input.runId,
+                  phase: derivePhase(input),
+                  step: input.run.currentStep,
+                  role: deriveRole(input) as 'implementer' | 'reviewer',
+                  round: deriveRound(input),
+                  startedAt: nowIso,
+                  endedAt: nowIso,
+                  outcome: 'succeeded',
+                  model: meta.model!,
+                  inferenceSettings: {},
+                  ...(meta.tokenUsage.available === true && meta.tokenUsage.tokens !== undefined
+                    ? { tokens: meta.tokenUsage.tokens, usageAvailable: true }
+                    : { usageAvailable: false })
+                }
+              );
+            } catch (recordError) {
+              if (recordError instanceof ExecutionSessionRecordingError) {
+                // For direct-mode advance, session persistence failure fails the dispatch.
+                return { workResult: { directive: 'fail' as const, reason: 'session_persistence_failed' } };
+              }
+            }
+          }
+
           return {
             workResult: { directive: 'advance' as const, result: directResult.value as unknown as Readonly<Record<string, unknown>> },
             checkpointResult: directResult.value as JsonValue
@@ -114,8 +192,9 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
             }
           })();
       const eventsStore = options.eventsStore ?? new InMemoryRetainedRunEventStore();
+      let consumeResult: Awaited<ReturnType<typeof consumeRunnerEvents>>;
       try {
-        return await consumeRunnerEvents({
+        consumeResult = await consumeRunnerEvents({
           eventsStore,
           events: tapped,
           runId: input.runId,
@@ -128,6 +207,56 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
         const reason = safeFailureReasonFromError(error) ?? 'Runner failed before terminal result.';
         return { workResult: { directive: 'fail', reason } };
       }
+
+      // Record durable session when session metadata and sessions repo are available.
+      if (options.sessions !== undefined && consumeResult.sessionMetadata !== undefined) {
+        const meta = consumeResult.sessionMetadata;
+        const outcome = deriveAgentOutcome(consumeResult.workResult);
+        try {
+          await recordExecutionSession(
+            { sessions: options.sessions, logger: options.logger },
+            {
+              runId: input.runId,
+              phase: derivePhase(input),
+              step: input.run.currentStep,
+              role: deriveRole(input) as 'implementer' | 'reviewer',
+              round: deriveRound(input),
+              startedAt: meta.startedAt,
+              endedAt: meta.endedAt,
+              outcome,
+              model: meta.model,
+              inferenceSettings: meta.inferenceSettings,
+              ...(meta.usageAvailable === true && meta.tokens !== undefined
+                ? { tokens: meta.tokens, usageAvailable: true }
+                : { usageAvailable: false }),
+              ...(meta.assistantTurnCount !== undefined ? { assistantTurnCount: meta.assistantTurnCount } : {}),
+              ...(meta.toolCallCount !== undefined ? { toolCallCount: meta.toolCallCount } : {})
+            }
+          );
+        } catch (recordError) {
+          if (recordError instanceof ExecutionSessionRecordingError) {
+            // For advance and needs_input results: session persistence failure fails the dispatch.
+            // For fail results: log safely and preserve the original reason.
+            if (consumeResult.workResult.directive === 'advance' || consumeResult.workResult.directive === 'needs_input') {
+              return { workResult: { directive: 'fail' as const, reason: 'session_persistence_failed' } };
+            }
+            // fail result: log and keep original
+            options.logger?.error(
+              {
+                runId: input.runId,
+                step: input.run.currentStep,
+                role: deriveRole(input),
+                errorName: recordError.name,
+                ...(recordError.code !== undefined ? { errorCode: recordError.code } : {})
+              },
+              'Failed to record session for failed dispatch; original failure reason preserved.'
+            );
+          }
+          // For non-recording errors (unexpected), we just log and keep original result
+        }
+      }
+
+      return consumeResult;
     }
   };
 }
