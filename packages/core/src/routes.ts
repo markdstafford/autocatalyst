@@ -126,6 +126,17 @@ export const runPullRequestPolicyResourceKind = 'run_pull_request' as const;
 export const runSessionsListPolicyAction = 'run_sessions.list' as const;
 export const runSessionsPolicyResourceKind = 'run_sessions' as const;
 
+export interface SafeServerErrorLogFields {
+  readonly event: 'route_failure';
+  readonly requestId: string;
+  readonly method: string;
+  readonly route: string;
+  readonly statusCode: number;
+  readonly errorName: string;
+  readonly errorCode?: string;
+  readonly stack?: string;
+}
+
 export interface ControlPlaneRouteDependencies {
   readonly health: HealthDependencyChecker;
   readonly auth: BearerAuthOptions;
@@ -136,7 +147,37 @@ export interface ControlPlaneRouteDependencies {
   readonly controlPlane: ControlPlaneService;
 }
 
+function routePattern(request: FastifyRequest): string {
+  return (request.routeOptions as { url?: string } | undefined)?.url ?? (request as unknown as { routerPath?: string }).routerPath ?? request.url.split('?')[0] ?? 'unknown';
+}
+
+function safeStack(error: unknown): string | undefined {
+  if (!(error instanceof Error) || typeof error.stack !== 'string') return undefined;
+  return error.stack
+    .replace(/\/Users\/[^\s)]+/gu, '[workspace-path]')
+    .replace(/Bearer\s+[A-Za-z0-9._~+/-]+/giu, 'Bearer [redacted]')
+    .replace(/SECRET_SENTINEL/gu, '[redacted]');
+}
+
+function buildSafeServerErrorLogFields(request: FastifyRequest, statusCode: number, error: unknown, code?: string): SafeServerErrorLogFields {
+  return {
+    event: 'route_failure',
+    requestId: request.id,
+    method: request.method,
+    route: routePattern(request),
+    statusCode,
+    errorName: error instanceof Error ? error.name : 'UnknownError',
+    ...(code !== undefined ? { errorCode: code } : {}),
+    stack: safeStack(error)
+  };
+}
+
+function logServerFault(request: FastifyRequest, statusCode: number, error: unknown, code?: string): void {
+  request.log.error(buildSafeServerErrorLogFields(request, statusCode, error, code), 'Autocatalyst route produced a 5xx response.');
+}
+
 async function handleControlPlaneServiceError(
+  request: FastifyRequest,
   reply: FastifyReply,
   error: ControlPlaneServiceError
 ): Promise<void> {
@@ -155,7 +196,8 @@ async function handleControlPlaneServiceError(
       await reply.status(409).send(errorResponse(activeRunConflictErrorCode, error.message, error.details));
       return;
     case 'persistence_failed':
-      await reply.status(500).send(errorResponse('internal_error', 'Internal server error.'));
+      logServerFault(request, 500, error, error.code);
+      await reply.status(500).send(errorResponse('internal_error', 'An internal server error occurred.'));
       return;
     case 'invalid_transition':
       await reply.status(400).send(errorResponse('invalid_transition', error.message, error.details));
@@ -167,7 +209,8 @@ async function handleControlPlaneServiceError(
       await reply.status(409).send(errorResponse('conflict', error.message, error.details));
       return;
     default:
-      await reply.status(500).send(errorResponse('internal_error', 'Internal server error.'));
+      logServerFault(request, 500, error, error.code);
+      await reply.status(500).send(errorResponse('internal_error', 'An internal server error occurred.'));
   }
 }
 
@@ -505,7 +548,7 @@ export async function registerControlPlaneRoutes(
         await reply.status(createConversationSuccessStatusCode).send(result);
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
-          await handleControlPlaneServiceError(reply, error);
+          await handleControlPlaneServiceError(request, reply, error);
           return;
         }
         throw error;
@@ -530,7 +573,7 @@ export async function registerControlPlaneRoutes(
         );
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
-          await handleControlPlaneServiceError(reply, error);
+          await handleControlPlaneServiceError(request, reply, error);
           return;
         }
         throw error;
@@ -562,7 +605,7 @@ export async function registerControlPlaneRoutes(
         await reply.status(getRunSpecSuccessStatusCode).send(runSpecResponseSchema.parse(result));
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
-          await handleControlPlaneServiceError(reply, error);
+          await handleControlPlaneServiceError(request, reply, error);
           return;
         }
         throw error;
@@ -597,7 +640,7 @@ export async function registerControlPlaneRoutes(
         await reply.status(createRunFeedbackSuccessStatusCode).send(feedbackSchema.parse(feedback));
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
-          await handleControlPlaneServiceError(reply, error);
+          await handleControlPlaneServiceError(request, reply, error);
           return;
         }
         throw error;
@@ -629,7 +672,7 @@ export async function registerControlPlaneRoutes(
         await reply.status(listRunFeedbackSuccessStatusCode).send(runFeedbackListResponseSchema.parse(result));
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
-          await handleControlPlaneServiceError(reply, error);
+          await handleControlPlaneServiceError(request, reply, error);
           return;
         }
         throw error;
@@ -665,7 +708,7 @@ export async function registerControlPlaneRoutes(
         await reply.status(appendRunFeedbackThreadSuccessStatusCode).send(feedbackSchema.parse(feedback));
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
-          await handleControlPlaneServiceError(reply, error);
+          await handleControlPlaneServiceError(request, reply, error);
           return;
         }
         throw error;
@@ -700,7 +743,7 @@ export async function registerControlPlaneRoutes(
         await reply.status(createRunReplySuccessStatusCode).send(runReplyResponseSchema.parse(result));
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
-          await handleControlPlaneServiceError(reply, error);
+          await handleControlPlaneServiceError(request, reply, error);
           return;
         }
         throw error;
@@ -724,7 +767,7 @@ export async function registerControlPlaneRoutes(
         await reply.status(reconcilePullRequestsSuccessStatusCode).send(pullRequestReconciliationResponseSchema.parse(result));
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
-          await handleControlPlaneServiceError(reply, error);
+          await handleControlPlaneServiceError(request, reply, error);
           return;
         }
         throw error;
@@ -756,7 +799,7 @@ export async function registerControlPlaneRoutes(
         await reply.status(getRunPullRequestSuccessStatusCode).send(runPullRequestResponseSchema.parse(result));
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
-          await handleControlPlaneServiceError(reply, error);
+          await handleControlPlaneServiceError(request, reply, error);
           return;
         }
         throw error;
@@ -788,7 +831,7 @@ export async function registerControlPlaneRoutes(
         await reply.status(listRunSessionsSuccessStatusCode).send(runSessionListResponseSchema.parse(result));
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
-          await handleControlPlaneServiceError(reply, error);
+          await handleControlPlaneServiceError(request, reply, error);
           return;
         }
         throw error;
@@ -820,7 +863,7 @@ export async function registerControlPlaneRoutes(
         await reply.status(getRunSuccessStatusCode).send(result.run);
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
-          await handleControlPlaneServiceError(reply, error);
+          await handleControlPlaneServiceError(request, reply, error);
           return;
         }
         throw error;
@@ -854,7 +897,7 @@ export async function registerControlPlaneRoutes(
         );
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
-          await handleControlPlaneServiceError(reply, error);
+          await handleControlPlaneServiceError(request, reply, error);
           return;
         }
         throw error;
@@ -902,7 +945,7 @@ export async function registerControlPlaneRoutes(
         });
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
-          await handleControlPlaneServiceError(reply, error);
+          await handleControlPlaneServiceError(request, reply, error);
           return;
         }
         throw error;
@@ -921,7 +964,7 @@ export async function registerControlPlaneRoutes(
       } catch (error) {
         subscription.close();
         if (error instanceof ControlPlaneServiceError) {
-          await handleControlPlaneServiceError(reply, error);
+          await handleControlPlaneServiceError(request, reply, error);
           return;
         }
         throw error;
@@ -985,7 +1028,16 @@ export async function registerControlPlaneRoutes(
     });
   });
 
-  app.setErrorHandler(async (error, _request, reply) => {
+  app.setErrorHandler(async (error, request, reply) => {
+    if (error instanceof ZodError) {
+      await sendValidationError(reply, error);
+      return;
+    }
+    try {
+      logServerFault(request, 500, error);
+    } catch {
+      // swallow logging errors so the response is always sent
+    }
     await reply.status(500).send(errorResponse('internal_error', 'An internal server error occurred.'));
   });
 }

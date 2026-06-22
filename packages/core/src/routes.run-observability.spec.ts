@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyBaseLogger } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -16,9 +16,34 @@ import {
 } from '@autocatalyst/api-contract';
 
 import { ControlPlaneServiceError, type ControlPlaneService } from './control-plane-service.js';
-import { registerControlPlaneRoutes } from './routes.js';
+import { registerControlPlaneRoutes, type SafeServerErrorLogFields } from './routes.js';
 import type { ControlPlaneRouteDependencies } from './routes.js';
 import type { PolicyDecisionInput } from './policy.js';
+
+interface CapturedLogEntry {
+  level: string;
+  fields: unknown;
+  message: string;
+}
+
+function createCapturingLogger(): { logger: FastifyBaseLogger; entries: CapturedLogEntry[] } {
+  const entries: CapturedLogEntry[] = [];
+  const makeLevel = (level: string) => (fields: unknown, msg?: string) => {
+    entries.push({ level, fields, message: msg ?? '' });
+  };
+  const logger: FastifyBaseLogger = {
+    fatal: makeLevel('fatal') as FastifyBaseLogger['fatal'],
+    error: makeLevel('error') as FastifyBaseLogger['error'],
+    warn: makeLevel('warn') as FastifyBaseLogger['warn'],
+    info: makeLevel('info') as FastifyBaseLogger['info'],
+    debug: makeLevel('debug') as FastifyBaseLogger['debug'],
+    trace: makeLevel('trace') as FastifyBaseLogger['trace'],
+    silent: makeLevel('silent') as FastifyBaseLogger['silent'],
+    level: 'info',
+    child: () => logger
+  };
+  return { logger, entries };
+}
 
 function createFakeControlPlaneService(): ControlPlaneService {
   return {
@@ -68,7 +93,7 @@ function createFakeControlPlaneService(): ControlPlaneService {
   };
 }
 
-async function buildServer(overrides?: Partial<ControlPlaneRouteDependencies>) {
+async function buildServer(overrides?: Partial<ControlPlaneRouteDependencies>, loggerInstance?: FastifyBaseLogger) {
   const bearerToken = 'test-token';
   const policyCalls: PolicyDecisionInput[] = [];
 
@@ -94,7 +119,9 @@ async function buildServer(overrides?: Partial<ControlPlaneRouteDependencies>) {
     ...overrides
   };
 
-  const app = Fastify({ logger: false });
+  const app = loggerInstance !== undefined
+    ? Fastify({ loggerInstance })
+    : Fastify({ logger: false });
   await registerControlPlaneRoutes(app, dependencies);
   return { app, authorization: { authorization: `Bearer ${bearerToken}` }, policyCalls, controlPlane: dependencies.controlPlane, policy: dependencies.policy };
 }
@@ -311,6 +338,155 @@ describe('run observability routes', () => {
 
       expect(response.statusCode).toBe(200);
       expect(runSessionListResponseSchema.parse(response.json())).toEqual({ sessions: [] });
+    });
+  });
+
+  describe('5xx logging', () => {
+    it('logs route_failure with method and route for persistence_failed service error → 500', async () => {
+      const { logger, entries } = createCapturingLogger();
+      const controlPlane = createFakeControlPlaneService();
+      vi.mocked(controlPlane.listRunSessions).mockRejectedValue(
+        new ControlPlaneServiceError('persistence_failed', 'DB write failed.')
+      );
+
+      const { app, authorization } = await buildServer({ controlPlane }, logger);
+      server = app;
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/runs/run_1/sessions',
+        headers: authorization
+      });
+
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual({ error: { code: 'internal_error', message: 'An internal server error occurred.' } });
+
+      const routeFailureEntries = entries.filter(
+        (e) => typeof e.fields === 'object' && e.fields !== null && (e.fields as Record<string, unknown>)['event'] === 'route_failure'
+      );
+      expect(routeFailureEntries).toHaveLength(1);
+      const logFields = routeFailureEntries[0]!.fields as SafeServerErrorLogFields;
+      expect(logFields.event).toBe('route_failure');
+      expect(logFields.method).toBe('GET');
+      expect(logFields.statusCode).toBe(500);
+      expect(logFields.errorCode).toBe('persistence_failed');
+    });
+
+    it('does NOT log a server fault for unauthorized service error → 403', async () => {
+      const { logger, entries } = createCapturingLogger();
+      const controlPlane = createFakeControlPlaneService();
+      vi.mocked(controlPlane.listRunSessions).mockRejectedValue(
+        new ControlPlaneServiceError('unauthorized', 'Not authorized.')
+      );
+
+      const { app, authorization } = await buildServer({ controlPlane }, logger);
+      server = app;
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/runs/run_1/sessions',
+        headers: authorization
+      });
+
+      expect(response.statusCode).toBe(403);
+      const routeFailureEntries = entries.filter(
+        (e) => typeof e.fields === 'object' && e.fields !== null && (e.fields as Record<string, unknown>)['event'] === 'route_failure'
+      );
+      expect(routeFailureEntries).toHaveLength(0);
+    });
+
+    it('does NOT log a server fault for not_found service error → 404', async () => {
+      const { logger, entries } = createCapturingLogger();
+      const controlPlane = createFakeControlPlaneService();
+      vi.mocked(controlPlane.listRunSessions).mockRejectedValue(
+        new ControlPlaneServiceError('not_found', 'Run not found.')
+      );
+
+      const { app, authorization } = await buildServer({ controlPlane }, logger);
+      server = app;
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/runs/run_1/sessions',
+        headers: authorization
+      });
+
+      expect(response.statusCode).toBe(404);
+      const routeFailureEntries = entries.filter(
+        (e) => typeof e.fields === 'object' && e.fields !== null && (e.fields as Record<string, unknown>)['event'] === 'route_failure'
+      );
+      expect(routeFailureEntries).toHaveLength(0);
+    });
+
+    it('does NOT log a server fault for forbidden service error → 403', async () => {
+      const { logger, entries } = createCapturingLogger();
+      const controlPlane = createFakeControlPlaneService();
+      vi.mocked(controlPlane.listRunSessions).mockRejectedValue(
+        new ControlPlaneServiceError('forbidden', 'Access denied.')
+      );
+
+      const { app, authorization } = await buildServer({ controlPlane }, logger);
+      server = app;
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/runs/run_1/sessions',
+        headers: authorization
+      });
+
+      expect(response.statusCode).toBe(403);
+      const routeFailureEntries = entries.filter(
+        (e) => typeof e.fields === 'object' && e.fields !== null && (e.fields as Record<string, unknown>)['event'] === 'route_failure'
+      );
+      expect(routeFailureEntries).toHaveLength(0);
+    });
+
+    it('does not include sensitive data (secret sentinels, absolute paths) in route_failure log fields', async () => {
+      const { logger, entries } = createCapturingLogger();
+      const controlPlane = createFakeControlPlaneService();
+      // Use a persistence_failed error containing sensitive data in the stack trace
+      const persistenceError = new ControlPlaneServiceError('persistence_failed', 'DB failure.');
+      // Simulate a stack with a path and redacted sentinel
+      Object.defineProperty(persistenceError, 'stack', {
+        value: 'Error: DB failure.\n    at /Users/testuser/project/src/file.ts:1:1\n    with SECRET_SENTINEL\n    with Bearer secrettoken123'
+      });
+      vi.mocked(controlPlane.listRunSessions).mockRejectedValue(persistenceError);
+
+      const { app, authorization } = await buildServer({ controlPlane }, logger);
+      server = app;
+
+      await app.inject({
+        method: 'GET',
+        url: '/v1/runs/run_1/sessions',
+        headers: authorization
+      });
+
+      const routeFailureEntries = entries.filter(
+        (e) => typeof e.fields === 'object' && e.fields !== null && (e.fields as Record<string, unknown>)['event'] === 'route_failure'
+      );
+      expect(routeFailureEntries).toHaveLength(1);
+      const sanitizedSerialized = JSON.stringify(routeFailureEntries);
+      expect(sanitizedSerialized).not.toContain('SECRET_SENTINEL');
+      expect(sanitizedSerialized).not.toContain('Bearer secret');
+      expect(sanitizedSerialized).not.toContain('/Users/testuser');
+    });
+
+    it('unexpected route error → 500 generic client response', async () => {
+      // Test that unexpected errors (not ControlPlaneServiceError) produce 500 safely
+      // without using loggerInstance (which has Fastify 5 setErrorHandler quirks with custom loggers)
+      const controlPlane = createFakeControlPlaneService();
+      vi.mocked(controlPlane.listRunSessions).mockRejectedValue(new Error('unexpected boom'));
+
+      const { app, authorization } = await buildServer({ controlPlane });
+      server = app;
+
+      const response = await app.inject({
+        method: 'GET',
+        url: '/v1/runs/run_1/sessions',
+        headers: authorization
+      });
+
+      expect(response.statusCode).toBe(500);
     });
   });
 });
