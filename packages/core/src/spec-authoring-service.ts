@@ -12,6 +12,7 @@ export type SpecAuthoringErrorCode =
   | 'spec_file_write_failed'
   | 'spec_file_validation_failed'
   | 'spec_commit_failed'
+  | 'spec_artifact_location_mismatch'
   | 'spec_artifact_persistence_failed';
 
 export class SpecAuthoringError extends Error {
@@ -116,6 +117,52 @@ function commitMessagePrefix(kind: 'feature_spec' | 'enhancement_spec'): string 
   return kind === 'feature_spec' ? 'feature' : 'enhancement';
 }
 
+function assertExistingArtifactLocation(existingArtifact: Artifact, relativePath: string): void {
+  if (existingArtifact.location !== relativePath) {
+    throw new SpecAuthoringError(
+      'spec_artifact_location_mismatch',
+      'Existing spec artifact location does not match the authored spec path.'
+    );
+  }
+}
+
+async function writeValidateAndCommitSpec(input: {
+  readonly workspaceRepoRoot: string;
+  readonly relativePath: string;
+  readonly contents: string;
+  readonly kind: 'feature_spec' | 'enhancement_spec';
+  readonly slug: string;
+  readonly operation: 'add' | 'revise';
+}, deps: Pick<SpecAuthoringServiceDependencies, 'filesystem' | 'git'>): Promise<void> {
+  const { workspaceRepoRoot, relativePath, contents, kind, slug, operation } = input;
+
+  try {
+    await deps.filesystem.writeFile({ workspaceRepoRoot, relativePath, contents });
+  } catch (cause) {
+    throw new SpecAuthoringError('spec_file_write_failed', 'Failed to write spec file.', { cause });
+  }
+
+  try {
+    const written = await deps.filesystem.readFile({ workspaceRepoRoot, relativePath });
+    parseSpecFrontmatter(written);
+  } catch (cause) {
+    throw new SpecAuthoringError('spec_file_validation_failed', 'Spec file validation failed after write.', { cause });
+  }
+
+  const prefix = commitMessagePrefix(kind);
+  try {
+    await deps.git.commitFiles({
+      workspaceRepoRoot,
+      relativePaths: [relativePath],
+      message: operation === 'add'
+        ? `docs: add ${prefix} spec ${slug}`
+        : `docs: revise ${prefix} spec ${slug}`
+    });
+  } catch (cause) {
+    throw new SpecAuthoringError('spec_commit_failed', 'Failed to commit spec file.', { cause });
+  }
+}
+
 export async function completeSpecAuthoring(
   input: CompleteSpecAuthoringInput,
   deps: SpecAuthoringServiceDependencies
@@ -135,30 +182,36 @@ export async function completeSpecAuthoring(
     throw new SpecAuthoringError('spec_artifact_persistence_failed', 'Failed to look up existing spec artifact.', { cause });
   }
 
+  const typedKind = kind as 'feature_spec' | 'enhancement_spec';
+
   if (existingArtifact === null) {
-    // First attempt: write, validate, and commit the spec file.
+    await writeValidateAndCommitSpec({
+      workspaceRepoRoot,
+      relativePath,
+      contents,
+      kind: typedKind,
+      slug,
+      operation: 'add'
+    }, deps);
+  } else {
+    assertExistingArtifactLocation(existingArtifact, relativePath);
+
+    let existingContents: string;
     try {
-      await deps.filesystem.writeFile({ workspaceRepoRoot, relativePath, contents });
+      existingContents = await deps.filesystem.readFile({ workspaceRepoRoot, relativePath: existingArtifact.location });
     } catch (cause) {
-      throw new SpecAuthoringError('spec_file_write_failed', 'Failed to write spec file.', { cause });
+      throw new SpecAuthoringError('spec_file_validation_failed', 'Failed to read existing spec file.', { cause });
     }
 
-    try {
-      const written = await deps.filesystem.readFile({ workspaceRepoRoot, relativePath });
-      parseSpecFrontmatter(written);
-    } catch (cause) {
-      throw new SpecAuthoringError('spec_file_validation_failed', 'Spec file validation failed after write.', { cause });
-    }
-
-    const prefix = commitMessagePrefix(kind as 'feature_spec' | 'enhancement_spec');
-    try {
-      await deps.git.commitFiles({
+    if (existingContents !== contents) {
+      await writeValidateAndCommitSpec({
         workspaceRepoRoot,
-        relativePaths: [relativePath],
-        message: `docs: add ${prefix} spec ${slug}`
-      });
-    } catch (cause) {
-      throw new SpecAuthoringError('spec_commit_failed', 'Failed to commit spec file.', { cause });
+        relativePath,
+        contents,
+        kind: typedKind,
+        slug,
+        operation: 'revise'
+      }, deps);
     }
   }
 
