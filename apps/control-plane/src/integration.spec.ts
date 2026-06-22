@@ -1,13 +1,13 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   configurationRecordListResponseSchema,
@@ -3580,6 +3580,109 @@ describe('run replies integration', () => {
       }
     });
   });
+
+  it('POST /v1/runs/:id/replies with spec feedback revises the existing spec file and addresses artifact feedback', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const tempDir = await mkdtemp(join(tmpdir(), 'reply-spec-revise-'));
+      try {
+        await execFileAsync('git', ['init', '--initial-branch=main'], { cwd: tempDir });
+        await execFileAsync('git', ['config', 'user.email', 'integration@example.test'], { cwd: tempDir });
+        await execFileAsync('git', ['config', 'user.name', 'Autocatalyst Integration'], { cwd: tempDir });
+
+        const { runId } = await seedSpecReviewScenario(databasePath, tempDir);
+        await execFileAsync('git', ['add', '.'], { cwd: tempDir });
+        await execFileAsync('git', ['commit', '-m', 'seed spec for revise test'], { cwd: tempDir });
+
+        const unitRun = vi.fn(async ({ run }: { run: { currentStep: string } }) => {
+          if (run.currentStep === 'spec.author') {
+            return {
+              directive: 'advance' as const,
+              result: {
+                kind: 'enhancement_spec',
+                slug: 'spec-review',
+                relativePath: 'context-human/specs/enhancement-spec-review.md',
+                frontmatter: {
+                  created: '2026-06-12',
+                  last_updated: '2026-06-22',
+                  status: 'draft',
+                  specced_by: 'autocatalyst'
+                },
+                body: '# Enhancement: Spec Review API Surface\n\n## Product requirements\nTest spec content.\n\n## Failure modes\nHandle stale cached artifact content during revise.\n'
+              }
+            };
+          }
+          return { directive: 'advance' as const };
+        });
+
+        const app = await createControlPlaneServer({
+          databasePath,
+          bearerToken: BEARER_TOKEN,
+          masterSecret: MASTER_SECRET,
+          unitOfWork: { run: unitRun }
+        });
+        try {
+          const feedbackResp = await app.inject({
+            method: 'POST',
+            url: `/v1/runs/${runId}/replies`,
+            headers: {
+              authorization: `Bearer ${BEARER_TOKEN}`,
+              'content-type': 'application/json'
+            },
+            payload: {
+              kind: 'feedback',
+              title: 'Add stale artifact handling',
+              body: 'Please document how stale cached artifact content is handled during spec revise.'
+            }
+          });
+          expect(feedbackResp.statusCode).toBe(200);
+          const feedbackBody = runReplyResponseSchema.parse(feedbackResp.json());
+          expect(feedbackBody.classification.directive).toBe('revise');
+          expect(feedbackBody.classification.target).toBe('artifact');
+          expect(feedbackBody.classification.createdFeedbackId).toBeDefined();
+
+          const revisedRun = await pollForStep(
+            (opts) => app.inject(opts),
+            runId,
+            BEARER_TOKEN,
+            'spec.human_review',
+            20_000
+          );
+          expect(revisedRun.currentStep).toBe('spec.human_review');
+          expect(revisedRun.waitingOn).toBe('human');
+          expect(unitRun).toHaveBeenCalledWith(expect.objectContaining({
+            run: expect.objectContaining({ currentStep: 'spec.author' })
+          }));
+
+          const revisedFile = await readFile(
+            join(tempDir, 'context-human', 'specs', 'enhancement-spec-review.md'),
+            'utf8'
+          );
+          expect(revisedFile).toContain('status: draft');
+          expect(revisedFile).toContain('## Failure modes');
+          expect(revisedFile).toContain('Handle stale cached artifact content during revise.');
+
+          const log = await execFileAsync('git', ['log', '--oneline', '-1'], { cwd: tempDir });
+          expect(log.stdout).toContain('docs: revise enhancement spec spec-review');
+
+          const verifyDb = createSqliteDatabase({ path: databasePath });
+          try {
+            const verifyRepos = createDrizzleDomainRepositories(verifyDb);
+            const allFeedback = await verifyRepos.feedback.listByRun(runId);
+            const artifactFeedback = allFeedback.filter(f => f.target === 'artifact');
+            expect(artifactFeedback).toHaveLength(1);
+            expect(artifactFeedback[0]?.id).toBe(feedbackBody.classification.createdFeedbackId);
+            expect(artifactFeedback[0]?.status).toBe('addressed');
+          } finally {
+            verifyDb.close();
+          }
+        } finally {
+          await app.close();
+        }
+      } finally {
+        await rm(tempDir, { recursive: true, force: true });
+      }
+    });
+  }, 30_000);
 
   it('POST /v1/runs/:id/replies with guidance at implementation.awaiting_input classifies pauseKind=convergence_escalation', async () => {
     await withTempDatabasePath(async (databasePath) => {

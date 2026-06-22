@@ -511,14 +511,29 @@ export function createDefaultProviderProfileFallbackRoutingResolver(input: {
   };
 }
 
-// Default registry used by tests and as fallback. Uses 'autocatalyst' as specced_by.
-const defaultStepResultContractRegistry = registerPullRequestFinalizeResultContract(
-  registerImplementerDispositionsResultContract(
-    registerReviewerResultContract(
-      registerSpecAuthorResultContract(createStepResultContractRegistry())
+export interface ControlPlaneStepResultContractRegistryOptions {
+  readonly specAuthorIdentity?: string;
+}
+
+export function createControlPlaneStepResultContractRegistry(
+  options: ControlPlaneStepResultContractRegistryOptions = {}
+): StepResultContractRegistry {
+  return registerPullRequestFinalizeResultContract(
+    registerImplementerDispositionsResultContract(
+      registerReviewerResultContract(
+        registerSpecAuthorResultContract(
+          createStepResultContractRegistry(),
+          options.specAuthorIdentity !== undefined
+            ? { trustedSpeccedBy: options.specAuthorIdentity }
+            : {}
+        )
+      )
     )
-  )
-);
+  );
+}
+
+// Default registry used by tests and as fallback. Uses 'autocatalyst' as specced_by.
+const defaultStepResultContractRegistry = createControlPlaneStepResultContractRegistry();
 
 export interface ScratchResultValidationOptions {
   readonly clock?: () => string;
@@ -1123,16 +1138,9 @@ export async function createControlPlaneServer(
     const materializer = createExecutionMaterializer({
       capabilities: { shellAvailable: false, lspAvailable: false }
     });
-    const stepResultContractRegistry = registerPullRequestFinalizeResultContract(
-      registerReviewerResultContract(
-        registerSpecAuthorResultContract(
-          createStepResultContractRegistry(),
-          options.specAuthorIdentity !== undefined
-            ? { trustedSpeccedBy: options.specAuthorIdentity }
-            : {}
-        )
-      )
-    );
+    const stepResultContractRegistry = createControlPlaneStepResultContractRegistry({
+      ...(options.specAuthorIdentity !== undefined ? { specAuthorIdentity: options.specAuthorIdentity } : {})
+    });
     const entryPoint = createDelegatingExecutionEntryPoint({
       factory: runnerFactory,
       materialize: (context) => materializer.materialize(context),
@@ -1469,7 +1477,8 @@ export async function createControlPlaneServer(
     artifacts: domainRepos.artifacts,
     filesystem: nodeFilesystem,
     git: nodeGit,
-    clock: () => new Date().toISOString()
+    clock: () => new Date().toISOString(),
+    feedbackLifecycle: feedbackLifecycleDependencies
   };
 
   const specApprovalFinalizerDependencies: SpecApprovalFinalizerDependencies = {

@@ -24,6 +24,7 @@ import {
   SPEC_AUTHOR_SCHEMA_ID,
   REVIEWER_RESULT_SCHEMA_ID,
   IMPLEMENTER_DISPOSITIONS_SCHEMA_ID,
+  PR_FINALIZE_SCHEMA_ID,
   type AgentProviderAdapter,
   type AgentProviderAdapterRegistry,
   type AgentRunnerFactory,
@@ -34,6 +35,7 @@ import { claudeAgentAdapterId, claudeProviderKind } from '@autocatalyst/claude-a
 
 import {
   createControlPlaneServer,
+  createControlPlaneStepResultContractRegistry,
   createDelegatingExecutionEntryPoint,
   createExplicitProfileResolver,
   createNodeWorkspaceFilesystem,
@@ -213,6 +215,30 @@ describe('createControlPlaneServer', () => {
 });
 
 describe('createControlPlaneServer (real runner dispatch composition)', () => {
+  it('production step-result registry resolves all server-wired contracts', () => {
+    const registry = createControlPlaneStepResultContractRegistry({ specAuthorIdentity: 'autocatalyst' });
+
+    expect(registry.resolve({
+      step: 'spec.author',
+      schemaId: SPEC_AUTHOR_SCHEMA_ID
+    })).toMatchObject({ status: 'resolved' });
+
+    expect(registry.resolve({
+      step: 'implementation.build',
+      schemaId: REVIEWER_RESULT_SCHEMA_ID
+    })).toMatchObject({ status: 'resolved' });
+
+    expect(registry.resolve({
+      step: 'implementation.build',
+      schemaId: IMPLEMENTER_DISPOSITIONS_SCHEMA_ID
+    })).toMatchObject({ status: 'resolved' });
+
+    expect(registry.resolve({
+      step: 'pr.finalize',
+      schemaId: PR_FINALIZE_SCHEMA_ID
+    })).toMatchObject({ status: 'resolved' });
+  });
+
   const fakeAdapter: AgentProviderAdapter = {
     providerKind: claudeProviderKind,
     adapterId: claudeAgentAdapterId,
