@@ -13,6 +13,8 @@ const ALLOWED_PATHS = [
   'packages/github-issue-tracker-adapter/src/gh-exec.ts',
   'packages/github-issue-tracker-adapter/src/github-issue-tracker.ts',
   'packages/github-issue-tracker-adapter/src/index.ts',
+  // server.ts passes executeGh as an injectable test seam to the code-host adapter — not a direct gh invocation
+  'apps/control-plane/src/server.ts',
 ];
 
 // gh pr command strings that indicate direct CLI usage outside the adapter boundary
