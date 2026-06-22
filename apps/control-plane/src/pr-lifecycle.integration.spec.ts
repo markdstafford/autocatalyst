@@ -1182,7 +1182,9 @@ async function buildReconcileApp(
       clock: () => now
     },
     projects: harness.domainRepos.projects,
-    issueReferenceIntakeResolver: { resolve: async () => ({ kind: 'error' as const, code: 'tracker_not_found' as const }) }
+    issueReferenceIntakeResolver: { resolve: async () => ({ kind: 'error' as const, code: 'tracker_not_found' as const }) },
+    pullRequests: harness.domainRepos.pullRequests,
+    sessions: harness.domainRepos.sessions
   });
 
   const app = Fastify({ logger: false });

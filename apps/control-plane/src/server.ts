@@ -1545,7 +1545,9 @@ export async function createControlPlaneServer(
     workspaceFilesystem: nodeFilesystem,
     feedbackLifecycle: feedbackLifecycleDependencies,
     projects: domainRepos.projects,
-    issueReferenceIntakeResolver
+    issueReferenceIntakeResolver,
+    pullRequests: domainRepos.pullRequests,
+    sessions: domainRepos.sessions
   });
   options.onControlPlaneReady?.(controlPlane);
 
