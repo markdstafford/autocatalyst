@@ -753,7 +753,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     } catch (error) {
       throw persistenceFailed('Failed to load run pull request.', error);
     }
-    if (pullRequest === null) {
+    if (pullRequest === null || pullRequest.tenant !== input.tenant) {
       throw new ControlPlaneServiceError('not_found', `Pull request for run '${input.runId}' not found.`);
     }
     return runPullRequestResponseSchema.parse({ pullRequest });
