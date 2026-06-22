@@ -1,5 +1,5 @@
 import type { MaterializedExecutionEnvironment } from './materialized-environment.js';
-import type { RunnerEvent } from '@autocatalyst/api-contract';
+import type { InferenceSettings, ModelIdentity, TokenBreakdown, RunnerEvent } from '@autocatalyst/api-contract';
 
 export type RunnerProtocolErrorCode =
   | 'invalid_event'
@@ -31,7 +31,20 @@ export interface RunnerRunInput {
   readonly correlationId?: string;
 }
 
+export interface RunnerSessionMetadata {
+  readonly model: ModelIdentity;
+  readonly inferenceSettings: InferenceSettings;
+  readonly startedAt: string;
+  readonly endedAt: string | null;
+  readonly outcome: 'succeeded' | 'failed' | 'cancelled' | 'timeout';
+  readonly tokens?: TokenBreakdown;
+  readonly usageAvailable?: boolean;
+  readonly assistantTurnCount?: number;
+  readonly toolCallCount?: number;
+}
+
 export interface Runner {
   run(input: RunnerRunInput): AsyncIterable<RunnerEvent>;
   close(): Promise<RunnerCloseResult>;
+  getSessionMetadata?(): Promise<RunnerSessionMetadata | null>;
 }

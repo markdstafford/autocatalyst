@@ -77,6 +77,16 @@ import {
   pullRequestReconciliationResponseSchema,
   reconcilePullRequestsSuccessStatusCode
 } from './pr-reconciliation.js';
+import {
+  getRunPullRequestSuccessStatusCode,
+  runPullRequestPath,
+  runPullRequestResponseSchema
+} from './pull-request.js';
+import {
+  listRunSessionsSuccessStatusCode,
+  runSessionListResponseSchema,
+  runSessionsPath
+} from './session.js';
 
 extendZodWithOpenApi(z);
 
@@ -144,6 +154,8 @@ export function generateOpenApiDocument(): OpenApiDocument {
   const RunReplyResponse = registry.register('RunReplyResponse', runReplyResponseSchema);
   const RunReplyParams = registry.register('RunReplyParams', z.object({ id: z.string().min(1) }).strict());
   const PullRequestReconciliationResponse = registry.register('PullRequestReconciliationResponse', pullRequestReconciliationResponseSchema);
+  const RunPullRequestResponse = registry.register('RunPullRequestResponse', runPullRequestResponseSchema);
+  const RunSessionListResponse = registry.register('RunSessionListResponse', runSessionListResponseSchema);
 
   registry.registerPath({
     method: 'get',
@@ -480,6 +492,38 @@ export function generateOpenApiDocument(): OpenApiDocument {
       [reconcilePullRequestsSuccessStatusCode]: jsonResponse(PullRequestReconciliationResponse, 'Reconciliation summary.'),
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
       403: jsonResponse(ErrorResponse, 'Forbidden.'),
+      500: jsonResponse(ErrorResponse, 'Internal server error.')
+    }
+  });
+
+  // GET /v1/runs/{id}/pull-request
+  registry.registerPath({
+    method: 'get',
+    path: runPullRequestPath.replace(':id', '{id}') as '/v1/runs/{id}/pull-request',
+    tags: ['runs'],
+    request: { params: RunIdParams },
+    security: [{ bearerAuth: [] }],
+    responses: {
+      [getRunPullRequestSuccessStatusCode]: jsonResponse(RunPullRequestResponse, 'Persisted pull request for the run.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      403: jsonResponse(ErrorResponse, 'Forbidden.'),
+      404: jsonResponse(ErrorResponse, 'Run or pull request not found.'),
+      500: jsonResponse(ErrorResponse, 'Internal server error.')
+    }
+  });
+
+  // GET /v1/runs/{id}/sessions
+  registry.registerPath({
+    method: 'get',
+    path: runSessionsPath.replace(':id', '{id}') as '/v1/runs/{id}/sessions',
+    tags: ['runs'],
+    request: { params: RunIdParams },
+    security: [{ bearerAuth: [] }],
+    responses: {
+      [listRunSessionsSuccessStatusCode]: jsonResponse(RunSessionListResponse, 'Durable model and direct-call sessions for the run.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      403: jsonResponse(ErrorResponse, 'Forbidden.'),
+      404: jsonResponse(ErrorResponse, 'Run not found.'),
       500: jsonResponse(ErrorResponse, 'Internal server error.')
     }
   });

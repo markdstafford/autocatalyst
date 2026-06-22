@@ -260,7 +260,19 @@ function makeService(options?: {
       clock: () => timestamp
     },
     projects: options?.projects ?? makeFakeProjectRepository(),
-    issueReferenceIntakeResolver: options?.issueReferenceIntakeResolver ?? makePassThroughResolver()
+    issueReferenceIntakeResolver: options?.issueReferenceIntakeResolver ?? makePassThroughResolver(),
+    pullRequests: {
+      create: vi.fn(),
+      findById: vi.fn(),
+      findByRun: vi.fn().mockResolvedValue(null),
+      updateState: vi.fn(),
+      listOpen: vi.fn().mockResolvedValue([])
+    },
+    sessions: {
+      create: vi.fn(),
+      findById: vi.fn(),
+      listByRun: vi.fn().mockResolvedValue([])
+    }
   });
 }
 
@@ -925,7 +937,19 @@ function makeServiceWithFeedback(feedbackRepo: FeedbackRepository): DefaultContr
       clock: () => timestamp
     },
     projects: makeFakeProjectRepository(),
-    issueReferenceIntakeResolver: makePassThroughResolver()
+    issueReferenceIntakeResolver: makePassThroughResolver(),
+    pullRequests: {
+      create: vi.fn(),
+      findById: vi.fn(),
+      findByRun: vi.fn().mockResolvedValue(null),
+      updateState: vi.fn(),
+      listOpen: vi.fn().mockResolvedValue([])
+    },
+    sessions: {
+      create: vi.fn(),
+      findById: vi.fn(),
+      listByRun: vi.fn().mockResolvedValue([])
+    }
   });
 }
 

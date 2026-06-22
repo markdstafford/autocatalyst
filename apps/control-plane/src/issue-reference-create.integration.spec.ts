@@ -140,7 +140,9 @@ async function withTestSetup<T>(
         clock: () => new Date().toISOString()
       },
       projects: domainRepos.projects,
-      issueReferenceIntakeResolver
+      issueReferenceIntakeResolver,
+      pullRequests: domainRepos.pullRequests,
+      sessions: domainRepos.sessions
     });
 
     return await fn({ controlPlane, secretStore, projectId: project.id, domainRepos });

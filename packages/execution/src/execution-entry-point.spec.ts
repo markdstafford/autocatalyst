@@ -1326,3 +1326,166 @@ describe('createExecutionEntryPoint — implementation.build per-round result fi
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Session metadata propagation tests
+// ---------------------------------------------------------------------------
+
+import type { RunnerSessionMetadata } from './runner.js';
+
+describe('createExecutionEntryPoint — session metadata propagation', () => {
+  function makeRunnerWithMetadata(
+    events: RunnerEvent[],
+    metadata: RunnerSessionMetadata | null
+  ): Runner {
+    return {
+      run(_input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+        return (async function* () {
+          for (const event of events) {
+            yield event;
+          }
+        })();
+      },
+      close: vi.fn().mockResolvedValue({ status: 'closed' }),
+      getSessionMetadata: vi.fn().mockResolvedValue(metadata)
+    };
+  }
+
+  it('attaches sessionMetadata from runner.getSessionMetadata() to terminal event', async () => {
+    const context = makeContext();
+    const materialize = vi.fn().mockResolvedValue(makeMaterializedEnv(context));
+
+    const metadata: RunnerSessionMetadata = {
+      model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+      inferenceSettings: {},
+      startedAt: '2026-06-22T10:00:00.000Z',
+      endedAt: '2026-06-22T10:00:05.000Z',
+      outcome: 'succeeded',
+      tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+      usageAvailable: true,
+      assistantTurnCount: 1,
+      toolCallCount: 2
+    };
+
+    const runner = makeRunnerWithMetadata([makeTerminalEvent()], metadata);
+    const entryPoint = createExecutionEntryPoint({ runner, materialize, resultValidation: { mode: 'none' } });
+
+    const collected: ExecutionBoundaryEvent[] = [];
+    for await (const event of entryPoint.execute({ context })) {
+      collected.push(event);
+    }
+
+    expect(collected).toHaveLength(1);
+    const terminal = collected[0] as ExecutionTerminalResultEvent;
+    expect(terminal.type).toBe('runner_terminal_result');
+    expect(terminal.sessionMetadata).toEqual({
+      model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+      inferenceSettings: {},
+      startedAt: '2026-06-22T10:00:00.000Z',
+      endedAt: '2026-06-22T10:00:05.000Z',
+      outcome: 'succeeded',
+      tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 },
+      usageAvailable: true,
+      assistantTurnCount: 1,
+      toolCallCount: 2
+    });
+  });
+
+  it('does not include sessionMetadata when runner returns null', async () => {
+    const context = makeContext();
+    const materialize = vi.fn().mockResolvedValue(makeMaterializedEnv(context));
+    const runner = makeRunnerWithMetadata([makeTerminalEvent()], null);
+    const entryPoint = createExecutionEntryPoint({ runner, materialize, resultValidation: { mode: 'none' } });
+
+    const collected: ExecutionBoundaryEvent[] = [];
+    for await (const event of entryPoint.execute({ context })) {
+      collected.push(event);
+    }
+
+    const terminal = collected[0] as ExecutionTerminalResultEvent;
+    expect(terminal.sessionMetadata).toBeUndefined();
+  });
+
+  it('does not include sessionMetadata when runner does not implement getSessionMetadata', async () => {
+    const context = makeContext();
+    const materialize = vi.fn().mockResolvedValue(makeMaterializedEnv(context));
+    const runner = makeFakeRunner([makeTerminalEvent()]); // no getSessionMetadata
+    const entryPoint = createExecutionEntryPoint({ runner, materialize, resultValidation: { mode: 'none' } });
+
+    const collected: ExecutionBoundaryEvent[] = [];
+    for await (const event of entryPoint.execute({ context })) {
+      collected.push(event);
+    }
+
+    const terminal = collected[0] as ExecutionTerminalResultEvent;
+    expect(terminal.sessionMetadata).toBeUndefined();
+  });
+
+  it('sessionMetadata does not contain sensitive sentinel values', async () => {
+    const SECRET_SENTINEL = 'SECRET_API_KEY_12345';
+    const context = makeContext();
+    const materialize = vi.fn().mockResolvedValue(makeMaterializedEnv(context));
+
+    const metadata: RunnerSessionMetadata = {
+      model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+      inferenceSettings: {},
+      startedAt: '2026-06-22T10:00:00.000Z',
+      endedAt: '2026-06-22T10:00:05.000Z',
+      outcome: 'succeeded',
+      usageAvailable: false,
+      assistantTurnCount: 0,
+      toolCallCount: 0
+    };
+
+    const runner = makeRunnerWithMetadata([makeTerminalEvent()], metadata);
+    const entryPoint = createExecutionEntryPoint({ runner, materialize, resultValidation: { mode: 'none' } });
+
+    const collected: ExecutionBoundaryEvent[] = [];
+    for await (const event of entryPoint.execute({ context })) {
+      collected.push(event);
+    }
+
+    const terminal = collected[0] as ExecutionTerminalResultEvent;
+    expect(JSON.stringify(terminal.sessionMetadata)).not.toContain(SECRET_SENTINEL);
+  });
+
+  it('getSessionMetadata is called after runner.close()', async () => {
+    const context = makeContext();
+    const materialize = vi.fn().mockResolvedValue(makeMaterializedEnv(context));
+
+    const callOrder: string[] = [];
+    const metadata: RunnerSessionMetadata = {
+      model: { provider: 'anthropic', model: 'claude-sonnet-4' },
+      inferenceSettings: {},
+      startedAt: '2026-06-22T10:00:00.000Z',
+      endedAt: '2026-06-22T10:00:05.000Z',
+      outcome: 'succeeded',
+      usageAvailable: false,
+      assistantTurnCount: 0,
+      toolCallCount: 0
+    };
+
+    const runner: Runner = {
+      run(_input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+        return (async function* () {
+          yield makeTerminalEvent();
+        })();
+      },
+      async close() {
+        callOrder.push('close');
+        return { status: 'closed' as const };
+      },
+      async getSessionMetadata() {
+        callOrder.push('getSessionMetadata');
+        return metadata;
+      }
+    };
+
+    const entryPoint = createExecutionEntryPoint({ runner, materialize, resultValidation: { mode: 'none' } });
+    for await (const _ of entryPoint.execute({ context })) {
+      // consume
+    }
+
+    expect(callOrder).toEqual(['close', 'getSessionMetadata']);
+  });
+});

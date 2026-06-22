@@ -55,6 +55,13 @@ export const createSessionInputSchema = z.object({
   cost: costSchema
 }).strict().superRefine(requireCostTokensMatchSessionTokens);
 
+export const runSessionsPath = '/v1/runs/:id/sessions' as const;
+export const listRunSessionsSuccessStatusCode = 200 as const;
+export const runSessionListResponseSchema = z.object({
+  sessions: z.array(sessionSchema)
+}).strict();
+export type RunSessionListResponse = z.infer<typeof runSessionListResponseSchema>;
+
 export type SessionOutcome = z.infer<typeof sessionOutcomeSchema>;
 export type Session = z.infer<typeof sessionSchema>;
 export type CreateSessionInput = z.infer<typeof createSessionInputSchema>;

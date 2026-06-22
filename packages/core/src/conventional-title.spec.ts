@@ -189,6 +189,51 @@ describe('deriveConventionalTitle', () => {
     expect(title).not.toMatch(/implementation passed review/iu);
     expect(title).not.toMatch(/round \d+/iu);
   });
+
+  describe('fallback order regression', () => {
+    it('1. titleSubject takes priority over all other sources', () => {
+      expect(deriveConventionalTitle({
+        workKind: 'enhancement',
+        titleSubject: 'Durable activity API',
+        reconciledSummary: 'Wrong.',
+        cumulativeSummary: 'Wrong.',
+        changedFiles: ['packages/core/src/routes.ts']
+      })).toBe('feat: durable activity API');
+    });
+
+    it('2. reconciledSummary used when no titleSubject', () => {
+      expect(deriveConventionalTitle({
+        workKind: 'enhancement',
+        reconciledSummary: 'Expose durable run sessions.',
+        cumulativeSummary: 'Wrong.',
+        changedFiles: ['packages/core/src/routes.ts']
+      })).toBe('feat: expose durable run sessions');
+    });
+
+    it('3. cumulativeSummary used when no titleSubject or reconciledSummary', () => {
+      expect(deriveConventionalTitle({
+        workKind: 'enhancement',
+        cumulativeSummary: 'Persist sessions for completed runs.',
+        changedFiles: ['packages/core/src/routes.ts']
+      })).toBe('feat: persist sessions for completed runs');
+    });
+
+    it('4. Round N placeholder in cumulativeSummary falls back to changed-path-derived subject', () => {
+      expect(deriveConventionalTitle({
+        workKind: 'enhancement',
+        cumulativeSummary: 'Round 1: implementation passed review',
+        changedFiles: ['packages/core/src/pr-content.ts', 'packages/core/src/pr-open-handler.ts']
+      })).toBe('feat: update core PR content handling');
+    });
+
+    it('5. No files with placeholder summary falls back to generic subject', () => {
+      expect(deriveConventionalTitle({
+        workKind: 'enhancement',
+        cumulativeSummary: 'Round 1: implementation passed review',
+        changedFiles: []
+      })).toBe('feat: complete approved implementation');
+    });
+  });
 });
 
 describe('deriveChangedPathSubject', () => {

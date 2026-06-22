@@ -178,4 +178,35 @@ describe('buildPullRequestContent', () => {
     expect(content.body).not.toContain('Fallback summary.');
     expect(content.body).toContain('- `packages/core/src/pr-content.ts`');
   });
+
+  it('produces useful title and renders real changed paths when finalization output is empty', () => {
+    // Simulates pr.finalize returning {} (empty output): no titleSubject, no reconciledSummary,
+    // cumulativeSummary contains a legacy placeholder. Must still produce a meaningful title
+    // and must include repository-relative changed paths in the body.
+    const content = buildPullRequestContent({
+      workKind: 'enhancement',
+      titleSubject: null,
+      reconciledSummary: null,
+      cumulativeSummary: {
+        kind: 'cumulative_implementation_summary',
+        cumulativeSummary: 'Round 1: implementation passed review',
+        changedFiles: [
+          'packages/core/src/routes.ts',
+          'packages/sdk/src/client.ts'
+        ],
+        validationSummary: [],
+        followUps: [],
+        nonGoals: [],
+        sourceRoundCount: 1,
+        completedAt: '2026-06-18T00:00:00.000Z'
+      }
+    });
+
+    // Title must NOT be a count-only or round-placeholder value
+    expect(content.title).not.toMatch(/\d+ file\(s\) changed/iu);
+    expect(content.title).not.toMatch(/round \d+: implementation passed review/iu);
+    // Body must contain repository-relative changed paths
+    expect(content.body).toContain('- `packages/core/src/routes.ts`');
+    expect(content.body).toContain('- `packages/sdk/src/client.ts`');
+  });
 });

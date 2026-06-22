@@ -26,8 +26,10 @@ import {
   createRunReplySuccessStatusCode,
   feedbackSchema,
   runFeedbackThreadPath,
+  getRunPullRequestSuccessStatusCode,
   getRunSpecSuccessStatusCode,
   listRunFeedbackSuccessStatusCode,
+  listRunSessionsSuccessStatusCode,
   pullRequestReconciliationPath,
   pullRequestReconciliationResponseSchema,
   reconcilePullRequestsSuccessStatusCode,
@@ -36,11 +38,15 @@ import {
   runFeedbackListResponseSchema,
   runFeedbackPath,
   runListResponseSchema,
+  runPullRequestPath,
+  runPullRequestResponseSchema,
   runRepliesPath,
   runReplyRequestSchema,
   runReplyResponseSchema,
   runResourcePath,
   runSchema,
+  runSessionListResponseSchema,
+  runSessionsPath,
   runSpecPath,
   runSpecResponseSchema,
   runStepListResponseSchema,
@@ -67,6 +73,8 @@ import {
   type Run,
   type RunFeedbackListResponse,
   type RunListResponse,
+  type RunPullRequestResponse,
+  type RunSessionListResponse,
   type RunStepListResponse,
   type RunSpecResponse,
   type UpdateConfigurationRecordRequest
@@ -92,6 +100,8 @@ export interface ControlPlaneClient {
   listRuns(): Promise<RunListResponse>;
   getRun(id: string): Promise<Run>;
   listRunSteps(id: string): Promise<RunStepListResponse>;
+  getRunPullRequest(id: string): Promise<RunPullRequestResponse>;
+  listRunSessions(id: string): Promise<RunSessionListResponse>;
   subscribeRunEvents(id: string, options?: RunEventsStreamOptions): Promise<RunEventsResponse>;
   getRunSpec(id: string): Promise<RunSpecResponse>;
   createRunFeedback(id: string, request: CreateRunFeedbackRequest): Promise<Feedback>;
@@ -313,6 +323,30 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
       );
       await throwForError(response);
       return runStepListResponseSchema.parse(await parseJson(response));
+    },
+
+    async getRunPullRequest(id) {
+      const response = await fetchImplementation(
+        urlFor(baseUrl, runPullRequestPath.replace(':id', id)),
+        { method: 'GET', headers: protectedHeaders(bearerToken) }
+      );
+      await throwForError(response);
+      if (response.status !== getRunPullRequestSuccessStatusCode) {
+        throw new Error(`Expected ${getRunPullRequestSuccessStatusCode} from getRunPullRequest, received ${response.status}.`);
+      }
+      return runPullRequestResponseSchema.parse(await parseJson(response));
+    },
+
+    async listRunSessions(id) {
+      const response = await fetchImplementation(
+        urlFor(baseUrl, runSessionsPath.replace(':id', id)),
+        { method: 'GET', headers: protectedHeaders(bearerToken) }
+      );
+      await throwForError(response);
+      if (response.status !== listRunSessionsSuccessStatusCode) {
+        throw new Error(`Expected ${listRunSessionsSuccessStatusCode} from listRunSessions, received ${response.status}.`);
+      }
+      return runSessionListResponseSchema.parse(await parseJson(response));
     },
 
     async subscribeRunEvents(id, options) {

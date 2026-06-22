@@ -6,15 +6,18 @@ import type {
   NonModelPrincipal,
   Principal,
   Run,
+  RunPullRequestResponse,
   RunReplyRequest,
   RunReplyResponse,
+  RunSessionListResponse,
   RunSpecResponse,
-  RunStep
+  RunStep,
+  Session
 } from '@autocatalyst/api-contract';
-import { createConversationWithFirstRunResponseSchema, pullRequestReconciliationResponseSchema, runFeedbackListResponseSchema, runReplyResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
+import { createConversationWithFirstRunResponseSchema, pullRequestReconciliationResponseSchema, runFeedbackListResponseSchema, runPullRequestResponseSchema, runReplyResponseSchema, runSessionListResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
 import type { ReconcilePullRequestsResponse } from '@autocatalyst/api-contract';
 
-import type { ArtifactRepository, FeedbackRepository, ProjectRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository } from './domain-repositories.js';
+import type { ArtifactRepository, FeedbackRepository, ProjectRepository, PullRequestRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository, SessionRepository } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
 import { appendFeedbackThreadReply, createArtifactFeedback, FeedbackLifecycleError } from './feedback-lifecycle.js';
 import type { IssueReferenceIntakeResolver, ResolvedConversationCreate } from './issue-reference-intake.js';
@@ -184,6 +187,22 @@ export interface ServiceReconcilePullRequestsInput {
 
 export type ServiceReconcilePullRequestsResult = ReconcilePullRequestsResponse;
 
+export interface ServiceGetRunPullRequestInput {
+  readonly principal: Principal;
+  readonly tenant: string;
+  readonly runId: string;
+}
+
+export type ServiceGetRunPullRequestResult = RunPullRequestResponse;
+
+export interface ServiceListRunSessionsInput {
+  readonly principal: Principal;
+  readonly tenant: string;
+  readonly runId: string;
+}
+
+export type ServiceListRunSessionsResult = RunSessionListResponse;
+
 // --- Service interface ---
 
 export interface ControlPlaneService {
@@ -202,6 +221,8 @@ export interface ControlPlaneService {
   appendRunFeedbackThreadReply(input: AppendRunFeedbackThreadReplyInput): Promise<Feedback>;
   replyToRun(input: ServiceReplyToRunInput): Promise<RunReplyResponse>;
   reconcilePullRequests(input: ServiceReconcilePullRequestsInput): Promise<ServiceReconcilePullRequestsResult>;
+  getRunPullRequest(input: ServiceGetRunPullRequestInput): Promise<ServiceGetRunPullRequestResult>;
+  listRunSessions(input: ServiceListRunSessionsInput): Promise<ServiceListRunSessionsResult>;
 }
 
 // --- Constructor options ---
@@ -219,6 +240,8 @@ export interface DefaultControlPlaneServiceOptions {
   readonly feedbackLifecycle: FeedbackLifecycleDependencies;
   readonly projects: ProjectRepository;
   readonly issueReferenceIntakeResolver: IssueReferenceIntakeResolver;
+  readonly pullRequests: PullRequestRepository;
+  readonly sessions: SessionRepository;
 }
 
 // --- Implementation ---
@@ -244,6 +267,23 @@ function specArtifactKindForRun(workKind: string): 'feature_spec' | 'enhancement
 
 function persistenceFailed(message: string, cause?: unknown): ControlPlaneServiceError {
   return new ControlPlaneServiceError('persistence_failed', message, cause === undefined ? {} : { cause });
+}
+
+async function requireTenantRun(input: {
+  readonly runs: RunRepository;
+  readonly runId: string;
+  readonly tenant: string;
+}): Promise<Run> {
+  let run: Run | null;
+  try {
+    run = await input.runs.findById(input.runId);
+  } catch (error) {
+    throw persistenceFailed('Failed to load run.', error);
+  }
+  if (run === null || run.tenant !== input.tenant) {
+    throw new ControlPlaneServiceError('not_found', `Run '${input.runId}' not found.`);
+  }
+  return run;
 }
 
 function requireNonModelPrincipal(principal: Principal): NonModelPrincipal {
@@ -274,6 +314,8 @@ export class DefaultControlPlaneService implements ControlPlaneService {
   readonly #feedbackLifecycle: FeedbackLifecycleDependencies;
   readonly #projects: ProjectRepository;
   readonly #issueReferenceIntakeResolver: IssueReferenceIntakeResolver;
+  readonly #pullRequests: PullRequestRepository;
+  readonly #sessions: SessionRepository;
 
   constructor(options: DefaultControlPlaneServiceOptions) {
     this.#orchestrator = options.orchestrator;
@@ -288,6 +330,8 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     this.#feedbackLifecycle = options.feedbackLifecycle;
     this.#projects = options.projects;
     this.#issueReferenceIntakeResolver = options.issueReferenceIntakeResolver;
+    this.#pullRequests = options.pullRequests;
+    this.#sessions = options.sessions;
   }
 
   async createConversationWithFirstRun(
@@ -698,6 +742,33 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       }
       throw error;
     }
+  }
+
+  async getRunPullRequest(input: ServiceGetRunPullRequestInput): Promise<ServiceGetRunPullRequestResult> {
+    await requireTenantRun({ runs: this.#runs, runId: input.runId, tenant: input.tenant });
+
+    let pullRequest;
+    try {
+      pullRequest = await this.#pullRequests.findByRun(input.runId);
+    } catch (error) {
+      throw persistenceFailed('Failed to load run pull request.', error);
+    }
+    if (pullRequest === null || pullRequest.tenant !== input.tenant) {
+      throw new ControlPlaneServiceError('not_found', `Pull request for run '${input.runId}' not found.`);
+    }
+    return runPullRequestResponseSchema.parse({ pullRequest });
+  }
+
+  async listRunSessions(input: ServiceListRunSessionsInput): Promise<ServiceListRunSessionsResult> {
+    await requireTenantRun({ runs: this.#runs, runId: input.runId, tenant: input.tenant });
+
+    let sessions: readonly Session[];
+    try {
+      sessions = await this.#sessions.listByRun(input.runId);
+    } catch (error) {
+      throw persistenceFailed('Failed to list run sessions.', error);
+    }
+    return runSessionListResponseSchema.parse({ sessions });
   }
 
   async replyToRun(input: ServiceReplyToRunInput): Promise<RunReplyResponse> {

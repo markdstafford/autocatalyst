@@ -26,6 +26,7 @@ export interface ConsumeRunnerEventsInput extends RunnerEventConsumerDependencie
 export interface ConsumeRunnerEventsResult {
   readonly workResult: RunWorkResult;
   readonly checkpointResult?: JsonValue;
+  readonly sessionMetadata?: ExecutionTerminalResultEvent['sessionMetadata'];
 }
 
 function toClientTerminalEvent(event: ExecutionTerminalResultEvent): RunnerTerminalResultClientEvent {
@@ -112,8 +113,16 @@ export async function consumeRunnerEvents(input: ConsumeRunnerEventsInput): Prom
   }
 
   const workResult = mapTerminalToWorkResult(terminalEvent);
+  const sessionMetadata = terminalEvent.sessionMetadata;
   if (workResult.directive === 'advance' && workResult.result !== undefined) {
-    return { workResult, checkpointResult: workResult.result as JsonValue };
+    return {
+      workResult,
+      checkpointResult: workResult.result as JsonValue,
+      ...(sessionMetadata !== undefined ? { sessionMetadata } : {})
+    };
   }
-  return { workResult };
+  return {
+    workResult,
+    ...(sessionMetadata !== undefined ? { sessionMetadata } : {})
+  };
 }

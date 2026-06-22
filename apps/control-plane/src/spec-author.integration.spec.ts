@@ -291,7 +291,9 @@ describe('spec-author integration: stray-frontmatter recovery at production boun
             clock: () => new Date().toISOString()
           },
           projects: domainRepos.projects,
-          issueReferenceIntakeResolver: makePassThroughIntakeResolver()
+          issueReferenceIntakeResolver: makePassThroughIntakeResolver(),
+          pullRequests: domainRepos.pullRequests,
+          sessions: domainRepos.sessions
         });
 
         // Execute the spec.author step through the real entry point
