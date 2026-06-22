@@ -2,7 +2,6 @@ import Fastify, { type FastifyBaseLogger } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
-  errorResponseSchema,
   getRunPullRequestSuccessStatusCode,
   listRunSessionsSuccessStatusCode,
   pullRequestSchema,

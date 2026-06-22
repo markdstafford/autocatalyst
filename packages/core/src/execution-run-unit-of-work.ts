@@ -135,7 +135,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
             const nowIso = new Date().toISOString();
             try {
               await recordExecutionSession(
-                { sessions: options.sessions, logger: options.logger },
+                { sessions: options.sessions, ...(options.logger !== undefined ? { logger: options.logger } : {}) },
                 {
                   runId: input.runId,
                   phase: derivePhase(input),
@@ -214,7 +214,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
         const outcome = deriveAgentOutcome(consumeResult.workResult);
         try {
           await recordExecutionSession(
-            { sessions: options.sessions, logger: options.logger },
+            { sessions: options.sessions, ...(options.logger !== undefined ? { logger: options.logger } : {}) },
             {
               runId: input.runId,
               phase: derivePhase(input),

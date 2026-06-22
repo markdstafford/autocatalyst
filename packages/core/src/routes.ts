@@ -160,6 +160,7 @@ function safeStack(error: unknown): string | undefined {
 }
 
 function buildSafeServerErrorLogFields(request: FastifyRequest, statusCode: number, error: unknown, code?: string): SafeServerErrorLogFields {
+  const stack = safeStack(error);
   return {
     event: 'route_failure',
     requestId: request.id,
@@ -168,7 +169,7 @@ function buildSafeServerErrorLogFields(request: FastifyRequest, statusCode: numb
     statusCode,
     errorName: error instanceof Error ? error.name : 'UnknownError',
     ...(code !== undefined ? { errorCode: code } : {}),
-    stack: safeStack(error)
+    ...(stack !== undefined ? { stack } : {})
   };
 }
 
