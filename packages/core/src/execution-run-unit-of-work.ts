@@ -205,6 +205,12 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
         if (error instanceof RunnerProtocolError) {
           throw error;
         }
+        // A RunnerProtocolError wrapped in PreTerminalRunnerFailure (because the runner cached
+        // metadata before the protocol violation) must still propagate as a protocol error,
+        // not be downgraded to an ordinary run failure.
+        if (error instanceof PreTerminalRunnerFailure && error.cause instanceof RunnerProtocolError) {
+          throw error.cause;
+        }
         // For pre-terminal runner failures, try to record a failed session row from the cached
         // metadata before returning. Persistence failures here are logged but must not replace
         // the original sanitized terminal reason.

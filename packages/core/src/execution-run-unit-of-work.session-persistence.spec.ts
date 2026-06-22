@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ExecutionContext } from '@autocatalyst/api-contract';
 import type { ExecutionBoundaryEvent, ExecutionEntryPoint, ExecutionEntryPointInput, RunnerSessionMetadata } from '@autocatalyst/execution';
-import { PreTerminalRunnerFailure } from '@autocatalyst/execution';
+import { PreTerminalRunnerFailure, RunnerProtocolError } from '@autocatalyst/execution';
 import type { Session } from '@autocatalyst/api-contract';
 import type { SessionRepository } from './domain-repositories.js';
 import type { RunWorkInput, RunWorkResult } from './orchestrator.js';
@@ -503,6 +503,39 @@ describe('execution-run-unit-of-work session persistence', () => {
       expect(logFields).toHaveProperty('errorName');
       expect(JSON.stringify(logFields)).not.toContain('DB write failed');
     }
+  });
+
+  // ---------------------------------------------------------------------------
+  // Protocol error with cached metadata — P1 regression (non-convergence fix)
+  // ---------------------------------------------------------------------------
+
+  it('rethrows RunnerProtocolError even when wrapped in PreTerminalRunnerFailure with cached metadata', async () => {
+    // Regression: execution-entry-point wraps RunnerProtocolError in PreTerminalRunnerFailure
+    // when getSessionMetadata() returns cached data. The unit of work must still propagate it
+    // as a RunnerProtocolError rather than downgrading it to { directive: 'fail' }.
+    const sessions = makeSessions();
+    const protocolError = new RunnerProtocolError('invalid_event', 'Adapter produced an invalid event.');
+    const preTerminalMeta: RunnerSessionMetadata = { ...baseSessionMetadata, outcome: 'failed' };
+    const wrapped = new PreTerminalRunnerFailure(protocolError, preTerminalMeta);
+
+    const throwingEntryPoint: ExecutionEntryPoint = {
+      execute(_input: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
+        return (async function* () {
+          throw wrapped;
+        })();
+      }
+    };
+
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: throwingEntryPoint,
+      resolveContext: async () => makeContext(),
+      eventsStore: newStore(),
+      sessions
+    });
+
+    await expect(unitOfWork.run(makeRoleInput('implementer', 1))).rejects.toBeInstanceOf(RunnerProtocolError);
+    // Must NOT silently swallow into a { directive: 'fail' } and must NOT call sessions.create
+    expect(sessions.create).not.toHaveBeenCalled();
   });
 });
 
