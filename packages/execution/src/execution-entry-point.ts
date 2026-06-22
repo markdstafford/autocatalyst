@@ -144,7 +144,12 @@ export function createExecutionEntryPoint(options: CreateExecutionEntryPointOpti
         config,
         runId: expectedRunId
       });
-      yield terminal;
+      const sessionMetadata = await options.runner.getSessionMetadata?.() ?? null;
+      const terminalWithMetadata =
+        sessionMetadata === null
+          ? terminal
+          : { ...terminal, sessionMetadata };
+      yield terminalWithMetadata;
     }
   };
 }

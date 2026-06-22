@@ -2,11 +2,28 @@ import { z } from 'zod';
 
 import {
   runnerEventSchema,
-  runnerTerminalStepResultSchema
+  runnerTerminalStepResultSchema,
+  inferenceSettingsSchema,
+  modelIdentitySchema,
+  tokenBreakdownSchema
 } from '@autocatalyst/api-contract';
 import type { RunnerEvent } from '@autocatalyst/api-contract';
 
 import { RunnerProtocolError } from './runner.js';
+
+const executionSessionMetadataSchema = z.object({
+  model: modelIdentitySchema,
+  inferenceSettings: inferenceSettingsSchema,
+  startedAt: z.string().datetime(),
+  endedAt: z.string().datetime().nullable(),
+  outcome: z.enum(['succeeded', 'failed', 'cancelled', 'timeout']),
+  tokens: tokenBreakdownSchema.optional(),
+  usageAvailable: z.boolean().optional(),
+  assistantTurnCount: z.number().int().min(0).optional(),
+  toolCallCount: z.number().int().min(0).optional()
+}).strict();
+
+export type ExecutionSessionMetadata = z.infer<typeof executionSessionMetadataSchema>;
 
 // Non-terminal events pass through as raw RunnerEvents.
 const nonTerminalRunnerEventSchema = runnerEventSchema.refine(
@@ -30,7 +47,8 @@ export const executionTerminalResultEventSchema = z
         schemaId: z.string().min(1)
       })
       .strict()
-      .optional()
+      .optional(),
+    sessionMetadata: executionSessionMetadataSchema.optional()
   })
   .strict();
 
