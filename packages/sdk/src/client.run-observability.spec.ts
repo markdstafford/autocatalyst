@@ -30,6 +30,19 @@ describe('ControlPlaneClient run observability methods', () => {
     const client = createControlPlaneClient({ baseUrl: 'https://api.test', bearerToken: 'token_1', fetch });
     await expect(client.listRunSessions('run_1')).resolves.toEqual(sessionResponse);
     expect(String(fetch.mock.calls[0]?.[0])).toBe('https://api.test/v1/runs/run_1/sessions');
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({ method: 'GET', headers: { authorization: 'Bearer token_1' } });
+  });
+
+  it('throws ControlPlaneClientError for non-2xx listRunSessions responses', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: { code: 'not_found', message: 'Not found.' } }), { status: 404 }));
+    const client = createControlPlaneClient({ baseUrl: 'https://api.test', fetch });
+    await expect(client.listRunSessions('run_missing')).rejects.toBeInstanceOf(ControlPlaneClientError);
+  });
+
+  it('rejects listRunSessions responses with unknown top-level fields', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ...sessionResponse, extra: true }), { status: 200 }));
+    const client = createControlPlaneClient({ baseUrl: 'https://api.test', fetch });
+    await expect(client.listRunSessions('run_1')).rejects.toThrow();
   });
 
   it('throws ControlPlaneClientError for non-2xx responses', async () => {
