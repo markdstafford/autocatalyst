@@ -957,6 +957,44 @@ describe('createOpenAIAgentAdapter — provider auth failure classification', ()
 // injected OpenAI client's `fetch` mocked. No SDK class is re-created here.
 // ---------------------------------------------------------------------------
 
+/**
+ * Build a Responses API SSE stream for a single turn.
+ *
+ * The @openai/agents SDK uses `stream: true` with the Responses API.
+ * The OpenAI SDK parses the response body as SSE via Stream.fromSSEResponse.
+ * Each SSE line is `data: <JSON>` and the terminal event is `response.completed`.
+ */
+function makeResponsesSSEBody(
+  respId: string,
+  output: unknown[]
+): ReadableStream<Uint8Array> {
+  const usageJson = JSON.stringify({ input_tokens: 12, output_tokens: 6, total_tokens: 18, input_tokens_details: {}, output_tokens_details: {} });
+  const responseJson = JSON.stringify({
+    id: respId,
+    object: 'realtime.response',
+    created_at: 0,
+    model: 'gpt-4.1',
+    status: 'completed',
+    output,
+    usage: JSON.parse(usageJson)
+  });
+  // Minimal SSE sequence: response.created → response.completed → [DONE]
+  const lines = [
+    `data: ${JSON.stringify({ type: 'response.created', response: { id: respId, object: 'realtime.response', status: 'in_progress', output: [], usage: null } })}\n\n`,
+    `data: ${JSON.stringify({ type: 'response.completed', response: JSON.parse(responseJson) })}\n\n`,
+    'data: [DONE]\n\n'
+  ];
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const line of lines) {
+        controller.enqueue(encoder.encode(line));
+      }
+      controller.close();
+    }
+  });
+}
+
 describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mocked only)', () => {
   it('drives a real UnixLocalSandboxClient + Runner with mocked fetch and produces canonical events', async () => {
     // Import the REAL modules so this test fails if the adapter does not match
@@ -978,7 +1016,7 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
 
     try {
       // The model traffic is mocked ONLY at the fetch layer of the injected
-      // OpenAI client (Responses API wire format): first turn calls notify,
+      // OpenAI client (Responses API SSE wire format): first turn calls notify,
       // second turn produces the final assistant message.
       let call = 0;
       const seenUrls: string[] = [];
@@ -989,16 +1027,11 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
           const output = call === 1
             ? [{ id: 'fc_1', type: 'function_call', call_id: 'call_1', name: 'notify', arguments: JSON.stringify({ message: 'starting review', importance: 'low' }), status: 'completed' }]
             : [{ id: 'msg_1', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Review complete: looks good.' }] }];
-          const payload = {
-            id: `resp_${call}`,
-            object: 'realtime.response',
-            created_at: 0,
-            model: 'gpt-4.1',
-            status: 'completed',
-            output,
-            usage: { input_tokens: 12, output_tokens: 6, total_tokens: 18, input_tokens_details: {}, output_tokens_details: {} }
-          };
-          return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+          // Return SSE stream (Responses API streaming format).
+          return new Response(makeResponsesSSEBody(`resp_${call}`, output), {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' }
+          });
         })
       };
 
@@ -1055,6 +1088,10 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
       expect(transport.fetch).toHaveBeenCalled();
       expect(seenUrls.some((u) => u.startsWith('https://api.openai.test/v1'))).toBe(true);
 
+      // All requests must go to /v1/responses, NOT /v1/chat/completions.
+      expect(seenUrls.some((u) => u.includes('/v1/responses'))).toBe(true);
+      expect(seenUrls.every((u) => !u.includes('/v1/chat/completions'))).toBe(true);
+
       // Result-file handoff occurred (final assistant text written to scratch).
       const written = await readFile(path.join(scratchRoot, 'step-result.json'), 'utf8');
       expect(written).toContain('Review complete');
@@ -1063,6 +1100,88 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
       expect(metadata.outcome).toBe('succeeded');
       expect(metadata.launchMechanism).toBe('fetch_transport');
       expect(metadata.tokenUsage.available).toBe(true);
+
+      await session.close?.();
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// Regression: adapter must never route agent traffic to /v1/chat/completions
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — no Chat Completions regression', () => {
+  it('throws if any fetch request hits /v1/chat/completions during a real-SDK session', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'ac-openai-nochat-'));
+    const repoRoot = path.join(tmp, 'repo');
+    const scratchRoot = path.join(tmp, 'scratch');
+    const sandboxBase = path.join(tmp, 'sbx');
+    await mkdir(repoRoot, { recursive: true });
+    await mkdir(scratchRoot, { recursive: true });
+    await mkdir(sandboxBase, { recursive: true });
+    await writeFile(path.join(repoRoot, 'README.md'), '# project\n');
+
+    try {
+      // Fetch mock that throws if chat/completions is called; succeeds for /v1/responses.
+      const transport: ProviderFetchTransport = {
+        fetch: vi.fn(async (request) => {
+          if (request.url.includes('/v1/chat/completions')) {
+            throw new Error(`REGRESSION: adapter routed to /v1/chat/completions — url: ${request.url}`);
+          }
+          // Return a valid SSE response for /v1/responses.
+          const output = [{ id: 'msg_1', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'All good.' }] }];
+          return new Response(makeResponsesSSEBody('resp_nochat_1', output), {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' }
+          });
+        })
+      };
+
+      const profile = makeProfile({ endpoint: { baseUrl: 'https://api.openai.test/v1' } });
+      const connection: AgentConnection = {
+        profile,
+        credentialResolved: true,
+        createFetchTransport: () => transport,
+        createProcessLaunchConfig: () => { throw new Error('process launch not supported'); }
+      };
+
+      const input: AgentProviderSessionInput = {
+        runInput: {
+          environment: {
+            context: {
+              run: { id: 'run_nochat', workKind: 'feature', currentStep: 'implementation.work', tenant: 'tenant_1' },
+              task: { prompt: 'Check this repo.', inputs: {} },
+              workspaceIntent: { shape: 'none' },
+              secretBindings: [],
+              toolPolicy: { allowedTools: ['bash'], workspaceScope: 'declared_workspace' },
+              skills: { requested: [], resolved: [] },
+              capabilityRequirements: { shell: { kind: 'bash', required: false }, paths: { canonicalWorkspacePaths: true }, lsp: { requested: false } }
+            },
+            workspace: { shape: 'two_roots', repoRoot, scratchRoot, branchName: 'feature/x', provisionedBaseRef: 'origin/main', workspaceRoots: [repoRoot, scratchRoot] },
+            environment: { variables: { SAFE_ENV: 'v', OPENAI_API_KEY: FAKE_SECRET }, secretVariableNames: ['OPENAI_API_KEY'] },
+            toolPolicy: { allowedTools: ['bash'], workspaceRoots: [repoRoot, scratchRoot] },
+            skills: { requested: [], resolved: [] },
+            capabilities: { shell: { kind: 'bash', available: false }, paths: { repoRoot, scratchRoot }, lsp: { requested: false, available: false } }
+          }
+        },
+        profile,
+        connection,
+        telemetryContext: { runId: 'run_nochat', step: 'implementation.work', role: 'reviewer' }
+      };
+
+      const adapter = createOpenAIAgentAdapter({ sandboxWorkspaceBaseDir: sandboxBase });
+      const session = await adapter.startSession(input);
+      const events = await collectEvents(session.events);
+
+      // Session must succeed — no chat/completions route was taken.
+      expect(events.some((e) => e.type === 'runner_terminal_result')).toBe(true);
+      expect(events.find((e) => e.type === 'runner_terminal_result')).toMatchObject({
+        type: 'runner_terminal_result',
+        result: { directive: 'advance' }
+      });
+      expect(transport.fetch).toHaveBeenCalled();
 
       await session.close?.();
     } finally {
