@@ -1535,7 +1535,7 @@ describe('createExecutionEntryPoint — structuredResultCapture pre-run attachme
         result: { directive: 'advance' }
       };
 
-      const { runner, getCapturedInput } = makeCapturingRunner([terminalEvt]);
+      const { runner } = makeCapturingRunner([terminalEvt]);
 
       // Wrap runner to write the file before yielding
       const writingRunner: Runner = {
