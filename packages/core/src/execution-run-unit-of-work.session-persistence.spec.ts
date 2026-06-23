@@ -432,6 +432,7 @@ describe('execution-run-unit-of-work session persistence', () => {
 
     const throwingEntryPoint: ExecutionEntryPoint = {
       execute(_input: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
+        // eslint-disable-next-line require-yield
         return (async function* () {
           throw preTerminalFailure;
         })();
@@ -475,6 +476,7 @@ describe('execution-run-unit-of-work session persistence', () => {
 
     const throwingEntryPoint: ExecutionEntryPoint = {
       execute(_input: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
+        // eslint-disable-next-line require-yield
         return (async function* () {
           throw preTerminalFailure;
         })();
@@ -521,6 +523,7 @@ describe('execution-run-unit-of-work session persistence', () => {
 
     const throwingEntryPoint: ExecutionEntryPoint = {
       execute(_input: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
+        // eslint-disable-next-line require-yield
         return (async function* () {
           throw wrapped;
         })();
