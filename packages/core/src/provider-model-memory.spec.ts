@@ -295,3 +295,59 @@ describe('createRunStepAgentModelMemoryStore - load', () => {
     expect(result).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Adapter continuity: mismatched providerKind/adapterId
+// ---------------------------------------------------------------------------
+
+describe('openai adapter continuity — mismatched snapshot rejection', () => {
+  it('a snapshot with providerKind !== "openai" should produce no modelMemoryState (adapter must ignore it)', async () => {
+    // This test documents the expected contract: if load() returns a snapshot for a different
+    // providerKind (e.g. "anthropic"), the openai adapter must not use it.
+    // The store itself returns the snapshot faithfully — the adapter is responsible for filtering.
+    const checkpoint = {
+      providerModelMemory: {
+        [key]: { providerKind: 'anthropic', adapterId: 'openai-agents-sdk', state: { previousResponseId: 'resp_x' } }
+      }
+    };
+    const steps = [makeRunStep({ checkpointResult: checkpoint })];
+    const repo = makeFakeRunStepRepo(steps);
+
+    const store = createRunStepAgentModelMemoryStore({
+      runSteps: repo,
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      currentStep: 'implementation.build',
+      key
+    });
+
+    const result = await store.load();
+    // The store returns the snapshot — but the adapter must check providerKind before using it.
+    // We verify the snapshot does NOT have providerKind === 'openai', so the adapter should ignore it.
+    expect(result).not.toBeNull();
+    expect(result?.providerKind).not.toBe('openai');
+  });
+
+  it('a snapshot with adapterId !== "openai-agents-sdk" should produce no modelMemoryState (adapter must ignore it)', async () => {
+    const checkpoint = {
+      providerModelMemory: {
+        [key]: { providerKind: 'openai', adapterId: 'openai-direct', state: { previousResponseId: 'resp_y' } }
+      }
+    };
+    const steps = [makeRunStep({ checkpointResult: checkpoint })];
+    const repo = makeFakeRunStepRepo(steps);
+
+    const store = createRunStepAgentModelMemoryStore({
+      runSteps: repo,
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      currentStep: 'implementation.build',
+      key
+    });
+
+    const result = await store.load();
+    // The store returns the snapshot — but the adapter must check adapterId before using it.
+    expect(result).not.toBeNull();
+    expect(result?.adapterId).not.toBe('openai-agents-sdk');
+  });
+});

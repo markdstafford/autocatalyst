@@ -108,6 +108,8 @@ export interface OpenAIRunSessionInput {
   readonly modelProvider: OpenAIProvider;
   readonly modelSettings: Readonly<Record<string, unknown>>;
   readonly structuredResult?: OpenAIStructuredResultConfiguration;
+  /** Loaded continuity state from the previous run turn. Never contains sandbox identifiers. */
+  readonly modelMemoryState?: OpenAIResponsesContinuityState;
 }
 
 export interface OpenAIRunOutcome {
@@ -122,6 +124,8 @@ export interface OpenAIRunOutcome {
     readonly question?: string;
     readonly reason?: string;
     readonly tokenUsage?: { readonly input: number; readonly output: number };
+    /** Continuity state to persist for the next run turn. Never contains sandbox identifiers. */
+    readonly responsesContinuity?: OpenAIResponsesContinuityState;
   }>;
 }
 
@@ -143,6 +147,11 @@ export interface OpenAIAgentAdapterOptions {
   readonly clock?: () => string;
   readonly eventIdGenerator?: () => string;
   readonly logger?: OpenAIAgentAdapterLogger;
+}
+
+export interface OpenAIResponsesContinuityState {
+  readonly conversationId?: string;
+  readonly previousResponseId?: string;
 }
 
 export interface OpenAIStructuredResultConfiguration {
@@ -676,10 +685,13 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
 
   async function* drive(): AsyncIterable<RunItem> {
     try {
-      const stream = await runner.run(agent, input.prompt, {
-        sandbox: { session: input.session },
-        stream: true
-      }) as unknown as StreamedRunnerRunView;
+      const continuityOptions = input.modelMemoryState !== undefined
+        ? {
+            ...(input.modelMemoryState.previousResponseId !== undefined ? { previousResponseId: input.modelMemoryState.previousResponseId } : {}),
+            ...(input.modelMemoryState.conversationId !== undefined ? { conversationId: input.modelMemoryState.conversationId } : {})
+          }
+        : {};
+      const stream = await runner.run(agent, input.prompt, { sandbox: { session: input.session }, stream: true, ...continuityOptions }) as unknown as StreamedRunnerRunView;
 
       for await (const event of stream) {
         if (isRunItemStreamEvent(event)) {
@@ -689,12 +701,17 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
 
       const streamResult = stream as unknown as StreamRunResultView;
       const usage = streamResult.state._context.usage;
+      const lastResponseId = streamResult.lastResponseId;
+      const responsesContinuity: OpenAIResponsesContinuityState | undefined = lastResponseId !== undefined
+        ? { previousResponseId: lastResponseId }
+        : undefined;
       resolveResult({
         directive: 'advance',
         ...(streamResult.finalOutput !== undefined ? { output: streamResult.finalOutput } : {}),
         ...(usage
           ? { tokenUsage: { input: usage.inputTokens ?? 0, output: usage.outputTokens ?? 0 } }
-          : {})
+          : {}),
+        ...(responsesContinuity !== undefined ? { responsesContinuity } : {})
       });
     } catch (err) {
       const shaped = err as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
@@ -941,6 +958,27 @@ export function createOpenAIAgentAdapter(
         ? `${baseInstructions}\n\n${skillMaterialization.systemPromptHint}`
         : baseInstructions;
 
+      // Load continuity state from the previous turn (if model memory is configured).
+      let modelMemoryState: OpenAIResponsesContinuityState | undefined;
+      if (input.modelMemory !== undefined) {
+        const snapshot = await input.modelMemory.store.load();
+        if (
+          snapshot !== null &&
+          snapshot.providerKind === openaiProviderKind &&
+          snapshot.adapterId === openaiAgentAdapterId
+        ) {
+          const state = snapshot.state as Record<string, unknown>;
+          const prevId = typeof state['previousResponseId'] === 'string' ? state['previousResponseId'] : undefined;
+          const convId = typeof state['conversationId'] === 'string' ? state['conversationId'] : undefined;
+          if (prevId !== undefined || convId !== undefined) {
+            modelMemoryState = {
+              ...(prevId !== undefined ? { previousResponseId: prevId } : {}),
+              ...(convId !== undefined ? { conversationId: convId } : {})
+            };
+          }
+        }
+      }
+
       const outcome = await runAgentSession({
         prompt: input.runInput.environment.context.task.prompt,
         model: input.profile.model.model,
@@ -950,7 +988,8 @@ export function createOpenAIAgentAdapter(
         session: sandboxHandle.session,
         modelProvider,
         modelSettings: inferenceMapping.mapped,
-        ...(structuredResult !== undefined ? { structuredResult } : {})
+        ...(structuredResult !== undefined ? { structuredResult } : {}),
+        ...(modelMemoryState !== undefined ? { modelMemoryState } : {})
       });
 
       let metadataResolve!: (value: AgentProviderSessionMetadata) => void;
@@ -984,6 +1023,19 @@ export function createOpenAIAgentAdapter(
           }
 
           const terminal = await outcome.result;
+
+          // Persist continuity state before yielding the terminal event.
+          if (input.modelMemory !== undefined && terminal.responsesContinuity !== undefined) {
+            const continuity = terminal.responsesContinuity;
+            const continuityState: Record<string, string> = {};
+            if (continuity.previousResponseId !== undefined) continuityState['previousResponseId'] = continuity.previousResponseId;
+            if (continuity.conversationId !== undefined) continuityState['conversationId'] = continuity.conversationId;
+            await input.modelMemory.store.save({
+              providerKind: openaiProviderKind,
+              adapterId: openaiAgentAdapterId,
+              state: continuityState
+            });
+          }
 
           // Result-file handoff: write the final output to the scratch root.
           // Only on advance.

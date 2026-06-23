@@ -26,6 +26,7 @@ import {
   type OpenAIRunSessionInput,
   type OpenAISandboxClientHandle
 } from './openai-agent-adapter.js';
+import type { AgentModelMemoryContinuity, AgentModelMemoryStore, AgentModelMemorySnapshot } from '@autocatalyst/execution';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1440,4 +1441,117 @@ describe('createOpenAIAgentAdapter — reviewer workspace immutability (behavior
       await rm(tmp, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// Model-memory continuity (seam-driven)
+// ---------------------------------------------------------------------------
+
+function makeFakeStore(
+  loadResult: AgentModelMemorySnapshot | null,
+  capturedSaves: AgentModelMemorySnapshot[] = []
+): AgentModelMemoryStore {
+  return {
+    async load() { return loadResult; },
+    async save(snapshot) { capturedSaves.push(snapshot); }
+  };
+}
+
+function makeModelMemory(store: AgentModelMemoryStore): AgentModelMemoryContinuity {
+  return { key: 'run_1:implementation.work:reviewer:openai:openai-agents-sdk:openai-reviewer', store };
+}
+
+describe('createOpenAIAgentAdapter — model-memory continuity', () => {
+  it('passes previousResponseId from loaded snapshot as modelMemoryState to runAgentSession', async () => {
+    const snapshot: AgentModelMemorySnapshot = {
+      providerKind: 'openai',
+      adapterId: 'openai-agents-sdk',
+      state: { previousResponseId: 'resp_previous' }
+    };
+    const store = makeFakeStore(snapshot);
+    const calls: OpenAIRunSessionInput[] = [];
+    const fakeRun: OpenAIRunAgentSession = (input) => {
+      calls.push(input);
+      return { items: [], result: Promise.resolve({ directive: 'advance' as const }) };
+    };
+
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => fakeSandboxHandle(),
+      runAgentSession: fakeRun
+    });
+
+    const base = makeSessionInput('scratch_only');
+    const input: AgentProviderSessionInput = {
+      ...base,
+      modelMemory: makeModelMemory(store)
+    };
+
+    const session = await adapter.startSession(input);
+    await collectEvents(session.events);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.modelMemoryState).toEqual({ previousResponseId: 'resp_previous' });
+  });
+
+  it('saves responsesContinuity from run result to the model memory store', async () => {
+    const capturedSaves: AgentModelMemorySnapshot[] = [];
+    const store = makeFakeStore(null, capturedSaves);
+    const fakeRun: OpenAIRunAgentSession = () => ({
+      items: [],
+      result: Promise.resolve({
+        directive: 'advance' as const,
+        responsesContinuity: { previousResponseId: 'resp_next', conversationId: 'conv_1' }
+      })
+    });
+
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => fakeSandboxHandle(),
+      runAgentSession: fakeRun
+    });
+
+    const base = makeSessionInput('scratch_only');
+    const input: AgentProviderSessionInput = {
+      ...base,
+      modelMemory: makeModelMemory(store)
+    };
+
+    const session = await adapter.startSession(input);
+    await collectEvents(session.events);
+
+    expect(capturedSaves).toHaveLength(1);
+    expect(capturedSaves[0]).toEqual({
+      providerKind: 'openai',
+      adapterId: 'openai-agents-sdk',
+      state: { previousResponseId: 'resp_next', conversationId: 'conv_1' }
+    });
+  });
+
+  it('saved memory JSON does not contain the word sandbox', async () => {
+    const capturedSaves: AgentModelMemorySnapshot[] = [];
+    const store = makeFakeStore(null, capturedSaves);
+    const fakeRun: OpenAIRunAgentSession = () => ({
+      items: [],
+      result: Promise.resolve({
+        directive: 'advance' as const,
+        responsesContinuity: { previousResponseId: 'resp_abc', conversationId: 'conv_2' }
+      })
+    });
+
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => fakeSandboxHandle(),
+      runAgentSession: fakeRun
+    });
+
+    const base = makeSessionInput('scratch_only');
+    const input: AgentProviderSessionInput = {
+      ...base,
+      modelMemory: makeModelMemory(store)
+    };
+
+    const session = await adapter.startSession(input);
+    await collectEvents(session.events);
+
+    expect(capturedSaves).toHaveLength(1);
+    expect(JSON.stringify(capturedSaves[0])).not.toContain('sandbox');
+  });
 });
