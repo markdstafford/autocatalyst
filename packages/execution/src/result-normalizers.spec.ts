@@ -295,6 +295,26 @@ describe('prFinalizeNullStripNormalizer', () => {
     expect(result.candidate).toEqual({ directive: 'advance', findings: [], titleSubject: 'fix: something' });
   });
 
+  it('strips null targets from nested findings', () => {
+    const result = normalize({
+      directive: 'advance',
+      findings: [
+        { severity: 'info', summary: 'Looks good.', target: null },
+        { severity: 'warning', summary: 'Keep an eye on this.', target: 'tests' }
+      ],
+      reconciledSummary: null
+    });
+    expect(result.status).toBe('changed');
+    if (result.status !== 'changed') return;
+    expect(result.candidate).toEqual({
+      directive: 'advance',
+      findings: [
+        { severity: 'info', summary: 'Looks good.' },
+        { severity: 'warning', summary: 'Keep an eye on this.', target: 'tests' }
+      ]
+    });
+  });
+
   it('is unchanged when no null optional fields are present', () => {
     expect(normalize({ directive: 'advance', findings: [] })).toEqual({ status: 'unchanged' });
     expect(normalize({ directive: 'advance', findings: [], titleSubject: 'fix: something' })).toEqual({ status: 'unchanged' });
@@ -333,7 +353,13 @@ describe('end-to-end: canonical schema validation passes after normalization', (
   });
 
   it('pr.finalize: null optional fields pass prFinalizeResultSchema after prFinalizeNullStripNormalizer', () => {
-    const input = { directive: 'advance', findings: [], reconciledSummary: null, titleSubject: null, validationSummary: null };
+    const input = {
+      directive: 'advance',
+      findings: [{ severity: 'info', summary: 'Looks good.', target: null }],
+      reconciledSummary: null,
+      titleSubject: null,
+      validationSummary: null
+    };
     const normalized = prFinalizeNullStripNormalizer.normalize({
       candidate: input,
       step: 'pr.finalize',

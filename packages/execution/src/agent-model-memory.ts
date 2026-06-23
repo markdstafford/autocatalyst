@@ -11,10 +11,17 @@ export interface AgentModelMemoryStore {
   save(snapshot: AgentModelMemorySnapshot): Promise<void>;
 }
 
+export interface AgentModelMemoryProviderScope {
+  readonly providerKind: string;
+  readonly adapterId: string;
+  readonly profileName: string;
+}
+
 export interface AgentModelMemoryContinuity {
   /** Stable logical conversation key, not a sandbox/session identifier. */
   readonly key: string;
   readonly store: AgentModelMemoryStore;
+  readonly forProvider?: (scope: AgentModelMemoryProviderScope) => AgentModelMemoryContinuity;
 }
 
 export function createNoopAgentModelMemoryStore(): AgentModelMemoryStore {

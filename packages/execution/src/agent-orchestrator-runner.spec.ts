@@ -965,6 +965,61 @@ describe('createAgentOrchestratorRunner', () => {
       expect(receivedInput?.modelMemory?.key).toBe('run_1:implementation.work:reviewer');
       expect(receivedInput?.modelMemory?.store).toBe(store);
     });
+
+    it('scopes model memory continuity with the resolved provider profile before adapter startSession', async () => {
+      const runId = 'run_test_1';
+      const baseStore = createNoopAgentModelMemoryStore();
+      const scopedStore = createNoopAgentModelMemoryStore();
+      const forProvider = vi.fn((scope: { providerKind: string; adapterId: string; profileName: string }) => ({
+        key: `run_1:reviewer:${scope.providerKind}:${scope.adapterId}:${scope.profileName}`,
+        store: scopedStore
+      }));
+      let receivedInput: AgentProviderSessionInput | undefined;
+
+      const profile = makeProfile({
+        providerKind: 'openai',
+        adapterId: 'openai-agents-sdk',
+        profileName: 'openai-reviewer'
+      });
+
+      const capturingAdapter: AgentProviderAdapter = {
+        providerKind: 'openai',
+        adapterId: 'openai-agents-sdk',
+        supportedConnectionMechanism: 'process_environment',
+        startSession(input: AgentProviderSessionInput): AgentProviderSession {
+          receivedInput = input;
+          return {
+            events: (async function* () { yield makeTerminalEvent(runId); })(),
+            metadata: Promise.resolve(makeDefaultMetadata())
+          };
+        }
+      };
+
+      const runner = createAgentOrchestratorRunner({
+        adapter: capturingAdapter,
+        profile,
+        connection: makeConnection(profile),
+        telemetryContext: makeTelemetryContext(),
+        clock: () => 1000
+      });
+      const modelMemory = {
+        key: 'run_1:reviewer:unknown:unknown:unknown',
+        store: baseStore,
+        forProvider
+      } as unknown as RunnerRunInput['modelMemory'];
+
+      await collectEvents(runner, { ...makeRunInput(), modelMemory });
+
+      expect(forProvider).toHaveBeenCalledWith({
+        providerKind: 'openai',
+        adapterId: 'openai-agents-sdk',
+        profileName: 'openai-reviewer'
+      });
+      expect(receivedInput?.modelMemory?.key).toBe('run_1:reviewer:openai:openai-agents-sdk:openai-reviewer');
+      expect(receivedInput?.modelMemory?.store).toBe(scopedStore);
+      expect(receivedInput?.runInput.modelMemory?.key).toBe('run_1:reviewer:openai:openai-agents-sdk:openai-reviewer');
+      expect(receivedInput?.runInput.modelMemory?.store).toBe(scopedStore);
+    });
   });
 
   describe('structuredResultCapture pass-through', () => {

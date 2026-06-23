@@ -202,8 +202,11 @@ async function* asyncIter(events: ClaudeNativeEvent[]): AsyncIterable<ClaudeNati
 
 function successfulResultStream(): AsyncIterable<ClaudeNativeEvent> {
   return asyncIter([
-    { type: 'tool_use', tool: { name: 'submit_result', input: { status: 'satisfied', findings: [] } } },
-    { type: 'result', result: { is_error: false, output: 'Done.' } }
+    {
+      type: 'result',
+      structuredOutput: { status: 'satisfied', findings: [] },
+      result: { is_error: false, output: 'Done.' }
+    }
   ]);
 }
 
@@ -754,7 +757,7 @@ describe('createClaudeAgentAdapter — provider failure classification', () => {
 });
 
 describe('createClaudeAgentAdapter — structured result capture', () => {
-  it('passes submit_result in allowedTools for structured sessions', async () => {
+  it('passes native Claude outputFormat for structured sessions without MCP tools', async () => {
     const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-claude-toolreg-'));
     try {
       const launchCalls: ClaudeSessionLaunchOptions[] = [];
@@ -763,29 +766,34 @@ describe('createClaudeAgentAdapter — structured result capture', () => {
         launchClaudeSession: (opts) => {
           launchCalls.push(opts);
           return successfulResultStream();
-        },
-        supportsStructuredResultTools: true
+        }
       });
 
       const capture = makeReviewerCapture();
       await runAdapterWithCapture(adapter, capture, { scratchRoot: scratchDir });
 
-      expect(launchCalls[0]!.allowedTools).toContain('submit_result');
-      expect(launchCalls[0]!.structuredResultTool?.name).toBe('submit_result');
-      expect(launchCalls[0]!.structuredResultTool?.projection.mechanism).toBe('claude_submit_result_tool');
+      expect(launchCalls[0]!.allowedTools).not.toContain('submit_result');
+      expect(launchCalls[0]!.structuredResult?.projection.mechanism).toBe('claude_structured_output');
+      expect(launchCalls[0]!.structuredResult?.outputFormat).toEqual({
+        type: 'json_schema',
+        schema: launchCalls[0]!.structuredResult?.projection.schema
+      });
     } finally {
       await rm(scratchDir, { recursive: true });
     }
   });
 
-  it('allows submit_result in read-only reviewer sessions without granting write tools', async () => {
+  it('captures native structured_output in read-only reviewer sessions without granting write tools', async () => {
     const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-claude-reviewer-'));
     try {
-      const submittedResult = { status: 'satisfied', findings: [] };
+      const structuredOutput = { status: 'satisfied', findings: [] };
 
       const events: ClaudeNativeEvent[] = [
-        { type: 'tool_use', tool: { name: 'submit_result', input: submittedResult } },
-        { type: 'result', result: { is_error: false, output: 'prose summary here' } }
+        {
+          type: 'result',
+          structuredOutput,
+          result: { is_error: false, output: 'prose summary here' }
+        }
       ];
 
       const launchCalls: ClaudeSessionLaunchOptions[] = [];
@@ -793,8 +801,7 @@ describe('createClaudeAgentAdapter — structured result capture', () => {
         launchClaudeSession: (opts) => {
           launchCalls.push(opts);
           return asyncIter(events);
-        },
-        supportsStructuredResultTools: true
+        }
       });
 
       await runAdapterWithCapture(adapter, makeReviewerCapture('reviewer-result.json'), {
@@ -802,29 +809,34 @@ describe('createClaudeAgentAdapter — structured result capture', () => {
         scratchRoot: scratchDir
       });
 
-      expect(launchCalls[0]!.allowedTools).toContain('submit_result');
       expect(launchCalls[0]!.allowedTools).toContain('Read');
       expect(launchCalls[0]!.allowedTools).not.toContain('Write');
       expect(launchCalls[0]!.allowedTools).not.toContain('Edit');
+      expect(launchCalls[0]!.options).toMatchObject({
+        outputFormat: launchCalls[0]!.structuredResult?.outputFormat
+      });
 
       const resultText = await readFile(path.join(scratchDir, 'reviewer-result.json'), 'utf8');
-      expect(JSON.parse(resultText)).toEqual(submittedResult);
+      expect(JSON.parse(resultText)).toEqual(structuredOutput);
     } finally {
       await rm(scratchDir, { recursive: true });
     }
   });
 
-  it('ignores result-event prose when submit_result provides a valid object', async () => {
+  it('ignores result-event prose when structured_output provides a valid object', async () => {
     const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-claude-prose-'));
     try {
       const structuredResult = { status: 'satisfied', findings: [] };
       const events: ClaudeNativeEvent[] = [
-        { type: 'tool_use', tool: { name: 'submit_result', input: structuredResult } },
-        { type: 'result', result: { is_error: false, output: 'Here is my prose summary of the review...' } }
+        {
+          type: 'result',
+          structuredOutput: structuredResult,
+          result: { is_error: false, output: 'Here is my prose summary of the review...' }
+        }
       ];
 
       await runAdapterWithCapture(
-        createClaudeAgentAdapter({ launchClaudeSession: () => asyncIter(events), supportsStructuredResultTools: true }),
+        createClaudeAgentAdapter({ launchClaudeSession: () => asyncIter(events) }),
         makeReviewerCapture(),
         { scratchRoot: scratchDir }
       );
@@ -837,23 +849,13 @@ describe('createClaudeAgentAdapter — structured result capture', () => {
     }
   });
 
-  it('throws structured_result_unsupported when supportsStructuredResultTools is explicitly false', async () => {
-    const adapter = createClaudeAgentAdapter({
-      launchClaudeSession: () => asyncIter([]),
-      supportsStructuredResultTools: false  // explicitly disabled
-    });
-
-    await expect(runAdapterWithCapture(adapter, makeReviewerCapture())).rejects.toThrow(UnsupportedProviderCapabilityError);
-  });
-
-  it('throws missing_structured_result when session ends without submit_result call', async () => {
+  it('throws missing_structured_result when session ends without structured_output', async () => {
     const events: ClaudeNativeEvent[] = [
       { type: 'result', result: { is_error: false, output: 'Done.' } }
     ];
 
     const adapter = createClaudeAgentAdapter({
-      launchClaudeSession: () => asyncIter(events),
-      supportsStructuredResultTools: true
+      launchClaudeSession: () => asyncIter(events)
     });
 
     await expect(runAdapterWithCapture(adapter, makeReviewerCapture())).rejects.toThrow(ProviderProtocolError);
@@ -867,17 +869,15 @@ describe('createClaudeAgentAdapter — structured result capture', () => {
     expect(err?.code).toBe('missing_structured_result');
   });
 
-  it('throws duplicate_structured_result on second submit_result call', async () => {
+  it('throws duplicate_structured_result on second structured_output result', async () => {
     const result = { status: 'satisfied', findings: [] };
     const events: ClaudeNativeEvent[] = [
-      { type: 'tool_use', tool: { name: 'submit_result', input: result } },
-      { type: 'tool_use', tool: { name: 'submit_result', input: result } },
-      { type: 'result', result: { is_error: false } }
+      { type: 'result', structuredOutput: result, result: { is_error: false } },
+      { type: 'result', structuredOutput: result, result: { is_error: false } }
     ];
 
     const adapter = createClaudeAgentAdapter({
-      launchClaudeSession: () => asyncIter(events),
-      supportsStructuredResultTools: true
+      launchClaudeSession: () => asyncIter(events)
     });
 
     let err: ProviderProtocolError | undefined;
@@ -943,10 +943,10 @@ describe('createClaudeAgentAdapter — credential redaction', () => {
 // ---------------------------------------------------------------------------
 // Read-only reviewer satisfied verdict regression (T-019)
 //
-// NOTE: The test 'allows submit_result in read-only reviewer sessions without
-// granting write tools' above already proves this contract end-to-end. This
-// explicit test documents the exact satisfied verdict path as a named regression
-// anchor for the implementation.build reviewer contract.
+// NOTE: The test 'captures native structured_output in read-only reviewer
+// sessions without granting write tools' above already proves this contract
+// end-to-end. This explicit test documents the exact satisfied verdict path as a
+// named regression anchor for the implementation.build reviewer contract.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
@@ -974,7 +974,6 @@ describe('createClaudeAgentAdapter — structured result error paths no-leak', (
       launchClaudeSession: () => asyncIter([
         { type: 'result', result: { is_error: false, output: SENTINEL_PROMPT } }
       ]),
-      supportsStructuredResultTools: true,
       logger: {
         info: (_e, f) => logs.push(f),
         warn: (_e, f) => logs.push(f),
@@ -988,7 +987,7 @@ describe('createClaudeAgentAdapter — structured result error paths no-leak', (
     expectNoStructuredSentinels(captured);
     // Safe structured-result diagnostics must be present
     expect(captured).toContain('autocatalyst.reviewer_result.v1');
-    expect(captured).toContain('claude_submit_result_tool');
+    expect(captured).toContain('claude_structured_output');
   });
 
   it('does not leak sentinels in logger output when duplicate_structured_result fires', async () => {
@@ -996,11 +995,9 @@ describe('createClaudeAgentAdapter — structured result error paths no-leak', (
     const result = { status: 'satisfied', findings: [] };
     const adapter = createClaudeAgentAdapter({
       launchClaudeSession: () => asyncIter([
-        { type: 'tool_use', tool: { name: 'submit_result', input: result } },
-        { type: 'tool_use', tool: { name: 'submit_result', input: result } },
-        { type: 'result', result: { is_error: false } }
+        { type: 'result', structuredOutput: result, result: { is_error: false } },
+        { type: 'result', structuredOutput: result, result: { is_error: false } }
       ]),
-      supportsStructuredResultTools: true,
       logger: {
         info: (_e, f) => logs.push(f),
         warn: (_e, f) => logs.push(f),
@@ -1014,7 +1011,7 @@ describe('createClaudeAgentAdapter — structured result error paths no-leak', (
     expectNoStructuredSentinels(captured);
     // Safe structured-result diagnostics must be present
     expect(captured).toContain('autocatalyst.reviewer_result.v1');
-    expect(captured).toContain('claude_submit_result_tool');
+    expect(captured).toContain('claude_structured_output');
   });
 
   it('does not leak sentinels in logger output when SDK auth error fires during structured capture', async () => {
@@ -1027,7 +1024,6 @@ describe('createClaudeAgentAdapter — structured result error paths no-leak', (
 
     const adapter = createClaudeAgentAdapter({
       launchClaudeSession: async function* () { yield await Promise.reject<ClaudeNativeEvent>(leakyError); },
-      supportsStructuredResultTools: true,
       logger: {
         info: (_e, f) => logs.push(f),
         warn: (_e, f) => logs.push(f),
@@ -1048,7 +1044,6 @@ describe('createClaudeAgentAdapter — structured result error paths no-leak', (
       launchClaudeSession: () => asyncIter([
         { type: 'result', result: { is_error: false, output: proseOutput } }
       ]),
-      supportsStructuredResultTools: true,
       logger: {
         info: (_e, f) => logs.push(f),
         warn: (_e, f) => logs.push(f),
@@ -1064,21 +1059,18 @@ describe('createClaudeAgentAdapter — structured result error paths no-leak', (
 });
 
 describe('createClaudeAgentAdapter — read-only reviewer satisfied verdict regression', () => {
-  it('read-only reviewer can submit satisfied verdict via submit_result', async () => {
+  it('read-only reviewer can return a satisfied verdict via structured_output', async () => {
     const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-reviewer-verdict-'));
     try {
       const verdict = { status: 'satisfied' as const, findings: [] };
       const events: ClaudeNativeEvent[] = [
-        { type: 'tool_use', tool: { name: 'submit_result', input: verdict } },
-        { type: 'result', result: { is_error: false } }
+        { type: 'result', structuredOutput: verdict, result: { is_error: false } }
       ];
 
       const adapter = createClaudeAgentAdapter({
-        launchClaudeSession: () => asyncIter(events),
-        supportsStructuredResultTools: true
+        launchClaudeSession: () => asyncIter(events)
       });
 
-      // Read-only tools (no Write, no Edit) — submit_result is still available
       await runAdapterWithCapture(adapter, makeReviewerCapture('step-result.json'), {
         scratchRoot: scratchDir,
         allowedTools: ['Read', 'Glob', 'Grep']

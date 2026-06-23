@@ -82,14 +82,24 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
         } : {})
       });
 
+      const scopedModelMemory = input.modelMemory?.forProvider?.({
+        providerKind: profile.providerKind,
+        adapterId: profile.adapterId,
+        profileName: profile.profileName
+      }) ?? input.modelMemory;
+      const sessionRunInput =
+        scopedModelMemory !== undefined && scopedModelMemory !== input.modelMemory
+          ? { ...input, modelMemory: scopedModelMemory }
+          : input;
+
       // Start session
       const session = await adapter.startSession({
-        runInput: input,
+        runInput: sessionRunInput,
         profile,
         connection,
         telemetryContext,
         ...(input.structuredResultCapture !== undefined ? { structuredResultCapture: input.structuredResultCapture } : {}),
-        ...(input.modelMemory !== undefined ? { modelMemory: input.modelMemory } : {})
+        ...(scopedModelMemory !== undefined ? { modelMemory: scopedModelMemory } : {})
       });
       activeSession = session;
 

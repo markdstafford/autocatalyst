@@ -184,24 +184,39 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
       // Agent path
       // Build model memory continuity for this agent dispatch
       const role = deriveRole(input);
-      const mmKey = deriveAgentModelMemoryKey({
-        runId: input.runId,
-        role,
-        providerKind: 'unknown',
-        adapterId: 'unknown',
-        profileName: 'unknown'
-      });
+      const createModelMemory = (scope: {
+        readonly providerKind: string;
+        readonly adapterId: string;
+        readonly profileName: string;
+      }) => {
+        const mmKey = deriveAgentModelMemoryKey({
+          runId: input.runId,
+          role,
+          providerKind: scope.providerKind,
+          adapterId: scope.adapterId,
+          profileName: scope.profileName
+        });
+        return {
+          key: mmKey,
+          store: options.runSteps !== undefined
+            ? createRunStepAgentModelMemoryStore({
+                runSteps: options.runSteps,
+                runId: input.runId,
+                tenant: input.tenant,
+                currentStep: input.run.currentStep,
+                key: mmKey
+              })
+            : createNoopAgentModelMemoryStore(),
+          forProvider: createModelMemory
+        };
+      };
       const modelMemory = {
-        key: mmKey,
-        store: options.runSteps !== undefined
-          ? createRunStepAgentModelMemoryStore({
-              runSteps: options.runSteps,
-              runId: input.runId,
-              tenant: input.tenant,
-              currentStep: input.run.currentStep,
-              key: mmKey
-            })
-          : createNoopAgentModelMemoryStore()
+        ...createModelMemory({
+          providerKind: 'unknown',
+          adapterId: 'unknown',
+          profileName: 'unknown'
+        }),
+        forProvider: createModelMemory
       };
 
       const events = options.execute.execute({ context, correlationId: input.runId, modelMemory });
