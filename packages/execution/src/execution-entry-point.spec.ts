@@ -351,11 +351,14 @@ import {
   registerSpecAuthorResultContract,
   registerReviewerResultContract,
   registerImplementerDispositionsResultContract,
+  registerPullRequestFinalizeResultContract,
   createStepResultContractRegistry,
   SPEC_AUTHOR_SCHEMA_ID,
   REVIEWER_RESULT_SCHEMA_ID,
-  IMPLEMENTER_DISPOSITIONS_SCHEMA_ID
+  IMPLEMENTER_DISPOSITIONS_SCHEMA_ID,
+  PR_FINALIZE_SCHEMA_ID
 } from './result-contracts.js';
+import type { StructuredAgentResultCapture } from './structured-result-capture.js';
 
 describe('createExecutionEntryPoint — resultValidation', () => {
   it('mode: none preserves terminal directive shape', async () => {
@@ -1487,5 +1490,378 @@ describe('createExecutionEntryPoint — session metadata propagation', () => {
     }
 
     expect(callOrder).toEqual(['close', 'getSessionMetadata']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// structuredResultCapture pre-run capture tests
+// ---------------------------------------------------------------------------
+
+function makeCapturingRunner(result: RunnerEvent[]) {
+  let capturedInput: RunnerRunInput | undefined;
+  const runner: Runner = {
+    async *run(input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+      capturedInput = input;
+      for (const event of result) yield event;
+    },
+    async close(): Promise<RunnerCloseResult> { return { status: 'closed' }; }
+  };
+  return { runner, getCapturedInput: () => capturedInput };
+}
+
+describe('createExecutionEntryPoint — structuredResultCapture pre-run attachment', () => {
+  it('attaches structuredResultCapture to runner input when mode is scratch_file with valid contract', async () => {
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'ep-capture-attach-'));
+    try {
+      const resultFile = 'step-result.json';
+      const payload = { kind: 'feature_spec', slug: 'my-spec', relativePath: 'context-human/specs/feature-my-spec.md', frontmatter: { created: '2026-06-22', last_updated: '2026-06-22', status: 'draft', issue: 1, specced_by: 'autocatalyst' }, body: '# Feature: My spec\n\n## Task list\n\n### Story 1 — First story' };
+
+      const context = makeSpecAuthorContext();
+      const env: MaterializedExecutionEnvironment = {
+        ...makeMaterializedEnv(context),
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      };
+      const materialize = vi.fn().mockResolvedValue(env);
+
+      // Runner that writes a valid result file before yielding terminal
+      const schema = z.object({ kind: z.string() });
+      const terminalEvt: RunnerEvent = {
+        id: 'evt_t',
+        type: 'runner_terminal_result',
+        runId,
+        step: 'spec.author',
+        importance: 'normal',
+        createdAt: '2026-06-22T00:00:00.000Z',
+        result: { directive: 'advance' }
+      };
+
+      const { runner, getCapturedInput } = makeCapturingRunner([terminalEvt]);
+
+      // Wrap runner to write the file before yielding
+      const writingRunner: Runner = {
+        async *run(input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+          await import('node:fs/promises').then(({ writeFile: wf }) =>
+            wf(path.join(scratchRoot, resultFile), JSON.stringify(payload), 'utf8')
+          );
+          for await (const evt of runner.run(input)) yield evt;
+        },
+        close: runner.close.bind(runner)
+      };
+      // Use a thin capturing wrapper over the writing runner
+      let capturedRunnerInput: RunnerRunInput | undefined;
+      const capturingWritingRunner: Runner = {
+        async *run(input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+          capturedRunnerInput = input;
+          for await (const evt of writingRunner.run(input)) yield evt;
+        },
+        close: writingRunner.close.bind(writingRunner)
+      };
+
+      const entryPoint = createExecutionEntryPoint({
+        runner: capturingWritingRunner,
+        materialize,
+        resultValidation: {
+          mode: 'scratch_file',
+          step: 'spec.author',
+          schemaId: SPEC_AUTHOR_SCHEMA_ID,
+          schema,
+          resultFile
+        }
+      });
+
+      const events: ExecutionBoundaryEvent[] = [];
+      for await (const event of entryPoint.execute({ context })) {
+        events.push(event);
+      }
+
+      expect(capturedRunnerInput).toBeDefined();
+      expect(capturedRunnerInput?.structuredResultCapture).toBeDefined();
+      expect(capturedRunnerInput?.structuredResultCapture?.step).toBe('spec.author');
+      expect(capturedRunnerInput?.structuredResultCapture?.schemaId).toBe(SPEC_AUTHOR_SCHEMA_ID);
+      expect(capturedRunnerInput?.structuredResultCapture?.resultFile).toBe(resultFile);
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('does not attach structuredResultCapture when mode is none', async () => {
+    const context = makeContext();
+    const materialize = vi.fn().mockResolvedValue(makeMaterializedEnv(context));
+
+    let capturedRunnerInput: RunnerRunInput | undefined;
+    const capturingRunner: Runner = {
+      async *run(input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+        capturedRunnerInput = input;
+        yield makeTerminalEvent();
+      },
+      close: vi.fn().mockResolvedValue({ status: 'closed' })
+    };
+
+    const entryPoint = createExecutionEntryPoint({
+      runner: capturingRunner,
+      materialize,
+      resultValidation: { mode: 'none' }
+    });
+
+    for await (const _ of entryPoint.execute({ context })) {
+      // consume
+    }
+
+    expect(capturedRunnerInput).toBeDefined();
+    expect(capturedRunnerInput?.structuredResultCapture).toBeUndefined();
+  });
+
+  it('fails before runner starts when contract has no resultFile', async () => {
+    const context = makeSpecAuthorContext();
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'ep-capture-no-file-'));
+    try {
+      const env: MaterializedExecutionEnvironment = {
+        ...makeMaterializedEnv(context),
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      };
+      const materialize = vi.fn().mockResolvedValue(env);
+
+      let runnerCalled = false;
+      const neverCalledRunner: Runner = {
+        async *run(_input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+          runnerCalled = true;
+          yield makeTerminalEvent();
+        },
+        close: vi.fn().mockResolvedValue({ status: 'closed' })
+      };
+
+      // Contract with resultFile explicitly undefined to trigger pre-run failure
+      const schema = z.object({ kind: z.string() });
+      const entryPoint = createExecutionEntryPoint({
+        runner: neverCalledRunner,
+        materialize,
+        resultValidation: {
+          mode: 'scratch_file',
+          contract: {
+            step: 'spec.author',
+            schemaId: SPEC_AUTHOR_SCHEMA_ID,
+            schema,
+            resultFile: '' // empty string triggers result_file_missing
+          }
+        }
+      });
+
+      const events: ExecutionBoundaryEvent[] = [];
+      for await (const event of entryPoint.execute({ context })) {
+        events.push(event);
+      }
+
+      expect(runnerCalled).toBe(false);
+      const terminal = events.find((e) => e.type === 'runner_terminal_result') as ExecutionTerminalResultEvent | undefined;
+      expect(terminal).toBeDefined();
+      expect(terminal?.result.directive).toBe('fail');
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('createExecutionEntryPoint — covered contract shapes', () => {
+  it('spec.author: structuredResultCapture.schemaId matches SPEC_AUTHOR_SCHEMA_ID', async () => {
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'ep-cover-spec-author-'));
+    try {
+      const context = makeSpecAuthorContext();
+      const env: MaterializedExecutionEnvironment = {
+        ...makeMaterializedEnv(context),
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      };
+      const registry = registerSpecAuthorResultContract(createStepResultContractRegistry());
+
+      let capturedCapture: StructuredAgentResultCapture | undefined;
+      const capturingRunner: Runner = {
+        async *run(input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+          capturedCapture = input.structuredResultCapture;
+          // Write a valid result so post-run validation passes
+          const specResult = {
+            kind: 'feature_spec', slug: 'test-spec', relativePath: 'context-human/specs/feature-test-spec.md',
+            frontmatter: { created: '2026-06-22', last_updated: '2026-06-22', status: 'draft', issue: 10, specced_by: 'autocatalyst' },
+            body: '# Feature: Test spec\n\n## Task list\n\n### Story 1 — Story'
+          };
+          await import('node:fs/promises').then(({ writeFile: wf }) =>
+            wf(path.join(scratchRoot, 'step-result.json'), JSON.stringify(specResult), 'utf8')
+          );
+          yield {
+            id: 'evt_t', type: 'runner_terminal_result' as const, runId,
+            step: 'spec.author' as const, importance: 'normal' as const,
+            createdAt: '2026-06-22T00:00:00.000Z', result: { directive: 'advance' as const }
+          };
+        },
+        close: vi.fn().mockResolvedValue({ status: 'closed' })
+      };
+
+      const entryPoint = createExecutionEntryPoint({
+        runner: capturingRunner,
+        materialize: vi.fn().mockResolvedValue(env),
+        resultValidation: {
+          mode: 'scratch_file',
+          step: 'spec.author',
+          schemaId: SPEC_AUTHOR_SCHEMA_ID,
+          contractRegistry: registry,
+          resultFile: 'step-result.json'
+        }
+      });
+
+      for await (const _ of entryPoint.execute({ context })) { /* consume */ }
+
+      expect(capturedCapture).toBeDefined();
+      expect(capturedCapture?.schemaId).toBe(SPEC_AUTHOR_SCHEMA_ID);
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('implementation.build reviewer: structuredResultCapture.schemaId matches REVIEWER_RESULT_SCHEMA_ID', async () => {
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'ep-cover-reviewer-'));
+    try {
+      const context = makeContext();
+      context.run.currentStep = 'implementation.build';
+      const env: MaterializedExecutionEnvironment = {
+        ...makeMaterializedEnv(context),
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      };
+      const registry = registerReviewerResultContract(createStepResultContractRegistry());
+
+      let capturedCapture: StructuredAgentResultCapture | undefined;
+      const capturingRunner: Runner = {
+        async *run(input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+          capturedCapture = input.structuredResultCapture;
+          const verdict = { status: 'satisfied' };
+          await import('node:fs/promises').then(({ writeFile: wf }) =>
+            wf(path.join(scratchRoot, 'round-1-reviewer.json'), JSON.stringify(verdict), 'utf8')
+          );
+          yield {
+            id: 'evt_t', type: 'runner_terminal_result' as const, runId,
+            step: 'implementation.build' as const, importance: 'normal' as const,
+            createdAt: '2026-06-22T00:00:00.000Z', result: { directive: 'advance' as const }
+          };
+        },
+        close: vi.fn().mockResolvedValue({ status: 'closed' })
+      };
+
+      const entryPoint = createExecutionEntryPoint({
+        runner: capturingRunner,
+        materialize: vi.fn().mockResolvedValue(env),
+        resultValidation: {
+          mode: 'scratch_file',
+          step: 'implementation.build',
+          schemaId: REVIEWER_RESULT_SCHEMA_ID,
+          contractRegistry: registry,
+          resultFile: 'round-1-reviewer.json'
+        }
+      });
+
+      for await (const _ of entryPoint.execute({ context })) { /* consume */ }
+
+      expect(capturedCapture).toBeDefined();
+      expect(capturedCapture?.schemaId).toBe(REVIEWER_RESULT_SCHEMA_ID);
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('implementation.build implementer: structuredResultCapture.schemaId matches IMPLEMENTER_DISPOSITIONS_SCHEMA_ID', async () => {
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'ep-cover-impl-disp-'));
+    try {
+      const context = makeContext();
+      context.run.currentStep = 'implementation.build';
+      const env: MaterializedExecutionEnvironment = {
+        ...makeMaterializedEnv(context),
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      };
+      const registry = registerImplementerDispositionsResultContract(createStepResultContractRegistry());
+
+      let capturedCapture: StructuredAgentResultCapture | undefined;
+      const capturingRunner: Runner = {
+        async *run(input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+          capturedCapture = input.structuredResultCapture;
+          const dispositions = { dispositions: [{ feedbackId: 'fb_1', disposition: 'fixed', summary: 'Done.' }] };
+          await import('node:fs/promises').then(({ writeFile: wf }) =>
+            wf(path.join(scratchRoot, 'round-1-implementer.json'), JSON.stringify(dispositions), 'utf8')
+          );
+          yield {
+            id: 'evt_t', type: 'runner_terminal_result' as const, runId,
+            step: 'implementation.build' as const, importance: 'normal' as const,
+            createdAt: '2026-06-22T00:00:00.000Z', result: { directive: 'advance' as const }
+          };
+        },
+        close: vi.fn().mockResolvedValue({ status: 'closed' })
+      };
+
+      const entryPoint = createExecutionEntryPoint({
+        runner: capturingRunner,
+        materialize: vi.fn().mockResolvedValue(env),
+        resultValidation: {
+          mode: 'scratch_file',
+          step: 'implementation.build',
+          schemaId: IMPLEMENTER_DISPOSITIONS_SCHEMA_ID,
+          contractRegistry: registry,
+          resultFile: 'round-1-implementer.json'
+        }
+      });
+
+      for await (const _ of entryPoint.execute({ context })) { /* consume */ }
+
+      expect(capturedCapture).toBeDefined();
+      expect(capturedCapture?.schemaId).toBe(IMPLEMENTER_DISPOSITIONS_SCHEMA_ID);
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('pr.finalize: structuredResultCapture.schemaId matches PR_FINALIZE_SCHEMA_ID', async () => {
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'ep-cover-pr-finalize-'));
+    try {
+      const context = makeContext();
+      context.run.currentStep = 'pr.finalize';
+      const env: MaterializedExecutionEnvironment = {
+        ...makeMaterializedEnv(context),
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      };
+      const registry = registerPullRequestFinalizeResultContract(createStepResultContractRegistry(), {
+        resultFile: 'step-result.json'
+      });
+
+      let capturedCapture: StructuredAgentResultCapture | undefined;
+      const capturingRunner: Runner = {
+        async *run(input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+          capturedCapture = input.structuredResultCapture;
+          // Write a minimal valid pr.finalize result
+          const prResult = { directive: 'advance', findings: [] };
+          await import('node:fs/promises').then(({ writeFile: wf }) =>
+            wf(path.join(scratchRoot, 'step-result.json'), JSON.stringify(prResult), 'utf8')
+          );
+          yield {
+            id: 'evt_t', type: 'runner_terminal_result' as const, runId,
+            step: 'pr.finalize' as const, importance: 'normal' as const,
+            createdAt: '2026-06-22T00:00:00.000Z', result: { directive: 'advance' as const }
+          };
+        },
+        close: vi.fn().mockResolvedValue({ status: 'closed' })
+      };
+
+      const entryPoint = createExecutionEntryPoint({
+        runner: capturingRunner,
+        materialize: vi.fn().mockResolvedValue(env),
+        resultValidation: {
+          mode: 'scratch_file',
+          step: 'pr.finalize',
+          schemaId: PR_FINALIZE_SCHEMA_ID,
+          contractRegistry: registry,
+          resultFile: 'step-result.json'
+        }
+      });
+
+      for await (const _ of entryPoint.execute({ context })) { /* consume */ }
+
+      expect(capturedCapture).toBeDefined();
+      expect(capturedCapture?.schemaId).toBe(PR_FINALIZE_SCHEMA_ID);
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
   });
 });
