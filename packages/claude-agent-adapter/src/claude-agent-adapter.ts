@@ -531,12 +531,21 @@ export function createClaudeAgentAdapter(
         } catch (err) {
           outcome = 'failed';
           const classified = classifySdkError(err);
+          const safeDetail = buildSafeAdapterFailureLogDetail(err, profile.providerKind);
+          const failureCode = typeof safeDetail.code === 'string' ? safeDetail.code : undefined;
           safeLog('error', 'claude.adapter.session_failed', {
             runId,
             step,
             adapterId: claudeAgentAdapterId,
-            ...buildSafeAdapterFailureLogDetail(err, profile.providerKind),
-            ...(classified !== undefined ? { failureReason: classified.failureReason } : {})
+            ...safeDetail,
+            ...(classified !== undefined ? { failureReason: classified.failureReason } : {}),
+            ...(failureCode !== undefined ? { failureCode } : {}),
+            ...(structuredResultTool !== undefined && input.structuredResultCapture !== undefined ? {
+              structuredResultCapture: true,
+              schemaId: input.structuredResultCapture.schemaId,
+              resultFile: input.structuredResultCapture.resultFile,
+              resultCaptureMechanism: structuredResultTool.projection.mechanism
+            } : {})
           });
           const thrown = classified ?? err;
           metadataReject(thrown);

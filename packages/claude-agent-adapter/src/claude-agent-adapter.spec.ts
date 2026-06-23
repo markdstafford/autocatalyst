@@ -949,6 +949,120 @@ describe('createClaudeAgentAdapter — credential redaction', () => {
 // anchor for the implementation.build reviewer contract.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Structured result error-path no-leak tests (T-020)
+// ---------------------------------------------------------------------------
+
+describe('createClaudeAgentAdapter — structured result error paths no-leak', () => {
+  const SENTINEL_SECRET = 'sk-ant-sentinel-leak-secret';
+  const SENTINEL_PROMPT = 'raw result text sentinel prompt content';
+  const SENTINEL_PATH = '/Users/sentinel/private/path';
+  const SENTINEL_AUTH = 'authorization: Bearer sentinel-token';
+  const SENTINEL_JSON = '{"raw":"json body sentinel"}';
+
+  function expectNoStructuredSentinels(captured: string): void {
+    expect(captured).not.toContain(SENTINEL_SECRET);
+    expect(captured).not.toContain(SENTINEL_PROMPT);
+    expect(captured).not.toContain(SENTINEL_PATH);
+    expect(captured).not.toContain(SENTINEL_AUTH);
+    expect(captured).not.toContain(SENTINEL_JSON);
+  }
+
+  it('does not leak sentinels in logger output when missing_structured_result fires', async () => {
+    const logs: unknown[] = [];
+    const adapter = createClaudeAgentAdapter({
+      launchClaudeSession: () => asyncIter([
+        { type: 'result', result: { is_error: false, output: SENTINEL_PROMPT } }
+      ]),
+      supportsStructuredResultTools: true,
+      logger: {
+        info: (_e, f) => logs.push(f),
+        warn: (_e, f) => logs.push(f),
+        error: (_e, f) => logs.push(f)
+      }
+    });
+
+    await runAdapterWithCapture(adapter, makeReviewerCapture()).catch(() => undefined);
+
+    const captured = JSON.stringify(logs);
+    expectNoStructuredSentinels(captured);
+    // Safe structured-result diagnostics must be present
+    expect(captured).toContain('autocatalyst.reviewer_result.v1');
+    expect(captured).toContain('claude_submit_result_tool');
+  });
+
+  it('does not leak sentinels in logger output when duplicate_structured_result fires', async () => {
+    const logs: unknown[] = [];
+    const result = { status: 'satisfied', findings: [] };
+    const adapter = createClaudeAgentAdapter({
+      launchClaudeSession: () => asyncIter([
+        { type: 'tool_use', tool: { name: 'submit_result', input: result } },
+        { type: 'tool_use', tool: { name: 'submit_result', input: result } },
+        { type: 'result', result: { is_error: false } }
+      ]),
+      supportsStructuredResultTools: true,
+      logger: {
+        info: (_e, f) => logs.push(f),
+        warn: (_e, f) => logs.push(f),
+        error: (_e, f) => logs.push(f)
+      }
+    });
+
+    await runAdapterWithCapture(adapter, makeReviewerCapture()).catch(() => undefined);
+
+    const captured = JSON.stringify(logs);
+    expectNoStructuredSentinels(captured);
+    // Safe structured-result diagnostics must be present
+    expect(captured).toContain('autocatalyst.reviewer_result.v1');
+    expect(captured).toContain('claude_submit_result_tool');
+  });
+
+  it('does not leak sentinels in logger output when SDK auth error fires during structured capture', async () => {
+    const logs: unknown[] = [];
+    const leakyError = Object.assign(
+      new Error(`${SENTINEL_SECRET} ${SENTINEL_PATH} ${SENTINEL_AUTH} ${SENTINEL_JSON}`),
+      // code uses 'authentication_error' (allowlisted) — the secret is in the error message only
+      { code: 'authentication_error', status: 401, name: 'AuthenticationError' }
+    );
+
+    const adapter = createClaudeAgentAdapter({
+      launchClaudeSession: async function* () { yield await Promise.reject<ClaudeNativeEvent>(leakyError); },
+      supportsStructuredResultTools: true,
+      logger: {
+        info: (_e, f) => logs.push(f),
+        warn: (_e, f) => logs.push(f),
+        error: (_e, f) => logs.push(f)
+      }
+    });
+
+    await runAdapterWithCapture(adapter, makeReviewerCapture()).catch(() => undefined);
+
+    const captured = JSON.stringify(logs);
+    expectNoStructuredSentinels(captured);
+  });
+
+  it('does not log raw result-event prose in info/warn/error calls', async () => {
+    const logs: unknown[] = [];
+    const proseOutput = SENTINEL_PROMPT;
+    const adapter = createClaudeAgentAdapter({
+      launchClaudeSession: () => asyncIter([
+        { type: 'result', result: { is_error: false, output: proseOutput } }
+      ]),
+      supportsStructuredResultTools: true,
+      logger: {
+        info: (_e, f) => logs.push(f),
+        warn: (_e, f) => logs.push(f),
+        error: (_e, f) => logs.push(f)
+      }
+    });
+
+    await runAdapterWithCapture(adapter, makeReviewerCapture()).catch(() => undefined);
+
+    const captured = JSON.stringify(logs);
+    expect(captured).not.toContain(proseOutput);
+  });
+});
+
 describe('createClaudeAgentAdapter — read-only reviewer satisfied verdict regression', () => {
   it('read-only reviewer can submit satisfied verdict via submit_result', async () => {
     const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-reviewer-verdict-'));

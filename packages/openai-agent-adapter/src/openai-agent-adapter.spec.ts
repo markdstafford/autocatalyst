@@ -1137,6 +1137,134 @@ describe('createOpenAIAgentAdapter — structured result capture', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Structured result error-path no-leak tests (T-020)
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — structured result error paths no-leak', () => {
+  const SENTINEL_SECRET = 'sk-openai-sentinel-leak-secret';
+  const SENTINEL_PROMPT = 'raw result text sentinel prompt content';
+  const SENTINEL_PATH = '/Users/sentinel/private/path';
+  const SENTINEL_AUTH = 'authorization: Bearer sentinel-token';
+  const SENTINEL_JSON = '{"raw":"json body sentinel"}';
+
+  function makeLeakyError(): Error & { code: string; status: number } {
+    return Object.assign(
+      new Error(`${SENTINEL_SECRET} ${SENTINEL_PATH} ${SENTINEL_AUTH} ${SENTINEL_JSON}`),
+      // code uses 'invalid_api_key' (allowlisted) to avoid raw-code leak — the secret is in the message only
+      { code: 'invalid_api_key', status: 401, name: 'AuthenticationError' }
+    );
+  }
+
+  it('does not leak sentinels in logger output when missing_structured_result fires', async () => {
+    const logs: unknown[] = [];
+    const logger = {
+      info: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
+      warn: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
+      error: vi.fn((_e: string, f: unknown) => { logs.push(f); })
+    };
+
+    const fakeRunSession: OpenAIRunAgentSession = () => ({
+      items: [],
+      result: Promise.resolve({ directive: 'advance' as const, output: undefined })
+    });
+
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => fakeSandboxHandle(),
+      runAgentSession: fakeRunSession,
+      logger
+    });
+
+    const input: AgentProviderSessionInput = {
+      ...makeSessionInput('scratch_only'),
+      structuredResultCapture: makeStructuredCapture()
+    };
+
+    const session = await adapter.startSession(input);
+    await collectEvents(session.events).catch(() => undefined);
+
+    const captured = JSON.stringify(logs);
+    expect(captured).not.toContain(SENTINEL_SECRET);
+    expect(captured).not.toContain(SENTINEL_PROMPT);
+    expect(captured).not.toContain(SENTINEL_PATH);
+    expect(captured).not.toContain(SENTINEL_AUTH);
+    expect(captured).not.toContain(SENTINEL_JSON);
+    // Safe fields should be present
+    expect(captured).toContain('autocatalyst.reviewer_result.v1');
+    expect(captured).toContain('openai_output_type');
+  });
+
+  it('does not leak sentinels in logger output when sandbox fails during structured capture', async () => {
+    const logs: unknown[] = [];
+    const logger = {
+      info: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
+      warn: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
+      error: vi.fn((_e: string, f: unknown) => { logs.push(f); })
+    };
+
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => { throw makeLeakyError(); },
+      runAgentSession: makeRunSession([assistantItem('hi')]).run,
+      logger
+    });
+
+    const input: AgentProviderSessionInput = {
+      ...makeSessionInput('scratch_only'),
+      structuredResultCapture: makeStructuredCapture()
+    };
+
+    await adapter.startSession(input).catch(() => undefined);
+
+    const captured = JSON.stringify(logs);
+    expect(captured).not.toContain(SENTINEL_SECRET);
+    expect(captured).not.toContain(SENTINEL_PATH);
+    expect(captured).not.toContain(SENTINEL_AUTH);
+    expect(captured).not.toContain(SENTINEL_JSON);
+  });
+
+  it('does not leak sentinels in logger output when run session fails during structured capture', async () => {
+    const logs: unknown[] = [];
+    const logger = {
+      info: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
+      warn: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
+      error: vi.fn((_e: string, f: unknown) => { logs.push(f); })
+    };
+
+    const leakyError = makeLeakyError();
+    const failingRun = (): OpenAIRunOutcome => {
+      const resultPromise = new Promise<never>((_, reject) => reject(leakyError));
+      resultPromise.catch(() => undefined);
+      return {
+        items: (async function* () { yield await Promise.reject<never>(leakyError); })(),
+        result: resultPromise
+      };
+    };
+
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => fakeSandboxHandle(),
+      runAgentSession: failingRun,
+      logger
+    });
+
+    const input: AgentProviderSessionInput = {
+      ...makeSessionInput('scratch_only'),
+      structuredResultCapture: makeStructuredCapture()
+    };
+
+    const session = await adapter.startSession(input);
+    await collectEvents(session.events).catch(() => undefined);
+
+    const captured = JSON.stringify(logs);
+    expect(captured).not.toContain(SENTINEL_SECRET);
+    expect(captured).not.toContain(SENTINEL_PATH);
+    expect(captured).not.toContain(SENTINEL_AUTH);
+    expect(captured).not.toContain(SENTINEL_JSON);
+    // Safe structured-result diagnostics should appear
+    expect(captured).toContain('autocatalyst.reviewer_result.v1');
+    expect(captured).toContain('openai_output_type');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Reviewer read-only behavioral guarantee
 // ---------------------------------------------------------------------------
 

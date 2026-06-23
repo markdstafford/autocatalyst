@@ -867,15 +867,22 @@ export function createOpenAIAgentAdapter(
         });
       } catch (err) {
         const classified = classifySdkError(err);
-        if (classified !== undefined) {
-          safeLog('error', 'openai.adapter.sandbox_auth_failed', {
-            runId: input.telemetryContext.runId,
-            step: input.telemetryContext.step,
-            failureReason: classified.failureReason,
-            ...buildSafeAdapterFailureLogDetail(err, openaiProviderKind)
-          });
-          throw classified;
-        }
+        const safeDetail = buildSafeAdapterFailureLogDetail(err, openaiProviderKind);
+        const failureCode = typeof safeDetail.code === 'string' ? safeDetail.code : undefined;
+        safeLog('error', 'openai.adapter.sandbox_failed', {
+          runId: input.telemetryContext.runId,
+          step: input.telemetryContext.step,
+          ...(classified !== undefined ? { failureReason: classified.failureReason } : {}),
+          ...(failureCode !== undefined ? { failureCode } : {}),
+          ...(structuredResult !== undefined ? {
+            structuredResultCapture: true,
+            schemaId: structuredResult.capture.schemaId,
+            resultFile: structuredResult.capture.resultFile,
+            resultCaptureMechanism: structuredResult.projection.mechanism
+          } : {}),
+          ...safeDetail
+        });
+        if (classified !== undefined) throw classified;
         throw err;
       }
 
@@ -1021,14 +1028,21 @@ export function createOpenAIAgentAdapter(
         } catch (err) {
           const classified = classifySdkError(err);
           const thrown = classified ?? err;
-          if (classified !== undefined) {
-            safeLog('error', 'openai.adapter.session_auth_failed', {
-              runId: input.runInput.environment.context.run.id,
-              step: input.runInput.environment.context.run.currentStep,
-              failureReason: classified.failureReason,
-              ...buildSafeAdapterFailureLogDetail(err, openaiProviderKind)
-            });
-          }
+          const safeDetail = buildSafeAdapterFailureLogDetail(err, openaiProviderKind);
+          const failureCode = typeof safeDetail.code === 'string' ? safeDetail.code : undefined;
+          safeLog('error', 'openai.adapter.session_failed', {
+            runId: input.runInput.environment.context.run.id,
+            step: input.runInput.environment.context.run.currentStep,
+            ...(classified !== undefined ? { failureReason: classified.failureReason } : {}),
+            ...(failureCode !== undefined ? { failureCode } : {}),
+            ...(structuredResult !== undefined ? {
+              structuredResultCapture: true,
+              schemaId: structuredResult.capture.schemaId,
+              resultFile: structuredResult.capture.resultFile,
+              resultCaptureMechanism: structuredResult.projection.mechanism
+            } : {}),
+            ...safeDetail
+          });
           metadataReject(thrown);
           throw thrown;
         }
