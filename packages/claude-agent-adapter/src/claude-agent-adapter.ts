@@ -9,7 +9,10 @@ import type {
   AgentProviderSessionMetadata,
   AgentTokenUsage,
   ProcessLaunchConfig,
-  ProviderCapabilityDegradation
+  ProviderCapabilityDegradation,
+  ProviderSchemaProjection,
+  ProviderStructuredOutputSchema,
+  StructuredAgentResultCapture
 } from '@autocatalyst/execution';
 import {
   ClassifiedProviderFailureError,
@@ -18,6 +21,7 @@ import {
   buildSafeAdapterFailureLogDetail,
   classifyProviderFailure,
   filterSafeClassificationDetails,
+  projectStepResultSchemaForProvider,
   runtimeSkillsCatalogRoot
 } from '@autocatalyst/execution';
 
@@ -29,6 +33,22 @@ import { materializeClaudeSkillPlugins } from './skill-materialization.js';
 
 export const claudeProviderKind = 'anthropic' as const;
 export const claudeAgentAdapterId = 'claude-agent-sdk' as const;
+
+export const CLAUDE_STRUCTURED_RESULT_TOOL_NAME = 'submit_result' as const;
+
+// ---------------------------------------------------------------------------
+// Structured result tool definition
+// ---------------------------------------------------------------------------
+
+export interface ClaudeStructuredResultToolDefinition {
+  readonly name: typeof CLAUDE_STRUCTURED_RESULT_TOOL_NAME;
+  readonly description: string;
+  readonly inputSchema: ProviderStructuredOutputSchema;
+  readonly projection: ProviderSchemaProjection & {
+    readonly target: 'claude_tool_input_schema';
+    readonly mechanism: 'claude_submit_result_tool';
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Native event seam (mirrors the @anthropic-ai/claude-agent-sdk wire shape
@@ -217,6 +237,25 @@ function defaultLaunch(): ClaudeSessionLaunch {
   // (returns AsyncIterable<ClaudeNativeEvent>). Dynamic import means the SDK is
   // only required at runtime — tests inject launchClaudeSession instead.
   return realSDKLaunch;
+}
+
+function createClaudeStructuredResultTool(
+  capture: StructuredAgentResultCapture
+): ClaudeStructuredResultToolDefinition {
+  const projection = projectStepResultSchemaForProvider({
+    schemaId: capture.schemaId,
+    schema: capture.schema,
+    target: 'claude_tool_input_schema'
+  });
+  return {
+    name: CLAUDE_STRUCTURED_RESULT_TOOL_NAME,
+    description: 'Submit the structured Autocatalyst step result. Call this exactly once when the step result is ready.',
+    inputSchema: projection.schema,
+    projection: projection as ProviderSchemaProjection & {
+      readonly target: 'claude_tool_input_schema';
+      readonly mechanism: 'claude_submit_result_tool';
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
