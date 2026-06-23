@@ -1,5 +1,6 @@
 import type { ResultToleranceEvent, StepResultValidationFailureCode } from './result-tolerance.js';
 import {
+  IMPLEMENTER_DISPOSITIONS_SCHEMA_ID,
   PR_FINALIZE_SCHEMA_ID,
   REVIEWER_RESULT_SCHEMA_ID,
   SPEC_AUTHOR_SCHEMA_ID,
@@ -222,6 +223,68 @@ export const reviewerResultNormalizer: ResultNormalizer = {
     }
 
     return { status: 'unchanged' };
+  }
+};
+
+export const reviewerNullFindingsNormalizer: ResultNormalizer = {
+  id: 'reviewer-null-findings-strip',
+  description: 'Strips null findings from reviewer results returned by OpenAI strict-mode structured output.',
+  normalize(input) {
+    if (input.schemaId !== REVIEWER_RESULT_SCHEMA_ID) return { status: 'unchanged' };
+    if (!isPlainObject(input.candidate)) return { status: 'unchanged' };
+    if (!Object.prototype.hasOwnProperty.call(input.candidate, 'findings') || input.candidate['findings'] !== null) {
+      return { status: 'unchanged' };
+    }
+    const { findings: _discarded, ...rest } = input.candidate;
+    void _discarded;
+    return {
+      status: 'changed',
+      candidate: rest,
+      message: 'Stripped null findings from reviewer result.'
+    };
+  }
+};
+
+export const implementerDispositionsNullStripNormalizer: ResultNormalizer = {
+  id: 'implementer-dispositions-null-strip',
+  description: 'Strips null dispositions from implementer disposition results returned by OpenAI strict-mode structured output.',
+  normalize(input) {
+    if (input.schemaId !== IMPLEMENTER_DISPOSITIONS_SCHEMA_ID) return { status: 'unchanged' };
+    if (!isPlainObject(input.candidate)) return { status: 'unchanged' };
+    if (!Object.prototype.hasOwnProperty.call(input.candidate, 'dispositions') || input.candidate['dispositions'] !== null) {
+      return { status: 'unchanged' };
+    }
+    const { dispositions: _discarded, ...rest } = input.candidate;
+    void _discarded;
+    return {
+      status: 'changed',
+      candidate: rest,
+      message: 'Stripped null dispositions from implementer dispositions result.'
+    };
+  }
+};
+
+export const prFinalizeNullStripNormalizer: ResultNormalizer = {
+  id: 'pr-finalize-null-strip',
+  description: 'Strips null optional fields from pr.finalize results returned by OpenAI strict-mode structured output.',
+  normalize(input) {
+    if (input.schemaId !== PR_FINALIZE_SCHEMA_ID) return { status: 'unchanged' };
+    if (!isPlainObject(input.candidate)) return { status: 'unchanged' };
+    const nullableFields = ['reconciledSummary', 'titleSubject', 'validationSummary'] as const;
+    const stripped: string[] = [];
+    const result: Record<string, unknown> = { ...input.candidate };
+    for (const field of nullableFields) {
+      if (Object.prototype.hasOwnProperty.call(result, field) && result[field] === null) {
+        delete result[field];
+        stripped.push(field);
+      }
+    }
+    if (stripped.length === 0) return { status: 'unchanged' };
+    return {
+      status: 'changed',
+      candidate: result,
+      message: `Stripped null optional fields from pr.finalize result: ${stripped.join(', ')}.`
+    };
   }
 };
 

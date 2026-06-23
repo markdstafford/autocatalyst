@@ -6,10 +6,18 @@ import {
   createSpecAuthorFrontmatterNormalizer,
   createUrlWrappedIdentifierNormalizer,
   defaultResultNormalizers,
+  implementerDispositionsNullStripNormalizer,
   prFinalizeCleanResultNormalizer,
+  prFinalizeNullStripNormalizer,
+  reviewerNullFindingsNormalizer,
   reviewerResultNormalizer
 } from './result-normalizers.js';
-import { PR_FINALIZE_SCHEMA_ID, REVIEWER_RESULT_SCHEMA_ID, SPEC_AUTHOR_SCHEMA_ID } from './result-contracts.js';
+import {
+  IMPLEMENTER_DISPOSITIONS_SCHEMA_ID,
+  PR_FINALIZE_SCHEMA_ID,
+  REVIEWER_RESULT_SCHEMA_ID,
+  SPEC_AUTHOR_SCHEMA_ID
+} from './result-contracts.js';
 
 describe('result normalizers', () => {
   it('applies registered normalizers in order without changing pipeline control flow', () => {
@@ -208,6 +216,87 @@ describe('createSpecAuthorFrontmatterNormalizer', () => {
     expect(result.status).toBe('changed');
     if (result.status !== 'changed') return;
     expect((result.candidate as { body: unknown }).body).toBe(7);
+  });
+});
+
+describe('reviewerNullFindingsNormalizer', () => {
+  const normalize = (candidate: unknown, schemaId = REVIEWER_RESULT_SCHEMA_ID) =>
+    reviewerNullFindingsNormalizer.normalize({ candidate, step: 'implementation.build', schemaId, attempt: 0 });
+
+  it('strips findings: null from reviewer results', () => {
+    expect(normalize({ status: 'satisfied', findings: null })).toEqual({
+      status: 'changed',
+      candidate: { status: 'satisfied' },
+      message: 'Stripped null findings from reviewer result.'
+    });
+  });
+
+  it('is unchanged when findings is not null', () => {
+    expect(normalize({ status: 'satisfied', findings: [] })).toEqual({ status: 'unchanged' });
+    expect(normalize({ status: 'satisfied' })).toEqual({ status: 'unchanged' });
+  });
+
+  it('is schema-id gated', () => {
+    expect(normalize({ findings: null }, 'other.schema')).toEqual({ status: 'unchanged' });
+  });
+});
+
+describe('implementerDispositionsNullStripNormalizer', () => {
+  const normalize = (candidate: unknown, schemaId = IMPLEMENTER_DISPOSITIONS_SCHEMA_ID) =>
+    implementerDispositionsNullStripNormalizer.normalize({ candidate, step: 'implementation.build', schemaId, attempt: 0 });
+
+  it('strips dispositions: null from implementer dispositions results', () => {
+    expect(normalize({ dispositions: null })).toEqual({
+      status: 'changed',
+      candidate: {},
+      message: 'Stripped null dispositions from implementer dispositions result.'
+    });
+  });
+
+  it('is unchanged when dispositions is an array', () => {
+    expect(normalize({ dispositions: [] })).toEqual({ status: 'unchanged' });
+    expect(normalize({})).toEqual({ status: 'unchanged' });
+  });
+
+  it('is schema-id gated', () => {
+    expect(normalize({ dispositions: null }, 'other.schema')).toEqual({ status: 'unchanged' });
+  });
+});
+
+describe('prFinalizeNullStripNormalizer', () => {
+  const normalize = (candidate: unknown, schemaId = PR_FINALIZE_SCHEMA_ID) =>
+    prFinalizeNullStripNormalizer.normalize({ candidate, step: 'pr.finalize', schemaId, attempt: 0 });
+
+  it('strips all three null optional fields', () => {
+    const result = normalize({
+      directive: 'advance',
+      findings: [],
+      reconciledSummary: null,
+      titleSubject: null,
+      validationSummary: null
+    });
+    expect(result.status).toBe('changed');
+    if (result.status !== 'changed') return;
+    expect(result.candidate).toEqual({ directive: 'advance', findings: [] });
+    expect(result.message).toContain('reconciledSummary');
+    expect(result.message).toContain('titleSubject');
+    expect(result.message).toContain('validationSummary');
+  });
+
+  it('strips only the null fields, leaving non-null optional fields intact', () => {
+    const result = normalize({ directive: 'advance', findings: [], reconciledSummary: null, titleSubject: 'fix: something' });
+    expect(result.status).toBe('changed');
+    if (result.status !== 'changed') return;
+    expect(result.candidate).toEqual({ directive: 'advance', findings: [], titleSubject: 'fix: something' });
+  });
+
+  it('is unchanged when no null optional fields are present', () => {
+    expect(normalize({ directive: 'advance', findings: [] })).toEqual({ status: 'unchanged' });
+    expect(normalize({ directive: 'advance', findings: [], titleSubject: 'fix: something' })).toEqual({ status: 'unchanged' });
+  });
+
+  it('is schema-id gated', () => {
+    expect(normalize({ reconciledSummary: null }, 'other.schema')).toEqual({ status: 'unchanged' });
   });
 });
 
