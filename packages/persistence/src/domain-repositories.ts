@@ -192,10 +192,18 @@ function requireParent(rows: unknown[], parentId: string, parentName: string): v
 type DrizzleDb = ReturnType<typeof asInternalSqliteDatabase>['drizzle'];
 type DrizzleTx = Parameters<Parameters<DrizzleDb['transaction']>[0]>[0];
 
-function buildRunStepInsideTransaction(tx: DrizzleTx, runId: string, input: LifecycleRunStepInput): RunStep {
+function buildRunStepInsideTransaction(
+  tx: DrizzleTx,
+  runId: string,
+  input: LifecycleRunStepInput,
+  initialProviderModelMemory?: Record<string, unknown>
+): RunStep {
   const existingForRun: number = tx.select({ value: count() }).from(runSteps).where(eq(runSteps.runId, runId)).all()[0]?.value ?? 0;
   const existingForStep: number = tx.select({ value: count() }).from(runSteps).where(and(eq(runSteps.runId, runId), eq(runSteps.step, input.step))).all()[0]?.value ?? 0;
   const occurrence = { index: existingForRun, attempt: existingForStep + 1 };
+  const initialCheckpoint = initialProviderModelMemory !== undefined
+    ? { providerModelMemory: initialProviderModelMemory }
+    : null;
   const entity = validateEntity(runStepSchema, {
     id: `step_${randomUUID()}`,
     runId,
@@ -206,7 +214,7 @@ function buildRunStepInsideTransaction(tx: DrizzleTx, runId: string, input: Life
     endedAt: input.endedAt,
     durationMs: input.durationMs,
     occurrence,
-    checkpointResult: null
+    checkpointResult: initialCheckpoint
   });
   tx.insert(runSteps).values({
     id: entity.id,
@@ -218,7 +226,9 @@ function buildRunStepInsideTransaction(tx: DrizzleTx, runId: string, input: Life
     endedAt: entity.endedAt,
     durationMs: entity.durationMs,
     occurrenceJson: stringifyJsonValue(occurrenceSchema, entity.occurrence),
-    checkpointResultJson: null
+    checkpointResultJson: initialCheckpoint !== null
+      ? stringifyJsonValue(jsonValueSchema, initialCheckpoint as unknown as JsonValue)
+      : null
   }).run();
   return entity;
 }
@@ -715,7 +725,7 @@ export class DrizzleRunRepository implements RunRepository {
           .where(eq(runSteps.id, input.sourceRunStepId))
           .run();
       }
-      const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep);
+      const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep, input.inheritedProviderModelMemory);
       return { run, runStep };
     });
   }
