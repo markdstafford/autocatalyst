@@ -168,16 +168,28 @@ async function* realSDKLaunch(
   opts: ClaudeSessionLaunchOptions
 ): AsyncIterable<ClaudeNativeEvent> {
   type QueryFn = (input: { prompt: string; options?: Record<string, unknown> }) => AsyncIterable<Record<string, unknown>>;
+  type SdkMcpTool = { name: string; description?: string; inputSchema?: unknown; handler: (input: unknown) => Promise<unknown> };
+  type CreateSdkMcpServerFn = (tools: SdkMcpTool[]) => unknown;
   let query: QueryFn;
+  let createSdkMcpServer: CreateSdkMcpServerFn | undefined;
   try {
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment -- @ts-ignore is required here because @ts-expect-error triggers TS2578 (unused directive) when the optional peer is installed, making the suppression self-defeating
     // @ts-ignore -- optional peer: types unavailable until the package is installed
-    const sdk = await import('@anthropic-ai/claude-agent-sdk') as { query: QueryFn };
+    const sdk = await import('@anthropic-ai/claude-agent-sdk') as { query: QueryFn; createSdkMcpServer?: CreateSdkMcpServerFn };
     query = sdk.query;
+    createSdkMcpServer = typeof sdk.createSdkMcpServer === 'function' ? sdk.createSdkMcpServer : undefined;
   } catch {
     throw new ProviderConnectionError(
       'process_launch_failed',
       '@anthropic-ai/claude-agent-sdk is not installed. Install it as a peer dependency or provide options.launchClaudeSession.'
+    );
+  }
+
+  if (opts.structuredResultTool !== undefined && createSdkMcpServer === undefined) {
+    throw new UnsupportedProviderCapabilityError(
+      'structured_result_unsupported',
+      'The installed @anthropic-ai/claude-agent-sdk does not export createSdkMcpServer. Upgrade the SDK or provide options.launchClaudeSession to use the submit_result tool.',
+      { capability: 'claude_submit_result_tool' }
     );
   }
 
@@ -186,16 +198,23 @@ async function* realSDKLaunch(
     ...(opts.env !== undefined ? { env: opts.env } : {}),
     ...(opts.allowedTools !== undefined ? { allowedTools: opts.allowedTools } : {}),
     permissionMode: 'dontAsk',
-    // Pass structured result tool definition so the Claude CLI can expose the tool to the model
-    ...(opts.structuredResultTool !== undefined ? {
-      tools: [{
-        name: opts.structuredResultTool.name,
-        description: opts.structuredResultTool.description,
-        inputSchema: opts.structuredResultTool.inputSchema
-      }]
-    } : {}),
     ...(opts.options ?? {})
   };
+
+  const mcpCalls: unknown[] = [];
+
+  if (opts.structuredResultTool !== undefined && createSdkMcpServer !== undefined) {
+    const mcpServer = createSdkMcpServer([{
+      name: opts.structuredResultTool.name,
+      description: opts.structuredResultTool.description,
+      inputSchema: opts.structuredResultTool.inputSchema,
+      handler: async (input: unknown) => {
+        mcpCalls.push(input);
+        return {};
+      }
+    }]);
+    sdkOpts['mcpServers'] = [mcpServer];
+  }
 
   for await (const msg of query({ prompt: opts.prompt, options: sdkOpts })) {
     if (msg['type'] === 'assistant') {
@@ -242,6 +261,12 @@ async function* realSDKLaunch(
       }
     }
     // System, user, status, hook, task, and other messages are intentionally ignored.
+  }
+
+  if (opts.structuredResultTool !== undefined) {
+    for (const callInput of mcpCalls) {
+      yield { type: 'tool_use', tool: { name: opts.structuredResultTool.name, input: callInput } };
+    }
   }
 }
 
