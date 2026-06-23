@@ -105,6 +105,7 @@ export interface OpenAIRunSessionInput {
   /** OpenAIProvider bound to the per-session fetch transport. Never a global. */
   readonly modelProvider: OpenAIProvider;
   readonly modelSettings: Readonly<Record<string, unknown>>;
+  readonly structuredResult?: OpenAIStructuredResultConfiguration;
 }
 
 export interface OpenAIRunOutcome {
@@ -619,14 +620,36 @@ async function runRunnerNonStream(
 }
 
 function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome {
+  // When a structured result is configured, wrap the projection schema as a
+  // JsonSchemaDefinition so the OpenAI Agents SDK enforces structured output.
+  // The projection.schema is a plain JSON Schema object; JsonSchemaDefinition
+  // wraps it with the required { type: 'json_schema', name, strict, schema } shape.
+  // We cast through `unknown` because ProviderStructuredOutputSchema = unknown.
+  const outputTypeOption =
+    input.structuredResult !== undefined
+      ? {
+          outputType: {
+            type: 'json_schema' as const,
+            name: input.structuredResult.capture.schemaId.replace(/[^a-zA-Z0-9_-]/g, '_'),
+            strict: true,
+            schema: input.structuredResult.projection.schema as unknown as Record<string, unknown>
+          }
+        }
+      : {};
+
+  // Cast to the default SandboxAgent (TextOutput) type that the runner and
+  // runRunnerNonStream expect. The outputType field is passed through the
+  // constructor and consumed by the SDK at runtime; the cast is safe because
+  // the runner only observes the finalOutput (typed unknown in NonStreamRunResultView).
   const agent = new SandboxAgent({
     name: 'autocatalyst-openai-agent',
     model: input.model,
     instructions: input.instructions,
     defaultManifest: input.manifest,
     tools: input.tools,
-    ...(Object.keys(input.modelSettings).length > 0 ? { modelSettings: input.modelSettings } : {})
-  });
+    ...(Object.keys(input.modelSettings).length > 0 ? { modelSettings: input.modelSettings } : {}),
+    ...outputTypeOption
+  } as ConstructorParameters<typeof SandboxAgent>[0]) as SandboxAgent;
 
   // Per-session Runner bound to the per-session model provider via RunConfig.
   // This is the ONLY place the model provider is set — never through any of the
@@ -772,6 +795,12 @@ export function createOpenAIAgentAdapter(
         if (!secretSet.has(key)) safeEnvironment[key] = value;
       }
 
+      // Build structured result configuration if capture is active.
+      let structuredResult: OpenAIStructuredResultConfiguration | undefined;
+      if (input.structuredResultCapture !== undefined) {
+        structuredResult = createOpenAIStructuredResultConfiguration(input.structuredResultCapture);
+      }
+
       safeLog('info', 'openai_agent_session_start', {
         runId: input.telemetryContext.runId,
         phase: input.telemetryContext.phase,
@@ -781,7 +810,12 @@ export function createOpenAIAgentAdapter(
         connectionMechanism: input.profile.connectionMechanism,
         noopSnapshot: true,
         workspaceShape: workspace.shape,
-        workspaceRootCount: workspace.workspaceRoots.length
+        workspaceRootCount: workspace.workspaceRoots.length,
+        ...(structuredResult !== undefined ? {
+          schemaId: structuredResult.capture.schemaId,
+          resultFile: structuredResult.capture.resultFile,
+          resultCaptureMechanism: structuredResult.projection.mechanism
+        } : {})
       });
 
       // 5. Materialize resolved runtime skills into sandbox mounts + a system-prompt hint.
@@ -868,7 +902,8 @@ export function createOpenAIAgentAdapter(
         manifest,
         session: sandboxHandle.session,
         modelProvider,
-        modelSettings: inferenceMapping.mapped
+        modelSettings: inferenceMapping.mapped,
+        ...(structuredResult !== undefined ? { structuredResult } : {})
       });
 
       let metadataResolve!: (value: AgentProviderSessionMetadata) => void;
