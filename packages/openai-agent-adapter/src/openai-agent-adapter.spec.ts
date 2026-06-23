@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 import type { RunItem } from '@openai/agents';
 
+import type { RunnerEvent } from '@autocatalyst/api-contract';
 import type { AgentProviderAdapter, StructuredAgentResultCapture } from '@autocatalyst/execution';
 import { ClassifiedProviderFailureError, ProviderProtocolError } from '@autocatalyst/execution';
 import type {
@@ -542,6 +543,65 @@ describe('createOpenAIAgentAdapter — skill containment', () => {
     }
     expect(threw).toBe(true);
     expect(sandboxCalls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live streaming acceptance tests
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — live streaming', () => {
+  it('yields events before the run outcome resolves (pre-completion delivery)', async () => {
+    let releaseCompletion!: () => void;
+    const completionGate = new Promise<void>((resolve) => { releaseCompletion = resolve; });
+
+    const run = (): OpenAIRunOutcome => ({
+      items: (async function*() {
+        yield toolCallItem('notify', { message: 'live event', severity: 'info' });
+        await completionGate;
+      })(),
+      result: completionGate.then(() => ({ directive: 'advance' as const }))
+    });
+
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession: run,
+      sandboxClientFactory: () => fakeSandboxHandle()
+    });
+    const session = await adapter.startSession(makeSessionInput('scratch_only'));
+
+    // Get the iterator once and use it for both phases
+    const eventsIterator = session.events[Symbol.asyncIterator]();
+
+    // The first event (runner_notification from 'notify' tool call) must arrive
+    // BEFORE we release the completion gate — proving pre-completion delivery
+    const firstEventResult = await Promise.race([
+      eventsIterator.next(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('event did not arrive before completion gate')), 300)
+      )
+    ]);
+
+    expect(firstEventResult.done).toBe(false);
+    expect(firstEventResult.value).toMatchObject({ type: 'runner_notification' });
+
+    // Now release the gate
+    releaseCompletion();
+
+    // Drain remaining events from the same iterator
+    const remaining: RunnerEvent[] = [];
+    for (let r = await eventsIterator.next(); !r.done; r = await eventsIterator.next()) {
+      remaining.push(r.value as RunnerEvent);
+    }
+    expect(remaining.at(-1)).toMatchObject({ type: 'runner_terminal_result', result: { directive: 'advance' } });
+  });
+
+  it('default real-SDK run driver uses stream: true and not non-stream newItems replay', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const source = await readFile(new URL('./openai-agent-adapter.ts', import.meta.url), 'utf8');
+    expect(source).toContain('stream: true');
+    expect(source).not.toContain('runRunnerNonStream');
+    expect(source).not.toContain('stream: false');
+    expect(source).not.toContain('NonStreamRunResultView');
   });
 });
 
