@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ExecutionContext } from '@autocatalyst/api-contract';
+import type { ExecutionContext, JsonValue } from '@autocatalyst/api-contract';
+import type { RunStep } from '@autocatalyst/api-contract';
 import type { ExecutionBoundaryEvent, ExecutionEntryPoint, ExecutionEntryPointInput, RunnerSessionMetadata } from '@autocatalyst/execution';
 import { PreTerminalRunnerFailure, RunnerProtocolError } from '@autocatalyst/execution';
 import type { Session } from '@autocatalyst/api-contract';
-import type { SessionRepository } from './domain-repositories.js';
+import type { RunStepRepository, SessionRepository } from './domain-repositories.js';
 import type { RunWorkInput, RunWorkResult } from './orchestrator.js';
 import { createExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
 import type { DirectStepExecutionPort } from './execution-run-unit-of-work.js';
@@ -536,6 +537,145 @@ describe('execution-run-unit-of-work session persistence', () => {
     await expect(unitOfWork.run(makeRoleInput('implementer', 1))).rejects.toBeInstanceOf(RunnerProtocolError);
     // Must NOT silently swallow into a { directive: 'fail' } and must NOT call sessions.create
     expect(sessions.create).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Model memory continuity — runSteps integration
+// ---------------------------------------------------------------------------
+
+function makeRunStep(overrides: Partial<RunStep> = {}): RunStep {
+  return {
+    id: 'step_1',
+    runId,
+    phase: 'implementation',
+    step: 'implementation.build',
+    role: 'implementer',
+    startedAt: '2026-06-22T00:00:00.000Z',
+    endedAt: null,
+    durationMs: null,
+    occurrence: { index: 0, attempt: 1 },
+    checkpointResult: null,
+    ...overrides
+  };
+}
+
+function makeFakeRunStepRepo(
+  steps: RunStep[] = []
+): RunStepRepository & { capturedCheckpoints: Array<{ runStepId: string; checkpointResult: JsonValue }> } {
+  const capturedCheckpoints: Array<{ runStepId: string; checkpointResult: JsonValue }> = [];
+  return {
+    async create(_input) { return makeRunStep(); },
+    async findById(id) { return steps.find(s => s.id === id) ?? null; },
+    async listByRun(_runId) { return steps; },
+    async updateCheckpoint(input) {
+      capturedCheckpoints.push({ runStepId: input.runStepId, checkpointResult: input.checkpointResult });
+      const step = steps.find(s => s.id === input.runStepId);
+      if (step === undefined) throw new Error('step not found');
+      (step as Record<string, unknown>)['checkpointResult'] = input.checkpointResult;
+      return step;
+    },
+    capturedCheckpoints
+  };
+}
+
+describe('execution-run-unit-of-work model memory', () => {
+  it('passes non-undefined modelMemory to execute when runSteps is provided', async () => {
+    const capturedInputs: ExecutionEntryPointInput[] = [];
+    const entryPoint: ExecutionEntryPoint = {
+      execute(input: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
+        capturedInputs.push(input);
+        return (async function* () {
+          yield makeTerminalEvent('advance');
+        })();
+      }
+    };
+
+    const steps = [makeRunStep()];
+    const runSteps = makeFakeRunStepRepo(steps);
+
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: entryPoint,
+      resolveContext: async () => makeContext(),
+      eventsStore: newStore(),
+      runSteps
+    });
+
+    await unitOfWork.run(makeRoleInput('implementer', 1));
+
+    expect(capturedInputs).toHaveLength(1);
+    expect(capturedInputs[0].modelMemory).toBeDefined();
+    expect(typeof capturedInputs[0].modelMemory?.key).toBe('string');
+    expect(capturedInputs[0].modelMemory?.store).toBeDefined();
+  });
+
+  it('model-memory save merges providerModelMemory into existing checkpoint data', async () => {
+    const existingCheckpoint = { pause: { kind: 'model_question' } };
+    const steps = [makeRunStep({ checkpointResult: existingCheckpoint })];
+    const runSteps = makeFakeRunStepRepo(steps);
+
+    let capturedStore: ExecutionEntryPointInput['modelMemory'] | undefined;
+    const entryPoint: ExecutionEntryPoint = {
+      execute(input: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
+        capturedStore = input.modelMemory;
+        return (async function* () {
+          yield makeTerminalEvent('advance');
+        })();
+      }
+    };
+
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: entryPoint,
+      resolveContext: async () => makeContext(),
+      eventsStore: newStore(),
+      runSteps
+    });
+
+    await unitOfWork.run(makeRoleInput('implementer', 1));
+
+    // Simulate adapter saving memory
+    expect(capturedStore).toBeDefined();
+    await capturedStore!.store.save({
+      providerKind: 'openai',
+      adapterId: 'openai-agents-sdk',
+      state: { threadId: 'thread_test' }
+    });
+
+    // The checkpoint should now contain both the original data and the new memory
+    expect(runSteps.capturedCheckpoints).toHaveLength(1);
+    const saved = runSteps.capturedCheckpoints[0].checkpointResult as Record<string, unknown>;
+    // Original fields must be preserved
+    expect(saved['pause']).toEqual({ kind: 'model_question' });
+    // New memory must be present
+    expect(saved['providerModelMemory']).toBeDefined();
+  });
+
+  it('passes noop model memory store when runSteps is not provided', async () => {
+    const capturedInputs: ExecutionEntryPointInput[] = [];
+    const entryPoint: ExecutionEntryPoint = {
+      execute(input: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
+        capturedInputs.push(input);
+        return (async function* () {
+          yield makeTerminalEvent('advance');
+        })();
+      }
+    };
+
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: entryPoint,
+      resolveContext: async () => makeContext(),
+      eventsStore: newStore()
+      // runSteps not provided
+    });
+
+    await unitOfWork.run(makeRoleInput('implementer', 1));
+
+    expect(capturedInputs).toHaveLength(1);
+    // modelMemory should still be defined (with noop store) — adapter should always receive it
+    expect(capturedInputs[0].modelMemory).toBeDefined();
+    // The noop store returns null for load
+    const result = await capturedInputs[0].modelMemory!.store.load();
+    expect(result).toBeNull();
   });
 });
 

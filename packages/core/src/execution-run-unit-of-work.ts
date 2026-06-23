@@ -4,7 +4,8 @@ import {
   PreTerminalRunnerFailure,
   type ExecutionBoundaryEvent,
   type DirectCallRequest,
-  type DirectOrchestratorCallResult
+  type DirectOrchestratorCallResult,
+  createNoopAgentModelMemoryStore
 } from '@autocatalyst/execution';
 import type { ExecutionEntryPoint } from '@autocatalyst/execution';
 import type { RunWorkInput, RunWorkResult, RunUnitOfWork } from './orchestrator.js';
@@ -17,7 +18,8 @@ import {
   ExecutionSessionRecordingError,
   type ExecutionSessionRecorderLogger
 } from './execution-session-recorder.js';
-import type { SessionRepository } from './domain-repositories.js';
+import type { RunStepRepository, SessionRepository } from './domain-repositories.js';
+import { deriveAgentModelMemoryKey, createRunStepAgentModelMemoryStore } from './provider-model-memory.js';
 
 export interface DirectStepWorkInput {
   readonly runId: string;
@@ -50,6 +52,8 @@ export interface ExecutionRunUnitOfWorkOptions {
   readonly sessions?: SessionRepository;
   /** Optional logger for session recording errors (only logs runId, step, role, error name/code). */
   readonly logger?: ExecutionSessionRecorderLogger;
+  /** Optional run step repository for persisting provider model memory continuity. */
+  readonly runSteps?: RunStepRepository;
 }
 
 export type ExecutionRunUnitOfWorkResult = RunWorkResult & {
@@ -177,8 +181,31 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
         }
       }
 
-      // Agent path (existing behavior, unchanged)
-      const events = options.execute.execute({ context, correlationId: input.runId });
+      // Agent path
+      // Build model memory continuity for this agent dispatch
+      const role = deriveRole(input);
+      const mmKey = deriveAgentModelMemoryKey({
+        runId: input.runId,
+        step: input.run.currentStep,
+        role,
+        providerKind: 'unknown',
+        adapterId: 'unknown',
+        profileName: 'unknown'
+      });
+      const modelMemory = {
+        key: mmKey,
+        store: options.runSteps !== undefined
+          ? createRunStepAgentModelMemoryStore({
+              runSteps: options.runSteps,
+              runId: input.runId,
+              tenant: input.tenant,
+              currentStep: input.run.currentStep,
+              key: mmKey
+            })
+          : createNoopAgentModelMemoryStore()
+      };
+
+      const events = options.execute.execute({ context, correlationId: input.runId, modelMemory });
       const onEvent = options.onEvent;
       const tapped = onEvent === undefined
         ? events
