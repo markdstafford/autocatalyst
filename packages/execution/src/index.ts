@@ -341,3 +341,11 @@ export {
   ClassifiedProviderFailureError,
   isClassifiedProviderFailureError
 } from './errors.js';
+
+export {
+  ProviderSchemaProjectionError,
+  projectStepResultSchemaForProvider,
+  type ProviderSchemaProjectionTarget,
+  type ProviderStructuredOutputSchema,
+  type ProviderSchemaProjection
+} from './provider-schema-projection.js';
