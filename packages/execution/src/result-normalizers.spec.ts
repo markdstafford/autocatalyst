@@ -18,6 +18,11 @@ import {
   REVIEWER_RESULT_SCHEMA_ID,
   SPEC_AUTHOR_SCHEMA_ID
 } from './result-contracts.js';
+import {
+  implementerDispositionsResultSchema,
+  prFinalizeResultSchema,
+  reviewerResultSchema
+} from '@autocatalyst/api-contract';
 
 describe('result normalizers', () => {
   it('applies registered normalizers in order without changing pipeline control flow', () => {
@@ -297,6 +302,47 @@ describe('prFinalizeNullStripNormalizer', () => {
 
   it('is schema-id gated', () => {
     expect(normalize({ reconciledSummary: null }, 'other.schema')).toEqual({ status: 'unchanged' });
+  });
+});
+
+describe('end-to-end: canonical schema validation passes after normalization', () => {
+  it('reviewer: { status: "satisfied", findings: null } passes reviewerResultSchema after reviewerNullFindingsNormalizer', () => {
+    const input = { status: 'satisfied', findings: null };
+    const normalized = reviewerNullFindingsNormalizer.normalize({
+      candidate: input,
+      step: 'implementation.build',
+      schemaId: REVIEWER_RESULT_SCHEMA_ID,
+      attempt: 0
+    });
+    expect(normalized.status).toBe('changed');
+    if (normalized.status !== 'changed') return;
+    expect(() => reviewerResultSchema.parse(normalized.candidate)).not.toThrow();
+  });
+
+  it('implementer: { dispositions: null } passes implementerDispositionsResultSchema after implementerDispositionsNullStripNormalizer', () => {
+    const input = { dispositions: null };
+    const normalized = implementerDispositionsNullStripNormalizer.normalize({
+      candidate: input,
+      step: 'implementation.build',
+      schemaId: IMPLEMENTER_DISPOSITIONS_SCHEMA_ID,
+      attempt: 0
+    });
+    expect(normalized.status).toBe('changed');
+    if (normalized.status !== 'changed') return;
+    expect(() => implementerDispositionsResultSchema.parse(normalized.candidate)).not.toThrow();
+  });
+
+  it('pr.finalize: null optional fields pass prFinalizeResultSchema after prFinalizeNullStripNormalizer', () => {
+    const input = { directive: 'advance', findings: [], reconciledSummary: null, titleSubject: null, validationSummary: null };
+    const normalized = prFinalizeNullStripNormalizer.normalize({
+      candidate: input,
+      step: 'pr.finalize',
+      schemaId: PR_FINALIZE_SCHEMA_ID,
+      attempt: 0
+    });
+    expect(normalized.status).toBe('changed');
+    if (normalized.status !== 'changed') return;
+    expect(() => prFinalizeResultSchema.parse(normalized.candidate)).not.toThrow();
   });
 });
 
