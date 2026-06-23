@@ -1,7 +1,7 @@
 ---
 date: 2026-06-10
 status: accepted
-superseded_by: null
+superseded_by: openai-agent-responses-streaming-continuity.md
 ---
 # openai-agent-adapter — real @openai/agents SDK integration
 
@@ -10,7 +10,7 @@ superseded_by: null
 **Rationale:**
 - The previous adapter was written against an invented API (`agent.run(...)`, `sdk.createClientBinding`, an `OpenAIAgentsSdkFacade`) and the SDK was never installed, so its tests proved nothing.
 - The real per-call `run()` options have no `modelProvider`; only `RunConfig` does. So the per-session, no-global binding must go through `new Runner({ modelProvider })`, then `runner.run(agent, prompt, { sandbox: { session } })`. The `setDefault*` globals are never used (a source-scan test enforces this).
-- The OpenAI client's `fetch` is bridged to `connection.createFetchTransport()`; `useResponses: false` keeps the Chat Completions wire format (simpler to mock at the fetch layer).
+- The OpenAI client's `fetch` is bridged to `connection.createFetchTransport()`; `useResponses: true` selects the Responses API required for tool-using agent sessions (superseded `useResponses: false`/Chat Completions approach — see `openai-agent-responses-streaming-continuity.md`).
 - `UnixLocalSandboxClient` materializes `localDir({ src })` entries only if the source is granted via `manifest.extraPathGrants` (default base is cwd). Each declared workspace root gets a `localDir` entry **and** a path grant.
 - At least one test imports the real module and drives a full session with only the injected OpenAI client's `fetch` mocked — proving the real path, not a fake.
 
@@ -24,3 +24,4 @@ superseded_by: null
 - Keeping the `OpenAIAgentsSdkFacade` seam — it encoded an API that does not exist; replaced by two real-SDK-default seams (`sandboxClientFactory`, `runAgentSession`) for test injection only.
 - Forcing the whole repo to zod 4 — too broad/risky for one adapter; scoped install is contained.
 - `setDefaultModelProvider`/`setDefaultOpenAIClient` (process-global) — violates the per-session, no-global-client requirement.
+- `useResponses: false` (Chat Completions) for OpenAI agent sessions — routes tool-using agent traffic through Chat Completions and fails reasoning-model scenarios; superseded by `openai-agent-responses-streaming-continuity.md`.
