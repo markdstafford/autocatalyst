@@ -46,6 +46,7 @@ export function createStructuredAgentResultCapture(
 ): StructuredAgentResultCaptureResolution {
   if (input.mode === 'none') return { status: 'skipped', reason: 'mode_none' };
   if (input.contract === undefined) return { status: 'skipped', reason: 'no_contract' };
+  if (input.contract.schemaId === 'any') return { status: 'skipped', reason: 'no_contract' };
   if (input.contract.resultFile === undefined || input.contract.resultFile.length === 0) {
     const safeMessage = 'Step result contract does not declare a result file.';
     return {

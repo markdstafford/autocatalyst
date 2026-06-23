@@ -193,46 +193,42 @@ describe('OpenAI strict mode compatibility (INIT-1)', () => {
 
 describe('discriminated union branch constraints (INIT-2)', () => {
   describe('autocatalyst.reviewer_result.v1', () => {
-    it('openai projection has a branch with status: findings and minItems: 1', () => {
+    it('openai projection is a flat object schema with type: object at root', () => {
       const projection = projectStepResultSchemaForProvider({
         schemaId: 'autocatalyst.reviewer_result.v1',
         schema: reviewerResultSchema,
         target: 'openai_agents_output_type'
       });
       const schema = projection.schema as JsonSchema;
-      const branches = (schema['anyOf'] as JsonSchema[]) ?? [];
-      const findingsBranch = branches.find(
-        (b) => {
-          const statusProp = (b['properties'] as JsonSchema | undefined)?.['status'];
-          return (statusProp as JsonSchema | undefined)?.['enum']?.[0] === 'findings';
-        }
-      );
-      expect(findingsBranch).toBeDefined();
-      const findingsProp = (findingsBranch?.['properties'] as JsonSchema | undefined)?.['findings'] as JsonSchema | undefined;
-      expect(findingsProp?.['minItems']).toBe(1);
+      // Root must be type: object (bare anyOf rejected by OpenAI Agents SDK)
+      expect(schema['type']).toBe('object');
+      expect(schema['anyOf']).toBeUndefined();
     });
 
-    it('openai projection has a branch with status: satisfied that does not allow non-empty findings', () => {
+    it('openai projection status has enum with both satisfied and findings', () => {
       const projection = projectStepResultSchemaForProvider({
         schemaId: 'autocatalyst.reviewer_result.v1',
         schema: reviewerResultSchema,
         target: 'openai_agents_output_type'
       });
       const schema = projection.schema as JsonSchema;
-      const branches = (schema['anyOf'] as JsonSchema[]) ?? [];
-      const satisfiedBranch = branches.find(
-        (b) => {
-          const statusProp = (b['properties'] as JsonSchema | undefined)?.['status'];
-          return (statusProp as JsonSchema | undefined)?.['enum']?.[0] === 'satisfied';
-        }
-      );
-      expect(satisfiedBranch).toBeDefined();
-      // findings for satisfied branch must constrain to empty/null — verified by maxItems: 0
-      const findingsProp = (satisfiedBranch?.['properties'] as JsonSchema | undefined)?.['findings'] as JsonSchema | undefined;
-      // findings is anyOf with one branch having maxItems: 0 and one being null
+      const statusProp = (schema['properties'] as JsonSchema | undefined)?.['status'] as JsonSchema | undefined;
+      expect(statusProp?.['enum']).toEqual(['satisfied', 'findings']);
+    });
+
+    it('openai projection findings has anyOf with array branch and null branch', () => {
+      const projection = projectStepResultSchemaForProvider({
+        schemaId: 'autocatalyst.reviewer_result.v1',
+        schema: reviewerResultSchema,
+        target: 'openai_agents_output_type'
+      });
+      const schema = projection.schema as JsonSchema;
+      const findingsProp = (schema['properties'] as JsonSchema | undefined)?.['findings'] as JsonSchema | undefined;
       const anyOfBranches = (findingsProp?.['anyOf'] as JsonSchema[] | undefined) ?? [];
-      const hasMaxItems = anyOfBranches.some((b) => (b as JsonSchema)['maxItems'] === 0);
-      expect(hasMaxItems).toBe(true);
+      const hasArrayBranch = anyOfBranches.some((b) => b['type'] === 'array');
+      const hasNullBranch = anyOfBranches.some((b) => b['type'] === 'null');
+      expect(hasArrayBranch).toBe(true);
+      expect(hasNullBranch).toBe(true);
     });
 
     it('claude projection has a branch with status: findings and minItems: 1', () => {
@@ -254,27 +250,28 @@ describe('discriminated union branch constraints (INIT-2)', () => {
       expect(findingsProp?.['minItems']).toBe(1);
     });
 
-    it('near-miss: findings status branch requires non-empty findings (structural check)', () => {
-      // Verify the projected schema structure rejects { status: 'findings', findings: [] }
-      // by confirming the findings branch enforces minItems: 1.
-      for (const target of ['openai_agents_output_type', 'claude_tool_input_schema'] as const) {
-        const projection = projectStepResultSchemaForProvider({
-          schemaId: 'autocatalyst.reviewer_result.v1',
-          schema: reviewerResultSchema,
-          target
-        });
-        const schema = projection.schema as JsonSchema;
-        const branches = (schema['anyOf'] as JsonSchema[]) ?? [];
-        // Every branch that allows status: 'findings' must have minItems: 1 on findings
-        const findingsBranches = branches.filter((b) => {
-          const statusEnum = ((b['properties'] as JsonSchema | undefined)?.['status'] as JsonSchema | undefined)?.['enum'];
-          return Array.isArray(statusEnum) && statusEnum.includes('findings') && !statusEnum.includes('satisfied');
-        });
-        expect(findingsBranches.length).toBeGreaterThan(0);
-        for (const branch of findingsBranches) {
-          const findings = (branch['properties'] as JsonSchema | undefined)?.['findings'] as JsonSchema | undefined;
-          expect(findings?.['minItems']).toBeGreaterThanOrEqual(1);
-        }
+    it('near-miss: claude projection findings branch requires non-empty findings (structural check)', () => {
+      // For the Claude target, the discriminated union is represented as anyOf branches.
+      // The findings branch must have minItems: 1.
+      // For the OpenAI target, discriminated union enforcement is delegated to the execution
+      // boundary (canonical Zod schema), because the OpenAI Agents SDK requires type: 'object'
+      // at the root and rejects bare anyOf.
+      const projection = projectStepResultSchemaForProvider({
+        schemaId: 'autocatalyst.reviewer_result.v1',
+        schema: reviewerResultSchema,
+        target: 'claude_tool_input_schema'
+      });
+      const schema = projection.schema as JsonSchema;
+      const branches = (schema['anyOf'] as JsonSchema[]) ?? [];
+      // Every branch that allows status: 'findings' must have minItems: 1 on findings
+      const findingsBranches = branches.filter((b) => {
+        const statusEnum = ((b['properties'] as JsonSchema | undefined)?.['status'] as JsonSchema | undefined)?.['enum'];
+        return Array.isArray(statusEnum) && statusEnum.includes('findings') && !statusEnum.includes('satisfied');
+      });
+      expect(findingsBranches.length).toBeGreaterThan(0);
+      for (const branch of findingsBranches) {
+        const findings = (branch['properties'] as JsonSchema | undefined)?.['findings'] as JsonSchema | undefined;
+        expect(findings?.['minItems']).toBeGreaterThanOrEqual(1);
       }
     });
   });

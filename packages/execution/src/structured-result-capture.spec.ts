@@ -68,6 +68,17 @@ describe('createStructuredAgentResultCapture', () => {
     expect(result).toMatchObject({ status: 'failed', code: 'step_result_contract_unknown' });
   });
 
+  it('returns skipped with reason no_contract when contract schemaId is "any"', () => {
+    const contract = {
+      step: 'some.step',
+      schemaId: 'any',
+      schema: z.unknown(),
+      resultFile: 'step-result.json'
+    };
+    const result = createStructuredAgentResultCapture({ mode: 'scratch_file', contract });
+    expect(result).toEqual({ status: 'skipped', reason: 'no_contract' });
+  });
+
   it('returns capture when step is not provided (no step mismatch check)', () => {
     const result = createStructuredAgentResultCapture({
       mode: 'scratch_file',

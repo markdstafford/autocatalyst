@@ -837,10 +837,10 @@ describe('createClaudeAgentAdapter — structured result capture', () => {
     }
   });
 
-  it('throws structured_result_unsupported when supportsStructuredResultTools is not set', async () => {
+  it('throws structured_result_unsupported when supportsStructuredResultTools is explicitly false', async () => {
     const adapter = createClaudeAgentAdapter({
-      launchClaudeSession: () => asyncIter([])
-      // supportsStructuredResultTools NOT set
+      launchClaudeSession: () => asyncIter([]),
+      supportsStructuredResultTools: false  // explicitly disabled
     });
 
     await expect(runAdapterWithCapture(adapter, makeReviewerCapture())).rejects.toThrow(UnsupportedProviderCapabilityError);

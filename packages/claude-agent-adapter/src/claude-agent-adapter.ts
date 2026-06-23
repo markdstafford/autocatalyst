@@ -186,6 +186,14 @@ async function* realSDKLaunch(
     ...(opts.env !== undefined ? { env: opts.env } : {}),
     ...(opts.allowedTools !== undefined ? { allowedTools: opts.allowedTools } : {}),
     permissionMode: 'dontAsk',
+    // Pass structured result tool definition so the Claude CLI can expose the tool to the model
+    ...(opts.structuredResultTool !== undefined ? {
+      tools: [{
+        name: opts.structuredResultTool.name,
+        description: opts.structuredResultTool.description,
+        inputSchema: opts.structuredResultTool.inputSchema
+      }]
+    } : {}),
     ...(opts.options ?? {})
   };
 
@@ -347,7 +355,7 @@ export function createClaudeAgentAdapter(
       // Structured result tool capability gate (before any SDK launch).
       let structuredResultTool: ClaudeStructuredResultToolDefinition | undefined;
       if (input.structuredResultCapture !== undefined) {
-        if (options.supportsStructuredResultTools !== true) {
+        if (options.supportsStructuredResultTools === false) {
           throw new UnsupportedProviderCapabilityError(
             'structured_result_unsupported',
             'Claude Agent SDK structured result tool registration is not supported by the installed SDK version. ' +
@@ -794,8 +802,7 @@ async function writeClaudeStructuredResultFile(
   const writeOutcome = await writeScratchStepResultFile({
     environment: env,
     resultFile: capture.resultFile,
-    value,
-    schema: capture.schema
+    value
   });
   if (writeOutcome.status === 'failed') {
     throw new ProviderProtocolError(

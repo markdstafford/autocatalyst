@@ -117,33 +117,22 @@ const claudeFindingItem = {
 // ---------------------------------------------------------------------------
 function buildReviewerResultProjection(target: ProviderSchemaProjectionTarget): ProviderStructuredOutputSchema {
   if (target === 'openai_agents_output_type') {
-    // OpenAI strict mode: all properties in required, optional fields nullable.
+    // OpenAI strict mode requires type: 'object' at the root — bare anyOf is rejected by the SDK.
+    // Discriminated union enforcement (satisfied requires no findings, findings requires non-empty)
+    // is handled at the execution boundary via the canonical Zod schema.
     return {
-      anyOf: [
-        {
-          type: 'object',
-          properties: {
-            status: { type: 'string', enum: ['satisfied'] },
-            findings: {
-              anyOf: [
-                { type: 'array', items: strictFindingItem, maxItems: 0 },
-                { type: 'null' }
-              ]
-            }
-          },
-          required: ['status', 'findings'],
-          additionalProperties: false
-        },
-        {
-          type: 'object',
-          properties: {
-            status: { type: 'string', enum: ['findings'] },
-            findings: { type: 'array', items: strictFindingItem, minItems: 1 }
-          },
-          required: ['status', 'findings'],
-          additionalProperties: false
+      type: 'object',
+      properties: {
+        status: { type: 'string', enum: ['satisfied', 'findings'] },
+        findings: {
+          anyOf: [
+            { type: 'array', items: strictFindingItem },
+            { type: 'null' }
+          ]
         }
-      ]
+      },
+      required: ['status', 'findings'],
+      additionalProperties: false
     };
   }
 

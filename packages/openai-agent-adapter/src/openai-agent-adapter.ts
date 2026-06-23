@@ -457,8 +457,7 @@ async function writeStructuredResultFile(
   const writeOutcome = await writeScratchStepResultFile({
     environment: env,
     resultFile: structuredResult.capture.resultFile,
-    value: output,
-    schema: structuredResult.capture.schema
+    value: output
   });
 
   if (writeOutcome.status === 'failed') {
