@@ -26,6 +26,7 @@ import type { RunnerRunInput } from './runner.js';
 import { RunnerProtocolError } from './runner.js';
 import { createAgentOrchestratorRunner } from './agent-orchestrator-runner.js';
 import type { CreateAgentOrchestratorRunnerOptions } from './agent-orchestrator-runner.js';
+import { createNoopAgentModelMemoryStore } from './index.js';
 import { createExecutionEntryPoint } from './execution-entry-point.js';
 import type { ExecutionContext } from '@autocatalyst/api-contract';
 import type { MaterializedExecutionEnvironment } from './materialized-environment.js';
@@ -919,6 +920,50 @@ describe('createAgentOrchestratorRunner', () => {
       expect(metadata!.endedAt).not.toBeNull();
       expect(() => new Date(metadata!.endedAt!)).not.toThrow();
       expect(new Date(metadata!.endedAt!).toISOString()).toBe(metadata!.endedAt);
+    });
+  });
+
+  describe('modelMemory pass-through', () => {
+    it('passes model memory continuity to the provider adapter startSession input', async () => {
+      const runId = 'run_test_1';
+      const store = createNoopAgentModelMemoryStore();
+      let receivedInput: AgentProviderSessionInput | undefined;
+
+      const profile = makeProfile();
+      const adapterCloseMock = vi.fn().mockResolvedValue(undefined);
+      const sessionCloseMock = vi.fn().mockResolvedValue(undefined);
+
+      const capturingAdapter: AgentProviderAdapter = {
+        providerKind: 'test',
+        adapterId: 'test-adapter',
+        supportedConnectionMechanism: 'process_environment',
+        startSession(input: AgentProviderSessionInput): AgentProviderSession {
+          receivedInput = input;
+          return {
+            events: (async function* () { yield makeTerminalEvent(runId); })(),
+            metadata: Promise.resolve(makeDefaultMetadata()),
+            close: sessionCloseMock
+          };
+        },
+        close: adapterCloseMock
+      };
+
+      const options: CreateAgentOrchestratorRunnerOptions = {
+        adapter: capturingAdapter,
+        profile,
+        connection: makeConnection(profile),
+        telemetryContext: makeTelemetryContext(),
+        clock: () => 1000
+      };
+
+      const runner = createAgentOrchestratorRunner(options);
+      const runInput = makeRunInput();
+      const modelMemory = { key: 'run_1:implementation.work:reviewer', store };
+      await collectEvents(runner, { ...runInput, modelMemory });
+
+      expect(receivedInput).toBeDefined();
+      expect(receivedInput?.modelMemory?.key).toBe('run_1:implementation.work:reviewer');
+      expect(receivedInput?.modelMemory?.store).toBe(store);
     });
   });
 

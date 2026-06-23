@@ -1,6 +1,13 @@
 export const executionPackageName = '@autocatalyst/execution' as const;
 
 export {
+  createNoopAgentModelMemoryStore,
+  type AgentModelMemoryContinuity,
+  type AgentModelMemoryStore,
+  type AgentModelMemorySnapshot
+} from './agent-model-memory.js';
+
+export {
   runtimeSkillsCatalog,
   runtimeSkillsCatalogRoot,
   type RuntimeSkillCatalogEntry

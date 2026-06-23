@@ -88,7 +88,8 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
         profile,
         connection,
         telemetryContext,
-        ...(input.structuredResultCapture !== undefined ? { structuredResultCapture: input.structuredResultCapture } : {})
+        ...(input.structuredResultCapture !== undefined ? { structuredResultCapture: input.structuredResultCapture } : {}),
+        ...(input.modelMemory !== undefined ? { modelMemory: input.modelMemory } : {})
       });
       activeSession = session;
 

@@ -5,6 +5,7 @@ import {
   type ExecutionContext,
   type RunnerEvent
 } from '@autocatalyst/api-contract';
+import type { AgentModelMemoryContinuity } from './agent-model-memory.js';
 
 import type { ExecutionBoundaryEvent, ExecutionTerminalResultEvent } from './execution-boundary-events.js';
 import type { MaterializedExecutionEnvironment } from './materialized-environment.js';
@@ -43,6 +44,7 @@ export class PreTerminalRunnerFailure extends Error {
 export interface ExecutionEntryPointInput {
   readonly context: ExecutionContext;
   readonly correlationId?: string;
+  readonly modelMemory?: AgentModelMemoryContinuity;
 }
 
 export interface NoExecutionResultValidationConfig {
@@ -130,7 +132,8 @@ export function createExecutionEntryPoint(options: CreateExecutionEntryPointOpti
       const runnerInput = {
         environment,
         ...(input.correlationId !== undefined ? { correlationId: input.correlationId } : {}),
-        ...(resolvedCapture !== undefined ? { structuredResultCapture: resolvedCapture } : {})
+        ...(resolvedCapture !== undefined ? { structuredResultCapture: resolvedCapture } : {}),
+        ...(input.modelMemory !== undefined ? { modelMemory: input.modelMemory } : {})
       };
       let streamError: unknown = undefined;
       let closeProtocolError: RunnerProtocolError | undefined;
