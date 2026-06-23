@@ -951,6 +951,72 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
 });
 
 // ---------------------------------------------------------------------------
+// spec.author structured result capture regression
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — spec.author structured result capture', () => {
+  it('spec.author: structured output captures spec data despite prose in stream', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-spec-author-'));
+    try {
+      const specData = {
+        kind: 'feature_spec',
+        slug: 'test-feature',
+        relativePath: 'context-human/specs/feature-test-feature.md',
+        frontmatter: {
+          status: 'draft',
+          created: '2026-06-01',
+          last_updated: '2026-06-01',
+          specced_by: 'autocatalyst'
+        },
+        body: '# Test Feature\n\nThis is a test.'
+      };
+
+      const fakeRun: OpenAIRunAgentSession = () => ({
+        items: [assistantItem('I wrote the spec. Let me summarize what I did.')],
+        result: Promise.resolve({ directive: 'advance' as const, output: specData })
+      });
+
+      const specCapture: StructuredAgentResultCapture = {
+        step: 'spec.author',
+        schemaId: 'autocatalyst.spec_author.v1',
+        // Use a permissive schema at the adapter level; full validation happens at the entry point.
+        schema: z.object({
+          kind: z.string(),
+          slug: z.string(),
+          relativePath: z.string(),
+          frontmatter: z.record(z.any()),
+          body: z.string()
+        }),
+        resultFile: 'step-result.json',
+        required: true
+      };
+
+      const adapter = createOpenAIAgentAdapter({
+        sandboxClientFactory: () => fakeSandboxHandle(),
+        runAgentSession: fakeRun
+      });
+
+      const input: AgentProviderSessionInput = {
+        ...makeSessionInput('scratch_only', { scratchRoot: scratchDir }),
+        structuredResultCapture: specCapture
+      };
+
+      const session = await adapter.startSession(input);
+      await collectEvents(session.events);
+
+      const resultJson = JSON.parse(await readFile(path.join(scratchDir, 'step-result.json'), 'utf8'));
+      expect(resultJson.kind).toBe('feature_spec');
+      expect(resultJson.slug).toBe('test-feature');
+      expect(resultJson.relativePath).toBe('context-human/specs/feature-test-feature.md');
+      expect(resultJson.frontmatter.status).toBe('draft');
+      expect(resultJson.body).toBe('# Test Feature\n\nThis is a test.');
+    } finally {
+      await rm(scratchDir, { recursive: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Structured result capture (seam-driven)
 // ---------------------------------------------------------------------------
 

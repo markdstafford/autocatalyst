@@ -1865,3 +1865,153 @@ describe('createExecutionEntryPoint — covered contract shapes', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// implementer dispositions regression — resultContract attachment
+// ---------------------------------------------------------------------------
+
+describe('createExecutionEntryPoint — implementer dispositions resultContract regression', () => {
+  it('implementation.build implementer: advance terminal has resultContract with IMPLEMENTER_DISPOSITIONS_SCHEMA_ID', async () => {
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'ep-impl-disp-reg-'));
+    try {
+      const context = makeContext();
+      context.run.currentStep = 'implementation.build';
+      const env: MaterializedExecutionEnvironment = {
+        ...makeMaterializedEnv(context),
+        workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+      };
+      const materialize = vi.fn().mockResolvedValue(env);
+      const registry = registerImplementerDispositionsResultContract(createStepResultContractRegistry());
+
+      const resultFile = 'round-1-implementer.json';
+      // Empty dispositions object is valid per implementerDispositionsResultSchema
+      await writeFile(path.join(scratchRoot, resultFile), JSON.stringify({}), 'utf8');
+
+      const entryPoint = createExecutionEntryPoint({
+        runner: makeFakeRunner([{
+          id: 'evt_t',
+          type: 'runner_terminal_result',
+          runId,
+          step: 'implementation.build',
+          importance: 'normal',
+          createdAt: '2026-06-22T00:00:00.000Z',
+          result: { directive: 'advance' }
+        }]),
+        materialize,
+        resultValidation: {
+          mode: 'scratch_file',
+          step: 'implementation.build',
+          schemaId: IMPLEMENTER_DISPOSITIONS_SCHEMA_ID,
+          contractRegistry: registry,
+          resultFile
+        }
+      });
+
+      const events: ExecutionBoundaryEvent[] = [];
+      for await (const event of entryPoint.execute({ context })) {
+        events.push(event);
+      }
+
+      const terminal = events.find((e) => e.type === 'runner_terminal_result') as ExecutionTerminalResultEvent | undefined;
+      expect(terminal).toBeDefined();
+      expect(terminal?.result.directive).toBe('advance');
+      // The resultContract must be attached with the correct schema id
+      expect(terminal?.resultContract).toMatchObject({
+        step: 'implementation.build',
+        schemaId: IMPLEMENTER_DISPOSITIONS_SCHEMA_ID
+      });
+      // Empty dispositions object is valid and passes through
+      expect(terminal?.result.result).toEqual({});
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pr.finalize boundary regression
+// ---------------------------------------------------------------------------
+
+describe('createExecutionEntryPoint — pr.finalize boundary regression', () => {
+  function makePrFinalizeContext(): ExecutionContext {
+    const context = makeContext();
+    context.run.currentStep = 'pr.finalize';
+    return context;
+  }
+
+  async function runPrFinalize(scratchRoot: string, payload: unknown): Promise<ExecutionTerminalResultEvent | undefined> {
+    const context = makePrFinalizeContext();
+    const resultFile = 'step-result.json';
+    await writeFile(path.join(scratchRoot, resultFile), JSON.stringify(payload), 'utf8');
+
+    const env: MaterializedExecutionEnvironment = {
+      ...makeMaterializedEnv(context),
+      workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] }
+    };
+    const registry = registerPullRequestFinalizeResultContract(
+      createStepResultContractRegistry(),
+      { resultFile }
+    );
+
+    const entryPoint = createExecutionEntryPoint({
+      runner: makeFakeRunner([{
+        id: 'evt_t',
+        type: 'runner_terminal_result',
+        runId,
+        step: 'pr.finalize',
+        importance: 'normal',
+        createdAt: '2026-06-22T00:00:00.000Z',
+        result: { directive: 'advance' }
+      }]),
+      materialize: vi.fn().mockResolvedValue(env),
+      resultValidation: {
+        mode: 'scratch_file',
+        step: 'pr.finalize',
+        schemaId: PR_FINALIZE_SCHEMA_ID,
+        contractRegistry: registry,
+        resultFile,
+        maxCorrectionAttempts: 0
+      }
+    });
+
+    const events: ExecutionBoundaryEvent[] = [];
+    for await (const event of entryPoint.execute({ context })) {
+      events.push(event);
+    }
+    return events.find((e) => e.type === 'runner_terminal_result') as ExecutionTerminalResultEvent | undefined;
+  }
+
+  it('valid advance result (no findings) passes boundary validation and advances', async () => {
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'ep-prfinalize-valid-'));
+    try {
+      const terminal = await runPrFinalize(scratchRoot, { directive: 'advance', findings: [] });
+      expect(terminal).toBeDefined();
+      expect(terminal?.result.directive).toBe('advance');
+      expect(terminal?.resultContract).toMatchObject({
+        step: 'pr.finalize',
+        schemaId: PR_FINALIZE_SCHEMA_ID
+      });
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('advance directive with blocker finding is rejected by boundary validation as schema_validation_failed', async () => {
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'ep-prfinalize-blocker-'));
+    try {
+      // advance + blocker is a contradictory result — prFinalizeResultSchema rejects it
+      const invalidPayload = {
+        directive: 'advance',
+        findings: [{ severity: 'blocker', summary: 'Critical bug found' }]
+      };
+      const terminal = await runPrFinalize(scratchRoot, invalidPayload);
+      expect(terminal).toBeDefined();
+      expect(terminal?.result.directive).toBe('fail');
+      if (terminal?.result.directive === 'fail') {
+        expect(terminal.result.reason).toContain('schema_validation_failed');
+      }
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+});

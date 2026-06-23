@@ -939,3 +939,42 @@ describe('createClaudeAgentAdapter — credential redaction', () => {
     expect(turn.message.content.includes('[REDACTED]')).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Read-only reviewer satisfied verdict regression (T-019)
+//
+// NOTE: The test 'allows submit_result in read-only reviewer sessions without
+// granting write tools' above already proves this contract end-to-end. This
+// explicit test documents the exact satisfied verdict path as a named regression
+// anchor for the implementation.build reviewer contract.
+// ---------------------------------------------------------------------------
+
+describe('createClaudeAgentAdapter — read-only reviewer satisfied verdict regression', () => {
+  it('read-only reviewer can submit satisfied verdict via submit_result', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-reviewer-verdict-'));
+    try {
+      const verdict = { status: 'satisfied' as const, findings: [] };
+      const events: ClaudeNativeEvent[] = [
+        { type: 'tool_use', tool: { name: 'submit_result', input: verdict } },
+        { type: 'result', result: { is_error: false } }
+      ];
+
+      const adapter = createClaudeAgentAdapter({
+        launchClaudeSession: () => asyncIter(events),
+        supportsStructuredResultTools: true
+      });
+
+      // Read-only tools (no Write, no Edit) — submit_result is still available
+      await runAdapterWithCapture(adapter, makeReviewerCapture('step-result.json'), {
+        scratchRoot: scratchDir,
+        allowedTools: ['Read', 'Glob', 'Grep']
+      });
+
+      const result = JSON.parse(await readFile(path.join(scratchDir, 'step-result.json'), 'utf8'));
+      expect(result.status).toBe('satisfied');
+      expect(result.findings).toEqual([]);
+    } finally {
+      await rm(scratchDir, { recursive: true });
+    }
+  });
+});
