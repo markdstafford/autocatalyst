@@ -27,6 +27,7 @@ import type {
   StructuredAgentResultCapture
 } from '@autocatalyst/execution';
 import {
+  assertSerializableStructuredResult,
   buildSafeAdapterFailureLogDetail,
   ClassifiedProviderFailureError,
   classifyProviderFailure,
@@ -37,7 +38,8 @@ import {
   reportProgressToolInputSchema,
   runtimeSkillsCatalogRoot,
   UnsupportedProviderCapabilityError,
-  updatePlanToolInputSchema
+  updatePlanToolInputSchema,
+  writeScratchStepResultFile
 } from '@autocatalyst/execution';
 import { materializeOpenAISkillFiles } from './skill-materialization.js';
 import type { RunnerEvent } from '@autocatalyst/api-contract';
@@ -434,6 +436,37 @@ async function maybeWriteResultFile(
   } catch {
     // Suppress raw filesystem errors that may carry host paths.
     throw new Error('OpenAI agent adapter failed to write the step result file.');
+  }
+}
+
+async function writeStructuredResultFile(
+  env: AgentProviderSessionInput['runInput']['environment'],
+  structuredResult: OpenAIStructuredResultConfiguration,
+  output: unknown
+): Promise<void> {
+  if (output === undefined || output === null) {
+    throw new ProviderProtocolError(
+      'missing_structured_result',
+      'OpenAI structured output session advanced without a parsed structured result.',
+      { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId }
+    );
+  }
+
+  assertSerializableStructuredResult(output);
+
+  const writeOutcome = await writeScratchStepResultFile({
+    environment: env,
+    resultFile: structuredResult.capture.resultFile,
+    value: output,
+    schema: structuredResult.capture.schema
+  });
+
+  if (writeOutcome.status === 'failed') {
+    throw new ProviderProtocolError(
+      'structured_result_invalid',
+      `OpenAI structured result write failed: ${writeOutcome.code}`,
+      { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId, code: writeOutcome.code }
+    );
   }
 }
 
@@ -938,10 +971,16 @@ export function createOpenAIAgentAdapter(
 
           const terminal = await outcome.result;
 
-          // Result-file handoff: write the raw final output to the scratch root,
-          // leaving validation to the execution entry point. Only on advance.
+          // Result-file handoff: write the final output to the scratch root.
+          // Only on advance.
           if (terminal.directive === 'advance') {
-            await maybeWriteResultFile(input.runInput.environment, terminal.output);
+            if (structuredResult !== undefined) {
+              // Structured capture: use parsed output, not prose
+              await writeStructuredResultFile(input.runInput.environment, structuredResult, terminal.output);
+            } else {
+              // Legacy no-contract path: write prose finalOutput as before
+              await maybeWriteResultFile(input.runInput.environment, terminal.output);
+            }
           }
 
           let terminalEvent: RunnerEvent;
