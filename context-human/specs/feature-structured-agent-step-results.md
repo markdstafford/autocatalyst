@@ -1,7 +1,7 @@
 ---
 created: 2026-06-23
 last_updated: 2026-06-23
-status: implementing
+status: complete
 issue: 100
 specced_by: autocatalyst
 ---
@@ -27,11 +27,11 @@ The run lifecycle depends on trusted step handoffs. Result capture should be str
 
 - Give agent adapters first-class access to the active step-result contract: step, schema id, schema, result file, and role-specific result-file name when applicable.
 - Configure OpenAI agent sessions with structured output using the Agents SDK `outputType` or the nearest supported equivalent for the active contract.
-- Configure Claude agent sessions with a result-submission tool such as `submit_result`, where the tool input schema is the active contract schema.
-- Capture the typed provider output or submitted tool arguments as the step result object.
+- Configure Claude agent sessions with the Agent SDK native `outputFormat` structured-output option for the active contract schema.
+- Capture the typed provider output as the step result object.
 - Write `step-result.json` from the captured structured object, not from `finalOutput` or Claude result prose.
 - Preserve the execution entry point's scratch-file validation, normalizers, correction loop, result contract metadata, and fail-safe terminal behavior.
-- Let read-only reviewer sessions submit a structured verdict without granting write access to the repository workspace.
+- Let read-only reviewer sessions return a structured verdict without granting write access to the repository workspace.
 - Keep provider-specific details inside provider adapters and shared adapter/orchestrator seams, not in control-plane business logic.
 - Preserve safe diagnostics: log schema id, step, role, result-capture mechanism, and failure codes, but not raw model output, full prompts, secrets, or unredacted scratch content.
 - Prove that prose before or after a final response no longer causes `result_json_invalid` when the provider returns a structured result.
@@ -55,7 +55,7 @@ The run lifecycle depends on trusted step handoffs. Result capture should be str
 
 - As Enzo, I can start an agent step and know the adapter receives the exact result contract selected for that step and role.
 - As Enzo, I can inspect adapter code and see OpenAI `outputType` or equivalent structured output configured from the selected schema.
-- As Enzo, I can inspect Claude adapter code and see a `submit_result` tool whose input schema is the selected result schema.
+- As Enzo, I can inspect Claude adapter code and see `outputFormat` configured from the selected result schema and `structured_output` captured from the SDK result.
 - As Opal, I can run a reviewer model that adds prose to its final message and still receive the structured reviewer verdict captured by the provider mechanism.
 - As Opal, I can run a read-only reviewer and still receive its verdict without allowing repository writes.
 - As Phoebe, I can submit a feature request and not lose a valid `spec.author` result because the model also wrote an explanatory recap.
@@ -66,15 +66,15 @@ The run lifecycle depends on trusted step handoffs. Result capture should be str
 - OpenAI agent sessions configure the Agents SDK with `outputType` or the current SDK-supported equivalent for the active result schema.
 - OpenAI adapter captures the parsed structured output object and writes that object to the configured scratch result file.
 - OpenAI adapter no longer writes `runResult.finalOutput` or terminal prose verbatim to `step-result.json` when structured result capture is active.
-- Claude agent sessions expose a result-submission tool, named consistently such as `submit_result`, with an input schema equivalent to the active step-result schema.
-- Claude adapter captures the `submit_result` tool arguments and writes those arguments to the configured scratch result file.
+- Claude agent sessions configure the Agent SDK native `outputFormat` option with a schema equivalent to the active step-result schema.
+- Claude adapter captures the SDK result message `structured_output` object and writes that object to the configured scratch result file.
 - Claude adapter no longer writes the SDK result-event prose output verbatim to `step-result.json` when structured result capture is active.
-- Read-only reviewer sessions can call the result-submission mechanism even when repository write tools are unavailable.
+- Read-only reviewer sessions can return structured results even when repository write tools are unavailable.
 - If a provider session ends without a structured result for a contract-required step, the adapter fails safely with a typed provider protocol or capability error; it does not manufacture a result from prose.
 - The execution entry point still reads the scratch result file, validates it with the selected schema, runs configured normalizers and correction where applicable, and attaches `resultContract` to successful terminal events.
 - Regression tests prove that a prose final message plus a valid structured OpenAI result packages cleanly.
-- Regression tests prove that a prose Claude final result plus a valid `submit_result` tool call packages cleanly.
-- Regression tests prove that a read-only `implementation.build` reviewer can submit `{ "status": "satisfied", "findings": [] }` through the structured mechanism.
+- Regression tests prove that a prose Claude final result plus a valid native `structured_output` result packages cleanly.
+- Regression tests prove that a read-only `implementation.build` reviewer can return `{ "status": "satisfied", "findings": [] }` through the structured mechanism.
 - Tests cover missing structured result, malformed structured result, wrong schema, and no-contract steps.
 - Safe logs or metadata identify the result capture mechanism, schema id, step, and failure code without logging raw result bodies, prompts, secrets, or full filesystem paths.
 ### Non-functional requirements
@@ -87,14 +87,14 @@ The run lifecycle depends on trusted step handoffs. Result capture should be str
 - **Workspace ownership:** Implementation stays on the current Autocatalyst-owned branch and does not perform git lifecycle actions outside the current branch.
 ### Devil's advocate pass
 
-- **Structured output cannot be only a prompt instruction.** The feature must use provider mechanisms that return parsed output or schema-checked tool arguments. Otherwise the system still depends on a model choosing to end with raw JSON.
+- **Structured output cannot be only a prompt instruction.** The feature must use provider-native structured-output mechanisms that return parsed schema-shaped output. Otherwise the system still depends on a model choosing to end with raw JSON.
 - **The boundary validator is still required.** Provider validation lowers the chance of malformed output, but execution must still validate the file before control-plane logic consumes it.
 - **Provider schema support may be uneven.** The implementation must handle SDK limitations explicitly. If a schema cannot be expressed for a provider, fail with a safe unsupported-capability reason instead of silently reverting to prose parsing for contract-required steps.
 - **Read-only review cannot mean no result channel.** The reviewer must remain unable to change repository files, but the structured result channel is control-plane machinery and must stay available.
 - **Zod version mismatches are likely.** The OpenAI adapter depends on `zod` v4 while `@autocatalyst/api-contract` uses the repo's shared Zod schemas. The adapter needs a tested bridge rather than ad hoc casting if the SDK requires a different schema representation.
 ### Reviewer pass
 
-This feature aligns with ADR-007, ADR-012, ADR-022, and ADR-027. It keeps the contract source in `@autocatalyst/api-contract`, keeps provider identity in adapters, and preserves execution-boundary validation. The main design risk is Claude Agent SDK custom-tool support: the spec requires a result-submission tool because issue 100 names that as the structured mechanism, but implementation must confirm how the SDK exposes local tools or MCP-style tools and report unsupported behavior directly if the installed SDK cannot enforce tool input schemas.
+This feature aligns with ADR-007, ADR-012, ADR-022, and ADR-027. It keeps the contract source in `@autocatalyst/api-contract`, keeps provider identity in adapters, and preserves execution-boundary validation. The main design risk is provider SDK structured-output support: implementation must confirm that both OpenAI Agents SDK and Claude Agent SDK expose native structured outputs for the selected schemas and report unsupported behavior directly if an installed SDK cannot enforce the projected schema.
 ## Design spec
 
 ### Design scope
@@ -121,7 +121,7 @@ Structured result capture should be explicit in the runner input rather than inf
 - `schema`: the canonical Zod schema selected by execution validation.
 - `resultFile`: the scratch-relative result file name to write.
 - `required`: whether absence of a structured result is a provider protocol failure.
-This neutral descriptor deliberately excludes provider-selected capture-mechanism metadata. Adapters derive the provider mechanism, such as `openai_output_type` or `claude_submit_result_tool`, from provider schema projection and use that projection metadata for logs and tests.
+This neutral descriptor deliberately excludes provider-selected capture-mechanism metadata. Adapters derive the provider mechanism, such as `openai_output_type` or `claude_structured_output`, from provider schema projection and use that projection metadata for logs and tests.
 For no-contract steps, the field is absent and adapters keep their existing behavior or no-op result-file handling. For contract-required steps, adapters must not fall back to final-message parsing unless the execution configuration explicitly marks such fallback as allowed. This feature does not add that fallback allowance.
 ### OpenAI design
 
@@ -137,26 +137,26 @@ The OpenAI flow should be:
 If the SDK returns both a parsed object and a prose final message, the parsed object wins. If the SDK returns no parsed object for a contract-required step, the adapter should throw a safe provider protocol error such as `missing_structured_result`.
 ### Claude design
 
-The Claude agent adapter should expose a result-submission tool, for example `submit_result`, whose input schema is equivalent to the active result schema. The agent uses normal filesystem and review tools for the task, then calls `submit_result({...})` once with the step result.
+The Claude agent adapter should configure the Claude Agent SDK native structured-output feature with an `outputFormat` whose JSON schema is equivalent to the active result schema. The agent uses normal filesystem and review tools for the task, then the SDK returns the schema-shaped object as `structured_output` on the result message.
 The Claude flow should be:
 1. Map the normal allowed tool policy for repository work or read-only review.
-2. Add the result-submission tool to the session even when the workspace is read-only.
-3. Describe in the prompt or session options that the step advances only after calling `submit_result`.
-4. Capture the first valid `submit_result` tool arguments as the pending structured result.
-5. Treat duplicate submissions as a provider protocol error unless the SDK guarantees a single final tool call.
-6. Write the captured arguments as JSON to `resultFile` inside scratch after the stream ends.
+2. Project the active result schema into the Claude `outputFormat` JSON schema.
+3. Pass `outputFormat: { type: "json_schema", schema }` to the Claude Agent SDK session options when structured capture is active.
+4. Capture the SDK result message `structured_output` value as the pending structured result.
+5. Treat duplicate structured-output result messages as a provider protocol error unless the SDK gives a clear final-result signal.
+6. Write the captured object as JSON to `resultFile` inside scratch after the stream ends.
 7. Ignore the SDK result-event prose for result-file writing.
-If Claude Agent SDK cannot register local tools with enforced input schemas in the installed version, the implementation should surface an unsupported provider capability for contract-required structured capture. It should not silently revert to whole-final-message parsing for the covered steps.
+If Claude Agent SDK cannot configure native structured output with the projected schema in the installed version, the implementation should surface an unsupported provider capability for contract-required structured capture. It should not silently revert to whole-final-message parsing for the covered steps.
 ### Read-only reviewer design
 
 Read-only review means the agent cannot modify repository files. It must not prevent the adapter-owned result channel.
-For OpenAI, `outputType` is not a repository write and should work with read-only sandbox grants. For Claude, `submit_result` should be outside the repository tool allowlist or added as an adapter-owned tool that remains available alongside read-only tools such as `Read`, `Glob`, and `Grep`. The tool should not grant write access to the repo or scratch beyond the adapter's own controlled write of the validated arguments.
+For OpenAI, `outputType` is not a repository write and should work with read-only sandbox grants. For Claude, `outputFormat` is session configuration rather than a repository tool and should work alongside read-only tools such as `Read`, `Glob`, and `Grep`. Neither provider's structured-output path grants write access to the repo or scratch beyond the adapter's own controlled write of the validated object.
 ### Failure and fallback design
 
 Structured capture should make failures more precise:
 - `structured_result_unsupported` when the provider cannot express the active schema.
-- `missing_structured_result` when a contract-required session ends without typed output or a result tool call.
-- `duplicate_structured_result` when the provider reports more than one result submission and the adapter cannot choose safely.
+- `missing_structured_result` when a contract-required session ends without typed structured output.
+- `duplicate_structured_result` when the provider reports more than one structured result and the adapter cannot choose safely.
 - `structured_result_invalid` when provider output cannot be serialized or fails a pre-write schema parse.
 - Existing execution-boundary errors such as `result_file_missing`, `result_json_invalid`, and `schema_validation_failed` remain possible as defense-in-depth failures.
 The optional tolerance-pipeline fallback from issues 83 and 86 can still extract JSON from prose-wrapped output after scratch-file read. It is not the primary path for the covered agent steps.
@@ -175,7 +175,7 @@ Safe diagnostics should help operators understand which path ran without exposin
 Diagnostics must not include raw prompts, full final messages, raw result JSON bodies, secret values, authorization headers, or absolute host paths. If a rejected result excerpt is added later for issue 99-style diagnosability, it must be redacted, length-bounded, and explicitly safe.
 ### Reviewer pass
 
-The design keeps structured result capture close to provider behavior while retaining the current scratch-file contract for the execution boundary. It deliberately does not make control-plane code understand provider-specific result mechanics. The strongest remaining uncertainty is Claude tool registration; that uncertainty is isolated as a provider capability risk rather than hidden behind final-output parsing.
+The design keeps structured result capture close to provider behavior while retaining the current scratch-file contract for the execution boundary. It deliberately does not make control-plane code understand provider-specific result mechanics. The strongest remaining uncertainty is provider SDK schema support; that uncertainty is isolated as a provider capability risk rather than hidden behind final-output parsing.
 ## Tech spec
 
 ### Current state
@@ -187,7 +187,7 @@ Relevant current code paths:
 - `packages/core/src/spec-authoring-context.ts` and `packages/core/src/implementation-build-context.ts` already put output-contract facts in task inputs and prompts, but those facts are prompt/task guidance, not an adapter-enforced result channel.
 - `packages/openai-agent-adapter/src/openai-agent-adapter.ts` creates `SandboxAgent` without `outputType`, then writes `terminal.output` from `runResult.finalOutput` to scratch.
 - `packages/claude-agent-adapter/src/claude-agent-adapter.ts` captures Claude SDK result-event `output` as `pendingResult.output`, then writes that string to scratch.
-- The OpenAI adapter has local progress tools. The Claude adapter maps tool-use events but currently does not show an equivalent local custom tool registration seam in the inspected code.
+- The OpenAI adapter does not configure `outputType` yet in the inspected baseline. The Claude adapter captures result-event prose in the inspected baseline rather than configuring native `outputFormat` and reading `structured_output`.
 ### Architecture
 
 Resolve structured result capture before the runner starts. The execution entry point already has the result validation configuration; it should resolve the active contract early, then pass a provider-neutral structured result capture descriptor into `RunnerRunInput`.
@@ -237,7 +237,7 @@ The orchestrator can either pass it directly as `structuredResultCapture: input.
 Provider SDKs may not accept the repository's Zod v3 schemas directly. Add a small adapter-facing helper if needed:
 - Input: `schemaId` and `z.ZodTypeAny` from `@autocatalyst/api-contract`.
 - Output for OpenAI: the schema representation accepted by `@openai/agents` `outputType`.
-- Output for Claude: a JSON Schema-like tool input schema accepted by the Claude Agent SDK or its local-tool/MCP mechanism.
+- Output for Claude: a JSON Schema-like schema accepted by the Claude Agent SDK `outputFormat` structured-output option.
 If a schema cannot be projected without weakening required fields, strictness, discriminated unions, or provider-enforceable refinements, return a typed unsupported-capability failure. Do not drop strictness silently.
 Some canonical Zod refinements, especially `superRefine` cross-field invariants, are not expected to be enforceable by every provider schema mechanism. Projection should preserve the object shape and provider-enforceable constraints needed to capture the result, while execution-boundary validation remains authoritative for boundary-only refinements. Covered contracts such as `spec.author` and `pr.finalize` must not be rejected merely because their cross-field invariants are enforced after capture instead of by the provider.
 ### OpenAI adapter changes
@@ -252,16 +252,14 @@ Update the OpenAI run session seam so tests can assert the agent is created with
 Testing should use the existing injected `runAgentSession` seam and fake SDK result objects. Tests should not require a live OpenAI call.
 ### Claude adapter changes
 
-Add a result-submission tool path to the Claude adapter:
-- Define a constant result tool name such as `submit_result`.
-- Project the active schema into the tool input schema.
-- Register the tool with the Claude Agent SDK session if supported by the installed SDK.
-- Ensure `allowedTools` includes the result tool even for read-only reviewer sessions.
-- Update `mapNativeEvent` or adjacent stream handling so `tool_use` events for `submit_result` capture `tool.input` as the pending structured result instead of emitting ordinary tool activity.
-- Reject duplicate result tool calls unless the SDK gives a clear final-call signal.
-- Write the captured structured input object to scratch after the stream ends.
+Add a native structured-output path to the Claude adapter:
+- Project the active schema into the Claude `outputFormat` JSON schema.
+- Pass `outputFormat: { type: "json_schema", schema }` to the Claude Agent SDK session when structured capture is active.
+- Extend the native result seam so SDK result messages expose `structured_output` to the adapter as the pending structured result.
+- Reject duplicate structured-output result messages unless the SDK gives a clear final-result signal.
+- Write the captured structured output object to scratch after the stream ends.
 - Do not use `result.output` as the result-file source for structured sessions.
-If the SDK only reports tool calls but cannot register local tools with schemas, implementation should add a provider capability check and fail structured capture for Claude until a supported registration mechanism exists.
+If the SDK cannot configure native structured output with the projected schema, implementation should add a provider capability check and fail structured capture for Claude until supported structured output exists.
 ### Result file writing
 
 The current `maybeWriteResultFile` helpers should accept `unknown` structured data in addition to strings, or a new helper should be added. The helper should:
@@ -282,10 +280,10 @@ Add focused unit tests before broad integration tests:
 - OpenAI adapter passes `outputType` or equivalent when `structuredResultCapture` is present.
 - OpenAI adapter writes parsed structured output to scratch and ignores prose `finalOutput` for result-file writing.
 - OpenAI adapter fails safely when structured capture is required but the SDK returns no parsed object.
-- Claude adapter registers or requests the `submit_result` tool when `structuredResultCapture` is present.
-- Claude adapter captures `submit_result` input and ignores result-event prose for result-file writing.
-- Claude adapter keeps `submit_result` available for read-only reviewer sessions.
-- Claude adapter fails safely on missing or duplicate structured result submissions.
+- Claude adapter passes native `outputFormat` when `structuredResultCapture` is present.
+- Claude adapter captures `structured_output` and ignores result-event prose for result-file writing.
+- Claude adapter keeps structured result capture available for read-only reviewer sessions without adding repository write tools.
+- Claude adapter fails safely on missing or duplicate structured results.
 - Execution entry point passes the resolved contract to the runner before stream execution and still validates the scratch file after terminal advance.
 - End-to-end or integration-level tests cover a reasoning-style `spec.author` and an `implementation.build` reviewer where prose appears in final output but structured result capture succeeds.
 - Existing tests for scratch-root containment, contract resolution, result normalizers, and boundary validation continue to pass.
@@ -304,7 +302,7 @@ This feature can be added without a data migration. It changes runtime behavior 
 No-contract steps and direct-provider calls keep their existing paths. Contract-required producing and reviewing agent steps should move to structured capture in one change so a provider cannot pass tests by using structured output for one step but prose parsing for another covered step.
 ### Open risks
 
-- Claude Agent SDK custom tool registration and input-schema enforcement must be verified against the installed peer version. If unsupported, Claude structured result capture should fail with a safe unsupported-capability error until the adapter has a supported tool bridge.
+- Claude Agent SDK `outputFormat` support and schema enforcement must be verified against the installed peer version. If unsupported, Claude structured result capture should fail with a safe unsupported-capability error until native structured output is supported.
 - OpenAI Agents SDK `outputType` may require Zod v4 or another schema representation. The implementation must bridge schemas intentionally and prove strict/discriminated shapes are preserved.
 - Some Zod refinements may not be expressible in provider JSON schema. Boundary validation remains authoritative for those refinements, and projection support should fail only when the provider shape would silently weaken required fields, strictness, discriminated unions, or refinements the projection claims to enforce.
 ## Converged API
@@ -348,8 +346,8 @@ Extends the OpenAI agent run seam with an explicit structured result configurati
 `OpenAIStructuredResultConfiguration`, `createOpenAIStructuredResultConfiguration`, `OpenAIRunSessionInput`, `OpenAIRunOutcome`, `OpenAIRunAgentSession`, `createOpenAIAgentAdapter`
 
 `packages/claude-agent-adapter/src/claude-agent-adapter.ts`
-Adds a Claude submit_result tool channel for structured step results, keeps it available for read-only reviewer sessions, captures tool arguments, and writes those arguments to the scratch result file instead of result-event prose.
-`CLAUDE_STRUCTURED_RESULT_TOOL_NAME`, `ClaudeStructuredResultToolDefinition`, `ClaudeNativeEvent`, `ClaudeSessionLaunchOptions`, `ClaudeSessionLaunch`, `createClaudeAgentAdapter`
+Adds a Claude native structured-output channel for structured step results, passes the projected schema through `outputFormat`, captures `structured_output`, and writes that object to the scratch result file instead of result-event prose.
+`ClaudeStructuredResultDefinition`, `ClaudeNativeEvent`, `ClaudeSessionLaunchOptions`, `ClaudeSessionLaunch`, `createClaudeAgentAdapter`
 
 ### Public API
 
@@ -362,7 +360,7 @@ export interface StructuredAgentResultCapture { readonly step: string; readonly 
 #### `StructuredAgentResultCaptureMechanism`
 
 ```typescript
-export type StructuredAgentResultCaptureMechanism = 'openai_output_type' | 'claude_submit_result_tool';
+export type StructuredAgentResultCaptureMechanism = 'openai_output_type' | 'claude_structured_output';
 ```
 - Returns: `StructuredAgentResultCaptureMechanism`
 #### `createStructuredAgentResultCapture`
@@ -423,7 +421,7 @@ export function projectStepResultSchemaForProvider(input: { readonly schemaId: s
 - Parameters:
 	- `input.schemaId: string` — Stable Autocatalyst result contract id used for diagnostics and projection decisions.
 	- `input.schema: z.ZodTypeAny` — Canonical step-result schema selected by execution validation.
-	- `input.target: ProviderSchemaProjectionTarget` — Provider schema target such as OpenAI Agents outputType or Claude tool input schema.
+	- `input.target: ProviderSchemaProjectionTarget` — Provider schema target such as OpenAI Agents outputType or Claude Agent SDK outputFormat.
 - Returns: `ProviderSchemaProjection`
 - Errors:
 - `ProviderSchemaProjectionError when the Zod schema cannot be projected without silently weakening required fields, strictness, discriminated unions, or provider-enforceable refinements. Boundary-only Zod refinements such as cross-field `superRefine` invariants may remain enforced by the execution-boundary parse instead of the provider projection. ProviderSchemaProjectionError extends UnsupportedProviderCapabilityError with code structured_result_unsupported, so adapter-boundary instanceof UnsupportedProviderCapabilityError checks also catch projection failures.`
@@ -467,22 +465,16 @@ export function createOpenAIAgentAdapter(options?: OpenAIAgentAdapterOptions): A
 	- `UnsupportedProviderCapabilityError with code structured_result_unsupported when the active result schema cannot be configured as OpenAI structured output; projection failures surface as ProviderSchemaProjectionError, which extends UnsupportedProviderCapabilityError, unless the adapter chooses to wrap with the base capability class while preserving the same code and safe metadata`
 	- `ProviderProtocolError with code missing_structured_result when a contract-required session advances without parsed finalOutput from the configured OpenAI structured-output run`
 	- `ProviderProtocolError with code structured_result_invalid when finalOutput cannot be serialized by assertSerializableStructuredResult or fails the pre-write schema parse performed by writeScratchStepResultFile`
-#### `CLAUDE_STRUCTURED_RESULT_TOOL_NAME`
+#### `ClaudeStructuredResultDefinition`
 
 ```typescript
-export const CLAUDE_STRUCTURED_RESULT_TOOL_NAME = 'submit_result' as const;
+export interface ClaudeStructuredResultDefinition { readonly outputFormat: { readonly type: 'json_schema'; readonly schema: ProviderStructuredOutputSchema; }; readonly projection: ProviderSchemaProjection & { readonly target: 'claude_output_format'; readonly mechanism: 'claude_structured_output'; }; }
 ```
-- Returns: `'submit_result'`
-#### `ClaudeStructuredResultToolDefinition`
-
-```typescript
-export interface ClaudeStructuredResultToolDefinition { readonly name: typeof CLAUDE_STRUCTURED_RESULT_TOOL_NAME; readonly description: string; readonly inputSchema: ProviderStructuredOutputSchema; readonly projection: ProviderSchemaProjection & { readonly target: 'claude_tool_input_schema'; readonly mechanism: 'claude_submit_result_tool'; }; }
-```
-- Returns: `ClaudeStructuredResultToolDefinition`
+- Returns: `ClaudeStructuredResultDefinition`
 #### `ClaudeSessionLaunchOptions`
 
 ```typescript
-export interface ClaudeSessionLaunchOptions { readonly prompt: string; readonly cwd?: string; readonly env?: Record; readonly allowedTools?: string[]; readonly options?: Record; readonly structuredResultTool?: ClaudeStructuredResultToolDefinition; }
+export interface ClaudeSessionLaunchOptions { readonly prompt: string; readonly cwd?: string; readonly env?: Record; readonly allowedTools?: string[]; readonly options?: Record; readonly structuredResult?: ClaudeStructuredResultDefinition; }
 ```
 - Returns: `ClaudeSessionLaunchOptions`
 #### `createClaudeAgentAdapter`
@@ -491,13 +483,13 @@ export interface ClaudeSessionLaunchOptions { readonly prompt: string; readonly 
 export function createClaudeAgentAdapter(options?: ClaudeAgentAdapterOptions): AgentProviderAdapter
 ```
 - Parameters:
-	- `options: ClaudeAgentAdapterOptions | undefined` — Adapter options including injectable Claude session launch seam; structured capture is supplied per session through AgentProviderSessionInput and projected inside the adapter before registering the submit_result tool.
+	- `options: ClaudeAgentAdapterOptions | undefined` — Adapter options including injectable Claude session launch seam; structured capture is supplied per session through AgentProviderSessionInput and projected inside the adapter before configuring the SDK outputFormat.
 - Returns: `AgentProviderAdapter`
 - Errors:
-	- `UnsupportedProviderCapabilityError with code structured_result_unsupported when the installed Claude SDK cannot register an enforced submit_result tool for the active schema; schema projection failures surface as ProviderSchemaProjectionError, which extends UnsupportedProviderCapabilityError, unless the adapter chooses to wrap with the base capability class while preserving the same code and safe metadata`
-	- `ProviderProtocolError with code missing_structured_result when a contract-required session advances without a submit_result tool call`
-	- `ProviderProtocolError with code duplicate_structured_result when more than one submit_result call is observed and no safe final-call signal exists`
-	- `ProviderProtocolError with code structured_result_invalid when submitted arguments cannot be serialized by assertSerializableStructuredResult or fail the pre-write schema parse performed by writeScratchStepResultFile`
+	- `UnsupportedProviderCapabilityError with code structured_result_unsupported when the installed Claude SDK cannot configure native structured output for the active schema; schema projection failures surface as ProviderSchemaProjectionError, which extends UnsupportedProviderCapabilityError, unless the adapter chooses to wrap with the base capability class while preserving the same code and safe metadata`
+	- `ProviderProtocolError with code missing_structured_result when a contract-required session advances without structured_output`
+	- `ProviderProtocolError with code duplicate_structured_result when more than one structured_output result is observed and no safe final-result signal exists`
+	- `ProviderProtocolError with code structured_result_invalid when structured_output cannot be serialized by assertSerializableStructuredResult or fails the pre-write schema parse performed by writeScratchStepResultFile`
 ### Types
 
 #### `StructuredAgentResultCapture`
@@ -508,7 +500,7 @@ interface StructuredAgentResultCapture { readonly step: string; readonly schemaI
 #### `StructuredAgentResultCaptureMechanism`
 
 ```typescript
-type StructuredAgentResultCaptureMechanism = 'openai_output_type' | 'claude_submit_result_tool';
+type StructuredAgentResultCaptureMechanism = 'openai_output_type' | 'claude_structured_output';
 ```
 #### `CreateStructuredAgentResultCaptureInput`
 
@@ -573,7 +565,7 @@ interface StepResultFileWriteFailure { readonly status: 'failed'; readonly code:
 #### `ProviderSchemaProjectionTarget`
 
 ```typescript
-type ProviderSchemaProjectionTarget = 'openai_agents_output_type' | 'claude_tool_input_schema';
+type ProviderSchemaProjectionTarget = 'openai_agents_output_type' | 'claude_output_format';
 ```
 #### `ProviderStructuredOutputSchema`
 
@@ -605,24 +597,24 @@ interface OpenAIRunSessionInput { readonly prompt: string; readonly model: strin
 ```typescript
 interface OpenAIRunOutcome { readonly items: AsyncIterable | Iterable; readonly result: Promise; }
 ```
-#### `ClaudeStructuredResultToolDefinition`
+#### `ClaudeStructuredResultDefinition`
 
 ```typescript
-interface ClaudeStructuredResultToolDefinition { readonly name: typeof CLAUDE_STRUCTURED_RESULT_TOOL_NAME; readonly description: string; readonly inputSchema: ProviderStructuredOutputSchema; readonly projection: ProviderSchemaProjection & { readonly target: 'claude_tool_input_schema'; readonly mechanism: 'claude_submit_result_tool'; }; }
+interface ClaudeStructuredResultDefinition { readonly outputFormat: { readonly type: 'json_schema'; readonly schema: ProviderStructuredOutputSchema; }; readonly projection: ProviderSchemaProjection & { readonly target: 'claude_output_format'; readonly mechanism: 'claude_structured_output'; }; }
 ```
 #### `ClaudeSessionLaunchOptions`
 
 ```typescript
-interface ClaudeSessionLaunchOptions { readonly prompt: string; readonly cwd?: string; readonly env?: Record; readonly allowedTools?: string[]; readonly options?: Record; readonly structuredResultTool?: ClaudeStructuredResultToolDefinition; }
+interface ClaudeSessionLaunchOptions { readonly prompt: string; readonly cwd?: string; readonly env?: Record; readonly allowedTools?: string[]; readonly options?: Record; readonly structuredResult?: ClaudeStructuredResultDefinition; }
 ```
 #### `ClaudeNativeEvent`
 
 ```typescript
-interface ClaudeNativeEvent { readonly type: 'assistant' | 'tool_use' | 'tool_result' | 'result' | 'system' | string; readonly content?: string; readonly tool?: { readonly name: string; readonly input?: unknown }; readonly result?: { readonly type?: string; readonly output?: string; readonly is_error?: boolean; readonly total_tokens?: number; readonly input_tokens?: number; readonly output_tokens?: number }; readonly usage?: { readonly input_tokens?: number; readonly output_tokens?: number }; readonly [key: string]: unknown; }
+interface ClaudeNativeEvent { readonly type: 'assistant' | 'tool_use' | 'tool_result' | 'result' | 'system' | string; readonly content?: string; readonly tool?: { readonly name: string; readonly input?: unknown }; readonly structuredOutput?: unknown; readonly result?: { readonly type?: string; readonly output?: string; readonly is_error?: boolean; readonly total_tokens?: number; readonly input_tokens?: number; readonly output_tokens?: number }; readonly usage?: { readonly input_tokens?: number; readonly output_tokens?: number }; readonly [key: string]: unknown; }
 ```
 ### Notes
 
-The artifact proposes backend TypeScript API/seam changes only. It intentionally adds no public HTTP routes or UI APIs. Provider-specific structured-output mechanics remain in provider adapters, while execution keeps the scratch-file validation boundary authoritative. The neutral StructuredAgentResultCapture no longer contains provider mechanism metadata; adapters log the result-capture mechanism from ProviderSchemaProjection.mechanism after projection. createStructuredAgentResultCapture is non-throwing so pre-run failures can become existing fail-terminal boundary events. The execution entry point resolves validation once per execute() invocation and reuses that cached resolution for post-run validation to avoid divergent resolver results. OpenAI structured sessions use the SDK finalOutput seam as output; when structured capture is active that output must be the parsed object returned by outputType/projection.schema. Claude support remains explicitly unsupported with structured_result_unsupported if the installed SDK cannot register an enforced submit_result tool. Projection failures are modeled as ProviderSchemaProjectionError extending UnsupportedProviderCapabilityError, preserving the documented adapter capability error surface and instanceof behavior. OpenAI structured configuration is built through createOpenAIStructuredResultConfiguration; projection.schema, not capture.schema, is the SDK outputType, while capture.schema remains for validation and diagnostics. Adapter structured-result write protocol is explicit: run assertSerializableStructuredResult first, then writeScratchStepResultFile with the capture schema and map any invalid write outcome to structured_result_invalid.
+The artifact proposes backend TypeScript API/seam changes only. It intentionally adds no public HTTP routes or UI APIs. Provider-specific structured-output mechanics remain in provider adapters, while execution keeps the scratch-file validation boundary authoritative. The neutral StructuredAgentResultCapture no longer contains provider mechanism metadata; adapters log the result-capture mechanism from ProviderSchemaProjection.mechanism after projection. createStructuredAgentResultCapture is non-throwing so pre-run failures can become existing fail-terminal boundary events. The execution entry point resolves validation once per execute() invocation and reuses that cached resolution for post-run validation to avoid divergent resolver results. OpenAI structured sessions use the SDK finalOutput seam as output; when structured capture is active that output must be the parsed object returned by outputType/projection.schema. Claude structured sessions use the SDK result-message structured_output seam configured by outputFormat/projection.schema. Projection failures are modeled as ProviderSchemaProjectionError extending UnsupportedProviderCapabilityError, preserving the documented adapter capability error surface and instanceof behavior. OpenAI structured configuration is built through createOpenAIStructuredResultConfiguration; projection.schema, not capture.schema, is the SDK outputType, while capture.schema remains for validation and diagnostics. Claude structured configuration is built through ClaudeStructuredResultDefinition; projection.schema, not capture.schema, is the SDK outputFormat schema. Adapter structured-result write protocol is explicit: run assertSerializableStructuredResult first, then writeScratchStepResultFile with the capture schema and map any invalid write outcome to structured_result_invalid.
 ## Task list
 
 ### Story 1: Add the shared structured-result capture foundation
@@ -680,11 +672,11 @@ Create the provider-neutral contracts, provider error codes, and scratch-file wr
 Provide one adapter-facing projection seam so OpenAI and Claude can configure structured output without weakening canonical Autocatalyst schemas.
 #### T-006: Implement provider schema projection helper
 
-**Description:** Add `packages/execution/src/provider-schema-projection.ts` with the agreed projection target, projection result, and `ProviderSchemaProjectionError`. Implement `projectStepResultSchemaForProvider` for OpenAI Agents output type and Claude tool input schema targets.
+**Description:** Add `packages/execution/src/provider-schema-projection.ts` with the agreed projection target, projection result, and `ProviderSchemaProjectionError`. Implement `projectStepResultSchemaForProvider` for OpenAI Agents outputType and Claude Agent SDK outputFormat targets.
 **Acceptance criteria:**
 - The projection API matches the `## Converged API` signatures.
 - OpenAI projections return target `openai_agents_output_type` and mechanism `openai_output_type`.
-- Claude projections return target `claude_tool_input_schema` and mechanism `claude_submit_result_tool`.
+- Claude projections return target `claude_output_format` and mechanism `claude_structured_output`.
 - Unsupported or lossy projections fail with `ProviderSchemaProjectionError` extending `UnsupportedProviderCapabilityError` and code `structured_result_unsupported`.
 - Projection does not silently drop required fields, strictness, discriminated unions, or provider-enforceable refinements.
 - Tests document that boundary-only cross-field refinements for covered contracts remain authoritative at execution validation and do not make provider projection unsupported by themselves.
@@ -769,45 +761,44 @@ Configure OpenAI agent sessions with the projected structured output schema and 
 - Tests prove invalid structured output fails with `structured_result_invalid`.
 - Tests prove no-contract sessions still behave as before.
 **Dependencies:** T-011, T-012, and T-013.
-### Story 5: Use a Claude `submit_result` tool for step result files
+### Story 5: Use Claude native structured output for step result files
 
-Add an adapter-owned Claude result submission channel that remains available in read-only sessions and writes submitted tool arguments to scratch.
-#### T-015: Define Claude structured result tool projection
+Configure Claude agent sessions with native structured output and write SDK `structured_output` objects to scratch.
+#### T-015: Define Claude structured result output configuration
 
-**Description:** Update `packages/claude-agent-adapter/src/claude-agent-adapter.ts` with `CLAUDE_STRUCTURED_RESULT_TOOL_NAME`, `ClaudeStructuredResultToolDefinition`, and projection setup for `claude_tool_input_schema`.
+**Description:** Update `packages/claude-agent-adapter/src/claude-agent-adapter.ts` with `ClaudeStructuredResultDefinition` and projection setup for `claude_output_format`.
 **Acceptance criteria:**
-- The tool name is exported as `'submit_result'`.
-- The tool definition includes description, projected input schema, and projection metadata.
+- The structured result definition includes `outputFormat: { type: "json_schema", schema }` and projection metadata.
 - Projection failures surface as `structured_result_unsupported` capability errors.
-- If the installed Claude SDK cannot register enforced local tools, the adapter returns a safe unsupported-capability error instead of falling back to prose parsing.
+- If the installed Claude SDK cannot configure native structured output, the adapter returns a safe unsupported-capability error instead of falling back to prose parsing.
 **Dependencies:** T-006.
-#### T-016: Register `submit_result` without granting repository writes
+#### T-016: Pass Claude outputFormat without granting repository writes
 
-**Description:** Extend Claude session launch options and tool policy construction so structured sessions include the result tool even when repository access is read-only. The result tool should be adapter-owned control-plane machinery, not a repository write tool.
+**Description:** Extend Claude session launch options so structured sessions pass the projected `outputFormat` through SDK options even when repository access is read-only. Structured output is adapter-owned control-plane machinery, not a repository write tool.
 **Acceptance criteria:**
-- `ClaudeSessionLaunchOptions` includes optional `structuredResultTool`.
-- `submit_result` is included for structured sessions with normal repository tools.
-- `submit_result` is included for read-only reviewer sessions alongside read-only tools such as `Read`, `Glob`, and `Grep`.
-- Adding the result tool does not enable repository file writes in read-only sessions.
+- `ClaudeSessionLaunchOptions` includes optional `structuredResult`.
+- Structured sessions pass `outputFormat` from `structuredResult.outputFormat` to Claude SDK options.
+- Read-only reviewer sessions keep read-only repository tools such as `Read`, `Glob`, and `Grep`; structured output does not add write tools.
+- Adding structured output does not enable repository file writes in read-only sessions.
 - No-contract Claude sessions keep existing tool policy behavior.
 **Dependencies:** T-015.
-#### T-017: Capture Claude `submit_result` arguments and write scratch result
+#### T-017: Capture Claude structured_output and write scratch result
 
-**Description:** Update Claude native event mapping or adjacent stream handling so `submit_result` tool calls capture their input as the pending structured result. After the stream ends, write the captured object to `capture.resultFile` through the shared serializability and scratch writer helpers.
+**Description:** Update Claude native event mapping or adjacent stream handling so SDK result messages expose `structured_output` as the pending structured result. After the stream ends, write the captured object to `capture.resultFile` through the shared serializability and scratch writer helpers.
 **Acceptance criteria:**
-- The first valid `submit_result` input is captured as the structured result.
-- Duplicate result submissions fail with `ProviderProtocolError` code `duplicate_structured_result` unless the SDK provides a safe final-call signal.
-- Missing result submission on an advance terminal result fails with `missing_structured_result`.
-- Submitted arguments that cannot be serialized or fail schema validation fail with `structured_result_invalid`.
+- The first valid `structured_output` object is captured as the structured result.
+- Duplicate structured-output result messages fail with `ProviderProtocolError` code `duplicate_structured_result` unless the SDK provides a safe final-result signal.
+- Missing structured output on an advance terminal result fails with `missing_structured_result`.
+- Structured output that cannot be serialized or fails schema validation fails with `structured_result_invalid`.
 - Claude result-event prose is not used as the result-file source when structured capture is active.
 **Dependencies:** T-003 and T-016.
 #### T-018: Test Claude structured result behavior
 
-**Description:** Add or update `packages/claude-agent-adapter/src/claude-agent-adapter.spec.ts` for tool registration, read-only availability, event capture, and failure paths.
+**Description:** Add or update `packages/claude-agent-adapter/src/claude-agent-adapter.spec.ts` for outputFormat configuration, read-only compatibility, structured_output capture, and failure paths.
 **Acceptance criteria:**
-- Tests prove structured sessions register or request the `submit_result` tool with the projected input schema.
-- Tests prove read-only reviewer sessions can submit `{ "status": "satisfied", "findings": [] }` without write tools.
-- Tests prove result-event prose is ignored when `submit_result` provides a valid object.
+- Tests prove structured sessions configure `outputFormat` with the projected schema.
+- Tests prove read-only reviewer sessions can return `{ "status": "satisfied", "findings": [] }` through structured_output without write tools.
+- Tests prove result-event prose is ignored when `structured_output` provides a valid object.
 - Tests prove missing, duplicate, unsupported, and invalid structured-result paths fail with the agreed safe codes.
 - Tests prove no-contract sessions keep their current behavior.
 **Dependencies:** T-015, T-016, and T-017.
@@ -820,7 +811,7 @@ Add cross-cutting coverage and safe diagnostics so the implementation proves the
 **Acceptance criteria:**
 - A `spec.author` test proves prose around a final response no longer causes `result_json_invalid` when a structured provider result is present.
 - An `implementation.build` implementer test proves implementer dispositions write the structured object, including `{}` when valid.
-- An `implementation.build` reviewer test proves a read-only reviewer can submit a satisfied verdict through structured capture.
+- An `implementation.build` reviewer test proves a read-only reviewer can return a satisfied verdict through structured capture.
 - A `pr.finalize` test proves the structured PR-finalize result reaches boundary validation and still honors existing schema refinements or correction behavior.
 - Tests do not require live provider calls by default.
 **Dependencies:** T-010, T-014, and T-018.
@@ -831,14 +822,14 @@ Add cross-cutting coverage and safe diagnostics so the implementation proves the
 - Success or failure diagnostics can include step, role when available, provider kind, adapter id, schema id, scratch-relative result file, capture mechanism, and failure code.
 - Diagnostics do not include raw result JSON bodies, raw final messages, full prompts, credentials, authorization headers, or absolute host paths.
 - Tests or assertions with sentinel secrets prove sensitive values are not emitted by the new diagnostics.
-- Unsupported Claude structured-result behavior is reported directly as `structured_result_unsupported`.
+- Unsupported provider structured-result behavior is reported directly as `structured_result_unsupported`.
 **Dependencies:** T-014 and T-018.
 #### T-021: Update agent-facing code map after implementation
 
 **Description:** Update `context-agent/wiki/code-map.md` once code changes land so future agents can find the structured-result capture resolver, provider schema projection helper, result writer, and adapter-specific OpenAI and Claude capture paths.
 **Acceptance criteria:**
 - The code map names the new execution foundation files and their responsibilities.
-- The code map names the OpenAI structured output path and Claude `submit_result` path.
+- The code map names the OpenAI structured output path and Claude `outputFormat` / `structured_output` path.
 - The code map records that execution-boundary scratch validation remains authoritative after provider capture.
 **Dependencies:** T-004, T-014, and T-018.
 #### T-022: Run targeted and broad validation
@@ -847,7 +838,7 @@ Add cross-cutting coverage and safe diagnostics so the implementation proves the
 **Acceptance criteria:**
 - Targeted execution tests pass for structured capture, result file writing, provider projection, entry point, and orchestrator pass-through.
 - Targeted OpenAI adapter tests pass.
-- Targeted Claude adapter tests pass or document explicit unsupported SDK behavior covered by safe failure tests.
+- Targeted Claude adapter tests pass or document explicit unsupported native structured-output SDK behavior covered by safe failure tests.
 - `pnpm nx run-many -t build lint test` or the repository's practical equivalent is run before handoff, or any skipped command is documented with the reason.
 - Boundary tests remain passing if code changes affect execution boundaries.
 **Dependencies:** T-005, T-007, T-010, T-014, T-018, T-019, and T-020.
@@ -859,5 +850,5 @@ Add cross-cutting coverage and safe diagnostics so the implementation proves the
 - **Parallel work:** T-003, T-006, and T-008 can begin after T-001/T-002 are stable. OpenAI tasks T-011 through T-014 and Claude tasks T-015 through T-018 can proceed in parallel after T-006. Diagnostics T-020 and code-map work T-021 should wait until adapter behavior is implemented.
 ### Reviewer pass
 
-The task list covers every agreed API file and behavior from the requirements, design, tech spec, and `## Converged API` sections. The decomposition keeps the execution boundary authoritative, isolates provider-specific behavior inside adapters, and makes schema projection a shared failure-aware seam rather than ad hoc casting. Acceptance criteria call out the risky paths: OpenAI parsed output versus prose, Claude tool registration support, read-only reviewer result submission, safe failure codes, and diagnostics redaction.
-The main implementation risk remains Claude Agent SDK support for enforced custom tools. The tasks require explicit `structured_result_unsupported` behavior if the installed SDK cannot register `submit_result` with an input schema, so unsupported provider behavior does not silently regress to final-message parsing.
+The task list covers every agreed API file and behavior from the requirements, design, tech spec, and `## Converged API` sections. The decomposition keeps the execution boundary authoritative, isolates provider-specific behavior inside adapters, and makes schema projection a shared failure-aware seam rather than ad hoc casting. Acceptance criteria call out the risky paths: OpenAI parsed output versus prose, Claude native structured-output support, read-only reviewer result capture, safe failure codes, and diagnostics redaction.
+The main implementation risk remains provider SDK support for native structured outputs. The tasks require explicit `structured_result_unsupported` behavior if an installed SDK cannot configure the projected schema, so unsupported provider behavior does not silently regress to final-message parsing.

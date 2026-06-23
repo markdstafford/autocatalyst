@@ -37,19 +37,18 @@ import { materializeClaudeSkillPlugins } from './skill-materialization.js';
 export const claudeProviderKind = 'anthropic' as const;
 export const claudeAgentAdapterId = 'claude-agent-sdk' as const;
 
-export const CLAUDE_STRUCTURED_RESULT_TOOL_NAME = 'submit_result' as const;
-
 // ---------------------------------------------------------------------------
-// Structured result tool definition
+// Structured result output format
 // ---------------------------------------------------------------------------
 
-export interface ClaudeStructuredResultToolDefinition {
-  readonly name: typeof CLAUDE_STRUCTURED_RESULT_TOOL_NAME;
-  readonly description: string;
-  readonly inputSchema: ProviderStructuredOutputSchema;
+export interface ClaudeStructuredResultDefinition {
+  readonly outputFormat: {
+    readonly type: 'json_schema';
+    readonly schema: ProviderStructuredOutputSchema;
+  };
   readonly projection: ProviderSchemaProjection & {
-    readonly target: 'claude_tool_input_schema';
-    readonly mechanism: 'claude_submit_result_tool';
+    readonly target: 'claude_output_format';
+    readonly mechanism: 'claude_structured_output';
   };
 }
 
@@ -63,6 +62,7 @@ export interface ClaudeNativeEvent {
   readonly type: 'assistant' | 'tool_use' | 'tool_result' | 'result' | 'system' | string;
   readonly content?: string;
   readonly tool?: { readonly name: string; readonly input?: unknown };
+  readonly structuredOutput?: unknown;
   readonly result?: {
     readonly type?: string;
     readonly output?: string;
@@ -81,7 +81,7 @@ export interface ClaudeSessionLaunchOptions {
   readonly env?: Record<string, string>;
   readonly allowedTools?: string[];
   readonly options?: Record<string, unknown>;
-  readonly structuredResultTool?: ClaudeStructuredResultToolDefinition;
+  readonly structuredResult?: ClaudeStructuredResultDefinition;
 }
 
 export type ClaudeSessionLaunch = (
@@ -104,7 +104,6 @@ export interface ClaudeAgentAdapterOptions {
   readonly clock?: () => string;
   readonly idGenerator?: () => string;
   readonly logger?: ClaudeAgentAdapterLogger;
-  readonly supportsStructuredResultTools?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -168,28 +167,16 @@ async function* realSDKLaunch(
   opts: ClaudeSessionLaunchOptions
 ): AsyncIterable<ClaudeNativeEvent> {
   type QueryFn = (input: { prompt: string; options?: Record<string, unknown> }) => AsyncIterable<Record<string, unknown>>;
-  type SdkMcpTool = { name: string; description?: string; inputSchema?: unknown; handler: (input: unknown) => Promise<unknown> };
-  type CreateSdkMcpServerFn = (tools: SdkMcpTool[]) => unknown;
   let query: QueryFn;
-  let createSdkMcpServer: CreateSdkMcpServerFn | undefined;
   try {
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment -- @ts-ignore is required here because @ts-expect-error triggers TS2578 (unused directive) when the optional peer is installed, making the suppression self-defeating
     // @ts-ignore -- optional peer: types unavailable until the package is installed
-    const sdk = await import('@anthropic-ai/claude-agent-sdk') as { query: QueryFn; createSdkMcpServer?: CreateSdkMcpServerFn };
+    const sdk = await import('@anthropic-ai/claude-agent-sdk') as { query: QueryFn };
     query = sdk.query;
-    createSdkMcpServer = typeof sdk.createSdkMcpServer === 'function' ? sdk.createSdkMcpServer : undefined;
   } catch {
     throw new ProviderConnectionError(
       'process_launch_failed',
       '@anthropic-ai/claude-agent-sdk is not installed. Install it as a peer dependency or provide options.launchClaudeSession.'
-    );
-  }
-
-  if (opts.structuredResultTool !== undefined && createSdkMcpServer === undefined) {
-    throw new UnsupportedProviderCapabilityError(
-      'structured_result_unsupported',
-      'The installed @anthropic-ai/claude-agent-sdk does not export createSdkMcpServer. Upgrade the SDK or provide options.launchClaudeSession to use the submit_result tool.',
-      { capability: 'claude_submit_result_tool' }
     );
   }
 
@@ -198,23 +185,9 @@ async function* realSDKLaunch(
     ...(opts.env !== undefined ? { env: opts.env } : {}),
     ...(opts.allowedTools !== undefined ? { allowedTools: opts.allowedTools } : {}),
     permissionMode: 'dontAsk',
-    ...(opts.options ?? {})
+    ...(opts.options ?? {}),
+    ...(opts.structuredResult !== undefined ? { outputFormat: opts.structuredResult.outputFormat } : {})
   };
-
-  const mcpCalls: unknown[] = [];
-
-  if (opts.structuredResultTool !== undefined && createSdkMcpServer !== undefined) {
-    const mcpServer = createSdkMcpServer([{
-      name: opts.structuredResultTool.name,
-      description: opts.structuredResultTool.description,
-      inputSchema: opts.structuredResultTool.inputSchema,
-      handler: async (input: unknown) => {
-        mcpCalls.push(input);
-        return {};
-      }
-    }]);
-    sdkOpts['mcpServers'] = [mcpServer];
-  }
 
   for await (const msg of query({ prompt: opts.prompt, options: sdkOpts })) {
     if (msg['type'] === 'assistant') {
@@ -240,6 +213,7 @@ async function* realSDKLaunch(
         const hasTokens = input_tokens !== undefined && output_tokens !== undefined;
         yield {
           type: 'result',
+          ...(msg['structured_output'] !== undefined ? { structuredOutput: msg['structured_output'] } : {}),
           result: {
             is_error: msg['is_error'] === true,
             ...(typeof msg['result'] === 'string' ? { output: msg['result'] } : {}),
@@ -262,12 +236,6 @@ async function* realSDKLaunch(
     }
     // System, user, status, hook, task, and other messages are intentionally ignored.
   }
-
-  if (opts.structuredResultTool !== undefined) {
-    for (const callInput of mcpCalls) {
-      yield { type: 'tool_use', tool: { name: opts.structuredResultTool.name, input: callInput } };
-    }
-  }
 }
 
 function defaultLaunch(): ClaudeSessionLaunch {
@@ -277,21 +245,22 @@ function defaultLaunch(): ClaudeSessionLaunch {
   return realSDKLaunch;
 }
 
-function createClaudeStructuredResultTool(
+function createClaudeStructuredResultDefinition(
   capture: StructuredAgentResultCapture
-): ClaudeStructuredResultToolDefinition {
+): ClaudeStructuredResultDefinition {
   const projection = projectStepResultSchemaForProvider({
     schemaId: capture.schemaId,
     schema: capture.schema,
-    target: 'claude_tool_input_schema'
+    target: 'claude_output_format'
   });
   return {
-    name: CLAUDE_STRUCTURED_RESULT_TOOL_NAME,
-    description: 'Submit the structured Autocatalyst step result. Call this exactly once when the step result is ready.',
-    inputSchema: projection.schema,
+    outputFormat: {
+      type: 'json_schema',
+      schema: projection.schema
+    },
     projection: projection as ProviderSchemaProjection & {
-      readonly target: 'claude_tool_input_schema';
-      readonly mechanism: 'claude_submit_result_tool';
+      readonly target: 'claude_output_format';
+      readonly mechanism: 'claude_structured_output';
     }
   };
 }
@@ -377,22 +346,10 @@ export function createClaudeAgentAdapter(
         });
       }
 
-      // Structured result tool capability gate (before any SDK launch).
-      let structuredResultTool: ClaudeStructuredResultToolDefinition | undefined;
+      // Structured result output format configuration (before any SDK launch).
+      let structuredResult: ClaudeStructuredResultDefinition | undefined;
       if (input.structuredResultCapture !== undefined) {
-        if (options.supportsStructuredResultTools === false) {
-          throw new UnsupportedProviderCapabilityError(
-            'structured_result_unsupported',
-            'Claude Agent SDK structured result tool registration is not supported by the installed SDK version. ' +
-              'Provide options.supportsStructuredResultTools: true to enable the submit_result tool seam.',
-            {
-              providerKind: profile.providerKind,
-              adapterId: claudeAgentAdapterId,
-              capability: 'claude_submit_result_tool'
-            }
-          );
-        }
-        structuredResultTool = createClaudeStructuredResultTool(input.structuredResultCapture);
+        structuredResult = createClaudeStructuredResultDefinition(input.structuredResultCapture);
       }
 
       // Resolve cwd from materialized workspace.
@@ -403,9 +360,7 @@ export function createClaudeAgentAdapter(
           : workspace.workspaceRoots[0];
 
       const baseAllowedTools = mapAllowedToolsForClaude(env.toolPolicy.allowedTools);
-      const allowedTools = structuredResultTool !== undefined
-        ? Array.from(new Set([...baseAllowedTools, CLAUDE_STRUCTURED_RESULT_TOOL_NAME]))
-        : baseAllowedTools;
+      const allowedTools = baseAllowedTools;
       const prompt = env.context.task.prompt;
 
       // Materialize resolved skills into Claude SDK plugin descriptors.
@@ -475,10 +430,10 @@ export function createClaudeAgentAdapter(
             cwdProvided: cwd !== undefined,
             // Redacted summary the connection layer already prepared.
             launchConfig: launchConfig.redacted,
-            ...(structuredResultTool !== undefined ? {
-              schemaId: structuredResultTool.projection.schemaId,
+            ...(structuredResult !== undefined ? {
+              schemaId: structuredResult.projection.schemaId,
               resultFile: input.structuredResultCapture?.resultFile,
-              resultCaptureMechanism: structuredResultTool.projection.mechanism
+              resultCaptureMechanism: structuredResult.projection.mechanism
             } : {})
           });
 
@@ -502,26 +457,27 @@ export function createClaudeAgentAdapter(
             ...(cwd !== undefined ? { cwd } : {}),
             env: launchEnv,
             allowedTools,
-            ...(skillPlugins.length > 0 ? { options: { skills: skillPlugins } } : {}),
-            ...(structuredResultTool !== undefined ? { structuredResultTool } : {})
+            ...((skillPlugins.length > 0 || structuredResult !== undefined)
+              ? {
+                  options: {
+                    ...(skillPlugins.length > 0 ? { skills: skillPlugins } : {}),
+                    ...(structuredResult !== undefined ? { outputFormat: structuredResult.outputFormat } : {})
+                  }
+                }
+              : {}),
+            ...(structuredResult !== undefined ? { structuredResult } : {})
           });
 
           for await (const ev of native) {
-            // Intercept submit_result tool calls for structured capture
-            if (
-              structuredResultTool !== undefined &&
-              ev.type === 'tool_use' &&
-              ev.tool?.name === CLAUDE_STRUCTURED_RESULT_TOOL_NAME
-            ) {
+            if (structuredResult !== undefined && ev.type === 'result' && ev.structuredOutput !== undefined) {
               if (capturedStructuredResult !== undefined) {
                 throw new ProviderProtocolError(
                   'duplicate_structured_result',
-                  'Claude session called submit_result more than once.',
+                  'Claude session returned structured_output more than once.',
                   { providerKind: profile.providerKind, adapterId: claudeAgentAdapterId }
                 );
               }
-              capturedStructuredResult = { value: ev.tool.input };
-              continue;
+              capturedStructuredResult = { value: ev.structuredOutput };
             }
 
             const mapped = mapNativeEvent(ev, {
@@ -543,12 +499,12 @@ export function createClaudeAgentAdapter(
           }
 
           // After the native stream ends: write the result file and emit a terminal-result event.
-          if (structuredResultTool !== undefined && input.structuredResultCapture !== undefined) {
+          if (structuredResult !== undefined && input.structuredResultCapture !== undefined) {
             // Structured capture path
             if (capturedStructuredResult === undefined) {
               throw new ProviderProtocolError(
                 'missing_structured_result',
-                'Claude session ended without calling submit_result.',
+                'Claude session ended without returning structured_output.',
                 { providerKind: profile.providerKind, adapterId: claudeAgentAdapterId }
               );
             }
@@ -573,11 +529,11 @@ export function createClaudeAgentAdapter(
             ...safeDetail,
             ...(classified !== undefined ? { failureReason: classified.failureReason } : {}),
             ...(failureCode !== undefined ? { failureCode } : {}),
-            ...(structuredResultTool !== undefined && input.structuredResultCapture !== undefined ? {
+            ...(structuredResult !== undefined && input.structuredResultCapture !== undefined ? {
               structuredResultCapture: true,
               schemaId: input.structuredResultCapture.schemaId,
               resultFile: input.structuredResultCapture.resultFile,
-              resultCaptureMechanism: structuredResultTool.projection.mechanism
+              resultCaptureMechanism: structuredResult.projection.mechanism
             } : {})
           });
           const thrown = classified ?? err;
@@ -832,7 +788,7 @@ async function writeClaudeStructuredResultFile(
   if (writeOutcome.status === 'failed') {
     throw new ProviderProtocolError(
       'structured_result_invalid',
-      `Claude submit_result write failed: ${writeOutcome.code}`,
+      `Claude structured_output write failed: ${writeOutcome.code}`,
       { providerKind: claudeProviderKind, adapterId: claudeAgentAdapterId, code: writeOutcome.code }
     );
   }
