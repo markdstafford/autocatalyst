@@ -186,7 +186,6 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
       const role = deriveRole(input);
       const mmKey = deriveAgentModelMemoryKey({
         runId: input.runId,
-        step: input.run.currentStep,
         role,
         providerKind: 'unknown',
         adapterId: 'unknown',

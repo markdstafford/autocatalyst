@@ -59,19 +59,17 @@ describe('deriveAgentModelMemoryKey', () => {
   it('returns the expected colon-separated key', () => {
     const key = deriveAgentModelMemoryKey({
       runId: 'run_1',
-      step: 'implementation.build',
       role: 'reviewer',
       providerKind: 'openai',
       adapterId: 'openai-agents-sdk',
       profileName: 'openai-reviewer'
     });
-    expect(key).toBe('run_1:implementation.build:reviewer:openai:openai-agents-sdk:openai-reviewer');
+    expect(key).toBe('run_1:reviewer:openai:openai-agents-sdk:openai-reviewer');
   });
 
   it('result never contains the word sandbox', () => {
     const key = deriveAgentModelMemoryKey({
       runId: 'run_abc',
-      step: 'spec.author',
       role: 'implementer',
       providerKind: 'anthropic',
       adapterId: 'claude-sdk',
@@ -85,7 +83,7 @@ describe('deriveAgentModelMemoryKey', () => {
 // createRunStepAgentModelMemoryStore
 // ---------------------------------------------------------------------------
 
-const key = 'run_1:implementation.build:implementer:openai:openai-agents-sdk:openai-impl';
+const key = 'run_1:implementer:openai:openai-agents-sdk:openai-impl';
 
 const snapshot: AgentModelMemorySnapshot = {
   providerKind: 'openai',
@@ -242,20 +240,28 @@ describe('createRunStepAgentModelMemoryStore - load', () => {
     expect(result).toBeNull();
   });
 
-  it('returns null when no RunStep matches currentStep', async () => {
-    const steps = [makeRunStep({ step: 'spec.author' })];
+  it('finds memory from a different step when the key is present', async () => {
+    const crossStepKey = 'run_1:implementer:openai:openai-agents-sdk:openai-impl';
+    const checkpoint = {
+      providerModelMemory: {
+        [crossStepKey]: { providerKind: 'openai', adapterId: 'openai-agents-sdk', state: { previousResponseId: 'resp_x' } }
+      }
+    };
+    // RunStep has a DIFFERENT step name ('spec.author') but still has the key
+    const steps = [makeRunStep({ step: 'spec.author', checkpointResult: checkpoint })];
     const repo = makeFakeRunStepRepo(steps);
 
     const store = createRunStepAgentModelMemoryStore({
       runSteps: repo,
       runId: 'run_1',
       tenant: 'tenant_1',
-      currentStep: 'implementation.build',
-      key
+      currentStep: 'implementation.build',  // different step from the saved RunStep
+      key: crossStepKey
     });
 
     const result = await store.load();
-    expect(result).toBeNull();
+    expect(result).not.toBeNull();
+    expect(result?.state).toMatchObject({ previousResponseId: 'resp_x' });
   });
 
   it('returns null when checkpoint is null', async () => {
@@ -293,6 +299,46 @@ describe('createRunStepAgentModelMemoryStore - load', () => {
 
     const result = await store.load();
     expect(result).toBeNull();
+  });
+
+  it('loads previousResponseId after step transition (INIT-1 regression)', async () => {
+    const stableKey = 'run_1:implementer:openai:openai-agents-sdk:openai-impl';
+    // Turn 1: RunStep for implementation.build saved previousResponseId
+    const buildStep = makeRunStep({
+      id: 'step_build',
+      step: 'implementation.build',
+      checkpointResult: {
+        providerModelMemory: {
+          [stableKey]: {
+            providerKind: 'openai',
+            adapterId: 'openai-agents-sdk',
+            state: { previousResponseId: 'resp_build_001' }
+          }
+        }
+      }
+    });
+    // After pause/resume: RunStep for implementation.awaiting_input (no memory of its own)
+    const pauseStep = makeRunStep({
+      id: 'step_pause',
+      step: 'implementation.awaiting_input',
+      checkpointResult: null
+    });
+    const repo = makeFakeRunStepRepo([buildStep, pauseStep]);
+
+    // New turn: currentStep is implementation.awaiting_input, same stable key
+    const store = createRunStepAgentModelMemoryStore({
+      runSteps: repo,
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      currentStep: 'implementation.awaiting_input',
+      key: stableKey
+    });
+
+    const result = await store.load();
+    expect(result).not.toBeNull();
+    expect(result?.providerKind).toBe('openai');
+    expect(result?.adapterId).toBe('openai-agents-sdk');
+    expect((result?.state as Record<string, unknown>)['previousResponseId']).toBe('resp_build_001');
   });
 });
 

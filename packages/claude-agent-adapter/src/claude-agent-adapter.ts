@@ -203,6 +203,9 @@ async function* realSDKLaunch(
 
   const mcpCalls: unknown[] = [];
 
+  // @anthropic-ai/claude-agent-sdk wraps the CLI subprocess and exposes no native outputFormat/outputType option on query.
+  // createSdkMcpServer + submit_result is the only SDK-sanctioned structured-result mechanism for this SDK version.
+  // If the SDK adds native structured output in a future version, this MCP path can be simplified.
   if (opts.structuredResultTool !== undefined && createSdkMcpServer !== undefined) {
     const mcpServer = createSdkMcpServer([{
       name: opts.structuredResultTool.name,

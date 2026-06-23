@@ -4,7 +4,6 @@ import type { RunStepRepository } from './domain-repositories.js';
 
 export interface AgentModelMemoryKeyInput {
   readonly runId: string;
-  readonly step: string;
   readonly role: string;
   readonly providerKind: string;
   readonly adapterId: string;
@@ -13,11 +12,12 @@ export interface AgentModelMemoryKeyInput {
 
 /**
  * Derives a stable, provider-neutral key for identifying a model-memory slot.
- * Format: {runId}:{step}:{role}:{providerKind}:{adapterId}:{profileName}
- * This key must never include session/sandbox identifiers.
+ * Format: {runId}:{role}:{providerKind}:{adapterId}:{profileName}
+ * This key must never include session/sandbox identifiers or step names,
+ * so that memory is recoverable across workflow step transitions.
  */
 export function deriveAgentModelMemoryKey(input: AgentModelMemoryKeyInput): string {
-  return `${input.runId}:${input.step}:${input.role}:${input.providerKind}:${input.adapterId}:${input.profileName}`;
+  return `${input.runId}:${input.role}:${input.providerKind}:${input.adapterId}:${input.profileName}`;
 }
 
 export interface RunStepAgentModelMemoryStoreInput {
@@ -38,7 +38,13 @@ export function createRunStepAgentModelMemoryStore(input: RunStepAgentModelMemor
     async load(): Promise<AgentModelMemorySnapshot | null> {
       const steps = await input.runSteps.listByRun(input.runId);
       // Find the latest RunStep for the current step (reverse order)
-      const matching = [...steps].reverse().find(s => s.step === input.currentStep);
+      const matching = [...steps].reverse().find(s => {
+        const checkpoint = s.checkpointResult;
+        if (checkpoint === null || typeof checkpoint !== 'object' || Array.isArray(checkpoint)) return false;
+        const pmem = (checkpoint as Record<string, unknown>)['providerModelMemory'];
+        if (pmem === null || typeof pmem !== 'object' || Array.isArray(pmem)) return false;
+        return (pmem as Record<string, unknown>)[input.key] !== undefined;
+      });
       if (matching === undefined) return null;
       const checkpoint = matching.checkpointResult;
       if (checkpoint === null || typeof checkpoint !== 'object' || Array.isArray(checkpoint)) return null;

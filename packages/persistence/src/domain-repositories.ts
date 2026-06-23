@@ -22,6 +22,7 @@ import type {
   CreateTopicInput,
   Feedback,
   FeedbackStatus,
+  JsonValue,
   Message,
   Project,
   Publication,
