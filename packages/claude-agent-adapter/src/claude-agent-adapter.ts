@@ -17,12 +17,15 @@ import type {
 import {
   ClassifiedProviderFailureError,
   ProviderConnectionError,
+  ProviderProtocolError,
   UnsupportedProviderCapabilityError,
+  assertSerializableStructuredResult,
   buildSafeAdapterFailureLogDetail,
   classifyProviderFailure,
   filterSafeClassificationDetails,
   projectStepResultSchemaForProvider,
-  runtimeSkillsCatalogRoot
+  runtimeSkillsCatalogRoot,
+  writeScratchStepResultFile
 } from '@autocatalyst/execution';
 
 import { materializeClaudeSkillPlugins } from './skill-materialization.js';
@@ -392,6 +395,7 @@ export function createClaudeAgentAdapter(
         let outcome: 'succeeded' | 'failed' | 'canceled' = 'succeeded';
         let tokenUsage: AgentTokenUsage = { available: false };
         let pendingResult: PendingResult | undefined;
+        let capturedStructuredResult: { readonly value: unknown } | undefined;
         // degradedCapabilities is populated after the launch config resolves;
         // declared here so the finally block can always reference it.
         let degradedCapabilities: ProviderCapabilityDegradation[] = [...inferenceDegradations];
@@ -470,6 +474,23 @@ export function createClaudeAgentAdapter(
           });
 
           for await (const ev of native) {
+            // Intercept submit_result tool calls for structured capture
+            if (
+              structuredResultTool !== undefined &&
+              ev.type === 'tool_use' &&
+              ev.tool?.name === CLAUDE_STRUCTURED_RESULT_TOOL_NAME
+            ) {
+              if (capturedStructuredResult !== undefined) {
+                throw new ProviderProtocolError(
+                  'duplicate_structured_result',
+                  'Claude session called submit_result more than once.',
+                  { providerKind: profile.providerKind, adapterId: claudeAgentAdapterId }
+                );
+              }
+              capturedStructuredResult = { value: ev.tool.input };
+              continue;
+            }
+
             const mapped = mapNativeEvent(ev, {
               runId,
               step,
@@ -488,18 +509,24 @@ export function createClaudeAgentAdapter(
             }
           }
 
-          // After the native stream ends: write the result file if any
-          // captured output, then emit a single terminal-result event if the
-          // SDK did not already produce one.
-          if (pendingResult !== undefined) {
-            await maybeWriteResultFile(env, pendingResult.output);
-            yield buildTerminalResult({
-              runId,
-              step,
-              clock,
-              idGenerator,
-              directive: 'advance'
-            });
+          // After the native stream ends: write the result file and emit a terminal-result event.
+          if (structuredResultTool !== undefined && input.structuredResultCapture !== undefined) {
+            // Structured capture path
+            if (capturedStructuredResult === undefined) {
+              throw new ProviderProtocolError(
+                'missing_structured_result',
+                'Claude session ended without calling submit_result.',
+                { providerKind: profile.providerKind, adapterId: claudeAgentAdapterId }
+              );
+            }
+            await writeClaudeStructuredResultFile(env, input.structuredResultCapture, capturedStructuredResult.value);
+            yield buildTerminalResult({ runId, step, clock, idGenerator, directive: 'advance' });
+          } else {
+            // Legacy no-contract path
+            if (pendingResult !== undefined) {
+              await maybeWriteResultFile(env, pendingResult.output);
+              yield buildTerminalResult({ runId, step, clock, idGenerator, directive: 'advance' });
+            }
           }
         } catch (err) {
           outcome = 'failed';
@@ -747,6 +774,27 @@ function resolveResultFileName(
     if (typeof resultFile === 'string' && resultFile.length > 0) return resultFile;
   }
   return 'step-result.json';
+}
+
+async function writeClaudeStructuredResultFile(
+  env: AgentProviderSessionInput['runInput']['environment'],
+  capture: StructuredAgentResultCapture,
+  value: unknown
+): Promise<void> {
+  assertSerializableStructuredResult(value);
+  const writeOutcome = await writeScratchStepResultFile({
+    environment: env,
+    resultFile: capture.resultFile,
+    value,
+    schema: capture.schema
+  });
+  if (writeOutcome.status === 'failed') {
+    throw new ProviderProtocolError(
+      'structured_result_invalid',
+      `Claude submit_result write failed: ${writeOutcome.code}`,
+      { providerKind: claudeProviderKind, adapterId: claudeAgentAdapterId, code: writeOutcome.code }
+    );
+  }
 }
 
 async function maybeWriteResultFile(
