@@ -1,6 +1,8 @@
-import { access, lstat, readFile, realpath } from 'node:fs/promises';
+import { access, lstat, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import path from 'node:path';
+
+import { z } from 'zod';
 
 import type { MaterializedExecutionEnvironment } from './materialized-environment.js';
 import type { ResultValidationIssue } from './result-tolerance.js';
@@ -30,6 +32,33 @@ export interface StepResultFileReadFailure {
   readonly safeMessage: string;
   readonly issues: readonly ResultValidationIssue[];
 }
+
+export type StepResultFileWriteErrorCode =
+  | 'result_path_outside_scratch_root'
+  | 'result_write_failed'
+  | 'result_json_invalid'
+  | 'result_schema_invalid';
+
+export interface WriteScratchStepResultFileInput {
+  readonly environment: MaterializedExecutionEnvironment;
+  readonly resultFile: string;
+  readonly value: unknown;
+  readonly schema?: z.ZodTypeAny;
+}
+
+export interface StepResultFileWriteSuccess {
+  readonly status: 'written';
+  readonly relativePath: string;
+}
+
+export interface StepResultFileWriteFailure {
+  readonly status: 'failed';
+  readonly code: StepResultFileWriteErrorCode;
+  readonly safeMessage: string;
+  readonly issues: readonly ResultValidationIssue[];
+}
+
+export type StepResultFileWriteOutcome = StepResultFileWriteSuccess | StepResultFileWriteFailure;
 
 /**
  * Resolves a relative path against a scratch root by walking existing path components via
@@ -183,6 +212,58 @@ export async function readScratchStepResultFile(input: ReadScratchStepResultFile
   } catch {
     return fileFailure('result_json_invalid', 'Result file does not contain valid JSON.');
   }
+}
+
+export async function writeScratchStepResultFile(input: WriteScratchStepResultFileInput): Promise<StepResultFileWriteOutcome> {
+  const scratchRoot = 'scratchRoot' in input.environment.workspace ? input.environment.workspace.scratchRoot : undefined;
+  if (scratchRoot === undefined) return writeFailure('result_write_failed', 'No scratch root is available for result-file writing.');
+
+  if (input.schema !== undefined) {
+    const schemaParse = input.schema.safeParse(input.value);
+    if (!schemaParse.success) {
+      return {
+        status: 'failed',
+        code: 'result_schema_invalid',
+        safeMessage: 'Structured result does not match the active step result schema.',
+        issues: schemaParse.error.issues.map((issue) => ({ code: issue.code, path: issue.path.map(String), message: issue.message }))
+      };
+    }
+  }
+
+  let serialized: string;
+  try {
+    const encoded = JSON.stringify(input.value, null, 2);
+    if (encoded === undefined) throw new TypeError('Cannot serialize structured result.');
+    serialized = encoded;
+  } catch {
+    return writeFailure('result_json_invalid', 'Structured result cannot be serialized as JSON.');
+  }
+
+  let resolution: { readonly resolvedCandidate: string; readonly rootRealPath: string } | null;
+  try {
+    resolution = await resolveScratchRootCandidatePath(scratchRoot, input.resultFile);
+  } catch {
+    return writeFailure('result_path_outside_scratch_root', 'Result file path escapes the scratch root.');
+  }
+  if (resolution === null) {
+    return writeFailure('result_path_outside_scratch_root', 'Result file path escapes the scratch root.');
+  }
+
+  if (!(await isFinalWriteTargetSafe(resolution.resolvedCandidate, resolution.rootRealPath))) {
+    return writeFailure('result_path_outside_scratch_root', 'Result file path escapes the scratch root.');
+  }
+
+  try {
+    await mkdir(path.dirname(resolution.resolvedCandidate), { recursive: true });
+    await writeFile(resolution.resolvedCandidate, serialized, 'utf8');
+    return { status: 'written', relativePath: path.relative(resolution.rootRealPath, resolution.resolvedCandidate) };
+  } catch {
+    return writeFailure('result_write_failed', 'Result file could not be written.');
+  }
+}
+
+function writeFailure(code: StepResultFileWriteErrorCode, safeMessage: string): StepResultFileWriteFailure {
+  return { status: 'failed', code, safeMessage, issues: [{ code, path: [], message: safeMessage }] };
 }
 
 function isContainedByRoot(candidate: string, root: string): boolean {
