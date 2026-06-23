@@ -1,10 +1,11 @@
-import { mkdtemp, mkdir, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import type { MaterializedExecutionEnvironment } from './materialized-environment.js';
-import { readScratchStepResultFile } from './result-file.js';
+import { readScratchStepResultFile, writeScratchStepResultFile } from './result-file.js';
 
 const stubContext: MaterializedExecutionEnvironment['context'] = {
   run: { id: 'run_1', workKind: 'implement', currentStep: 'implement', tenant: 'tenant_1' },
@@ -168,5 +169,77 @@ describe('readScratchStepResultFile', () => {
 
     expect(result).toMatchObject({ status: 'failed', code: 'result_file_unreadable' });
     expect(JSON.stringify(result)).not.toContain(base);
+  });
+});
+
+function noneEnvironment(): MaterializedExecutionEnvironment {
+  return {
+    context: stubContext,
+    workspace: { shape: 'none', workspaceRoots: [] },
+    environment: { variables: {}, secretVariableNames: [] },
+    toolPolicy: { allowedTools: [], workspaceRoots: [] },
+    skills: { requested: [], resolved: [] },
+    capabilities: {
+      shell: { kind: 'bash', available: false },
+      paths: {},
+      lsp: { requested: false, available: false }
+    }
+  };
+}
+
+describe('writeScratchStepResultFile', () => {
+  it('writes formatted JSON (2-space indent) to scratch root and returns written status', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'result-file-write-'));
+    const value = { answer: 42, nested: { flag: true } };
+
+    const result = await writeScratchStepResultFile({
+      environment: environmentWithScratch(root),
+      resultFile: 'output.json',
+      value
+    });
+
+    expect(result).toMatchObject({ status: 'written', relativePath: 'output.json' });
+    const written = await readFile(path.join(root, 'output.json'), 'utf8');
+    expect(written).toBe(JSON.stringify(value, null, 2));
+  });
+
+  it('rejects schema-invalid values with result_schema_invalid without creating a file', async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), 'result-file-write-'));
+    const schema = z.object({ name: z.string() });
+
+    const result = await writeScratchStepResultFile({
+      environment: environmentWithScratch(root),
+      resultFile: 'output.json',
+      value: { name: 123 },
+      schema
+    });
+
+    expect(result).toMatchObject({ status: 'failed', code: 'result_schema_invalid' });
+    // File must not have been created
+    await expect(access(path.join(root, 'output.json'))).rejects.toThrow();
+  });
+
+  it('rejects ../ path escapes with result_path_outside_scratch_root', async () => {
+    const base = await mkdtemp(path.join(os.tmpdir(), 'result-file-write-'));
+    const scratchRoot = path.join(base, 'scratch');
+    await mkdir(scratchRoot);
+
+    const result = await writeScratchStepResultFile({
+      environment: environmentWithScratch(scratchRoot),
+      resultFile: '../outside.json',
+      value: { escaped: true }
+    });
+
+    expect(result).toMatchObject({ status: 'failed', code: 'result_path_outside_scratch_root' });
+  });
+
+  it('returns result_write_failed when no scratch root is available (workspace.shape === none)', async () => {
+    const result = await writeScratchStepResultFile({
+      environment: noneEnvironment(),
+      resultFile: 'output.json',
+      value: { ok: true }
+    });
+
+    expect(result).toMatchObject({ status: 'failed', code: 'result_write_failed' });
   });
 });

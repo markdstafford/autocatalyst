@@ -3,10 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod/v4';
 import type { RunItem } from '@openai/agents';
 
-import type { AgentProviderAdapter } from '@autocatalyst/execution';
-import { ClassifiedProviderFailureError } from '@autocatalyst/execution';
+import type { AgentProviderAdapter, StructuredAgentResultCapture } from '@autocatalyst/execution';
+import { ClassifiedProviderFailureError, ProviderProtocolError } from '@autocatalyst/execution';
 import type {
   AgentConnection,
   AgentConnectionTelemetryContext,
@@ -19,6 +20,7 @@ import {
   createOpenAIAgentAdapter,
   openaiAgentAdapterId,
   openaiProviderKind,
+  type OpenAIRunAgentSession,
   type OpenAIRunOutcome,
   type OpenAIRunSessionInput,
   type OpenAISandboxClientHandle
@@ -946,6 +948,320 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
       await rm(tmp, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// spec.author structured result capture regression
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — spec.author structured result capture', () => {
+  it('spec.author: structured output captures spec data despite prose in stream', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-spec-author-'));
+    try {
+      const specData = {
+        kind: 'feature_spec',
+        slug: 'test-feature',
+        relativePath: 'context-human/specs/feature-test-feature.md',
+        frontmatter: {
+          status: 'draft',
+          created: '2026-06-01',
+          last_updated: '2026-06-01',
+          specced_by: 'autocatalyst'
+        },
+        body: '# Test Feature\n\nThis is a test.'
+      };
+
+      const fakeRun: OpenAIRunAgentSession = () => ({
+        items: [assistantItem('I wrote the spec. Let me summarize what I did.')],
+        result: Promise.resolve({ directive: 'advance' as const, output: specData })
+      });
+
+      const specCapture: StructuredAgentResultCapture = {
+        step: 'spec.author',
+        schemaId: 'autocatalyst.spec_author.v1',
+        // Use a permissive schema at the adapter level; full validation happens at the entry point.
+        schema: z.object({
+          kind: z.string(),
+          slug: z.string(),
+          relativePath: z.string(),
+          frontmatter: z.record(z.any()),
+          body: z.string()
+        }),
+        resultFile: 'step-result.json',
+        required: true
+      };
+
+      const adapter = createOpenAIAgentAdapter({
+        sandboxClientFactory: () => fakeSandboxHandle(),
+        runAgentSession: fakeRun
+      });
+
+      const input: AgentProviderSessionInput = {
+        ...makeSessionInput('scratch_only', { scratchRoot: scratchDir }),
+        structuredResultCapture: specCapture
+      };
+
+      const session = await adapter.startSession(input);
+      await collectEvents(session.events);
+
+      const resultJson = JSON.parse(await readFile(path.join(scratchDir, 'step-result.json'), 'utf8'));
+      expect(resultJson.kind).toBe('feature_spec');
+      expect(resultJson.slug).toBe('test-feature');
+      expect(resultJson.relativePath).toBe('context-human/specs/feature-test-feature.md');
+      expect(resultJson.frontmatter.status).toBe('draft');
+      expect(resultJson.body).toBe('# Test Feature\n\nThis is a test.');
+    } finally {
+      await rm(scratchDir, { recursive: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Structured result capture (seam-driven)
+// ---------------------------------------------------------------------------
+
+function makeStructuredCapture(resultFile = 'step-result.json'): StructuredAgentResultCapture {
+  return {
+    step: 'implementation.build',
+    schemaId: 'autocatalyst.reviewer_result.v1',
+    schema: z.object({ status: z.enum(['satisfied', 'changes_requested', 'rejected']), findings: z.array(z.any()).optional() }),
+    resultFile,
+    required: true
+  };
+}
+
+describe('createOpenAIAgentAdapter — structured result capture', () => {
+  it('passes projection.schema (not capture.schema) as structured output type', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-openai-projection-'));
+    try {
+      const calls: OpenAIRunSessionInput[] = [];
+      const fakeRunSession: OpenAIRunAgentSession = (input) => {
+        calls.push(input);
+        return { items: [], result: Promise.resolve({ directive: 'advance' as const, output: { status: 'satisfied', findings: [] } }) };
+      };
+
+      const capture = makeStructuredCapture();
+      const input: AgentProviderSessionInput = {
+        ...makeSessionInput('scratch_only', { scratchRoot: scratchDir }),
+        structuredResultCapture: capture
+      };
+
+      const adapter = createOpenAIAgentAdapter({ sandboxClientFactory: () => fakeSandboxHandle(), runAgentSession: fakeRunSession });
+      const session = await adapter.startSession(input);
+      await collectEvents(session.events);
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.structuredResult).toBeDefined();
+      expect(calls[0]!.structuredResult?.capture).toBe(capture);
+      expect(calls[0]!.structuredResult?.projection.schema).not.toBe(capture.schema); // projection schema differs from capture schema
+      expect(calls[0]!.structuredResult?.projection.mechanism).toBe('openai_output_type');
+    } finally {
+      await rm(scratchDir, { recursive: true });
+    }
+  });
+
+  it('writes structured result JSON and ignores prose finalOutput', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-openai-structured-'));
+    try {
+      const capture = makeStructuredCapture('step-result.json');
+      const structuredOutput = { status: 'satisfied', findings: [] };
+
+      const fakeRunSession: OpenAIRunAgentSession = () => ({
+        items: [assistantItem('I reviewed the code and everything looks satisfied.')],
+        result: Promise.resolve({ directive: 'advance' as const, output: structuredOutput })
+      });
+
+      const adapter = createOpenAIAgentAdapter({
+        sandboxClientFactory: () => fakeSandboxHandle(),
+        runAgentSession: fakeRunSession
+      });
+
+      const input: AgentProviderSessionInput = {
+        ...makeSessionInput('scratch_only', { scratchRoot: scratchDir }),
+        structuredResultCapture: capture
+      };
+
+      const session = await adapter.startSession(input);
+      await collectEvents(session.events);
+
+      // The result file should contain the structured JSON, not prose
+      const resultJson = JSON.parse(await readFile(path.join(scratchDir, 'step-result.json'), 'utf8'));
+      expect(resultJson).toEqual(structuredOutput);
+      // Should be pretty-printed (2-space indent)
+      const resultText = await readFile(path.join(scratchDir, 'step-result.json'), 'utf8');
+      expect(resultText).toContain('\n  ');
+    } finally {
+      await rm(scratchDir, { recursive: true });
+    }
+  });
+
+  it('fails with missing_structured_result when advance has no output', async () => {
+    const fakeRunSession: OpenAIRunAgentSession = () => ({
+      items: [],
+      result: Promise.resolve({ directive: 'advance' as const, output: undefined })
+    });
+
+    const input: AgentProviderSessionInput = {
+      ...makeSessionInput('scratch_only'),
+      structuredResultCapture: makeStructuredCapture()
+    };
+
+    const adapter = createOpenAIAgentAdapter({ sandboxClientFactory: () => fakeSandboxHandle(), runAgentSession: fakeRunSession });
+    const session = await adapter.startSession(input);
+    const err = await collectEvents(session.events).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProviderProtocolError);
+    expect((err as ProviderProtocolError).code).toBe('missing_structured_result');
+  });
+
+  it('no-contract sessions still write legacy terminal.output', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-openai-legacy-'));
+    try {
+      const fakeRunSession: OpenAIRunAgentSession = () => ({
+        items: [],
+        result: Promise.resolve({ directive: 'advance' as const, output: '{"status":"ok"}' })
+      });
+
+      const adapter = createOpenAIAgentAdapter({ sandboxClientFactory: () => fakeSandboxHandle(), runAgentSession: fakeRunSession });
+
+      // Run WITHOUT structuredResultCapture
+      const input = makeSessionInput('scratch_only', { scratchRoot: scratchDir });
+      const session = await adapter.startSession(input);
+      await collectEvents(session.events);
+
+      const resultText = await readFile(path.join(scratchDir, 'step-result.json'), 'utf8');
+      expect(resultText).toContain('status');
+    } finally {
+      await rm(scratchDir, { recursive: true });
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Structured result error-path no-leak tests (T-020)
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — structured result error paths no-leak', () => {
+  const SENTINEL_SECRET = 'sk-openai-sentinel-leak-secret';
+  const SENTINEL_PROMPT = 'raw result text sentinel prompt content';
+  const SENTINEL_PATH = '/Users/sentinel/private/path';
+  const SENTINEL_AUTH = 'authorization: Bearer sentinel-token';
+  const SENTINEL_JSON = '{"raw":"json body sentinel"}';
+
+  function makeLeakyError(): Error & { code: string; status: number } {
+    return Object.assign(
+      new Error(`${SENTINEL_SECRET} ${SENTINEL_PATH} ${SENTINEL_AUTH} ${SENTINEL_JSON}`),
+      // code uses 'invalid_api_key' (allowlisted) to avoid raw-code leak — the secret is in the message only
+      { code: 'invalid_api_key', status: 401, name: 'AuthenticationError' }
+    );
+  }
+
+  it('does not leak sentinels in logger output when missing_structured_result fires', async () => {
+    const logs: unknown[] = [];
+    const logger = {
+      info: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
+      warn: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
+      error: vi.fn((_e: string, f: unknown) => { logs.push(f); })
+    };
+
+    const fakeRunSession: OpenAIRunAgentSession = () => ({
+      items: [],
+      result: Promise.resolve({ directive: 'advance' as const, output: undefined })
+    });
+
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => fakeSandboxHandle(),
+      runAgentSession: fakeRunSession,
+      logger
+    });
+
+    const input: AgentProviderSessionInput = {
+      ...makeSessionInput('scratch_only'),
+      structuredResultCapture: makeStructuredCapture()
+    };
+
+    const session = await adapter.startSession(input);
+    await collectEvents(session.events).catch(() => undefined);
+
+    const captured = JSON.stringify(logs);
+    expect(captured).not.toContain(SENTINEL_SECRET);
+    expect(captured).not.toContain(SENTINEL_PROMPT);
+    expect(captured).not.toContain(SENTINEL_PATH);
+    expect(captured).not.toContain(SENTINEL_AUTH);
+    expect(captured).not.toContain(SENTINEL_JSON);
+    // Safe fields should be present
+    expect(captured).toContain('autocatalyst.reviewer_result.v1');
+    expect(captured).toContain('openai_output_type');
+  });
+
+  it('does not leak sentinels in logger output when sandbox fails during structured capture', async () => {
+    const logs: unknown[] = [];
+    const logger = {
+      info: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
+      warn: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
+      error: vi.fn((_e: string, f: unknown) => { logs.push(f); })
+    };
+
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => { throw makeLeakyError(); },
+      runAgentSession: makeRunSession([assistantItem('hi')]).run,
+      logger
+    });
+
+    const input: AgentProviderSessionInput = {
+      ...makeSessionInput('scratch_only'),
+      structuredResultCapture: makeStructuredCapture()
+    };
+
+    await adapter.startSession(input).catch(() => undefined);
+
+    const captured = JSON.stringify(logs);
+    expect(captured).not.toContain(SENTINEL_SECRET);
+    expect(captured).not.toContain(SENTINEL_PATH);
+    expect(captured).not.toContain(SENTINEL_AUTH);
+    expect(captured).not.toContain(SENTINEL_JSON);
+  });
+
+  it('does not leak sentinels in logger output when run session fails during structured capture', async () => {
+    const logs: unknown[] = [];
+    const logger = {
+      info: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
+      warn: vi.fn((_e: string, f: unknown) => { logs.push(f); }),
+      error: vi.fn((_e: string, f: unknown) => { logs.push(f); })
+    };
+
+    const leakyError = makeLeakyError();
+    const failingRun = (): OpenAIRunOutcome => {
+      const resultPromise = new Promise<never>((_, reject) => reject(leakyError));
+      resultPromise.catch(() => undefined);
+      return {
+        items: (async function* () { yield await Promise.reject<never>(leakyError); })(),
+        result: resultPromise
+      };
+    };
+
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => fakeSandboxHandle(),
+      runAgentSession: failingRun,
+      logger
+    });
+
+    const input: AgentProviderSessionInput = {
+      ...makeSessionInput('scratch_only'),
+      structuredResultCapture: makeStructuredCapture()
+    };
+
+    const session = await adapter.startSession(input);
+    await collectEvents(session.events).catch(() => undefined);
+
+    const captured = JSON.stringify(logs);
+    expect(captured).not.toContain(SENTINEL_SECRET);
+    expect(captured).not.toContain(SENTINEL_PATH);
+    expect(captured).not.toContain(SENTINEL_AUTH);
+    expect(captured).not.toContain(SENTINEL_JSON);
+    // Safe structured-result diagnostics should appear
+    expect(captured).toContain('autocatalyst.reviewer_result.v1');
+    expect(captured).toContain('openai_output_type');
+  });
 });
 
 // ---------------------------------------------------------------------------

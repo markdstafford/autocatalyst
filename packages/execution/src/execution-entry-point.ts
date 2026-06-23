@@ -8,6 +8,8 @@ import {
 
 import type { ExecutionBoundaryEvent, ExecutionTerminalResultEvent } from './execution-boundary-events.js';
 import type { MaterializedExecutionEnvironment } from './materialized-environment.js';
+import { createStructuredAgentResultCapture } from './structured-result-capture.js';
+import type { StructuredAgentResultCapture } from './structured-result-capture.js';
 import type { ResultCorrectionRequester } from './result-correction.js';
 import {
   resolveStepResultContract,
@@ -87,11 +89,49 @@ export function createExecutionEntryPoint(options: CreateExecutionEntryPointOpti
   return {
     async *execute(input: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
       const environment = await options.materialize(input.context);
+      const expectedRunId = input.context.run.id;
+
+      // Resolve config before starting the runner so we can attach structuredResultCapture
+      // to the runner input and fail-fast if the contract is missing.
+      const config = await resolveResultValidationConfig(options.resultValidation, input);
+
+      // Resolve structured result capture before starting the provider session.
+      // For mode:none or no-contract steps, capture is undefined (no-op).
+      // For contract-required steps, capture is attached to the runner input.
+      // Pre-run failures fail-terminal before the provider session starts.
+      let resolvedCapture: StructuredAgentResultCapture | undefined;
+      if (config.mode === 'scratch_file') {
+        const contractResolution = resolveScratchFileContract(config, input.context.run.currentStep ?? '');
+        if (contractResolution.kind === 'failed') {
+          const failEvent = makePreRunFailTerminal(input, contractResolution.code, expectedRunId);
+          yield failEvent;
+          return;
+        }
+        const contract = contractResolution.contract;
+        const captureContract =
+          config.resultFile !== undefined
+            ? { ...contract, resultFile: config.resultFile }
+            : contract;
+        const captureResolution = createStructuredAgentResultCapture({
+          mode: 'scratch_file',
+          step: contract.step,
+          contract: captureContract
+        });
+        if (captureResolution.status === 'failed') {
+          const failEvent = makePreRunFailTerminal(input, captureResolution.code, expectedRunId);
+          yield failEvent;
+          return;
+        }
+        if (captureResolution.status === 'capture') {
+          resolvedCapture = captureResolution.capture;
+        }
+      }
+
       const runnerInput = {
         environment,
-        ...(input.correlationId !== undefined ? { correlationId: input.correlationId } : {})
+        ...(input.correlationId !== undefined ? { correlationId: input.correlationId } : {}),
+        ...(resolvedCapture !== undefined ? { structuredResultCapture: resolvedCapture } : {})
       };
-      const expectedRunId = input.context.run.id;
       let streamError: unknown = undefined;
       let closeProtocolError: RunnerProtocolError | undefined;
       let rawTerminal: RawTerminalEvent | undefined;
@@ -162,7 +202,6 @@ export function createExecutionEntryPoint(options: CreateExecutionEntryPointOpti
         return;
       }
 
-      const config = await resolveResultValidationConfig(options.resultValidation, input);
       const terminal = await buildTerminalBoundaryEvent({
         rawTerminal,
         environment,
@@ -368,6 +407,22 @@ function composeNormalizers(
 ): readonly ResultNormalizer[] | undefined {
   const composed = [...listNormalizers(contractNormalizers), ...listNormalizers(configNormalizers)];
   return composed.length > 0 ? composed : undefined;
+}
+
+function makePreRunFailTerminal(
+  input: ExecutionEntryPointInput,
+  code: string,
+  runId: string
+): ExecutionTerminalResultEvent {
+  return {
+    id: `pre_run_fail_${Date.now()}`,
+    type: 'runner_terminal_result',
+    runId,
+    step: input.context.run.currentStep ?? '',
+    importance: 'high',
+    createdAt: new Date().toISOString(),
+    result: { directive: 'fail', reason: `Execution failed: ${code}` }
+  };
 }
 
 function makeFailTerminal(rawTerminal: RawTerminalEvent, reason: string): ExecutionTerminalResultEvent {

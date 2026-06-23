@@ -12,6 +12,7 @@ import type {
   AgentProviderAdapter,
   AgentProviderSession,
   AgentProviderSessionMetadata,
+  AgentProviderSessionInput,
   ResolvedAgentRunnerProfile,
   AgentConnection,
   AgentConnectionTelemetryContext
@@ -20,6 +21,7 @@ import {
   ProviderConfigurationError,
   ProviderConnectionError
 } from './agent-provider-adapter.js';
+import type { StructuredAgentResultCapture } from './structured-result-capture.js';
 import type { RunnerRunInput } from './runner.js';
 import { RunnerProtocolError } from './runner.js';
 import { createAgentOrchestratorRunner } from './agent-orchestrator-runner.js';
@@ -917,6 +919,58 @@ describe('createAgentOrchestratorRunner', () => {
       expect(metadata!.endedAt).not.toBeNull();
       expect(() => new Date(metadata!.endedAt!)).not.toThrow();
       expect(new Date(metadata!.endedAt!).toISOString()).toBe(metadata!.endedAt);
+    });
+  });
+
+  describe('structuredResultCapture pass-through', () => {
+    it('passes structuredResultCapture to the provider adapter startSession input', async () => {
+      const runId = 'run_test_1';
+      const capture: StructuredAgentResultCapture = {
+        step: 'spec.author',
+        schemaId: 'autocatalyst.spec_author.v1',
+        schema: z.object({ kind: z.string() }),
+        resultFile: 'step-result.json',
+        required: true
+      };
+
+      let receivedInput: AgentProviderSessionInput | undefined;
+
+      const profile = makeProfile();
+      const adapterCloseMock = vi.fn().mockResolvedValue(undefined);
+      const sessionCloseMock = vi.fn().mockResolvedValue(undefined);
+
+      const capturingAdapter: AgentProviderAdapter = {
+        providerKind: 'test',
+        adapterId: 'test-adapter',
+        supportedConnectionMechanism: 'process_environment',
+        startSession(input: AgentProviderSessionInput): AgentProviderSession {
+          receivedInput = input;
+          const session: AgentProviderSession = {
+            events: (async function* () {
+              yield makeTerminalEvent(runId);
+            })(),
+            metadata: Promise.resolve(makeDefaultMetadata()),
+            close: sessionCloseMock
+          };
+          return session;
+        },
+        close: adapterCloseMock
+      };
+
+      const options: CreateAgentOrchestratorRunnerOptions = {
+        adapter: capturingAdapter,
+        profile,
+        connection: makeConnection(profile),
+        telemetryContext: makeTelemetryContext(),
+        clock: () => 1000
+      };
+
+      const runner = createAgentOrchestratorRunner(options);
+      const runInput = makeRunInput();
+      await collectEvents(runner, { ...runInput, structuredResultCapture: capture });
+
+      expect(receivedInput).toBeDefined();
+      expect(receivedInput?.structuredResultCapture).toBe(capture);
     });
   });
 });

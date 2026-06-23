@@ -2,7 +2,14 @@ import { z } from 'zod';
 import type { ResultDegradationPolicy, ResultValidationIssue } from './result-tolerance.js';
 import type { ResultCorrectionRequester } from './result-correction.js';
 import type { ResultNormalizer, ResultNormalizerRegistry } from './result-normalizers.js';
-import { createSpecAuthorFrontmatterNormalizer, prFinalizeCleanResultNormalizer } from './result-normalizers.js';
+import {
+  createSpecAuthorFrontmatterNormalizer,
+  implementerDispositionsNullStripNormalizer,
+  prFinalizeCleanResultNormalizer,
+  prFinalizeNullStripNormalizer,
+  reviewerNullFindingsNormalizer,
+  reviewerResultNormalizer
+} from './result-normalizers.js';
 import {
   implementerDispositionsResultSchema,
   prFinalizeResultSchema,
@@ -217,7 +224,7 @@ export function createPullRequestFinalizeResultContract(
     schemaId: PR_FINALIZE_SCHEMA_ID,
     schema: prFinalizeResultSchema,
     ...(options.resultFile !== undefined ? { resultFile: options.resultFile } : {}),
-    normalizers: options.normalizers ?? [prFinalizeCleanResultNormalizer],
+    normalizers: options.normalizers ?? [prFinalizeNullStripNormalizer, prFinalizeCleanResultNormalizer],
     ...(options.correctionRequester !== undefined ? { correctionRequester: options.correctionRequester } : {}),
     ...(options.maxCorrectionAttempts !== undefined ? { maxCorrectionAttempts: options.maxCorrectionAttempts } : {}),
     ...(options.degradationPolicy !== undefined ? { degradationPolicy: options.degradationPolicy } : {})
@@ -238,7 +245,8 @@ export function registerReviewerResultContract(
     step: 'implementation.build',
     schemaId: REVIEWER_RESULT_SCHEMA_ID,
     schema: reviewerResultSchema,
-    resultFile: 'step-result.json'
+    resultFile: 'step-result.json',
+    normalizers: [reviewerNullFindingsNormalizer, reviewerResultNormalizer]
   });
 }
 
@@ -253,7 +261,8 @@ export function registerImplementerDispositionsResultContract(
     step: 'implementation.build',
     schemaId: IMPLEMENTER_DISPOSITIONS_SCHEMA_ID,
     schema: implementerDispositionsResultSchema,
-    resultFile: 'step-result.json'
+    resultFile: 'step-result.json',
+    normalizers: [implementerDispositionsNullStripNormalizer]
   });
 }
 

@@ -72,7 +72,14 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
         adapterId: profile.adapterId,
         connectionMechanism: profile.connectionMechanism,
         model: profile.model,
-        inferenceSettings: profile.inferenceSettings
+        inferenceSettings: profile.inferenceSettings,
+        // Safe structured capture metadata (no raw result values)
+        ...(input.structuredResultCapture !== undefined ? {
+          structuredResultCapture: true,
+          schemaId: input.structuredResultCapture.schemaId,
+          captureStep: input.structuredResultCapture.step,
+          resultFile: input.structuredResultCapture.resultFile
+        } : {})
       });
 
       // Start session
@@ -80,7 +87,8 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
         runInput: input,
         profile,
         connection,
-        telemetryContext
+        telemetryContext,
+        ...(input.structuredResultCapture !== undefined ? { structuredResultCapture: input.structuredResultCapture } : {})
       });
       activeSession = session;
 

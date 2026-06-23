@@ -9,16 +9,23 @@ import type {
   AgentProviderSessionMetadata,
   AgentTokenUsage,
   ProcessLaunchConfig,
-  ProviderCapabilityDegradation
+  ProviderCapabilityDegradation,
+  ProviderSchemaProjection,
+  ProviderStructuredOutputSchema,
+  StructuredAgentResultCapture
 } from '@autocatalyst/execution';
 import {
   ClassifiedProviderFailureError,
   ProviderConnectionError,
+  ProviderProtocolError,
   UnsupportedProviderCapabilityError,
+  assertSerializableStructuredResult,
   buildSafeAdapterFailureLogDetail,
   classifyProviderFailure,
   filterSafeClassificationDetails,
-  runtimeSkillsCatalogRoot
+  projectStepResultSchemaForProvider,
+  runtimeSkillsCatalogRoot,
+  writeScratchStepResultFile
 } from '@autocatalyst/execution';
 
 import { materializeClaudeSkillPlugins } from './skill-materialization.js';
@@ -29,6 +36,22 @@ import { materializeClaudeSkillPlugins } from './skill-materialization.js';
 
 export const claudeProviderKind = 'anthropic' as const;
 export const claudeAgentAdapterId = 'claude-agent-sdk' as const;
+
+export const CLAUDE_STRUCTURED_RESULT_TOOL_NAME = 'submit_result' as const;
+
+// ---------------------------------------------------------------------------
+// Structured result tool definition
+// ---------------------------------------------------------------------------
+
+export interface ClaudeStructuredResultToolDefinition {
+  readonly name: typeof CLAUDE_STRUCTURED_RESULT_TOOL_NAME;
+  readonly description: string;
+  readonly inputSchema: ProviderStructuredOutputSchema;
+  readonly projection: ProviderSchemaProjection & {
+    readonly target: 'claude_tool_input_schema';
+    readonly mechanism: 'claude_submit_result_tool';
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Native event seam (mirrors the @anthropic-ai/claude-agent-sdk wire shape
@@ -58,6 +81,7 @@ export interface ClaudeSessionLaunchOptions {
   readonly env?: Record<string, string>;
   readonly allowedTools?: string[];
   readonly options?: Record<string, unknown>;
+  readonly structuredResultTool?: ClaudeStructuredResultToolDefinition;
 }
 
 export type ClaudeSessionLaunch = (
@@ -80,6 +104,7 @@ export interface ClaudeAgentAdapterOptions {
   readonly clock?: () => string;
   readonly idGenerator?: () => string;
   readonly logger?: ClaudeAgentAdapterLogger;
+  readonly supportsStructuredResultTools?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -143,16 +168,28 @@ async function* realSDKLaunch(
   opts: ClaudeSessionLaunchOptions
 ): AsyncIterable<ClaudeNativeEvent> {
   type QueryFn = (input: { prompt: string; options?: Record<string, unknown> }) => AsyncIterable<Record<string, unknown>>;
+  type SdkMcpTool = { name: string; description?: string; inputSchema?: unknown; handler: (input: unknown) => Promise<unknown> };
+  type CreateSdkMcpServerFn = (tools: SdkMcpTool[]) => unknown;
   let query: QueryFn;
+  let createSdkMcpServer: CreateSdkMcpServerFn | undefined;
   try {
     // eslint-disable-next-line @typescript-eslint/ban-ts-comment -- @ts-ignore is required here because @ts-expect-error triggers TS2578 (unused directive) when the optional peer is installed, making the suppression self-defeating
     // @ts-ignore -- optional peer: types unavailable until the package is installed
-    const sdk = await import('@anthropic-ai/claude-agent-sdk') as { query: QueryFn };
+    const sdk = await import('@anthropic-ai/claude-agent-sdk') as { query: QueryFn; createSdkMcpServer?: CreateSdkMcpServerFn };
     query = sdk.query;
+    createSdkMcpServer = typeof sdk.createSdkMcpServer === 'function' ? sdk.createSdkMcpServer : undefined;
   } catch {
     throw new ProviderConnectionError(
       'process_launch_failed',
       '@anthropic-ai/claude-agent-sdk is not installed. Install it as a peer dependency or provide options.launchClaudeSession.'
+    );
+  }
+
+  if (opts.structuredResultTool !== undefined && createSdkMcpServer === undefined) {
+    throw new UnsupportedProviderCapabilityError(
+      'structured_result_unsupported',
+      'The installed @anthropic-ai/claude-agent-sdk does not export createSdkMcpServer. Upgrade the SDK or provide options.launchClaudeSession to use the submit_result tool.',
+      { capability: 'claude_submit_result_tool' }
     );
   }
 
@@ -163,6 +200,21 @@ async function* realSDKLaunch(
     permissionMode: 'dontAsk',
     ...(opts.options ?? {})
   };
+
+  const mcpCalls: unknown[] = [];
+
+  if (opts.structuredResultTool !== undefined && createSdkMcpServer !== undefined) {
+    const mcpServer = createSdkMcpServer([{
+      name: opts.structuredResultTool.name,
+      description: opts.structuredResultTool.description,
+      inputSchema: opts.structuredResultTool.inputSchema,
+      handler: async (input: unknown) => {
+        mcpCalls.push(input);
+        return {};
+      }
+    }]);
+    sdkOpts['mcpServers'] = [mcpServer];
+  }
 
   for await (const msg of query({ prompt: opts.prompt, options: sdkOpts })) {
     if (msg['type'] === 'assistant') {
@@ -210,6 +262,12 @@ async function* realSDKLaunch(
     }
     // System, user, status, hook, task, and other messages are intentionally ignored.
   }
+
+  if (opts.structuredResultTool !== undefined) {
+    for (const callInput of mcpCalls) {
+      yield { type: 'tool_use', tool: { name: opts.structuredResultTool.name, input: callInput } };
+    }
+  }
 }
 
 function defaultLaunch(): ClaudeSessionLaunch {
@@ -217,6 +275,25 @@ function defaultLaunch(): ClaudeSessionLaunch {
   // (returns AsyncIterable<ClaudeNativeEvent>). Dynamic import means the SDK is
   // only required at runtime — tests inject launchClaudeSession instead.
   return realSDKLaunch;
+}
+
+function createClaudeStructuredResultTool(
+  capture: StructuredAgentResultCapture
+): ClaudeStructuredResultToolDefinition {
+  const projection = projectStepResultSchemaForProvider({
+    schemaId: capture.schemaId,
+    schema: capture.schema,
+    target: 'claude_tool_input_schema'
+  });
+  return {
+    name: CLAUDE_STRUCTURED_RESULT_TOOL_NAME,
+    description: 'Submit the structured Autocatalyst step result. Call this exactly once when the step result is ready.',
+    inputSchema: projection.schema,
+    projection: projection as ProviderSchemaProjection & {
+      readonly target: 'claude_tool_input_schema';
+      readonly mechanism: 'claude_submit_result_tool';
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +377,24 @@ export function createClaudeAgentAdapter(
         });
       }
 
+      // Structured result tool capability gate (before any SDK launch).
+      let structuredResultTool: ClaudeStructuredResultToolDefinition | undefined;
+      if (input.structuredResultCapture !== undefined) {
+        if (options.supportsStructuredResultTools === false) {
+          throw new UnsupportedProviderCapabilityError(
+            'structured_result_unsupported',
+            'Claude Agent SDK structured result tool registration is not supported by the installed SDK version. ' +
+              'Provide options.supportsStructuredResultTools: true to enable the submit_result tool seam.',
+            {
+              providerKind: profile.providerKind,
+              adapterId: claudeAgentAdapterId,
+              capability: 'claude_submit_result_tool'
+            }
+          );
+        }
+        structuredResultTool = createClaudeStructuredResultTool(input.structuredResultCapture);
+      }
+
       // Resolve cwd from materialized workspace.
       const workspace = env.workspace;
       const cwd: string | undefined =
@@ -307,7 +402,10 @@ export function createClaudeAgentAdapter(
           ? workspace.scratchRoot
           : workspace.workspaceRoots[0];
 
-      const allowedTools = mapAllowedToolsForClaude(env.toolPolicy.allowedTools);
+      const baseAllowedTools = mapAllowedToolsForClaude(env.toolPolicy.allowedTools);
+      const allowedTools = structuredResultTool !== undefined
+        ? Array.from(new Set([...baseAllowedTools, CLAUDE_STRUCTURED_RESULT_TOOL_NAME]))
+        : baseAllowedTools;
       const prompt = env.context.task.prompt;
 
       // Materialize resolved skills into Claude SDK plugin descriptors.
@@ -330,6 +428,7 @@ export function createClaudeAgentAdapter(
         let outcome: 'succeeded' | 'failed' | 'canceled' = 'succeeded';
         let tokenUsage: AgentTokenUsage = { available: false };
         let pendingResult: PendingResult | undefined;
+        let capturedStructuredResult: { readonly value: unknown } | undefined;
         // degradedCapabilities is populated after the launch config resolves;
         // declared here so the finally block can always reference it.
         let degradedCapabilities: ProviderCapabilityDegradation[] = [...inferenceDegradations];
@@ -375,7 +474,12 @@ export function createClaudeAgentAdapter(
             resolvedSkillPluginCount: skillPlugins.length,
             cwdProvided: cwd !== undefined,
             // Redacted summary the connection layer already prepared.
-            launchConfig: launchConfig.redacted
+            launchConfig: launchConfig.redacted,
+            ...(structuredResultTool !== undefined ? {
+              schemaId: structuredResultTool.projection.schemaId,
+              resultFile: input.structuredResultCapture?.resultFile,
+              resultCaptureMechanism: structuredResultTool.projection.mechanism
+            } : {})
           });
 
           // Merge connection-layer degradations now that we have the launch config.
@@ -398,10 +502,28 @@ export function createClaudeAgentAdapter(
             ...(cwd !== undefined ? { cwd } : {}),
             env: launchEnv,
             allowedTools,
-            ...(skillPlugins.length > 0 ? { options: { skills: skillPlugins } } : {})
+            ...(skillPlugins.length > 0 ? { options: { skills: skillPlugins } } : {}),
+            ...(structuredResultTool !== undefined ? { structuredResultTool } : {})
           });
 
           for await (const ev of native) {
+            // Intercept submit_result tool calls for structured capture
+            if (
+              structuredResultTool !== undefined &&
+              ev.type === 'tool_use' &&
+              ev.tool?.name === CLAUDE_STRUCTURED_RESULT_TOOL_NAME
+            ) {
+              if (capturedStructuredResult !== undefined) {
+                throw new ProviderProtocolError(
+                  'duplicate_structured_result',
+                  'Claude session called submit_result more than once.',
+                  { providerKind: profile.providerKind, adapterId: claudeAgentAdapterId }
+                );
+              }
+              capturedStructuredResult = { value: ev.tool.input };
+              continue;
+            }
+
             const mapped = mapNativeEvent(ev, {
               runId,
               step,
@@ -420,28 +542,43 @@ export function createClaudeAgentAdapter(
             }
           }
 
-          // After the native stream ends: write the result file if any
-          // captured output, then emit a single terminal-result event if the
-          // SDK did not already produce one.
-          if (pendingResult !== undefined) {
-            await maybeWriteResultFile(env, pendingResult.output);
-            yield buildTerminalResult({
-              runId,
-              step,
-              clock,
-              idGenerator,
-              directive: 'advance'
-            });
+          // After the native stream ends: write the result file and emit a terminal-result event.
+          if (structuredResultTool !== undefined && input.structuredResultCapture !== undefined) {
+            // Structured capture path
+            if (capturedStructuredResult === undefined) {
+              throw new ProviderProtocolError(
+                'missing_structured_result',
+                'Claude session ended without calling submit_result.',
+                { providerKind: profile.providerKind, adapterId: claudeAgentAdapterId }
+              );
+            }
+            await writeClaudeStructuredResultFile(env, input.structuredResultCapture, capturedStructuredResult.value);
+            yield buildTerminalResult({ runId, step, clock, idGenerator, directive: 'advance' });
+          } else {
+            // Legacy no-contract path
+            if (pendingResult !== undefined) {
+              await maybeWriteResultFile(env, pendingResult.output);
+              yield buildTerminalResult({ runId, step, clock, idGenerator, directive: 'advance' });
+            }
           }
         } catch (err) {
           outcome = 'failed';
           const classified = classifySdkError(err);
+          const safeDetail = buildSafeAdapterFailureLogDetail(err, profile.providerKind);
+          const failureCode = typeof safeDetail.code === 'string' ? safeDetail.code : undefined;
           safeLog('error', 'claude.adapter.session_failed', {
             runId,
             step,
             adapterId: claudeAgentAdapterId,
-            ...buildSafeAdapterFailureLogDetail(err, profile.providerKind),
-            ...(classified !== undefined ? { failureReason: classified.failureReason } : {})
+            ...safeDetail,
+            ...(classified !== undefined ? { failureReason: classified.failureReason } : {}),
+            ...(failureCode !== undefined ? { failureCode } : {}),
+            ...(structuredResultTool !== undefined && input.structuredResultCapture !== undefined ? {
+              structuredResultCapture: true,
+              schemaId: input.structuredResultCapture.schemaId,
+              resultFile: input.structuredResultCapture.resultFile,
+              resultCaptureMechanism: structuredResultTool.projection.mechanism
+            } : {})
           });
           const thrown = classified ?? err;
           metadataReject(thrown);
@@ -679,6 +816,26 @@ function resolveResultFileName(
     if (typeof resultFile === 'string' && resultFile.length > 0) return resultFile;
   }
   return 'step-result.json';
+}
+
+async function writeClaudeStructuredResultFile(
+  env: AgentProviderSessionInput['runInput']['environment'],
+  capture: StructuredAgentResultCapture,
+  value: unknown
+): Promise<void> {
+  assertSerializableStructuredResult(value);
+  const writeOutcome = await writeScratchStepResultFile({
+    environment: env,
+    resultFile: capture.resultFile,
+    value
+  });
+  if (writeOutcome.status === 'failed') {
+    throw new ProviderProtocolError(
+      'structured_result_invalid',
+      `Claude submit_result write failed: ${writeOutcome.code}`,
+      { providerKind: claudeProviderKind, adapterId: claudeAgentAdapterId, code: writeOutcome.code }
+    );
+  }
 }
 
 async function maybeWriteResultFile(

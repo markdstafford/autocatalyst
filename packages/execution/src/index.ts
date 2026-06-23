@@ -58,6 +58,9 @@ export {
   createResultNormalizerRegistry,
   defaultResultNormalizers,
   reviewerResultNormalizer,
+  reviewerNullFindingsNormalizer,
+  implementerDispositionsNullStripNormalizer,
+  prFinalizeNullStripNormalizer,
   createSpecAuthorFrontmatterNormalizer,
   prFinalizeCleanResultNormalizer,
   createFilenameAliasNormalizer,
@@ -80,12 +83,31 @@ export {
 
 export {
   readScratchStepResultFile,
+  writeScratchStepResultFile,
+  resolveScratchRootCandidatePath,
   type ReadScratchStepResultFileInput,
+  type WriteScratchStepResultFileInput,
   type StepResultFileReadOutcome,
   type StepResultFileReadSuccess,
   type StepResultFileReadFailure,
-  type StepResultFileErrorCode
+  type StepResultFileErrorCode,
+  type StepResultFileWriteErrorCode,
+  type StepResultFileWriteOutcome,
+  type StepResultFileWriteSuccess,
+  type StepResultFileWriteFailure
 } from './result-file.js';
+
+export {
+  createStructuredAgentResultCapture,
+  assertSerializableStructuredResult,
+  type StructuredAgentResultCapture,
+  type StructuredAgentResultCaptureMechanism,
+  type CreateStructuredAgentResultCaptureInput,
+  type StructuredAgentResultCaptureResolution,
+  type StructuredAgentResultCaptureResolutionSuccess,
+  type StructuredAgentResultCaptureResolutionSkipped,
+  type StructuredAgentResultCaptureResolutionFailure
+} from './structured-result-capture.js';
 
 export { StubRunner, type StubRunnerOptions } from './stub-runner.js';
 
@@ -322,3 +344,11 @@ export {
   ClassifiedProviderFailureError,
   isClassifiedProviderFailureError
 } from './errors.js';
+
+export {
+  ProviderSchemaProjectionError,
+  projectStepResultSchemaForProvider,
+  type ProviderSchemaProjectionTarget,
+  type ProviderStructuredOutputSchema,
+  type ProviderSchemaProjection
+} from './provider-schema-projection.js';
