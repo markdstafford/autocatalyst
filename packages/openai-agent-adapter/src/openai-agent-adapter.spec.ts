@@ -679,6 +679,65 @@ describe('createOpenAIAgentAdapter — observability', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Transport selection
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — transport selection', () => {
+  it('logs transport: responses for all agent sessions', async () => {
+    const logs: Array<{event: string, fields: unknown}> = [];
+    const logger = {
+      info: vi.fn((event: string, fields: unknown) => { logs.push({ event, fields }); }),
+      warn: vi.fn(),
+      error: vi.fn()
+    };
+    const { run } = makeRunSession([assistantItem('done')]);
+    const adapter = createOpenAIAgentAdapter({ runAgentSession: run, sandboxClientFactory: () => fakeSandboxHandle(), logger });
+    await adapter.startSession(makeSessionInput('scratch_only'));
+
+    const transportLog = logs.find((l) => l.event === 'openai.adapter.transport_selected');
+    expect(transportLog).toBeDefined();
+    expect((transportLog!.fields as Record<string, unknown>)['transport']).toBe('responses');
+  });
+
+  it('selects responses transport for gpt-5.5 even with empty inferenceSettings', async () => {
+    const logs: Array<{event: string, fields: unknown}> = [];
+    const logger = {
+      info: vi.fn((event: string, fields: unknown) => { logs.push({ event, fields }); }),
+      warn: vi.fn(),
+      error: vi.fn()
+    };
+    const { run } = makeRunSession([assistantItem('done')]);
+    const customProfile = {
+      ...makeProfile(),
+      model: { provider: 'openai' as const, model: 'gpt-5.5' },
+      inferenceSettings: {}
+    };
+    const transport = makeTransport();
+    const sessionInput = {
+      ...makeSessionInput('scratch_only'),
+      profile: customProfile,
+      connection: makeConnection(transport)
+    };
+    const adapter = createOpenAIAgentAdapter({ runAgentSession: run, sandboxClientFactory: () => fakeSandboxHandle(), logger });
+    await adapter.startSession(sessionInput);
+
+    const transportLog = logs.find((l) => l.event === 'openai.adapter.transport_selected');
+    expect(transportLog).toBeDefined();
+    expect((transportLog!.fields as Record<string, unknown>)['transport']).toBe('responses');
+    expect((transportLog!.fields as Record<string, unknown>)['model']).toBe('gpt-5.5');
+  });
+
+  it('does not document chat_completions as an agent transport fallback', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const source = await readFile(new URL('./openai-agent-adapter.ts', import.meta.url), 'utf8');
+    // useResponses: false must be gone from the provider construction
+    expect(source).not.toContain('useResponses: false');
+    // useResponses: true must be present
+    expect(source).toContain('useResponses: true');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Provider auth failure classification (seam-driven)
 // ---------------------------------------------------------------------------
 
@@ -858,7 +917,7 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
 
     try {
       // The model traffic is mocked ONLY at the fetch layer of the injected
-      // OpenAI client (Chat Completions wire format): first turn calls notify,
+      // OpenAI client (Responses API wire format): first turn calls notify,
       // second turn produces the final assistant message.
       let call = 0;
       const seenUrls: string[] = [];
@@ -866,16 +925,17 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
         fetch: vi.fn(async (request) => {
           seenUrls.push(request.url);
           call += 1;
-          const message = call === 1
-            ? { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'notify', arguments: JSON.stringify({ message: 'starting review', importance: 'low' }) } }] }
-            : { role: 'assistant', content: 'Review complete: looks good.' };
+          const output = call === 1
+            ? [{ id: 'fc_1', type: 'function_call', call_id: 'call_1', name: 'notify', arguments: JSON.stringify({ message: 'starting review', importance: 'low' }), status: 'completed' }]
+            : [{ id: 'msg_1', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Review complete: looks good.' }] }];
           const payload = {
-            id: `chatcmpl-${call}`,
-            object: 'chat.completion',
-            created: 0,
+            id: `resp_${call}`,
+            object: 'realtime.response',
+            created_at: 0,
             model: 'gpt-4.1',
-            choices: [{ index: 0, finish_reason: call === 1 ? 'tool_calls' : 'stop', message }],
-            usage: { prompt_tokens: 12, completion_tokens: 6, total_tokens: 18 }
+            status: 'completed',
+            output,
+            usage: { input_tokens: 12, output_tokens: 6, total_tokens: 18, input_tokens_details: {}, output_tokens_details: {} }
           };
           return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
         })

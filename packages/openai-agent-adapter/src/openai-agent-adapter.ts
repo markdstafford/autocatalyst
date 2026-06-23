@@ -908,9 +908,16 @@ export function createOpenAIAgentAdapter(
       type OpenAIProviderClient = NonNullable<OpenAIProviderOptions['openAIClient']>;
       const providerOptions: OpenAIProviderOptions = {
         openAIClient: openAIClient as unknown as OpenAIProviderClient,
-        useResponses: false
+        useResponses: true
       };
       const modelProvider = new OpenAIProvider(providerOptions);
+      safeLog('info', 'openai.adapter.transport_selected', {
+        runId: input.runInput.environment.context.run.id,
+        step: input.runInput.environment.context.run.currentStep,
+        role: input.telemetryContext.role,
+        model: input.profile.model.model,
+        transport: 'responses'
+      });
 
       const inferenceMapping = mapInferenceSettings(input.profile);
       const tools = createProgressTools();
