@@ -236,7 +236,6 @@ export const reviewerNullFindingsNormalizer: ResultNormalizer = {
       return { status: 'unchanged' };
     }
     const { findings: _discarded, ...rest } = input.candidate;
-    void _discarded;
     return {
       status: 'changed',
       candidate: rest,
@@ -255,7 +254,6 @@ export const implementerDispositionsNullStripNormalizer: ResultNormalizer = {
       return { status: 'unchanged' };
     }
     const { dispositions: _discarded, ...rest } = input.candidate;
-    void _discarded;
     return {
       status: 'changed',
       candidate: rest,
