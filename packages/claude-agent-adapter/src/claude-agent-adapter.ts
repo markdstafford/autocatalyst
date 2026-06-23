@@ -78,6 +78,7 @@ export interface ClaudeSessionLaunchOptions {
   readonly env?: Record<string, string>;
   readonly allowedTools?: string[];
   readonly options?: Record<string, unknown>;
+  readonly structuredResultTool?: ClaudeStructuredResultToolDefinition;
 }
 
 export type ClaudeSessionLaunch = (
@@ -100,6 +101,7 @@ export interface ClaudeAgentAdapterOptions {
   readonly clock?: () => string;
   readonly idGenerator?: () => string;
   readonly logger?: ClaudeAgentAdapterLogger;
+  readonly supportsStructuredResultTools?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +341,24 @@ export function createClaudeAgentAdapter(
         });
       }
 
+      // Structured result tool capability gate (before any SDK launch).
+      let structuredResultTool: ClaudeStructuredResultToolDefinition | undefined;
+      if (input.structuredResultCapture !== undefined) {
+        if (options.supportsStructuredResultTools !== true) {
+          throw new UnsupportedProviderCapabilityError(
+            'structured_result_unsupported',
+            'Claude Agent SDK structured result tool registration is not supported by the installed SDK version. ' +
+              'Provide options.supportsStructuredResultTools: true to enable the submit_result tool seam.',
+            {
+              providerKind: profile.providerKind,
+              adapterId: claudeAgentAdapterId,
+              capability: 'claude_submit_result_tool'
+            }
+          );
+        }
+        structuredResultTool = createClaudeStructuredResultTool(input.structuredResultCapture);
+      }
+
       // Resolve cwd from materialized workspace.
       const workspace = env.workspace;
       const cwd: string | undefined =
@@ -346,7 +366,10 @@ export function createClaudeAgentAdapter(
           ? workspace.scratchRoot
           : workspace.workspaceRoots[0];
 
-      const allowedTools = mapAllowedToolsForClaude(env.toolPolicy.allowedTools);
+      const baseAllowedTools = mapAllowedToolsForClaude(env.toolPolicy.allowedTools);
+      const allowedTools = structuredResultTool !== undefined
+        ? Array.from(new Set([...baseAllowedTools, CLAUDE_STRUCTURED_RESULT_TOOL_NAME]))
+        : baseAllowedTools;
       const prompt = env.context.task.prompt;
 
       // Materialize resolved skills into Claude SDK plugin descriptors.
@@ -414,7 +437,12 @@ export function createClaudeAgentAdapter(
             resolvedSkillPluginCount: skillPlugins.length,
             cwdProvided: cwd !== undefined,
             // Redacted summary the connection layer already prepared.
-            launchConfig: launchConfig.redacted
+            launchConfig: launchConfig.redacted,
+            ...(structuredResultTool !== undefined ? {
+              schemaId: structuredResultTool.projection.schemaId,
+              resultFile: input.structuredResultCapture?.resultFile,
+              resultCaptureMechanism: structuredResultTool.projection.mechanism
+            } : {})
           });
 
           // Merge connection-layer degradations now that we have the launch config.
@@ -437,7 +465,8 @@ export function createClaudeAgentAdapter(
             ...(cwd !== undefined ? { cwd } : {}),
             env: launchEnv,
             allowedTools,
-            ...(skillPlugins.length > 0 ? { options: { skills: skillPlugins } } : {})
+            ...(skillPlugins.length > 0 ? { options: { skills: skillPlugins } } : {}),
+            ...(structuredResultTool !== undefined ? { structuredResultTool } : {})
           });
 
           for await (const ev of native) {
