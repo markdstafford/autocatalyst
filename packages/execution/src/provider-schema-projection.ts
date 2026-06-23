@@ -70,65 +70,214 @@ function buildProjectedSchema(
   }
 }
 
-// reviewerResultSchema is a discriminatedUnion('status', [satisfied, findings])
-// satisfied: { status: 'satisfied', findings?: [] }
-// findings: { status: 'findings', findings: [{ externalId?, title, body, severity, anchor? }] }
-// anchor is a discriminated union — flatten to optional string for provider projection
-function buildReviewerResultProjection(_target: ProviderSchemaProjectionTarget): ProviderStructuredOutputSchema {
+// ---------------------------------------------------------------------------
+// Finding item schemas (shared across targets)
+// ---------------------------------------------------------------------------
+
+// OpenAI strict finding item: all properties in required, externalId nullable.
+// anchor is a complex discriminated union; it is omitted from the provider
+// projection — the execution-boundary parse enforces it after capture.
+const strictFindingItem = {
+  type: 'object',
+  properties: {
+    externalId: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+    title: { type: 'string' },
+    body: { type: 'string' },
+    severity: { type: 'string', enum: ['blocker', 'warning', 'info'] }
+  },
+  required: ['externalId', 'title', 'body', 'severity'],
+  additionalProperties: false
+};
+
+// Claude finding item: optional externalId, anchor omitted.
+const claudeFindingItem = {
+  type: 'object',
+  properties: {
+    externalId: { type: 'string' },
+    title: { type: 'string' },
+    body: { type: 'string' },
+    severity: { type: 'string', enum: ['blocker', 'warning', 'info'] }
+  },
+  required: ['title', 'body', 'severity'],
+  additionalProperties: false
+};
+
+// ---------------------------------------------------------------------------
+// reviewerResultSchema projection
+//
+// Canonical: discriminatedUnion('status', [
+//   satisfiedReviewerResultSchema: { status: 'satisfied', findings?: [] }
+//   findingsReviewerResultSchema:  { status: 'findings',  findings: [min 1] }
+// ])
+//
+// Provider projection uses anyOf with two branches so the provider can enforce:
+//   - 'satisfied' branch: findings absent/null/empty
+//   - 'findings' branch: non-empty findings array required
+// This addresses the weakening flagged in INIT-2.
+// ---------------------------------------------------------------------------
+function buildReviewerResultProjection(target: ProviderSchemaProjectionTarget): ProviderStructuredOutputSchema {
+  if (target === 'openai_agents_output_type') {
+    // OpenAI strict mode: all properties in required, optional fields nullable.
+    return {
+      anyOf: [
+        {
+          type: 'object',
+          properties: {
+            status: { type: 'string', enum: ['satisfied'] },
+            findings: {
+              anyOf: [
+                { type: 'array', items: strictFindingItem, maxItems: 0 },
+                { type: 'null' }
+              ]
+            }
+          },
+          required: ['status', 'findings'],
+          additionalProperties: false
+        },
+        {
+          type: 'object',
+          properties: {
+            status: { type: 'string', enum: ['findings'] },
+            findings: { type: 'array', items: strictFindingItem, minItems: 1 }
+          },
+          required: ['status', 'findings'],
+          additionalProperties: false
+        }
+      ]
+    };
+  }
+
+  // Claude target: not strict mode, but still enforce discriminated branches.
+  return {
+    anyOf: [
+      {
+        type: 'object',
+        properties: {
+          status: { type: 'string', enum: ['satisfied'] },
+          findings: { type: 'array', items: claudeFindingItem, maxItems: 0 }
+        },
+        required: ['status'],
+        additionalProperties: false
+      },
+      {
+        type: 'object',
+        properties: {
+          status: { type: 'string', enum: ['findings'] },
+          findings: { type: 'array', items: claudeFindingItem, minItems: 1 }
+        },
+        required: ['status', 'findings'],
+        additionalProperties: false
+      }
+    ]
+  };
+}
+
+// ---------------------------------------------------------------------------
+// implementerDispositionsResultSchema projection
+//
+// Canonical: { dispositions?: Array<fixed | declined> }
+//   fixed:   { feedbackId, disposition: 'fixed',   summary }
+//   declined: { feedbackId, disposition: 'declined', reason }
+//
+// Provider projection uses anyOf within disposition items so the provider
+// enforces branch-specific required fields (summary for fixed, reason for
+// declined). This addresses the weakening flagged in INIT-2.
+// ---------------------------------------------------------------------------
+function buildImplementerDispositionsProjection(target: ProviderSchemaProjectionTarget): ProviderStructuredOutputSchema {
+  const fixedItem = {
+    type: 'object',
+    properties: {
+      feedbackId: { type: 'string' },
+      disposition: { type: 'string', enum: ['fixed'] },
+      summary: { type: 'string' }
+    },
+    required: ['feedbackId', 'disposition', 'summary'],
+    additionalProperties: false
+  };
+
+  const declinedItem = {
+    type: 'object',
+    properties: {
+      feedbackId: { type: 'string' },
+      disposition: { type: 'string', enum: ['declined'] },
+      reason: { type: 'string' }
+    },
+    required: ['feedbackId', 'disposition', 'reason'],
+    additionalProperties: false
+  };
+
+  const dispositionsArray = {
+    type: 'array',
+    items: { anyOf: [fixedItem, declinedItem] }
+  };
+
+  if (target === 'openai_agents_output_type') {
+    // OpenAI strict mode: dispositions in required, nullable because the canonical
+    // schema marks it optional (implementer may have no dispositions this round).
+    return {
+      type: 'object',
+      properties: {
+        dispositions: {
+          anyOf: [dispositionsArray, { type: 'null' }]
+        }
+      },
+      required: ['dispositions'],
+      additionalProperties: false
+    };
+  }
+
+  // Claude target: dispositions is genuinely optional.
   return {
     type: 'object',
     properties: {
-      status: { type: 'string', enum: ['satisfied', 'findings'] },
-      findings: {
-        type: 'array',
-        items: {
-          type: 'object',
-          properties: {
-            externalId: { type: 'string' },
-            title: { type: 'string' },
-            body: { type: 'string' },
-            severity: { type: 'string', enum: ['blocker', 'warning', 'info'] }
-          },
-          required: ['title', 'body', 'severity'],
-          additionalProperties: false
-        }
-      }
+      dispositions: dispositionsArray
     },
-    required: ['status'],
     additionalProperties: false
   };
 }
 
-// implementerDispositionsResultSchema: { dispositions?: Array<fixed | declined> }
-// fixed: { feedbackId, disposition: 'fixed', summary }
-// declined: { feedbackId, disposition: 'declined', reason }
-function buildImplementerDispositionsProjection(_target: ProviderSchemaProjectionTarget): ProviderStructuredOutputSchema {
-  return {
-    type: 'object',
-    properties: {
-      dispositions: {
-        type: 'array',
-        items: {
+// ---------------------------------------------------------------------------
+// specAuthorResultSchema projection
+//
+// Canonical: { kind, slug, relativePath, frontmatter, body }
+// frontmatter: { created, last_updated, status, issue?, specced_by,
+//                implemented_by?, supersedes?, superseded_by? }
+//
+// Cross-field superRefine (relativePath ~ kind+slug) is enforced at execution
+// boundary, not projected — projection support does not fail for this.
+// ---------------------------------------------------------------------------
+function buildSpecAuthorProjection(target: ProviderSchemaProjectionTarget): ProviderStructuredOutputSchema {
+  if (target === 'openai_agents_output_type') {
+    // OpenAI strict mode: all frontmatter fields in required, optional ones nullable.
+    return {
+      type: 'object',
+      properties: {
+        kind: { type: 'string', enum: ['feature_spec', 'enhancement_spec'] },
+        slug: { type: 'string' },
+        relativePath: { type: 'string' },
+        frontmatter: {
           type: 'object',
           properties: {
-            feedbackId: { type: 'string' },
-            disposition: { type: 'string', enum: ['fixed', 'declined'] },
-            summary: { type: 'string' },
-            reason: { type: 'string' }
+            created: { type: 'string' },
+            last_updated: { type: 'string' },
+            status: { type: 'string', enum: ['draft', 'approved', 'implementing', 'complete', 'superseded'] },
+            issue: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
+            specced_by: { type: 'string' },
+            implemented_by: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+            supersedes: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+            superseded_by: { anyOf: [{ type: 'string' }, { type: 'null' }] }
           },
-          required: ['feedbackId', 'disposition'],
+          required: ['created', 'last_updated', 'status', 'issue', 'specced_by', 'implemented_by', 'supersedes', 'superseded_by'],
           additionalProperties: false
-        }
-      }
-    },
-    additionalProperties: false
-  };
-}
+        },
+        body: { type: 'string' }
+      },
+      required: ['kind', 'slug', 'relativePath', 'frontmatter', 'body'],
+      additionalProperties: false
+    };
+  }
 
-// specAuthorResultSchema: { kind, slug, relativePath, frontmatter, body }
-// frontmatter: { created, last_updated, status, issue?, specced_by, implemented_by?, supersedes?, superseded_by? }
-// cross-field superRefine (relativePath ~ kind+slug) is enforced at execution boundary, not projected
-function buildSpecAuthorProjection(_target: ProviderSchemaProjectionTarget): ProviderStructuredOutputSchema {
+  // Claude target: optional frontmatter fields remain optional.
   return {
     type: 'object',
     properties: {
@@ -157,10 +306,51 @@ function buildSpecAuthorProjection(_target: ProviderSchemaProjectionTarget): Pro
   };
 }
 
-// prFinalizeResultSchema: { directive, reconciledSummary?, titleSubject?, validationSummary?, findings[] }
-// prFinalizeFindingSchema: { severity, summary, target? }
-// cross-field superRefine (advance + blocker contradiction) is enforced at execution boundary
-function buildPrFinalizeProjection(_target: ProviderSchemaProjectionTarget): ProviderStructuredOutputSchema {
+// ---------------------------------------------------------------------------
+// prFinalizeResultSchema projection
+//
+// Canonical: { directive, reconciledSummary?, titleSubject?,
+//              validationSummary?, findings[] }
+// prFinalizeFinding: { severity, summary, target? }
+//
+// Cross-field superRefine (advance + blocker contradiction) is enforced at
+// execution boundary, not projected.
+// ---------------------------------------------------------------------------
+function buildPrFinalizeProjection(target: ProviderSchemaProjectionTarget): ProviderStructuredOutputSchema {
+  if (target === 'openai_agents_output_type') {
+    // OpenAI strict mode: all properties in required, optional fields nullable.
+    return {
+      type: 'object',
+      properties: {
+        directive: { type: 'string', enum: ['advance', 'revise'] },
+        reconciledSummary: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        titleSubject: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        validationSummary: {
+          anyOf: [
+            { type: 'array', items: { type: 'string' } },
+            { type: 'null' }
+          ]
+        },
+        findings: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              severity: { type: 'string', enum: ['blocker', 'warning', 'info'] },
+              summary: { type: 'string' },
+              target: { anyOf: [{ type: 'string' }, { type: 'null' }] }
+            },
+            required: ['severity', 'summary', 'target'],
+            additionalProperties: false
+          }
+        }
+      },
+      required: ['directive', 'reconciledSummary', 'titleSubject', 'validationSummary', 'findings'],
+      additionalProperties: false
+    };
+  }
+
+  // Claude target: optional fields remain optional.
   return {
     type: 'object',
     properties: {
