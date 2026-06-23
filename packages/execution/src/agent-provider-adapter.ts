@@ -3,6 +3,7 @@ import type { RunnerEvent } from '@autocatalyst/api-contract';
 
 import type { RunnerRunInput } from './runner.js';
 import type { ProviderCapabilityDegradation, ProviderRequest } from './request-alteration.js';
+import type { StructuredAgentResultCapture } from './structured-result-capture.js';
 
 export type ProviderConnectionMechanism = 'fetch_transport' | 'process_environment';
 
@@ -73,6 +74,7 @@ export interface AgentProviderSessionInput {
   readonly profile: ResolvedAgentRunnerProfile;
   readonly connection: AgentConnection;
   readonly telemetryContext: AgentConnectionTelemetryContext;
+  readonly structuredResultCapture?: StructuredAgentResultCapture;
 }
 
 export interface AgentTokenUsage {
@@ -127,7 +129,10 @@ export type ProviderConnectionErrorCode =
 export type ProviderProtocolErrorCode =
   | 'event_mapping_failed'
   | 'invalid_provider_event'
-  | 'impossible_session_sequence';
+  | 'impossible_session_sequence'
+  | 'missing_structured_result'
+  | 'duplicate_structured_result'
+  | 'structured_result_invalid';
 
 export type UnsupportedProviderCapabilityErrorCode =
   | 'inference_setting_unsupported'
@@ -136,7 +141,8 @@ export type UnsupportedProviderCapabilityErrorCode =
   | 'header_operation_unsupported'
   | 'sandbox_client_unsupported'
   | 'sandbox_snapshot_unsupported'
-  | 'workspace_containment_violation';
+  | 'workspace_containment_violation'
+  | 'structured_result_unsupported';
 
 export class ProviderConfigurationError extends Error {
   constructor(

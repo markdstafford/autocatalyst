@@ -22,19 +22,24 @@ import type {
   AgentProviderSessionMetadata,
   ProviderCapabilityDegradation,
   ProviderFetchTransport,
-  ProviderRequest
+  ProviderRequest,
+  ProviderSchemaProjection,
+  StructuredAgentResultCapture
 } from '@autocatalyst/execution';
 import {
+  assertSerializableStructuredResult,
   buildSafeAdapterFailureLogDetail,
   ClassifiedProviderFailureError,
   classifyProviderFailure,
   filterSafeClassificationDetails,
   notifyToolInputSchema,
+  projectStepResultSchemaForProvider,
   ProviderProtocolError,
   reportProgressToolInputSchema,
   runtimeSkillsCatalogRoot,
   UnsupportedProviderCapabilityError,
-  updatePlanToolInputSchema
+  updatePlanToolInputSchema,
+  writeScratchStepResultFile
 } from '@autocatalyst/execution';
 import { materializeOpenAISkillFiles } from './skill-materialization.js';
 import type { RunnerEvent } from '@autocatalyst/api-contract';
@@ -102,6 +107,7 @@ export interface OpenAIRunSessionInput {
   /** OpenAIProvider bound to the per-session fetch transport. Never a global. */
   readonly modelProvider: OpenAIProvider;
   readonly modelSettings: Readonly<Record<string, unknown>>;
+  readonly structuredResult?: OpenAIStructuredResultConfiguration;
 }
 
 export interface OpenAIRunOutcome {
@@ -137,6 +143,32 @@ export interface OpenAIAgentAdapterOptions {
   readonly clock?: () => string;
   readonly eventIdGenerator?: () => string;
   readonly logger?: OpenAIAgentAdapterLogger;
+}
+
+export interface OpenAIStructuredResultConfiguration {
+  readonly capture: StructuredAgentResultCapture;
+  readonly projection: ProviderSchemaProjection & {
+    readonly target: 'openai_agents_output_type';
+    readonly mechanism: 'openai_output_type';
+  };
+}
+
+export function createOpenAIStructuredResultConfiguration(
+  capture: StructuredAgentResultCapture
+): OpenAIStructuredResultConfiguration {
+  const projection = projectStepResultSchemaForProvider({
+    schemaId: capture.schemaId,
+    schema: capture.schema,
+    target: 'openai_agents_output_type'
+  });
+  // projection.target is always 'openai_agents_output_type' for this target
+  return {
+    capture,
+    projection: projection as ProviderSchemaProjection & {
+      readonly target: 'openai_agents_output_type';
+      readonly mechanism: 'openai_output_type';
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -407,6 +439,36 @@ async function maybeWriteResultFile(
   }
 }
 
+async function writeStructuredResultFile(
+  env: AgentProviderSessionInput['runInput']['environment'],
+  structuredResult: OpenAIStructuredResultConfiguration,
+  output: unknown
+): Promise<void> {
+  if (output === undefined || output === null) {
+    throw new ProviderProtocolError(
+      'missing_structured_result',
+      'OpenAI structured output session advanced without a parsed structured result.',
+      { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId }
+    );
+  }
+
+  assertSerializableStructuredResult(output);
+
+  const writeOutcome = await writeScratchStepResultFile({
+    environment: env,
+    resultFile: structuredResult.capture.resultFile,
+    value: output
+  });
+
+  if (writeOutcome.status === 'failed') {
+    throw new ProviderProtocolError(
+      'structured_result_invalid',
+      `OpenAI structured result write failed: ${writeOutcome.code}`,
+      { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId, code: writeOutcome.code }
+    );
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Workspace mapping & containment
 // ---------------------------------------------------------------------------
@@ -590,14 +652,36 @@ async function runRunnerNonStream(
 }
 
 function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome {
+  // When a structured result is configured, wrap the projection schema as a
+  // JsonSchemaDefinition so the OpenAI Agents SDK enforces structured output.
+  // The projection.schema is a plain JSON Schema object; JsonSchemaDefinition
+  // wraps it with the required { type: 'json_schema', name, strict, schema } shape.
+  // We cast through `unknown` because ProviderStructuredOutputSchema = unknown.
+  const outputTypeOption =
+    input.structuredResult !== undefined
+      ? {
+          outputType: {
+            type: 'json_schema' as const,
+            name: input.structuredResult.capture.schemaId.replace(/[^a-zA-Z0-9_-]/g, '_'),
+            strict: true,
+            schema: input.structuredResult.projection.schema as unknown as Record<string, unknown>
+          }
+        }
+      : {};
+
+  // Cast to the default SandboxAgent (TextOutput) type that the runner and
+  // runRunnerNonStream expect. The outputType field is passed through the
+  // constructor and consumed by the SDK at runtime; the cast is safe because
+  // the runner only observes the finalOutput (typed unknown in NonStreamRunResultView).
   const agent = new SandboxAgent({
     name: 'autocatalyst-openai-agent',
     model: input.model,
     instructions: input.instructions,
     defaultManifest: input.manifest,
     tools: input.tools,
-    ...(Object.keys(input.modelSettings).length > 0 ? { modelSettings: input.modelSettings } : {})
-  });
+    ...(Object.keys(input.modelSettings).length > 0 ? { modelSettings: input.modelSettings } : {}),
+    ...outputTypeOption
+  } as ConstructorParameters<typeof SandboxAgent>[0]) as SandboxAgent;
 
   // Per-session Runner bound to the per-session model provider via RunConfig.
   // This is the ONLY place the model provider is set — never through any of the
@@ -743,6 +827,12 @@ export function createOpenAIAgentAdapter(
         if (!secretSet.has(key)) safeEnvironment[key] = value;
       }
 
+      // Build structured result configuration if capture is active.
+      let structuredResult: OpenAIStructuredResultConfiguration | undefined;
+      if (input.structuredResultCapture !== undefined) {
+        structuredResult = createOpenAIStructuredResultConfiguration(input.structuredResultCapture);
+      }
+
       safeLog('info', 'openai_agent_session_start', {
         runId: input.telemetryContext.runId,
         phase: input.telemetryContext.phase,
@@ -752,7 +842,12 @@ export function createOpenAIAgentAdapter(
         connectionMechanism: input.profile.connectionMechanism,
         noopSnapshot: true,
         workspaceShape: workspace.shape,
-        workspaceRootCount: workspace.workspaceRoots.length
+        workspaceRootCount: workspace.workspaceRoots.length,
+        ...(structuredResult !== undefined ? {
+          schemaId: structuredResult.capture.schemaId,
+          resultFile: structuredResult.capture.resultFile,
+          resultCaptureMechanism: structuredResult.projection.mechanism
+        } : {})
       });
 
       // 5. Materialize resolved runtime skills into sandbox mounts + a system-prompt hint.
@@ -771,15 +866,22 @@ export function createOpenAIAgentAdapter(
         });
       } catch (err) {
         const classified = classifySdkError(err);
-        if (classified !== undefined) {
-          safeLog('error', 'openai.adapter.sandbox_auth_failed', {
-            runId: input.telemetryContext.runId,
-            step: input.telemetryContext.step,
-            failureReason: classified.failureReason,
-            ...buildSafeAdapterFailureLogDetail(err, openaiProviderKind)
-          });
-          throw classified;
-        }
+        const safeDetail = buildSafeAdapterFailureLogDetail(err, openaiProviderKind);
+        const failureCode = typeof safeDetail.code === 'string' ? safeDetail.code : undefined;
+        safeLog('error', 'openai.adapter.sandbox_failed', {
+          runId: input.telemetryContext.runId,
+          step: input.telemetryContext.step,
+          ...(classified !== undefined ? { failureReason: classified.failureReason } : {}),
+          ...(failureCode !== undefined ? { failureCode } : {}),
+          ...(structuredResult !== undefined ? {
+            structuredResultCapture: true,
+            schemaId: structuredResult.capture.schemaId,
+            resultFile: structuredResult.capture.resultFile,
+            resultCaptureMechanism: structuredResult.projection.mechanism
+          } : {}),
+          ...safeDetail
+        });
+        if (classified !== undefined) throw classified;
         throw err;
       }
 
@@ -839,7 +941,8 @@ export function createOpenAIAgentAdapter(
         manifest,
         session: sandboxHandle.session,
         modelProvider,
-        modelSettings: inferenceMapping.mapped
+        modelSettings: inferenceMapping.mapped,
+        ...(structuredResult !== undefined ? { structuredResult } : {})
       });
 
       let metadataResolve!: (value: AgentProviderSessionMetadata) => void;
@@ -874,10 +977,16 @@ export function createOpenAIAgentAdapter(
 
           const terminal = await outcome.result;
 
-          // Result-file handoff: write the raw final output to the scratch root,
-          // leaving validation to the execution entry point. Only on advance.
+          // Result-file handoff: write the final output to the scratch root.
+          // Only on advance.
           if (terminal.directive === 'advance') {
-            await maybeWriteResultFile(input.runInput.environment, terminal.output);
+            if (structuredResult !== undefined) {
+              // Structured capture: use parsed output, not prose
+              await writeStructuredResultFile(input.runInput.environment, structuredResult, terminal.output);
+            } else {
+              // Legacy no-contract path: write prose finalOutput as before
+              await maybeWriteResultFile(input.runInput.environment, terminal.output);
+            }
           }
 
           let terminalEvent: RunnerEvent;
@@ -918,14 +1027,21 @@ export function createOpenAIAgentAdapter(
         } catch (err) {
           const classified = classifySdkError(err);
           const thrown = classified ?? err;
-          if (classified !== undefined) {
-            safeLog('error', 'openai.adapter.session_auth_failed', {
-              runId: input.runInput.environment.context.run.id,
-              step: input.runInput.environment.context.run.currentStep,
-              failureReason: classified.failureReason,
-              ...buildSafeAdapterFailureLogDetail(err, openaiProviderKind)
-            });
-          }
+          const safeDetail = buildSafeAdapterFailureLogDetail(err, openaiProviderKind);
+          const failureCode = typeof safeDetail.code === 'string' ? safeDetail.code : undefined;
+          safeLog('error', 'openai.adapter.session_failed', {
+            runId: input.runInput.environment.context.run.id,
+            step: input.runInput.environment.context.run.currentStep,
+            ...(classified !== undefined ? { failureReason: classified.failureReason } : {}),
+            ...(failureCode !== undefined ? { failureCode } : {}),
+            ...(structuredResult !== undefined ? {
+              structuredResultCapture: true,
+              schemaId: structuredResult.capture.schemaId,
+              resultFile: structuredResult.capture.resultFile,
+              resultCaptureMechanism: structuredResult.projection.mechanism
+            } : {}),
+            ...safeDetail
+          });
           metadataReject(thrown);
           throw thrown;
         }

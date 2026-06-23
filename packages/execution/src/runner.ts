@@ -1,5 +1,6 @@
 import type { MaterializedExecutionEnvironment } from './materialized-environment.js';
 import type { InferenceSettings, ModelIdentity, TokenBreakdown, RunnerEvent } from '@autocatalyst/api-contract';
+import type { StructuredAgentResultCapture } from './structured-result-capture.js';
 
 export type RunnerProtocolErrorCode =
   | 'invalid_event'
@@ -29,6 +30,7 @@ export interface RunnerCloseResult {
 export interface RunnerRunInput {
   readonly environment: MaterializedExecutionEnvironment;
   readonly correlationId?: string;
+  readonly structuredResultCapture?: StructuredAgentResultCapture;
 }
 
 export interface RunnerSessionMetadata {

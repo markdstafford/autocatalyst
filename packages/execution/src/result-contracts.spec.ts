@@ -335,13 +335,15 @@ describe('pr.finalize result contract registration', () => {
     expect(PR_FINALIZE_SCHEMA_ID).toBe('autocatalyst.pr_finalize.v1');
   });
 
-  it('registers a default pr.finalize contract with the clean-result normalizer', () => {
+  it('registers a default pr.finalize contract with the null-strip and clean-result normalizers', () => {
     const registry = registerPullRequestFinalizeResultContract(createStepResultContractRegistry());
     const resolution = registry.resolve({ step: 'pr.finalize', schemaId: PR_FINALIZE_SCHEMA_ID });
     expect(resolution.status).toBe('resolved');
     if (resolution.status !== 'resolved') return;
     expect(resolution.contract.schema).toBe(prFinalizeResultSchema);
-    expect((resolution.contract.normalizers as readonly { id: string }[])[0]?.id).toBe('pr-finalize-clean-result');
+    const normalizers = resolution.contract.normalizers as readonly { id: string }[];
+    expect(normalizers[0]?.id).toBe('pr-finalize-null-strip');
+    expect(normalizers[1]?.id).toBe('pr-finalize-clean-result');
   });
 
   it('propagates PR-finalize policy and rejects duplicate registrations', () => {
@@ -373,6 +375,10 @@ describe('reviewer result contract registration', () => {
     if (resolution.status !== 'resolved') return;
     expect(resolution.contract.schemaId).toBe('autocatalyst.reviewer_result.v1');
     expect(resolution.contract.resultFile).toBe('step-result.json');
+    const normalizers = resolution.contract.normalizers as readonly { id: string }[];
+    expect(Array.isArray(normalizers)).toBe(true);
+    expect(normalizers.map((n) => n.id)).toContain('reviewer-null-findings-strip');
+    expect(normalizers.map((n) => n.id)).toContain('reviewer-result-clean-review');
   });
 
   it('rejects invalid reviewer result shapes', () => {
@@ -401,6 +407,9 @@ describe('implementer dispositions result contract registration', () => {
     expect(resolution.status).toBe('resolved');
     if (resolution.status !== 'resolved') return;
     expect(resolution.contract.schemaId).toBe('autocatalyst.implementer_dispositions.v1');
+    const normalizers = resolution.contract.normalizers as readonly { id: string }[];
+    expect(Array.isArray(normalizers)).toBe(true);
+    expect(normalizers.map((n) => n.id)).toContain('implementer-dispositions-null-strip');
   });
 
   it('accepts an empty object and a dispositions array, and rejects a reviewer verdict', () => {
