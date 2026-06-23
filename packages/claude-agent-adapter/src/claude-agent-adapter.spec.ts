@@ -1,8 +1,9 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import os, { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 import type { ResolvedSkill, RunnerEvent } from '@autocatalyst/api-contract';
 import type {
@@ -12,9 +13,14 @@ import type {
   ProcessLaunchConfig,
   ProcessLaunchConfigInput,
   ProviderFetchTransport,
-  ResolvedAgentRunnerProfile
+  ResolvedAgentRunnerProfile,
+  StructuredAgentResultCapture
 } from '@autocatalyst/execution';
-import { ClassifiedProviderFailureError, UnsupportedProviderCapabilityError } from '@autocatalyst/execution';
+import {
+  ClassifiedProviderFailureError,
+  ProviderProtocolError,
+  UnsupportedProviderCapabilityError
+} from '@autocatalyst/execution';
 
 import {
   claudeAgentAdapterId,
@@ -184,6 +190,65 @@ async function collect(stream: AsyncIterable<RunnerEvent>): Promise<RunnerEvent[
   const out: RunnerEvent[] = [];
   for await (const ev of stream) out.push(ev);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Structured result helpers
+// ---------------------------------------------------------------------------
+
+async function* asyncIter(events: ClaudeNativeEvent[]): AsyncIterable<ClaudeNativeEvent> {
+  for (const ev of events) yield ev;
+}
+
+function successfulResultStream(): AsyncIterable<ClaudeNativeEvent> {
+  return asyncIter([
+    { type: 'tool_use', tool: { name: 'submit_result', input: { status: 'satisfied', findings: [] } } },
+    { type: 'result', result: { is_error: false, output: 'Done.' } }
+  ]);
+}
+
+function makeReviewerCapture(resultFile = 'step-result.json'): StructuredAgentResultCapture {
+  return {
+    step: 'implementation.build',
+    schemaId: 'autocatalyst.reviewer_result.v1',
+    schema: z.object({ status: z.enum(['satisfied', 'changes_requested', 'rejected']), findings: z.array(z.any()).optional() }),
+    resultFile,
+    required: true
+  };
+}
+
+interface RunAdapterCaptureOptions {
+  allowedTools?: string[];
+  scratchRoot?: string;
+}
+
+async function runAdapterWithCapture(
+  adapter: ReturnType<typeof createClaudeAgentAdapter>,
+  capture: StructuredAgentResultCapture,
+  opts: RunAdapterCaptureOptions = {}
+): Promise<RunnerEvent[]> {
+  const { input } = makeSessionInput({
+    allowedTools: opts.allowedTools,
+    scratchRoot: opts.scratchRoot
+  });
+  const inputWithCapture: AgentProviderSessionInput = {
+    ...input,
+    structuredResultCapture: capture
+  };
+  const session = await adapter.startSession(inputWithCapture);
+  return collect(session.events);
+}
+
+async function runAdapterNoCapture(
+  adapter: ReturnType<typeof createClaudeAgentAdapter>,
+  opts: RunAdapterCaptureOptions = {}
+): Promise<RunnerEvent[]> {
+  const { input } = makeSessionInput({
+    allowedTools: opts.allowedTools,
+    scratchRoot: opts.scratchRoot
+  });
+  const session = await adapter.startSession(input);
+  return collect(session.events);
 }
 
 // ---------------------------------------------------------------------------
@@ -685,6 +750,163 @@ describe('createClaudeAgentAdapter — provider failure classification', () => {
     const serializedLogs = JSON.stringify(logs);
     expectNoSentinels(serializedLogs);
     expect(serializedLogs).toContain('provider_auth_failed');
+  });
+});
+
+describe('createClaudeAgentAdapter — structured result capture', () => {
+  it('passes submit_result in allowedTools for structured sessions', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-claude-toolreg-'));
+    try {
+      const launchCalls: ClaudeSessionLaunchOptions[] = [];
+
+      const adapter = createClaudeAgentAdapter({
+        launchClaudeSession: (opts) => {
+          launchCalls.push(opts);
+          return successfulResultStream();
+        },
+        supportsStructuredResultTools: true
+      });
+
+      const capture = makeReviewerCapture();
+      await runAdapterWithCapture(adapter, capture, { scratchRoot: scratchDir });
+
+      expect(launchCalls[0]!.allowedTools).toContain('submit_result');
+      expect(launchCalls[0]!.structuredResultTool?.name).toBe('submit_result');
+      expect(launchCalls[0]!.structuredResultTool?.projection.mechanism).toBe('claude_submit_result_tool');
+    } finally {
+      await rm(scratchDir, { recursive: true });
+    }
+  });
+
+  it('allows submit_result in read-only reviewer sessions without granting write tools', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-claude-reviewer-'));
+    try {
+      const submittedResult = { status: 'satisfied', findings: [] };
+
+      const events: ClaudeNativeEvent[] = [
+        { type: 'tool_use', tool: { name: 'submit_result', input: submittedResult } },
+        { type: 'result', result: { is_error: false, output: 'prose summary here' } }
+      ];
+
+      const launchCalls: ClaudeSessionLaunchOptions[] = [];
+      const adapter = createClaudeAgentAdapter({
+        launchClaudeSession: (opts) => {
+          launchCalls.push(opts);
+          return asyncIter(events);
+        },
+        supportsStructuredResultTools: true
+      });
+
+      await runAdapterWithCapture(adapter, makeReviewerCapture('reviewer-result.json'), {
+        allowedTools: ['Read', 'Glob', 'Grep'],
+        scratchRoot: scratchDir
+      });
+
+      expect(launchCalls[0]!.allowedTools).toContain('submit_result');
+      expect(launchCalls[0]!.allowedTools).toContain('Read');
+      expect(launchCalls[0]!.allowedTools).not.toContain('Write');
+      expect(launchCalls[0]!.allowedTools).not.toContain('Edit');
+
+      const resultText = await readFile(path.join(scratchDir, 'reviewer-result.json'), 'utf8');
+      expect(JSON.parse(resultText)).toEqual(submittedResult);
+    } finally {
+      await rm(scratchDir, { recursive: true });
+    }
+  });
+
+  it('ignores result-event prose when submit_result provides a valid object', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-claude-prose-'));
+    try {
+      const structuredResult = { status: 'satisfied', findings: [] };
+      const events: ClaudeNativeEvent[] = [
+        { type: 'tool_use', tool: { name: 'submit_result', input: structuredResult } },
+        { type: 'result', result: { is_error: false, output: 'Here is my prose summary of the review...' } }
+      ];
+
+      await runAdapterWithCapture(
+        createClaudeAgentAdapter({ launchClaudeSession: () => asyncIter(events), supportsStructuredResultTools: true }),
+        makeReviewerCapture(),
+        { scratchRoot: scratchDir }
+      );
+
+      const resultText = await readFile(path.join(scratchDir, 'step-result.json'), 'utf8');
+      expect(JSON.parse(resultText)).toEqual(structuredResult);
+      expect(resultText).not.toContain('prose summary');
+    } finally {
+      await rm(scratchDir, { recursive: true });
+    }
+  });
+
+  it('throws structured_result_unsupported when supportsStructuredResultTools is not set', async () => {
+    const adapter = createClaudeAgentAdapter({
+      launchClaudeSession: () => asyncIter([])
+      // supportsStructuredResultTools NOT set
+    });
+
+    await expect(runAdapterWithCapture(adapter, makeReviewerCapture())).rejects.toThrow(UnsupportedProviderCapabilityError);
+  });
+
+  it('throws missing_structured_result when session ends without submit_result call', async () => {
+    const events: ClaudeNativeEvent[] = [
+      { type: 'result', result: { is_error: false, output: 'Done.' } }
+    ];
+
+    const adapter = createClaudeAgentAdapter({
+      launchClaudeSession: () => asyncIter(events),
+      supportsStructuredResultTools: true
+    });
+
+    await expect(runAdapterWithCapture(adapter, makeReviewerCapture())).rejects.toThrow(ProviderProtocolError);
+
+    let err: ProviderProtocolError | undefined;
+    try {
+      await runAdapterWithCapture(adapter, makeReviewerCapture());
+    } catch (e) {
+      err = e as ProviderProtocolError;
+    }
+    expect(err?.code).toBe('missing_structured_result');
+  });
+
+  it('throws duplicate_structured_result on second submit_result call', async () => {
+    const result = { status: 'satisfied', findings: [] };
+    const events: ClaudeNativeEvent[] = [
+      { type: 'tool_use', tool: { name: 'submit_result', input: result } },
+      { type: 'tool_use', tool: { name: 'submit_result', input: result } },
+      { type: 'result', result: { is_error: false } }
+    ];
+
+    const adapter = createClaudeAgentAdapter({
+      launchClaudeSession: () => asyncIter(events),
+      supportsStructuredResultTools: true
+    });
+
+    let err: ProviderProtocolError | undefined;
+    try {
+      await runAdapterWithCapture(adapter, makeReviewerCapture());
+    } catch (e) {
+      err = e as ProviderProtocolError;
+    }
+    expect(err?.code).toBe('duplicate_structured_result');
+  });
+
+  it('no-contract sessions keep existing final-output behavior', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-claude-legacy-'));
+    try {
+      const events: ClaudeNativeEvent[] = [
+        { type: 'result', result: { is_error: false, output: '{"status":"ok"}' } }
+      ];
+
+      const adapter = createClaudeAgentAdapter({
+        launchClaudeSession: () => asyncIter(events)
+      });
+
+      await runAdapterNoCapture(adapter, { scratchRoot: scratchDir });
+
+      const resultText = await readFile(path.join(scratchDir, 'step-result.json'), 'utf8');
+      expect(resultText).toContain('status');
+    } finally {
+      await rm(scratchDir, { recursive: true });
+    }
   });
 });
 
