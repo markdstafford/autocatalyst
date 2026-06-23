@@ -22,7 +22,9 @@ import type {
   AgentProviderSessionMetadata,
   ProviderCapabilityDegradation,
   ProviderFetchTransport,
-  ProviderRequest
+  ProviderRequest,
+  ProviderSchemaProjection,
+  StructuredAgentResultCapture
 } from '@autocatalyst/execution';
 import {
   buildSafeAdapterFailureLogDetail,
@@ -30,6 +32,7 @@ import {
   classifyProviderFailure,
   filterSafeClassificationDetails,
   notifyToolInputSchema,
+  projectStepResultSchemaForProvider,
   ProviderProtocolError,
   reportProgressToolInputSchema,
   runtimeSkillsCatalogRoot,
@@ -137,6 +140,32 @@ export interface OpenAIAgentAdapterOptions {
   readonly clock?: () => string;
   readonly eventIdGenerator?: () => string;
   readonly logger?: OpenAIAgentAdapterLogger;
+}
+
+export interface OpenAIStructuredResultConfiguration {
+  readonly capture: StructuredAgentResultCapture;
+  readonly projection: ProviderSchemaProjection & {
+    readonly target: 'openai_agents_output_type';
+    readonly mechanism: 'openai_output_type';
+  };
+}
+
+export function createOpenAIStructuredResultConfiguration(
+  capture: StructuredAgentResultCapture
+): OpenAIStructuredResultConfiguration {
+  const projection = projectStepResultSchemaForProvider({
+    schemaId: capture.schemaId,
+    schema: capture.schema,
+    target: 'openai_agents_output_type'
+  });
+  // projection.target is always 'openai_agents_output_type' for this target
+  return {
+    capture,
+    projection: projection as ProviderSchemaProjection & {
+      readonly target: 'openai_agents_output_type';
+      readonly mechanism: 'openai_output_type';
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
