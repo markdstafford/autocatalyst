@@ -11,7 +11,7 @@ export interface StructuredAgentResultCapture {
   readonly required: true;
 }
 
-export type StructuredAgentResultCaptureMechanism = 'openai_output_type' | 'claude_submit_result_tool';
+export type StructuredAgentResultCaptureMechanism = 'openai_output_type' | 'claude_structured_output';
 
 export interface CreateStructuredAgentResultCaptureInput {
   readonly mode: 'none' | 'scratch_file';

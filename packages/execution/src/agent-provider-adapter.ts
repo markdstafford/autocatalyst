@@ -4,6 +4,7 @@ import type { RunnerEvent } from '@autocatalyst/api-contract';
 import type { RunnerRunInput } from './runner.js';
 import type { ProviderCapabilityDegradation, ProviderRequest } from './request-alteration.js';
 import type { StructuredAgentResultCapture } from './structured-result-capture.js';
+import type { AgentModelMemoryContinuity } from './agent-model-memory.js';
 
 export type ProviderConnectionMechanism = 'fetch_transport' | 'process_environment';
 
@@ -75,6 +76,7 @@ export interface AgentProviderSessionInput {
   readonly connection: AgentConnection;
   readonly telemetryContext: AgentConnectionTelemetryContext;
   readonly structuredResultCapture?: StructuredAgentResultCapture;
+  readonly modelMemory?: AgentModelMemoryContinuity;
 }
 
 export interface AgentTokenUsage {

@@ -248,6 +248,17 @@ describe('runner dispatch public API', () => {
   });
 });
 
+describe('agent model memory continuity public API', () => {
+  it('exports provider-neutral agent model memory continuity contracts', async () => {
+    const mod = await import('./index.js');
+    expect(mod.createNoopAgentModelMemoryStore).toBeTypeOf('function');
+
+    const store = mod.createNoopAgentModelMemoryStore();
+    await expect(store.load()).resolves.toBeNull();
+    await expect(store.save({ providerKind: 'openai', adapterId: 'openai-agents-sdk', state: { previousResponseId: 'resp_1' } })).resolves.toBeUndefined();
+  });
+});
+
 describe('request alteration public API', () => {
   it('exports request alteration primitives from the public entrypoint', () => {
     // Verify function exports are callable

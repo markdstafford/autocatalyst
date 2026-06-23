@@ -1191,6 +1191,7 @@ export async function createControlPlaneServer(
     const executionUnitOfWork = createExecutionRunUnitOfWork({
       execute: entryPoint,
       sessions: domainRepos.sessions,
+      runSteps: domainRepos.runSteps,
       logger: safeSessionLogger,
       resolveContext: async (workInput) => {
         const workspace = await resolveWorkspaceInputForRun({
