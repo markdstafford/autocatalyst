@@ -109,6 +109,13 @@ export async function startRunLifecycle(input: StartRunLifecycleInput): Promise<
   }
 }
 
+function extractProviderModelMemory(checkpoint: JsonValue | null): Record<string, unknown> | null {
+  if (checkpoint === null || typeof checkpoint !== 'object' || Array.isArray(checkpoint)) return null;
+  const pmem = (checkpoint as Record<string, unknown>)['providerModelMemory'];
+  if (pmem === null || typeof pmem !== 'object' || Array.isArray(pmem)) return null;
+  return pmem as Record<string, unknown>;
+}
+
 export async function applyRunDirective(input: ApplyRunDirectiveInput): Promise<RunLifecycleState> {
   const existing = await input.runs.findById(input.runId);
   if (existing === null) {
@@ -130,6 +137,7 @@ export async function applyRunDirective(input: ApplyRunDirectiveInput): Promise<
     const sourceRunStep = input.runs.findLatestOpenRunStep
       ? await input.runs.findLatestOpenRunStep({ runId: existing.id, step: existing.currentStep })
       : null;
+    const inheritedProviderModelMemory = extractProviderModelMemory(sourceRunStep?.checkpointResult ?? null);
     const recorded = await input.runs.recordRunStepTransition({
       runId: existing.id,
       currentStep: step.id,
@@ -137,7 +145,8 @@ export async function applyRunDirective(input: ApplyRunDirectiveInput): Promise<
       runStep: buildEntryRunStep(step, now(input.clock)),
       ...(sourceRunStep !== null ? { sourceRunStepId: sourceRunStep.id } : {}),
       ...(input.checkpointResult !== undefined ? { checkpointResult: input.checkpointResult } : {}),
-      ...(input.directive === 'fail' && input.reason !== undefined ? { failureReason: input.reason } : {})
+      ...(input.directive === 'fail' && input.reason !== undefined ? { failureReason: input.reason } : {}),
+      ...(inheritedProviderModelMemory !== null ? { inheritedProviderModelMemory } : {})
     });
     return { run: recorded.run, workflow, step, runStep: recorded.runStep, transition };
   } catch (error) {

@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { UnsupportedProviderCapabilityError } from './agent-provider-adapter.js';
 import type { StructuredAgentResultCaptureMechanism } from './structured-result-capture.js';
 
-export type ProviderSchemaProjectionTarget = 'openai_agents_output_type' | 'claude_tool_input_schema';
+export type ProviderSchemaProjectionTarget = 'openai_agents_output_type' | 'claude_output_format';
 export type ProviderStructuredOutputSchema = unknown;
 
 export interface ProviderSchemaProjection {
@@ -35,7 +35,7 @@ export function projectStepResultSchemaForProvider(input: {
   readonly target: ProviderSchemaProjectionTarget;
 }): ProviderSchemaProjection {
   const mechanism: StructuredAgentResultCaptureMechanism =
-    input.target === 'openai_agents_output_type' ? 'openai_output_type' : 'claude_submit_result_tool';
+    input.target === 'openai_agents_output_type' ? 'openai_output_type' : 'claude_structured_output';
 
   const schema = buildProjectedSchema(input.schemaId, input.target);
 

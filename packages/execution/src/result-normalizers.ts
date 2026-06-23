@@ -277,6 +277,20 @@ export const prFinalizeNullStripNormalizer: ResultNormalizer = {
         stripped.push(field);
       }
     }
+    if (Array.isArray(result['findings'])) {
+      const findings = result['findings'];
+      let changedFindings = false;
+      const nextFindings = findings.map((finding) => {
+        if (!isPlainObject(finding) || finding['target'] !== null) return finding;
+        const { target: _discarded, ...rest } = finding;
+        changedFindings = true;
+        return rest;
+      });
+      if (changedFindings) {
+        result['findings'] = nextFindings;
+        stripped.push('findings[].target');
+      }
+    }
     if (stripped.length === 0) return { status: 'unchanged' };
     return {
       status: 'changed',

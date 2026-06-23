@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod/v4';
 import type { RunItem } from '@openai/agents';
 
+import type { RunnerEvent } from '@autocatalyst/api-contract';
 import type { AgentProviderAdapter, StructuredAgentResultCapture } from '@autocatalyst/execution';
 import { ClassifiedProviderFailureError, ProviderProtocolError } from '@autocatalyst/execution';
 import type {
@@ -25,6 +26,7 @@ import {
   type OpenAIRunSessionInput,
   type OpenAISandboxClientHandle
 } from './openai-agent-adapter.js';
+import type { AgentModelMemoryContinuity, AgentModelMemoryStore, AgentModelMemorySnapshot } from '@autocatalyst/execution';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -546,6 +548,65 @@ describe('createOpenAIAgentAdapter — skill containment', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Live streaming acceptance tests
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — live streaming', () => {
+  it('yields events before the run outcome resolves (pre-completion delivery)', async () => {
+    let releaseCompletion!: () => void;
+    const completionGate = new Promise<void>((resolve) => { releaseCompletion = resolve; });
+
+    const run = (): OpenAIRunOutcome => ({
+      items: (async function*() {
+        yield toolCallItem('notify', { message: 'live event', severity: 'info' });
+        await completionGate;
+      })(),
+      result: completionGate.then(() => ({ directive: 'advance' as const }))
+    });
+
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession: run,
+      sandboxClientFactory: () => fakeSandboxHandle()
+    });
+    const session = await adapter.startSession(makeSessionInput('scratch_only'));
+
+    // Get the iterator once and use it for both phases
+    const eventsIterator = session.events[Symbol.asyncIterator]();
+
+    // The first event (runner_notification from 'notify' tool call) must arrive
+    // BEFORE we release the completion gate — proving pre-completion delivery
+    const firstEventResult = await Promise.race([
+      eventsIterator.next(),
+      new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error('event did not arrive before completion gate')), 300)
+      )
+    ]);
+
+    expect(firstEventResult.done).toBe(false);
+    expect(firstEventResult.value).toMatchObject({ type: 'runner_notification' });
+
+    // Now release the gate
+    releaseCompletion();
+
+    // Drain remaining events from the same iterator
+    const remaining: RunnerEvent[] = [];
+    for (let r = await eventsIterator.next(); !r.done; r = await eventsIterator.next()) {
+      remaining.push(r.value as RunnerEvent);
+    }
+    expect(remaining.at(-1)).toMatchObject({ type: 'runner_terminal_result', result: { directive: 'advance' } });
+  });
+
+  it('default real-SDK run driver uses stream: true and not non-stream newItems replay', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const source = await readFile(new URL('./openai-agent-adapter.ts', import.meta.url), 'utf8');
+    expect(source).toContain('stream: true');
+    expect(source).not.toContain('runRunnerNonStream');
+    expect(source).not.toContain('stream: false');
+    expect(source).not.toContain('NonStreamRunResultView');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Event mapping & terminal protocol (seam-driven)
 // ---------------------------------------------------------------------------
 
@@ -675,6 +736,65 @@ describe('createOpenAIAgentAdapter — observability', () => {
     expect(captured).not.toContain(FAKE_SECRET);
     expect(captured).not.toContain(FAKE_PROMPT);
     expect(logger.info).toHaveBeenCalledWith('openai_agent_session_start', expect.any(Object));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Transport selection
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — transport selection', () => {
+  it('logs transport: responses for all agent sessions', async () => {
+    const logs: Array<{event: string, fields: unknown}> = [];
+    const logger = {
+      info: vi.fn((event: string, fields: unknown) => { logs.push({ event, fields }); }),
+      warn: vi.fn(),
+      error: vi.fn()
+    };
+    const { run } = makeRunSession([assistantItem('done')]);
+    const adapter = createOpenAIAgentAdapter({ runAgentSession: run, sandboxClientFactory: () => fakeSandboxHandle(), logger });
+    await adapter.startSession(makeSessionInput('scratch_only'));
+
+    const transportLog = logs.find((l) => l.event === 'openai.adapter.transport_selected');
+    expect(transportLog).toBeDefined();
+    expect((transportLog!.fields as Record<string, unknown>)['transport']).toBe('responses');
+  });
+
+  it('selects responses transport for gpt-5.5 even with empty inferenceSettings', async () => {
+    const logs: Array<{event: string, fields: unknown}> = [];
+    const logger = {
+      info: vi.fn((event: string, fields: unknown) => { logs.push({ event, fields }); }),
+      warn: vi.fn(),
+      error: vi.fn()
+    };
+    const { run } = makeRunSession([assistantItem('done')]);
+    const customProfile = {
+      ...makeProfile(),
+      model: { provider: 'openai' as const, model: 'gpt-5.5' },
+      inferenceSettings: {}
+    };
+    const transport = makeTransport();
+    const sessionInput = {
+      ...makeSessionInput('scratch_only'),
+      profile: customProfile,
+      connection: makeConnection(transport)
+    };
+    const adapter = createOpenAIAgentAdapter({ runAgentSession: run, sandboxClientFactory: () => fakeSandboxHandle(), logger });
+    await adapter.startSession(sessionInput);
+
+    const transportLog = logs.find((l) => l.event === 'openai.adapter.transport_selected');
+    expect(transportLog).toBeDefined();
+    expect((transportLog!.fields as Record<string, unknown>)['transport']).toBe('responses');
+    expect((transportLog!.fields as Record<string, unknown>)['model']).toBe('gpt-5.5');
+  });
+
+  it('does not document chat_completions as an agent transport fallback', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const source = await readFile(new URL('./openai-agent-adapter.ts', import.meta.url), 'utf8');
+    // useResponses: false must be gone from the provider construction
+    expect(source).not.toContain('useResponses: false');
+    // useResponses: true must be present
+    expect(source).toContain('useResponses: true');
   });
 });
 
@@ -837,6 +957,44 @@ describe('createOpenAIAgentAdapter — provider auth failure classification', ()
 // injected OpenAI client's `fetch` mocked. No SDK class is re-created here.
 // ---------------------------------------------------------------------------
 
+/**
+ * Build a Responses API SSE stream for a single turn.
+ *
+ * The @openai/agents SDK uses `stream: true` with the Responses API.
+ * The OpenAI SDK parses the response body as SSE via Stream.fromSSEResponse.
+ * Each SSE line is `data: <JSON>` and the terminal event is `response.completed`.
+ */
+function makeResponsesSSEBody(
+  respId: string,
+  output: unknown[]
+): ReadableStream<Uint8Array> {
+  const usageJson = JSON.stringify({ input_tokens: 12, output_tokens: 6, total_tokens: 18, input_tokens_details: {}, output_tokens_details: {} });
+  const responseJson = JSON.stringify({
+    id: respId,
+    object: 'realtime.response',
+    created_at: 0,
+    model: 'gpt-4.1',
+    status: 'completed',
+    output,
+    usage: JSON.parse(usageJson)
+  });
+  // Minimal SSE sequence: response.created → response.completed → [DONE]
+  const lines = [
+    `data: ${JSON.stringify({ type: 'response.created', response: { id: respId, object: 'realtime.response', status: 'in_progress', output: [], usage: null } })}\n\n`,
+    `data: ${JSON.stringify({ type: 'response.completed', response: JSON.parse(responseJson) })}\n\n`,
+    'data: [DONE]\n\n'
+  ];
+  const encoder = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const line of lines) {
+        controller.enqueue(encoder.encode(line));
+      }
+      controller.close();
+    }
+  });
+}
+
 describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mocked only)', () => {
   it('drives a real UnixLocalSandboxClient + Runner with mocked fetch and produces canonical events', async () => {
     // Import the REAL modules so this test fails if the adapter does not match
@@ -858,7 +1016,7 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
 
     try {
       // The model traffic is mocked ONLY at the fetch layer of the injected
-      // OpenAI client (Chat Completions wire format): first turn calls notify,
+      // OpenAI client (Responses API SSE wire format): first turn calls notify,
       // second turn produces the final assistant message.
       let call = 0;
       const seenUrls: string[] = [];
@@ -866,18 +1024,14 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
         fetch: vi.fn(async (request) => {
           seenUrls.push(request.url);
           call += 1;
-          const message = call === 1
-            ? { role: 'assistant', content: null, tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'notify', arguments: JSON.stringify({ message: 'starting review', importance: 'low' }) } }] }
-            : { role: 'assistant', content: 'Review complete: looks good.' };
-          const payload = {
-            id: `chatcmpl-${call}`,
-            object: 'chat.completion',
-            created: 0,
-            model: 'gpt-4.1',
-            choices: [{ index: 0, finish_reason: call === 1 ? 'tool_calls' : 'stop', message }],
-            usage: { prompt_tokens: 12, completion_tokens: 6, total_tokens: 18 }
-          };
-          return new Response(JSON.stringify(payload), { status: 200, headers: { 'content-type': 'application/json' } });
+          const output = call === 1
+            ? [{ id: 'fc_1', type: 'function_call', call_id: 'call_1', name: 'notify', arguments: JSON.stringify({ message: 'starting review', importance: 'low' }), status: 'completed' }]
+            : [{ id: 'msg_1', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Review complete: looks good.' }] }];
+          // Return SSE stream (Responses API streaming format).
+          return new Response(makeResponsesSSEBody(`resp_${call}`, output), {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' }
+          });
         })
       };
 
@@ -934,6 +1088,10 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
       expect(transport.fetch).toHaveBeenCalled();
       expect(seenUrls.some((u) => u.startsWith('https://api.openai.test/v1'))).toBe(true);
 
+      // All requests must go to /v1/responses, NOT /v1/chat/completions.
+      expect(seenUrls.some((u) => u.includes('/v1/responses'))).toBe(true);
+      expect(seenUrls.every((u) => !u.includes('/v1/chat/completions'))).toBe(true);
+
       // Result-file handoff occurred (final assistant text written to scratch).
       const written = await readFile(path.join(scratchRoot, 'step-result.json'), 'utf8');
       expect(written).toContain('Review complete');
@@ -942,6 +1100,88 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
       expect(metadata.outcome).toBe('succeeded');
       expect(metadata.launchMechanism).toBe('fetch_transport');
       expect(metadata.tokenUsage.available).toBe(true);
+
+      await session.close?.();
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// Regression: adapter must never route agent traffic to /v1/chat/completions
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — no Chat Completions regression', () => {
+  it('throws if any fetch request hits /v1/chat/completions during a real-SDK session', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'ac-openai-nochat-'));
+    const repoRoot = path.join(tmp, 'repo');
+    const scratchRoot = path.join(tmp, 'scratch');
+    const sandboxBase = path.join(tmp, 'sbx');
+    await mkdir(repoRoot, { recursive: true });
+    await mkdir(scratchRoot, { recursive: true });
+    await mkdir(sandboxBase, { recursive: true });
+    await writeFile(path.join(repoRoot, 'README.md'), '# project\n');
+
+    try {
+      // Fetch mock that throws if chat/completions is called; succeeds for /v1/responses.
+      const transport: ProviderFetchTransport = {
+        fetch: vi.fn(async (request) => {
+          if (request.url.includes('/v1/chat/completions')) {
+            throw new Error(`REGRESSION: adapter routed to /v1/chat/completions — url: ${request.url}`);
+          }
+          // Return a valid SSE response for /v1/responses.
+          const output = [{ id: 'msg_1', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'All good.' }] }];
+          return new Response(makeResponsesSSEBody('resp_nochat_1', output), {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' }
+          });
+        })
+      };
+
+      const profile = makeProfile({ endpoint: { baseUrl: 'https://api.openai.test/v1' } });
+      const connection: AgentConnection = {
+        profile,
+        credentialResolved: true,
+        createFetchTransport: () => transport,
+        createProcessLaunchConfig: () => { throw new Error('process launch not supported'); }
+      };
+
+      const input: AgentProviderSessionInput = {
+        runInput: {
+          environment: {
+            context: {
+              run: { id: 'run_nochat', workKind: 'feature', currentStep: 'implementation.work', tenant: 'tenant_1' },
+              task: { prompt: 'Check this repo.', inputs: {} },
+              workspaceIntent: { shape: 'none' },
+              secretBindings: [],
+              toolPolicy: { allowedTools: ['bash'], workspaceScope: 'declared_workspace' },
+              skills: { requested: [], resolved: [] },
+              capabilityRequirements: { shell: { kind: 'bash', required: false }, paths: { canonicalWorkspacePaths: true }, lsp: { requested: false } }
+            },
+            workspace: { shape: 'two_roots', repoRoot, scratchRoot, branchName: 'feature/x', provisionedBaseRef: 'origin/main', workspaceRoots: [repoRoot, scratchRoot] },
+            environment: { variables: { SAFE_ENV: 'v', OPENAI_API_KEY: FAKE_SECRET }, secretVariableNames: ['OPENAI_API_KEY'] },
+            toolPolicy: { allowedTools: ['bash'], workspaceRoots: [repoRoot, scratchRoot] },
+            skills: { requested: [], resolved: [] },
+            capabilities: { shell: { kind: 'bash', available: false }, paths: { repoRoot, scratchRoot }, lsp: { requested: false, available: false } }
+          }
+        },
+        profile,
+        connection,
+        telemetryContext: { runId: 'run_nochat', step: 'implementation.work', role: 'reviewer' }
+      };
+
+      const adapter = createOpenAIAgentAdapter({ sandboxWorkspaceBaseDir: sandboxBase });
+      const session = await adapter.startSession(input);
+      const events = await collectEvents(session.events);
+
+      // Session must succeed — no chat/completions route was taken.
+      expect(events.some((e) => e.type === 'runner_terminal_result')).toBe(true);
+      expect(events.find((e) => e.type === 'runner_terminal_result')).toMatchObject({
+        type: 'runner_terminal_result',
+        result: { directive: 'advance' }
+      });
+      expect(transport.fetch).toHaveBeenCalled();
 
       await session.close?.();
     } finally {
@@ -1320,4 +1560,117 @@ describe('createOpenAIAgentAdapter — reviewer workspace immutability (behavior
       await rm(tmp, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// Model-memory continuity (seam-driven)
+// ---------------------------------------------------------------------------
+
+function makeFakeStore(
+  loadResult: AgentModelMemorySnapshot | null,
+  capturedSaves: AgentModelMemorySnapshot[] = []
+): AgentModelMemoryStore {
+  return {
+    async load() { return loadResult; },
+    async save(snapshot) { capturedSaves.push(snapshot); }
+  };
+}
+
+function makeModelMemory(store: AgentModelMemoryStore): AgentModelMemoryContinuity {
+  return { key: 'run_1:implementation.work:reviewer:openai:openai-agents-sdk:openai-reviewer', store };
+}
+
+describe('createOpenAIAgentAdapter — model-memory continuity', () => {
+  it('passes previousResponseId from loaded snapshot as modelMemoryState to runAgentSession', async () => {
+    const snapshot: AgentModelMemorySnapshot = {
+      providerKind: 'openai',
+      adapterId: 'openai-agents-sdk',
+      state: { previousResponseId: 'resp_previous' }
+    };
+    const store = makeFakeStore(snapshot);
+    const calls: OpenAIRunSessionInput[] = [];
+    const fakeRun: OpenAIRunAgentSession = (input) => {
+      calls.push(input);
+      return { items: [], result: Promise.resolve({ directive: 'advance' as const }) };
+    };
+
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => fakeSandboxHandle(),
+      runAgentSession: fakeRun
+    });
+
+    const base = makeSessionInput('scratch_only');
+    const input: AgentProviderSessionInput = {
+      ...base,
+      modelMemory: makeModelMemory(store)
+    };
+
+    const session = await adapter.startSession(input);
+    await collectEvents(session.events);
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.modelMemoryState).toEqual({ previousResponseId: 'resp_previous' });
+  });
+
+  it('saves responsesContinuity from run result to the model memory store', async () => {
+    const capturedSaves: AgentModelMemorySnapshot[] = [];
+    const store = makeFakeStore(null, capturedSaves);
+    const fakeRun: OpenAIRunAgentSession = () => ({
+      items: [],
+      result: Promise.resolve({
+        directive: 'advance' as const,
+        responsesContinuity: { previousResponseId: 'resp_next', conversationId: 'conv_1' }
+      })
+    });
+
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => fakeSandboxHandle(),
+      runAgentSession: fakeRun
+    });
+
+    const base = makeSessionInput('scratch_only');
+    const input: AgentProviderSessionInput = {
+      ...base,
+      modelMemory: makeModelMemory(store)
+    };
+
+    const session = await adapter.startSession(input);
+    await collectEvents(session.events);
+
+    expect(capturedSaves).toHaveLength(1);
+    expect(capturedSaves[0]).toEqual({
+      providerKind: 'openai',
+      adapterId: 'openai-agents-sdk',
+      state: { previousResponseId: 'resp_next', conversationId: 'conv_1' }
+    });
+  });
+
+  it('saved memory JSON does not contain the word sandbox', async () => {
+    const capturedSaves: AgentModelMemorySnapshot[] = [];
+    const store = makeFakeStore(null, capturedSaves);
+    const fakeRun: OpenAIRunAgentSession = () => ({
+      items: [],
+      result: Promise.resolve({
+        directive: 'advance' as const,
+        responsesContinuity: { previousResponseId: 'resp_abc', conversationId: 'conv_2' }
+      })
+    });
+
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => fakeSandboxHandle(),
+      runAgentSession: fakeRun
+    });
+
+    const base = makeSessionInput('scratch_only');
+    const input: AgentProviderSessionInput = {
+      ...base,
+      modelMemory: makeModelMemory(store)
+    };
+
+    const session = await adapter.startSession(input);
+    await collectEvents(session.events);
+
+    expect(capturedSaves).toHaveLength(1);
+    expect(JSON.stringify(capturedSaves[0])).not.toContain('sandbox');
+  });
 });

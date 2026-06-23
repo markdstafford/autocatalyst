@@ -100,17 +100,17 @@ describe('projectStepResultSchemaForProvider', () => {
     }
   });
 
-  describe('covered schema ids — claude_tool_input_schema target', () => {
+  describe('covered schema ids — claude_output_format target', () => {
     for (const schemaId of coveredSchemaIds) {
-      it(`projects ${schemaId} to claude_tool_input_schema`, () => {
+      it(`projects ${schemaId} to claude_output_format`, () => {
         const projection = projectStepResultSchemaForProvider({
           schemaId,
           schema: schemaFixtures[schemaId],
-          target: 'claude_tool_input_schema'
+          target: 'claude_output_format'
         });
 
-        expect(projection.target).toBe('claude_tool_input_schema');
-        expect(projection.mechanism).toBe('claude_submit_result_tool');
+        expect(projection.target).toBe('claude_output_format');
+        expect(projection.mechanism).toBe('claude_structured_output');
         expect(projection.schemaId).toBe(schemaId);
         expect(projection.schema).toBeDefined();
         expect(projection.schema).not.toBeNull();
@@ -235,7 +235,7 @@ describe('discriminated union branch constraints (INIT-2)', () => {
       const projection = projectStepResultSchemaForProvider({
         schemaId: 'autocatalyst.reviewer_result.v1',
         schema: reviewerResultSchema,
-        target: 'claude_tool_input_schema'
+        target: 'claude_output_format'
       });
       const schema = projection.schema as JsonSchema;
       const branches = (schema['anyOf'] as JsonSchema[]) ?? [];
@@ -259,7 +259,7 @@ describe('discriminated union branch constraints (INIT-2)', () => {
       const projection = projectStepResultSchemaForProvider({
         schemaId: 'autocatalyst.reviewer_result.v1',
         schema: reviewerResultSchema,
-        target: 'claude_tool_input_schema'
+        target: 'claude_output_format'
       });
       const schema = projection.schema as JsonSchema;
       const branches = (schema['anyOf'] as JsonSchema[]) ?? [];
@@ -313,7 +313,7 @@ describe('discriminated union branch constraints (INIT-2)', () => {
       const projection = projectStepResultSchemaForProvider({
         schemaId: 'autocatalyst.implementer_dispositions.v1',
         schema: implementerDispositionsResultSchema,
-        target: 'claude_tool_input_schema'
+        target: 'claude_output_format'
       });
       const schema = projection.schema as JsonSchema;
       const dispositionsProp = (schema['properties'] as JsonSchema | undefined)?.['dispositions'] as JsonSchema | undefined;
@@ -337,7 +337,7 @@ describe('discriminated union branch constraints (INIT-2)', () => {
 
     it('near-miss: fixed disposition without summary is rejected by schema structure', () => {
       // Verify no branch allows fixed disposition without summary in required
-      for (const target of ['openai_agents_output_type', 'claude_tool_input_schema'] as const) {
+      for (const target of ['openai_agents_output_type', 'claude_output_format'] as const) {
         const projection = projectStepResultSchemaForProvider({
           schemaId: 'autocatalyst.implementer_dispositions.v1',
           schema: implementerDispositionsResultSchema,

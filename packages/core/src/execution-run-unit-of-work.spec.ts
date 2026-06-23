@@ -601,6 +601,61 @@ describe('direct mode integration seam', () => {
     expect(directPort.call).not.toHaveBeenCalled();
   });
 
+  it('agent mode: provider-scoped model memory uses resolved provider profile key', async () => {
+    const terminal = makeTerminalEvent('advance');
+    const runStep = {
+      id: 'step_1',
+      runId,
+      step: 'implement',
+      checkpointResult: null
+    };
+    const updateCheckpoint = vi.fn().mockResolvedValue(runStep);
+    const runSteps = {
+      create: vi.fn(),
+      findById: vi.fn(),
+      listByRun: vi.fn().mockResolvedValue([runStep]),
+      updateCheckpoint
+    };
+    const executeSpy = vi.fn().mockImplementation((input: ExecutionEntryPointInput) =>
+      (async function* () {
+        const scoped = input.modelMemory?.forProvider?.({
+          providerKind: 'openai',
+          adapterId: 'openai-agents-sdk',
+          profileName: 'openai-reviewer'
+        });
+        expect(scoped?.key).toBe('run_1:implementer:openai:openai-agents-sdk:openai-reviewer');
+        await scoped?.store.save({
+          providerKind: 'openai',
+          adapterId: 'openai-agents-sdk',
+          state: { previousResponseId: 'resp_1' }
+        });
+        yield terminal;
+      })()
+    );
+
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: { execute: executeSpy },
+      resolveContext: async () => makeContext(),
+      eventsStore: newStore(),
+      runSteps
+    });
+
+    const result = await unitOfWork.run(makeInput());
+    expect(result).toEqual({ directive: 'advance' });
+    expect(updateCheckpoint).toHaveBeenCalledWith(expect.objectContaining({
+      runStepId: 'step_1',
+      checkpointResult: {
+        providerModelMemory: {
+          'run_1:implementer:openai:openai-agents-sdk:openai-reviewer': {
+            providerKind: 'openai',
+            adapterId: 'openai-agents-sdk',
+            state: { previousResponseId: 'resp_1' }
+          }
+        }
+      }
+    }));
+  });
+
   it('default mode (no resolveExecutionMode) uses agent path', async () => {
     const unitOfWork = createExecutionRunUnitOfWork({
       execute: makeFakeEntryPoint([makeTerminalEvent('advance')]),

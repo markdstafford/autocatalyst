@@ -108,6 +108,8 @@ export interface OpenAIRunSessionInput {
   readonly modelProvider: OpenAIProvider;
   readonly modelSettings: Readonly<Record<string, unknown>>;
   readonly structuredResult?: OpenAIStructuredResultConfiguration;
+  /** Loaded continuity state from the previous run turn. Never contains sandbox identifiers. */
+  readonly modelMemoryState?: OpenAIResponsesContinuityState;
 }
 
 export interface OpenAIRunOutcome {
@@ -122,6 +124,8 @@ export interface OpenAIRunOutcome {
     readonly question?: string;
     readonly reason?: string;
     readonly tokenUsage?: { readonly input: number; readonly output: number };
+    /** Continuity state to persist for the next run turn. Never contains sandbox identifiers. */
+    readonly responsesContinuity?: OpenAIResponsesContinuityState;
   }>;
 }
 
@@ -143,6 +147,11 @@ export interface OpenAIAgentAdapterOptions {
   readonly clock?: () => string;
   readonly eventIdGenerator?: () => string;
   readonly logger?: OpenAIAgentAdapterLogger;
+}
+
+export interface OpenAIResponsesContinuityState {
+  readonly conversationId?: string;
+  readonly previousResponseId?: string;
 }
 
 export interface OpenAIStructuredResultConfiguration {
@@ -605,50 +614,28 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 /**
- * The structural subset of the SDK's non-stream RunResult that the adapter
- * consumes. The SDK's own `RunResult<_, SandboxAgent>` does not round-trip under
- * exactOptionalPropertyTypes (its `Agent` class declares optional fields without
- * `| undefined`), so we narrow to what we actually read instead of naming it.
+ * The structural subset of the SDK's streaming RunResult that the adapter
+ * consumes after iteration completes. The SDK's own `RunResult<_, SandboxAgent>`
+ * does not round-trip under exactOptionalPropertyTypes, so we narrow to what we
+ * actually read instead of naming it.
  */
-interface NonStreamRunResultView {
-  readonly newItems: readonly RunItem[];
+interface StreamRunResultView {
   readonly finalOutput: unknown;
+  readonly lastResponseId: string | undefined;
   readonly state: { readonly _context: { readonly usage?: { readonly inputTokens?: number; readonly outputTokens?: number } } };
 }
 
 /**
- * Drives a non-streaming run and returns the resolved RunResult (narrowed). The
- * `run` call itself typechecks against the concrete SandboxAgent; only naming
- * the full result type trips the SDK's exactOptional quirk, so we view it
- * structurally.
+ * The streamed run result combines the post-iteration StreamRunResultView fields
+ * with the AsyncIterable interface for consuming events during the run.
  */
-async function runRunnerNonStream(
-  runner: Runner,
-  agent: SandboxAgent,
-  prompt: string,
-  session: OpenAISandboxSession,
-  onError: (err: unknown) => void
-): Promise<NonStreamRunResultView> {
-  try {
-    const result = await runner.run(agent, prompt, { sandbox: { session }, stream: false });
-    return result as NonStreamRunResultView;
-  } catch (err) {
-    // Classify before rejecting so the result promise never carries raw SDK text.
-    const shaped = err as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
-    const classificationInput = {
-      ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
-      ...(typeof shaped.statusCode === 'number' ? { statusCode: shaped.statusCode } : {}),
-      code: shaped.code,
-      errorName: shaped.name,
-      providerKind: openaiProviderKind
-    };
-    const reason = classifyProviderFailure(classificationInput);
-    const classified: ClassifiedProviderFailureError = reason !== undefined
-      ? new ClassifiedProviderFailureError(reason, filterSafeClassificationDetails(classificationInput))
-      : new ClassifiedProviderFailureError('runner_failed_before_terminal_result', { providerKind: openaiProviderKind });
-    onError(classified);
-    throw err;
-  }
+type StreamedRunnerRunView = StreamRunResultView & AsyncIterable<{
+  readonly type: string;
+  readonly item?: RunItem;
+}>;
+
+function isRunItemStreamEvent(event: { readonly type: string; readonly item?: RunItem }): event is { readonly type: 'run_item_stream_event'; readonly item: RunItem } {
+  return event.type === 'run_item_stream_event' && event.item !== undefined;
 }
 
 function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome {
@@ -669,10 +656,10 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
         }
       : {};
 
-  // Cast to the default SandboxAgent (TextOutput) type that the runner and
-  // runRunnerNonStream expect. The outputType field is passed through the
-  // constructor and consumed by the SDK at runtime; the cast is safe because
-  // the runner only observes the finalOutput (typed unknown in NonStreamRunResultView).
+  // Cast to the default SandboxAgent (TextOutput) type that the runner expects.
+  // The outputType field is passed through the constructor and consumed by the SDK
+  // at runtime; the cast is safe because the runner only observes the finalOutput
+  // (typed unknown in StreamRunResultView). The runner uses streaming internally.
   const agent = new SandboxAgent({
     name: 'autocatalyst-openai-agent',
     model: input.model,
@@ -697,20 +684,51 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
   result.catch(() => undefined);
 
   async function* drive(): AsyncIterable<RunItem> {
-    // The non-stream overload (no `stream: true`) returns a RunResult; let TS
-    // infer the precise (agent-specialized) result type from the call.
-    const runResult = await runRunnerNonStream(runner, agent, input.prompt, input.session, rejectResult);
-    for (const item of runResult.newItems) {
-      yield item;
+    try {
+      const continuityOptions = input.modelMemoryState !== undefined
+        ? {
+            ...(input.modelMemoryState.previousResponseId !== undefined ? { previousResponseId: input.modelMemoryState.previousResponseId } : {}),
+            ...(input.modelMemoryState.conversationId !== undefined ? { conversationId: input.modelMemoryState.conversationId } : {})
+          }
+        : {};
+      const stream = await runner.run(agent, input.prompt, { sandbox: { session: input.session }, stream: true, ...continuityOptions }) as unknown as StreamedRunnerRunView;
+
+      for await (const event of stream) {
+        if (isRunItemStreamEvent(event)) {
+          yield event.item;
+        }
+      }
+
+      const streamResult = stream as unknown as StreamRunResultView;
+      const usage = streamResult.state._context.usage;
+      const lastResponseId = streamResult.lastResponseId;
+      const responsesContinuity: OpenAIResponsesContinuityState | undefined = lastResponseId !== undefined
+        ? { previousResponseId: lastResponseId }
+        : undefined;
+      resolveResult({
+        directive: 'advance',
+        ...(streamResult.finalOutput !== undefined ? { output: streamResult.finalOutput } : {}),
+        ...(usage
+          ? { tokenUsage: { input: usage.inputTokens ?? 0, output: usage.outputTokens ?? 0 } }
+          : {}),
+        ...(responsesContinuity !== undefined ? { responsesContinuity } : {})
+      });
+    } catch (err) {
+      const shaped = err as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
+      const classificationInput = {
+        ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
+        ...(typeof shaped.statusCode === 'number' ? { statusCode: shaped.statusCode } : {}),
+        code: shaped.code,
+        errorName: shaped.name,
+        providerKind: openaiProviderKind
+      };
+      const reason = classifyProviderFailure(classificationInput);
+      const classified: ClassifiedProviderFailureError = reason !== undefined
+        ? new ClassifiedProviderFailureError(reason, filterSafeClassificationDetails(classificationInput))
+        : new ClassifiedProviderFailureError('runner_failed_before_terminal_result', { providerKind: openaiProviderKind });
+      rejectResult(classified);
+      throw err;
     }
-    const usage = runResult.state._context.usage;
-    resolveResult({
-      directive: 'advance',
-      ...(runResult.finalOutput !== undefined ? { output: runResult.finalOutput } : {}),
-      ...(usage
-        ? { tokenUsage: { input: usage.inputTokens ?? 0, output: usage.outputTokens ?? 0 } }
-        : {})
-    });
   }
 
   return { items: drive(), result };
@@ -908,9 +926,16 @@ export function createOpenAIAgentAdapter(
       type OpenAIProviderClient = NonNullable<OpenAIProviderOptions['openAIClient']>;
       const providerOptions: OpenAIProviderOptions = {
         openAIClient: openAIClient as unknown as OpenAIProviderClient,
-        useResponses: false
+        useResponses: true
       };
       const modelProvider = new OpenAIProvider(providerOptions);
+      safeLog('info', 'openai.adapter.transport_selected', {
+        runId: input.runInput.environment.context.run.id,
+        step: input.runInput.environment.context.run.currentStep,
+        role: input.telemetryContext.role,
+        model: input.profile.model.model,
+        transport: 'responses'
+      });
 
       const inferenceMapping = mapInferenceSettings(input.profile);
       const tools = createProgressTools();
@@ -933,6 +958,27 @@ export function createOpenAIAgentAdapter(
         ? `${baseInstructions}\n\n${skillMaterialization.systemPromptHint}`
         : baseInstructions;
 
+      // Load continuity state from the previous turn (if model memory is configured).
+      let modelMemoryState: OpenAIResponsesContinuityState | undefined;
+      if (input.modelMemory !== undefined) {
+        const snapshot = await input.modelMemory.store.load();
+        if (
+          snapshot !== null &&
+          snapshot.providerKind === openaiProviderKind &&
+          snapshot.adapterId === openaiAgentAdapterId
+        ) {
+          const state = snapshot.state as Record<string, unknown>;
+          const prevId = typeof state['previousResponseId'] === 'string' ? state['previousResponseId'] : undefined;
+          const convId = typeof state['conversationId'] === 'string' ? state['conversationId'] : undefined;
+          if (prevId !== undefined || convId !== undefined) {
+            modelMemoryState = {
+              ...(prevId !== undefined ? { previousResponseId: prevId } : {}),
+              ...(convId !== undefined ? { conversationId: convId } : {})
+            };
+          }
+        }
+      }
+
       const outcome = await runAgentSession({
         prompt: input.runInput.environment.context.task.prompt,
         model: input.profile.model.model,
@@ -942,7 +988,8 @@ export function createOpenAIAgentAdapter(
         session: sandboxHandle.session,
         modelProvider,
         modelSettings: inferenceMapping.mapped,
-        ...(structuredResult !== undefined ? { structuredResult } : {})
+        ...(structuredResult !== undefined ? { structuredResult } : {}),
+        ...(modelMemoryState !== undefined ? { modelMemoryState } : {})
       });
 
       let metadataResolve!: (value: AgentProviderSessionMetadata) => void;
@@ -976,6 +1023,19 @@ export function createOpenAIAgentAdapter(
           }
 
           const terminal = await outcome.result;
+
+          // Persist continuity state before yielding the terminal event.
+          if (input.modelMemory !== undefined && terminal.responsesContinuity !== undefined) {
+            const continuity = terminal.responsesContinuity;
+            const continuityState: Record<string, string> = {};
+            if (continuity.previousResponseId !== undefined) continuityState['previousResponseId'] = continuity.previousResponseId;
+            if (continuity.conversationId !== undefined) continuityState['conversationId'] = continuity.conversationId;
+            await input.modelMemory.store.save({
+              providerKind: openaiProviderKind,
+              adapterId: openaiAgentAdapterId,
+              state: continuityState
+            });
+          }
 
           // Result-file handoff: write the final output to the scratch root.
           // Only on advance.

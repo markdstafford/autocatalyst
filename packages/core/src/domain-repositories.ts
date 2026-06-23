@@ -73,6 +73,7 @@ export interface RecordRunStepTransitionInput {
   readonly sourceRunStepId?: string;
   readonly checkpointResult?: JsonValue;
   readonly failureReason?: string;
+  readonly inheritedProviderModelMemory?: Record<string, unknown>;
 }
 
 export interface RecordRunStepTransitionResult {

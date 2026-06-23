@@ -396,4 +396,11 @@ describe('proxy endpoint settings', () => {
       headerValueFilters: [{ headerName: 'anthropic-beta', removeValues: [] }]
     })).toThrow();
   });
+
+  it('does not accept an OpenAI agent Chat Completions fallback transport setting', () => {
+    expect(providerProfileSettingsSchema.safeParse({
+      profileName: 'openai-agent',
+      endpoint: { openaiAgentTransport: 'chat_completions' }
+    }).success).toBe(false);
+  });
 });

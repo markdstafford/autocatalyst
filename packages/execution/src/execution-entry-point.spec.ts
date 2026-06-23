@@ -343,6 +343,68 @@ describe('createExecutionEntryPoint', () => {
   });
 });
 
+describe('createExecutionEntryPoint — modelMemory pass-through', () => {
+  it('threads modelMemory from ExecutionEntryPointInput through to RunnerRunInput', async () => {
+    const context = makeContext();
+    const materialize = vi.fn().mockResolvedValue(makeMaterializedEnv(context));
+
+    let capturedRunnerInput: RunnerRunInput | undefined;
+    const capturingRunner: Runner = {
+      async *run(input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+        capturedRunnerInput = input;
+        yield makeTerminalEvent();
+      },
+      close: vi.fn().mockResolvedValue({ status: 'closed' })
+    };
+
+    // Import createNoopAgentModelMemoryStore from index
+    const { createNoopAgentModelMemoryStore } = await import('./index.js');
+    const store = createNoopAgentModelMemoryStore();
+    const modelMemory = { key: 'run_1:implementation.work:reviewer', store };
+
+    const entryPoint = createExecutionEntryPoint({
+      runner: capturingRunner,
+      materialize,
+      resultValidation: { mode: 'none' }
+    });
+
+    for await (const _ of entryPoint.execute({ context, modelMemory })) {
+      // consume
+    }
+
+    expect(capturedRunnerInput).toBeDefined();
+    expect(capturedRunnerInput?.modelMemory?.key).toBe('run_1:implementation.work:reviewer');
+    expect(capturedRunnerInput?.modelMemory?.store).toBe(store);
+  });
+
+  it('does not include modelMemory in RunnerRunInput when not provided', async () => {
+    const context = makeContext();
+    const materialize = vi.fn().mockResolvedValue(makeMaterializedEnv(context));
+
+    let capturedRunnerInput: RunnerRunInput | undefined;
+    const capturingRunner: Runner = {
+      async *run(input: RunnerRunInput): AsyncIterable<RunnerEvent> {
+        capturedRunnerInput = input;
+        yield makeTerminalEvent();
+      },
+      close: vi.fn().mockResolvedValue({ status: 'closed' })
+    };
+
+    const entryPoint = createExecutionEntryPoint({
+      runner: capturingRunner,
+      materialize,
+      resultValidation: { mode: 'none' }
+    });
+
+    for await (const _ of entryPoint.execute({ context })) {
+      // consume
+    }
+
+    expect(capturedRunnerInput).toBeDefined();
+    expect(capturedRunnerInput?.modelMemory).toBeUndefined();
+  });
+});
+
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';

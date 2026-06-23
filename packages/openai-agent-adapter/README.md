@@ -17,6 +17,10 @@ OpenAI Agents SDK `SandboxAgent`.
 - Snapshot persistence is disabled by explicitly passing the JS SDK `NoopSnapshotSpec` with `type: 'noop'`.
 - Hosted or remote sandbox providers are outside this package's production behavior for this slice.
 - Native SDK events are mapped to canonical `RunnerEvent` values before they leave the package.
+- `useResponses: true` selects the Responses API for OpenAI agent-mode traffic. Chat Completions is not a fallback for tool-using agent sessions.
+- Each Autocatalyst run turn maps to one `Runner.run(..., { stream: true })` call.
+- The adapter consumes SDK stream events incrementally and maps surfaced assistant/tool/progress signals to canonical `RunnerEvent` values before the SDK run completes.
+- OpenAI model-memory continuity is separate from the sandbox session. The adapter loads/saves Responses continuity (`conversationId` and/or `previousResponseId`) through the execution model-memory store. The sandbox session remains only tool/workspace execution state.
 
 ## Real SDK wiring (`@openai/agents` 0.11.x)
 
@@ -28,7 +32,7 @@ OpenAI Agents SDK `SandboxAgent`.
   with its `fetch` bridged to `connection.createFetchTransport()`, wrapped in an
   `OpenAIProvider`, and passed to a per-session `new Runner({ modelProvider })`.
   The SDK's `setDefault*` global setters are never called.
-- `useResponses: false` selects the Chat Completions wire format.
+- `useResponses: true` selects the Responses API wire format required for tool-using OpenAI agent sessions.
 - Workspace materialization: each declared workspace root becomes a `localDir`
   manifest entry plus an `extraPathGrants` entry (the local sandbox otherwise
   restricts `local_dir` sources to its own base dir). `UnixLocalSandboxClient`
