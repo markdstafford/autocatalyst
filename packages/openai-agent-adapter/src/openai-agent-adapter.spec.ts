@@ -3,10 +3,11 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod/v4';
 import type { RunItem } from '@openai/agents';
 
-import type { AgentProviderAdapter } from '@autocatalyst/execution';
-import { ClassifiedProviderFailureError } from '@autocatalyst/execution';
+import type { AgentProviderAdapter, StructuredAgentResultCapture } from '@autocatalyst/execution';
+import { ClassifiedProviderFailureError, ProviderProtocolError } from '@autocatalyst/execution';
 import type {
   AgentConnection,
   AgentConnectionTelemetryContext,
@@ -19,6 +20,7 @@ import {
   createOpenAIAgentAdapter,
   openaiAgentAdapterId,
   openaiProviderKind,
+  type OpenAIRunAgentSession,
   type OpenAIRunOutcome,
   type OpenAIRunSessionInput,
   type OpenAISandboxClientHandle
@@ -946,6 +948,126 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
       await rm(tmp, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
+// Structured result capture (seam-driven)
+// ---------------------------------------------------------------------------
+
+function makeStructuredCapture(resultFile = 'step-result.json'): StructuredAgentResultCapture {
+  return {
+    step: 'implementation.build',
+    schemaId: 'autocatalyst.reviewer_result.v1',
+    schema: z.object({ status: z.enum(['satisfied', 'changes_requested', 'rejected']), findings: z.array(z.any()).optional() }),
+    resultFile,
+    required: true
+  };
+}
+
+describe('createOpenAIAgentAdapter — structured result capture', () => {
+  it('passes projection.schema (not capture.schema) as structured output type', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-openai-projection-'));
+    try {
+      const calls: OpenAIRunSessionInput[] = [];
+      const fakeRunSession: OpenAIRunAgentSession = (input) => {
+        calls.push(input);
+        return { items: [], result: Promise.resolve({ directive: 'advance' as const, output: { status: 'satisfied', findings: [] } }) };
+      };
+
+      const capture = makeStructuredCapture();
+      const input: AgentProviderSessionInput = {
+        ...makeSessionInput('scratch_only', { scratchRoot: scratchDir }),
+        structuredResultCapture: capture
+      };
+
+      const adapter = createOpenAIAgentAdapter({ sandboxClientFactory: () => fakeSandboxHandle(), runAgentSession: fakeRunSession });
+      const session = await adapter.startSession(input);
+      await collectEvents(session.events);
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.structuredResult).toBeDefined();
+      expect(calls[0]!.structuredResult?.capture).toBe(capture);
+      expect(calls[0]!.structuredResult?.projection.schema).not.toBe(capture.schema); // projection schema differs from capture schema
+      expect(calls[0]!.structuredResult?.projection.mechanism).toBe('openai_output_type');
+    } finally {
+      await rm(scratchDir, { recursive: true });
+    }
+  });
+
+  it('writes structured result JSON and ignores prose finalOutput', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-openai-structured-'));
+    try {
+      const capture = makeStructuredCapture('step-result.json');
+      const structuredOutput = { status: 'satisfied', findings: [] };
+
+      const fakeRunSession: OpenAIRunAgentSession = () => ({
+        items: [assistantItem('I reviewed the code and everything looks satisfied.')],
+        result: Promise.resolve({ directive: 'advance' as const, output: structuredOutput })
+      });
+
+      const adapter = createOpenAIAgentAdapter({
+        sandboxClientFactory: () => fakeSandboxHandle(),
+        runAgentSession: fakeRunSession
+      });
+
+      const input: AgentProviderSessionInput = {
+        ...makeSessionInput('scratch_only', { scratchRoot: scratchDir }),
+        structuredResultCapture: capture
+      };
+
+      const session = await adapter.startSession(input);
+      await collectEvents(session.events);
+
+      // The result file should contain the structured JSON, not prose
+      const resultJson = JSON.parse(await readFile(path.join(scratchDir, 'step-result.json'), 'utf8'));
+      expect(resultJson).toEqual(structuredOutput);
+      // Should be pretty-printed (2-space indent)
+      const resultText = await readFile(path.join(scratchDir, 'step-result.json'), 'utf8');
+      expect(resultText).toContain('\n  ');
+    } finally {
+      await rm(scratchDir, { recursive: true });
+    }
+  });
+
+  it('fails with missing_structured_result when advance has no output', async () => {
+    const fakeRunSession: OpenAIRunAgentSession = () => ({
+      items: [],
+      result: Promise.resolve({ directive: 'advance' as const, output: undefined })
+    });
+
+    const input: AgentProviderSessionInput = {
+      ...makeSessionInput('scratch_only'),
+      structuredResultCapture: makeStructuredCapture()
+    };
+
+    const adapter = createOpenAIAgentAdapter({ sandboxClientFactory: () => fakeSandboxHandle(), runAgentSession: fakeRunSession });
+    const session = await adapter.startSession(input);
+    const err = await collectEvents(session.events).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ProviderProtocolError);
+    expect((err as ProviderProtocolError).code).toBe('missing_structured_result');
+  });
+
+  it('no-contract sessions still write legacy terminal.output', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-openai-legacy-'));
+    try {
+      const fakeRunSession: OpenAIRunAgentSession = () => ({
+        items: [],
+        result: Promise.resolve({ directive: 'advance' as const, output: '{"status":"ok"}' })
+      });
+
+      const adapter = createOpenAIAgentAdapter({ sandboxClientFactory: () => fakeSandboxHandle(), runAgentSession: fakeRunSession });
+
+      // Run WITHOUT structuredResultCapture
+      const input = makeSessionInput('scratch_only', { scratchRoot: scratchDir });
+      const session = await adapter.startSession(input);
+      await collectEvents(session.events);
+
+      const resultText = await readFile(path.join(scratchDir, 'step-result.json'), 'utf8');
+      expect(resultText).toContain('status');
+    } finally {
+      await rm(scratchDir, { recursive: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
