@@ -19,6 +19,10 @@ function requireCostTokensMatchSessionTokens<T extends { tokens: unknown; cost: 
 export const sessionSchema = z.object({
   id: z.string().min(1),
   runId: z.string().min(1),
+  // Deterministic per-run ordering. Monotonically increases (starting at 1) for each
+  // persisted session in a run. Allocated by the persistence layer at insert time, so it
+  // is present on the durable Session but intentionally absent from CreateSessionInput.
+  sequence: z.number().int().min(1),
   phase: z.string().min(1).nullable(),
   step: z.string().min(1),
   role: sessionRoleSchema,

@@ -719,12 +719,36 @@ export class DrizzleRunRepository implements RunRepository {
         throw new Error(`Run '${input.runId}' does not exist.`);
       }
       const run = this.#rowToRun(updatedRows[0]);
-      if (input.sourceRunStepId !== undefined && input.checkpointResult !== undefined) {
-        const json = stringifyJsonValue(jsonValueSchema, input.checkpointResult);
-        tx.update(runSteps)
-          .set({ checkpointResultJson: json })
-          .where(eq(runSteps.id, input.sourceRunStepId))
-          .run();
+      if (input.sourceRunStepId !== undefined) {
+        // Close the occurrence being left: stamp endedAt at the transition time and compute
+        // durationMs. The new occurrence's startedAt is the transition instant. This runs for
+        // every transition, including repeated entries for looping steps, so each occurrence
+        // carries bounds without any post-run backfill.
+        const checkpointJson = input.checkpointResult !== undefined
+          ? stringifyJsonValue(jsonValueSchema, input.checkpointResult)
+          : undefined;
+        const sourceRows = tx.select().from(runSteps).where(eq(runSteps.id, input.sourceRunStepId)).limit(1).all();
+        const source = sourceRows[0];
+        if (source !== undefined && source.endedAt === null) {
+          const transitionAt = input.runStep.startedAt;
+          const started = Date.parse(source.startedAt);
+          const ended = Date.parse(transitionAt);
+          const duration = Number.isFinite(started) && Number.isFinite(ended) && ended >= started ? ended - started : null;
+          tx.update(runSteps)
+            .set({
+              endedAt: transitionAt,
+              durationMs: duration,
+              ...(checkpointJson !== undefined ? { checkpointResultJson: checkpointJson } : {})
+            })
+            .where(eq(runSteps.id, input.sourceRunStepId))
+            .run();
+        } else if (checkpointJson !== undefined) {
+          // Source already closed (defensive): still persist the checkpoint result.
+          tx.update(runSteps)
+            .set({ checkpointResultJson: checkpointJson })
+            .where(eq(runSteps.id, input.sourceRunStepId))
+            .run();
+        }
       }
       const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep, input.inheritedProviderModelMemory);
       return { run, runStep };
@@ -1341,49 +1365,62 @@ export class DrizzleSessionRepository implements SessionRepository {
 
   async create(input: CreateSessionInput): Promise<Session> {
     const parsed = createSessionInputSchema.parse(input);
-    const parentRows = this.#database.drizzle.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
-    requireParent(parentRows, parsed.runId, 'Run');
-    const entity: Session = validateEntity(sessionSchema, {
-      id: `sess_${randomUUID()}`,
-      runId: parsed.runId,
-      phase: parsed.phase,
-      step: parsed.step,
-      role: parsed.role,
-      round: parsed.round,
-      model: parsed.model,
-      inferenceSettings: parsed.inferenceSettings,
-      startedAt: parsed.startedAt,
-      endedAt: parsed.endedAt,
-      durationMs: parsed.durationMs,
-      tokens: parsed.tokens,
-      usageAvailable: parsed.usageAvailable,
-      assistantTurnCount: parsed.assistantTurnCount,
-      toolCallCount: parsed.toolCallCount,
-      outcome: parsed.outcome,
-      cost: parsed.cost
+    // Allocate the per-run sequence and insert atomically so concurrent creates for the same
+    // run cannot collide on a stale max. The unique (run_id, sequence) index is the final
+    // guard; serial per-run execution makes coalesce(max)+1 sufficient in practice.
+    return this.#database.drizzle.transaction((tx) => {
+      const parentRows = tx.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
+      requireParent(parentRows, parsed.runId, 'Run');
+      const maxRow = tx
+        .select({ value: sql<number>`coalesce(max(${sessions.sequence}), 0)` })
+        .from(sessions)
+        .where(eq(sessions.runId, parsed.runId))
+        .all()[0];
+      const nextSequence = (maxRow?.value ?? 0) + 1;
+      const entity: Session = validateEntity(sessionSchema, {
+        id: `sess_${randomUUID()}`,
+        runId: parsed.runId,
+        sequence: nextSequence,
+        phase: parsed.phase,
+        step: parsed.step,
+        role: parsed.role,
+        round: parsed.round,
+        model: parsed.model,
+        inferenceSettings: parsed.inferenceSettings,
+        startedAt: parsed.startedAt,
+        endedAt: parsed.endedAt,
+        durationMs: parsed.durationMs,
+        tokens: parsed.tokens,
+        usageAvailable: parsed.usageAvailable,
+        assistantTurnCount: parsed.assistantTurnCount,
+        toolCallCount: parsed.toolCallCount,
+        outcome: parsed.outcome,
+        cost: parsed.cost
+      });
+
+      tx.insert(sessions).values({
+        id: entity.id,
+        runId: entity.runId,
+        sequence: entity.sequence,
+        phase: entity.phase,
+        step: entity.step,
+        role: entity.role,
+        round: entity.round,
+        modelJson: stringifyJsonValue(modelIdentitySchema, entity.model),
+        inferenceSettingsJson: stringifyJsonValue(inferenceSettingsSchema, entity.inferenceSettings),
+        startedAt: entity.startedAt,
+        endedAt: entity.endedAt,
+        durationMs: entity.durationMs,
+        tokensJson: stringifyJsonValue(tokenBreakdownSchema, entity.tokens),
+        usageAvailable: entity.usageAvailable,
+        assistantTurnCount: entity.assistantTurnCount,
+        toolCallCount: entity.toolCallCount,
+        outcome: entity.outcome,
+        costJson: stringifyJsonValue(costSchema, entity.cost)
+      }).run();
+
+      return entity;
     });
-
-    this.#database.drizzle.insert(sessions).values({
-      id: entity.id,
-      runId: entity.runId,
-      phase: entity.phase,
-      step: entity.step,
-      role: entity.role,
-      round: entity.round,
-      modelJson: stringifyJsonValue(modelIdentitySchema, entity.model),
-      inferenceSettingsJson: stringifyJsonValue(inferenceSettingsSchema, entity.inferenceSettings),
-      startedAt: entity.startedAt,
-      endedAt: entity.endedAt,
-      durationMs: entity.durationMs,
-      tokensJson: stringifyJsonValue(tokenBreakdownSchema, entity.tokens),
-      usageAvailable: entity.usageAvailable,
-      assistantTurnCount: entity.assistantTurnCount,
-      toolCallCount: entity.toolCallCount,
-      outcome: entity.outcome,
-      costJson: stringifyJsonValue(costSchema, entity.cost)
-    }).run();
-
-    return entity;
   }
 
   async findById(id: string): Promise<Session | null> {
@@ -1393,11 +1430,13 @@ export class DrizzleSessionRepository implements SessionRepository {
   }
 
   async listByRun(runId: string): Promise<readonly Session[]> {
+    // Deterministic per-run ordering by the allocated sequence; startedAt/id remain only as
+    // defensive tie-breakers for any legacy rows that might share a sequence.
     const rows = this.#database.drizzle
       .select()
       .from(sessions)
       .where(eq(sessions.runId, runId))
-      .orderBy(asc(sessions.startedAt), asc(sessions.id))
+      .orderBy(asc(sessions.sequence), asc(sessions.startedAt), asc(sessions.id))
       .all();
     return rows.map((row) => this.#rowToSession(row));
   }
@@ -1406,6 +1445,7 @@ export class DrizzleSessionRepository implements SessionRepository {
     return validateEntity(sessionSchema, {
       id: row.id,
       runId: row.runId,
+      sequence: row.sequence,
       phase: row.phase,
       step: row.step,
       role: row.role,
