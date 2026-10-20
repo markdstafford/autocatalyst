@@ -10,6 +10,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
   return {
     id: 'session_1',
     runId: 'run_1',
+    sequence: 1,
     phase: 'implementation',
     step: 'implementation.build',
     role: 'implementer',
@@ -24,7 +25,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     assistantTurnCount: 0,
     toolCallCount: 0,
     outcome: 'succeeded',
-    cost: { model, usd: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
+    cost: { model, usd: null, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } },
     ...overrides
   };
 }
@@ -77,7 +78,7 @@ describe('recordExecutionSession', () => {
       assistantTurnCount: 0,
       toolCallCount: 0,
       outcome: 'succeeded',
-      cost: { model, usd: 0, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 } }
+      cost: { model, usd: null, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 } }
     });
     expect(call.tokens.input).toBe(10);
     expect(call.cost.tokens.input).toBe(10);
@@ -124,7 +125,7 @@ describe('recordExecutionSession', () => {
       assistantTurnCount: 0,
       toolCallCount: 0,
       outcome: 'succeeded',
-      cost: { model, usd: 0, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }
+      cost: { model, usd: null, tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }
     });
   });
 

@@ -90,7 +90,9 @@ export async function recordExecutionSession(
       assistantTurnCount: input.assistantTurnCount ?? 0,
       toolCallCount: input.toolCallCount ?? 0,
       outcome: persistedOutcome,
-      cost: { model: input.model, usd: 0, tokens: usage.tokens }
+      // The Session is the cost unit, but this feature stores only raw tokens and performs no
+      // pricing: usd is left null for a later cost feature to populate. Per ADR-015.
+      cost: { model: input.model, usd: null, tokens: usage.tokens }
     });
   } catch {
     throw new ExecutionSessionRecordingError(

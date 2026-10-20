@@ -492,6 +492,7 @@ describe('DrizzleDomainRepositories round-trip', () => {
         cost
       });
       expect((await repos.sessions.findById(session.id))?.cost.usd).toBeNull();
+      expect(session.sequence).toBe(1);
       expect(await repos.sessions.listByRun(run.id)).toHaveLength(1);
 
       const testResult = await repos.testResults.create({
@@ -562,6 +563,80 @@ describe('DrizzleDomainRepositories round-trip', () => {
           cost: { ...cost, tokens: { ...tokens, output: 999 } }
         })
       ).rejects.toThrow();
+    });
+  });
+
+  it('allocates monotonic per-run session sequences and orders listByRun by sequence', async () => {
+    await withRepositories(async (repos) => {
+      const { topic } = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'seq-conv',
+        title: 'Seq'
+      });
+      const runA = await repos.runs.create({
+        topicId: topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false
+      });
+      // A second topic/run to prove sequences are per-run, not global.
+      const { topic: topicB } = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'seq-conv-b',
+        title: 'SeqB'
+      });
+      const runB = await repos.runs.create({
+        topicId: topicB.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false
+      });
+
+      function sessionInput(runId: string, step: string, startedAt: string) {
+        return {
+          runId,
+          phase: null,
+          step,
+          role: 'none' as const,
+          round: 0,
+          model: { provider: 'openai', model: 'gpt-4.1' },
+          inferenceSettings: {},
+          startedAt,
+          endedAt: startedAt,
+          durationMs: 0,
+          tokens,
+          usageAvailable: true,
+          assistantTurnCount: 1,
+          toolCallCount: 0,
+          outcome: 'succeeded' as const,
+          cost
+        };
+      }
+
+      // Three sessions for runA; the third shares a startedAt with the second to prove the
+      // sequence (not the timestamp) drives ordering.
+      const a1 = await repos.sessions.create(sessionInput(runA.id, 'spec.author', '2026-06-08T00:00:00.000Z'));
+      const a2 = await repos.sessions.create(sessionInput(runA.id, 'implementation.build', '2026-06-08T00:00:05.000Z'));
+      const a3 = await repos.sessions.create(sessionInput(runA.id, 'implementation.review', '2026-06-08T00:00:05.000Z'));
+      expect([a1.sequence, a2.sequence, a3.sequence]).toEqual([1, 2, 3]);
+
+      // runB allocates its own independent sequence starting at 1.
+      const b1 = await repos.sessions.create(sessionInput(runB.id, 'spec.author', '2026-06-08T00:00:02.000Z'));
+      expect(b1.sequence).toBe(1);
+
+      const listA = await repos.sessions.listByRun(runA.id);
+      expect(listA.map((s) => s.sequence)).toEqual([1, 2, 3]);
+      expect(listA.map((s) => s.id)).toEqual([a1.id, a2.id, a3.id]);
+
+      const listB = await repos.sessions.listByRun(runB.id);
+      expect(listB).toHaveLength(1);
+      expect(listB[0].sequence).toBe(1);
     });
   });
 

@@ -102,6 +102,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
   return {
     id: 'session_1',
     runId,
+    sequence: 1,
     phase: 'implementation',
     step: 'implementation.build',
     role: 'implementer',
@@ -118,7 +119,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     outcome: 'succeeded',
     cost: {
       model: { provider: 'anthropic', model: 'claude-sonnet-4' },
-      usd: 0,
+      usd: null,
       tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
     },
     ...overrides

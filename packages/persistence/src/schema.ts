@@ -204,6 +204,7 @@ export const runSteps = sqliteTable('run_steps', {
 export const sessions = sqliteTable('sessions', {
   id: text('id').primaryKey(),
   runId: text('run_id').notNull().references(() => runs.id),
+  sequence: integer('sequence').notNull(),
   phase: text('phase'),
   step: text('step').notNull(),
   role: text('role').notNull(),
@@ -221,7 +222,8 @@ export const sessions = sqliteTable('sessions', {
   costJson: text('cost_json').notNull()
 }, (table) => [
   index('sessions_run_started_idx').on(table.runId, table.startedAt),
-  index('sessions_run_step_role_idx').on(table.runId, table.step, table.role)
+  index('sessions_run_step_role_idx').on(table.runId, table.step, table.role),
+  uniqueIndex('sessions_run_sequence_idx').on(table.runId, table.sequence)
 ]);
 
 export const runWorkspaceMetadata = sqliteTable('run_workspace_metadata', {

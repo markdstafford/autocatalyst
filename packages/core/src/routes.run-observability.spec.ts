@@ -231,6 +231,7 @@ describe('run observability routes', () => {
       const session: Session = sessionSchema.parse({
         id: 'sess_1',
         runId: 'run_1',
+        sequence: 1,
         phase: 'planning',
         step: 'think',
         role: 'main',
