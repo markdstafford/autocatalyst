@@ -330,6 +330,14 @@ describe('execution-run-unit-of-work session persistence', () => {
           tokenUsage: { available: true, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 } },
           degradedCapabilities: [],
           model: { provider: 'anthropic', model: 'claude-haiku-4' }
+        },
+        sessionTelemetry: {
+          startedAt: '2026-06-22T00:00:00.000Z',
+          endedAt: '2026-06-22T00:00:01.500Z',
+          durationMs: 1500,
+          inferenceSettings: { temperature: 0.2, maxOutputTokens: 1024 },
+          assistantTurnCount: 1,
+          toolCallCount: 0
         }
       })
     };
@@ -362,6 +370,15 @@ describe('execution-run-unit-of-work session persistence', () => {
       usageAvailable: true,
       tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }
     });
+    // The recorder must carry the orchestrator-measured telemetry rather than
+    // synthesizing a zero-duration row with empty inference settings.
+    expect(call.startedAt).toBe('2026-06-22T00:00:00.000Z');
+    expect(call.endedAt).toBe('2026-06-22T00:00:01.500Z');
+    expect(call.inferenceSettings).toEqual({ temperature: 0.2, maxOutputTokens: 1024 });
+    expect(call.assistantTurnCount).toBe(1);
+    expect(call.toolCallCount).toBe(0);
+    // startedAt and endedAt must differ so the persisted duration is real.
+    expect(call.startedAt).not.toBe(call.endedAt);
   });
 
   it('does not record when direct mode is not configured and no model session ran', async () => {
@@ -393,6 +410,14 @@ describe('execution-run-unit-of-work session persistence', () => {
           tokenUsage: { available: false },
           degradedCapabilities: [],
           model: { provider: 'anthropic', model: 'claude-haiku-4' }
+        },
+        sessionTelemetry: {
+          startedAt: '2026-06-22T00:00:00.000Z',
+          endedAt: '2026-06-22T00:00:00.750Z',
+          durationMs: 750,
+          inferenceSettings: {},
+          assistantTurnCount: 1,
+          toolCallCount: 0
         }
       })
     };

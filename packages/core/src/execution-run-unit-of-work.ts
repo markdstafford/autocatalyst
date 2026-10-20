@@ -137,7 +137,10 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
           // Record session for direct mode when sessions repo and model are available.
           if (options.sessions !== undefined && directResult.metadata.model !== undefined) {
             const meta = directResult.metadata;
-            const nowIso = new Date().toISOString();
+            // Carry the orchestrator-measured telemetry (real start/end timestamps, the
+            // resolved profile inference settings, and the applicable per-call counts)
+            // instead of a synthesized zero-duration row with empty settings.
+            const telemetry = directResult.sessionTelemetry;
             try {
               await recordExecutionSession(
                 { sessions: options.sessions, ...(options.logger !== undefined ? { logger: options.logger } : {}) },
@@ -147,14 +150,16 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
                   step: input.run.currentStep,
                   role: deriveRole(input) as 'implementer' | 'reviewer',
                   round: deriveRound(input),
-                  startedAt: nowIso,
-                  endedAt: nowIso,
+                  startedAt: telemetry.startedAt,
+                  endedAt: telemetry.endedAt,
                   outcome: 'succeeded',
                   model: meta.model!,
-                  inferenceSettings: {},
+                  inferenceSettings: telemetry.inferenceSettings,
                   ...(meta.tokenUsage.available === true && meta.tokenUsage.tokens !== undefined
                     ? { tokens: meta.tokenUsage.tokens, usageAvailable: true }
-                    : { usageAvailable: false })
+                    : { usageAvailable: false }),
+                  assistantTurnCount: telemetry.assistantTurnCount,
+                  toolCallCount: telemetry.toolCallCount
                 }
               );
             } catch (recordError) {
