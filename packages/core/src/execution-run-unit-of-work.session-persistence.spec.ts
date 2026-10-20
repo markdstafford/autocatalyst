@@ -441,6 +441,48 @@ describe('execution-run-unit-of-work session persistence', () => {
     expect(result).toEqual({ directive: 'fail', reason: 'session_persistence_failed' });
   });
 
+  it('safely fails the dispatch when a direct port returns metadata without sessionTelemetry', async () => {
+    // DirectStepExecutionPort is public/core-facing. A port compiled against a prior
+    // DirectOrchestratorCallResult shape can return metadata (with model/tokenUsage) but
+    // no sessionTelemetry. The unit of work must not crash into the outer direct-call
+    // catch as `direct_call_failed`; it must surface a visible, safe persistence failure.
+    const sessions = makeSessions();
+    const directPort: DirectStepExecutionPort = {
+      call: vi.fn().mockResolvedValue({
+        value: { ok: true },
+        validation: { status: 'valid' },
+        metadata: {
+          outcome: 'succeeded',
+          tokenUsage: { available: true, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 } },
+          degradedCapabilities: [],
+          model: { provider: 'anthropic', model: 'claude-haiku-4' }
+        }
+        // sessionTelemetry intentionally absent (legacy/third-party port shape)
+      })
+    };
+
+    const directCall = {
+      purpose: 'intent',
+      input: {},
+      resultValidation: { schemaId: 'test', schema: { parse: (v: unknown) => v } as unknown as import('zod').ZodTypeAny }
+    };
+
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: { execute: vi.fn() } as unknown as ExecutionEntryPoint,
+      resolveContext: async () => makeContext(),
+      resolveExecutionMode: () => ({ mode: 'direct' as const, directCall }),
+      direct: directPort,
+      eventsStore: newStore(),
+      sessions
+    });
+
+    const result = await unitOfWork.run(makeRoleInput('implementer', 1));
+    // Must be the safe persistence failure, NOT a raw `direct_call_failed` TypeError surface.
+    expect(result).toEqual({ directive: 'fail', reason: 'session_persistence_failed' });
+    // No durable row can be written without telemetry, so create must not be attempted.
+    expect(sessions.create).not.toHaveBeenCalled();
+  });
+
   // ---------------------------------------------------------------------------
   // Pre-terminal runner failure — INIT-2 regression
   // ---------------------------------------------------------------------------
