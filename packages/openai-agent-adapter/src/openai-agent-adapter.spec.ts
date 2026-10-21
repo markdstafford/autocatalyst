@@ -19,6 +19,7 @@ import type {
 
 import {
   createOpenAIAgentAdapter,
+  OPENAI_AGENT_MAX_TURNS,
   openaiAgentAdapterId,
   openaiProviderKind,
   type OpenAIRunAgentSession,
@@ -996,7 +997,8 @@ function makeResponsesSSEBody(
 }
 
 describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mocked only)', () => {
-  it('drives a real UnixLocalSandboxClient + Runner with mocked fetch and produces canonical events', async () => {
+  it.each([1, 10, OPENAI_AGENT_MAX_TURNS])('bounds real SDK review after %s tool turns and preserves safe exhaustion diagnostics', async (toolTurns) => {
+    const exhaust = toolTurns === OPENAI_AGENT_MAX_TURNS;
     // Import the REAL modules so this test fails if the adapter does not match
     // the SDK's actual API surface.
     const sandbox = await import('@openai/agents/sandbox');
@@ -1024,7 +1026,7 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
         fetch: vi.fn(async (request) => {
           seenUrls.push(request.url);
           call += 1;
-          const output = call === 1
+          const output = call <= toolTurns
             ? [{ id: 'fc_1', type: 'function_call', call_id: 'call_1', name: 'notify', arguments: JSON.stringify({ message: 'starting review', importance: 'low' }), status: 'completed' }]
             : [{ id: 'msg_1', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Review complete: looks good.' }] }];
           // Return SSE stream (Responses API streaming format).
@@ -1069,9 +1071,24 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
 
       // Default real-SDK path: only sandboxWorkspaceBaseDir is provided so the
       // local sandbox materializes under a temp dir. No SDK seams are injected.
-      const adapter = createOpenAIAgentAdapter({ sandboxWorkspaceBaseDir: sandboxBase });
+      const errors: unknown[] = [];
+      const adapter = createOpenAIAgentAdapter({ sandboxWorkspaceBaseDir: sandboxBase, logger: { info() {}, warn() {}, error(_event, fields) { errors.push(fields); } } });
       const session = await adapter.startSession(input);
+      if (exhaust) {
+        await expect(collectEvents(session.events)).rejects.toMatchObject({
+          failureReason: 'runner_failed_before_terminal_result',
+          safeDetails: { sdkErrorName: 'MaxTurnsExceededError', maxTurns: OPENAI_AGENT_MAX_TURNS }
+        });
+        await expect(session.metadata).rejects.toMatchObject({ safeDetails: { sdkErrorName: 'MaxTurnsExceededError' } });
+        expect(call).toBe(OPENAI_AGENT_MAX_TURNS);
+        expect(errors).toContainEqual(expect.objectContaining({ sdkErrorName: 'MaxTurnsExceededError', maxTurns: OPENAI_AGENT_MAX_TURNS }));
+        expect(JSON.stringify(errors)).not.toContain(FAKE_SECRET);
+        expect(JSON.stringify(errors)).not.toContain('Review the README.');
+        await session.close?.();
+        return;
+      }
       const events = await collectEvents(session.events);
+      expect(call).toBe(toolTurns + 1);
       const types = events.map((e) => e.type);
 
       // Native RunItems mapped to canonical RunnerEvents.
