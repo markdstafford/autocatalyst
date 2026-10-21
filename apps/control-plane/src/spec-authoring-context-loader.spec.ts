@@ -247,9 +247,9 @@ describe('loadSpecAuthorPromptInput — missing_request_context', () => {
   it('throws missing_request_context when no inbound messages and topic title is empty-ish', async () => {
     const emptyTitleTopic: Topic = { ...topic, title: '   ' };
     const request = makeRequest({
-      repositories: makeRepos({ topic: emptyTitleTopic, messages: [] })
+      repositories: makeRepos({ topic: emptyTitleTopic, messages: [], run: { ...run, trackedIssue: undefined } })
     });
-    // Topic title is whitespace-only and no messages => no request text
+    // TEMP validation: no issue snapshot, topic title, or inbound messages => no request text
     await expect(loadSpecAuthorPromptInput(request)).rejects.toMatchObject({
       code: 'missing_request_context'
     });
@@ -313,11 +313,21 @@ describe('loadSpecAuthorPromptInput — happy path', () => {
     expect(earlierIdx).toBeLessThan(laterIdx);
   });
 
-  it('sets linkedIssue.number from trackedIssue when no issue reader is provided', async () => {
+  it('TEMP validation: preserves tracked issue metadata when no issue reader is provided', async () => {
     const request = makeRequest({ issues: undefined });
     const result = await loadSpecAuthorPromptInput(request);
 
-    expect(result.linkedIssue).toEqual({ number: 46 });
+    expect(result.linkedIssue).toEqual({ number: 46, title: 'Add real spec authoring' });
+    expect(result.request.text).toContain('Add real spec authoring');
+  });
+
+  // TEMP validation: reproduce the production path without an optional reader.
+  it('includes the intake issue body and labels in spec context without re-fetching', async () => {
+    const issue = { ...run.trackedIssue!, body: 'Record durable session telemetry.', labels: ['observability'] };
+    const request = makeRequest({ issues: undefined, repositories: makeRepos({ run: { ...run, trackedIssue: issue } }) });
+    const result = await loadSpecAuthorPromptInput(request);
+    expect(result.linkedIssue).toMatchObject({ number: issue.number, title: issue.title, body: issue.body, labels: issue.labels });
+    expect(result.request.text).toContain(issue.body);
   });
 
   it('returns no linkedIssue when run has no trackedIssue', async () => {

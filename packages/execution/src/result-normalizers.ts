@@ -228,18 +228,32 @@ export const reviewerResultNormalizer: ResultNormalizer = {
 
 export const reviewerNullFindingsNormalizer: ResultNormalizer = {
   id: 'reviewer-null-findings-strip',
-  description: 'Strips null findings from reviewer results returned by OpenAI strict-mode structured output.',
+  description: 'Strips null optional fields from reviewer results returned by OpenAI strict-mode structured output.',
   normalize(input) {
     if (input.schemaId !== REVIEWER_RESULT_SCHEMA_ID) return { status: 'unchanged' };
     if (!isPlainObject(input.candidate)) return { status: 'unchanged' };
-    if (!Object.prototype.hasOwnProperty.call(input.candidate, 'findings') || input.candidate['findings'] !== null) {
-      return { status: 'unchanged' };
+    if (Object.prototype.hasOwnProperty.call(input.candidate, 'findings') && input.candidate['findings'] === null) {
+      const { findings: _discarded, ...rest } = input.candidate;
+      return {
+        status: 'changed',
+        candidate: rest,
+        message: 'Stripped null findings from reviewer result.'
+      };
     }
-    const { findings: _discarded, ...rest } = input.candidate;
+
+    if (!Array.isArray(input.candidate['findings'])) return { status: 'unchanged' };
+    let changed = false;
+    const findings = input.candidate['findings'].map((finding) => {
+      if (!isPlainObject(finding) || finding['externalId'] !== null) return finding;
+      const { externalId: _discarded, ...rest } = finding;
+      changed = true;
+      return rest;
+    });
+    if (!changed) return { status: 'unchanged' };
     return {
       status: 'changed',
-      candidate: rest,
-      message: 'Stripped null findings from reviewer result.'
+      candidate: { ...input.candidate, findings },
+      message: 'Stripped null optional fields from reviewer findings: findings[].externalId.'
     };
   }
 };

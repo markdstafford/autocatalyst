@@ -236,6 +236,19 @@ describe('reviewerNullFindingsNormalizer', () => {
     });
   });
 
+  it('strips null optional externalId fields from reviewer findings', () => {
+    const result = normalize({
+      status: 'findings',
+      findings: [{ externalId: null, title: 'Review not performed', body: 'Need actual inspection.', severity: 'blocker' }]
+    });
+    expect(result.status).toBe('changed');
+    if (result.status !== 'changed') return;
+    expect(result.candidate).toEqual({
+      status: 'findings',
+      findings: [{ title: 'Review not performed', body: 'Need actual inspection.', severity: 'blocker' }]
+    });
+  });
+
   it('is unchanged when findings is not null', () => {
     expect(normalize({ status: 'satisfied', findings: [] })).toEqual({ status: 'unchanged' });
     expect(normalize({ status: 'satisfied' })).toEqual({ status: 'unchanged' });
@@ -326,6 +339,22 @@ describe('prFinalizeNullStripNormalizer', () => {
 });
 
 describe('end-to-end: canonical schema validation passes after normalization', () => {
+  it('reviewer: findings with null externalId pass reviewerResultSchema after reviewerNullFindingsNormalizer', () => {
+    const input = {
+      status: 'findings',
+      findings: [{ externalId: null, title: 'Review not performed', body: 'Need actual inspection.', severity: 'blocker' }]
+    };
+    const normalized = reviewerNullFindingsNormalizer.normalize({
+      candidate: input,
+      step: 'implementation.build',
+      schemaId: REVIEWER_RESULT_SCHEMA_ID,
+      attempt: 0
+    });
+    expect(normalized.status).toBe('changed');
+    if (normalized.status !== 'changed') return;
+    expect(() => reviewerResultSchema.parse(normalized.candidate)).not.toThrow();
+  });
+
   it('reviewer: { status: "satisfied", findings: null } passes reviewerResultSchema after reviewerNullFindingsNormalizer', () => {
     const input = { status: 'satisfied', findings: null };
     const normalized = reviewerNullFindingsNormalizer.normalize({
