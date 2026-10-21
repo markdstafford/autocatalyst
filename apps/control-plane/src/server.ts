@@ -876,10 +876,15 @@ export async function createControlPlaneServer(
   const baseAdapters = options.providerAdapters ?? emptyProviderAdapterMap;
   let mergedAdapters: ProviderAdapterMap = baseAdapters;
   if (realDispatchEnabled) {
+    const agentAdapterLogger = {
+      info(event: string, fields: unknown) { app.log.info({ ...(fields as Record<string, unknown>), event }, 'Agent adapter diagnostic.'); },
+      warn(event: string, fields: unknown) { app.log.warn({ ...(fields as Record<string, unknown>), event }, 'Agent adapter diagnostic.'); },
+      error(event: string, fields: unknown) { app.log.error({ ...(fields as Record<string, unknown>), event }, 'Agent adapter diagnostic.'); }
+    };
     const merged = new Map<string, ProviderAdapterFactory>(baseAdapters);
     const claudeKey = buildProviderAdapterKey(claudeProviderKind, claudeAgentAdapterId);
     if (!merged.has(claudeKey)) {
-      merged.set(claudeKey, () => createClaudeAgentAdapter());
+      merged.set(claudeKey, () => createClaudeAgentAdapter({ logger: agentAdapterLogger }));
     }
     const anthropicDirectKey = buildProviderAdapterKey(anthropicProviderKind, anthropicDirectAdapterId);
     if (!merged.has(anthropicDirectKey)) {
@@ -891,7 +896,7 @@ export async function createControlPlaneServer(
     }
     const openaiAgentKey = buildProviderAdapterKey(openaiProviderKind, openaiAgentAdapterId);
     if (!merged.has(openaiAgentKey)) {
-      merged.set(openaiAgentKey, () => createOpenAIAgentAdapter());
+      merged.set(openaiAgentKey, () => createOpenAIAgentAdapter({ logger: agentAdapterLogger }));
     }
     mergedAdapters = merged;
   }
@@ -906,7 +911,11 @@ export async function createControlPlaneServer(
 
   const app = options.loggerInstance !== undefined
     ? Fastify({ loggerInstance: options.loggerInstance })
-    : Fastify({ logger: options.logger ?? false });
+    : Fastify({
+        logger: options.logger ?? (realDispatchEnabled ? { level: 'info' } : false),
+        // Default real-dispatch diagnostics must be visible without logging requests.
+        disableRequestLogging: options.logger === undefined
+      });
 
   const domainRepos = createDrizzleDomainRepositories(database);
   const conversationIngress = new DrizzleConversationIngressRepository(database);

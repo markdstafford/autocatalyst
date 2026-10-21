@@ -277,6 +277,14 @@ describe('createClaudeAgentAdapter — identity', () => {
     expect(adapter.adapterId).toBe('claude-agent-sdk');
     expect(adapter.supportedConnectionMechanism).toBe('process_environment');
   });
+
+  it('can resolve the Claude Agent SDK from the adapter package at runtime', async () => {
+    // realSDKLaunch imports this package from inside @autocatalyst/claude-agent-adapter,
+    // so the adapter package must own a resolvable runtime dependency, not rely on a
+    // sibling application dependency through pnpm workspace symlinks.
+    const sdk = await import('@anthropic-ai/claude-agent-sdk') as { query?: unknown };
+    expect(sdk.query).toBeTypeOf('function');
+  });
 });
 
 describe('createClaudeAgentAdapter — connection mechanism', () => {
@@ -377,25 +385,82 @@ describe('createClaudeAgentAdapter — launch input mapping', () => {
     expect(calls[0]!.options).toBeUndefined();
   });
 
-  it('passes materialized plugin entries in options.skills when resolved skills are present', async () => {
+  it('passes supported local plugin entries in options.plugins when resolved skills are present', async () => {
     const resolvedSkills: ResolvedSkill[] = [
       { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/writing-guidelines', dependencies: [] },
       { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: ['mm:writing-guidelines'] }
     ];
-    const { input } = makeSessionInput({ resolvedSkills });
+    const { input } = makeSessionInput({ requestedSkills: ['mm:planning'], resolvedSkills });
     const { launch, calls } = fakeLaunch([{ type: 'result', result: { output: '' } }]);
     const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch });
     const session = await adapter.startSession(input);
     await collect(session.events);
     expect(calls).toHaveLength(1);
-    const skillOptions = calls[0]!.options?.skills;
-    expect(Array.isArray(skillOptions)).toBe(true);
-    expect((skillOptions as unknown[]).length).toBe(2);
-    const [first, second] = skillOptions as Array<{ type: string; path: string }>;
-    expect(first!.type).toBe('claudecode');
-    expect(first!.path).toMatch(/assets\/mm\/writing-guidelines$/);
-    expect(second!.type).toBe('claudecode');
-    expect(second!.path).toMatch(/assets\/mm\/planning$/);
+    expect(calls[0]!.options?.skills).toBe('all');
+    const plugins = calls[0]!.options?.plugins;
+    expect(Array.isArray(plugins)).toBe(true);
+    expect((plugins as unknown[]).length).toBe(1);
+    const [plugin] = plugins as Array<{ type: string; path: string }>;
+    expect(plugin!.type).toBe('local');
+    expect(plugin!.path).toMatch(/autocatalyst-claude-skills-.*\/mm$/);
+    expect(JSON.parse(await readFile(path.join(plugin!.path, '.claude-plugin', 'plugin.json'), 'utf8'))).toMatchObject({ name: 'mm' });
+    await expect(readFile(path.join(plugin!.path, 'skills', 'writing-guidelines', 'SKILL.md'), 'utf8'))
+      .resolves.toContain('name: writing-guidelines');
+    await expect(readFile(path.join(plugin!.path, 'skills', 'planning', 'SKILL.md'), 'utf8'))
+      .resolves.toContain('name: planning');
+    await expect(readFile(path.join(plugin!.path, 'skills', 'planning', 'references', 'stages', 'product-requirements.md'), 'utf8'))
+      .resolves.toContain('# Stage: Product requirements');
+    await session.close?.();
+    await expect(readFile(path.join(plugin!.path, '.claude-plugin', 'plugin.json'), 'utf8')).rejects.toThrow();
+  });
+
+  it('logs safe runtime skill diagnostics before SDK launch', async () => {
+    const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    const logger = {
+      info: vi.fn((event: string, fields: unknown) => { logs.push({ event, fields: fields as Record<string, unknown> }); }),
+      warn: vi.fn(),
+      error: vi.fn()
+    };
+    const resolvedSkills: ResolvedSkill[] = [
+      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/writing-guidelines', dependencies: [] },
+      { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: ['mm:writing-guidelines'] }
+    ];
+    const { input } = makeSessionInput({ requestedSkills: ['mm:planning'], resolvedSkills });
+    const { launch } = fakeLaunch([{ type: 'result', result: { output: '' } }]);
+    const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch, logger });
+    const session = await adapter.startSession(input);
+    await collect(session.events);
+
+    const skillLog = logs.find((entry) => entry.event === 'claude.adapter.runtime_skills_prepared');
+    expect(skillLog).toBeDefined();
+    expect(skillLog!.fields['requestedSkillRefs']).toEqual(['mm:planning']);
+    expect(skillLog!.fields['resolvedSkillRefs']).toEqual(['mm:writing-guidelines', 'mm:planning']);
+    expect(skillLog!.fields['localPluginCount']).toBe(1);
+    expect(skillLog!.fields['localPluginNamespaces']).toEqual(['mm']);
+    expect(skillLog!.fields['localPluginSkillRefs']).toEqual([['mm:writing-guidelines', 'mm:planning']]);
+    expect(skillLog!.fields['sdkOptionsSkills']).toBe('all');
+    expect(JSON.stringify(skillLog!.fields)).not.toContain('# Stage: Product requirements');
+  });
+
+  it('emits runtime skill diagnostics into the runner event stream', async () => {
+    const resolvedSkills: ResolvedSkill[] = [
+      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/writing-guidelines', dependencies: [] },
+      { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: ['mm:writing-guidelines'] }
+    ];
+    const { input } = makeSessionInput({ requestedSkills: ['mm:planning'], resolvedSkills });
+    const { launch } = fakeLaunch([{ type: 'result', result: { output: '' } }]);
+    const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch });
+    const session = await adapter.startSession(input);
+
+    const events = await collect(session.events);
+
+    expect(events[0]?.type).toBe('runner_notification');
+    const notification = events[0];
+    if (notification?.type !== 'runner_notification') throw new Error('expected notification');
+    expect(notification.notification.severity).toBe('info');
+    expect(notification.notification.message).toBe(
+      'Runtime skills: requested=mm:planning resolved=mm:writing-guidelines,mm:planning handoff=local_plugins plugins=mm'
+    );
   });
 });
 
@@ -499,7 +564,7 @@ describe('createClaudeAgentAdapter — notify mapping', () => {
     const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch });
     const session = await adapter.startSession(input);
     const events = await collect(session.events);
-    const notification = events.find((e) => e.type === 'runner_notification');
+    const notification = events.find((e) => e.type === 'runner_notification' && e.notification.message === 'heads up');
     expect(notification).toBeDefined();
     if (notification?.type !== 'runner_notification') throw new Error('wrong event');
     expect(notification.notification.severity).toBe('warn');
@@ -1081,6 +1146,31 @@ describe('createClaudeAgentAdapter — read-only reviewer satisfied verdict regr
       expect(result.findings).toEqual([]);
     } finally {
       await rm(scratchDir, { recursive: true });
+    }
+  });
+});
+
+
+describe('Claude capture diagnostics', () => {
+  it('logs capture metadata without structured result contents or credentials', async () => {
+    const scratchRoot = await mkdtemp(path.join(os.tmpdir(), 'claude-capture-log-'));
+    const logs: Array<{ event: string; fields: unknown }> = [];
+    const sentinel = 'result-body-must-not-appear';
+    const payload = { status: 'changes_requested', findings: [{ body: sentinel + SECRET_TOKEN }] };
+    const adapter = createClaudeAgentAdapter({
+      launchClaudeSession: () => asyncIter([{ type: 'result', structuredOutput: payload, result: { is_error: false } }]),
+      logger: { info: (event, fields) => logs.push({ event, fields }), warn() {}, error() {} }
+    });
+    try {
+      await runAdapterWithCapture(adapter, makeReviewerCapture(), { scratchRoot });
+      expect(logs).toContainEqual(expect.objectContaining({
+        event: 'claude.adapter.result_capture_diagnostic',
+        fields: expect.objectContaining({ captureStage: 'capture_complete', schemaId: 'autocatalyst.reviewer_result.v1' })
+      }));
+      expect(JSON.stringify(logs)).not.toContain(sentinel);
+      expect(JSON.stringify(logs)).not.toContain(SECRET_TOKEN);
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
     }
   });
 });

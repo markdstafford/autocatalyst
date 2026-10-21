@@ -1339,26 +1339,18 @@ describe('runner-cells: B1 skill materialization — Claude agent cell', () => {
     // The spy must have been called exactly once.
     expect(capturedLaunchOptions).toHaveLength(1);
 
-    // The options must contain a `skills` array (Claude SDK plugin format).
-    const launchSkills = capturedLaunchOptions[0]?.options?.['skills'];
-    expect(Array.isArray(launchSkills)).toBe(true);
-    const plugins = launchSkills as Array<{ type: string; path: string }>;
+    // The SDK takes local plugin descriptors, with all plugin skills enabled.
+    expect(capturedLaunchOptions[0]?.options?.['skills']).toBe('all');
+    const plugins = capturedLaunchOptions[0]?.options?.['plugins'] as Array<{ type: string; path: string }>;
+    expect(plugins).toHaveLength(1);
+    const plugin = plugins[0]!;
+    expect(plugin.type).toBe('local');
+    const { readFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    expect(await readFile(join(plugin.path, 'skills/planning/SKILL.md'), 'utf8')).toContain('name: planning');
+    expect(await readFile(join(plugin.path, 'skills/writing-guidelines/SKILL.md'), 'utf8')).toContain('name: writing-guidelines');
+    await session.close?.();
 
-    // Both B1 skills (mm:planning and its dependency mm:writing-guidelines) must be present.
-    expect(plugins.length).toBeGreaterThanOrEqual(2);
-
-    for (const plugin of plugins) {
-      // Each plugin must be of type 'claudecode'.
-      expect(plugin.type).toBe('claudecode');
-      // Each plugin path must be inside the catalog root.
-      expect(plugin.path.startsWith(runtimeSkillsCatalogRoot)).toBe(true);
-    }
-
-    // Verify asset path segments are present for both B1 skills.
-    const planningPlugin = plugins.find((p) => p.path.includes('assets/mm/planning'));
-    const writingPlugin = plugins.find((p) => p.path.includes('assets/mm/writing-guidelines'));
-    expect(planningPlugin).toBeDefined();
-    expect(writingPlugin).toBeDefined();
   });
 });
 

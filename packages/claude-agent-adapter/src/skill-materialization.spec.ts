@@ -1,227 +1,60 @@
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
-
 import { describe, expect, it } from 'vitest';
+import { runtimeSkillsCatalogRoot } from '@autocatalyst/execution';
+import { ClaudeSkillMaterializationError, materializeClaudeSkillPlugins } from './skill-materialization.js';
 
-import type { ResolvedSkill } from '@autocatalyst/api-contract';
+const skills = [
+  { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/writing-guidelines', dependencies: [] },
+  { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: ['mm:writing-guidelines'] }
+];
 
-import {
-  ClaudeSkillMaterializationError,
-  materializeClaudeSkillPlugins
-} from './skill-materialization.js';
-
-// ---------------------------------------------------------------------------
-// Fixtures
-// ---------------------------------------------------------------------------
-
-const CATALOG_ROOT = '/var/autocatalyst/runtime/skills';
-const SECRET_TOKEN = 'sk-ant-secret-99999';
-const PROMPT_TEXT = 'Write a comprehensive plan for the feature.';
-const WORKSPACE_CONTENT = 'README content from repo';
-
-function _makeResolvedSkill(overrides?: Partial<ResolvedSkill>): ResolvedSkill {
-  return {
-    ref: 'mm:planning',
-    assetPath: 'assets/mm/planning',
-    dependencies: ['mm:writing-guidelines'],
-    ...overrides
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Tests: empty skills
-// ---------------------------------------------------------------------------
-
-describe('materializeClaudeSkillPlugins — empty skills', () => {
-  it('returns [] when no resolved skills are provided', () => {
-    const result = materializeClaudeSkillPlugins([], CATALOG_ROOT);
-    expect(result).toEqual([]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: B1 skills (mm:writing-guidelines + mm:planning)
-// ---------------------------------------------------------------------------
-
-describe('materializeClaudeSkillPlugins — B1 skill set', () => {
-  it('returns 2 plugin entries for mm:writing-guidelines and mm:planning', () => {
-    const skills: ResolvedSkill[] = [
-      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/writing-guidelines', dependencies: [] },
-      { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: ['mm:writing-guidelines'] }
-    ];
-
-    const result = materializeClaudeSkillPlugins(skills, CATALOG_ROOT);
-
-    expect(result).toHaveLength(2);
-    expect(result[0]).toEqual({
-      type: 'claudecode',
-      path: path.resolve(CATALOG_ROOT, 'assets/mm/writing-guidelines')
-    });
-    expect(result[1]).toEqual({
-      type: 'claudecode',
-      path: path.resolve(CATALOG_ROOT, 'assets/mm/planning')
-    });
-  });
-
-  it('uses type "claudecode" for every plugin entry', () => {
-    const skills: ResolvedSkill[] = [
-      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/writing-guidelines', dependencies: [] },
-      { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: ['mm:writing-guidelines'] }
-    ];
-
-    const result = materializeClaudeSkillPlugins(skills, CATALOG_ROOT);
-
-    for (const plugin of result) {
-      expect(plugin.type).toBe('claudecode');
-    }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: absolute path resolution
-// ---------------------------------------------------------------------------
-
-describe('materializeClaudeSkillPlugins — path resolution', () => {
-  it('resolves catalog-relative assetPath to an absolute path using catalogRoot', () => {
-    const skill: ResolvedSkill = {
-      ref: 'mm:planning',
-      assetPath: 'assets/mm/planning',
-      dependencies: []
-    };
-
-    const result = materializeClaudeSkillPlugins([skill], CATALOG_ROOT);
-
-    expect(result).toHaveLength(1);
-    expect(path.isAbsolute(result[0]!.path)).toBe(true);
-    expect(result[0]!.path).toBe(path.join(CATALOG_ROOT, 'assets/mm/planning'));
-  });
-
-  it('resolves a nested assetPath correctly', () => {
-    const skill: ResolvedSkill = {
-      ref: 'mm:planning',
-      assetPath: 'assets/mm/planning',
-      dependencies: []
-    };
-
-    const result = materializeClaudeSkillPlugins([skill], '/catalog/root');
-
-    expect(result[0]!.path).toBe('/catalog/root/assets/mm/planning');
-  });
-
-  it('handles a single skill entry correctly', () => {
-    const skill: ResolvedSkill = {
-      ref: 'mm:writing-guidelines',
-      assetPath: 'assets/mm/writing-guidelines',
-      dependencies: []
-    };
-
-    const result = materializeClaudeSkillPlugins([skill], CATALOG_ROOT);
-
-    expect(result).toHaveLength(1);
-    expect(result[0]!.path).toBe(path.resolve(CATALOG_ROOT, 'assets/mm/writing-guidelines'));
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: no secrets, file contents, or prompt text in output
-// ---------------------------------------------------------------------------
-
-describe('materializeClaudeSkillPlugins — sanitization', () => {
-  it('does not include raw secrets in plugin entries', () => {
-    const skill: ResolvedSkill = {
-      ref: 'mm:planning',
-      assetPath: 'assets/mm/planning',
-      dependencies: []
-    };
-
-    const result = materializeClaudeSkillPlugins([skill], CATALOG_ROOT);
-    const serialized = JSON.stringify(result);
-
-    expect(serialized.includes(SECRET_TOKEN)).toBe(false);
-  });
-
-  it('does not include raw prompt text in plugin entries', () => {
-    const skill: ResolvedSkill = {
-      ref: 'mm:planning',
-      assetPath: 'assets/mm/planning',
-      dependencies: []
-    };
-
-    const result = materializeClaudeSkillPlugins([skill], CATALOG_ROOT);
-    const serialized = JSON.stringify(result);
-
-    expect(serialized.includes(PROMPT_TEXT)).toBe(false);
-  });
-
-  it('does not include workspace file contents in plugin entries', () => {
-    const skill: ResolvedSkill = {
-      ref: 'mm:planning',
-      assetPath: 'assets/mm/planning',
-      dependencies: []
-    };
-
-    const result = materializeClaudeSkillPlugins([skill], CATALOG_ROOT);
-    const serialized = JSON.stringify(result);
-
-    expect(serialized.includes(WORKSPACE_CONTENT)).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Tests: ClaudeSkillMaterializationError
-// ---------------------------------------------------------------------------
-
-describe('materializeClaudeSkillPlugins — error handling', () => {
-  it('throws ClaudeSkillMaterializationError for an empty assetPath', () => {
-    const skill: ResolvedSkill = {
-      ref: 'mm:planning',
-      assetPath: '   ',
-      dependencies: []
-    };
-
-    expect(() => materializeClaudeSkillPlugins([skill], CATALOG_ROOT)).toThrow(
-      ClaudeSkillMaterializationError
-    );
-  });
-
-  it('includes safe details in ClaudeSkillMaterializationError — no file contents', () => {
-    const skill: ResolvedSkill = {
-      ref: 'mm:planning',
-      assetPath: '   ',
-      dependencies: []
-    };
-
-    let caught: ClaudeSkillMaterializationError | undefined;
+describe('Claude local skill plugins', () => {
+  it('creates one plugin per namespace with manifest, skills, and references; cleanup is idempotent', () => {
+    const materialized = materializeClaudeSkillPlugins(skills, runtimeSkillsCatalogRoot);
     try {
-      materializeClaudeSkillPlugins([skill], CATALOG_ROOT);
-    } catch (err) {
-      if (err instanceof ClaudeSkillMaterializationError) {
-        caught = err;
+      expect(materialized.plugins).toHaveLength(1);
+      const plugin = materialized.plugins[0]!;
+      expect(plugin.type).toBe('local');
+      expect(JSON.parse(readFileSync(path.join(plugin.path, '.claude-plugin/plugin.json'), 'utf8'))).toEqual({ name: 'mm', version: '0.0.0' });
+      expect(readFileSync(path.join(plugin.path, 'skills/planning/SKILL.md'), 'utf8')).toContain('name: planning');
+      expect(existsSync(path.join(plugin.path, 'skills/planning/references/stages/product-requirements.md'))).toBe(true);
+      expect(existsSync(path.join(plugin.path, 'skills/writing-guidelines/SKILL.md'))).toBe(true);
+    } finally {
+      materialized.cleanup();
+      materialized.cleanup();
+    }
+    expect(existsSync(materialized.plugins[0]!.path)).toBe(false);
+  });
+
+  it('creates no files for empty skill intent', () => {
+    const result = materializeClaudeSkillPlugins([], runtimeSkillsCatalogRoot);
+    expect(result.plugins).toEqual([]);
+    result.cleanup();
+  });
+
+  it.each([
+    { ref: '../escape:planning', assetPath: skills[0]!.assetPath },
+    { ref: 'mm:../escape', assetPath: skills[0]!.assetPath },
+    { ref: 'mm:planning', assetPath: '../escape' },
+    { ref: 'mm:planning', assetPath: '' }
+  ])('rejects malformed or escaping skill paths: %s', (skill) => {
+    expect(() => materializeClaudeSkillPlugins([{ ...skill, dependencies: [] }], runtimeSkillsCatalogRoot)).toThrow(ClaudeSkillMaterializationError);
+  });
+
+  it('rejects symlinked content and missing sources without exposing file contents', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'claude-skill-test-'));
+    try {
+      mkdirSync(path.join(root, 'skill'));
+      writeFileSync(path.join(root, 'secret'), 'sentinel-secret-content');
+      symlinkSync(path.join(root, 'secret'), path.join(root, 'skill/link'));
+      for (const assetPath of ['skill', 'missing']) {
+        expect(() => materializeClaudeSkillPlugins([{ ref: 'mm:planning', assetPath, dependencies: [] }], root))
+          .toThrow('Runtime skills could not be materialized as local Claude plugins.');
       }
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
-
-    expect(caught).toBeDefined();
-    expect(caught!.code).toBe('skill_materialization_failed');
-    expect(caught!.message).not.toContain(SECRET_TOKEN);
-    expect(caught!.message).not.toContain(PROMPT_TEXT);
-    expect(caught!.message).not.toContain(WORKSPACE_CONTENT);
-    // Safe details include ref and assetPath only
-    expect(caught!.details?.ref).toBe('mm:planning');
-  });
-
-  it('error name is ClaudeSkillMaterializationError', () => {
-    const skill: ResolvedSkill = {
-      ref: 'mm:planning',
-      assetPath: '',
-      dependencies: []
-    };
-
-    let caught: Error | undefined;
-    try {
-      materializeClaudeSkillPlugins([skill], CATALOG_ROOT);
-    } catch (err) {
-      if (err instanceof Error) caught = err;
-    }
-
-    expect(caught?.name).toBe('ClaudeSkillMaterializationError');
   });
 });

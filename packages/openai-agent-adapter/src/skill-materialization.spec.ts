@@ -1,10 +1,12 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { describe, it, expect } from 'vitest';
 
-import type { MaterializedSkillIntent } from '@autocatalyst/execution';
+import { runtimeSkillsCatalogRoot, type MaterializedSkillIntent } from '@autocatalyst/execution';
 
-import { materializeOpenAISkillFiles } from './skill-materialization.js';
+import { buildOpenAISkillDescriptors, materializeOpenAISkillFiles } from './skill-materialization.js';
 
 const CATALOG_ROOT = '/catalog';
 
@@ -111,4 +113,29 @@ describe('materializeOpenAISkillFiles', () => {
     expect(result.systemPromptHint).toContain('Skills root: /workspace/skills');
     expect(result.systemPromptHint).toContain('Load and apply the skills declared in your session context');
   });
+});
+
+
+describe('native OpenAI skill descriptor containment', () => {
+  it('rejects symlinked references instead of reading files outside the skill', () => {
+    const root = mkdtempSync(path.join(tmpdir(), 'openai-skills-test-'));
+    try {
+      mkdirSync(path.join(root, 'skill/references'), { recursive: true });
+      writeFileSync(path.join(root, 'skill/SKILL.md'), '---\nname: example\ndescription: Test skill\n---\nContent');
+      writeFileSync(path.join(root, 'secret'), 'private-secret-content');
+      symlinkSync(path.join(root, 'secret'), path.join(root, 'skill/references/escaped'));
+      expect(() => buildOpenAISkillDescriptors(makeSkillIntent([{ ref: 'mm:example', assetPath: 'skill', dependencies: [] }]), root))
+        .toThrow('Runtime skill references must not contain symbolic links.');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+
+it('loads the folded description and nested references from the shipped planning skill', () => {
+  const [descriptor] = buildOpenAISkillDescriptors(makeSkillIntent([{ ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: [] }]), runtimeSkillsCatalogRoot);
+  expect(descriptor?.description).toContain('Use when');
+  expect(descriptor?.description).not.toBe('>');
+  expect(Object.keys(descriptor?.references ?? {})).toContain('stages');
 });

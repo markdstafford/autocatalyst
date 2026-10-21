@@ -324,6 +324,8 @@ describe('createControlPlaneServer (real runner dispatch composition)', () => {
         }
       });
 
+      expect(app.log.level).toBe('info');
+
       expect(compositionResult?.composed).toEqual([
         expect.objectContaining({
           providerKind: claudeProviderKind,
