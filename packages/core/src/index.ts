@@ -19,6 +19,15 @@ export type { ConfigurationRecordRepository, CreateConfigurationRecordInput, Upd
 export { createSecret, SecretStoreLockedError, SecretResolutionError } from './secret.js';
 export type { SecretStore, CreateSecretInput, SecretResolver, SecretResolutionErrorCode, SecretResolutionErrorDetails } from './secret.js';
 
+export { createProject, listProjects, getProject, updateProject, ProjectServiceError } from './project.js';
+export type {
+  ProjectServiceErrorCode,
+  CreateProjectServiceInput,
+  ListProjectsServiceInput,
+  GetProjectServiceInput,
+  UpdateProjectServiceInput
+} from './project.js';
+
 export {
   InMemoryExtensionRegistryCatalog,
   createExtensionRegistryCatalog,
@@ -84,6 +93,7 @@ export type {
   ListOpenPullRequestsInput,
   RunWorkspaceMetadata,
   RunWorkspaceMetadataRepository,
+  UpdateProjectInput,
   UpsertRunWorkspaceMetadataInput,
   UpdatePullRequestStateInput,
   UpdateRunStepCheckpointInput

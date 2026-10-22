@@ -1588,6 +1588,7 @@ export async function createControlPlaneServer(
     probeResources: new DrizzleProbeResourceRepository(database),
     configurationRecords,
     secrets: secretStore,
+    projects: domainRepos.projects,
     controlPlane
   });
 

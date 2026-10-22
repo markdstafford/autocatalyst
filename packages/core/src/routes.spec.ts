@@ -14,6 +14,9 @@ import {
   principalDiagnosticResponseSchema,
   probeResourceCollectionPath,
   probeResourceSchema,
+  projectCollectionPath,
+  projectListResponseSchema,
+  projectResponseSchema,
   pullRequestReconciliationPath,
   pullRequestReconciliationResponseSchema,
   reconcilePullRequestsSuccessStatusCode,
@@ -110,6 +113,12 @@ async function buildServer(overrides?: Partial<ControlPlaneRouteDependencies>) {
     },
     secrets: {
       createSecret: vi.fn(async () => ({ handle: 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef' }))
+    },
+    projects: {
+      create: vi.fn(async () => { throw new Error('projects.create not stubbed for this test'); }),
+      findById: (vi.fn(async () => null)) as ControlPlaneRouteDependencies['projects']['findById'],
+      list: vi.fn(async () => []),
+      update: vi.fn(async () => null)
     },
     controlPlane: createFakeControlPlaneService(),
     ...overrides
@@ -1907,6 +1916,160 @@ describe('registerControlPlaneRoutes', () => {
         headers: authorization
       });
 
+      expect(response.statusCode).toBe(403);
+      expect(errorResponseSchema.parse(response.json()).error.code).toBe('forbidden');
+    });
+  });
+
+  describe('project routes', () => {
+    const now = '2026-06-08T00:00:00.000Z';
+    const makeProject = (overrides: Record<string, unknown> = {}) => ({
+      id: 'proj_1',
+      owner: { id: 'principal_dev_human', kind: 'human', tenantId: 'tenant_dev', displayName: 'Development Principal' },
+      tenant: 'tenant_dev',
+      displayName: 'Autocatalyst',
+      repoUrl: 'https://github.com/example/repo',
+      hostRepository: { provider: 'github', owner: 'example', name: 'repo' },
+      workspaceRootOverride: null,
+      issueTrackerSetting: null,
+      codeHostSetting: null,
+      credentialRefs: [],
+      createdAt: now,
+      updatedAt: now,
+      ...overrides
+    });
+    const validCreateBody = {
+      displayName: 'Autocatalyst',
+      repoUrl: 'https://github.com/example/repo',
+      hostRepository: { provider: 'github', owner: 'example', name: 'repo' }
+    };
+
+    it('creates a project and returns 201 after calling the policy point', async () => {
+      const create = vi.fn(async () => makeProject());
+      const { app, authorization, policyCalls } = await buildServer({
+        projects: {
+          create: create as never,
+          findById: (vi.fn(async () => null)) as never,
+          list: vi.fn(async () => []),
+          update: vi.fn(async () => null)
+        }
+      });
+      server = app;
+
+      const response = await app.inject({ method: 'POST', url: projectCollectionPath, headers: authorization, payload: validCreateBody });
+      expect(response.statusCode).toBe(201);
+      expect(projectResponseSchema.parse(response.json()).id).toBe('proj_1');
+      expect(create).toHaveBeenCalled();
+      expect(policyCalls.some((c) => c.action === 'project.create')).toBe(true);
+    });
+
+    it('returns 400 for an unsafe non-https repo url', async () => {
+      const { app, authorization } = await buildServer();
+      server = app;
+      const response = await app.inject({ method: 'POST', url: projectCollectionPath, headers: authorization, payload: { ...validCreateBody, repoUrl: 'http://github.com/example/repo' } });
+      expect(response.statusCode).toBe(400);
+      expect(errorResponseSchema.parse(response.json()).error.code).toBe('validation_error');
+    });
+
+    it('returns 403 for a model principal creating a project', async () => {
+      const { app, authorization } = await buildServer({
+        auth: { bearerToken: 'test-token', resolvePrincipal: async () => ({ id: 'principal_model', kind: 'model' as const, tenantId: 'tenant_dev' }) }
+      });
+      server = app;
+      const response = await app.inject({ method: 'POST', url: projectCollectionPath, headers: authorization, payload: validCreateBody });
+      expect(response.statusCode).toBe(403);
+      expect(errorResponseSchema.parse(response.json()).error.code).toBe('forbidden');
+    });
+
+    it('returns 409 when the host repository already exists in the tenant', async () => {
+      const { app, authorization } = await buildServer({
+        projects: {
+          create: (vi.fn(async () => makeProject())) as never,
+          findById: (vi.fn(async () => null)) as never,
+          list: vi.fn(async () => [makeProject()]),
+          update: vi.fn(async () => null)
+        }
+      });
+      server = app;
+      const response = await app.inject({ method: 'POST', url: projectCollectionPath, headers: authorization, payload: validCreateBody });
+      expect(response.statusCode).toBe(409);
+      expect(errorResponseSchema.parse(response.json()).error.code).toBe('conflict');
+    });
+
+    it('lists projects for the caller tenant', async () => {
+      const { app, authorization } = await buildServer({
+        projects: {
+          create: (vi.fn()) as never,
+          findById: (vi.fn(async () => null)) as never,
+          list: vi.fn(async () => [makeProject()]),
+          update: vi.fn(async () => null)
+        }
+      });
+      server = app;
+      const response = await app.inject({ method: 'GET', url: projectCollectionPath, headers: authorization });
+      expect(response.statusCode).toBe(200);
+      expect(projectListResponseSchema.parse(response.json()).projects).toHaveLength(1);
+    });
+
+    it('reads a single project and returns 404 for missing/cross-tenant ids', async () => {
+      const { app, authorization } = await buildServer({
+        projects: {
+          create: (vi.fn()) as never,
+          findById: (vi.fn(async (_tenant: string, id: string) => (id === 'proj_1' ? makeProject() : null))) as never,
+          list: vi.fn(async () => []),
+          update: vi.fn(async () => null)
+        }
+      });
+      server = app;
+      const ok = await app.inject({ method: 'GET', url: `${projectCollectionPath}/proj_1`, headers: authorization });
+      expect(ok.statusCode).toBe(200);
+      const missing = await app.inject({ method: 'GET', url: `${projectCollectionPath}/proj_absent`, headers: authorization });
+      expect(missing.statusCode).toBe(404);
+    });
+
+    it('updates a project, rejects empty/immutable patches, and 404s missing ids', async () => {
+      const update = vi.fn(async () => makeProject({ displayName: 'Renamed' }));
+      const { app, authorization } = await buildServer({
+        projects: {
+          create: (vi.fn()) as never,
+          findById: (vi.fn(async () => null)) as never,
+          list: vi.fn(async () => []),
+          update: update as never
+        }
+      });
+      server = app;
+
+      const ok = await app.inject({ method: 'PATCH', url: `${projectCollectionPath}/proj_1`, headers: authorization, payload: { displayName: 'Renamed' } });
+      expect(ok.statusCode).toBe(200);
+      expect(projectResponseSchema.parse(ok.json()).displayName).toBe('Renamed');
+
+      const empty = await app.inject({ method: 'PATCH', url: `${projectCollectionPath}/proj_1`, headers: authorization, payload: {} });
+      expect(empty.statusCode).toBe(400);
+
+      const immutable = await app.inject({ method: 'PATCH', url: `${projectCollectionPath}/proj_1`, headers: authorization, payload: { repoUrl: 'https://github.com/example/other' } });
+      expect(immutable.statusCode).toBe(400);
+    });
+
+    it('returns 404 when updating a missing or cross-tenant project', async () => {
+      const { app, authorization } = await buildServer({
+        projects: {
+          create: (vi.fn()) as never,
+          findById: (vi.fn(async () => null)) as never,
+          list: vi.fn(async () => []),
+          update: vi.fn(async () => null)
+        }
+      });
+      server = app;
+      const response = await app.inject({ method: 'PATCH', url: `${projectCollectionPath}/proj_absent`, headers: authorization, payload: { displayName: 'x' } });
+      expect(response.statusCode).toBe(404);
+    });
+
+    it('returns 403 for a model principal updating a project', async () => {
+      const { app, authorization } = await buildServer({
+        auth: { bearerToken: 'test-token', resolvePrincipal: async () => ({ id: 'principal_model', kind: 'model' as const, tenantId: 'tenant_dev' }) }
+      });
+      server = app;
+      const response = await app.inject({ method: 'PATCH', url: `${projectCollectionPath}/proj_1`, headers: authorization, payload: { displayName: 'x' } });
       expect(response.statusCode).toBe(403);
       expect(errorResponseSchema.parse(response.json()).error.code).toBe('forbidden');
     });

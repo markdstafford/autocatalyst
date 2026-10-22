@@ -163,7 +163,9 @@ function makeService(options?: {
     },
     projects: {
       create: vi.fn(),
-      findById: vi.fn().mockResolvedValue(null)
+      findById: vi.fn().mockResolvedValue(null),
+      list: vi.fn(async () => []),
+      update: vi.fn(async () => null)
     },
     issueReferenceIntakeResolver: {
       resolve: vi.fn()
