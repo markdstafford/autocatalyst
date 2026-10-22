@@ -13,6 +13,3 @@ export const healthResponseSchema = z.object({
 
 export type DependencyStatus = z.infer<typeof dependencyStatusSchema>;
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
-
-// Deliberate CI lint failure for issue #109; never merge this branch.
-const ciLintFailure = true;
