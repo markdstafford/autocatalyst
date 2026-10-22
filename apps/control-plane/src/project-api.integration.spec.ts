@@ -7,13 +7,10 @@ import { describe, expect, it } from 'vitest';
 import {
   createSecretResponseSchema,
   projectListResponseSchema,
-  projectResponseSchema
+  projectResponseSchema,
+  type Principal
 } from '@autocatalyst/api-contract';
 import { hardcodedDevelopmentPrincipal, type RunUnitOfWork } from '@autocatalyst/core';
-import {
-  createDrizzleDomainRepositories,
-  createSqliteDatabase
-} from '@autocatalyst/persistence';
 
 import { startControlPlaneServer } from './server.js';
 
@@ -39,13 +36,15 @@ const noopUnitOfWork: RunUnitOfWork = { run: async () => ({ directive: 'advance'
 describe('project management API (end-to-end)', () => {
   it('configures a project from a secret and starts a conversation without direct DB writes', async () => {
     await withTempDatabasePath(async (databasePath) => {
+      let principal: Principal = hardcodedDevelopmentPrincipal;
       const handle = await startControlPlaneServer({
         autoDispatch: { enabled: false },
         port: 0,
         databasePath,
         bearerToken: BEARER_TOKEN,
         masterSecret: MASTER_SECRET,
-        unitOfWork: noopUnitOfWork
+        unitOfWork: noopUnitOfWork,
+        resolvePrincipal: async () => principal
       });
       const baseUrl = `http://127.0.0.1:${handle.port}`;
 
@@ -98,39 +97,56 @@ describe('project management API (end-to-end)', () => {
         expect(convBody.run.id).toMatch(/^run_/u);
         expect(convBody.conversation.projectId).toBe(project.id);
 
-        // 5. Tenant isolation: seed a project under a different tenant directly in the
-        // database and verify the authenticated tenant cannot list, read, or update it.
-        const otherOwner = { id: 'user_other', kind: 'human', tenantId: 'tenant_other', displayName: 'Other' } as const;
-        const seedDb = createSqliteDatabase({ path: databasePath });
-        const seedRepos = createDrizzleDomainRepositories(seedDb);
-        const otherProject = await seedRepos.projects.create({
-          owner: otherOwner,
-          tenant: 'tenant_other',
-          displayName: 'Other tenant project',
-          repoUrl: 'https://github.com/other/repo',
-          hostRepository: { provider: 'github', owner: 'other', name: 'repo' },
-          workspaceRootOverride: null,
-          issueTrackerSetting: null,
-          codeHostSetting: null,
-          credentialRefs: []
-        });
-        seedDb.close();
+        // 5. Authenticate as another tenant and verify it cannot access the
+        // first tenant's API-created project. Identity remains server-controlled.
+        principal = { id: 'user_other', kind: 'human', tenantId: 'tenant_other', displayName: 'Other' };
+        const otherListResp = await fetch(`${baseUrl}/v1/projects`, { headers: authHeaders });
+        expect(otherListResp.status).toBe(200);
+        expect(projectListResponseSchema.parse(await otherListResp.json()).projects).toEqual([]);
 
-        const listResp = await fetch(`${baseUrl}/v1/projects`, { headers: authHeaders });
-        expect(listResp.status).toBe(200);
-        const listed = projectListResponseSchema.parse(await listResp.json());
-        expect(listed.projects.map((p) => p.id)).toContain(project.id);
-        expect(listed.projects.map((p) => p.id)).not.toContain(otherProject.id);
-
-        const crossRead = await fetch(`${baseUrl}/v1/projects/${otherProject.id}`, { headers: authHeaders });
+        const crossRead = await fetch(`${baseUrl}/v1/projects/${project.id}`, { headers: authHeaders });
         expect(crossRead.status).toBe(404);
-
-        const crossUpdate = await fetch(`${baseUrl}/v1/projects/${otherProject.id}`, {
+        const crossUpdate = await fetch(`${baseUrl}/v1/projects/${project.id}`, {
           method: 'PATCH',
           headers: jsonHeaders,
           body: JSON.stringify({ displayName: 'hijacked' })
         });
         expect(crossUpdate.status).toBe(404);
+
+        // Create the second tenant's project through HTTP too. The same host
+        // repository is allowed in a different tenant.
+        const otherCreateResp = await fetch(`${baseUrl}/v1/projects`, {
+          method: 'POST',
+          headers: jsonHeaders,
+          body: JSON.stringify({
+            displayName: 'Other tenant project',
+            repoUrl: project.repoUrl,
+            hostRepository: project.hostRepository
+          })
+        });
+        expect(otherCreateResp.status).toBe(201);
+        const otherProject = projectResponseSchema.parse(await otherCreateResp.json());
+        expect(otherProject.tenant).toBe('tenant_other');
+        expect(otherProject.owner).toEqual(principal);
+        const ownListResp = await fetch(`${baseUrl}/v1/projects`, { headers: authHeaders });
+        expect(ownListResp.status).toBe(200);
+        expect(projectListResponseSchema.parse(await ownListResp.json()).projects.map((p) => p.id))
+          .toEqual([otherProject.id]);
+
+        // Return to the original identity: the failed cross-tenant update did
+        // not modify its project, and the second tenant's project stays hidden.
+        principal = hardcodedDevelopmentPrincipal;
+        const listResp = await fetch(`${baseUrl}/v1/projects`, { headers: authHeaders });
+        expect(listResp.status).toBe(200);
+        expect(projectListResponseSchema.parse(await listResp.json()).projects.map((p) => p.id))
+          .toEqual([project.id]);
+        const unchangedResp = await fetch(`${baseUrl}/v1/projects/${project.id}`, { headers: authHeaders });
+        expect(unchangedResp.status).toBe(200);
+        expect(projectResponseSchema.parse(await unchangedResp.json()).displayName).toBe('Autocatalyst');
+        expect((await fetch(`${baseUrl}/v1/projects/${otherProject.id}`, { headers: authHeaders })).status).toBe(404);
+        expect((await fetch(`${baseUrl}/v1/projects/${otherProject.id}`, {
+          method: 'PATCH', headers: jsonHeaders, body: JSON.stringify({ displayName: 'hijacked' })
+        })).status).toBe(404);
       } finally {
         await handle.close();
       }

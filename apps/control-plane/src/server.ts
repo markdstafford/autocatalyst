@@ -11,7 +11,7 @@ import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyServ
 import { z } from 'zod';
 
 import { sessionRoleSchema } from '@autocatalyst/api-contract';
-import type { ConfigurationRecord, Conversation, ExecutionContext, NonModelPrincipal, Project, ProviderProfileSettings, Topic } from '@autocatalyst/api-contract';
+import type { ConfigurationRecord, Conversation, ExecutionContext, NonModelPrincipal, Principal, Project, ProviderProfileSettings, Topic } from '@autocatalyst/api-contract';
 import {
   buildProviderAdapterKey,
   buildImplementationBuildContext,
@@ -155,6 +155,8 @@ export interface ControlPlaneServerOptions {
   readonly databasePath: string;
   readonly bearerToken: string;
   readonly masterSecret: string;
+  /** Optional server-owned identity resolver; defaults to the development principal. */
+  readonly resolvePrincipal?: () => Principal | Promise<Principal>;
   readonly runConcurrency?: number;
   readonly workspaceRoots?: WorkspaceRootOptions;
   readonly policy?: PolicyDecisionPoint;
@@ -1583,7 +1585,10 @@ export async function createControlPlaneServer(
     health: options.health ?? {
       isDatabaseReachable: async () => checkSqliteDatabaseReachability(database)
     },
-    auth: { bearerToken: options.bearerToken },
+    auth: {
+      bearerToken: options.bearerToken,
+      ...(options.resolvePrincipal !== undefined ? { resolvePrincipal: options.resolvePrincipal } : {})
+    },
     policy,
     probeResources: new DrizzleProbeResourceRepository(database),
     configurationRecords,
