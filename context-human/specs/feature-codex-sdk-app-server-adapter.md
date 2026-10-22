@@ -15,12 +15,12 @@ Autocatalyst will add a distinct Codex agent adapter that can run existing model
 
 ### Why
 
-This gives Autocatalyst another approved model backend as Grove-backed credits run down. The feature also tests the workflow reliability, skill delivery, permissions, and structured-result improvements from PRs #107 and #108 under a different agent runtime.
+This gives Autocatalyst users another approved way to run model-backed work: through Codex with enterprise sign-in. The feature broadens provider choice so projects can use different model and authentication schemes without changing workflow orchestration.
 
 ### Goals
 
 - A provider profile can select Codex through the existing `AgentProviderAdapter` path while existing profiles continue to behave as before.
-- Enterprise Codex authentication works without requiring a Platform API key, Grove endpoint, or copied cached token in Autocatalyst secrets.
+- Enterprise Codex authentication works without requiring a Platform API key, unrelated endpoint, or copied cached token in Autocatalyst secrets.
 - Workspace permissions match Autocatalyst role intent: implementers can persist changes in the run workspace and reviewers cannot change repository state.
 - Runtime-resolved skills are delivered to Codex through the selected supported mechanism, and diagnostics report requested, resolved, and delivered skills.
 - Existing structured-result contracts remain authoritative for spec authoring, implementation/review rounds, and PR finalization.
@@ -34,13 +34,13 @@ This gives Autocatalyst another approved model backend as Grove-backed credits r
 
 ### Narrative
 
-Enzo sees Grove credits running low before the next feature run. He creates a Codex-backed profile that points to the approved enterprise sign-in and routes spec authoring to it. The run pauses at the normal spec review gate with the same artifact shape as before, but the session metadata shows Codex as the adapter and marks usage as unavailable if the app-server protocol does not report it.
+Enzo wants a project to use Codex with enterprise sign-in for the next feature run. He creates a Codex-backed profile that points to the approved enterprise identity and routes spec authoring to it. The run pauses at the normal spec review gate with the same artifact shape as before, but the session metadata shows Codex as the adapter and marks usage as unavailable if the app-server protocol does not report it.
 
 Later, Phoebe approves a spec and an implementation run uses Codex as implementer while the reviewer role is configured read-only. The implementer changes files in the workspace. The reviewer attempts to inspect the repository and write a note through normal review output, but any repository write is rejected and the structured reviewer result is still captured through the adapter-owned result path.
 
 ### User stories
 
-- As an operator, I want to configure a Codex profile that uses enterprise sign-in, so that Autocatalyst can run without Grove or Platform API-key billing for that profile.
+- As an operator, I want to configure a Codex profile that uses enterprise sign-in, so that Autocatalyst can run without unrelated provider or Platform API-key billing for that profile.
 - As an engineer, I want unsupported Codex settings to fail before a session starts, so that misconfiguration does not create confusing partial runs.
 - As an engineer, I want implementer and reviewer permissions enforced by the adapter, so that review cannot mutate repository state.
 - As a run observer, I want Codex events and outcomes to appear in the existing event stream, so that UI and persistence code do not need provider-specific branches.
@@ -49,7 +49,7 @@ Later, Phoebe approves a spec and an implementation run uses Codex as implemente
 ### Non-functional requirements
 
 - **Security:** Do not read, copy, persist, or log raw Codex cached credentials. Authentication diagnostics must identify only safe facts such as auth mode, adapter id, account type, and redacted failure codes.
-- **Billing safety:** Do not silently switch to API-key billing, Grove, another account, or automatic paid retry when enterprise sign-in is missing, expired, or disallowed.
+- **Billing safety:** Do not silently switch to API-key billing, unrelated provider, another account, or automatic paid retry when enterprise sign-in is missing, expired, or disallowed.
 - **Compatibility:** Use one supported Codex SDK or app-server transport. Do not implement both in this issue. Validate behavior against the runtime version used by Autocatalyst, including accepted sandbox values.
 - **Testability:** Deterministic tests must not consume enterprise inference by default. Live smoke checks must be opt-in and operator-authorized.
 - **Maintainability:** Provider-specific protocol handling must stay inside the new adapter package and shared execution seams. Orchestrator code must not gain Codex-specific branches.
@@ -58,7 +58,7 @@ Later, Phoebe approves a spec and an implementation run uses Codex as implemente
 
 - Account provisioning or login UI for Codex or ChatGPT.
 - General raw OpenAI API access through this adapter.
-- Automatic quota balancing across Grove, Platform API keys, and enterprise Codex.
+- Automatic quota balancing across Platform API keys, enterprise Codex, or other provider accounts.
 - Replacing existing Claude, OpenAI Agents SDK, Anthropic direct, or OpenAI direct adapters.
 - Starting a new end-to-end run or approving any human gates as part of this feature.
 
@@ -136,7 +136,7 @@ No new durable domain entity is expected. Configuration records may need new all
 
 ### Authentication and permissions
 
-The adapter must use an explicit operator-approved enterprise sign-in mode. Missing, expired, disallowed, or mismatched sign-in fails safely with redacted diagnostics. The adapter must not fall back to `OPENAI_API_KEY`, Grove endpoints, another account, or copied cached tokens.
+The adapter must use an explicit operator-approved enterprise sign-in mode. Missing, expired, disallowed, or mismatched sign-in fails safely with redacted diagnostics. The adapter must not fall back to `OPENAI_API_KEY`, unrelated provider endpoints, another account, or copied cached tokens.
 
 Implementer sessions can write to the run workspace according to the materialized tool policy. Reviewer sessions must enforce read-only repository access. A rejected reviewer write attempt must leave repository contents unchanged while still allowing the reviewer result to be captured through scratch, native structured output, or another adapter-owned non-repository channel.
 
@@ -235,7 +235,7 @@ Make Codex sessions start, fail, and close safely through enterprise sign-in.
 
 **Acceptance criteria:**
 - Tests cover success and each deterministic auth failure class exposed by the fake transport.
-- The adapter does not fall back to `OPENAI_API_KEY`, Grove, or another account.
+- The adapter does not fall back to `OPENAI_API_KEY`, unrelated provider, or another account.
 - Logs and thrown errors contain no raw credentials, cached token paths, or upstream secret text.
 
 **Dependencies:** T-003.
