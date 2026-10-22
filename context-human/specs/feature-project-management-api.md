@@ -1,7 +1,7 @@
 ---
 created: 2026-10-22
 last_updated: 2026-10-22
-status: draft
+status: approved
 issue: 112
 specced_by: markdstafford
 ---
