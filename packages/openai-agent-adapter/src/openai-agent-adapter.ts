@@ -621,6 +621,10 @@ function sandboxResultFileCandidates(
   candidates.push(`/workspace/scratch/${normalizedResultFile}`);
   candidates.push(`/workspace/${normalizedResultFile}`);
   candidates.push(normalizedResultFile);
+  // Shell workdir does not change the base of session.readFile's relative paths.
+  if (workspace.repoRoot !== undefined) {
+    candidates.push(`/workspace/${path.basename(workspace.repoRoot)}/${normalizedResultFile}`);
+  }
   return [...new Set(candidates)];
 }
 
@@ -1244,7 +1248,15 @@ export function createOpenAIAgentAdapter(
       const env = input.runInput.environment;
       const skillMaterialization = materializeOpenAISkillFiles(env.skills, runtimeSkillsCatalogRoot);
       const skillDescriptors = buildOpenAISkillDescriptors(env.skills, runtimeSkillsCatalogRoot);
-      const instructions = buildOpenAIAgentInstructions(skillMaterialization.systemPromptHint);
+      const baseInstructions = buildOpenAIAgentInstructions(skillMaterialization.systemPromptHint);
+      const resultPath = structuredResult?.capture.step === 'spec.author'
+        ? sandboxResultFileCandidates(workspace, structuredResult.capture.resultFile)[0]
+        : undefined;
+      const instructions = resultPath === undefined ? baseInstructions : [
+        baseInstructions,
+        `Write the spec result JSON to the absolute sandbox path ${resultPath}, regardless of the shell working directory.`,
+        'Before finishing, read that exact file and confirm it contains the required JSON result. A prose completion message does not replace the result file.'
+      ].join('\n');
       const promptShape = buildPromptShapeDiagnostic({
         prompt: input.runInput.environment.context.task.prompt,
         instructions,
