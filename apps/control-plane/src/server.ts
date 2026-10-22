@@ -30,6 +30,7 @@ import {
   DefaultControlPlaneService,
   DefaultIssueReferenceIntakeResolver,
   DefaultOrchestrator,
+  createExtensionRegistryCatalog,
   defaultExtensionRegistryCatalog,
   emptyProviderAdapterMap,
   ExecutionContextResolutionError,
@@ -47,6 +48,7 @@ import {
   type DomainRepositories,
   type ExecutionModeResolution,
   type ExtensionRegistryCatalog,
+  type ExtensionRegistryEntry,
   type FeedbackLifecycleDependencies,
   type HealthDependencyChecker,
   type ModelRoutingDistinctResolution,
@@ -870,35 +872,82 @@ export async function createControlPlaneServer(
 
   const baseAdapters = options.providerAdapters ?? emptyProviderAdapterMap;
   let mergedAdapters: ProviderAdapterMap = baseAdapters;
+  // Extension-registry entries mirroring the adapters that real dispatch registers.
+  // Startup composition validates persisted provider profiles against the registry
+  // catalog; without matching entries, every valid profile (Codex included) would
+  // emit a spurious `adapter_not_registered` warning even though its factory is
+  // present. We only populate these when real dispatch wires the factories, so the
+  // registry claim and the registered factory stay in lockstep.
+  const realDispatchRegistryEntries: ExtensionRegistryEntry[] = [];
   if (realDispatchEnabled) {
     const merged = new Map<string, ProviderAdapterFactory>(baseAdapters);
     const claudeKey = buildProviderAdapterKey(claudeProviderKind, claudeAgentAdapterId);
     if (!merged.has(claudeKey)) {
       merged.set(claudeKey, () => createClaudeAgentAdapter());
     }
+    realDispatchRegistryEntries.push({
+      providerKind: claudeProviderKind,
+      adapterId: claudeAgentAdapterId,
+      displayName: 'Claude Agent SDK',
+      capabilities: ['agent_session']
+    });
     const anthropicDirectKey = buildProviderAdapterKey(anthropicProviderKind, anthropicDirectAdapterId);
     if (!merged.has(anthropicDirectKey)) {
       merged.set(anthropicDirectKey, () => createAnthropicDirectAdapter());
     }
+    realDispatchRegistryEntries.push({
+      providerKind: anthropicProviderKind,
+      adapterId: anthropicDirectAdapterId,
+      displayName: 'Anthropic (direct)',
+      capabilities: ['direct_call']
+    });
     const openaiDirectKey = buildProviderAdapterKey(openaiProviderKind, openaiDirectAdapterId);
     if (!merged.has(openaiDirectKey)) {
       merged.set(openaiDirectKey, () => createOpenAIDirectAdapter());
     }
+    realDispatchRegistryEntries.push({
+      providerKind: openaiProviderKind,
+      adapterId: openaiDirectAdapterId,
+      displayName: 'OpenAI (direct)',
+      capabilities: ['direct_call']
+    });
     const openaiAgentKey = buildProviderAdapterKey(openaiProviderKind, openaiAgentAdapterId);
     if (!merged.has(openaiAgentKey)) {
       merged.set(openaiAgentKey, () => createOpenAIAgentAdapter());
     }
+    realDispatchRegistryEntries.push({
+      providerKind: openaiProviderKind,
+      adapterId: openaiAgentAdapterId,
+      displayName: 'OpenAI Agents SDK',
+      capabilities: ['agent_session']
+    });
     const codexAgentKey = buildProviderAdapterKey(codexProviderKind, codexAgentAdapterId);
     if (!merged.has(codexAgentKey)) {
       merged.set(codexAgentKey, () => createCodexAgentAdapter());
     }
+    realDispatchRegistryEntries.push({
+      providerKind: codexProviderKind,
+      adapterId: codexAgentAdapterId,
+      displayName: 'Codex (enterprise sign-in)',
+      capabilities: ['agent_session']
+    });
     mergedAdapters = merged;
   }
+
+  // Prefer an explicitly injected registry (tests/custom callers). Otherwise, when
+  // real dispatch is enabled, validate against the catalog mirroring the registered
+  // factories so Codex and its siblings resolve cleanly in production. Fall back to
+  // the empty default catalog only when no factories were wired.
+  const startupExtensionRegistry: ExtensionRegistryCatalog =
+    options.extensionRegistry ??
+    (realDispatchEnabled
+      ? createExtensionRegistryCatalog(realDispatchRegistryEntries)
+      : defaultExtensionRegistryCatalog);
 
   const startupCompositionTenant = 'tenant_dev';
   const providerCompositionResult = await composeConfiguredProviders({
     configurationRecords: await configurationRecords.list(startupCompositionTenant),
-    registry: options.extensionRegistry ?? defaultExtensionRegistryCatalog,
+    registry: startupExtensionRegistry,
     providerAdapters: mergedAdapters
   });
   await options.onProviderComposition?.(providerCompositionResult);

@@ -32,6 +32,7 @@ import {
   type Runner
 } from '@autocatalyst/execution';
 import { claudeAgentAdapterId, claudeProviderKind } from '@autocatalyst/claude-agent-adapter';
+import { codexAgentAdapterId, codexProviderKind } from '@autocatalyst/codex-agent-adapter';
 
 import {
   createControlPlaneServer,
@@ -330,6 +331,74 @@ describe('createControlPlaneServer (real runner dispatch composition)', () => {
           adapterId: claudeAgentAdapterId
         })
       ]);
+      const response = await app.inject({ method: 'GET', url: '/health' });
+      expect(response.statusCode).toBe(200);
+
+      await app.close();
+    });
+  });
+
+  it('resolves a Codex provider profile through production composition without an adapter_not_registered warning', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      // Seed a persisted Codex provider profile.
+      const seed = await createControlPlaneServer({
+        databasePath,
+        bearerToken: 'token',
+        masterSecret: 'correct-master-secret'
+      });
+      const createdResponse = await seed.inject({
+        method: 'POST',
+        url: configurationRecordCollectionPath,
+        headers: { authorization: 'Bearer token' },
+        payload: {
+          kind: 'provider_profile',
+          providerKind: codexProviderKind,
+          adapterId: codexAgentAdapterId,
+          settings: { profileName: 'codex-enterprise' }
+        }
+      });
+      expect(createdResponse.statusCode).toBe(createConfigurationRecordSuccessStatusCode);
+      const created = createdResponse.json() as { id: string };
+      await seed.close();
+
+      // Override only the Codex adapter factory with a fake so no real app-server
+      // subprocess launches. The production extension registry is still assembled
+      // by the server from the real-dispatch adapter set, so this test exercises
+      // the registry claim, not the fake factory.
+      const fakeCodexAdapter: AgentProviderAdapter = {
+        providerKind: codexProviderKind,
+        adapterId: codexAgentAdapterId,
+        supportedConnectionMechanism: 'process_environment',
+        async startSession() {
+          throw new Error('startSession should not be invoked in composition test');
+        }
+      };
+      const fakeCodexKey = buildProviderAdapterKey(codexProviderKind, codexAgentAdapterId);
+
+      let compositionResult: ProviderCompositionResult | undefined;
+      const app = await createControlPlaneServer({
+        databasePath,
+        bearerToken: 'token',
+        masterSecret: 'correct-master-secret',
+        providerAdapters: new Map([[fakeCodexKey, () => fakeCodexAdapter]]),
+        realRunnerDispatch: { enabled: true, defaultProviderProfileId: created.id },
+        onProviderComposition: (result) => {
+          compositionResult = result;
+        }
+      });
+
+      // The Codex profile composes through the production dispatch path.
+      expect(compositionResult?.composed).toEqual([
+        expect.objectContaining({
+          providerKind: codexProviderKind,
+          adapterId: codexAgentAdapterId
+        })
+      ]);
+      // And the production registry recognizes the Codex adapter, so startup
+      // composition reports it as registered rather than emitting a spurious
+      // adapter_not_registered warning.
+      expect(compositionResult?.warnings ?? []).toEqual([]);
+
       const response = await app.inject({ method: 'GET', url: '/health' });
       expect(response.statusCode).toBe(200);
 
