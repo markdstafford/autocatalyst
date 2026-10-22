@@ -13,3 +13,6 @@ export const healthResponseSchema = z.object({
 
 export type DependencyStatus = z.infer<typeof dependencyStatusSchema>;
 export type HealthResponse = z.infer<typeof healthResponseSchema>;
+
+// Deliberate CI build failure for issue #109; never merge this branch.
+export const ciBuildFailure: number = 'deliberate type error';
