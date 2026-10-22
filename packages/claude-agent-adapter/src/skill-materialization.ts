@@ -1,112 +1,61 @@
+import { cpSync, lstatSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { ResolvedSkill } from '@autocatalyst/api-contract';
 import { resolveCatalogAssetPath } from '@autocatalyst/execution';
+import type { SdkPluginConfig } from '@anthropic-ai/claude-agent-sdk';
 
-// ---------------------------------------------------------------------------
-// Claude SDK skill/plugin shape
-//
-// The @anthropic-ai/claude-agent-sdk receives skills via `options.skills` as
-// an array of plugin descriptor objects. Each descriptor contains:
-//   - `type`:  always `'claudecode'` — identifies the plugin kind.
-//   - `path`:  absolute filesystem path to the skill's root directory.
-//
-// This shape is verified against the current adapter behavior in
-// `claude-agent-adapter.ts` where `options: { skills: [...] }` is forwarded.
-// The helper documents this provider-specific mapping so callers do not need
-// to know SDK internals. If the SDK shape changes, only this file needs
-// updating.
-// ---------------------------------------------------------------------------
-
-/**
- * A single Claude Agent SDK skill plugin descriptor.
- * The adapter passes an array of these inside `options.skills`.
- */
-export interface ClaudeSkillPlugin {
-  readonly type: 'claudecode';
-  readonly path: string;
-}
-
-// ---------------------------------------------------------------------------
-// Materialization error
-// ---------------------------------------------------------------------------
-
-export type ClaudeSkillMaterializationErrorCode = 'skill_materialization_failed';
-
-/**
- * Thrown when a resolved skill cannot be represented as a Claude SDK plugin.
- * Safe details include only skill refs and catalog-relative paths — never
- * file contents, prompt text, credentials, or provider payloads.
- */
 export class ClaudeSkillMaterializationError extends Error {
-  readonly code: ClaudeSkillMaterializationErrorCode;
-  readonly details?: { readonly ref: string; readonly assetPath: string; readonly reason: string };
-
-  constructor(
-    code: ClaudeSkillMaterializationErrorCode,
-    message: string,
-    details?: { readonly ref: string; readonly assetPath: string; readonly reason: string }
-  ) {
-    super(message);
+  readonly code = 'skill_materialization_failed';
+  constructor() {
+    super('Runtime skills could not be materialized as local Claude plugins.');
     this.name = 'ClaudeSkillMaterializationError';
-    this.code = code;
-    if (details !== undefined) this.details = details;
   }
 }
 
-// ---------------------------------------------------------------------------
-// materializeClaudeSkillPlugins
-// ---------------------------------------------------------------------------
+export interface ClaudeSkillMaterialization {
+  readonly plugins: SdkPluginConfig[];
+  cleanup(): void;
+}
 
-/**
- * Converts provider-neutral resolved skill entries into the verified Claude
- * Agent SDK plugin descriptor array expected by `options.skills`.
- *
- * This is a pure transformation — no async, no filesystem access. Path
- * resolution uses `resolveCatalogAssetPath` from `@autocatalyst/execution`,
- * which enforces catalog boundary containment (no traversal, no escaped
- * symlinks). Callers that invoke this helper directly are protected by this
- * check; callers that go through the execution materializer path receive an
- * additional layer of validation from `validateMaterializedSkills`.
- *
- * @param skills    Resolved skill entries from `MaterializedExecutionEnvironment.skills.resolved`.
- * @param catalogRoot  Absolute path to the runtime skills catalog root. Used to
- *                     resolve catalog-relative `assetPath` values to absolute paths.
- * @returns An array of `ClaudeSkillPlugin` entries ready to pass as `options.skills`.
- *          Returns `[]` when `skills` is empty.
- *
- * @throws `ClaudeSkillMaterializationError` with code `'skill_materialization_failed'`
- *         if an `assetPath` entry is empty or path resolution yields an empty string.
- */
+/** Materialize one SDK local plugin per namespace, retaining every skill's references. */
 export function materializeClaudeSkillPlugins(
   skills: readonly ResolvedSkill[],
   catalogRoot: string
-): ClaudeSkillPlugin[] {
-  if (skills.length === 0) {
-    return [];
-  }
-
-  return skills.map((skill) => {
-    if (skill.assetPath.trim().length === 0) {
-      throw new ClaudeSkillMaterializationError(
-        'skill_materialization_failed',
-        `Skill '${skill.ref}' has an empty assetPath and cannot be materialized as a Claude plugin.`,
-        { ref: skill.ref, assetPath: skill.assetPath, reason: 'empty_asset_path' }
-      );
-    }
-
-    let absolutePath: string;
+): ClaudeSkillMaterialization {
+  if (skills.length === 0) return { plugins: [], cleanup() {} };
+  // Validate all references and source paths before creating any temporary files.
+  const sources = skills.map((skill) => {
+    const match = /^([a-zA-Z0-9_-]+):([a-zA-Z0-9_-]+)$/.exec(skill.ref);
+    if (match === null || skill.assetPath.trim().length === 0) throw new ClaudeSkillMaterializationError();
     try {
-      absolutePath = resolveCatalogAssetPath(catalogRoot, skill.assetPath);
+      return { namespace: match[1]!, name: match[2]!, source: resolveCatalogAssetPath(catalogRoot, skill.assetPath) };
     } catch {
-      throw new ClaudeSkillMaterializationError(
-        'skill_materialization_failed',
-        `Skill '${skill.ref}' asset path escapes the catalog boundary.`,
-        { ref: skill.ref, assetPath: skill.assetPath, reason: 'asset_path_outside_catalog' }
-      );
+      throw new ClaudeSkillMaterializationError();
     }
-
-    return {
-      type: 'claudecode' as const,
-      path: absolutePath
-    };
   });
+  const root = mkdtempSync(join(tmpdir(), 'autocatalyst-claude-skills-'));
+  const cleanup = (): void => rmSync(root, { recursive: true, force: true });
+  try {
+    const namespaces = [...new Set(sources.map((source) => source.namespace))];
+    const plugins: SdkPluginConfig[] = namespaces.map((namespace) => {
+      const pluginRoot = join(root, namespace);
+      mkdirSync(join(pluginRoot, '.claude-plugin'), { recursive: true });
+      writeFileSync(join(pluginRoot, '.claude-plugin', 'plugin.json'), JSON.stringify({ name: namespace, version: '0.0.0' }));
+      return { type: 'local', path: pluginRoot };
+    });
+    for (const { namespace, name, source } of sources) {
+      cpSync(source, join(root, namespace, 'skills', name), {
+        recursive: true,
+        filter: (candidate) => {
+          if (lstatSync(candidate).isSymbolicLink()) throw new ClaudeSkillMaterializationError();
+          return true;
+        }
+      });
+    }
+    return { plugins, cleanup };
+  } catch {
+    cleanup();
+    throw new ClaudeSkillMaterializationError();
+  }
 }

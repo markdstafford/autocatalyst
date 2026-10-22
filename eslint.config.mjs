@@ -90,10 +90,8 @@ export default [
       ]
     }
   },
-  // The control-plane app hosts the Claude/OpenAI adapter peer and SDK deps.
-  // @anthropic-ai/claude-agent-sdk is used only via dynamic import in tests.
-  // @openai/agents and openai are transitive deps verified by the runtime spec.
-  // zod: control-plane uses v3 but pnpm deduplicates with v4 from openai-agent-adapter.
+  // The control-plane app owns only app-level dependencies. Provider SDKs live
+  // with their adapter packages and are verified by the runtime spec.
   {
     files: ['apps/control-plane/package.json'],
     languageOptions: {
@@ -108,8 +106,7 @@ export default [
             '{projectRoot}/vite.config.ts',
             '{projectRoot}/vitest.config.ts',
             '{projectRoot}/drizzle.config.ts'
-          ],
-          ignoredDependencies: ['@anthropic-ai/claude-agent-sdk', 'zod']
+          ]
         }
       ]
     }
@@ -117,9 +114,8 @@ export default [
   // The OpenAI agent adapter declares @openai/agents, `openai`, and `zod` as
   // real dependencies and imports them statically, so @nx/dependency-checks
   // detects them without an override (the default rule above applies).
-  // @anthropic-ai/claude-agent-sdk is an optional peer dep used only via
-  // dynamic import() in the Claude adapter — the @nx/dependency-checks rule
-  // cannot detect dynamic imports, so we suppress the false positive here.
+  // The Claude adapter dynamically imports the Claude SDK, which the Nx rule
+  // cannot detect, so the adapter declares and ignores only its owned SDK deps.
   {
     files: ['packages/claude-agent-adapter/package.json'],
     languageOptions: {
@@ -135,7 +131,7 @@ export default [
             '{projectRoot}/vitest.config.ts',
             '{projectRoot}/drizzle.config.ts'
           ],
-          ignoredDependencies: ['@anthropic-ai/claude-agent-sdk']
+          ignoredDependencies: ['@anthropic-ai/claude-agent-sdk', '@anthropic-ai/sdk', 'zod']
         }
       ]
     }
