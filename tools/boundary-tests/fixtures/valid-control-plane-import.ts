@@ -8,6 +8,3 @@ export const validControlPlaneRunner: Runner = {
     return { status: 'closed' as const };
   }
 };
-
-// Deliberate CI execution-boundary violation for issue #109; never merge this branch.
-import '@autocatalyst/execution/src/index';
