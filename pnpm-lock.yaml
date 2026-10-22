@@ -87,6 +87,9 @@ importers:
       '@autocatalyst/claude-agent-adapter':
         specifier: workspace:*
         version: link:../../packages/claude-agent-adapter
+      '@autocatalyst/codex-agent-adapter':
+        specifier: workspace:*
+        version: link:../../packages/codex-agent-adapter
       '@autocatalyst/core':
         specifier: workspace:*
         version: link:../../packages/core
@@ -131,6 +134,15 @@ importers:
         version: 3.25.76
 
   packages/claude-agent-adapter:
+    dependencies:
+      '@autocatalyst/api-contract':
+        specifier: '*'
+        version: link:../api-contract
+      '@autocatalyst/execution':
+        specifier: '*'
+        version: link:../execution
+
+  packages/codex-agent-adapter:
     dependencies:
       '@autocatalyst/api-contract':
         specifier: '*'

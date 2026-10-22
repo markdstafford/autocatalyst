@@ -128,6 +128,11 @@ import {
   openaiAgentAdapterId
 } from '@autocatalyst/openai-agent-adapter';
 import {
+  codexAgentAdapterId,
+  codexProviderKind,
+  createCodexAgentAdapter
+} from '@autocatalyst/codex-agent-adapter';
+import {
   DrizzleConfigurationRecordRepository,
   DrizzleConversationIngressRepository,
   DrizzleProbeResourceRepository,
@@ -882,6 +887,10 @@ export async function createControlPlaneServer(
     const openaiAgentKey = buildProviderAdapterKey(openaiProviderKind, openaiAgentAdapterId);
     if (!merged.has(openaiAgentKey)) {
       merged.set(openaiAgentKey, () => createOpenAIAgentAdapter());
+    }
+    const codexAgentKey = buildProviderAdapterKey(codexProviderKind, codexAgentAdapterId);
+    if (!merged.has(codexAgentKey)) {
+      merged.set(codexAgentKey, () => createCodexAgentAdapter());
     }
     mergedAdapters = merged;
   }
