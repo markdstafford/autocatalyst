@@ -1473,10 +1473,13 @@ describe('createOpenAIAgentAdapter — spec.author structured result capture', (
         throw Object.assign(new Error('missing'), { code: 'ENOENT' });
       });
 
-      const fakeRun: OpenAIRunAgentSession = () => ({
-        items: [assistantItem('Wrote /workspace/scratch/step-result.json')],
-        result: Promise.resolve({ directive: 'advance' as const })
-      });
+      const fakeRun: OpenAIRunAgentSession = (runInput) => {
+        expect(runInput.instructions).toContain(`Write the spec result JSON to the absolute sandbox path /workspace/${path.basename(scratchDir)}/step-result.json`);
+        return {
+          items: [assistantItem('Wrote /workspace/scratch/step-result.json')],
+          result: Promise.resolve({ directive: 'advance' as const })
+        };
+      };
 
       const specCapture: StructuredAgentResultCapture = {
         step: 'spec.author',
@@ -2246,7 +2249,10 @@ describe('createOpenAIAgentAdapter — model-memory continuity', () => {
 // Regression: exercise native shell -> sandbox file -> host result with the
 // real SDK and local sandbox; only model HTTP is replaced, so no paid calls occur.
 describe('real SDK spec result handoff', () => {
-  it('captures JSON written by a native shell tool before a prose final answer', async () => {
+  it.each([
+    { workdir: '/workspace/scratch', outputPath: '/workspace/scratch/step-result.json' },
+    { workdir: '/workspace/repo', outputPath: 'step-result.json' }
+  ])('captures native shell JSON from $workdir before a prose final answer', async ({ workdir, outputPath }) => {
     const tmp = await mkdtemp(path.join(os.tmpdir(), 'ac-result-handoff-'));
     const repoRoot = path.join(tmp, 'repo');
     const scratchRoot = path.join(tmp, 'scratch');
@@ -2259,7 +2265,7 @@ describe('real SDK spec result handoff', () => {
       fetch: vi.fn(async () => {
         call += 1;
         const output = call === 1
-          ? [{ id: 'fc_write', type: 'function_call', call_id: 'call_write', name: 'exec_command', arguments: JSON.stringify({ cmd: `printf '%s' '${JSON.stringify(specData)}' > /workspace/scratch/step-result.json`, workdir: '/workspace/scratch' }), status: 'completed' }]
+          ? [{ id: 'fc_write', type: 'function_call', call_id: 'call_write', name: 'exec_command', arguments: JSON.stringify({ cmd: `printf '%s' '${JSON.stringify(specData)}' > ${outputPath}`, workdir }), status: 'completed' }]
           : [{ id: 'msg_done', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Wrote step-result.json.' }] }];
         return new Response(makeResponsesSSEBody(`resp_handoff_${call}`, output), { status: 200, headers: { 'content-type': 'text/event-stream' } });
       })
@@ -2279,6 +2285,10 @@ describe('real SDK spec result handoff', () => {
       await collectEvents(session.events);
       expect(call).toBe(2);
       expect(JSON.parse(await readFile(path.join(scratchRoot, 'step-result.json'), 'utf8'))).toEqual(specData);
+      expect(logs).toContainEqual(expect.objectContaining({
+        captureStage: 'sandbox_read_ok',
+        candidate: outputPath === 'step-result.json' ? '/workspace/repo/step-result.json' : outputPath
+      }));
 
     } finally {
       await session?.close?.();
