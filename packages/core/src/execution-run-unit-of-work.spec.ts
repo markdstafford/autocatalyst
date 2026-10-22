@@ -445,7 +445,15 @@ describe('direct mode integration seam', () => {
       call: vi.fn().mockResolvedValue({
         value: result,
         validation: { status: 'valid' },
-        metadata: { outcome: 'succeeded', tokenUsage: { available: false }, degradedCapabilities: [] }
+        metadata: { outcome: 'succeeded', tokenUsage: { available: false }, degradedCapabilities: [] },
+        sessionTelemetry: {
+          startedAt: '2026-06-22T00:00:00.000Z',
+          endedAt: '2026-06-22T00:00:00.250Z',
+          durationMs: 250,
+          inferenceSettings: {},
+          assistantTurnCount: 1,
+          toolCallCount: 0
+        }
       })
     };
   }

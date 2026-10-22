@@ -1173,6 +1173,49 @@ describe('real Claude agent dispatch', () => {
           expect(executedStep!).toHaveProperty('checkpointResult');
           expect(executedStep!.checkpointResult).not.toBeNull();
 
+          // RunStep bounds must close on the real production path: the step the run
+          // transitioned out of (e.g. intake) carries a non-null endedAt. No post-hoc backfill.
+          const closedStep = stepsBody.steps.find((s) => s.endedAt !== null);
+          expect(closedStep).toBeDefined();
+
+          // Durable Session rows must be written by the production recorder path — not injected —
+          // and read back through DrizzleSessionRepository.listByRun (via the sessions route)
+          // deterministically ordered by the per-run sequence.
+          const sessionsResp = await fetch(`${baseUrl}/v1/runs/${runId}/sessions`, { headers: authHeaders });
+          expect(sessionsResp.status).toBe(200);
+          const sessionsBody = (await sessionsResp.json()) as {
+            sessions: Array<{
+              runId: string;
+              sequence: number;
+              model: { provider: string; model: string };
+              inferenceSettings: unknown;
+              tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
+              usageAvailable: boolean;
+              assistantTurnCount: number;
+              toolCallCount: number;
+              durationMs: number | null;
+              outcome: string;
+              cost: { usd: number | null; tokens: unknown };
+            }>;
+          };
+          // The executed model go must have produced exactly one durable session row.
+          expect(sessionsBody.sessions.length).toBeGreaterThanOrEqual(1);
+          const sequences = sessionsBody.sessions.map((s) => s.sequence);
+          // Sequence allocation starts at 1, strictly increases, and is unique per run.
+          expect(sequences[0]).toBe(1);
+          expect(sequences).toEqual([...sequences].sort((a, b) => a - b));
+          expect(new Set(sequences).size).toBe(sequences.length);
+          const firstSession = sessionsBody.sessions[0];
+          expect(firstSession.runId).toBe(runId);
+          expect(firstSession.model.model.length).toBeGreaterThan(0);
+          expect(typeof firstSession.usageAvailable).toBe('boolean');
+          expect(typeof firstSession.assistantTurnCount).toBe('number');
+          expect(typeof firstSession.toolCallCount).toBe('number');
+          // Raw tokens are embedded in cost.tokens; pricing is intentionally left unset.
+          expect(firstSession.cost.usd).toBeNull();
+          expect(firstSession.cost.tokens).toEqual(firstSession.tokens);
+          expect(['succeeded', 'failed', 'cancelled', 'timeout']).toContain(firstSession.outcome);
+
           // Run must have transitioned to either the next step or terminal.
           const runResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: authHeaders });
           expect(runResp.status).toBe(200);

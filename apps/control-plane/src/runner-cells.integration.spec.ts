@@ -23,8 +23,8 @@ import {
   InMemoryRetainedRunEventStore,
   RunDispatchQueue,
 } from '@autocatalyst/core';
-import type { ConfigurationRecord, JsonValue, Run, RunStep } from '@autocatalyst/api-contract';
-import type { ConversationIngressRepository, RunRepository } from '@autocatalyst/core';
+import type { ConfigurationRecord, CreateSessionInput, JsonValue, Run, RunStep, Session } from '@autocatalyst/api-contract';
+import type { ConversationIngressRepository, RunRepository, SessionRepository } from '@autocatalyst/core';
 import {
   ClassifiedProviderFailureError,
   createAgentConnection,
@@ -527,6 +527,159 @@ describe('runner-cells: OpenAI direct dispatch', () => {
     if (replay.status === 'ok') {
       expect(replay.events).toHaveLength(0);
     }
+  });
+
+  it('records a durable direct session with measured timing, resolved inference settings, and counts through the production seam', async () => {
+    const schema = z.object({ intent: z.enum(['implement', 'review']) }).strict();
+    const fakeTransport: ProviderFetchTransport = {
+      fetch: vi.fn(async (_request) => new Response(JSON.stringify({
+        model: 'gpt-4o',
+        choices: [
+          {
+            message: {
+              role: 'assistant',
+              content: null,
+              tool_calls: [
+                { id: 'call_prod', type: 'function', function: { name: 'autocatalyst_direct_result', arguments: '{"intent":"implement"}' } }
+              ]
+            },
+            finish_reason: 'tool_calls'
+          }
+        ],
+        usage: { prompt_tokens: 20, completion_tokens: 10 }
+      }), { status: 200, headers: { 'content-type': 'application/json' } }))
+    };
+
+    // Resolved profile carries real, non-empty inference settings — these must survive
+    // through orchestration into the durable Session row, not be replaced by `{}`.
+    const resolvedInferenceSettings = { temperature: 0.4, maxOutputTokens: 512 };
+
+    const openaiAdapter = createOpenAIDirectAdapter();
+    const directCallFactory = createDirectCallFactory({
+      adapters: [openaiAdapter],
+      resolveProfile: async () => ({
+        profile: {
+          mode: 'direct' as const,
+          providerKind: openaiProviderKind,
+          adapterId: openaiDirectAdapterId,
+          profileName: 'test-openai-direct',
+          model: { provider: 'openai', model: 'gpt-4o' },
+          inferenceSettings: resolvedInferenceSettings,
+          endpoint: {},
+          connectionMechanism: 'fetch_transport' as const
+        },
+        credentialReference: { required: false }
+      }),
+      createConnection: async (input) => ({
+        profile: input.profile,
+        credentialResolved: true,
+        createFetchTransport: () => fakeTransport,
+        createProcessLaunchConfig: (_launchInput: ProcessLaunchConfigInput): ProcessLaunchConfig => {
+          throw new Error('createProcessLaunchConfig not supported');
+        }
+      })
+    });
+
+    // Capturing session repository — not a mock emitter. It records exactly what the
+    // production recorder persists so we can assert on real measured telemetry.
+    const createdSessions: CreateSessionInput[] = [];
+    const sessions: SessionRepository = {
+      async create(input: CreateSessionInput): Promise<Session> {
+        createdSessions.push(input);
+        return { id: `session_${createdSessions.length}`, ...input } as unknown as Session;
+      },
+      findById: vi.fn().mockResolvedValue(null),
+      listByRun: vi.fn().mockResolvedValue([])
+    } as unknown as SessionRepository;
+
+    const directUoW = createExecutionRunUnitOfWork({
+      execute: {
+        execute: () => {
+          throw new Error('execute should not be called in direct mode');
+        }
+      },
+      resolveContext: async (workInput) => ({
+        run: { id: workInput.runId, workKind: 'feature', currentStep: workInput.run.currentStep, tenant: workInput.tenant },
+        task: { prompt: 'Classify intent', inputs: {} },
+        workspaceIntent: { shape: 'none' },
+        secretBindings: [],
+        toolPolicy: { allowedTools: [], workspaceScope: 'declared_workspace' },
+        skills: { requested: [], resolved: [] },
+        capabilityRequirements: {
+          shell: { kind: 'bash', required: false },
+          paths: { canonicalWorkspacePaths: false },
+          lsp: { requested: false }
+        }
+      }),
+      resolveExecutionMode: () => ({
+        mode: 'direct' as const,
+        directCall: {
+          purpose: 'intent_classification',
+          input: { rawText: 'implement this feature' },
+          resultValidation: { schemaId: 'intent-result', schema }
+        }
+      }),
+      direct: {
+        call: (input) => directCallFactory.call({
+          runId: input.runId,
+          step: input.step,
+          ...(input.phase !== undefined && { phase: input.phase }),
+          directCall: input.directCall
+        })
+      },
+      sessions,
+      eventsStore: new InMemoryRetainedRunEventStore({
+        maxEventsPerScope: 256, maxExpiredIdsPerScope: 64, subscriberBufferSize: 32
+      })
+    });
+
+    const fakeRunRepo = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'implementation.build' })),
+      recordRunStepTransition: vi.fn().mockResolvedValue({
+        run: makeRun({ currentStep: 'implementation.human_review' }),
+        runStep: makeRunStep({ step: 'implementation.human_review' })
+      })
+    });
+
+    const orchestrator = new DefaultOrchestrator({
+      runs: fakeRunRepo,
+      conversationIngress: makeFakeIngressRepo(),
+      events: new InMemoryRetainedRunEventStore({
+        maxEventsPerScope: 256, maxExpiredIdsPerScope: 64, subscriberBufferSize: 32
+      }),
+      dispatchQueue: new RunDispatchQueue({ maxConcurrent: 1 }),
+      unitOfWork: directUoW
+    });
+
+    await orchestrator.dispatch({ runId: 'run_prod_session_001', tenant: 'tenant_test' });
+
+    // Exactly one durable session row written by the production recorder path.
+    expect(createdSessions).toHaveLength(1);
+    const persisted = createdSessions[0];
+
+    // Measured timing: startedAt and endedAt are real, distinct wall-clock timestamps,
+    // and the derived durationMs is non-negative (not a synthesized zero-length instant).
+    expect(typeof persisted.startedAt).toBe('string');
+    expect(typeof persisted.endedAt).toBe('string');
+    expect(Number.isFinite(Date.parse(persisted.startedAt))).toBe(true);
+    expect(Number.isFinite(Date.parse(persisted.endedAt as string))).toBe(true);
+    expect(Date.parse(persisted.endedAt as string)).toBeGreaterThanOrEqual(Date.parse(persisted.startedAt));
+    expect(persisted.durationMs).not.toBeNull();
+    expect(persisted.durationMs as number).toBeGreaterThanOrEqual(0);
+
+    // Resolved inference settings survived orchestration — not replaced with `{}`.
+    expect(persisted.inferenceSettings).toEqual(resolvedInferenceSettings);
+
+    // Applicable counts for a single structured completion with no tool loop.
+    expect(persisted.assistantTurnCount).toBe(1);
+    expect(persisted.toolCallCount).toBe(0);
+
+    // Provider usage flowed through normalized; raw tokens embedded in cost, pricing unset.
+    expect(persisted.usageAvailable).toBe(true);
+    expect(persisted.cost.usd).toBeNull();
+    expect(persisted.cost.tokens).toEqual(persisted.tokens);
+    expect(persisted.outcome).toBe('succeeded');
+    expect(persisted.model).toEqual({ provider: 'openai', model: 'gpt-4o' });
   });
 });
 

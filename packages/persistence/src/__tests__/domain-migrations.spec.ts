@@ -48,6 +48,91 @@ describe('domain schema migrations', () => {
     });
   });
 
+  it('adds a non-null sessions.sequence column with a unique (run_id, sequence) index', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const database = createSqliteDatabase({ path: databasePath });
+      await migrateSqliteDatabase(database);
+      const internal = asInternalSqliteDatabase(database);
+
+      const columns = internal.client.prepare('PRAGMA table_info(sessions)').all() as Array<{
+        name: string;
+        notnull: number;
+        type: string;
+      }>;
+      const sequence = columns.find((column) => column.name === 'sequence');
+      expect(sequence).toMatchObject({ name: 'sequence', notnull: 1 });
+      expect(sequence?.type.toUpperCase()).toBe('INTEGER');
+
+      const indexes = names(internal.client.prepare("select name from sqlite_master where type = 'index' and name = ?").all(
+        'sessions_run_sequence_idx'
+      ));
+      expect(indexes).toEqual(['sessions_run_sequence_idx']);
+
+      // The (run_id, sequence) index must be unique.
+      const indexInfo = internal.client.prepare("PRAGMA index_list(sessions)").all() as Array<{ name: string; unique: number }>;
+      const seqIndex = indexInfo.find((entry) => entry.name === 'sessions_run_sequence_idx');
+      expect(seqIndex?.unique).toBe(1);
+
+      database.close();
+    });
+  });
+
+  it('backfills per-run sessions.sequence values for a pre-0010 database', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      // Simulate a database already migrated through 0009 (sessions without `sequence`).
+      // Drizzle applies a migration when lastAppliedTimestamp < migration.folderMillis; the
+      // 0010 migration uses folderMillis=1792500000000, so marking everything before it as
+      // applied causes only 0010 to run.
+      const PRE_0010_TIMESTAMP = 1792499999999;
+      const rawDb = new Database(databasePath);
+      rawDb.exec(`
+        CREATE TABLE runs (
+          id text PRIMARY KEY NOT NULL, topic_id text NOT NULL, owner_json text NOT NULL,
+          tenant text NOT NULL, work_kind text NOT NULL, current_step text NOT NULL,
+          terminal integer NOT NULL, tracked_issue_json text, testing_guide_result_json text,
+          failure_reason text, created_at text NOT NULL, updated_at text NOT NULL
+        );
+        CREATE TABLE sessions (
+          id text PRIMARY KEY NOT NULL, run_id text NOT NULL, phase text,
+          step text NOT NULL, role text NOT NULL, round integer NOT NULL,
+          model_json text NOT NULL, inference_settings_json text NOT NULL,
+          started_at text NOT NULL, ended_at text, duration_ms integer,
+          tokens_json text NOT NULL, usage_available integer NOT NULL,
+          assistant_turn_count integer NOT NULL, tool_call_count integer NOT NULL,
+          outcome text NOT NULL, cost_json text NOT NULL
+        );
+      `);
+      rawDb.exec(`CREATE TABLE "__drizzle_migrations" (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, hash text NOT NULL, created_at numeric)`);
+      rawDb.prepare('INSERT INTO "__drizzle_migrations" (hash, created_at) VALUES (?, ?)').run('pre-0010-fixture', PRE_0010_TIMESTAMP);
+
+      const now = new Date().toISOString();
+      const model = JSON.stringify({ provider: 'openai', model: 'gpt-4.1' });
+      const inference = JSON.stringify({});
+      const tokens = JSON.stringify({ input: 1, output: 2, cacheRead: 0, cacheWrite: 0 });
+      const costJson = JSON.stringify({ model: { provider: 'openai', model: 'gpt-4.1' }, usd: null, tokens: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 } });
+      rawDb.prepare(`INSERT INTO runs (id, topic_id, owner_json, tenant, work_kind, current_step, terminal, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run('run_seq', 'topic_seq', '{}', 'tenant1', 'feature', 'spec.author', 0, now, now);
+      const insertSession = rawDb.prepare(`INSERT INTO sessions (id, run_id, phase, step, role, round, model_json, inference_settings_json, started_at, ended_at, duration_ms, tokens_json, usage_available, assistant_turn_count, tool_call_count, outcome, cost_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+      // Insert out of started_at order to prove the backfill orders by started_at, not rowid.
+      insertSession.run('sess_b', 'run_seq', null, 'implementation.build', 'none', 0, model, inference, '2026-06-08T00:00:02.000Z', null, null, tokens, 1, 1, 0, 'succeeded', costJson);
+      insertSession.run('sess_a', 'run_seq', null, 'spec.author', 'none', 0, model, inference, '2026-06-08T00:00:01.000Z', null, null, tokens, 1, 1, 0, 'succeeded', costJson);
+      rawDb.close();
+
+      const database = createSqliteDatabase({ path: databasePath });
+      try {
+        await migrateSqliteDatabase(database);
+        const internal = asInternalSqliteDatabase(database);
+        const rows = internal.client.prepare('SELECT id, sequence FROM sessions ORDER BY sequence').all() as Array<{ id: string; sequence: number }>;
+        expect(rows).toEqual([
+          { id: 'sess_a', sequence: 1 },
+          { id: 'sess_b', sequence: 2 }
+        ]);
+      } finally {
+        database.close();
+      }
+    });
+  });
+
   it('upgrades a pre-0004 database with valid domain data without foreign key errors', async () => {
     await withTempDatabasePath(async (databasePath) => {
       // Simulate a pre-0004 database: tables without FK constraints, plus a __drizzle_migrations

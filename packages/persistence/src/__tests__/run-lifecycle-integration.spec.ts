@@ -95,6 +95,28 @@ describe('feature run lifecycle integration', () => {
       const secondBuildVisit = stepRows.find((s) => s.step === 'implementation.build' && s.occurrence.index === 6);
       expect(secondBuildVisit?.occurrence.attempt).toBe(2);
 
+      // Every occurrence that the run left behind must be closed with endedAt + durationMs,
+      // including both implementation.build visits (the looped step). Only the terminal
+      // 'done' occurrence stays open because the run never transitions out of it.
+      const terminalStep = stepRows[stepRows.length - 1];
+      expect(terminalStep.step).toBe('done');
+      expect(terminalStep.endedAt).toBeNull();
+      expect(terminalStep.durationMs).toBeNull();
+
+      const closedSteps = stepRows.slice(0, -1);
+      for (const step of closedSteps) {
+        expect(step.endedAt).not.toBeNull();
+        expect(step.durationMs).not.toBeNull();
+        expect(step.durationMs).toBeGreaterThanOrEqual(0);
+        // endedAt must not precede startedAt.
+        expect(Date.parse(step.endedAt as string)).toBeGreaterThanOrEqual(Date.parse(step.startedAt));
+      }
+
+      // Both occurrences of the looped implementation.build step are closed.
+      const buildVisits = stepRows.filter((s) => s.step === 'implementation.build');
+      expect(buildVisits).toHaveLength(2);
+      expect(buildVisits.every((s) => s.endedAt !== null && s.durationMs !== null)).toBe(true);
+
       expect(stepRows.every((s) => s.role === 'none')).toBe(true);
 
       const specAuthorStep = stepRows.find((s) => s.step === 'spec.author');
