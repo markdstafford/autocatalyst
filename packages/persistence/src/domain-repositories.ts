@@ -105,6 +105,7 @@ import type {
   SessionRepository,
   TestResultRepository,
   TopicRepository,
+  UpdateProjectInput,
   UpdatePullRequestStateInput,
   UpdateRunStepCheckpointInput
 } from '@autocatalyst/core';
@@ -281,13 +282,68 @@ export class DrizzleProjectRepository implements ProjectRepository {
     return project;
   }
 
-  async findById(id: string): Promise<Project | null> {
-    const rows = this.#database.drizzle.select().from(projects).where(eq(projects.id, id)).limit(1).all();
+  findById(id: string): Promise<Project | null>;
+  findById(tenant: string, id: string): Promise<Project | null>;
+  async findById(tenantOrId: string, maybeId?: string): Promise<Project | null> {
+    const where = maybeId === undefined
+      ? eq(projects.id, tenantOrId)
+      : and(eq(projects.tenant, tenantOrId), eq(projects.id, maybeId));
+    const rows = this.#database.drizzle.select().from(projects).where(where).limit(1).all();
     const row = rows[0];
     if (row === undefined) {
       return null;
     }
     return this.#rowToProject(row);
+  }
+
+  async list(tenant: string): Promise<readonly Project[]> {
+    const rows = this.#database.drizzle
+      .select()
+      .from(projects)
+      .where(eq(projects.tenant, tenant))
+      .orderBy(asc(projects.createdAt), asc(projects.id))
+      .all();
+    return rows.map((row) => this.#rowToProject(row));
+  }
+
+  async update(tenant: string, id: string, input: UpdateProjectInput): Promise<Project | null> {
+    const existing = this.#database.drizzle
+      .select({ id: projects.id })
+      .from(projects)
+      .where(and(eq(projects.tenant, tenant), eq(projects.id, id)))
+      .limit(1)
+      .all()[0];
+    if (existing === undefined) {
+      return null;
+    }
+
+    const changes: Partial<typeof projects.$inferInsert> = { updatedAt: nowIso() };
+    if (input.displayName !== undefined) {
+      changes.displayName = input.displayName;
+    }
+    if (input.issueTrackerSetting !== undefined) {
+      changes.issueTrackerSettingJson = nullableJsonForRow(projectSettingReferenceSchema, input.issueTrackerSetting);
+    }
+    if (input.codeHostSetting !== undefined) {
+      changes.codeHostSettingJson = nullableJsonForRow(projectSettingReferenceSchema, input.codeHostSetting);
+    }
+    if (input.credentialRefs !== undefined) {
+      changes.credentialRefsJson = stringifyJsonValue(credentialReferenceArraySchema, input.credentialRefs);
+    }
+
+    this.#database.drizzle
+      .update(projects)
+      .set(changes)
+      .where(and(eq(projects.tenant, tenant), eq(projects.id, id)))
+      .run();
+
+    const updated = this.#database.drizzle
+      .select()
+      .from(projects)
+      .where(and(eq(projects.tenant, tenant), eq(projects.id, id)))
+      .limit(1)
+      .all()[0];
+    return updated === undefined ? null : this.#rowToProject(updated);
   }
 
   #rowToProject(row: typeof projects.$inferSelect): Project {
