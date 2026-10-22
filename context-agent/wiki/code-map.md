@@ -45,6 +45,7 @@ Last updated: 2026-06-22 (bug fix — production control-plane result-contract w
 
 ## Key entry points
 
+- CI gate: `.github/workflows/ci.yml`; workflow stages and local reproduction: [ci.md](ci.md).
 - Root workspace metadata: `package.json`, `pnpm-workspace.yaml`, `.npmrc`.
 - Nx task graph and cache defaults: `nx.json`.
 - Shared TypeScript paths and compiler settings: `tsconfig.base.json`.
