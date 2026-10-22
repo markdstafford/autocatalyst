@@ -71,6 +71,17 @@ import {
   runStepsPath,
   secretCollectionPath,
   secretStoreLockedErrorCode,
+  conflictErrorCode,
+  createProjectRequestSchema,
+  createProjectSuccessStatusCode,
+  getProjectSuccessStatusCode,
+  listProjectsSuccessStatusCode,
+  projectCollectionPath,
+  projectIdParamsSchema,
+  projectListResponseSchema,
+  projectResponseSchema,
+  updateProjectRequestSchema,
+  updateProjectSuccessStatusCode,
   updateConfigurationRecordRequestSchema,
   type AppendRunFeedbackThreadRequest,
   type ConfigurationRecord,
@@ -78,8 +89,11 @@ import {
   type CreateConfigurationRecordRequest,
   type CreateConversationWithFirstRunRequest,
   type CreateProbeResourceRequest,
+  type CreateProjectRequest,
   type CreateRunFeedbackRequest,
   type CreateSecretRequest,
+  type ProjectIdParams,
+  type UpdateProjectRequest,
   type ErrorResponse,
   type ProbeResourceIdParams,
   type ReconcilePullRequestsResponse,
@@ -119,6 +133,14 @@ import {
   type ConfigurationRecordRepository
 } from './configuration-record.js';
 import { createSecret, SecretStoreLockedError, type SecretStore } from './secret.js';
+import {
+  createProject,
+  getProject,
+  listProjects,
+  updateProject,
+  ProjectServiceError
+} from './project.js';
+import type { ProjectRepository } from './domain-repositories.js';
 import type { RunEventSubscription } from './run-events.js';
 
 export const runPullRequestReadPolicyAction = 'run_pull_request.read' as const;
@@ -144,6 +166,7 @@ export interface ControlPlaneRouteDependencies {
   readonly probeResources: ProbeResourceRepository;
   readonly configurationRecords: ConfigurationRecordRepository;
   readonly secrets: SecretStore;
+  readonly projects: ProjectRepository;
   readonly controlPlane: ControlPlaneService;
 }
 
@@ -217,6 +240,23 @@ async function handleControlPlaneServiceError(
     default:
       logServerFault(request, 500, error, error.code);
       await reply.status(500).send(errorResponse('internal_error', 'An internal server error occurred.'));
+  }
+}
+
+async function handleProjectServiceError(
+  reply: FastifyReply,
+  error: ProjectServiceError
+): Promise<void> {
+  switch (error.code) {
+    case 'forbidden':
+      await reply.status(403).send(errorResponse(forbiddenErrorCode, error.message));
+      return;
+    case 'conflict':
+      await reply.status(409).send(errorResponse(conflictErrorCode, error.message));
+      return;
+    case 'not_found':
+      await reply.status(404).send(errorResponse(notFoundErrorCode, error.message));
+      return;
   }
 }
 
@@ -540,6 +580,103 @@ export async function registerControlPlaneRoutes(
       } catch (error) {
         if (error instanceof SecretStoreLockedError) {
           await reply.status(400).send(errorResponse(secretStoreLockedErrorCode, 'Secret store is locked.'));
+          return;
+        }
+        throw error;
+      }
+    });
+
+    // Project management API: POST /v1/projects
+    protectedApp.post(projectCollectionPath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'project.create', () => ({
+        kind: 'project_collection' as const,
+        path: '/v1/projects' as const
+      }))
+    }, async (request, reply) => {
+      let body: CreateProjectRequest;
+      try {
+        body = createProjectRequestSchema.parse(request.body);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const principal = requirePrincipalFromRequest(request);
+      try {
+        const project = await createProject(dependencies.projects, { principal, request: body });
+        await reply.status(createProjectSuccessStatusCode).send(projectResponseSchema.parse(project));
+      } catch (error) {
+        if (error instanceof ProjectServiceError) {
+          await handleProjectServiceError(reply, error);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    // Project management API: GET /v1/projects
+    protectedApp.get(projectCollectionPath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'project.list', () => ({
+        kind: 'project_collection' as const,
+        path: '/v1/projects' as const
+      }))
+    }, async (request, reply) => {
+      const principal = requirePrincipalFromRequest(request);
+      const projects = await listProjects(dependencies.projects, { principal });
+      await reply.status(listProjectsSuccessStatusCode).send(projectListResponseSchema.parse({ projects }));
+    });
+
+    // Project management API: GET /v1/projects/:id
+    protectedApp.get(`${projectCollectionPath}/:id`, {
+      preHandler: authorizePreHandler(dependencies.policy, 'project.read', (request) => ({
+        kind: 'project' as const,
+        id: (request.params as { id: string }).id,
+        path: '/v1/projects/:id' as const
+      }))
+    }, async (request, reply) => {
+      let params: ProjectIdParams;
+      try {
+        params = projectIdParamsSchema.parse(request.params);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const principal = requirePrincipalFromRequest(request);
+      const project = await getProject(dependencies.projects, { principal, id: params.id });
+      if (project === null) {
+        await reply.status(404).send(errorResponse(notFoundErrorCode, 'Project not found.'));
+        return;
+      }
+      await reply.status(getProjectSuccessStatusCode).send(projectResponseSchema.parse(project));
+    });
+
+    // Project management API: PATCH /v1/projects/:id
+    protectedApp.patch(`${projectCollectionPath}/:id`, {
+      preHandler: authorizePreHandler(dependencies.policy, 'project.update', (request) => ({
+        kind: 'project' as const,
+        id: (request.params as { id: string }).id,
+        path: '/v1/projects/:id' as const
+      }))
+    }, async (request, reply) => {
+      let params: ProjectIdParams;
+      let body: UpdateProjectRequest;
+      try {
+        params = projectIdParamsSchema.parse(request.params);
+        body = updateProjectRequestSchema.parse(request.body);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const principal = requirePrincipalFromRequest(request);
+      try {
+        const project = await updateProject(dependencies.projects, { principal, id: params.id, request: body });
+        if (project === null) {
+          await reply.status(404).send(errorResponse(notFoundErrorCode, 'Project not found.'));
+          return;
+        }
+        await reply.status(updateProjectSuccessStatusCode).send(projectResponseSchema.parse(project));
+      } catch (error) {
+        if (error instanceof ProjectServiceError) {
+          await handleProjectServiceError(reply, error);
           return;
         }
         throw error;

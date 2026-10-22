@@ -149,7 +149,9 @@ function makeDeps(opts: {
   };
   const projects: ProjectRepository = {
     create: vi.fn(),
-    findById: vi.fn(async () => makeProject(opts.projectOverrides ?? {}))
+    findById: vi.fn(async () => makeProject(opts.projectOverrides ?? {})),
+    list: vi.fn(async () => []),
+    update: vi.fn(async () => null)
   };
 
   const defaultFacts: CodeHostPullRequestFacts = {

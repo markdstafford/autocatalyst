@@ -192,7 +192,9 @@ function makeDeps(opts: {
   };
   const projects: ProjectRepository = {
     create: vi.fn(),
-    findById: vi.fn().mockResolvedValue(makeProject(opts.projectOverrides ?? {}))
+    findById: vi.fn().mockResolvedValue(makeProject(opts.projectOverrides ?? {})),
+    list: vi.fn(async () => []),
+    update: vi.fn(async () => null)
   };
   const pullRequestCreate = vi.fn().mockImplementation(
     opts.pullRequestCreateBehavior ?? (async (input: { number: number; url: string; provider: string; state: PullRequest['state']; branch: string }) =>

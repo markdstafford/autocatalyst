@@ -48,6 +48,18 @@ import {
   createSecretSuccessStatusCode,
   secretCollectionPath
 } from './secret.js';
+import {
+  createProjectRequestSchema,
+  createProjectSuccessStatusCode,
+  getProjectSuccessStatusCode,
+  listProjectsSuccessStatusCode,
+  projectCollectionPath,
+  projectIdParamsSchema,
+  projectListResponseSchema,
+  projectResponseSchema,
+  updateProjectRequestSchema,
+  updateProjectSuccessStatusCode
+} from './project.js';
 import { eventsStreamPath } from './sse.js';
 import {
   runSpecPath,
@@ -156,6 +168,11 @@ export function generateOpenApiDocument(): OpenApiDocument {
   const PullRequestReconciliationResponse = registry.register('PullRequestReconciliationResponse', pullRequestReconciliationResponseSchema);
   const RunPullRequestResponse = registry.register('RunPullRequestResponse', runPullRequestResponseSchema);
   const RunSessionListResponse = registry.register('RunSessionListResponse', runSessionListResponseSchema);
+  const CreateProjectRequest = registry.register('CreateProjectRequest', createProjectRequestSchema);
+  const UpdateProjectRequest = registry.register('UpdateProjectRequest', updateProjectRequestSchema);
+  const Project = registry.register('Project', projectResponseSchema);
+  const ProjectListResponse = registry.register('ProjectListResponse', projectListResponseSchema);
+  const ProjectIdParams = registry.register('ProjectIdParams', projectIdParamsSchema);
 
   registry.registerPath({
     method: 'get',
@@ -310,6 +327,66 @@ export function generateOpenApiDocument(): OpenApiDocument {
       [createSecretSuccessStatusCode]: jsonResponse(CreateSecretResponse, 'Created secret handle.'),
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
       400: jsonResponse(ErrorResponse, 'Validation error or secret store locked.')
+    }
+  });
+
+  // POST /v1/projects
+  registry.registerPath({
+    method: 'post',
+    path: projectCollectionPath,
+    tags: ['projects'],
+    request: {
+      body: { content: { 'application/json': { schema: CreateProjectRequest } } }
+    },
+    responses: {
+      [createProjectSuccessStatusCode]: jsonResponse(Project, 'Created project.'),
+      400: jsonResponse(ErrorResponse, 'Validation error, unsafe URL, or forbidden field.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      403: jsonResponse(ErrorResponse, 'Forbidden (model principal or policy denial).'),
+      409: jsonResponse(ErrorResponse, 'Host repository binding already exists in the tenant.')
+    }
+  });
+
+  // GET /v1/projects
+  registry.registerPath({
+    method: 'get',
+    path: projectCollectionPath,
+    tags: ['projects'],
+    responses: {
+      [listProjectsSuccessStatusCode]: jsonResponse(ProjectListResponse, 'List of projects for the authenticated tenant.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      403: jsonResponse(ErrorResponse, 'Forbidden.')
+    }
+  });
+
+  // GET /v1/projects/{id}
+  registry.registerPath({
+    method: 'get',
+    path: `${projectCollectionPath}/{id}`,
+    tags: ['projects'],
+    request: { params: ProjectIdParams },
+    responses: {
+      [getProjectSuccessStatusCode]: jsonResponse(Project, 'Project.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      404: jsonResponse(ErrorResponse, 'Project not found or in another tenant.')
+    }
+  });
+
+  // PATCH /v1/projects/{id}
+  registry.registerPath({
+    method: 'patch',
+    path: `${projectCollectionPath}/{id}`,
+    tags: ['projects'],
+    request: {
+      params: ProjectIdParams,
+      body: { content: { 'application/json': { schema: UpdateProjectRequest } } }
+    },
+    responses: {
+      [updateProjectSuccessStatusCode]: jsonResponse(Project, 'Updated project.'),
+      400: jsonResponse(ErrorResponse, 'Validation error or immutable/forbidden field.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      403: jsonResponse(ErrorResponse, 'Forbidden (model principal or policy denial).'),
+      404: jsonResponse(ErrorResponse, 'Project not found or in another tenant.')
     }
   });
 

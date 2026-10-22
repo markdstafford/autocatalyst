@@ -52,6 +52,15 @@ import {
   runStepListResponseSchema,
   runStepsPath,
   secretCollectionPath,
+  createProjectRequestSchema,
+  createProjectSuccessStatusCode,
+  getProjectSuccessStatusCode,
+  listProjectsSuccessStatusCode,
+  projectCollectionPath,
+  projectListResponseSchema,
+  projectResponseSchema,
+  updateProjectRequestSchema,
+  updateProjectSuccessStatusCode,
   updateConfigurationRecordRequestSchema,
   type ConfigurationRecord,
   type ConfigurationRecordListResponse,
@@ -59,6 +68,10 @@ import {
   type CreateConversationWithFirstRunRequest,
   type CreateConversationWithFirstRunResponse,
   type CreateProbeResourceRequest,
+  type CreateProjectRequest,
+  type Project,
+  type ProjectListResponse,
+  type UpdateProjectRequest,
   type AppendRunFeedbackThreadRequest,
   type CreateRunFeedbackRequest,
   type CreateSecretRequest,
@@ -96,6 +109,10 @@ export interface ControlPlaneClient {
   updateConfigurationRecord(id: string, patch: UpdateConfigurationRecordRequest): Promise<ConfigurationRecord>;
   deleteConfigurationRecord(id: string): Promise<void>;
   createSecret(request: CreateSecretRequest): Promise<CreateSecretResponse>;
+  createProject(request: CreateProjectRequest): Promise<Project>;
+  listProjects(): Promise<ProjectListResponse>;
+  getProject(id: string): Promise<Project>;
+  updateProject(id: string, patch: UpdateProjectRequest): Promise<Project>;
   createConversationWithFirstRun(request: CreateConversationWithFirstRunRequest): Promise<CreateConversationWithFirstRunResponse>;
   listRuns(): Promise<RunListResponse>;
   getRun(id: string): Promise<Run>;
@@ -280,6 +297,61 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
         );
       }
       return createSecretResponseSchema.parse(await parseJson(response));
+    },
+
+    async createProject(request) {
+      const body = createProjectRequestSchema.parse(request);
+      const response = await fetchImplementation(urlFor(baseUrl, projectCollectionPath), {
+        method: 'POST',
+        headers: protectedHeaders(bearerToken, { 'content-type': 'application/json' }),
+        body: JSON.stringify(body)
+      });
+      await throwForError(response);
+      if (response.status !== createProjectSuccessStatusCode) {
+        throw new Error(`Expected ${createProjectSuccessStatusCode} from createProject, received ${response.status}.`);
+      }
+      return projectResponseSchema.parse(await parseJson(response));
+    },
+
+    async listProjects() {
+      const response = await fetchImplementation(urlFor(baseUrl, projectCollectionPath), {
+        method: 'GET',
+        headers: protectedHeaders(bearerToken)
+      });
+      await throwForError(response);
+      if (response.status !== listProjectsSuccessStatusCode) {
+        throw new Error(`Expected ${listProjectsSuccessStatusCode} from listProjects, received ${response.status}.`);
+      }
+      return projectListResponseSchema.parse(await parseJson(response));
+    },
+
+    async getProject(id) {
+      const response = await fetchImplementation(
+        urlFor(baseUrl, `${projectCollectionPath}/${id}`),
+        { method: 'GET', headers: protectedHeaders(bearerToken) }
+      );
+      await throwForError(response);
+      if (response.status !== getProjectSuccessStatusCode) {
+        throw new Error(`Expected ${getProjectSuccessStatusCode} from getProject, received ${response.status}.`);
+      }
+      return projectResponseSchema.parse(await parseJson(response));
+    },
+
+    async updateProject(id, patch) {
+      const body = updateProjectRequestSchema.parse(patch);
+      const response = await fetchImplementation(
+        urlFor(baseUrl, `${projectCollectionPath}/${id}`),
+        {
+          method: 'PATCH',
+          headers: protectedHeaders(bearerToken, { 'content-type': 'application/json' }),
+          body: JSON.stringify(body)
+        }
+      );
+      await throwForError(response);
+      if (response.status !== updateProjectSuccessStatusCode) {
+        throw new Error(`Expected ${updateProjectSuccessStatusCode} from updateProject, received ${response.status}.`);
+      }
+      return projectResponseSchema.parse(await parseJson(response));
     },
 
     async createConversationWithFirstRun(request) {

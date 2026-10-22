@@ -30,9 +30,30 @@ import type {
   Topic
 } from '@autocatalyst/api-contract';
 
+/**
+ * Mutable fields of a project that may be changed through the update API. Distinct
+ * from {@link CreateProjectInput}: it carries only client-updatable fields and never
+ * `owner`, `tenant`, `repoUrl`, `hostRepository`, or `workspaceRootOverride`.
+ * A present key (including an explicit `null` for a setting) is applied; an absent
+ * key is left unchanged.
+ */
+export interface UpdateProjectInput {
+  readonly displayName?: string;
+  readonly issueTrackerSetting?: Project['issueTrackerSetting'];
+  readonly codeHostSetting?: Project['codeHostSetting'];
+  readonly credentialRefs?: Project['credentialRefs'];
+}
+
 export interface ProjectRepository {
   create(input: CreateProjectInput): Promise<Project>;
+  /** Global lookup by id, used by orchestrator/workspace resolution. */
   findById(id: string): Promise<Project | null>;
+  /** Tenant-scoped lookup; returns null for missing and cross-tenant ids. */
+  findById(tenant: string, id: string): Promise<Project | null>;
+  /** Tenant-scoped list. */
+  list(tenant: string): Promise<readonly Project[]>;
+  /** Tenant-scoped update of mutable fields; returns null for missing/cross-tenant ids. */
+  update(tenant: string, id: string, input: UpdateProjectInput): Promise<Project | null>;
 }
 
 export interface ConversationRepository {

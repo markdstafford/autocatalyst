@@ -212,7 +212,9 @@ const baseProject: Project = {
 function makeFakeProjectRepository(project: Project | null = baseProject): ProjectRepository {
   return {
     create: vi.fn(),
-    findById: vi.fn().mockResolvedValue(project)
+    findById: vi.fn().mockResolvedValue(project),
+    list: vi.fn(async () => (project === null ? [] : [project])),
+    update: vi.fn(async () => project)
   };
 }
 

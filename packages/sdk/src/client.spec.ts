@@ -44,6 +44,83 @@ describe('bearer token auth', () => {
   });
 });
 
+describe('project methods', () => {
+  const now = '2026-06-08T00:00:00.000Z';
+  const project = {
+    id: 'proj_1',
+    owner: { id: 'user_1', kind: 'human', tenantId: 'tenant_1', displayName: 'Ada' },
+    tenant: 'tenant_1',
+    displayName: 'Autocatalyst',
+    repoUrl: 'https://github.com/example/repo',
+    hostRepository: { provider: 'github', owner: 'example', name: 'repo' },
+    workspaceRootOverride: null,
+    issueTrackerSetting: null,
+    codeHostSetting: null,
+    credentialRefs: [],
+    createdAt: now,
+    updatedAt: now
+  };
+
+  it('creates, lists, gets, and updates projects on the expected paths', async () => {
+    const calls: Array<{ method: string; path: string }> = [];
+    const mockFetch = vi.fn(async (url: string, init?: RequestInit) => {
+      const method = init?.method ?? 'GET';
+      const urlStr = url.toString();
+      calls.push({ method, path: new URL(urlStr).pathname });
+
+      if (method === 'POST' && urlStr.endsWith('/v1/projects')) {
+        return new Response(JSON.stringify(project), { status: 201, headers: { 'content-type': 'application/json' } });
+      }
+      if (method === 'GET' && urlStr.endsWith('/v1/projects')) {
+        return new Response(JSON.stringify({ projects: [project] }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (method === 'GET' && urlStr.includes('/v1/projects/')) {
+        return new Response(JSON.stringify(project), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      if (method === 'PATCH') {
+        return new Response(JSON.stringify({ ...project, displayName: 'Renamed' }), { status: 200, headers: { 'content-type': 'application/json' } });
+      }
+      throw new Error(`Unexpected: ${method} ${urlStr}`);
+    });
+
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
+
+    const created = await client.createProject({
+      displayName: 'Autocatalyst',
+      repoUrl: 'https://github.com/example/repo',
+      hostRepository: { provider: 'github', owner: 'example', name: 'repo' }
+    });
+    expect(created.id).toBe('proj_1');
+
+    const listed = await client.listProjects();
+    expect(listed.projects).toHaveLength(1);
+
+    const fetched = await client.getProject('proj_1');
+    expect(fetched.id).toBe('proj_1');
+
+    const updated = await client.updateProject('proj_1', { displayName: 'Renamed' });
+    expect(updated.displayName).toBe('Renamed');
+
+    expect(calls).toEqual([
+      { method: 'POST', path: '/v1/projects' },
+      { method: 'GET', path: '/v1/projects' },
+      { method: 'GET', path: '/v1/projects/proj_1' },
+      { method: 'PATCH', path: '/v1/projects/proj_1' }
+    ]);
+  });
+
+  it('validates request bodies before sending (rejects non-https repo url)', async () => {
+    const mockFetch = vi.fn(async () => new Response(null, { status: 500 }));
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
+    await expect(client.createProject({
+      displayName: 'Bad',
+      repoUrl: 'http://github.com/example/repo',
+      hostRepository: { provider: 'github', owner: 'example', name: 'repo' }
+    })).rejects.toBeTruthy();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+});
+
 describe('configuration record methods', () => {
   it('creates, lists, gets, updates, and deletes configuration records', async () => {
     const record = {
