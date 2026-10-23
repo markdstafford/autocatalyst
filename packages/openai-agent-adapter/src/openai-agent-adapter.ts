@@ -224,7 +224,14 @@ const BASE_OPENAI_AGENT_INSTRUCTIONS = [
 // Inference settings the OpenAI Agents SDK plumbs through ModelSettings.
 const SUPPORTED_INFERENCE_SETTINGS = new Set(['temperature', 'topP', 'maxOutputTokens']);
 const OPTIONAL_AGENT_UNSUPPORTED_SETTINGS = ['reasoningEffort', 'seed', 'topK', 'streamingMode', 'parallelToolCalls'] as const;
-const SAFE_SDK_DIAGNOSTIC_TOKENS = new Set(['MaxTurnsExceededError', 'max_turns_exceeded', 'APIError', 'AuthenticationError', 'RateLimitError', 'APIConnectionError', 'APIConnectionTimeoutError', 'ENOENT', 'EACCES', 'EPERM']);
+const SAFE_SDK_DIAGNOSTIC_TOKENS = new Set([
+  'MaxTurnsExceededError', 'max_turns_exceeded', 'APIError', 'AuthenticationError',
+  'RateLimitError', 'APIConnectionError', 'APIConnectionTimeoutError', 'ENOENT', 'EACCES', 'EPERM',
+  'ModelBehaviorError', 'ModelRefusalError', 'UserError', 'ToolCallError', 'GuardrailExecutionError',
+  'InputGuardrailTripwireTriggered', 'OutputGuardrailTripwireTriggered', 'ZodError',
+  'TypeError', 'SyntaxError', 'RangeError', 'AbortError', 'Error', 'SqliteError',
+  'DrizzleError', 'DrizzleQueryError', 'SQLITE_BUSY', 'SQLITE_LOCKED', 'SQLITE_CONSTRAINT'
+]);
 
 // ---------------------------------------------------------------------------
 // Inference settings mapping
@@ -247,15 +254,23 @@ function buildSafeOpenAISdkErrorDiagnostic(err: unknown): Record<string, unknown
     readonly code?: unknown;
     readonly type?: unknown;
     readonly constructor?: { readonly name?: unknown };
+    readonly cause?: unknown;
   };
   const sdkErrorName = safeSdkDiagnosticToken(shaped.name);
   const sdkErrorCode = safeSdkDiagnosticToken(shaped.code);
   const sdkErrorType = safeSdkDiagnosticToken(shaped.type);
   const sdkErrorConstructor = safeSdkDiagnosticToken(shaped.constructor?.name);
+  const cause = shaped.cause !== null && typeof shaped.cause === 'object' && shaped.cause !== err
+    ? shaped.cause as { readonly name?: unknown; readonly code?: unknown }
+    : undefined;
+  const sdkCauseErrorName = safeSdkDiagnosticToken(cause?.name);
+  const sdkCauseErrorCode = safeSdkDiagnosticToken(cause?.code);
   return {
     ...(sdkErrorName !== undefined ? { sdkErrorName } : {}),
     ...(sdkErrorCode !== undefined ? { sdkErrorCode } : {}),
     ...(sdkErrorType !== undefined ? { sdkErrorType } : {}),
+    ...(sdkCauseErrorName !== undefined ? { sdkCauseErrorName } : {}),
+    ...(sdkCauseErrorCode !== undefined ? { sdkCauseErrorCode } : {}),
     ...(sdkErrorConstructor !== undefined && sdkErrorConstructor !== 'Error' ? { sdkErrorConstructor } : {}),
     ...(err instanceof MaxTurnsExceededError ? { sdkErrorName: 'MaxTurnsExceededError', maxTurns: OPENAI_AGENT_MAX_TURNS } : {})
   };
@@ -631,9 +646,12 @@ function sandboxResultFileCandidates(
 async function writeStructuredResultFromFinalOutput(
   env: AgentProviderSessionInput['runInput']['environment'],
   structuredResult: OpenAIStructuredResultConfiguration,
-  output: unknown
+  output: unknown,
+  onStage?: (stage: 'result_parse' | 'result_write') => void
 ): Promise<void> {
+  onStage?.('result_parse');
   const parsed = parseStructuredResultFromFinalOutput(output);
+  onStage?.('result_write');
   await writeStructuredResultFile(env, structuredResult, parsed);
 }
 
@@ -1044,6 +1062,7 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
   result.catch(() => undefined);
 
   async function* drive(): AsyncIterable<RunItem> {
+    let failureStage: 'sdk_run_start' | 'sdk_stream' | 'sdk_completion' = 'sdk_run_start';
     try {
       const continuityOptions = input.modelMemoryState !== undefined
         ? {
@@ -1053,12 +1072,14 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
         : {};
       const stream = await runner.run(agent, input.prompt, { sandbox: { session: input.session }, stream: true, maxTurns: OPENAI_AGENT_MAX_TURNS, ...continuityOptions }) as unknown as StreamedRunnerRunView;
 
+      failureStage = 'sdk_stream';
       for await (const event of stream) {
         if (isRunItemStreamEvent(event)) {
           yield event.item;
         }
       }
 
+      failureStage = 'sdk_completion';
       const streamResult = stream as unknown as StreamRunResultView;
       const usage = streamResult.state._context.usage;
       const lastResponseId = streamResult.lastResponseId;
@@ -1085,7 +1106,8 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
       const reason = classifyProviderFailure(classificationInput);
       const safeDetails = {
         ...filterSafeClassificationDetails(classificationInput),
-        ...buildSafeOpenAISdkErrorDiagnostic(err)
+        ...buildSafeOpenAISdkErrorDiagnostic(err),
+        failureStage
       };
       const classified: ClassifiedProviderFailureError = reason !== undefined
         ? new ClassifiedProviderFailureError(reason, safeDetails)
@@ -1224,6 +1246,7 @@ export function createOpenAIAgentAdapter(
       const openAIOutputTypeStructuredResult = shouldUseOpenAIOutputType(structuredResult, input.telemetryContext.role)
         ? structuredResult
         : undefined;
+      const resultCaptureMechanism = openAIOutputTypeStructuredResult !== undefined ? 'openai_output_type' : 'sandbox_or_final_output';
 
       safeLog('info', 'openai_agent_session_start', {
         runId: input.telemetryContext.runId,
@@ -1238,7 +1261,7 @@ export function createOpenAIAgentAdapter(
         ...(structuredResult !== undefined ? {
           schemaId: structuredResult.capture.schemaId,
           resultFile: structuredResult.capture.resultFile,
-          resultCaptureMechanism: structuredResult.projection.mechanism
+          resultCaptureMechanism
         } : {})
       });
 
@@ -1325,7 +1348,7 @@ export function createOpenAIAgentAdapter(
             structuredResultCapture: true,
             schemaId: structuredResult.capture.schemaId,
             resultFile: structuredResult.capture.resultFile,
-            resultCaptureMechanism: structuredResult.projection.mechanism
+            resultCaptureMechanism
           } : {}),
           ...safeDetail
         });
@@ -1340,6 +1363,7 @@ export function createOpenAIAgentAdapter(
       //    When proxyMode is 'required', the connection's fetch transport already
       //    rebases every request URL to the loopback proxy — do NOT pass the
       //    upstream baseURL to the OpenAI client (the transport owns URL routing).
+      let setupStage: 'session_setup' | 'model_memory_load' | 'sdk_run_start' = 'session_setup';
       try {
       const endpoint = input.profile.endpoint as { baseUrl?: string; proxyMode?: string };
       const proxyModeRequired = endpoint.proxyMode === 'required';
@@ -1394,6 +1418,7 @@ export function createOpenAIAgentAdapter(
       // Load continuity state from the previous turn (if model memory is configured).
       let modelMemoryState: OpenAIResponsesContinuityState | undefined;
       if (input.modelMemory !== undefined) {
+        setupStage = 'model_memory_load';
         const snapshot = await input.modelMemory.store.load();
         if (
           snapshot !== null &&
@@ -1412,6 +1437,7 @@ export function createOpenAIAgentAdapter(
         }
       }
 
+      setupStage = 'sdk_run_start';
       const outcome = await runAgentSession({
         prompt: input.runInput.environment.context.task.prompt,
         model: input.profile.model.model,
@@ -1442,6 +1468,7 @@ export function createOpenAIAgentAdapter(
           eventIdGenerator
         };
         let terminalSeen = false;
+        let failureStage = 'sdk_stream';
         try {
           yield runtimeSkillDiagnosticNotification({
             requestedSkillRefs: env.skills.requested,
@@ -1464,6 +1491,7 @@ export function createOpenAIAgentAdapter(
             yield event;
           }
 
+          failureStage = 'sdk_result';
           const terminal = await outcome.result;
 
           // Persist continuity state before yielding the terminal event.
@@ -1472,6 +1500,7 @@ export function createOpenAIAgentAdapter(
             const continuityState: Record<string, string> = {};
             if (continuity.previousResponseId !== undefined) continuityState['previousResponseId'] = continuity.previousResponseId;
             if (continuity.conversationId !== undefined) continuityState['conversationId'] = continuity.conversationId;
+            failureStage = 'model_memory_save';
             await input.modelMemory.store.save({
               providerKind: openaiProviderKind,
               adapterId: openaiAgentAdapterId,
@@ -1482,15 +1511,17 @@ export function createOpenAIAgentAdapter(
           // Result-file handoff: write the final output to the scratch root.
           // Only on advance.
           if (terminal.directive === 'advance') {
+            failureStage = 'result_capture';
             if (openAIOutputTypeStructuredResult !== undefined) {
               // Structured capture: use parsed output, not prose
+              failureStage = 'result_write';
               await writeStructuredResultFile(input.runInput.environment, openAIOutputTypeStructuredResult, terminal.output);
             } else if (structuredResult !== undefined) {
               if (input.telemetryContext.role === 'reviewer' && structuredResult.capture.step === 'implementation.build') {
                 // Reviewers are read-only and record their verdict from the final
                 // message. Avoid OpenAI outputType here so the model still uses
                 // read-only tools before returning JSON.
-                await writeStructuredResultFromFinalOutput(input.runInput.environment, structuredResult, terminal.output);
+                await writeStructuredResultFromFinalOutput(input.runInput.environment, structuredResult, terminal.output, stage => { failureStage = stage; });
               } else {
                 // Structured capture without OpenAI outputType: prefer the JSON
                 // the agent authored inside the active sandbox, but accept a
@@ -1509,6 +1540,7 @@ export function createOpenAIAgentAdapter(
               }
             } else if (structuredResult === undefined) {
               // Legacy no-contract path: write prose finalOutput as before
+              failureStage = 'result_write';
               await maybeWriteResultFile(input.runInput.environment, terminal.output);
             }
           }
@@ -1521,6 +1553,7 @@ export function createOpenAIAgentAdapter(
             });
           }
 
+          failureStage = 'terminal_emit';
           let terminalEvent: RunnerEvent;
           if (terminal.directive === 'needs_input') {
             terminalEvent = {
@@ -1557,14 +1590,12 @@ export function createOpenAIAgentAdapter(
             model: input.profile.model
           });
         } catch (err) {
+          const fallbackDetails = { providerKind: openaiProviderKind, failureStage, ...buildSafeOpenAISdkErrorDiagnostic(err) };
           const classified = err instanceof ClassifiedProviderFailureError
             ? err
             : err instanceof ProviderProtocolError
               ? undefined
-              : classifySdkError(err) ?? new ClassifiedProviderFailureError('runner_failed_before_terminal_result', {
-                  providerKind: openaiProviderKind,
-                  ...buildSafeOpenAISdkErrorDiagnostic(err)
-                });
+              : classifySdkError(err) ?? new ClassifiedProviderFailureError('runner_failed_before_terminal_result', fallbackDetails);
           const thrown = classified ?? err;
           const safeDetail = {
             ...buildSafeAdapterFailureLogDetail(err ?? {}, openaiProviderKind),
@@ -1578,6 +1609,8 @@ export function createOpenAIAgentAdapter(
           safeLog('error', 'openai.adapter.session_failed', {
             runId: input.runInput.environment.context.run.id,
             step: input.runInput.environment.context.run.currentStep,
+            role: input.telemetryContext.role,
+            failureStage,
             ...(classified !== undefined ? { failureReason: classified.failureReason } : {}),
             ...(failureCode !== undefined ? { failureCode } : {}),
             ...(protocolErrorCode !== undefined ? { protocolErrorCode } : {}),
@@ -1585,7 +1618,7 @@ export function createOpenAIAgentAdapter(
               structuredResultCapture: true,
               schemaId: structuredResult.capture.schemaId,
               resultFile: structuredResult.capture.resultFile,
-              resultCaptureMechanism: structuredResult.projection.mechanism
+              resultCaptureMechanism
             } : {}),
             ...safeDetail
           });
@@ -1606,6 +1639,7 @@ export function createOpenAIAgentAdapter(
         safeLog('error', 'openai.adapter.session_failed', {
           runId: input.telemetryContext.runId, step: input.telemetryContext.step,
           stage: 'session_setup',
+          failureStage: setupStage,
           ...buildSafeAdapterFailureLogDetail(err ?? {}, openaiProviderKind),
           ...buildSafeOpenAISdkErrorDiagnostic(err),
           ...(classified?.safeDetails ?? {})
