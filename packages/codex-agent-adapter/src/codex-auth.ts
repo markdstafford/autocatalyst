@@ -21,6 +21,7 @@ export interface CodexAuthProbeInput {
   /** Secret-stripped launch environment. The probe must not read raw credentials. */
   readonly env: Readonly<Record<string, string>>;
   readonly cwd?: string;
+  readonly signal?: AbortSignal;
 }
 
 export interface CodexAuthProbeSuccess {

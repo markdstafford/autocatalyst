@@ -4,27 +4,16 @@ import { resolveCatalogAssetPath } from '@autocatalyst/execution';
 // ---------------------------------------------------------------------------
 // Codex skill delivery
 //
-// The Codex app-server has no first-class plugin array like the Claude SDK. The
-// supported Codex-visible mechanism is to mount each resolved skill's catalog
-// directory into the session workspace and name those directories in the system
-// prompt so the agent can discover and read them. This helper performs the pure
-// (no-filesystem, no-async) transformation from provider-neutral resolved skills
-// into Codex skill mounts, a delivered-ref list, and a safe system-prompt hint.
-//
-// Path resolution uses `resolveCatalogAssetPath` from `@autocatalyst/execution`,
-// which enforces catalog boundary containment (no traversal, no escaped
-// symlinks). The adapter must not depend on personal host skills, plugins, or
-// non-catalog paths.
+// Native Codex skill inputs use real SKILL.md paths in the runtime-owned catalog.
+// The transport verifies those paths exist and disables host skill discovery.
+// No virtual /workspace mount is claimed: app-server works in the actual run repo.
 // ---------------------------------------------------------------------------
-
-/** The sandbox root under which skill directories are mounted for the agent. */
-export const CODEX_SKILL_SANDBOX_ROOT = '/workspace/.codex-skills';
 
 export interface CodexSkillMount {
   readonly ref: string;
   /** Absolute host path to the skill directory in the runtime catalog. */
   readonly hostPath: string;
-  /** Read-only sandbox path the agent is told to look in. */
+  /** Real Codex-visible catalog path; retained alongside hostPath for diagnostics. */
   readonly sandboxPath: string;
 }
 
@@ -57,12 +46,6 @@ export class CodexSkillMaterializationError extends Error {
     this.code = code;
     if (details !== undefined) this.details = details;
   }
-}
-
-function sandboxPathForRef(ref: string): string {
-  // Colons are not path separators; map ref 'mm:planning' -> 'mm__planning'.
-  const safeRef = ref.replace(/[^a-zA-Z0-9_-]/g, '__');
-  return `${CODEX_SKILL_SANDBOX_ROOT}/${safeRef}`;
 }
 
 /**
@@ -101,13 +84,13 @@ export function materializeCodexSkills(
       );
     }
 
-    return { ref: skill.ref, hostPath, sandboxPath: sandboxPathForRef(skill.ref) };
+    return { ref: skill.ref, hostPath, sandboxPath: hostPath };
   });
 
   const delivered = mounts.map((mount) => mount.ref);
   const lines = mounts.map((mount) => `- ${mount.ref}: ${mount.sandboxPath}`);
   const systemPromptHint = [
-    'The following Autocatalyst runtime skills are mounted read-only for this session.',
+    'The following Autocatalyst runtime skills are provided as native skill inputs for this session.',
     'Read a skill directory before using it:',
     ...lines
   ].join('\n');

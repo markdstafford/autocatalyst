@@ -20,10 +20,10 @@ for the transport decision.
 | Codex CLI / app-server | **0.160.1** (probed 2026-10-22) |
 | Accepted sandbox values | `read-only`, `workspace-write` |
 
-Validate against the installed runtime rather than documentation examples. If the
-installed Codex runtime does not accept the sandbox value a role requires, the
-adapter fails fast with `UnsupportedProviderCapabilityError('tool_policy_unsupported')`
-before any paid work begins.
+Validate against the installed runtime rather than documentation examples. The adapter checks `codex --version` before launching the app-server and rejects
+other versions. It also verifies thread model/provider and sandbox responses before
+starting a turn. Set `codexBinary` when constructing the adapter to use an absolute
+approved executable path; production startup otherwise resolves the installed `codex` on PATH.
 
 ## Installation (clean checkout)
 
@@ -39,7 +39,7 @@ before any paid work begins.
 
    ```bash
    codex login                 # enterprise / ChatGPT sign-in, operator-approved
-   codex login status --json   # expect an authenticated enterprise/chatgpt method
+   codex login status          # expect ChatGPT sign-in
    ```
 
 3. Build and test the adapter without relying on a developer PATH:
@@ -67,7 +67,7 @@ map alongside the Claude and OpenAI adapters. Enable real dispatch as described 
     "profileName": "Codex Enterprise",
     "model": {
       "provider": "openai",
-      "model": "gpt-5-codex"
+      "model": "gpt-6.1-sol"
     },
     "inferenceSettings": {
       "reasoningEffort": "high"
@@ -116,8 +116,10 @@ identity, cached-credential path, or raw app-server message text.
 - **Session metadata** reports adapter id, model identity, role, outcome, token
   usage when available, and marks usage **unavailable** (not zero) when the
   app-server does not report it.
-- **Skill diagnostics** (`codex.adapter.session_start`) report requested, resolved,
-  and delivered skill identifiers.
+- **Skill diagnostics** report prepared counts at `codex.adapter.session_start`, then
+  requested, resolved, and delivered identifiers at `codex.adapter.skills_delivered`
+  after `turn/start` accepts the native skill inputs. Zero requested skills do not
+  prove delivery.
 
 ## Opt-in live smoke procedure
 
@@ -125,7 +127,7 @@ Live smoke consumes enterprise inference and is **opt-in and operator-authorized
 only**. It must not start a new end-to-end run or approve any human gate
 automatically. Run it against a disposable workspace:
 
-1. Confirm enterprise sign-in: `codex login status --json`.
+1. Confirm enterprise sign-in: `codex login status`.
 2. Configure a `codex` / `codex-app-server` provider profile (above) and route a
    single spec-authoring or implementation step to it.
 3. Observe and record, **without any secret value**:
@@ -138,3 +140,46 @@ automatically. Run it against a disposable workspace:
    - structured result capture (correct per-round / PR-finalize result file written).
 
 Do not approve human gates or launch a new E2E run as part of live smoke.
+
+## Protocol and configuration limits
+
+The adapter uses `initialize` → `initialized` → `account/read` → `thread/start` →
+`turn/start`, then consumes `item/*`, token-usage, and `turn/completed` notifications.
+Only a completed turn can advance. Missing/invalid JSON fails without a successful
+result file. Each session uses an ephemeral thread; cross-session conversation
+continuity is not enabled.
+
+Authentication is explicitly selected by the `codex` / `codex-app-server` profile.
+Codex owns its existing credential cache; the adapter does not read or copy tokens.
+`account/read` must report ChatGPT enterprise authentication. The current approved
+host login is the identity used: per-profile user/account selection is not supported.
+API-key credentials and endpoint overrides are not an alternative authentication mode.
+The child environment excludes API credentials and gateway overrides. Custom OpenAI
+provider definitions fail closed. Host MCP servers are disabled through thread-scoped
+configuration overrides; the host configuration is not edited. Plugins, host skill
+discovery, hooks, apps and child-agent tools are disabled for this integration.
+
+Skill inputs reference real `SKILL.md` files in the runtime-owned catalog. The
+adapter does not claim to mount virtual `/workspace/.codex-skills` directories.
+Implementers start in the actual run repository, with declared workspace roots
+writable. Reviewers use a read-only policy. The adapter writes validated results to
+scratch outside the model's repository permissions. A tool policy that forbids the
+native shell is unsupported and fails before starting inference.
+
+Session time is bounded by endpoint `requestTimeoutMs` (default ten minutes).
+Closing the session cancels the process. Authentication probing is bounded to
+30 seconds. No model-session retry or automatic account fallback occurs.
+
+## Local permission check without inference
+
+After building, verify the actual supported runtime in a disposable directory:
+
+```bash
+AUTOCATALYST_CODEX_BINARY=/absolute/path/to/codex node packages/codex-agent-adapter/tools/probe-permissions.mjs
+```
+
+This calls `command/exec` with the same policies used for turns. It asserts that
+an implementer write succeeds, then attempts the same write as a reviewer and
+asserts rejection with unchanged file contents. It starts no model turn and
+requires no inference credits. The deterministic subprocess tests use a fixture
+executable and do not require Codex to be installed.

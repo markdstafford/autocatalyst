@@ -6,7 +6,6 @@ import type { ResolvedSkill } from '@autocatalyst/api-contract';
 import { runtimeSkillsCatalogRoot } from '@autocatalyst/execution';
 
 import {
-  CODEX_SKILL_SANDBOX_ROOT,
   CodexSkillMaterializationError,
   materializeCodexSkills
 } from './skill-materialization.js';
@@ -27,9 +26,9 @@ describe('materializeCodexSkills', () => {
     const result = materializeCodexSkills(skills, runtimeSkillsCatalogRoot);
     expect(result.delivered).toEqual(['mm:writing-guidelines', 'mm:planning']);
     expect(result.mounts[0]!.hostPath).toBe(path.join(runtimeSkillsCatalogRoot, 'assets/mm/writing-guidelines'));
-    expect(result.mounts[0]!.sandboxPath).toBe(`${CODEX_SKILL_SANDBOX_ROOT}/mm__writing-guidelines`);
+    expect(result.mounts[0]!.sandboxPath).toBe(path.join(runtimeSkillsCatalogRoot, 'assets/mm/writing-guidelines'));
     expect(result.systemPromptHint).toContain('mm:planning');
-    expect(result.systemPromptHint).toContain(CODEX_SKILL_SANDBOX_ROOT);
+    expect(result.systemPromptHint).toContain(runtimeSkillsCatalogRoot);
   });
 
   it('throws on an empty assetPath', () => {

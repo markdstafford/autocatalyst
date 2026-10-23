@@ -29,8 +29,7 @@ export type {
 } from './codex-auth.js';
 export {
   materializeCodexSkills,
-  CodexSkillMaterializationError,
-  CODEX_SKILL_SANDBOX_ROOT
+  CodexSkillMaterializationError
 } from './skill-materialization.js';
 export type {
   CodexSkillMount,

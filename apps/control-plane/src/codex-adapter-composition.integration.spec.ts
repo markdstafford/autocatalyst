@@ -7,7 +7,7 @@ import {
   composeConfiguredProviders,
   createExtensionRegistryCatalog
 } from '@autocatalyst/core';
-import { getAgentProviderAdapterKey } from '@autocatalyst/execution';
+import { createAgentConnection, getAgentProviderAdapterKey } from '@autocatalyst/execution';
 import {
   codexAgentAdapterId,
   codexProviderKind,
@@ -18,6 +18,7 @@ import {
   claudeProviderKind,
   createClaudeAgentAdapter
 } from '@autocatalyst/claude-agent-adapter';
+import { createExplicitProfileResolver } from './server.js';
 
 // Deterministic integration coverage for issue #114: the Codex adapter composes
 // through the existing registry/composition flow and routes by (providerKind,
@@ -30,7 +31,7 @@ function codexProfileRecord(overrides: Partial<ConfigurationRecord> = {}): Confi
     kind: 'provider_profile',
     providerKind: codexProviderKind,
     adapterId: codexAgentAdapterId,
-    settings: { profileName: 'codex-enterprise', credentialSecretHandle: 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef' },
+    settings: { profileName: 'codex-enterprise' },
     createdAt: '2026-10-22T00:00:00.000Z',
     updatedAt: '2026-10-22T00:00:00.000Z',
     ...overrides
@@ -53,6 +54,22 @@ const codexRegistryCatalog = createExtensionRegistryCatalog([
 ]);
 
 describe('codex adapter composition', () => {
+  it('resolves and launches the external-account connection without looking up an API secret', async () => {
+    const adapter = createCodexAgentAdapter();
+    const resolver = createExplicitProfileResolver({ defaultProviderProfileId: 'cfg_codex_1',
+      listRecords: async () => [codexProfileRecord()],
+      registry: new Map([[getAgentProviderAdapterKey(codexProviderKind, codexAgentAdapterId), adapter]]) });
+    const resolution = await resolver({ runId: 'run_1', step: 'spec.author' });
+    expect(resolution.credentialReference.required).toBe(false);
+    const connection = await createAgentConnection({ ...resolution,
+      credentialResolver: { resolveCredential: async () => { throw new Error('API secret lookup must not happen'); } },
+      telemetryContext: { runId: 'run_1', step: 'spec.author' } });
+    const config = await connection.createProcessLaunchConfig({ materializedEnvironment: { variables: {}, secretVariableNames: [] } });
+    expect(connection.credentialResolved).toBe(false);
+    for (const key of config.secretVariableNames) expect(config.environment[key] ?? '').toBe('');
+    await connection.close?.();
+  });
+
   it('composes a Codex provider profile through the standard registry flow', async () => {
     const result = await composeConfiguredProviders({
       configurationRecords: [codexProfileRecord()],

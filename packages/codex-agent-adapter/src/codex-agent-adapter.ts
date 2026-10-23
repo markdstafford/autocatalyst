@@ -14,7 +14,6 @@ import type {
 } from '@autocatalyst/execution';
 import {
   ClassifiedProviderFailureError,
-  ProviderConnectionError,
   ProviderProtocolError,
   UnsupportedProviderCapabilityError,
   assertSerializableStructuredResult,
@@ -28,9 +27,10 @@ import {
 import {
   CodexAuthenticationError,
   type CodexAuthMode,
-  type CodexAuthProbe,
-  type CodexAuthProbeResult
+  type CodexAuthProbe
 } from './codex-auth.js';
+import { codexAuthProbe, codexSessionLaunch } from './codex-app-server.js';
+
 import {
   materializeCodexSkills,
   type CodexSkillMount
@@ -88,6 +88,9 @@ export interface CodexNativeEvent {
 export interface CodexSessionLaunchOptions {
   readonly prompt: string;
   readonly instructions: string;
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
+  readonly workspaceRoots?: readonly string[];
   readonly model: string;
   readonly cwd?: string;
   readonly env?: Record<string, string>;
@@ -245,9 +248,7 @@ function redactString(value: string, knownSecretValues: readonly string[]): stri
   let out = value;
   for (const secret of knownSecretValues) {
     if (secret.length === 0) continue;
-    while (out.includes(secret)) {
-      out = out.replace(secret, '[REDACTED]');
-    }
+    out = out.split(secret).join('[REDACTED]');
   }
   return out;
 }
@@ -255,136 +256,9 @@ function redactString(value: string, knownSecretValues: readonly string[]): stri
 // ---------------------------------------------------------------------------
 // Default real transport (Codex app-server over stdio)
 //
-// Dynamically spawns `codex app-server` and translates its newline-delimited
-// JSON stdout into CodexNativeEvent. This default is never exercised by the
-// deterministic unit tests — they inject `launchCodexSession` — but keeps the
-// package runnable against a real, operator-signed-in Codex CLI.
+// Production JSON-RPC transport lives in codex-app-server.ts; subprocess-level
+// tests exercise the handshake and native notifications without model inference.
 // ---------------------------------------------------------------------------
-
-function defaultLaunch(codexBinary: string): CodexSessionLaunch {
-  return async function* realCodexAppServerLaunch(
-    options: CodexSessionLaunchOptions
-  ): AsyncIterable<CodexNativeEvent> {
-    let spawn: typeof import('node:child_process').spawn;
-    let createInterface: typeof import('node:readline').createInterface;
-    try {
-      ({ spawn } = await import('node:child_process'));
-      ({ createInterface } = await import('node:readline'));
-    } catch {
-      throw new ProviderConnectionError(
-        'process_launch_failed',
-        'Node child_process is unavailable; cannot launch the Codex app-server.'
-      );
-    }
-
-    const child = spawn(
-      codexBinary,
-      ['app-server', '--listen', 'stdio://', '--sandbox', options.sandbox],
-      {
-        cwd: options.cwd ?? process.cwd(),
-        env: { ...process.env, ...(options.env ?? {}) },
-        stdio: ['pipe', 'pipe', 'pipe']
-      }
-    );
-
-    const launchRequest = {
-      type: 'start_session',
-      model: options.model,
-      instructions: options.instructions,
-      prompt: options.prompt,
-      sandbox: options.sandbox,
-      ...(options.allowedTools !== undefined ? { allowed_tools: options.allowedTools } : {}),
-      ...(options.config !== undefined ? { config: options.config } : {}),
-      ...(options.skills !== undefined ? { skills: options.skills.map((skill) => ({ ref: skill.ref, path: skill.sandboxPath })) } : {})
-    };
-    child.stdin.write(`${JSON.stringify(launchRequest)}\n`);
-    child.stdin.end();
-
-    const exitPromise = new Promise<number>((resolve) => {
-      child.on('close', (code) => resolve(code ?? 0));
-    });
-
-    try {
-      const lines = createInterface({ input: child.stdout });
-      for await (const line of lines) {
-        const trimmed = line.trim();
-        if (trimmed.length === 0) continue;
-        let parsed: CodexNativeEvent;
-        try {
-          parsed = JSON.parse(trimmed) as CodexNativeEvent;
-        } catch {
-          continue;
-        }
-        yield parsed;
-      }
-      const exitCode = await exitPromise;
-      if (exitCode !== 0) {
-        throw new ProviderConnectionError(
-          'process_launch_failed',
-          'The Codex app-server exited abnormally before the session completed.'
-        );
-      }
-    } finally {
-      if (child.exitCode === null) child.kill();
-    }
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Default enterprise sign-in probe
-//
-// Fails closed: if the operator-approved sign-in cannot be positively confirmed
-// the probe reports `missing_sign_in` rather than proceeding. Never reads, logs,
-// or returns the cached credential.
-// ---------------------------------------------------------------------------
-
-function defaultAuthProbe(codexBinary: string): CodexAuthProbe {
-  return async function probeCodexEnterpriseSignIn(): Promise<CodexAuthProbeResult> {
-    let spawn: typeof import('node:child_process').spawn;
-    try {
-      ({ spawn } = await import('node:child_process'));
-    } catch {
-      return { status: 'unauthenticated', code: 'missing_sign_in' };
-    }
-
-    return await new Promise<CodexAuthProbeResult>((resolve) => {
-      let stdout = '';
-      try {
-        const child = spawn(codexBinary, ['login', 'status', '--json'], {
-          stdio: ['ignore', 'pipe', 'ignore']
-        });
-        child.stdout.on('data', (chunk: Buffer) => {
-          stdout += chunk.toString('utf8');
-        });
-        child.on('error', () => resolve({ status: 'unauthenticated', code: 'missing_sign_in' }));
-        child.on('close', (code) => {
-          if (code !== 0) {
-            resolve({ status: 'unauthenticated', code: 'missing_sign_in' });
-            return;
-          }
-          try {
-            const parsed = JSON.parse(stdout) as Record<string, unknown>;
-            const authMethod = parsed['auth_method'];
-            if (authMethod === 'chatgpt' || authMethod === 'enterprise') {
-              const plan = parsed['plan'];
-              resolve({
-                status: 'authenticated',
-                ...(typeof plan === 'string' ? { accountType: plan } : {})
-              });
-              return;
-            }
-            // Signed in but not through the approved enterprise path.
-            resolve({ status: 'unauthenticated', code: 'account_mismatch' });
-          } catch {
-            resolve({ status: 'unauthenticated', code: 'missing_sign_in' });
-          }
-        });
-      } catch {
-        resolve({ status: 'unauthenticated', code: 'missing_sign_in' });
-      }
-    });
-  };
-}
 
 // ---------------------------------------------------------------------------
 // Result file helpers
@@ -438,6 +312,7 @@ async function writeCodexStructuredResultFile(
   const writeOutcome = await writeScratchStepResultFile({
     environment: env,
     resultFile: capture.resultFile,
+    schema: capture.schema,
     value
   });
   if (writeOutcome.status === 'failed') {
@@ -499,6 +374,7 @@ function mapNativeEvent(ev: CodexNativeEvent, ctx: MapContext): MappedNative {
   }
 
   if (ev.type === 'tool_call' && ev.tool) {
+    if (ev['completed'] === true) return { events: [{ ...baseFields(ctx), type: 'runner_tool_activity', importance: 'normal', tool: { name: ev.tool.name, action: 'result', status: 'completed' } }] };
     return mapToolCall(ev.tool, ctx);
   }
 
@@ -506,7 +382,7 @@ function mapNativeEvent(ev: CodexNativeEvent, ctx: MapContext): MappedNative {
     const r = ev.result ?? {};
     const usage = pickTokenUsage(r, ev.usage);
     const pendingResult: PendingResult = {
-      ...(r.directive !== undefined ? { directive: r.directive } : {}),
+      ...(r.is_error === true ? { directive: 'fail' as const } : r.directive !== undefined ? { directive: r.directive } : {}),
       ...(r.output !== undefined ? { output: r.output } : {}),
       ...(r.question !== undefined ? { question: r.question } : {}),
       ...(r.reason !== undefined ? { reason: r.reason } : {})
@@ -649,8 +525,8 @@ export function createCodexAgentAdapter(
   options: CodexAgentAdapterOptions = {}
 ): AgentProviderAdapter {
   const codexBinary = options.codexBinary ?? 'codex';
-  const launch = options.launchCodexSession ?? defaultLaunch(codexBinary);
-  const probeAuth = options.probeCodexAuth ?? defaultAuthProbe(codexBinary);
+  const launch = options.launchCodexSession ?? codexSessionLaunch(codexBinary);
+  const probeAuth = options.probeCodexAuth ?? codexAuthProbe(codexBinary);
   const supportedInference =
     options.supportedInferenceSettings ?? new Set<string>(DEFAULT_SUPPORTED_INFERENCE_KEYS);
   const acceptedSandboxValues =
@@ -683,6 +559,7 @@ export function createCodexAgentAdapter(
     providerKind: codexProviderKind,
     adapterId: codexAgentAdapterId,
     supportedConnectionMechanism: 'process_environment',
+    credentialRequirement: 'external',
 
     startSession(input: AgentProviderSessionInput): AgentProviderSession {
       const { runInput, profile, connection } = input;
@@ -715,12 +592,17 @@ export function createCodexAgentAdapter(
         };
       }
 
+      const resolvedRefs = new Set(env.skills.resolved.map(skill => skill.ref));
+      if (env.skills.requested.some(ref => !resolvedRefs.has(ref))) {
+        throw new UnsupportedProviderCapabilityError('skill_unsupported', 'Requested Codex skills are unresolved.');
+      }
       // Materialize resolved skills (pure; throws on empty/escaping assetPath).
       const skillMaterialization = materializeCodexSkills(env.skills.resolved, runtimeSkillsCatalogRoot);
 
       const workspace = env.workspace;
       const cwd: string | undefined =
-        'scratchRoot' in workspace ? workspace.scratchRoot : workspace.workspaceRoots[0];
+        'repoRoot' in workspace ? workspace.repoRoot : 'scratchRoot' in workspace ? workspace.scratchRoot : workspace.workspaceRoots[0];
+      const cancellation = new AbortController();
 
       const allowedTools = mapAllowedToolsForCodex(env.toolPolicy.allowedTools, sandbox);
       const prompt = env.context.task.prompt;
@@ -779,7 +661,7 @@ export function createCodexAgentAdapter(
           // Enterprise sign-in probe (never reads/logs raw credentials). No
           // fallback to OPENAI_API_KEY or any other account.
           // --------------------------------------------------------------
-          const authResult = await probeAuth({ env: safeEnvironment, ...(cwd !== undefined ? { cwd } : {}) });
+          const authResult = await probeAuth({ env: safeEnvironment, signal: cancellation.signal, ...(cwd !== undefined ? { cwd } : {}) });
           if (authResult.status !== 'authenticated') {
             safeLog('error', 'codex.adapter.auth_failed', {
               runId,
@@ -808,8 +690,7 @@ export function createCodexAgentAdapter(
             allowedToolsCount: allowedTools.length,
             requestedSkillCount: env.skills.requested.length,
             resolvedSkillCount: env.skills.resolved.length,
-            deliveredSkillCount: skillMaterialization.delivered.length,
-            deliveredSkills: skillMaterialization.delivered,
+            preparedSkillCount: skillMaterialization.delivered.length,
             cwdProvided: cwd !== undefined,
             launchConfig: launchConfig.redacted,
             ...(structuredResult !== undefined
@@ -837,7 +718,10 @@ export function createCodexAgentAdapter(
             instructions,
             model: profile.model.model,
             ...(cwd !== undefined ? { cwd } : {}),
-            env: launchConfig.environment,
+            env: safeEnvironment,
+            signal: cancellation.signal,
+            timeoutMs: profile.endpoint.requestTimeoutMs ?? 600_000,
+            workspaceRoots: workspace.workspaceRoots,
             sandbox,
             allowedTools,
             ...(Object.keys(inferenceMapping.config).length > 0 ? { config: inferenceMapping.config } : {}),
@@ -847,6 +731,10 @@ export function createCodexAgentAdapter(
           });
 
           for await (const ev of native) {
+            if (ev.type === 'skills_delivered') {
+              safeLog('info', 'codex.adapter.skills_delivered', { runId, step, requestedSkillCount: env.skills.requested.length, resolvedSkillCount: env.skills.resolved.length, deliveredSkillCount: skillMaterialization.delivered.length, deliveredSkills: skillMaterialization.delivered });
+            }
+            if (resultSeen && ev.type !== 'result') throw new ProviderProtocolError('impossible_session_sequence', 'Codex emitted events after completion.');
             if (ev.type === 'result') {
               if (structuredResult !== undefined && ev.structuredOutput !== undefined) {
                 if (capturedStructuredResult !== undefined) {
@@ -874,10 +762,11 @@ export function createCodexAgentAdapter(
             for (const out of mapped.events) yield out;
           }
 
+          if (!resultSeen) throw new ProviderProtocolError('impossible_session_sequence', 'Codex ended without a terminal result.');
           // ------------------------------------------------------------
           // Terminal handling.
           // ------------------------------------------------------------
-          if (structuredResult !== undefined && input.structuredResultCapture !== undefined) {
+          if (pendingResult?.directive === 'advance' && structuredResult !== undefined && input.structuredResultCapture !== undefined) {
             if (capturedStructuredResult === undefined) {
               throw new ProviderProtocolError(
                 'missing_structured_result',
@@ -940,7 +829,7 @@ export function createCodexAgentAdapter(
         }
       }
 
-      return { events: mapEvents(), metadata };
+      return { events: mapEvents(), metadata, async close() { cancellation.abort(); } };
     }
   };
 }

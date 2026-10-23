@@ -142,7 +142,7 @@ function makeSessionInput(args: {
           workspaceIntent: { shape: 'none' },
           secretBindings: [],
           toolPolicy: { allowedTools: args.allowedTools ?? ['bash'], workspaceScope: 'declared_workspace' },
-          skills: { requested: args.requestedSkills ?? ['mm:planning'], resolved: args.resolvedSkills ?? [] },
+          skills: { requested: args.requestedSkills ?? [], resolved: args.resolvedSkills ?? [] },
           capabilityRequirements: {
             shell: { kind: 'bash', required: false },
             paths: { canonicalWorkspacePaths: true },
@@ -152,7 +152,7 @@ function makeSessionInput(args: {
         workspace,
         environment: { variables, secretVariableNames },
         toolPolicy: { allowedTools: args.allowedTools ?? ['bash'], workspaceRoots: workspace.workspaceRoots },
-        skills: { requested: args.requestedSkills ?? ['mm:planning'], resolved: args.resolvedSkills ?? [] },
+        skills: { requested: args.requestedSkills ?? [], resolved: args.resolvedSkills ?? [] },
         capabilities: {
           shell: { kind: 'bash', available: true },
           paths:
@@ -519,7 +519,7 @@ describe('createCodexAgentAdapter — skills', () => {
     ];
     const logs: Array<{ event: string; fields: unknown }> = [];
     const { input } = makeSessionInput({ resolvedSkills, requestedSkills: ['mm:planning', 'mm:writing-guidelines'] });
-    const { adapter, calls } = makeAdapter([{ type: 'result', result: { directive: 'advance' } }], {
+    const { adapter, calls } = makeAdapter([{ type: 'skills_delivered' }, { type: 'result', result: { directive: 'advance' } }], {
       logger: {
         info: (event, fields) => logs.push({ event, fields }),
         warn: (event, fields) => logs.push({ event, fields }),
@@ -529,7 +529,7 @@ describe('createCodexAgentAdapter — skills', () => {
     await collect(adapter.startSession(input).events);
     expect(calls[0]!.skills).toHaveLength(2);
     expect(calls[0]!.skills?.map((s) => s.ref)).toEqual(['mm:writing-guidelines', 'mm:planning']);
-    const start = logs.find((l) => l.event === 'codex.adapter.session_start');
+    const start = logs.find((l) => l.event === 'codex.adapter.skills_delivered');
     const serialized = JSON.stringify(start?.fields);
     expect(serialized).toContain('mm:planning');
     expect(serialized).toContain('"deliveredSkillCount":2');
@@ -611,6 +611,34 @@ describe('createCodexAgentAdapter — enterprise sign-in', () => {
 // ---------------------------------------------------------------------------
 
 describe('createCodexAgentAdapter — structured results', () => {
+  it('rejects schema-invalid JSON before creating a result file or advancing', async () => {
+    const scratchRoot = await mkdtemp(path.join(tmpdir(), 'codex-invalid-'));
+    try {
+      const { input } = makeSessionInput({ scratchRoot });
+      const capture = { ...makeCapture('review', 'review.json'), schema: z.object({ status: z.literal('satisfied') }) };
+      const { adapter } = makeAdapter([{ type: 'result', structuredOutput: { wrong: true }, result: { directive: 'advance' } }]);
+      const session = adapter.startSession({ ...input, structuredResultCapture: capture });
+      await expect(collect(session.events)).rejects.toMatchObject({ code: 'structured_result_invalid' });
+      await expect(session.metadata).rejects.toThrow();
+      await expect(readFile(path.join(scratchRoot, 'review.json'))).rejects.toThrow();
+    } finally { await rm(scratchRoot, { recursive: true, force: true }); }
+  });
+
+  it('does not turn a failed native result into successful structured capture', async () => {
+    const { input } = makeSessionInput();
+    const { adapter } = makeAdapter([{ type: 'result', structuredOutput: {}, result: { directive: 'fail' } }]);
+    const session = adapter.startSession({ ...input, structuredResultCapture: makeCapture('review', 'review.json') });
+    const events = await collect(session.events);
+    expect(events.at(-1)).toMatchObject({ result: { directive: 'fail' } });
+    expect(await session.metadata).toMatchObject({ outcome: 'failed' });
+  });
+
+  it('rejects an empty native stream rather than fabricating success', async () => {
+    const { input } = makeSessionInput();
+    const { adapter } = makeAdapter([]);
+    await expect(collect(adapter.startSession(input).events)).rejects.toMatchObject({ code: 'impossible_session_sequence' });
+  });
+
   async function runWithCapture(
     events: CodexNativeEvent[],
     capture: StructuredAgentResultCapture,

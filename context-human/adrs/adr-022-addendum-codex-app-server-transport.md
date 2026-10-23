@@ -1,8 +1,7 @@
 ---
 created: 2026-10-22
 last_updated: 2026-10-22
-status: accepted
-decided_by: markdstafford
+status: proposed
 addendum_to: adr-022-runner-structure.md
 issue: 114
 ---
@@ -11,7 +10,7 @@ issue: 114
 
 ## Status
 
-Accepted — addendum to [ADR-022](./adr-022-runner-structure.md).
+Proposed for human review — addendum to [ADR-022](./adr-022-runner-structure.md).
 
 ## Context
 
@@ -50,9 +49,9 @@ transport is explicitly out of scope for issue #114.**
   stdout. The adapter maps those native events onto the canonical `RunnerEvent` union
   (assistant turns, tool activity, progress/notification, terminal result) exactly as
   the other agent adapters do, keeping the agent orchestrator provider-neutral.
-- **Structured output:** captured from the app-server's terminal event and written by
+- **Structured output:** parsed from the final assistant message after successful `turn/completed` and written by
   the **adapter** (not by the sandboxed Codex process) to the configured scratch
-  result file via the shared `writeScratchStepResultFile` path. This keeps reviewer
+  result file via the shared `writeScratchStepResultFile` path with the active canonical schema. This keeps reviewer
   sessions read-only against the repository while still capturing the structured
   reviewer result.
 - **Filesystem permissions:** the materialized tool policy maps to Codex sandbox
@@ -65,21 +64,14 @@ transport is explicitly out of scope for issue #114.**
   protocol violations terminate the session cleanly with redacted diagnostics and no
   automatic paid retry.
 
-## Why not the in-process SDK library (this issue)
+## Why this transport
 
-- The approved enterprise identity is bound to the Codex CLI's on-host login. The
-  app-server inherits that identity directly; an in-process library would push us
-  toward an API-key or token-handoff path that the billing-safety requirement
-  forbids.
-- The probed runtime (Codex CLI **0.160.1**, 2026-10-22) exposes `app-server` and the
-  `read-only` sandbox value, so the subprocess boundary is verifiable against a real
-  runtime today.
-- ADR-022 already lists "an external CLI subprocess per backend" as a considered
-  alternative whose cost is process management and weaker streaming control. That
-  cost is accepted *only here and only because* enterprise sign-in requires it; the
-  Claude and OpenAI adapters remain in-process. Provider-specific subprocess handling
-  is confined to `packages/codex-agent-adapter` and the existing `process_environment`
-  connection seam, so no orchestrator gains a Codex-specific branch.
+The app-server provides direct control of the initialization handshake, account
+status, thread permissions, native skill inputs, streamed items, and turn completion.
+The supported CLI version exposes these protocol shapes through generated bindings.
+The SDK is another supported Codex integration and can also use Codex authentication;
+API-key authentication is not an inherent SDK requirement. This issue selects one
+transport to keep lifecycle and protocol tests focused.
 
 ## Consequences
 

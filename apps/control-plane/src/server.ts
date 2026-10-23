@@ -358,10 +358,10 @@ export function createExplicitProfileResolver(input: {
     // Derive authTarget from connectionMechanism. For fetch_transport adapters
     // (e.g. OpenAI Agents SDK), the credential is passed as an Authorization header.
     // For process_environment adapters (e.g. Claude Agent SDK), it is injected as
-    // an environment variable. A credential is always required — absence is caught
-    // by createAgentConnection as a missing_credential error before any session starts.
+    // an environment variable. Adapters owning an external account explicitly opt out
+    // of API-secret requirements and validate that account before starting paid work.
     const credentialReference: ResolvedAgentCredentialReference = {
-      required: true,
+      required: adapter.credentialRequirement !== 'external',
       ...(settings.credentialSecretHandle !== undefined
         ? { secretHandle: settings.credentialSecretHandle }
         : {}),
@@ -923,7 +923,11 @@ export async function createControlPlaneServer(
     });
     const codexAgentKey = buildProviderAdapterKey(codexProviderKind, codexAgentAdapterId);
     if (!merged.has(codexAgentKey)) {
-      merged.set(codexAgentKey, () => createCodexAgentAdapter());
+      merged.set(codexAgentKey, () => createCodexAgentAdapter({ logger: {
+        info: (event, fields) => app.log.info({ event, ...(fields as Record<string, unknown>) }, 'Agent adapter diagnostic.'),
+        warn: (event, fields) => app.log.warn({ event, ...(fields as Record<string, unknown>) }, 'Agent adapter diagnostic.'),
+        error: (event, fields) => app.log.error({ event, ...(fields as Record<string, unknown>) }, 'Agent adapter diagnostic.')
+      } }));
     }
     realDispatchRegistryEntries.push({
       providerKind: codexProviderKind,
@@ -954,7 +958,7 @@ export async function createControlPlaneServer(
 
   const app = options.loggerInstance !== undefined
     ? Fastify({ loggerInstance: options.loggerInstance })
-    : Fastify({ logger: options.logger ?? false });
+    : Fastify({ logger: options.logger ?? (realDispatchEnabled ? { level: 'info' } : false), disableRequestLogging: true });
 
   const domainRepos = createDrizzleDomainRepositories(database);
   const conversationIngress = new DrizzleConversationIngressRepository(database);
