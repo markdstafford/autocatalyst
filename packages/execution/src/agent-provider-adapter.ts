@@ -99,6 +99,8 @@ export interface AgentProviderSession {
 }
 
 export interface AgentProviderAdapter {
+  /** External authentication is owned and validated by the adapter, e.g. an approved local account. */
+  readonly credentialRequirement?: 'required' | 'external';
   readonly providerKind: string;
   readonly adapterId: string;
   readonly supportedConnectionMechanism: ProviderConnectionMechanism;

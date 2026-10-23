@@ -1,0 +1,47 @@
+{
+  "name": "codex-agent-adapter",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "packages/codex-agent-adapter/src",
+  "projectType": "library",
+  "tags": [
+    "type:lib",
+    "scope:adapter",
+    "plane:execution"
+  ],
+  "targets": {
+    "build": {
+      "executor": "@nx/js:tsc",
+      "outputs": [
+        "{options.outputPath}"
+      ],
+      "options": {
+        "outputPath": "packages/codex-agent-adapter/dist",
+        "main": "packages/codex-agent-adapter/src/index.ts",
+        "tsConfig": "packages/codex-agent-adapter/tsconfig.lib.json"
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "outputs": [
+        "{options.outputFile}"
+      ],
+      "options": {
+        "lintFilePatterns": [
+          "packages/codex-agent-adapter/src/**/*.ts",
+          "packages/codex-agent-adapter/project.json",
+          "packages/codex-agent-adapter/package.json"
+        ]
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/coverage/packages/codex-agent-adapter"
+      ],
+      "options": {
+        "command": "vitest run",
+        "cwd": "packages/codex-agent-adapter"
+      }
+    }
+  }
+}

@@ -30,6 +30,7 @@ import {
   DefaultControlPlaneService,
   DefaultIssueReferenceIntakeResolver,
   DefaultOrchestrator,
+  createExtensionRegistryCatalog,
   defaultExtensionRegistryCatalog,
   emptyProviderAdapterMap,
   ExecutionContextResolutionError,
@@ -47,6 +48,7 @@ import {
   type DomainRepositories,
   type ExecutionModeResolution,
   type ExtensionRegistryCatalog,
+  type ExtensionRegistryEntry,
   type FeedbackLifecycleDependencies,
   type HealthDependencyChecker,
   type ModelRoutingDistinctResolution,
@@ -127,6 +129,11 @@ import {
   createOpenAIAgentAdapter,
   openaiAgentAdapterId
 } from '@autocatalyst/openai-agent-adapter';
+import {
+  codexAgentAdapterId,
+  codexProviderKind,
+  createCodexAgentAdapter
+} from '@autocatalyst/codex-agent-adapter';
 import {
   DrizzleConfigurationRecordRepository,
   DrizzleConversationIngressRepository,
@@ -351,10 +358,10 @@ export function createExplicitProfileResolver(input: {
     // Derive authTarget from connectionMechanism. For fetch_transport adapters
     // (e.g. OpenAI Agents SDK), the credential is passed as an Authorization header.
     // For process_environment adapters (e.g. Claude Agent SDK), it is injected as
-    // an environment variable. A credential is always required — absence is caught
-    // by createAgentConnection as a missing_credential error before any session starts.
+    // an environment variable. Adapters owning an external account explicitly opt out
+    // of API-secret requirements and validate that account before starting paid work.
     const credentialReference: ResolvedAgentCredentialReference = {
-      required: true,
+      required: adapter.credentialRequirement !== 'external',
       ...(settings.credentialSecretHandle !== undefined
         ? { secretHandle: settings.credentialSecretHandle }
         : {}),
@@ -865,38 +872,93 @@ export async function createControlPlaneServer(
 
   const baseAdapters = options.providerAdapters ?? emptyProviderAdapterMap;
   let mergedAdapters: ProviderAdapterMap = baseAdapters;
+  // Extension-registry entries mirroring the adapters that real dispatch registers.
+  // Startup composition validates persisted provider profiles against the registry
+  // catalog; without matching entries, every valid profile (Codex included) would
+  // emit a spurious `adapter_not_registered` warning even though its factory is
+  // present. We only populate these when real dispatch wires the factories, so the
+  // registry claim and the registered factory stay in lockstep.
+  const realDispatchRegistryEntries: ExtensionRegistryEntry[] = [];
   if (realDispatchEnabled) {
     const merged = new Map<string, ProviderAdapterFactory>(baseAdapters);
     const claudeKey = buildProviderAdapterKey(claudeProviderKind, claudeAgentAdapterId);
     if (!merged.has(claudeKey)) {
       merged.set(claudeKey, () => createClaudeAgentAdapter());
     }
+    realDispatchRegistryEntries.push({
+      providerKind: claudeProviderKind,
+      adapterId: claudeAgentAdapterId,
+      displayName: 'Claude Agent SDK',
+      capabilities: ['agent_session']
+    });
     const anthropicDirectKey = buildProviderAdapterKey(anthropicProviderKind, anthropicDirectAdapterId);
     if (!merged.has(anthropicDirectKey)) {
       merged.set(anthropicDirectKey, () => createAnthropicDirectAdapter());
     }
+    realDispatchRegistryEntries.push({
+      providerKind: anthropicProviderKind,
+      adapterId: anthropicDirectAdapterId,
+      displayName: 'Anthropic (direct)',
+      capabilities: ['direct_call']
+    });
     const openaiDirectKey = buildProviderAdapterKey(openaiProviderKind, openaiDirectAdapterId);
     if (!merged.has(openaiDirectKey)) {
       merged.set(openaiDirectKey, () => createOpenAIDirectAdapter());
     }
+    realDispatchRegistryEntries.push({
+      providerKind: openaiProviderKind,
+      adapterId: openaiDirectAdapterId,
+      displayName: 'OpenAI (direct)',
+      capabilities: ['direct_call']
+    });
     const openaiAgentKey = buildProviderAdapterKey(openaiProviderKind, openaiAgentAdapterId);
     if (!merged.has(openaiAgentKey)) {
       merged.set(openaiAgentKey, () => createOpenAIAgentAdapter());
     }
+    realDispatchRegistryEntries.push({
+      providerKind: openaiProviderKind,
+      adapterId: openaiAgentAdapterId,
+      displayName: 'OpenAI Agents SDK',
+      capabilities: ['agent_session']
+    });
+    const codexAgentKey = buildProviderAdapterKey(codexProviderKind, codexAgentAdapterId);
+    if (!merged.has(codexAgentKey)) {
+      merged.set(codexAgentKey, () => createCodexAgentAdapter({ logger: {
+        info: (event, fields) => app.log.info({ event, ...(fields as Record<string, unknown>) }, 'Agent adapter diagnostic.'),
+        warn: (event, fields) => app.log.warn({ event, ...(fields as Record<string, unknown>) }, 'Agent adapter diagnostic.'),
+        error: (event, fields) => app.log.error({ event, ...(fields as Record<string, unknown>) }, 'Agent adapter diagnostic.')
+      } }));
+    }
+    realDispatchRegistryEntries.push({
+      providerKind: codexProviderKind,
+      adapterId: codexAgentAdapterId,
+      displayName: 'Codex (enterprise sign-in)',
+      capabilities: ['agent_session']
+    });
     mergedAdapters = merged;
   }
+
+  // Prefer an explicitly injected registry (tests/custom callers). Otherwise, when
+  // real dispatch is enabled, validate against the catalog mirroring the registered
+  // factories so Codex and its siblings resolve cleanly in production. Fall back to
+  // the empty default catalog only when no factories were wired.
+  const startupExtensionRegistry: ExtensionRegistryCatalog =
+    options.extensionRegistry ??
+    (realDispatchEnabled
+      ? createExtensionRegistryCatalog(realDispatchRegistryEntries)
+      : defaultExtensionRegistryCatalog);
 
   const startupCompositionTenant = 'tenant_dev';
   const providerCompositionResult = await composeConfiguredProviders({
     configurationRecords: await configurationRecords.list(startupCompositionTenant),
-    registry: options.extensionRegistry ?? defaultExtensionRegistryCatalog,
+    registry: startupExtensionRegistry,
     providerAdapters: mergedAdapters
   });
   await options.onProviderComposition?.(providerCompositionResult);
 
   const app = options.loggerInstance !== undefined
     ? Fastify({ loggerInstance: options.loggerInstance })
-    : Fastify({ logger: options.logger ?? false });
+    : Fastify({ logger: options.logger ?? (realDispatchEnabled ? { level: 'info' } : false), disableRequestLogging: true });
 
   const domainRepos = createDrizzleDomainRepositories(database);
   const conversationIngress = new DrizzleConversationIngressRepository(database);

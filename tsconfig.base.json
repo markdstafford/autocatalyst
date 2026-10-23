@@ -27,6 +27,7 @@
       "@autocatalyst/anthropic-direct-adapter": ["packages/anthropic-direct-adapter/src/index.ts"],
       "@autocatalyst/github-issue-tracker-adapter": ["packages/github-issue-tracker-adapter/src/index.ts"],
       "@autocatalyst/claude-agent-adapter": ["packages/claude-agent-adapter/src/index.ts"],
+      "@autocatalyst/codex-agent-adapter": ["packages/codex-agent-adapter/src/index.ts"],
       "@autocatalyst/core": ["packages/core/src/index.ts"],
       "@autocatalyst/execution": ["packages/execution/src/index.ts"],
       "@autocatalyst/openai-agent-adapter": ["packages/openai-agent-adapter/src/index.ts"],
