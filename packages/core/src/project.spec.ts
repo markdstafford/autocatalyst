@@ -32,7 +32,9 @@ function makeProject(overrides: Partial<Project> = {}): Project {
 function makeRepository(overrides: Partial<ProjectRepository> = {}): ProjectRepository {
   return {
     create: vi.fn(async (input) => makeProject({ owner: input.owner, tenant: input.tenant, displayName: input.displayName, repoUrl: input.repoUrl, hostRepository: input.hostRepository, workspaceRootOverride: input.workspaceRootOverride, issueTrackerSetting: input.issueTrackerSetting, codeHostSetting: input.codeHostSetting, credentialRefs: input.credentialRefs })),
-    findById: vi.fn(async () => null) as ProjectRepository['findById'],
+    // Default: the target project exists in the caller's tenant. Update tests that need
+    // a missing/cross-tenant target override findById to return null.
+    findById: vi.fn(async () => makeProject()) as ProjectRepository['findById'],
     list: vi.fn(async () => []),
     update: vi.fn(async () => makeProject()),
     ...overrides
@@ -170,9 +172,65 @@ describe('updateProject', () => {
   });
 
   it('returns null for missing/cross-tenant ids', async () => {
-    const repository = makeRepository({ update: vi.fn(async () => null) });
+    const findById = vi.fn(async () => null) as ProjectRepository['findById'];
+    const update = vi.fn(async () => null);
+    const repository = makeRepository({ findById, update });
     await expect(updateProject(repository, makeSecretExistence(), { principal: humanPrincipal, id: 'proj_missing', request: { displayName: 'x' } }))
       .resolves.toBeNull();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('keeps a 404 (null) for a missing id even when the patch also supplies an unknown credential handle', async () => {
+    // Regression: existence is checked before credential validation, so a nonexistent
+    // project stays 404 (null) instead of surfacing a 422 unknown_credential_reference.
+    const findById = vi.fn(async () => null) as ProjectRepository['findById'];
+    const update = vi.fn(async () => null);
+    const repository = makeRepository({ findById, update });
+    const secretExistence = makeSecretExistence({ known: [] });
+    const request: UpdateProjectRequest = { credentialRefs: [{ id: secHandle('missingmiss'), purpose: 'repo' }] };
+    await expect(updateProject(repository, secretExistence, { principal: humanPrincipal, id: 'proj_missing', request }))
+      .resolves.toBeNull();
+    expect(findById).toHaveBeenCalledWith('tenant_1', 'proj_missing');
+    expect(secretExistence.hasSecret).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('keeps a 404 (null) for a cross-tenant id even when the patch also supplies an unknown credential handle', async () => {
+    // A cross-tenant project resolves to null via the tenant-scoped findById, so the
+    // unknown handle must not promote the response to a 422.
+    const findById = vi.fn(async () => null) as ProjectRepository['findById'];
+    const update = vi.fn(async () => null);
+    const repository = makeRepository({ findById, update });
+    const secretExistence = makeSecretExistence({ known: [] });
+    const request: UpdateProjectRequest = {
+      issueTrackerSetting: { provider: 'jira', credentialRef: { id: secHandle('crosstenant'), purpose: 'issue_tracker' } }
+    };
+    await expect(updateProject(repository, secretExistence, { principal: humanPrincipal, id: 'proj_other_tenant', request }))
+      .resolves.toBeNull();
+    expect(findById).toHaveBeenCalledWith('tenant_1', 'proj_other_tenant');
+    expect(secretExistence.hasSecret).not.toHaveBeenCalled();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it('still returns 422 with every offending field path for an existing, accessible project', async () => {
+    // With the project present, an unknown written handle remains a 422 that reports all
+    // offending paths.
+    const good = secHandle('goodpatch');
+    const missingIssue = secHandle('missingissuepatch');
+    const missingRef = secHandle('missingrefpatch');
+    const repository = makeRepository();
+    const secretExistence = makeSecretExistence({ known: [good] });
+    const request: UpdateProjectRequest = {
+      issueTrackerSetting: { provider: 'jira', credentialRef: { id: missingIssue, purpose: 'issue_tracker' } },
+      codeHostSetting: { provider: 'github', credentialRef: { id: good, purpose: 'code_host' } },
+      credentialRefs: [{ id: good, purpose: 'repo' }, { id: missingRef, purpose: 'other' }]
+    };
+    await expect(updateProject(repository, secretExistence, { principal: humanPrincipal, id: 'proj_1', request }))
+      .rejects.toMatchObject({
+        code: 'unknown_credential_reference',
+        details: { fields: ['issueTrackerSetting.credentialRef', 'credentialRefs[1]'] }
+      });
+    expect(repository.update).not.toHaveBeenCalled();
   });
 
   it('validates only credential fields supplied by the patch', async () => {

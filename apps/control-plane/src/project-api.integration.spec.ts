@@ -288,6 +288,17 @@ describe('project management API (end-to-end)', () => {
 
         const unchanged = await fetch(`${baseUrl}/v1/projects/${project.id}`, { headers: authHeaders });
         expect(projectResponseSchema.parse(await unchanged.json()).credentialRefs[0]?.id).toBe(realHandle);
+
+        // Regression: a PATCH that targets a nonexistent project while also supplying an
+        // unknown credential handle must stay 404, not be promoted to a 422. Project
+        // existence is resolved before credential validation.
+        const missingPatch = await fetch(`${baseUrl}/v1/projects/proj_does_not_exist`, {
+          method: 'PATCH',
+          headers: jsonHeaders,
+          body: JSON.stringify({ credentialRefs: [{ id: UNKNOWN_SECRET_HANDLE, purpose: 'repo' }] })
+        });
+        expect(missingPatch.status).toBe(404);
+        expect(errorResponseSchema.parse(await missingPatch.json()).error.code).not.toBe('unknown_credential_reference');
       } finally {
         await handle.close();
       }

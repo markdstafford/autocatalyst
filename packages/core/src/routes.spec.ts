@@ -2041,7 +2041,8 @@ describe('registerControlPlaneRoutes', () => {
         },
         projects: {
           create: (vi.fn()) as never,
-          findById: (vi.fn(async () => null)) as never,
+          // The patched project exists in the tenant; the unknown handle is what triggers 422.
+          findById: (vi.fn(async (_tenant: string, id: string) => (id === 'proj_1' ? makeProject() : null))) as never,
           list: vi.fn(async () => []),
           update: update as never
         }
@@ -2095,7 +2096,8 @@ describe('registerControlPlaneRoutes', () => {
       const { app, authorization } = await buildServer({
         projects: {
           create: (vi.fn()) as never,
-          findById: (vi.fn(async () => null)) as never,
+          // proj_1 exists in the tenant so the rename reaches the update path; other ids 404.
+          findById: (vi.fn(async (_tenant: string, id: string) => (id === 'proj_1' ? makeProject() : null))) as never,
           list: vi.fn(async () => []),
           update: update as never
         }

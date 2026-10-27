@@ -219,6 +219,8 @@ export function getProject(
 /**
  * Update mutable project fields. Rejects model principals and scopes the update to the
  * caller's tenant; returns null for missing or cross-tenant ids so the route can map to 404.
+ * Tenant-scoped existence is checked before credential validation, so a patch that targets
+ * a missing or cross-tenant project stays 404 even when it also supplies an unknown handle.
  * Validates only the credential references supplied in this patch (422
  * `unknown_credential_reference` when any is unknown), so unrelated edits such as a
  * rename never revalidate or block on pre-existing dangling references.
@@ -230,6 +232,14 @@ export async function updateProject(
 ): Promise<Project | null> {
   const owner = assertNonModelPrincipal(input.principal, 'update');
   const { request } = input;
+
+  // Missing/cross-tenant ids must stay 404. Resolve the project before any credential
+  // existence check so an unknown handle on a nonexistent project cannot mask the 404
+  // with a 422.
+  const existing = await repository.findById(owner.tenantId, input.id);
+  if (existing === null) {
+    return null;
+  }
 
   await assertCredentialReferencesExist(secretExistence, collectUpdateCredentialReferences(request));
 
