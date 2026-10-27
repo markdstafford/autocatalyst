@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os, { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -19,7 +20,8 @@ import type {
 import {
   ClassifiedProviderFailureError,
   ProviderProtocolError,
-  UnsupportedProviderCapabilityError
+  UnsupportedProviderCapabilityError,
+  resolveSkills
 } from '@autocatalyst/execution';
 
 import {
@@ -377,26 +379,48 @@ describe('createClaudeAgentAdapter — launch input mapping', () => {
     expect(calls[0]!.options).toBeUndefined();
   });
 
-  it('passes materialized plugin entries in options.skills when resolved skills are present', async () => {
-    const resolvedSkills: ResolvedSkill[] = [
-      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/writing-guidelines', dependencies: [] },
-      { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: ['mm:writing-guidelines'] }
-    ];
+  it('passes final local plugins through options.plugins, preserves supplemental docs, and cleans up after completion', async () => {
+    const resolvedSkills = (await resolveSkills(['mm:planning'])).resolved;
     const { input } = makeSessionInput({ resolvedSkills });
-    const { launch, calls } = fakeLaunch([{ type: 'result', result: { output: '' } }]);
+    let pluginPath = '';
+    const launch: ClaudeSessionLaunch = (options) => {
+      expect(options.options?.skills).toBe('all');
+      const plugins = options.options?.plugins as Array<{ type: string; path: string }>;
+      expect(plugins).toHaveLength(1);
+      expect(plugins[0]!.type).toBe('local');
+      pluginPath = plugins[0]!.path;
+      const planning = path.join(pluginPath, 'skills/planning');
+      expect(existsSync(path.join(planning, 'SKILL.md'))).toBe(true);
+      for (const file of ['context-human/specs/enhancement-pause-before.md', '.eng-docs/specs/enhancement-spec-lifecycle-state.md']) {
+        expect(readFileSync(path.resolve(planning, '../../../..', file), 'utf8').length).toBeGreaterThan(0);
+      }
+      return (async function* () { yield { type: 'result' as const, result: { output: '' } }; })();
+    };
     const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch });
     const session = await adapter.startSession(input);
     await collect(session.events);
-    expect(calls).toHaveLength(1);
-    const skillOptions = calls[0]!.options?.skills;
-    expect(Array.isArray(skillOptions)).toBe(true);
-    expect((skillOptions as unknown[]).length).toBe(2);
-    const [first, second] = skillOptions as Array<{ type: string; path: string }>;
-    expect(first!.type).toBe('claudecode');
-    expect(first!.path).toMatch(/assets\/mm\/writing-guidelines$/);
-    expect(second!.type).toBe('claudecode');
-    expect(second!.path).toMatch(/assets\/mm\/planning$/);
+    expect(pluginPath).not.toBe('');
+    expect(existsSync(pluginPath)).toBe(false);
+    await session.close?.();
   });
+
+  it('reclaims local plugins on failure or close before consuming events', async () => {
+    const resolvedSkills = (await resolveSkills(['mm:planning'])).resolved;
+    const { input } = makeSessionInput({ resolvedSkills });
+    let pluginPath = '';
+    const launch: ClaudeSessionLaunch = (options) => {
+      pluginPath = (options.options?.plugins as Array<{ path: string }>)[0]!.path;
+      return (async function* () { throw new Error('test failure'); yield { type: 'assistant' as const, content: '' }; })();
+    };
+    const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch });
+    const failed = await adapter.startSession(input);
+    await expect(collect(failed.events)).rejects.toThrow('test failure');
+    expect(existsSync(pluginPath)).toBe(false);
+    const unused = await adapter.startSession(input);
+    await unused.close?.();
+    await unused.close?.();
+  });
+
 });
 
 describe('createClaudeAgentAdapter — assistant turn mapping', () => {

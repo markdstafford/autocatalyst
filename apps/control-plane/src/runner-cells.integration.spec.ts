@@ -1319,6 +1319,21 @@ describe('runner-cells: B1 skill materialization — Claude agent cell', () => {
 
     const spyLaunch: ClaudeSessionLaunch = (launchOpts) => {
       capturedLaunchOptions.push({ options: launchOpts.options });
+      expect(launchOpts.options?.['skills']).toBe('all');
+      const plugins = launchOpts.options?.['plugins'] as Array<{ type: string; path: string }>;
+      expect(plugins).toHaveLength(1);
+      const plugin = plugins[0]!;
+      expect(plugin.type).toBe('local');
+      const deliveredRoot = path.resolve(plugin.path, '../..');
+      const manifest = JSON.parse(readFileSync(path.join(runtimeSkillsCatalogRoot, 'assets/mm/SOURCE.json'), 'utf8')) as { files: Record<string, string>; supplementalReferences: Record<string, string> };
+      for (const [file, digest] of Object.entries(manifest.files)) {
+        expect(createHash('sha256').update(readFileSync(path.join(deliveredRoot, file))).digest('hex'), file).toBe(digest);
+      }
+      const planning = path.join(plugin.path, 'skills/planning');
+      for (const file of Object.values(manifest.supplementalReferences)) {
+        expect(createHash('sha256').update(readFileSync(path.resolve(planning, '../../../..', file))).digest('hex'), file).toBe(manifest.files[file]);
+      }
+
       async function* gen(): AsyncIterable<ClaudeNativeEvent> {
         for (const ev of CLAUDE_EVENTS) yield ev;
       }
@@ -1342,34 +1357,7 @@ describe('runner-cells: B1 skill materialization — Claude agent cell', () => {
     // The spy must have been called exactly once.
     expect(capturedLaunchOptions).toHaveLength(1);
 
-    // The options must contain a `skills` array (Claude SDK plugin format).
-    const launchSkills = capturedLaunchOptions[0]?.options?.['skills'];
-    expect(Array.isArray(launchSkills)).toBe(true);
-    const plugins = launchSkills as Array<{ type: string; path: string }>;
-
-    // Both B1 skills (mm:planning and its dependency mm:writing-guidelines) must be present.
-    expect(plugins.length).toBeGreaterThanOrEqual(2);
-
-    for (const plugin of plugins) {
-      // Each plugin must be of type 'claudecode'.
-      expect(plugin.type).toBe('claudecode');
-      // Each plugin path must be inside the catalog root.
-      expect(plugin.path.startsWith(runtimeSkillsCatalogRoot)).toBe(true);
-    }
-
-    // Verify asset path segments are present for both B1 skills.
-    const planningPlugin = plugins.find((p) => p.path.includes('assets/mm/plugins/mm/skills/planning'));
-    const writingPlugin = plugins.find((p) => p.path.includes('assets/mm/plugins/mm/skills/writing-guidelines'));
-    expect(planningPlugin).toBeDefined();
-    expect(writingPlugin).toBeDefined();
-    const manifest = JSON.parse(readFileSync(path.join(runtimeSkillsCatalogRoot, 'assets/mm/SOURCE.json'), 'utf8')) as { files: Record<string, string> };
-    for (const plugin of plugins) {
-      const prefix = path.relative(path.join(runtimeSkillsCatalogRoot, 'assets/mm'), plugin.path).split(path.sep).join('/') + '/';
-      for (const [file, digest] of Object.entries(manifest.files)) {
-        if (!file.startsWith(prefix)) continue;
-        expect(createHash('sha256').update(readFileSync(path.join(plugin.path, file.slice(prefix.length)))).digest('hex'), file).toBe(digest);
-      }
-    }
+    expect(capturedLaunchOptions[0]?.options?.['skills']).toBe('all');
   });
 });
 
