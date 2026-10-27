@@ -129,7 +129,7 @@ export interface SpecAuthorTaskInputs {
   };
   readonly planningScope: {
     readonly stages: readonly ['requirements', 'design', 'tech_spec'];
-    readonly taskList: 'include hierarchical stories/tasks with descriptions, acceptance criteria, and dependencies';
+    readonly taskList: 'follow mm:planning task-decomposition.md nested checkbox format with descriptions, acceptance criteria, and dependencies';
     readonly stopPoint: 'stop after writing step-result.json; the run pauses at spec.human_review before implementation';
   };
 }
@@ -254,8 +254,14 @@ export function buildSpecAuthorPrompt(input: SpecAuthorPromptInput): string {
     '- Do not begin implementation; the run pauses at `spec.human_review` after this authoring step.',
     '',
     'Planning scope:',
-    '- Author requirements, design spec, and tech spec sections before task decomposition.',
-    '- Include a top-level `## Task list` with hierarchical stories/tasks, descriptions, acceptance criteria, and dependencies.',
+    '- Use the canonical planning template and stages for this work kind: feature requirements, design spec, and tech spec for features; enhancement requirements, design changes, and technical changes for enhancements.',
+    '- Follow references/stages/task-decomposition.md for the nested checkbox story/task/acceptance-criteria format; use its template rather than heading-based stories or a flat checklist.',
+    '- The runtime invocation covers a single feature or enhancement through task decomposition. Do not route into roadmapping, friction logging, or implementation handoff.',
+    '- Autocatalyst owns approval gates and permissions. Draft the complete planning artifact for spec.human_review; the run owns the human review pause.',
+    '- Autocatalyst owns file locations and result transport. Canonical plugin files remain unchanged; the runtime ownership and output contract below take precedence over their lifecycle and location defaults.',
+    '- Supplemental upstream documents live relative to the planning skill directory at ../../../../context-human/specs/enhancement-pause-before.md and ../../../../.eng-docs/specs/enhancement-spec-lifecycle-state.md. Read them when the skill cites those names.',
+    '- Upstream references/examples/{adr-schema,design-spec,tech-spec,task-list}.md are absent in the pinned plugin. Use the supplied canonical templates and inline stage examples; do not invent replacement Micromanager files.',
+    '- Include a top-level `## Task list` using the canonical nested checkbox stories/tasks, descriptions, acceptance criteria checkboxes, and dependencies.',
     '- Treat the task list as planning output only; it does not authorize implementation.',
     '',
     'Output contract:',
@@ -344,7 +350,7 @@ export function buildSpecAuthorTaskInputs(input: SpecAuthorPromptInput): SpecAut
       taskListPlaceholderAllowed: false,
       taskListRequirements: [
         'top-level ## Task list heading',
-        'hierarchical stories and tasks',
+        'canonical nested checkbox stories and tasks (mm:planning task-decomposition.md)',
         'descriptions',
         'acceptance criteria',
         'dependencies'
@@ -361,7 +367,7 @@ export function buildSpecAuthorTaskInputs(input: SpecAuthorPromptInput): SpecAut
     },
     planningScope: {
       stages: ['requirements', 'design', 'tech_spec'],
-      taskList: 'include hierarchical stories/tasks with descriptions, acceptance criteria, and dependencies',
+      taskList: 'follow mm:planning task-decomposition.md nested checkbox format with descriptions, acceptance criteria, and dependencies',
       stopPoint: 'stop after writing step-result.json; the run pauses at spec.human_review before implementation'
     }
   };

@@ -66,7 +66,7 @@ describe('Codex app-server wire boundary', () => {
   });
   it('passes a real runtime catalog SKILL.md through native skill input', async () => {
     await withCli(async (binary, cwd) => {
-      const hostPath = path.join(runtimeSkillsCatalogRoot, 'assets/mm/writing-guidelines');
+      const hostPath = path.join(runtimeSkillsCatalogRoot, 'assets/mm/plugins/mm/skills/writing-guidelines');
       const options = { ...launchOptions(cwd), skills: [{ ref: 'mm:writing-guidelines', hostPath, sandboxPath: hostPath }] };
       for await (const event of codexSessionLaunch(binary)(options)) void event;
       const inputs = JSON.parse(await readFile(path.join(cwd, 'skill-input.json'), 'utf8'));

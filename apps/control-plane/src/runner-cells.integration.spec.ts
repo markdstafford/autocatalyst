@@ -11,6 +11,9 @@
  * Anthropic direct cell and the OpenAI direct cell.
  */
 
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { z } from 'zod';
@@ -1316,6 +1319,21 @@ describe('runner-cells: B1 skill materialization — Claude agent cell', () => {
 
     const spyLaunch: ClaudeSessionLaunch = (launchOpts) => {
       capturedLaunchOptions.push({ options: launchOpts.options });
+      expect(launchOpts.options?.['skills']).toBe('all');
+      const plugins = launchOpts.options?.['plugins'] as Array<{ type: string; path: string }>;
+      expect(plugins).toHaveLength(1);
+      const plugin = plugins[0]!;
+      expect(plugin.type).toBe('local');
+      const deliveredRoot = path.resolve(plugin.path, '../..');
+      const manifest = JSON.parse(readFileSync(path.join(runtimeSkillsCatalogRoot, 'assets/mm/SOURCE.json'), 'utf8')) as { files: Record<string, string>; supplementalReferences: Record<string, string> };
+      for (const [file, digest] of Object.entries(manifest.files)) {
+        expect(createHash('sha256').update(readFileSync(path.join(deliveredRoot, file))).digest('hex'), file).toBe(digest);
+      }
+      const planning = path.join(plugin.path, 'skills/planning');
+      for (const file of Object.values(manifest.supplementalReferences)) {
+        expect(createHash('sha256').update(readFileSync(path.resolve(planning, '../../../..', file))).digest('hex'), file).toBe(manifest.files[file]);
+      }
+
       async function* gen(): AsyncIterable<ClaudeNativeEvent> {
         for (const ev of CLAUDE_EVENTS) yield ev;
       }
@@ -1339,26 +1357,7 @@ describe('runner-cells: B1 skill materialization — Claude agent cell', () => {
     // The spy must have been called exactly once.
     expect(capturedLaunchOptions).toHaveLength(1);
 
-    // The options must contain a `skills` array (Claude SDK plugin format).
-    const launchSkills = capturedLaunchOptions[0]?.options?.['skills'];
-    expect(Array.isArray(launchSkills)).toBe(true);
-    const plugins = launchSkills as Array<{ type: string; path: string }>;
-
-    // Both B1 skills (mm:planning and its dependency mm:writing-guidelines) must be present.
-    expect(plugins.length).toBeGreaterThanOrEqual(2);
-
-    for (const plugin of plugins) {
-      // Each plugin must be of type 'claudecode'.
-      expect(plugin.type).toBe('claudecode');
-      // Each plugin path must be inside the catalog root.
-      expect(plugin.path.startsWith(runtimeSkillsCatalogRoot)).toBe(true);
-    }
-
-    // Verify asset path segments are present for both B1 skills.
-    const planningPlugin = plugins.find((p) => p.path.includes('assets/mm/planning'));
-    const writingPlugin = plugins.find((p) => p.path.includes('assets/mm/writing-guidelines'));
-    expect(planningPlugin).toBeDefined();
-    expect(writingPlugin).toBeDefined();
+    expect(capturedLaunchOptions[0]?.options?.['skills']).toBe('all');
   });
 });
 
@@ -1466,28 +1465,25 @@ describe('runner-cells: B1 skill materialization — OpenAI agent cell', () => {
     // The sandbox factory must have been called once.
     expect(capturedSandboxInputs).toHaveLength(1);
 
-    // The sandbox factory input must contain skill mounts for both B1 skills.
+    // One read-only mount retains the canonical repository layout for both skills
+    // and their supplemental resources. Verify the bytes actually passed to the provider seam.
     const sandboxInput = capturedSandboxInputs[0]!;
     const mounts = sandboxInput.skillMounts ?? [];
-    expect(mounts.length).toBeGreaterThanOrEqual(2);
-
-    // Verify host paths are inside the catalog root and sandbox paths follow ref→dir convention.
-    const planningMount = mounts.find((m) => m.hostPath.includes('assets/mm/planning'));
-    const writingMount = mounts.find((m) => m.hostPath.includes('assets/mm/writing-guidelines'));
-    expect(planningMount).toBeDefined();
-    expect(writingMount).toBeDefined();
-
-    expect(planningMount?.sandboxPath).toBe('/workspace/skills/mm/planning');
-    expect(writingMount?.sandboxPath).toBe('/workspace/skills/mm/writing-guidelines');
-
-    for (const mount of mounts) {
-      expect(mount.hostPath.startsWith(runtimeSkillsCatalogRoot)).toBe(true);
+    expect(mounts).toHaveLength(1);
+    const mount = mounts[0]!;
+    expect(mount.hostPath).toBe(path.join(runtimeSkillsCatalogRoot, 'assets/mm'));
+    expect(mount.sandboxPath).toBe('/workspace/skills/mm');
+    const manifest = JSON.parse(readFileSync(path.join(mount.hostPath, 'SOURCE.json'), 'utf8')) as { files: Record<string, string> };
+    for (const [file, digest] of Object.entries(manifest.files)) {
+      expect(createHash('sha256').update(readFileSync(path.join(mount.hostPath, file))).digest('hex'), file).toBe(digest);
     }
 
     // The run agent session must have received instructions containing the system-prompt hint.
     expect(capturedRunInputs).toHaveLength(1);
     const instructions = capturedRunInputs[0]!.instructions;
     expect(instructions).toContain('Runtime skills are staged in this session.');
+    expect(instructions).toContain('/workspace/skills/mm/plugins/mm/skills/planning/SKILL.md');
+    expect(instructions).toContain('/workspace/skills/mm/plugins/mm/skills/writing-guidelines/SKILL.md');
     expect(instructions).toContain('mm:planning');
     expect(instructions).toContain('mm:writing-guidelines');
   });

@@ -1,8 +1,11 @@
+import { createHash } from 'node:crypto';
+import { cpSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { describe, it, expect } from 'vitest';
 
-import type { MaterializedSkillIntent } from '@autocatalyst/execution';
+import { resolveSkills, runtimeSkillsCatalogRoot, type MaterializedSkillIntent } from '@autocatalyst/execution';
 
 import { materializeOpenAISkillFiles } from './skill-materialization.js';
 
@@ -111,4 +114,27 @@ describe('materializeOpenAISkillFiles', () => {
     expect(result.systemPromptHint).toContain('Skills root: /workspace/skills');
     expect(result.systemPromptHint).toContain('Load and apply the skills declared in your session context');
   });
+});
+
+it('delivers the canonical subset and supplemental resources without changing bytes or relative paths', async () => {
+  const skills = await resolveSkills(['mm:planning']);
+  const result = materializeOpenAISkillFiles(skills, runtimeSkillsCatalogRoot);
+  const staged = mkdtempSync(path.join(tmpdir(), 'openai-canonical-skills-'));
+  try {
+    expect(result.mounts).toHaveLength(1);
+    const mount = result.mounts[0]!;
+    expect(mount.sandboxPath).toBe('/workspace/skills/mm');
+    cpSync(mount.hostPath, staged, { recursive: true });
+    const manifest = JSON.parse(readFileSync(path.join(staged, 'SOURCE.json'), 'utf8')) as { files: Record<string, string> };
+    for (const [file, hash] of Object.entries(manifest.files)) {
+      expect(createHash('sha256').update(readFileSync(path.join(staged, file))).digest('hex'), file).toBe(hash);
+    }
+    for (const skill of skills.resolved) {
+      const visible = result.manifest[skill.ref]!;
+      expect(visible).toBe(`/workspace/skills/mm/${skill.assetPath.slice('assets/mm/'.length)}/SKILL.md`);
+      expect(readFileSync(path.join(staged, visible.slice('/workspace/skills/mm/'.length)))).toEqual(
+        readFileSync(path.join(runtimeSkillsCatalogRoot, skill.assetPath, 'SKILL.md'))
+      );
+    }
+  } finally { rmSync(staged, { recursive: true, force: true }); }
 });

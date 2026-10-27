@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, rm, stat, symlink } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,18 +13,37 @@ const forbiddenSkillRefs = [
   'superpowers:writing-plans',
   'superpowers:brainstorming'
 ];
-const forbiddenInstructionPhrases = [
-  'Branch setup',
-  'create branch',
-  'switch branch',
-  'set up worktree',
-  'push',
-  'merge',
-  'open PR',
-  'pull request creation'
-];
-
 describe('runtime skills catalog assets', () => {
+  it('matches the selection and verifies the canonical enhancement template and nested checkbox format', async () => {
+    const root = path.join(runtimeSkillsCatalogRoot, 'assets/mm');
+    const manifest = JSON.parse(await readFile(path.join(root, 'SOURCE.json'), 'utf8')) as {
+      commit: string;
+      skills: Record<string, { path: string; dependencies: string[] }>;
+      files: Record<string, string>;
+    };
+    expect(manifest.commit).toMatch(/^[a-f0-9]{40}$/);
+    for (const entry of runtimeSkillsCatalog) {
+      expect(entry.assetPath).toBe(`assets/mm/${manifest.skills[entry.ref]?.path}`);
+      expect(entry.dependencies).toEqual(manifest.skills[entry.ref]?.dependencies);
+    }
+    for (const [file, digest] of Object.entries(manifest.files)) {
+      expect(createHash('sha256').update(await readFile(path.join(root, file))).digest('hex'), file).toBe(digest);
+    }
+    const planning = path.join(root, 'plugins/mm/skills/planning');
+    const template = await readFile(path.join(planning, 'references/templates/enhancement.md'), 'utf8');
+    for (const heading of ['Parent feature', 'What', 'Why', 'Design changes', 'Technical changes', 'Task list']) {
+      expect(template).toContain(`## ${heading}`);
+    }
+    expect(template).not.toContain('## Proposed behavior');
+    const tasks = await readFile(path.join(planning, 'references/stages/task-decomposition.md'), 'utf8');
+    expect(tasks).toContain('  - [ ] **Story:');
+    expect(tasks).toContain('    - [ ] **Task:');
+    expect(tasks).toContain('      - **Description**:');
+    expect(tasks).toContain('      - **Acceptance criteria**:');
+    expect(tasks).toContain('        - [ ] Migration file created');
+    expect(tasks).toContain('      - **Dependencies**:');
+  });
+
   it('declares exactly the B1 catalog refs and dependency edge', () => {
     expect(runtimeSkillsCatalog.map((entry) => entry.ref)).toEqual(['mm:planning', 'mm:writing-guidelines']);
     expect(runtimeSkillsCatalog.find((entry) => entry.ref === 'mm:planning')?.dependencies).toEqual(['mm:writing-guidelines']);
@@ -46,37 +66,15 @@ describe('runtime skills catalog assets', () => {
     }
   });
 
-  it('records source metadata for both B1 skills', async () => {
-    const metadata = JSON.parse(await readFile(path.join(runtimeSkillsCatalogRoot, 'assets/mm/SOURCE.json'), 'utf8')) as {
-      sources: Array<{ ref: string; sourcePath?: string; vendoredPath: string; vendoredContentSha256: string }>;
-    };
-    const refs = metadata.sources.map((source) => source.ref);
-    expect(refs).toContain('mm:planning');
-    expect(refs).toContain('mm:writing-guidelines');
-    for (const source of metadata.sources) {
-      expect(source.vendoredPath).toMatch(/^assets\/mm\//u);
-      expect(source.vendoredContentSha256).toMatch(/^[a-f0-9]{64}$/u);
-    }
-    const skillMdEntries = metadata.sources.filter((source) => source.sourcePath !== undefined);
-    for (const source of skillMdEntries) {
-      expect(source.sourcePath).toMatch(/^\.agents\/mm:/u);
-    }
-  });
-
-  it('keeps forbidden support skills and lifecycle instructions out of vendored planning asset', async () => {
-    const planning = await readFile(path.join(runtimeSkillsCatalogRoot, 'assets/mm/planning/SKILL.md'), 'utf8');
-    for (const forbidden of forbiddenSkillRefs) {
-      expect(planning).not.toContain(forbidden);
-    }
-    for (const phrase of forbiddenInstructionPhrases) {
-      expect(planning.toLowerCase()).not.toContain(phrase.toLowerCase());
-    }
-    expect(planning).toContain('mm:writing-guidelines');
-    expect(planning).toContain('Autocatalyst handoff boundary');
+  it('retains upstream lifecycle instructions and keeps runtime overrides outside the plugin', async () => {
+    const planning = await readFile(path.join(runtimeSkillsCatalogRoot, 'assets/mm/plugins/mm/skills/planning/SKILL.md'), 'utf8');
+    expect(planning).toContain('### Branch setup');
+    expect(planning).toContain('superpowers:using-git-worktrees');
+    expect(planning).not.toContain('Autocatalyst handoff boundary');
   });
 
   it('retains required sections in the vendored planning asset', async () => {
-    const planning = await readFile(path.join(runtimeSkillsCatalogRoot, 'assets/mm/planning/SKILL.md'), 'utf8');
+    const planning = await readFile(path.join(runtimeSkillsCatalogRoot, 'assets/mm/plugins/mm/skills/planning/SKILL.md'), 'utf8');
     const requiredSections = [
       'Core principles',
       'When to use',
@@ -99,7 +97,7 @@ describe('runtime skills catalog assets', () => {
   });
 
   it('retains required sections in the vendored writing-guidelines asset', async () => {
-    const guidelines = await readFile(path.join(runtimeSkillsCatalogRoot, 'assets/mm/writing-guidelines/SKILL.md'), 'utf8');
+    const guidelines = await readFile(path.join(runtimeSkillsCatalogRoot, 'assets/mm/plugins/mm/skills/writing-guidelines/SKILL.md'), 'utf8');
     const requiredSections = ['When to use', 'Style principles', 'Document-specific guidance', 'Review checklist', 'When to break the rules'];
     for (const section of requiredSections) {
       expect(guidelines).toContain(section);
@@ -107,9 +105,9 @@ describe('runtime skills catalog assets', () => {
   });
 
   it('has a filesystem entry for every references/... path cited in the planning SKILL.md', async () => {
-    const skillMdPath = path.join(runtimeSkillsCatalogRoot, 'assets/mm/planning/SKILL.md');
+    const skillMdPath = path.join(runtimeSkillsCatalogRoot, 'assets/mm/plugins/mm/skills/planning/SKILL.md');
     const content = await readFile(skillMdPath, 'utf8');
-    const planningRoot = path.join(runtimeSkillsCatalogRoot, 'assets/mm/planning');
+    const planningRoot = path.join(runtimeSkillsCatalogRoot, 'assets/mm/plugins/mm/skills/planning');
 
     // Extract all `references/...` paths from backtick spans
     const cited = new Set<string>();

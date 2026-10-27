@@ -363,13 +363,12 @@ export function createClaudeAgentAdapter(
       const allowedTools = baseAllowedTools;
       const prompt = env.context.task.prompt;
 
-      // Materialize resolved skills into Claude SDK plugin descriptors.
-      // This is a pure transformation — throws ClaudeSkillMaterializationError
-      // if any resolved skill has an empty assetPath.
-      const skillPlugins = materializeClaudeSkillPlugins(
+      // SDK local-plugin delivery, preserving the canonical Micromanager bundle.
+      const skillMaterialization = materializeClaudeSkillPlugins(
         env.skills.resolved,
         runtimeSkillsCatalogRoot
       );
+      const skillPlugins = skillMaterialization.plugins;
 
       let metadataResolve!: (value: AgentProviderSessionMetadata) => void;
       let metadataReject!: (err: unknown) => void;
@@ -460,7 +459,7 @@ export function createClaudeAgentAdapter(
             ...((skillPlugins.length > 0 || structuredResult !== undefined)
               ? {
                   options: {
-                    ...(skillPlugins.length > 0 ? { skills: skillPlugins } : {}),
+                    ...(skillPlugins.length > 0 ? { plugins: skillPlugins, skills: 'all' } : {}),
                     ...(structuredResult !== undefined ? { outputFormat: structuredResult.outputFormat } : {})
                   }
                 }
@@ -540,6 +539,7 @@ export function createClaudeAgentAdapter(
           metadataReject(thrown);
           throw thrown;
         } finally {
+          skillMaterialization.cleanup();
           if (outcome !== 'failed') {
             metadataResolve({
               outcome,
@@ -561,7 +561,8 @@ export function createClaudeAgentAdapter(
 
       const session: AgentProviderSession = {
         events: mapEvents(),
-        metadata
+        metadata,
+        async close() { skillMaterialization.cleanup(); }
       };
       return session;
     }

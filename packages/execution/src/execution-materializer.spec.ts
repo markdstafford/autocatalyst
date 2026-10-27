@@ -353,8 +353,8 @@ describe('createExecutionMaterializer', () => {
         skills: {
           requested: ['mm:planning'],
           resolved: [
-            { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/writing-guidelines', dependencies: [] },
-            { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: ['mm:writing-guidelines'] }
+            { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/plugins/mm/skills/writing-guidelines', dependencies: [] },
+            { ref: 'mm:planning', assetPath: 'assets/mm/plugins/mm/skills/planning', dependencies: ['mm:writing-guidelines'] }
           ]
         }
       });
@@ -377,8 +377,8 @@ describe('createExecutionMaterializer', () => {
 
   describe('skill bundle validation', () => {
     const resolvedSkills = [
-      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/writing-guidelines', dependencies: [] },
-      { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: ['mm:writing-guidelines'] }
+      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/plugins/mm/skills/writing-guidelines', dependencies: [] },
+      { ref: 'mm:planning', assetPath: 'assets/mm/plugins/mm/skills/planning', dependencies: ['mm:writing-guidelines'] }
     ];
 
     it('proceeds normally when resolved skills are non-empty and validateSkillCatalog succeeds', async () => {
@@ -400,7 +400,7 @@ describe('createExecutionMaterializer', () => {
     });
 
     it('throws skill_materialization_failed before any workspace or provider work when validateSkillCatalog fails', async () => {
-      const catalogError = new SkillCatalogResolutionError('skill_asset_missing', 'Skill asset path does not exist.', { ref: 'mm:planning', assetPath: 'assets/mm/planning' });
+      const catalogError = new SkillCatalogResolutionError('skill_asset_missing', 'Skill asset path does not exist.', { ref: 'mm:planning', assetPath: 'assets/mm/plugins/mm/skills/planning' });
       const mockValidate = vi.fn().mockRejectedValue(catalogError);
       const mockProvision = vi.fn();
       const materializer = createExecutionMaterializer({

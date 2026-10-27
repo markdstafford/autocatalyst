@@ -54,7 +54,12 @@ export function materializeOpenAISkillFiles(
   const manifest: Record<string, string> = {};
 
   for (const skill of skills.resolved) {
-    const sandboxDir = sandboxDirFromRef(skill.ref);
+    // Keep the upstream repository layout intact, including supplemental docs
+    // outside the skill directories. One read-only mount serves the selected subset.
+    const canonicalMM = skill.assetPath.startsWith('assets/mm/plugins/mm/skills/');
+    const sandboxDir = canonicalMM
+      ? `${SKILLS_ROOT}/mm/${skill.assetPath.slice('assets/mm/'.length)}`
+      : sandboxDirFromRef(skill.ref);
     const sandboxSkillMdPath = `${sandboxDir}/SKILL.md`;
     let hostPath: string;
     try {
@@ -66,7 +71,10 @@ export function materializeOpenAISkillFiles(
       );
     }
 
-    mounts.push({ hostPath, sandboxPath: sandboxDir });
+    const mount = canonicalMM
+      ? { hostPath: resolveCatalogAssetPath(catalogRoot, 'assets/mm'), sandboxPath: `${SKILLS_ROOT}/mm` }
+      : { hostPath, sandboxPath: sandboxDir };
+    if (!mounts.some((existing) => existing.sandboxPath === mount.sandboxPath)) mounts.push(mount);
     manifest[skill.ref] = sandboxSkillMdPath;
   }
 

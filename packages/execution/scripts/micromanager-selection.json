@@ -1,0 +1,39 @@
+{
+  "repository": "https://github.com/markdstafford/micromanager.git",
+  "commit": "2697b97864e1cea9035aa272685911d43cc460da",
+  "pluginVersion": "2.3.0",
+  "skills": {
+    "mm:planning": {
+      "path": "plugins/mm/skills/planning",
+      "dependencies": [
+        "mm:writing-guidelines"
+      ]
+    },
+    "mm:writing-guidelines": {
+      "path": "plugins/mm/skills/writing-guidelines",
+      "dependencies": []
+    }
+  },
+  "resources": [
+    "plugins/mm/.claude-plugin/plugin.json",
+    "context-human/specs/enhancement-pause-before.md",
+    ".eng-docs/specs/enhancement-spec-lifecycle-state.md"
+  ],
+  "excludedSkillReferences": {
+    "mm:roadmapping": "Conditional multi-feature routing; this runtime invocation is scoped to a single feature or enhancement.",
+    "mm:friction-log": "Describes the storage convention for friction logs; not invoked during spec authoring.",
+    "superpowers:using-git-worktrees": "Git lifecycle is owned by Autocatalyst.",
+    "superpowers:writing-plans": "Implementation handoff is outside the spec-authoring invocation.",
+    "superpowers:finishing-a-development-branch": "Git lifecycle is owned by Autocatalyst."
+  },
+  "missingUpstreamReferences": [
+    "plugins/mm/skills/planning/references/examples/adr-schema.md",
+    "plugins/mm/skills/planning/references/examples/design-spec.md",
+    "plugins/mm/skills/planning/references/examples/task-list.md",
+    "plugins/mm/skills/planning/references/examples/tech-spec.md"
+  ],
+  "supplementalReferences": {
+    "enhancement-pause-before.md": "context-human/specs/enhancement-pause-before.md",
+    "enhancement-spec-lifecycle-state.md": ".eng-docs/specs/enhancement-spec-lifecycle-state.md"
+  }
+}

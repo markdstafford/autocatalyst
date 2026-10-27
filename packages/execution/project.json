@@ -25,7 +25,11 @@
             "output": "src/skills/assets"
           }
         ]
-      }
+      },
+      "dependsOn": [
+        "^build",
+        "verify-skills"
+      ]
     },
     "verify-dist-assets": {
       "executor": "nx:run-commands",
@@ -56,8 +60,15 @@
         "{workspaceRoot}/coverage/packages/execution"
       ],
       "options": {
-        "command": "vitest run",
+        "command": "node --test scripts/sync-micromanager.test.mjs && vitest run",
         "cwd": "packages/execution"
+      }
+    },
+    "verify-skills": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "node packages/execution/scripts/sync-micromanager.mjs",
+        "cwd": "{workspaceRoot}"
       }
     }
   }
