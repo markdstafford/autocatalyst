@@ -240,3 +240,15 @@ describe('spec-authoring context builders', () => {
     expect(emptyPrompt).not.toContain('Revision requests');
   });
 });
+
+it('delegates enhancement structure and task formatting to canonical Micromanager while retaining runtime control', () => {
+  const input = { ...baseInput, run: makeRun({ workKind: 'enhancement' }), request: { text: 'Improve an existing feature', classification: 'enhancement' as const } };
+  const { prompt, taskInputs } = buildSpecAuthorContext(input);
+  expect(prompt).toContain('enhancement requirements, design changes, and technical changes');
+  expect(prompt).toContain('references/stages/task-decomposition.md');
+  expect(prompt).toContain('nested checkbox');
+  expect(prompt).toContain('Autocatalyst owns approval gates and permissions');
+  expect(prompt).toContain('Canonical plugin files remain unchanged');
+  expect(taskInputs.planningScope.taskList).toContain('mm:planning task-decomposition.md');
+  expect(prompt).not.toContain('## Proposed behavior');
+});

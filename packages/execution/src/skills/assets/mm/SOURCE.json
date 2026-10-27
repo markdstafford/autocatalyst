@@ -1,100 +1,74 @@
 {
-  "sources": [
-    {
-      "ref": "mm:planning",
-      "vendoredPath": "assets/mm/planning/SKILL.md",
-      "sourcePath": ".agents/mm:planning/SKILL.md",
-      "sourceContentSha256": "8a539ff46013b8511d41c8baa3669ab835a3b75d40c204833e159d98edc60822",
-      "vendoredContentSha256": "77b8bf20b431a1d89f5215439ec732a38caf2e04c1648493665370ae96d40050",
-      "alignment": "Authoring stages retained; Autocatalyst-owned implementation handoff, branch setup, and session-lifecycle guidance removed or neutralized."
+  "repository": "https://github.com/markdstafford/micromanager.git",
+  "commit": "2697b97864e1cea9035aa272685911d43cc460da",
+  "pluginVersion": "2.3.0",
+  "skills": {
+    "mm:planning": {
+      "path": "plugins/mm/skills/planning",
+      "dependencies": [
+        "mm:writing-guidelines"
+      ]
     },
-    {
-      "ref": "mm:writing-guidelines",
-      "vendoredPath": "assets/mm/writing-guidelines/SKILL.md",
-      "sourcePath": ".agents/mm:writing-guidelines/SKILL.md",
-      "sourceContentSha256": "08ae86e7073225f87483261f413792db2462db2e89a8ab4a760482733e4eadfd",
-      "vendoredContentSha256": "08ae86e7073225f87483261f413792db2462db2e89a8ab4a760482733e4eadfd",
-      "alignment": "Writing guidance retained for runtime spec-authoring support."
-    },
-    {
-      "ref": "mm:planning",
-      "vendoredPath": "assets/mm/planning/enhancement-pause-before.md",
-      "vendoredContentSha256": "7e9032dc3a4d5ec48c23f29a313e6b666ab89662d0a86ad789f595e44ea9fb6a"
-    },
-    {
-      "ref": "mm:planning",
-      "vendoredPath": "assets/mm/planning/enhancement-spec-lifecycle-state.md",
-      "vendoredContentSha256": "62f31431da769a0095522e6cdf1867cb0be8c543be6935f917591edef5bb85e8"
-    },
-    {
-      "ref": "mm:planning",
-      "vendoredPath": "assets/mm/planning/references/collaboration-protocol.md",
-      "vendoredContentSha256": "a1372baa061edf3adcecef869b8b609d96fbf01d881316f0a731968e241b5cf3"
-    },
-    {
-      "ref": "mm:planning",
-      "vendoredPath": "assets/mm/planning/references/roles.md",
-      "vendoredContentSha256": "320711a34d306e4fbf821dd59aef5a700072f0682ced96b455b7eeac7de8d74e"
-    },
-    {
-      "ref": "mm:planning",
-      "vendoredPath": "assets/mm/planning/references/scaling-guide.md",
-      "vendoredContentSha256": "aa976f201e34ed6b6421ff5cc7e02f90d8d2c2551ccd2a0b310d136267d4a510"
-    },
-    {
-      "ref": "mm:planning",
-      "vendoredPath": "assets/mm/planning/references/stages/adrs.md",
-      "vendoredContentSha256": "fee6660f40b5136facadf4d5359ee6033b1f981c1f17ae13c45ef5b3a723847a"
-    },
-    {
-      "ref": "mm:planning",
-      "vendoredPath": "assets/mm/planning/references/stages/bug-triage.md",
-      "vendoredContentSha256": "0e6cbaab34af22cf377fe0e5e5de33773a04cd959b60e285bfac32c4d63f28a5"
-    },
-    {
-      "ref": "mm:planning",
-      "vendoredPath": "assets/mm/planning/references/stages/design-specs.md",
-      "vendoredContentSha256": "fd62a4628c5576f38df49dfa1f6c0a681197c7af38202823924e8b8852df9c7c"
-    },
-    {
-      "ref": "mm:planning",
-      "vendoredPath": "assets/mm/planning/references/stages/enhancements.md",
-      "vendoredContentSha256": "0b55a8c9c3b0f675908fa257e405c79136ad12a887ed9d22c8d42c4ebe42778e"
-    },
-    {
-      "ref": "mm:planning",
-      "vendoredPath": "assets/mm/planning/references/stages/product-requirements.md",
-      "vendoredContentSha256": "7f2608c959cc1b7936f8e5153e0e1d3a099c33d8b7cfd369645343cb9688dd63"
-    },
-    {
-      "ref": "mm:planning",
-      "vendoredPath": "assets/mm/planning/references/stages/task-decomposition.md",
-      "vendoredContentSha256": "7eef49c9d3082e1da89b02f90603e398d363fe5a5775a50cad79cf1a8e3fd301"
-    },
-    {
-      "ref": "mm:planning",
-      "vendoredPath": "assets/mm/planning/references/stages/tech-specs.md",
-      "vendoredContentSha256": "285a07fb010def8b2cc3e64ec6a3d913fed3d530a1d294f15b8163e0a0816262"
-    },
-    {
-      "ref": "mm:planning",
-      "vendoredPath": "assets/mm/planning/references/templates/adr.md",
-      "vendoredContentSha256": "cdc76f56905f44ed982f20a7fb5b4e076d12885aa7d54e198a927515ed0961e2"
-    },
-    {
-      "ref": "mm:planning",
-      "vendoredPath": "assets/mm/planning/references/templates/app-spec.md",
-      "vendoredContentSha256": "c3601eaa32387fded6d87e3b6304267026f31c86f4604247ec56c31008dc147f"
-    },
-    {
-      "ref": "mm:planning",
-      "vendoredPath": "assets/mm/planning/references/templates/enhancement-spec.md",
-      "vendoredContentSha256": "159b64545c1dc2e4a3aaba46486853343fcf15eff3e683901dbe1ecc1e2344e7"
-    },
-    {
-      "ref": "mm:planning",
-      "vendoredPath": "assets/mm/planning/references/templates/feature-spec.md",
-      "vendoredContentSha256": "29be306588ae7c0279951858945dfd2291e5b7723521276f95e3fba21f66d6b6"
+    "mm:writing-guidelines": {
+      "path": "plugins/mm/skills/writing-guidelines",
+      "dependencies": []
     }
-  ]
+  },
+  "resources": [
+    "plugins/mm/.claude-plugin/plugin.json",
+    "context-human/specs/enhancement-pause-before.md",
+    ".eng-docs/specs/enhancement-spec-lifecycle-state.md"
+  ],
+  "excludedSkillReferences": {
+    "mm:roadmapping": "Conditional multi-feature routing; this runtime invocation is scoped to a single feature or enhancement.",
+    "mm:friction-log": "Describes the storage convention for friction logs; not invoked during spec authoring.",
+    "superpowers:using-git-worktrees": "Git lifecycle is owned by Autocatalyst.",
+    "superpowers:writing-plans": "Implementation handoff is outside the spec-authoring invocation.",
+    "superpowers:finishing-a-development-branch": "Git lifecycle is owned by Autocatalyst."
+  },
+  "missingUpstreamReferences": [
+    "plugins/mm/skills/planning/references/examples/adr-schema.md",
+    "plugins/mm/skills/planning/references/examples/design-spec.md",
+    "plugins/mm/skills/planning/references/examples/task-list.md",
+    "plugins/mm/skills/planning/references/examples/tech-spec.md"
+  ],
+  "supplementalReferences": {
+    "enhancement-pause-before.md": "context-human/specs/enhancement-pause-before.md",
+    "enhancement-spec-lifecycle-state.md": ".eng-docs/specs/enhancement-spec-lifecycle-state.md"
+  },
+  "files": {
+    ".eng-docs/specs/enhancement-spec-lifecycle-state.md": "4bd382d84f3622f6e6cecfea6134dc21401dbe7a865cd74718e8b241ff46d2a7",
+    "context-human/specs/enhancement-pause-before.md": "89481b5743bfc516d4a2c3a8b9f75136ed3f3ea44c9e1ea4c8dd649fdc616da2",
+    "plugins/mm/.claude-plugin/plugin.json": "31745510de86dc860d372ff16dfc9aa9cae1114fb3af67f48273a179b84f6754",
+    "plugins/mm/skills/planning/agents/openai.yaml": "55f86a0d585c147dcf19ac538a1cc1cc22e116a7819273b4b237c1ac0ec03f43",
+    "plugins/mm/skills/planning/references/collaboration-protocol.md": "2d8838296a0d41165931ce37e2dffeb36d52f8f7edbd6b19f07df0a48816d9ec",
+    "plugins/mm/skills/planning/references/examples/adr-desktop-framework.md": "432b8d6d634284e6feae6f96392a48ecf7853015d05cc90c59db4cfec09bb2fc",
+    "plugins/mm/skills/planning/references/examples/adr-domain-model.md": "3b18b2eae4f4b1b661fc6afbbd6364b25c83892cd153cebf04efd75e9ad5312f",
+    "plugins/mm/skills/planning/references/examples/adr-state-management.md": "c8141b5e205f9777d6c275c95dc2e85a89561028edd7a5d8b41cbc87c6d0686b",
+    "plugins/mm/skills/planning/references/examples/app.md": "32178005d16908be7cdf250d7451420e2a76a433c5a5ba50d42ee2cf3b41ce2e",
+    "plugins/mm/skills/planning/references/examples/enhancement.md": "89fc4309cfe751a85f371b4e283673d8a9125735f34450276720711104e71fe6",
+    "plugins/mm/skills/planning/references/examples/feature.md": "84b460fdbead41747b86aeb98dd4f9e129ecdce1b9497a28640fccde83d44337",
+    "plugins/mm/skills/planning/references/roles.md": "23e63bb7d1eca3b49720ebeb21617b467c898d74316e6e9583fdddf4f3804185",
+    "plugins/mm/skills/planning/references/scaling-guide.md": "a38a46b3923d4f410b3058f2296b75d79f402ddc6fd7ab1d6d907373bc5a68c6",
+    "plugins/mm/skills/planning/references/stages/adrs.md": "4924059d56ddf0696ae88518f391c011550970b49e93faa4944811d9a725a2ac",
+    "plugins/mm/skills/planning/references/stages/bug-triage.md": "fff81396c2c395b26e806b43114b6a70c745d10c1dea9b6ad8c302663bf4682a",
+    "plugins/mm/skills/planning/references/stages/design-specs.md": "a29af441f7f2173f64fe7c01a599b25614e483a704c0dadc9f40c23929a887d8",
+    "plugins/mm/skills/planning/references/stages/enhancements.md": "4ad05dfb65a10125f14f4fe3df8c7ba387fb665210031ad67554750033382a6e",
+    "plugins/mm/skills/planning/references/stages/implementation-handoff.md": "f9747cbef6d9012d8907778cd67d291e7d3c9bd670424bda4a901384ae5f04c5",
+    "plugins/mm/skills/planning/references/stages/product-requirements.md": "93b553af1a757096f5596835d25e47e986c7e3d75874b189e3dab724be658600",
+    "plugins/mm/skills/planning/references/stages/task-decomposition.md": "b835d660766f222235f834a0f0f0c7a11e2702c92a429a0a93b804590f3093e8",
+    "plugins/mm/skills/planning/references/stages/tech-specs.md": "55b13b0957e82d4093c963f7db7fd2e49f9bff8595d0ad8ca900abb257646264",
+    "plugins/mm/skills/planning/references/templates/adr.md": "49c459783fd6e0c1789c3e6ad49e9462fdf1a7d9e778824fe9120bc018916ce0",
+    "plugins/mm/skills/planning/references/templates/api-contract.yaml": "84f730d6e4abdabebaec2d400b112b53c05b8627fb0f10ecdae5439e6a7bbdc4",
+    "plugins/mm/skills/planning/references/templates/app.md": "7406c29cbee68904e9f060e592487696e614eabce76cbc13d71b7f4c8937f753",
+    "plugins/mm/skills/planning/references/templates/enhancement.md": "c2574ac5d172f6b5223a594926291c504b6d5a252aaed98e9a79a6a0facb6dc2",
+    "plugins/mm/skills/planning/references/templates/feature.md": "ea1c7e51c5dfde189ee082c6fe7262ef222ec34545b28c6a2eff293ce309135e",
+    "plugins/mm/skills/planning/references/templates/wiki/api-contracts.md": "7f92ae9374a66c775039e31417f8afb0b70100668404b6b6fbaef8b084f8e557",
+    "plugins/mm/skills/planning/references/templates/wiki/database-schema.md": "02793af6de2d4b3288de637790c0feb8b3ef61e376075d791610856194058890",
+    "plugins/mm/skills/planning/references/templates/wiki/design-system.md": "821259597317a5425c33930688b97a44be77f5222a78cf5d364922d9a4c3d9ee",
+    "plugins/mm/skills/planning/references/templates/wiki/domain-model.md": "3f0ba27c64f6679a155651170b55c9627eb866a4a28e88e608e35fd73c4c754f",
+    "plugins/mm/skills/planning/SKILL.md": "17f96a547a8ae2eac12efe0c950584ebe1bc7640f3350a41a9665d26e1a92763",
+    "plugins/mm/skills/writing-guidelines/agents/openai.yaml": "001351b41b8329d39c455ad62945c92e57d90495918f7d7152c670c5260daa98",
+    "plugins/mm/skills/writing-guidelines/SKILL.md": "08ae86e7073225f87483261f413792db2462db2e89a8ab4a760482733e4eadfd"
+  }
 }

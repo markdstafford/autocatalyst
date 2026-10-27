@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolveSkills, runtimeSkillsCatalogRoot } from '@autocatalyst/execution';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
@@ -224,4 +227,26 @@ describe('materializeClaudeSkillPlugins — error handling', () => {
 
     expect(caught?.name).toBe('ClaudeSkillMaterializationError');
   });
+});
+
+it('delivers every selected canonical skill file and retains access to supplemental upstream docs', async () => {
+  const skills = await resolveSkills(['mm:planning']);
+  const delivered = materializeClaudeSkillPlugins(skills.resolved, runtimeSkillsCatalogRoot);
+  const root = path.join(runtimeSkillsCatalogRoot, 'assets/mm');
+  const manifest = JSON.parse(readFileSync(path.join(root, 'SOURCE.json'), 'utf8')) as { files: Record<string, string> };
+  for (const [index, skill] of skills.resolved.entries()) {
+    const target = delivered[index]!.path;
+    const prefix = skill.assetPath.slice('assets/mm/'.length) + '/';
+    for (const [file, hash] of Object.entries(manifest.files)) {
+      if (!file.startsWith(prefix)) continue;
+      const bytes = readFileSync(path.join(target, file.slice(prefix.length)));
+      expect(createHash('sha256').update(bytes).digest('hex'), file).toBe(hash);
+    }
+    if (skill.ref === 'mm:planning') {
+      for (const file of ['context-human/specs/enhancement-pause-before.md', '.eng-docs/specs/enhancement-spec-lifecycle-state.md']) {
+        const bytes = readFileSync(path.resolve(target, '../../../..', file));
+        expect(createHash('sha256').update(bytes).digest('hex')).toBe(manifest.files[file]);
+      }
+    }
+  }
 });
