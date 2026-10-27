@@ -6,13 +6,19 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createSecretResponseSchema,
+  errorResponseSchema,
   projectListResponseSchema,
   projectResponseSchema,
   type Principal
 } from '@autocatalyst/api-contract';
 import { hardcodedDevelopmentPrincipal, type RunUnitOfWork } from '@autocatalyst/core';
+import { createDrizzleDomainRepositories, createSqliteDatabase } from '@autocatalyst/persistence';
 
 import { startControlPlaneServer } from './server.js';
+
+// A well-formed secret handle (`sec_` + 32 url-safe chars) that is never written to
+// the secret store — used to prove dangling-reference rejection.
+const UNKNOWN_SECRET_HANDLE = 'sec_00000000000000000000000000000000';
 
 const BEARER_TOKEN = 'integration-token';
 const MASTER_SECRET = 'integration-master-secret';
@@ -209,6 +215,130 @@ describe('project management API (end-to-end)', () => {
           method: 'PATCH', headers: jsonHeaders, body: JSON.stringify({})
         });
         expect(emptyPatch.status).toBe(400);
+      } finally {
+        await handle.close();
+      }
+    });
+  });
+
+  it('rejects create and patch that reference an unknown secret handle with 422, without persisting', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const handle = await startControlPlaneServer({
+        autoDispatch: { enabled: false },
+        port: 0,
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET,
+        unitOfWork: noopUnitOfWork
+      });
+      const baseUrl = `http://127.0.0.1:${handle.port}`;
+
+      try {
+        // Create a real secret so the valid path has an existing handle.
+        const secretResp = await fetch(`${baseUrl}/v1/secrets`, {
+          method: 'POST', headers: jsonHeaders, body: JSON.stringify({ value: 'ghp_real_token' })
+        });
+        expect(secretResp.status).toBe(201);
+        const { handle: realHandle } = createSecretResponseSchema.parse(await secretResp.json());
+
+        // A well-formed but never-stored handle is rejected with 422 and safe details.
+        const badCreate = await fetch(`${baseUrl}/v1/projects`, {
+          method: 'POST',
+          headers: jsonHeaders,
+          body: JSON.stringify({
+            displayName: 'Dangling on create',
+            repoUrl: 'https://github.com/example/dangling',
+            hostRepository: { provider: 'github', owner: 'example', name: 'dangling' },
+            credentialRefs: [{ id: UNKNOWN_SECRET_HANDLE, purpose: 'repo' }]
+          })
+        });
+        expect(badCreate.status).toBe(422);
+        const badBody = errorResponseSchema.parse(await badCreate.json());
+        expect(badBody.error.code).toBe('unknown_credential_reference');
+        expect(badBody.error.details).toEqual({ fields: ['credentialRefs[0]'] });
+        // The mistyped handle must not be echoed back.
+        expect(JSON.stringify(badBody)).not.toContain(UNKNOWN_SECRET_HANDLE);
+
+        // The failed create saved nothing visible through the API.
+        const afterBadCreate = await fetch(`${baseUrl}/v1/projects`, { headers: authHeaders });
+        expect(projectListResponseSchema.parse(await afterBadCreate.json()).projects).toEqual([]);
+
+        // Create a valid project to patch.
+        const createResp = await fetch(`${baseUrl}/v1/projects`, {
+          method: 'POST',
+          headers: jsonHeaders,
+          body: JSON.stringify({
+            displayName: 'Patchable',
+            repoUrl: 'https://github.com/example/repo',
+            hostRepository: { provider: 'github', owner: 'example', name: 'repo' },
+            credentialRefs: [{ id: realHandle, purpose: 'repo' }]
+          })
+        });
+        expect(createResp.status).toBe(201);
+        const project = projectResponseSchema.parse(await createResp.json());
+
+        // Patching to an unknown handle is rejected and leaves the project unchanged.
+        const badPatch = await fetch(`${baseUrl}/v1/projects/${project.id}`, {
+          method: 'PATCH',
+          headers: jsonHeaders,
+          body: JSON.stringify({ credentialRefs: [{ id: UNKNOWN_SECRET_HANDLE, purpose: 'repo' }] })
+        });
+        expect(badPatch.status).toBe(422);
+        expect(errorResponseSchema.parse(await badPatch.json()).error.code).toBe('unknown_credential_reference');
+
+        const unchanged = await fetch(`${baseUrl}/v1/projects/${project.id}`, { headers: authHeaders });
+        expect(projectResponseSchema.parse(await unchanged.json()).credentialRefs[0]?.id).toBe(realHandle);
+      } finally {
+        await handle.close();
+      }
+    });
+  });
+
+  it('allows a rename-only patch of a legacy project that already has a dangling credential handle', async () => {
+    await withTempDatabasePath(async (databasePath) => {
+      const handle = await startControlPlaneServer({
+        autoDispatch: { enabled: false },
+        port: 0,
+        databasePath,
+        bearerToken: BEARER_TOKEN,
+        masterSecret: MASTER_SECRET,
+        unitOfWork: noopUnitOfWork
+      });
+      const baseUrl = `http://127.0.0.1:${handle.port}`;
+
+      try {
+        // Arrange legacy pre-existing data: write a project with a dangling handle
+        // directly through persistence. This models bad data stored before the
+        // write-boundary check existed; it is NOT part of the behavior under test.
+        const seedDatabase = createSqliteDatabase({ path: databasePath });
+        try {
+          const seedRepos = createDrizzleDomainRepositories(seedDatabase);
+          const legacy = await seedRepos.projects.create({
+            owner: hardcodedDevelopmentPrincipal,
+            tenant: hardcodedDevelopmentPrincipal.tenantId,
+            displayName: 'Legacy',
+            repoUrl: 'https://github.com/example/legacy',
+            hostRepository: { provider: 'github', owner: 'example', name: 'legacy' },
+            workspaceRootOverride: null,
+            issueTrackerSetting: null,
+            codeHostSetting: null,
+            credentialRefs: [{ id: UNKNOWN_SECRET_HANDLE, purpose: 'repo' }]
+          });
+
+          // Act + assert via HTTP: a rename-only patch succeeds despite the dangling handle.
+          const renameResp = await fetch(`${baseUrl}/v1/projects/${legacy.id}`, {
+            method: 'PATCH',
+            headers: jsonHeaders,
+            body: JSON.stringify({ displayName: 'Legacy renamed' })
+          });
+          expect(renameResp.status).toBe(200);
+          const renamed = projectResponseSchema.parse(await renameResp.json());
+          expect(renamed.displayName).toBe('Legacy renamed');
+          // The pre-existing dangling reference is preserved, not revalidated or cleared.
+          expect(renamed.credentialRefs[0]?.id).toBe(UNKNOWN_SECRET_HANDLE);
+        } finally {
+          seedDatabase.close();
+        }
       } finally {
         await handle.close();
       }
