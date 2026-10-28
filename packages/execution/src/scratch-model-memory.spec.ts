@@ -1,8 +1,13 @@
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createScratchAgentModelMemoryStore } from './scratch-model-memory.js';
+
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, open: vi.fn(actual.open) };
+});
 
 const roots: string[] = [];
 async function scratch() {
@@ -67,6 +72,28 @@ describe('scratch model memory', () => {
     await expect(store.save(snapshot)).resolves.toBeUndefined();
     expect(onWarning.mock.calls).toEqual([['load'], ['save']]);
     expect(await readFile(scratchRoot, 'utf8')).toBe('sentinel');
+  });
+
+  it.each(['write', 'rename'] as const)('removes its temporary file after a %s failure', async fault => {
+    const scratchRoot = await scratch();
+    const onWarning = vi.fn();
+    const store = createScratchAgentModelMemoryStore({ scratchRoot, key: 'reviewer', onWarning });
+    if (fault === 'write') {
+      const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+      vi.mocked(open).mockImplementationOnce(async (...args) => {
+        const file = await actual.open(...args);
+        vi.spyOn(file, 'writeFile').mockRejectedValueOnce(new Error('disk write failed'));
+        return file;
+      });
+    } else {
+      await store.save(snapshot);
+      const [filename] = await readdir(scratchRoot);
+      await rm(join(scratchRoot, filename!));
+      await mkdir(join(scratchRoot, filename!)); // Rename over a directory must fail.
+    }
+    await expect(store.save(snapshot)).resolves.toBeUndefined();
+    expect((await readdir(scratchRoot)).filter(filename => filename.endsWith('.tmp'))).toEqual([]);
+    expect(onWarning).toHaveBeenCalledWith('save');
   });
 
   it('never exposes a partial JSON file to concurrent readers', async () => {

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { open, readFile, rename } from 'node:fs/promises';
+import { open, readFile, rename, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { jsonValueSchema } from '@autocatalyst/api-contract';
@@ -37,19 +37,27 @@ export function createScratchAgentModelMemoryStore(options: ScratchModelMemoryOp
       }
     },
     async save(snapshot) {
+      let temporaryPath: string | undefined;
+      let temporaryCreated = false;
       try {
         const serialized = JSON.stringify(snapshotSchema.parse(snapshot));
         // Unique sibling + rename keeps readers from observing a partial write.
-        const temporaryPath = join(options.scratchRoot, `model-memory-${digest}-${randomUUID()}.tmp`);
+        temporaryPath = join(options.scratchRoot, `model-memory-${digest}-${randomUUID()}.tmp`);
         const file = await open(temporaryPath, 'wx', 0o600);
+        temporaryCreated = true;
         try {
           await file.writeFile(serialized, 'utf8');
         } finally {
           await file.close();
         }
         await rename(temporaryPath, path);
+        temporaryPath = undefined;
       } catch {
         warn('save');
+      } finally {
+        if (temporaryCreated && temporaryPath !== undefined) {
+          try { await unlink(temporaryPath); } catch { /* Cache cleanup is best effort. */ }
+        }
       }
     }
   };
