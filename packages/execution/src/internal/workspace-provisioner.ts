@@ -392,17 +392,34 @@ export function createWorkspaceProvisioner(dependencies: WorkspaceProvisionerDep
       });
       const base = request.materializationBase;
 
-      // Explicit start-over: rebuild from the fetched default branch even if the run
-      // root is already present — the run's own derived branch/root are removed first.
-      if (base?.kind === 'current_default_branch') {
-        return materializeFromDefaultBranch(request, paths, branchName, { removeExisting: true });
+      // Already-present workspace behavior applies to EVERY provisioning base: if the run
+      // root is already present on the expected branch, leave it in place, treat the match
+      // as the branch guard, and report it as present. An explicit base must not wipe or
+      // rebuild a healthy workspace (and must not discard its scratch).
+      if (runPresent) {
+        const actualBranch = await driver.currentBranch(paths.repoRoot);
+        if (actualBranch === branchName) {
+          return twoRootsResult(request, paths, branchName, declaredBaseRef(request), 'present');
+        }
+
+        // Present but not on the expected branch. The explicit `current_default_branch`
+        // start-over is the sole path allowed to intentionally remove and rebuild the
+        // run's own root; every other base keeps branch-guard failure as the safety
+        // boundary rather than silently deleting or repairing the directory.
+        if (base?.kind !== 'current_default_branch') {
+          throw new WorkspaceProvisioningError('branch_guard_failed', 'Worktree is not on the expected branch', {
+            targetPath: paths.repoRoot,
+            expectedBranch: branchName,
+            actualBranch
+          });
+        }
       }
 
-      // Already-present workspace (no explicit start-over): leave it in place, run the
-      // branch guard, and report it as present without wiping scratch or re-provisioning.
-      if (runPresent) {
-        await verifyBranch({ driver, repoRoot: paths.repoRoot, expectedBranch: branchName });
-        return twoRootsResult(request, paths, branchName, declaredBaseRef(request), 'present');
+      // Explicit start-over: rebuild from the fetched default branch. Reached only when the
+      // workspace is missing or present on an unexpected branch — the run's own derived
+      // branch/root are removed first so no prior run commits are carried forward.
+      if (base?.kind === 'current_default_branch') {
+        return materializeFromDefaultBranch(request, paths, branchName, { removeExisting: true });
       }
 
       // Missing workspace, explicit recovery from the existing run branch.
