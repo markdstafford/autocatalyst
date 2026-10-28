@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
-import { Runner, OpenAIProvider, tool } from '@openai/agents';
+import { Runner, OpenAIProvider, tool, MaxTurnsExceededError } from '@openai/agents';
 import {
   SandboxAgent,
   Manifest,
@@ -183,6 +183,10 @@ export function createOpenAIStructuredResultConfiguration(
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
+
+// A finite per-session budget covers repository reviews beyond the SDK default.
+// Exhaustion is terminal; the adapter never starts a replacement paid session.
+export const OPENAI_AGENT_MAX_TURNS = 250;
 
 const PROGRESS_TOOL_NAMES = new Set(['update_plan', 'report_progress', 'notify']);
 
@@ -691,7 +695,7 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
             ...(input.modelMemoryState.conversationId !== undefined ? { conversationId: input.modelMemoryState.conversationId } : {})
           }
         : {};
-      const stream = await runner.run(agent, input.prompt, { sandbox: { session: input.session }, stream: true, ...continuityOptions }) as unknown as StreamedRunnerRunView;
+      const stream = await runner.run(agent, input.prompt, { sandbox: { session: input.session }, stream: true, maxTurns: OPENAI_AGENT_MAX_TURNS, ...continuityOptions }) as unknown as StreamedRunnerRunView;
 
       for await (const event of stream) {
         if (isRunItemStreamEvent(event)) {
@@ -723,11 +727,15 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
         providerKind: openaiProviderKind
       };
       const reason = classifyProviderFailure(classificationInput);
-      const classified: ClassifiedProviderFailureError = reason !== undefined
-        ? new ClassifiedProviderFailureError(reason, filterSafeClassificationDetails(classificationInput))
-        : new ClassifiedProviderFailureError('runner_failed_before_terminal_result', { providerKind: openaiProviderKind });
+      const safeDetails = {
+        ...filterSafeClassificationDetails(classificationInput),
+        ...(err instanceof MaxTurnsExceededError
+          ? { sdkErrorName: 'MaxTurnsExceededError', maxTurns: OPENAI_AGENT_MAX_TURNS }
+          : {})
+      };
+      const classified = new ClassifiedProviderFailureError(reason ?? 'runner_failed_before_terminal_result', safeDetails);
       rejectResult(classified);
-      throw err;
+      throw classified;
     }
   }
 
@@ -795,6 +803,7 @@ export function createOpenAIAgentAdapter(
   }
 
   function classifySdkError(err: unknown): ClassifiedProviderFailureError | undefined {
+    if (err instanceof ClassifiedProviderFailureError) return err;
     const shaped = err as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
     const classificationInput = {
       ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
@@ -884,7 +893,7 @@ export function createOpenAIAgentAdapter(
         });
       } catch (err) {
         const classified = classifySdkError(err);
-        const safeDetail = buildSafeAdapterFailureLogDetail(err, openaiProviderKind);
+        const safeDetail = { ...buildSafeAdapterFailureLogDetail(err, openaiProviderKind), ...(classified?.safeDetails ?? {}) };
         const failureCode = typeof safeDetail.code === 'string' ? safeDetail.code : undefined;
         safeLog('error', 'openai.adapter.sandbox_failed', {
           runId: input.telemetryContext.runId,
@@ -1087,7 +1096,7 @@ export function createOpenAIAgentAdapter(
         } catch (err) {
           const classified = classifySdkError(err);
           const thrown = classified ?? err;
-          const safeDetail = buildSafeAdapterFailureLogDetail(err, openaiProviderKind);
+          const safeDetail = { ...buildSafeAdapterFailureLogDetail(err, openaiProviderKind), ...(classified?.safeDetails ?? {}) };
           const failureCode = typeof safeDetail.code === 'string' ? safeDetail.code : undefined;
           safeLog('error', 'openai.adapter.session_failed', {
             runId: input.runInput.environment.context.run.id,

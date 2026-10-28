@@ -25,6 +25,8 @@ import {
   migrateSqliteDatabase
 } from '@autocatalyst/persistence';
 
+import { loadSpecAuthorPromptInput } from './spec-authoring-context-loader.js';
+
 const SENTINEL_TOKEN = 'sentinel-test-token-abc123-do-not-leak';
 const FAKE_GH_ISSUE_NUMBER = 71;
 const MASTER_SECRET = 'integration-test-master-secret';
@@ -165,7 +167,7 @@ describe('issue-reference create integration (realistic fake gh)', () => {
   });
 
   it('creates a run from a structured issue_reference submission with enriched tracked issue', async () => {
-    await withTestSetup(successFakeGh, async ({ controlPlane, projectId }) => {
+    await withTestSetup(successFakeGh, async ({ controlPlane, projectId, domainRepos }) => {
       const response = await controlPlane.createConversationWithFirstRun({
         principal: owner,
         tenant: owner.tenantId,
@@ -180,6 +182,25 @@ describe('issue-reference create integration (realistic fake gh)', () => {
           }
         }
       });
+
+      // Follow the production no-reader path from persisted intake to authoring.
+      await domainRepos.runs.recordRunStepTransition({
+        runId: response.run.id,
+        currentStep: 'spec.author',
+        terminal: false,
+        runStep: { step: 'spec.author', phase: 'spec', role: 'implementer', startedAt: '2026-10-21T00:00:00.000Z', endedAt: null, durationMs: null }
+      });
+      const authoring = await loadSpecAuthorPromptInput({
+        runId: response.run.id,
+        tenantId: owner.tenantId,
+        repositories: domainRepos
+      });
+      expect(authoring.linkedIssue).toMatchObject({
+        title: 'feat: Start a run from an issue reference',
+        body: 'Canonical issue body',
+        labels: ['feature', 'backend']
+      });
+      expect(authoring.request.text).toContain('Canonical issue body');
 
       expect(response.run.workKind).toBe('feature');
       expect(response.run.currentStep).toBe('intake');

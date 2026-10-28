@@ -700,6 +700,21 @@ describe('createDelegatingExecutionEntryPoint — role routing', () => {
     expect(capturedInputs[0]?.role).toBe('implementer');
   });
 
+  it('selects structured finalization capture with a file distinct from spec.author', () => {
+    const context = makeMinimalContext();
+    context.run.currentStep = 'pr.finalize';
+    const registry = createControlPlaneStepResultContractRegistry();
+    const config = resolveScratchResultValidationConfig(context, registry);
+    expect(config).toMatchObject({ mode: 'scratch_file', step: 'pr.finalize', schemaId: PR_FINALIZE_SCHEMA_ID, resultFile: 'pr-finalize-result.json' });
+    const resolved = registry.resolve({ step: 'pr.finalize', schemaId: PR_FINALIZE_SCHEMA_ID });
+    expect(resolved.status).toBe('resolved');
+    if (resolved.status === 'resolved') {
+      expect(resolved.contract.resultFile).toBe('pr-finalize-result.json');
+      expect(resolved.contract.schema.safeParse({ directive: 'advance', findings: [] }).success).toBe(true);
+      expect(resolved.contract.schema.safeParse({ kind: 'feature_spec', body: 'stale spec' }).success).toBe(false);
+    }
+  });
+
   it('selects the reviewer result contract and the per-round reviewer file for reviewer sessions', () => {
     const context = makeMinimalContext('reviewer', 2);
     const config = resolveScratchResultValidationConfig(context);
