@@ -1,4 +1,6 @@
 import { runnerEventSchema, type RunnerEvent } from '@autocatalyst/api-contract';
+import { createNoopAgentModelMemoryStore } from './agent-model-memory.js';
+import { createScratchAgentModelMemoryStore } from './scratch-model-memory.js';
 
 import type {
   AgentConnection,
@@ -82,11 +84,42 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
         } : {})
       });
 
+      const memoryKey = JSON.stringify([
+        input.environment.context.run.id,
+        telemetryContext.role ?? 'implementer',
+        profile.providerKind,
+        profile.adapterId,
+        profile.profileName
+      ]);
+      const workspace = input.environment.workspace;
+      const scratchRoot = workspace.shape === 'none'
+        ? input.environment.capabilities.paths.scratchRoot
+        : workspace.scratchRoot;
+      const defaultModelMemory = () => ({
+        key: memoryKey,
+        store: scratchRoot === undefined
+          ? createNoopAgentModelMemoryStore()
+          : createScratchAgentModelMemoryStore({
+              scratchRoot,
+              key: memoryKey,
+              onWarning(operation) {
+                const fields = {
+                  runId: telemetryContext.runId,
+                  step: telemetryContext.step,
+                  role: telemetryContext.role,
+                  level: 'warn',
+                  operation
+                };
+                if (telemetry !== undefined) telemetry.emit('agent_model_memory_cache_warning', fields);
+                else console.warn({ event: 'agent_model_memory_cache_warning', ...fields });
+              }
+            })
+      });
       const scopedModelMemory = input.modelMemory?.forProvider?.({
         providerKind: profile.providerKind,
         adapterId: profile.adapterId,
         profileName: profile.profileName
-      }) ?? input.modelMemory;
+      }) ?? input.modelMemory ?? defaultModelMemory();
       const sessionRunInput =
         scopedModelMemory !== undefined && scopedModelMemory !== input.modelMemory
           ? { ...input, modelMemory: scopedModelMemory }

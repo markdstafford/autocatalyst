@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
@@ -2839,6 +2839,7 @@ describe('real feature dispatch workspace context', () => {
           await bootstrap.close();
         }
 
+        let capturedMemorySnapshot: unknown;
         const capturedWorkspaceFacts: Array<{
           workspaceShape: string;
           workspaceRootCount: number;
@@ -2858,6 +2859,13 @@ describe('real feature dispatch workspace context', () => {
             projectId: workspaceIntent.shape === 'two_roots' ? workspaceIntent.provisioning.project.id : 'none'
           });
           async function* events(): AsyncIterable<RunnerEvent> {
+            expect(input.modelMemory).toBeDefined();
+            expect(await input.modelMemory!.store.load()).toBeNull();
+            await input.modelMemory!.store.save({ providerKind: 'openai', adapterId: 'openai-agents-sdk', state: { previousResponseId: 'server_smoke_response' } });
+            if (workspace.shape === 'none') throw new Error('scratch workspace required');
+            const memoryFiles = (await readdir(workspace.scratchRoot)).filter(name => /^model-memory-[a-f0-9]{64}\.json$/.test(name));
+            expect(memoryFiles).toHaveLength(1);
+            capturedMemorySnapshot = JSON.parse(await readFile(join(workspace.scratchRoot, memoryFiles[0]!), 'utf8'));
             yield {
               id: 'evt_feature_terminal',
               runId,
@@ -2913,6 +2921,8 @@ describe('real feature dispatch workspace context', () => {
           expect(capturedWorkspaceFacts).toEqual([
             { workspaceShape: 'two_roots', workspaceRootCount: 2, projectId }
           ]);
+
+          expect(capturedMemorySnapshot).toEqual({ providerKind: 'openai', adapterId: 'openai-agents-sdk', state: { previousResponseId: 'server_smoke_response' } });
 
           // The run transitions to terminal after the tick (either advanced or failed
           // — the fake adapter does not write a result file so scratch_file validation
