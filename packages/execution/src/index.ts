@@ -305,6 +305,7 @@ export {
   teardownWorkspace
 } from './workspace.js';
 export type {
+  ExistingWorkspaceBehavior,
   ImplementingWorkspaceRunKind,
   PruneWorkspacePathRequest,
   ProvisionWorkspaceRequest,

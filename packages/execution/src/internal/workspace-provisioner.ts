@@ -391,9 +391,19 @@ export function createWorkspaceProvisioner(dependencies: WorkspaceProvisionerDep
         shortRunId: request.shortRunId
       });
       const base = request.materializationBase;
+      const existingWorkspaceBehavior = request.existingWorkspaceBehavior ?? 'keep';
 
-      // Already-present workspace behavior applies to EVERY provisioning base: if the run
-      // root is already present on the expected branch, leave it in place, treat the match
+      // Explicit `replace`: discard the run's own present workspace and rebuild from the
+      // freshly fetched default branch, independent of the current branch or base. Used
+      // only by recovery start-over, which must drop prior commits even when the present
+      // workspace is already on the expected branch. The keep short-circuit below is
+      // skipped entirely so a healthy on-branch workspace is still rebuilt.
+      if (existingWorkspaceBehavior === 'replace') {
+        return materializeFromDefaultBranch(request, paths, branchName, { removeExisting: true });
+      }
+
+      // Already-present workspace behavior (keep) applies to EVERY provisioning base: if the
+      // run root is already present on the expected branch, leave it in place, treat the match
       // as the branch guard, and report it as present. An explicit base must not wipe or
       // rebuild a healthy workspace (and must not discard its scratch).
       if (runPresent) {

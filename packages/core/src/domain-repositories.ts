@@ -101,6 +101,24 @@ export interface RecordRunStepTransitionResult {
   readonly runStep: RunStep;
 }
 
+/**
+ * Atomic reopen of a failed terminal run. Moves the run back to the re-dispatch step,
+ * clears terminality and failure reason, and opens a new RunStep row while leaving all
+ * earlier (including the terminal `failed`) rows untouched. Implementations must enforce
+ * the one-active-run-per-topic invariant inside the transaction and surface an active-run
+ * conflict rather than assembling the writes separately in the service.
+ */
+export interface RecoverFailedRunInput {
+  readonly runId: string;
+  readonly reDispatchStep: string;
+  readonly runStep: LifecycleRunStepInput;
+}
+
+export interface RecoverFailedRunResult {
+  readonly run: Run;
+  readonly runStep: RunStep;
+}
+
 export interface ListRunsByTenantOptions {
   readonly limit?: number;
 }
@@ -120,6 +138,12 @@ export interface RunRepository {
   recordRunLifecycleStart(input: RecordRunLifecycleStartInput): Promise<RecordRunLifecycleStartResult>;
   recordRunStepTransition(input: RecordRunStepTransitionInput): Promise<RecordRunStepTransitionResult>;
   findLatestOpenRunStep?(input: { runId: string; step: string }): Promise<RunStep | null>;
+  /**
+   * Atomically reopen a failed terminal run at the re-dispatch step. Optional so in-memory
+   * test doubles need not implement it; the control-plane service requires it to be present
+   * when recovering a run.
+   */
+  recoverFailedRun?(input: RecoverFailedRunInput): Promise<RecoverFailedRunResult>;
 }
 
 export interface ArtifactRepository {

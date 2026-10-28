@@ -22,6 +22,16 @@ export type WorkspaceProvisioningOutcome = 'present' | 'materialized';
  */
 export type { WorkspaceMaterializationBase } from '@autocatalyst/api-contract';
 
+/**
+ * Whether an already-present workspace is kept in place or replaced during provisioning.
+ * This is independent of {@link WorkspaceMaterializationBase}: the base selects what the
+ * workspace is rebuilt from, while this selects whether a present workspace is rebuilt at
+ * all. `keep` (the default) preserves the idempotent, present-workspace behavior every
+ * existing caller relies on. `replace` is used only by recovery start-over, which must
+ * discard a present workspace and its prior commits even when it is on the expected branch.
+ */
+export type ExistingWorkspaceBehavior = 'keep' | 'replace';
+
 export interface WorkspaceProvisioningRoots {
   readonly reposRoot: string;
   readonly workspacesRoot: string;
@@ -41,6 +51,13 @@ export interface ProvisionWorkspaceRequest {
    * when the run root is missing, idempotent otherwise).
    */
   readonly materializationBase?: WorkspaceMaterializationBase;
+  /**
+   * Whether a present workspace is kept or replaced. Defaults to `keep`, which
+   * preserves the idempotent present-workspace behavior. `replace` forces a rebuild
+   * of the run's own derived branch and root even when the workspace is present on
+   * the expected branch; it is used only by recovery start-over.
+   */
+  readonly existingWorkspaceBehavior?: ExistingWorkspaceBehavior;
 }
 
 export type ProvisionWorkspaceResult =

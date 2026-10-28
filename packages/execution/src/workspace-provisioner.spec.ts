@@ -511,4 +511,63 @@ describe('workspace provisioner', () => {
       expect(driver.calls.some((call) => call.startsWith('mkdirp:'))).toBe(false);
     });
   });
+
+  describe('existingWorkspaceBehavior', () => {
+    it('defaults to keep: a present on-branch workspace is left in place', async () => {
+      const driver = new FakeWorkspaceDriver();
+      driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123'));
+      driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123/repo'));
+      const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
+
+      // No existingWorkspaceBehavior set → keep.
+      const result = await provisioner.provisionWorkspace(makeRequest());
+
+      expect(result).toMatchObject({ shape: 'two_roots', outcome: 'present' });
+      expect(driver.calls.some((call) => call.startsWith('prune:'))).toBe(false);
+      expect(driver.calls).not.toContain('addWorktree');
+    });
+
+    it('replace rebuilds a present on-branch workspace from the fetched default, removing only the run derived state', async () => {
+      const driver = new FakeWorkspaceDriver();
+      driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123'));
+      driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123/repo'));
+      // Present on the expected branch — keep would short-circuit; replace must still rebuild.
+      const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
+
+      const result = await provisioner.provisionWorkspace(
+        makeRequest({
+          materializationBase: { kind: 'current_default_branch' },
+          existingWorkspaceBehavior: 'replace'
+        })
+      );
+
+      expect(result).toMatchObject({
+        shape: 'two_roots',
+        outcome: 'materialized',
+        provisionedBaseRef: 'origin/main'
+      });
+      expect(driver.calls).toContain('fetchHostRepository');
+      expect(driver.calls).toContain('resolveDefaultBranch');
+      expect(driver.calls).toContain(`prune:worktree:${path.resolve('/tmp/workspaces/acme/widgets/run_123/repo')}`);
+      expect(driver.calls).toContain(`prune:directory:${path.resolve('/tmp/workspaces/acme/widgets/run_123')}`);
+      expect(driver.calls).toContain('deleteBranch');
+      expect(driver.calls).toContain('addWorktree');
+    });
+
+    it('replace rebuilds a missing workspace from the fetched default', async () => {
+      const driver = new FakeWorkspaceDriver();
+      const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
+
+      const result = await provisioner.provisionWorkspace(
+        makeRequest({
+          materializationBase: { kind: 'current_default_branch' },
+          existingWorkspaceBehavior: 'replace'
+        })
+      );
+
+      expect(result).toMatchObject({ shape: 'two_roots', outcome: 'materialized' });
+      expect(driver.calls).toContain('fetchHostRepository');
+      expect(driver.calls).toContain('addWorktree');
+    });
+  });
 });

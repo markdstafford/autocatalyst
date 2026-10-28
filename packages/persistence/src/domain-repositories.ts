@@ -96,6 +96,8 @@ import type {
   RecordRunLifecycleStartResult,
   RecordRunStepTransitionInput,
   RecordRunStepTransitionResult,
+  RecoverFailedRunInput,
+  RecoverFailedRunResult,
   RunRepository,
   RunWorkspaceMetadata,
   RunWorkspaceMetadataRepository,
@@ -809,6 +811,43 @@ export class DrizzleRunRepository implements RunRepository {
             .run();
         }
       }
+      const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep);
+      return { run, runStep };
+    });
+  }
+
+  async recoverFailedRun(input: RecoverFailedRunInput): Promise<RecoverFailedRunResult> {
+    return this.#database.drizzle.transaction((tx) => {
+      const existingRow = tx.select({ topicId: runs.topicId }).from(runs).where(eq(runs.id, input.runId)).limit(1).all()[0];
+      const topicId = existingRow?.topicId ?? '';
+      // Guarded update: only a failed terminal run may be reopened. The WHERE clause asserts
+      // the run is currently terminal and at the `failed` step so a concurrent change cannot
+      // reopen a non-failed run. Setting terminal=false re-arms the one-active-run-per-topic
+      // partial unique index, which surfaces as an active-run conflict below.
+      let updatedRows;
+      try {
+        updatedRows = tx.update(runs)
+          .set({
+            currentStep: input.reDispatchStep,
+            terminal: false,
+            failureReason: null,
+            updatedAt: nowIso()
+          })
+          .where(and(eq(runs.id, input.runId), eq(runs.terminal, true), eq(runs.currentStep, 'failed')))
+          .returning()
+          .all();
+      } catch (error) {
+        if (isActiveRunConstraintViolation(error)) {
+          throw new ActiveRunConflictPersistenceError(topicId, null);
+        }
+        throw error;
+      }
+      if (updatedRows[0] === undefined) {
+        throw new Error(`Run '${input.runId}' is not a recoverable failed run.`);
+      }
+      const run = this.#rowToRun(updatedRows[0]);
+      // Create a new open RunStep for the re-dispatch step. Earlier rows, including the
+      // terminal `failed` row, are left untouched so run history stays auditable.
       const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep);
       return { run, runStep };
     });
