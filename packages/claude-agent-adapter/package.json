@@ -12,15 +12,10 @@
     }
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.3.177",
+    "@anthropic-ai/sdk": "^0.93.0",
     "@autocatalyst/api-contract": "*",
-    "@autocatalyst/execution": "*"
-  },
-  "peerDependencies": {
-    "@anthropic-ai/claude-agent-sdk": ">=0.2.0"
-  },
-  "peerDependenciesMeta": {
-    "@anthropic-ai/claude-agent-sdk": {
-      "optional": true
-    }
+    "@autocatalyst/execution": "*",
+    "zod": "^4.0.0"
   }
 }
