@@ -246,3 +246,11 @@ Use the established initial tags as examples:
 - `apps/control-plane/src/server.ts` registers and selects `PR_FINALIZE_SCHEMA_ID` with `pr-finalize-result.json`, excluding the specification's shared result file. `server.spec.ts` verifies finalization accepts its own contract and rejects stale specification output.
 - `packages/openai-agent-adapter/src/openai-agent-adapter.ts` owns `OPENAI_AGENT_MAX_TURNS = 250`; SDK exhaustion retains safe static cause metadata through wrapper/logging. See `../decisions/openai-agent-turn-budget.md`.
 - `packages/execution/src/result-normalizers.ts` strips only optional reviewer finding `externalId: null`; required fields still undergo schema validation.
+
+## Provider runtime skills and completion diagnostics (issues105/106)
+
+- `packages/claude-agent-adapter/src/skill-materialization.ts` preserves the canonical Micromanager bundle in a temporary SDK local plugin, including supplemental documents; the adapter passes `plugins` and `skills: all`, then cleans up.
+- `packages/openai-agent-adapter/src/skill-materialization.ts` provides native skill descriptors with recursive references, scripts and assets, rejects symlinked references, and mounts the full selected canonical tree read-only. `defaultRunAgentSession` enables native filesystem/shell/compaction capabilities.
+- OpenAI spec authors write to the absolute sandbox scratch result path. Capture also checks the sandbox repository root, covering repository-relative writes. Actual capture mode is logged separately from schema projection. Reviewer restrictions and NoopSnapshotSpec remain unchanged.
+- `packages/openai-agent-adapter/src/openai-agent-adapter.ts` records fixed failure stages across SDK streaming/completion, model-memory persistence, result parsing/writing and terminal emission, retaining allowlisted error/cause classes and codes without messages/content. See `../decisions/openai-completion-failure-diagnostics.md`.
+- Provider dependencies belong to their adapter packages; real dispatch wires safe metadata loggers. Runtime skill preparation reports requested/resolved refs and delivery mode; log output never proves model compliance by itself.

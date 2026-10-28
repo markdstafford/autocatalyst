@@ -1,4 +1,7 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { cp, lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { Runner, OpenAIProvider, tool, MaxTurnsExceededError } from '@openai/agents';
@@ -7,7 +10,11 @@ import {
   Manifest,
   NoopSnapshotSpec,
   isNoopSnapshotSpec,
-  localDir
+  localDir,
+  skills as sdkSkills,
+  filesystem as sdkFilesystem,
+  shell as sdkShell,
+  compaction as sdkCompaction
 } from '@openai/agents/sandbox';
 import { UnixLocalSandboxClient } from '@openai/agents/sandbox/local';
 import type { RunItem } from '@openai/agents';
@@ -41,7 +48,7 @@ import {
   updatePlanToolInputSchema,
   writeScratchStepResultFile
 } from '@autocatalyst/execution';
-import { materializeOpenAISkillFiles } from './skill-materialization.js';
+import { materializeOpenAISkillFiles, buildOpenAISkillDescriptors, type OpenAISkillDescriptor } from './skill-materialization.js';
 import type { RunnerEvent } from '@autocatalyst/api-contract';
 
 export const openaiProviderKind = 'openai' as const;
@@ -83,6 +90,8 @@ export interface OpenAISandboxClientHandle {
   readonly client: SandboxClient;
   /** The session opened against the materialized workspace. */
   readonly session: OpenAISandboxSession;
+  /** Manifest used to open the session, after any provider-specific root staging. */
+  readonly manifest?: Manifest;
   close?(): Promise<void> | void;
 }
 
@@ -110,6 +119,12 @@ export interface OpenAIRunSessionInput {
   readonly structuredResult?: OpenAIStructuredResultConfiguration;
   /** Loaded continuity state from the previous run turn. Never contains sandbox identifiers. */
   readonly modelMemoryState?: OpenAIResponsesContinuityState;
+  /**
+   * Runtime skills loaded natively via the SDK `skills()` capability (SKILL.md
+   * content surfaced to the model as real skills), instead of relying on the
+   * model to read mounted files.
+   */
+  readonly skillDescriptors?: readonly OpenAISkillDescriptor[];
 }
 
 export interface OpenAIRunOutcome {
@@ -180,19 +195,43 @@ export function createOpenAIStructuredResultConfiguration(
   };
 }
 
+function shouldUseOpenAIOutputType(
+  structuredResult: OpenAIStructuredResultConfiguration | undefined,
+  role: AgentProviderSessionInput['telemetryContext']['role']
+): boolean {
+  if (structuredResult === undefined) return false;
+  if (structuredResult.capture.step === 'spec.author') return false;
+  if (structuredResult.capture.step === 'implementation.build' && role === 'reviewer') return false;
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-// A finite per-session budget covers repository reviews beyond the SDK default.
-// Exhaustion is terminal; the adapter never starts a replacement paid session.
+// A finite session budget; exhaustion never starts a replacement paid session.
 export const OPENAI_AGENT_MAX_TURNS = 250;
 
 const PROGRESS_TOOL_NAMES = new Set(['update_plan', 'report_progress', 'notify']);
+const execFileAsync = promisify(execFile);
+const LOCAL_SANDBOX_EXCLUDED_DIRECTORY_NAMES = new Set(['node_modules']);
+const BASE_OPENAI_AGENT_INSTRUCTIONS = [
+  'You are an AI agent for software development automation.',
+  'Work in the provided sandbox workspace.',
+  'Follow the user prompt for the current task.'
+].join('\n');
 
 // Inference settings the OpenAI Agents SDK plumbs through ModelSettings.
 const SUPPORTED_INFERENCE_SETTINGS = new Set(['temperature', 'topP', 'maxOutputTokens']);
 const OPTIONAL_AGENT_UNSUPPORTED_SETTINGS = ['reasoningEffort', 'seed', 'topK', 'streamingMode', 'parallelToolCalls'] as const;
+const SAFE_SDK_DIAGNOSTIC_TOKENS = new Set([
+  'MaxTurnsExceededError', 'max_turns_exceeded', 'APIError', 'AuthenticationError',
+  'RateLimitError', 'APIConnectionError', 'APIConnectionTimeoutError', 'ENOENT', 'EACCES', 'EPERM',
+  'ModelBehaviorError', 'ModelRefusalError', 'UserError', 'ToolCallError', 'GuardrailExecutionError',
+  'InputGuardrailTripwireTriggered', 'OutputGuardrailTripwireTriggered', 'ZodError',
+  'TypeError', 'SyntaxError', 'RangeError', 'AbortError', 'Error', 'SqliteError',
+  'DrizzleError', 'DrizzleQueryError', 'SQLITE_BUSY', 'SQLITE_LOCKED', 'SQLITE_CONSTRAINT'
+]);
 
 // ---------------------------------------------------------------------------
 // Inference settings mapping
@@ -201,6 +240,40 @@ const OPTIONAL_AGENT_UNSUPPORTED_SETTINGS = ['reasoningEffort', 'seed', 'topK', 
 interface OpenAIInferenceMapping {
   readonly mapped: Record<string, unknown>;
   readonly degraded: ProviderCapabilityDegradation[];
+}
+
+function safeSdkDiagnosticToken(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  return SAFE_SDK_DIAGNOSTIC_TOKENS.has(value) ? value : undefined;
+}
+
+function buildSafeOpenAISdkErrorDiagnostic(err: unknown): Record<string, unknown> {
+  if (err === null || typeof err !== 'object') return {};
+  const shaped = err as {
+    readonly name?: unknown;
+    readonly code?: unknown;
+    readonly type?: unknown;
+    readonly constructor?: { readonly name?: unknown };
+    readonly cause?: unknown;
+  };
+  const sdkErrorName = safeSdkDiagnosticToken(shaped.name);
+  const sdkErrorCode = safeSdkDiagnosticToken(shaped.code);
+  const sdkErrorType = safeSdkDiagnosticToken(shaped.type);
+  const sdkErrorConstructor = safeSdkDiagnosticToken(shaped.constructor?.name);
+  const cause = shaped.cause !== null && typeof shaped.cause === 'object' && shaped.cause !== err
+    ? shaped.cause as { readonly name?: unknown; readonly code?: unknown }
+    : undefined;
+  const sdkCauseErrorName = safeSdkDiagnosticToken(cause?.name);
+  const sdkCauseErrorCode = safeSdkDiagnosticToken(cause?.code);
+  return {
+    ...(sdkErrorName !== undefined ? { sdkErrorName } : {}),
+    ...(sdkErrorCode !== undefined ? { sdkErrorCode } : {}),
+    ...(sdkErrorType !== undefined ? { sdkErrorType } : {}),
+    ...(sdkCauseErrorName !== undefined ? { sdkCauseErrorName } : {}),
+    ...(sdkCauseErrorCode !== undefined ? { sdkCauseErrorCode } : {}),
+    ...(sdkErrorConstructor !== undefined && sdkErrorConstructor !== 'Error' ? { sdkErrorConstructor } : {}),
+    ...(err instanceof MaxTurnsExceededError ? { sdkErrorName: 'MaxTurnsExceededError', maxTurns: OPENAI_AGENT_MAX_TURNS } : {})
+  };
 }
 
 function mapInferenceSettings(profile: AgentProviderSessionInput['profile']): OpenAIInferenceMapping {
@@ -314,6 +387,74 @@ function lowImportanceToolActivity(name: string, ctx: EventContext): RunnerEvent
     importance: 'low' as const,
     tool: { name, action: 'invoke', status: 'completed' }
   } as RunnerEvent;
+}
+
+interface PromptShapeDiagnostic {
+  readonly promptChars: number;
+  readonly instructionsChars: number;
+  readonly instructionsStartWithPrompt: boolean;
+  readonly instructionSuffixChars: number;
+  readonly skillHintAppended: boolean;
+  readonly structuredOutput: boolean;
+}
+
+function runtimeSkillDiagnosticNotification(input: {
+  readonly requestedSkillRefs: readonly string[];
+  readonly resolvedSkillRefs: readonly string[];
+  readonly handoffMode: string;
+  readonly referenceEntries?: readonly string[];
+  readonly promptShape?: PromptShapeDiagnostic;
+}, ctx: EventContext): RunnerEvent {
+  const requested = input.requestedSkillRefs.length > 0 ? input.requestedSkillRefs.join(',') : 'none';
+  const resolved = input.resolvedSkillRefs.length > 0 ? input.resolvedSkillRefs.join(',') : 'none';
+  const references = input.referenceEntries !== undefined && input.referenceEntries.length > 0
+    ? ` referenceEntries=${input.referenceEntries.join(';')}`
+    : '';
+  const promptShape = input.promptShape !== undefined
+    ? ` promptShape=${input.promptShape.instructionsStartWithPrompt ? 'instructions_start_with_prompt' : 'instructions_distinct'} structuredOutput=${input.promptShape.structuredOutput ? 'true' : 'false'}`
+    : '';
+  return {
+    ...baseEvent(ctx),
+    type: 'runner_notification',
+    importance: 'normal',
+    notification: {
+      severity: input.requestedSkillRefs.length > 0 && input.resolvedSkillRefs.length === 0 ? 'warn' : 'info',
+      message: `Runtime skills: requested=${requested} resolved=${resolved} handoff=${input.handoffMode}${references}${promptShape}`
+    }
+  } as RunnerEvent;
+}
+
+function buildPromptShapeDiagnostic(input: {
+  readonly prompt: string;
+  readonly instructions: string;
+  readonly skillHintAppended: boolean;
+  readonly structuredOutput: boolean;
+}): PromptShapeDiagnostic {
+  const instructionsStartWithPrompt = input.instructions.startsWith(input.prompt);
+  return {
+    promptChars: input.prompt.length,
+    instructionsChars: input.instructions.length,
+    instructionsStartWithPrompt,
+    instructionSuffixChars: instructionsStartWithPrompt
+      ? input.instructions.length - input.prompt.length
+      : 0,
+    skillHintAppended: input.skillHintAppended,
+    structuredOutput: input.structuredOutput
+  };
+}
+
+function buildOpenAIAgentInstructions(skillHint: string): string {
+  return skillHint.length > 0
+    ? `${BASE_OPENAI_AGENT_INSTRUCTIONS}\n\n${skillHint}`
+    : BASE_OPENAI_AGENT_INSTRUCTIONS;
+}
+
+function summarizeDescriptorReferenceEntries(descriptors: readonly OpenAISkillDescriptor[]): string[] {
+  return descriptors.flatMap((descriptor) => {
+    const referenceNames = Object.keys(descriptor.references ?? {}).sort();
+    if (referenceNames.length === 0) return [];
+    return `${descriptor.name}[${referenceNames.join(',')}]`;
+  });
 }
 
 function mapProgressToolCall(name: string, rawArgs: unknown, ctx: EventContext): RunnerEvent | undefined {
@@ -482,6 +623,148 @@ async function writeStructuredResultFile(
   }
 }
 
+function sandboxResultFileCandidates(
+  workspace: OpenAIWorkspaceSandboxConfig,
+  resultFile: string
+): readonly string[] {
+  const normalizedResultFile = resultFile.replace(/\\/g, '/').replace(/^\/+/, '');
+  const candidates: string[] = [];
+  const scratchRoot = workspace.scratchRoot;
+  if (scratchRoot !== undefined) {
+    candidates.push(`/workspace/${path.basename(scratchRoot)}/${normalizedResultFile}`);
+  }
+  candidates.push(`/workspace/scratch/${normalizedResultFile}`);
+  candidates.push(`/workspace/${normalizedResultFile}`);
+  candidates.push(normalizedResultFile);
+  // Shell workdir does not change the base of session.readFile's relative paths.
+  if (workspace.repoRoot !== undefined) {
+    candidates.push(`/workspace/${path.basename(workspace.repoRoot)}/${normalizedResultFile}`);
+  }
+  return [...new Set(candidates)];
+}
+
+async function writeStructuredResultFromFinalOutput(
+  env: AgentProviderSessionInput['runInput']['environment'],
+  structuredResult: OpenAIStructuredResultConfiguration,
+  output: unknown,
+  onStage?: (stage: 'result_parse' | 'result_write') => void
+): Promise<void> {
+  onStage?.('result_parse');
+  const parsed = parseStructuredResultFromFinalOutput(output);
+  onStage?.('result_write');
+  await writeStructuredResultFile(env, structuredResult, parsed);
+}
+
+function parseStructuredResultFromFinalOutput(output: unknown): unknown {
+  if (typeof output !== 'string') return output;
+
+  const trimmed = output.trim();
+  const candidates = [
+    trimmed,
+    ...[...trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)].map((match) => match[1]?.trim() ?? ''),
+    trimmed.slice(trimmed.indexOf('{'), trimmed.lastIndexOf('}') + 1)
+  ].filter((candidate) => candidate.length > 0);
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch {
+      // Try the next safe extraction shape; raw output is never logged.
+    }
+  }
+
+  throw new ProviderProtocolError(
+    'structured_result_invalid',
+    'OpenAI structured-output-free session advanced with non-JSON final output.',
+    { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId }
+  );
+}
+
+async function copyStructuredResultFileFromSandbox(
+  env: AgentProviderSessionInput['runInput']['environment'],
+  workspace: OpenAIWorkspaceSandboxConfig,
+  session: OpenAISandboxSession,
+  structuredResult: OpenAIStructuredResultConfiguration,
+  diagnostic?: (detail: Record<string, unknown>) => void
+): Promise<void> {
+  // Record metadata only; never log file or model contents.
+  diagnostic?.({ captureStage: "sandbox_read_start", readableSession: session.readFile !== undefined });
+  if (session.readFile === undefined) {
+    throw new ProviderProtocolError(
+      'missing_structured_result',
+      'OpenAI structured output session advanced without a readable agent-authored result file.',
+      { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId }
+    );
+  }
+
+  let fileText: string | undefined;
+  for (const candidate of sandboxResultFileCandidates(workspace, structuredResult.capture.resultFile)) {
+    try {
+      const content = await session.readFile({ path: candidate });
+      fileText = typeof content === 'string' ? content : new TextDecoder().decode(content);
+      diagnostic?.({ captureStage: 'sandbox_read_ok', candidate, byteCount: fileText.length });
+      break;
+    } catch (err) {
+      const error = err as { code?: unknown };
+      diagnostic?.({ captureStage: 'sandbox_read_failed', candidate, ...buildSafeOpenAISdkErrorDiagnostic(err), ...(safeSdkDiagnosticToken(error.code) ? { code: error.code } : {}) });
+      // Try the next sandbox-visible location. The final error below stays path-safe.
+    }
+  }
+
+  if (fileText === undefined) {
+    throw new ProviderProtocolError(
+      'missing_structured_result',
+      'OpenAI structured output session advanced without an agent-authored result file.',
+      { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId }
+    );
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fileText);
+  } catch {
+    throw new ProviderProtocolError(
+      'structured_result_invalid',
+      'OpenAI agent-authored result file did not contain valid JSON.',
+      { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId, code: 'result_json_invalid' }
+    );
+  }
+
+  const writeOutcome = await writeScratchStepResultFile({
+    environment: env,
+    resultFile: structuredResult.capture.resultFile,
+    value: parsed
+  });
+
+  if (writeOutcome.status === 'failed') {
+    throw new ProviderProtocolError(
+      'structured_result_invalid',
+      `OpenAI agent-authored result file write failed: ${writeOutcome.code}`,
+      { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId, code: writeOutcome.code }
+    );
+  }
+}
+
+async function copyStructuredResultFileFromSandboxOrFinalOutput(
+  env: AgentProviderSessionInput['runInput']['environment'],
+  workspace: OpenAIWorkspaceSandboxConfig,
+  session: OpenAISandboxSession,
+  structuredResult: OpenAIStructuredResultConfiguration,
+  output: unknown,
+  diagnostic?: (detail: Record<string, unknown>) => void
+): Promise<void> {
+  try {
+    await copyStructuredResultFileFromSandbox(env, workspace, session, structuredResult, diagnostic);
+  } catch (err) {
+    if (err instanceof ProviderProtocolError && err.code === 'missing_structured_result') {
+      diagnostic?.({ captureStage: 'final_output_fallback', outputType: typeof output, ...(typeof output === 'string' ? { outputChars: output.length } : {}) });
+      await writeStructuredResultFromFinalOutput(env, structuredResult, output);
+      return;
+    }
+    throw err;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Workspace mapping & containment
 // ---------------------------------------------------------------------------
@@ -566,6 +849,84 @@ function buildWorkspaceManifest(
     environment: environmentInit,
     extraPathGrants: grants
   });
+}
+
+interface MaterializedOpenAIWorkspace {
+  readonly workspace: OpenAIWorkspaceSandboxConfig;
+  cleanup(): Promise<void>;
+}
+
+async function copyWorkspaceRootForLocalSandbox(source: string, destination: string): Promise<void> {
+  // A worktree's .git file points outside its root. Copying that pointer would
+  // let sandbox git commands mutate host refs despite NoopSnapshotSpec.
+  const gitEntry = await lstat(path.join(source, '.git')).catch(() => undefined);
+  const linkedWorktree = gitEntry?.isFile() === true;
+  if (linkedWorktree) {
+    await execFileAsync('git', ['clone', '--no-hardlinks', '--no-checkout', '--', source, destination]);
+    await execFileAsync('git', ['-C', destination, 'reset', '--mixed', 'HEAD']);
+  }
+  await cp(source, destination, {
+    recursive: true,
+    force: true,
+    errorOnExist: false,
+    filter: async (src) => {
+      if (LOCAL_SANDBOX_EXCLUDED_DIRECTORY_NAMES.has(path.basename(src))) return false;
+      if (linkedWorktree && src === path.join(source, '.git')) return false;
+      const info = await lstat(src);
+      return !info.isSymbolicLink();
+    }
+  });
+}
+
+async function materializeWorkspaceForOpenAILocalSandbox(
+  workspace: OpenAIWorkspaceSandboxConfig,
+  workspaceBaseDir?: string
+): Promise<MaterializedOpenAIWorkspace> {
+  if (workspace.workspaceRoots.length === 0) {
+    return {
+      workspace,
+      async cleanup(): Promise<void> {
+        // No staged workspace was created.
+      }
+    };
+  }
+
+  const stageRoot = await mkdtemp(path.join(workspaceBaseDir ?? tmpdir(), 'autocatalyst-openai-sandbox-'));
+  const remappedRoots = new Map<string, string>();
+
+  try {
+    for (const root of workspace.workspaceRoots) {
+      const logicalName = path.basename(root) || 'root';
+      const stagedRoot = path.join(stageRoot, logicalName);
+      if ([...remappedRoots.values()].includes(stagedRoot)) {
+        throw new Error('Workspace roots must have distinct logical names.');
+      }
+      await copyWorkspaceRootForLocalSandbox(root, stagedRoot);
+      remappedRoots.set(root, stagedRoot);
+    }
+  } catch {
+    await rm(stageRoot, { recursive: true, force: true });
+    throw new UnsupportedProviderCapabilityError(
+      'sandbox_client_unsupported', 'OpenAI workspace staging failed.',
+      { providerKind: openaiProviderKind, adapterId: openaiAgentAdapterId }
+    );
+  }
+
+  const remapRequiredRoot = (root: string): string => remappedRoots.get(root) ?? root;
+  const { repoRoot, scratchRoot, resultRoot, workspaceRoots, ...workspaceRest } = workspace;
+
+  return {
+    workspace: {
+      ...workspaceRest,
+      workspaceRoots: workspaceRoots.map(remapRequiredRoot),
+      ...(repoRoot !== undefined ? { repoRoot: remapRequiredRoot(repoRoot) } : {}),
+      ...(scratchRoot !== undefined ? { scratchRoot: remapRequiredRoot(scratchRoot) } : {}),
+      ...(resultRoot !== undefined ? { resultRoot: remapRequiredRoot(resultRoot) } : {})
+    },
+    async cleanup(): Promise<void> {
+      await rm(stageRoot, { recursive: true, force: true });
+    }
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -660,19 +1021,32 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
         }
       : {};
 
-  // Cast to the default SandboxAgent (TextOutput) type that the runner expects.
-  // The outputType field is passed through the constructor and consumed by the SDK
-  // at runtime; the cast is safe because the runner only observes the finalOutput
-  // (typed unknown in StreamRunResultView). The runner uses streaming internally.
-  const agent = new SandboxAgent({
+  // Runtime skills need the SDK capability path to own the model-facing tool set.
+  // Native capabilities supply the tools needed to read skills and execute their scripts.
+  const hasRuntimeSkills = input.skillDescriptors !== undefined && input.skillDescriptors.length > 0;
+  const capabilities = hasRuntimeSkills
+    ? [
+        sdkFilesystem(),
+        sdkShell(),
+        sdkCompaction(),
+        sdkSkills({ skills: input.skillDescriptors.map((s) => ({ ...s })) })
+      ]
+    : [];
+  const sandboxAgentConfig = {
     name: 'autocatalyst-openai-agent',
     model: input.model,
     instructions: input.instructions,
-    defaultManifest: input.manifest,
-    tools: input.tools,
+    ...(hasRuntimeSkills
+      ? { capabilities }
+      : {
+          defaultManifest: input.manifest,
+          tools: input.tools
+        }),
     ...(Object.keys(input.modelSettings).length > 0 ? { modelSettings: input.modelSettings } : {}),
     ...outputTypeOption
-  } as ConstructorParameters<typeof SandboxAgent>[0]) as SandboxAgent;
+  } as ConstructorParameters<typeof SandboxAgent>[0];
+
+  const agent = new SandboxAgent(sandboxAgentConfig) as SandboxAgent;
 
   // Per-session Runner bound to the per-session model provider via RunConfig.
   // This is the ONLY place the model provider is set — never through any of the
@@ -688,6 +1062,7 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
   result.catch(() => undefined);
 
   async function* drive(): AsyncIterable<RunItem> {
+    let failureStage: 'sdk_run_start' | 'sdk_stream' | 'sdk_completion' = 'sdk_run_start';
     try {
       const continuityOptions = input.modelMemoryState !== undefined
         ? {
@@ -697,12 +1072,14 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
         : {};
       const stream = await runner.run(agent, input.prompt, { sandbox: { session: input.session }, stream: true, maxTurns: OPENAI_AGENT_MAX_TURNS, ...continuityOptions }) as unknown as StreamedRunnerRunView;
 
+      failureStage = 'sdk_stream';
       for await (const event of stream) {
         if (isRunItemStreamEvent(event)) {
           yield event.item;
         }
       }
 
+      failureStage = 'sdk_completion';
       const streamResult = stream as unknown as StreamRunResultView;
       const usage = streamResult.state._context.usage;
       const lastResponseId = streamResult.lastResponseId;
@@ -718,7 +1095,7 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
         ...(responsesContinuity !== undefined ? { responsesContinuity } : {})
       });
     } catch (err) {
-      const shaped = err as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
+      const shaped = (err ?? {}) as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
       const classificationInput = {
         ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
         ...(typeof shaped.statusCode === 'number' ? { statusCode: shaped.statusCode } : {}),
@@ -729,11 +1106,12 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
       const reason = classifyProviderFailure(classificationInput);
       const safeDetails = {
         ...filterSafeClassificationDetails(classificationInput),
-        ...(err instanceof MaxTurnsExceededError
-          ? { sdkErrorName: 'MaxTurnsExceededError', maxTurns: OPENAI_AGENT_MAX_TURNS }
-          : {})
+        ...buildSafeOpenAISdkErrorDiagnostic(err),
+        failureStage
       };
-      const classified = new ClassifiedProviderFailureError(reason ?? 'runner_failed_before_terminal_result', safeDetails);
+      const classified: ClassifiedProviderFailureError = reason !== undefined
+        ? new ClassifiedProviderFailureError(reason, safeDetails)
+        : new ClassifiedProviderFailureError('runner_failed_before_terminal_result', safeDetails);
       rejectResult(classified);
       throw classified;
     }
@@ -755,8 +1133,9 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
  */
 function makeDefaultSandboxClientFactory(workspaceBaseDir?: string): OpenAISandboxClientFactory {
   return async (factoryInput): Promise<OpenAISandboxClientHandle> => {
+    const staged = await materializeWorkspaceForOpenAILocalSandbox(factoryInput.workspace, workspaceBaseDir);
     const manifest = buildWorkspaceManifest(
-      factoryInput.workspace,
+      staged.workspace,
       factoryInput.environment,
       factoryInput.skillMounts ?? [],
       factoryInput.telemetryContext.role === 'reviewer'
@@ -770,6 +1149,7 @@ function makeDefaultSandboxClientFactory(workspaceBaseDir?: string): OpenAISandb
       });
       session = await client.create(manifest);
     } catch {
+      await staged.cleanup();
       throw new UnsupportedProviderCapabilityError(
         'sandbox_client_unsupported',
         'OpenAI local sandbox client could not open a session for the materialized workspace.',
@@ -779,8 +1159,13 @@ function makeDefaultSandboxClientFactory(workspaceBaseDir?: string): OpenAISandb
     return {
       client,
       session,
+      manifest,
       async close(): Promise<void> {
-        await session.close?.();
+        try {
+          await session.close?.();
+        } finally {
+          await staged.cleanup();
+        }
       }
     };
   };
@@ -803,8 +1188,7 @@ export function createOpenAIAgentAdapter(
   }
 
   function classifySdkError(err: unknown): ClassifiedProviderFailureError | undefined {
-    if (err instanceof ClassifiedProviderFailureError) return err;
-    const shaped = err as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
+    const shaped = (err ?? {}) as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
     const classificationInput = {
       ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
       ...(typeof shaped.statusCode === 'number' ? { statusCode: shaped.statusCode } : {}),
@@ -859,6 +1243,10 @@ export function createOpenAIAgentAdapter(
       if (input.structuredResultCapture !== undefined) {
         structuredResult = createOpenAIStructuredResultConfiguration(input.structuredResultCapture);
       }
+      const openAIOutputTypeStructuredResult = shouldUseOpenAIOutputType(structuredResult, input.telemetryContext.role)
+        ? structuredResult
+        : undefined;
+      const resultCaptureMechanism = openAIOutputTypeStructuredResult !== undefined ? 'openai_output_type' : 'sandbox_or_final_output';
 
       safeLog('info', 'openai_agent_session_start', {
         runId: input.telemetryContext.runId,
@@ -873,13 +1261,65 @@ export function createOpenAIAgentAdapter(
         ...(structuredResult !== undefined ? {
           schemaId: structuredResult.capture.schemaId,
           resultFile: structuredResult.capture.resultFile,
-          resultCaptureMechanism: structuredResult.projection.mechanism
+          resultCaptureMechanism
         } : {})
       });
 
-      // 5. Materialize resolved runtime skills into sandbox mounts + a system-prompt hint.
+      // 5. Materialize resolved runtime skills: sandbox mounts + a system-prompt
+      //    hint (legacy), AND native SDK skill descriptors (SKILL.md content) so
+      //    the model receives the skills natively rather than having to read files.
       const env = input.runInput.environment;
       const skillMaterialization = materializeOpenAISkillFiles(env.skills, runtimeSkillsCatalogRoot);
+      const skillDescriptors = buildOpenAISkillDescriptors(env.skills, runtimeSkillsCatalogRoot);
+      const baseInstructions = buildOpenAIAgentInstructions(skillMaterialization.systemPromptHint);
+      const resultPath = structuredResult?.capture.step === 'spec.author'
+        ? sandboxResultFileCandidates(workspace, structuredResult.capture.resultFile)[0]
+        : undefined;
+      const instructions = resultPath === undefined ? baseInstructions : [
+        baseInstructions,
+        `Write the spec result JSON to the absolute sandbox path ${resultPath}, regardless of the shell working directory.`,
+        'Before finishing, read that exact file and confirm it contains the required JSON result. A prose completion message does not replace the result file.'
+      ].join('\n');
+      const promptShape = buildPromptShapeDiagnostic({
+        prompt: input.runInput.environment.context.task.prompt,
+        instructions,
+        skillHintAppended: skillMaterialization.systemPromptHint.length > 0,
+        structuredOutput: openAIOutputTypeStructuredResult !== undefined
+      });
+      const nativeSkillDescriptorsWithReferences = skillDescriptors
+        .filter((descriptor) => descriptor.references !== undefined && Object.keys(descriptor.references).length > 0)
+        .map((descriptor) => descriptor.name);
+      const nativeSkillReferenceEntries = summarizeDescriptorReferenceEntries(skillDescriptors);
+      safeLog('info', 'openai.adapter.runtime_skills_prepared', {
+        runId: input.runInput.environment.context.run.id,
+        step: input.runInput.environment.context.run.currentStep,
+        role: input.telemetryContext.role,
+        providerKind: input.profile.providerKind,
+        adapterId: openaiAgentAdapterId,
+        requestedSkillCount: env.skills.requested.length,
+        requestedSkillRefs: [...env.skills.requested],
+        resolvedSkillCount: env.skills.resolved.length,
+        resolvedSkillRefs: env.skills.resolved.map((skill) => skill.ref),
+        stagedSkillMountCount: skillMaterialization.mounts.length,
+        stagedSkillSandboxPaths: skillMaterialization.mounts.map((mount) => mount.sandboxPath),
+        nativeSkillDescriptorCount: skillDescriptors.length,
+        nativeSkillDescriptorNames: skillDescriptors.map((descriptor) => descriptor.name),
+        nativeSkillDescriptorsWithReferences,
+        nativeSkillReferenceEntries,
+        sdkHandoffMode: skillDescriptors.length > 0 ? 'native_skills' : 'default_manifest',
+        progressToolsSuppressedForRuntimeSkills: skillDescriptors.length > 0,
+        promptShape
+      });
+      if (env.skills.requested.length > 0 && env.skills.resolved.length === 0) {
+        safeLog('warn', 'openai.adapter.runtime_skills_unresolved', {
+          runId: input.runInput.environment.context.run.id,
+          step: input.runInput.environment.context.run.currentStep,
+          role: input.telemetryContext.role,
+          providerKind: input.profile.providerKind,
+          adapterId: openaiAgentAdapterId,
+          requestedSkillRefs: [...env.skills.requested]
+        });
+      }
 
       // 6. Open the sandbox session over the materialized workspace (including skill mounts).
       let sandboxHandle: OpenAISandboxClientHandle;
@@ -892,8 +1332,12 @@ export function createOpenAIAgentAdapter(
           skillMounts: skillMaterialization.mounts
         });
       } catch (err) {
-        const classified = classifySdkError(err);
-        const safeDetail = { ...buildSafeAdapterFailureLogDetail(err, openaiProviderKind), ...(classified?.safeDetails ?? {}) };
+        const classified = err instanceof ClassifiedProviderFailureError ? err : classifySdkError(err);
+        const safeDetail = {
+          ...buildSafeAdapterFailureLogDetail(err ?? {}, openaiProviderKind),
+          ...(classified?.safeDetails ?? {}),
+          ...buildSafeOpenAISdkErrorDiagnostic(err)
+        };
         const failureCode = typeof safeDetail.code === 'string' ? safeDetail.code : undefined;
         safeLog('error', 'openai.adapter.sandbox_failed', {
           runId: input.telemetryContext.runId,
@@ -904,7 +1348,7 @@ export function createOpenAIAgentAdapter(
             structuredResultCapture: true,
             schemaId: structuredResult.capture.schemaId,
             resultFile: structuredResult.capture.resultFile,
-            resultCaptureMechanism: structuredResult.projection.mechanism
+            resultCaptureMechanism
           } : {}),
           ...safeDetail
         });
@@ -919,6 +1363,8 @@ export function createOpenAIAgentAdapter(
       //    When proxyMode is 'required', the connection's fetch transport already
       //    rebases every request URL to the loopback proxy — do NOT pass the
       //    upstream baseURL to the OpenAI client (the transport owns URL routing).
+      let setupStage: 'session_setup' | 'model_memory_load' | 'sdk_run_start' = 'session_setup';
+      try {
       const endpoint = input.profile.endpoint as { baseUrl?: string; proxyMode?: string };
       const proxyModeRequired = endpoint.proxyMode === 'required';
       const openAIClient = new OpenAI({
@@ -960,16 +1406,19 @@ export function createOpenAIAgentAdapter(
         skillMaterialization.mounts,
         input.telemetryContext.role === 'reviewer'
       );
+      const runManifest = sandboxHandle.manifest ?? manifest;
 
-      // Build the system instructions, appending the skill discovery hint when skills are staged.
-      const baseInstructions = input.runInput.environment.context.task.prompt;
-      const instructions = skillMaterialization.systemPromptHint.length > 0
-        ? `${baseInstructions}\n\n${skillMaterialization.systemPromptHint}`
-        : baseInstructions;
+      safeLog('info', 'openai.adapter.prompt_shape_prepared', {
+        runId: input.runInput.environment.context.run.id,
+        step: input.runInput.environment.context.run.currentStep,
+        role: input.telemetryContext.role,
+        promptShape
+      });
 
       // Load continuity state from the previous turn (if model memory is configured).
       let modelMemoryState: OpenAIResponsesContinuityState | undefined;
       if (input.modelMemory !== undefined) {
+        setupStage = 'model_memory_load';
         const snapshot = await input.modelMemory.store.load();
         if (
           snapshot !== null &&
@@ -988,16 +1437,18 @@ export function createOpenAIAgentAdapter(
         }
       }
 
+      setupStage = 'sdk_run_start';
       const outcome = await runAgentSession({
         prompt: input.runInput.environment.context.task.prompt,
         model: input.profile.model.model,
         instructions,
         tools,
-        manifest,
+        manifest: runManifest,
         session: sandboxHandle.session,
         modelProvider,
         modelSettings: inferenceMapping.mapped,
-        ...(structuredResult !== undefined ? { structuredResult } : {}),
+        ...(skillDescriptors.length > 0 ? { skillDescriptors } : {}),
+        ...(openAIOutputTypeStructuredResult !== undefined ? { structuredResult: openAIOutputTypeStructuredResult } : {}),
         ...(modelMemoryState !== undefined ? { modelMemoryState } : {})
       });
 
@@ -1017,7 +1468,16 @@ export function createOpenAIAgentAdapter(
           eventIdGenerator
         };
         let terminalSeen = false;
+        let failureStage = 'sdk_stream';
         try {
+          yield runtimeSkillDiagnosticNotification({
+            requestedSkillRefs: env.skills.requested,
+            resolvedSkillRefs: env.skills.resolved.map((skill) => skill.ref),
+            handoffMode: skillDescriptors.length > 0 ? 'native_skills' : 'default_manifest',
+            referenceEntries: nativeSkillReferenceEntries,
+            promptShape
+          }, ctx);
+
           for await (const item of outcome.items) {
             const event = mapRunItem(item, ctx);
             if (event === undefined) continue;
@@ -1031,6 +1491,7 @@ export function createOpenAIAgentAdapter(
             yield event;
           }
 
+          failureStage = 'sdk_result';
           const terminal = await outcome.result;
 
           // Persist continuity state before yielding the terminal event.
@@ -1039,6 +1500,7 @@ export function createOpenAIAgentAdapter(
             const continuityState: Record<string, string> = {};
             if (continuity.previousResponseId !== undefined) continuityState['previousResponseId'] = continuity.previousResponseId;
             if (continuity.conversationId !== undefined) continuityState['conversationId'] = continuity.conversationId;
+            failureStage = 'model_memory_save';
             await input.modelMemory.store.save({
               providerKind: openaiProviderKind,
               adapterId: openaiAgentAdapterId,
@@ -1049,15 +1511,49 @@ export function createOpenAIAgentAdapter(
           // Result-file handoff: write the final output to the scratch root.
           // Only on advance.
           if (terminal.directive === 'advance') {
-            if (structuredResult !== undefined) {
+            failureStage = 'result_capture';
+            if (openAIOutputTypeStructuredResult !== undefined) {
               // Structured capture: use parsed output, not prose
-              await writeStructuredResultFile(input.runInput.environment, structuredResult, terminal.output);
-            } else {
+              failureStage = 'result_write';
+              await writeStructuredResultFile(input.runInput.environment, openAIOutputTypeStructuredResult, terminal.output);
+            } else if (structuredResult !== undefined) {
+              if (input.telemetryContext.role === 'reviewer' && structuredResult.capture.step === 'implementation.build') {
+                // Reviewers are read-only and record their verdict from the final
+                // message. Avoid OpenAI outputType here so the model still uses
+                // read-only tools before returning JSON.
+                await writeStructuredResultFromFinalOutput(input.runInput.environment, structuredResult, terminal.output, stage => { failureStage = stage; });
+              } else {
+                // Structured capture without OpenAI outputType: prefer the JSON
+                // the agent authored inside the active sandbox, but accept a
+                // valid final JSON payload when the result file is absent.
+                await copyStructuredResultFileFromSandboxOrFinalOutput(
+                  input.runInput.environment,
+                  workspace,
+                  sandboxHandle.session,
+                  structuredResult,
+                  terminal.output,
+                  // Record the capture path without model or file contents.
+                  (detail) => safeLog('info', 'openai.adapter.result_capture_diagnostic', {
+                    runId: ctx.runId, step: ctx.step, ...detail
+                  })
+                );
+              }
+            } else if (structuredResult === undefined) {
               // Legacy no-contract path: write prose finalOutput as before
+              failureStage = 'result_write';
               await maybeWriteResultFile(input.runInput.environment, terminal.output);
             }
           }
 
+          if (terminal.directive === 'advance' && structuredResult !== undefined) {
+            safeLog('info', 'openai.adapter.result_capture_diagnostic', {
+              runId: ctx.runId, step: ctx.step, captureStage: 'capture_complete',
+              schemaId: structuredResult.capture.schemaId, resultFile: structuredResult.capture.resultFile,
+              resultCaptureMechanism: openAIOutputTypeStructuredResult !== undefined ? 'openai_output_type' : 'sandbox_or_final_output'
+            });
+          }
+
+          failureStage = 'terminal_emit';
           let terminalEvent: RunnerEvent;
           if (terminal.directive === 'needs_input') {
             terminalEvent = {
@@ -1094,20 +1590,35 @@ export function createOpenAIAgentAdapter(
             model: input.profile.model
           });
         } catch (err) {
-          const classified = classifySdkError(err);
+          const fallbackDetails = { providerKind: openaiProviderKind, failureStage, ...buildSafeOpenAISdkErrorDiagnostic(err) };
+          const classified = err instanceof ClassifiedProviderFailureError
+            ? err
+            : err instanceof ProviderProtocolError
+              ? undefined
+              : classifySdkError(err) ?? new ClassifiedProviderFailureError('runner_failed_before_terminal_result', fallbackDetails);
           const thrown = classified ?? err;
-          const safeDetail = { ...buildSafeAdapterFailureLogDetail(err, openaiProviderKind), ...(classified?.safeDetails ?? {}) };
+          const safeDetail = {
+            ...buildSafeAdapterFailureLogDetail(err ?? {}, openaiProviderKind),
+            ...buildSafeOpenAISdkErrorDiagnostic(err),
+            // Keep the original SDK cause instead of replacing
+            // its name with the ClassifiedProviderFailureError wrapper.
+            ...(classified?.safeDetails ?? {})
+          };
           const failureCode = typeof safeDetail.code === 'string' ? safeDetail.code : undefined;
+          const protocolErrorCode = err instanceof ProviderProtocolError ? err.code : undefined;
           safeLog('error', 'openai.adapter.session_failed', {
             runId: input.runInput.environment.context.run.id,
             step: input.runInput.environment.context.run.currentStep,
+            role: input.telemetryContext.role,
+            failureStage,
             ...(classified !== undefined ? { failureReason: classified.failureReason } : {}),
             ...(failureCode !== undefined ? { failureCode } : {}),
+            ...(protocolErrorCode !== undefined ? { protocolErrorCode } : {}),
             ...(structuredResult !== undefined ? {
               structuredResultCapture: true,
               schemaId: structuredResult.capture.schemaId,
               resultFile: structuredResult.capture.resultFile,
-              resultCaptureMechanism: structuredResult.projection.mechanism
+              resultCaptureMechanism
             } : {}),
             ...safeDetail
           });
@@ -1123,6 +1634,21 @@ export function createOpenAIAgentAdapter(
           await sandboxHandle.close?.();
         }
       };
+      } catch (err) {
+        const classified = classifySdkError(err);
+        safeLog('error', 'openai.adapter.session_failed', {
+          runId: input.telemetryContext.runId, step: input.telemetryContext.step,
+          stage: 'session_setup',
+          failureStage: setupStage,
+          ...buildSafeAdapterFailureLogDetail(err ?? {}, openaiProviderKind),
+          ...buildSafeOpenAISdkErrorDiagnostic(err),
+          ...(classified?.safeDetails ?? {})
+        });
+        try { await sandboxHandle.close?.(); } catch {
+          safeLog('warn', 'openai.adapter.sandbox_cleanup_failed', { runId: input.telemetryContext.runId });
+        }
+        throw classified ?? err;
+      }
     }
   };
 }

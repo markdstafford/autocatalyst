@@ -63,3 +63,11 @@ that approximate the SDK's wire protocol:
 - `providerKind`: `'anthropic'`
 - `adapterId`: `'claude-agent-sdk'`
 - `supportedConnectionMechanism`: `'process_environment'`
+
+## Runtime dependencies and skills
+
+This adapter owns the Claude Agent SDK and its Anthropic SDK/Zod 4 peers. A frozen workspace install resolves the dynamic SDK import from this package without relying on control-plane dependencies.
+
+Runtime skills become local plugins: one namespace directory containing `.claude-plugin/plugin.json` and `skills/<name>/`, including references. Launch options use `plugins: [{ type: 'local', path }]` and `skills: 'all'`. Session close and failure remove these temporary directories. Materialization rejects invalid paths and symlinks. Reviewer tool allowlists remain unchanged.
+
+Session-failure and structured-result capture diagnostics contain safe metadata only; credentials, prompts, result contents, and raw provider errors are excluded.

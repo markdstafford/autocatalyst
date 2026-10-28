@@ -1,4 +1,6 @@
-import { mkdtemp, mkdir, readFile, writeFile, rm } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { mkdtemp, mkdir, readdir, readFile, symlink, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -28,6 +30,7 @@ import {
   type OpenAISandboxClientHandle
 } from './openai-agent-adapter.js';
 import type { AgentModelMemoryContinuity, AgentModelMemoryStore, AgentModelMemorySnapshot } from '@autocatalyst/execution';
+import type { Dir } from '@openai/agents/sandbox';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -418,11 +421,19 @@ describe('createOpenAIAgentAdapter — reviewer workspace policy', () => {
 
 describe('createOpenAIAgentAdapter — skill materialization', () => {
   it('passes skill mounts to the sandbox client factory when resolved skills are present', async () => {
-    const { run } = makeRunSession([assistantItem('done')]);
+    const { run } = makeRunSession([assistantItem('done')], {
+      output: {
+        kind: 'feature_spec',
+        slug: 'test-feature',
+        relativePath: 'context-human/specs/feature-test-feature.md',
+        frontmatter: {},
+        body: '# Test Feature'
+      }
+    });
     const sandboxInputs: Array<Record<string, unknown>> = [];
     const input = makeSessionInputWithSkills('scratch_only', [
-      { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: [] },
-      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/writing-guidelines', dependencies: [] }
+      { ref: 'mm:planning', assetPath: 'assets/mm/plugins/mm/skills/planning', dependencies: [] },
+      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/plugins/mm/skills/writing-guidelines', dependencies: [] }
     ]);
     const adapter = createOpenAIAgentAdapter({
       runAgentSession: run,
@@ -434,16 +445,16 @@ describe('createOpenAIAgentAdapter — skill materialization', () => {
     expect(sandboxInputs).toHaveLength(1);
     const mounts = sandboxInputs[0]!['skillMounts'] as Array<{ hostPath: string; sandboxPath: string }>;
     expect(Array.isArray(mounts)).toBe(true);
-    expect(mounts).toHaveLength(2);
+    expect(mounts).toHaveLength(1);
     const sandboxPaths = mounts.map((m) => m.sandboxPath).sort();
-    expect(sandboxPaths).toEqual(['/workspace/skills/mm/planning', '/workspace/skills/mm/writing-guidelines']);
+    expect(sandboxPaths).toEqual(['/workspace/skills/mm']);
     expect(mounts.every((m) => typeof m.hostPath === 'string' && m.hostPath.length > 0)).toBe(true);
   });
 
   it('includes the systemPromptHint in the run session instructions when skills are staged', async () => {
     const { run, calls } = makeRunSession([assistantItem('done')]);
     const input = makeSessionInputWithSkills('scratch_only', [
-      { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: [] }
+      { ref: 'mm:planning', assetPath: 'assets/mm/plugins/mm/skills/planning', dependencies: [] }
     ]);
     const adapter = createOpenAIAgentAdapter({
       runAgentSession: run,
@@ -453,8 +464,11 @@ describe('createOpenAIAgentAdapter — skill materialization', () => {
     await collectEvents(session.events);
 
     expect(calls).toHaveLength(1);
+    expect(calls[0]!.prompt).toBe(FAKE_PROMPT);
+    expect(calls[0]!.instructions).not.toContain(FAKE_PROMPT);
+    expect(calls[0]!.instructions).toContain('You are an AI agent for software development automation.');
     expect(calls[0]!.instructions).toContain('mm:planning');
-    expect(calls[0]!.instructions).toContain('/workspace/skills/mm/planning');
+    expect(calls[0]!.instructions).toContain('/workspace/skills/mm/plugins/mm/skills/planning');
   });
 
   it('passes no skill mounts and no hint when env.skills is empty', async () => {
@@ -482,7 +496,7 @@ describe('createOpenAIAgentAdapter — skill materialization', () => {
   it('skill mount host paths use the catalog-declared assetPaths', async () => {
     const { run } = makeRunSession([assistantItem('done')]);
     const sandboxInputs: Array<Record<string, unknown>> = [];
-    const assetPath = 'assets/mm/planning';
+    const assetPath = 'assets/mm/plugins/mm/skills/planning';
     const input = makeSessionInputWithSkills('scratch_only', [
       { ref: 'mm:planning', assetPath, dependencies: [] }
     ]);
@@ -495,15 +509,15 @@ describe('createOpenAIAgentAdapter — skill materialization', () => {
     const mounts = sandboxInputs[0]!['skillMounts'] as Array<{ hostPath: string; sandboxPath: string }>;
     expect(mounts).toHaveLength(1);
     // The host path must end with the catalog assetPath segment.
-    expect(mounts[0]!.hostPath.endsWith(assetPath)).toBe(true);
+    expect(mounts[0]!.hostPath.endsWith('assets/mm')).toBe(true);
   });
 
   it('advertised sandbox paths in skill mounts match paths referenced in run session instructions', async () => {
     const { run, calls } = makeRunSession([assistantItem('done')]);
     const sandboxInputs: Array<Record<string, unknown>> = [];
     const input = makeSessionInputWithSkills('scratch_only', [
-      { ref: 'mm:planning', assetPath: 'assets/mm/planning', dependencies: [] },
-      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/writing-guidelines', dependencies: [] }
+      { ref: 'mm:planning', assetPath: 'assets/mm/plugins/mm/skills/planning', dependencies: [] },
+      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/plugins/mm/skills/writing-guidelines', dependencies: [] }
     ]);
     const adapter = createOpenAIAgentAdapter({
       runAgentSession: run,
@@ -518,6 +532,28 @@ describe('createOpenAIAgentAdapter — skill materialization', () => {
     for (const mount of mounts) {
       expect(instructions).toContain(mount.sandboxPath);
     }
+  });
+
+  it('loads skill descriptors with referenced stage files for native SDK skills', async () => {
+    const { run, calls } = makeRunSession([assistantItem('done')]);
+    const input = makeSessionInputWithSkills('scratch_only', [
+      { ref: 'mm:planning', assetPath: 'assets/mm/plugins/mm/skills/planning', dependencies: [] }
+    ]);
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession: run,
+      sandboxClientFactory: () => fakeSandboxHandle()
+    });
+    const session = await adapter.startSession(input);
+    await collectEvents(session.events);
+
+    expect(calls).toHaveLength(1);
+    const descriptor = calls[0]!.skillDescriptors?.[0];
+    expect(descriptor).toBeDefined();
+    expect(descriptor?.name).toBe('mm:planning');
+    expect(Object.keys(descriptor?.references ?? {})).toContain('stages');
+    const stages = descriptor?.references?.['stages'] as Dir | undefined;
+    expect(stages?.type).toBe('dir');
+    expect(Object.keys(stages?.children ?? {})).toContain('product-requirements.md');
   });
 });
 
@@ -623,6 +659,7 @@ describe('createOpenAIAgentAdapter — event mapping', () => {
     const session = await adapter.startSession(makeSessionInput('scratch_only'));
     const events = await collectEvents(session.events);
     expect(events.map((e) => e.type)).toEqual([
+      'runner_notification',
       'runner_assistant_turn',
       'runner_tool_activity',
       'runner_tool_activity',
@@ -737,6 +774,100 @@ describe('createOpenAIAgentAdapter — observability', () => {
     expect(captured).not.toContain(FAKE_SECRET);
     expect(captured).not.toContain(FAKE_PROMPT);
     expect(logger.info).toHaveBeenCalledWith('openai_agent_session_start', expect.any(Object));
+  });
+
+  it('logs safe runtime skill diagnostics before SDK handoff', async () => {
+    const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    const logger = {
+      info: vi.fn((event: string, fields: unknown) => { logs.push({ event, fields: fields as Record<string, unknown> }); }),
+      warn: vi.fn(),
+      error: vi.fn()
+    };
+    const { run } = makeRunSession([assistantItem('done')]);
+    const adapter = createOpenAIAgentAdapter({ runAgentSession: run, sandboxClientFactory: () => fakeSandboxHandle(), logger });
+    const session = await adapter.startSession(makeSessionInputWithSkills('scratch_only', [
+      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/plugins/mm/skills/writing-guidelines', dependencies: [] },
+      { ref: 'mm:planning', assetPath: 'assets/mm/plugins/mm/skills/planning', dependencies: ['mm:writing-guidelines'] }
+    ]));
+
+    await collectEvents(session.events);
+
+    const skillLog = logs.find((entry) => entry.event === 'openai.adapter.runtime_skills_prepared');
+    expect(skillLog).toBeDefined();
+    expect(skillLog!.fields['requestedSkillRefs']).toEqual(['mm:writing-guidelines', 'mm:planning']);
+    expect(skillLog!.fields['resolvedSkillRefs']).toEqual(['mm:writing-guidelines', 'mm:planning']);
+    expect(skillLog!.fields['nativeSkillDescriptorNames']).toEqual(['mm:writing-guidelines', 'mm:planning']);
+    expect(skillLog!.fields['nativeSkillDescriptorsWithReferences']).toEqual(['mm:planning']);
+    expect(skillLog!.fields['nativeSkillReferenceEntries']).toEqual([
+      'mm:planning[collaboration-protocol.md,examples,roles.md,scaling-guide.md,stages,templates]'
+    ]);
+    expect(skillLog!.fields['stagedSkillSandboxPaths']).toEqual([
+      '/workspace/skills/mm'
+    ]);
+    expect(skillLog!.fields['sdkHandoffMode']).toBe('native_skills');
+    expect(skillLog!.fields['progressToolsSuppressedForRuntimeSkills']).toBe(true);
+    expect(skillLog!.fields['promptShape']).toEqual({
+      promptChars: expect.any(Number),
+      instructionsChars: expect.any(Number),
+      instructionsStartWithPrompt: false,
+      instructionSuffixChars: expect.any(Number),
+      skillHintAppended: true,
+      structuredOutput: false
+    });
+    expect(JSON.stringify(skillLog!.fields)).not.toContain('Required runtime skill');
+  });
+
+  it('emits runtime skill and prompt-shape diagnostics into the runner event stream', async () => {
+    const specData = {
+      kind: 'feature_spec',
+      slug: 'test-feature',
+      relativePath: 'context-human/specs/feature-test-feature.md',
+      frontmatter: {},
+      body: '# Test Feature'
+    };
+    const { run } = makeRunSession([assistantItem('done')], {
+      output: specData
+    });
+    const sandboxReadFile = vi.fn(async () => new TextEncoder().encode(JSON.stringify(specData)));
+    const sandboxHandle = {
+      client: {} as OpenAISandboxClientHandle['client'],
+      session: { readFile: sandboxReadFile } as unknown as OpenAISandboxClientHandle['session'],
+      close: vi.fn(async () => undefined)
+    };
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession: run,
+      sandboxClientFactory: () => sandboxHandle
+    });
+    const input = makeSessionInputWithSkills('scratch_only', [
+      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/plugins/mm/skills/writing-guidelines', dependencies: [] },
+      { ref: 'mm:planning', assetPath: 'assets/mm/plugins/mm/skills/planning', dependencies: ['mm:writing-guidelines'] }
+    ]);
+    const session = await adapter.startSession({
+      ...input,
+      structuredResultCapture: {
+        step: 'spec.author',
+        schemaId: 'autocatalyst.spec_author.v1',
+        schema: z.object({
+          kind: z.string(),
+          slug: z.string(),
+          relativePath: z.string(),
+          frontmatter: z.record(z.any()),
+          body: z.string()
+        }),
+        resultFile: 'step-result.json',
+        required: true
+      }
+    });
+
+    const events = await collectEvents(session.events);
+
+    expect(events[0]?.type).toBe('runner_notification');
+    const notification = events[0];
+    if (notification?.type !== 'runner_notification') throw new Error('expected notification');
+    expect(notification.notification.severity).toBe('info');
+    expect(notification.notification.message).toBe(
+      'Runtime skills: requested=mm:writing-guidelines,mm:planning resolved=mm:writing-guidelines,mm:planning handoff=native_skills referenceEntries=mm:planning[collaboration-protocol.md,examples,roles.md,scaling-guide.md,stages,templates] promptShape=instructions_distinct structuredOutput=false'
+    );
   });
 });
 
@@ -951,6 +1082,45 @@ describe('createOpenAIAgentAdapter — provider auth failure classification', ()
     expectNoSentinels(captured);
     expect(captured).toContain('provider_auth_failed');
   });
+
+  it('logs sanitized SDK error shape for unclassified run-session failures', async () => {
+    const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn((event: string, fields: unknown) => { logs.push({ event, fields: fields as Record<string, unknown> }); })
+    };
+    class MaxTurnsExceededError extends Error {}
+    const sdkError = Object.assign(new MaxTurnsExceededError(`raw body ${FAKE_SECRET}`), {
+      name: 'MaxTurnsExceededError',
+      code: 'max_turns_exceeded'
+    });
+    const failingRun = (): OpenAIRunOutcome => {
+      const resultPromise = new Promise<never>((_, reject) => reject(sdkError));
+      resultPromise.catch(() => undefined);
+      return {
+        items: (async function* () {
+          yield await Promise.reject<never>(sdkError);
+        })(),
+        result: resultPromise
+      };
+    };
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => fakeSandboxHandle(),
+      runAgentSession: failingRun,
+      logger
+    });
+    const session = await adapter.startSession(makeSessionInput('scratch_only'));
+    const err = await collectEvents(session.events).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ClassifiedProviderFailureError);
+    expect(err).toMatchObject({ failureReason: 'runner_failed_before_terminal_result' });
+    const failureLog = logs.find((entry) => entry.event === 'openai.adapter.session_failed');
+    expect(failureLog?.fields['failureReason']).toBe('runner_failed_before_terminal_result');
+    expect(failureLog?.fields['sdkErrorName']).toBe('MaxTurnsExceededError');
+    expect(failureLog?.fields['sdkErrorCode']).toBe('max_turns_exceeded');
+    expect(JSON.stringify(failureLog)).not.toContain(FAKE_SECRET);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1098,7 +1268,7 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
       expect(events.filter((e) => e.type === 'runner_terminal_result')).toHaveLength(1);
       expect(types[types.length - 1]).toBe('runner_terminal_result');
 
-      const notification = events.find((e) => e.type === 'runner_notification');
+      const notification = events.find((e) => e.type === 'runner_notification' && e.notification.message === 'starting review');
       expect(notification && notification.type === 'runner_notification' && notification.notification.message).toBe('starting review');
 
       // The fetch transport (not a global client) carried the model traffic.
@@ -1208,35 +1378,171 @@ describe('createOpenAIAgentAdapter — no Chat Completions regression', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Runtime skills must use the SDK capability tool set without progress-tool mixing
+// ---------------------------------------------------------------------------
+
+describe('createOpenAIAgentAdapter — native runtime skill SDK request shape', () => {
+  it('does not mix custom progress tools into native runtime skill sessions', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'ac-openai-skills-'));
+    const repoRoot = path.join(tmp, 'repo');
+    const scratchRoot = path.join(tmp, 'scratch');
+    const sandboxBase = path.join(tmp, 'sbx');
+    await mkdir(repoRoot, { recursive: true });
+    await mkdir(scratchRoot, { recursive: true });
+    await mkdir(sandboxBase, { recursive: true });
+    await writeFile(path.join(repoRoot, 'README.md'), '# project\n');
+
+    try {
+      const requestBodies: unknown[] = [];
+      const transport: ProviderFetchTransport = {
+        fetch: vi.fn(async (request) => {
+          if (typeof request.body === 'string') {
+            requestBodies.push(JSON.parse(request.body) as unknown);
+          }
+          const output = [{ id: 'msg_1', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Done.' }] }];
+          return new Response(makeResponsesSSEBody('resp_skill_1', output), {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' }
+          });
+        })
+      };
+
+      const profile = makeProfile({ endpoint: { baseUrl: 'https://api.openai.test/v1' } });
+      const connection: AgentConnection = {
+        profile,
+        credentialResolved: true,
+        createFetchTransport: () => transport,
+        createProcessLaunchConfig: () => { throw new Error('process launch not supported'); }
+      };
+
+      const input: AgentProviderSessionInput = {
+        ...makeSessionInputWithSkills('two_roots', [
+          { ref: 'mm:planning', assetPath: 'assets/mm/plugins/mm/skills/planning', dependencies: [] }
+        ]),
+        profile,
+        connection
+      };
+      (input.runInput.environment as { workspace: unknown }).workspace = {
+        shape: 'two_roots',
+        repoRoot,
+        scratchRoot,
+        branchName: 'feature/x',
+        provisionedBaseRef: 'origin/main',
+        workspaceRoots: [repoRoot, scratchRoot]
+      };
+      (input.runInput.environment.context as { task: unknown }).task = {
+        prompt: 'Use mm:planning to write a feature spec.',
+        inputs: {}
+      };
+
+      const adapter = createOpenAIAgentAdapter({ sandboxWorkspaceBaseDir: sandboxBase });
+      const session = await adapter.startSession(input);
+      await collectEvents(session.events);
+
+      const serializedBodies = JSON.stringify(requestBodies);
+      expect(serializedBodies).toContain('mm:planning');
+      expect(serializedBodies).not.toContain('update_plan');
+      expect(serializedBodies).not.toContain('report_progress');
+      expect(serializedBodies).not.toContain('notify');
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+// ---------------------------------------------------------------------------
 // spec.author structured result capture regression
 // ---------------------------------------------------------------------------
 
 describe('createOpenAIAgentAdapter — spec.author structured result capture', () => {
-  it('spec.author: structured output captures spec data despite prose in stream', async () => {
-    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-spec-author-'));
+  it('spec.author: copies the agent-authored sandbox result file into the host scratch root', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-spec-author-host-copy-'));
     try {
       const specData = {
         kind: 'feature_spec',
-        slug: 'test-feature',
-        relativePath: 'context-human/specs/feature-test-feature.md',
-        frontmatter: {
-          status: 'draft',
-          created: '2026-06-01',
-          last_updated: '2026-06-01',
-          specced_by: 'autocatalyst'
-        },
-        body: '# Test Feature\n\nThis is a test.'
+        slug: 'sandbox-authored-feature',
+        relativePath: 'context-human/specs/feature-sandbox-authored-feature.md',
+        frontmatter: {},
+        body: '# Sandbox Authored Feature'
       };
-
-      const fakeRun: OpenAIRunAgentSession = () => ({
-        items: [assistantItem('I wrote the spec. Let me summarize what I did.')],
-        result: Promise.resolve({ directive: 'advance' as const, output: specData })
+      const sandboxReadFile = vi.fn(async (args: { path: string }) => {
+        if (args.path === '/workspace/scratch/step-result.json') {
+          return new TextEncoder().encode(JSON.stringify(specData));
+        }
+        throw Object.assign(new Error('missing'), { code: 'ENOENT' });
       });
+
+      const fakeRun: OpenAIRunAgentSession = (runInput) => {
+        expect(runInput.instructions).toContain(`Write the spec result JSON to the absolute sandbox path /workspace/${path.basename(scratchDir)}/step-result.json`);
+        return {
+          items: [assistantItem('Wrote /workspace/scratch/step-result.json')],
+          result: Promise.resolve({ directive: 'advance' as const })
+        };
+      };
 
       const specCapture: StructuredAgentResultCapture = {
         step: 'spec.author',
         schemaId: 'autocatalyst.spec_author.v1',
-        // Use a permissive schema at the adapter level; full validation happens at the entry point.
+        schema: z.object({
+          kind: z.string(),
+          slug: z.string(),
+          relativePath: z.string(),
+          frontmatter: z.record(z.any()),
+          body: z.string()
+        }),
+        resultFile: 'step-result.json',
+        required: true
+      };
+
+      const adapter = createOpenAIAgentAdapter({
+        sandboxClientFactory: () => ({
+          client: {} as OpenAISandboxClientHandle['client'],
+          session: { readFile: sandboxReadFile } as unknown as OpenAISandboxClientHandle['session'],
+          close: vi.fn(async () => undefined)
+        }),
+        runAgentSession: fakeRun
+      });
+
+      const input: AgentProviderSessionInput = {
+        ...makeSessionInput('scratch_only', { scratchRoot: scratchDir }),
+        structuredResultCapture: specCapture
+      };
+      const session = await adapter.startSession(input);
+      await collectEvents(session.events);
+
+      expect(sandboxReadFile).toHaveBeenCalledWith({ path: '/workspace/scratch/step-result.json' });
+      const resultJson = JSON.parse(await readFile(path.join(scratchDir, 'step-result.json'), 'utf8'));
+      expect(resultJson).toEqual(specData);
+    } finally {
+      await rm(scratchDir, { recursive: true });
+    }
+  });
+
+  it('spec.author: falls back to final-message JSON when the sandbox result file is missing', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-spec-author-final-output-'));
+    try {
+      const specData = {
+        kind: 'feature_spec',
+        slug: 'final-output-feature',
+        relativePath: 'context-human/specs/feature-final-output-feature.md',
+        frontmatter: { status: 'draft' },
+        body: '# Final Output Feature\n\nCaptured from final output.'
+      };
+      const calls: OpenAIRunSessionInput[] = [];
+      const fakeRun: OpenAIRunAgentSession = (input) => {
+        calls.push(input);
+        return {
+          items: [assistantItem('I wrote the structured result in my final response.')],
+          result: Promise.resolve({
+            directive: 'advance' as const,
+            output: `Spec complete.\n\n\`\`\`json\n${JSON.stringify(specData)}\n\`\`\``
+          })
+        };
+      };
+
+      const specCapture: StructuredAgentResultCapture = {
+        step: 'spec.author',
+        schemaId: 'autocatalyst.spec_author.v1',
         schema: z.object({
           kind: z.string(),
           slug: z.string(),
@@ -1257,10 +1563,77 @@ describe('createOpenAIAgentAdapter — spec.author structured result capture', (
         ...makeSessionInput('scratch_only', { scratchRoot: scratchDir }),
         structuredResultCapture: specCapture
       };
+      const session = await adapter.startSession(input);
+      await collectEvents(session.events);
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.structuredResult).toBeUndefined();
+      const resultJson = JSON.parse(await readFile(path.join(scratchDir, 'step-result.json'), 'utf8'));
+      expect(resultJson).toEqual(specData);
+    } finally {
+      await rm(scratchDir, { recursive: true });
+    }
+  });
+
+  it('spec.author: disables OpenAI outputType and relies on the agent-authored scratch result file', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-spec-author-'));
+    try {
+      const specData = {
+        kind: 'feature_spec',
+        slug: 'test-feature',
+        relativePath: 'context-human/specs/feature-test-feature.md',
+        frontmatter: {
+          status: 'draft',
+          created: '2026-06-01',
+          last_updated: '2026-06-01',
+          specced_by: 'autocatalyst'
+        },
+        body: '# Test Feature\n\nThis is a test.'
+      };
+      const calls: OpenAIRunSessionInput[] = [];
+      const fakeRun: OpenAIRunAgentSession = (input) => {
+        calls.push(input);
+        return {
+          items: [assistantItem('I wrote the spec. Let me summarize what I did.')],
+          result: Promise.resolve({ directive: 'advance' as const })
+        };
+      };
+
+      const specCapture: StructuredAgentResultCapture = {
+        step: 'spec.author',
+        schemaId: 'autocatalyst.spec_author.v1',
+        // Use a permissive schema at the adapter level; full validation happens at the entry point.
+        schema: z.object({
+          kind: z.string(),
+          slug: z.string(),
+          relativePath: z.string(),
+          frontmatter: z.record(z.any()),
+          body: z.string()
+        }),
+        resultFile: 'step-result.json',
+        required: true
+      };
+
+      const sandboxReadFile = vi.fn(async () => new TextEncoder().encode(JSON.stringify(specData)));
+      const adapter = createOpenAIAgentAdapter({
+        sandboxClientFactory: () => ({
+          client: {} as OpenAISandboxClientHandle['client'],
+          session: { readFile: sandboxReadFile } as unknown as OpenAISandboxClientHandle['session'],
+          close: vi.fn(async () => undefined)
+        }),
+        runAgentSession: fakeRun
+      });
+
+      const input: AgentProviderSessionInput = {
+        ...makeSessionInput('scratch_only', { scratchRoot: scratchDir }),
+        structuredResultCapture: specCapture
+      };
 
       const session = await adapter.startSession(input);
       await collectEvents(session.events);
 
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.structuredResult).toBeUndefined();
       const resultJson = JSON.parse(await readFile(path.join(scratchDir, 'step-result.json'), 'utf8'));
       expect(resultJson.kind).toBe('feature_spec');
       expect(resultJson.slug).toBe('test-feature');
@@ -1300,6 +1673,7 @@ describe('createOpenAIAgentAdapter — structured result capture', () => {
       const capture = makeStructuredCapture();
       const input: AgentProviderSessionInput = {
         ...makeSessionInput('scratch_only', { scratchRoot: scratchDir }),
+        telemetryContext: { ...makeTelemetry(), role: 'implementer' },
         structuredResultCapture: capture
       };
 
@@ -1317,6 +1691,89 @@ describe('createOpenAIAgentAdapter — structured result capture', () => {
     }
   });
 
+  it('reviewer sessions avoid OpenAI outputType and write the final JSON verdict', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-openai-reviewer-final-json-'));
+    try {
+      const calls: OpenAIRunSessionInput[] = [];
+      const verdict = { status: 'findings', findings: [{ title: 'No review', body: 'Need inspection.', severity: 'blocker' }] };
+      const fakeRunSession: OpenAIRunAgentSession = (input) => {
+        calls.push(input);
+        return {
+          items: [assistantItem(JSON.stringify(verdict))],
+          result: Promise.resolve({ directive: 'advance' as const, output: verdict })
+        };
+      };
+
+      const input: AgentProviderSessionInput = {
+        ...makeSessionInput('scratch_only', { scratchRoot: scratchDir }),
+        telemetryContext: { ...makeTelemetry(), role: 'reviewer' },
+        structuredResultCapture: makeStructuredCapture('implementation-build-round-1-reviewer-result.json')
+      };
+
+      const adapter = createOpenAIAgentAdapter({ sandboxClientFactory: () => fakeSandboxHandle(), runAgentSession: fakeRunSession });
+      const session = await adapter.startSession(input);
+      await collectEvents(session.events);
+
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.structuredResult).toBeUndefined();
+      const resultJson = JSON.parse(await readFile(path.join(scratchDir, 'implementation-build-round-1-reviewer-result.json'), 'utf8'));
+      expect(resultJson).toEqual(verdict);
+    } finally {
+      await rm(scratchDir, { recursive: true, force: true });
+    }
+  });
+
+  it('reviewer final-message capture accepts fenced JSON verdicts', async () => {
+    const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-openai-reviewer-fenced-json-'));
+    try {
+      const verdict = { status: 'satisfied', findings: [] };
+      const fakeRunSession: OpenAIRunAgentSession = () => ({
+        items: [assistantItem('Review complete.')],
+        result: Promise.resolve({
+          directive: 'advance' as const,
+          output: 'I reviewed the implementation.\n\n```json\n{ "status": "satisfied", "findings": [] }\n```'
+        })
+      });
+
+      const adapter = createOpenAIAgentAdapter({ sandboxClientFactory: () => fakeSandboxHandle(), runAgentSession: fakeRunSession });
+      const session = await adapter.startSession({
+        ...makeSessionInput('scratch_only', { scratchRoot: scratchDir }),
+        telemetryContext: { ...makeTelemetry(), role: 'reviewer' },
+        structuredResultCapture: makeStructuredCapture('implementation-build-round-1-reviewer-result.json')
+      });
+      await collectEvents(session.events);
+
+      const resultJson = JSON.parse(await readFile(path.join(scratchDir, 'implementation-build-round-1-reviewer-result.json'), 'utf8'));
+      expect(resultJson).toEqual(verdict);
+    } finally {
+      await rm(scratchDir, { recursive: true, force: true });
+    }
+  });
+
+  it('logs safe protocol error codes when reviewer final-message JSON is invalid', async () => {
+    const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    const logger = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn((event: string, fields: unknown) => { logs.push({ event, fields: fields as Record<string, unknown> }); })
+    };
+    const fakeRunSession: OpenAIRunAgentSession = () => ({
+      items: [assistantItem('not json')],
+      result: Promise.resolve({ directive: 'advance' as const, output: `not json ${FAKE_SECRET}` })
+    });
+
+    const adapter = createOpenAIAgentAdapter({ sandboxClientFactory: () => fakeSandboxHandle(), runAgentSession: fakeRunSession, logger });
+    const session = await adapter.startSession({
+      ...makeSessionInput('scratch_only'),
+      telemetryContext: { ...makeTelemetry(), role: 'reviewer' },
+      structuredResultCapture: makeStructuredCapture('implementation-build-round-1-reviewer-result.json')
+    });
+    await collectEvents(session.events).catch(() => undefined);
+
+    const failureLog = logs.find((entry) => entry.event === 'openai.adapter.session_failed');
+    expect(failureLog?.fields['protocolErrorCode']).toBe('structured_result_invalid');
+    expect(JSON.stringify(failureLog)).not.toContain(FAKE_SECRET);
+  });
   it('writes structured result JSON and ignores prose finalOutput', async () => {
     const scratchDir = await mkdtemp(path.join(os.tmpdir(), 'test-openai-structured-'));
     try {
@@ -1447,7 +1904,7 @@ describe('createOpenAIAgentAdapter — structured result error paths no-leak', (
     expect(captured).not.toContain(SENTINEL_JSON);
     // Safe fields should be present
     expect(captured).toContain('autocatalyst.reviewer_result.v1');
-    expect(captured).toContain('openai_output_type');
+    expect(captured).toContain('sandbox_or_final_output');
   });
 
   it('does not leak sentinels in logger output when sandbox fails during structured capture', async () => {
@@ -1517,7 +1974,7 @@ describe('createOpenAIAgentAdapter — structured result error paths no-leak', (
     expect(captured).not.toContain(SENTINEL_JSON);
     // Safe structured-result diagnostics should appear
     expect(captured).toContain('autocatalyst.reviewer_result.v1');
-    expect(captured).toContain('openai_output_type');
+    expect(captured).toContain('sandbox_or_final_output');
   });
 });
 
@@ -1526,6 +1983,102 @@ describe('createOpenAIAgentAdapter — structured result error paths no-leak', (
 // ---------------------------------------------------------------------------
 
 describe('createOpenAIAgentAdapter — reviewer workspace immutability (behavioral)', () => {
+  it('opens reviewer sandboxes when the repo contains ignored pnpm node_modules symlinks', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'ac-reviewer-symlinks-'));
+    const repoRoot = path.join(tmp, 'repo');
+    const scratchRoot = path.join(tmp, 'scratch');
+    const sandboxBase = path.join(tmp, 'sbx');
+    await mkdir(path.join(repoRoot, 'apps/control-plane/node_modules/.pnpm/fastify@5.8.5/node_modules'), { recursive: true });
+    await mkdir(scratchRoot, { recursive: true });
+    await mkdir(sandboxBase, { recursive: true });
+    await writeFile(path.join(repoRoot, 'README.md'), 'repo content\n');
+    await mkdir(path.join(repoRoot, 'apps/control-plane'), { recursive: true });
+    await symlink(
+      path.join(repoRoot, 'apps/control-plane/node_modules/.pnpm/fastify@5.8.5/node_modules/fastify'),
+      path.join(repoRoot, 'apps/control-plane/node_modules/fastify')
+    );
+
+    const runAgentSession: OpenAIRunAgentSession = async () => ({
+      items: [{ type: 'message_output_item', rawItem: { content: [{ type: 'output_text', text: 'reviewed' }] } } as RunItem],
+      result: Promise.resolve({ directive: 'advance', output: 'ok' })
+    });
+
+    const adapter = createOpenAIAgentAdapter({
+      runAgentSession,
+      sandboxWorkspaceBaseDir: sandboxBase,
+      clock: () => new Date('2025-01-01T00:00:00.000Z'),
+      eventIdGenerator: (() => {
+        let i = 0;
+        return () => `evt_${++i}`;
+      })()
+    });
+
+    try {
+      const baseInput = makeSessionInput('two_roots', { repoRoot, scratchRoot });
+      const session = await adapter.startSession({
+        ...baseInput,
+        telemetryContext: { ...baseInput.telemetryContext, role: 'reviewer' },
+        runInput: {
+          ...baseInput.runInput,
+          environment: {
+            ...baseInput.runInput.environment,
+            context: {
+              ...baseInput.runInput.environment.context,
+              task: { id: 'task-review', title: 'Review', prompt: 'Review the repo' }
+            }
+          }
+        }
+      });
+
+      const events = await collectEvents(session.events);
+      expect(events.some((event) => event.type === 'runner_assistant_turn')).toBe(true);
+      await session.close?.();
+      expect((await readdir(sandboxBase)).filter((name) => name.startsWith('autocatalyst-openai-sandbox-'))).toEqual([]);
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it('isolates linked-worktree git metadata and file edits from the reviewer host', async () => {
+    const git = promisify(execFile);
+    const root = await mkdtemp(path.join(os.tmpdir(), 'ac-review-worktree-'));
+    const host = path.join(root, 'host');
+    const repoRoot = path.join(root, 'repo');
+    const scratchRoot = path.join(root, 'scratch');
+    const sandboxBase = path.join(root, 'sandbox');
+    await Promise.all([host, scratchRoot, sandboxBase].map((directory) => mkdir(directory)));
+    try {
+      await git('git', ['init', '-b', 'main', host]);
+      await writeFile(path.join(host, 'README.md'), 'original');
+      await git('git', ['-C', host, 'add', 'README.md']);
+      await git('git', ['-C', host, '-c', 'user.name=Test', '-c', 'user.email=test@example.com', 'commit', '-m', 'fixture']);
+      await git('git', ['-C', host, 'worktree', 'add', '-b', 'review', repoRoot]);
+      const adapter = createOpenAIAgentAdapter({
+        sandboxWorkspaceBaseDir: sandboxBase,
+        runAgentSession: async (input) => {
+          if (input.session.exec === undefined || input.session.readFile === undefined) throw new Error('Expected real sandbox tools');
+          const initialStatus = await input.session.exec({ cmd: 'git -C /workspace/repo status --porcelain' });
+          expect(initialStatus.stdout.trim()).toBe('');
+          await input.session.exec({ cmd: 'git -C /workspace/repo update-ref refs/heads/sandbox-only HEAD && echo sandbox-edit > /workspace/repo/README.md' });
+          const content = await input.session.readFile({ path: '/workspace/repo/README.md' });
+          expect(new TextDecoder().decode(content)).toContain('sandbox-edit');
+          return { items: [], result: Promise.resolve({ directive: 'advance' }) };
+        }
+      });
+      const session = await adapter.startSession(makeSessionInput('two_roots', { repoRoot, scratchRoot }));
+      try {
+        await collectEvents(session.events);
+      } finally {
+        await session.close?.();
+      }
+      expect(await readFile(path.join(repoRoot, 'README.md'), 'utf8')).toBe('original');
+      await expect(git('git', ['-C', host, 'show-ref', '--verify', 'refs/heads/sandbox-only'])).rejects.toThrow();
+    } finally {
+      await git('git', ['-C', host, 'worktree', 'remove', '--force', repoRoot]).catch(() => undefined);
+      await rm(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it('leaves host workspace files unchanged after a reviewer session even when the sandbox executes a write command', async () => {
     // This test proves the read-only invariant through two complementary mechanisms:
     //   1. extraPathGrants readOnly: true tells the sandbox client the source is read-only.
@@ -1690,4 +2243,251 @@ describe('createOpenAIAgentAdapter — model-memory continuity', () => {
     expect(capturedSaves).toHaveLength(1);
     expect(JSON.stringify(capturedSaves[0])).not.toContain('sandbox');
   });
+});
+
+// Regression: exercise native shell -> sandbox file -> host result with the
+// real SDK and local sandbox; only model HTTP is replaced, so no paid calls occur.
+describe('real SDK spec result handoff', () => {
+  it.each([
+    { workdir: '/workspace/scratch', outputPath: '/workspace/scratch/step-result.json' },
+    { workdir: '/workspace/repo', outputPath: 'step-result.json' }
+  ])('captures native shell JSON from $workdir before a prose final answer', async ({ workdir, outputPath }) => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'ac-result-handoff-'));
+    const repoRoot = path.join(tmp, 'repo');
+    const scratchRoot = path.join(tmp, 'scratch');
+    const sandboxBase = path.join(tmp, 'sandbox');
+    await Promise.all([repoRoot, scratchRoot, sandboxBase].map((root) => mkdir(root, { recursive: true })));
+    const specData = { kind: 'feature_spec', slug: 'telemetry', relativePath: 'context-human/specs/feature-telemetry.md', frontmatter: {}, body: '# Telemetry' };
+    const logs: unknown[] = [];
+    let call = 0;
+    const transport: ProviderFetchTransport = {
+      fetch: vi.fn(async () => {
+        call += 1;
+        const output = call === 1
+          ? [{ id: 'fc_write', type: 'function_call', call_id: 'call_write', name: 'exec_command', arguments: JSON.stringify({ cmd: `printf '%s' '${JSON.stringify(specData)}' > ${outputPath}`, workdir }), status: 'completed' }]
+          : [{ id: 'msg_done', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: 'Wrote step-result.json.' }] }];
+        return new Response(makeResponsesSSEBody(`resp_handoff_${call}`, output), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+      })
+    };
+    const profile = makeProfile({ endpoint: { baseUrl: 'https://api.openai.test/v1' } });
+    const input: AgentProviderSessionInput = {
+      ...makeSessionInputWithSkills('two_roots', [{ ref: 'mm:planning', assetPath: 'assets/mm/plugins/mm/skills/planning', dependencies: [] }]),
+      profile,
+      connection: { profile, credentialResolved: true, createFetchTransport: () => transport, createProcessLaunchConfig: () => { throw new Error('unused'); } },
+      structuredResultCapture: { step: 'spec.author', schemaId: 'autocatalyst.spec_author.v1', schema: z.object({ kind: z.string(), slug: z.string(), relativePath: z.string(), frontmatter: z.record(z.any()), body: z.string() }), resultFile: 'step-result.json', required: true }
+    };
+    (input.runInput.environment as { workspace: unknown }).workspace = { shape: 'two_roots', repoRoot, scratchRoot, branchName: 'feature/test', provisionedBaseRef: 'origin/main', workspaceRoots: [repoRoot, scratchRoot] };
+    const adapter = createOpenAIAgentAdapter({ sandboxWorkspaceBaseDir: sandboxBase, logger: { info: (_event, detail) => logs.push(detail), warn: (_event, detail) => logs.push(detail), error: (_event, detail) => logs.push(detail) } });
+    let session: Awaited<ReturnType<typeof adapter.startSession>> | undefined;
+    try {
+      session = await adapter.startSession(input);
+      await collectEvents(session.events);
+      expect(call).toBe(2);
+      expect(JSON.parse(await readFile(path.join(scratchRoot, 'step-result.json'), 'utf8'))).toEqual(specData);
+      expect(logs).toContainEqual(expect.objectContaining({
+        captureStage: 'sandbox_read_ok',
+        candidate: outputPath === 'step-result.json' ? '/workspace/repo/step-result.json' : outputPath
+      }));
+
+    } finally {
+      await session?.close?.();
+      await rm(tmp, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe('OpenAI diagnostic redaction', () => {
+  it('does not treat token-shaped error fields as safe diagnostic names', async () => {
+    const logs: unknown[] = [];
+    const error = Object.assign(new Error(FAKE_PROMPT), { name: FAKE_SECRET, code: FAKE_SECRET, type: FAKE_SECRET });
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => fakeSandboxHandle(),
+      runAgentSession: () => ({
+        items: (async function* () { yield await Promise.reject<RunItem>(error); })(),
+        result: Promise.resolve({ directive: 'fail' })
+      }),
+      logger: { info: (_event, fields) => logs.push(fields), warn() {}, error: (_event, fields) => logs.push(fields) }
+    });
+    const session = await adapter.startSession(makeSessionInput());
+    await expect(collectEvents(session.events)).rejects.toMatchObject({ failureReason: 'runner_failed_before_terminal_result' });
+    expect(JSON.stringify(logs)).not.toContain(FAKE_SECRET);
+    expect(JSON.stringify(logs)).not.toContain(FAKE_PROMPT);
+  });
+
+  it('logs capture metadata without final output contents', async () => {
+    const scratchRoot = await mkdtemp(path.join(os.tmpdir(), 'openai-capture-log-'));
+    const logs: Array<{ event: string; fields: unknown }> = [];
+    const sentinel = 'result-body-must-not-appear';
+    const output = { status: 'changes_requested', findings: [{ body: sentinel + FAKE_SECRET }] };
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => fakeSandboxHandle(),
+      runAgentSession: () => ({ items: [], result: Promise.resolve({ directive: 'advance', output }) }),
+      logger: { info: (event, fields) => logs.push({ event, fields }), warn() {}, error() {} }
+    });
+    try {
+      const session = await adapter.startSession({ ...makeSessionInput('scratch_only', { scratchRoot }), structuredResultCapture: makeStructuredCapture() });
+      await collectEvents(session.events);
+      expect(logs).toContainEqual(expect.objectContaining({
+        event: 'openai.adapter.result_capture_diagnostic',
+        fields: expect.objectContaining({ captureStage: 'capture_complete', schemaId: 'autocatalyst.reviewer_result.v1' })
+      }));
+      expect(JSON.stringify(logs)).not.toContain(sentinel);
+      expect(JSON.stringify(logs)).not.toContain(FAKE_SECRET);
+    } finally {
+      await rm(scratchRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+
+describe('OpenAI setup cleanup', () => {
+  it('closes the materialized sandbox when session construction fails', async () => {
+    const handle = fakeSandboxHandle();
+    const adapter = createOpenAIAgentAdapter({
+      sandboxClientFactory: () => handle,
+      runAgentSession: () => { throw new Error('session-setup-failed'); }
+    });
+    await expect(adapter.startSession(makeSessionInput())).rejects.toThrow('session-setup-failed');
+    expect(handle.close).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Fault injection is local: do not confuse reproduction of symptoms with the historical cause.
+describe('OpenAI completion boundary diagnostics', () => {
+  it.each(['memory_save', 'parse', 'write', 'sdk_result'] as const)('locates %s after an assistant verdict without logging content', async (fault) => {
+    const scratchRoot = await mkdtemp(path.join(os.tmpdir(), 'ac-completion-fault-'));
+    const resultFile = 'round-2-reviewer-result.json';
+    const output = fault === 'parse' ? `not JSON ${FAKE_SECRET}` : JSON.stringify({ status: 'satisfied', findings: [] });
+    const logs: Record<string, unknown>[] = [];
+    const error = new TypeError(`private cause ${FAKE_SECRET} ${FAKE_PROMPT}`);
+    const result: OpenAIRunOutcome['result'] = fault === 'sdk_result' ? Promise.reject(error)
+      : Promise.resolve({ directive: 'advance', output, responsesContinuity: { previousResponseId: 'resp_completed' } });
+    result.catch(() => undefined);
+    const adapter = createOpenAIAgentAdapter({ sandboxClientFactory: () => fakeSandboxHandle(),
+      runAgentSession: () => ({ items: [assistantItem(output)], result }),
+      logger: { info: () => undefined, warn: () => undefined, error: (_event, fields) => logs.push(fields as Record<string, unknown>) } });
+    const input: AgentProviderSessionInput = { ...makeSessionInput('scratch_only', { scratchRoot }),
+      telemetryContext: { runId: 'run_1', step: 'implementation.build', role: 'reviewer' },
+      structuredResultCapture: makeStructuredCapture(resultFile),
+      modelMemory: makeModelMemory({ load: async () => null, save: async () => { if (fault === 'memory_save') throw error; } }) };
+    const seen: RunnerEvent[] = [];
+    try {
+      if (fault === 'write') await mkdir(path.join(scratchRoot, resultFile));
+      const session = await adapter.startSession(input);
+      await expect((async () => { for await (const event of session.events) seen.push(event); })()).rejects.toThrow();
+      await expect(session.metadata).rejects.toThrow();
+      expect(seen.some(event => event.type === 'runner_assistant_turn')).toBe(true);
+      expect(seen.some(event => event.type === 'runner_terminal_result')).toBe(false);
+      expect(logs.at(-1)).toMatchObject({
+        failureStage: { memory_save: 'model_memory_save', parse: 'result_parse', write: 'result_write', sdk_result: 'sdk_result' }[fault],
+        resultCaptureMechanism: 'sandbox_or_final_output', role: 'reviewer'
+      });
+      if (fault === 'memory_save' || fault === 'sdk_result') expect(logs.at(-1)?.['sdkErrorName']).toBe('TypeError');
+      else expect(logs.at(-1)?.['protocolErrorCode']).toBe('structured_result_invalid');
+      expect(JSON.stringify(logs)).not.toContain(FAKE_SECRET);
+      expect(JSON.stringify(logs)).not.toContain(FAKE_PROMPT);
+      await expect(readFile(path.join(scratchRoot, resultFile), 'utf8')).rejects.toThrow();
+    } finally { await rm(scratchRoot, { recursive: true, force: true }); }
+  });
+
+  it('locates a memory-load failure before SDK launch and cleans up the sandbox', async () => {
+    const logs: Record<string, unknown>[] = [];
+    const handle = fakeSandboxHandle();
+    const run = vi.fn(makeRunSession([]).run);
+    const adapter = createOpenAIAgentAdapter({ sandboxClientFactory: () => handle, runAgentSession: run,
+      logger: { info: () => undefined, warn: () => undefined, error: (_event, fields) => logs.push(fields as Record<string, unknown>) } });
+    const input = { ...makeSessionInput(), modelMemory: makeModelMemory({ load: async () => { throw new Error(FAKE_SECRET); }, save: async () => undefined }) };
+    await expect(adapter.startSession(input)).rejects.toThrow();
+    expect(run).not.toHaveBeenCalled();
+    expect(handle.close).toHaveBeenCalledOnce();
+    expect(logs.at(-1)).toMatchObject({ failureStage: 'model_memory_load', sdkErrorName: 'Error' });
+    expect(JSON.stringify(logs)).not.toContain(FAKE_SECRET);
+  });
+
+  it.each(['success', 'memory_save', 'sdk_output'] as const)('exercises the real SDK with mocked HTTP: %s', async (fault) => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'ac-sdk-completion-'));
+    const repoRoot = path.join(tmp, 'repo'), scratchRoot = path.join(tmp, 'scratch');
+    await Promise.all([repoRoot, scratchRoot, path.join(tmp, 'sbx')].map(root => mkdir(root)));
+    const verdict = { status: 'findings', findings: [{ title: 'Registration', body: 'Wire the adapter.', severity: 'blocker' }] };
+    const logs: Record<string, unknown>[] = [];
+    const transport: ProviderFetchTransport = { fetch: vi.fn(async () => new Response(makeResponsesSSEBody('resp_complete', [
+      { id: 'msg_verdict', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: fault === 'sdk_output' ? `invalid JSON ${FAKE_SECRET}` : JSON.stringify(verdict) }] }
+    ]), { status: 200, headers: { 'content-type': 'text/event-stream' } })) };
+    const profile = makeProfile({ endpoint: { baseUrl: 'https://offline.invalid/v1' } });
+    const adapter = createOpenAIAgentAdapter({ sandboxWorkspaceBaseDir: path.join(tmp, 'sbx'),
+      logger: { info: () => undefined, warn: () => undefined, error: (_event, fields) => logs.push(fields as Record<string, unknown>) } });
+    const input: AgentProviderSessionInput = { ...makeSessionInput('two_roots', { repoRoot, scratchRoot }), profile,
+      connection: { profile, credentialResolved: true, createFetchTransport: () => transport, createProcessLaunchConfig: () => { throw new Error('unused'); } },
+      telemetryContext: { runId: 'run_1', step: 'implementation.build', role: 'reviewer' },
+      // Explicitly choose strict output for the SDK-parser case; build reviewers use final-output capture.
+      structuredResultCapture: { ...makeStructuredCapture('review.json'), ...(fault === 'sdk_output' ? { step: 'implementation.work' } : {}) },
+      modelMemory: makeModelMemory({ load: async () => null, save: async () => {
+        if (fault === 'memory_save') throw new Error(FAKE_SECRET, { cause: Object.assign(new Error(FAKE_PROMPT), { name: 'SqliteError', code: 'SQLITE_BUSY' }) });
+      } }) };
+    let session: Awaited<ReturnType<typeof adapter.startSession>> | undefined;
+    const seen: RunnerEvent[] = [];
+    try {
+      session = await adapter.startSession(input);
+      const consume = async () => { for await (const event of session!.events) seen.push(event); };
+      if (fault === 'success') {
+        await consume();
+        expect(await session.metadata).toMatchObject({ outcome: 'succeeded' });
+        expect(JSON.parse(await readFile(path.join(scratchRoot, 'review.json'), 'utf8'))).toEqual(verdict);
+      } else {
+        await expect(consume()).rejects.toMatchObject({ failureReason: 'runner_failed_before_terminal_result' });
+        await expect(session.metadata).rejects.toThrow();
+        expect(seen.some(event => event.type === 'runner_assistant_turn')).toBe(true);
+        expect(seen.some(event => event.type === 'runner_terminal_result')).toBe(false);
+        expect(logs.at(-1)).toMatchObject(fault === 'memory_save'
+          ? { failureStage: 'model_memory_save', sdkErrorName: 'Error', sdkCauseErrorName: 'SqliteError', sdkCauseErrorCode: 'SQLITE_BUSY', resultCaptureMechanism: 'sandbox_or_final_output' }
+          : { failureStage: 'sdk_stream', sdkErrorName: 'ModelBehaviorError', resultCaptureMechanism: 'openai_output_type' });
+        await expect(readFile(path.join(scratchRoot, 'review.json'), 'utf8')).rejects.toThrow();
+      }
+      expect(transport.fetch).toHaveBeenCalledOnce();
+      expect(JSON.stringify(logs)).not.toContain(FAKE_SECRET);
+      expect(JSON.stringify(logs)).not.toContain(FAKE_PROMPT);
+    } finally { await session?.close?.(); await rm(tmp, { recursive: true, force: true }); }
+  }, 30_000);
+});
+
+describe('OpenAI completion boundary diagnostics — consecutive rounds', () => {
+  it('completes two fourteen-turn reviews with shared model memory and distinct result files', async () => {
+    const tmp = await mkdtemp(path.join(os.tmpdir(), 'ac-review-rounds-'));
+    const repoRoot = path.join(tmp, 'repo'), scratchRoot = path.join(tmp, 'scratch'), sandboxBase = path.join(tmp, 'sbx');
+    await Promise.all([repoRoot, scratchRoot, sandboxBase].map(root => mkdir(root)));
+    let snapshot: AgentModelMemorySnapshot | null = null;
+    const store: AgentModelMemoryStore = { load: async () => snapshot, save: async value => { snapshot = value; } };
+    const previousIds: unknown[] = [];
+    let requests = 0;
+    const verdict = { status: 'satisfied', findings: [] };
+    const transport: ProviderFetchTransport = { fetch: vi.fn(async request => {
+      const body = typeof request.body === 'string' ? JSON.parse(request.body) as Record<string, unknown> : {};
+      previousIds.push(body['previous_response_id']);
+      requests += 1;
+      const final = requests % 14 === 0;
+      const output = final
+        ? [{ id: `msg_${requests}`, type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text', text: JSON.stringify(verdict) }] }]
+        : [{ id: `fc_${requests}`, type: 'function_call', call_id: `call_${requests}`, name: 'notify', arguments: JSON.stringify({ message: 'Inspecting repository', importance: 'low' }), status: 'completed' }];
+      return new Response(makeResponsesSSEBody(`resp_${requests}`, output), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+    }) };
+    const profile = makeProfile({ endpoint: { baseUrl: 'https://offline.invalid/v1' } });
+    const adapter = createOpenAIAgentAdapter({ sandboxWorkspaceBaseDir: sandboxBase });
+    try {
+      for (const round of [1, 2]) {
+        const session = await adapter.startSession({ ...makeSessionInput('two_roots', { repoRoot, scratchRoot }), profile,
+          connection: { profile, credentialResolved: true, createFetchTransport: () => transport, createProcessLaunchConfig: () => { throw new Error('unused'); } },
+          telemetryContext: { runId: 'run_1', step: 'implementation.build', role: 'reviewer' },
+          modelMemory: makeModelMemory(store), structuredResultCapture: makeStructuredCapture(`round-${round}-reviewer.json`) });
+        try {
+          const events = await collectEvents(session.events);
+          expect(events.at(-1)).toMatchObject({ type: 'runner_terminal_result', result: { directive: 'advance' } });
+          expect(await session.metadata).toMatchObject({ outcome: 'succeeded' });
+          expect(JSON.parse(await readFile(path.join(scratchRoot, `round-${round}-reviewer.json`), 'utf8'))).toEqual(verdict);
+        } finally { await session.close?.(); }
+      }
+      expect(requests).toBe(28);
+      expect(previousIds[14]).toBe('resp_14');
+      expect(snapshot).toMatchObject({ state: { previousResponseId: 'resp_28' } });
+    } finally { await rm(tmp, { recursive: true, force: true }); }
+  }, 30_000);
 });

@@ -162,21 +162,19 @@ function redactString(value: string, knownSecretValues: readonly string[]): stri
 // Real SDK launch: dynamically imports @anthropic-ai/claude-agent-sdk and
 // translates its SDKMessage stream into the ClaudeNativeEvent shape used by
 // mapNativeEvent. Dynamic import keeps the package buildable and unit-testable
-// without the SDK installed; tests inject their own launchClaudeSession seam.
+// while still making the adapter package own its provider SDK dependency.
 async function* realSDKLaunch(
   opts: ClaudeSessionLaunchOptions
 ): AsyncIterable<ClaudeNativeEvent> {
   type QueryFn = (input: { prompt: string; options?: Record<string, unknown> }) => AsyncIterable<Record<string, unknown>>;
   let query: QueryFn;
   try {
-    // eslint-disable-next-line @typescript-eslint/ban-ts-comment -- @ts-ignore is required here because @ts-expect-error triggers TS2578 (unused directive) when the optional peer is installed, making the suppression self-defeating
-    // @ts-ignore -- optional peer: types unavailable until the package is installed
     const sdk = await import('@anthropic-ai/claude-agent-sdk') as { query: QueryFn };
     query = sdk.query;
   } catch {
     throw new ProviderConnectionError(
       'process_launch_failed',
-      '@anthropic-ai/claude-agent-sdk is not installed. Install it as a peer dependency or provide options.launchClaudeSession.'
+      '@anthropic-ai/claude-agent-sdk is not installed for @autocatalyst/claude-agent-adapter. Run pnpm install or provide options.launchClaudeSession.'
     );
   }
 
@@ -289,7 +287,8 @@ export function createClaudeAgentAdapter(
   }
 
   function classifySdkError(err: unknown): ClassifiedProviderFailureError | undefined {
-    const shaped = err as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
+    if (err instanceof ClassifiedProviderFailureError) return err;
+    const shaped = (err ?? {}) as { status?: unknown; statusCode?: unknown; code?: unknown; name?: unknown };
     const classificationInput = {
       ...(typeof shaped.status === 'number' ? { status: shaped.status } : {}),
       ...(typeof shaped.statusCode === 'number' ? { statusCode: shaped.statusCode } : {}),
@@ -363,12 +362,49 @@ export function createClaudeAgentAdapter(
       const allowedTools = baseAllowedTools;
       const prompt = env.context.task.prompt;
 
-      // SDK local-plugin delivery, preserving the canonical Micromanager bundle.
+      // Materialize resolved skills into real Claude SDK LOCAL PLUGINS
+      // (`.claude-plugin/plugin.json` + skills/<name>/), passed via options.plugins.
       const skillMaterialization = materializeClaudeSkillPlugins(
         env.skills.resolved,
         runtimeSkillsCatalogRoot
       );
       const skillPlugins = skillMaterialization.plugins;
+      const localPluginSkillRefs = skillPlugins.map((plugin) => {
+        const namespace = path.basename(plugin.path);
+        return env.skills.resolved
+          .filter((skill) => {
+            const colon = skill.ref.indexOf(':');
+            const skillNamespace = colon === -1 ? skill.ref : skill.ref.slice(0, colon);
+            return skillNamespace === namespace;
+          })
+          .map((skill) => skill.ref);
+      });
+      safeLog('info', 'claude.adapter.runtime_skills_prepared', {
+        runId,
+        step,
+        providerKind: profile.providerKind,
+        adapterId: claudeAgentAdapterId,
+        profileName: profile.profileName,
+        requestedSkillCount: env.skills.requested.length,
+        requestedSkillRefs: [...env.skills.requested],
+        resolvedSkillCount: env.skills.resolved.length,
+        resolvedSkillRefs: env.skills.resolved.map((skill) => skill.ref),
+        localPluginCount: skillPlugins.length,
+        localPluginNamespaces: skillPlugins.map((plugin) => path.basename(plugin.path)),
+        localPluginSkillRefs,
+        sdkOptionsSkills: skillPlugins.length > 0 ? 'all' : undefined,
+        sdkHandoffMode: skillPlugins.length > 0 ? 'local_plugins' : 'no_runtime_skills'
+      });
+      if (env.skills.requested.length > 0 && env.skills.resolved.length === 0) {
+        safeLog('warn', 'claude.adapter.runtime_skills_unresolved', {
+          runId,
+          step,
+          providerKind: profile.providerKind,
+          adapterId: claudeAgentAdapterId,
+          profileName: profile.profileName,
+          requestedSkillRefs: [...env.skills.requested]
+        });
+      }
 
       let metadataResolve!: (value: AgentProviderSessionMetadata) => void;
       let metadataReject!: (err: unknown) => void;
@@ -451,6 +487,13 @@ export function createClaudeAgentAdapter(
             }
           }
 
+          yield runtimeSkillDiagnosticNotification({
+            requestedSkillRefs: env.skills.requested,
+            resolvedSkillRefs: env.skills.resolved.map((skill) => skill.ref),
+            handoffMode: skillPlugins.length > 0 ? 'local_plugins' : 'no_runtime_skills',
+            pluginNamespaces: skillPlugins.map((plugin) => path.basename(plugin.path))
+          }, { runId, step, clock, idGenerator, knownSecretValues });
+
           const native = launch({
             prompt,
             ...(cwd !== undefined ? { cwd } : {}),
@@ -459,6 +502,8 @@ export function createClaudeAgentAdapter(
             ...((skillPlugins.length > 0 || structuredResult !== undefined)
               ? {
                   options: {
+                    // Local plugins carry the skills; `skills: 'all'` loads every
+                    // discovered skill into the system prompt.
                     ...(skillPlugins.length > 0 ? { plugins: skillPlugins, skills: 'all' } : {}),
                     ...(structuredResult !== undefined ? { outputFormat: structuredResult.outputFormat } : {})
                   }
@@ -508,6 +553,11 @@ export function createClaudeAgentAdapter(
               );
             }
             await writeClaudeStructuredResultFile(env, input.structuredResultCapture, capturedStructuredResult.value);
+            safeLog('info', 'claude.adapter.result_capture_diagnostic', {
+              runId, step, schemaId: input.structuredResultCapture.schemaId,
+              resultFile: input.structuredResultCapture.resultFile,
+              captureStage: 'capture_complete', resultCaptureMechanism: structuredResult.projection.mechanism
+            });
             yield buildTerminalResult({ runId, step, clock, idGenerator, directive: 'advance' });
           } else {
             // Legacy no-contract path
@@ -518,14 +568,17 @@ export function createClaudeAgentAdapter(
           }
         } catch (err) {
           outcome = 'failed';
+          skillMaterialization.cleanup();
           const classified = classifySdkError(err);
-          const safeDetail = buildSafeAdapterFailureLogDetail(err, profile.providerKind);
+          const safeDetail = { ...buildSafeAdapterFailureLogDetail(err ?? {}, profile.providerKind), ...(classified?.safeDetails ?? {}) };
+          const protocolErrorCode = err instanceof ProviderProtocolError ? err.code : undefined;
           const failureCode = typeof safeDetail.code === 'string' ? safeDetail.code : undefined;
           safeLog('error', 'claude.adapter.session_failed', {
             runId,
             step,
             adapterId: claudeAgentAdapterId,
             ...safeDetail,
+            ...(protocolErrorCode !== undefined ? { protocolErrorCode } : {}),
             ...(classified !== undefined ? { failureReason: classified.failureReason } : {}),
             ...(failureCode !== undefined ? { failureCode } : {}),
             ...(structuredResult !== undefined && input.structuredResultCapture !== undefined ? {
@@ -629,6 +682,28 @@ function mapNativeEvent(ev: ClaudeNativeEvent, ctx: MapContext): MappedNative {
 
   // Unknown / system events: ignore.
   return { events: [] };
+}
+
+function runtimeSkillDiagnosticNotification(input: {
+  readonly requestedSkillRefs: readonly string[];
+  readonly resolvedSkillRefs: readonly string[];
+  readonly handoffMode: string;
+  readonly pluginNamespaces?: readonly string[];
+}, ctx: MapContext): RunnerEvent {
+  const requested = input.requestedSkillRefs.length > 0 ? input.requestedSkillRefs.join(',') : 'none';
+  const resolved = input.resolvedSkillRefs.length > 0 ? input.resolvedSkillRefs.join(',') : 'none';
+  const plugins = input.pluginNamespaces !== undefined && input.pluginNamespaces.length > 0
+    ? ` plugins=${input.pluginNamespaces.join(',')}`
+    : '';
+  return {
+    ...baseFields(ctx),
+    type: 'runner_notification',
+    importance: 'normal',
+    notification: {
+      severity: input.requestedSkillRefs.length > 0 && input.resolvedSkillRefs.length === 0 ? 'warn' : 'info',
+      message: `Runtime skills: requested=${requested} resolved=${resolved} handoff=${input.handoffMode}${plugins}`
+    }
+  };
 }
 
 function mapToolUse(

@@ -3,11 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ResolvedSkill } from '@autocatalyst/api-contract';
 import { resolveCatalogAssetPath } from '@autocatalyst/execution';
-// SDK local-plugin descriptor containing the fields supplied by materialization.
-export interface ClaudeSkillPlugin {
-  readonly type: 'local';
-  readonly path: string;
-}
+import type { SdkPluginConfig } from '@anthropic-ai/claude-agent-sdk';
+export type ClaudeSkillPlugin = SdkPluginConfig;
 
 export class ClaudeSkillMaterializationError extends Error {
   readonly code = 'skill_materialization_failed';

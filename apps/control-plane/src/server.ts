@@ -892,10 +892,15 @@ export async function createControlPlaneServer(
   // registry claim and the registered factory stay in lockstep.
   const realDispatchRegistryEntries: ExtensionRegistryEntry[] = [];
   if (realDispatchEnabled) {
+    const agentAdapterLogger = {
+      info(event: string, fields: unknown) { app.log.info({ ...(fields as Record<string, unknown>), event }, 'Agent adapter diagnostic.'); },
+      warn(event: string, fields: unknown) { app.log.warn({ ...(fields as Record<string, unknown>), event }, 'Agent adapter diagnostic.'); },
+      error(event: string, fields: unknown) { app.log.error({ ...(fields as Record<string, unknown>), event }, 'Agent adapter diagnostic.'); }
+    };
     const merged = new Map<string, ProviderAdapterFactory>(baseAdapters);
     const claudeKey = buildProviderAdapterKey(claudeProviderKind, claudeAgentAdapterId);
     if (!merged.has(claudeKey)) {
-      merged.set(claudeKey, () => createClaudeAgentAdapter());
+      merged.set(claudeKey, () => createClaudeAgentAdapter({ logger: agentAdapterLogger }));
     }
     realDispatchRegistryEntries.push({
       providerKind: claudeProviderKind,
@@ -925,7 +930,7 @@ export async function createControlPlaneServer(
     });
     const openaiAgentKey = buildProviderAdapterKey(openaiProviderKind, openaiAgentAdapterId);
     if (!merged.has(openaiAgentKey)) {
-      merged.set(openaiAgentKey, () => createOpenAIAgentAdapter());
+      merged.set(openaiAgentKey, () => createOpenAIAgentAdapter({ logger: agentAdapterLogger }));
     }
     realDispatchRegistryEntries.push({
       providerKind: openaiProviderKind,
@@ -970,7 +975,11 @@ export async function createControlPlaneServer(
 
   const app = options.loggerInstance !== undefined
     ? Fastify({ loggerInstance: options.loggerInstance })
-    : Fastify({ logger: options.logger ?? (realDispatchEnabled ? { level: 'info' } : false), disableRequestLogging: true });
+    : Fastify({
+        logger: options.logger ?? (realDispatchEnabled ? { level: 'info' } : false),
+        // Default real-dispatch diagnostics must be visible without logging requests.
+        disableRequestLogging: options.logger === undefined
+      });
 
   const domainRepos = createDrizzleDomainRepositories(database);
   const conversationIngress = new DrizzleConversationIngressRepository(database);

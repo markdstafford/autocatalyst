@@ -404,6 +404,54 @@ describe('createClaudeAgentAdapter — launch input mapping', () => {
     await session.close?.();
   });
 
+  it('logs safe runtime skill diagnostics before SDK launch', async () => {
+    const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    const logger = {
+      info: vi.fn((event: string, fields: unknown) => { logs.push({ event, fields: fields as Record<string, unknown> }); }),
+      warn: vi.fn(),
+      error: vi.fn()
+    };
+    const resolvedSkills: ResolvedSkill[] = [
+      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/plugins/mm/skills/writing-guidelines', dependencies: [] },
+      { ref: 'mm:planning', assetPath: 'assets/mm/plugins/mm/skills/planning', dependencies: ['mm:writing-guidelines'] }
+    ];
+    const { input } = makeSessionInput({ requestedSkills: ['mm:planning'], resolvedSkills });
+    const { launch } = fakeLaunch([{ type: 'result', result: { output: '' } }]);
+    const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch, logger });
+    const session = await adapter.startSession(input);
+    await collect(session.events);
+
+    const skillLog = logs.find((entry) => entry.event === 'claude.adapter.runtime_skills_prepared');
+    expect(skillLog).toBeDefined();
+    expect(skillLog!.fields['requestedSkillRefs']).toEqual(['mm:planning']);
+    expect(skillLog!.fields['resolvedSkillRefs']).toEqual(['mm:writing-guidelines', 'mm:planning']);
+    expect(skillLog!.fields['localPluginCount']).toBe(1);
+    expect(skillLog!.fields['localPluginNamespaces']).toEqual(['mm']);
+    expect(skillLog!.fields['localPluginSkillRefs']).toEqual([['mm:writing-guidelines', 'mm:planning']]);
+    expect(skillLog!.fields['sdkOptionsSkills']).toBe('all');
+    expect(JSON.stringify(skillLog!.fields)).not.toContain('# Stage: Product requirements');
+  });
+
+  it('emits runtime skill diagnostics into the runner event stream', async () => {
+    const resolvedSkills: ResolvedSkill[] = [
+      { ref: 'mm:writing-guidelines', assetPath: 'assets/mm/plugins/mm/skills/writing-guidelines', dependencies: [] },
+      { ref: 'mm:planning', assetPath: 'assets/mm/plugins/mm/skills/planning', dependencies: ['mm:writing-guidelines'] }
+    ];
+    const { input } = makeSessionInput({ requestedSkills: ['mm:planning'], resolvedSkills });
+    const { launch } = fakeLaunch([{ type: 'result', result: { output: '' } }]);
+    const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch });
+    const session = await adapter.startSession(input);
+
+    const events = await collect(session.events);
+
+    expect(events[0]?.type).toBe('runner_notification');
+    const notification = events[0];
+    if (notification?.type !== 'runner_notification') throw new Error('expected notification');
+    expect(notification.notification.severity).toBe('info');
+    expect(notification.notification.message).toBe(
+      'Runtime skills: requested=mm:planning resolved=mm:writing-guidelines,mm:planning handoff=local_plugins plugins=mm'
+    );
+  });
   it('reclaims local plugins on failure or close before consuming events', async () => {
     const resolvedSkills = (await resolveSkills(['mm:planning'])).resolved;
     const { input } = makeSessionInput({ resolvedSkills });
@@ -523,7 +571,7 @@ describe('createClaudeAgentAdapter — notify mapping', () => {
     const adapter = createClaudeAgentAdapter({ launchClaudeSession: launch });
     const session = await adapter.startSession(input);
     const events = await collect(session.events);
-    const notification = events.find((e) => e.type === 'runner_notification');
+    const notification = events.find((e) => e.type === 'runner_notification' && e.notification.message === 'heads up');
     expect(notification).toBeDefined();
     if (notification?.type !== 'runner_notification') throw new Error('wrong event');
     expect(notification.notification.severity).toBe('warn');

@@ -44,3 +44,11 @@ OpenAI Agents SDK `SandboxAgent`.
 - Two injectable seams (`sandboxClientFactory`, `runAgentSession`) default to the
   real SDK; tests inject fakes for dispatch wiring, while the package's own spec
   drives the **real** module with only the OpenAI client's `fetch` mocked.
+
+## Runtime skills and staged workspaces
+
+Resolved runtime skills use the SDK's native skills capability with filesystem, shell, and compaction tools. Descriptors include skill instructions and recursive references, scripts, and assets. Specification authoring captures the agent-authored sandbox JSON; build reviewers return final JSON without OpenAI outputType. Other structured routes retain native output schemas.
+
+The local sandbox stages workspace roots without dependency directories or symlinks. Linked worktrees receive independent Git metadata, so sandbox commands cannot mutate the host through a copied `.git` pointer. Reviewer grants remain read-only and snapshots remain disabled. Session close and setup failure remove staging; structured-result capture explicitly copies only the result into scratch.
+
+Sessions allow at most 250 turns and never automatically restart after exhaustion. Diagnostics report safe metadata and allowlisted SDK error identifiers, without credentials, prompts, result contents, or raw error messages.
