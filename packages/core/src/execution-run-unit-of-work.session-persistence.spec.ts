@@ -102,6 +102,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
   return {
     id: 'session_1',
     runId,
+    sequence: 1,
     phase: 'implementation',
     step: 'implementation.build',
     role: 'implementer',
@@ -118,7 +119,7 @@ function makeSession(overrides: Partial<Session> = {}): Session {
     outcome: 'succeeded',
     cost: {
       model: { provider: 'anthropic', model: 'claude-sonnet-4' },
-      usd: 0,
+      usd: null,
       tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
     },
     ...overrides
@@ -329,6 +330,14 @@ describe('execution-run-unit-of-work session persistence', () => {
           tokenUsage: { available: true, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 } },
           degradedCapabilities: [],
           model: { provider: 'anthropic', model: 'claude-haiku-4' }
+        },
+        sessionTelemetry: {
+          startedAt: '2026-06-22T00:00:00.000Z',
+          endedAt: '2026-06-22T00:00:01.500Z',
+          durationMs: 1500,
+          inferenceSettings: { temperature: 0.2, maxOutputTokens: 1024 },
+          assistantTurnCount: 1,
+          toolCallCount: 0
         }
       })
     };
@@ -361,6 +370,15 @@ describe('execution-run-unit-of-work session persistence', () => {
       usageAvailable: true,
       tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }
     });
+    // The recorder must carry the orchestrator-measured telemetry rather than
+    // synthesizing a zero-duration row with empty inference settings.
+    expect(call.startedAt).toBe('2026-06-22T00:00:00.000Z');
+    expect(call.endedAt).toBe('2026-06-22T00:00:01.500Z');
+    expect(call.inferenceSettings).toEqual({ temperature: 0.2, maxOutputTokens: 1024 });
+    expect(call.assistantTurnCount).toBe(1);
+    expect(call.toolCallCount).toBe(0);
+    // startedAt and endedAt must differ so the persisted duration is real.
+    expect(call.startedAt).not.toBe(call.endedAt);
   });
 
   it('does not record when direct mode is not configured and no model session ran', async () => {
@@ -392,6 +410,14 @@ describe('execution-run-unit-of-work session persistence', () => {
           tokenUsage: { available: false },
           degradedCapabilities: [],
           model: { provider: 'anthropic', model: 'claude-haiku-4' }
+        },
+        sessionTelemetry: {
+          startedAt: '2026-06-22T00:00:00.000Z',
+          endedAt: '2026-06-22T00:00:00.750Z',
+          durationMs: 750,
+          inferenceSettings: {},
+          assistantTurnCount: 1,
+          toolCallCount: 0
         }
       })
     };
@@ -413,6 +439,48 @@ describe('execution-run-unit-of-work session persistence', () => {
 
     const result = await unitOfWork.run(makeRoleInput('implementer', 1));
     expect(result).toEqual({ directive: 'fail', reason: 'session_persistence_failed' });
+  });
+
+  it('safely fails the dispatch when a direct port returns metadata without sessionTelemetry', async () => {
+    // DirectStepExecutionPort is public/core-facing. A port compiled against a prior
+    // DirectOrchestratorCallResult shape can return metadata (with model/tokenUsage) but
+    // no sessionTelemetry. The unit of work must not crash into the outer direct-call
+    // catch as `direct_call_failed`; it must surface a visible, safe persistence failure.
+    const sessions = makeSessions();
+    const directPort: DirectStepExecutionPort = {
+      call: vi.fn().mockResolvedValue({
+        value: { ok: true },
+        validation: { status: 'valid' },
+        metadata: {
+          outcome: 'succeeded',
+          tokenUsage: { available: true, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 } },
+          degradedCapabilities: [],
+          model: { provider: 'anthropic', model: 'claude-haiku-4' }
+        }
+        // sessionTelemetry intentionally absent (legacy/third-party port shape)
+      })
+    };
+
+    const directCall = {
+      purpose: 'intent',
+      input: {},
+      resultValidation: { schemaId: 'test', schema: { parse: (v: unknown) => v } as unknown as import('zod').ZodTypeAny }
+    };
+
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: { execute: vi.fn() } as unknown as ExecutionEntryPoint,
+      resolveContext: async () => makeContext(),
+      resolveExecutionMode: () => ({ mode: 'direct' as const, directCall }),
+      direct: directPort,
+      eventsStore: newStore(),
+      sessions
+    });
+
+    const result = await unitOfWork.run(makeRoleInput('implementer', 1));
+    // Must be the safe persistence failure, NOT a raw `direct_call_failed` TypeError surface.
+    expect(result).toEqual({ directive: 'fail', reason: 'session_persistence_failed' });
+    // No durable row can be written without telemetry, so create must not be attempted.
+    expect(sessions.create).not.toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------------
