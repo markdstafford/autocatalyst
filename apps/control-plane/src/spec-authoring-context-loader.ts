@@ -105,7 +105,14 @@ export async function loadSpecAuthorPromptInput(request: LoadSpecAuthorPromptInp
     if (request.tenantId !== undefined) assertTenant(message, request.tenantId, 'message', request.runId);
   }
 
-  let linkedIssue: SpecAuthorLinkedIssueContext | undefined = run.trackedIssue?.number !== undefined ? { number: run.trackedIssue.number } : undefined;
+  // Preserve the issue snapshot already fetched by intake.
+  // A supplied reader below still refreshes it; production supplies no reader.
+  let linkedIssue: SpecAuthorLinkedIssueContext | undefined = run.trackedIssue !== undefined ? {
+    number: run.trackedIssue.number,
+    title: run.trackedIssue.title,
+    ...(run.trackedIssue.body !== undefined ? { body: run.trackedIssue.body } : {}),
+    ...(run.trackedIssue.labels !== undefined ? { labels: run.trackedIssue.labels } : {})
+  } : undefined;
   if (request.tenantId !== undefined && request.issues !== undefined && run.trackedIssue?.number !== undefined) {
     try {
       const issue = await request.issues.read({ tenantId: request.tenantId, run, project, issueNumber: run.trackedIssue.number });

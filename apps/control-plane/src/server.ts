@@ -93,6 +93,7 @@ import {
   REVIEWER_RESULT_SCHEMA_ID,
   IMPLEMENTER_DISPOSITIONS_SCHEMA_ID,
   SPEC_AUTHOR_SCHEMA_ID,
+  PR_FINALIZE_SCHEMA_ID,
   ProviderConfigurationError,
   type AgentConnection,
   type AgentConnectionTelemetryContext,
@@ -549,7 +550,8 @@ export function createControlPlaneStepResultContractRegistry(
             : {}
         )
       )
-    )
+    ),
+    { resultFile: 'pr-finalize-result.json' }
   );
 }
 
@@ -609,6 +611,16 @@ export function resolveScratchResultValidationConfig(
       step: 'spec.author',
       schemaId: SPEC_AUTHOR_SCHEMA_ID,
       resultFile: 'step-result.json'
+    };
+  }
+
+  if (step === 'pr.finalize') {
+    return {
+      mode: 'scratch_file' as const,
+      contractRegistry: registry,
+      step: 'pr.finalize',
+      schemaId: PR_FINALIZE_SCHEMA_ID,
+      resultFile: 'pr-finalize-result.json'
     };
   }
 

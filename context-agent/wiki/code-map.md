@@ -241,3 +241,8 @@ Use the established initial tags as examples:
 - `AgentProviderAdapter.credentialRequirement` defaults to required; external-auth adapters explicitly select `external`. `createExplicitProfileResolver` honors it; Codex validates its account itself. Tests prove no secret lookup and unchanged existing provider behavior.
 - `packages/codex-agent-adapter/tools/probe-permissions.mjs` uses real app-server command/exec with the production permission helper and zero model turns; implementer-write control and reviewer-write denial must both pass. Run after `pnpm nx build codex-agent-adapter`.
 - Human-owned transport addendum is a proposal for PR review, indexed in the ADR index. Operator docs include actual supported commands, sign-in/config limits, session timeout and optional permission probe.
+## Workflow reliability regressions (2026-10-21, issue #105)
+- `apps/control-plane/src/spec-authoring-context-loader.ts` retains the persisted intake issue snapshot when no reader is supplied; reader refresh remains authoritative. `issue-reference-create.integration.spec.ts` covers persisted intake through no-reader authoring.
+- `apps/control-plane/src/server.ts` registers and selects `PR_FINALIZE_SCHEMA_ID` with `pr-finalize-result.json`, excluding the specification's shared result file. `server.spec.ts` verifies finalization accepts its own contract and rejects stale specification output.
+- `packages/openai-agent-adapter/src/openai-agent-adapter.ts` owns `OPENAI_AGENT_MAX_TURNS = 250`; SDK exhaustion retains safe static cause metadata through wrapper/logging. See `../decisions/openai-agent-turn-budget.md`.
+- `packages/execution/src/result-normalizers.ts` strips only optional reviewer finding `externalId: null`; required fields still undergo schema validation.
