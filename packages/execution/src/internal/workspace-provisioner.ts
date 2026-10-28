@@ -402,6 +402,11 @@ export function createWorkspaceProvisioner(dependencies: WorkspaceProvisionerDep
         return materializeFromDefaultBranch(request, paths, branchName, { removeExisting: true });
       }
 
+      // From here, existingWorkspaceBehavior === 'keep' (the default for every caller except
+      // recovery start-over). Keep NEVER removes the run's own derived state: base selection
+      // (run_branch vs current_default_branch) is fully independent of keep/replace. Only the
+      // `replace` short-circuit above may delete and rebuild.
+
       // Already-present workspace behavior (keep) applies to EVERY provisioning base: if the
       // run root is already present on the expected branch, leave it in place, treat the match
       // as the branch guard, and report it as present. An explicit base must not wipe or
@@ -412,24 +417,15 @@ export function createWorkspaceProvisioner(dependencies: WorkspaceProvisionerDep
           return twoRootsResult(request, paths, branchName, declaredBaseRef(request), 'present');
         }
 
-        // Present but not on the expected branch. The explicit `current_default_branch`
-        // start-over is the sole path allowed to intentionally remove and rebuild the
-        // run's own root; every other base keeps branch-guard failure as the safety
-        // boundary rather than silently deleting or repairing the directory.
-        if (base?.kind !== 'current_default_branch') {
-          throw new WorkspaceProvisioningError('branch_guard_failed', 'Worktree is not on the expected branch', {
-            targetPath: paths.repoRoot,
-            expectedBranch: branchName,
-            actualBranch
-          });
-        }
-      }
-
-      // Explicit start-over: rebuild from the fetched default branch. Reached only when the
-      // workspace is missing or present on an unexpected branch — the run's own derived
-      // branch/root are removed first so no prior run commits are carried forward.
-      if (base?.kind === 'current_default_branch') {
-        return materializeFromDefaultBranch(request, paths, branchName, { removeExisting: true });
+        // Present but not on the expected branch. Under keep, branch-guard failure is the
+        // safety boundary for EVERY base — including `current_default_branch`. The run's own
+        // root is never silently deleted or rebuilt here; a caller that intends to drop prior
+        // commits must opt in explicitly with `existingWorkspaceBehavior: 'replace'`.
+        throw new WorkspaceProvisioningError('branch_guard_failed', 'Worktree is not on the expected branch', {
+          targetPath: paths.repoRoot,
+          expectedBranch: branchName,
+          actualBranch
+        });
       }
 
       // Missing workspace, explicit recovery from the existing run branch.
@@ -437,7 +433,9 @@ export function createWorkspaceProvisioner(dependencies: WorkspaceProvisionerDep
         return materializeFromRunBranch(request, paths, branchName);
       }
 
-      // No explicit base, run root missing → today's default new-run behavior.
+      // Missing workspace, keep: materialize from the freshly fetched default branch WITHOUT
+      // removing any existing derived state. Covers both an explicit `current_default_branch`
+      // base under keep and today's default new-run behavior (no explicit base).
       return materializeFromDefaultBranch(request, paths, branchName, { removeExisting: false });
     }
   };

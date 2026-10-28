@@ -463,31 +463,28 @@ describe('workspace provisioner', () => {
       expect(driver.calls).toContain('addWorktree');
     });
 
-    it('removes only the run derived branch and root when the present workspace is on an unexpected branch, then rebuilds', async () => {
+    it('fails the branch guard without deleting anything when a present workspace is on an unexpected branch under default keep', async () => {
       const driver = new FakeWorkspaceDriver();
-      // Present run root/repo, but checked out on a different branch — the sole case where
-      // current_default_branch is allowed to remove and rebuild the run's own root.
+      // Present run root/repo, but checked out on a different branch. Base selection is
+      // independent of keep/replace: current_default_branch alone (default keep) must NOT
+      // remove or rebuild the run's own root. Branch-guard failure is the keep boundary.
       driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123'));
       driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123/repo'));
       driver.currentBranchValue = 'feature/some-other-branch';
       const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
 
-      const result = await provisioner.provisionWorkspace(
-        makeRequest({ materializationBase: { kind: 'current_default_branch' } })
-      );
-
-      expect(result).toMatchObject({
-        shape: 'two_roots',
-        outcome: 'materialized',
-        provisionedBaseRef: 'origin/main'
+      await expect(
+        provisioner.provisionWorkspace(makeRequest({ materializationBase: { kind: 'current_default_branch' } }))
+      ).rejects.toMatchObject({
+        code: 'branch_guard_failed',
+        context: { expectedBranch: 'feature/hello-world-Abc123', actualBranch: 'feature/some-other-branch' }
       });
-      expect(driver.calls).toContain('fetchHostRepository');
-      expect(driver.calls).toContain('resolveDefaultBranch');
-      expect(driver.calls).toContain(`prune:worktree:${path.resolve('/tmp/workspaces/acme/widgets/run_123/repo')}`);
-      expect(driver.calls).toContain(`prune:directory:${path.resolve('/tmp/workspaces/acme/widgets/run_123')}`);
-      expect(driver.calls).toContain('deleteBranch');
-      // Rebuild uses the new-branch (-b) worktree add from the fetched default base.
-      expect(driver.calls).toContain('addWorktree');
+
+      // Nothing is deleted or rebuilt: no prune, no branch delete, no worktree add, no fetch.
+      expect(driver.calls.some((call) => call.startsWith('prune:'))).toBe(false);
+      expect(driver.calls).not.toContain('deleteBranch');
+      expect(driver.calls).not.toContain('addWorktree');
+      expect(driver.calls).not.toContain('fetchHostRepository');
     });
 
     it('leaves an already-present workspace on the expected branch in place and never wipes or rebuilds it', async () => {
