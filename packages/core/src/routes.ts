@@ -72,6 +72,7 @@ import {
   secretCollectionPath,
   secretStoreLockedErrorCode,
   conflictErrorCode,
+  unknownCredentialReferenceErrorCode,
   createProjectRequestSchema,
   createProjectSuccessStatusCode,
   getProjectSuccessStatusCode,
@@ -132,7 +133,7 @@ import {
   updateConfigurationRecord,
   type ConfigurationRecordRepository
 } from './configuration-record.js';
-import { createSecret, SecretStoreLockedError, type SecretStore } from './secret.js';
+import { createSecret, SecretStoreLockedError, type SecretStore, type SecretExistenceChecker } from './secret.js';
 import {
   createProject,
   getProject,
@@ -165,7 +166,7 @@ export interface ControlPlaneRouteDependencies {
   readonly policy: PolicyDecisionPoint;
   readonly probeResources: ProbeResourceRepository;
   readonly configurationRecords: ConfigurationRecordRepository;
-  readonly secrets: SecretStore;
+  readonly secrets: SecretStore & SecretExistenceChecker;
   readonly projects: ProjectRepository;
   readonly controlPlane: ControlPlaneService;
 }
@@ -256,6 +257,9 @@ async function handleProjectServiceError(
       return;
     case 'not_found':
       await reply.status(404).send(errorResponse(notFoundErrorCode, error.message));
+      return;
+    case 'unknown_credential_reference':
+      await reply.status(422).send(errorResponse(unknownCredentialReferenceErrorCode, error.message, error.details));
       return;
   }
 }
@@ -602,7 +606,7 @@ export async function registerControlPlaneRoutes(
       }
       const principal = requirePrincipalFromRequest(request);
       try {
-        const project = await createProject(dependencies.projects, { principal, request: body });
+        const project = await createProject(dependencies.projects, dependencies.secrets, { principal, request: body });
         await reply.status(createProjectSuccessStatusCode).send(projectResponseSchema.parse(project));
       } catch (error) {
         if (error instanceof ProjectServiceError) {
@@ -668,7 +672,7 @@ export async function registerControlPlaneRoutes(
       }
       const principal = requirePrincipalFromRequest(request);
       try {
-        const project = await updateProject(dependencies.projects, { principal, id: params.id, request: body });
+        const project = await updateProject(dependencies.projects, dependencies.secrets, { principal, id: params.id, request: body });
         if (project === null) {
           await reply.status(404).send(errorResponse(notFoundErrorCode, 'Project not found.'));
           return;

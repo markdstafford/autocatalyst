@@ -19,6 +19,16 @@ describe('OpenAPI generation', () => {
     expect(document.paths[eventsStreamPath]?.get?.responses['200']).toBeDefined();
   });
 
+  it('documents a 422 unknown_credential_reference response on both project write operations', () => {
+    const document = generateOpenApiDocument();
+    const createOperation = document.paths['/v1/projects']?.post as { responses?: Record<string, unknown> };
+    const patchOperation = document.paths['/v1/projects/{id}']?.patch as { responses?: Record<string, unknown> };
+    expect(createOperation.responses?.['201']).toBeDefined();
+    expect(createOperation.responses?.['422']).toBeDefined();
+    expect(patchOperation.responses?.['200']).toBeDefined();
+    expect(patchOperation.responses?.['422']).toBeDefined();
+  });
+
   it('documents protected principal, configuration, and secret routes', () => {
     const document = generateOpenApiDocument();
     expect(document.paths['/v1/principal']?.get).toBeDefined();

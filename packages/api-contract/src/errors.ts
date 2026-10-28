@@ -18,3 +18,4 @@ export const conflictErrorCode = 'conflict' as const;
 export const activeRunConflictErrorCode = 'active_run_conflict' as const;
 export const intakeRoutingErrorCode = 'intake_routing_error' as const;
 export const forbiddenErrorCode = 'forbidden' as const;
+export const unknownCredentialReferenceErrorCode = 'unknown_credential_reference' as const;
