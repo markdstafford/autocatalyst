@@ -99,6 +99,7 @@ describe('workspace provisioning integration', () => {
     expect(result).toEqual({
       shape: 'two_roots',
       runId: 'run_123',
+      outcome: 'materialized',
       workspaceRoot: workspacesRoot,
       runRoot,
       repoRoot,
@@ -167,5 +168,76 @@ describe('workspace provisioning integration', () => {
 
     // No run directory should have been created under the escape target
     await expect(fs.stat(path.join(outsideDir, 'widgets'))).rejects.toThrow();
+  });
+
+  async function commitOnRunBranch(repoRoot: string, fileName: string, contents: string): Promise<void> {
+    await fs.writeFile(path.join(repoRoot, fileName), contents, 'utf8');
+    await git(['add', fileName], repoRoot);
+    await git(['-c', 'user.name=Autocatalyst Test', '-c', 'user.email=test@example.invalid', 'commit', '-m', `add ${fileName}`], repoRoot);
+  }
+
+  it('recreates a missing workspace from the existing run branch and restores a committed file', async () => {
+    const first = await provisionWorkspace(makeRequest());
+    expect(first.shape).toBe('two_roots');
+    if (first.shape !== 'two_roots') return;
+
+    await commitOnRunBranch(first.repoRoot, 'tracked.txt', 'restored\n');
+
+    // Simulate a manual deletion of the on-disk workspace. The run branch and host repo
+    // remain; the git worktree administrative state becomes stale.
+    await fs.rm(first.runRoot, { recursive: true, force: true });
+    await expect(fs.stat(first.repoRoot)).rejects.toThrow();
+
+    const recovered = await provisionWorkspace(makeRequest({ materializationBase: { kind: 'run_branch' } }));
+    expect(recovered).toMatchObject({
+      shape: 'two_roots',
+      outcome: 'materialized',
+      branchName: 'feature/hello-world-Abc123'
+    });
+    if (recovered.shape !== 'two_roots') return;
+
+    await expect(fs.readFile(path.join(recovered.repoRoot, 'tracked.txt'), 'utf8')).resolves.toBe('restored\n');
+    await expect(git(['branch', '--show-current'], recovered.repoRoot)).resolves.toBe('feature/hello-world-Abc123');
+    await expect(fs.readdir(recovered.scratchRoot)).resolves.toEqual([]);
+  });
+
+  it('fails with run_branch_missing and leaves no workspace when the run branch is absent', async () => {
+    await expect(
+      provisionWorkspace(makeRequest({ materializationBase: { kind: 'run_branch' } }))
+    ).rejects.toMatchObject({ code: 'run_branch_missing' });
+
+    await expect(fs.stat(path.join(workspacesRoot, 'acme', 'widgets', 'run_123'))).rejects.toThrow();
+  });
+
+  it('leaves an already-present workspace in place and preserves its scratch contents', async () => {
+    const first = await provisionWorkspace(makeRequest());
+    if (first.shape !== 'two_roots') return;
+    await fs.writeFile(path.join(first.scratchRoot, 'keep.txt'), 'keep\n', 'utf8');
+
+    const second = await provisionWorkspace(makeRequest({ materializationBase: { kind: 'run_branch' } }));
+    expect(second).toMatchObject({ shape: 'two_roots', outcome: 'present' });
+
+    await expect(fs.readFile(path.join(first.scratchRoot, 'keep.txt'), 'utf8')).resolves.toBe('keep\n');
+  });
+
+  it('starts over from the fetched default branch, dropping prior run commits and updating provisionedBaseRef', async () => {
+    const hostRepositoryPath = path.join(reposRoot, 'acme', 'widgets');
+    const first = await provisionWorkspace(makeRequest());
+    if (first.shape !== 'two_roots') return;
+
+    await commitOnRunBranch(first.repoRoot, 'stale.txt', 'stale\n');
+    const branchHeadBefore = await git(['rev-parse', 'feature/hello-world-Abc123'], hostRepositoryPath);
+
+    const rebuilt = await provisionWorkspace(makeRequest({ materializationBase: { kind: 'current_default_branch' } }));
+    expect(rebuilt).toMatchObject({ shape: 'two_roots', outcome: 'materialized', provisionedBaseRef: 'origin/main' });
+    if (rebuilt.shape !== 'two_roots') return;
+
+    // No prior run commit survives, and the default-branch README is present.
+    await expect(fs.stat(path.join(rebuilt.repoRoot, 'stale.txt'))).rejects.toThrow();
+    await expect(fs.readFile(path.join(rebuilt.repoRoot, 'README.md'), 'utf8')).resolves.toBe('# Example\n');
+    await expect(fs.readdir(rebuilt.scratchRoot)).resolves.toEqual([]);
+
+    const branchHeadAfter = await git(['rev-parse', 'feature/hello-world-Abc123'], hostRepositoryPath);
+    expect(branchHeadAfter).not.toBe(branchHeadBefore);
   });
 });
