@@ -33,6 +33,7 @@ export const knownFailureReasonCodes = [
   'pr_finalize_invalid_result',
   'spec_freeze_failed',
   'pull_request_closed_without_merge',
+  'run_branch_missing',
 ] as const;
 
 export type KnownFailureReasonCode = typeof knownFailureReasonCodes[number];

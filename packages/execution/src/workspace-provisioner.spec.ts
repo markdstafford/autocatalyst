@@ -49,6 +49,10 @@ class FakeWorkspaceDriver implements WorkspaceDriver {
   readonly calls: string[] = [];
   readonly paths = new Set<string>(['/tmp', '/tmp/repos', '/tmp/workspaces']);
   currentBranchValue: string | null = 'feature/hello-world-Abc123';
+  // When true, a worktree add does not update currentBranchValue — used to simulate a
+  // post-add branch anomaly so the branch guard can be exercised.
+  pinCurrentBranch = false;
+  branchExistsValue = true;
   failOnCall?: string;
   removeDirectoryFails = false;
   removeWorktreeFails = false;
@@ -66,9 +70,34 @@ class FakeWorkspaceDriver implements WorkspaceDriver {
     return 'origin/main';
   }
 
-  async addWorktree(input: { repoRoot: string; [key: string]: unknown }): Promise<void> {
+  async addWorktree(input: { repoRoot: string; branchName?: string; [key: string]: unknown }): Promise<void> {
     this.record('addWorktree');
     this.paths.add(path.resolve(input.repoRoot));
+    // Adding the worktree checks out the target branch, matching real git behavior.
+    if (!this.pinCurrentBranch && typeof input.branchName === 'string') {
+      this.currentBranchValue = input.branchName;
+    }
+  }
+
+  async addExistingBranchWorktree(input: { repoRoot: string; branchName?: string; [key: string]: unknown }): Promise<void> {
+    this.record('addExistingBranchWorktree');
+    this.paths.add(path.resolve(input.repoRoot));
+    if (!this.pinCurrentBranch && typeof input.branchName === 'string') {
+      this.currentBranchValue = input.branchName;
+    }
+  }
+
+  async branchExists(): Promise<boolean> {
+    this.record('branchExists');
+    return this.branchExistsValue;
+  }
+
+  async pruneWorktreeAdminState(): Promise<void> {
+    this.record('pruneWorktreeAdminState');
+  }
+
+  async deleteBranch(): Promise<void> {
+    this.record('deleteBranch');
   }
 
   async currentBranch(): Promise<string | null> {
@@ -234,6 +263,8 @@ describe('workspace provisioner', () => {
   it('fails branch guard mismatch with expected and actual branch context', async () => {
     const driver = new FakeWorkspaceDriver();
     driver.currentBranchValue = 'feature/other-Abc123';
+    // Pin the branch so the worktree add does not resolve the mismatch — exercises the guard.
+    driver.pinCurrentBranch = true;
     const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
 
     await expect(provisioner.provisionWorkspace(makeRequest())).rejects.toMatchObject({
@@ -323,5 +354,161 @@ describe('workspace provisioner', () => {
     });
     expect(driver.calls).not.toContain('removeWorktree');
     expect(driver.calls.some((call) => call.startsWith('removeDirectory:'))).toBe(false);
+  });
+
+  it('reports outcome "materialized" for a freshly provisioned default-base workspace', async () => {
+    const driver = new FakeWorkspaceDriver();
+    const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
+
+    const result = await provisioner.provisionWorkspace(makeRequest());
+    expect(result).toMatchObject({ shape: 'two_roots', outcome: 'materialized' });
+  });
+
+  it('reports outcome "present" for an already-present idempotent workspace', async () => {
+    const driver = new FakeWorkspaceDriver();
+    driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123'));
+    driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123/repo'));
+    const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
+
+    const result = await provisioner.provisionWorkspace(makeRequest());
+    expect(result).toMatchObject({ shape: 'two_roots', outcome: 'present' });
+  });
+
+  describe('run_branch materialization base', () => {
+    it('materializes a missing workspace from the existing run branch without -b or a fetch', async () => {
+      const driver = new FakeWorkspaceDriver();
+      const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
+
+      const result = await provisioner.provisionWorkspace(
+        makeRequest({ materializationBase: { kind: 'run_branch' } })
+      );
+
+      expect(result).toMatchObject({
+        shape: 'two_roots',
+        outcome: 'materialized',
+        branchName: 'feature/hello-world-Abc123',
+        repoRoot: path.resolve('/tmp/workspaces/acme/widgets/run_123/repo'),
+        scratchRoot: path.resolve('/tmp/workspaces/acme/widgets/run_123/scratch')
+      });
+      expect(driver.calls).toContain('ensureHostRepository');
+      expect(driver.calls).toContain('branchExists');
+      expect(driver.calls).toContain('addExistingBranchWorktree');
+      // Existing-branch checkout must not use the new-branch (-b) worktree add and must not fetch.
+      expect(driver.calls).not.toContain('addWorktree');
+      expect(driver.calls).not.toContain('fetchHostRepository');
+      expect(driver.calls).toContain('currentBranch');
+    });
+
+    it('fails with run_branch_missing and creates nothing when the branch is absent', async () => {
+      const driver = new FakeWorkspaceDriver();
+      driver.branchExistsValue = false;
+      const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
+
+      await expect(
+        provisioner.provisionWorkspace(makeRequest({ materializationBase: { kind: 'run_branch' } }))
+      ).rejects.toMatchObject({ code: 'run_branch_missing' });
+
+      expect(driver.calls).not.toContain('addExistingBranchWorktree');
+      expect(driver.calls.some((call) => call.startsWith('mkdirp:'))).toBe(false);
+      expect(driver.calls.some((call) => call.startsWith('prune:'))).toBe(false);
+    });
+
+    it('rolls back the run root after an existing-branch worktree failure', async () => {
+      const driver = new FakeWorkspaceDriver();
+      driver.failOnCall = 'addExistingBranchWorktree';
+      const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
+
+      await expect(
+        provisioner.provisionWorkspace(makeRequest({ materializationBase: { kind: 'run_branch' } }))
+      ).rejects.toThrow(/induced failure/);
+      expect(driver.calls).toContain(`prune:directory:${path.resolve('/tmp/workspaces/acme/widgets/run_123')}`);
+      // worktree was never created, so no worktree prune
+      expect(driver.calls.some((call) => call.startsWith('prune:worktree:'))).toBe(false);
+    });
+
+    it('leaves an already-present workspace in place and reports it as present', async () => {
+      const driver = new FakeWorkspaceDriver();
+      driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123'));
+      driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123/repo'));
+      const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
+
+      const result = await provisioner.provisionWorkspace(
+        makeRequest({ materializationBase: { kind: 'run_branch' } })
+      );
+
+      expect(result).toMatchObject({ shape: 'two_roots', outcome: 'present' });
+      expect(driver.calls).not.toContain('addExistingBranchWorktree');
+      expect(driver.calls).not.toContain('ensureHostRepository');
+      expect(driver.calls).toContain('currentBranch');
+    });
+  });
+
+  describe('current_default_branch materialization base', () => {
+    it('rebuilds a missing workspace from the fetched default without touching unrelated state', async () => {
+      const driver = new FakeWorkspaceDriver();
+      const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
+
+      const result = await provisioner.provisionWorkspace(
+        makeRequest({ materializationBase: { kind: 'current_default_branch' } })
+      );
+
+      expect(result).toMatchObject({
+        shape: 'two_roots',
+        outcome: 'materialized',
+        provisionedBaseRef: 'origin/main'
+      });
+      expect(driver.calls).toContain('fetchHostRepository');
+      expect(driver.calls).toContain('resolveDefaultBranch');
+      // Rebuild uses the new-branch (-b) worktree add from the fetched default base.
+      expect(driver.calls).toContain('addWorktree');
+    });
+
+    it('removes only the run derived branch and root when the present workspace is on an unexpected branch, then rebuilds', async () => {
+      const driver = new FakeWorkspaceDriver();
+      // Present run root/repo, but checked out on a different branch — the sole case where
+      // current_default_branch is allowed to remove and rebuild the run's own root.
+      driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123'));
+      driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123/repo'));
+      driver.currentBranchValue = 'feature/some-other-branch';
+      const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
+
+      const result = await provisioner.provisionWorkspace(
+        makeRequest({ materializationBase: { kind: 'current_default_branch' } })
+      );
+
+      expect(result).toMatchObject({
+        shape: 'two_roots',
+        outcome: 'materialized',
+        provisionedBaseRef: 'origin/main'
+      });
+      expect(driver.calls).toContain('fetchHostRepository');
+      expect(driver.calls).toContain('resolveDefaultBranch');
+      expect(driver.calls).toContain(`prune:worktree:${path.resolve('/tmp/workspaces/acme/widgets/run_123/repo')}`);
+      expect(driver.calls).toContain(`prune:directory:${path.resolve('/tmp/workspaces/acme/widgets/run_123')}`);
+      expect(driver.calls).toContain('deleteBranch');
+      // Rebuild uses the new-branch (-b) worktree add from the fetched default base.
+      expect(driver.calls).toContain('addWorktree');
+    });
+
+    it('leaves an already-present workspace on the expected branch in place and never wipes or rebuilds it', async () => {
+      const driver = new FakeWorkspaceDriver();
+      driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123'));
+      driver.paths.add(path.resolve('/tmp/workspaces/acme/widgets/run_123/repo'));
+      // Default currentBranchValue matches the derived branch → present on the expected branch.
+      const provisioner = createWorkspaceProvisioner({ driver, pruner: makeFakePruner(driver) });
+
+      const result = await provisioner.provisionWorkspace(
+        makeRequest({ materializationBase: { kind: 'current_default_branch' } })
+      );
+
+      expect(result).toMatchObject({ shape: 'two_roots', outcome: 'present' });
+      // The present workspace (and its scratch) must not be pruned, rebuilt, or re-fetched.
+      expect(driver.calls).toContain('currentBranch');
+      expect(driver.calls.some((call) => call.startsWith('prune:'))).toBe(false);
+      expect(driver.calls).not.toContain('deleteBranch');
+      expect(driver.calls).not.toContain('addWorktree');
+      expect(driver.calls).not.toContain('fetchHostRepository');
+      expect(driver.calls.some((call) => call.startsWith('mkdirp:'))).toBe(false);
+    });
   });
 });

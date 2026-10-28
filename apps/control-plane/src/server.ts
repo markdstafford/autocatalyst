@@ -11,7 +11,7 @@ import Fastify, { type FastifyBaseLogger, type FastifyInstance, type FastifyServ
 import { z } from 'zod';
 
 import { sessionRoleSchema } from '@autocatalyst/api-contract';
-import type { ConfigurationRecord, Conversation, ExecutionContext, NonModelPrincipal, Principal, Project, ProviderProfileSettings, Topic } from '@autocatalyst/api-contract';
+import type { ConfigurationRecord, Conversation, ExecutionContext, NonModelPrincipal, Principal, Project, ProviderProfileSettings, Run, Topic } from '@autocatalyst/api-contract';
 import {
   buildProviderAdapterKey,
   buildImplementationBuildContext,
@@ -38,6 +38,7 @@ import {
   InMemoryRetainedRunEventStore,
   ModelRoutingConfigurationError,
   permissivePolicyDecisionPoint,
+  reconcileStartupWorkspaces,
   registerControlPlaneRoutes,
   RunDispatchQueue,
   StaticIssueTrackerRegistry,
@@ -83,6 +84,7 @@ import {
   createDirectCallFactory,
   createExecutionEntryPoint,
   createExecutionMaterializer,
+  provisionWorkspace,
   createSpecAuthorResultContract,
   createStepResultContractRegistry,
   registerPullRequestFinalizeResultContract,
@@ -107,6 +109,7 @@ import {
   type ExecutionEntryPointInput,
   type ExecutionBoundaryEvent,
   type MaterializedExecutionEnvironment,
+  type ProvisionWorkspaceRequest,
   type ProviderCredentialResolver,
   type ResolvedAgentCredentialReference,
   type ResolvedAgentRunnerProfile
@@ -1662,6 +1665,69 @@ export async function createControlPlaneServer(
     sessions: domainRepos.sessions
   });
   options.onControlPlaneReady?.(controlPlane);
+
+  // Startup workspace reconciliation: recreate any missing on-disk workspaces for
+  // non-terminal two-root runs from their durable run branch, and fail runs whose run
+  // branch is missing — without dispatching, advancing, or recovering any run. Runs here
+  // after persistence/configuration and the orchestrator are ready, and before the
+  // service begins accepting traffic. A failure for one run is logged safely and never
+  // prevents later runs from being reconciled or the service from starting.
+  if (options.workspaceRoots !== undefined) {
+    const reconcileRoots = options.workspaceRoots;
+    const twoRootWorkKinds = new Set(['feature', 'enhancement', 'bug', 'chore']);
+    const buildReconcileProvisionRequest = async (run: Run): Promise<ProvisionWorkspaceRequest | null> => {
+      if (!twoRootWorkKinds.has(run.workKind)) {
+        return null;
+      }
+      // Only reconcile runs that were already provisioned at least once. Persisted workspace
+      // metadata is the signal that a run branch exists to recover from; a run that has never
+      // been dispatched has no branch yet and must be left for normal dispatch, not failed as
+      // run_branch_missing.
+      const workspaceMetadata = await domainRepos.runWorkspaceMetadata.findByRunId(run.id);
+      if (workspaceMetadata === null) {
+        return null;
+      }
+      const topic = await domainRepos.topics.findById(run.topicId);
+      if (topic === null || topic.tenant !== run.tenant) {
+        return null;
+      }
+      const conversation = await domainRepos.conversations.findById(topic.conversationId);
+      if (conversation === null || conversation.tenant !== run.tenant) {
+        return null;
+      }
+      const project = await domainRepos.projects.findById(conversation.projectId);
+      if (project === null || project.tenant !== run.tenant) {
+        return null;
+      }
+      return {
+        runId: run.id,
+        runKind: run.workKind as ProvisionWorkspaceRequest['runKind'],
+        topicSlug: deriveTopicSlug(topic.title),
+        shortRunId: deriveShortRunId(run.id),
+        project,
+        roots: { reposRoot: reconcileRoots.reposRoot, workspacesRoot: reconcileRoots.workspacesRoot }
+      };
+    };
+    try {
+      const summary = await reconcileStartupWorkspaces({
+        listNonTerminalRuns: () =>
+          domainRepos.runs.listNonTerminal !== undefined ? domainRepos.runs.listNonTerminal() : Promise.resolve([]),
+        buildProvisionRequest: buildReconcileProvisionRequest,
+        provisionWorkspace,
+        orchestrator,
+        logger: {
+          info: (fields, message) => app.log.info(fields, message),
+          warn: (fields, message) => app.log.warn(fields, message),
+          error: (fields, message) => app.log.error(fields, message)
+        }
+      });
+      app.log.info({ ...summary }, 'Startup workspace reconciliation complete.');
+    } catch (error) {
+      // Defensive: reconcileStartupWorkspaces is designed not to throw per-run, but the
+      // service must still start even if the walk itself fails unexpectedly.
+      app.log.error({ errorName: (error as Error)?.name }, 'Startup workspace reconciliation threw; continuing startup.');
+    }
+  }
 
   await registerControlPlaneRoutes(app, {
     health: options.health ?? {

@@ -1,4 +1,4 @@
-import type { Project } from '@autocatalyst/api-contract';
+import type { Project, WorkspaceMaterializationBase } from '@autocatalyst/api-contract';
 
 import { createNodeWorkspaceDriver } from './internal/workspace-driver.js';
 import { createWorkspaceProvisioner } from './internal/workspace-provisioner.js';
@@ -8,6 +8,19 @@ import { createWorkspaceTeardown } from './internal/workspace-teardown.js';
 export type WorkspaceRunKind = 'feature' | 'enhancement' | 'bug' | 'chore' | 'file_issue' | 'question';
 export type ImplementingWorkspaceRunKind = Extract<WorkspaceRunKind, 'feature' | 'enhancement' | 'bug' | 'chore'>;
 export type WorkspaceProvisioningShape = 'none' | 'scratch_only' | 'two_roots';
+
+/**
+ * Whether the returned workspace was already present on disk (and left in place) or
+ * was freshly materialized by this call. Startup/recovery callers use this to log
+ * recovery work accurately without treating an already-present workspace as recovery.
+ */
+export type WorkspaceProvisioningOutcome = 'present' | 'materialized';
+
+/**
+ * Re-exported from the api-contract so execution callers have a single import site.
+ * Absent on a provisioning request means today's default behavior.
+ */
+export type { WorkspaceMaterializationBase } from '@autocatalyst/api-contract';
 
 export interface WorkspaceProvisioningRoots {
   readonly reposRoot: string;
@@ -22,6 +35,12 @@ export interface ProvisionWorkspaceRequest {
   readonly defaultBranch?: string;
   readonly project: Project;
   readonly roots: WorkspaceProvisioningRoots;
+  /**
+   * Explicit materialization base for recovery paths. When absent, provisioning
+   * keeps today's behavior (create the run branch from the fetched default branch
+   * when the run root is missing, idempotent otherwise).
+   */
+  readonly materializationBase?: WorkspaceMaterializationBase;
 }
 
 export type ProvisionWorkspaceResult =
@@ -32,6 +51,7 @@ export type ProvisionWorkspaceResult =
   | {
       readonly shape: 'scratch_only';
       readonly runId: string;
+      readonly outcome: WorkspaceProvisioningOutcome;
       readonly workspaceRoot: string;
       readonly runRoot: string;
       readonly scratchRoot: string;
@@ -39,6 +59,7 @@ export type ProvisionWorkspaceResult =
   | {
       readonly shape: 'two_roots';
       readonly runId: string;
+      readonly outcome: WorkspaceProvisioningOutcome;
       readonly workspaceRoot: string;
       readonly runRoot: string;
       readonly repoRoot: string;
@@ -58,6 +79,7 @@ export type WorkspaceProvisioningErrorCode =
   | 'worktree_creation_failed'
   | 'scratch_creation_failed'
   | 'run_workspace_exists'
+  | 'run_branch_missing'
   | 'rollback_failed'
   | 'out_of_root_path'
   | 'branch_guard_failed';

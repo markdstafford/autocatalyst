@@ -111,6 +111,12 @@ export interface RunRepository {
   findActiveByTopic(topicId: string): Promise<Run | null>;
   listByTopic(topicId: string): Promise<readonly Run[]>;
   listByTenant(tenant: string, options?: ListRunsByTenantOptions): Promise<readonly Run[]>;
+  /**
+   * List every non-terminal run across all tenants. Used by startup reconciliation to
+   * find runs whose on-disk workspace may need to be recreated. Optional so in-memory
+   * test doubles need not implement it.
+   */
+  listNonTerminal?(): Promise<readonly Run[]>;
   recordRunLifecycleStart(input: RecordRunLifecycleStartInput): Promise<RecordRunLifecycleStartResult>;
   recordRunStepTransition(input: RecordRunStepTransitionInput): Promise<RecordRunStepTransitionResult>;
   findLatestOpenRunStep?(input: { runId: string; step: string }): Promise<RunStep | null>;

@@ -20,12 +20,25 @@ export const workspaceRootRefsSchema = z.object({
   workspacesRoot: z.string().min(1)
 }).strict();
 
+/**
+ * Explicit base from which a two-root workspace is (re)materialized. Absent means
+ * ordinary provisioning: create the run branch/worktree from the fetched default branch.
+ * `run_branch` recovers a missing workspace by checking out the already-existing run
+ * branch; `current_default_branch` starts over from a freshly fetched default branch,
+ * removing only the run's own derived branch and root first.
+ */
+export const workspaceMaterializationBaseSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('current_default_branch') }).strict(),
+  z.object({ kind: z.literal('run_branch') }).strict()
+]);
+
 export const workspaceProvisioningIntentSchema = z.object({
   project: projectSchema,
   roots: workspaceRootRefsSchema,
   topicSlug: z.string().min(1),
   shortRunId: z.string().min(1),
-  defaultBranch: z.string().min(1).optional()
+  defaultBranch: z.string().min(1).optional(),
+  materializationBase: workspaceMaterializationBaseSchema.optional()
 }).strict();
 
 export const workspaceIntentSchema = z.discriminatedUnion('shape', [
@@ -84,6 +97,7 @@ export const executionContextSchema = z.object({
 export type ExecutionRunContext = z.infer<typeof executionRunContextSchema>;
 export type ExecutionTaskContext = z.infer<typeof executionTaskContextSchema>;
 export type WorkspaceRootRefs = z.infer<typeof workspaceRootRefsSchema>;
+export type WorkspaceMaterializationBase = z.infer<typeof workspaceMaterializationBaseSchema>;
 export type WorkspaceProvisioningIntent = z.infer<typeof workspaceProvisioningIntentSchema>;
 export type WorkspaceIntent = z.infer<typeof workspaceIntentSchema>;
 export type SecretBinding = z.infer<typeof secretBindingSchema>;

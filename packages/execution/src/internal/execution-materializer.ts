@@ -60,7 +60,10 @@ export function createExecutionMaterializer(options: ExecutionMaterializerOption
           topicSlug: provisioning.topicSlug,
           shortRunId: provisioning.shortRunId,
           project: provisioning.project,
-          ...(provisioning.defaultBranch !== undefined ? { defaultBranch: provisioning.defaultBranch } : {})
+          ...(provisioning.defaultBranch !== undefined ? { defaultBranch: provisioning.defaultBranch } : {}),
+          // Ordinary dispatch leaves this absent; recovery/startup materialization sets it
+          // to request an explicit run-branch or default-branch base.
+          ...(provisioning.materializationBase !== undefined ? { materializationBase: provisioning.materializationBase } : {})
         };
 
         let result: Awaited<ReturnType<typeof defaultProvisionWorkspace>>;
