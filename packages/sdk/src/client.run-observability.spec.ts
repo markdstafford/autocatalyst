@@ -8,7 +8,7 @@ const pullRequestResponse = { pullRequest: {
 } };
 
 const sessionResponse = { sessions: [{
-  id: 'sess_1', runId: 'run_1', phase: 'implementation', step: 'implementation.build', role: 'implementer', round: 1,
+  id: 'sess_1', runId: 'run_1', sequence: 1, phase: 'implementation', step: 'implementation.build', role: 'implementer', round: 1,
   model: { provider: 'anthropic', model: 'claude-sonnet-4' }, inferenceSettings: {},
   startedAt: '2026-06-22T00:03:00.000Z', endedAt: '2026-06-22T00:04:00.000Z', durationMs: 60000,
   tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, usageAvailable: false,

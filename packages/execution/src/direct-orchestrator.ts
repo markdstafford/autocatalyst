@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import type { InferenceSettings } from '@autocatalyst/api-contract';
 import type {
   AgentConnection,
   AgentConnectionTelemetryContext,
@@ -34,10 +35,35 @@ export interface CreateDirectOrchestratorOptions {
   readonly clock?: () => number;
 }
 
+/**
+ * Orchestrator-measured session telemetry for a direct call.
+ *
+ * Provider-specific token extraction stays inside the adapter (`metadata`); the
+ * orchestrator owns the uniform, measured telemetry shape: wall-clock timing, the
+ * resolved profile inference settings, and the applicable per-call counts. A direct
+ * call is a single structured model completion with no agentic tool loop, so it
+ * reports exactly one assistant turn and zero tool calls.
+ */
+export interface DirectOrchestratorSessionTelemetry {
+  /** ISO-8601 wall-clock timestamp when the direct call started. */
+  readonly startedAt: string;
+  /** ISO-8601 wall-clock timestamp when the direct call completed. */
+  readonly endedAt: string;
+  /** Measured call duration in milliseconds. */
+  readonly durationMs: number;
+  /** Resolved inference settings from the direct profile (not a hard-coded empty object). */
+  readonly inferenceSettings: InferenceSettings;
+  /** Assistant turns observed for this call. A direct call is a single completion => 1. */
+  readonly assistantTurnCount: number;
+  /** Tool calls observed for this call. Direct calls have no tool loop => 0. */
+  readonly toolCallCount: number;
+}
+
 export interface DirectOrchestratorCallResult<TValue = unknown> {
   readonly value: TValue;
   readonly validation: StepResultValidationSuccess<TValue>;
   readonly metadata: DirectProviderCallMetadata;
+  readonly sessionTelemetry: DirectOrchestratorSessionTelemetry;
 }
 
 export interface DirectOrchestrator {
@@ -240,10 +266,24 @@ export function createDirectOrchestrator(options: CreateDirectOrchestratorOption
       callCompleted = true;
       await orchestrator.close();
 
+      // Orchestrator-measured telemetry: real start/end timestamps from the injected
+      // clock, the resolved profile inference settings, and the applicable per-call
+      // counts for a single structured completion. This is what durable Session
+      // recording consumes instead of synthesizing zero-duration / empty-settings rows.
+      const sessionTelemetry: DirectOrchestratorSessionTelemetry = {
+        startedAt: new Date(startedAt).toISOString(),
+        endedAt: new Date(startedAt + durationMs).toISOString(),
+        durationMs,
+        inferenceSettings: profile.inferenceSettings,
+        assistantTurnCount: 1,
+        toolCallCount: 0
+      };
+
       return {
         value: validationOutcome.value as z.infer<TSchema>,
         validation: validationOutcome as StepResultValidationSuccess<z.infer<TSchema>>,
-        metadata: adapterResult.metadata
+        metadata: adapterResult.metadata,
+        sessionTelemetry
       };
     },
 

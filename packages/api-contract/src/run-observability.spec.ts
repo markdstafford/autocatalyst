@@ -34,6 +34,7 @@ const pullRequest = {
 const session = {
   id: 'sess_1',
   runId: 'run_1',
+  sequence: 1,
   phase: 'implementation',
   step: 'implementation.build',
   role: 'implementer',

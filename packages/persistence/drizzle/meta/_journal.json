@@ -71,6 +71,13 @@
       "when": 1750204800000,
       "tag": "0009_run_workspace_provisioned_base_ref",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1792500000000,
+      "tag": "0010_session_sequence",
+      "breakpoints": true
     }
   ]
 }

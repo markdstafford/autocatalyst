@@ -242,6 +242,7 @@ export {
   type CreateDirectOrchestratorOptions,
   type DirectOrchestrator,
   type DirectOrchestratorCallResult,
+  type DirectOrchestratorSessionTelemetry,
   type DirectOrchestratorLogger,
   type DirectOrchestratorTelemetryEmitter
 } from './direct-orchestrator.js';

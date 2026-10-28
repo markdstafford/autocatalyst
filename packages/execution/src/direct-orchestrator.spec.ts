@@ -162,6 +162,35 @@ describe('createDirectOrchestrator', () => {
       expect(typeof endEvent.fields.durationMs).toBe('number');
     });
 
+    it('surfaces measured session telemetry (timing, resolved inference settings, counts)', async () => {
+      // Deterministic clock: first call = start, second call = end (250ms later).
+      const times = [1_700_000_000_000, 1_700_000_000_250];
+      let idx = 0;
+      const clock = () => times[Math.min(idx++, times.length - 1)];
+
+      const inferenceSettings = { temperature: 0.3, maxOutputTokens: 2048 };
+      const orchestrator = createDirectOrchestrator({
+        adapter: makeAdapter(),
+        profile: makeProfile({ inferenceSettings }),
+        connection: makeConnection(),
+        telemetryContext: makeTelemetryContext(),
+        clock
+      });
+
+      const result = await orchestrator.call(makeCallRequest());
+
+      // Real, distinct wall-clock timestamps — not a single synthesized instant.
+      expect(result.sessionTelemetry.startedAt).toBe(new Date(times[0]).toISOString());
+      expect(result.sessionTelemetry.endedAt).toBe(new Date(times[1]).toISOString());
+      expect(result.sessionTelemetry.startedAt).not.toBe(result.sessionTelemetry.endedAt);
+      expect(result.sessionTelemetry.durationMs).toBe(250);
+      // Resolved profile inference settings are carried, not an empty object.
+      expect(result.sessionTelemetry.inferenceSettings).toEqual(inferenceSettings);
+      // A direct call is a single structured completion with no tool loop.
+      expect(result.sessionTelemetry.assistantTurnCount).toBe(1);
+      expect(result.sessionTelemetry.toolCallCount).toBe(0);
+    });
+
     it('calls adapter.close after successful call', async () => {
       const closeFn = vi.fn().mockResolvedValue(undefined);
       const adapter = makeAdapter({ close: closeFn });
