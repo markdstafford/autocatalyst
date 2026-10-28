@@ -44,6 +44,18 @@ export interface AddWorktreeInput {
   readonly baseRef: string;
 }
 
+export interface AddExistingBranchWorktreeInput {
+  readonly workspaceRoot: string;
+  readonly hostRepositoryPath: string;
+  readonly repoRoot: string;
+  readonly branchName: string;
+}
+
+export interface BranchExistsInput {
+  readonly hostRepositoryPath: string;
+  readonly branchName: string;
+}
+
 export interface MkdirpInput {
   readonly workspaceRoot: string;
   readonly targetPath: string;
@@ -85,6 +97,10 @@ export interface WorkspaceDriver {
   /** Returns the remote-tracking base ref (e.g. 'origin/main') for use as the worktree base. */
   resolveDefaultBranch(input: ResolveDefaultBranchInput): Promise<string>;
   addWorktree(input: AddWorktreeInput): Promise<void>;
+  /** Adds a worktree that checks out an existing branch (no `-b`); the branch must already exist. */
+  addExistingBranchWorktree(input: AddExistingBranchWorktreeInput): Promise<void>;
+  /** Returns true when the named branch exists in the host repository, without mutating any worktree. */
+  branchExists(input: BranchExistsInput): Promise<boolean>;
   currentBranch(repoRoot: string): Promise<string | null>;
   removeWorktree(input: RemoveWorktreeInput): Promise<void>;
   pruneWorktreeAdminState(input: PruneWorktreeAdminStateInput): Promise<void>;
@@ -223,6 +239,35 @@ export function createNodeWorkspaceDriver(): WorkspaceDriver {
         message: 'Failed to create run worktree',
         targetPath: input.repoRoot
       });
+    },
+
+    async addExistingBranchWorktree(input) {
+      await assertPathInsideRoot(
+        { root: input.workspaceRoot, rootKind: 'workspace', targetPath: input.repoRoot, intent: 'write' },
+        { pathExists: exists, realpath: nodeRealpath }
+      );
+      // No `-b`: the branch already exists and is checked out into the new worktree.
+      await runGit(['worktree', 'add', input.repoRoot, input.branchName], {
+        cwd: input.hostRepositoryPath,
+        code: 'worktree_creation_failed',
+        message: 'Failed to create run worktree from existing branch',
+        targetPath: input.repoRoot
+      });
+    },
+
+    async branchExists(input) {
+      try {
+        // `--verify --quiet` exits non-zero (and prints nothing) when the ref is absent.
+        await runGit(['show-ref', '--verify', '--quiet', `refs/heads/${input.branchName}`], {
+          cwd: input.hostRepositoryPath,
+          code: 'branch_guard_failed',
+          message: 'Failed to check run branch existence',
+          targetPath: input.hostRepositoryPath
+        });
+        return true;
+      } catch {
+        return false;
+      }
     },
 
     async currentBranch(repoRoot) {

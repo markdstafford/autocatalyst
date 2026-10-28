@@ -689,6 +689,16 @@ export class DrizzleRunRepository implements RunRepository {
     return rows.map((row) => this.#rowToRun(row));
   }
 
+  async listNonTerminal(): Promise<readonly Run[]> {
+    const rows = this.#database.drizzle
+      .select()
+      .from(runs)
+      .where(eq(runs.terminal, false))
+      .orderBy(asc(runs.createdAt), asc(runs.id))
+      .all();
+    return rows.map((row) => this.#rowToRun(row));
+  }
+
   #rowToRun(row: typeof runs.$inferSelect): Run {
     const trackedIssue = parseNullableJsonValue(persistedTrackedIssueSchema, row.trackedIssueJson);
     const testingGuideResult = parseNullableJsonValue(testingGuideResultSchema, row.testingGuideResultJson);

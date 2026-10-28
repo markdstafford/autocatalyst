@@ -168,6 +168,14 @@ export type {
 
 export { safeFailureReasonFromError } from './safe-failure-reason.js';
 
+export {
+  reconcileStartupWorkspaces,
+  RUN_BRANCH_MISSING_FAILURE_REASON,
+  type StartupWorkspaceReconcilerDependencies,
+  type StartupWorkspaceReconcilerLogger,
+  type StartupWorkspaceReconciliationSummary
+} from './startup-workspace-reconciler.js';
+
 export { createExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
 export type {
   ExecutionRunUnitOfWorkOptions,

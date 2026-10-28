@@ -309,6 +309,8 @@ export type {
   PruneWorkspacePathRequest,
   ProvisionWorkspaceRequest,
   ProvisionWorkspaceResult,
+  WorkspaceMaterializationBase,
+  WorkspaceProvisioningOutcome,
   TeardownWorkspaceRequest,
   WorkspaceBranchAction,
   WorkspaceBranchResult,
