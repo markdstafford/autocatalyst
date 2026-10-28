@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 
 import { eq } from 'drizzle-orm';
 
-import type { CreateSecretInput, SecretResolver, SecretStore } from '@autocatalyst/core';
+import type { CreateSecretInput, SecretExistenceChecker, SecretResolver, SecretStore } from '@autocatalyst/core';
 import { SecretResolutionError, SecretStoreLockedError } from '@autocatalyst/core';
 import type { CreateSecretResponse } from '@autocatalyst/api-contract';
 
@@ -40,7 +40,7 @@ interface SqliteSecretStoreOptions {
   readonly randomBytes?: RandomBytesProvider;
 }
 
-export class SqliteSecretStore implements SecretStore, SecretResolver {
+export class SqliteSecretStore implements SecretStore, SecretResolver, SecretExistenceChecker {
   readonly #database;
   #encryptionKey: Buffer | null = null;
   readonly #randomBytes: RandomBytesProvider;
@@ -145,6 +145,21 @@ export class SqliteSecretStore implements SecretStore, SecretResolver {
     }
 
     throw new Error('Unable to allocate secret handle.');
+  }
+
+  /**
+   * Existence-only lookup: returns true when a secret row exists for `handle`.
+   * Reads just the `handle` column — it never touches `#encryptionKey`, decrypts
+   * ciphertext, returns a value, or logs the handle/value — so it works while the
+   * store is locked and is safe to call during write-boundary validation.
+   */
+  async hasSecret(handle: string): Promise<boolean> {
+    const row = this.#database.drizzle
+      .select({ handle: secrets.handle })
+      .from(secrets)
+      .where(eq(secrets.handle, handle))
+      .get();
+    return row !== undefined;
   }
 
   async resolveSecret(handle: string): Promise<string> {

@@ -112,7 +112,8 @@ async function buildServer(overrides?: Partial<ControlPlaneRouteDependencies>, l
       delete: vi.fn(async () => false)
     },
     secrets: {
-      createSecret: vi.fn(async () => ({ handle: 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef' }))
+      createSecret: vi.fn(async () => ({ handle: 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef' })),
+      hasSecret: vi.fn(async () => true)
     },
     controlPlane: createFakeControlPlaneService(),
     ...overrides

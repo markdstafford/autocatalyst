@@ -343,7 +343,8 @@ export function generateOpenApiDocument(): OpenApiDocument {
       400: jsonResponse(ErrorResponse, 'Validation error, unsafe URL, or forbidden field.'),
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
       403: jsonResponse(ErrorResponse, 'Forbidden (model principal or policy denial).'),
-      409: jsonResponse(ErrorResponse, 'Host repository binding already exists in the tenant.')
+      409: jsonResponse(ErrorResponse, 'Host repository binding already exists in the tenant.'),
+      422: jsonResponse(ErrorResponse, 'A credential reference points at no stored secret.')
     }
   });
 
@@ -386,7 +387,8 @@ export function generateOpenApiDocument(): OpenApiDocument {
       400: jsonResponse(ErrorResponse, 'Validation error or immutable/forbidden field.'),
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
       403: jsonResponse(ErrorResponse, 'Forbidden (model principal or policy denial).'),
-      404: jsonResponse(ErrorResponse, 'Project not found or in another tenant.')
+      404: jsonResponse(ErrorResponse, 'Project not found or in another tenant.'),
+      422: jsonResponse(ErrorResponse, 'A written credential reference points at no stored secret.')
     }
   });
 

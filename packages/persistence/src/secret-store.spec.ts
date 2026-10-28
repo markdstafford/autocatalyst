@@ -117,6 +117,44 @@ describe('SqliteSecretStore', () => {
     });
   });
 
+  describe('hasSecret', () => {
+    it('returns true for a stored handle and false for an unknown well-formed handle', async () => {
+      const database = createSqliteDatabase({ path: ':memory:' });
+      await migrateSqliteDatabase(database);
+      const store = new SqliteSecretStore(database);
+      await store.unlock('master-password');
+      const { handle } = await store.createSecret({ value: 'existence-value' });
+
+      await expect(store.hasSecret(handle)).resolves.toBe(true);
+      await expect(store.hasSecret('sec_unknown_but_well_formed_handle00')).resolves.toBe(false);
+
+      database.close();
+    });
+
+    it('works before unlock on an existing database and never exposes the plaintext value', async () => {
+      await withTempDatabasePath(async (databasePath) => {
+        // Arrange: store a secret, then close the database.
+        const firstDatabase = createSqliteDatabase({ path: databasePath });
+        await migrateSqliteDatabase(firstDatabase);
+        const first = new SqliteSecretStore(firstDatabase);
+        await first.unlock('master-password');
+        const { handle } = await first.createSecret({ value: 'locked-existence-value' });
+        firstDatabase.close();
+
+        // Reopen the same database WITHOUT unlocking — existence must still resolve.
+        const secondDatabase = createSqliteDatabase({ path: databasePath });
+        const locked = new SqliteSecretStore(secondDatabase);
+        const exists = await locked.hasSecret(handle);
+        expect(exists).toBe(true);
+        // A boolean existence result never carries the plaintext value.
+        expect(exists).not.toBe('locked-existence-value');
+        await expect(locked.hasSecret('sec_definitely_not_stored_handle000')).resolves.toBe(false);
+
+        secondDatabase.close();
+      });
+    });
+  });
+
   it('retries handle generation on collision', async () => {
     await withTempDatabasePath(async (databasePath) => {
       const database = createSqliteDatabase({ path: databasePath });

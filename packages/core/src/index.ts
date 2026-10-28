@@ -17,7 +17,7 @@ export { createConfigurationRecord, listConfigurationRecords, getConfigurationRe
 export type { ConfigurationRecordRepository, CreateConfigurationRecordInput, UpdateConfigurationRecordInput } from './configuration-record.js';
 
 export { createSecret, SecretStoreLockedError, SecretResolutionError } from './secret.js';
-export type { SecretStore, CreateSecretInput, SecretResolver, SecretResolutionErrorCode, SecretResolutionErrorDetails } from './secret.js';
+export type { SecretStore, CreateSecretInput, SecretResolver, SecretExistenceChecker, SecretResolutionErrorCode, SecretResolutionErrorDetails } from './secret.js';
 
 export { createProject, listProjects, getProject, updateProject, ProjectServiceError } from './project.js';
 export type {

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { createSecret, SecretResolutionError, SecretStoreLockedError, type SecretResolver, type SecretStore } from './secret.js';
+import { createSecret, SecretResolutionError, SecretStoreLockedError, type SecretExistenceChecker, type SecretResolver, type SecretStore } from './secret.js';
 
 describe('secret use case', () => {
   it('delegates creation and returns only a handle', async () => {
@@ -41,5 +41,31 @@ describe('SecretResolver seam', () => {
   it('SecretResolver interface works', async () => {
     const resolver: SecretResolver = { resolveSecret: async (handle) => `value:${handle}` };
     await expect(resolver.resolveSecret('sec_abc')).resolves.toBe('value:sec_abc');
+  });
+});
+
+describe('SecretExistenceChecker seam', () => {
+  it('is a boolean existence port distinct from SecretResolver (no plaintext access)', async () => {
+    const stored = new Set(['sec_known']);
+    const checker: SecretExistenceChecker = { hasSecret: async (handle) => stored.has(handle) };
+    await expect(checker.hasSecret('sec_known')).resolves.toBe(true);
+    await expect(checker.hasSecret('sec_unknown')).resolves.toBe(false);
+    // Structurally the port exposes existence only — it has no resolveSecret.
+    expect('resolveSecret' in checker).toBe(false);
+  });
+
+  it('a store can satisfy both ports without existence checks leaking values', async () => {
+    const stored = new Map<string, string>([['sec_known', 'plaintext-value']]);
+    const store: SecretResolver & SecretExistenceChecker = {
+      resolveSecret: async (handle) => {
+        const value = stored.get(handle);
+        if (value === undefined) throw new SecretResolutionError('missing_secret', 'missing', { handle });
+        return value;
+      },
+      hasSecret: async (handle) => stored.has(handle)
+    };
+    await expect(store.hasSecret('sec_known')).resolves.toBe(true);
+    // Existence is a boolean, never the value.
+    expect(await store.hasSecret('sec_known')).not.toBe('plaintext-value');
   });
 });

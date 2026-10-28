@@ -14,6 +14,7 @@ export {
   notFoundErrorCode,
   secretStoreLockedErrorCode,
   unauthorizedErrorCode,
+  unknownCredentialReferenceErrorCode,
   validationErrorCode
 } from './errors.js';
 export type { ErrorResponse } from './errors.js';

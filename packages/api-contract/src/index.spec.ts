@@ -16,6 +16,7 @@ import {
   secretStoreLockedErrorCode,
   submissionKindSchema,
   unauthorizedErrorCode,
+  unknownCredentialReferenceErrorCode,
   validationErrorCode,
   runnerEventSchema,
   executionContextSchema,
@@ -56,6 +57,7 @@ describe('api-contract barrel', () => {
     expect(activeRunConflictErrorCode).toBe('active_run_conflict');
     expect(intakeRoutingErrorCode).toBe('intake_routing_error');
     expect(forbiddenErrorCode).toBe('forbidden');
+    expect(unknownCredentialReferenceErrorCode).toBe('unknown_credential_reference');
   });
 
   it('exports conversation ingress contract', () => {

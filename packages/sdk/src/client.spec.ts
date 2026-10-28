@@ -119,6 +119,52 @@ describe('project methods', () => {
     })).rejects.toBeTruthy();
     expect(mockFetch).not.toHaveBeenCalled();
   });
+
+  it('surfaces a 422 unknown_credential_reference through the existing ControlPlaneClientError', async () => {
+    const handle = 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef';
+    const mockFetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 'unknown_credential_reference',
+            message: 'Project credential references must point at existing secrets.',
+            details: { fields: ['credentialRefs[0]'] }
+          }
+        }),
+        { status: 422, headers: { 'content-type': 'application/json' } }
+      )
+    );
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
+    await expect(client.createProject({
+      displayName: 'Autocatalyst',
+      repoUrl: 'https://github.com/example/repo',
+      hostRepository: { provider: 'github', owner: 'example', name: 'repo' },
+      credentialRefs: [{ id: handle, purpose: 'repo' }]
+    })).rejects.toMatchObject({
+      name: 'ControlPlaneClientError',
+      status: 422,
+      response: { error: { code: 'unknown_credential_reference', details: { fields: ['credentialRefs[0]'] } } }
+    });
+  });
+
+  it('surfaces a 422 unknown_credential_reference for updateProject', async () => {
+    const handle = 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef';
+    const mockFetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          error: {
+            code: 'unknown_credential_reference',
+            message: 'Project credential references must point at existing secrets.',
+            details: { fields: ['credentialRefs[0]'] }
+          }
+        }),
+        { status: 422, headers: { 'content-type': 'application/json' } }
+      )
+    );
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
+    await expect(client.updateProject('proj_1', { credentialRefs: [{ id: handle, purpose: 'repo' }] }))
+      .rejects.toBeInstanceOf(ControlPlaneClientError);
+  });
 });
 
 describe('configuration record methods', () => {
@@ -750,7 +796,7 @@ describe('control-plane SDK client against a test server', () => {
         update: async () => null,
         delete: async () => false
       },
-      secrets: { createSecret: async () => { throw new Error('not used'); } }
+      secrets: { createSecret: async () => { throw new Error('not used'); }, hasSecret: async () => true }
     };
   }
 

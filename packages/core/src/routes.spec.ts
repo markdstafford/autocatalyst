@@ -112,7 +112,8 @@ async function buildServer(overrides?: Partial<ControlPlaneRouteDependencies>) {
       delete: vi.fn(async () => false)
     },
     secrets: {
-      createSecret: vi.fn(async () => ({ handle: 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef' }))
+      createSecret: vi.fn(async () => ({ handle: 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef' })),
+      hasSecret: vi.fn(async () => true)
     },
     projects: {
       create: vi.fn(async () => { throw new Error('projects.create not stubbed for this test'); }),
@@ -699,7 +700,7 @@ describe('registerControlPlaneRoutes', () => {
   });
 
   it('maps SecretStoreLockedError to 400 secret_store_locked without echoing value', async () => {
-    const lockedSecrets = { createSecret: vi.fn(async () => { throw new SecretStoreLockedError(); }) };
+    const lockedSecrets = { createSecret: vi.fn(async () => { throw new SecretStoreLockedError(); }), hasSecret: vi.fn(async () => true) };
     const { app, authorization } = await buildServer({ secrets: lockedSecrets });
     server = app;
     const response = await app.inject({
@@ -1996,6 +1997,69 @@ describe('registerControlPlaneRoutes', () => {
       expect(errorResponseSchema.parse(response.json()).error.code).toBe('conflict');
     });
 
+    it('maps unknown_credential_reference to 422 with safe code, message, and field paths on create', async () => {
+      const create = vi.fn(async () => makeProject());
+      const handle = 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef';
+      const { app, authorization } = await buildServer({
+        secrets: {
+          createSecret: vi.fn(async () => ({ handle })),
+          hasSecret: vi.fn(async () => false)
+        },
+        projects: {
+          create: create as never,
+          findById: (vi.fn(async () => null)) as never,
+          list: vi.fn(async () => []),
+          update: vi.fn(async () => null)
+        }
+      });
+      server = app;
+
+      const response = await app.inject({
+        method: 'POST',
+        url: projectCollectionPath,
+        headers: authorization,
+        payload: { ...validCreateBody, credentialRefs: [{ id: handle, purpose: 'repo' }] }
+      });
+      expect(response.statusCode).toBe(422);
+      const parsed = errorResponseSchema.parse(response.json());
+      expect(parsed.error.code).toBe('unknown_credential_reference');
+      expect(parsed.error.message).toBeTruthy();
+      expect(parsed.error.details).toEqual({ fields: ['credentialRefs[0]'] });
+      // The offending handle value must not be echoed back to the client.
+      expect(JSON.stringify(parsed)).not.toContain(handle);
+      // Validation failed before persistence.
+      expect(create).not.toHaveBeenCalled();
+    });
+
+    it('maps unknown_credential_reference to 422 on patch', async () => {
+      const update = vi.fn(async () => makeProject());
+      const handle = 'sec_ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef';
+      const { app, authorization } = await buildServer({
+        secrets: {
+          createSecret: vi.fn(async () => ({ handle })),
+          hasSecret: vi.fn(async () => false)
+        },
+        projects: {
+          create: (vi.fn()) as never,
+          // The patched project exists in the tenant; the unknown handle is what triggers 422.
+          findById: (vi.fn(async (_tenant: string, id: string) => (id === 'proj_1' ? makeProject() : null))) as never,
+          list: vi.fn(async () => []),
+          update: update as never
+        }
+      });
+      server = app;
+
+      const response = await app.inject({
+        method: 'PATCH',
+        url: `${projectCollectionPath}/proj_1`,
+        headers: authorization,
+        payload: { credentialRefs: [{ id: handle, purpose: 'repo' }] }
+      });
+      expect(response.statusCode).toBe(422);
+      expect(errorResponseSchema.parse(response.json()).error.code).toBe('unknown_credential_reference');
+      expect(update).not.toHaveBeenCalled();
+    });
+
     it('lists projects for the caller tenant', async () => {
       const { app, authorization } = await buildServer({
         projects: {
@@ -2032,7 +2096,8 @@ describe('registerControlPlaneRoutes', () => {
       const { app, authorization } = await buildServer({
         projects: {
           create: (vi.fn()) as never,
-          findById: (vi.fn(async () => null)) as never,
+          // proj_1 exists in the tenant so the rename reaches the update path; other ids 404.
+          findById: (vi.fn(async (_tenant: string, id: string) => (id === 'proj_1' ? makeProject() : null))) as never,
           list: vi.fn(async () => []),
           update: update as never
         }
