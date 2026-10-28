@@ -22,7 +22,6 @@ import type {
   CreateTopicInput,
   Feedback,
   FeedbackStatus,
-  JsonValue,
   Message,
   Project,
   Publication,
@@ -197,15 +196,11 @@ type DrizzleTx = Parameters<Parameters<DrizzleDb['transaction']>[0]>[0];
 function buildRunStepInsideTransaction(
   tx: DrizzleTx,
   runId: string,
-  input: LifecycleRunStepInput,
-  initialProviderModelMemory?: Record<string, unknown>
+  input: LifecycleRunStepInput
 ): RunStep {
   const existingForRun: number = tx.select({ value: count() }).from(runSteps).where(eq(runSteps.runId, runId)).all()[0]?.value ?? 0;
   const existingForStep: number = tx.select({ value: count() }).from(runSteps).where(and(eq(runSteps.runId, runId), eq(runSteps.step, input.step))).all()[0]?.value ?? 0;
   const occurrence = { index: existingForRun, attempt: existingForStep + 1 };
-  const initialCheckpoint = initialProviderModelMemory !== undefined
-    ? { providerModelMemory: initialProviderModelMemory }
-    : null;
   const entity = validateEntity(runStepSchema, {
     id: `step_${randomUUID()}`,
     runId,
@@ -216,7 +211,7 @@ function buildRunStepInsideTransaction(
     endedAt: input.endedAt,
     durationMs: input.durationMs,
     occurrence,
-    checkpointResult: initialCheckpoint
+    checkpointResult: null
   });
   tx.insert(runSteps).values({
     id: entity.id,
@@ -228,9 +223,7 @@ function buildRunStepInsideTransaction(
     endedAt: entity.endedAt,
     durationMs: entity.durationMs,
     occurrenceJson: stringifyJsonValue(occurrenceSchema, entity.occurrence),
-    checkpointResultJson: initialCheckpoint !== null
-      ? stringifyJsonValue(jsonValueSchema, initialCheckpoint as unknown as JsonValue)
-      : null
+    checkpointResultJson: null
   }).run();
   return entity;
 }
@@ -806,7 +799,7 @@ export class DrizzleRunRepository implements RunRepository {
             .run();
         }
       }
-      const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep, input.inheritedProviderModelMemory);
+      const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep);
       return { run, runStep };
     });
   }

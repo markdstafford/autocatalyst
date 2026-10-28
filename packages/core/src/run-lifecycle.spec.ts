@@ -231,7 +231,7 @@ describe('applyRunDirective', () => {
     expect(lastTransitionInput?.failureReason).toBeUndefined();
   });
 
-  it('propagates providerModelMemory from source RunStep to the new RunStep', async () => {
+  it('does not inherit legacy providerModelMemory into a new RunStep', async () => {
     let capturedTransitionInput: RecordRunStepTransitionInput | undefined;
     const run = makeRun({ currentStep: 'implementation.build' });
     const nextRun = makeRun({ currentStep: 'implementation.awaiting_input' });
@@ -266,42 +266,10 @@ describe('applyRunDirective', () => {
       checkpointResult: { convergenceResult: 'paused' }
     });
 
-    expect(capturedTransitionInput?.inheritedProviderModelMemory).toEqual({
-      'run_1:implementation.build:implementer:openai:openai-agents-sdk:default': {
-        providerKind: 'openai',
-        adapterId: 'openai-agents-sdk',
-        state: { previousResponseId: 'resp_turn1' }
-      }
-    });
+    expect(capturedTransitionInput).not.toHaveProperty('inheritedProviderModelMemory');
+    expect(capturedTransitionInput?.sourceRunStepId).toBe('step_source');
+    expect(capturedTransitionInput?.checkpointResult).toEqual({ convergenceResult: 'paused' });
   });
 
-  it('does not set inheritedProviderModelMemory when source RunStep has no providerModelMemory', async () => {
-    let capturedTransitionInput: RecordRunStepTransitionInput | undefined;
-    const run = makeRun({ currentStep: 'implementation.build' });
-    const nextRun = makeRun({ currentStep: 'implementation.awaiting_input' });
-    const nextStep = makeRunStep({ step: 'implementation.awaiting_input' });
-    const sourceRunStep = makeRunStep({
-      id: 'step_source',
-      step: 'implementation.build',
-      checkpointResult: { convergenceResult: 'some_data' }
-    });
 
-    const repos = makeRunRepository({
-      findById: async () => run,
-      findLatestOpenRunStep: async () => sourceRunStep,
-      recordRunStepTransition: async (input: RecordRunStepTransitionInput): Promise<RecordRunStepTransitionResult> => {
-        capturedTransitionInput = input;
-        return { run: nextRun, runStep: nextStep };
-      }
-    });
-
-    await applyRunDirective({
-      runs: repos,
-      runId: 'run_1',
-      directive: 'needs_input',
-      checkpointResult: { convergenceResult: 'paused' }
-    });
-
-    expect(capturedTransitionInput?.inheritedProviderModelMemory).toBeUndefined();
-  });
 });

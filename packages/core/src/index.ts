@@ -355,10 +355,3 @@ export * from './pr-open-handler.js';
 export * from './pr-lifecycle.js';
 
 export * from './execution-session-recorder.js';
-
-export {
-  deriveAgentModelMemoryKey,
-  createRunStepAgentModelMemoryStore,
-  type AgentModelMemoryKeyInput,
-  type RunStepAgentModelMemoryStoreInput
-} from './provider-model-memory.js';

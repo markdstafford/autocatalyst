@@ -102,6 +102,8 @@ describe('recordRunStepTransition', () => {
         runStep: { phase: null, step: 'intake', role: 'none', startedAt: new Date().toISOString(), endedAt: null, durationMs: null }
       });
       const runId = startResult.run.id;
+      const legacyCheckpoint = { providerModelMemory: { reviewer: { providerKind: 'openai', adapterId: 'openai-agents-sdk', state: { previousResponseId: 'legacy_response' } } } };
+      await repos.runSteps.updateCheckpoint({ runStepId: startResult.runStep.id, runId, tenant: 'tenant_1', checkpointResult: legacyCheckpoint });
 
       const t1 = await repos.runs.recordRunStepTransition({
         runId,
@@ -113,6 +115,8 @@ describe('recordRunStepTransition', () => {
       expect(t1.run.terminal).toBe(false);
       expect(t1.runStep.occurrence.index).toBe(1);
       expect(t1.runStep.occurrence.attempt).toBe(1);
+      expect(t1.runStep.checkpointResult).toBeNull();
+      expect((await repos.runSteps.findById(startResult.runStep.id))?.checkpointResult).toEqual(legacyCheckpoint);
 
       const t2 = await repos.runs.recordRunStepTransition({
         runId,

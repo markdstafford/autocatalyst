@@ -2182,14 +2182,14 @@ describe('createOpenAIAgentAdapter — model-memory continuity', () => {
     expect(calls[0]!.modelMemoryState).toEqual({ previousResponseId: 'resp_previous' });
   });
 
-  it('saves responsesContinuity from run result to the model memory store', async () => {
+  it('saves only conversation handles from responsesContinuity to the model memory store', async () => {
     const capturedSaves: AgentModelMemorySnapshot[] = [];
     const store = makeFakeStore(null, capturedSaves);
     const fakeRun: OpenAIRunAgentSession = () => ({
       items: [],
       result: Promise.resolve({
         directive: 'advance' as const,
-        responsesContinuity: { previousResponseId: 'resp_next', conversationId: 'conv_1' }
+        responsesContinuity: { previousResponseId: 'resp_next', conversationId: 'conv_1', apiKey: FAKE_SECRET, authorization: `Bearer ${FAKE_SECRET}` }
       })
     });
 
@@ -2354,7 +2354,7 @@ describe('OpenAI setup cleanup', () => {
 
 // Fault injection is local: do not confuse reproduction of symptoms with the historical cause.
 describe('OpenAI completion boundary diagnostics', () => {
-  it.each(['memory_save', 'parse', 'write', 'sdk_result'] as const)('locates %s after an assistant verdict without logging content', async (fault) => {
+  it.each(['parse', 'write', 'sdk_result'] as const)('locates %s after an assistant verdict without logging content', async (fault) => {
     const scratchRoot = await mkdtemp(path.join(os.tmpdir(), 'ac-completion-fault-'));
     const resultFile = 'round-2-reviewer-result.json';
     const output = fault === 'parse' ? `not JSON ${FAKE_SECRET}` : JSON.stringify({ status: 'satisfied', findings: [] });
@@ -2369,7 +2369,7 @@ describe('OpenAI completion boundary diagnostics', () => {
     const input: AgentProviderSessionInput = { ...makeSessionInput('scratch_only', { scratchRoot }),
       telemetryContext: { runId: 'run_1', step: 'implementation.build', role: 'reviewer' },
       structuredResultCapture: makeStructuredCapture(resultFile),
-      modelMemory: makeModelMemory({ load: async () => null, save: async () => { if (fault === 'memory_save') throw error; } }) };
+      modelMemory: makeModelMemory({ load: async () => null, save: async () => undefined }) };
     const seen: RunnerEvent[] = [];
     try {
       if (fault === 'write') await mkdir(path.join(scratchRoot, resultFile));
@@ -2379,10 +2379,10 @@ describe('OpenAI completion boundary diagnostics', () => {
       expect(seen.some(event => event.type === 'runner_assistant_turn')).toBe(true);
       expect(seen.some(event => event.type === 'runner_terminal_result')).toBe(false);
       expect(logs.at(-1)).toMatchObject({
-        failureStage: { memory_save: 'model_memory_save', parse: 'result_parse', write: 'result_write', sdk_result: 'sdk_result' }[fault],
+        failureStage: { parse: 'result_parse', write: 'result_write', sdk_result: 'sdk_result' }[fault],
         resultCaptureMechanism: 'sandbox_or_final_output', role: 'reviewer'
       });
-      if (fault === 'memory_save' || fault === 'sdk_result') expect(logs.at(-1)?.['sdkErrorName']).toBe('TypeError');
+      if (fault === 'sdk_result') expect(logs.at(-1)?.['sdkErrorName']).toBe('TypeError');
       else expect(logs.at(-1)?.['protocolErrorCode']).toBe('structured_result_invalid');
       expect(JSON.stringify(logs)).not.toContain(FAKE_SECRET);
       expect(JSON.stringify(logs)).not.toContain(FAKE_PROMPT);
@@ -2415,7 +2415,7 @@ describe('OpenAI completion boundary diagnostics', () => {
     ]), { status: 200, headers: { 'content-type': 'text/event-stream' } })) };
     const profile = makeProfile({ endpoint: { baseUrl: 'https://offline.invalid/v1' } });
     const adapter = createOpenAIAgentAdapter({ sandboxWorkspaceBaseDir: path.join(tmp, 'sbx'),
-      logger: { info: () => undefined, warn: () => undefined, error: (_event, fields) => logs.push(fields as Record<string, unknown>) } });
+      logger: { info: () => undefined, warn: (_event, fields) => logs.push(fields as Record<string, unknown>), error: (_event, fields) => logs.push(fields as Record<string, unknown>) } });
     const input: AgentProviderSessionInput = { ...makeSessionInput('two_roots', { repoRoot, scratchRoot }), profile,
       connection: { profile, credentialResolved: true, createFetchTransport: () => transport, createProcessLaunchConfig: () => { throw new Error('unused'); } },
       telemetryContext: { runId: 'run_1', step: 'implementation.build', role: 'reviewer' },
@@ -2429,18 +2429,18 @@ describe('OpenAI completion boundary diagnostics', () => {
     try {
       session = await adapter.startSession(input);
       const consume = async () => { for await (const event of session!.events) seen.push(event); };
-      if (fault === 'success') {
+      if (fault !== 'sdk_output') {
         await consume();
         expect(await session.metadata).toMatchObject({ outcome: 'succeeded' });
         expect(JSON.parse(await readFile(path.join(scratchRoot, 'review.json'), 'utf8'))).toEqual(verdict);
+        expect(seen.some(event => event.type === 'runner_terminal_result')).toBe(true);
+        if (fault === 'memory_save') expect(logs).toContainEqual(expect.objectContaining({ runId: 'run_1', role: 'reviewer' }));
       } else {
         await expect(consume()).rejects.toMatchObject({ failureReason: 'runner_failed_before_terminal_result' });
         await expect(session.metadata).rejects.toThrow();
         expect(seen.some(event => event.type === 'runner_assistant_turn')).toBe(true);
         expect(seen.some(event => event.type === 'runner_terminal_result')).toBe(false);
-        expect(logs.at(-1)).toMatchObject(fault === 'memory_save'
-          ? { failureStage: 'model_memory_save', sdkErrorName: 'Error', sdkCauseErrorName: 'SqliteError', sdkCauseErrorCode: 'SQLITE_BUSY', resultCaptureMechanism: 'sandbox_or_final_output' }
-          : { failureStage: 'sdk_stream', sdkErrorName: 'ModelBehaviorError', resultCaptureMechanism: 'openai_output_type' });
+        expect(logs.at(-1)).toMatchObject({ failureStage: 'sdk_stream', sdkErrorName: 'ModelBehaviorError', resultCaptureMechanism: 'openai_output_type' });
         await expect(readFile(path.join(scratchRoot, 'review.json'), 'utf8')).rejects.toThrow();
       }
       expect(transport.fetch).toHaveBeenCalledOnce();

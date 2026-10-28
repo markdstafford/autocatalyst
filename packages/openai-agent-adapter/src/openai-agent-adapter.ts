@@ -1494,18 +1494,27 @@ export function createOpenAIAgentAdapter(
           failureStage = 'sdk_result';
           const terminal = await outcome.result;
 
-          // Persist continuity state before yielding the terminal event.
+          // Cache optional continuity without losing a completed model result.
           if (input.modelMemory !== undefined && terminal.responsesContinuity !== undefined) {
             const continuity = terminal.responsesContinuity;
             const continuityState: Record<string, string> = {};
             if (continuity.previousResponseId !== undefined) continuityState['previousResponseId'] = continuity.previousResponseId;
             if (continuity.conversationId !== undefined) continuityState['conversationId'] = continuity.conversationId;
-            failureStage = 'model_memory_save';
-            await input.modelMemory.store.save({
-              providerKind: openaiProviderKind,
-              adapterId: openaiAgentAdapterId,
-              state: continuityState
-            });
+            try {
+              await input.modelMemory.store.save({
+                providerKind: openaiProviderKind,
+                adapterId: openaiAgentAdapterId,
+                state: continuityState
+              });
+            } catch {
+              try {
+                safeLog('warn', 'openai.adapter.model_memory_save_failed', {
+                  runId: input.telemetryContext.runId,
+                  step: input.telemetryContext.step,
+                  role: input.telemetryContext.role
+                });
+              } catch { /* Optional diagnostics must not discard the result either. */ }
+            }
           }
 
           // Result-file handoff: write the final output to the scratch root.

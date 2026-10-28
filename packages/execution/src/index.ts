@@ -7,6 +7,8 @@ export {
   type AgentModelMemorySnapshot
 } from './agent-model-memory.js';
 
+export { createScratchAgentModelMemoryStore, type ScratchModelMemoryOptions } from './scratch-model-memory.js';
+
 export {
   runtimeSkillsCatalog,
   runtimeSkillsCatalogRoot,

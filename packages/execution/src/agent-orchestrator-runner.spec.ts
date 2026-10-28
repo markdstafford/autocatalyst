@@ -1,3 +1,6 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -920,6 +923,84 @@ describe('createAgentOrchestratorRunner', () => {
       expect(metadata!.endedAt).not.toBeNull();
       expect(() => new Date(metadata!.endedAt!)).not.toThrow();
       expect(new Date(metadata!.endedAt!).toISOString()).toBe(metadata!.endedAt);
+    });
+  });
+
+  describe('default scratch model memory', () => {
+    it.each(['openai', 'anthropic', 'codex'])('reuses %s memory across rounds and steps with separate role/provider/profile slots', async providerKind => {
+      const scratchRoot = await mkdtemp(join(tmpdir(), 'ac-orchestrator-memory-'));
+      try {
+        const observations: unknown[] = [];
+        const snapshot = { providerKind, adapterId: 'test-adapter', state: { previousResponseId: 'resp_1' } };
+        const runInput = makeRunInput();
+        const environment = { ...runInput.environment, workspace: { shape: 'scratch_only' as const, scratchRoot, workspaceRoots: [scratchRoot] } };
+        const runSession = async (scope: { role?: string; providerKind?: string; adapterId?: string; profileName?: string; step?: string; runId?: string } = {}) => {
+          const kind = scope.providerKind ?? providerKind;
+          const profile = makeProfile({ providerKind: kind, adapterId: scope.adapterId ?? 'test-adapter', profileName: scope.profileName ?? 'default' });
+          const adapter: AgentProviderAdapter = {
+            ...makeFakeAdapter({ providerKind: kind, adapterId: profile.adapterId }).adapter,
+            startSession(input) {
+              return {
+                events: (async function* () {
+                  expect(input.modelMemory).toBe(input.runInput.modelMemory);
+                  observations.push(await input.modelMemory!.store.load());
+                  await input.modelMemory!.store.save({ ...snapshot, providerKind: kind, adapterId: profile.adapterId });
+                  yield makeTerminalEvent('run_test_1');
+                })(),
+                metadata: Promise.resolve(makeDefaultMetadata())
+              };
+            }
+          };
+          const runner = createAgentOrchestratorRunner({
+            adapter, profile, connection: makeConnection(profile),
+            telemetryContext: makeTelemetryContext({ role: scope.role ?? 'reviewer', step: scope.step ?? 'implementation.build' })
+          });
+          const sessionEnvironment = { ...environment, context: { ...environment.context, run: { ...environment.context.run, id: scope.runId ?? 'run_test_1' } } };
+          expect(await collectEvents(runner, { environment: sessionEnvironment })).toHaveLength(1);
+          await runner.close();
+        };
+        await runSession();
+        await runSession(); // Round 2 uses a newly constructed runner/store.
+        await runSession({ step: 'pr.review' });
+        await runSession({ role: 'implementer' });
+        await runSession({ providerKind: 'other-provider' });
+        await runSession({ profileName: 'other-profile' });
+        await runSession({ adapterId: 'other-adapter' });
+        await runSession({ runId: 'other-run' });
+        expect(observations).toEqual([null, snapshot, snapshot, null, null, null, null, null]);
+      } finally {
+        await rm(scratchRoot, { recursive: true, force: true });
+      }
+    });
+
+    it('keeps terminal success when saving optional memory fails', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'ac-orchestrator-memory-error-'));
+      try {
+        const profile = makeProfile();
+        const telemetry = { emit: vi.fn() };
+        const adapter: AgentProviderAdapter = {
+          ...makeFakeAdapter().adapter,
+          startSession(input) {
+            return {
+              events: (async function* () {
+                await input.modelMemory!.store.save({ providerKind: 'test', adapterId: 'test-adapter', state: {} });
+                yield makeTerminalEvent('run_test_1');
+              })(),
+              metadata: Promise.resolve(makeDefaultMetadata())
+            };
+          }
+        };
+        const runner = createAgentOrchestratorRunner({ adapter, profile, connection: makeConnection(profile), telemetryContext: makeTelemetryContext(), telemetry });
+        const runInput = makeRunInput();
+        const scratchRoot = join(root, 'missing');
+        const events = await collectEvents(runner, { environment: { ...runInput.environment, workspace: { shape: 'scratch_only', scratchRoot, workspaceRoots: [scratchRoot] } } });
+        expect(events.at(-1)?.type).toBe('runner_terminal_result');
+        expect(telemetry.emit).toHaveBeenCalledWith('agent_model_memory_cache_warning', expect.objectContaining({ operation: 'save', level: 'warn' }));
+        expect(JSON.stringify(telemetry.emit.mock.calls)).not.toContain(root);
+        await runner.close();
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
     });
   });
 
