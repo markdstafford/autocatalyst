@@ -75,7 +75,7 @@ shows a secret back. To change one, the operator enters a new one.
 - The client starts a run only from a tracked issue. It does not collect a description, so writing a good
   issue (research, a clear description) stays separate from running one.
 - One web app serves every device. One code base avoids keeping a web, a desktop, and a mobile client in
-  step.
+  step (ADR-031). The client reads the event stream with `fetch` (ADR-033), and its stack is in ADR-032.
 
 ## Open edges
 

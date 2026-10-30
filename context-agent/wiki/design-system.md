@@ -29,65 +29,64 @@ selected by `data-theme` on the `html` element.
 
 ### Color
 
-The default pair is Catppuccin Latte (light) and Catppuccin Macchiato (dark). Every theme defines the full
-set below.
+Colors come from the operator's chosen theme. A theme is a light or dark palette, and every theme defines
+every token below with a value for its own brightness. Components read only these tokens. No component
+holds a color value, and none uses a raw palette name. Light and dark appearances are two themes, picked by
+the Appearance settings (theme mode, light slot, dark slot).
 
-| Token | Light | Dark | Use |
-| --- | --- | --- | --- |
-| `--color-background` | `#eff1f5` | `#24273a` | Main area, detail pane, table. |
-| `--color-mantle` | `#e6e9ef` | `#1e2030` | Sidebar, footer, cards, code backgrounds. |
-| `--color-crust` | `#dce0e8` | `#181926` | Dim backing behind dialogs. |
-| `--color-surface` | `#ccd0da` | `#363a4f` | Selected row, hover fill, pressed secondary button. |
-| `--color-surface-1` | `#bcc0cc` | `#494d64` | Hover on a surface, upcoming progress segment. |
-| `--color-surface-2` | `#acb0be` | `#5b6078` | Strong fill, placeholder outlines. |
-| `--color-overlay` | `#9ca0b0` | `#6e738d` | Muted icons, canceled and untested dots. |
-| `--color-text` | `#4c4f69` | `#cad3f5` | Primary text. |
-| `--color-subtext-1` | `#5c5f77` | `#b8c0e0` | Tertiary text. |
-| `--color-subtext` | `#6c6f85` | `#a5adcb` | Secondary text, labels, counts. |
-| `--color-primary` | `#209fb5` | `#7dc4e4` | Focus, selection, links, active tab, primary action. |
-| `--color-secondary` | `#179299` | `#8bd5ca` | Second accent for neutral highlights. |
-| `--color-on-primary` | `#1e2030` | `#181926` | Text on a primary fill. |
-| `--color-on-destructive` | `#ffffff` | `#181926` | Text on a red fill. |
-| `--color-border` | `#acb0be` | `#5b6078` | Borders and dividers. |
-| `--color-focus` | `#209fb5` | `#7dc4e4` | Focus ring. Equals the primary accent. |
-| `--color-green` | `#40a02b` | `#a6da95` | Done, pass, resolved. |
-| `--color-red` | `#d20f39` | `#ed8796` | Failed, fail, connection lost, destructive. |
-| `--color-yellow` | `#df8e1d` | `#eed49f` | Open comment marker, caution. |
-| `--color-mauve` | `#8839ef` | `#c6a0f6` | Decorative pairing only. |
-| `--color-peach` | `#fe640b` | `#f5a97f` | Decorative pairing only. |
-
-Contrast checks on the default pair: `--color-on-primary` on `--color-primary` is 5.13:1 in light, and
-`--color-on-destructive` on `--color-red` is 5.43:1 in light. Check every new foreground and background
-pairing against WCAG AA (4.5:1 for text under 18 px) in both modes.
-
-Derived tokens, mixed in `oklch` with `color-mix`:
-
-- `--color-border-subtle` is `--color-border` at 60% over transparent. `--color-border-faint` is 40%.
-- `--color-hover` is `--color-surface` at 50%. `--color-hover-row` is `--color-surface` at 40%.
-- `--color-secondary-highlight-bg` is `--color-secondary` at 14% over `--color-surface`. Its border is
-  `--color-secondary` at 45% over `--color-border`. Its text is `--color-text`.
-- `--color-sentiment-good-bg`, `-ok-bg`, and `-bad-bg` are green at 14%, yellow at 16%, and red at 14% over
-  `--color-surface`. Their borders are the color at 45% over `--color-border`. Their text is
-  `--color-text`.
-
-Comment marker tokens (the spec reading column):
-
-| Token | Value |
+| Token | Role |
 | --- | --- |
-| `--color-comment-open-bg` | `color-mix(in oklch, var(--color-yellow) 32%, transparent)` |
-| `--color-comment-open-line` | `var(--color-yellow)` |
-| `--color-comment-resolved-bg` | `color-mix(in oklch, var(--color-green) 20%, transparent)` |
-| `--color-comment-selected-bg` | `color-mix(in oklch, var(--color-primary) 40%, transparent)` |
-| `--color-comment-flash-bg` | `color-mix(in oklch, var(--color-primary) 70%, transparent)` |
+| `--color-background` | Main area, detail pane, table. |
+| `--color-mantle` | Sidebar, footer, cards, code and diagram backgrounds. |
+| `--color-crust` | Dim backing behind dialogs. |
+| `--color-surface` | Selected row, hover fill, pressed secondary button. |
+| `--color-surface-1` | Hover on a surface, upcoming progress segment. |
+| `--color-surface-2` | Strong fill, placeholder outlines. |
+| `--color-overlay` | Muted icons, canceled and untested dots. |
+| `--color-text` | Primary text. |
+| `--color-subtext-1` | Tertiary text. |
+| `--color-subtext` | Secondary text, labels, counts. |
+| `--color-primary` | Focus, selection, links, active tab, primary action. Set from the primary accent. |
+| `--color-secondary` | Second accent for neutral highlights. Set from the secondary accent. |
+| `--color-on-primary` | Text on a primary fill. |
+| `--color-on-destructive` | Text on a red fill. |
+| `--color-border` | Borders and dividers. |
+| `--color-focus` | Focus ring. Equals the primary accent. |
+| `--color-green` | Done, pass, resolved. |
+| `--color-red` | Failed, fail, connection lost, destructive. |
+| `--color-yellow` | Open comment marker, caution. |
+| `--color-mauve`, `--color-peach` | Decorative pairings only. |
+
+Derived tokens are mixes of the tokens above, defined once in the token layer so that no component picks
+its own opacity:
+
+- `--color-border-subtle` and `--color-border-faint`: weaker forms of `--color-border`, for lines that
+  should recede.
+- `--color-hover` and `--color-hover-row`: weak forms of `--color-surface`, for sidebar and row hover.
+- `--color-secondary-highlight-bg`, `-border`, and `-text`: a muted hint treatment from the secondary accent.
+- `--color-sentiment-good-*`, `-ok-*`, and `-bad-*` (`bg`, `border`, `text`): tints of green, yellow, and
+  red. Text is `--color-text`.
+- `--color-comment-open-bg`, `--color-comment-open-line`, `--color-comment-resolved-bg`,
+  `--color-comment-selected-bg`, and `--color-comment-flash-bg`: the comment marker fills and the open
+  underline, from yellow, green, and the primary accent.
 
 Color rules:
 
 1. The primary accent is for user intent: focus, the selected tab, links, the active view chip, the
    decision button, and the "Waiting on you" chip.
 2. The secondary accent is for neutral highlights, such as a hint chip. It is never a status color.
-3. Status uses `--color-green`, `--color-red`, and the overlay gray. Sentiment tokens (`good`, `ok`, `bad`)
-   need visible text beside them.
+3. Status uses `--color-green`, `--color-red`, and `--color-overlay`. Sentiment tokens need visible text
+   beside them.
 4. Gray carries "not applicable": canceled, not started, skipped, untested.
+
+Contrast rules, checked in every theme:
+
+- Text against its background meets 4.5:1. Large text (18 px and up, or 14 px bold) meets 3:1.
+- Interactive component boundaries, icons that carry meaning, and the focus ring meet 3:1 against the
+  adjacent color.
+- `--color-on-primary` meets 4.5:1 on `--color-primary`, and `--color-on-destructive` meets 4.5:1 on
+  `--color-red`, for every accent the operator can pick.
+- Disabled controls are exempt.
 
 ### Themes and accents
 
@@ -99,9 +98,9 @@ slot.
 
 Fourteen accent ids exist: rosewater, flamingo, pink, mauve, red, maroon, peach, yellow, green, teal, sky,
 sapphire, blue, lavender. Each theme defines `--accent-<id>`. `--primary-accent` and `--secondary-accent`
-point at the chosen ids, and `--color-primary` and `--color-secondary` read them. Defaults are sapphire and
-teal. Sentiment tokens do not follow the accents. Shiki uses Catppuccin Latte in light mode and Catppuccin
-Macchiato in dark mode.
+point at the chosen ids, and `--color-primary` and `--color-secondary` read them. The defaults are sapphire
+and teal. Sentiment tokens do not follow the accents. Shiki uses the code theme that matches the resolved
+theme's brightness.
 
 ### Type
 
@@ -144,13 +143,13 @@ settings page padding.
 
 ### Elevation and layers
 
-Flat surfaces separate with a border. Only floating surfaces cast a shadow. Level 1 is
-`0 4px 12px rgb(0 0 0 / 0.15)` in light and `0 4px 12px rgb(0 0 0 / 0.4)` in dark, for menus, popovers,
-the selected comment card, the comment composer, and the hover sidebar. Level 2 is
-`0 12px 32px rgb(0 0 0 / 0.2)` in light and `0 12px 32px rgb(0 0 0 / 0.5)` in dark, for dialogs.
+Flat surfaces separate with a border. Only floating surfaces cast a shadow: menus, popovers, the selected
+comment card, the composer, and the hover sidebar use `--shadow-popover`, and dialogs use `--shadow-dialog`.
+The theme sets both for its brightness.
 
-Layers: the shell is at 0, the hover sidebar at 30, the full-screen overlay at 40, and menus, popovers, and
-dialogs at 50.
+Stacking order, lowest first: the shell, the hover sidebar, the full-screen overlay, then menus, popovers,
+and dialogs. The order matters because the hover sidebar must cover the header and footer, and a menu must
+open above the overlay.
 
 ### Motion
 
@@ -176,38 +175,45 @@ horizontal padding in both.
 
 ## The shell
 
-The shell fills the viewport and does not scroll. It has a sidebar, a header, a main area, and a footer.
-The sidebar and the main area stack above the footer, and the footer spans the full width.
+The shell fills the viewport and does not scroll. The sidebar and the main area stack above the footer,
+and the footer spans the full width.
 
-```
-+-----------+-------------------------------------------------+
-| title row | header title row                       (40 px)  |
-| (40 px)   +-------------------------------------------------+
-+-----------+ view chips row                         (32 px)  |
-| To do     +-----------------------------+-+-----------------+
-|           | column header (36 px)       |h| nav row (36 px) |
-| Pinned    +-----------------------------+a+-----------------+
-| Runs      | rows (scroll)               |n| tabs and body   |
-| Projects  |                             |d| (scroll)        |
-| Settings  |                             |l|                 |
-+-----------+-----------------------------+-+-----------------+
-| toggle    |        list zone            |   pane zone       |  footer (28 px)
-+-----------+-----------------------------+-------------------+
-```
+| Region | Position | Size |
+| --- | --- | --- |
+| Sidebar | Left column, above the footer. | `--width-sidebar` wide. Its title row is `--height-header-bar` high. |
+| Header | Top of the main area, right of the sidebar. | Title row `--height-header-bar`, then for run views a chips row `--height-chip-row`. |
+| List | Below the header, left of the detail pane. | Column header row `--height-pane-bar`, then rows. |
+| Detail pane | Below the header, right of the list. | Navigation row `--height-pane-bar`, then the pane body. |
+| Footer | Bottom, full width. | `--height-footer` high, five zones. |
+
+The footer has five zones, left to right: left control zone, sidebar zone, list zone, detail pane zone, right
+control zone.
+
+| Footer zone | Holds | Edges |
+| --- | --- | --- |
+| Left control zone | The sidebar toggle. | Starts at the viewport left edge. Its width is `--width-footer-control`. |
+| Sidebar zone | Sidebar-related status, when there is any. | With the sidebar open, ends at the sidebar's right edge. Zero width when closed. |
+| List zone | Status for the list: counts and the connection item. | Ends at the list's right edge. Content is centered between its own edges. |
+| Detail pane zone | Information for the pane: comment counts and previous and next buttons. | Starts at the detail pane's left edge and ends where the right control zone starts. Content is centered. |
+| Right control zone | The detail pane toggle. | Ends at the viewport right edge. Its width is `--width-footer-control`. |
+
+The control zones are minimum-width zones that sit over the outer ends of the sidebar and the detail pane.
+They keep the same width whether the sidebar or the pane is open, closed, or hidden. Zones have no
+dividers between them.
 
 ### Dimensions
 
 | Token | Value | Use |
 | --- | --- | --- |
-| `--width-sidebar` | 15.25rem (244 px) | Open sidebar, hover sidebar, footer left zone when open. |
-| `--width-footer-toggle` | 2.75rem (44 px) | Footer left zone when the sidebar is closed. |
+| `--width-sidebar` | 15.25rem (244 px) | Open sidebar and hover sidebar. The sidebar zone ends where the sidebar ends. |
+| `--width-footer-control` | 2.75rem (44 px) | Minimum width of the left and right footer control zones. |
 | `--height-header-bar` | 2.5rem (40 px) | Header title row and sidebar title row. |
 | `--height-chip-row` | 2rem (32 px) | View chips row and the To do slot in the sidebar. |
 | `--height-pane-bar` | 2.25rem (36 px) | Table column header row, pane navigation row, spec overlay top row. |
 | `--height-footer` | 1.75rem (28 px) | Footer. |
 | `--width-resize-handle` | 0.25rem (4 px) | Handle between the list and the side pane. |
-| `--width-pane` | 440 px default, 320 px minimum, 720 px maximum | Side detail pane. At most 60% of the main area. |
-| `--height-pane` | 280 px default, 200 px minimum, 560 px maximum | Bottom detail pane. At most 70% of the main area. |
+| `--width-pane` | 440 px default, 320 px minimum, 720 px maximum | Side detail pane. At most 60% of the main area, so the list keeps room for its title column. |
+| `--height-pane` | 280 px default, 200 px minimum, 560 px maximum | Bottom detail pane. At most 70% of the main area, so the list keeps a few rows. |
 | `--width-comment-column` | 11rem (176 px) | Comment column beside the spec. |
 | `--width-reading-column` | 46rem (736 px) | Maximum width of the spec text. |
 | `--width-settings-column` | 42rem (672 px) | Settings page content. |
@@ -241,47 +247,47 @@ The chips row holds the view chips (see Collection). Horizontal padding is 12 px
 Region edges and text baselines line up across the shell. The rules hold with the sidebar open or closed,
 in every theme, mode, and density, and in settings.
 
-- The header title row and the sidebar title row share one y range, 0 to 40 px. Their text uses the same
-  size (`--text-md`), weight, and line height, so the baselines match.
-- The To do slot and the view chips row share one y range, 40 to 72 px. The To do row (28 px) and the chips
-  (24 px) are vertically centered in the 32 px slot.
-- The table column header row and the pane navigation row start where the header ends and are both 36 px
-  high. Both use `--text-xs`, so their baselines match.
-- The sidebar bottom edge meets the footer top edge, and the sidebar divider stops there.
-- The footer left zone is as wide as the sidebar (244 px open, 44 px closed) and holds the sidebar toggle.
-  The list zone runs from there to the pane zone, with its content centered under the list.
-- The footer pane zone has the same left edge and width as the detail pane, including while the pane
-  resizes. Its content is centered under the pane. With no side pane, the zone is content-width and
-  right-aligned.
-- The sidebar toggle is 6 px from the footer left edge and does not move when the sidebar opens or
-  closes. The pane toggle is 6 px from the footer right edge.
-- The decision button is 12 px from the pane right edge and vertically centered in the navigation row.
+- The header title row and the sidebar title row share top and bottom edges. Their text uses the same size,
+  weight, and line height, so the baselines match.
+- The To do slot and the view chips row share top and bottom edges. The To do row and the chips are
+  vertically centered in that shared height.
+- The table column header row and the pane navigation row start at the header's bottom edge and share one
+  height. Both use `--text-xs`, so their baselines match.
+- The sidebar's bottom edge meets the footer's top edge, and the sidebar divider stops there.
+- The sidebar zone's right edge equals the sidebar's right edge. The list zone's right edge equals the
+  list's right edge, and the detail pane zone's left edge equals the detail pane's left edge, including
+  while the pane resizes.
+- Footer content is centered within its zone. Text in all five zones shares one baseline.
+- The sidebar toggle sits at the left end of the left control zone and the pane toggle at the right end of
+  the right control zone. Neither moves when the sidebar or the pane opens, closes, or resizes.
+- The decision button's right edge is inset from the pane's right edge by the pane's horizontal padding, and
+  it is vertically centered in the navigation row.
 
 ### Sidebar states
 
-**Open.** The sidebar column is in the layout at 244 px. The footer runs under it. The footer top border
-is continuous across the full width, and the sidebar divider ends at the footer top.
+**Open.** The sidebar column is in the layout at `--width-sidebar`. The footer runs under it, and its top
+border is continuous across the full width. The sidebar divider ends at the footer top.
 
-**Closed.** The sidebar column has zero width. The header and the main area start at x = 0. The footer
-left zone shrinks to 44 px and keeps the toggle. Closing and opening animate the layout over
-`--duration-layout`.
+**Closed.** The sidebar column has zero width. The header and the main area start at the viewport's left
+edge. The sidebar zone has zero width, and the left control zone keeps the toggle. Closing and opening
+animate the layout over `--duration-layout`.
 
 **Hover (closed only).** The pointer entering the left-edge strip (`--width-hover-zone` wide, from the
 top of the viewport to the footer top) shows the sidebar as an overlay. The overlay:
 
-- is 244 px wide, runs the full viewport height from y = 0 to the bottom, and sits above the header and
-  the footer (layer 30);
+- is `--width-sidebar` wide, runs the full viewport height, and sits above the header and the footer;
 - takes the pointer. Anything under it, including the header, the list, and the footer, does not receive
   hover or clicks while it shows;
-- draws its own 1 px `--color-border` right divider over the full height, and level 1 elevation;
+- draws its own `--color-border` right divider over the full height, and uses `--shadow-popover`;
 - closes when the pointer leaves it and focus is not inside it, and on `Escape`;
 - does not move the main area. The layout under it stays as closed.
 
-The hover strip ends at the footer top so the toggle stays reachable.
+The hover strip ends at the footer top so the left control zone stays reachable. `[` toggles the sidebar
+open and closed, and `]` shows and hides the detail pane.
 
 ### Sidebar content
 
-Rows are 28 px high (`--height-control-base`), `--radius-sm`, `--text-sm`, with a 14 px icon and an 8 px gap.
+Rows are `--height-control-base` high, `--radius-sm`, `--text-sm`, with a 14 px icon and an 8 px gap.
 Nesting indents 14 px per level. A row with children has a 20 px chevron cell (12 px chevron) at its left;
 a row without one keeps the cell empty so labels align.
 
@@ -307,7 +313,7 @@ Add a divider only where it separates regions. These are all of them.
 
 | Divider | Spec |
 | --- | --- |
-| Sidebar right edge | 1 px `--color-border`. Runs from the top to the footer top when open. Runs the full height on the hover overlay. |
+| Sidebar right edge | `--color-border`. Runs from the top to the footer top when open, and the full height on the hover overlay. |
 | Footer top | 1 px `--color-border`, full width. |
 | Header bottom | 1 px `--color-border-subtle`. |
 | List and pane | The 4 px resize handle, `--color-border-subtle`. `--color-primary` on hover, focus, and drag. |
@@ -369,7 +375,7 @@ can hide empty groups.
 ### Other layouts and view settings
 
 The list and board layouts use the same selection, hover, and status dot rules as the table. The view
-settings button opens a popover 20rem wide with level 1 elevation. Its top sheet lists Layout, Properties,
+settings button opens a popover 20rem wide that uses `--shadow-popover`. Its top sheet lists Layout, Properties,
 Sort, Group, and Filter with the current value and a chevron. A sub-panel replaces the sheet and has a back
 button, a title, and a close button. `Escape` closes it and returns focus to the button.
 
@@ -412,13 +418,13 @@ The pane body has 16 px padding and scrolls under the navigation row.
 
 The handle between the list and a side pane is 4 px wide with `role="separator"` and
 `aria-orientation="vertical"`. A bottom pane has a 4 px high handle with `aria-orientation="horizontal"`.
-Arrow keys on a focused handle resize by 16 px, and dragging resizes continuously. The footer pane zone
+Arrow keys on a focused handle resize by 16 px, and dragging resizes continuously. The detail pane zone
 follows every change.
 
 ### Full-screen overlay
 
 The spec and the testing guide can fill the screen. The overlay is `position: fixed` over the viewport at
-layer 40 with `--color-background` fill and `role="dialog"`. It covers the shell, including the footer. Its
+above the shell with `--color-background` fill and `role="dialog"`. It covers the shell, including the footer. Its
 top row is `--height-pane-bar` high with the run title (`--text-sm`, weight 500, truncating), the position,
 the decision button, and a close button (X, 14 px). The body has 24 px padding and a centered column of at
 most 64rem. `Escape` closes it, after any confirm popover on top.
@@ -469,7 +475,7 @@ transition. It is clickable and selects its comment.
 | Open | `--color-comment-open-bg` fill and a 2 px solid `--color-comment-open-line` underline. |
 | Resolved | `--color-comment-resolved-bg` fill and no underline. |
 | Selected | `--color-comment-selected-bg` fill and a 2 px solid `--color-primary` underline. |
-| Jump target | `--color-comment-flash-bg` fading out over 1.1 s, once, when a comment is reached with the previous and next buttons. |
+| Jump target | `--color-comment-flash-bg` fading out once, over `--duration-layout` or longer, when a comment is reached with the previous and next buttons. |
 
 Open and resolved differ by the underline as well as the color. The underline is the non-color signal. A
 selected marker replaces the open or resolved style until another comment is selected.
@@ -478,7 +484,7 @@ selected marker replaces the open or resolved style until another comment is sel
 
 Cards stand in the comment column, each at the top of its anchor and pushed down to keep an 8 px gap. A card
 is `--color-mantle` fill, 1 px `--color-border-subtle` outline, `--radius-sm`, 8 px padding, `--text-sm`.
-Resolved cards are 70% opacity. The selected card has a `--color-primary` outline and level 1 elevation.
+Resolved cards are dimmed. The selected card has a `--color-primary` outline and uses `--shadow-popover`.
 
 A card holds a meta line (author in weight 500, age, and the state chip at the right, all `--text-xs`), the
 quoted text (2 px left border, 8 px left padding, `--text-xs`, italic, `--color-subtext`), the body,
@@ -487,10 +493,10 @@ replies (12 px indent, 1 px left border), and a reply input (24 px high, `--text
 uses `--color-primary` for outline and text, resolved uses `--color-green`.
 
 The composer appears at the selection: a quote line, a three-row textarea, a primary Comment button
-(disabled while empty), and Cancel. A `--color-primary` outline and level 1 elevation mark it.
+(disabled while empty), and Cancel. A `--color-primary` outline and `--shadow-popover` mark it.
 `Ctrl+Enter` or `Cmd+Enter` submits, and `Escape` cancels.
 
-The footer pane zone shows "N open, M resolved" in `--text-xs` and the previous and next comment buttons
+The detail pane zone shows "N open, M resolved" in `--text-xs` and the previous and next comment buttons
 (ChevronLeft, ChevronRight, 12 px, 20 x 24 px).
 
 ## Gate decision
@@ -501,8 +507,7 @@ implementation gate shows "Approve" when no comment is open, and "Request change
 open. Resolved comments do not count. A pull request gate has no button.
 
 Both labels share one style: `--height-control-sm` high, 10 px horizontal padding, `--radius-sm`, `--text-xs`,
-weight 500, `--color-primary` fill, `--color-on-primary` text. Hover lowers opacity to 90% and pressed to
-80%. Focus shows the 2 px `--color-focus` ring with a 2 px offset. N uses `tabular-nums`. The label changes
+weight 500, `--color-primary` fill, `--color-on-primary` text. Hover and pressed dim the fill a step each. Focus shows the 2 px `--color-focus` ring with an offset. N uses `tabular-nums`. The label changes
 in place when the count crosses zero.
 
 Activating the button opens a confirm popover under it. `Enter` confirms and `Escape` cancels. The popover
@@ -518,10 +523,11 @@ dialog whose confirm button is `--color-red` fill with `--color-on-destructive` 
 - Each test item has a result group of `aria-pressed` buttons (Pass, Fail, Not tried) and an optional note
   field that works with any result. Buttons are `--text-xs`, 8 px by 2 px padding, `--radius-sm`, 1 px
   outline. Unpressed is `--color-border` with `--color-subtext` text. Pressed Pass is a `--color-green`
-  outline with a 15% green fill. Pressed Fail is a `--color-red` outline with a 15% red fill. Pressed
+  outline with a `--color-sentiment-good-bg` fill. Pressed Fail is a `--color-red` outline with a
+  `--color-sentiment-bad-bg` fill. Pressed
   Not tried is a `--color-border` outline with `--color-surface` fill.
 - General feedback is a text area below the items. It is the one place feedback is not anchored.
-- The footer pane zone shows the tally ("5 passed, 2 failed, 1 note, 2 not tried") and previous and next
+- The detail pane zone shows the tally ("5 passed, 2 failed, 1 note, 2 not tried") and previous and next
   item buttons, in the comment count style.
 
 ## Status and waiting indicators
@@ -547,7 +553,7 @@ row carries a second attention signal. Counts in the sidebar are plain `--color-
 is a spinning Loader2 in `--color-primary`, skipped is MinusCircle in `--color-overlay`, and not started or
 not reached is Circle in `--color-overlay`. Skipped and not-reached rows are dimmed.
 
-**Connection.** When the connection is lost or degraded, the footer list zone shows an 8 px `--color-red`
+**Connection.** When the connection is lost or degraded, the list zone shows an 8 px `--color-red`
 dot and "Connection lost" in `--color-red` before the counts. A healthy connection shows nothing.
 
 ## Empty states
@@ -635,11 +641,11 @@ never receives a stored value, so it is empty every time the form opens.
 
 Radix primitives supply behavior and focus handling. Tokens supply the styling.
 
-- Menus, context menus, and popovers: `--color-mantle` fill, 1 px `--color-border` outline, `--radius-sm`, level
-  1 elevation, 4 px padding. Items are 28 px high, `--text-sm`, with the key right-aligned in `--text-xs`. A
+- Menus, context menus, and popovers: `--color-mantle` fill, 1 px `--color-border` outline, `--radius-sm`,
+  `--shadow-popover`, 4 px padding. Items are 28 px high, `--text-sm`, with the key right-aligned in `--text-xs`. A
   highlighted item has `--color-surface` fill.
-- Dialogs: `--color-background` fill, 1 px `--color-border` outline, `--radius-sm`, level 2 elevation, 16 px
-  padding, `--color-crust` backing at 50%. A title (`--text-md`, weight 500), one short description
+- Dialogs: `--color-background` fill, 1 px `--color-border` outline, `--radius-sm`, `--shadow-dialog`, 16 px
+  padding, and a `--color-crust` backing. A title (`--text-md`, weight 500), one short description
   (`--text-sm`, `--color-subtext`), the body, then a right-aligned action row 16 px below with 8 px between
   buttons and Cancel left of the confirm action. Start a run is a dialog.
 - Tooltips are required on every icon-only button: `--text-xs`, `--color-mantle` fill, 1 px outline.
@@ -649,7 +655,7 @@ Radix primitives supply behavior and focus handling. Tokens supply the styling.
 ## Buttons
 
 Primary: `--color-primary` fill, `--color-on-primary` text, `--text-sm`, weight 500, 12 px by 4 px padding,
-`--radius-sm`, 90% opacity on hover, 40% when disabled. Secondary: 1 px `--color-border` outline,
+`--radius-sm`, dimmed on hover and more so when disabled. Secondary: 1 px `--color-border` outline,
 `--color-text` text, `--color-surface` hover fill. Destructive: `--color-red` fill with
 `--color-on-destructive` text. Icon: `--height-control-sm` high, `--color-subtext` icon, `--color-surface`
 hover fill. A disabled icon button uses `aria-disabled` so it keeps its tooltip.
@@ -670,7 +676,7 @@ hover fill. A disabled icon button uses `aria-disabled` so it keeps its tooltip.
 - Single-key shortcuts do not fire in an input, textarea, select, or editable element, while a menu or
   dialog is open, or with a modifier held. The settings toggle (`Cmd+,` or `Ctrl+,`) works everywhere.
 - Current bindings: `j` and `k` next and previous run, `r` recover, `x` cancel, `e` archive, `s` set step, `m`
-  rename, `f` full screen, `n` start a run, `[` and `]` toggle the sidebar and the detail pane (comment navigation takes other keys), `?` the
+  rename, `f` full screen, `n` start a run, `[` toggles the sidebar and `]` toggles the detail pane (comment navigation uses the registry's own keys and the footer buttons), `?` the
   shortcuts overlay, and `Escape` to close the top layer (a confirm popover, then the overlay, then full
   page, then settings).
 - A control shown on row hover also shows when focus is inside the row.
@@ -678,64 +684,71 @@ hover fill. A disabled icon button uses `aria-disabled` so it keeps its tooltip.
 ## Playwright geometry assertions
 
 Playwright checks these with `getBoundingClientRect` on regions located by role and accessible name: the
-sidebar (`navigation`), the header (`banner`), the footer (`contentinfo`), the detail pane
-(`complementary` named "Run detail"), the resize handle (`separator`), the tablist (named "Run detail
-tabs"), and the chips (named "Collection views"). Positions match within 0.5 px and text baselines within
-1 px. Each assertion runs with the sidebar open and closed, in light and dark mode, in compact and regular
-density, and on a run view and a settings page, unless it names a state.
+sidebar (`navigation`), the header (`banner`), the footer (`contentinfo`), the five footer zones (named by
+zone), the detail pane (`complementary` named "Run detail"), the resize handle (`separator`), the tablist
+(named "Run detail tabs"), and the chips (named "Collection views"). Edges match within 0.5 px and text
+baselines within 1 px. Each assertion runs with the sidebar open and closed, in light and dark themes, in
+compact and regular density, and on a run view and a settings page, unless it names a state. Where a size
+has a token, the test reads the token and does not hard-code the number.
 
 Alignment:
 
-- The header title row bottom edge equals the sidebar title row bottom edge, at 40 px. Their top edges are
-  both 0, and their title text baselines are equal (sidebar open).
-- The chips row top edge equals the To do slot top edge (40 px), and their bottom edges are equal (72 px).
-  The active chip's vertical center equals the To do row's vertical center (run views, sidebar open).
-- The table column header row top edge equals the pane navigation row top edge, and both equal the header
-  bottom edge. Both rows are 36 px high, and their text baselines are equal.
-- The header left edge equals the sidebar right edge when open and 0 when closed. The header right edge
-  equals the viewport width.
+- The header title row's top and bottom edges equal the sidebar title row's. Their title text baselines
+  match (sidebar open).
+- The chips row's top and bottom edges equal the To do slot's, and the active chip's vertical center equals
+  the To do row's vertical center (run views, sidebar open).
+- The table column header row's top edge equals the pane navigation row's top edge, and both equal the
+  header's bottom edge. The two rows have equal heights and matching text baselines.
+- The header's left edge equals the sidebar's right edge when open and the viewport's left edge when closed.
+  The header's right edge equals the viewport's right edge.
 
 Footer:
 
-- The footer is 28 px high, starts at the viewport height minus 28 px, and is as wide as the viewport.
-- The sidebar bottom edge equals the footer top edge, and the sidebar divider bottom edge equals the footer
-  top edge (sidebar open). The footer top border spans x = 0 to the viewport width.
-- The footer left zone is 244 px wide when open and 44 px when closed. The sidebar toggle's bounding box is
-  the same in both states. The pane toggle's right edge is 6 px from the viewport right edge.
-- The footer pane zone has the same left edge and width as the detail pane, also after the pane is dragged
-  and after it is resized with the arrow keys. Its content center equals the pane center.
-- The footer list zone runs from the left zone's right edge to the pane zone's left edge, and its content
-  center equals the center of that span.
-- No footer zone has a left or right border.
+- The footer's top edge is the viewport height minus `--height-footer`, and its width equals the viewport
+  width. Its top border spans the viewport width.
+- The sidebar's bottom edge and the sidebar divider's bottom edge equal the footer's top edge (sidebar open).
+- The five zones are contiguous in order, with no gap or overlap, and together span the footer. No zone has a
+  left or right border.
+- The left and right control zones are at least `--width-footer-control` wide. The sidebar toggle's bounding
+  box is the same with the sidebar open, closed, and hovered, and the pane toggle's box is the same with the
+  pane shown, hidden, and resized.
+- The sidebar zone's right edge equals the sidebar's right edge (sidebar open), and its width is zero when the
+  sidebar is closed.
+- The list zone's right edge equals the list's right edge. The detail pane zone's left edge equals the detail
+  pane's left edge, also after the pane is dragged and after it is resized with the arrow keys.
+- Each zone's content center equals the center of its zone, and text in all five zones shares one baseline.
 
 Sidebar behavior and dividers:
 
-- With the sidebar closed, moving the pointer into the left-edge strip shows the overlay. Its top edge is 0,
-  its bottom edge is the viewport height, and its width is 244 px. It closes on `Escape` and when the
-  pointer leaves it.
+- With the sidebar closed, moving the pointer into the left-edge strip shows the overlay. Its top edge equals
+  the viewport's top edge, its bottom edge equals the viewport's bottom edge, and its width equals
+  `--width-sidebar`. It closes on `Escape` and when the pointer leaves it.
 - With the overlay showing, `elementFromPoint` at a point in the header and a point in the footer, both
-  within the overlay's x range, returns an element inside the overlay. The header, list, and pane keep the
-  positions they had with the sidebar closed.
-- The resize handle is 4 px wide, and the pane left edge equals the handle right edge.
+  within the overlay's horizontal range, returns an element inside the overlay. The header, list, and pane
+  keep the positions they had with the sidebar closed.
+- `[` toggles the sidebar and `]` toggles the detail pane, and the geometry rules above hold after each.
+- The resize handle's width equals `--width-resize-handle`, and the pane's left edge equals the handle's
+  right edge.
 - The elements with a visible border match the divider table. Nothing between the header title row and the
   chips row has a border.
 
 Pane, rows, and documents:
 
-- The decision button's right edge is 12 px left of the pane right edge, and its vertical center equals the
-  navigation row's.
-- A row is 28 px high in compact density and 36 px in regular. The column header row is 36 px in both.
+- The decision button's right edge is inset from the pane's right edge by the pane's horizontal padding, and
+  its vertical center equals the navigation row's.
+- A row's height equals `--height-row-compact` or `--height-row-regular` for the view's density. The column
+  header row height does not change with density.
 - Exactly one row has `aria-selected="true"`.
-- The pane width stays within 320 and 720 px and within 60% of the main area width.
-- The comment column is 176 px wide. Each comment card's top edge is at least its anchor's top edge and at
-  least 8 px below the card above it.
-- The full-screen overlay box equals the viewport box and covers the footer.
-- The settings content column is at most 672 px wide. The settings sidebar title row follows the title row
-  alignment assertions above.
+- The pane width stays within `--width-pane`'s minimum and maximum and within its share of the main area.
+- The comment column's width equals `--width-comment-column`. Each comment card's top edge is at or below its
+  anchor's top edge and below the card above it.
+- The full-screen overlay's box equals the viewport's box and covers the footer.
+- The settings content column's width is at most `--width-settings-column`. The settings sidebar title row
+  follows the title row alignment assertions above.
 
 Appearance:
 
 - After a theme or mode change, the body background equals the new theme's `--color-background`, and none
   of the geometry above changes.
-- In both modes, no visible text has a contrast ratio under 4.5:1 with its background, excluding disabled
-  controls.
+- In every theme, visible text meets 4.5:1 against its background (3:1 for large text), and meaningful UI
+  boundaries and the focus ring meet 3:1, excluding disabled controls.
