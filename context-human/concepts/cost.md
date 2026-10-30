@@ -1,6 +1,6 @@
 ---
 created: 2026-06-06
-last_updated: 2026-06-06
+last_updated: 2026-10-30
 status: active
 roadmap: obs
 ---
@@ -95,7 +95,7 @@ first-class aggregation over the `Session` rows — no pre-stored rollup to main
   the same kind of query, including how much of a total is cache reads versus fresh input.
 
 These queries are the substrate; the screens and the routing changes that act on them are owned
-elsewhere (DESK `settings`, `model-routing`). The records are written from the first run, so a cost view
+elsewhere (`ux`, `model-routing`). The records are written for every run, so a cost view
 or a tuning query built later reads data that already exists.
 
 ## Relationships

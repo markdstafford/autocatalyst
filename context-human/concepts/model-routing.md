@@ -1,6 +1,6 @@
 ---
 created: 2026-06-05
-last_updated: 2026-06-05
+last_updated: 2026-10-30
 status: active
 roadmap: ai
 ---
@@ -83,7 +83,7 @@ than replacing the mechanism.
 The set of usable models is the set of configured profiles, and which step and role each serves is the
 routing table. All of it is service-owned data in the database, edited through the API and validated on
 write (ADR-008, ADR-007), with a typed error when a route resolves to nothing. The in-application
-editing surface is owned by `settings` (DESK); the registry supplies discovery of which providers and
+editing surface is owned by `ux` (the settings screens); the registry supplies discovery of which providers and
 models are available (ADR-011). This concept owns the configuration model and the typed-error
 contract, not the screen that edits it.
 
@@ -96,7 +96,7 @@ contract, not the screen that edits it.
 - `review` and `workflow` — own the convergence pipeline that draws on role-distinct routing.
 - `run` and `cost` — persist the per-session model and cost the routing decision produces, rolled up to
   `(step, role)`.
-- `settings` — the in-application model-management surface (DESK).
+- `ux` — the in-application model-management surface (the settings screens).
 
 ## Constraints and decisions
 
@@ -118,4 +118,4 @@ contract, not the screen that edits it.
   deferred option, taken if a concrete need arrives that role-keyed resolution and the run's own
   sequencing do not cover.
 - **Override layers** (per-run, per-user) over the base table, taken when the need is real.
-- **The in-application routing-management surface** is owned by `settings` (DESK).
+- **The in-application routing-management surface** is owned by `ux` (the settings screens).

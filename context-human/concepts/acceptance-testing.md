@@ -1,6 +1,6 @@
 ---
 created: 2026-06-06
-last_updated: 2026-06-06
+last_updated: 2026-10-30
 status: active
 roadmap: flow
 ---
@@ -70,6 +70,19 @@ The guide carries no status of its own. Its state is read from the run's step an
 for a person, and the run moving on *is* the guide done. A separate guide-status field could drift from
 the run; deriving it from the run removes that possibility.
 
+## Item results and general feedback
+
+The guide lists the things to try, beside the instructions for getting the build running. In a test pass
+the person marks each item pass or fail, or leaves it unanswered, and can add a note to any item. The
+person can also add general feedback that is not tied to an item, for something noticed while testing.
+General feedback is target-level `Feedback` against the implementation (`feedback`), so it holds the gate
+like any other item and goes to the implementation when the run revises.
+
+The item marks and notes belong to that pass's test-result record, so the record shows how each item
+went. They do not replace the `Feedback` rows, which stay the one place an item of feedback is
+dispositioned. The control plane exposes the guide, its items, and the results of a pass through the run
+(`api`).
+
 ## Evidence
 
 Evidence has two homes split by weight. The durable record — the outcome, who tested, and the references
@@ -120,6 +133,8 @@ supplies where the gate sits and how it advances.
 - The testing guide is a `Publication`, not an `Artifact` — it stays inside the system and becomes
   nothing externally durable on disposition (ADR-017).
 - The guide renders `Feedback` rows as the source of truth, not its own checkbox tracking (ADR-018).
+- A test pass records a result per guide item (pass, fail, or unanswered, with an optional note) and can
+  carry general feedback that is target-level `Feedback` against the implementation.
 - The guide's state derives from the run's step and `waiting_on` rather than a separate status that can
   drift (ADR-015).
 - The gate is one flavor of the single human pause-and-resume mechanism owned by `hitl`.
