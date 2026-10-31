@@ -29,7 +29,7 @@ After this ships, one command starts fake mode and one command seeds scenarios. 
 
 ### Start fake mode and inspect seeded runs
 
-Opal runs `pnpm nx run control-plane:serve-fake`. The target builds the control plane, verifies the selected state directory is safe to delete, clears `.autocatalyst-fake/`, starts on `http://127.0.0.1:4010`, and prints `fake-mode ready port=4010 stateDir=<absolute path> baseUrl=http://127.0.0.1:4010`. In a second terminal, Opal runs `pnpm nx run control-plane:seed-fake -- --scenario all` and sees five runs at the expected states.
+Opal runs `pnpm nx run control-plane:serve-fake`. The target builds the control plane, verifies the selected state directory is safe to delete, clears `.autocatalyst-fake/`, starts on `http://127.0.0.1:4010`, and prints `fake-mode ready port=4010 stateDir=<absolute path> baseUrl=http://127.0.0.1:4010`. Opal can then call the health route with `Authorization: Bearer fake-mode-token` and gets HTTP 200. In a second terminal, Opal runs `pnpm nx run control-plane:seed-fake -- --scenario all` and sees five runs at the expected states.
 
 ### Start a run without seeding
 
@@ -89,7 +89,7 @@ graph TD
     A[Tester runs seed-fake] --> B{Scenario}
     B -->|spec-review feature| C[Create run from issue 1 and wait at spec.human_review]
     B -->|implementation-review enhancement| D[Create enhancement run, approve spec gate, wait at implementation.human_review]
-    B -->|pr-open bug| E[Create bug run, follow bug workflow to pr.human_review]
+    B -->|pr-open bug| E[Create bug run, pass spec.author bug triage, skip spec gate, continue to pr.human_review]
     B -->|merged chore| F[Create chore run, follow chore workflow, set PR state merged and reconcile to done]
     B -->|failed feature| G[Write failure file and wait at failed]
     C --> H[Print result]
@@ -171,7 +171,7 @@ The seed cannot use one uniform gate sequence for all scenarios because workflow
 
 - `spec-review` uses issue 1 (`feature`) and stops at `spec.human_review` after the first spec author pass.
 - `implementation-review` uses issue 2 (`enhancement`), waits for `spec.human_review`, approves the spec, and stops at `implementation.human_review`.
-- `pr-open` uses issue 3 (`bug`). Bug workflow has no `spec.author` or `spec.human_review`, so the seed follows the bug workflow directly through implementation and stops at `pr.human_review`.
+- `pr-open` uses issue 3 (`bug`). Bug workflow runs `spec.author` but has no `spec.human_review` gate. The scripted `spec.author` returns a valid bug triage result that records a `bug_triage` artifact, then the seed goes straight to implementation, continues through pull request creation, and stops at `pr.human_review`. The seed must not wait for `GET /v1/runs/:id/spec`, because that endpoint returns 404 for bug runs.
 - `merged` uses issue 4 (`chore`). Chore workflow has no `spec.author`; the seed follows the chore workflow to pull request creation, writes `merged` to the pull request state file, reconciles, and stops at `done`.
 - `failed` uses issue 6 (`feature`), writes the failure file for `spec.author`, starts the run, and stops at `failed`.
 
@@ -185,7 +185,7 @@ Startup creates a local bare fixture remote, host clone, fixture issue file, pul
 
 Fixture issues are fixed: issue 1 feature for `spec-review`, 2 enhancement for `implementation-review`, 3 bug for `pr-open`, 4 chore for `merged`, 5 unlabeled, 6 feature for `failed`, 7-10 spare labeled issues, and 11 spare unlabeled issue.
 
-The first scripted spec contains a heading, paragraphs, a table, a bullet list, a fenced code block, an emoji before passage A, and exact passages A through D from issue #128. The revision is triggered by either request-changes at the spec gate or a feedback reply. The revision inserts `- A name is trimmed of leading and trailing spaces.\n` before passage A, removes passage B and its `Open questions` heading, leaves passages C and D in place, and marks every open spec comment `addressed` with a thread response. Each later pass changes only a final line that names the pass number.
+Scripted `spec.author` responses depend on work kind. For `feature` and `enhancement`, the first scripted spec contains a heading, paragraphs, a table, a bullet list, a fenced code block, an emoji before passage A, and exact passages A through D from issue #128. For `bug`, scripted `spec.author` returns a valid bug triage result and records a `bug_triage` artifact; it does not create a spec readable through `GET /v1/runs/:id/spec`. The revision is triggered by either request-changes at the spec gate or a feedback reply. The revision inserts `- A name is trimmed of leading and trailing spaces.\n` before passage A, removes passage B and its `Open questions` heading, leaves passages C and D in place, and marks every open spec comment `addressed` with a thread response. Each later pass changes only a final line that names the pass number.
 
 The seed CLI accepts `--scenario`, `--issue`, `--base-url`, `--bearer-token`, `--fake-state-dir`, and `--json`. Base URL and token come from flags, `AUTOCATALYST_SEED_URL` / `AUTOCATALYST_SEED_TOKEN`, or fake defaults. `--fake-state-dir` defaults to `.autocatalyst-fake` for the Nx target and for direct CLI use when absent; scenarios that need state files use that default rather than failing solely because the flag is missing.
 
@@ -242,8 +242,9 @@ Scripted results can drift from real contracts; mitigate with contract validatio
     - **Description**: Pass fake-mode config from `main.ts` into `startControlPlaneServer` and print the fixed readiness line after fake-mode startup is listening.
     - **Acceptance criteria**:
       - [ ] Entrypoint accepts fake-mode flags.
-      - [ ] Startup prints `fake-mode ready port=<port> stateDir=<absolute path> baseUrl=http://127.0.0.1:<port>`.
+      - [ ] Startup prints `fake-mode ready port=4010 stateDir=<absolute path> baseUrl=http://127.0.0.1:4010` when using defaults.
       - [ ] Test harness can parse the line and use the port and state directory.
+      - [ ] `GET /health` or the existing health route returns HTTP 200 when called with `Authorization: Bearer fake-mode-token` after `serve-fake` starts with defaults.
     - **Dependencies**: Task: Add fake-mode config parsing and defaults
   - [ ] **Task: Guard `serve-fake` state deletion**
     - **Description**: Make the `serve-fake` startup wrapper refuse to delete a non-empty state directory unless it contains a fake-mode marker file created by fake-mode startup.
@@ -338,6 +339,7 @@ Scripted results can drift from real contracts; mitigate with contract validatio
       - [ ] Reviewer sessions return satisfied reviewer results.
       - [ ] Implementer sessions return valid dispositions and commit a deterministic file.
       - [ ] PR finalization returns a valid PR-finalize result.
+      - [ ] Bug `spec.author` returns a valid bug triage result and records a `bug_triage` artifact for issue 3.
       - [ ] Tests validate outputs with the real contract registry.
     - **Dependencies**: Task: Record launch context for scripted sessions
   - [ ] **Task: Implement scripted spec content and revision**
@@ -378,7 +380,7 @@ Scripted results can drift from real contracts; mitigate with contract validatio
     - **Acceptance criteria**:
       - [ ] Feature `spec-review` waits for `spec.human_review`.
       - [ ] Enhancement `implementation-review` approves spec and waits for `implementation.human_review`.
-      - [ ] Bug `pr-open` does not wait for `spec.human_review` and stops at `pr.human_review`.
+      - [ ] Bug `pr-open` runs through `spec.author`, records a `bug_triage` artifact, does not wait for `spec.human_review`, does not call or wait on `GET /v1/runs/:id/spec`, and stops at `pr.human_review`.
       - [ ] Chore `merged` does not wait for `spec.author`, merges by state file, reconciles, and reaches `done`.
       - [ ] `failed` writes the issue 6 failure file and reaches `failed`.
       - [ ] `all` seeds the five scenarios in documented order.
@@ -394,6 +396,7 @@ Scripted results can drift from real contracts; mitigate with contract validatio
       - [ ] Existing runs remain listed after built-entrypoint restart.
       - [ ] Next `pr-open` seed uses the next pull request number.
       - [ ] `GET /v1/runs` shows the five expected scenario steps.
+      - [ ] The bug scenario test proves the run passed `spec.author` and persisted a `bug_triage` artifact while `GET /v1/runs/:id/spec` returns 404.
       - [ ] Unlabeled issues have no default run.
       - [ ] Built seed output matches `GET /v1/runs/:id` and PR state files.
       - [ ] No test makes a real model call.
