@@ -154,6 +154,16 @@ import {
 
 import type { ControlPlaneAppConfig, PullRequestReconciliationTickerConfig } from './config.js';
 import { createPullRequestReconciliationTicker } from './pr-reconciliation-ticker.js';
+import {
+  createScriptedClaudeAdapterFactory,
+  createScriptedCodeHostExecuteGh,
+  createScriptedIssueTrackerExecuteGh,
+  ensureFakeProviderConfig,
+  ensureFakeState,
+  FAKE_TENANT,
+  scriptedClaudeAdapterKey,
+  type FakeStatePaths
+} from './fake/index.js';
 
 export interface RealRunnerDispatchOptions {
   readonly enabled: boolean;
@@ -224,6 +234,11 @@ export interface ControlPlaneServerOptions {
   readonly githubIssueTracker?: {
     readonly executablePath?: string;
     readonly timeoutMs?: number;
+    /**
+     * Fully replaces the gh subprocess for issue-tracker reads. When set,
+     * `executablePath` and `timeoutMs` are ignored. Used by fake mode and tests.
+     */
+    readonly executeGh?: ExecuteGhFunction;
   };
   /**
    * Injectable GitHub code-host options for integration tests.
@@ -249,6 +264,16 @@ export interface ControlPlaneServerOptions {
    * composed and stopped automatically on `onClose`.
    */
   readonly pullRequestReconciliationTicker?: PullRequestReconciliationTickerConfig;
+  /**
+   * When present, the server runs in deterministic fake mode: it provisions local
+   * fixture state under `stateDir`, registers only the scripted Claude adapter,
+   * installs scripted issue-tracker and code-host executors, and creates a fake
+   * secret and provider profile so AI steps route to the scripted adapter.
+   */
+  readonly fakeMode?: {
+    readonly enabled: true;
+    readonly stateDir: string;
+  };
   /**
    * Optional Fastify logger configuration. When not provided, defaults to `false`
    * (no logging), preserving the existing behavior. Tests can inject a custom
@@ -874,6 +899,18 @@ export async function createControlPlaneServer(
     throw new Error('Master secret is required.');
   }
 
+  // Fake mode: provision deterministic local state before opening the database,
+  // which lives under the state directory. Scripted gh executors are built here
+  // so they can be injected into the issue-tracker and code-host seams below.
+  let fakeStatePaths: FakeStatePaths | undefined;
+  let scriptedIssueTrackerExecuteGh: ExecuteGhFunction | undefined;
+  let scriptedCodeHostExecuteGh: ExecuteGhFunction | undefined;
+  if (options.fakeMode !== undefined) {
+    fakeStatePaths = await ensureFakeState(options.fakeMode.stateDir);
+    scriptedIssueTrackerExecuteGh = createScriptedIssueTrackerExecuteGh(fakeStatePaths);
+    scriptedCodeHostExecuteGh = createScriptedCodeHostExecuteGh(fakeStatePaths);
+  }
+
   const database = createSqliteDatabase({ path: options.databasePath });
   await migrateSqliteDatabase(database);
 
@@ -882,11 +919,24 @@ export async function createControlPlaneServer(
 
   const configurationRecords = new DrizzleConfigurationRecordRepository(database);
 
+  // Fake dispatch is enabled whenever fake mode is on and no explicit unit of work
+  // was injected. It owns dispatch and provider adapter selection.
+  const fakeDispatchEnabled = options.fakeMode !== undefined && options.unitOfWork === undefined;
+  const domainReposFakeRef: { current?: DomainRepositories } = {};
+  let fakeProfileId: string | undefined;
+  if (fakeDispatchEnabled) {
+    fakeProfileId = await ensureFakeProviderConfig({ secretStore, configurationRecords, tenant: FAKE_TENANT });
+  }
+
   // If real dispatch is enabled and no explicit unitOfWork was provided, register
   // the Claude adapter factory. Callers can still override by providing their own
   // factory with the same key in `providerAdapters`.
   const realDispatchEnabled =
     options.realRunnerDispatch?.enabled === true && options.unitOfWork === undefined;
+
+  // Both real and fake dispatch build the execution unit of work; they differ only
+  // in which provider adapters are registered and how profiles resolve.
+  const buildDispatch = realDispatchEnabled || fakeDispatchEnabled;
 
   const baseAdapters = options.providerAdapters ?? emptyProviderAdapterMap;
   let mergedAdapters: ProviderAdapterMap = baseAdapters;
@@ -897,7 +947,29 @@ export async function createControlPlaneServer(
   // present. We only populate these when real dispatch wires the factories, so the
   // registry claim and the registered factory stay in lockstep.
   const realDispatchRegistryEntries: ExtensionRegistryEntry[] = [];
-  if (realDispatchEnabled) {
+  if (fakeDispatchEnabled && fakeStatePaths !== undefined) {
+    // Fake mode registers only the scripted Claude adapter under the real Claude
+    // adapter key. No real adapters are composed, even if persisted API-created
+    // profiles exist from a prior run.
+    const merged = new Map<string, ProviderAdapterFactory>(baseAdapters);
+    merged.set(
+      scriptedClaudeAdapterKey,
+      createScriptedClaudeAdapterFactory({
+        paths: fakeStatePaths,
+        resolveIssueNumber: async (runId) => {
+          const run = await domainReposFakeRef.current?.runs.findById(runId);
+          return run?.trackedIssue?.number;
+        }
+      })
+    );
+    realDispatchRegistryEntries.push({
+      providerKind: claudeProviderKind,
+      adapterId: claudeAgentAdapterId,
+      displayName: 'Claude Agent SDK (fake)',
+      capabilities: ['agent_session']
+    });
+    mergedAdapters = merged;
+  } else if (realDispatchEnabled) {
     const agentAdapterLogger = {
       info(event: string, fields: unknown) { app.log.info({ ...(fields as Record<string, unknown>), event }, 'Agent adapter diagnostic.'); },
       warn(event: string, fields: unknown) { app.log.warn({ ...(fields as Record<string, unknown>), event }, 'Agent adapter diagnostic.'); },
@@ -967,7 +1039,7 @@ export async function createControlPlaneServer(
   // the empty default catalog only when no factories were wired.
   const startupExtensionRegistry: ExtensionRegistryCatalog =
     options.extensionRegistry ??
-    (realDispatchEnabled
+    (buildDispatch
       ? createExtensionRegistryCatalog(realDispatchRegistryEntries)
       : defaultExtensionRegistryCatalog);
 
@@ -988,6 +1060,9 @@ export async function createControlPlaneServer(
       });
 
   const domainRepos = createDrizzleDomainRepositories(database);
+  // Expose domain repositories to the scripted adapter factory for issue-number
+  // resolution at session time (the factory is constructed before this line).
+  domainReposFakeRef.current = domainRepos;
   const conversationIngress = new DrizzleConversationIngressRepository(database);
   const eventBus = new InMemoryRetainedRunEventStore(options.runEventStoreOptions ?? {
     maxEventsPerScope: 256,
@@ -1115,8 +1190,8 @@ export async function createControlPlaneServer(
   // and a workspace git port — all of which are only available in the real-dispatch branch.
   // An explicitly injected convergenceEngine (e.g. from integration tests) takes priority.
   let convergenceEngine: ConvergenceEngine | undefined = options.convergenceEngine;
-  if (convergenceEngine === undefined && resolvedUnitOfWork === undefined && realDispatchEnabled) {
-    const profileId = options.realRunnerDispatch?.defaultProviderProfileId;
+  if (convergenceEngine === undefined && resolvedUnitOfWork === undefined && buildDispatch) {
+    const profileId = fakeDispatchEnabled ? fakeProfileId : options.realRunnerDispatch?.defaultProviderProfileId;
     const adapterRegistry = composeAgentProviderAdapterRegistry({
       composed: providerCompositionResult.composed
     });
@@ -1550,10 +1625,14 @@ export async function createControlPlaneServer(
   // The adapter owns the shared gh helper internally, so the composition root never imports it
   // (keeping gh usage inside the adapter boundary). Tests override the binary path through
   // `codeHost.executablePath`, or inject a full fake via `codeHost.executeGh`.
+  // Fake mode injects scripted gh executors; explicit options always win.
+  const effectiveCodeHostExecuteGh = options.codeHost?.executeGh ?? scriptedCodeHostExecuteGh;
+  const effectiveIssueTrackerExecuteGh = options.githubIssueTracker?.executeGh ?? scriptedIssueTrackerExecuteGh;
+
   const githubCodeHostAdapter = createGitHubCodeHostAdapter({
     git: safeGitExecutorForCodeHost,
-    ...(options.codeHost?.executeGh !== undefined
-      ? { executeGh: options.codeHost.executeGh }
+    ...(effectiveCodeHostExecuteGh !== undefined
+      ? { executeGh: effectiveCodeHostExecuteGh }
       : {
           ...(options.codeHost?.executablePath !== undefined ? { ghExecutablePath: options.codeHost.executablePath } : {}),
           ...(options.codeHost?.timeoutMs !== undefined ? { timeoutMs: options.codeHost.timeoutMs } : {})
@@ -1646,6 +1725,7 @@ export async function createControlPlaneServer(
   const policy = options.policy ?? permissivePolicyDecisionPoint;
   const githubTracker = new GitHubIssueTracker({
     secretResolver: secretStore,
+    ...(effectiveIssueTrackerExecuteGh !== undefined ? { executeGhFn: effectiveIssueTrackerExecuteGh } : {}),
     ...(options.githubIssueTracker?.executablePath !== undefined ? { executablePath: options.githubIssueTracker.executablePath } : {}),
     ...(options.githubIssueTracker?.timeoutMs !== undefined ? { timeoutMs: options.githubIssueTracker.timeoutMs } : {})
   });

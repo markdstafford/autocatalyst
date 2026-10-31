@@ -904,6 +904,13 @@ export class DefaultOrchestrator implements Orchestrator {
         });
       }
 
+      // For bug spec.author advance: record an issue-canonical bug_triage artifact.
+      // Bug triage has no committed spec file and no spec.human_review gate, so this is
+      // best-effort and never blocks advancement.
+      if (result.directive === 'advance' && run.currentStep === 'spec.author' && run.workKind === 'bug') {
+        await this.#recordBugTriageArtifact(input.runId, run);
+      }
+
       const directive: RunDirective = result.directive === 'needs_input' ? 'needs_input' : 'advance';
       const checkpointResult: JsonValue | undefined =
         result.directive === 'advance' && result.result !== undefined
@@ -1298,6 +1305,39 @@ export class DefaultOrchestrator implements Orchestrator {
       error.code === 'terminal_run' ||
       error.code === 'invalid_transition'
     );
+  }
+
+  /**
+   * Record an issue-canonical bug_triage artifact for a bug run that completed
+   * spec.author. Bug triage is the tracker issue's source of truth, so the artifact
+   * carries `canonicalRecord: 'issue'` and no committed spec file. Best-effort: a
+   * missing dependency or a persistence failure is logged and never blocks the run.
+   */
+  async #recordBugTriageArtifact(runId: string, run: Run): Promise<void> {
+    const artifacts = this.#specAuthoringDependencies?.artifacts;
+    if (artifacts === undefined) {
+      return;
+    }
+    try {
+      const existing = await artifacts.findByRunAndKind({ runId, kind: 'bug_triage' });
+      if (existing !== null && existing !== undefined) {
+        return;
+      }
+      const location = run.trackedIssue?.url ?? `issue:${run.trackedIssue?.number ?? 'unknown'}`;
+      await artifacts.create({
+        runId,
+        owner: run.owner,
+        tenant: run.tenant,
+        kind: 'bug_triage',
+        canonicalRecord: 'issue',
+        location,
+        cachedStatus: 'draft',
+        ...(run.trackedIssue !== undefined ? { linkedIssue: run.trackedIssue } : {}),
+        publicationRefs: []
+      });
+    } catch (cause) {
+      this.#logger?.warn('Failed to record bug_triage artifact; continuing.', { runId, ...this.#safeCause(cause) });
+    }
   }
 
   async #runSpecAuthoringCompletion(

@@ -60,7 +60,7 @@ import {
   SqliteSecretStore
 } from '@autocatalyst/persistence';
 
-import { createFakeLaunchHarness } from './fake-claude-agent-sdk-harness.spec-helper.js';
+import { createFakeLaunchHarness } from './fake/launch-harness.js';
 import { createControlPlaneServer, startControlPlaneServer } from './server.js';
 
 const BEARER_TOKEN = 'integration-token';

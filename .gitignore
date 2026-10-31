@@ -34,3 +34,6 @@ coverage/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+
+# Fake mode / local state
+.autocatalyst-fake/
