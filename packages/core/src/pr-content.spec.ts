@@ -34,14 +34,14 @@ describe('buildPullRequestContent', () => {
     expect(content.body).toContain('Added project import flow');
   });
 
-  it('includes issue URL when present', () => {
+  it('links the issue with a closing keyword on its own line', () => {
     const content = buildPullRequestContent({
       workKind: 'feature',
       cumulativeSummary: baseSummary,
       issueUrl: 'https://github.com/owner/repo/issues/73',
       titleSubject: 'Add project import.'
     });
-    expect(content.body).toContain('https://github.com/owner/repo/issues/73');
+    expect(content.body).toMatch(/^Closes https:\/\/github\.com\/owner\/repo\/issues\/73$/mu);
   });
 
   it('includes validation section', () => {
