@@ -57,7 +57,7 @@ export function buildPullRequestContent(input: BuildPullRequestContentInput): Pu
   sections.push(summaryText);
 
   if (input.issueUrl) {
-    sections.push(`\n**Issue:** ${input.issueUrl}`);
+    sections.push(`\nCloses ${input.issueUrl}`);
   }
 
   if (changedFiles.length > 0) {
