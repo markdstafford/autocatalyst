@@ -1,6 +1,6 @@
 ---
 created: 2026-06-04
-last_updated: 2026-06-07
+last_updated: 2026-10-30
 status: active
 roadmap: core
 ---
@@ -126,8 +126,9 @@ links (below).
 ## Test results
 
 A **`TestResult`** records one human test pass over a run's implementation: the `Principal` who ran it,
-the outcome, the evidence captured (a reference into the run's scratch — screenshots, a video, notes),
-and the `Feedback` the pass raised. It is **parented to the `Run`** (`Run` to `TestResult` is
+the outcome, the result of each item in the testing guide (pass, fail, or unanswered, with an optional
+note), the evidence captured (a reference into the run's scratch — screenshots, a video, notes), and the
+`Feedback` the pass raised. It is **parented to the `Run`** (`Run` to `TestResult` is
 one-to-many; a run re-tested after a fix produces another). It **references** rather than embeds the
 `Feedback`, which is its own run-parented, reopenable record (above). The acceptance-testing gate owns
 when a result is captured and how it gates run completion (see `acceptance-testing`); this concept owns

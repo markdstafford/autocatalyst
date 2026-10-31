@@ -1,6 +1,6 @@
 ---
 created: 2026-06-04
-last_updated: 2026-06-07
+last_updated: 2026-10-30
 purpose: Index of the architecture decision records — read this to find the right ADR without opening each.
 ---
 
@@ -42,3 +42,6 @@ which changes over time.
 | [ADR-028 — Spec amendable through implementation](adr-028-spec-amendable-through-implementation.md) | The spec gate is approve-to-build-from; the implementer amends the spec then makes the change, confirmed at the implementation gate; freeze at `pr.finalize`, durable at merge. |
 | [ADR-029 — Compaction and doc-update step](adr-029-compaction-doc-update-step.md) | A `docs` phase between implementation and pr; `docs.update` runs bottom-up compaction; `docs.human_review` gates the human-owned doc diffs and skips when there are none; doc changes land on the code's branch. |
 | [ADR-030 — Observability two-store telemetry](adr-030-observability-two-store-telemetry.md) | Two stores: the durable DB (source of truth) holds a session-grain record of every run; an ephemeral OTLP/Victoria backend holds logs and metrics. Recorded from the first run; OTel-SDK emission; traces deferred; observability owns the operational-visibility model. |
+| [ADR-031 — The web client is one stateless web app](adr-031-web-client-architecture.md) | One web app that talks only to the control plane and keeps no run state; the desktop app wraps it and a mobile mode shows a subset. |
+| [ADR-032 — Web client stack](adr-032-web-client-stack.md) | React 19 with Vite, Tailwind 4, headless Base UI primitives behind the client's own components, lucide-react, Shiki, Vitest, and Playwright. |
+| [ADR-033 — Spec comment anchors](adr-033-spec-comment-anchors.md) | A spec anchor is code-point offsets plus the quoted text; when read, offsets that no longer match are repaired by searching for the quote, and marked stale when it is gone; optional at the control plane, required by the web client. |
