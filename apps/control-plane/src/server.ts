@@ -948,10 +948,14 @@ export async function createControlPlaneServer(
   // registry claim and the registered factory stay in lockstep.
   const realDispatchRegistryEntries: ExtensionRegistryEntry[] = [];
   if (fakeDispatchEnabled && fakeStatePaths !== undefined) {
-    // Fake mode registers only the scripted Claude adapter under the real Claude
-    // adapter key. No real adapters are composed, even if persisted API-created
-    // profiles exist from a prior run.
-    const merged = new Map<string, ProviderAdapterFactory>(baseAdapters);
+    // Fake mode registers ONLY the scripted Claude adapter under the real Claude
+    // adapter key. It deliberately ignores any caller-provided `providerAdapters`
+    // (`baseAdapters`) rather than carrying them into the fake registry: fake mode
+    // owns provider adapter selection, so no real Claude/OpenAI/Codex/Anthropic
+    // factory may be composed here. Seeding from `baseAdapters` would leave real
+    // factories reachable by any persisted/API-created profile that references
+    // their adapter key, which would allow real-provider routing after restart.
+    const merged = new Map<string, ProviderAdapterFactory>();
     merged.set(
       scriptedClaudeAdapterKey,
       createScriptedClaudeAdapterFactory({
