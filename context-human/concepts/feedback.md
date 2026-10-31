@@ -1,6 +1,6 @@
 ---
 created: 2026-06-06
-last_updated: 2026-06-07
+last_updated: 2026-10-30
 status: active
 roadmap: flow
 ---
@@ -50,7 +50,10 @@ doc change, or which part of the pull request it concerns; the target (`artifact
 `docs`, or `pr`) records which gate review it belongs to — one target per gate that accepts feedback
 (`domain-model`). A person's anchored comment carries the region they selected; a reviewer's finding
 carries the part of the change it points at. An item with no region is target-level: it concerns the
-whole work under that review rather than a specific place in it.
+whole work under that review rather than a specific place in it, as general feedback raised while testing
+the implementation does, or a comment typed into a chat thread. When an item does carry an anchor on the
+spec, the control plane rejects one that does not resolve to a region of the current spec. A client may
+require an anchor of its own comments, as the web client does for the spec (`run-detail`).
 
 ## Disposition authority
 
@@ -172,6 +175,8 @@ separate post-PR feedback mechanism.
   pipeline before any resolution is recorded (ADR-012, ADR-027).
 - Implementation feedback that contradicts the spec amends the spec in place, confirmed at the
   implementation gate, frozen at `pr.finalize` (ADR-028).
+- A spec anchor is optional at the control plane, which rejects one that does not resolve in the current
+  spec. A client can require one, so a comment from a chat channel can arrive without a region.
 
 ## Open edges
 

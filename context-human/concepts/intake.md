@@ -1,6 +1,6 @@
 ---
 created: 2026-06-06
-last_updated: 2026-06-06
+last_updated: 2026-10-30
 status: active
 roadmap: track
 ---
@@ -41,7 +41,9 @@ but resolving to, the workflow catalog (`run`/`workflow`):
 
 - **An issue reference** — a structured pointer to an existing tracker issue. Because the reference is
   explicit, nothing has to be classified to recognize that a lookup is needed; intake goes straight to
-  the pull-and-enrich and the work kind is settled from the enriched issue.
+  the pull-and-enrich and the work kind is settled from the enriched issue. The reference can also carry
+  an explicit work kind, as it does from the web client, which has a control for it. That kind is used
+  as given, and the classifier settles the kind only when none is given.
 - **A free-form trigger** — text describing work. The classifier reads it into a workflow. Text that
   happens to name an issue ("work on issue #N") is also free-form; the difference between a one-stage and
   a two-stage create surfaces from classification, not from the submission shape.

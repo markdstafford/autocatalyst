@@ -1,6 +1,6 @@
 ---
 created: 2026-06-03
-last_updated: 2026-06-07
+last_updated: 2026-10-30
 status: active
 roadmap: fnd
 ---
@@ -20,8 +20,8 @@ behavior of a run in motion (see `execution-runtime`), or the run lifecycle and 
 ## The shape: one service, two planes
 
 Autocatalyst runs as a **standalone network-API service** that is the single source of truth.
-Every client (the desktop app, a lightweight mobile app, and optional channel adapters) is a
-thin peer consumer of that API. The service is never embedded inside a client (ADR-003).
+Every client (the web client, which the desktop app wraps and which has a mobile mode, and optional
+channel adapters) is a thin peer consumer of that API. The service is never embedded inside a client (ADR-003).
 
 Inside the service are two planes:
 
@@ -36,6 +36,11 @@ execution plane can later be extracted into separately deployed workers without 
 contract (ADR-003). The repository layout enforces this boundary structurally: the control-plane
 package may depend on the execution *interface* but not reach into its internals (ADR-002). The
 mechanics of a run crossing this boundary belong to `execution-runtime`.
+
+The **web client** is a component of the system that sits outside the service. It talks only to the
+control plane, through the public API and the event stream, and holds no run or project state of its
+own; the browser keeps only the operator's preferences. The control plane serves the built client, so
+the client needs no separate host. The desktop app wraps this same client (`ux`).
 
 ## Hosting and deployment
 
@@ -163,6 +168,7 @@ design goal, because the system is authored largely by agents.
   behind the ports defined here.
 - `identity` — the full multi-user/RBAC model built against the seam placed here.
 - `observability` — the structured logging and telemetry shared across the topology.
+- `ux` — the web client: its principles, the shell, and the screens that front the public API.
 - `channels` and `mobile` — acknowledged future client surfaces the client-agnostic API
   anticipates.
 

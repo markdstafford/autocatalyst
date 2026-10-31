@@ -1,6 +1,6 @@
 ---
 created: 2026-06-06
-last_updated: 2026-06-06
+last_updated: 2026-10-30
 status: active
 roadmap: obs
 ---
@@ -17,7 +17,7 @@ the **durable run record**, the **query model** that sits behind status and prog
 operational-visibility model the API surface defers here. It does not own the entities themselves (see
 `domain-model`), the per-session telemetry it consumes (emitted by `agent-runners`), the cost
 computation over that record (see `cost`), the event transport (see `api`), or the screens that render
-it (DESK `progress`).
+it (`run-detail`, `ux`).
 
 ## Two stores
 
@@ -132,8 +132,8 @@ volume ever makes it worthwhile; at expected throughput it is not needed.
 - `execution-runtime` — owns the typed event protocol whose live stream carries per-turn activity and
   whose persisted events serve reconnect and resume.
 - `acceptance-testing` — owns the run-parented test-result record this concept surfaces but does not own.
-- DESK `progress` and `settings` — render the timeline, the session drill-in, and the operational view
-  over the model defined here.
+- `run-detail` — renders the timeline and the session drill-in. No client screen shows the
+  operational-visibility model.
 
 ## Constraints and decisions
 

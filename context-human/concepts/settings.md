@@ -1,6 +1,6 @@
 ---
 created: 2026-06-07
-last_updated: 2026-06-07
+last_updated: 2026-10-30
 status: active
 roadmap: core
 ---
@@ -11,7 +11,7 @@ The configuration data model: the service-owned settings the system reads to run
 validation, and secret handling that govern them. ADR-008 makes configuration a core data model and an
 API contract, so its schemas need an owner. This concept is that owner. It homes the configuration
 records scattered across the other concepts, and owns how they are stored, validated, scoped, and
-secured. It does **not** own the in-application editing surface (DESK `settings`), and it does not
+secured. It does **not** own the in-application editing surface (the settings screens in `ux`), and it does not
 re-state the per-domain schemas the other concepts define; it homes them and owns the storage, the
 validation lifecycle, the secret-reference model, and the bootstrap boundary.
 
@@ -69,10 +69,9 @@ operational configuration in the store (ADR-008).
 ## The schema model and the editing surface
 
 This concept owns the configuration data model — the records, their schemas, validation, scoping, and
-secrets. The in-application editing surface that reads and writes them is DESK `settings` (repository
-management, the model-management surface, theming), a separate DESK concept. The split keeps the schema
-contract, which the running system needs from the start, independent of the UI, which the desktop app
-delivers later.
+secrets. The in-application editing surface that reads and writes them is the settings screens in `ux`
+(repository management, the model-management surface, theming). The split keeps the schema contract,
+which the running system needs from the start, independent of the UI.
 
 ## Relationships
 
@@ -84,7 +83,7 @@ delivers later.
 - `domain-model` / `workspace` / `trackers` — the `Project` settings (repository, tracker, code host,
   workspace root, merge strategy).
 - `commands` — the channel and publisher bindings.
-- DESK `settings` — the in-application editing surface onto these records.
+- `ux` — the settings screens, the in-application editing surface onto these records.
 
 ## Constraints and decisions
 
@@ -94,7 +93,7 @@ delivers later.
   record.
 - A configured provider is valid when its adapter id resolves to code; the registry is advisory
   (ADR-011).
-- The configuration schema model is needed from the start; the DESK editing surface is a later concept.
+- The configuration schema model is needed from the start; the editing surface is owned by `ux`.
 
 ## Open edges
 

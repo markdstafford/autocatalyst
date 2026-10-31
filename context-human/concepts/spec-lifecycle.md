@@ -1,6 +1,6 @@
 ---
 created: 2026-06-06
-last_updated: 2026-06-07
+last_updated: 2026-10-30
 status: active
 roadmap: spec
 ---
@@ -12,7 +12,7 @@ one run. It covers the committed-frontmatter status the spec carries, the metada
 holds to, how a spec is superseded, and the per-kind rule for whether a work product becomes a committed file
 at all. The `Artifact` *entity* (its database record, operational handle, cached status, and publications)
 belongs to `domain-model` and ADR-017. The run-time touch points that author the spec, amend it, and freeze
-it belong to `workflow`, `feedback`, and ADR-028; the in-app review surface is a DESK concern (`artifact-review`).
+it belong to `workflow`, `feedback`, and ADR-028; the in-app review surface is `run-detail`.
 This concept is what the spec is as a document, across and beyond the run that produced it.
 
 ## The committed file and the database record
@@ -122,7 +122,7 @@ docs and `spec.md`, refreshed by compaction (`docs-model`).
   ship rule and the frontmatter the amendments and the freeze write.
 - `docs-model` — owns the wider corpus the durable source of truth shifts into; this concept owns the per-
   spec document the corpus is built from.
-- `artifact-review` (DESK) — owns the in-app surface for reading and editing a spec; this concept owns the
+- `run-detail` — owns the in-app surface for reading and reviewing a spec; this concept owns the
   document that surface renders.
 - `mm-integration` — owns the invocation of `mm:planning`, which authors file-canonical specs to this schema.
 

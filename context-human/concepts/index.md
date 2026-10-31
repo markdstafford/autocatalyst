@@ -1,6 +1,6 @@
 ---
 created: 2026-06-04
-last_updated: 2026-06-07
+last_updated: 2026-10-30
 purpose: Index of the concept docs — read this to find the right concept without opening each.
 ---
 
@@ -18,7 +18,7 @@ Each concept below is an architectural contract. See its frontmatter for the cur
 | [review](review.md) | In-step convergence review: the implementer and reviewer roles within a step, the per-round loop, the implementer-decides-convergence rule, reviews steering the workflow through `revise`, single-model degradation, and a finding as a `Feedback` item. |
 | [orchestrator](orchestrator.md) | The single mutation authority and scheduler: ingestion through the service interface, the topic-keyed dedup gate, dispatch across the `Runner` boundary, concurrency, operator actions, and recovery. |
 | [api](api.md) | The service interface and network surface: the resource taxonomy, naming and casing, reads and the SSE event stream, versioning, health, and auth. |
-| [settings](settings.md) | The configuration data model: service-owned config in the database (ADR-008), the records it homes (provider connectivity, routing and rate tables, `Project` settings, channel bindings, policy knobs), secret references rather than secrets, validation and connection tests, the bootstrap boundary, and the split from the DESK editing surface. |
+| [settings](settings.md) | The configuration data model: service-owned config in the database (ADR-008), the records it homes (provider connectivity, routing and rate tables, `Project` settings, channel bindings, policy settings), secret references rather than secrets, validation and connection tests, the bootstrap boundary, and the split from the editing screens in `ux`. |
 | [workspace](workspace.md) | The per-run filesystem environment: the two-root (repo/scratch) layout and its durability invariant, the git-worktree isolation primitive, provisioning shapes, canonical paths and containment, the branch, creation and teardown, retention and garbage collection, and re-materialization. |
 | [agent-runners](agent-runners.md) | Runner plurality and its machinery: the connection layer + agent/direct orchestrators + per-cell provider adapters, connectivity configuration, the request-alteration boundary, typed-event emission, uniform telemetry, and per-backend tool/skill materialization. |
 | [model-routing](model-routing.md) | The selection policy: the `(step, role)` routing key, the declarative routing table and resolution, profiles and inference settings, role-distinct routing for convergence, and the model-management configuration model. |
@@ -35,3 +35,6 @@ Each concept below is an architectural contract. See its frontmatter for the cur
 | [mm-integration](mm-integration.md) | The boundary with micromanager: the delegation test and what is built versus invoked, the three invoked skills (planning, issue-triage, compaction), the uniform invocation envelope, the one-time config read, version dependence through the manifest, and the methods taken up later. |
 | [observability](observability.md) | The two stores and what flows to each: the durable session-grain run record (`RunStep` + `Session`) versus the ephemeral OTLP/Victoria logs and metrics, OTel-SDK emission, the durable query model behind status and progress, the operational-visibility model the API defers here, and retention. |
 | [cost](cost.md) | Turning execution metadata into money: the session as the cost unit, pricing tokens × per-model rate in integer nano-dollars at session completion, the service-owned rate table, live-computed rollups (a cached aggregate deferred), and the per-session analytics for tuning workflow depth and comparing thinking levels. |
+| [ux](ux.md) | The web client's shape: its principles (dense layouts and keyboard shortcuts, the operator manages the work and agents do it), one web app for every device that talks only to the control plane, the four-region shell, and the settings screens that edit the records `settings` owns. |
+| [collection](collection.md) | The run list: runs as one array of items with properties, named views that filter, sort, group, and lay out that array, pinned views and To do, and a selection that keeps the detail tab as the operator moves between runs. |
+| [run-detail](run-detail.md) | The detail pane for a run: the header and four tabs (Summary, Spec, Acceptance, Activity), phases and steps taken from the run's workflow, anchored comments on the spec, the testing guide and its results, and the one gate decision. |

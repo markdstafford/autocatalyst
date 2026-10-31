@@ -1,6 +1,6 @@
 ---
 created: 2026-06-04
-last_updated: 2026-06-06
+last_updated: 2026-10-30
 status: active
 roadmap: core
 ---
@@ -58,6 +58,13 @@ Submitting work is creating resources:
 This is the same intake the in-process adapters feed; the orchestrator's gate decides whether each call
 starts or advances work.
 
+Two further operations support a client that starts runs from tracked issues:
+
+- An **issue lookup** reads one issue on a project by number and returns its number, title, labels, and
+  tracker state (`trackers`, `domain-model`), so a client can show the issue before it starts a run.
+- A submission that opens a conversation can carry a **work kind**. When it does, that kind selects the
+  run's workflow and takes precedence over the kind settled from the issue (`intake`).
+
 ## Operator actions and feedback
 
 Operator actions are action sub-resources, authenticated and routed through the single authority
@@ -65,12 +72,25 @@ Operator actions are action sub-resources, authenticated and routed through the 
 first-class endpoints because it gates run completion: `POST /runs/{id}/feedback` raises an item, and
 `PATCH /runs/{id}/feedback/{id}` resolves, reopens, or marks it `wont_fix`.
 
+A client can also archive a run, which is the archive action of `commands`: the run leaves active
+listings and no data is destroyed. Recovering a stopped run is its own contract (`hitl`).
+
+Feedback on a spec can carry an anchor, and the server rejects an anchor that does not resolve in the
+current spec (`feedback`). A run's testing guide and the results of a test pass, per item and general,
+are read and written through the run (`acceptance-testing`).
+
 ## Reads and streaming
 
 Reads are ordinary REST:
 
 - `GET /runs/{id}` returns a run's state; `GET /runs?status=&topicId=&conversationId=&projectId=`
   filters across runs.
+- Each item in a run listing carries what a list row needs, so a client draws the list without a read
+  per run: the issue number and title, the work kind, the status, what the run is waiting on, the
+  project, and the age. The listing filters by status and by project.
+- A run exposes the ordered phases of its workflow and the expected path of steps through it, so a
+  client draws progress from the run and never from a fixed list. This holds for a workflow that adds,
+  drops, or reorders phases (`run`, `workflow`).
 - `GET /runs/{id}/steps` returns the run's step occurrences (the timeline and its cost rolled up to
   `(step, role)`). Cost rides on the resource it belongs to: a run, topic, conversation, or project
   exposes its cost as integer minor units (nano-dollars, not a float), computed live from the session
@@ -111,6 +131,9 @@ change goes in a new version path alongside the current one.
 - A minimal **health** endpoint (`GET /health`, reporting that the process is alive and the database is
   reachable) is operational and **unversioned**, kept out of `/v1`. Rich operational visibility (running
   agents, queue depth, token totals) is an observability concern, not part of this surface.
+- A client can check a stored tracker credential on demand. The check reports whether the credential
+  works, in failure categories that never reveal the secret, and no response returns the secret
+  (`settings`, `trackers`).
 - Every request carries a **`Principal`** (identity and tenant) and is authenticated by a bearer token
   (ADR-009). The policy point that reads the principal sits in the API layer.
 - Events scope by principal and tenant, and by the conversation's repository binding (`domain-model`),
@@ -122,6 +145,8 @@ change goes in a new version path alongside the current one.
 - `domain-model`: owns the entities the resources expose and the `Principal` the requests carry.
 - `orchestrator`: the single authority the surface drives; intake and operator actions route to it.
 - `execution-runtime`: owns the event protocol the run-events stream transports.
+- `trackers`: owns the issue read behind the issue lookup and the connection test behind the credential
+  check.
 - `architecture`: owns the envelope (typed REST, SSE, Fastify, schema-as-source) this surface is built
   within.
 

@@ -1,6 +1,6 @@
 ---
 created: 2026-06-06
-last_updated: 2026-06-06
+last_updated: 2026-10-30
 status: active
 roadmap: flow
 ---
@@ -25,6 +25,10 @@ cover every inbound message:
 - **`advance`** — approve. The run moves forward to the workflow's next step.
 - **`revise`** — feedback. The run moves back to address it.
 - **`answer`** — a question. The run does not move; the message gets a response.
+
+A client with its own control for each impact, such as the web client's buttons to approve, request
+changes, or start a run, sends the impact directly and needs no classification. Classification is for
+messages that arrive without that signal, such as a reply in a chat thread.
 
 This framing refines ADR-016's `MessageIntent`. The impacts align with the directive vocabulary the
 run already uses (see `run`), which makes them straightforward to act on: `advance` and `revise` *are* the
