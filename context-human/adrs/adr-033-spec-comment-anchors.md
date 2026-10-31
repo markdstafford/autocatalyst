@@ -6,7 +6,7 @@ decided_by: markdstafford
 superseded_by: null
 ---
 
-# ADR-033: Spec comment anchors are quoted text, resolved against the current spec
+# ADR-033: Spec comment anchors are offsets with the quoted text, reconciled when read
 
 ## Status
 
@@ -23,47 +23,49 @@ before it changes, whatever the length of the text itself.
 
 ## Decision
 
-**A spec anchor is the quoted text, a short run of text before and after it, the offsets in code points where
-the operator selected it, and the spec revision it was made against. The anchor is never rewritten. The
-control plane resolves it against the current spec when it is read: it looks for the quoted text near the old
-offsets, uses the surrounding text to choose between matches, and returns the current range. If the text is
-no longer there, the anchor is returned as stale. A stale comment is kept and shown with its quote.**
+**A spec anchor is a start and end offset into the spec's source text, counted in Unicode code points, plus
+the quoted text those offsets cover. Most of the time the offsets are right. When the control plane reads a
+comment, it checks that the text at the offsets equals the quoted text. If it does, nothing changes. If it
+does not, the control plane searches the spec for the quoted text. When it finds it, it stores the new
+offsets. When it does not, it marks the anchor stale. A stale comment is kept and shown with its quote.**
 
 - On write, the control plane rejects an anchor whose offsets do not reproduce the quoted text in the
-  revision it names.
-- Resolution happens in the control plane, so every client sees the same range for the same comment.
+  current spec.
+- Reconciliation happens in the control plane, so every client sees the same range for the same comment.
 - The anchor is optional at the control plane. The web client requires one on every spec comment.
 - The web client maps a selection in the rendered view back to source offsets before it sends the anchor.
+- The agent that revises a spec is not asked to maintain offsets. Counting code points is unreliable for a
+  model, and the check against the quoted text catches any mistake.
 
 ## Consequences
 
 **Pros:**
-- Nothing has to be updated when the spec changes, and a comment survives revisions that leave its text alone.
-- Stale comments are visible and recoverable, never silently moved to the wrong text.
+- The common case costs one comparison, and a changed spec repairs its comments the next time they are read.
+- A comment whose text is gone is visible and recoverable, never silently moved to the wrong text.
 - Offsets do not depend on how a client renders.
 
 **Cons:**
-- Resolution is a search, so a passage that repeats can resolve to the wrong copy. The surrounding text
-  makes this rare but not impossible.
+- The search takes the first match, so a phrase that appears twice can move a comment to the wrong copy.
+  Storing a little text on each side of the quote would reduce this, and is taken up if it happens in
+  practice.
 - Mapping a rendered selection to source offsets is real client work, with edge cases in tables, lists, and
   code.
 - Code point counting differs from string length in JavaScript, so the client counts with care.
 
 ## Alternatives considered
 
-### Offsets that are rewritten whenever the spec changes
+### Resolve from the quoted text alone, never storing offsets
 
-**Pros:** no search at read time.
-**Cons:** the system must know what changed. An agent rewrites the whole spec, so there is no edit record
-to shift offsets by, and the only way to rewrite them is the same search.
-**Why not chosen:** it does the search anyway and makes every revision write to every comment.
+**Pros:** nothing to keep current.
+**Cons:** a search on every read, and no cheap way to tell a moved passage from an unchanged one.
+**Why not chosen:** offsets make the common case a single comparison.
+
+### Ask the revising agent to update the offsets
+
+**Cons:** models miscount code points, and a wrong offset looks valid until a reader notices.
+**Why not chosen:** the control plane can repair offsets from the quoted text without trusting the agent.
 
 ### Anchor to a heading or block id
 
 **Cons:** too coarse for a comment on a phrase.
 **Why not chosen:** operators comment on sentences.
-
-### Offsets without quoted text
-
-**Cons:** cannot tell a stale range from a valid one.
-**Why not chosen:** the quoted text is what makes the check and the search possible.
