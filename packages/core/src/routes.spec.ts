@@ -82,9 +82,12 @@ function createFakeControlPlaneService(): ControlPlaneService {
     replyToRun: vi.fn(async () => {
       throw new Error('controlPlane.replyToRun not stubbed for this test');
     }),
+    recoverRun: vi.fn(async () => {
+      throw new Error('controlPlane.recoverRun not stubbed for this test');
+    }),
     reconcilePullRequests: vi.fn().mockResolvedValue({ checked: 0, merged: 0, closed: 0, failed: 0, timedOut: false }),
     tick: vi.fn(async () => ({ status: 'noop' as const }))
-  };
+  } as unknown as ControlPlaneService;
 }
 
 async function buildServer(overrides?: Partial<ControlPlaneRouteDependencies>) {
@@ -1712,6 +1715,113 @@ describe('registerControlPlaneRoutes', () => {
 
     expect(response.statusCode).toBe(409);
     expect(errorResponseSchema.parse(response.json()).error.code).toBe('conflict');
+  });
+
+  it('POST /v1/runs/:id/recover returns 200 with the reopened run and mode, and authorizes recovery', async () => {
+    const recoveredRun = {
+      id: 'run_1',
+      topicId: 'topic_1',
+      owner: hardcodedDevelopmentPrincipal,
+      tenant: 'tenant_dev',
+      workKind: 'feature',
+      currentStep: 'implementation.build',
+      terminal: false,
+      waitingOn: 'ai' as const,
+      createdAt: '2026-10-28T00:00:00.000Z',
+      updatedAt: '2026-10-28T00:00:00.000Z'
+    };
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.recoverRun as ReturnType<typeof vi.fn>).mockResolvedValue({ run: recoveredRun, mode: 'resume' });
+    const { app, authorization, policyCalls } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/recover',
+      headers: authorization,
+      payload: { mode: 'resume' }
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ mode: 'resume', run: { id: 'run_1' } });
+    expect(controlPlane.recoverRun).toHaveBeenCalledWith({
+      principal: hardcodedDevelopmentPrincipal,
+      tenant: 'tenant_dev',
+      runId: 'run_1',
+      request: { mode: 'resume' }
+    });
+    expect(policyCalls).toContainEqual({
+      principal: hardcodedDevelopmentPrincipal,
+      action: 'run_recovery.create',
+      resource: { kind: 'run_recovery', id: 'run_1', path: '/v1/runs/:id/recover' }
+    });
+  });
+
+  it('POST /v1/runs/:id/recover treats a missing body as an empty recovery request', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.recoverRun as ReturnType<typeof vi.fn>).mockResolvedValue({
+      run: {
+        id: 'run_1', topicId: 'topic_1', owner: hardcodedDevelopmentPrincipal, tenant: 'tenant_dev',
+        workKind: 'feature', currentStep: 'spec.author', terminal: false, waitingOn: 'ai' as const,
+        createdAt: '2026-10-28T00:00:00.000Z', updatedAt: '2026-10-28T00:00:00.000Z'
+      },
+      mode: 'start_over'
+    });
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({ method: 'POST', url: '/v1/runs/run_1/recover', headers: authorization });
+
+    expect(response.statusCode).toBe(200);
+    expect(controlPlane.recoverRun).toHaveBeenCalledWith(expect.objectContaining({ request: {} }));
+  });
+
+  it('POST /v1/runs/:id/recover rejects an unknown field with 400', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({
+      method: 'POST',
+      url: '/v1/runs/run_1/recover',
+      headers: authorization,
+      payload: { mode: 'resume', unexpected: true }
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('validation_error');
+    expect(controlPlane.recoverRun).not.toHaveBeenCalled();
+  });
+
+  it('POST /v1/runs/:id/recover maps conflict error to 409', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    (controlPlane.recoverRun as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new ControlPlaneServiceError('conflict', 'run_branch_missing')
+    );
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({ method: 'POST', url: '/v1/runs/run_1/recover', headers: authorization, payload: { mode: 'resume' } });
+
+    expect(response.statusCode).toBe(409);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('conflict');
+  });
+
+  it('POST /v1/runs/:id/recover maps not_found to 404 and active_run_conflict to 409', async () => {
+    const notFound = createFakeControlPlaneService();
+    (notFound.recoverRun as ReturnType<typeof vi.fn>).mockRejectedValue(new ControlPlaneServiceError('not_found', 'Run not found.'));
+    const nf = await buildServer({ controlPlane: notFound });
+    const nfResponse = await nf.app.inject({ method: 'POST', url: '/v1/runs/run_x/recover', headers: nf.authorization, payload: {} });
+    expect(nfResponse.statusCode).toBe(404);
+    await nf.app.close();
+
+    const conflict = createFakeControlPlaneService();
+    (conflict.recoverRun as ReturnType<typeof vi.fn>).mockRejectedValue(new ControlPlaneServiceError('active_run_conflict', 'Active run conflict.'));
+    const { app, authorization } = await buildServer({ controlPlane: conflict });
+    server = app;
+    const response = await app.inject({ method: 'POST', url: '/v1/runs/run_1/recover', headers: authorization, payload: {} });
+    expect(response.statusCode).toBe(409);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('active_run_conflict');
   });
 
   it('POST /v1/runs/:id/replies maps invalid_transition error to 400', async () => {

@@ -81,6 +81,12 @@ re-dispatches the run from the recorded step (see `execution-runtime` for the re
 `orchestrator` for admitting the run back for dispatch). The run resumes from where it was, not from
 the beginning, because the recorded step is where it stopped.
 
+Recovery can **resume or start over by choice**. By default it follows the recovery policy table
+(`run`): a spec-phase failure starts over on a fresh default branch, and an implementation/docs/pr
+failure with committed work resumes from the failed step on the run branch. The operator can override
+that default — `resume` keeps the run branch and continues the failed step, `start_over` restarts the
+phase on a freshly fetched default branch.
+
 ## A reply to a stopped run
 
 A reply that arrives for a run that has already stopped — a `failed` or `canceled` run — is neither

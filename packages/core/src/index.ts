@@ -90,6 +90,8 @@ export type {
   RecordRunLifecycleStartResult,
   RecordRunStepTransitionInput,
   RecordRunStepTransitionResult,
+  RecoverFailedRunInput,
+  RecoverFailedRunResult,
   ListOpenPullRequestsInput,
   RunWorkspaceMetadata,
   RunWorkspaceMetadataRepository,
@@ -146,6 +148,8 @@ export * from './run-dispatch-queue.js';
 export * from './orchestrator.js';
 
 export * from './control-plane-service.js';
+
+export * from './run-recovery.js';
 
 export {
   createExecutionContextResolver,

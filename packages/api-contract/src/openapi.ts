@@ -85,6 +85,12 @@ import {
   runReplyResponseSchema
 } from './run-replies.js';
 import {
+  recoverRunSuccessStatusCode,
+  runRecoveryPath,
+  runRecoveryRequestSchema,
+  runRecoveryResponseSchema
+} from './run-recovery.js';
+import {
   pullRequestReconciliationPath,
   pullRequestReconciliationResponseSchema,
   reconcilePullRequestsSuccessStatusCode
@@ -165,6 +171,9 @@ export function generateOpenApiDocument(): OpenApiDocument {
   const RunReplyRequest = registry.register('RunReplyRequest', runReplyRequestSchema);
   const RunReplyResponse = registry.register('RunReplyResponse', runReplyResponseSchema);
   const RunReplyParams = registry.register('RunReplyParams', z.object({ id: z.string().min(1) }).strict());
+  const RunRecoveryRequest = registry.register('RunRecoveryRequest', runRecoveryRequestSchema);
+  const RunRecoveryResponse = registry.register('RunRecoveryResponse', runRecoveryResponseSchema);
+  const RunRecoveryParams = registry.register('RunRecoveryParams', z.object({ id: z.string().min(1) }).strict());
   const PullRequestReconciliationResponse = registry.register('PullRequestReconciliationResponse', pullRequestReconciliationResponseSchema);
   const RunPullRequestResponse = registry.register('RunPullRequestResponse', runPullRequestResponseSchema);
   const RunSessionListResponse = registry.register('RunSessionListResponse', runSessionListResponseSchema);
@@ -558,6 +567,33 @@ export function generateOpenApiDocument(): OpenApiDocument {
       404: jsonResponse(ErrorResponse, 'Run not found.'),
       409: jsonResponse(ErrorResponse, 'Run is terminal, not waiting on a human, blocked by feedback, changed step, or unsupported pause.'),
       500: jsonResponse(ErrorResponse, 'Unexpected internal failure.')
+    }
+  });
+
+  // POST /v1/runs/{id}/recover
+  registry.registerPath({
+    method: 'post',
+    path: runRecoveryPath.replace(':id', '{id}') as '/v1/runs/{id}/recover',
+    tags: ['runs'],
+    summary: 'Recover a failed run',
+    description: 'Reopens a failed run and re-dispatches it from a policy- or mode-selected step.',
+    security: [{ bearerAuth: [] }],
+    request: {
+      params: RunRecoveryParams,
+      body: {
+        content: {
+          'application/json': {
+            schema: RunRecoveryRequest
+          }
+        }
+      }
+    },
+    responses: {
+      [recoverRunSuccessStatusCode]: jsonResponse(RunRecoveryResponse, 'Run reopened and admitted for dispatch.'),
+      400: jsonResponse(ErrorResponse, 'Malformed request or unknown field.'),
+      403: jsonResponse(ErrorResponse, 'Unauthorized principal or model principal.'),
+      404: jsonResponse(ErrorResponse, 'Run not found.'),
+      409: jsonResponse(ErrorResponse, 'Run is not a recoverable failed run, has no recoverable step, conflicts with an active run, or the run branch is missing.')
     }
   });
 

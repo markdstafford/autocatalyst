@@ -190,6 +190,12 @@ A spec-phase failure starts over because little durable work precedes it; an imp
 pr failure resumes from the failed step over the committed branch. Every recovery is operator-initiated;
 there is no automatic re-dispatch.
 
+This table is the **default** the operator confirmation applies when no mode is given. The operator can
+override it at the point of recovery by choosing a mode: `resume` continues from the failed step on the
+run branch, and `start_over` restarts the phase on a freshly fetched default branch. The operator
+confirmation is therefore a mode choice — accept the policy default, or pick `resume`/`start_over`
+explicitly (`hitl`).
+
 ## Relationships
 
 - `domain-model` — owns the `Run`, `Topic`, `Conversation`, `Artifact`, `Feedback`, `RunStep`, and

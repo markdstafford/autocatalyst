@@ -692,6 +692,64 @@ describe('ControlPlaneClient.replyToRun', () => {
   });
 });
 
+describe('ControlPlaneClient.recoverRun', () => {
+  const recoveredRun = {
+    id: 'run_1', topicId: 'topic_1',
+    owner: { kind: 'human' as const, id: 'user_1', tenantId: 'org_1' },
+    tenant: 'org_1', workKind: 'feature', currentStep: 'implementation.build',
+    waitingOn: 'ai' as const, terminal: false,
+    createdAt: '2026-10-28T00:00:00.000Z', updatedAt: '2026-10-28T00:00:00.000Z'
+  };
+
+  it('sends resume and parses the response', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ run: recoveredRun, mode: 'resume' }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const client = createControlPlaneClient({ baseUrl: 'https://api.test', bearerToken: 'token', fetch });
+
+    const response = await client.recoverRun('run_1', { mode: 'resume' });
+
+    expect(fetch).toHaveBeenCalledWith(new URL('https://api.test/v1/runs/run_1/recover'), expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ mode: 'resume' })
+    }));
+    expect(response).toEqual({ run: recoveredRun, mode: 'resume' });
+  });
+
+  it('sends start_over and parses the response', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ run: { ...recoveredRun, currentStep: 'spec.author' }, mode: 'start_over' }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const client = createControlPlaneClient({ baseUrl: 'https://api.test', bearerToken: 'token', fetch });
+
+    const response = await client.recoverRun('run_1', { mode: 'start_over' });
+
+    expect(response.mode).toBe('start_over');
+  });
+
+  it('sends an empty body when the request is omitted', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ run: recoveredRun, mode: 'resume' }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const client = createControlPlaneClient({ baseUrl: 'https://api.test', bearerToken: 'token', fetch });
+
+    await client.recoverRun('run_1');
+
+    expect(fetch).toHaveBeenCalledWith(new URL('https://api.test/v1/runs/run_1/recover'), expect.objectContaining({
+      body: JSON.stringify({})
+    }));
+  });
+
+  it('propagates conflict errors', async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ error: { code: 'conflict', message: 'run_branch_missing' } }), { status: 409, headers: { 'content-type': 'application/json' } }));
+    const client = createControlPlaneClient({ baseUrl: 'https://api.test', bearerToken: 'token', fetch });
+
+    await expect(client.recoverRun('run_1', { mode: 'resume' })).rejects.toMatchObject({ status: 409 });
+  });
+
+  it('rejects invalid recovery requests before sending', async () => {
+    const fetch = vi.fn();
+    const client = createControlPlaneClient({ baseUrl: 'https://api.test', bearerToken: 'token', fetch });
+
+    await expect(client.recoverRun('run_1', { mode: 'retry' } as never)).rejects.toThrow();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
 describe('ControlPlaneClient.appendRunFeedbackThreadReply', () => {
   const feedbackItem = {
     id: 'fb_1', runId: 'run_1',

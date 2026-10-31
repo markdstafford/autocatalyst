@@ -7,6 +7,10 @@ import {
   runRepliesPath,
   runReplyRequestSchema,
   runReplyResponseSchema,
+  recoverRunSuccessStatusCode,
+  runRecoveryPath,
+  runRecoveryRequestSchema,
+  runRecoveryResponseSchema,
   configurationRecordCollectionPath,
   configurationRecordIdParamsSchema,
   configurationRecordListResponseSchema,
@@ -100,6 +104,7 @@ import {
   type ReconcilePullRequestsResponse,
   type RunIdParams,
   type RunPullRequestResponse,
+  type RunRecoveryRequest,
   type RunReplyRequest,
   type RunSessionListResponse,
   type UpdateConfigurationRecordRequest
@@ -904,6 +909,42 @@ export async function registerControlPlaneRoutes(
           request: body
         });
         await reply.status(createRunReplySuccessStatusCode).send(runReplyResponseSchema.parse(result));
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(request, reply, error);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    // Recover a failed run: POST /v1/runs/:id/recover
+    protectedApp.post(runRecoveryPath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'run_recovery.create', (request) => ({
+        kind: 'run_recovery' as const,
+        id: (request.params as { id: string }).id,
+        path: '/v1/runs/:id/recover' as const
+      }))
+    }, async (request, reply) => {
+      let params: RunIdParams;
+      let body: RunRecoveryRequest;
+      try {
+        params = runIdParamsSchema.parse(request.params);
+        // A missing or empty body is treated as `{}` (apply the recovery policy).
+        body = runRecoveryRequestSchema.parse(request.body ?? {});
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const principal = requirePrincipalFromRequest(request);
+      try {
+        const result = await dependencies.controlPlane.recoverRun({
+          principal,
+          tenant: principal.tenantId,
+          runId: params.id,
+          request: body
+        });
+        await reply.status(recoverRunSuccessStatusCode).send(runRecoveryResponseSchema.parse(result));
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
           await handleControlPlaneServiceError(request, reply, error);

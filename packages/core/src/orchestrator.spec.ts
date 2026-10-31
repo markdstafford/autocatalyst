@@ -3146,3 +3146,41 @@ describe('DefaultOrchestrator.replyToRun', () => {
     ).rejects.toMatchObject({ name: 'OrchestratorError', code: 'invalid_transition', details: { code: 'unsupported_pause' } });
   });
 });
+
+describe('DefaultOrchestrator.admitForDispatch', () => {
+  it('admits a reopened non-terminal run through the existing dispatch path', async () => {
+    const run = makeRun({ currentStep: 'docs.update', terminal: false });
+    const unitRun = vi.fn().mockResolvedValue({ directive: 'advance' });
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(run) });
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork: { run: unitRun }, autoDispatch: { enabled: true } });
+
+    await orchestrator.admitForDispatch({ runId: run.id, tenant: run.tenant });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(unitRun).toHaveBeenCalled();
+  });
+
+  it('is a no-op for a terminal run', async () => {
+    const run = makeRun({ currentStep: 'failed', terminal: true });
+    const unitRun = vi.fn();
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(run) });
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork: { run: unitRun }, autoDispatch: { enabled: true } });
+
+    await orchestrator.admitForDispatch({ runId: run.id, tenant: run.tenant });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(unitRun).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op for a cross-tenant run', async () => {
+    const run = makeRun({ currentStep: 'docs.update', terminal: false, tenant: 'tenant_other' });
+    const unitRun = vi.fn();
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(run) });
+    const { orchestrator } = makeOrchestrator({ runs, unitOfWork: { run: unitRun }, autoDispatch: { enabled: true } });
+
+    await orchestrator.admitForDispatch({ runId: run.id, tenant: 'tenant_1' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(unitRun).not.toHaveBeenCalled();
+  });
+});

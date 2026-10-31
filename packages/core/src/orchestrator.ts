@@ -215,6 +215,12 @@ export interface Orchestrator {
   tick(input: TickInput): Promise<TickResult>;
   replyToRun(input: ReplyToRunInput): Promise<ReplyToRunResult>;
   detectMerges(tenant: string): Promise<PullRequestStatusReconciliationResult>;
+  /**
+   * Admit an already-reopened run (e.g. after recovery) for dispatch through the existing
+   * queue, per-run serialization, and concurrency controls — without calling the runner
+   * directly. A no-op when the run is missing, cross-tenant, terminal, or not AI/system-waiting.
+   */
+  admitForDispatch(input: DispatchRunInput): Promise<void>;
 }
 
 // --- Spec authoring completion ---
@@ -1006,6 +1012,17 @@ export class DefaultOrchestrator implements Orchestrator {
         ...(this.#clock !== undefined ? { clock: this.#clock } : {})
       }
     );
+  }
+
+  async admitForDispatch(input: DispatchRunInput): Promise<void> {
+    const run = await this.#runs.findById(input.runId);
+    if (run === null || run.tenant !== input.tenant || run.terminal) {
+      return;
+    }
+    // Reuse the exact auto-dispatch path used after a normal transition, so a recovered run
+    // is admitted through the dispatch queue, per-run serialization, and concurrency limit
+    // rather than invoking the runner directly.
+    this.#scheduleAutoDispatch(run);
   }
 
   async tick(input: TickInput): Promise<TickResult> {

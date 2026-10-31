@@ -209,6 +209,14 @@ present workspace on the right branch is left in place, a missing one is re-mate
 and the one edge — a run whose branch is itself missing because the host repository was lost — cannot
 reconstruct from a checkpoint and is escalated.
 
+The base and the present-workspace handling are **independent choices**. Every base keeps a present
+workspace in place: a workspace already on the expected branch is reported present and its scratch is
+preserved, whatever base was requested. **Explicit start-over** is the one exception — it *replaces* an
+existing workspace, removing only this run's own derived branch and run root (through the containment-
+checked pruner), creating a fresh scratch root, and rebuilding from the freshly fetched default branch,
+so a recovered run drops its prior commits even when the workspace is still present on the expected
+branch.
+
 A run's branch is durable to the extent the host repository is. On a co-located host the host
 repository and the database share a disk, so losing one loses the other; pushing a run's branch to the
 upstream remote at every checkpoint, rather than only at `PR` open, is the lever for branch durability

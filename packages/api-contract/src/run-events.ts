@@ -48,6 +48,31 @@ export const runStateTransitionEventSchema = z.object({
 export type RunStateTransitionKind = z.infer<typeof runStateTransitionKindSchema>;
 export type RunStateTransitionEvent = z.infer<typeof runStateTransitionEventSchema>;
 
+export const runRecoveryEventName = 'run_recovery' as const;
+
+/**
+ * Emitted when a failed run is recovered and reopened. Carries the recovery decision —
+ * the mode that actually ran, the materialization base kind, the re-dispatch step, and
+ * the workspace provisioning outcome — alongside the reopened run and new open run step.
+ */
+export const runRecoveryEventSchema = z.object({
+  id: z.string().min(1),
+  type: z.literal(runRecoveryEventName),
+  runId: z.string().min(1),
+  recovery: z.object({
+    mode: z.enum(['resume', 'start_over']),
+    baseKind: z.enum(['run_branch', 'current_default_branch']),
+    reDispatchStep: z.string().min(1),
+    provisioningOutcome: z.enum(['present', 'materialized', 'none'])
+  }).strict(),
+  run: runSchema,
+  runStep: runStepSchema,
+  tenant: z.string().min(1),
+  createdAt: z.string().datetime()
+}).strict();
+
+export type RunRecoveryEvent = z.infer<typeof runRecoveryEventSchema>;
+
 // Non-terminal runner event schemas, reused from runner-events.ts.
 // Index 0-4 are non-terminal; index 5 is runner_terminal_result.
 const [
@@ -76,6 +101,7 @@ export const runnerTerminalResultClientEventSchema = z.object({
 
 export const runEventFrameNameSchema = z.enum([
   'run_state_transition',
+  'run_recovery',
   'runner_assistant_turn',
   'runner_tool_activity',
   'runner_progress',
@@ -86,6 +112,7 @@ export const runEventFrameNameSchema = z.enum([
 
 export const clientRunEventSchema = z.discriminatedUnion('type', [
   runStateTransitionEventSchema,
+  runRecoveryEventSchema,
   runnerAssistantTurnEventSchema,
   runnerToolActivityEventSchema,
   runnerProgressEventSchema,

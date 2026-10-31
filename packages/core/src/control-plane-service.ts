@@ -7,6 +7,8 @@ import type {
   Principal,
   Run,
   RunPullRequestResponse,
+  RunRecoveryRequest,
+  RunRecoveryResponse,
   RunReplyRequest,
   RunReplyResponse,
   RunSessionListResponse,
@@ -14,8 +16,19 @@ import type {
   RunStep,
   Session
 } from '@autocatalyst/api-contract';
-import { createConversationWithFirstRunResponseSchema, pullRequestReconciliationResponseSchema, runFeedbackListResponseSchema, runPullRequestResponseSchema, runReplyResponseSchema, runSessionListResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
+import { createConversationWithFirstRunResponseSchema, pullRequestReconciliationResponseSchema, runFeedbackListResponseSchema, runPullRequestResponseSchema, runRecoveryResponseSchema, runReplyResponseSchema, runSessionListResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
 import type { ReconcilePullRequestsResponse } from '@autocatalyst/api-contract';
+
+import {
+  createRunRecoveryEvent
+} from './run-events.js';
+import {
+  findStoppedStep,
+  resolveRecoveryPlan,
+  RecoveryPlanError,
+  RunRecoveryWorkspaceError,
+  type RunRecoveryDependencies
+} from './run-recovery.js';
 
 import type { ArtifactRepository, FeedbackRepository, ProjectRepository, PullRequestRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository, SessionRepository } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
@@ -34,6 +47,7 @@ import type { RunEventReplayResult } from '@autocatalyst/api-contract';
 import { parseSpecFrontmatter } from './spec-frontmatter.js';
 import type { WorkspaceFileSystemPort } from './spec-authoring-service.js';
 import { getRunStepDefinition } from './run-step-catalog.js';
+import { buildEntryRunStep } from './run-lifecycle.js';
 
 // --- Error types ---
 
@@ -180,6 +194,15 @@ export interface ServiceReplyToRunInput {
   readonly request: RunReplyRequest;
 }
 
+export interface ServiceRecoverRunInput {
+  readonly principal: Principal;
+  readonly tenant: string;
+  readonly runId: string;
+  readonly request: RunRecoveryRequest;
+}
+
+export type ServiceRecoverRunResult = RunRecoveryResponse;
+
 export interface ServiceReconcilePullRequestsInput {
   readonly principal: NonModelPrincipal;
   readonly tenant: string;
@@ -220,6 +243,7 @@ export interface ControlPlaneService {
   listRunFeedback(input: ServiceListRunFeedbackInput): Promise<ServiceListRunFeedbackResult>;
   appendRunFeedbackThreadReply(input: AppendRunFeedbackThreadReplyInput): Promise<Feedback>;
   replyToRun(input: ServiceReplyToRunInput): Promise<RunReplyResponse>;
+  recoverRun(input: ServiceRecoverRunInput): Promise<ServiceRecoverRunResult>;
   reconcilePullRequests(input: ServiceReconcilePullRequestsInput): Promise<ServiceReconcilePullRequestsResult>;
   getRunPullRequest(input: ServiceGetRunPullRequestInput): Promise<ServiceGetRunPullRequestResult>;
   listRunSessions(input: ServiceListRunSessionsInput): Promise<ServiceListRunSessionsResult>;
@@ -242,9 +266,18 @@ export interface DefaultControlPlaneServiceOptions {
   readonly issueReferenceIntakeResolver: IssueReferenceIntakeResolver;
   readonly pullRequests: PullRequestRepository;
   readonly sessions: SessionRepository;
+  /**
+   * Host-provided recovery workspace seam. Required for `recoverRun`; when absent, recovery
+   * requests fail with a persistence error rather than silently skipping materialization.
+   */
+  readonly recovery?: RunRecoveryDependencies;
 }
 
 // --- Implementation ---
+
+function isActiveRunConflictError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'ActiveRunConflictPersistenceError';
+}
 
 function mapOrchestratorErrorCode(code: OrchestratorErrorCode): ControlPlaneServiceErrorCode {
   switch (code) {
@@ -316,6 +349,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
   readonly #issueReferenceIntakeResolver: IssueReferenceIntakeResolver;
   readonly #pullRequests: PullRequestRepository;
   readonly #sessions: SessionRepository;
+  readonly #recovery: RunRecoveryDependencies | undefined;
 
   constructor(options: DefaultControlPlaneServiceOptions) {
     this.#orchestrator = options.orchestrator;
@@ -332,6 +366,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     this.#issueReferenceIntakeResolver = options.issueReferenceIntakeResolver;
     this.#pullRequests = options.pullRequests;
     this.#sessions = options.sessions;
+    this.#recovery = options.recovery;
   }
 
   async createConversationWithFirstRun(
@@ -782,7 +817,17 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     const principal = requireNonModelPrincipal(input.principal);
     const run = await this.#runs.findById(input.runId);
     if (run === null || run.tenant !== input.tenant) throw new ControlPlaneServiceError('not_found', `Run '${input.runId}' not found.`);
-    if (run.terminal) throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' is terminal.`);
+    // A stopped run is never a reply target. Point a failed run at recovery and reject a
+    // canceled run as unrecoverable; other terminal states keep a clear terminal conflict.
+    if (run.terminal) {
+      if (run.currentStep === 'failed') {
+        throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' is stopped; use POST /v1/runs/${input.runId}/recover to recover it.`);
+      }
+      if (run.currentStep === 'canceled') {
+        throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' was canceled and cannot be recovered.`);
+      }
+      throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' is terminal.`);
+    }
     const stepDefinition = getRunStepDefinition(run.currentStep);
     if (stepDefinition?.waitingOn !== 'human') throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' is not waiting on human input.`);
 
@@ -811,5 +856,145 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       }
       throw error;
     }
+  }
+
+  async recoverRun(input: ServiceRecoverRunInput): Promise<ServiceRecoverRunResult> {
+    // Policy decision first, before any state load or mutation.
+    const decision = await this.#policy.authorize({
+      principal: input.principal,
+      action: 'run_recovery.create',
+      resource: { kind: 'run_recovery', id: input.runId, path: '/v1/runs/:id/recover' }
+    });
+    if (!decision.allowed) throw new ControlPlaneServiceError('forbidden', 'Not authorized to recover runs.');
+
+    // Model principals cannot recover runs (maps to 403).
+    requireNonModelPrincipal(input.principal);
+
+    if (this.#recovery === undefined) {
+      throw persistenceFailed('Recovery is not configured.');
+    }
+    if (this.#runs.recoverFailedRun === undefined) {
+      throw persistenceFailed('Run repository does not support recovery.');
+    }
+    const recovery = this.#recovery;
+    const recoverFailedRun = this.#runs.recoverFailedRun.bind(this.#runs);
+
+    // Load + tenant scope. Missing and cross-tenant both resolve to 404 (no tenant disclosure).
+    const run = await this.#runs.findById(input.runId);
+    if (run === null || run.tenant !== input.tenant) {
+      throw new ControlPlaneServiceError('not_found', `Run '${input.runId}' not found.`);
+    }
+
+    // Only a failed terminal run can be recovered.
+    if (run.currentStep === 'canceled') {
+      throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' was canceled and cannot be recovered.`);
+    }
+    if (run.currentStep === 'done') {
+      throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' is done and cannot be recovered.`);
+    }
+    if (!run.terminal || run.currentStep !== 'failed') {
+      throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' is not a stopped failed run and cannot be recovered.`);
+    }
+
+    // The stopped step comes from durable RunStep history.
+    let steps: readonly RunStep[];
+    try {
+      steps = await this.#runSteps.listByRun(run.id);
+    } catch (error) {
+      throw persistenceFailed('Failed to load run steps.', error);
+    }
+    const stoppedStep = findStoppedStep(steps);
+    if (stoppedStep === null) {
+      throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' has no recoverable stopped step.`);
+    }
+
+    const stoppedPhase = getRunStepDefinition(stoppedStep.step)?.phase ?? null;
+
+    // Commit detection only matters for omitted mode outside the spec phase.
+    let hasCommittedCheckpoints = false;
+    if (input.request.mode === undefined && stoppedPhase !== 'spec') {
+      try {
+        hasCommittedCheckpoints = await recovery.detectCommittedCheckpoints({ run });
+      } catch (error) {
+        throw persistenceFailed('Failed to detect committed checkpoints.', error);
+      }
+    }
+
+    let plan;
+    try {
+      plan = resolveRecoveryPlan({
+        stoppedStep,
+        ...(input.request.mode !== undefined ? { explicitMode: input.request.mode } : {}),
+        hasCommittedCheckpoints
+      });
+    } catch (error) {
+      if (error instanceof RecoveryPlanError) {
+        throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' has no recoverable stopped step.`, { cause: error });
+      }
+      throw error;
+    }
+
+    // Materialize the workspace BEFORE reopening the run. A materialization failure leaves
+    // the run failed and unchanged.
+    let provisioningOutcome: 'present' | 'materialized' | 'none';
+    try {
+      const result = await recovery.materializeWorkspace({
+        run,
+        baseKind: plan.baseKind,
+        existingWorkspaceBehavior: plan.existingWorkspaceBehavior
+      });
+      provisioningOutcome = result.provisioningOutcome;
+    } catch (error) {
+      if (error instanceof RunRecoveryWorkspaceError && error.code === 'run_branch_missing') {
+        throw new ControlPlaneServiceError('conflict', 'run_branch_missing', { cause: error });
+      }
+      throw persistenceFailed('Failed to materialize workspace for recovery.', error);
+    }
+
+    // Atomic reopen. Active-run conflict maps to a 409 and leaves the failed run unchanged.
+    const reDispatchDefinition = getRunStepDefinition(plan.reDispatchStep);
+    if (reDispatchDefinition === null) {
+      throw persistenceFailed(`Unknown re-dispatch step '${plan.reDispatchStep}'.`);
+    }
+    const startedAt = new Date().toISOString();
+    let reopened;
+    try {
+      reopened = await recoverFailedRun({
+        runId: run.id,
+        reDispatchStep: plan.reDispatchStep,
+        runStep: buildEntryRunStep(reDispatchDefinition, startedAt)
+      });
+    } catch (error) {
+      if (isActiveRunConflictError(error)) {
+        throw new ControlPlaneServiceError('active_run_conflict', `Active run conflict for run '${input.runId}'.`, { cause: error });
+      }
+      throw persistenceFailed('Failed to reopen run.', error);
+    }
+
+    // Publish a durable/live recovery event (post-commit; non-fatal on failure).
+    try {
+      const event = createRunRecoveryEvent({
+        runId: reopened.run.id,
+        mode: plan.mode,
+        baseKind: plan.baseKind,
+        reDispatchStep: plan.reDispatchStep,
+        provisioningOutcome,
+        run: mapRunToApiRun(reopened.run),
+        runStep: reopened.runStep,
+        tenant: reopened.run.tenant
+      });
+      await this.#events.append({ scope: { runId: reopened.run.id, tenant: reopened.run.tenant }, event });
+    } catch {
+      // The reopen already committed; losing the live event notification must not fail the call.
+    }
+
+    // Admit through the orchestrator's existing dispatch path (queue + concurrency).
+    try {
+      await this.#orchestrator.admitForDispatch({ runId: reopened.run.id, tenant: reopened.run.tenant });
+    } catch {
+      // Dispatch admission is best-effort; the run is reopened and will be picked up on tick.
+    }
+
+    return runRecoveryResponseSchema.parse({ run: mapRunToApiRun(reopened.run), mode: plan.mode });
   }
 }

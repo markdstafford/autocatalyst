@@ -152,6 +152,21 @@ describe('OpenAPI generation', () => {
     expect((operation as { responses?: Record<string, unknown> })?.responses?.['500']).toBeDefined();
   });
 
+  it('documents the run recovery endpoint', () => {
+    const document = generateOpenApiDocument();
+    const operation = document.paths['/v1/runs/{id}/recover']?.post as
+      | { responses?: Record<string, unknown>; tags?: string[] }
+      | undefined;
+
+    expect(operation).toBeDefined();
+    expect(operation?.tags).toContain('runs');
+    expect(operation?.responses?.['200']).toBeDefined();
+    expect(operation?.responses?.['400']).toBeDefined();
+    expect(operation?.responses?.['403']).toBeDefined();
+    expect(operation?.responses?.['404']).toBeDefined();
+    expect(operation?.responses?.['409']).toBeDefined();
+  });
+
   it('documents POST /v1/pull-requests/reconcile', () => {
     const document = generateOpenApiDocument();
     const operation = document.paths['/v1/pull-requests/reconcile']?.post as
