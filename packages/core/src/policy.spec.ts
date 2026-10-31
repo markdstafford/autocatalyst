@@ -24,6 +24,23 @@ describe('policy decision point', () => {
     expect(decision).toEqual({ allowed: true });
   });
 
+  it('allows and can deny run recovery decisions', async () => {
+    const allowed = await permissivePolicyDecisionPoint.authorize({
+      principal: { kind: 'human', id: 'user_1', tenantId: 'tenant_1' },
+      action: 'run_recovery.create',
+      resource: { kind: 'run_recovery', id: 'run_1', path: '/v1/runs/:id/recover' }
+    });
+    expect(allowed).toEqual({ allowed: true });
+
+    const denyPolicy = { authorize: vi.fn(async () => ({ allowed: false as const })) };
+    const denied = await authorizeRequest(denyPolicy, {
+      principal: { kind: 'model', id: 'model_1', tenantId: 'tenant_1' },
+      action: 'run_recovery.create',
+      resource: { kind: 'run_recovery', id: 'run_1', path: '/v1/runs/:id/recover' }
+    });
+    expect(denied).toEqual({ allowed: false });
+  });
+
   it('routes authorization through an injectable policy', async () => {
     const authorize = vi.fn(async () => ({ allowed: true as const }));
     await authorizeRequest(

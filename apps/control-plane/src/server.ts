@@ -41,6 +41,8 @@ import {
   reconcileStartupWorkspaces,
   registerControlPlaneRoutes,
   RunDispatchQueue,
+  RunRecoveryWorkspaceError,
+  type RunRecoveryDependencies,
   StaticIssueTrackerRegistry,
   type AutoDispatchOptions,
   type CodeHostCredential,
@@ -87,6 +89,7 @@ import {
   provisionWorkspace,
   createSpecAuthorResultContract,
   createStepResultContractRegistry,
+  WorkspaceProvisioningError,
   registerPullRequestFinalizeResultContract,
   registerReviewerResultContract,
   registerImplementerDispositionsResultContract,
@@ -1648,6 +1651,85 @@ export async function createControlPlaneServer(
   });
   const trackerRegistry = new StaticIssueTrackerRegistry({ github: githubTracker });
   const issueReferenceIntakeResolver = new DefaultIssueReferenceIntakeResolver({ registry: trackerRegistry });
+
+  // Recovery workspace seam: wires the control-plane service's recovery concerns to the
+  // execution workspace provisioner and the run workspace git port. Only available when a
+  // workspace-backed deployment is configured (repos/workspaces roots + git port).
+  let recoveryDependencies: RunRecoveryDependencies | undefined;
+  if (options.workspaceRoots !== undefined && runWorkspaceGit !== undefined) {
+    const recoveryRoots = options.workspaceRoots;
+    const recoveryGit = runWorkspaceGit;
+    const twoRootRecoveryWorkKinds = new Set(['feature', 'enhancement', 'bug', 'chore']);
+    const buildRecoveryProvisionRequest = async (run: Run): Promise<ProvisionWorkspaceRequest | null> => {
+      if (!twoRootRecoveryWorkKinds.has(run.workKind)) return null;
+      const topic = await domainRepos.topics.findById(run.topicId);
+      if (topic === null || topic.tenant !== run.tenant) return null;
+      const conversation = await domainRepos.conversations.findById(topic.conversationId);
+      if (conversation === null || conversation.tenant !== run.tenant) return null;
+      const project = await domainRepos.projects.findById(conversation.projectId);
+      if (project === null || project.tenant !== run.tenant) return null;
+      return {
+        runId: run.id,
+        runKind: run.workKind as ProvisionWorkspaceRequest['runKind'],
+        topicSlug: deriveTopicSlug(topic.title),
+        shortRunId: deriveShortRunId(run.id),
+        project,
+        roots: { reposRoot: recoveryRoots.reposRoot, workspacesRoot: recoveryRoots.workspacesRoot }
+      };
+    };
+    recoveryDependencies = {
+      detectCommittedCheckpoints: async ({ run }) => {
+        // Compare the run branch head to the provisioned base ref via the git port. A missing
+        // base ref, a missing run branch, or an identical head means no meaningful commit.
+        const metadata = await domainRepos.runWorkspaceMetadata.findByRunId(run.id);
+        const baseRef = metadata?.provisionedBaseRef ?? null;
+        if (baseRef === null) return false;
+        const request = await buildRecoveryProvisionRequest(run);
+        if (request === null) return false;
+        let result;
+        try {
+          result = await provisionWorkspace({ ...request, materializationBase: { kind: 'run_branch' }, existingWorkspaceBehavior: 'keep' });
+        } catch (error) {
+          if (error instanceof WorkspaceProvisioningError && error.code === 'run_branch_missing') return false;
+          throw error;
+        }
+        if (result.shape !== 'two_roots') return false;
+        runWorkspaceRootRegistry.set(run.id, { repoRoot: result.repoRoot, branchName: result.branchName });
+        const changed = await recoveryGit.getChangedFiles({
+          workspaceRepoRoot: result.repoRoot,
+          baseRef,
+          headRef: result.branchName
+        });
+        return changed.length > 0;
+      },
+      materializeWorkspace: async ({ run, baseKind, existingWorkspaceBehavior }) => {
+        const request = await buildRecoveryProvisionRequest(run);
+        if (request === null) return { provisioningOutcome: 'none' };
+        let result;
+        try {
+          result = await provisionWorkspace({ ...request, materializationBase: { kind: baseKind }, existingWorkspaceBehavior });
+        } catch (error) {
+          if (error instanceof WorkspaceProvisioningError && error.code === 'run_branch_missing') {
+            throw new RunRecoveryWorkspaceError('run_branch_missing', 'Run branch is missing.');
+          }
+          throw error;
+        }
+        if (result.shape !== 'two_roots') return { provisioningOutcome: 'none' };
+        // Keep the in-memory registry and durable metadata in sync so the reopened run's
+        // dispatch resolves the repo root and branch after recovery.
+        runWorkspaceRootRegistry.set(run.id, { repoRoot: result.repoRoot, branchName: result.branchName });
+        await domainRepos.runWorkspaceMetadata.upsert({
+          runId: run.id,
+          workspaceHandle: result.branchName,
+          workspaceRepoRoot: result.repoRoot,
+          provisionedBaseRef: result.provisionedBaseRef,
+          createdAt: new Date().toISOString()
+        });
+        return { provisioningOutcome: result.outcome };
+      }
+    };
+  }
+
   const controlPlane = new DefaultControlPlaneService({
     orchestrator,
     runs: domainRepos.runs,
@@ -1662,7 +1744,8 @@ export async function createControlPlaneServer(
     projects: domainRepos.projects,
     issueReferenceIntakeResolver,
     pullRequests: domainRepos.pullRequests,
-    sessions: domainRepos.sessions
+    sessions: domainRepos.sessions,
+    ...(recoveryDependencies !== undefined ? { recovery: recoveryDependencies } : {})
   });
   options.onControlPlaneReady?.(controlPlane);
 

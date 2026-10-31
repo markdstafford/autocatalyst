@@ -228,14 +228,17 @@ describe('workspace provisioning integration', () => {
     await commitOnRunBranch(first.repoRoot, 'stale.txt', 'stale\n');
     const branchHeadBefore = await git(['rev-parse', 'feature/hello-world-Abc123'], hostRepositoryPath);
 
-    // Start-over rebuild applies when the on-disk workspace is gone but the derived run
-    // branch (with its stale commit) still lives in the host repository. Simulate that by
-    // removing the run root first; a present-on-expected-branch workspace would instead be
-    // left in place (covered separately below).
+    // Start-over rebuild is requested explicitly with existingWorkspaceBehavior: 'replace'.
+    // Base selection (current_default_branch) is independent of keep/replace, so dropping the
+    // derived branch's stale commit requires opting into replace. Simulate the on-disk
+    // workspace being gone while the derived run branch (with its stale commit) still lives
+    // in the host repository.
     await fs.rm(first.runRoot, { recursive: true, force: true });
     await expect(fs.stat(first.repoRoot)).rejects.toThrow();
 
-    const rebuilt = await provisionWorkspace(makeRequest({ materializationBase: { kind: 'current_default_branch' } }));
+    const rebuilt = await provisionWorkspace(
+      makeRequest({ materializationBase: { kind: 'current_default_branch' }, existingWorkspaceBehavior: 'replace' })
+    );
     expect(rebuilt).toMatchObject({ shape: 'two_roots', outcome: 'materialized', provisionedBaseRef: 'origin/main' });
     if (rebuilt.shape !== 'two_roots') return;
 

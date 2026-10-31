@@ -1264,6 +1264,32 @@ describe('DefaultControlPlaneService.replyToRun', () => {
     })).rejects.toMatchObject({ code: 'conflict' });
   });
 
+  it('returns an actionable conflict naming recovery when replying to a failed run', async () => {
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'failed', terminal: true }))
+    });
+    const service = makeService({ runs });
+    await expect(service.replyToRun({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      request: { kind: 'approve' }
+    })).rejects.toMatchObject({ code: 'conflict', message: expect.stringContaining('/v1/runs/run_1/recover') });
+  });
+
+  it('returns a conflict stating cancellation cannot be recovered when replying to a canceled run', async () => {
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'canceled', terminal: true }))
+    });
+    const service = makeService({ runs });
+    await expect(service.replyToRun({
+      principal,
+      tenant: 'tenant_1',
+      runId: 'run_1',
+      request: { kind: 'approve' }
+    })).rejects.toMatchObject({ code: 'conflict', message: expect.stringContaining('cannot be recovered') });
+  });
+
   it('throws conflict when run is not at a human-waiting step', async () => {
     const runs = makeFakeRunRepo({
       findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'implementation.build' }))

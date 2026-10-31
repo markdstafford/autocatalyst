@@ -43,6 +43,10 @@ import {
   runRepliesPath,
   runReplyRequestSchema,
   runReplyResponseSchema,
+  recoverRunSuccessStatusCode,
+  runRecoveryPath,
+  runRecoveryRequestSchema,
+  runRecoveryResponseSchema,
   runResourcePath,
   runSchema,
   runSessionListResponseSchema,
@@ -76,6 +80,8 @@ import {
   type CreateRunFeedbackRequest,
   type CreateSecretRequest,
   type ReconcilePullRequestsResponse,
+  type RunRecoveryRequest,
+  type RunRecoveryResponse,
   type RunReplyRequest,
   type RunReplyResponse,
   type CreateSecretResponse,
@@ -125,6 +131,7 @@ export interface ControlPlaneClient {
   listRunFeedback(id: string): Promise<RunFeedbackListResponse>;
   appendRunFeedbackThreadReply(id: string, feedbackId: string, request: AppendRunFeedbackThreadRequest): Promise<Feedback>;
   replyToRun(id: string, request: RunReplyRequest): Promise<RunReplyResponse>;
+  recoverRun(id: string, request?: RunRecoveryRequest): Promise<RunRecoveryResponse>;
   reconcilePullRequests(): Promise<ReconcilePullRequestsResponse>;
 }
 
@@ -517,6 +524,24 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
         throw new Error(`Expected ${createRunReplySuccessStatusCode} from replyToRun, received ${response.status}.`);
       }
       return runReplyResponseSchema.parse(await parseJson(response));
+    },
+
+    async recoverRun(id, request) {
+      // Omitting the request sends an empty body; the server treats a missing/empty body as {}.
+      const body = runRecoveryRequestSchema.parse(request ?? {});
+      const response = await fetchImplementation(
+        urlFor(baseUrl, runRecoveryPath.replace(':id', id)),
+        {
+          method: 'POST',
+          headers: protectedHeaders(bearerToken, { 'content-type': 'application/json' }),
+          body: JSON.stringify(body)
+        }
+      );
+      await throwForError(response);
+      if (response.status !== recoverRunSuccessStatusCode) {
+        throw new Error(`Expected ${recoverRunSuccessStatusCode} from recoverRun, received ${response.status}.`);
+      }
+      return runRecoveryResponseSchema.parse(await parseJson(response));
     },
 
     async reconcilePullRequests() {

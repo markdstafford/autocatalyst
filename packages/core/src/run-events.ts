@@ -1,10 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import {
   clientRunEventSchema,
+  runRecoveryEventSchema,
   runStateTransitionEventSchema,
   type ClientRunEvent,
   type Run,
   type RunEventReplayResult,
+  type RunRecoveryEvent,
   type RunStateTransitionEvent,
   type RunStateTransitionKind,
   type RunStep
@@ -37,6 +39,39 @@ export function createRunStateTransitionEvent(input: CreateRunStateTransitionEve
       ...(input.fromStep !== undefined ? { fromStep: input.fromStep } : {}),
       toStep: input.toStep,
       ...(input.directive === 'fail' && input.reason !== undefined ? { reason: input.reason } : {})
+    },
+    run: input.run,
+    runStep: input.runStep,
+    tenant: input.tenant,
+    createdAt
+  });
+}
+
+export interface CreateRunRecoveryEventInput {
+  readonly runId: string;
+  readonly mode: 'resume' | 'start_over';
+  readonly baseKind: 'run_branch' | 'current_default_branch';
+  readonly reDispatchStep: string;
+  readonly provisioningOutcome: 'present' | 'materialized' | 'none';
+  readonly run: Run;
+  readonly runStep: RunStep;
+  readonly tenant: string;
+  readonly idGenerator?: () => string;
+  readonly clock?: () => string;
+}
+
+export function createRunRecoveryEvent(input: CreateRunRecoveryEventInput): RunRecoveryEvent {
+  const id = input.idGenerator?.() ?? `evt_${randomUUID()}`;
+  const createdAt = input.clock?.() ?? new Date().toISOString();
+  return runRecoveryEventSchema.parse({
+    id,
+    type: 'run_recovery',
+    runId: input.runId,
+    recovery: {
+      mode: input.mode,
+      baseKind: input.baseKind,
+      reDispatchStep: input.reDispatchStep,
+      provisioningOutcome: input.provisioningOutcome
     },
     run: input.run,
     runStep: input.runStep,

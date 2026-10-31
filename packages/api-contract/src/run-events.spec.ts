@@ -325,7 +325,7 @@ describe('formatRunEventFrameName', () => {
 
   it('enumerates all known frame names', () => {
     expect(runEventFrameNameSchema.options).toEqual([
-      'run_state_transition', 'runner_assistant_turn', 'runner_tool_activity',
+      'run_state_transition', 'run_recovery', 'runner_assistant_turn', 'runner_tool_activity',
       'runner_progress', 'runner_notification', 'runner_step_checkpoint', 'runner_terminal_result'
     ]);
   });
