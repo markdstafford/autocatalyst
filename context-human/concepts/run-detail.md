@@ -21,7 +21,7 @@ issue number, the work kind, and the status. Below it are four tabs: **Summary**
 and **Activity**.
 
 Every tab is present on every run. A tab with nothing to show says why and what happens next, such as a
-Spec tab on a bug ("bugs skip the spec") or an Acceptance tab before the implementation is ready. Showing the
+Spec tab on a bug or a chore, which have no spec, or an Acceptance tab before the implementation is ready. Showing the
 same tabs for every run keeps the pane predictable, and the operator never wonders whether an artifact
 exists.
 
@@ -85,7 +85,7 @@ footer controls show the open and resolved comment counts and move between comme
   require one, so a comment from a chat channel can arrive without a region, but it rejects an anchor
   that does not resolve in the current spec. Feedback at the implementation gate can also be general,
   because testing turns up things that belong to no item.
-- An anchor refers to the spec's source text, not to the rendered view (ADR-034). Mapping a selection in the
+- An anchor refers to the spec's source text, not to the rendered view (ADR-033). Mapping a selection in the
   rendered view back to the source is a core part of the client.
 - The progress bar and the Activity tab take their phases and steps from the run's workflow, never from a
   fixed list in the client.

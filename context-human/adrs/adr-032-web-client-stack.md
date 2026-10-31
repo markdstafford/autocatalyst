@@ -1,8 +1,8 @@
 ---
 created: 2026-10-30
 last_updated: 2026-10-30
-status: proposed
-decided_by: null
+status: accepted
+decided_by: markdstafford
 superseded_by: null
 ---
 
@@ -10,7 +10,7 @@ superseded_by: null
 
 ## Status
 
-Proposed for human review.
+Accepted
 
 ## Context
 
@@ -20,7 +20,7 @@ and a real browser. The choices below are hard to change once screens exist, so 
 
 ## Decision
 
-**React 19 with Vite, Tailwind 4, headless Radix primitives behind the client's own thin components,
+**React 19 with Vite, Tailwind 4, headless Base UI primitives behind the client's own thin components,
 lucide-react icons, Shiki for code in specs, Vitest for unit tests, and Playwright for end-to-end and
 layout tests.**
 
@@ -31,7 +31,7 @@ layout tests.**
   tokens.
 - **Headless primitives behind our own components.** Screens import the client's own `Dialog`, `Menu`,
   `Tabs`, and so on, never the primitive library directly. That lets the library change in one place.
-  Radix is the first choice. Base UI is the likely alternative if Radix falls behind.
+  Base UI is the first choice. Radix is the alternative, and swapping is a change to the wrappers.
 - **lucide-react.** One icon set, tree-shaken.
 - **Shiki.** Highlighting quality matches the editor the operator knows. It runs in the browser here,
   because specs render client-side, so the client loads it on first use with the JavaScript regex engine
@@ -57,12 +57,12 @@ layout tests.**
 **Cons:** fewer accessible primitives and fewer examples for agents to follow.
 **Why not chosen:** the ecosystem matters more than raw speed for a list of tens to hundreds of rows.
 
-### React Aria Components or Base UI instead of Radix
+### Radix or React Aria Components instead of Base UI
 
-**Pros:** React Aria has built-in table and list keyboard models. Base UI is the actively developed
-successor from Radix's creators.
-**Cons:** React Aria is a larger, more opinionated API. Base UI is newer, with fewer references.
-**Why not chosen:** both are viable. The wrapper components keep the choice reversible.
+**Pros:** Radix has the most reference code. React Aria has built-in table and list keyboard models.
+**Cons:** Radix is released less often than Base UI, which comes from the same authors. React Aria is a
+larger, more opinionated API.
+**Why not chosen:** all three are viable. The wrapper components keep the choice reversible.
 
 ### highlight.js or Prism instead of Shiki
 
