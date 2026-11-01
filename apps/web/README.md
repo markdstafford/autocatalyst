@@ -44,10 +44,17 @@ Chromium is not installed for Playwright. Run: pnpm exec playwright install chro
 The target exits non-zero, no browser window opens, and no test runs — a skipped
 test would read as a pass, so the preflight fails loudly instead.
 
-## CI does not run this
+## CI runs this
 
-`.github/workflows/ci.yml` runs `build`, `lint`, `test` and `test:boundaries`.
-It does **not** run `e2e`, and `e2e` is not part of `pnpm validate`. A browser
-download and a spawned server are a maintainer's decision; if wanted, the
-`Validate` job can run this target after
-`pnpm exec playwright install --with-deps chromium`.
+`.github/workflows/ci.yml` runs `build`, `lint`, `test`, `test:boundaries` and
+`e2e`. The `Validate` job installs the browser with
+`pnpm exec playwright install --with-deps chromium` (from `apps/web`) and then
+runs `pnpm nx e2e web`, so the Playwright harness and the same-origin
+static-client contract are exercised on every pull request.
+
+`e2e` is also part of `pnpm validate`, which runs `build`, `lint`, `test` and
+`e2e` before the boundary checks. Running `pnpm validate` locally therefore
+requires Chromium; install it once with the command above (or
+`pnpm exec playwright install chromium` without the OS dependencies). If it is
+missing, the target's preflight stops loudly with the install hint rather than
+skipping the tests.

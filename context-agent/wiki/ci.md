@@ -7,9 +7,13 @@
 `pnpm.onlyBuiltDependencies`.
 
 The job configures a git identity for temporary repository tests, then runs separate `Build`, `Lint`,
-`Test`, and `Boundary checks` steps: `pnpm build`, `pnpm lint`, `pnpm test`, and
-`pnpm test:boundaries`. Reproduce the complete gate locally with `pnpm validate` after installation.
-The root validation script groups the Nx targets before running the same three boundary assertions.
+`Test`, `Boundary checks`, and `End-to-end tests` steps: `pnpm build`, `pnpm lint`, `pnpm test`,
+`pnpm test:boundaries`, and `pnpm nx e2e web`. Before the e2e step the job installs the browser with
+`pnpm exec playwright install --with-deps chromium` (run from `apps/web`), so the `web` project's
+Playwright harness and its same-origin static-client contract are exercised on every run. Reproduce
+the complete gate locally with `pnpm validate` after installation. The root validation script groups
+the `build`, `lint`, `test`, and `e2e` Nx targets before running the same three boundary assertions, so
+running it locally also requires Chromium (`pnpm exec playwright install chromium`).
 
 Keep `vitest.shared.ts` limits intact: forks pool, at most two workers per project, and a 2048 MiB
 heap per worker (PR #50). CI supplies no live-suite opt-ins or provider/GitHub credentials; live specs
