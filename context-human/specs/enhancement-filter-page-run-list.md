@@ -13,7 +13,7 @@ specced_by: markdstafford
 
 ## What
 
-`GET /v1/runs` becomes a bounded, filterable page of run rows. An operator client can filter runs by `status`, `waitingOn`, `workKind`, and `projectId`; can request a page with `limit` and `cursor`; and receives `nextCursor` only when more matching rows exist. Every row returned by `GET /v1/runs`, `GET /v1/runs/:id`, and reply responses includes the row data the collection view needs: tracked issue number/title, work kind, derived status, waiting class, project id, and created time.
+`GET /v1/runs` becomes a bounded, filterable page of run rows. An operator client can filter runs by `status`, `waitingOn`, `workKind`, and `projectId` using one comma-separated value per field; can request a page with `limit` and `cursor`; and receives `nextCursor` only when more matching rows exist. Every row returned by `GET /v1/runs`, `GET /v1/runs/:id`, and reply responses includes the row data the collection view needs: tracked issue number/title, work kind, derived status, waiting class, project id, and created time.
 
 ## Why
 
@@ -38,11 +38,11 @@ Examples:
 ```http
 GET /v1/runs?status=failed
 GET /v1/runs?waitingOn=human&limit=25
-GET /v1/runs?projectId=proj_1&status=in_progress&status=failed
+GET /v1/runs?projectId=proj_1&status=in_progress,failed
 GET /v1/runs?cursor=<opaque-cursor>
 ```
 
-Repeated values within the same filter field combine with OR. Different filter fields combine with AND. Unknown query fields and enum values outside the contract return `400 validation_error`. A project id the tenant does not own returns an empty page rather than an authorization oracle or cross-tenant data.
+Comma-separated items within the same filter field combine with OR. Different filter fields combine with AND. This supersedes the issue text that allowed repeated query keys; repeated keys such as `status=failed&status=in_progress` are invalid and return `400 validation_error`. Unknown query fields and enum values outside the contract return `400 validation_error`. A project id the tenant does not own returns an empty page rather than an authorization oracle or cross-tenant data.
 
 The response remains a collection envelope and adds `nextCursor` only when there are more matching rows:
 
@@ -70,7 +70,7 @@ The response remains a collection envelope and adds `nextCursor` only when there
 
 ### Row data consistency
 
-`GET /v1/runs`, `GET /v1/runs/:id`, and the run embedded in a reply response use the same mapping function, so `waitingOn`, `status`, and `projectId` agree for a given run. Conversation-creation responses and run events continue to carry the persisted/orchestrator run shape and do not claim `status` or `projectId`; clients treat run state-transition events as invalidation triggers and re-read the run when they need row data.
+`GET /v1/runs`, `GET /v1/runs/:id`, and the run embedded in a reply response use the same mapping function, so `waitingOn`, `status`, and `projectId` agree for a given run. Conversation-creation responses and run events continue to carry the persisted/orchestrator run shape and do not claim `status` or `projectId`; clients treat run state-transition events as invalidation triggers and re-read the run when they need row data. Recovery responses also use the same API run mapper and therefore carry `waitingOn`, `status`, and `projectId`.
 
 ### Paging behavior
 
@@ -83,7 +83,7 @@ Default page size is 100 and the maximum accepted `limit` is 100. Ordering stays
 - `packages/api-contract/src/run.ts` — add optional `projectId` and `status` on `runSchema`, define status enum, query schema, list response with optional `nextCursor`, and exported types/constants.
 - `packages/api-contract/src/openapi.ts` and OpenAPI tests — document filters, paging, new fields, `nextCursor`, and `400 validation_error`.
 - `packages/core/src/routes.ts` — parse and validate `GET /v1/runs` query parameters with the existing validation helper and pass normalized options into the service.
-- `packages/core/src/control-plane-service.ts` — derive `status`, join/project-map `projectId`, and use one mapper for list/get/reply responses.
+- `packages/core/src/control-plane-service.ts` — derive `status`, join/project-map `projectId`, and use one mapper for list/get/reply/recover responses, with a batched list project lookup and shared single-run project lookup.
 - `packages/core/src/domain-repositories.ts` — extend `RunRepository.listByTenant` options with filters, limit, and cursor/page behavior.
 - `packages/persistence/src/domain-repositories.ts` — push filters, project join, ordering, cursor predicate, and limit-plus-one pagination into the database query.
 - `packages/sdk/src/client.ts` — keep `listRuns()` working with no arguments and add optional filters, `limit`, and `cursor` arguments parsed through the contract response schema.
@@ -106,14 +106,14 @@ Status is derived from the current run state, not stored as a new database field
 
 Define a strict query schema for `GET /v1/runs` with:
 
-- `status`: repeatable `runStatusSchema` values.
-- `waitingOn`: repeatable values from the same waiting-on enum already used by run mapping.
-- `workKind`: repeatable work-kind values.
-- `projectId`: repeatable project ids.
+- `status`: a single string split on `,`; each item validates against `runStatusSchema`.
+- `waitingOn`: a single string split on `,`; each item validates against the same waiting-on enum already used by run mapping.
+- `workKind`: a single string split on `,`; each item validates against the work-kind enum.
+- `projectId`: a single string split on `,`; project ids must not contain commas. Duplicate ids are allowed and de-duplicated.
 - `limit`: positive integer, default 100, maximum 100.
 - `cursor`: opaque string.
 
-The route must reject unknown query fields and invalid values through the existing validation helper so callers receive `400 validation_error`.
+The route must reject unknown query fields, repeated keys delivered as arrays by Fastify, empty filter items (`status=failed,`, `status=,`, `status=`), comma-containing project ids, and invalid enum values through the existing validation helper so callers receive `400 validation_error`. Duplicate non-empty items are allowed and de-duplicated.
 
 #### Repository paging and filtering
 
@@ -127,17 +127,18 @@ Project filtering and `projectId` row data require joining from run to topic to 
 
 #### Service and response mapping
 
-Keep a single `mapRunToApiRun`-style function as the source for API-only row fields. Extend it to accept enough page row context to set `projectId`, and to derive `status` from `currentStep` and `terminal`. Use it for:
+Keep a single `mapRunToApiRun`-style function as the source for API-only row fields. Extend it to accept `projectId` from either batched list-row context or a single-run project lookup, and to derive `status` from `currentStep` and `terminal`. The list path uses the repository join/batched context. The single-run paths use a shared helper that resolves `projectId` from the run's `topicId` through `topics.conversationId` to `conversations.projectId`; if the topic or conversation is missing, the service must handle that as a data-integrity error or existing not-found style rather than silently leaving `projectId` unset. Use the mapper for:
 
 - `GET /v1/runs` rows.
 - `GET /v1/runs/:id`.
 - The run in a reply response.
+- The run in a recovery response.
 
-Do not change run events to carry `status` or `projectId`. Do not make conversation-creation responses fail validation because those runs lack the new optional fields.
+Do not change run events to carry `status` or `projectId`. Do not make conversation-creation responses fail validation because those runs lack the new optional fields. Add an explicit assertion that get, reply, and recover return the same `projectId` as the list for the same run.
 
 #### SDK and OpenAPI
 
-`ControlPlaneClient.listRuns()` remains callable with no arguments and returns the newest default page. It also accepts an optional argument containing filter arrays or single values, `limit`, and `cursor`; serializes repeated query parameters; parses the response through the shared contract schema; and exposes `nextCursor` in the return type. OpenAPI must list all query fields, the new response fields, `nextCursor`, and the `400 validation_error` response.
+`ControlPlaneClient.listRuns()` remains callable with no arguments and returns the newest default page. It also accepts an optional argument containing filter arrays or single values, `limit`, and `cursor`; serializes arrays by joining values with `,` into one query parameter per filter field; parses the response through the shared contract schema; and exposes `nextCursor` in the return type. OpenAPI must list all query fields as `style: form, explode: false`, the new response fields, `nextCursor`, and the `400 validation_error` response.
 
 #### Security, privacy, and compliance
 
@@ -177,18 +178,20 @@ No new metrics are required for this slice. Existing route logging/error handlin
 
 - [ ] **Story: Contract and validation surface**
   - [ ] **Task: Add run row fields and list query schemas**
-    - **Description**: Extend `packages/api-contract/src/run.ts` with optional `projectId` and `status` on `runSchema`, a `runStatusSchema`, strict list-runs query parsing for repeatable filters, `limit`, and `cursor`, and a list response schema that includes optional `nextCursor`. Keep system/persistence compatibility by making API-only fields optional.
+    - **Description**: Extend `packages/api-contract/src/run.ts` with optional `projectId` and `status` on `runSchema`, a `runStatusSchema`, strict list-runs query parsing for comma-separated filters, `limit`, and `cursor`, and a list response schema that includes optional `nextCursor`. Keep system/persistence compatibility by making API-only fields optional.
     - **Acceptance criteria**:
       - [ ] `runSchema` accepts stored/event runs without `projectId` or `status`.
       - [ ] `runSchema` accepts API read runs with `projectId` and `status`.
       - [ ] Status values are limited to `in_progress`, `done`, `failed`, and `canceled`.
       - [ ] Query schema accepts repeated `status`, `waitingOn`, `workKind`, and `projectId` values plus `limit` and `cursor`.
-      - [ ] Query schema rejects unknown fields, invalid enum values, non-positive limits, limits above 100, and malformed cursors.
+      - [ ] Query schema rejects unknown fields, repeated keys/array values, empty comma items, invalid enum values, comma-containing project ids, non-positive limits, limits above 100, and malformed cursors.
+      - [ ] Duplicate filter items are accepted and de-duplicated.
     - **Dependencies**: None
   - [ ] **Task: Document OpenAPI changes**
     - **Description**: Update the OpenAPI generation/registration for `GET /v1/runs` so it lists all query fields, new response fields, optional `nextCursor`, and `400 validation_error`. Add or update OpenAPI assertions.
     - **Acceptance criteria**:
       - [ ] OpenAPI documents `status`, `waitingOn`, `workKind`, `projectId`, `limit`, and `cursor` query parameters.
+      - [ ] Multi-value filter parameters are documented as `style: form, explode: false`.
       - [ ] OpenAPI documents `status`, `projectId`, and `nextCursor` in successful responses.
       - [ ] OpenAPI documents `400 validation_error` for invalid query input.
       - [ ] `openapi.spec.ts` or the nearest existing OpenAPI test asserts the new contract.
@@ -198,7 +201,7 @@ No new metrics are required for this slice. Existing route logging/error handlin
   - [ ] **Task: Extend the run repository list contract**
     - **Description**: Update the core `RunRepository.listByTenant` interface and related option/result types to carry normalized filters, `limit`, and cursor page position while preserving no-argument/default behavior.
     - **Acceptance criteria**:
-      - [ ] The interface supports filters for status, waitingOn, workKind, and projectId.
+      - [ ] The interface supports filters for status, waitingOn, workKind, and projectId after comma-separated query values have been parsed, de-duplicated, and validated.
       - [ ] The interface supports default limit 100, explicit limit up to 100, and optional cursor.
       - [ ] The result type can return `nextCursor` only when more rows match.
       - [ ] Existing callers compile and default to the newest page.
@@ -228,15 +231,18 @@ No new metrics are required for this slice. Existing route logging/error handlin
     - **Acceptance criteria**:
       - [ ] Non-terminal runs map to `status: in_progress`.
       - [ ] Terminal `done`, `failed`, and `canceled` runs map to matching statuses.
-      - [ ] List, get, and reply responses use the same mapper.
-      - [ ] A test shows list and get responses match for the same run's row fields.
+      - [ ] List, get, reply, and recover responses use the same mapper.
+      - [ ] A test shows list, get, reply, and recover responses match for the same run's `projectId`, `status`, and `waitingOn` row fields.
       - [ ] Conversation-creation responses and run events still parse without `status` or `projectId`.
     - **Dependencies**: "Task: Implement SQL-level filters and paging"
   - [ ] **Task: Wire validated list query parameters through the route and service**
     - **Description**: Update `GET /v1/runs` route parsing to use the strict contract query schema and pass normalized filters, `limit`, and `cursor` into `ControlPlaneService.listRuns`. Preserve existing auth/policy behavior.
     - **Acceptance criteria**:
-      - [ ] `GET /v1/runs` accepts all specified filters, repeated values, `limit`, and `cursor`.
-      - [ ] Repeated values within a field combine with OR and different fields combine with AND.
+      - [ ] `GET /v1/runs` accepts all specified filters as one comma-separated string per field, plus `limit` and `cursor`.
+      - [ ] Comma-separated values within a field combine with OR and different fields combine with AND.
+      - [ ] Repeated keys such as `status=failed&status=in_progress` return `400 validation_error`.
+      - [ ] Empty items such as `status=failed,`, `status=,`, and `status=` return `400 validation_error`.
+      - [ ] Duplicate items are de-duplicated.
       - [ ] Unknown query fields and invalid values return `400 validation_error`.
       - [ ] Invalid cursor values return `400 validation_error`.
       - [ ] No route accepts tenant from query input.
@@ -247,7 +253,7 @@ No new metrics are required for this slice. Existing route logging/error handlin
       - [ ] A `status=failed` filter returns runs driven to failed through the service transition path.
       - [ ] A `waitingOn=human` filter returns runs driven to a human-waiting state through the service transition path.
       - [ ] Tests state that run events do not carry `status` or `projectId`.
-      - [ ] Tests state that get/reply responses do carry `status` and `projectId`.
+      - [ ] Tests state that get/reply/recover responses do carry `status` and `projectId`.
       - [ ] No test makes a model call.
     - **Dependencies**: "Task: Wire validated list query parameters through the route and service"
 
@@ -256,7 +262,8 @@ No new metrics are required for this slice. Existing route logging/error handlin
     - **Description**: Update `ControlPlaneClient.listRuns()` so the no-argument call continues to fetch the newest page and an optional argument serializes filters, `limit`, and `cursor` as query parameters. Parse success responses through the shared list response schema and expose `nextCursor`.
     - **Acceptance criteria**:
       - [ ] Existing `listRuns()` callers require no changes.
-      - [ ] Filter arrays or repeated values serialize as repeated query parameters.
+      - [ ] Filter arrays serialize as one comma-separated query parameter per field.
+      - [ ] The SDK never serializes multi-value filters as repeated query keys.
       - [ ] `limit` and `cursor` serialize correctly.
       - [ ] Success responses parse through the contract schema.
       - [ ] The returned TypeScript type includes `nextCursor`.
@@ -265,7 +272,7 @@ No new metrics are required for this slice. Existing route logging/error handlin
     - **Description**: Extend SDK tests to cover no-argument listing, filter serialization, cursor following input, response parsing, and shared error handling.
     - **Acceptance criteria**:
       - [ ] No-argument `listRuns()` sends `GET /v1/runs` with no query string.
-      - [ ] Filtered calls send repeated query parameters for repeated filters.
+      - [ ] filtered calls send one comma-separated query parameter for multi-value filters.
       - [ ] `limit` and `cursor` appear in the request URL when supplied.
       - [ ] Responses with `nextCursor` parse and return it.
       - [ ] Non-OK responses continue using existing SDK error behavior.
@@ -273,12 +280,12 @@ No new metrics are required for this slice. Existing route logging/error handlin
 
 - [ ] **Story: Production wiring and documentation**
   - [ ] **Task: Add production-server wiring coverage**
-    - **Description**: Add or extend a wiring/e2e test that uses the production server, creates runs in two projects through `POST /v1/conversations`, then lists by project, by `status=in_progress`, and by repeated statuses.
+    - **Description**: Add or extend a wiring/e2e test that uses the production server, creates runs in two projects through `POST /v1/conversations`, then lists by project, by `status=in_progress`, and by comma-separated statuses.
     - **Acceptance criteria**:
       - [ ] The test creates runs in two projects through the public conversation endpoint.
       - [ ] Listing with each `projectId` returns only that project's runs.
       - [ ] Listing with `status=in_progress` returns the expected active runs.
-      - [ ] Listing with repeated `status` values returns OR-combined results.
+      - [ ] Listing with `status=failed,in_progress` returns OR-combined results.
       - [ ] Each row assertion covers issue number, title, work kind, status, `waitingOn`, `projectId`, and `createdAt`.
       - [ ] The test runs without model calls.
     - **Dependencies**: "Task: Wire validated list query parameters through the route and service", "Task: Add optional listRuns arguments and response typing"
