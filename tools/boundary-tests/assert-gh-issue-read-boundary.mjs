@@ -6,10 +6,12 @@ import { dirname } from 'node:path';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = resolve(__dirname, '../..');
 
-// Production source files allowed to contain 'gh issue view'
+// Production source files allowed to contain 'gh issue view'.
+// scripted-gh.ts is the fake-mode implementation of the injectable executeGh seam.
 const ALLOWED_PATHS = [
   'packages/github-issue-tracker-adapter/src/gh-exec.ts',
   'packages/github-issue-tracker-adapter/src/github-issue-tracker.ts',
+  'apps/control-plane/src/fake/scripted-gh.ts',
 ];
 
 function getAllTsFiles(dir) {
