@@ -1,18 +1,18 @@
 /**
- * End-to-end coverage of the real built foundation page served by the control
- * plane in fake mode.
+ * End-to-end coverage of the real built shell served by the control plane in fake
+ * mode.
  *
  * These tests drive the actual `apps/web/dist` build (the e2e target depends on
  * `web:build`) served from the control plane's own origin — no proxy, no CORS, no
  * `page.route`, no injected browser storage, and no test-only hook. They prove the
- * served build routes correctly, reads `/health` through the SDK from the same
- * origin, lazily loads Shiki only when the operator asks, and never triggers a
- * model call (the scripted-launch counter stays `0`).
+ * served build routes correctly, renders the shell with the connect empty state when
+ * no token is stored, loads only from the control plane's own origin, applies the
+ * first-paint theme, and never triggers a model call (the scripted-launch counter
+ * stays `0`). The full connection flow is in `connection.spec.ts`.
  */
 import { expect, test } from './fixtures/fake-server.js';
 
 const ENTRY_CHUNK = /\/assets\/index-[^/]+\.js$/;
-const SHIKI_CHUNK = /\/assets\/(core|engine-javascript|json|github-light|github-dark)-[^/]+\.js$/;
 const DARK_THEMES = [
   'catppuccin-frappe',
   'catppuccin-macchiato',
@@ -21,10 +21,7 @@ const DARK_THEMES = [
   'dracula'
 ];
 
-test('serves the built foundation page and reads health from the same origin', async ({
-  page,
-  fakeServer
-}) => {
+test('serves the built shell and loads only from the same origin', async ({ page, fakeServer }) => {
   const origin = new URL(fakeServer.baseUrl).origin;
   const requestedOrigins = new Set<string>();
   const requestedUrls: string[] = [];
@@ -35,18 +32,13 @@ test('serves the built foundation page and reads health from the same origin', a
 
   await page.goto(`${fakeServer.baseUrl}/`);
 
-  // `/` redirects to `/runs` and the foundation page renders from the built app.
-  await expect(page.getByRole('heading', { name: 'Autocatalyst' })).toBeVisible();
+  // `/` redirects to `/runs`; with no token stored the shell shows the connect
+  // empty state and the persistent footer.
+  await expect(page.getByRole('heading', { name: 'Connect to the control plane' })).toBeVisible();
+  await expect(page.getByRole('contentinfo')).toBeVisible();
 
-  // The entry chunk loaded on page load; the Shiki chunks did not (lazy).
+  // The entry chunk loaded on page load.
   expect(requestedUrls.some((url) => ENTRY_CHUNK.test(url))).toBe(true);
-  expect(requestedUrls.some((url) => SHIKI_CHUNK.test(url))).toBe(false);
-
-  // Clicking the connection button calls /health through the SDK and renders the
-  // highlighted response — which pulls in the Shiki chunk for the first time.
-  await page.getByRole('button', { name: 'Check connection' }).click();
-  await expect(page.getByLabel('health response')).toContainText('"status": "ok"');
-  expect(requestedUrls.some((url) => SHIKI_CHUNK.test(url))).toBe(true);
 
   // Everything came from the control plane's own origin.
   expect([...requestedOrigins]).toEqual([origin]);
@@ -57,14 +49,14 @@ test('serves the built foundation page and reads health from the same origin', a
 
 test('serves /runs and the not-found page on direct loads', async ({ page, fakeServer }) => {
   await page.goto(`${fakeServer.baseUrl}/runs`);
-  await expect(page.getByRole('heading', { name: 'Autocatalyst' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Runs' })).toBeVisible();
 
   await page.goto(`${fakeServer.baseUrl}/not-a-route`);
   await expect(page.getByRole('heading', { name: 'Page not found' })).toBeVisible();
 
-  // The not-found page links back to /runs and navigation renders the foundation page.
+  // The not-found page links back to /runs and navigation renders the shell.
   await page.getByRole('link', { name: 'Back to runs' }).click();
-  await expect(page.getByRole('heading', { name: 'Autocatalyst' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Runs' })).toBeVisible();
 
   expect(await fakeServer.readLaunchCount()).toBe(0);
 });
@@ -76,7 +68,7 @@ test('applies a dark theme before mount under an emulated dark system preference
   await page.emulateMedia({ colorScheme: 'dark' });
 
   await page.goto(`${fakeServer.baseUrl}/`);
-  await expect(page.getByRole('heading', { name: 'Autocatalyst' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Runs' })).toBeVisible();
 
   // No storage was injected, so the first-paint script resolves the system scheme
   // to the default dark theme slot.
@@ -88,15 +80,14 @@ test('applies a dark theme before mount under an emulated dark system preference
   expect(await fakeServer.readLaunchCount()).toBe(0);
 });
 
-test('restart keeps serving the foundation page after a reload', async ({ page, fakeServer }) => {
+test('restart keeps serving the shell after a reload', async ({ page, fakeServer }) => {
   await page.goto(`${fakeServer.baseUrl}/`);
-  await expect(page.getByRole('heading', { name: 'Autocatalyst' })).toBeVisible();
+  await expect(page.getByRole('heading', { level: 1, name: 'Runs' })).toBeVisible();
 
   await fakeServer.restart();
 
   await page.reload();
-  await page.getByRole('button', { name: 'Check connection' }).click();
-  await expect(page.getByLabel('health response')).toContainText('"status": "ok"');
+  await expect(page.getByRole('heading', { level: 1, name: 'Runs' })).toBeVisible();
 
   expect(await fakeServer.readLaunchCount()).toBe(0);
 });

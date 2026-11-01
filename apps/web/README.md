@@ -1,11 +1,13 @@
 # @autocatalyst/web
 
 The Autocatalyst web client: a React 19 + Vite + Tailwind 4 browser app served by
-the control plane. This foundation (issue #131) ships the first real served page —
-routing, design tokens, theme preferences, safe token storage, typed SDK access,
-the first UI wrappers, and lazy syntax highlighting — so later screens build on one
-tested runtime and one set of conventions. The full shell, settings, run screens,
-and token-entry flow are **out of scope** here (they arrive in later issues).
+the control plane. The foundation (issue #131) shipped the runtime — routing, design
+tokens, theme preferences, safe token storage, typed SDK access, the first UI
+wrappers, and lazy syntax highlighting. Issue #132 adds the operator **shell**
+(sidebar, header, main area, footer with five zones and a health indicator), the
+**settings frame**, and the **Connection** page where an operator enters the control
+plane bearer token. The run list and detail pane are still **out of scope** here —
+they arrive in #134.
 
 ## Targets
 
@@ -60,9 +62,26 @@ install command — a skipped test would read as a pass, so it fails loudly inst
 The router is **`react-router-dom` using the declarative `BrowserRouter` / `Routes` /
 `Route` / `Navigate` APIs** with base `/`. This gives normal browser history,
 redirects, and not-found routing without pulling in a framework runtime or a data
-router we do not yet need. Routes: `/` → `/runs`, `/runs` = the foundation page,
-catch-all = the not-found page. `app.tsx` exports `AppRoutes` separately so tests can
-mount it under a `MemoryRouter`.
+router we do not yet need. A layout route renders the persistent shell
+(`src/shell/shell-layout.tsx`) around the child routes. Routes: `/` → `/runs`,
+`/runs` = the Runs destination (`src/routes/runs-page.tsx`), `/settings` →
+`/settings/connection`, `/settings/connection` = the Connection page
+(`src/settings/connection-page.tsx`), catch-all = the not-found page (outside the
+shell). `app.tsx` exports `AppRoutes` separately so tests can mount it under a
+`MemoryRouter`.
+
+## Keyboard shortcuts
+
+The shell ships a small set of shortcuts through a temporary key table
+(`src/shell/shell-keys.ts`); tooltips and this list read their key text from that
+table. **#134 replaces these temporary hooks with the action registry.**
+
+| Shortcut | Action |
+| --- | --- |
+| `[` | Toggle the sidebar open/closed. Does not fire while typing in a field, while a menu/dialog is open, with a modifier held, or with AltGr active. |
+| `Cmd+,` (macOS) / `Ctrl+,` | Open and close Settings. Works everywhere, including inside a form field. |
+| `Escape` | Close the top layer: the hover sidebar first, then Settings. |
+| `]` | Reserved for the detail pane toggle; **disabled and a deliberate no-op until #134** enables the pane. The footer toggle shows `aria-disabled` with tooltip `Detail pane (])`. |
 
 ## Package aliases
 
@@ -108,16 +127,18 @@ from any call flips connection state to `unauthorized` without throwing to the r
 
 ## UI wrapper convention
 
-`src/ui/` holds the client-owned wrappers (`Button`, `Tooltip` today) and is the
-**only** place allowed to import `@base-ui/react` — enforced by ESLint and the
-`import-conventions` test. Screens import the wrappers, never Base UI primitives
-directly. Every icon-only button carries a `Tooltip`. Icons come only from
-`lucide-react`, imported by name.
+`src/ui/` holds the client-owned wrappers (`Button`, `Tooltip`, and the form building
+blocks `Input`, `Field`, and `WriteOnlySecretField`) and is the **only** place allowed
+to import `@base-ui/react` — enforced by ESLint and the `import-conventions` test.
+Screens import the wrappers, never Base UI primitives directly. Every icon-only button
+carries a `Tooltip`. Icons come only from `lucide-react`, imported by name.
 
-Only `Button` and `Tooltip` exist now, on purpose. The remaining wrappers — `Menu`,
-`Popover`, `Dialog`, `Tabs`, `Select`, `Switch`, and form fields — should be added by
-the first screen that actually uses each one. No wrapper should exist without a screen
-exercising it.
+`Input`, `Field`, and `WriteOnlySecretField` were added by #132 for the Connection
+page. `WriteOnlySecretField` receives only a `hasStoredValue` boolean (never a stored
+secret), is a password input with `autocomplete="off"`, and has no mask, reveal,
+stored badge, or clear/delete control. The remaining wrappers — `Menu`, `Popover`,
+`Dialog`, `Tabs`, `Select`, `Switch` — should still be added by the first screen that
+actually uses each one. No wrapper should exist without a screen exercising it.
 
 ## Syntax highlighting (Shiki)
 
@@ -125,11 +146,12 @@ exercising it.
 bundled `createHighlighter`. On first use it dynamically imports `shiki/core`,
 `shiki/engine/javascript` (`createJavaScriptRegexEngine`), `shiki/langs/json.mjs`, and
 the `shiki/themes/github-light.mjs` / `shiki/themes/github-dark.mjs` code themes, then
-creates one highlighter and reuses it. Only JSON is loaded for this issue; later
-callers may extend it with their own explicit language imports. The code theme follows
-the resolved app brightness. Because every Shiki import is dynamic, Shiki stays out of
-the entry chunk (asserted by the build-output test and the Playwright run, which only
-loads the Shiki chunk after the first Check-connection click).
+creates one highlighter and reuses it. Only JSON is loaded today; later callers may
+extend it with their own explicit language imports. The code theme follows the
+resolved app brightness. Because every Shiki import is dynamic, Shiki stays out of the
+entry chunk. `highlight.ts` is a retained utility for later screens that render code;
+#132 removed its only caller (the #131 foundation page), so no current route loads the
+Shiki chunk.
 
 > Note: these exact subpaths (`shiki/langs/json.mjs`, `shiki/themes/github-*.mjs`,
 > `shiki/engine/javascript`) resolve in the installed Shiki 4.5.0 via its `./*` export,

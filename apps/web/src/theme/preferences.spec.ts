@@ -38,6 +38,18 @@ describe('validatePreferences', () => {
     expect(result.bodyFont).toBe('inter');
     expect(result.monoFont).toBe(DEFAULT_PREFERENCES.monoFont);
   });
+
+  it('defaults sidebarOpen to true when missing or non-boolean', () => {
+    expect(validatePreferences({}).sidebarOpen).toBe(true);
+    expect(validatePreferences({ sidebarOpen: 'yes' }).sidebarOpen).toBe(true);
+    expect(validatePreferences({ sidebarOpen: 1 }).sidebarOpen).toBe(true);
+    expect(validatePreferences(null).sidebarOpen).toBe(true);
+  });
+
+  it('keeps an explicit boolean sidebarOpen', () => {
+    expect(validatePreferences({ sidebarOpen: false }).sidebarOpen).toBe(false);
+    expect(validatePreferences({ sidebarOpen: true }).sidebarOpen).toBe(true);
+  });
 });
 
 describe('readPreferences', () => {
