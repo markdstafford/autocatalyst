@@ -418,12 +418,46 @@ export function generateOpenApiDocument(): OpenApiDocument {
   });
 
   // GET /v1/runs
+  const commaFilterParam = (name: string, description: string) =>
+    z.string().optional().openapi({
+      param: { name, in: 'query', style: 'form', explode: false, required: false },
+      description
+    });
   registry.registerPath({
     method: 'get',
     path: runCollectionPath,
     tags: ['runs'],
+    request: {
+      query: z.object({
+        status: commaFilterParam(
+          'status',
+          'Comma-separated run statuses (in_progress, done, failed, canceled). Items within the field combine with OR.'
+        ),
+        waitingOn: commaFilterParam(
+          'waitingOn',
+          'Comma-separated waiting-on classes (system, ai, human, none). Items within the field combine with OR.'
+        ),
+        workKind: commaFilterParam(
+          'workKind',
+          'Comma-separated work kinds (feature, enhancement, bug, chore, file_issue, question). Items within the field combine with OR.'
+        ),
+        projectId: commaFilterParam(
+          'projectId',
+          'Comma-separated project ids. Items within the field combine with OR; ids the tenant does not own yield an empty page.'
+        ),
+        limit: z.coerce.number().int().optional().openapi({
+          param: { name: 'limit', in: 'query', required: false },
+          description: 'Page size, default and maximum 100.'
+        }),
+        cursor: z.string().optional().openapi({
+          param: { name: 'cursor', in: 'query', required: false },
+          description: 'Opaque cursor from a previous page\'s nextCursor. Malformed cursors return 400.'
+        })
+      })
+    },
     responses: {
-      [listRunsSuccessStatusCode]: jsonResponse(RunListResponse, 'List of runs for the authenticated tenant.'),
+      [listRunsSuccessStatusCode]: jsonResponse(RunListResponse, 'One page of runs for the authenticated tenant, with nextCursor when more rows match.'),
+      400: jsonResponse(ErrorResponse, 'Validation error (unknown field, invalid filter value, bad limit, or malformed cursor).'),
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
       403: jsonResponse(ErrorResponse, 'Forbidden.')
     }

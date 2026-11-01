@@ -319,7 +319,7 @@ describe('issue-reference create failure cases', () => {
       ).rejects.toBeInstanceOf(ControlPlaneServiceError);
 
       const runs = await domainRepos.runs.listByTenant(owner.tenantId);
-      expect(runs).toHaveLength(0);
+      expect(runs.runs).toHaveLength(0);
     }, tmpDir);
   });
 

@@ -24,7 +24,10 @@ import type {
   Publication,
   PullRequest,
   Run,
+  RunListCursor,
+  RunStatus,
   RunStep,
+  RunWaitingOn,
   Session,
   TestResult,
   Topic
@@ -119,8 +122,32 @@ export interface RecoverFailedRunResult {
   readonly runStep: RunStep;
 }
 
+/**
+ * Server-side filters for the run collection read. Each field is a de-duplicated set of validated
+ * values parsed from one comma-separated query parameter. Items within a field combine with OR;
+ * different fields combine with AND. All filtering happens in the SQL query before page selection.
+ */
+export interface ListRunsByTenantFilters {
+  readonly status?: readonly RunStatus[];
+  readonly waitingOn?: readonly RunWaitingOn[];
+  readonly workKind?: readonly string[];
+  readonly projectId?: readonly string[];
+}
+
 export interface ListRunsByTenantOptions {
   readonly limit?: number;
+  /** Ordered-position cursor for the next page (decoded from the opaque client cursor). */
+  readonly cursor?: RunListCursor;
+  readonly filters?: ListRunsByTenantFilters;
+}
+
+/**
+ * One page of the filtered run collection. `nextCursor` is present only when at least one further
+ * matching row exists beyond this page.
+ */
+export interface ListRunsByTenantResult {
+  readonly runs: readonly Run[];
+  readonly nextCursor?: RunListCursor;
 }
 
 export interface RunRepository {
@@ -128,7 +155,13 @@ export interface RunRepository {
   findById(id: string): Promise<Run | null>;
   findActiveByTopic(topicId: string): Promise<Run | null>;
   listByTopic(topicId: string): Promise<readonly Run[]>;
-  listByTenant(tenant: string, options?: ListRunsByTenantOptions): Promise<readonly Run[]>;
+  listByTenant(tenant: string, options?: ListRunsByTenantOptions): Promise<ListRunsByTenantResult>;
+  /**
+   * Resolve the owning project id for a single run through its topic and conversation in a
+   * constant number of queries. Returns null when the run, its topic, or its conversation is
+   * missing (a data-integrity signal). Optional so in-memory test doubles need not implement it.
+   */
+  resolveProjectId?(runId: string): Promise<string | null>;
   /**
    * List every non-terminal run across all tenants. Used by startup reconciliation to
    * find runs whose on-disk workspace may need to be recreated. Optional so in-memory

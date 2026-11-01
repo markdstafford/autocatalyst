@@ -117,7 +117,7 @@ function makeFakeRunRepo(overrides?: Partial<RunRepository>): RunRepository {
     findById: vi.fn().mockResolvedValue(makeRun()),
     findActiveByTopic: vi.fn().mockResolvedValue(null),
     listByTopic: vi.fn().mockResolvedValue([]),
-    listByTenant: vi.fn().mockResolvedValue([]),
+    listByTenant: vi.fn().mockResolvedValue({ runs: [] }),
     recordRunLifecycleStart: vi.fn(),
     recordRunStepTransition: vi.fn(),
     ...overrides
@@ -480,7 +480,7 @@ describe('DefaultControlPlaneService.createConversationWithFirstRun intake', () 
 describe('DefaultControlPlaneService.listRuns', () => {
   it('authorizes with run.list on the run collection resource', async () => {
     const policy: PolicyDecisionPoint = { authorize: vi.fn().mockResolvedValue({ allowed: true }) };
-    const runs = makeFakeRunRepo({ listByTenant: vi.fn().mockResolvedValue([]) });
+    const runs = makeFakeRunRepo({ listByTenant: vi.fn().mockResolvedValue({ runs: [] }) });
     const service = makeService({ policy, runs });
 
     await service.listRuns({ principal, tenant: 'tenant_1' });
@@ -494,25 +494,94 @@ describe('DefaultControlPlaneService.listRuns', () => {
 
   it('calls listByTenant with the input tenant and returns runs', async () => {
     const run = makeRun({ id: 'run_2' });
-    const runs = makeFakeRunRepo({ listByTenant: vi.fn().mockResolvedValue([run]) });
+    const runs = makeFakeRunRepo({ listByTenant: vi.fn().mockResolvedValue({ runs: [run] }) });
     const service = makeService({ runs });
 
     const result = await service.listRuns({ principal, tenant: 'tenant_1' });
 
-    expect(runs.listByTenant).toHaveBeenCalledWith('tenant_1');
+    expect(runs.listByTenant).toHaveBeenCalledWith('tenant_1', {});
     expect(result.runs).toHaveLength(1);
     expect(result.runs[0]?.id).toBe('run_2');
     expect(result.runs[0]?.waitingOn).toBe('system');
+    expect(result.runs[0]?.status).toBe('in_progress');
+  });
+
+  it('passes normalized filters, limit, and cursor into the repository and returns nextCursor', async () => {
+    const run = makeRun({ id: 'run_9' });
+    const nextCursor = { createdAt: timestamp, id: 'run_9' };
+    const listByTenant = vi.fn().mockResolvedValue({ runs: [run], nextCursor });
+    const runs = makeFakeRunRepo({ listByTenant });
+    const service = makeService({ runs });
+
+    const result = await service.listRuns({
+      principal,
+      tenant: 'tenant_1',
+      limit: 25,
+      cursor: { createdAt: timestamp, id: 'run_1' },
+      filters: { status: ['failed'], projectId: ['proj_1'] }
+    });
+
+    expect(listByTenant).toHaveBeenCalledWith('tenant_1', {
+      limit: 25,
+      cursor: { createdAt: timestamp, id: 'run_1' },
+      filters: { status: ['failed'], projectId: ['proj_1'] }
+    });
+    expect(result.nextCursor).toEqual(nextCursor);
   });
 
   it('throws forbidden and does not read persistence when policy denies', async () => {
-    const runs = makeFakeRunRepo({ listByTenant: vi.fn().mockResolvedValue([makeRun()]) });
+    const runs = makeFakeRunRepo({ listByTenant: vi.fn().mockResolvedValue({ runs: [makeRun()] }) });
     const service = makeService({ policy: makeDenyPolicy(), runs });
 
     await expect(service.listRuns({ principal, tenant: 'tenant_1' })).rejects.toMatchObject({
       code: 'forbidden'
     });
     expect(runs.listByTenant).not.toHaveBeenCalled();
+  });
+
+  it('list and get produce the same projectId, status, and waitingOn for one run', async () => {
+    const listRow: Run = { ...makeRun({ id: 'run_match', currentStep: 'spec.human_review' }), projectId: 'proj_7' };
+    const storedRun = makeRun({ id: 'run_match', currentStep: 'spec.human_review' });
+    const runs = makeFakeRunRepo({
+      // List rows carry projectId from the repository join.
+      listByTenant: vi.fn().mockResolvedValue({ runs: [listRow] }),
+      // Single-run reads resolve projectId through the dedicated lookup.
+      findById: vi.fn().mockResolvedValue(storedRun),
+      resolveProjectId: vi.fn().mockResolvedValue('proj_7')
+    });
+    const service = makeService({ runs });
+
+    const listed = (await service.listRuns({ principal, tenant: 'tenant_1' })).runs[0];
+    const got = (await service.getRun({ principal, tenant: 'tenant_1', runId: 'run_match' })).run;
+
+    expect(got.projectId).toBe('proj_7');
+    expect(got.status).toBe('in_progress');
+    expect(got.waitingOn).toBe('human');
+    expect(listed?.projectId).toBe(got.projectId);
+    expect(listed?.status).toBe(got.status);
+    expect(listed?.waitingOn).toBe(got.waitingOn);
+  });
+
+  it('derives terminal statuses on get responses', async () => {
+    for (const [currentStep, status] of [['done', 'done'], ['failed', 'failed'], ['canceled', 'canceled']] as const) {
+      const runs = makeFakeRunRepo({
+        findById: vi.fn().mockResolvedValue(makeRun({ currentStep, terminal: true })),
+        resolveProjectId: vi.fn().mockResolvedValue('proj_1')
+      });
+      const service = makeService({ runs });
+      const result = await service.getRun({ principal, tenant: 'tenant_1', runId: 'run_1' });
+      expect(result.run.status).toBe(status);
+    }
+  });
+
+  it('treats an unresolvable project as a data-integrity error on single-run reads', async () => {
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(makeRun()),
+      resolveProjectId: vi.fn().mockResolvedValue(null)
+    });
+    const service = makeService({ runs });
+    await expect(service.getRun({ principal, tenant: 'tenant_1', runId: 'run_1' }))
+      .rejects.toMatchObject({ code: 'persistence_failed' });
   });
 });
 
@@ -893,10 +962,12 @@ describe('DefaultControlPlaneService run waiting-state', () => {
 
   it('listRuns returns waitingOn for each run', async () => {
     const fakeRunsRepo = makeFakeRunRepo({
-      listByTenant: vi.fn().mockResolvedValue([
-        makeRun({ id: 'run_1', currentStep: 'spec.human_review', workKind: 'feature' }),
-        makeRun({ id: 'run_2', currentStep: 'spec.author', workKind: 'enhancement' })
-      ])
+      listByTenant: vi.fn().mockResolvedValue({
+        runs: [
+          makeRun({ id: 'run_1', currentStep: 'spec.human_review', workKind: 'feature' }),
+          makeRun({ id: 'run_2', currentStep: 'spec.author', workKind: 'enhancement' })
+        ]
+      })
     });
     const service = makeService({ runs: fakeRunsRepo });
     const result = await service.listRuns({ principal, tenant: 'tenant_1' });

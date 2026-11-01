@@ -41,6 +41,9 @@ import {
   listRunFeedbackSuccessStatusCode,
   listRunSessionsSuccessStatusCode,
   listRunsSuccessStatusCode,
+  listRunsQuerySchema,
+  decodeRunListCursor,
+  encodeRunListCursor,
   runListResponseSchema,
   healthResponseSchema,
   intakeRoutingErrorCode,
@@ -102,6 +105,7 @@ import {
   type ErrorResponse,
   type ProbeResourceIdParams,
   type ReconcilePullRequestsResponse,
+  type RunListCursor,
   type RunIdParams,
   type RunPullRequestResponse,
   type RunRecoveryRequest,
@@ -146,7 +150,7 @@ import {
   updateProject,
   ProjectServiceError
 } from './project.js';
-import type { ProjectRepository } from './domain-repositories.js';
+import type { ListRunsByTenantFilters, ProjectRepository } from './domain-repositories.js';
 import type { RunEventSubscription } from './run-events.js';
 
 export const runPullRequestReadPolicyAction = 'run_pull_request.read' as const;
@@ -723,21 +727,57 @@ export async function registerControlPlaneRoutes(
       }
     });
 
-    // Story 8: List runs
+    // Story 8: List runs (filter + cursor paging)
     protectedApp.get(runCollectionPath, {
       preHandler: authorizePreHandler(dependencies.policy, 'run.list', () => ({
         kind: 'run_collection' as const,
         path: '/v1/runs' as const
       }))
     }, async (request, reply) => {
+      // Strict query parsing: unknown fields, repeated keys (arrays), empty comma items, invalid
+      // enum values, comma-containing project ids, and bad limits all surface as 400 here.
+      let query: z.infer<typeof listRunsQuerySchema>;
+      try {
+        query = listRunsQuerySchema.parse(request.query);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+
+      // Opaque cursor → ordered-position. Malformed cursors are validation errors, not 500s.
+      let cursor: RunListCursor | undefined;
+      if (query.cursor !== undefined) {
+        try {
+          cursor = decodeRunListCursor(query.cursor);
+        } catch (error) {
+          await sendValidationError(reply, error);
+          return;
+        }
+      }
+
+      const filters: ListRunsByTenantFilters = {
+        ...(query.status !== undefined ? { status: query.status } : {}),
+        ...(query.waitingOn !== undefined ? { waitingOn: query.waitingOn } : {}),
+        ...(query.workKind !== undefined ? { workKind: query.workKind } : {}),
+        ...(query.projectId !== undefined ? { projectId: query.projectId } : {})
+      };
+      const hasFilters = Object.keys(filters).length > 0;
+
       const principal = requirePrincipalFromRequest(request);
       try {
         const result = await dependencies.controlPlane.listRuns({
           principal,
-          tenant: principal.tenantId
+          // Tenant always comes from the authenticated principal, never from query input.
+          tenant: principal.tenantId,
+          ...(query.limit !== undefined ? { limit: query.limit } : {}),
+          ...(cursor !== undefined ? { cursor } : {}),
+          ...(hasFilters ? { filters } : {})
         });
         await reply.status(listRunsSuccessStatusCode).send(
-          runListResponseSchema.parse({ runs: result.runs })
+          runListResponseSchema.parse({
+            runs: result.runs,
+            ...(result.nextCursor !== undefined ? { nextCursor: encodeRunListCursor(result.nextCursor) } : {})
+          })
         );
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
