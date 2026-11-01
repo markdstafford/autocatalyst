@@ -20,6 +20,7 @@ import {
   pullRequestReconciliationPath,
   pullRequestReconciliationResponseSchema,
   reconcilePullRequestsSuccessStatusCode,
+  encodeRunListCursor,
   runFeedbackListResponseSchema,
   runListResponseSchema,
   runReplyResponseSchema,
@@ -870,6 +871,89 @@ describe('registerControlPlaneRoutes', () => {
 
     expect(response.statusCode).toBe(403);
     expect(errorResponseSchema.parse(response.json()).error.code).toBe('forbidden');
+  });
+
+  it('GET /v1/runs passes normalized filters, limit, and decoded cursor to the service and encodes nextCursor', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    const nextCursor = { createdAt: '2026-06-08T00:00:00.000Z', id: 'run_1' };
+    (controlPlane.listRuns as ReturnType<typeof vi.fn>).mockResolvedValue({ runs: [routeRun], nextCursor });
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const inboundCursor = encodeRunListCursor({ createdAt: '2026-06-07T00:00:00.000Z', id: 'run_0' });
+    const response = await app.inject({
+      method: 'GET',
+      url: `/v1/runs?status=failed,in_progress&projectId=proj_1&limit=25&cursor=${encodeURIComponent(inboundCursor)}`,
+      headers: authorization
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(controlPlane.listRuns).toHaveBeenCalledWith({
+      principal: hardcodedDevelopmentPrincipal,
+      tenant: 'tenant_dev',
+      limit: 25,
+      cursor: { createdAt: '2026-06-07T00:00:00.000Z', id: 'run_0' },
+      filters: { status: ['failed', 'in_progress'], projectId: ['proj_1'] }
+    });
+    expect(runListResponseSchema.parse(response.json()).nextCursor).toBe(encodeRunListCursor(nextCursor));
+  });
+
+  it('GET /v1/runs rejects unknown query fields with 400 validation_error', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({ method: 'GET', url: '/v1/runs?unknown=x', headers: authorization });
+
+    expect(response.statusCode).toBe(400);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('validation_error');
+    expect(controlPlane.listRuns).not.toHaveBeenCalled();
+  });
+
+  it('GET /v1/runs rejects repeated filter keys with 400 validation_error', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({ method: 'GET', url: '/v1/runs?status=failed&status=in_progress', headers: authorization });
+
+    expect(response.statusCode).toBe(400);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('validation_error');
+    expect(controlPlane.listRuns).not.toHaveBeenCalled();
+  });
+
+  it.each(['status=failed,', 'status=,', 'status='])('GET /v1/runs rejects empty filter items (%s) with 400', async (queryString) => {
+    const controlPlane = createFakeControlPlaneService();
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({ method: 'GET', url: `/v1/runs?${queryString}`, headers: authorization });
+
+    expect(response.statusCode).toBe(400);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('validation_error');
+  });
+
+  it('GET /v1/runs rejects invalid enum values with 400', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({ method: 'GET', url: '/v1/runs?status=paused', headers: authorization });
+
+    expect(response.statusCode).toBe(400);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('validation_error');
+  });
+
+  it('GET /v1/runs rejects malformed cursors with 400 validation_error', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    const { app, authorization } = await buildServer({ controlPlane });
+    server = app;
+
+    const response = await app.inject({ method: 'GET', url: '/v1/runs?cursor=not-a-valid-cursor', headers: authorization });
+
+    expect(response.statusCode).toBe(400);
+    expect(errorResponseSchema.parse(response.json()).error.code).toBe('validation_error');
+    expect(controlPlane.listRuns).not.toHaveBeenCalled();
   });
 
   it('GET /v1/runs/:id still reaches the single-run route', async () => {

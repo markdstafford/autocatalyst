@@ -103,17 +103,42 @@ describe('OpenAPI generation', () => {
     expect(operation?.responses?.['401']).toBeDefined();
   });
 
-  it('documents GET /v1/runs with success and auth errors', () => {
+  it('documents GET /v1/runs with filters, paging, and validation errors', () => {
     const document = generateOpenApiDocument();
     const operation = document.paths['/v1/runs']?.get as
-      | { responses?: Record<string, unknown>; tags?: string[] }
+      | {
+          responses?: Record<string, unknown>;
+          tags?: string[];
+          parameters?: { name: string; in: string; style?: string; explode?: boolean }[];
+        }
       | undefined;
 
     expect(operation).toBeDefined();
     expect(operation?.tags).toContain('runs');
     expect(operation?.responses?.['200']).toBeDefined();
+    expect(operation?.responses?.['400']).toBeDefined();
     expect(operation?.responses?.['401']).toBeDefined();
     expect(operation?.responses?.['403']).toBeDefined();
+
+    const params = operation?.parameters ?? [];
+    for (const name of ['status', 'waitingOn', 'workKind', 'projectId', 'limit', 'cursor']) {
+      expect(params.some((p) => p.name === name && p.in === 'query')).toBe(true);
+    }
+    for (const name of ['status', 'waitingOn', 'workKind', 'projectId']) {
+      const param = params.find((p) => p.name === name && p.in === 'query');
+      expect(param?.style).toBe('form');
+      expect(param?.explode).toBe(false);
+    }
+  });
+
+  it('documents status, projectId, and nextCursor on the run list response schema', () => {
+    const document = generateOpenApiDocument();
+    const components = (document.components ?? {}) as { schemas?: Record<string, { properties?: Record<string, unknown> }> };
+    const runListResponse = components.schemas?.['RunListResponse'];
+    expect(runListResponse?.properties?.['nextCursor']).toBeDefined();
+    const run = components.schemas?.['Run'];
+    expect(run?.properties?.['status']).toBeDefined();
+    expect(run?.properties?.['projectId']).toBeDefined();
   });
 
   it('documents replay=retained query parameter for GET /v1/runs/{id}/events', () => {

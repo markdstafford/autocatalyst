@@ -913,9 +913,10 @@ describe('DrizzleDomainRepositories round-trip', () => {
       const listed = await repos.runs.listByTenant('tenant_1');
       const expectedTieOrder = [tieLow.id, tieHigh.id].sort().reverse();
 
-      expect(listed.map((run) => run.id)).toEqual([...expectedTieOrder, older.id]);
-      expect(listed.map((run) => run.tenant)).toEqual(['tenant_1', 'tenant_1', 'tenant_1']);
-      expect(listed.some((run) => run.id === otherTenant.id)).toBe(false);
+      expect(listed.runs.map((run) => run.id)).toEqual([...expectedTieOrder, older.id]);
+      expect(listed.runs.map((run) => run.tenant)).toEqual(['tenant_1', 'tenant_1', 'tenant_1']);
+      expect(listed.runs.some((run) => run.id === otherTenant.id)).toBe(false);
+      expect(listed.nextCursor).toBeUndefined();
     });
   });
 
@@ -949,8 +950,8 @@ describe('DrizzleDomainRepositories round-trip', () => {
       }
 
       expect(defaultRunListLimit).toBe(100);
-      await expect(repos.runs.listByTenant('tenant_1', { limit: 1 })).resolves.toHaveLength(1);
-      await expect(repos.runs.listByTenant('tenant_1', { limit: defaultRunListLimit + 10 })).resolves.toHaveLength(runIds.length);
+      expect((await repos.runs.listByTenant('tenant_1', { limit: 1 })).runs).toHaveLength(1);
+      expect((await repos.runs.listByTenant('tenant_1', { limit: defaultRunListLimit + 10 })).runs).toHaveLength(runIds.length);
     });
   });
 
@@ -962,6 +963,188 @@ describe('DrizzleDomainRepositories round-trip', () => {
       });
     }
   );
+
+  describe('DrizzleRunRepository.listByTenant filtering and paging', () => {
+    it('pages through 105 runs via the cursor with no duplicates or missing rows', async () => {
+      await withRepositories(async (repos, database) => {
+        const setup = await createProjectConversationAndTopic(repos, {
+          tenant: 'tenant_1',
+          owner,
+          identity: 'paging',
+          title: 'Paging'
+        });
+        const createdIds: string[] = [];
+        for (let idx = 0; idx < 105; idx += 1) {
+          // Terminal runs may share a topic (the one-active-run index only constrains terminal=0).
+          const run = await repos.runs.create({
+            topicId: setup.topic.id,
+            owner,
+            tenant: 'tenant_1',
+            workKind: 'feature',
+            currentStep: 'done',
+            terminal: true
+          });
+          createdIds.push(run.id);
+        }
+        // Collapse every row onto one createdAt so paging is driven entirely by the id tie-breaker,
+        // which is the subtle same-timestamp cursor case.
+        asInternalSqliteDatabase(database).client
+          .prepare("UPDATE runs SET created_at = '2026-11-01T12:00:00.000Z' WHERE tenant = 'tenant_1'")
+          .run();
+
+        const firstPage = await repos.runs.listByTenant('tenant_1');
+        expect(firstPage.runs).toHaveLength(100);
+        expect(firstPage.nextCursor).toBeDefined();
+
+        const secondPage = await repos.runs.listByTenant('tenant_1', { cursor: firstPage.nextCursor });
+        expect(secondPage.runs).toHaveLength(5);
+        expect(secondPage.nextCursor).toBeUndefined();
+
+        const pagedIds = [...firstPage.runs, ...secondPage.runs].map((run) => run.id);
+        expect(new Set(pagedIds).size).toBe(105);
+        expect([...pagedIds].sort()).toEqual([...createdIds].sort());
+      });
+    });
+
+    it('returns an old matching run beyond the newest 100 when filtered', async () => {
+      await withRepositories(async (repos, database) => {
+        const setup = await createProjectConversationAndTopic(repos, {
+          tenant: 'tenant_1',
+          owner,
+          identity: 'old-match',
+          title: 'Old match'
+        });
+        // One old enhancement run, then 100 newer feature runs that would otherwise crowd it out.
+        const oldRun = await repos.runs.create({
+          topicId: setup.topic.id,
+          owner,
+          tenant: 'tenant_1',
+          workKind: 'enhancement',
+          currentStep: 'done',
+          terminal: true
+        });
+        asInternalSqliteDatabase(database).client
+          .prepare('UPDATE runs SET created_at = ? WHERE id = ?')
+          .run('2020-01-01T00:00:00.000Z', oldRun.id);
+        for (let idx = 0; idx < 100; idx += 1) {
+          const run = await repos.runs.create({
+            topicId: setup.topic.id,
+            owner,
+            tenant: 'tenant_1',
+            workKind: 'feature',
+            currentStep: 'done',
+            terminal: true
+          });
+          asInternalSqliteDatabase(database).client
+            .prepare('UPDATE runs SET created_at = ? WHERE id = ?')
+            .run(`2026-11-01T12:${String(idx % 60).padStart(2, '0')}:00.000Z`, run.id);
+        }
+
+        // Unfiltered newest page cannot see the old run.
+        const unfiltered = await repos.runs.listByTenant('tenant_1');
+        expect(unfiltered.runs.some((run) => run.id === oldRun.id)).toBe(false);
+
+        // The filter applies in SQL before paging, so the old match still surfaces.
+        const filtered = await repos.runs.listByTenant('tenant_1', { filters: { workKind: ['enhancement'] } });
+        expect(filtered.runs.map((run) => run.id)).toEqual([oldRun.id]);
+      });
+    });
+
+    it('scopes project filters to the tenant and never leaks another tenant', async () => {
+      await withRepositories(async (repos) => {
+        const tenantOne = await createProjectConversationAndTopic(repos, {
+          tenant: 'tenant_1',
+          owner,
+          identity: 'proj-one',
+          title: 'Project one'
+        });
+        const secondProjectSetup = await createProjectConversationAndTopic(repos, {
+          tenant: 'tenant_1',
+          owner,
+          identity: 'proj-two',
+          title: 'Project two'
+        });
+        const otherOwner = { ...owner, id: 'user_2', tenantId: 'tenant_2' } as const;
+        const tenantTwo = await createProjectConversationAndTopic(repos, {
+          tenant: 'tenant_2',
+          owner: otherOwner,
+          identity: 'proj-three',
+          title: 'Project three'
+        });
+
+        const runA = await repos.runs.create({
+          topicId: tenantOne.topic.id, owner, tenant: 'tenant_1', workKind: 'feature', currentStep: 'done', terminal: true
+        });
+        const runB = await repos.runs.create({
+          topicId: secondProjectSetup.topic.id, owner, tenant: 'tenant_1', workKind: 'feature', currentStep: 'done', terminal: true
+        });
+        await repos.runs.create({
+          topicId: tenantTwo.topic.id, owner: otherOwner, tenant: 'tenant_2', workKind: 'feature', currentStep: 'done', terminal: true
+        });
+
+        const projectA = await repos.runs.listByTenant('tenant_1', { filters: { projectId: [tenantOne.project.id] } });
+        expect(projectA.runs.map((run) => run.id)).toEqual([runA.id]);
+        expect(projectA.runs[0]?.projectId).toBe(tenantOne.project.id);
+
+        const projectB = await repos.runs.listByTenant('tenant_1', { filters: { projectId: [secondProjectSetup.project.id] } });
+        expect(projectB.runs.map((run) => run.id)).toEqual([runB.id]);
+
+        // Tenant_1 requesting tenant_2's project id gets an empty page, not cross-tenant data.
+        const crossTenant = await repos.runs.listByTenant('tenant_1', { filters: { projectId: [tenantTwo.project.id] } });
+        expect(crossTenant.runs).toHaveLength(0);
+      });
+    });
+
+    it('resolves projectId for a full page in a constant number of queries', async () => {
+      await withRepositories(async (repos, database) => {
+        const setup = await createProjectConversationAndTopic(repos, {
+          tenant: 'tenant_1',
+          owner,
+          identity: 'constant-query',
+          title: 'Constant query'
+        });
+        for (let idx = 0; idx < 100; idx += 1) {
+          await repos.runs.create({
+            topicId: setup.topic.id, owner, tenant: 'tenant_1', workKind: 'feature', currentStep: 'done', terminal: true
+          });
+        }
+
+        const measure = async (fn: () => Promise<unknown>): Promise<number> => {
+          const client = asInternalSqliteDatabase(database).client as unknown as {
+            prepare: (sql: string) => Record<string, unknown>;
+          };
+          const originalPrepare = client.prepare.bind(client);
+          let executions = 0;
+          client.prepare = (sql: string) => {
+            const stmt = originalPrepare(sql);
+            for (const method of ['all', 'get', 'run'] as const) {
+              const original = stmt[method];
+              if (typeof original === 'function') {
+                stmt[method] = (...args: unknown[]) => {
+                  executions += 1;
+                  return (original as (...a: unknown[]) => unknown).apply(stmt, args);
+                };
+              }
+            }
+            return stmt;
+          };
+          try {
+            await fn();
+          } finally {
+            client.prepare = originalPrepare;
+          }
+          return executions;
+        };
+
+        const fullPageQueries = await measure(() => repos.runs.listByTenant('tenant_1', { limit: 100 }));
+        const singleRowQueries = await measure(() => repos.runs.listByTenant('tenant_1', { limit: 1 }));
+
+        // Project resolution is a join on the page query, so query count does not grow with rows.
+        expect(fullPageQueries).toBe(singleRowQueries);
+        expect(fullPageQueries).toBeLessThanOrEqual(2);
+      });
+    });
+  });
 
   it('artifacts.findByRunAndKind returns the artifact when present and null otherwise', async () => {
     await withRepositories(async (repos) => {

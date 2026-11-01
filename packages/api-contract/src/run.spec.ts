@@ -2,13 +2,18 @@ import { describe, expect, it } from 'vitest';
 
 import {
   createRunWorkKindSchema,
+  decodeRunListCursor,
+  encodeRunListCursor,
   getRunSuccessStatusCode,
+  listRunsQuerySchema,
   listRunsSuccessStatusCode,
+  maxRunListLimit,
   runCollectionPath,
   runIdParamsSchema,
   runListResponseSchema,
   runResourcePath,
   runSchema,
+  runStatusSchema,
   waitingOnSchema
 } from './run.js';
 
@@ -77,7 +82,127 @@ describe('run contract extensions', () => {
   });
 
   it('rejects unknown top-level fields in run list responses', () => {
+    expect(() => runListResponseSchema.parse({ runs: [], unknownField: 'x' })).toThrow();
+  });
+
+  it('accepts an optional nextCursor on run list responses', () => {
+    expect(runListResponseSchema.parse({ runs: [], nextCursor: 'opaque' })).toEqual({ runs: [], nextCursor: 'opaque' });
+    expect(runListResponseSchema.parse({ runs: [] }).nextCursor).toBeUndefined();
+  });
+
+  it('rejects non-string or empty nextCursor values', () => {
     expect(() => runListResponseSchema.parse({ runs: [], nextCursor: null })).toThrow();
+    expect(() => runListResponseSchema.parse({ runs: [], nextCursor: '' })).toThrow();
+  });
+
+  it('accepts optional status and projectId on run read responses', () => {
+    const parsed = runSchema.parse({ ...validRun, status: 'in_progress', projectId: 'proj_1' });
+    expect(parsed.status).toBe('in_progress');
+    expect(parsed.projectId).toBe('proj_1');
+  });
+
+  it('keeps status and projectId optional for stored/event runs', () => {
+    const parsed = runSchema.parse(validRun);
+    expect(parsed.status).toBeUndefined();
+    expect(parsed.projectId).toBeUndefined();
+  });
+
+  it('limits status to the four derived values', () => {
+    for (const status of ['in_progress', 'done', 'failed', 'canceled'] as const) {
+      expect(runStatusSchema.parse(status)).toBe(status);
+    }
+    expect(() => runStatusSchema.parse('paused')).toThrow();
+    expect(() => runSchema.parse({ ...validRun, status: 'paused' })).toThrow();
+  });
+
+  it('exposes the max list limit constant', () => {
+    expect(maxRunListLimit).toBe(100);
+  });
+
+  describe('listRunsQuerySchema', () => {
+    it('parses an empty query', () => {
+      expect(listRunsQuerySchema.parse({})).toEqual({});
+    });
+
+    it('splits comma-separated filters and de-duplicates them', () => {
+      const parsed = listRunsQuerySchema.parse({
+        status: 'failed,in_progress,failed',
+        waitingOn: 'human',
+        workKind: 'enhancement,bug',
+        projectId: 'proj_1,proj_2,proj_1'
+      });
+      expect(parsed.status).toEqual(['failed', 'in_progress']);
+      expect(parsed.waitingOn).toEqual(['human']);
+      expect(parsed.workKind).toEqual(['enhancement', 'bug']);
+      expect(parsed.projectId).toEqual(['proj_1', 'proj_2']);
+    });
+
+    it('treats a comma in projectId as the multi-id separator, not a rejectable value', () => {
+      // Per spec "API experience": projectId is one comma-separated value per field, and a project
+      // id the tenant does not own returns an empty page rather than a 400. Real project ids are
+      // `proj_<uuid>` and never contain commas, so `projectId=proj,1` is two unowned ids
+      // ['proj','1'] (-> empty page), structurally identical to the accepted multi-id
+      // `proj_1,proj_2`. A single id that embeds a comma is unrepresentable because commas are the
+      // delimiter; the "project ids must not contain commas" invariant holds because each split
+      // item is comma-free (empty items are rejected above). Rejecting this value would also break
+      // the required multi-project filter `projectId=proj_1,proj_2`.
+      expect(listRunsQuerySchema.parse({ projectId: 'proj,1' }).projectId).toEqual(['proj', '1']);
+    });
+
+    it('accepts limit and cursor', () => {
+      const parsed = listRunsQuerySchema.parse({ limit: '25', cursor: 'opaque' });
+      expect(parsed.limit).toBe(25);
+      expect(parsed.cursor).toBe('opaque');
+    });
+
+    it('rejects repeated keys delivered as arrays', () => {
+      expect(() => listRunsQuerySchema.parse({ status: ['failed', 'in_progress'] })).toThrow();
+    });
+
+    it('rejects empty comma items', () => {
+      expect(() => listRunsQuerySchema.parse({ status: 'failed,' })).toThrow();
+      expect(() => listRunsQuerySchema.parse({ status: ',' })).toThrow();
+      expect(() => listRunsQuerySchema.parse({ status: '' })).toThrow();
+      expect(() => listRunsQuerySchema.parse({ projectId: 'proj_1,' })).toThrow();
+    });
+
+    it('rejects invalid enum values', () => {
+      expect(() => listRunsQuerySchema.parse({ status: 'paused' })).toThrow();
+      expect(() => listRunsQuerySchema.parse({ waitingOn: 'reviewer' })).toThrow();
+      expect(() => listRunsQuerySchema.parse({ workKind: 'nonsense' })).toThrow();
+    });
+
+    it('rejects unknown query fields', () => {
+      expect(() => listRunsQuerySchema.parse({ unknown: 'x' })).toThrow();
+    });
+
+    it('rejects non-positive, fractional, and oversized limits', () => {
+      expect(() => listRunsQuerySchema.parse({ limit: '0' })).toThrow();
+      expect(() => listRunsQuerySchema.parse({ limit: '-1' })).toThrow();
+      expect(() => listRunsQuerySchema.parse({ limit: '1.5' })).toThrow();
+      expect(() => listRunsQuerySchema.parse({ limit: '101' })).toThrow();
+      expect(() => listRunsQuerySchema.parse({ limit: 'abc' })).toThrow();
+    });
+  });
+
+  describe('run list cursor', () => {
+    it('round-trips an ordered-position cursor', () => {
+      const cursor = { createdAt: '2026-11-01T12:00:00.000Z', id: 'run_123' };
+      const encoded = encodeRunListCursor(cursor);
+      expect(typeof encoded).toBe('string');
+      expect(decodeRunListCursor(encoded)).toEqual(cursor);
+    });
+
+    it('produces a URL-safe opaque string', () => {
+      const encoded = encodeRunListCursor({ createdAt: '2026-11-01T12:00:00.000Z', id: 'run_123' });
+      expect(encoded).not.toMatch(/[+/=]/u);
+    });
+
+    it('throws a ZodError on malformed cursors', () => {
+      expect(() => decodeRunListCursor('not-base64-$$$')).toThrow();
+      expect(() => decodeRunListCursor(encodeRunListCursor({ createdAt: '2026-11-01T12:00:00.000Z', id: 'run_1' }).slice(0, 3) + '!!')).toThrow();
+      expect(() => decodeRunListCursor(btoa('{"createdAt":"nope","id":"run_1"}'))).toThrow();
+    });
   });
 
   it('accepts valid waitingOn values on run responses', () => {

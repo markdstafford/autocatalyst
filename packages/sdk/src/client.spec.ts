@@ -407,6 +407,49 @@ describe('orchestrator ingress methods', () => {
     await expect(client.listRuns()).rejects.toBeInstanceOf(ControlPlaneClientError);
   });
 
+  it('listRuns serializes filter arrays as one comma-separated parameter per field', async () => {
+    const mockFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ runs: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    );
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
+
+    await client.listRuns({ status: ['failed', 'in_progress'], waitingOn: 'human', projectId: ['proj_1', 'proj_2'] });
+
+    const url = new URL(String(mockFetch.mock.calls[0]?.[0]));
+    expect(url.searchParams.getAll('status')).toEqual(['failed,in_progress']);
+    expect(url.searchParams.get('status')).toBe('failed,in_progress');
+    expect(url.searchParams.get('waitingOn')).toBe('human');
+    expect(url.searchParams.get('projectId')).toBe('proj_1,proj_2');
+  });
+
+  it('listRuns serializes limit and cursor into the request URL', async () => {
+    const mockFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ runs: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    );
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
+
+    await client.listRuns({ limit: 25, cursor: 'opaque-cursor' });
+
+    const url = new URL(String(mockFetch.mock.calls[0]?.[0]));
+    expect(url.searchParams.get('limit')).toBe('25');
+    expect(url.searchParams.get('cursor')).toBe('opaque-cursor');
+  });
+
+  it('listRuns parses and returns nextCursor', async () => {
+    const mockFetch = vi.fn(async () =>
+      new Response(JSON.stringify({ runs: [baseRun], nextCursor: 'opaque' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    );
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', fetch: mockFetch, bearerToken: 'sdk-token' });
+
+    const result = await client.listRuns({ status: 'failed' });
+
+    expect(result.nextCursor).toBe('opaque');
+    expect(result.runs).toHaveLength(1);
+  });
+
   it('listRunSteps sends GET to /v1/runs/:id/steps with bearer token', async () => {
     const mockFetch = vi.fn(async () =>
       new Response(JSON.stringify({ steps: [baseRunStep] }), { status: 200, headers: { 'content-type': 'application/json' } })
