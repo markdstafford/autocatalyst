@@ -735,7 +735,7 @@ export async function registerControlPlaneRoutes(
       }))
     }, async (request, reply) => {
       // Strict query parsing: unknown fields, repeated keys (arrays), empty comma items, invalid
-      // enum values, comma-containing project ids, and bad limits all surface as 400 here.
+      // enum values, and bad limits all surface as 400 here.
       let query: z.infer<typeof listRunsQuerySchema>;
       try {
         query = listRunsQuerySchema.parse(request.query);

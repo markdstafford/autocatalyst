@@ -109,11 +109,11 @@ Define a strict query schema for `GET /v1/runs` with:
 - `status`: a single string split on `,`; each item validates against `runStatusSchema`.
 - `waitingOn`: a single string split on `,`; each item validates against the same waiting-on enum already used by run mapping.
 - `workKind`: a single string split on `,`; each item validates against the work-kind enum.
-- `projectId`: a single string split on `,`; project ids must not contain commas. Duplicate ids are allowed and de-duplicated.
+- `projectId`: a single string split on `,`; project ids are server-generated (`proj_<uuid>`) and never contain commas, which is what makes the comma a safe delimiter; the schema does not try to detect a comma inside an id, because the comma always splits it. Duplicate ids are allowed and de-duplicated.
 - `limit`: positive integer, default 100, maximum 100.
 - `cursor`: opaque string.
 
-The route must reject unknown query fields, repeated keys delivered as arrays by Fastify, empty filter items (`status=failed,`, `status=,`, `status=`), comma-containing project ids, and invalid enum values through the existing validation helper so callers receive `400 validation_error`. Duplicate non-empty items are allowed and de-duplicated.
+The route must reject unknown query fields, repeated keys delivered as arrays by Fastify, empty filter items (`status=failed,`, `status=,`, `status=`), and invalid enum values through the existing validation helper so callers receive `400 validation_error`. Duplicate non-empty items are allowed and de-duplicated.
 
 #### Repository paging and filtering
 
@@ -184,7 +184,7 @@ No new metrics are required for this slice. Existing route logging/error handlin
       - [ ] `runSchema` accepts API read runs with `projectId` and `status`.
       - [ ] Status values are limited to `in_progress`, `done`, `failed`, and `canceled`.
       - [ ] Query schema accepts repeated `status`, `waitingOn`, `workKind`, and `projectId` values plus `limit` and `cursor`.
-      - [ ] Query schema rejects unknown fields, repeated keys/array values, empty comma items, invalid enum values, comma-containing project ids, non-positive limits, limits above 100, and malformed cursors.
+      - [ ] Query schema rejects unknown fields, repeated keys/array values, empty comma items, invalid enum values, non-positive limits, limits above 100, and malformed cursors.
       - [ ] Duplicate filter items are accepted and de-duplicated.
     - **Dependencies**: None
   - [ ] **Task: Document OpenAPI changes**
