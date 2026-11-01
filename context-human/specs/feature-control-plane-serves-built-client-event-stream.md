@@ -117,8 +117,8 @@ The handler lives in `apps/control-plane/src/static-client.ts` and exports `regi
 ### Client-stream behavior under test
 
 - The fixture client is intentionally minimal: one `index.html` and one hashed asset. It is not the real client.
-- The stream proof uses fake mode from issue #128 so the test has deterministic project, tracker, and scripted-run behavior without model calls. The server starts through `startControlPlaneServer` with `fakeMode` enabled, `port: 0`, and the fixture client directory.
-- The test uses fake mode's seeded fixture project and submits `free_form` work to `POST /v1/conversations` so it does not invoke the real GitHub tracker.
+- The stream proof uses fake mode from issue #128 so the test has deterministic tracker and scripted-run behavior without model calls. The test must first create the fake secret and fake fixture project the same way `ensureSecretAndProject` does in `apps/control-plane/src/fake/seed-fake.ts`, either by importing a shared helper or by using the same SDK calls and `FAKE_FIXTURE_PROJECT` constants.
+- The test submits `free_form` work to `POST /v1/conversations` with an explicit `workKind: 'feature'` and the seeded fixture project id, so intake does not need an issue number and does not throw `work_kind_unresolved`. The scripted adapter accepts this no-issue run as `fixture-spec`; the test waits until the second retained `run_state_transition` frame arrives rather than assuming both frames exist at subscription time.
 - The first subscription calls SDK `subscribeRunEvents(runId, { replay: 'retained', signal })`. The SDK returns a raw `Response`, so the test parses the SSE body with a local helper such as `readSseFrames(response, { maxFrames, signal })` that extracts `id`, `event`, and parsed JSON `data` fields.
 - Stream reads must end deterministically by using both an `AbortSignal` and a frame-count target. Tests must fail rather than hang if the expected frames do not arrive.
 - The deterministic run setup must produce at least two retained `run_state_transition` frames. The known-cursor resume test uses the first frame's id, not the last frame's id, and expects only later ids with no repeats.
@@ -290,8 +290,9 @@ No data model, database schema, or migration changes are required.
 
 - Config unit tests cover env, CLI, unset behavior, relative path resolution against cwd, invalid directory, and missing `index.html`.
 - Static serving tests cover root HTML, hashed and unhashed assets, cache headers, content types, `nosniff`, public static access, API auth retention, no CORS header, SPA fallback, missing extensioned asset 404, preserved default 404 bodies, traversal and other escape cases, and unsupported `HEAD`.
-- Fake-mode wiring test starts `startControlPlaneServer` on port 0 with fake mode and a fixture client directory, loads the fixture files over HTTP, then creates a `free_form` run for the fixture project without real tracker or model calls.
-- Stream tests call `subscribeRunEvents` with `replay: 'retained'`, parse SSE frames from the raw `Response`, use an abort signal and frame-count limit, assert at least two retained `run_state_transition` frame ids, use the first id as the known cursor, assert only later ids are returned, assert a made-up cursor returns 409, and assert no-header/query-token/cookie-token stream requests return 401.
+- Wiring tests include both `startControlPlaneServer` and `main(argv, env)` coverage. At least one normal-mode test and one fake-mode test call `main(['--port', '0', ...], { AUTOCATALYST_CLIENT_DIR: <fixture>, ... })`, load the fixture over HTTP, and close the returned server handle.
+- Fake-mode stream setup starts the server, creates the fake secret and project using the same behavior as `ensureSecretAndProject` from `seed-fake.ts`, then creates a `free_form` run with explicit `workKind: 'feature'` for that project without real tracker or model calls.
+- Stream tests call `subscribeRunEvents` with `replay: 'retained'`, parse SSE frames from the raw `Response`, use an abort signal and frame-count limit, wait for at least two retained `run_state_transition` frame ids, use the first id as the known cursor, assert only later ids are returned, assert a made-up cursor returns JSON 409 with `error.code: 'run_event_replay_cursor_unknown'`, a `message`, and `lastEventId` echoing the sent cursor with no preceding SSE bytes, and assert no-header/query-token/cookie-token stream requests return 401.
 - SDK tests or type checks cover the updated `subscribeRunEvents` doc-adjacent behavior if touched.
 - Validation runs targeted control-plane tests, SDK tests if changed, lint for changed projects, and `pnpm test:boundaries`.
 
@@ -315,7 +316,7 @@ No data model, database schema, or migration changes are required.
   - [ ] **Task: Parse and validate client directory configuration**
     - **Description**: Extend `apps/control-plane/src/config.ts` so `AUTOCATALYST_CLIENT_DIR` and `--client-dir` populate a resolved absolute `clientDirectory` on `ControlPlaneAppConfig`; validate configured paths before startup continues.
     - **Acceptance criteria**:
-      - [ ] Env, CLI, unset, and fake-mode config paths are covered, with relative values resolved against `process.cwd()`.
+      - [ ] Env, CLI, unset, and fake-mode config paths are covered, with relative values resolved against `process.cwd()` and `--client-dir` taking precedence over `AUTOCATALYST_CLIENT_DIR` when both are set.
       - [ ] Missing directory, non-directory, and missing root `index.html` fail with clear client-directory errors before server/database startup.
       - [ ] Unset config preserves current behavior and requires no filesystem validation.
     - **Dependencies**: None
@@ -323,7 +324,7 @@ No data model, database schema, or migration changes are required.
     - **Description**: Add `clientDirectory` to `ControlPlaneServerOptions` and pass it from `startControlPlaneServer` to `createControlPlaneServer` on the same path used by `main.ts` and fake mode.
     - **Acceptance criteria**:
       - [ ] Existing callers without a client directory keep compiling and behaving unchanged.
-      - [ ] Production-path and fake-mode startup can receive the resolved directory and register static serving only when set.
+      - [ ] Production-path and fake-mode startup can receive the resolved directory and register static serving only when set; tests cover `main(['--port', '0', ...], env)` in normal mode and fake mode, load the fixture over HTTP, and close the returned handle.
     - **Dependencies**: "Task: Parse and validate client directory configuration"
 
 - [ ] **Story: Serve client files with explicit in-repo rules**
@@ -353,7 +354,7 @@ No data model, database schema, or migration changes are required.
   - [ ] **Task: Add fixture-client production wiring tests**
     - **Description**: Start the server through `startControlPlaneServer` on port 0 with a temporary fixture client directory containing `index.html` and one hashed asset; exercise both normal and fake-mode startup paths without using the real client.
     - **Acceptance criteria**:
-      - [ ] The test loads fixture HTML and hashed asset over HTTP through the production entrypoint path.
+      - [ ] The test loads fixture HTML and hashed asset over HTTP through the production entrypoint path and removes temporary fixture directories and closes server handles in cleanup even when assertions fail.
       - [ ] Static `GET /` succeeds without a token, while unauthenticated `GET /v1/runs` returns 401.
       - [ ] A request with a foreign `Origin` header receives no `access-control-allow-origin` header.
       - [ ] No real client build, real tracker call, or model call occurs.
@@ -361,17 +362,18 @@ No data model, database schema, or migration changes are required.
 
 - [ ] **Story: Prove retained SSE streaming and resume from the same server**
   - [ ] **Task: Add deterministic same-server stream fixture**
-    - **Description**: Use fake mode from issue #128 with the fixture project and a `free_form` conversation submission to produce a run with at least two retained `run_state_transition` frames on the same server that serves the fixture client.
+    - **Description**: Use fake mode from issue #128, create the fake secret and fixture project the same way `ensureSecretAndProject` does, then create a `free_form` conversation submission with explicit `workKind: 'feature'` to produce a run with at least two retained `run_state_transition` frames on the same server that serves the fixture client.
     - **Acceptance criteria**:
-      - [ ] Run creation uses HTTP `POST /v1/conversations` with the fixture project and `free_form` submission, avoiding real `gh` and model calls.
-      - [ ] The fixture produces at least two retained `run_state_transition` frames with distinct ids.
+      - [ ] Test setup creates the required secret and project using the `seed-fake.ts` `ensureSecretAndProject` behavior or shared helper.
+      - [ ] Run creation uses HTTP `POST /v1/conversations` with the fixture project, `free_form` submission, and explicit `workKind: 'feature'`, avoiding real `gh` and model calls.
+      - [ ] The test waits for at least two retained `run_state_transition` frames with distinct ids before running resume assertions.
     - **Dependencies**: "Task: Add fixture-client production wiring tests"
   - [ ] **Task: Add retained replay and resume stream tests**
     - **Description**: Use SDK `subscribeRunEvents` with `replay: 'retained'`, parse the raw SSE `Response` body with a helper that extracts `id`, `event`, and JSON `data`, and bound reads with an `AbortSignal` plus expected frame count.
     - **Acceptance criteria**:
       - [ ] Initial retained replay receives the expected transition frames and ends deterministically.
       - [ ] Known-cursor resume uses the first frame id, not the last, and receives only later ids with none repeated.
-      - [ ] Made-up cursor resume returns the documented 409 response.
+      - [ ] Made-up cursor resume returns JSON before any SSE bytes with status 409, `error.code: 'run_event_replay_cursor_unknown'`, a `message`, and `lastEventId` echoing the cursor sent.
     - **Dependencies**: "Task: Add deterministic same-server stream fixture"
   - [ ] **Task: Add unsupported stream token transport tests**
     - **Description**: Verify the existing stream auth behavior rejects missing bearer headers and unsupported token locations.
