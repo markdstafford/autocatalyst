@@ -137,6 +137,18 @@ describe('run contract extensions', () => {
       expect(parsed.projectId).toEqual(['proj_1', 'proj_2']);
     });
 
+    it('treats a comma in projectId as the multi-id separator, not a rejectable value', () => {
+      // Per spec "API experience": projectId is one comma-separated value per field, and a project
+      // id the tenant does not own returns an empty page rather than a 400. Real project ids are
+      // `proj_<uuid>` and never contain commas, so `projectId=proj,1` is two unowned ids
+      // ['proj','1'] (-> empty page), structurally identical to the accepted multi-id
+      // `proj_1,proj_2`. A single id that embeds a comma is unrepresentable because commas are the
+      // delimiter; the "project ids must not contain commas" invariant holds because each split
+      // item is comma-free (empty items are rejected above). Rejecting this value would also break
+      // the required multi-project filter `projectId=proj_1,proj_2`.
+      expect(listRunsQuerySchema.parse({ projectId: 'proj,1' }).projectId).toEqual(['proj', '1']);
+    });
+
     it('accepts limit and cursor', () => {
       const parsed = listRunsQuerySchema.parse({ limit: '25', cursor: 'opaque' });
       expect(parsed.limit).toBe(25);
