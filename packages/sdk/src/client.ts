@@ -428,6 +428,18 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
       return runSessionListResponseSchema.parse(await parseJson(response));
     },
 
+    /**
+     * Open the run event stream. This uses `fetch` with the bearer token in the
+     * `Authorization` header, which is exactly how a browser client subscribes:
+     * when the client is served from the control-plane origin it calls this same
+     * `fetch`-based path, with no CORS, proxy, cookie, or token-in-URL.
+     *
+     * The browser `EventSource` API is intentionally unsupported for this route:
+     * `EventSource` cannot set an `Authorization` header, and the route accepts the
+     * token nowhere else (not in the query string, not in a cookie), so an
+     * `EventSource` subscription would be rejected with 401. Callers that want SSE
+     * in the browser must read the returned `Response` body with `fetch`.
+     */
     async subscribeRunEvents(id, options) {
       const headers: Record<string, string> = protectedHeaders(bearerToken);
       if (options?.lastEventId !== undefined) {

@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, relative } from 'node:path';
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { readControlPlaneAppConfig } from './config.js';
 
 describe('readControlPlaneAppConfig', () => {
@@ -513,6 +517,96 @@ describe('readControlPlaneAppConfig', () => {
       expect(() => readControlPlaneAppConfig([], { AUTOCATALYST_FAKE_MODE: 'true', AUTOCATALYST_DEFAULT_PROVIDER_PROFILE_ID: 'cfg_1' })).toThrow(
         'Fake mode owns dispatch and provider adapter selection; remove --default-provider-profile-id / AUTOCATALYST_DEFAULT_PROVIDER_PROFILE_ID.'
       );
+    });
+  });
+
+  describe('client directory', () => {
+    let clientDir: string;
+
+    const baseEnv = {
+      CONTROL_PLANE_PORT: '4300',
+      CONTROL_PLANE_DATABASE_PATH: '/tmp/db.sqlite',
+      CONTROL_PLANE_BEARER_TOKEN: 'token',
+      CONTROL_PLANE_MASTER_SECRET: 'secret'
+    };
+
+    beforeEach(async () => {
+      clientDir = await mkdtemp(join(tmpdir(), 'ac-client-dir-'));
+      await writeFile(join(clientDir, 'index.html'), '<!doctype html><title>fixture</title>', 'utf-8');
+    });
+
+    afterEach(async () => {
+      await rm(clientDir, { recursive: true, force: true });
+    });
+
+    it('leaves clientDirectory undefined and performs no validation when unset', () => {
+      expect(readControlPlaneAppConfig([], { ...baseEnv }).clientDirectory).toBeUndefined();
+    });
+
+    it('reads an absolute client directory from AUTOCATALYST_CLIENT_DIR', () => {
+      expect(
+        readControlPlaneAppConfig([], { ...baseEnv, AUTOCATALYST_CLIENT_DIR: clientDir }).clientDirectory
+      ).toBe(clientDir);
+    });
+
+    it('lets --client-dir take precedence over AUTOCATALYST_CLIENT_DIR', async () => {
+      const flagDir = await mkdtemp(join(tmpdir(), 'ac-client-flag-'));
+      await writeFile(join(flagDir, 'index.html'), '<!doctype html>', 'utf-8');
+      try {
+        expect(
+          readControlPlaneAppConfig(['--client-dir', flagDir], {
+            ...baseEnv,
+            AUTOCATALYST_CLIENT_DIR: clientDir
+          }).clientDirectory
+        ).toBe(flagDir);
+      } finally {
+        await rm(flagDir, { recursive: true, force: true });
+      }
+    });
+
+    it('resolves a relative client directory against process.cwd()', () => {
+      const relativeDir = relative(process.cwd(), clientDir);
+      expect(
+        readControlPlaneAppConfig(['--client-dir', relativeDir], { ...baseEnv }).clientDirectory
+      ).toBe(clientDir);
+    });
+
+    it('is also parsed in fake mode', () => {
+      const config = readControlPlaneAppConfig(['--fake-mode', '--fake-state-dir', '/tmp/fake'], {
+        AUTOCATALYST_CLIENT_DIR: clientDir
+      });
+      expect(config.fakeMode).toEqual({ enabled: true, stateDir: '/tmp/fake' });
+      expect(config.clientDirectory).toBe(clientDir);
+    });
+
+    it('throws when the configured directory does not exist', () => {
+      expect(() =>
+        readControlPlaneAppConfig([], { ...baseEnv, AUTOCATALYST_CLIENT_DIR: join(clientDir, 'nope') })
+      ).toThrow(/does not exist/u);
+    });
+
+    it('throws when the configured path is not a directory', async () => {
+      const filePath = join(clientDir, 'index.html');
+      expect(() =>
+        readControlPlaneAppConfig([], { ...baseEnv, AUTOCATALYST_CLIENT_DIR: filePath })
+      ).toThrow(/is not a directory/u);
+    });
+
+    it('throws when the directory is missing a root index.html', async () => {
+      const emptyDir = await mkdtemp(join(tmpdir(), 'ac-client-empty-'));
+      try {
+        expect(() =>
+          readControlPlaneAppConfig([], { ...baseEnv, AUTOCATALYST_CLIENT_DIR: emptyDir })
+        ).toThrow(/missing a root index\.html/u);
+      } finally {
+        await rm(emptyDir, { recursive: true, force: true });
+      }
+    });
+
+    it('throws for a blank client directory value', () => {
+      expect(() =>
+        readControlPlaneAppConfig(['--client-dir', '   '], { ...baseEnv })
+      ).toThrow('Client directory must be non-empty when configured.');
     });
   });
 });

@@ -69,6 +69,46 @@ provider profile that resolves AI steps to the scripted adapter, so runs can sta
 Only the scripted Claude adapter is registered — no real Claude/OpenAI/Codex/Anthropic adapters are
 composed, even if API-created profiles exist from a prior run.
 
+## Serving a built client directory
+
+The control plane can optionally serve a built web client from its own HTTP origin so an operator
+opens one address, enters the bearer token in the client, and makes normal authenticated API calls
+with no CORS, proxy, cookie, or token-in-URL. This works in both normal and fake mode and is off by
+default — with no client directory configured, the server stays API-only and registers no static
+route.
+
+Point the server at a directory containing a built client (at minimum an `index.html`) with
+`AUTOCATALYST_CLIENT_DIR` or `--client-dir` (the flag wins when both are set). Relative paths resolve
+against the current working directory. The path is validated at startup: a missing directory, a
+non-directory path, or a directory with no root `index.html` fails before the server or database
+starts.
+
+```bash
+# Fake mode, serving a client/fixture directory from the same origin as the API.
+AUTOCATALYST_CLIENT_DIR=./path/to/built-client pnpm nx run control-plane:serve-fake
+
+# Or against the built entrypoint directly.
+node apps/control-plane/dist/src/main.js --fake-mode --fake-state-dir .autocatalyst-fake \
+  --client-dir ./path/to/built-client
+```
+
+When configured, the server:
+
+- serves `index.html` at `/` and for browser-routed extensionless HTML paths (SPA fallback that
+  requires an `Accept` header explicitly naming `text/html`), always with `cache-control: no-cache`;
+- serves hashed assets under `/assets/` with `cache-control: public, max-age=31536000, immutable`
+  and other files with `no-cache`, all with `x-content-type-options: nosniff`;
+- keeps every `/v1` route behind the bearer token (static files are public because they hold no
+  secret), adds no CORS headers, and preserves the existing 404 behavior for unknown API, health,
+  missing-asset, and non-GET requests.
+
+Browser clients read the authenticated run event stream from this same origin with `fetch` and the
+bearer token in the `Authorization` header (the SDK `subscribeRunEvents` path). `EventSource` is not
+supported because the stream route accepts the token only in the `Authorization` header. The
+same-origin serving and stream wiring are covered by `apps/control-plane/src/static-client.spec.ts`,
+`static-client-wiring.integration.spec.ts`, and `static-client-stream.integration.spec.ts`, with the
+static handler itself in `apps/control-plane/src/static-client.ts`.
+
 ## Fixture project
 
 Created on fresh startup when absent:
