@@ -37,6 +37,13 @@ export interface ControlPlaneConnection {
   setToken(token: string): void;
   /** Clear the bearer token and rebuild the client. */
   clearToken(): void;
+  /**
+   * Build a throwaway client scoped to `token`, over the same base fetch seam
+   * but **without** the provider's observing wrapper. The Connection page uses
+   * this to test a typed token: a 401 from this client must not flip app-wide
+   * `authorization`, and the typed token is never stored. Discard after the call.
+   */
+  createTestClient(token: string): ControlPlaneClient;
 }
 
 const ConnectionContext = createContext<ControlPlaneConnection | undefined>(undefined);
@@ -86,9 +93,19 @@ export function ControlPlaneClientProvider({
     setTokenState(undefined);
   }, []);
 
+  const createTestClient = useCallback(
+    (testToken: string): ControlPlaneClient =>
+      createControlPlaneClient({
+        baseUrl: window.location.origin,
+        fetch: baseFetch,
+        bearerToken: testToken
+      }),
+    [baseFetch]
+  );
+
   const value = useMemo<ControlPlaneConnection>(
-    () => ({ client, authorization, setToken, clearToken }),
-    [client, authorization, setToken, clearToken]
+    () => ({ client, authorization, setToken, clearToken, createTestClient }),
+    [client, authorization, setToken, clearToken, createTestClient]
   );
 
   return <ConnectionContext.Provider value={value}>{children}</ConnectionContext.Provider>;
