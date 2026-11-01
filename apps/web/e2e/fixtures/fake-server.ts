@@ -71,6 +71,15 @@ export interface FakeServer {
   /** Stop the process and remove the temporary state directory. Idempotent. */
   stop(): Promise<void>;
   /**
+   * Stop the process but keep the state directory and reserve the port, so the same
+   * server can come back with {@link goOnline}. Unlike {@link stop} this is
+   * recoverable: it simulates the control plane going offline without discarding its
+   * state, so a spec can observe the footer health indicator reporting the outage.
+   */
+  goOffline(): Promise<void>;
+  /** Start the process again on the same port and wait until it answers `/health`. */
+  goOnline(): Promise<void>;
+  /**
    * Stop and start again on the same port with the same state directory and
    * database, so a spec can test reconnection and persistence.
    */
@@ -248,14 +257,22 @@ class FakeServerProcess implements FakeServer {
     });
   }
 
-  async restart(): Promise<void> {
+  async goOffline(): Promise<void> {
     await this.#stopProcess();
+  }
+
+  async goOnline(): Promise<void> {
     this.#spawn();
     await waitForHealth(
       this.baseUrl,
       () => this.#child !== undefined && this.#child.exitCode === null,
       () => this.#output
     );
+  }
+
+  async restart(): Promise<void> {
+    await this.goOffline();
+    await this.goOnline();
   }
 
   async stop(): Promise<void> {

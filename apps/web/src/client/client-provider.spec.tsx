@@ -134,6 +134,33 @@ describe('ControlPlaneClientProvider', () => {
     expect(conn().authorization).toBe('unauthorized');
   });
 
+  it('createTestClient sends the typed token but does not flip app-wide authorization on 401', async () => {
+    const calls: RecordedCall[] = [];
+    const stub: typeof globalThis.fetch = async (input, init) => {
+      calls.push({ url: requestUrl(input), init });
+      return jsonResponse({ error: { code: 'unauthorized', message: 'Unauthorized' } }, 401);
+    };
+    renderWithStub(stub);
+
+    expect(conn().authorization).toBe('unknown');
+
+    const typed = 'typed-token-under-test';
+    await act(async () => {
+      await conn()
+        .createTestClient(typed)
+        .listProjects()
+        .catch(() => {
+          // The test flow reads the thrown error; app-wide state must be untouched.
+        });
+    });
+
+    // The typed token rode the call...
+    const projectsCall = calls.find((c) => c.url.includes('/v1/projects'));
+    expect(authHeader(projectsCall?.init)).toBe(`Bearer ${typed}`);
+    // ...but the observing wrapper was bypassed, so authorization did not change.
+    expect(conn().authorization).toBe('unknown');
+  });
+
   it('never leaks the bearer token into URLs, console, errors, or the DOM', async () => {
     const consoleOutput: string[] = [];
     for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) {

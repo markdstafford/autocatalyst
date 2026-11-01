@@ -44,6 +44,11 @@ export interface Preferences {
   readonly secondaryAccent: AccentId;
   readonly bodyFont: BodyFontId;
   readonly monoFont: MonoFontId;
+  /**
+   * Whether the primary sidebar is open. Shell state (#132) rides on the same
+   * preferences object so a single guarded write persists both theme and layout.
+   */
+  readonly sidebarOpen: boolean;
 }
 
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -53,7 +58,8 @@ export const DEFAULT_PREFERENCES: Preferences = {
   primaryAccent: 'sapphire',
   secondaryAccent: 'teal',
   bodyFont: 'inter',
-  monoFont: 'fira-code'
+  monoFont: 'fira-code',
+  sidebarOpen: true
 };
 
 /** Font stacks keyed by the stored font id. */
@@ -73,6 +79,11 @@ function oneOf<T extends string>(values: readonly T[], candidate: unknown): T | 
     : undefined;
 }
 
+/** Validate a boolean, falling back to `fallback` for missing or non-boolean values. */
+function boolOr(candidate: unknown, fallback: boolean): boolean {
+  return typeof candidate === 'boolean' ? candidate : fallback;
+}
+
 /**
  * Validate an arbitrary parsed value into a complete `Preferences`, falling back
  * field-by-field to the defaults. Always returns a valid object.
@@ -86,7 +97,8 @@ export function validatePreferences(input: unknown): Preferences {
     primaryAccent: oneOf(ACCENT_IDS, source['primaryAccent']) ?? DEFAULT_PREFERENCES.primaryAccent,
     secondaryAccent: oneOf(ACCENT_IDS, source['secondaryAccent']) ?? DEFAULT_PREFERENCES.secondaryAccent,
     bodyFont: oneOf(BODY_FONT_IDS, source['bodyFont']) ?? DEFAULT_PREFERENCES.bodyFont,
-    monoFont: oneOf(MONO_FONT_IDS, source['monoFont']) ?? DEFAULT_PREFERENCES.monoFont
+    monoFont: oneOf(MONO_FONT_IDS, source['monoFont']) ?? DEFAULT_PREFERENCES.monoFont,
+    sidebarOpen: boolOr(source['sidebarOpen'], DEFAULT_PREFERENCES.sidebarOpen)
   };
 }
 

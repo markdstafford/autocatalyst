@@ -497,6 +497,11 @@ handling, and tokens supply the styling.
 - `[` toggles the sidebar and `]` toggles the detail pane. `Escape` closes the top layer: a confirm popover,
   then the overlay, then full page, then settings.
 - A control shown on row hover also shows when focus is inside the row.
+- Before the detail pane exists (#134), the footer's detail pane toggle is present but disabled: it carries
+  `aria-disabled="true"`, keeps its tooltip `Detail pane (])`, has no activation behavior, and `]` is a
+  deliberate no-op. The toggle ships in its final footer position so #134 only enables it. Single-key shell
+  shortcuts read their key text from the shell key table (`apps/web/src/shell/shell-keys.ts`) until #134's
+  action registry replaces it.
 
 ## Playwright geometry assertions
 
