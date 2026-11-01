@@ -144,7 +144,7 @@ graph TD
 
 #### Footer
 
-- Contains five named zones: Left control, Sidebar, List, Detail pane, and Right control.
+- Contains five named zones: Left control, Sidebar, List, Detail pane, and Right control. Each zone is locatable in tests as `role="group"` with `aria-label` equal to its zone name.
 - Places the sidebar toggle in the left control zone and the disabled detail pane toggle in the right control zone.
 - Places the health connection item in the List zone. With no list or pane, the List zone spans the main area and the Detail pane zone has zero width.
 - Shows the disabled detail pane toggle with `aria-disabled="true"`, tooltip `Detail pane (])`, no activation behavior, and no `]` behavior until #134.
@@ -156,6 +156,7 @@ graph TD
 - Omits To do, Pinned, Projects, and any view chips row.
 - Opens by default, persists open/closed state through #131 preferences, and wraps every storage access in `try/catch`.
 - When closed, the left hover strip is `--width-hover-zone` wide and ends at the footer top. Pointer entry shows the same sidebar component as a `--width-sidebar` overlay with its own right divider and `--shadow-popover`. The overlay covers header and footer, takes the pointer, and does not move header or main.
+- Closed sidebar content is removed from the tab order and accessibility tree, either by not rendering it or by using `inert`/equivalent semantics. Hover overlay content is focusable only while the overlay is shown. A keyboard operator reaches sidebar entries by reopening the sidebar with `[` or the footer toggle.
 
 #### Header
 
@@ -288,24 +289,28 @@ sequenceDiagram
 
 #### State management
 
-- Sidebar open/closed state reads and writes the preferences API from #131. All storage calls are wrapped in `try/catch`; failed reads use the default open state and failed writes do not break interaction.
+- Extend `apps/web/src/theme/preferences.ts` with `sidebarOpen: boolean`. Add it to `Preferences`, `DEFAULT_PREFERENCES` with default `true`, and `validatePreferences`; missing or non-boolean values fall back to `true`.
+- Sidebar open/closed state is updated through the theme provider's preferences update hook, not through a second direct `readPreferences`/`writePreferences` writer. This prevents stale whole-object writes from dropping theme fields or the sidebar flag. All storage calls remain wrapped in `try/catch`; failed reads use defaults and failed writes do not break interaction.
 - Hover-sidebar visibility is ephemeral UI state. It closes on pointer leave when focus is not inside the overlay and on Escape.
 - Token presence comes from a boolean on the token store. Connection never reads the token value for display.
+- Extend the #131 client context with `createTestClient(token)`. It returns a client using the same base fetch seam passed to `ControlPlaneClientProvider`, but it does not use the provider's observing fetch wrapper. This keeps unit tests able to stub fetch while preventing typed-token tests from mutating app-wide authorization state.
 - Saving a token writes through the token store and triggers client recreation through the #131 client provider.
 - Health indicator state is independent from authenticated route failures. A 401 on `listProjects` or another protected call does not set Connection lost.
 
 #### Keyboard behavior
 
-- Temporary shell hooks implement only shortcuts needed for this issue. #134 replaces them with action-registry entries.
-- `[` toggles the sidebar only when focus is not in an input, textarea, select, or editable element; no menu or dialog is open; and no modifier is held.
+- Add `src/shell/shell-keys.ts` as the single source for shell key definitions before #134 ships the registry. The table uses the registry shape #134 will own: `id`, `label`, `keys`, and `appliesWhen`. Entries cover sidebar toggle, settings toggle, close layer, and detail pane toggle.
+- Hooks, tooltip key text, and README shortcut text read from `shell-keys.ts`; components do not hard-code `[` or `]` labels. #134 can replace the table with registry entries without touching components.
+- Key matching uses `KeyboardEvent.key` for printable bracket shortcuts so the visible character matches the tooltip. AltGr is treated as a text-entry modifier: if `event.getModifierState('AltGraph')` is true, single-key shortcuts do not fire. This means layouts that require AltGr for `[` or `]` cannot use those shell shortcuts until #134 decides whether to add layout-aware registry support; the tooltip still reflects the design-system key.
+- The sidebar toggle fires for `[` only when focus is not in an input, textarea, select, or editable element; no menu or dialog is open; no modifier is held; and AltGr is not active.
 - `Cmd+,` on macOS or `Ctrl+,` elsewhere opens and closes settings from anywhere, including inside form fields.
 - Escape closes the hover sidebar first, then settings when no other layer is open.
-- `]` is bound to the disabled detail pane toggle and does nothing until #134.
-- Tooltips use `Label (key)`, with glyphs on macOS and spelled keys elsewhere.
+- `]` is deliberately present in the table and deliberately no-ops while the detail pane toggle is disabled. This preserves the final tooltip and key contract for #134 even though no pane exists yet.
+- Tooltips use `Label (key)`, with glyphs on macOS and spelled keys elsewhere, and unit tests assert tooltip key text comes from `shell-keys.ts`.
 
 #### API use
 
-- Connection test calls `listProjects` through an SDK client. For typed tokens, construct a call-scoped client that is discarded after the test. For stored-token tests, use the app client that reads the stored token.
+- Connection test calls `listProjects` through an SDK client. For typed tokens, call `createTestClient(token)` from the client provider and discard the returned client after the test. Typed-token tests never change app-wide `authorization`. For stored-token tests with an empty field, use the app client; if the stored token receives a 401 through the observing fetch wrapper, app-wide `authorization` changes to `unauthorized`.
 - Health indicator calls `getHealth` on load, every 5 seconds, and when the window regains focus.
 - No new backend endpoints or data schemas are required.
 
@@ -410,6 +415,7 @@ sequenceDiagram
       - [ ] Zones are named Left control, Sidebar, List, Detail pane, and Right control.
       - [ ] Sidebar toggle is in Left control.
       - [ ] Detail pane toggle is in Right control.
+      - [ ] Each zone uses `role="group"` and `aria-label` equal to the zone name.
       - [ ] List zone holds the connection item and spans the main area when no list or pane exists.
       - [ ] Detail pane zone has zero width before #134.
     - **Dependencies**: "Task: Build `src/shell/` viewport layout"
@@ -440,7 +446,11 @@ sequenceDiagram
       - [ ] Footer left control toggles open and closed.
       - [ ] `[` toggles open and closed when shortcut guards allow it.
       - [ ] Layout animates over `--duration-layout`.
+      - [ ] `Preferences`, `DEFAULT_PREFERENCES`, and `validatePreferences` include `sidebarOpen: boolean` with default `true`.
+      - [ ] Missing or non-boolean `sidebarOpen` validates to `true`.
+      - [ ] Sidebar changes write through the theme provider's preferences update hook, not a separate whole-object writer.
       - [ ] Preference storage reads and writes are wrapped in `try/catch`.
+      - [ ] Tests prove a theme change preserves `sidebarOpen` and a sidebar toggle preserves theme fields.
     - **Dependencies**: "Task: Add sidebar and detail-pane footer controls"
   - [ ] **Task: Implement hover sidebar overlay**
     - **Description**: Show the same sidebar component as an overlay when the closed sidebar's left-edge hover zone is entered.
@@ -451,15 +461,21 @@ sequenceDiagram
       - [ ] Overlay takes pointer events and does not move header or main.
       - [ ] Overlay closes on Escape and on pointer leave when focus is outside.
       - [ ] Open sidebar and overlay share one component and width token.
+      - [ ] Closed sidebar content is absent from the tab order and accessibility tree.
+      - [ ] Hover overlay content is focusable only while the overlay is shown.
     - **Dependencies**: "Task: Persist open and closed sidebar state"
   - [ ] **Task: Add temporary shell shortcut hooks**
     - **Description**: Implement issue-local keyboard hooks until #134 introduces the action registry.
     - **Acceptance criteria**:
-      - [ ] `[` does not fire in input, textarea, select, editable elements, menus, dialogs, or with modifiers.
+      - [ ] `src/shell/shell-keys.ts` defines sidebar toggle, settings toggle, close layer, and pane toggle entries with `id`, `label`, `keys`, and `appliesWhen`.
+      - [ ] Hooks, tooltips, and README shortcut text read key labels from `shell-keys.ts`.
+      - [ ] Printable bracket shortcuts match `KeyboardEvent.key`; AltGr (`getModifierState('AltGraph')`) is treated as a modifier and prevents single-key shortcuts.
+      - [ ] `[` does not fire in input, textarea, select, editable elements, menus, dialogs, with modifiers, or with AltGr.
       - [ ] `Cmd+,` or `Ctrl+,` opens and closes settings from anywhere, including inputs.
       - [ ] Escape closes hover sidebar before settings.
-      - [ ] `]` is bound but no-ops while the detail pane toggle is disabled.
+      - [ ] `]` is deliberately bound but no-ops while the detail pane toggle is disabled.
       - [ ] Tooltip key labels use macOS glyphs on macOS and spelled keys elsewhere.
+      - [ ] Unit test proves every shell tooltip's key text comes from `shell-keys.ts`.
     - **Dependencies**: "Task: Implement hover sidebar overlay", "Task: Build settings frame routing"
   - [ ] **Task: Apply focus and divider rules**
     - **Description**: Ensure tab order, focus-visible rings, and dividers match the design system.
@@ -545,10 +561,12 @@ sequenceDiagram
       - [ ] Test uses typed value when present.
       - [ ] Test uses stored token when field is empty and token exists.
       - [ ] Test is disabled when neither typed nor stored token exists.
-      - [ ] Typed-token test uses a call-scoped client and does not store the value.
+      - [ ] Typed-token test uses `createTestClient(token)` from the client provider and does not store the value.
       - [ ] Status region has `role="status"`, an 8 px dot, and Not tested, Testing, Connected, and Failed states.
       - [ ] 401, unreachable server, and other status failures use the required distinct text.
       - [ ] Failed typed-token test leaves typed value and stored token unchanged.
+      - [ ] Typed-token 401 does not change app-wide `authorization`.
+      - [ ] Stored-token 401 through the app client changes app-wide `authorization` to `unauthorized`.
       - [ ] Successful test does not store the typed value.
     - **Dependencies**: "Task: Implement token save and client refresh"
   - [ ] **Task: Add secret redaction tests**
@@ -587,12 +605,24 @@ sequenceDiagram
   - [ ] **Task: Add `shell-geometry.spec.ts`**
     - **Description**: Implement the design-system geometry assertions that apply before the run list and detail pane exist.
     - **Acceptance criteria**:
-      - [ ] Specs locate regions by role and accessible name.
+      - [ ] Specs locate regions and footer zones by role and accessible name, including footer zone groups named Left control, Sidebar, List, Detail pane, and Right control.
       - [ ] Specs read CSS tokens from the document and do not hard-code shell sizes.
       - [ ] Edge assertions use 0.5 px tolerance and baseline assertions use 1 px tolerance.
-      - [ ] Runs with sidebar open and closed passes header, alignment, footer, and sidebar behavior assertions.
+      - [ ] Header title row top and bottom equal the sidebar title row and title baselines match when the sidebar is open.
+      - [ ] Header left edge equals the sidebar right edge when open and the viewport left edge when closed; header right edge equals viewport right edge.
+      - [ ] Footer top edge equals viewport height minus `--height-footer` and footer spans viewport width.
+      - [ ] Sidebar bottom edge and sidebar divider bottom edge equal footer top edge.
+      - [ ] Five footer zones are contiguous in order with no gap, overlap, left border, or right border.
+      - [ ] Left and right control zones are at least `--width-footer-control` wide.
+      - [ ] Sidebar toggle box is identical with sidebar open, closed, and hovered; pane toggle box never changes.
+      - [ ] Sidebar zone right edge equals sidebar right edge when open and sidebar zone width is zero when closed.
+      - [ ] Each footer zone's content is centered and text in all five zones shares one baseline.
+      - [ ] Hover overlay top and bottom equal the viewport and width equals `--width-sidebar`.
+      - [ ] `elementFromPoint` at header and footer points inside the overlay range returns an element inside the overlay.
+      - [ ] Hover overlay closes on Escape and pointer leave, while header and main positions remain unchanged.
+      - [ ] Every applicable geometry rule still holds after each `[` toggle.
+      - [ ] With the sidebar closed, tabbing from the page start reaches the header before any sidebar entry.
       - [ ] Connection page passes settings column and settings sidebar alignment assertions.
-      - [ ] Hover overlay covers header and footer, closes on Escape and pointer leave, and leaves header/main positions unchanged.
       - [ ] Specs run in light and dark system color schemes.
       - [ ] Chips, To do, table, row, pane, resize handle, and comments assertions are omitted as out of scope.
     - **Dependencies**: "Task: Apply focus and divider rules", "Task: Implement settings sidebar"
