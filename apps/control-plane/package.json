@@ -15,6 +15,7 @@
     "@autocatalyst/openai-agent-adapter": "workspace:*",
     "@autocatalyst/openai-direct-adapter": "workspace:*",
     "@autocatalyst/persistence": "workspace:*",
+    "@autocatalyst/sdk": "workspace:*",
     "fastify": "^5.8.5",
     "zod": "^3.25.64"
   }

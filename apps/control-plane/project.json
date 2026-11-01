@@ -35,6 +35,9 @@
     },
     "test": {
       "executor": "nx:run-commands",
+      "dependsOn": [
+        "build"
+      ],
       "outputs": [
         "{workspaceRoot}/coverage/apps/control-plane"
       ],
@@ -50,6 +53,26 @@
       ],
       "options": {
         "buildTarget": "control-plane:build"
+      }
+    },
+    "serve-fake": {
+      "executor": "nx:run-commands",
+      "dependsOn": [
+        "build"
+      ],
+      "options": {
+        "command": "node apps/control-plane/scripts/serve-fake.mjs",
+        "cwd": "{workspaceRoot}"
+      }
+    },
+    "seed-fake": {
+      "executor": "nx:run-commands",
+      "dependsOn": [
+        "build"
+      ],
+      "options": {
+        "command": "node apps/control-plane/dist/src/fake/seed-fake.js",
+        "cwd": "{workspaceRoot}"
       }
     }
   }

@@ -5,9 +5,19 @@ import type {
 } from '@autocatalyst/claude-agent-adapter';
 
 /**
+ * Production-included scripted Claude launch harness.
+ *
+ * This module previously lived at
+ * `apps/control-plane/src/fake-claude-agent-sdk-harness.spec-helper.ts` and was a
+ * test-only helper. Fake mode composes scripted Claude sessions through the same
+ * `ClaudeSessionLaunch` seam at runtime, so the harness now lives under
+ * `apps/control-plane/src/fake/` and is intentionally part of the production build.
+ */
+
+/**
  * Records every set of `launch()` options that the Claude agent adapter
- * forwarded to its session-launch seam during a test. Used to assert
- * environment-variable shaping and secret handling.
+ * forwarded to its session-launch seam. Used to assert environment-variable
+ * shaping and secret handling in tests, and available for diagnostics.
  */
 export interface FakeLaunchRecord {
   readonly env: Record<string, string>;

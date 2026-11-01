@@ -26,6 +26,12 @@ export async function main(
     port: handle.port,
     databasePath: handle.databasePath
   });
+  if (config.fakeMode !== undefined) {
+    // Exactly one readiness line to stdout after the server is listening.
+    console.log(
+      `fake-mode ready port=${handle.port} stateDir=${config.fakeMode.stateDir} baseUrl=http://127.0.0.1:${handle.port}`
+    );
+  }
   registerShutdownHandlers(handle);
   return handle;
 }

@@ -8,11 +8,13 @@ const root = resolve(__dirname, '../..');
 
 // Production source files/directories allowed to contain both gh pr commands AND executeGh/GhExec* usage.
 // To add a new adapter that legitimately uses gh pr commands, add its src/ path here.
+// scripted-gh.ts is the fake-mode implementation of the injectable executeGh seam, so it has both.
 const FULLY_ALLOWED_PATHS = [
   'packages/github-code-host-adapter/src/',
   'packages/github-issue-tracker-adapter/src/gh-exec.ts',
   'packages/github-issue-tracker-adapter/src/github-issue-tracker.ts',
   'packages/github-issue-tracker-adapter/src/index.ts',
+  'apps/control-plane/src/fake/scripted-gh.ts',
 ];
 
 // Files allowed to reference executeGh/GhExec* symbols (injectable seam) but NOT direct gh pr commands.

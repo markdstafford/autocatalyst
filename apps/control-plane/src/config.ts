@@ -1,6 +1,14 @@
+import { isAbsolute, join, resolve } from 'node:path';
+
 export interface WorkspaceRootConfig {
   readonly reposRoot: string;
   readonly workspacesRoot: string;
+}
+
+export interface FakeModeConfig {
+  readonly enabled: true;
+  /** Absolute path to the fake-mode state directory. */
+  readonly stateDir: string;
 }
 
 export interface RealRunnerDispatchConfig {
@@ -25,9 +33,17 @@ export interface ControlPlaneAppConfig {
   /** GitHub username to stamp as specced_by on spec.author results. Read from GITHUB_LOGIN env var. */
   readonly specAuthorIdentity?: string;
   readonly pullRequestReconciliationTicker?: PullRequestReconciliationTickerConfig;
+  /** Present and enabled only when the control plane runs in deterministic fake mode. */
+  readonly fakeMode?: FakeModeConfig;
 }
 
 const DEFAULT_RUN_CONCURRENCY = 2;
+
+// Fake-mode defaults. Applied only when fake mode is enabled and the usual setting is absent.
+const FAKE_MODE_DEFAULT_PORT = '4010';
+const FAKE_MODE_DEFAULT_BEARER_TOKEN = 'fake-mode-token';
+const FAKE_MODE_DEFAULT_MASTER_SECRET = 'fake-mode-master-secret';
+const FAKE_MODE_DEFAULT_STATE_DIR = '.autocatalyst-fake';
 
 function readFlag(argv: readonly string[], name: string): string | undefined {
   const index = argv.indexOf(name);
@@ -158,17 +174,61 @@ function parsePullRequestReconciliationTicker(
   return { enabled: true, intervalMs, tenant };
 }
 
+/**
+ * Resolve fake-mode settings. Fake mode is enabled by `--fake-mode` or
+ * `AUTOCATALYST_FAKE_MODE`. The state directory comes from `--fake-state-dir`,
+ * `AUTOCATALYST_FAKE_STATE_DIR`, or `.autocatalyst-fake/` at the current working
+ * directory. Fake mode owns dispatch and provider adapter selection, so any
+ * explicit real-dispatch or provider-profile configuration is rejected.
+ */
+function parseFakeMode(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv
+): FakeModeConfig | undefined {
+  const enabled = hasFlag(argv, '--fake-mode') || parseBooleanEnv(env['AUTOCATALYST_FAKE_MODE'], 'AUTOCATALYST_FAKE_MODE');
+  if (!enabled) {
+    return undefined;
+  }
+
+  const realDispatchRequested =
+    hasFlag(argv, '--real-dispatch') || parseBooleanEnv(env['AUTOCATALYST_REAL_DISPATCH'], 'AUTOCATALYST_REAL_DISPATCH');
+  if (realDispatchRequested) {
+    throw new Error(
+      'Fake mode owns dispatch and provider adapter selection; remove --real-dispatch / AUTOCATALYST_REAL_DISPATCH.'
+    );
+  }
+  const defaultProviderProfileId = readFlag(argv, '--default-provider-profile-id') ?? env['AUTOCATALYST_DEFAULT_PROVIDER_PROFILE_ID'];
+  if (defaultProviderProfileId !== undefined) {
+    throw new Error(
+      'Fake mode owns dispatch and provider adapter selection; remove --default-provider-profile-id / AUTOCATALYST_DEFAULT_PROVIDER_PROFILE_ID.'
+    );
+  }
+
+  const stateDirRaw = readFlag(argv, '--fake-state-dir') ?? env['AUTOCATALYST_FAKE_STATE_DIR'] ?? FAKE_MODE_DEFAULT_STATE_DIR;
+  if (stateDirRaw.trim().length === 0) {
+    throw new Error('Fake state directory must be non-empty when configured.');
+  }
+  const stateDir = isAbsolute(stateDirRaw) ? stateDirRaw : resolve(stateDirRaw);
+  return { enabled: true, stateDir };
+}
+
 export function readControlPlaneAppConfig(
   argv: readonly string[] = process.argv.slice(2),
   env: NodeJS.ProcessEnv = process.env
 ): ControlPlaneAppConfig {
-  const portValue = readFlag(argv, '--port') ?? env['CONTROL_PLANE_PORT'];
-  const databasePathValue = readFlag(argv, '--database-path') ?? env['CONTROL_PLANE_DATABASE_PATH'];
-  const bearerTokenValue = readFlag(argv, '--bearer-token') ?? env['CONTROL_PLANE_BEARER_TOKEN'];
-  const masterSecretValue = readFlag(argv, '--master-secret') ?? env['CONTROL_PLANE_MASTER_SECRET'];
+  const fakeMode = parseFakeMode(argv, env);
+  const fakeEnabled = fakeMode !== undefined;
+
+  const portValue = readFlag(argv, '--port') ?? env['CONTROL_PLANE_PORT'] ?? (fakeEnabled ? FAKE_MODE_DEFAULT_PORT : undefined);
+  const databasePathValue =
+    readFlag(argv, '--database-path') ?? env['CONTROL_PLANE_DATABASE_PATH'] ?? (fakeMode !== undefined ? join(fakeMode.stateDir, 'control-plane.sqlite') : undefined);
+  const bearerTokenValue = readFlag(argv, '--bearer-token') ?? env['CONTROL_PLANE_BEARER_TOKEN'] ?? (fakeEnabled ? FAKE_MODE_DEFAULT_BEARER_TOKEN : undefined);
+  const masterSecretValue = readFlag(argv, '--master-secret') ?? env['CONTROL_PLANE_MASTER_SECRET'] ?? (fakeEnabled ? FAKE_MODE_DEFAULT_MASTER_SECRET : undefined);
   const runConcurrencyValue = readFlag(argv, '--run-concurrency') ?? env['AUTOCATALYST_RUN_CONCURRENCY'];
-  const reposRootValue = readFlag(argv, '--repos-root') ?? env['AUTOCATALYST_REPOS_ROOT'];
-  const workspacesRootValue = readFlag(argv, '--workspaces-root') ?? env['AUTOCATALYST_WORKSPACES_ROOT'];
+  const reposRootValue =
+    readFlag(argv, '--repos-root') ?? env['AUTOCATALYST_REPOS_ROOT'] ?? (fakeMode !== undefined ? join(fakeMode.stateDir, 'repos') : undefined);
+  const workspacesRootValue =
+    readFlag(argv, '--workspaces-root') ?? env['AUTOCATALYST_WORKSPACES_ROOT'] ?? (fakeMode !== undefined ? join(fakeMode.stateDir, 'workspaces') : undefined);
   const workspaceRoots = parseWorkspaceRoots(reposRootValue, workspacesRootValue);
   const realRunnerDispatch = parseRealRunnerDispatch(argv, env);
   const specAuthorIdentity = env['GITHUB_LOGIN']?.trim() || undefined;
@@ -183,6 +243,7 @@ export function readControlPlaneAppConfig(
     ...(workspaceRoots !== undefined ? { workspaceRoots } : {}),
     ...(realRunnerDispatch !== undefined ? { realRunnerDispatch } : {}),
     ...(specAuthorIdentity !== undefined ? { specAuthorIdentity } : {}),
-    ...(pullRequestReconciliationTicker !== undefined ? { pullRequestReconciliationTicker } : {})
+    ...(pullRequestReconciliationTicker !== undefined ? { pullRequestReconciliationTicker } : {}),
+    ...(fakeMode !== undefined ? { fakeMode } : {})
   };
 }

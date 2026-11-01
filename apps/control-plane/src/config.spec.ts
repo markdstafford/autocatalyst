@@ -436,4 +436,83 @@ describe('readControlPlaneAppConfig', () => {
       AUTOCATALYST_PR_RECONCILE_INTERVAL_MS: '5000'
     })).toThrow('AUTOCATALYST_PR_RECONCILE_TENANT or --pr-reconcile-tenant is required when the PR reconciliation ticker is enabled.');
   });
+
+  describe('fake mode', () => {
+    it('leaves fakeMode undefined and preserves existing behavior when disabled', () => {
+      const config = readControlPlaneAppConfig([], {
+        CONTROL_PLANE_PORT: '4300',
+        CONTROL_PLANE_DATABASE_PATH: '/tmp/db.sqlite',
+        CONTROL_PLANE_BEARER_TOKEN: 'token',
+        CONTROL_PLANE_MASTER_SECRET: 'secret'
+      });
+      expect(config.fakeMode).toBeUndefined();
+      expect(config).toEqual({
+        port: 4300,
+        databasePath: '/tmp/db.sqlite',
+        bearerToken: 'token',
+        masterSecret: 'secret',
+        runConcurrency: 2
+      });
+    });
+
+    it('enables fake mode from the --fake-mode flag with documented defaults', () => {
+      const config = readControlPlaneAppConfig(['--fake-mode', '--fake-state-dir', '/tmp/fake'], {});
+      expect(config.fakeMode).toEqual({ enabled: true, stateDir: '/tmp/fake' });
+      expect(config.port).toBe(4010);
+      expect(config.bearerToken).toBe('fake-mode-token');
+      expect(config.masterSecret).toBe('fake-mode-master-secret');
+      expect(config.databasePath).toBe('/tmp/fake/control-plane.sqlite');
+      expect(config.workspaceRoots).toEqual({ reposRoot: '/tmp/fake/repos', workspacesRoot: '/tmp/fake/workspaces' });
+    });
+
+    it('enables fake mode from AUTOCATALYST_FAKE_MODE and resolves a relative state dir to absolute', () => {
+      const config = readControlPlaneAppConfig([], { AUTOCATALYST_FAKE_MODE: 'true' });
+      expect(config.fakeMode?.enabled).toBe(true);
+      expect(config.fakeMode?.stateDir.endsWith('.autocatalyst-fake')).toBe(true);
+      expect(config.fakeMode?.stateDir.startsWith('/')).toBe(true);
+    });
+
+    it('reads the state dir from AUTOCATALYST_FAKE_STATE_DIR', () => {
+      const config = readControlPlaneAppConfig([], {
+        AUTOCATALYST_FAKE_MODE: '1',
+        AUTOCATALYST_FAKE_STATE_DIR: '/var/fake-state'
+      });
+      expect(config.fakeMode).toEqual({ enabled: true, stateDir: '/var/fake-state' });
+    });
+
+    it('lets explicit settings override fake defaults', () => {
+      const config = readControlPlaneAppConfig(
+        ['--fake-mode', '--fake-state-dir', '/tmp/fake', '--port', '5555', '--bearer-token', 'custom-token'],
+        { CONTROL_PLANE_MASTER_SECRET: 'custom-secret', CONTROL_PLANE_DATABASE_PATH: '/custom/db.sqlite' }
+      );
+      expect(config.port).toBe(5555);
+      expect(config.bearerToken).toBe('custom-token');
+      expect(config.masterSecret).toBe('custom-secret');
+      expect(config.databasePath).toBe('/custom/db.sqlite');
+    });
+
+    it('rejects fake mode combined with --real-dispatch', () => {
+      expect(() => readControlPlaneAppConfig(['--fake-mode', '--real-dispatch'], {})).toThrow(
+        'Fake mode owns dispatch and provider adapter selection; remove --real-dispatch / AUTOCATALYST_REAL_DISPATCH.'
+      );
+    });
+
+    it('rejects fake mode combined with AUTOCATALYST_REAL_DISPATCH', () => {
+      expect(() => readControlPlaneAppConfig([], { AUTOCATALYST_FAKE_MODE: 'true', AUTOCATALYST_REAL_DISPATCH: 'true' })).toThrow(
+        'Fake mode owns dispatch and provider adapter selection; remove --real-dispatch / AUTOCATALYST_REAL_DISPATCH.'
+      );
+    });
+
+    it('rejects fake mode combined with --default-provider-profile-id', () => {
+      expect(() => readControlPlaneAppConfig(['--fake-mode', '--default-provider-profile-id', 'cfg_1'], {})).toThrow(
+        'Fake mode owns dispatch and provider adapter selection; remove --default-provider-profile-id / AUTOCATALYST_DEFAULT_PROVIDER_PROFILE_ID.'
+      );
+    });
+
+    it('rejects fake mode combined with AUTOCATALYST_DEFAULT_PROVIDER_PROFILE_ID', () => {
+      expect(() => readControlPlaneAppConfig([], { AUTOCATALYST_FAKE_MODE: 'true', AUTOCATALYST_DEFAULT_PROVIDER_PROFILE_ID: 'cfg_1' })).toThrow(
+        'Fake mode owns dispatch and provider adapter selection; remove --default-provider-profile-id / AUTOCATALYST_DEFAULT_PROVIDER_PROFILE_ID.'
+      );
+    });
+  });
 });
