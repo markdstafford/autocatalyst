@@ -5,7 +5,9 @@
     "production": [
       "default",
       "!{projectRoot}/**/*.spec.ts",
-      "!{projectRoot}/vite.config.ts"
+      "!{projectRoot}/**/*.spec.tsx",
+      "!{projectRoot}/vite.config.ts",
+      "!{projectRoot}/e2e/**"
     ],
     "sharedGlobals": [
       "{workspaceRoot}/eslint.config.mjs",

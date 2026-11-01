@@ -1,0 +1,141 @@
+/*
+ * Tailwind 4 entry for the web client.
+ *
+ * Token roles follow context-agent/wiki/design-system.md. Concrete per-theme
+ * palette values and the fourteen accents live in `themes.css` (generated from
+ * documented upstream sources; see apps/web/README.md). The `@theme` block below
+ * declares the structural design tokens and the default (Catppuccin Latte) color
+ * values so Tailwind emits the semantic utilities (`bg-background`, `text-text`,
+ * `text-subtext`, `h-control-base`, ...). At runtime the `[data-theme]` blocks in
+ * `themes.css` override every `--color-*` value, so the utilities resolve to the
+ * active theme.
+ */
+@import 'tailwindcss';
+@import './themes.css';
+
+@theme {
+  /* Type */
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'Fira Code', ui-monospace, monospace;
+  --text-xs: 0.6875rem;
+  --text-sm: 0.75rem;
+  --text-base: 0.8125rem;
+  --text-md: 0.875rem;
+  --text-lg: 1rem;
+  --text-xl: 1.25rem;
+
+  /* Spacing base unit (4px) */
+  --spacing: 0.25rem;
+
+  /* Control + row heights */
+  --height-control-sm: 1.5rem;
+  --height-control-base: 1.75rem;
+  --height-control-lg: 2rem;
+  --height-row-compact: 1.75rem;
+  --height-row-regular: 2.25rem;
+
+  /* Radius */
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-full: 9999px;
+
+  /* Shell dimensions */
+  --width-sidebar: 15.25rem;
+  --width-footer-control: 2.75rem;
+  --height-header-bar: 2.5rem;
+  --height-chip-row: 2rem;
+  --height-pane-bar: 2.25rem;
+  --height-footer: 1.75rem;
+  --width-resize-handle: 0.25rem;
+  --width-comment-column: 11rem;
+  --width-reading-column: 46rem;
+  --width-settings-column: 42rem;
+  --width-hover-zone: 0.5rem;
+
+  /* Motion */
+  --duration-hover: 100ms;
+  --duration-enter: 150ms;
+  --duration-exit: 100ms;
+  --duration-layout: 250ms;
+
+  /* Elevation */
+  --shadow-popover: 0 4px 12px rgb(0 0 0 / 0.18);
+  --shadow-dialog: 0 16px 48px rgb(0 0 0 / 0.32);
+
+  /* Default color values (Catppuccin Latte); overridden per [data-theme]. */
+  --color-background: #eff1f5;
+  --color-mantle: #e6e9ef;
+  --color-crust: #dce0e8;
+  --color-surface: #ccd0da;
+  --color-surface-1: #bcc0cc;
+  --color-surface-2: #acb0be;
+  --color-overlay: #9ca0b0;
+  --color-overlay-1: #8c8fa1;
+  --color-overlay-2: #7c7f93;
+  --color-text: #4c4f69;
+  --color-subtext: #5c5f77;
+  --color-subtext-1: #6c6f85;
+  --color-border: #7c7f93;
+  --color-green: #40a02b;
+  --color-red: #d20f39;
+  --color-yellow: #df8e1d;
+  --color-mauve: #8839ef;
+  --color-peach: #fe640b;
+  --color-on-destructive: #ffffff;
+
+  /* Accent pointers (defaults sapphire/teal); resolved per [data-primary-accent]. */
+  --primary-accent: var(--accent-sapphire);
+  --secondary-accent: var(--accent-teal);
+  --color-primary: var(--primary-accent);
+  --color-secondary: var(--secondary-accent);
+  --color-focus: var(--primary-accent);
+  --color-on-primary: #ffffff;
+  --color-on-secondary: #ffffff;
+}
+
+/*
+ * Derived tokens: single-source mixes of the base tokens so no component picks
+ * its own opacity. They re-resolve per theme because they reference the themed
+ * `--color-*` values.
+ */
+:root {
+  --color-border-subtle: color-mix(in srgb, var(--color-border) 60%, var(--color-background));
+  --color-border-faint: color-mix(in srgb, var(--color-border) 35%, var(--color-background));
+  --color-hover: color-mix(in srgb, var(--color-surface) 60%, var(--color-background));
+  --color-hover-row: color-mix(in srgb, var(--color-surface) 45%, var(--color-background));
+  --color-secondary-highlight-bg: color-mix(in srgb, var(--color-secondary) 16%, var(--color-background));
+  --color-secondary-highlight-border: color-mix(in srgb, var(--color-secondary) 45%, var(--color-background));
+  --color-secondary-highlight-text: var(--color-text);
+  --color-sentiment-good-bg: color-mix(in srgb, var(--color-green) 16%, var(--color-background));
+  --color-sentiment-good-border: color-mix(in srgb, var(--color-green) 45%, var(--color-background));
+  --color-sentiment-good-text: var(--color-text);
+  --color-sentiment-ok-bg: color-mix(in srgb, var(--color-yellow) 16%, var(--color-background));
+  --color-sentiment-ok-border: color-mix(in srgb, var(--color-yellow) 45%, var(--color-background));
+  --color-sentiment-ok-text: var(--color-text);
+  --color-sentiment-bad-bg: color-mix(in srgb, var(--color-red) 16%, var(--color-background));
+  --color-sentiment-bad-border: color-mix(in srgb, var(--color-red) 45%, var(--color-background));
+  --color-sentiment-bad-text: var(--color-text);
+  --color-comment-open-bg: color-mix(in srgb, var(--color-primary) 14%, var(--color-background));
+  --color-comment-open-line: var(--color-primary);
+  --color-comment-resolved-bg: color-mix(in srgb, var(--color-green) 12%, var(--color-background));
+  --color-comment-selected-bg: color-mix(in srgb, var(--color-primary) 20%, var(--color-background));
+  --color-comment-flash-bg: color-mix(in srgb, var(--color-primary) 30%, var(--color-background));
+}
+
+/* Base document surface follows the theme. */
+html,
+body {
+  background-color: var(--color-background);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+}
+
+/* Honor reduced-motion by collapsing durations to zero. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-hover: 0ms;
+    --duration-enter: 0ms;
+    --duration-exit: 0ms;
+    --duration-layout: 0ms;
+  }
+}
