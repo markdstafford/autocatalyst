@@ -1,52 +1,178 @@
 # @autocatalyst/web
 
-The web client project. For now it holds only the browser end-to-end target; the
-client application and its build arrive with #131.
+The Autocatalyst web client: a React 19 + Vite + Tailwind 4 browser app served by
+the control plane. This foundation (issue #131) ships the first real served page —
+routing, design tokens, theme preferences, safe token storage, typed SDK access,
+the first UI wrappers, and lazy syntax highlighting — so later screens build on one
+tested runtime and one set of conventions. The full shell, settings, run screens,
+and token-entry flow are **out of scope** here (they arrive in later issues).
 
-## `nx e2e web`
+## Targets
+
+Run these from the repo root with Nx.
+
+| Target | Command | What it does |
+| --- | --- | --- |
+| `build` | `pnpm nx build web` | Vite production build to `apps/web/dist` with hashed asset names and a manifest. |
+| `dev` | `pnpm nx dev web` | Vite dev server (no API proxy). |
+| `test` | `pnpm nx test web` | `vitest run` from `apps/web` (jsdom), including the real-build output checks. |
+| `lint` | `pnpm nx lint web` | ESLint over `.ts`/`.tsx`/`project.json`/`package.json`, including module boundaries and the Base UI import restriction. |
+| `e2e` | `pnpm nx e2e web` | Builds the app + control plane, then runs Playwright against the **real built app** served by a fake-mode control plane. |
+
+`build`, `lint`, and `test` are part of `pnpm nx run-many -t build lint test` and
+`pnpm validate`. `e2e` is **not** in CI or `validate` — it needs a one-time browser
+install (see below).
+
+## Running against fake mode
+
+The control plane can serve this app's build from its own origin. Build the client,
+then start the control plane in fake mode pointed at `apps/web/dist`:
 
 ```bash
-pnpm nx e2e web
+pnpm nx build web
+AUTOCATALYST_CLIENT_DIR=apps/web/dist pnpm nx serve-fake control-plane
 ```
 
-`nx e2e web` builds the control plane (`control-plane:build`), then runs a
-preflight and the Playwright tests from `apps/web`:
+Open the printed origin (for example `http://127.0.0.1:4100/`). `/` redirects to
+`/runs`; refreshing `/runs` or visiting an unknown path returns `index.html` and the
+router renders the right page (see #129 for the control plane's static serving and
+`index.html` fallback). No model call is made in fake mode.
 
-- Each spec file provisions its own control plane in **fake mode** — the real
-  production entrypoint (`apps/control-plane/dist`) on a free port, with a fresh
-  temporary state directory, serving the fixture client at
-  `apps/web/e2e/fixture-client` from its own origin. No model call is made and no
-  network beyond `127.0.0.1` is used. Each server is stopped when its spec ends,
-  including after a failing test.
-- One test opens the served page in Chromium, sees it load from the control
-  plane's own origin, and reads `/health` from that same origin (no proxy, no
-  CORS).
+The Playwright e2e target automates this: each spec starts its own fake-mode control
+plane serving `apps/web/dist` (the `web:build` dependency produces it) and drives the
+real foundation page. See `e2e/fixtures/fake-server.ts` (default `clientDir` is
+`apps/web/dist`; pass `clientDir` to override).
 
-The preflight unit test runs as a Playwright spec under this target (not
-`vitest run`), because `apps/web` has no `test` target yet.
+### One-time browser install
 
-## One-time browser install
-
-Playwright keeps its browsers outside `node_modules`, and `pnpm install` does not
-download them. Install Chromium once per machine (and again after the Playwright
-version changes):
+Playwright keeps browsers outside `node_modules`; `pnpm install` does not download
+them. Install Chromium once per machine (and after a Playwright version bump):
 
 ```bash
 pnpm exec playwright install chromium
 ```
 
-If Chromium is missing, the target's preflight stops before any test runs:
+If Chromium is missing, the e2e preflight stops before any test runs with the exact
+install command — a skipped test would read as a pass, so it fails loudly instead.
 
-```text
-Chromium is not installed for Playwright. Run: pnpm exec playwright install chromium
-```
+## Routing
 
-The target exits non-zero, no browser window opens, and no test runs — a skipped
-test would read as a pass, so the preflight fails loudly instead.
+The router is **`react-router-dom` using the declarative `BrowserRouter` / `Routes` /
+`Route` / `Navigate` APIs** with base `/`. This gives normal browser history,
+redirects, and not-found routing without pulling in a framework runtime or a data
+router we do not yet need. Routes: `/` → `/runs`, `/runs` = the foundation page,
+catch-all = the not-found page. `app.tsx` exports `AppRoutes` separately so tests can
+mount it under a `MemoryRouter`.
 
-## Not in CI
+## Package aliases
 
-CI does not run `e2e`, and `e2e` is not part of `pnpm validate`. `.github/workflows/ci.yml`
-runs `build`, `lint`, `test` and `test:boundaries` unchanged, none of which starts a browser
-or the fake server. A browser download and a spawned server are a decision for the maintainer.
-Run `pnpm nx e2e web` by hand after the one-time browser install above.
+`vite.config.ts` aliases both `@autocatalyst/sdk` and `@autocatalyst/api-contract` to
+their **source** (`packages/*/src/index.ts`), not built output. The control plane
+resolves the SDK through package output, but the browser build aliases to source so
+the Node-import guard and bundle checks see everything that ships to the client. The
+root `tsconfig.base.json` already maps both package paths, so no new path entries are
+needed. Nx may still build source dependencies where target orchestration requires
+it; browser code always resolves these two packages through the source aliases.
+
+## Storage keys
+
+Two separate browser `localStorage` keys, read and written inside `try`/`catch` so
+blocked or invalid storage falls back to defaults without crashing:
+
+- **`autocatalyst.preferences`** — operator theme preferences. Fields: `themeMode`
+  (`system` | `light` | `dark`), `lightTheme`, `darkTheme`, `primaryAccent`,
+  `secondaryAccent`, `bodyFont`, `monoFont`. Unknown ids fall back field-by-field
+  while keeping the valid fields. Defaults: `system`, `catppuccin-latte`,
+  `catppuccin-mocha`, `sapphire`, `teal`, and the design-system body/mono font stacks.
+  There is no settings UI yet; change preferences by editing this key in browser
+  storage until the appearance/settings screens exist.
+- **`autocatalyst.bearerToken`** — the bearer token, kept **separate** from
+  preferences because it is secret material, not a preference. `src/auth/token-store.ts`
+  exposes write/clear and an internal read used only by the SDK client provider to
+  build the client; there is **no** component-facing getter that returns the token for
+  display. On blocked storage it falls back to an in-memory value for the session. The
+  token never appears in URLs, logs, thrown messages, or the DOM. A future desktop
+  wrapper will replace this key with keychain storage (see the proposed ADR-031 / UX
+  patch under `context-agent/proposed-human-docs/`).
+
+## SDK client provider
+
+`src/client/client-provider.tsx` builds one `createControlPlaneClient` from
+`window.location.origin` and the current token, and rebuilds it when the token
+changes. Components get the client from `useControlPlaneClient()` (or the full
+connection from `useControlPlaneConnection()`) and **never call `fetch` directly** for
+control-plane routes, so authorization and error handling stay in one place. A `401`
+from any call flips connection state to `unauthorized` without throwing to the route;
+`getHealth()` sends no `Authorization` header, protected calls send
+`Authorization: Bearer <token>`.
+
+## UI wrapper convention
+
+`src/ui/` holds the client-owned wrappers (`Button`, `Tooltip` today) and is the
+**only** place allowed to import `@base-ui/react` — enforced by ESLint and the
+`import-conventions` test. Screens import the wrappers, never Base UI primitives
+directly. Every icon-only button carries a `Tooltip`. Icons come only from
+`lucide-react`, imported by name.
+
+Only `Button` and `Tooltip` exist now, on purpose. The remaining wrappers — `Menu`,
+`Popover`, `Dialog`, `Tabs`, `Select`, `Switch`, and form fields — should be added by
+the first screen that actually uses each one. No wrapper should exist without a screen
+exercising it.
+
+## Syntax highlighting (Shiki)
+
+`src/highlight/highlight.ts` uses the **fine-grained `shiki/core` API**, not the
+bundled `createHighlighter`. On first use it dynamically imports `shiki/core`,
+`shiki/engine/javascript` (`createJavaScriptRegexEngine`), `shiki/langs/json.mjs`, and
+the `shiki/themes/github-light.mjs` / `shiki/themes/github-dark.mjs` code themes, then
+creates one highlighter and reuses it. Only JSON is loaded for this issue; later
+callers may extend it with their own explicit language imports. The code theme follows
+the resolved app brightness. Because every Shiki import is dynamic, Shiki stays out of
+the entry chunk (asserted by the build-output test and the Playwright run, which only
+loads the Shiki chunk after the first Check-connection click).
+
+> Note: these exact subpaths (`shiki/langs/json.mjs`, `shiki/themes/github-*.mjs`,
+> `shiki/engine/javascript`) resolve in the installed Shiki 4.5.0 via its `./*` export,
+> matching the documented fine-grained paths.
+
+## Design tokens and palette provenance
+
+`src/styles/index.css` declares the Tailwind 4 `@theme` structural tokens (type,
+spacing, control heights, radii, elevation, shell dimensions, motion) and the default
+color values; `src/styles/themes.css` (generated by `tools/gen-themes.mjs`) defines
+the eight `data-theme` blocks and the per-accent `--color-on-primary` /
+`--color-on-secondary` selectors. Every theme declares all fourteen `--accent-<id>`
+variables (`rosewater`, `flamingo`, `pink`, `mauve`, `red`, `maroon`, `peach`,
+`yellow`, `green`, `teal`, `sky`, `sapphire`, `blue`, `lavender`). `--primary-accent`
+and `--secondary-accent` default to `sapphire` and `teal`. Outside `src/styles/`, web
+source uses semantic tokens only — never a hex color, an `rgb()`/`rgba()` value, or a
+raw `--ctp-*` name (enforced by `style-safety.spec.ts`).
+
+Palette values are copied as literals from documented upstream sources — no palette
+package dependency is added:
+
+| Theme(s) | Upstream source |
+| --- | --- |
+| Catppuccin Latte / Frappé / Macchiato / Mocha | Catppuccin palette **v1.7.1** (`https://github.com/catppuccin/catppuccin`), raw names mapped `base→background`, `mantle→mantle`, `crust→crust`, `surface0/1/2→surface-0/1/2`, `overlay0/1/2→overlay-0/1/2`, `subtext0/1→subtext-0/1`, `text→text`, plus the 14 accents. |
+| GitHub Light / Dark | GitHub Primer Primitives (`https://github.com/primer/primitives`). The spec names **v9.3.0**; the copied values are from the closest published release available at implementation time (**v9.1.2**) — recorded here as a provenance note. `canvas.*`/`neutral.*`/`border.*`/`fg.*` mapped to the semantic bases; the 14 accents come from the Primer `scale.*` ramps per the spec's accent table. |
+| Solarized Light | Ethan Schoonover Solarized, canonical repo (`https://github.com/altercation/solarized`); `base3→background` … `base00→text`, with documented `color-mix`/precomputed mixes for `crust`/`surface-1`; accents mapped from `magenta`/`orange`/`violet`/`red`/`yellow`/`green`/`cyan`/`blue` per the spec table. |
+| Dracula | Official Dracula spec (`https://github.com/dracula/dracula-theme`); `background→background`, `currentLine→surface-0`, `comment→surface-2`/`overlay-0`/`subtext-0`, `foreground→text`/`overlay-2`, with documented darker/foreground mixes; accents mapped per the spec table. |
+
+### Contrast-driven adjustments
+
+The contrast test (`contrast.spec.ts`) checks exact token pairs across every theme and
+every primary accent with **no exemptions**: body text ≥ 4.5:1 on background and
+mantle, secondary text ≥ 4.5:1 on background, `--color-on-primary` ≥ 4.5:1 on the
+selected accent, `--color-on-destructive` ≥ 4.5:1 on red, focus ring ≥ 3:1, and the
+component border ≥ 3:1. Where an upstream value failed a pair, the mapped semantic
+token (or per-accent foreground) is nudged in `src/styles/` — never excused — and the
+adjusted literal is commented next to its value. The generator header in `themes.css`
+records the total number of contrast-driven adjustments. `--color-on-primary` /
+`--color-on-secondary` are computed per theme+accent (black or white, whichever meets
+contrast) rather than a single fixed literal.
+
+## No per-app agent note file
+
+This project deliberately has no per-app `AGENTS.md`/agent note file; the repo-level
+`context-agent/wiki/code-map.md` records `apps/web`'s layout, targets, served build
+output, and the `scope:web` boundary.
