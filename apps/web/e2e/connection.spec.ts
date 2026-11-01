@@ -61,10 +61,12 @@ test('connects, saves, and keeps the token out of page text', async ({ page, fak
   expect(await fakeServer.readLaunchCount()).toBe(0);
 });
 
-test('footer health: healthy, survives a restart without re-entry, and shows lost when the control plane is gone', async ({
+test('footer health: offline shows Connection lost, online clears it, and a restart recovers without re-entering the token', async ({
   page,
   fakeServer
 }) => {
+  const STORED_LABEL = 'Bearer token (leave blank to keep existing)';
+
   // Connect first so the shell is in the signed-in state.
   await page.goto(`${fakeServer.baseUrl}/settings/connection`);
   await page.getByLabel('Bearer token').fill(FIXTURE_TOKEN);
@@ -76,11 +78,24 @@ test('footer health: healthy, survives a restart without re-entry, and shows los
   // Healthy: no footer warning.
   await expect(page.getByText('Connection lost')).toHaveCount(0);
 
-  // A real control-plane restart clears without re-entering the token: the stored
-  // token persists and a focus-triggered health check reports healthy again. (Note:
-  // the browser's own offline emulation does not block loopback requests, so the
-  // "degraded/failed → Connection lost → recovery" transitions are proven
-  // deterministically in the unit test `src/shell/health-indicator.spec.tsx`.)
+  // Offline: the control plane stops answering. The footer's periodic health poll
+  // (every 5 s) detects the outage and shows "Connection lost" — no focus nudge, so
+  // this proves the interval, not just the focus-triggered check. The stored token is
+  // untouched the whole time.
+  await fakeServer.goOffline();
+  await expect(page.getByText('Connection lost')).toBeVisible({ timeout: 15_000 });
+
+  // Online: the control plane answers again. A focus-triggered health check clears the
+  // indicator without the operator ever re-entering the token, and the stored-token
+  // label still shows an empty field.
+  await fakeServer.goOnline();
+  await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+  await expect(page.getByText('Connection lost')).toHaveCount(0);
+  await expect(page.getByLabel(STORED_LABEL)).toHaveValue('');
+  expect(await fakeServer.readLaunchCount()).toBe(0);
+
+  // A full control-plane restart likewise clears without re-entering the token: the
+  // stored token persists and a focus-triggered health check reports healthy again.
   await fakeServer.restart();
   await page.evaluate(() => window.dispatchEvent(new Event('focus')));
   await expect(page.getByText('Connection lost')).toHaveCount(0);

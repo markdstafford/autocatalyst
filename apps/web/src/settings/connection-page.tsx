@@ -135,7 +135,12 @@ export function ConnectionPage(): ReactNode {
           <Button
             type="button"
             variant="secondary"
-            aria-disabled={testDisabled || running}
+            // Hard-disabled when there is nothing to test (neither a typed nor a
+            // stored token): the control leaves the tab order and exposes no action.
+            // While a test is in flight it is only soft-disabled (`aria-disabled`) so
+            // it keeps focus and its tooltip while activation is suppressed.
+            disabled={testDisabled}
+            aria-disabled={running || undefined}
             onClick={() => {
               void handleTest();
             }}
@@ -150,7 +155,10 @@ export function ConnectionPage(): ReactNode {
           <Button
             type="button"
             variant="primary"
-            aria-disabled={!hasTyped}
+            // Hard-disabled until a replacement value is typed, so Save is never an
+            // available action (to pointer, keyboard, or assistive tech) with an
+            // empty field.
+            disabled={!hasTyped}
             onClick={handleSave}
           >
             Save

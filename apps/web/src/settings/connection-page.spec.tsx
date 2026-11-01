@@ -95,10 +95,11 @@ describe('ConnectionPage labels and save gating', () => {
     renderPage();
     expect(screen.getByLabelText('Bearer token')).toBeDefined();
     const save = screen.getByRole('button', { name: 'Save' });
-    expect(save.getAttribute('aria-disabled')).toBe('true');
+    // Save is a hard-disabled control until a value is typed, not merely aria-disabled.
+    expect((save as HTMLButtonElement).disabled).toBe(true);
 
     await userEvent.type(screen.getByLabelText('Bearer token'), 'tok');
-    expect(save.getAttribute('aria-disabled')).not.toBe('true');
+    expect((save as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('saves the token, clears the field, shows Saved, and switches to the stored label', async () => {
@@ -133,6 +134,41 @@ describe('ConnectionPage test connection', () => {
     expect(hasBearerToken()).toBe(false);
     // The typed token rode the call.
     expect(calls.at(-1)?.authorization).toBe('Bearer typed');
+  });
+
+  it('soft-disables (aria-disabled, not native disabled) while a test is in flight', async () => {
+    // A gated fetch keeps the test in the "testing" state until we release it, so we
+    // can observe the in-flight control: it must stay focusable (aria-disabled) rather
+    // than leave the tab order (native disabled), which is reserved for the
+    // nothing-to-test case.
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const gatedFetch: typeof globalThis.fetch = async (input) => {
+      const url = requestUrl(input);
+      if (url.includes('/v1/projects')) {
+        await gate;
+        return jsonResponse({ projects: [] }, 200);
+      }
+      return jsonResponse({}, 200);
+    };
+    render(
+      <ControlPlaneClientProvider fetch={gatedFetch}>
+        <ConnectionPage />
+      </ControlPlaneClientProvider>
+    );
+
+    await userEvent.type(screen.getByLabelText('Bearer token'), 'typed');
+    const test = screen.getByRole('button', { name: 'Test connection' });
+    await userEvent.click(test);
+
+    expect(await screen.findByText('Testing')).toBeDefined();
+    expect(test.getAttribute('aria-disabled')).toBe('true');
+    expect((test as HTMLButtonElement).disabled).toBe(false);
+
+    release?.();
+    expect(await screen.findByText('Connected')).toBeDefined();
   });
 
   it('maps a 401 to the rejected-token fix and leaves the typed value', async () => {
@@ -175,7 +211,11 @@ describe('ConnectionPage stored-token testing', () => {
   it('is disabled when neither a typed nor a stored token exists', () => {
     renderPage();
     const test = screen.getByRole('button', { name: 'Test connection' });
-    expect(test.getAttribute('aria-disabled')).toBe('true');
+    // Hard-disabled (removed from the tab order), not merely aria-disabled, so an
+    // empty-token test is never an available action.
+    expect((test as HTMLButtonElement).disabled).toBe(true);
+    // Save is likewise hard-disabled while nothing is typed.
+    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it('tests the stored token through the app client when the field is empty', async () => {
