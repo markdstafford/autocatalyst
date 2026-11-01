@@ -79,6 +79,7 @@ import { GitHubIssueTracker } from '@autocatalyst/github-issue-tracker-adapter';
 import { createGitHubCodeHostAdapter, type ExecuteGhFunction, type SafeGitExecutor } from '@autocatalyst/github-code-host-adapter';
 import { createReviewedExecutionDispatcher } from './reviewed-execution-dispatcher.js';
 import { createRunWorkspaceGitPort } from './run-workspace-git-port.js';
+import { createStaticClientNotFoundHandler, registerStaticClientRoutes } from './static-client.js';
 import { loadSpecAuthorPromptInput, SpecAuthoringContextLoadError } from './spec-authoring-context-loader.js';
 import {
   createAgentConnection,
@@ -264,6 +265,14 @@ export interface ControlPlaneServerOptions {
    * composed and stopped automatically on `onClose`.
    */
   readonly pullRequestReconciliationTicker?: PullRequestReconciliationTickerConfig;
+  /**
+   * Absolute path to a validated built-client directory. When set, the server
+   * serves `index.html`, hashed assets, and an SPA fallback from its own origin
+   * via the in-repo static handler; when unset, no static route is registered and
+   * the server keeps its API-only behavior. The path must already be validated
+   * (existing directory containing `index.html`); `config.ts` does this at load.
+   */
+  readonly clientDirectory?: string;
   /**
    * When present, the server runs in deterministic fake mode: it provisions local
    * fixture state under `stateDir`, registers only the scripted Claude adapter,
@@ -1911,6 +1920,15 @@ export async function createControlPlaneServer(
     projects: domainRepos.projects,
     controlPlane
   });
+
+  // Optional same-origin static client serving. Registered after core routes so
+  // `/health` and `/v1` keep precedence; the not-found handler supplies SPA
+  // fallback for extensionless HTML GETs and preserves Fastify's default 404
+  // everywhere else. Kept out of packages/core/src/routes.ts by design.
+  if (options.clientDirectory !== undefined) {
+    registerStaticClientRoutes(app, { clientDirectory: options.clientDirectory });
+    app.setNotFoundHandler(createStaticClientNotFoundHandler({ clientDirectory: options.clientDirectory }));
+  }
 
   if (options.pullRequestReconciliationTicker?.enabled === true) {
     const tickerTenant = options.pullRequestReconciliationTicker.tenant;

@@ -1,3 +1,4 @@
+import { existsSync, statSync } from 'node:fs';
 import { isAbsolute, join, resolve } from 'node:path';
 
 export interface WorkspaceRootConfig {
@@ -33,6 +34,12 @@ export interface ControlPlaneAppConfig {
   /** GitHub username to stamp as specced_by on spec.author results. Read from GITHUB_LOGIN env var. */
   readonly specAuthorIdentity?: string;
   readonly pullRequestReconciliationTicker?: PullRequestReconciliationTickerConfig;
+  /**
+   * Absolute path to a built web client directory to serve from the control-plane
+   * origin. Resolved from `AUTOCATALYST_CLIENT_DIR` or `--client-dir` and validated
+   * at config load. Undefined leaves the server API-only with no static route.
+   */
+  readonly clientDirectory?: string;
   /** Present and enabled only when the control plane runs in deterministic fake mode. */
   readonly fakeMode?: FakeModeConfig;
 }
@@ -212,6 +219,43 @@ function parseFakeMode(
   return { enabled: true, stateDir };
 }
 
+/**
+ * Resolve and validate the optional built-client directory. Accepts an absolute or
+ * relative path from `--client-dir` (precedence) or `AUTOCATALYST_CLIENT_DIR`;
+ * relative values resolve against `process.cwd()` using the same pattern as the
+ * fake-state directory. When set, the value must name an existing directory that
+ * contains `index.html`; validation runs here, during config loading, so startup
+ * fails before any server or database initialization. Unset leaves the client
+ * directory undefined and performs no filesystem access.
+ */
+function parseClientDirectory(
+  argv: readonly string[],
+  env: NodeJS.ProcessEnv
+): string | undefined {
+  const raw = readFlag(argv, '--client-dir') ?? env['AUTOCATALYST_CLIENT_DIR'];
+  if (raw === undefined) {
+    return undefined;
+  }
+  if (raw.trim().length === 0) {
+    throw new Error('Client directory must be non-empty when configured.');
+  }
+  const resolved = isAbsolute(raw) ? raw : resolve(raw);
+
+  let stats;
+  try {
+    stats = statSync(resolved);
+  } catch {
+    throw new Error(`Client directory '${resolved}' does not exist.`);
+  }
+  if (!stats.isDirectory()) {
+    throw new Error(`Client directory '${resolved}' is not a directory.`);
+  }
+  if (!existsSync(join(resolved, 'index.html'))) {
+    throw new Error(`Client directory '${resolved}' is missing a root index.html.`);
+  }
+  return resolved;
+}
+
 export function readControlPlaneAppConfig(
   argv: readonly string[] = process.argv.slice(2),
   env: NodeJS.ProcessEnv = process.env
@@ -233,6 +277,7 @@ export function readControlPlaneAppConfig(
   const realRunnerDispatch = parseRealRunnerDispatch(argv, env);
   const specAuthorIdentity = env['GITHUB_LOGIN']?.trim() || undefined;
   const pullRequestReconciliationTicker = parsePullRequestReconciliationTicker(argv, env);
+  const clientDirectory = parseClientDirectory(argv, env);
 
   return {
     port: parsePort(portValue),
@@ -244,6 +289,7 @@ export function readControlPlaneAppConfig(
     ...(realRunnerDispatch !== undefined ? { realRunnerDispatch } : {}),
     ...(specAuthorIdentity !== undefined ? { specAuthorIdentity } : {}),
     ...(pullRequestReconciliationTicker !== undefined ? { pullRequestReconciliationTicker } : {}),
+    ...(clientDirectory !== undefined ? { clientDirectory } : {}),
     ...(fakeMode !== undefined ? { fakeMode } : {})
   };
 }
