@@ -37,3 +37,7 @@ coverage/
 
 # Fake mode / local state
 .autocatalyst-fake/
+
+# Playwright
+test-results/
+playwright-report/

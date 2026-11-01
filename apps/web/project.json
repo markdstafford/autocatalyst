@@ -1,0 +1,26 @@
+{
+  "name": "web",
+  "$schema": "../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "apps/web",
+  "projectType": "application",
+  "tags": [
+    "type:app",
+    "scope:web"
+  ],
+  "targets": {
+    "e2e": {
+      "executor": "nx:run-commands",
+      "dependsOn": [
+        "control-plane:build"
+      ],
+      "options": {
+        "cwd": "apps/web",
+        "parallel": false,
+        "commands": [
+          "node e2e/check-browser.mjs",
+          "pnpm exec playwright test"
+        ]
+      }
+    }
+  }
+}
