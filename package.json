@@ -13,7 +13,7 @@
     "lint": "nx run-many -t lint",
     "test": "nx run-many -t test",
     "test:boundaries": "node tools/boundary-tests/assert-execution-boundary.mjs && node tools/boundary-tests/assert-gh-issue-read-boundary.mjs && node tools/boundary-tests/assert-gh-pr-boundary.mjs",
-    "validate": "pnpm nx run-many -t build lint test e2e && pnpm test:boundaries"
+    "validate": "pnpm nx run-many -t build lint test && pnpm test:boundaries"
   },
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^7.3.4",
