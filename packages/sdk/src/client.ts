@@ -73,6 +73,9 @@ import {
   type CreateConversationWithFirstRunResponse,
   type CreateProbeResourceRequest,
   type CreateProjectRequest,
+  type CreateRunWorkKind,
+  type RunStatus,
+  type RunWaitingOn,
   type Project,
   type ProjectListResponse,
   type UpdateProjectRequest,
@@ -105,6 +108,20 @@ export interface ControlPlaneClientOptions {
   readonly bearerToken?: string;
 }
 
+/**
+ * Optional filters and paging for {@link ControlPlaneClient.listRuns}. Each filter accepts a single
+ * value or an array; arrays serialize to one comma-separated query parameter per field (never
+ * repeated keys, which the server rejects).
+ */
+export interface ListRunsOptions {
+  readonly status?: RunStatus | readonly RunStatus[];
+  readonly waitingOn?: RunWaitingOn | readonly RunWaitingOn[];
+  readonly workKind?: CreateRunWorkKind | readonly CreateRunWorkKind[];
+  readonly projectId?: string | readonly string[];
+  readonly limit?: number;
+  readonly cursor?: string;
+}
+
 export interface ControlPlaneClient {
   getHealth(): Promise<HealthResponse>;
   createProbeResource(request: CreateProbeResourceRequest): Promise<ProbeResource>;
@@ -120,7 +137,7 @@ export interface ControlPlaneClient {
   getProject(id: string): Promise<Project>;
   updateProject(id: string, patch: UpdateProjectRequest): Promise<Project>;
   createConversationWithFirstRun(request: CreateConversationWithFirstRunRequest): Promise<CreateConversationWithFirstRunResponse>;
-  listRuns(): Promise<RunListResponse>;
+  listRuns(options?: ListRunsOptions): Promise<RunListResponse>;
   getRun(id: string): Promise<Run>;
   listRunSteps(id: string): Promise<RunStepListResponse>;
   getRunPullRequest(id: string): Promise<RunPullRequestResponse>;
@@ -377,8 +394,29 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
       return createConversationWithFirstRunResponseSchema.parse(await parseJson(response));
     },
 
-    async listRuns() {
-      const response = await fetchImplementation(urlFor(baseUrl, runCollectionPath), {
+    async listRuns(options) {
+      const url = urlFor(baseUrl, runCollectionPath);
+      if (options !== undefined) {
+        // Multi-value filters serialize as one comma-separated parameter per field, never as
+        // repeated keys (the server rejects repeated keys with 400).
+        const appendFilter = (key: string, value: string | readonly string[] | undefined): void => {
+          if (value === undefined) {
+            return;
+          }
+          url.searchParams.set(key, Array.isArray(value) ? value.join(',') : String(value));
+        };
+        appendFilter('status', options.status);
+        appendFilter('waitingOn', options.waitingOn);
+        appendFilter('workKind', options.workKind);
+        appendFilter('projectId', options.projectId);
+        if (options.limit !== undefined) {
+          url.searchParams.set('limit', String(options.limit));
+        }
+        if (options.cursor !== undefined) {
+          url.searchParams.set('cursor', options.cursor);
+        }
+      }
+      const response = await fetchImplementation(url, {
         method: 'GET',
         headers: protectedHeaders(bearerToken)
       });

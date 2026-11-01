@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 
-import { and, asc, count, desc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type {
@@ -27,7 +27,9 @@ import type {
   Publication,
   PullRequest,
   Run,
+  RunStatus,
   RunStep,
+  RunWaitingOn,
   Session,
   TestResult,
   Topic,
@@ -88,6 +90,7 @@ import type {
   LifecycleRunStepInput,
   ListOpenPullRequestsInput,
   ListRunsByTenantOptions,
+  ListRunsByTenantResult,
   MessageRepository,
   ProjectRepository,
   PublicationRepository,
@@ -110,7 +113,7 @@ import type {
   UpdatePullRequestStateInput,
   UpdateRunStepCheckpointInput
 } from '@autocatalyst/core';
-import { FeedbackConcurrentModificationError } from '@autocatalyst/core';
+import { FeedbackConcurrentModificationError, runStepDefinitions } from '@autocatalyst/core';
 
 import { ActiveRunConflictPersistenceError, isActiveRunConstraintViolation } from './active-run-conflict.js';
 import {
@@ -608,6 +611,23 @@ export function normalizeRunListLimit(limit: number | undefined): number {
   return Math.min(limit, defaultRunListLimit);
 }
 
+// Status is derived, not stored, so the status filter is translated into predicates over the
+// stored `terminal`/`currentStep` columns that exactly mirror the read mapper's derivation.
+function runStatusPredicate(status: RunStatus): SQL {
+  if (status === 'in_progress') {
+    return eq(runs.terminal, false);
+  }
+  return and(eq(runs.terminal, true), eq(runs.currentStep, status)) as SQL;
+}
+
+// waitingOn is also derived from the step catalog, so the waitingOn filter is translated into the
+// set of current-step ids that map to the requested waiting classes. This keeps filtering in SQL
+// (before page selection) instead of loading rows and filtering in memory.
+function stepsForWaitingOn(values: readonly RunWaitingOn[]): string[] {
+  const requested = new Set<RunWaitingOn>(values);
+  return runStepDefinitions.filter((definition) => requested.has(definition.waitingOn)).map((definition) => definition.id);
+}
+
 export class DrizzleRunRepository implements RunRepository {
   readonly #database;
 
@@ -679,16 +699,72 @@ export class DrizzleRunRepository implements RunRepository {
     return rows.map((row) => this.#rowToRun(row));
   }
 
-  async listByTenant(tenant: string, options: ListRunsByTenantOptions = {}): Promise<readonly Run[]> {
+  async listByTenant(tenant: string, options: ListRunsByTenantOptions = {}): Promise<ListRunsByTenantResult> {
     const limit = normalizeRunListLimit(options.limit);
+    const filters = options.filters;
+
+    // Tenant scoping is mandatory and comes from the authenticated caller, never from query input.
+    const conditions: SQL[] = [eq(runs.tenant, tenant)];
+
+    if (filters?.workKind !== undefined && filters.workKind.length > 0) {
+      conditions.push(inArray(runs.workKind, [...filters.workKind]));
+    }
+    if (filters?.projectId !== undefined && filters.projectId.length > 0) {
+      // Project filtering uses the joined conversations.projectId. A project id the tenant does not
+      // own is simply absent once the tenant predicate applies, so the page comes back empty.
+      conditions.push(inArray(conversations.projectId, [...filters.projectId]));
+    }
+    if (filters?.status !== undefined && filters.status.length > 0) {
+      const statusConditions = filters.status.map(runStatusPredicate);
+      conditions.push(statusConditions.length === 1 ? statusConditions[0]! : (or(...statusConditions) as SQL));
+    }
+    if (filters?.waitingOn !== undefined && filters.waitingOn.length > 0) {
+      const steps = stepsForWaitingOn(filters.waitingOn);
+      // No catalog step maps to the requested waiting class → no row can match.
+      conditions.push(steps.length > 0 ? inArray(runs.currentStep, steps) : sql`1 = 0`);
+    }
+    if (options.cursor !== undefined) {
+      // Continue the createdAt DESC, id DESC ordering strictly after the cursor position.
+      conditions.push(
+        or(
+          lt(runs.createdAt, options.cursor.createdAt),
+          and(eq(runs.createdAt, options.cursor.createdAt), lt(runs.id, options.cursor.id))
+        ) as SQL
+      );
+    }
+
+    // Join run → topic → conversation once for the whole page so projectId resolution and project
+    // filtering stay a constant number of queries (never one read per run).
     const rows = this.#database.drizzle
-      .select()
+      .select({ run: runs, projectId: conversations.projectId })
       .from(runs)
-      .where(eq(runs.tenant, tenant))
+      .innerJoin(topics, eq(runs.topicId, topics.id))
+      .innerJoin(conversations, eq(topics.conversationId, conversations.id))
+      .where(and(...conditions))
       .orderBy(desc(runs.createdAt), desc(runs.id))
-      .limit(limit)
+      // Request one extra row so nextCursor is emitted only when a further match actually exists.
+      .limit(limit + 1)
       .all();
-    return rows.map((row) => this.#rowToRun(row));
+
+    const page = rows.slice(0, limit);
+    const mapped = page.map((row) => this.#rowToRun(row.run, row.projectId));
+    if (rows.length > limit && page.length > 0) {
+      const last = page[page.length - 1]!;
+      return { runs: mapped, nextCursor: { createdAt: last.run.createdAt, id: last.run.id } };
+    }
+    return { runs: mapped };
+  }
+
+  async resolveProjectId(runId: string): Promise<string | null> {
+    const row = this.#database.drizzle
+      .select({ projectId: conversations.projectId })
+      .from(runs)
+      .innerJoin(topics, eq(runs.topicId, topics.id))
+      .innerJoin(conversations, eq(topics.conversationId, conversations.id))
+      .where(eq(runs.id, runId))
+      .limit(1)
+      .all()[0];
+    return row === undefined ? null : row.projectId;
   }
 
   async listNonTerminal(): Promise<readonly Run[]> {
@@ -701,7 +777,7 @@ export class DrizzleRunRepository implements RunRepository {
     return rows.map((row) => this.#rowToRun(row));
   }
 
-  #rowToRun(row: typeof runs.$inferSelect): Run {
+  #rowToRun(row: typeof runs.$inferSelect, projectId?: string | null): Run {
     const trackedIssue = parseNullableJsonValue(persistedTrackedIssueSchema, row.trackedIssueJson);
     const testingGuideResult = parseNullableJsonValue(testingGuideResultSchema, row.testingGuideResultJson);
     return validateEntity(runSchema, {
@@ -712,6 +788,7 @@ export class DrizzleRunRepository implements RunRepository {
       workKind: row.workKind,
       currentStep: row.currentStep,
       terminal: row.terminal,
+      ...(projectId === undefined || projectId === null ? {} : { projectId }),
       ...(trackedIssue === null ? {} : { trackedIssue }),
       ...(testingGuideResult === null ? {} : { testingGuideResult }),
       ...(row.failureReason === null || row.failureReason === undefined ? {} : { failureReason: row.failureReason }),

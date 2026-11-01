@@ -6,6 +6,8 @@ import type {
   NonModelPrincipal,
   Principal,
   Run,
+  RunListCursor,
+  RunStatus,
   RunPullRequestResponse,
   RunRecoveryRequest,
   RunRecoveryResponse,
@@ -30,7 +32,7 @@ import {
   type RunRecoveryDependencies
 } from './run-recovery.js';
 
-import type { ArtifactRepository, FeedbackRepository, ProjectRepository, PullRequestRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository, SessionRepository } from './domain-repositories.js';
+import type { ArtifactRepository, FeedbackRepository, ListRunsByTenantFilters, ListRunsByTenantOptions, ProjectRepository, PullRequestRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository, SessionRepository } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
 import { appendFeedbackThreadReply, createArtifactFeedback, FeedbackLifecycleError } from './feedback-lifecycle.js';
 import type { IssueReferenceIntakeResolver, ResolvedConversationCreate } from './issue-reference-intake.js';
@@ -101,10 +103,16 @@ export interface ServiceCreateConversationInput {
 export interface ServiceListRunsInput {
   readonly principal: Principal;
   readonly tenant: string;
+  readonly limit?: number;
+  /** Ordered-position cursor decoded from the opaque client cursor by the route. */
+  readonly cursor?: RunListCursor;
+  readonly filters?: ListRunsByTenantFilters;
 }
 
 export interface ServiceListRunsResult {
   readonly runs: readonly Run[];
+  /** Structured next-page cursor; the route encodes it into the opaque API `nextCursor`. */
+  readonly nextCursor?: RunListCursor;
 }
 
 export interface ServiceGetRunInput {
@@ -326,12 +334,48 @@ function requireNonModelPrincipal(principal: Principal): NonModelPrincipal {
   return principal as NonModelPrincipal;
 }
 
-function mapRunToApiRun(run: Run): Run {
+// Status is derived from terminality + current step, never stored. This mirrors the SQL status
+// predicate in the run repository so list filtering and read responses agree.
+function deriveRunStatus(run: Run): RunStatus {
+  if (!run.terminal) {
+    return 'in_progress';
+  }
+  switch (run.currentStep) {
+    case 'done':
+      return 'done';
+    case 'failed':
+      return 'failed';
+    case 'canceled':
+      return 'canceled';
+    default:
+      throw persistenceFailed(`Terminal run '${run.id}' has unexpected step '${run.currentStep}'.`);
+  }
+}
+
+// The persisted/orchestrator run shape plus the catalog-derived `waitingOn`. This is the shape run
+// events carry: it never claims the API-only `status`/`projectId` read fields.
+function withDerivedWaitingOn(run: Run): Run {
   const definition = getRunStepDefinition(run.currentStep);
   if (definition === null) {
     throw persistenceFailed(`Unknown run step '${run.currentStep}'.`);
   }
   return { ...run, waitingOn: definition.waitingOn };
+}
+
+/**
+ * The single source for API-only run row fields. Fills `waitingOn` and `status` from the step
+ * catalog, and `projectId` from either a batched list-row value already on the run (set by the
+ * repository join) or an explicit single-run lookup. Used by list, get, reply, and recover
+ * responses so those row fields agree for the same run. Run events deliberately use
+ * {@link withDerivedWaitingOn} instead so they do not claim `status`/`projectId`.
+ */
+function mapRunToApiRun(run: Run, projectId?: string): Run {
+  const resolvedProjectId = projectId ?? run.projectId;
+  return {
+    ...withDerivedWaitingOn(run),
+    status: deriveRunStatus(run),
+    ...(resolvedProjectId !== undefined ? { projectId: resolvedProjectId } : {})
+  };
 }
 
 export class DefaultControlPlaneService implements ControlPlaneService {
@@ -464,8 +508,41 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       throw new ControlPlaneServiceError('forbidden', 'Not authorized to list runs.');
     }
 
-    const runs = await this.#runs.listByTenant(input.tenant);
-    return { runs: runs.map(mapRunToApiRun) };
+    const options: ListRunsByTenantOptions = {
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(input.cursor !== undefined ? { cursor: input.cursor } : {}),
+      ...(input.filters !== undefined ? { filters: input.filters } : {})
+    };
+
+    const page = await this.#runs.listByTenant(input.tenant, options);
+    // List rows carry projectId from the repository join; the mapper keeps it.
+    const runs = page.runs.map((run) => mapRunToApiRun(run));
+    return {
+      runs,
+      ...(page.nextCursor !== undefined ? { nextCursor: page.nextCursor } : {})
+    };
+  }
+
+  /**
+   * Resolve the owning projectId for a single run through topic→conversation in a constant number
+   * of queries. A missing topic/conversation is a data-integrity error, not a silent omission.
+   * Returns undefined only when the repository implementation does not support resolution (test
+   * doubles); production persistence always implements it.
+   */
+  async #resolveRunProjectId(run: Run): Promise<string | undefined> {
+    if (this.#runs.resolveProjectId === undefined) {
+      return undefined;
+    }
+    let projectId: string | null;
+    try {
+      projectId = await this.#runs.resolveProjectId(run.id);
+    } catch (error) {
+      throw persistenceFailed('Failed to resolve run project.', error);
+    }
+    if (projectId === null) {
+      throw persistenceFailed(`Run '${run.id}' has no resolvable project (missing topic or conversation).`);
+    }
+    return projectId;
   }
 
   async getRun(input: ServiceGetRunInput): Promise<ServiceGetRunResult> {
@@ -486,7 +563,8 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       throw new ControlPlaneServiceError('forbidden', 'Run not accessible.');
     }
 
-    return { run: mapRunToApiRun(run) };
+    const projectId = await this.#resolveRunProjectId(run);
+    return { run: mapRunToApiRun(run, projectId) };
   }
 
   async listRunSteps(input: ServiceListRunStepsInput): Promise<ServiceListRunStepsResult> {
@@ -838,7 +916,8 @@ export class DefaultControlPlaneService implements ControlPlaneService {
         principal,
         request: input.request
       });
-      return runReplyResponseSchema.parse({ run: mapRunToApiRun(result.run), classification: result.classification });
+      const projectId = await this.#resolveRunProjectId(result.run);
+      return runReplyResponseSchema.parse({ run: mapRunToApiRun(result.run, projectId), classification: result.classification });
     } catch (error) {
       if (error instanceof OrchestratorError) {
         if (error.details !== null && typeof error.details === 'object' && (error.details as { code?: unknown }).code === 'unsupported_pause') {
@@ -971,6 +1050,9 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       throw persistenceFailed('Failed to reopen run.', error);
     }
 
+    // Resolve projectId once for both the recovery event and the response so they agree.
+    const recoveredProjectId = await this.#resolveRunProjectId(reopened.run);
+
     // Publish a durable/live recovery event (post-commit; non-fatal on failure).
     try {
       const event = createRunRecoveryEvent({
@@ -979,7 +1061,8 @@ export class DefaultControlPlaneService implements ControlPlaneService {
         baseKind: plan.baseKind,
         reDispatchStep: plan.reDispatchStep,
         provisioningOutcome,
-        run: mapRunToApiRun(reopened.run),
+        // Run events carry the persisted+waitingOn shape only, never status/projectId.
+        run: withDerivedWaitingOn(reopened.run),
         runStep: reopened.runStep,
         tenant: reopened.run.tenant
       });
@@ -995,6 +1078,6 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       // Dispatch admission is best-effort; the run is reopened and will be picked up on tick.
     }
 
-    return runRecoveryResponseSchema.parse({ run: mapRunToApiRun(reopened.run), mode: plan.mode });
+    return runRecoveryResponseSchema.parse({ run: mapRunToApiRun(reopened.run, recoveredProjectId), mode: plan.mode });
   }
 }

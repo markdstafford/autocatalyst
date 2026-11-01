@@ -145,8 +145,8 @@ class InMemoryRunRepository implements RunRepository {
     return [...this.#runs.values()].filter((r) => r.topicId === topicId);
   }
 
-  async listByTenant(tenant: string): Promise<readonly Run[]> {
-    return [...this.#runs.values()].filter((r) => r.tenant === tenant);
+  async listByTenant(tenant: string): Promise<{ runs: readonly Run[] }> {
+    return { runs: [...this.#runs.values()].filter((r) => r.tenant === tenant) };
   }
 
   async recordRunLifecycleStart(input: RecordRunLifecycleStartInput): Promise<RecordRunLifecycleStartResult> {
