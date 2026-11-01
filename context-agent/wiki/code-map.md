@@ -60,6 +60,33 @@ Last updated: 2026-06-22 (bug fix — production control-plane result-contract w
 
 - `docs/operators/real-dispatch.md` — startup guide for real runner dispatch: env vars, CLI flags, and a Grove-backed Claude Agent SDK provider-profile example with `authHeaderName: "api-key"` and `requestTimeoutMs: 600000`.
 - `docs/operators/codex-agent-adapter.md` — Codex agent adapter (enterprise sign-in over the Codex app-server): supported runtime version, clean-checkout install, sign-in prerequisite, `codex` / `codex-app-server` provider-profile example, implementer/reviewer filesystem permission behavior, safe diagnostics, and the opt-in live smoke procedure.
+- `docs/operators/fake-mode.md` — deterministic fake mode: `serve-fake` / `seed-fake` commands, settings and defaults (port `4010`, token `fake-mode-token`, master secret `fake-mode-master-secret`, state dir `.autocatalyst-fake/`), fixture project + issues 1–11, work-kind scenario sequences, PR/failure state files, scripted spec passages and revision, state-directory layout, and safe deletion.
+
+## Fake mode (deterministic local test harness)
+
+Enabled by `--fake-mode` / `AUTOCATALYST_FAKE_MODE`; state dir from `--fake-state-dir` /
+`AUTOCATALYST_FAKE_STATE_DIR` / `.autocatalyst-fake/`. Config parsed in
+`apps/control-plane/src/config.ts` (`parseFakeMode`, `ControlPlaneAppConfig.fakeMode`), which also
+applies fake defaults only when unset and rejects real-dispatch / provider-profile combinations.
+
+- `apps/control-plane/src/fake/` — production-included fake modules:
+  - `constants.ts` — tenant, fixture project values, scenario definitions, deterministic spec body builders.
+  - `fixtures.ts` — fixed fixture issues 1–11.
+  - `paths.ts` — state-directory path helpers + numeric-identifier validation + marker filename.
+  - `state-bootstrap.ts` — `ensureFakeState`: fixture bare remote + host clone, issues file, PR counter (starts 101), marker, subdirectories — only when absent.
+  - `scripted-claude-adapter.ts` — scripted Claude adapter composed under the real Claude key; records launch context per run id + launch sequence, injects failures, writes a committable implementer file, and delegates to the real adapter's event→result machinery.
+  - `scripted-results.ts` — deterministic contract-valid results (spec author, reviewer `satisfied`, implementer dispositions, pr.finalize) and event sequences.
+  - `launch-context.ts` — launch counter, per-run spec.author pass counter, launch-context records, failure-file consumption.
+  - `scripted-gh.ts` — scripted `executeGh` for the issue tracker (`gh issue view`) and code host (`pr create/view/list/merge/edit`) over state files.
+  - `provider-config.ts` — `ensureFakeProviderConfig`: fake secret (`fake-token`) + Claude provider profile, created only when absent.
+  - `serve-guard.ts` — `safelyClearFakeStateDir`: marker-guarded safe deletion for `serve-fake`.
+  - `seed-fake.ts` — Node CLI + Nx `seed-fake` target entrypoint; talks to the server only through `@autocatalyst/sdk`.
+  - `launch-harness.ts` — scripted `ClaudeSessionLaunch` harness (moved here from the former `fake-claude-agent-sdk-harness.spec-helper.ts`).
+- `apps/control-plane/src/server.ts` — fake-mode wiring: `ControlPlaneServerOptions.fakeMode` + `githubIssueTracker.executeGh`; registers only the scripted adapter under the real Claude key, installs scripted tracker/code-host executors, creates the fake secret/profile, and enables dispatch through the normal execution unit of work.
+- `apps/control-plane/src/main.ts` — prints `fake-mode ready port=… stateDir=… baseUrl=…` after listening.
+- `apps/control-plane/scripts/serve-fake.mjs` — `serve-fake` wrapper: marker-guarded clear, then `node dist/src/main.js --fake-mode`.
+- Nx targets in `apps/control-plane/project.json`: `serve-fake`, `seed-fake` (both `dependsOn: ["build"]`). `@autocatalyst/sdk` added to `apps/control-plane/package.json`.
+- Tests: `apps/control-plane/src/fake/scripted-results.spec.ts`, `serve-guard.spec.ts`, `fake-mode.integration.spec.ts` (in-process feature→done, anchored feedback→deterministic spec revision + comment addressing, bug→pr.human_review + spec 404, forced failure), `seed-fake.e2e.spec.ts` (all scenarios over real HTTP, duplicate exit 2, restart persistence + PR numbering), `full-wiring.e2e.spec.ts` (spawns the built `dist/src/main.js` production entrypoint in fake mode on an ephemeral port, then drives issue 1 through anchored feedback→revision→approvals→merged→done and a forced failure over SDK/HTTP + state files only), `config.spec.ts` (fake-mode cases), `main.spec.ts` (readiness line + health). The `test` target `dependsOn: ["build"]` so the production entrypoint exists before `full-wiring.e2e.spec.ts` runs. Commands: `pnpm nx run control-plane:serve-fake`, `pnpm nx run control-plane:seed-fake -- --scenario all`, `pnpm nx test control-plane`.
 
 ## Key entry points
 
