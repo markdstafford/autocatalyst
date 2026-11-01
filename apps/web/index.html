@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Autocatalyst</title>
+    <!--
+      First-paint theme script. This is the canonical copy of
+      src/theme/first-paint.ts (FIRST_PAINT_SCRIPT). It is a classic (non-module)
+      inline script with no imports and no reference to app bundle globals, so it
+      runs before the Vite module script below and sets the theme attributes ahead
+      of first paint, avoiding a light/dark flash. Keep it byte-for-byte in sync
+      with first-paint.ts; the build-order test asserts it appears here, in <head>,
+      before the module script.
+    -->
+    <script>
+      (function () {
+        try {
+          var d = document.documentElement;
+          var LIGHT = ['catppuccin-latte', 'github-light', 'solarized-light'];
+          var DARK = ['catppuccin-frappe', 'catppuccin-macchiato', 'catppuccin-mocha', 'github-dark', 'dracula'];
+          var ACC = ['rosewater', 'flamingo', 'pink', 'mauve', 'red', 'maroon', 'peach', 'yellow', 'green', 'teal', 'sky', 'sapphire', 'blue', 'lavender'];
+          var p = {};
+          try {
+            var raw = window.localStorage.getItem('autocatalyst.preferences');
+            if (raw) { p = JSON.parse(raw) || {}; }
+          } catch (e) { p = {}; }
+          function pick(list, v, fb) { return list.indexOf(v) >= 0 ? v : fb; }
+          var mode = pick(['system', 'light', 'dark'], p.themeMode, 'system');
+          var light = pick(LIGHT, p.lightTheme, 'catppuccin-latte');
+          var dark = pick(DARK, p.darkTheme, 'catppuccin-mocha');
+          var pa = pick(ACC, p.primaryAccent, 'sapphire');
+          var sa = pick(ACC, p.secondaryAccent, 'teal');
+          var prefersDark = false;
+          try { prefersDark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches); } catch (e) {}
+          var useDark = mode === 'dark' || (mode === 'system' && prefersDark);
+          d.setAttribute('data-theme', useDark ? dark : light);
+          d.setAttribute('data-theme-mode', useDark ? 'dark' : 'light');
+          d.setAttribute('data-primary-accent', pa);
+          d.setAttribute('data-secondary-accent', sa);
+        } catch (e) {}
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

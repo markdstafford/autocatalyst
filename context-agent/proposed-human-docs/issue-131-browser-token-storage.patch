@@ -1,0 +1,33 @@
+Proposed human-doc change for issue #131 — browser token storage.
+
+This patch is NOT applied by the implementation step. ADR-031 and
+context-human/concepts/ux.md are human-owned; this file records the proposed
+wording change for review through the human docs review process. It updates the
+current "the browser stores only the operator's preferences" statement to say the
+browser stores the operator's preferences AND the bearer token until the desktop
+wrapper supplies keychain storage, and that the token uses a separate storage key
+and is never displayed.
+
+To review: read the two diffs below. To apply after approval, run from the repo
+root: `git apply context-agent/proposed-human-docs/issue-131-browser-token-storage.patch`
+
+diff --git a/context-human/adrs/adr-031-web-client-architecture.md b/context-human/adrs/adr-031-web-client-architecture.md
+--- a/context-human/adrs/adr-031-web-client-architecture.md
++++ b/context-human/adrs/adr-031-web-client-architecture.md
+@@ -24,3 +24,5 @@
+ **The client is one web app that talks only to the control plane's HTTP and SSE API. It keeps no run or
+-project state of its own. The browser stores only the operator's preferences. The desktop app wraps the
++project state of its own. The browser stores the operator's preferences and the bearer token until the
++desktop wrapper supplies keychain storage. Preferences and the bearer token use separate browser storage
++keys; the token is secret material, kept under its own key and never displayed. The desktop app wraps the
+ same web app and adds device features such as a keychain, and a mobile mode shows a subset.**
+diff --git a/context-human/concepts/ux.md b/context-human/concepts/ux.md
+--- a/context-human/concepts/ux.md
++++ b/context-human/concepts/ux.md
+@@ -36,3 +36,5 @@
+ The client only talks to the control plane. It holds no run or project state of its own, and the browser
+-keeps only the operator's preferences. This is what lets a run move between devices.
++keeps the operator's preferences and the bearer token until the desktop wrapper supplies keychain storage.
++Preferences and the bearer token use separate browser storage keys; the token is secret material, kept
++under its own key and never displayed. This is what lets a run move between devices.
+

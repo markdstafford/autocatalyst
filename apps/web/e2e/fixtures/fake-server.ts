@@ -3,7 +3,8 @@
  *
  * Each server runs the real production entrypoint (`apps/control-plane/dist`) as
  * a child process in fake mode on a free port with a fresh temporary state
- * directory, serving the fixture client from its own origin. A spec reaches the
+ * directory, serving the built web client (`apps/web/dist`) from its own origin.
+ * A spec reaches the
  * server only through that entrypoint — this module imports nothing from
  * `apps/control-plane` (the `type:app` / `scope:web` tags forbid depending on
  * another app), and it never calls the `serve-fake` or `seed-fake` Nx targets,
@@ -38,7 +39,9 @@ const THIS_DIR = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(THIS_DIR, '..', '..', '..', '..');
 const CONTROL_PLANE_MAIN = join(REPO_ROOT, 'apps/control-plane/dist/src/main.js');
 const SEED_ENTRY = join(REPO_ROOT, 'apps/control-plane/dist/src/fake/seed-fake.js');
-const FIXTURE_CLIENT_DIR = join(REPO_ROOT, 'apps/web/e2e/fixture-client');
+// The default client the control plane serves is the real built web app
+// (`apps/web/dist`), produced by the `web:build` dependency of the e2e target.
+const DEFAULT_CLIENT_DIR = join(REPO_ROOT, 'apps/web/dist');
 
 const DEFAULT_BEARER_TOKEN = 'fake-mode-token';
 const HEALTH_TIMEOUT_MS = 30_000;
@@ -90,7 +93,7 @@ export interface FakeServer {
 /** Overrides for an individual server (all optional). */
 export interface StartFakeServerOptions {
   readonly bearerToken?: string;
-  /** Absolute client directory to serve. Defaults to the fixture client. */
+  /** Absolute client directory to serve. Defaults to the built web app (apps/web/dist). */
   readonly clientDir?: string;
 }
 
@@ -337,7 +340,7 @@ export async function startFakeServer(options: StartFakeServerOptions = {}): Pro
     port,
     stateDir,
     bearerToken: options.bearerToken ?? DEFAULT_BEARER_TOKEN,
-    clientDir: options.clientDir ?? FIXTURE_CLIENT_DIR
+    clientDir: options.clientDir ?? DEFAULT_CLIENT_DIR
   });
   try {
     await server.start();

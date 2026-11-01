@@ -8,9 +8,53 @@
     "scope:web"
   ],
   "targets": {
+    "build": {
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/apps/web/dist"
+      ],
+      "options": {
+        "command": "vite build",
+        "cwd": "apps/web"
+      }
+    },
+    "dev": {
+      "executor": "nx:run-commands",
+      "options": {
+        "command": "vite",
+        "cwd": "apps/web"
+      }
+    },
+    "test": {
+      "executor": "nx:run-commands",
+      "outputs": [
+        "{workspaceRoot}/coverage/apps/web"
+      ],
+      "options": {
+        "command": "vitest run",
+        "cwd": "apps/web"
+      }
+    },
+    "lint": {
+      "executor": "@nx/eslint:lint",
+      "outputs": [
+        "{options.outputFile}"
+      ],
+      "options": {
+        "lintFilePatterns": [
+          "apps/web/src/**/*.ts",
+          "apps/web/src/**/*.tsx",
+          "apps/web/vite/**/*.ts",
+          "apps/web/e2e/**/*.ts",
+          "apps/web/project.json",
+          "apps/web/package.json"
+        ]
+      }
+    },
     "e2e": {
       "executor": "nx:run-commands",
       "dependsOn": [
+        "build",
         "control-plane:build"
       ],
       "options": {

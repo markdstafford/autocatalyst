@@ -1,10 +1,14 @@
 import js from '@eslint/js';
 import * as jsoncParser from 'jsonc-eslint-parser';
 import nxPlugin from '@nx/eslint-plugin';
+import reactHooks from 'eslint-plugin-react-hooks';
 import tseslint from 'typescript-eslint';
 
 const executionInternalImportMessage =
   'Control-plane packages must import @autocatalyst/execution only through its public entry point.';
+
+const baseUiWrapperOnlyMessage =
+  'Import Base UI only through the client wrappers in apps/web/src/ui/ — screens use the wrappers, never @base-ui/react directly.';
 
 export default [
   {
@@ -13,7 +17,7 @@ export default [
   js.configs.recommended,
   ...tseslint.configs.recommended,
   {
-    files: ['**/*.ts'],
+    files: ['**/*.ts', '**/*.tsx'],
     languageOptions: {
       parserOptions: {
         projectService: true,
@@ -45,6 +49,13 @@ export default [
             {
               sourceTag: 'scope:sdk',
               onlyDependOnLibsWithTags: ['scope:contract', 'type:lib']
+            },
+            {
+              // The web client is a browser app: it may depend only on libraries
+              // (the SDK and API contract), never on another app such as
+              // apps/control-plane.
+              sourceTag: 'scope:web',
+              onlyDependOnLibsWithTags: ['type:lib']
             }
           ]
         }
@@ -134,6 +145,68 @@ export default [
           ignoredDependencies: ['@anthropic-ai/claude-agent-sdk', '@anthropic-ai/sdk', 'zod']
         }
       ]
+    }
+  },
+  // The web client declares its browser runtime deps in `dependencies` and its
+  // build/test tooling in `devDependencies`. The tooling is exercised only by
+  // config, test-setup, spec, and e2e files, so those are ignored for the
+  // production import scan, and the obsolete check is disabled (the tooling has no
+  // production import site to point at).
+  {
+    files: ['apps/web/package.json'],
+    languageOptions: {
+      parser: jsoncParser
+    },
+    plugins: { '@nx': nxPlugin },
+    rules: {
+      '@nx/dependency-checks': [
+        'error',
+        {
+          ignoredFiles: [
+            '{projectRoot}/vite.config.ts',
+            '{projectRoot}/playwright.config.ts',
+            '{projectRoot}/src/test-setup.ts',
+            '{projectRoot}/vite/**/*.ts',
+            '{projectRoot}/e2e/**',
+            '{projectRoot}/**/*.spec.ts',
+            '{projectRoot}/**/*.spec.tsx'
+          ],
+          checkObsoleteDependencies: false
+        }
+      ]
+    }
+  },
+  // React hooks rules for the web client's components.
+  {
+    files: ['apps/web/src/**/*.ts', 'apps/web/src/**/*.tsx'],
+    plugins: { 'react-hooks': reactHooks },
+    rules: {
+      'react-hooks/rules-of-hooks': 'error',
+      'react-hooks/exhaustive-deps': 'warn'
+    }
+  },
+  // Only the client-owned wrappers in apps/web/src/ui/ may import Base UI
+  // primitives directly; screens and other modules use the wrappers.
+  {
+    files: ['apps/web/src/**/*.ts', 'apps/web/src/**/*.tsx'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@base-ui/react', '@base-ui/react/*'],
+              message: baseUiWrapperOnlyMessage
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    files: ['apps/web/src/ui/**/*.ts', 'apps/web/src/ui/**/*.tsx'],
+    rules: {
+      'no-restricted-imports': 'off'
     }
   }
 ];
