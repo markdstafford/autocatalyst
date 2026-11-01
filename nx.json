@@ -27,6 +27,9 @@
     "test": {
       "inputs": ["default", "^production"],
       "cache": true
+    },
+    "e2e": {
+      "cache": false
     }
   },
   "generators": {
