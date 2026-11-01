@@ -1,7 +1,7 @@
 ---
 created: 2026-10-31
-last_updated: 2026-10-31
-status: approved
+last_updated: 2026-11-01
+status: complete
 issue: 128
 specced_by: markdstafford
 ---
