@@ -3,7 +3,7 @@
  * preferences (via the theme provider's single writer), settings open/close with
  * `Cmd+,`/`Ctrl+,` and Escape, and the sidebar → header → main → footer tab order.
  */
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
@@ -132,6 +132,35 @@ describe('settings frame shortcuts', () => {
     // Second Escape closes settings.
     fireEvent.keyDown(document.body, { key: 'Escape' });
     expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeDefined();
+  });
+});
+
+describe('shortcuts overlay', () => {
+  it('opens on "?" listing registered actions and closes on Escape', async () => {
+    renderApp('/runs');
+    expect(screen.queryByRole('dialog', { name: 'Keyboard shortcuts' })).toBeNull();
+
+    fireEvent.keyDown(document.body, { key: '?' });
+    const dialog = await screen.findByRole('dialog', { name: 'Keyboard shortcuts' });
+    // The overlay lists actions from the registry, e.g. the selection actions.
+    expect(within(dialog).getByText('Next run')).toBeDefined();
+    expect(within(dialog).getByText('Detail pane')).toBeDefined();
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    // Closing the overlay must not leave or change the runs route.
+    expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeDefined();
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog', { name: 'Keyboard shortcuts' })).toBeNull();
+    });
+  });
+});
+
+describe('detail pane toggle off the runs route', () => {
+  it('"]" on settings does not write the pane preference', () => {
+    renderApp('/settings/connection');
+    const before = readPreferences().detailPaneVisible;
+    fireEvent.keyDown(document.body, { key: ']' });
+    expect(readPreferences().detailPaneVisible).toBe(before);
   });
 });
 
