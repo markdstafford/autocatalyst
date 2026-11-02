@@ -352,8 +352,9 @@ Connection-lost indicator:
 1. Add shell-level connection state, exposed by a small context read by the footer, with two independent booleans: `healthLost` and `listLost`.
 2. Refactor `HealthIndicator` so health checks only write `healthLost`.
 3. The run list module writes only `listLost`: set it on non-401 initial/page/poll failures that should show stale or unavailable list data, and clear it only after a successful list request/poll/page retry as appropriate.
-4. The footer shows the red dot and "Connection lost" when `healthLost || listLost`. Health success must not clear `listLost`; list success must not clear `healthLost`.
-5. Existing #132 health indicator tests continue to pass, and new tests cover health ok plus poll failing, poll ok plus health failing, and each source clearing only its own flag.
+4. The list module clears `listLost` when the runs page unmounts, because no list source is running off the runs route to maintain that flag. While the operator is off the runs route, the footer follows `healthLost` alone.
+5. The footer shows the red dot and "Connection lost" when `healthLost || listLost`. Health success must not clear `listLost`; list success must not clear `healthLost`; runs-route unmount clears only `listLost`.
+6. Existing #132 health indicator tests continue to pass, and new tests cover health ok plus poll failing, poll ok plus health failing, each source clearing only its own flag, and navigating from Runs to Settings clearing `listLost` so the indicator follows `healthLost` alone.
 
 Polling:
 
@@ -413,7 +414,7 @@ Documentation updates:
 
 ### 6. Testing plan
 
-- Unit/component tests with a scripted SDK client cover table cells, missing tracked issue fallback, status and waiting mappings, project name joining and bounded refetch, no-token connect state, selection rules, keyboard focus/guard rules, action registry overlay/tooltips, polling timers, hidden-page pause, no-overlap polling, paging triggers, dedupe, vanished-selection rules, loading/empty/error states, shell connection-state flags, and preference try/catch behavior.
+- Unit/component tests with a scripted SDK client cover table cells, missing tracked issue fallback, status and waiting mappings, project name joining and bounded refetch, no-token connect state, selection rules, keyboard focus/guard rules, action registry overlay/tooltips, polling timers, hidden-page pause, no-overlap polling, paging triggers, dedupe, vanished-selection rules, loading/empty/error states, shell connection-state flags including runs-page unmount clearing `listLost`, and preference try/catch behavior.
 - Playwright tests run against fake mode on the production path with the built client served by the control plane. They seed scenarios, assert rows and exactly one selection, drive `j`, `k`, arrows, click/Enter selection, reload, poll in a new run, check no-runs state after creating a project, and verify geometry in light/dark with sidebar open/closed.
 - Existing #132 shell tests must still pass with shortcuts moved into the registry.
 - Targeted validation for implementation should include `pnpm nx test web`, `pnpm nx lint web`, `pnpm nx build web`, and `pnpm nx run web:e2e` where local Playwright browser support is available.
@@ -563,8 +564,9 @@ Documentation updates:
       - [ ] Non-401 poll failures keep previous rows on screen.
       - [ ] Footer list zone shows red dot and "Connection lost" when `healthLost || listLost`.
       - [ ] Health success does not clear `listLost`, and list success does not clear `healthLost`.
-      - [ ] Tests cover health ok plus poll failing, poll ok plus health failing, and each source clearing only its own flag.
-      - [ ] Next successful list poll clears the poll-driven `listLost` state.
+      - [ ] The list module clears `listLost` when the runs page unmounts, so Settings and other non-runs routes follow `healthLost` alone.
+      - [ ] Tests cover health ok plus poll failing, poll ok plus health failing, each source clearing only its own flag, and navigating from Runs to Settings with `listLost` set clearing the list flag.
+      - [ ] Next successful list poll clears the poll-driven `listLost` state while the runs page remains mounted.
       - [ ] 401 navigates to `CONNECTION_PATH`, stops polling on unmount, and is not shown as connection lost.
     - **Dependencies**: "Task: Implement non-overlapping polling"
   - [ ] **Task: Implement automatic paging and deduplication**
