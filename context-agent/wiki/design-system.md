@@ -282,7 +282,7 @@ horizontal padding, max width 12rem with truncation. Active is `--color-primary`
 - Hover is `--color-hover-row`. The selected row is `--color-surface` with `aria-selected="true"`, and it
   is the only row with that state. Rows are focusable, and `Enter` selects.
 - A row's "..." action button is hidden until the row is hovered or has focus inside it.
-- The project column is off by default.
+- The project column shows until a view can choose its properties, and is off by default after that.
 
 **Group headers.** A group header spans the row width, is 28 px high, `--color-mantle` fill, with a chevron,
 the label (`--text-xs`, weight 500, `--color-subtext`), and a `tabular-nums` count. It sticks under the

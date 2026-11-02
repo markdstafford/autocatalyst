@@ -1,15 +1,17 @@
 /**
- * Footer health indicator.
+ * Footer connection indicator.
  *
- * Calls `getHealth` on load, every 5 seconds, and when the window regains focus.
- * `/health` needs no bearer token, so this never depends on authorization: a 401
- * from a protected call elsewhere flips the provider's authorization state but does
- * not touch this indicator. A healthy control plane shows nothing; a degraded status
- * or a failed request shows an 8 px red dot and "Connection lost" in red.
+ * It polls the unauthenticated `/health` route on load, every 5 seconds, and on
+ * window focus, and writes only the `healthLost` flag of the shell connection state
+ * (a protected-route 401 never reaches here). It renders "Connection lost" whenever
+ * *either* connection flag is set — `healthLost || listLost` — so the run list's
+ * `listLost` shows through the same indicator. Used without a connection-state
+ * provider (isolated tests), it falls back to local health state.
  */
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 
 import { useControlPlaneClient } from '../client/client-provider.js';
+import { useConnectionStateOptional } from './connection-state.js';
 
 const DEFAULT_INTERVAL_MS = 5000;
 
@@ -20,7 +22,12 @@ export interface HealthIndicatorProps {
 
 export function HealthIndicator({ intervalMs = DEFAULT_INTERVAL_MS }: HealthIndicatorProps): ReactNode {
   const client = useControlPlaneClient();
-  const [lost, setLost] = useState(false);
+  const connection = useConnectionStateOptional();
+  const [localLost, setLocalLost] = useState(false);
+
+  // Read the latest setter through a ref so the poll effect never re-subscribes.
+  const setHealthLostRef = useRef<(lost: boolean) => void>(setLocalLost);
+  setHealthLostRef.current = connection?.setHealthLost ?? setLocalLost;
 
   useEffect(() => {
     let cancelled = false;
@@ -28,13 +35,13 @@ export function HealthIndicator({ intervalMs = DEFAULT_INTERVAL_MS }: HealthIndi
       try {
         const health = await client.getHealth();
         if (!cancelled) {
-          setLost(health.status !== 'ok');
+          setHealthLostRef.current(health.status !== 'ok');
         }
       } catch {
         // Network/unreachable failure counts as lost; a protected-route 401 never
         // reaches here because getHealth is unauthenticated.
         if (!cancelled) {
-          setLost(true);
+          setHealthLostRef.current(true);
         }
       }
     }
@@ -52,6 +59,8 @@ export function HealthIndicator({ intervalMs = DEFAULT_INTERVAL_MS }: HealthIndi
       window.removeEventListener('focus', onFocus);
     };
   }, [client, intervalMs]);
+
+  const lost = connection !== undefined ? connection.healthLost || connection.listLost : localLost;
 
   if (!lost) {
     return null;

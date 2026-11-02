@@ -1,0 +1,48 @@
+/**
+ * The client-owned dialog wrapper around Base UI's `Dialog` parts.
+ *
+ * App code imports this wrapper and never `@base-ui/react` directly (enforced by the
+ * `src/ui/`-only rule and the import-conventions test), the same convention the
+ * `Tooltip` and `Button` wrappers follow. Styling is token-only. The dialog is
+ * controlled through `open`/`onOpenChange`; Base UI supplies focus trapping and
+ * Escape-to-close.
+ */
+import { Dialog as BaseDialog } from '@base-ui/react/dialog';
+import type { ReactNode } from 'react';
+
+export interface DialogProps {
+  readonly open: boolean;
+  onOpenChange(open: boolean): void;
+  /** Accessible dialog title. */
+  readonly title: string;
+  /** Optional one-line description under the title. */
+  readonly description?: string;
+  readonly children: ReactNode;
+  /** Extra utility classes merged onto the popup. */
+  readonly className?: string;
+}
+
+const BACKDROP_CLASSES = 'fixed inset-0 z-40 bg-crust/70 transition-opacity duration-enter';
+const POPUP_CLASSES =
+  'fixed left-1/2 top-1/2 z-50 max-h-[80vh] w-[min(92vw,32rem)] -translate-x-1/2 -translate-y-1/2 ' +
+  'overflow-auto rounded-sm border border-border bg-background p-4 shadow-dialog ' +
+  'focus-visible:outline-none';
+
+export function Dialog({ open, onOpenChange, title, description, children, className }: DialogProps): ReactNode {
+  return (
+    <BaseDialog.Root open={open} onOpenChange={(next) => onOpenChange(next)}>
+      <BaseDialog.Portal>
+        <BaseDialog.Backdrop className={BACKDROP_CLASSES} />
+        <BaseDialog.Popup className={`${POPUP_CLASSES} ${className ?? ''}`.trim()}>
+          <BaseDialog.Title className="text-md font-medium text-text">{title}</BaseDialog.Title>
+          {description !== undefined ? (
+            <BaseDialog.Description className="mt-1 text-sm text-subtext">
+              {description}
+            </BaseDialog.Description>
+          ) : null}
+          <div className="mt-3">{children}</div>
+        </BaseDialog.Popup>
+      </BaseDialog.Portal>
+    </BaseDialog.Root>
+  );
+}

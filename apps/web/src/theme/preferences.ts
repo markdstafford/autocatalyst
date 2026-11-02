@@ -49,6 +49,32 @@ export interface Preferences {
    * preferences object so a single guarded write persists both theme and layout.
    */
   readonly sidebarOpen: boolean;
+  /** Whether the side detail pane is shown (#134). */
+  readonly detailPaneVisible: boolean;
+  /** Side detail pane width in px (#134), clamped to the design-system range on read. */
+  readonly sidePaneWidthPx: number;
+}
+
+// Side detail pane dimensions (design-system `--width-pane`).
+export const PANE_WIDTH_DEFAULT = 440;
+export const PANE_WIDTH_MIN = 320;
+export const PANE_WIDTH_MAX = 720;
+/** The pane takes at most this share of the main area so the list keeps room. */
+export const PANE_MAX_MAIN_SHARE = 0.6;
+
+/**
+ * Clamp a pane width to the design-system minimum/maximum, and — when a main-area
+ * width is known — to the maximum share of that area. Non-finite input falls back to
+ * the default.
+ */
+export function clampPaneWidth(width: number, mainAreaWidth?: number): number {
+  const base = Number.isFinite(width) ? width : PANE_WIDTH_DEFAULT;
+  let max = PANE_WIDTH_MAX;
+  if (mainAreaWidth !== undefined && Number.isFinite(mainAreaWidth) && mainAreaWidth > 0) {
+    max = Math.min(max, Math.floor(mainAreaWidth * PANE_MAX_MAIN_SHARE));
+  }
+  const lowerBounded = Math.max(PANE_WIDTH_MIN, base);
+  return Math.min(max, lowerBounded);
 }
 
 export const DEFAULT_PREFERENCES: Preferences = {
@@ -59,7 +85,9 @@ export const DEFAULT_PREFERENCES: Preferences = {
   secondaryAccent: 'teal',
   bodyFont: 'inter',
   monoFont: 'fira-code',
-  sidebarOpen: true
+  sidebarOpen: true,
+  detailPaneVisible: true,
+  sidePaneWidthPx: PANE_WIDTH_DEFAULT
 };
 
 /** Font stacks keyed by the stored font id. */
@@ -84,6 +112,11 @@ function boolOr(candidate: unknown, fallback: boolean): boolean {
   return typeof candidate === 'boolean' ? candidate : fallback;
 }
 
+/** Validate a finite number, falling back to `fallback` otherwise. */
+function numberOr(candidate: unknown, fallback: number): number {
+  return typeof candidate === 'number' && Number.isFinite(candidate) ? candidate : fallback;
+}
+
 /**
  * Validate an arbitrary parsed value into a complete `Preferences`, falling back
  * field-by-field to the defaults. Always returns a valid object.
@@ -98,7 +131,9 @@ export function validatePreferences(input: unknown): Preferences {
     secondaryAccent: oneOf(ACCENT_IDS, source['secondaryAccent']) ?? DEFAULT_PREFERENCES.secondaryAccent,
     bodyFont: oneOf(BODY_FONT_IDS, source['bodyFont']) ?? DEFAULT_PREFERENCES.bodyFont,
     monoFont: oneOf(MONO_FONT_IDS, source['monoFont']) ?? DEFAULT_PREFERENCES.monoFont,
-    sidebarOpen: boolOr(source['sidebarOpen'], DEFAULT_PREFERENCES.sidebarOpen)
+    sidebarOpen: boolOr(source['sidebarOpen'], DEFAULT_PREFERENCES.sidebarOpen),
+    detailPaneVisible: boolOr(source['detailPaneVisible'], DEFAULT_PREFERENCES.detailPaneVisible),
+    sidePaneWidthPx: clampPaneWidth(numberOr(source['sidePaneWidthPx'], DEFAULT_PREFERENCES.sidePaneWidthPx))
   };
 }
 

@@ -3,19 +3,24 @@
  * dividers.
  *
  * Zones left to right: Left control (sidebar toggle), Sidebar (status, ends at the
- * sidebar's right edge; zero width when closed), List (the health connection item;
- * spans the main area before #134 adds a list), Detail pane (zero width before #134),
- * and Right control (the disabled detail pane toggle). Each zone is a `role="group"`
- * with its zone name as the accessible label. The control zones keep their width and
- * position across sidebar/pane states; only the sidebar zone animates.
+ * sidebar's right edge; zero width when closed), List (the connection indicator;
+ * spans the main area), Detail pane (follows the pane's left edge; zero width when
+ * the pane is hidden or off the runs route), and Right control (the detail pane
+ * toggle). Each zone is a `role="group"` labeled by its name. The control zones keep
+ * their width and position across sidebar/pane states; only the sidebar and detail
+ * pane zones animate.
+ *
+ * Tooltip labels and key hints come from the action registry, so the footer never
+ * hard-codes a shortcut key.
  */
 import { PanelLeft, PanelRight } from 'lucide-react';
 import type { CSSProperties, ReactNode } from 'react';
 
 import { Button } from '../ui/button.js';
 import { Tooltip } from '../ui/tooltip.js';
+import { actionTooltipKey, getAction } from './action-registry.js';
 import { HealthIndicator } from './health-indicator.js';
-import { isMacPlatform, keyHintFor } from './shell-keys.js';
+import { isMacPlatform } from './key-utils.js';
 
 interface FooterZoneProps {
   readonly name: string;
@@ -40,20 +45,45 @@ function FooterZone({ name, className, style, children }: FooterZoneProps): Reac
 export interface FooterProps {
   readonly sidebarOpen: boolean;
   onToggleSidebar(): void;
+  /** Whether the detail pane toggle is enabled (true on the runs route). */
+  readonly paneEnabled?: boolean;
+  /** Whether the detail pane is currently shown. */
+  readonly paneVisible?: boolean;
+  /** Current pane width in px, used to size the detail pane zone. */
+  readonly paneWidthPx?: number;
+  /** Toggle the detail pane (only meaningful when enabled). */
+  onTogglePane?(): void;
 }
 
-export function Footer({ sidebarOpen, onToggleSidebar }: FooterProps): ReactNode {
+export function Footer({
+  sidebarOpen,
+  onToggleSidebar,
+  paneEnabled = false,
+  paneVisible = false,
+  paneWidthPx = 0,
+  onTogglePane
+}: FooterProps): ReactNode {
   const isMac = isMacPlatform();
   // The sidebar zone fills the remainder of the sidebar width after the left control
   // zone, so its right edge equals the sidebar's right edge. Zero when closed.
   const sidebarZoneStyle: CSSProperties = {
     width: sidebarOpen ? 'calc(var(--width-sidebar) - var(--width-footer-control))' : '0px'
   };
+  // The detail pane zone mirrors the sidebar zone on the right: its left edge equals
+  // the pane's left edge, ending where the right control zone starts. Zero width when
+  // the pane is hidden or off the runs route.
+  const paneZoneWidth =
+    paneEnabled && paneVisible
+      ? `calc(${paneWidthPx}px - var(--width-footer-control))`
+      : '0px';
+
+  const sidebarLabel = getAction('sidebar-toggle').name;
+  const paneLabel = getAction('pane-toggle').name;
 
   return (
     <footer className="flex h-footer border-t border-border bg-mantle">
       <FooterZone name="Left control" className="w-footer-control shrink-0">
-        <Tooltip label="Sidebar" keyHint={keyHintFor('sidebar-toggle', isMac)}>
+        <Tooltip label={sidebarLabel} keyHint={actionTooltipKey('sidebar-toggle', isMac)}>
           <Button
             variant="secondary"
             size="control-sm"
@@ -76,16 +106,22 @@ export function Footer({ sidebarOpen, onToggleSidebar }: FooterProps): ReactNode
         <HealthIndicator />
       </FooterZone>
 
-      <FooterZone name="Detail pane" style={{ width: '0px' }} className="overflow-hidden" />
+      <FooterZone
+        name="Detail pane"
+        className="overflow-hidden transition-[width] duration-layout"
+        style={{ width: paneZoneWidth }}
+      />
 
       <FooterZone name="Right control" className="w-footer-control shrink-0">
-        <Tooltip label="Detail pane" keyHint={keyHintFor('pane-toggle', isMac)}>
+        <Tooltip label={paneLabel} keyHint={actionTooltipKey('pane-toggle', isMac)}>
           <Button
             variant="secondary"
             size="control-sm"
             aria-label="Toggle detail pane"
-            aria-disabled
-            className="aspect-square border-0 bg-transparent px-0 text-subtext"
+            {...(paneEnabled
+              ? { onClick: onTogglePane }
+              : { 'aria-disabled': true })}
+            className="aspect-square border-0 bg-transparent px-0 text-subtext hover:bg-hover hover:text-text"
           >
             <PanelRight aria-hidden size={14} />
           </Button>

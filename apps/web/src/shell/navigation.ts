@@ -14,6 +14,20 @@ export function isSettingsPath(pathname: string): boolean {
   return pathname === SETTINGS_PATH || pathname.startsWith(`${SETTINGS_PATH}/`);
 }
 
+/**
+ * Whether a pathname is the runs destination: the collection (`/runs`) or a
+ * selected run (`/runs/:runId`). The detail pane and its footer zone are enabled
+ * only on this route.
+ */
+export function isRunsPath(pathname: string): boolean {
+  return pathname === RUNS_PATH || pathname.startsWith(`${RUNS_PATH}/`);
+}
+
+/** The address for a selected run, e.g. `/runs/run-123`. */
+export function runPath(runId: string): string {
+  return `${RUNS_PATH}/${runId}`;
+}
+
 export interface HeaderContent {
   /** Breadcrumb shown before the title on deeper views; absent on top-level views. */
   readonly breadcrumb?: string;

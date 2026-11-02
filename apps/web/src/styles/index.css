@@ -47,6 +47,9 @@
   --height-pane-bar: 2.25rem;
   --height-footer: 1.75rem;
   --width-resize-handle: 0.25rem;
+  --width-pane: 440px;
+  --width-pane-min: 320px;
+  --width-pane-max: 720px;
   --width-comment-column: 11rem;
   --width-reading-column: 46rem;
   --width-settings-column: 42rem;
