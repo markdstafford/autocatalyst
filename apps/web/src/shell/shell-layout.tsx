@@ -13,19 +13,43 @@
  * overlay that covers the header and footer without moving them. The settings frame
  * swaps the sidebar content and the main area while keeping the footer unchanged.
  *
- * Keyboard: `[` toggles the sidebar, `Cmd+,`/`Ctrl+,` toggles settings from
- * anywhere, Escape closes the hover sidebar first and then settings, and `]` is bound
- * but no-ops until #134 enables the detail pane.
+ * Detail pane: on the runs route the footer's detail-pane toggle and `]` show and hide
+ * the side pane, and its shown/hidden state and width ride on the same guarded
+ * preferences object. The shell owns that state and hands it to the runs route through
+ * the outlet context ({@link RunsOutletContext}); off the runs route the toggle and `]`
+ * are inert and write nothing, and the footer's detail-pane zone is zero width.
+ *
+ * Keyboard: `[` toggles the sidebar, `Cmd+,`/`Ctrl+,` toggles settings from anywhere,
+ * Escape closes the top layer (shortcuts overlay, then hover sidebar, then settings),
+ * `]` toggles the detail pane on the runs route, and `?` opens the shortcuts overlay.
+ * All keys flow through the action registry.
  */
 import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 
+import { hasBearerToken } from '../auth/token-store.js';
+import { clampPaneWidth } from '../theme/preferences.js';
 import { useTheme } from '../theme/theme-provider.js';
+import { ConnectionStateProvider } from './connection-state.js';
 import { Footer } from './footer.js';
 import { Header } from './header.js';
-import { CONNECTION_PATH, RUNS_PATH, isSettingsPath } from './navigation.js';
+import { CONNECTION_PATH, RUNS_PATH, isRunsPath, isSettingsPath } from './navigation.js';
+import { ShortcutsOverlay } from './shortcuts-overlay.js';
 import { Sidebar, type SidebarMode } from './sidebar.js';
 import { useShellKeys } from './use-shell-keys.js';
+
+/**
+ * State the shell shares with the runs route so the list and the footer agree on the
+ * detail pane. Provided via React Router's outlet context.
+ */
+export interface RunsOutletContext {
+  /** Whether the side detail pane is shown. */
+  readonly detailPaneVisible: boolean;
+  /** Current side-pane width in px. */
+  readonly sidePaneWidthPx: number;
+  /** Persist a new pane width, clamped to the design-system range and the main area. */
+  setPaneWidth(nextWidthPx: number, mainAreaWidthPx?: number): void;
+}
 
 export function ShellLayout(): ReactNode {
   const { preferences, updatePreferences } = useTheme();
@@ -33,8 +57,14 @@ export function ShellLayout(): ReactNode {
   const location = useLocation();
   const navigate = useNavigate();
   const settings = isSettingsPath(location.pathname);
+  const paneEnabled = isRunsPath(location.pathname);
+  // The pane only renders once a run list exists, i.e. with a stored token. Without
+  // one the runs route shows the connect prompt, so the footer's detail-pane zone must
+  // stay zero width even though the toggle itself is enabled on the route.
+  const paneVisible = paneEnabled && hasBearerToken() && preferences.detailPaneVisible;
 
   const [hoverOpen, setHoverOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const sidebarRef = useRef<HTMLElement | null>(null);
 
   // Remember the route to return to when settings closes. Updated whenever the
@@ -62,6 +92,21 @@ export function ShellLayout(): ReactNode {
     navigate(returnRouteRef.current || RUNS_PATH);
   }, [navigate]);
 
+  const togglePane = useCallback((): void => {
+    // Off the runs route the pane does not exist, so `]` writes nothing.
+    if (!paneEnabled) {
+      return;
+    }
+    updatePreferences({ detailPaneVisible: !preferences.detailPaneVisible });
+  }, [paneEnabled, preferences.detailPaneVisible, updatePreferences]);
+
+  const setPaneWidth = useCallback(
+    (nextWidthPx: number, mainAreaWidthPx?: number): void => {
+      updatePreferences({ sidePaneWidthPx: clampPaneWidth(nextWidthPx, mainAreaWidthPx) });
+    },
+    [updatePreferences]
+  );
+
   useShellKeys({
     toggleSidebar: () => {
       setSidebarOpen(!sidebarOpen);
@@ -74,11 +119,18 @@ export function ShellLayout(): ReactNode {
       }
     },
     closeLayer: () => {
-      if (hoverOpen) {
+      if (shortcutsOpen) {
+        setShortcutsOpen(false);
+      } else if (hoverOpen) {
         setHoverOpen(false);
       } else if (settings) {
         closeSettings();
       }
+    },
+    // Only bind the pane toggle on the runs route so `]` is a true no-op elsewhere.
+    ...(paneEnabled ? { togglePane } : {}),
+    openShortcuts: () => {
+      setShortcutsOpen(true);
     }
   });
 
@@ -91,45 +143,59 @@ export function ShellLayout(): ReactNode {
     }
   }, []);
 
+  const outletContext: RunsOutletContext = {
+    detailPaneVisible: preferences.detailPaneVisible,
+    sidePaneWidthPx: preferences.sidePaneWidthPx,
+    setPaneWidth
+  };
+
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-background text-text">
-      <div className="flex min-h-0 flex-1">
-        <Sidebar
-          ref={sidebarRef}
-          mode={sidebarMode}
-          settings={settings}
-          onCloseSettings={closeSettings}
-          {...(sidebarMode === 'overlay' ? { onPointerLeave: handleOverlayPointerLeave } : {})}
-        />
+    <ConnectionStateProvider>
+      <div className="flex h-screen w-screen flex-col overflow-hidden bg-background text-text">
+        <div className="flex min-h-0 flex-1">
+          <Sidebar
+            ref={sidebarRef}
+            mode={sidebarMode}
+            settings={settings}
+            onCloseSettings={closeSettings}
+            {...(sidebarMode === 'overlay' ? { onPointerLeave: handleOverlayPointerLeave } : {})}
+          />
 
-        <div className="flex min-w-0 flex-1 flex-col">
-          <Header />
-          <main className="min-h-0 flex-1 overflow-hidden bg-background">
-            <Outlet />
-          </main>
+          <div className="flex min-w-0 flex-1 flex-col">
+            <Header />
+            <main className="min-h-0 flex-1 overflow-hidden bg-background">
+              <Outlet context={outletContext} />
+            </main>
+          </div>
         </div>
-      </div>
 
-      <Footer
-        sidebarOpen={sidebarOpen}
-        onToggleSidebar={() => {
-          setSidebarOpen(!sidebarOpen);
-        }}
-      />
-
-      {/* Left-edge hover strip: only while the sidebar is closed and not already
-          shown as an overlay. Ends at the footer top so the left control stays
-          reachable. */}
-      {!sidebarOpen && !hoverOpen ? (
-        <div
-          data-testid="sidebar-hover-zone"
-          className="fixed left-0 top-0 z-30 w-hover-zone"
-          style={{ height: 'calc(100vh - var(--height-footer))' }}
-          onPointerEnter={() => {
-            setHoverOpen(true);
+        <Footer
+          sidebarOpen={sidebarOpen}
+          onToggleSidebar={() => {
+            setSidebarOpen(!sidebarOpen);
           }}
+          paneEnabled={paneEnabled}
+          paneVisible={paneVisible}
+          paneWidthPx={preferences.sidePaneWidthPx}
+          onTogglePane={togglePane}
         />
-      ) : null}
-    </div>
+
+        {/* Left-edge hover strip: only while the sidebar is closed and not already
+            shown as an overlay. Ends at the footer top so the left control stays
+            reachable. */}
+        {!sidebarOpen && !hoverOpen ? (
+          <div
+            data-testid="sidebar-hover-zone"
+            className="fixed left-0 top-0 z-30 w-hover-zone"
+            style={{ height: 'calc(100vh - var(--height-footer))' }}
+            onPointerEnter={() => {
+              setHoverOpen(true);
+            }}
+          />
+        ) : null}
+
+        <ShortcutsOverlay open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
+      </div>
+    </ConnectionStateProvider>
   );
 }

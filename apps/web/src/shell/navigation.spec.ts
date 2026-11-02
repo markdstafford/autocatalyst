@@ -3,7 +3,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { headerContentForPath, isSettingsPath } from './navigation.js';
+import { headerContentForPath, isRunsPath, isSettingsPath, runPath } from './navigation.js';
 
 describe('headerContentForPath', () => {
   it('shows only a title on the top-level Runs view', () => {
@@ -24,5 +24,20 @@ describe('isSettingsPath', () => {
     expect(isSettingsPath('/settings/connection')).toBe(true);
     expect(isSettingsPath('/runs')).toBe(false);
     expect(isSettingsPath('/')).toBe(false);
+  });
+});
+
+describe('isRunsPath', () => {
+  it('detects the runs collection and a selected run', () => {
+    expect(isRunsPath('/runs')).toBe(true);
+    expect(isRunsPath('/runs/run-123')).toBe(true);
+    expect(isRunsPath('/settings')).toBe(false);
+    expect(isRunsPath('/')).toBe(false);
+  });
+});
+
+describe('runPath', () => {
+  it('builds the address for a selected run', () => {
+    expect(runPath('run-123')).toBe('/runs/run-123');
   });
 });
