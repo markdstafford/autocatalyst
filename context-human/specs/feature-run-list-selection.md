@@ -41,7 +41,7 @@ When another run appears at the top, Enzo sees it on the next poll. If the serve
 
 ### Navigate the collection and pane
 
-Dani uses the table as one tab stop. Arrow keys move only while focus is in the list, while `j` and `k` follow the global action registry guard rules and never fire from text entry, editable content, or while a menu or dialog is open. She opens the shortcuts overlay with `?` and sees the registered list navigation and shell actions.
+Dani uses the table as one tab stop. The selected row is the list's roving tab stop, and `j`, `k`, Down, and Up move selection only while focus is inside the list; moving selection by key moves focus with it. Initial load, polls, and paging never steal focus, so browser tests focus the list first with Tab or a row click before pressing navigation keys. The single-key registry guards still apply, so `j` and `k` do nothing from text entry, editable content, outside the list, or while a menu or dialog is open.
 
 When she needs more room, she presses `]` to hide the detail pane, presses it again to show the pane, and drags or keyboard-resizes the separator. The footer detail-pane zone follows the pane edge, and the pane, handle, table header, and footer geometry continue to align in light and dark themes with the sidebar open or closed.
 
@@ -168,21 +168,21 @@ graph TD
 
 #### Detail pane toggle and separator
 
-- The footer right control zone's detail pane toggle is enabled. Its tooltip reads "Detail pane (])".
-- The toggle and `]` hide and show the pane. Shown/hidden state and width are stored in preferences, and every storage access is guarded with try/catch.
+- On the runs route, the footer right control zone's detail pane toggle is enabled. Its tooltip reads "Detail pane (])". Off the runs route, the footer detail pane zone is zero width, the toggle keeps its final position but is `aria-disabled` as in #132, and `]` is a no-op that does not write preferences.
+- On the runs route, the toggle and `]` hide and show the pane. With the pane hidden, the footer detail pane zone is zero width and the toggle stays enabled. Shown/hidden state and width are stored in preferences, and every storage access is guarded with try/catch.
 - The resize handle has `role="separator"` and `aria-orientation="vertical"`. Arrow keys resize by 16 px; dragging resizes continuously; width clamps to design-system min, max, and maximum share of the main area.
 - The handle uses `--color-border-subtle` by default and `--color-primary` on hover, focus, and drag.
 
 #### Action registry and shortcuts overlay
 
 - A client registry owns each action once: name, key, applies-when rule, and tooltip text. Components do not declare their own keys.
-- Registered shell actions: `[`, `]`, `Cmd+,` or `Ctrl+,`, and Escape. Registered selection actions: `j` and `k`. The overlay-opening `?` action also reads from the registry so the overlay can list all registered actions and no hard-coded extras.
+- Registered shell actions: `[`, `]`, `Cmd+,` or `Ctrl+,`, and Escape. Registered selection actions: `j` and `k`, with applies-when rules requiring focus inside the run list plus the shared single-key guards. The overlay-opening `?` action also reads from the registry so the overlay can list all registered actions and no hard-coded extras.
 - The shortcuts overlay is built on a new client `Dialog` wrapper around Base UI following the wrapper convention. It opens with `?`, closes with Escape, and displays platform-appropriate key caps.
 - Single-key action guard rules block actions in input, textarea, select, editable elements, while a menu or dialog is open, and with modifiers held. The settings toggle remains available everywhere.
 
 #### Loading, empty, and error states
 
-- First-page loading shows a loading state in the list region and not the empty state.
+- Without a stored bearer token, the runs page shows the existing connect empty state, makes no `listRuns` or `listProjects` request, and starts no poll timer; existing no-token tests keep passing. With a saved connection, first-page loading shows a loading state in the list region and not the empty state.
 - No runs shows the design-system no-runs empty state with a title and one line saying a run starts from a tracked issue. It omits a Start a run button.
 - First-page failure shows that runs could not be loaded and that the client will try again on the next poll, alongside the connection-lost indicator.
 
@@ -205,7 +205,7 @@ graph TD
 - Keep browser preferences limited to UI preferences: detail pane visibility and width, using the existing guarded preference pattern.
 - Avoid overlapping network work for polls and page loads.
 - Keep SDK interaction injectable through a scripted SDK client in component tests.
-- Preserve #132 shell behavior while replacing temporary shortcut hooks with the action registry.
+- Preserve #132 shell behavior while replacing temporary shortcut hooks with the action registry, including disabled off-route detail-pane behavior.
 
 #### Non-goals
 
@@ -244,10 +244,10 @@ graph TD
 - `runs` route/page: Owns layout composition for table, pane, separator, and empty/loading/error states. Extends routing to `/runs/:runId`; `/runs` selects the first loaded row and replaces the address.
 - Run list state module: Exports `RUN_LIST_PAGE_SIZE = 50` and `RUN_LIST_POLL_INTERVAL_MS = 5000` from one module, with a comment explaining polling is used because the API has no change feed. Provides loading, polling, paging, project-name cache, selection reconciliation, and request pass-through.
 - Run table components: Render cells, row focus/selection behavior, sticky header, and intersection/end-of-list paging trigger.
-- Project-name joiner: Fetches `listProjects` once during load and refetches when a poll or page returns a `projectId` not in the known map. Missing project ids render a dash.
-- Action registry: Replaces #132's temporary shell key hooks. Defines action descriptors and guard predicates; handlers bind in shell/runs scopes.
+- Project-name joiner: Fetches `listProjects` once during load and refetches when a poll or page returns a defined `projectId` not in the known map and not already looked up since the last project fetch. Missing project ids render a dash; undefined `projectId` never triggers refetch.
+- Action registry: Replaces #132's temporary shell key hooks. Defines action descriptors and guard predicates; `j`/`k` handlers bind only when focus is inside the run list, while shell handlers bind at the shell scope.
 - `Dialog` wrapper: Thin client-owned wrapper around Base UI Dialog, used by shortcuts overlay and future dialogs.
-- Detail pane components: Pane region, empty bar, toggle wiring, separator, width clamping, and footer zone alignment.
+- Detail pane components: Pane region, empty bar, toggle wiring, separator, width clamping, and footer zone alignment on the runs route; off the runs route the footer detail pane zone is zero width and the toggle/`]` remain inert.
 
 #### Primary data-flow sequence
 
@@ -296,7 +296,7 @@ sequenceDiagram
             ListState->>ListState: replace rows, dedupe, reconcile selection
             ListState->>Footer: clear connection lost
         else 401
-            ListState->>RunsPage: navigate to connection page
+            ListState->>RunsPage: authorization becomes unauthorized; navigate to CONNECTION_PATH
         else failure
             ListState->>Footer: show connection lost
         end
@@ -324,13 +324,19 @@ No new API endpoints are required. The client uses existing SDK methods:
 
 #### Key logic
 
+Connection and no-token behavior:
+
+1. If there is no stored bearer token, `RunsPage` shows the existing connect empty state, makes no `listRuns` or `listProjects` request, and starts no poll timer.
+2. If `listRuns` or `listProjects` returns 401, the observing client/provider marks authorization as `unauthorized`; `RunsPage` or the provider navigates to `CONNECTION_PATH`. Polling stops when the route unmounts.
+3. A 401 never sets `listLost`; it is an authorization state, not a connection-lost state.
+
 Selection resolution:
 
 1. After first load, if route is `/runs/:runId` and the id exists in loaded rows, select it.
-2. If route id is absent, or the route is `/runs`, select the first row if present and replace the address with `/runs/<first id>`.
+2. If route id is absent, or the route is `/runs`, select the first row if present and replace the address with `/runs/<first id>`. The selected row is the list's roving tab stop.
 3. When a user selects a different row, push a new `/runs/<id>` address so browser back returns to the prior selection.
 4. When rows are replaced by a poll, keep selected id if it remains. If it vanished, select the row at the removed row's prior index, or the previous row if the removed row was last. If the list is now empty, clear selection and show the no-runs state.
-5. Selection state must never refer to a run not present in `rows`.
+5. Selection state must never refer to a run not present in `rows`. Initial load, polls, and paging never steal focus; when key navigation changes selection, focus moves with the selected row.
 
 Paging:
 
@@ -340,6 +346,14 @@ Paging:
 4. If a page request is already in flight, do not send another.
 5. Append returned rows after deduping by run id against existing rows and within the page.
 6. On page failure, keep existing rows, show connection lost, and leave `nextCursor` so the next poll or end trigger can retry.
+
+Connection-lost indicator:
+
+1. Add shell-level connection state, exposed by a small context read by the footer, with two independent booleans: `healthLost` and `listLost`.
+2. Refactor `HealthIndicator` so health checks only write `healthLost`.
+3. The run list module writes only `listLost`: set it on non-401 initial/page/poll failures that should show stale or unavailable list data, and clear it only after a successful list request/poll/page retry as appropriate.
+4. The footer shows the red dot and "Connection lost" when `healthLost || listLost`. Health success must not clear `listLost`; list success must not clear `healthLost`.
+5. Existing #132 health indicator tests continue to pass, and new tests cover health ok plus poll failing, poll ok plus health failing, and each source clearing only its own flag.
 
 Polling:
 
@@ -357,6 +371,13 @@ Waiting/status mapping:
 - For `in_progress`: `human` -> "Waiting on you"; `ai` and `system` -> "Working"; `none` -> dash with tooltip saying nothing is waiting on it.
 - Unit tests cover every `waitingOn` value with `in_progress` and with each ended status.
 
+Project-name refetch rule:
+
+- Refetch projects only for a defined `projectId` that is not in the known project map and has not already been looked up since the last project fetch.
+- Keep a missing-project id set for ids still absent after a fetch; those rows show a dash and do not trigger another fetch on every poll.
+- Clear/rebuild the missing-project id set after a successful project fetch so genuinely new ids can trigger one future refetch.
+- Never refetch for `projectId === undefined`; those rows show a dash.
+
 Age formatting:
 
 - Compute from `createdAt` to the latest list timestamp.
@@ -373,26 +394,26 @@ Preferences:
 Documentation updates:
 
 - Update `context-agent/wiki/code-map.md` with the run list module, constants, and test files.
-- Propose or apply the required design-system one-line change according to repository ownership rules: the Collection section states the project column shows until a view can choose properties, and is off by default after that.
+- Edit `context-agent/wiki/design-system.md` directly: replace the Collection line currently reading "The project column is off by default." with "The project column shows until a view can choose its properties, and is off by default after that."
 
 ### 4. Security, privacy, and compliance
 
 - Authentication stays in the existing SDK/client provider. A `401` from list or project calls sends the operator to the connection page and does not expose token details.
 - No secrets are displayed. Project names and run metadata are already visible through authenticated APIs.
 - All route parameters and cursor values are supplied to the SDK; server-side validation remains authoritative. Client-side handling is for UX only.
-- Shortcut handlers must not capture keystrokes from text entry or editable contexts, preventing accidental navigation while entering credentials or settings.
+- Shortcut handlers must not capture keystrokes from text entry or editable contexts, and `j`/`k` must not move selection unless focus is inside the run list, preventing accidental navigation while entering credentials or settings.
 - Dialog and menu top-layer detection prevents background actions from firing while an overlay is active.
 
 ### 5. Observability
 
 - No telemetry pipeline changes are required.
-- Component state should expose user-visible status through the footer: current list count/loading state and connection-lost indicator.
+- Component state should expose user-visible status through the footer: current list count/loading state and a shell-level connection state context with independent `healthLost` and `listLost` flags. The footer indicator is shown when either flag is set; each source only clears its own flag.
 - Errors shown to the operator are generic and safe: runs could not be loaded, connection lost, or connection page for unauthorized.
 - Tests should assert no model calls are made; fake mode and scripted SDK clients are the only test data sources.
 
 ### 6. Testing plan
 
-- Unit/component tests with a scripted SDK client cover table cells, missing tracked issue fallback, status and waiting mappings, project name joining and refetch, selection rules, keyboard guards, action registry overlay/tooltips, polling timers, hidden-page pause, no-overlap polling, paging triggers, dedupe, vanished-selection rules, loading/empty/error states, and preference try/catch behavior.
+- Unit/component tests with a scripted SDK client cover table cells, missing tracked issue fallback, status and waiting mappings, project name joining and bounded refetch, no-token connect state, selection rules, keyboard focus/guard rules, action registry overlay/tooltips, polling timers, hidden-page pause, no-overlap polling, paging triggers, dedupe, vanished-selection rules, loading/empty/error states, shell connection-state flags, and preference try/catch behavior.
 - Playwright tests run against fake mode on the production path with the built client served by the control plane. They seed scenarios, assert rows and exactly one selection, drive `j`, `k`, arrows, click/Enter selection, reload, poll in a new run, check no-runs state after creating a project, and verify geometry in light/dark with sidebar open/closed.
 - Existing #132 shell tests must still pass with shortcuts moved into the registry.
 - Targeted validation for implementation should include `pnpm nx test web`, `pnpm nx lint web`, `pnpm nx build web`, and `pnpm nx run web:e2e` where local Playwright browser support is available.
@@ -415,11 +436,12 @@ Documentation updates:
 
 - [ ] **Story: Run list data loading and table rendering**
   - [ ] **Task: Create the run list state module and constants**
-    - **Description**: Add the run list module under the web client, export `RUN_LIST_PAGE_SIZE = 50` and `RUN_LIST_POLL_INTERVAL_MS = 5000` from one place, and include a comment explaining polling is used because the API has no collection change feed. The module should accept pass-through list arguments for future `projectId` filtering and call the SDK rather than raw fetch.
+    - **Description**: Add the run list module under the web client, export `RUN_LIST_PAGE_SIZE = 50` and `RUN_LIST_POLL_INTERVAL_MS = 5000` from one place, and include a comment explaining polling is used because the API has no collection change feed. The module should accept pass-through list arguments for future `projectId` filtering and call the SDK rather than raw fetch. It must expose a no-token path that renders the existing connect empty state without requests or timers.
     - **Acceptance criteria**:
       - [ ] The first page loads with `listRuns({ limit: RUN_LIST_PAGE_SIZE })` when a saved connection exists.
       - [ ] Request arguments are merged and passed through to `listRuns` for future filters.
       - [ ] Both constants are exported from one module and imported by consumers/tests.
+      - [ ] Without a stored bearer token, the page makes no list/project request, starts no timer, and existing no-token tests keep passing.
       - [ ] The polling constant has a nearby comment stating why polling is used.
     - **Dependencies**: None
   - [ ] **Task: Render the all-runs table columns and cells**
@@ -433,12 +455,14 @@ Documentation updates:
       - [ ] Header row is sticky and row height is `--height-row-regular`.
     - **Dependencies**: "Task: Create the run list state module and constants"
   - [ ] **Task: Join project names into run rows**
-    - **Description**: Fetch projects with `listProjects`, maintain a project id to name map, show project names in rows, and show a dash when a run's project is absent from the project list. Refetch projects when a poll or page returns an unknown `projectId`.
+    - **Description**: Fetch projects with `listProjects`, maintain a project id to name map, show project names in rows, and show a dash when a run's project is absent from the project list. Refetch projects when a poll or page returns a defined unknown `projectId`, but only once per still-missing id since the last project fetch; never refetch for undefined `projectId`.
     - **Acceptance criteria**:
       - [ ] `listProjects` runs once during initial list load.
       - [ ] The project column shows the matching project name for known ids.
       - [ ] Missing or unknown project ids render a dash.
-      - [ ] A poll or page containing an unknown `projectId` triggers one project refetch rather than per-row requests.
+      - [ ] A poll or page containing a defined unknown `projectId` triggers one bounded project refetch rather than per-row requests.
+      - [ ] A run whose project is absent from `listProjects` causes one refetch across several polls, not one refetch per poll.
+      - [ ] A run with `projectId === undefined` causes no project refetch and shows a dash.
     - **Dependencies**: "Task: Create the run list state module and constants"
   - [ ] **Task: Cover list cells and empty/loading/error states with component tests**
     - **Description**: Add scripted-SDK component tests for table cells, missing tracked issue fallback, status and waiting mapping combinations, project-name joining/refetch, loading state, no-runs empty state, and first-page failure state.
@@ -470,18 +494,19 @@ Documentation updates:
       - [ ] Unit tests cover both vanished-selection cases.
     - **Dependencies**: "Task: Extend routing for selected run addresses", "Task: Render the all-runs table columns and cells"
   - [ ] **Task: Implement list keyboard movement**
-    - **Description**: Add `j`, `k`, Down, and Up movement. `j` and Down select next row; `k` and Up select previous row. Arrow keys act only while focus is in the list, and list navigation is bounded at first/last row.
+    - **Description**: Add `j`, `k`, Down, and Up movement. `j` and Down select next row; `k` and Up select previous row. All four keys act only while focus is inside the list, and list navigation is bounded at first/last row. The selected row is the roving tab stop; key movement moves focus with selection, and initial load, polls, and paging never steal focus.
     - **Acceptance criteria**:
-      - [ ] `j` and Down select the next row while allowed.
-      - [ ] `k` and Up select the previous row while allowed.
+      - [ ] `j` and Down select the next row while focus is inside the list and guards allow.
+      - [ ] `k` and Up select the previous row while focus is inside the list and guards allow.
       - [ ] `k` on the first row and `j` on the last row with no next page do nothing else.
-      - [ ] The list is one tab stop according to the design-system rule.
+      - [ ] The selected row is the list's one roving tab stop according to the design-system rule.
+      - [ ] `j`/`k` with focus outside the list do nothing and are covered by registry unit tests.
       - [ ] No selection shortcut beyond `j`, `k`, and arrow keys is added.
     - **Dependencies**: "Task: Implement row selection semantics"
   - [ ] **Task: Add selection tests and Playwright assertions**
-    - **Description**: Add component tests for selection, keyboard movement, route selection, and vanished rows. Add Playwright assertions that count exactly one selected row on first render, after each key press, and after a poll.
+    - **Description**: Add component tests for selection, keyboard movement, focus scope, route selection, and vanished rows. Add Playwright assertions that focus the list first, then count exactly one selected row on first render, after each key press, and after a poll.
     - **Acceptance criteria**:
-      - [ ] Component tests cover `j`, `k`, arrows, click, Enter, route matching, route fallback, and vanished-selection rules.
+      - [ ] Component tests cover `j`, `k`, arrows, focus outside list doing nothing, click, Enter, route matching, route fallback, and vanished-selection rules.
       - [ ] Playwright asserts selected row count after first render, key presses, and poll update.
       - [ ] Tests assert pane id/title and address change with selection.
       - [ ] Reloading `/runs/<id>` preserves selection when the row is loaded.
@@ -489,18 +514,18 @@ Documentation updates:
 
 - [ ] **Story: Action registry, Dialog wrapper, shortcuts overlay, and tooltips**
   - [ ] **Task: Replace shell key hooks with the action registry**
-    - **Description**: Create a registry module that holds every action once with name, key, applies-when rule, and tooltip text. Move `[`, `]`, `Cmd+,`/`Ctrl+,`, Escape, `j`, and `k` into the registry and remove #132's temporary shortcut hooks without changing existing shell behavior.
+    - **Description**: Create a registry module that holds every action once with name, key, applies-when rule, and tooltip text. Move `[`, `]`, `Cmd+,`/`Ctrl+,`, Escape, `j`, and `k` into the registry and remove #132's temporary shortcut hooks without changing existing shell behavior. `j` and `k` require focus inside the run list in addition to shared single-key guards.
     - **Acceptance criteria**:
       - [ ] No component declares a shortcut key outside the registry.
       - [ ] Sidebar toggle, settings toggle, Escape top-layer close, and detail-pane toggle are registry actions.
-      - [ ] `j` and `k` are registry actions with list-scope applies-when rules.
+      - [ ] `j` and `k` are registry actions with applies-when rules requiring focus inside the run list.
       - [ ] Existing #132 shortcut behavior remains unchanged and its tests still pass.
     - **Dependencies**: "Task: Implement list keyboard movement"
   - [ ] **Task: Implement shortcut guard rules**
     - **Description**: Implement reusable guard predicates for single-key actions. Block them in inputs, textareas, selects, editable elements, with modifiers held, and while a menu or dialog is open. Preserve settings toggle availability everywhere.
     - **Acceptance criteria**:
       - [ ] Every single-key action uses the shared guard.
-      - [ ] Guard tests cover input, textarea, select, editable element, open menu, open dialog, and modifier-held cases.
+      - [ ] Guard tests cover input, textarea, select, editable element, open menu, open dialog, modifier-held cases, and `j` with focus outside the list doing nothing.
       - [ ] Settings toggle works from guarded contexts as required.
       - [ ] Arrow keys move selection only while focus is in the list.
     - **Dependencies**: "Task: Replace shell key hooks with the action registry"
@@ -533,12 +558,14 @@ Documentation updates:
       - [ ] Selection and scroll do not move when selected run remains.
     - **Dependencies**: "Task: Implement row selection semantics", "Task: Render the all-runs table columns and cells"
   - [ ] **Task: Handle poll failures and authorization**
-    - **Description**: Integrate poll results with the footer connection-lost indicator and connection page routing. Keep previous rows on non-401 failures and clear the indicator after success. Treat 401 as unauthorized navigation rather than lost connection.
+    - **Description**: Integrate poll results with the shell-level connection context and connection page routing. Keep previous rows on non-401 failures and set only `listLost`; clear only `listLost` after list success. Treat 401 as unauthorized navigation to `CONNECTION_PATH` rather than lost connection.
     - **Acceptance criteria**:
       - [ ] Non-401 poll failures keep previous rows on screen.
-      - [ ] Footer list zone shows red dot and "Connection lost" from poll failures as well as health check failures.
-      - [ ] Next successful poll clears the poll-driven lost-connection state.
-      - [ ] 401 navigates to the connection page and is not shown as connection lost.
+      - [ ] Footer list zone shows red dot and "Connection lost" when `healthLost || listLost`.
+      - [ ] Health success does not clear `listLost`, and list success does not clear `healthLost`.
+      - [ ] Tests cover health ok plus poll failing, poll ok plus health failing, and each source clearing only its own flag.
+      - [ ] Next successful list poll clears the poll-driven `listLost` state.
+      - [ ] 401 navigates to `CONNECTION_PATH`, stops polling on unmount, and is not shown as connection lost.
     - **Dependencies**: "Task: Implement non-overlapping polling"
   - [ ] **Task: Implement automatic paging and deduplication**
     - **Description**: Load the next page when selection reaches the last loaded row or the end sentinel intersects, append rows, show a loading row while loading, dedupe repeated run ids, and prevent duplicate concurrent page requests.
@@ -570,11 +597,12 @@ Documentation updates:
       - [ ] Pane shows no run for no-runs state.
     - **Dependencies**: "Task: Implement row selection semantics"
   - [ ] **Task: Enable detail pane toggle and preferences**
-    - **Description**: Enable the footer right control zone detail pane toggle and `]` action. Persist shown/hidden state through guarded preferences and keep the toggle's bounding box stable when shown, hidden, and resized.
+    - **Description**: Enable the footer right control zone detail pane toggle and `]` action on the runs route. Off the runs route, keep the toggle in its final position but `aria-disabled`, keep the detail pane zone zero width, and make `]` a no-op that does not write preferences. Persist shown/hidden state through guarded preferences on the runs route and keep the toggle's bounding box stable when shown, hidden, and resized.
     - **Acceptance criteria**:
-      - [ ] Toggle is enabled and its tooltip reads "Detail pane (])".
+      - [ ] Toggle is enabled on the runs route and its tooltip reads "Detail pane (])".
       - [ ] Toggle click and `]` hide/show the pane.
       - [ ] Shown/hidden state persists through preferences with every storage access in try/catch.
+      - [ ] Off the runs route, the footer detail pane zone is zero width, the toggle is `aria-disabled`, and `]` does not write preferences.
       - [ ] The toggle keeps its bounding box with pane shown, hidden, and resized.
     - **Dependencies**: "Task: Build the Run detail complementary region", "Task: Wire registry-backed tooltips"
   - [ ] **Task: Implement separator drag and keyboard resizing**
@@ -592,6 +620,7 @@ Documentation updates:
     - **Description**: Add geometry tests for pane, handle, footer zones, table header alignment, pane bar alignment, and toggle stability across shown, hidden, dragged, and arrow-resized states.
     - **Acceptance criteria**:
       - [ ] Pane, handle, and footer detail-pane zone geometry hold with pane shown, hidden, dragged, and keyboard-resized.
+      - [ ] Settings-page geometry asserts the footer detail pane zone is zero width and the disabled toggle remains in its final position.
       - [ ] Pane bar top equals table column header top and the header bottom edge; the rows have equal heights.
       - [ ] Pane body starts at the bar bottom edge.
       - [ ] Geometry tests run with sidebar open and closed, in light and dark themes, regular density.
@@ -604,7 +633,7 @@ Documentation updates:
       - [ ] Test sees one row each for `spec-review`, `implementation-review`, `pr-open`, `merged`, and `failed`.
       - [ ] Rows show issue title, work kind, status, and waiting-on values produced by the scenarios.
       - [ ] Exactly one selected row exists.
-      - [ ] The test presses `j`, `k`, and arrow keys and sees selection, pane id/title, and address change.
+      - [ ] The test focuses the list first with Tab or row click, then presses `j`, `k`, and arrow keys and sees selection, pane id/title, and address change.
       - [ ] Reloading the page preserves the same selected run.
       - [ ] No test makes a model call.
     - **Dependencies**: "Task: Add selection tests and Playwright assertions", "Task: Build the Run detail complementary region", "Task: Handle poll failures and authorization"
@@ -618,11 +647,11 @@ Documentation updates:
       - [ ] No data is injected around the API and no test-only hooks are used.
     - **Dependencies**: "Task: Add fake-mode run list Playwright coverage", "Task: Implement non-overlapping polling"
   - [ ] **Task: Update agent and design documentation**
-    - **Description**: Update `context-agent/wiki/code-map.md` with the run list module, poll/page constants, action registry, dialog wrapper, pane components, and test files. Apply the required design-system Collection note if allowed by ownership; otherwise prepare it as a human-owned doc proposal according to repository practice.
+    - **Description**: Update `context-agent/wiki/code-map.md` with the run list module, poll/page constants, action registry, dialog wrapper, pane components, and test files. Edit `context-agent/wiki/design-system.md` directly so the Collection line reads: "The project column shows until a view can choose its properties, and is off by default after that."
     - **Acceptance criteria**:
       - [ ] Code map records the run list module, constants, and relevant test files.
       - [ ] Code map records the action registry and Dialog wrapper locations.
-      - [ ] The design-system Collection section states that the project column shows until a view can choose properties, and is off by default after that, via the repository-approved path.
+      - [ ] `context-agent/wiki/design-system.md` Collection section contains the exact line: "The project column shows until a view can choose its properties, and is off by default after that."
     - **Dependencies**: "Task: Add fake-mode polling and no-runs Playwright coverage"
   - [ ] **Task: Run targeted validation**
     - **Description**: Run the relevant web build, lint, unit/component tests, and Playwright e2e target when available. Document skipped checks and reasons if the sandbox lacks browsers or other prerequisites.
