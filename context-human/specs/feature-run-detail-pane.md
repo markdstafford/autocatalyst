@@ -37,9 +37,9 @@ She clicks Spec and sees a short empty state explaining that the spec is ready b
 
 ### Following a run while it advances
 
-Enzo selects a running feature run and leaves the pane open while the control plane moves it forward. The browser keeps one event stream open for that selected run. When a run_state_transition frame arrives, the client treats it as a trigger, rereads the run, pull request, and sessions, and updates both the pane and the selected list row together.
+Enzo selects a running feature run and leaves the pane open while the control plane moves it forward. The browser keeps one event stream open for that selected run. When a run_state_transition frame arrives, the client treats it as a trigger, rereads the run, pull request, sessions, and the spec discriminator for feature and enhancement runs, and updates the selected list row through `replaceRun(run)` so the pane and row change from one source of truth.
 
-If the stream disconnects, Enzo does not see stale data presented as current. The client reconnects with backoff and resumes from the last received frame. If the server cannot replay from that cursor, the client clears the cursor, refreshes the run facts with ordinary reads, and opens a fresh stream.
+If the stream disconnects, Enzo does not see stale data presented as current. The client reconnects with backoff and resumes from the last received frame. If the server cannot replay from that cursor, the client clears the cursor, opens a fresh stream without an id, waits for the stream to attach, and then refreshes the run facts with ordinary reads.
 
 ### Checking pull request and failure facts
 
@@ -96,7 +96,7 @@ The totals are computed from durable sessions. Completed-session durations contr
 ```mermaid
 graph TD
     A[Operator views run list] --> B[Selects a run from issue #134 list]
-    B --> C[Detail pane reads run facts]
+    B --> C[Attach stream first, then read run facts]
     C --> D[Header shows title, issue link, work kind, status]
     D --> E[Summary tab shows facts]
     E --> F{Operator chooses a tab}
@@ -127,13 +127,13 @@ graph TD
     A[Run selected and pane visible] --> B[Open subscribeRunEvents stream]
     B --> C{Frame arrives}
     C -->|run_state_transition| D[Reread run with getRun]
-    D --> E[Reread pull request and sessions]
-    E --> F[Replace pane run and selected list row together]
+    D --> E[Reread pull request, sessions and spec discriminator]
+    E --> F[replaceRun updates list row and pane source]
     C -->|ignored runner frame| B
     B --> G{Stream ends or errors}
     G --> H[Reconnect with backoff and last frame id]
     H --> I{Replay cursor rejected?}
-    I -->|409 unknown or expired| J[Clear cursor and refresh run, PR, sessions]
+    I -->|409 unknown or expired| J[Clear cursor, attach stream, then refresh run, PR, sessions and spec]
     J --> B
     I -->|No| B
 ```
@@ -184,14 +184,14 @@ No external mockup is required. The feature composes the existing run list and d
 - Issue #129 proves browser stream reading with `fetch` and SDK `subscribeRunEvents`.
 - Issue #133 adds `status`, `waitingOn`, and `projectId` to list/get/reply run responses. Run events still do not carry `status` or `projectId`.
 - The feature uses the typed SDK only: `getRun`, `getRunPullRequest`, `listRunSessions`, `getRunSpec`, and `subscribeRunEvents`.
-- The Spec tab calls `getRunSpec` only for `feature` and `enhancement` runs. The work kinds with specs are declared in one `apps/web` table with a comment citing `specArtifactKindForRun` in `packages/core/src/control-plane-service.ts:262-266`.
+- The Spec tab calls `getRunSpec` only for `feature` and `enhancement` runs. The work kinds with specs are declared in one `apps/web` table with a comment citing `specArtifactKindForRun` in `packages/core/src/control-plane-service.ts` by function name, with no line number.
 - ADR-031 requires the web client to be stateless for run state. ADR-032 requires React, Tailwind, Base UI behind wrappers, Vitest, and Playwright.
 
 #### Goals and objectives
 
 - Provide run detail content with no backend contract changes.
 - Keep the pane and list row in sync after transition frames by replacing data from `getRun`, never from raw event payloads.
-- Avoid stale-current presentation after replay cursor loss by refreshing run, pull request, and sessions before resubscribing without a cursor.
+- Avoid stale-current presentation after replay cursor loss by resubscribing without a cursor first, waiting for stream attachment, then refreshing run, pull request, sessions, and spec state for spec-capable runs.
 - Keep cost and token totals exact by summing integer fields.
 
 #### Non-goals
@@ -227,7 +227,7 @@ graph TD
     L --> M[Selected row replacement]
 ```
 
-The pane content should be split into pure helpers, data hooks, and display components. Pure helpers handle tab fallback, waiting labels, summary totals, cost formatting, spec-work-kind checks, empty-state copy selection, and SSE frame parsing. React hooks own side effects: initial reads, independent fact states, and the event subscription lifecycle.
+The pane content should be split into pure helpers, data hooks, and display components. Pure helpers handle tab fallback, waiting labels, summary totals, cost formatting, spec-work-kind checks, empty-state copy selection, stale-response guards, and SSE frame parsing. React hooks own side effects: stream-first attachment, initial reads after the stream response begins, independent fact states, refresh sequencing, coalesced transition refreshes, and the event subscription lifecycle. The selected run has one source of truth: the run list state. This feature adds `replaceRun(run)` to `RunListState`; the pane reads the selected run from that state instead of holding a second authoritative run copy.
 
 #### Component breakdown
 
@@ -287,7 +287,7 @@ No database or API schema changes are required. The feature consumes existing SD
 - `GET /v1/runs/:id` through `getRun`: authoritative run read. Used on selection, pane show, and every transition trigger.
 - `GET /v1/runs/:id/pull-request` through `getRunPullRequest`: Summary pull request fact. A `404` is a normal no-PR state. Other errors render inline for that fact.
 - `GET /v1/runs/:id/sessions` through `listRunSessions`: Summary totals.
-- `GET /v1/runs/:id/spec` through `getRunSpec`: Spec empty-state discriminator for `feature` and `enhancement` only. A `404` means the spec is still being drafted or no spec artifact exists yet. A success means the spec is ready but not rendered here yet.
+- `GET /v1/runs/:id/spec` through `getRunSpec`: Spec empty-state discriminator for `feature` and `enhancement` only. A `404` means the spec is still being drafted or no spec artifact exists yet. A success means the spec is ready but not rendered here yet. The pane reads this on show, on transition refresh, and after cursor-loss recovery for spec-capable work kinds so the Spec tab does not stay stale when a run reaches spec review.
 - `GET /v1/runs/:id/events` through `subscribeRunEvents`: Selected-run stream. Reads frames with bearer-auth `fetch`, not browser `EventSource`.
 
 #### Summary calculations
@@ -296,6 +296,26 @@ No database or API schema changes are required. The feature consumes existing SD
 - Token total: Sum `input`, `output`, `cacheRead`, and `cacheWrite` across sessions. Show compact total with tooltip breakdown. If the run has no sessions, show a dash.
 - Cost total: If no sessions, show a dash. If any session has `cost.usd: null`, show `unknown` and a tooltip explaining a model has no configured rate. Otherwise sum `usd` as integers and convert nano-dollars to dollars only for display.
 - Floating point is not used for sums. Tests include a value that would drift under floating-point addition.
+
+#### Stream-first attachment and refresh ordering
+
+On selection and on showing the pane, the client attaches the selected-run stream before doing the initial reads. The order is:
+
+1. Abort any previous selected-run stream.
+2. Call `subscribeRunEvents` for the selected run with the current cursor, if any.
+3. Wait until the stream response begins; the control plane sends the `: connected` comment as the first bytes.
+4. Start the initial reads for `getRun`, `getRunPullRequest`, `listRunSessions`, and, for `feature` or `enhancement`, `getRunSpec`.
+5. Treat any transition frame delivered after stream attachment, including one that arrives before the initial reads complete, as a refresh trigger. The final visible pane state must be the newest reread run/spec state.
+
+The same stream-first order applies after cursor-loss recovery when the client resubscribes with no id. This prevents a transition from landing between an initial `getRun` and stream attachment, which would otherwise leave the pane stale until another transition.
+
+#### Single selected-run source and stale response guards
+
+The pane reads the selected run from the run list state. This feature adds `replaceRun(run)` to `RunListState`; it updates the matching row and therefore updates the pane. There is no second authoritative selected-run copy in pane-local state.
+
+`replaceRun` and the list poll merge use the same freshness rule: for a given run id, keep the row with the later `updatedAt`. If timestamps are equal, keep the existing row to avoid reverting fields with an older in-flight poll response.
+
+Every read started for a selected run carries both the run id and a monotonically increasing refresh sequence number. A read result is applied only if the selected run id still matches and the sequence is still current. If transition frames arrive while a refresh is in flight, they set a trailing-refresh flag instead of starting overlapping `getRun`/pull request/sessions/spec requests. When the current refresh finishes, one trailing refresh runs if the flag was set. Three quick transition frames therefore cause at most two refreshes: the in-flight refresh plus one coalesced trailing refresh.
 
 #### Event frame reader
 
@@ -313,14 +333,14 @@ Runner frames are ignored by this feature. `run_state_transition` frames trigger
 
 #### Reconnect behavior
 
-- A selected visible run opens exactly one stream. Selection changes, pane hide, and unmount abort the existing stream.
+- A selected visible run opens exactly one stream before initial fact reads. Selection changes, pane hide, and unmount abort the existing stream.
 - Reconnect on stream end or non-terminal error. Delay starts at `RUN_EVENTS_RECONNECT_DELAY_MS` and doubles up to `RUN_EVENTS_RECONNECT_MAX_DELAY_MS`. Both are named constants.
 - Reset the backoff after any valid frame arrives.
 - Resume with the last received frame id.
-- On `409` with `run_event_replay_cursor_unknown` or `run_event_replay_cursor_expired`, clear the saved id, refresh run, pull request, and sessions through ordinary reads, then subscribe again with no id.
+- On `409` with `run_event_replay_cursor_unknown` or `run_event_replay_cursor_expired`, clear the saved id, subscribe again with no id, wait for the stream response to begin, then refresh run, pull request, sessions, and spec state for spec-capable work kinds through ordinary reads.
 - On `401`, stop reconnecting and navigate to the connection page from issue #132.
 - On `404` for the run, stop reconnecting and show that the run is no longer available.
-- Once the refreshed run is terminal, show its final state and stop reconnecting.
+- Keep an already-open stream open even when the refreshed run is terminal, because recovery can reopen a failed run and the transition must be seen. Stop reconnecting only when the stream has ended and the latest known run is terminal. Selecting a terminal run still opens a stream.
 - While the selected-run stream is down and reconnecting, the pane shows no extra warning. The footer connection indicator remains driven only by health/list failures from issues #132/#134.
 
 ### Security, privacy, and compliance
@@ -340,12 +360,12 @@ Runner frames are ignored by this feature. `run_state_transition` frames trigger
 
 - Unit tests for tab fallback and kept-tab behavior, including a synthetic run that lacks a tab.
 - Unit tests for Summary calculations: completed-session time, token breakdown, all-priced cost, one-unpriced cost, no sessions, and integer-exact cost sum.
-- Unit tests for spec-work-kind table covering `bug`, `chore`, `file_issue`, and `question`, and proving `getRunSpec` is not called for those kinds.
+- Unit tests for spec-work-kind table covering `bug`, `chore`, `file_issue`, and `question`, and proving `getRunSpec` is not called for those kinds; optionally a control-plane/web parity test prevents drift from `specArtifactKindForRun`.
 - Component tests with a scripted SDK client for the header, each Summary fact, empty states, loading states, failed fact reads, kept tab, and vanished-tab fallback.
 - Unit tests for frame reader chunks, comments, CRLF, final frame without trailing blank, schema rejection, and log-once behavior.
-- Unit tests for stream lifecycle: abort previous selection, abort on unmount, reconnect backoff, reset after frame, resume id, 409 unknown/expired recovery, 401 connection navigation, 404 run gone, and terminal stop.
+- Unit tests for stream lifecycle: stream-first initial reads, a transition delivered between stream attach and initial-read completion ending with the newer run, abort previous selection, abort on unmount, reconnect backoff, reset after frame, resume id, 409 unknown/expired recovery, 401 connection navigation, 404 run gone, open terminal stream receiving a recovery transition, and reconnect stopping only after an ended terminal stream.
 - Playwright tests against fake mode for seeded scenarios `spec-review`, `implementation-review`, `pr-open`, `merged`, and `failed`, using production paths and no test-only hooks.
-- Playwright live-update test approving spec with `replyToRun` and observing state-line change without reload or list-poll wait.
+- Playwright live-update test approving spec with `replyToRun` and observing state-line change without reload or list-poll wait; while on the Spec tab for `spec-review`, it also asserts the empty state changes when the spec discriminator changes.
 - Playwright restart test stopping fake-mode control plane and restarting on the same port and state directory without `serve-fake`, then verifying pane catch-up.
 - Playwright geometry tests for header, meta line, tabs, and pane body scrolling at default, minimum, and maximum widths.
 - No test makes a model call.
@@ -431,11 +451,12 @@ Runner frames are ignored by this feature. `run_state_transition` frames trigger
   - [ ] **Task: Implement Spec tab empty-state selection**
     - **Description**: Add the `apps/web` work-kind table for spec-capable runs, skip `getRunSpec` for all other work kinds, and choose the correct Spec empty state based on work kind and `getRunSpec` result.
     - **Acceptance criteria**:
-      - [ ] The spec-capable work-kind table includes only `feature` and `enhancement` and has a comment citing `specArtifactKindForRun` in `packages/core/src/control-plane-service.ts:262-266`.
+      - [ ] The spec-capable work-kind table includes only `feature` and `enhancement` and has a comment citing `specArtifactKindForRun` in `packages/core/src/control-plane-service.ts` by function name, with no line number.
       - [ ] `bug`, `chore`, `file_issue`, and `question` show the no-spec empty state without calling `getRunSpec`.
       - [ ] Feature/enhancement `404` shows the spec-being-drafted empty state.
       - [ ] Feature/enhancement success shows the spec-ready-but-not-rendered empty state.
       - [ ] Unit tests cover all listed work kinds and both feature/enhancement outcomes.
+      - [ ] If practical, a parity test fails when `specArtifactKindForRun` accepts a work kind that the web table lacks, or the reverse.
     - **Dependencies**: "Task: Centralize empty-state copy and component rendering"
   - [ ] **Task: Implement Acceptance and Activity empty states**
     - **Description**: Render run-independent empty states for Acceptance and Activity.
@@ -446,6 +467,16 @@ Runner frames are ignored by this feature. `run_state_transition` frames trigger
     - **Dependencies**: "Task: Centralize empty-state copy and component rendering"
 
 - [ ] **Story: Subscribe to selected-run live updates**
+  - [ ] **Task: Add selected-run replacement and stale-response guards**
+    - **Description**: Extend the run list state with `replaceRun(run)`, make the pane read the selected run from list state, merge rows by later `updatedAt`, tag selected-run reads with run id and refresh sequence, and coalesce transition frames during refresh.
+    - **Acceptance criteria**:
+      - [ ] `RunListState` exposes `replaceRun(run)` and the pane uses list state as the selected run source of truth.
+      - [ ] `replaceRun` and list poll merge keep the row with the later `updatedAt` for each run id.
+      - [ ] Late `getRun`, pull request, sessions, or spec responses for a previous selection are dropped.
+      - [ ] A stale in-flight poll response cannot revert a row already updated by a transition refresh.
+      - [ ] Three transition frames in quick succession cause at most two refreshes.
+      - [ ] Unit tests cover previous-selection late response, stale poll non-revert, and coalesced frames.
+    - **Dependencies**: None
   - [ ] **Task: Implement the SSE frame reader**
     - **Description**: Build a pure frame reader for `ReadableStream` input that handles split chunks, comments, CRLF, final frames, data parsing, and schema validation with `clientRunEventSchema`.
     - **Acceptance criteria**:
@@ -458,18 +489,19 @@ Runner frames are ignored by this feature. `run_state_transition` frames trigger
   - [ ] **Task: Implement selected-run event subscription lifecycle**
     - **Description**: Open one `subscribeRunEvents` stream for the selected visible run, abort previous streams on selection change, pane hide, and unmount, and ignore non-transition frames for this feature.
     - **Acceptance criteria**:
-      - [ ] Selecting a run opens exactly one stream for that run.
+      - [ ] Selecting a run opens exactly one stream for that run before initial `getRun`, pull request, sessions, and spec-discriminator reads.
       - [ ] Changing selection aborts the prior stream's `AbortSignal`.
-      - [ ] Hiding the pane closes the stream; showing it rereads the run and opens one new stream.
-      - [ ] Unit tests with a scripted SDK client cover selection change, hide/show, and unmount.
-    - **Dependencies**: "Task: Implement the SSE frame reader"
+      - [ ] Hiding the pane closes the stream; showing it opens one new stream first, waits for attachment, then rereads the run, pull request, sessions, and spec discriminator.
+      - [ ] Unit tests with a scripted SDK client cover stream-first initial reads, a transition delivered between stream attach and initial-read completion, selection change, hide/show, and unmount.
+    - **Dependencies**: "Task: Implement the SSE frame reader", "Task: Add selected-run replacement and stale-response guards"
   - [ ] **Task: Refresh pane facts and list row on transition frames**
-    - **Description**: Treat `run_state_transition` as an invalidation trigger that rereads the run, pull request, and sessions, then replaces the pane run and selected list row together.
+    - **Description**: Treat `run_state_transition` as an invalidation trigger that rereads the run, pull request, sessions, and spec discriminator for spec-capable runs, then updates the selected run through `replaceRun(run)` so the pane and list row change together.
     - **Acceptance criteria**:
       - [ ] The client never copies `status`, `waitingOn`, or `projectId` from the transition frame payload.
       - [ ] A transition refresh updates the pane and selected list row within one render.
       - [ ] The selected list row keeps `status`, `waitingOn`, and `projectId` from the `getRun` response.
       - [ ] A unit test feeds a frame without `status` and verifies the pane shows the reread run's status.
+      - [ ] A unit test flips `getRunSpec` from `404` to a spec across a transition and verifies the Spec tab changes from drafting to ready.
     - **Dependencies**: "Task: Implement selected-run event subscription lifecycle"
   - [ ] **Task: Implement reconnect, cursor loss, and terminal handling**
     - **Description**: Add reconnect backoff constants and behavior, resume ids, cursor-loss recovery, authorization/not-found stops, and terminal-run stop logic.
@@ -477,11 +509,11 @@ Runner frames are ignored by this feature. `run_state_transition` frames trigger
       - [ ] `RUN_EVENTS_RECONNECT_DELAY_MS` and `RUN_EVENTS_RECONNECT_MAX_DELAY_MS` control exponential backoff.
       - [ ] Reconnect resumes with the last received frame id.
       - [ ] Backoff resets after a valid frame arrives.
-      - [ ] `409` cursor unknown and expired both clear the saved id, refresh run/PR/sessions, and resubscribe without an id.
+      - [ ] `409` cursor unknown and expired both clear the saved id, resubscribe without an id, wait for stream attachment, and then refresh run/PR/sessions/spec state.
       - [ ] `401` stops reconnecting and goes to the connection page.
       - [ ] `404` stops reconnecting and shows that the run is no longer available.
-      - [ ] Terminal refreshed runs stop reconnecting and show final state.
-      - [ ] Fake-timer tests cover delays, reset, resume id, both 409 codes, 401, 404, and terminal stop.
+      - [ ] Terminal refreshed runs keep an open stream open, stop reconnecting only after an ended stream, and show final state while stopped.
+      - [ ] Fake-timer tests cover delays, reset, resume id, both 409 codes, 401, 404, terminal ended-stream stop, and an open terminal stream receiving a transition to reopened state.
     - **Dependencies**: "Task: Refresh pane facts and list row on transition frames"
 
 - [ ] **Story: Cover fake-mode scenarios, geometry, and docs map**
@@ -499,7 +531,7 @@ Runner frames are ignored by this feature. `run_state_transition` frames trigger
     - **Acceptance criteria**:
       - [ ] Scenario test opens `spec-review`, `implementation-review`, `pr-open`, `merged`, and `failed` without test-only hooks or API data injection around the app.
       - [ ] Scenario assertions cover header, state line, PR row, and failed failure reason.
-      - [ ] A live-update test starts fake mode on a free port with fresh state, seeds `spec-review`, approves with `replyToRun`, and sees the state line change without reload or poll wait.
+      - [ ] A live-update test starts fake mode on a free port with fresh state, seeds `spec-review`, opens the Spec tab, approves with `replyToRun`, sees the state line change without reload or poll wait, and asserts the Spec empty state changes when `getRunSpec` changes from `404` to ready.
       - [ ] A restart test stops the fake-mode control plane and starts it again on the same port and state directory without `serve-fake`, then sees the pane catch up.
       - [ ] No Playwright test makes a model call.
     - **Dependencies**: "Task: Add component and unit coverage for pane content"
