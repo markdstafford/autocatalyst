@@ -255,6 +255,36 @@ describe('useRunList polling', () => {
     expect(spies.onListLostChange).toHaveBeenLastCalledWith(false);
   });
 
+  it('starts polling after a first-page failure and a later successful poll renders rows and clears listLost', async () => {
+    vi.useFakeTimers();
+    const client = createScriptedClient({ runs: [makeRun({ id: 'r1' })] });
+    // The initial first-page load fails (non-401); the next poll succeeds.
+    client.failRunsOnce(new Error('network down'));
+    const spies = defaults();
+    render(
+      <Harness client={client.client} connected routeRunId={undefined} pollIntervalMs={1000} {...spies} />
+    );
+
+    // Initial load settles into the first-page failure state with listLost raised and
+    // no rows rendered.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByTestId('phase').textContent).toBe('error');
+    expect(screen.getByTestId('rows').textContent).toBe('');
+    expect(spies.onListLostChange).toHaveBeenLastCalledWith(true);
+
+    // The poll timer started despite the failure: the next tick reloads the first page,
+    // renders rows, selects the first, moves to ready, and clears listLost.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(screen.getByTestId('phase').textContent).toBe('ready');
+    expect(screen.getByTestId('rows').textContent).toBe('r1');
+    expect(screen.getByTestId('selected').textContent).toBe('r1');
+    expect(spies.onListLostChange).toHaveBeenLastCalledWith(false);
+  });
+
   it('does not raise listLost on a 401 poll', async () => {
     vi.useFakeTimers();
     const client = createScriptedClient({ runs: [makeRun({ id: 'r1' })] });

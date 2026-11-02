@@ -7,7 +7,7 @@
  * writing browser storage or routing around the API, and no test makes a model call.
  */
 import { expect, test } from './fixtures/connected.js';
-import type { Browser, Page } from '@playwright/test';
+import type { Browser, BrowserContextOptions, Page } from '@playwright/test';
 
 const EDGE = 0.5;
 
@@ -15,9 +15,10 @@ const EDGE = 0.5;
 async function openRuns(
   browser: Browser,
   connectedStatePath: string,
-  url: string
+  url: string,
+  contextOptions: BrowserContextOptions = {}
 ): Promise<{ page: Page; close: () => Promise<void> }> {
-  const context = await browser.newContext({ storageState: connectedStatePath });
+  const context = await browser.newContext({ storageState: connectedStatePath, ...contextOptions });
   const page = await context.newPage();
   await page.goto(url);
   return { page, close: () => context.close() };
@@ -119,6 +120,60 @@ test.describe('run list', () => {
     }
   });
 
+  test('pressing j through every run sends no cursor request when there is no next page', async ({
+    browser,
+    fakeServer,
+    connectedStatePath
+  }) => {
+    const scenarios = ['spec-review', 'implementation-review', 'pr-open', 'merged', 'failed'];
+    for (const scenario of scenarios) {
+      await fakeServer.seed({ scenario });
+    }
+
+    // All five runs fit in one page (page size 50), so the list never has a
+    // `nextCursor`; moving to the end must not request another page.
+    const context = await browser.newContext({ storageState: connectedStatePath });
+    const page = await context.newPage();
+    const cursorRequests: string[] = [];
+    page.on('request', (request) => {
+      const url = new URL(request.url());
+      if (url.pathname.endsWith('/v1/runs') && url.searchParams.has('cursor')) {
+        cursorRequests.push(request.url());
+      }
+    });
+    try {
+      await page.goto(`${fakeServer.baseUrl}/runs`);
+      await expect(dataRows(page)).toHaveCount(scenarios.length);
+
+      // Focus the list on the first (selected) row, then press `j` through the rest,
+      // recording each distinct run the selection lands on.
+      const seen = new Set<string>();
+      const firstId = await selectedRow(page).getAttribute('data-run-id');
+      expect(firstId).not.toBeNull();
+      if (firstId !== null) {
+        seen.add(firstId);
+        await page.locator(`[data-run-id="${firstId}"]`).click();
+      }
+      for (let i = 0; i < scenarios.length - 1; i += 1) {
+        await page.keyboard.press('j');
+        const id = await selectedRow(page).getAttribute('data-run-id');
+        if (id !== null) {
+          seen.add(id);
+        }
+      }
+      // Every seeded run was observed while moving through the list.
+      expect(seen.size).toBe(scenarios.length);
+
+      // Pressing `j` again at the last row is a no-op for paging; give any erroneous
+      // request time to fire before asserting none did.
+      await page.keyboard.press('j');
+      await page.waitForTimeout(500);
+      expect(cursorRequests).toEqual([]);
+    } finally {
+      await context.close();
+    }
+  });
+
   test('an empty server shows the no-runs state without a Start a run button', async ({
     browser,
     fakeServer,
@@ -183,6 +238,146 @@ for (const scheme of ['light', 'dark'] as const) {
         }
       } finally {
         await close();
+      }
+    });
+
+    test('dragging and arrow-resizing the separator move the pane edge and the footer zone follows', async ({
+      browser,
+      fakeServer,
+      connectedStatePath
+    }) => {
+      await fakeServer.seed({ scenario: 'spec-review' });
+      const { page, close } = await openRuns(browser, connectedStatePath, `${fakeServer.baseUrl}/runs`, {
+        colorScheme: scheme
+      });
+      try {
+        await expect(dataRows(page)).toHaveCount(1);
+        const pane = page.getByRole('complementary', { name: 'Run detail' });
+        const paneZone = page.getByRole('group', { name: 'Detail pane' });
+
+        // Drag the handle left to widen the pane. The pane sits on the right, so moving
+        // the handle left grows it.
+        const paneBefore = await pane.boundingBox();
+        const handle = await page.getByRole('separator').boundingBox();
+        expect(paneBefore).not.toBeNull();
+        expect(handle).not.toBeNull();
+        if (handle) {
+          const cy = handle.y + handle.height / 2;
+          const cx = handle.x + handle.width / 2;
+          await page.mouse.move(cx, cy);
+          await page.mouse.down();
+          await page.mouse.move(cx - 48, cy, { steps: 6 });
+          await page.mouse.up();
+        }
+        const paneDragged = await pane.boundingBox();
+        if (paneBefore && paneDragged) {
+          // The pane grew.
+          expect(paneDragged.width).toBeGreaterThan(paneBefore.width + 1);
+        }
+        // The footer detail-pane zone's width animates (`--duration-layout`), so let the
+        // transition settle before asserting its left edge tracks the pane.
+        await page.waitForTimeout(400);
+        const draggedZone = await paneZone.boundingBox();
+        const paneAfterSettle = await pane.boundingBox();
+        if (paneAfterSettle && draggedZone) {
+          expect(Math.abs(draggedZone.x - paneAfterSettle.x)).toBeLessThanOrEqual(EDGE);
+        }
+
+        // Arrow-resize by one 16 px step. ArrowLeft widens the right-hand pane.
+        await page.getByRole('separator').focus();
+        const beforeKey = await pane.boundingBox();
+        await page.keyboard.press('ArrowLeft');
+        const afterKey = await pane.boundingBox();
+        if (beforeKey && afterKey) {
+          expect(Math.abs(afterKey.width - (beforeKey.width + 16))).toBeLessThanOrEqual(1);
+        }
+        // Again let the footer zone's width transition settle before measuring.
+        await page.waitForTimeout(400);
+        const keyZone = await paneZone.boundingBox();
+        const paneAfterKeySettle = await pane.boundingBox();
+        if (paneAfterKeySettle && keyZone) {
+          expect(Math.abs(keyZone.x - paneAfterKeySettle.x)).toBeLessThanOrEqual(EDGE);
+        }
+      } finally {
+        await close();
+      }
+    });
+
+    for (const sidebar of ['open', 'closed'] as const) {
+      test(`pane, handle, and footer zones align with the sidebar ${sidebar}`, async ({
+        browser,
+        fakeServer,
+        connectedStatePath
+      }) => {
+        await fakeServer.seed({ scenario: 'spec-review' });
+        const { page, close } = await openRuns(browser, connectedStatePath, `${fakeServer.baseUrl}/runs`, {
+          colorScheme: scheme
+        });
+        try {
+          await expect(dataRows(page)).toHaveCount(1);
+          if (sidebar === 'closed') {
+            // Collapse the sidebar and let the layout animation settle.
+            await page.locator('body').press('[');
+            await page.waitForTimeout(400);
+          }
+
+          const header = await page.getByTestId('run-table-header').boundingBox();
+          const paneBar = await page.getByTestId('pane-bar').boundingBox();
+          const pane = await page.getByRole('complementary', { name: 'Run detail' }).boundingBox();
+          const handle = await page.getByRole('separator').boundingBox();
+          const paneZone = await page.getByRole('group', { name: 'Detail pane' }).boundingBox();
+          expect(header).not.toBeNull();
+          expect(paneBar).not.toBeNull();
+          expect(pane).not.toBeNull();
+          expect(handle).not.toBeNull();
+          expect(paneZone).not.toBeNull();
+          if (header && paneBar && pane && handle && paneZone) {
+            expect(Math.abs(paneBar.y - header.y)).toBeLessThanOrEqual(EDGE);
+            expect(Math.abs(paneBar.height - header.height)).toBeLessThanOrEqual(EDGE);
+            expect(Math.abs(handle.x + handle.width - pane.x)).toBeLessThanOrEqual(EDGE);
+            expect(Math.abs(paneZone.x - pane.x)).toBeLessThanOrEqual(EDGE);
+          }
+        } finally {
+          await close();
+        }
+      });
+    }
+
+    test('the settings route disables the pane toggle, collapses its zone, and keeps the toggle in place', async ({
+      browser,
+      fakeServer,
+      connectedStatePath
+    }) => {
+      await fakeServer.seed({ scenario: 'spec-review' });
+      const context = await browser.newContext({ storageState: connectedStatePath, colorScheme: scheme });
+      const page = await context.newPage();
+      const toggle = page.getByRole('button', { name: 'Toggle detail pane' });
+      try {
+        // On the runs route the toggle is enabled and sits in the right control zone.
+        await page.goto(`${fakeServer.baseUrl}/runs`);
+        await expect(dataRows(page)).toHaveCount(1);
+        await expect(toggle).not.toHaveAttribute('aria-disabled', 'true');
+        const runsToggleBox = await toggle.boundingBox();
+
+        // Off the runs route the detail-pane zone is zero width, the toggle is disabled,
+        // and it keeps its final bounding box.
+        await page.goto(`${fakeServer.baseUrl}/settings/connection`);
+        await expect(page.getByRole('contentinfo')).toBeVisible();
+        await expect(toggle).toHaveAttribute('aria-disabled', 'true');
+        await page.waitForTimeout(400);
+        const settingsZone = await page.getByRole('group', { name: 'Detail pane' }).boundingBox();
+        expect(settingsZone).not.toBeNull();
+        if (settingsZone) {
+          expect(settingsZone.width).toBeLessThanOrEqual(EDGE);
+        }
+        const settingsToggleBox = await toggle.boundingBox();
+        if (runsToggleBox && settingsToggleBox) {
+          for (const key of ['x', 'y', 'width', 'height'] as const) {
+            expect(Math.abs(runsToggleBox[key] - settingsToggleBox[key])).toBeLessThanOrEqual(EDGE);
+          }
+        }
+      } finally {
+        await context.close();
       }
     });
   });

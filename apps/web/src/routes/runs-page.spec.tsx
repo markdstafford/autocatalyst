@@ -188,6 +188,24 @@ describe('RunsPage with runs', () => {
   });
 });
 
+describe('RunsPage first-page failure', () => {
+  it('shows the failure state promising a retry on the next poll and raises the indicator', async () => {
+    writeBearerToken('token-abc');
+    seam.runsStatus = 500;
+    renderRuns('/runs');
+    // The visible UI tells the operator the list could not load and that the client
+    // will retry on the next poll, alongside the connection-lost indicator.
+    await screen.findByTestId('runs-error');
+    expect(screen.getByText('Runs could not be loaded')).toBeDefined();
+    expect(screen.getByText('The client will try again on the next poll.')).toBeDefined();
+    await waitFor(() => {
+      expect(screen.getByText('Connection lost')).toBeDefined();
+    });
+    // No table is shown while the first page has not loaded.
+    expect(screen.queryByRole('grid', { name: 'Runs' })).toBeNull();
+  });
+});
+
 describe('RunsPage empty state', () => {
   it('shows the no-runs empty state without a Start a run button', async () => {
     writeBearerToken('token-abc');
