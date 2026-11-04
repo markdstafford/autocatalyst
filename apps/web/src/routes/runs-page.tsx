@@ -119,7 +119,15 @@ export function RunsPage(): ReactNode {
             onResize={onResize}
           />
           <div className="shrink-0" style={{ width: `${sidePaneWidthPx}px` }}>
-            <RunDetailPane run={selectedRun} />
+            <RunDetailPane
+              run={selectedRun}
+              client={client}
+              visible={detailPaneVisible}
+              replaceRun={state.replaceRun}
+              onUnauthorized={() => {
+                navigate(CONNECTION_PATH);
+              }}
+            />
           </div>
         </>
       ) : null}

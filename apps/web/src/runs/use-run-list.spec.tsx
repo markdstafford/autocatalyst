@@ -12,6 +12,8 @@ import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { Run } from '@autocatalyst/api-contract';
+
 import { makeProject, makeRun } from './run-fixtures.js';
 import { createScriptedClient, unauthorizedError } from './scripted-client.js';
 import { projectName } from './run-list-projects.js';
@@ -20,6 +22,8 @@ import { useRunList, type UseRunListOptions } from './use-run-list.js';
 interface HarnessProps extends Omit<UseRunListOptions, 'navigateToRun' | 'onListLostChange'> {
   readonly navigateToRun: UseRunListOptions['navigateToRun'];
   readonly onListLostChange: UseRunListOptions['onListLostChange'];
+  /** When set, a button calls `replaceRun` with this run (live-update path). */
+  readonly replaceWith?: Run;
 }
 
 function Harness(props: HarnessProps): ReactNode {
@@ -29,6 +33,7 @@ function Harness(props: HarnessProps): ReactNode {
       <span data-testid="phase">{state.phase}</span>
       <span data-testid="selected">{state.selectedRunId ?? ''}</span>
       <span data-testid="rows">{state.rows.map((r) => r.id).join(',')}</span>
+      <span data-testid="steps">{state.rows.map((r) => `${r.id}:${r.currentStep}`).join(',')}</span>
       <span data-testid="hasNext">{String(state.hasNextPage)}</span>
       <span data-testid="paging">{String(state.isPaging)}</span>
       {state.rows.map((r) => (
@@ -47,6 +52,18 @@ function Harness(props: HarnessProps): ReactNode {
       <button data-testid="load" onClick={() => state.loadNextPage()}>
         load
       </button>
+      {props.replaceWith !== undefined ? (
+        <button
+          data-testid="replace"
+          onClick={() => {
+            if (props.replaceWith !== undefined) {
+              state.replaceRun(props.replaceWith);
+            }
+          }}
+        >
+          replace
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -378,5 +395,68 @@ describe('useRunList project refetch', () => {
     });
     expect(client.listProjectsCalls).toBe(2);
     expect(screen.getByTestId('proj-r2').textContent).toBe('—');
+  });
+});
+
+describe('useRunList replaceRun', () => {
+  it('advances the matching row in place and a stale poll cannot revert it', async () => {
+    vi.useFakeTimers();
+    // The server still reports the old step; a transition refresh applies a newer run.
+    const client = createScriptedClient({
+      runs: [
+        { ...makeRun({ id: 'r1' }), currentStep: 'spec.author', updatedAt: '2026-01-01T00:00:01.000Z' }
+      ]
+    });
+    const spies = defaults();
+    const newer: Run = {
+      ...makeRun({ id: 'r1' }),
+      currentStep: 'spec.human_review',
+      updatedAt: '2026-01-01T00:00:09.000Z'
+    };
+    render(
+      <Harness
+        client={client.client}
+        connected
+        routeRunId={undefined}
+        pollIntervalMs={1000}
+        replaceWith={newer}
+        {...spies}
+      />
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByTestId('steps').textContent).toBe('r1:spec.author');
+
+    // Apply the live-update replacement.
+    await act(async () => {
+      screen.getByTestId('replace').click();
+    });
+    expect(screen.getByTestId('steps').textContent).toBe('r1:spec.human_review');
+
+    // A later poll that still carries the OLD (older-timestamp) row must not revert it.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+    });
+    expect(screen.getByTestId('steps').textContent).toBe('r1:spec.human_review');
+  });
+
+  it('ignores a run that is not in the current rows', async () => {
+    const client = createScriptedClient({ runs: [makeRun({ id: 'r1' })] });
+    const spies = defaults();
+    render(
+      <Harness
+        client={client.client}
+        connected
+        routeRunId={undefined}
+        replaceWith={makeRun({ id: 'ghost' })}
+        {...spies}
+      />
+    );
+    await waitFor(() => expect(screen.getByTestId('phase').textContent).toBe('ready'));
+    await act(async () => {
+      screen.getByTestId('replace').click();
+    });
+    expect(screen.getByTestId('rows').textContent).toBe('r1');
   });
 });

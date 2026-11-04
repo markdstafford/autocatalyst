@@ -30,6 +30,7 @@ import {
   resolveInitialSelection,
   type SelectionDirection
 } from './run-list-selection.js';
+import { mergeRunRows, replaceRunInRows } from './run-row-merge.js';
 
 /** Request filters passed through to every `listRuns` call (e.g. #142's projectId). */
 export type RunListRequestArgs = Omit<ListRunsOptions, 'limit' | 'cursor'>;
@@ -67,6 +68,14 @@ export interface RunListState {
   select(runId: string): void;
   move(direction: SelectionDirection): void;
   loadNextPage(): void;
+  /**
+   * Replace a single run's row from an authoritative `getRun` response (the selected-run
+   * live-update path). The row is updated in place by id using the same later-`updatedAt`
+   * freshness rule as the poll merge, so the pane — which reads the selected run from this
+   * state — and the list row change from one source of truth. A run not in the current
+   * rows is ignored.
+   */
+  replaceRun(run: Run): void;
 }
 
 function isUnauthorized(error: unknown): boolean {
@@ -182,9 +191,13 @@ export function useRunList(options: UseRunListOptions): RunListState {
   const commitRows = useCallback(
     async (nextRows: Run[], cursor: string | undefined, pageCount: number): Promise<void> => {
       const prevIds = rowsRef.current.map((r) => r.id);
-      const nextIds = nextRows.map((r) => r.id);
-      rowsRef.current = nextRows;
-      setRows(nextRows);
+      // Merge the freshly read rows over the current ones by the later-`updatedAt` rule,
+      // so a poll that started before a transition refresh cannot revert the row the
+      // refresh just advanced through `replaceRun`.
+      const merged = mergeRunRows(rowsRef.current, nextRows);
+      const nextIds = merged.map((r) => r.id);
+      rowsRef.current = merged;
+      setRows(merged);
       cursorRef.current = cursor;
       setNextCursor(cursor);
       pageCountRef.current = pageCount;
@@ -196,7 +209,7 @@ export function useRunList(options: UseRunListOptions): RunListState {
           : reconcileSelection(prevIds, nextIds, selectedRef.current);
       applySelection(newSelection, 'auto');
 
-      await refreshProjectNamesIfNeeded(nextRows);
+      await refreshProjectNamesIfNeeded(merged);
     },
     [applySelection, refreshProjectNamesIfNeeded]
   );
@@ -355,6 +368,16 @@ export function useRunList(options: UseRunListOptions): RunListState {
     [applySelection, loadNextPage]
   );
 
+  const replaceRun = useCallback((run: Run): void => {
+    const next = replaceRunInRows(rowsRef.current, run);
+    if (next === rowsRef.current) {
+      // The incoming run is not newer (or not present); nothing to update.
+      return;
+    }
+    rowsRef.current = next;
+    setRows(next);
+  }, []);
+
   const move = useCallback(
     (direction: SelectionDirection): void => {
       const ids = rowsRef.current.map((r) => r.id);
@@ -383,6 +406,7 @@ export function useRunList(options: UseRunListOptions): RunListState {
     isPaging,
     select,
     move,
-    loadNextPage
+    loadNextPage,
+    replaceRun
   };
 }
