@@ -20,7 +20,6 @@ import { useNavigate, useOutletContext, useParams } from 'react-router-dom';
 import { hasBearerToken } from '../auth/token-store.js';
 import { useControlPlaneConnection } from '../client/client-provider.js';
 import { RunDetailPane } from '../runs/run-detail-pane.js';
-import { RunSeparator } from '../runs/run-separator.js';
 import { RunTable } from '../runs/run-table.js';
 import { useRunList } from '../runs/use-run-list.js';
 import { useConnectionState } from '../shell/connection-state.js';
@@ -29,6 +28,7 @@ import { useActionKeys } from '../shell/use-action-keys.js';
 import type { RunsOutletContext } from '../shell/shell-layout.js';
 import { PANE_WIDTH_MAX, PANE_WIDTH_MIN } from '../theme/preferences.js';
 import { Button } from '../ui/button.js';
+import { ResizeHandle } from '../ui/resize-handle.js';
 
 export function RunsPage(): ReactNode {
   const navigate = useNavigate();
@@ -112,10 +112,13 @@ export function RunsPage(): ReactNode {
 
       {detailPaneVisible ? (
         <>
-          <RunSeparator
-            widthPx={sidePaneWidthPx}
-            minPx={PANE_WIDTH_MIN}
-            maxPx={PANE_WIDTH_MAX}
+          <ResizeHandle
+            orientation="vertical"
+            value={sidePaneWidthPx}
+            min={PANE_WIDTH_MIN}
+            max={PANE_WIDTH_MAX}
+            label="Resize detail pane"
+            startAxisChange="increase"
             onResize={onResize}
           />
           <div className="shrink-0" style={{ width: `${sidePaneWidthPx}px` }}>

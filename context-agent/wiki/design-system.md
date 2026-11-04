@@ -491,17 +491,44 @@ handling, and tokens supply the styling.
   the shortcuts overlay read the registry.
 - A key shows beside its action: in a tooltip as "Label (key)", and at the right of a menu item as a key cap
   (`--font-mono`, `--text-xs`, `--color-subtext`, `--color-surface` fill, `--color-border` outline). macOS
-  shows glyphs and other platforms spell the keys ("Ctrl+Shift+K"). A sequence shows a cap per step.
-- Single-key shortcuts do not fire in an input, textarea, select, or editable element, while a menu or
-  dialog is open, or with a modifier held. The settings toggle (`Cmd+,` or `Ctrl+,`) works everywhere.
+  shows glyphs and other platforms spell the keys ("Ctrl+Shift+K").
+- An action can declare more than one binding (an alternate), and a binding can be a single chord or a
+  multi-step sequence. **Alternates** render separated by a small "or" (for example `j` or `↓`); tooltips and
+  menus show only the first binding, while the shortcuts overlay shows them all. A **sequence** renders a cap
+  per step separated by a small "then" and carries an accessible name such as "g then r". A sequence fires
+  only when its final chord arrives in order within `SEQUENCE_TIMEOUT_MS` (1000 ms); a wrong key, `Escape`, or
+  the timeout clears the pending steps, and a wrong key is then re-evaluated as a fresh first chord.
+- **Chord matching is per-chord and exact.** Letter chords are authored lowercase (`{ key: 'j' }`) and matched
+  CapsLock-safely by comparing `event.key.toLowerCase()`; Shift is significant for letters, so `j` and
+  `Shift+J` are distinct bindings. Printable non-letter keys such as `?` compare `event.key` directly and
+  ignore Shift (the key value already carries the Shift result). `mod` is Cmd on macOS and Ctrl elsewhere, and
+  the opposite-platform modifier never stands in for it; an unnamed `mod` or `alt` means that modifier must be
+  up. A named `alt` requires Alt/Option and matches the physical `event.code` (for example `KeyK`), because
+  Option rewrites `event.key` on macOS. AltGraph is always blocked.
+- Single-key shortcuts do not fire in an input, textarea, select, or editable element, or while a menu or
+  dialog is open; the guards apply to every chord of a sequence. The settings toggle (`Cmd+,` or `Ctrl+,`)
+  works everywhere, and `Escape` is eligible even in text entry and open overlays.
 - `[` toggles the sidebar and `]` toggles the detail pane. `Escape` closes the top layer: a confirm popover,
   then the overlay, then full page, then settings.
 - A control shown on row hover also shows when focus is inside the row.
-- Before the detail pane exists (#134), the footer's detail pane toggle is present but disabled: it carries
-  `aria-disabled="true"`, keeps its tooltip `Detail pane (])`, has no activation behavior, and `]` is a
-  deliberate no-op. The toggle ships in its final footer position so #134 only enables it. Single-key shell
-  shortcuts read their key text from the shell key table (`apps/web/src/shell/shell-keys.ts`) until #134's
-  action registry replaces it.
+- Every action is declared once in `apps/web/src/shell/action-registry.ts`; the pure matcher and formatting
+  helpers live in `apps/web/src/shell/key-utils.ts`, and the window dispatch plus the one shared pending-
+  sequence tracker live in `apps/web/src/shell/use-action-keys.ts`. Registry validation rejects duplicate
+  bindings and any combo that is also a sequence prefix, naming both actions.
+
+## Shared components and the dev gallery
+
+- The shared, client-owned building blocks live in `apps/web/src/ui/`. Each file's top comment states whether
+  it wraps Base UI or is custom. The custom ones added for keyboard-heavy work are the `ResizeHandle`
+  (vertical/horizontal `role="separator"` with 16 px arrow steps and pointer drag), `Chip` (non-interactive
+  tone label), `EmptyState` (centered title, one line, optional single action), `DescriptionList`/
+  `DescriptionItem` (semantic `dl`/`dt`/`dd`), and `Kbd`/`Shortcut`/`ShortcutList` (platform-aware key caps for
+  combos, sequences, and alternates).
+- A development-only gallery at `/dev/components` renders every `ui/` component across useful states, themes,
+  and key-cap platforms. It is registered only when `import.meta.env.DEV` is true, lazily imported behind that
+  guard so it is absent from production bundles, and its toolbar drives theme and platform through local state
+  (writing `data-theme`/`data-theme-mode` to the document root) without ever touching stored preferences. A new
+  `ui/` component must get a gallery entry; a completeness test fails, naming the file, until it does.
 
 ## Playwright geometry assertions
 

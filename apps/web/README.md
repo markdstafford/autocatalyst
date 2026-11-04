@@ -72,16 +72,27 @@ shell). `app.tsx` exports `AppRoutes` separately so tests can mount it under a
 
 ## Keyboard shortcuts
 
-The shell ships a small set of shortcuts through a temporary key table
-(`src/shell/shell-keys.ts`); tooltips and this list read their key text from that
-table. **#134 replaces these temporary hooks with the action registry.**
+Every action is declared once in the **action registry** (`src/shell/action-registry.ts`);
+tooltips, menus, and the shortcuts overlay read their key text from it. The pure
+chord-matching and formatting helpers live in `src/shell/key-utils.ts`, and window dispatch
+plus the one shared pending-sequence tracker live in `src/shell/use-action-keys.ts`
+(`src/shell/shell-keys.ts` remains a thin legacy adapter over the same mechanics). An
+action can declare **alternates** (several bindings, shown separated by "or") and a binding
+can be a **sequence** of chords (shown separated by "then", e.g. `g then r`, firing within
+`SEQUENCE_TIMEOUT_MS`). No shipped action uses a sequence yet. Matching is per-chord and
+exact: letters are lowercase-authored and CapsLock-safe with Shift significant (`j` ≠
+`Shift+J`), printable non-letters such as `?` ignore Shift, `mod` is Cmd/Ctrl by platform,
+and a named `alt` matches the physical `event.code`. Registry validation rejects duplicate
+bindings and sequence-prefix conflicts.
 
 | Shortcut | Action |
 | --- | --- |
-| `[` | Toggle the sidebar open/closed. Does not fire while typing in a field, while a menu/dialog is open, with a modifier held, or with AltGr active. |
+| `[` | Toggle the sidebar open/closed. Does not fire while typing in a field, while a menu/dialog is open, with the platform modifier or Alt held, or with AltGr active. |
+| `]` | Toggle the detail pane (on the runs route). |
 | `Cmd+,` (macOS) / `Ctrl+,` | Open and close Settings. Works everywhere, including inside a form field. |
+| `?` | Open the keyboard shortcuts overlay. |
+| `j` / `↓`, `k` / `↑` | Select the next / previous run while focus is inside the run list. |
 | `Escape` | Close the top layer: the hover sidebar first, then Settings. |
-| `]` | Reserved for the detail pane toggle; **disabled and a deliberate no-op until #134** enables the pane. The footer toggle shows `aria-disabled` with tooltip `Detail pane (])`. |
 
 ## Package aliases
 
@@ -127,18 +138,47 @@ from any call flips connection state to `unauthorized` without throwing to the r
 
 ## UI wrapper convention
 
-`src/ui/` holds the client-owned wrappers (`Button`, `Tooltip`, and the form building
-blocks `Input`, `Field`, and `WriteOnlySecretField`) and is the **only** place allowed
-to import `@base-ui/react` — enforced by ESLint and the `import-conventions` test.
-Screens import the wrappers, never Base UI primitives directly. Every icon-only button
-carries a `Tooltip`. Icons come only from `lucide-react`, imported by name.
+`src/ui/` holds the client-owned components and is the **only** place allowed to import
+`@base-ui/react` — enforced by ESLint and the `import-conventions` test. Screens import
+these components, never Base UI primitives directly. Every icon-only button carries a
+`Tooltip`. Icons come only from `lucide-react`, imported by name. Each file's top comment
+states whether it **wraps Base UI** or is **custom** (Base UI has no primitive for it).
 
-`Input`, `Field`, and `WriteOnlySecretField` were added by #132 for the Connection
-page. `WriteOnlySecretField` receives only a `hasStoredValue` boolean (never a stored
-secret), is a password input with `autocomplete="off"`, and has no mask, reveal,
-stored badge, or clear/delete control. The remaining wrappers — `Menu`, `Popover`,
-`Dialog`, `Tabs`, `Select`, `Switch` — should still be added by the first screen that
-actually uses each one. No wrapper should exist without a screen exercising it.
+- Base UI wrappers: `Button`, `Tooltip`, `Dialog`, `Tabs`, and the form building blocks
+  `Input`, `Field`, and `WriteOnlySecretField`. `WriteOnlySecretField` receives only a
+  `hasStoredValue` boolean (never a stored secret), is a password input with
+  `autocomplete="off"`, and has no mask, reveal, stored badge, or clear/delete control.
+- Custom components: `ResizeHandle` (pane separator), `Chip` (tone label), `EmptyState`,
+  `DescriptionList`/`DescriptionItem`, and `Kbd`/`Shortcut`/`ShortcutList` (key caps).
+
+The remaining Base UI wrappers — `Menu`, `Popover`, `Select`, `Switch` — should still be
+added by the first screen that actually uses each one. No component should exist without a
+screen exercising it, and **every `ui/` component must have a gallery entry** (see below).
+
+## Component gallery
+
+A development-only gallery lives at `/dev/components`. It renders every `ui/` component
+across useful states, themes, and key-cap platforms in one place, with no bearer token,
+no control-plane call, and no model call. To open it, start the dev server and visit the
+route:
+
+```bash
+pnpm nx dev web
+# then open http://localhost:<port>/dev/components (port is printed by the dev server)
+```
+
+The toolbar switches theme mode, the light theme, the dark theme, and the key-cap
+platform; those controls are local to the page and never write stored preferences.
+
+The route is registered **only** when `import.meta.env.DEV` is true and its module is
+lazily imported behind that guard, so production builds omit it entirely — a built app
+serves the not-found page for `/dev/components` (proven by `e2e/served-page.spec.ts` and
+the `dev/gallery-production-build.spec.ts` output assertion).
+
+**Adding a `ui/` component requires a gallery entry.** Add it to
+`src/dev/component-gallery-registry.ts` (id = the file basename) and render it in
+`src/dev/components-gallery.tsx`; the completeness test fails, naming the file, until the
+entry exists.
 
 ## Syntax highlighting (Shiki)
 
