@@ -31,6 +31,31 @@ describe('Input', () => {
     expect(input.className).toContain('rounded-sm');
   });
 
+  it('marks the control invalid and red-bordered in the error state', () => {
+    render(<Input aria-label="Name" error />);
+    const input = screen.getByRole('textbox', { name: 'Name' });
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(input.className).toContain('border-red');
+    expect(input.className).not.toContain('border-border');
+  });
+
+  it('is busy and read-only (not disabled) with a spinner when loading', () => {
+    render(<Input aria-label="Name" loading />);
+    const input = screen.getByRole('textbox', { name: 'Name' }) as HTMLInputElement;
+    expect(input.getAttribute('aria-busy')).toBe('true');
+    expect(input.readOnly).toBe(true);
+    expect(input.disabled).toBe(false);
+    expect(screen.getByTestId('input-spinner')).toBeDefined();
+  });
+
+  it('has no aria-invalid, aria-busy, or spinner in the default state', () => {
+    render(<Input aria-label="Name" />);
+    const input = screen.getByRole('textbox', { name: 'Name' });
+    expect(input.getAttribute('aria-invalid')).toBeNull();
+    expect(input.getAttribute('aria-busy')).toBeNull();
+    expect(screen.queryByTestId('input-spinner')).toBeNull();
+  });
+
   it('forwards controlled value and onValueChange', async () => {
     const onValueChange = vi.fn();
     function Harness(): React.ReactNode {

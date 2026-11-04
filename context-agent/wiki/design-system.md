@@ -464,6 +464,16 @@ tested and Testing (`--color-overlay` dot, `--color-subtext` text), Connected (`
   stored secret unchanged.
 - The secret never appears in a URL, a log line, a toast, or an accessible name.
 
+**Input error and loading states.** The field supports two optional states on top of the label/hint pattern.
+
+- Error: a field's `error` message renders below the control in `--text-sm` and `--color-red`. The control
+  reports `aria-invalid="true"`, the message is wired into the control's `aria-describedby`, and the
+  control's outline switches from `--color-border` to `--color-red`. Error and hint can both appear; both are
+  part of the control's description.
+- Loading: a field or input's `loading` state reports `aria-busy="true"`, makes the control **read-only**
+  rather than disabled (so it stays focusable), and shows a small spinner at the control's trailing edge. The
+  spinner does not animate when `prefers-reduced-motion` is set.
+
 ## Overlays, menus, and buttons
 
 Base UI primitives (Menu, Popover, Dialog, Tooltip, Select, Switch, Tabs) supply behavior and focus
@@ -526,9 +536,13 @@ handling, and tokens supply the styling.
   combos, sequences, and alternates).
 - A development-only gallery at `/dev/components` renders every `ui/` component across useful states, themes,
   and key-cap platforms. It is registered only when `import.meta.env.DEV` is true, lazily imported behind that
-  guard so it is absent from production bundles, and its toolbar drives theme and platform through local state
-  (writing `data-theme`/`data-theme-mode` to the document root) without ever touching stored preferences. A new
-  `ui/` component must get a gallery entry; a completeness test fails, naming the file, until it does.
+  guard so it is absent from production bundles, and its toolbar drives theme mode, the light/dark theme, the
+  primary and secondary accents, the key-cap platform, and the sample surface through local state (writing
+  `data-theme`/`data-theme-mode`/`data-primary-accent`/`data-secondary-accent` to the document root, restored
+  exactly on unmount) without ever touching stored preferences. Sample wells sit on a real app surface —
+  `--color-background` by default, or `--color-mantle` via the Surface control — with a `--color-border`
+  outline, never on the grey `--color-surface`. A new `ui/` component must get a gallery entry; a completeness
+  test fails, naming the file, until it does.
 
 ## Playwright geometry assertions
 

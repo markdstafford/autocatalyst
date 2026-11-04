@@ -14,7 +14,7 @@ import { fireEvent, render } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { PREFERENCES_STORAGE_KEY, DARK_THEMES, LIGHT_THEMES } from '../theme/preferences.js';
-import { ComponentsGallery } from './components-gallery.js';
+import { ComponentsGallery, GALLERY_MARKER } from './components-gallery.js';
 
 function mockColorScheme(prefersDark: boolean): void {
   window.matchMedia = vi.fn().mockImplementation((query: string) => ({
@@ -34,6 +34,8 @@ afterEach(() => {
   Reflect.deleteProperty(window, 'matchMedia');
   document.documentElement.removeAttribute('data-theme');
   document.documentElement.removeAttribute('data-theme-mode');
+  document.documentElement.removeAttribute('data-primary-accent');
+  document.documentElement.removeAttribute('data-secondary-accent');
 });
 
 describe('gallery theme matrix', () => {
@@ -98,7 +100,10 @@ describe('gallery is preference-safe', () => {
     fireEvent.change(getByLabelText('Theme mode'), { target: { value: 'dark' } });
     fireEvent.change(getByLabelText('Dark theme'), { target: { value: 'github-dark' } });
     fireEvent.change(getByLabelText('Light theme'), { target: { value: 'solarized-light' } });
+    fireEvent.change(getByLabelText('Primary accent'), { target: { value: 'red' } });
+    fireEvent.change(getByLabelText('Secondary accent'), { target: { value: 'green' } });
     fireEvent.change(getByLabelText('Key-cap platform'), { target: { value: 'other' } });
+    fireEvent.change(getByLabelText('Surface'), { target: { value: 'mantle' } });
 
     expect(window.localStorage.getItem(PREFERENCES_STORAGE_KEY)).toBe(stored);
   });
@@ -106,17 +111,62 @@ describe('gallery is preference-safe', () => {
   it('restores the previous root attributes on unmount', () => {
     const root = document.documentElement;
     root.setAttribute('data-theme', 'catppuccin-latte');
-    // data-theme-mode is intentionally absent before mount.
+    root.setAttribute('data-primary-accent', 'sapphire');
+    // data-theme-mode and data-secondary-accent are intentionally absent before mount.
     root.removeAttribute('data-theme-mode');
+    root.removeAttribute('data-secondary-accent');
 
-    const view = render(<ComponentsGallery initialMode="dark" initialDarkTheme="dracula" />);
+    const view = render(
+      <ComponentsGallery
+        initialMode="dark"
+        initialDarkTheme="dracula"
+        initialPrimaryAccent="red"
+        initialSecondaryAccent="green"
+      />
+    );
     // While mounted the gallery drives the attributes.
     expect(root.getAttribute('data-theme')).toBe('dracula');
     expect(root.getAttribute('data-theme-mode')).toBe('dark');
+    expect(root.getAttribute('data-primary-accent')).toBe('red');
+    expect(root.getAttribute('data-secondary-accent')).toBe('green');
 
     view.unmount();
-    // The prior value is restored, and the previously-absent attribute is removed.
+    // The prior values are restored, and the previously-absent attributes are removed.
     expect(root.getAttribute('data-theme')).toBe('catppuccin-latte');
     expect(root.hasAttribute('data-theme-mode')).toBe(false);
+    expect(root.getAttribute('data-primary-accent')).toBe('sapphire');
+    expect(root.hasAttribute('data-secondary-accent')).toBe(false);
+  });
+});
+
+describe('gallery marker', () => {
+  it('exposes the marker as a root data attribute, not visible text', () => {
+    const { getByTestId, queryByText } = render(<ComponentsGallery initialMode="light" />);
+    expect(getByTestId('component-gallery').getAttribute('data-gallery-marker')).toBe(GALLERY_MARKER);
+    // The marker must not be printed on the page.
+    expect(queryByText(GALLERY_MARKER, { exact: false })).toBeNull();
+  });
+});
+
+describe('gallery sample surface', () => {
+  it('places sample wells on the background surface by default', () => {
+    const { container } = render(<ComponentsGallery initialMode="light" />);
+    const wells = container.querySelectorAll('[data-surface]');
+    expect(wells.length).toBeGreaterThan(0);
+    for (const well of wells) {
+      expect(well.getAttribute('data-surface')).toBe('background');
+      expect(well.className).toContain('bg-background');
+    }
+  });
+
+  it('follows the Surface control onto the mantle surface', () => {
+    const { container, getByLabelText } = render(<ComponentsGallery initialMode="light" />);
+    fireEvent.change(getByLabelText('Surface'), { target: { value: 'mantle' } });
+    const wells = container.querySelectorAll('[data-surface]');
+    expect(wells.length).toBeGreaterThan(0);
+    for (const well of wells) {
+      expect(well.getAttribute('data-surface')).toBe('mantle');
+      expect(well.className).toContain('bg-mantle');
+    }
   });
 });

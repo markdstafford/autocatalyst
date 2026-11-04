@@ -3,24 +3,34 @@
  *
  * It lists every `ui/` component across useful states so a developer or designer can
  * review them in one place, without a run scenario, a bearer token, or any control-plane
- * call. A toolbar switches theme mode, the light theme, the dark theme, and the key-cap
- * platform; those controls are **local state only** — they write `data-theme` and
- * `data-theme-mode` straight to `document.documentElement` (so Base UI portal content
- * such as the Dialog example picks up the theme) and never call the theme provider or
- * touch stored preferences. On unmount the previous root attributes are restored exactly,
- * including removing an attribute that was absent before.
+ * call. A toolbar switches theme mode, the light theme, the dark theme, the primary and
+ * secondary accents, the key-cap platform, and the sample surface; those controls are
+ * **local state only** — they write `data-theme`, `data-theme-mode`, `data-primary-accent`,
+ * and `data-secondary-accent` straight to `document.documentElement` (so Base UI portal
+ * content such as the Dialog example picks up the theme and accents) and never call the
+ * theme provider or touch stored preferences. On unmount the previous root attributes are
+ * restored exactly, including removing an attribute that was absent before.
+ *
+ * Samples sit on the app's real surfaces: each well uses `--color-background` (the
+ * Surface control can switch it to `--color-mantle`) with a `--color-border` outline, so
+ * the gallery judges components against the same background the real app uses — never the
+ * grey `--color-surface` the app never places components on.
  *
  * This module is lazily imported behind an `import.meta.env.DEV` guard (see
  * `dev-routes.tsx`), so it is eliminated from production builds. {@link GALLERY_MARKER}
  * is a unique string used by the production build-output assertion to prove the module is
- * absent from `apps/web/dist`.
+ * absent from `apps/web/dist`; it is rendered only as the root `data-gallery-marker`
+ * attribute, never as visible page text.
  */
 import { useEffect, useState, type ReactNode } from 'react';
 
 import {
+  ACCENT_IDS,
   DARK_THEMES,
+  DEFAULT_PREFERENCES,
   LIGHT_THEMES,
   THEME_MODES,
+  type AccentId,
   type DarkTheme,
   type LightTheme,
   type ThemeMode
@@ -42,6 +52,16 @@ import { GALLERY_ENTRIES, type GalleryEntry } from './component-gallery-registry
 
 /** Unique marker proving (by its absence) that the gallery is excluded from production. */
 export const GALLERY_MARKER = 'AUTOCATALYST_DEV_COMPONENT_GALLERY';
+
+/** The sample surface the wells sit on — both are real app surfaces. */
+export type GallerySurface = 'background' | 'mantle';
+const GALLERY_SURFACES: readonly GallerySurface[] = ['background', 'mantle'];
+
+/** Tailwind background utility for each sample surface (both are real app tokens). */
+const SURFACE_CLASS: Readonly<Record<GallerySurface, string>> = {
+  background: 'bg-background',
+  mantle: 'bg-mantle'
+};
 
 const DARK_QUERY = '(prefers-color-scheme: dark)';
 
@@ -93,20 +113,32 @@ export interface ComponentsGalleryProps {
   readonly initialLightTheme?: LightTheme;
   /** Test seam: the initial dark theme. Defaults to the first dark theme. */
   readonly initialDarkTheme?: DarkTheme;
+  /** Test seam: the initial primary accent. Defaults to the app default. */
+  readonly initialPrimaryAccent?: AccentId;
+  /** Test seam: the initial secondary accent. Defaults to the app default. */
+  readonly initialSecondaryAccent?: AccentId;
   /** Test seam: the initial key-cap platform. Defaults to `mac`. */
   readonly initialPlatform?: ShortcutPlatform;
+  /** Test seam: the initial sample surface. Defaults to `background`. */
+  readonly initialSurface?: GallerySurface;
 }
 
 export function ComponentsGallery({
   initialMode = 'system',
   initialLightTheme = LIGHT_THEMES[0],
   initialDarkTheme = DARK_THEMES[0],
-  initialPlatform = 'mac'
+  initialPrimaryAccent = DEFAULT_PREFERENCES.primaryAccent,
+  initialSecondaryAccent = DEFAULT_PREFERENCES.secondaryAccent,
+  initialPlatform = 'mac',
+  initialSurface = 'background'
 }: ComponentsGalleryProps): ReactNode {
   const [mode, setMode] = useState<ThemeMode>(initialMode);
   const [lightTheme, setLightTheme] = useState<LightTheme>(initialLightTheme);
   const [darkTheme, setDarkTheme] = useState<DarkTheme>(initialDarkTheme);
+  const [primaryAccent, setPrimaryAccent] = useState<AccentId>(initialPrimaryAccent);
+  const [secondaryAccent, setSecondaryAccent] = useState<AccentId>(initialSecondaryAccent);
   const [platform, setPlatform] = useState<ShortcutPlatform>(initialPlatform);
+  const [surface, setSurface] = useState<GallerySurface>(initialSurface);
 
   const prefersDark = useSystemPrefersDark();
   const useDark = mode === 'dark' || (mode === 'system' && prefersDark);
@@ -118,26 +150,37 @@ export function ComponentsGallery({
     const root = document.documentElement;
     const previousTheme = root.getAttribute('data-theme');
     const previousMode = root.getAttribute('data-theme-mode');
+    const previousPrimary = root.getAttribute('data-primary-accent');
+    const previousSecondary = root.getAttribute('data-secondary-accent');
     return () => {
       restoreAttribute(root, 'data-theme', previousTheme);
       restoreAttribute(root, 'data-theme-mode', previousMode);
+      restoreAttribute(root, 'data-primary-accent', previousPrimary);
+      restoreAttribute(root, 'data-secondary-accent', previousSecondary);
     };
   }, []);
 
-  // Apply the toolbar-selected theme directly to the root (never through preferences).
+  // Apply the toolbar-selected theme and accents directly to the root (never through
+  // preferences), so the page and Base UI portal content share the selection.
   useEffect(() => {
     const root = document.documentElement;
     root.setAttribute('data-theme', resolvedTheme);
     root.setAttribute('data-theme-mode', resolvedMode);
-  }, [resolvedTheme, resolvedMode]);
+    root.setAttribute('data-primary-accent', primaryAccent);
+    root.setAttribute('data-secondary-accent', secondaryAccent);
+  }, [resolvedTheme, resolvedMode, primaryAccent, secondaryAccent]);
 
   return (
-    <main className="min-h-screen bg-background px-6 py-6 text-text" data-testid="component-gallery">
+    <main
+      className="min-h-screen bg-background px-6 py-6 text-text"
+      data-testid="component-gallery"
+      data-gallery-marker={GALLERY_MARKER}
+    >
       <header className="mb-6 flex flex-col gap-1">
         <h1 className="text-xl font-semibold tracking-tight">Component gallery</h1>
         <p className="text-sm text-subtext" style={{ maxWidth: 'var(--width-reading-column)' }}>
           Development-only review of every <code className="font-mono text-xs">ui/</code> component. This
-          page makes no model or control-plane call. ({GALLERY_MARKER})
+          page makes no model or control-plane call.
         </p>
       </header>
 
@@ -145,17 +188,23 @@ export function ComponentsGallery({
         mode={mode}
         lightTheme={lightTheme}
         darkTheme={darkTheme}
+        primaryAccent={primaryAccent}
+        secondaryAccent={secondaryAccent}
         platform={platform}
+        surface={surface}
         onMode={setMode}
         onLightTheme={setLightTheme}
         onDarkTheme={setDarkTheme}
+        onPrimaryAccent={setPrimaryAccent}
+        onSecondaryAccent={setSecondaryAccent}
         onPlatform={setPlatform}
+        onSurface={setSurface}
       />
 
       <div className="mt-8 flex flex-col gap-8">
         {GALLERY_ENTRIES.map((entry) => (
-          <GallerySection key={entry.id} entry={entry}>
-            {renderExample(entry.id, platform)}
+          <GallerySection key={entry.id} entry={entry} surface={surface}>
+            {renderExample(entry.id, platform, surface)}
           </GallerySection>
         ))}
       </div>
@@ -173,93 +222,95 @@ interface ToolbarProps {
   readonly mode: ThemeMode;
   readonly lightTheme: LightTheme;
   readonly darkTheme: DarkTheme;
+  readonly primaryAccent: AccentId;
+  readonly secondaryAccent: AccentId;
   readonly platform: ShortcutPlatform;
+  readonly surface: GallerySurface;
   onMode(mode: ThemeMode): void;
   onLightTheme(theme: LightTheme): void;
   onDarkTheme(theme: DarkTheme): void;
+  onPrimaryAccent(accent: AccentId): void;
+  onSecondaryAccent(accent: AccentId): void;
   onPlatform(platform: ShortcutPlatform): void;
+  onSurface(surface: GallerySurface): void;
 }
 
 const SELECT_CLASSES =
   'h-control-base rounded-sm border border-border bg-background px-2 text-sm text-text ' +
   'focus:outline-none focus:ring-2 focus:ring-focus focus:ring-offset-1 focus:ring-offset-background';
 
+/** One labelled `<select>` in the toolbar, wired to local state. */
+function ToolbarSelect<T extends string>({
+  label,
+  value,
+  options,
+  onChange
+}: {
+  readonly label: string;
+  readonly value: T;
+  readonly options: readonly T[];
+  onChange(value: T): void;
+}): ReactNode {
+  return (
+    <label className="flex flex-col gap-1 text-xs font-medium text-subtext">
+      {label}
+      <select
+        className={SELECT_CLASSES}
+        value={value}
+        onChange={(event) => {
+          onChange(event.target.value as T);
+        }}
+      >
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function Toolbar({
   mode,
   lightTheme,
   darkTheme,
+  primaryAccent,
+  secondaryAccent,
   platform,
+  surface,
   onMode,
   onLightTheme,
   onDarkTheme,
-  onPlatform
+  onPrimaryAccent,
+  onSecondaryAccent,
+  onPlatform,
+  onSurface
 }: ToolbarProps): ReactNode {
   return (
     <div className="flex flex-wrap items-end gap-4 border-b border-border pb-4">
-      <label className="flex flex-col gap-1 text-xs font-medium text-subtext">
-        Theme mode
-        <select
-          className={SELECT_CLASSES}
-          value={mode}
-          onChange={(event) => {
-            onMode(event.target.value as ThemeMode);
-          }}
-        >
-          {THEME_MODES.map((value) => (
-            <option key={value} value={value}>
-              {value}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <label className="flex flex-col gap-1 text-xs font-medium text-subtext">
-        Light theme
-        <select
-          className={SELECT_CLASSES}
-          value={lightTheme}
-          onChange={(event) => {
-            onLightTheme(event.target.value as LightTheme);
-          }}
-        >
-          {LIGHT_THEMES.map((value) => (
-            <option key={value} value={value}>
-              {value}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <label className="flex flex-col gap-1 text-xs font-medium text-subtext">
-        Dark theme
-        <select
-          className={SELECT_CLASSES}
-          value={darkTheme}
-          onChange={(event) => {
-            onDarkTheme(event.target.value as DarkTheme);
-          }}
-        >
-          {DARK_THEMES.map((value) => (
-            <option key={value} value={value}>
-              {value}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      <label className="flex flex-col gap-1 text-xs font-medium text-subtext">
-        Key-cap platform
-        <select
-          className={SELECT_CLASSES}
-          value={platform}
-          onChange={(event) => {
-            onPlatform(event.target.value as ShortcutPlatform);
-          }}
-        >
-          <option value="mac">mac</option>
-          <option value="other">other</option>
-        </select>
-      </label>
+      <ToolbarSelect label="Theme mode" value={mode} options={THEME_MODES} onChange={onMode} />
+      <ToolbarSelect label="Light theme" value={lightTheme} options={LIGHT_THEMES} onChange={onLightTheme} />
+      <ToolbarSelect label="Dark theme" value={darkTheme} options={DARK_THEMES} onChange={onDarkTheme} />
+      <ToolbarSelect
+        label="Primary accent"
+        value={primaryAccent}
+        options={ACCENT_IDS}
+        onChange={onPrimaryAccent}
+      />
+      <ToolbarSelect
+        label="Secondary accent"
+        value={secondaryAccent}
+        options={ACCENT_IDS}
+        onChange={onSecondaryAccent}
+      />
+      <ToolbarSelect
+        label="Key-cap platform"
+        value={platform}
+        options={['mac', 'other'] as const}
+        onChange={onPlatform}
+      />
+      <ToolbarSelect label="Surface" value={surface} options={GALLERY_SURFACES} onChange={onSurface} />
     </div>
   );
 }
@@ -268,7 +319,15 @@ function Toolbar({
 // Section frame
 // ---------------------------------------------------------------------------
 
-function GallerySection({ entry, children }: { entry: GalleryEntry; children: ReactNode }): ReactNode {
+function GallerySection({
+  entry,
+  surface,
+  children
+}: {
+  entry: GalleryEntry;
+  surface: GallerySurface;
+  children: ReactNode;
+}): ReactNode {
   return (
     <section data-gallery-entry={entry.id} className="flex flex-col gap-3">
       <div className="flex items-center gap-2">
@@ -278,7 +337,9 @@ function GallerySection({ entry, children }: { entry: GalleryEntry; children: Re
         </Chip>
       </div>
       <p className="text-sm text-subtext">{entry.description}</p>
-      <div className="rounded-sm border border-border bg-surface p-4">{children}</div>
+      <div data-surface={surface} className={`rounded-sm border border-border p-4 ${SURFACE_CLASS[surface]}`}>
+        {children}
+      </div>
     </section>
   );
 }
@@ -292,7 +353,7 @@ function Row({ children }: { children: ReactNode }): ReactNode {
 // ---------------------------------------------------------------------------
 
 /** The example block for one `ui/` component id. */
-function renderExample(id: string, platform: ShortcutPlatform): ReactNode {
+function renderExample(id: string, platform: ShortcutPlatform, surface: GallerySurface): ReactNode {
   switch (id) {
     case 'resize-handle':
       return <ResizeHandleExample />;
@@ -357,9 +418,18 @@ function renderExample(id: string, platform: ShortcutPlatform): ReactNode {
       );
     case 'field':
       return (
-        <div className="max-w-sm">
+        <div className="grid max-w-xl gap-4 sm:grid-cols-2">
           <Field label="Display name" hint="Shown next to your runs.">
             <Input placeholder="Ada Lovelace" />
+          </Field>
+          <Field label="Disabled field" hint="Not editable right now.">
+            <Input placeholder="Ada Lovelace" disabled />
+          </Field>
+          <Field label="Name with error" error="Name is required.">
+            <Input placeholder="Ada Lovelace" />
+          </Field>
+          <Field label="Loading field" loading>
+            <Input placeholder="Fetching…" defaultValue="Checking availability" />
           </Field>
         </div>
       );
@@ -369,6 +439,8 @@ function renderExample(id: string, platform: ShortcutPlatform): ReactNode {
           <Input placeholder="Default" />
           <Input defaultValue="Filled value" />
           <Input placeholder="Disabled" disabled />
+          <Input defaultValue="Invalid value" error aria-label="Input in error state" />
+          <Input defaultValue="Loading value" loading aria-label="Input in loading state" />
         </div>
       );
     case 'write-only-secret-field':
@@ -384,7 +456,11 @@ function renderExample(id: string, platform: ShortcutPlatform): ReactNode {
         </Tooltip>
       );
     default:
-      return <p className="text-sm text-red">No example registered for &quot;{id}&quot;.</p>;
+      return (
+        <p className="text-sm text-red">
+          No example registered for &quot;{id}&quot; on the {surface} surface.
+        </p>
+      );
   }
 }
 
@@ -394,7 +470,7 @@ function ResizeHandleExample(): ReactNode {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex h-32 w-full max-w-xl overflow-hidden rounded-sm border border-border-subtle">
-        <div className="min-w-0 flex-1 bg-surface-1 p-2 text-xs text-subtext">List</div>
+        <div className="min-w-0 flex-1 bg-background p-2 text-xs text-subtext">List</div>
         <ResizeHandle
           orientation="vertical"
           value={width}
@@ -404,13 +480,13 @@ function ResizeHandleExample(): ReactNode {
           startAxisChange="increase"
           onResize={setWidth}
         />
-        <div className="shrink-0 bg-surface p-2 text-xs text-subtext" style={{ width: `${width}px` }}>
+        <div className="shrink-0 bg-mantle p-2 text-xs text-subtext" style={{ width: `${width}px` }}>
           Pane ({Math.round(width)} px)
         </div>
       </div>
 
       <div className="flex w-full max-w-xl flex-col overflow-hidden rounded-sm border border-border-subtle">
-        <div className="min-h-0 flex-1 bg-surface-1 p-2 text-xs text-subtext">Top</div>
+        <div className="min-h-0 flex-1 bg-background p-2 text-xs text-subtext">Top</div>
         <ResizeHandle
           orientation="horizontal"
           value={height}
@@ -420,7 +496,7 @@ function ResizeHandleExample(): ReactNode {
           startAxisChange="increase"
           onResize={setHeight}
         />
-        <div className="shrink-0 bg-surface p-2 text-xs text-subtext" style={{ height: `${height}px` }}>
+        <div className="shrink-0 bg-mantle p-2 text-xs text-subtext" style={{ height: `${height}px` }}>
           Bottom ({Math.round(height)} px)
         </div>
       </div>

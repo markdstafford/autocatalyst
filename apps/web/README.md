@@ -167,8 +167,13 @@ pnpm nx dev web
 # then open http://localhost:<port>/dev/components (port is printed by the dev server)
 ```
 
-The toolbar switches theme mode, the light theme, the dark theme, and the key-cap
-platform; those controls are local to the page and never write stored preferences.
+The toolbar switches theme mode, the light theme, the dark theme, the primary and
+secondary accent, the key-cap platform, and the sample surface (`background` or
+`mantle`); those controls are local to the page and never write stored preferences. Each
+sample well sits on a real app surface — `--color-background` by default, `--color-mantle`
+via the Surface control — with a `--color-border` outline, so components are judged against
+the same background the app uses rather than the grey `--color-surface`. `Field` and
+`Input` show their error and loading states alongside the default and disabled ones.
 
 The route is registered **only** when `import.meta.env.DEV` is true and its module is
 lazily imported behind that guard, so production builds omit it entirely — a built app
