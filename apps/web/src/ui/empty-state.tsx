@@ -3,7 +3,8 @@
  *
  * It follows the design-system empty-state pattern: centered in its region, a title in
  * `--text-md`, one explanatory line in `--text-sm` and `--color-subtext`, at most one
- * primary action, and no illustration. Copy stays with the caller (for the run detail
+ * primary action, and no illustration. The title is a heading (`h2`) so assistive technology
+ * keeps the region's name. Copy stays with the caller (for the run detail
  * pane, in `runs/run-detail-empty-states.ts`) so this component holds no wording.
  */
 import type { ReactNode } from 'react';
@@ -38,7 +39,7 @@ export function EmptyState({ title, message, action, className, ...rest }: Empty
     .join(' ');
   return (
     <div className={containerClass} {...rest}>
-      <div className="text-md font-medium text-text">{title}</div>
+      <h2 className="text-md font-medium text-text">{title}</h2>
       {message !== undefined && message.length > 0 ? (
         <p className="text-sm text-subtext" style={{ maxWidth: 'var(--width-reading-column)' }}>
           {message}
