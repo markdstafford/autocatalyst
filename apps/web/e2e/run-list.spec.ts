@@ -54,7 +54,10 @@ test.describe('run list', () => {
       await expect(page).toHaveURL(new RegExp(`/runs/${firstId}$`));
 
       // The pane reflects the selected run.
-      await expect(page.getByTestId('pane-run-id')).toHaveText(firstId ?? '');
+      await expect(page.getByRole('complementary', { name: 'Run detail' })).toHaveAttribute(
+        'data-pane-run-id',
+        firstId ?? ''
+      );
 
       // Focus the list via a row click, then move with the keyboard.
       await page.locator(`[data-run-id="${firstId}"]`).click();
@@ -63,7 +66,10 @@ test.describe('run list', () => {
       const secondId = await selectedRow(page).getAttribute('data-run-id');
       expect(secondId).not.toBe(firstId);
       await expect(page).toHaveURL(new RegExp(`/runs/${secondId}$`));
-      await expect(page.getByTestId('pane-run-id')).toHaveText(secondId ?? '');
+      await expect(page.getByRole('complementary', { name: 'Run detail' })).toHaveAttribute(
+        'data-pane-run-id',
+        secondId ?? ''
+      );
 
       // ArrowDown moves on; ArrowUp and k move back.
       await page.keyboard.press('ArrowDown');
@@ -154,11 +160,16 @@ test.describe('run list', () => {
         seen.add(firstId);
         await page.locator(`[data-run-id="${firstId}"]`).click();
       }
+      let previousId = firstId;
       for (let i = 0; i < scenarios.length - 1; i += 1) {
         await page.keyboard.press('j');
+        // Wait for the selection to move before reading it; the pane now does more work per
+        // selection, so reading the row straight after the key press can see the old row.
+        await expect(selectedRow(page)).not.toHaveAttribute('data-run-id', previousId ?? '');
         const id = await selectedRow(page).getAttribute('data-run-id');
         if (id !== null) {
           seen.add(id);
+          previousId = id;
         }
       }
       // Every seeded run was observed while moving through the list.

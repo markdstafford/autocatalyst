@@ -37,10 +37,65 @@ interface SeamState {
 
 const seam: SeamState = { runs: [], projects: [], runsStatus: 200 };
 
-const fetchSeam: typeof globalThis.fetch = async (input) => {
+function errorResponse(code: string, status: number): Response {
+  return jsonResponse({ error: { code, message: 'x' } }, status);
+}
+
+/** An abortable, never-ending SSE response for the selected-run event stream. */
+function sseResponse(init?: RequestInit): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      controller.enqueue(encoder.encode(': connected\n\n'));
+      const signal = init?.signal ?? undefined;
+      if (signal != null) {
+        if (signal.aborted) {
+          controller.error(new DOMException('Aborted', 'AbortError'));
+          return;
+        }
+        signal.addEventListener(
+          'abort',
+          () => {
+            try {
+              controller.error(new DOMException('Aborted', 'AbortError'));
+            } catch {
+              /* already closed */
+            }
+          },
+          { once: true }
+        );
+      }
+    }
+  });
+  return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+}
+
+const fetchSeam: typeof globalThis.fetch = async (input, init) => {
   const url = requestUrl(input);
   if (url.includes('/v1/projects')) {
     return jsonResponse({ projects: seam.projects }, 200);
+  }
+  // Selected-run detail reads (checked before the run collection/resource).
+  const detailMatch = /\/v1\/runs\/([^/?]+)\/(pull-request|sessions|spec|events)/u.exec(url);
+  if (detailMatch !== null) {
+    const kind = detailMatch[2];
+    if (kind === 'events') {
+      return sseResponse(init ?? undefined);
+    }
+    if (kind === 'sessions') {
+      return jsonResponse({ sessions: [] }, 200);
+    }
+    // No pull request and no spec artifact yet (normal 404s).
+    return errorResponse('not_found', 404);
+  }
+  // A single-run resource read (getRun): /v1/runs/<id> with no further segment.
+  const resourceMatch = /\/v1\/runs\/([^/?]+)$/u.exec(url);
+  if (resourceMatch !== null) {
+    const run = seam.runs.find((r) => r.id === resourceMatch[1]);
+    if (run === undefined) {
+      return errorResponse('not_found', 404);
+    }
+    return jsonResponse(run, 200);
   }
   if (url.includes('/v1/runs')) {
     if (seam.runsStatus !== 200) {
@@ -111,7 +166,7 @@ describe('RunsPage with runs', () => {
     await waitFor(() => {
       expect(screen.getByTestId('location').textContent).toBe('/runs/run-a');
     });
-    expect(screen.getByTestId('pane-run-id').textContent).toBe('run-a');
+    expect(screen.getByRole('complementary', { name: 'Run detail' }).getAttribute('data-pane-run-id')).toBe('run-a');
     expect(screen.getByTestId('pane-run-title').textContent).toBe('First run');
   });
 
@@ -123,7 +178,7 @@ describe('RunsPage with runs', () => {
     await waitFor(() => {
       expect(screen.getByTestId('location').textContent).toBe('/runs/run-b');
     });
-    expect(screen.getByTestId('pane-run-id').textContent).toBe('run-b');
+    expect(screen.getByRole('complementary', { name: 'Run detail' }).getAttribute('data-pane-run-id')).toBe('run-b');
   });
 
   it('moves selection with j while the list is focused', async () => {
