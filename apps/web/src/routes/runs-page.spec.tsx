@@ -138,7 +138,7 @@ afterEach(() => {
 describe('RunsPage without a token', () => {
   it('shows the connect prompt and makes no run/project request', async () => {
     renderRuns('/runs');
-    expect(screen.getByRole('heading', { name: 'Connect to the control plane' })).toBeDefined();
+    expect(screen.getByText('Connect to the control plane')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Open connection settings' })).toBeDefined();
     // No table ever appears.
     expect(screen.queryByRole('grid', { name: 'Runs' })).toBeNull();

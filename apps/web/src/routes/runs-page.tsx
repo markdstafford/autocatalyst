@@ -27,7 +27,7 @@ import { CONNECTION_PATH, runPath } from '../shell/navigation.js';
 import { useActionKeys } from '../shell/use-action-keys.js';
 import type { RunsOutletContext } from '../shell/shell-layout.js';
 import { PANE_WIDTH_MAX, PANE_WIDTH_MIN } from '../theme/preferences.js';
-import { Button } from '../ui/button.js';
+import { EmptyState } from '../ui/empty-state.js';
 import { ResizeHandle } from '../ui/resize-handle.js';
 
 export function RunsPage(): ReactNode {
@@ -83,21 +83,16 @@ export function RunsPage(): ReactNode {
 
   if (!connected) {
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
-        <h2 className="text-md font-medium text-text">Connect to the control plane</h2>
-        <p className="text-sm text-subtext" style={{ maxWidth: 'var(--width-reading-column)' }}>
-          Enter a bearer token in Connection settings to reach the control plane.
-        </p>
-        <Button
-          variant="primary"
-          className="mt-2"
-          onClick={() => {
+      <EmptyState
+        title="Connect to the control plane"
+        message="Enter a bearer token in Connection settings to reach the control plane."
+        action={{
+          label: 'Open connection settings',
+          onClick: () => {
             navigate(CONNECTION_PATH);
-          }}
-        >
-          Open connection settings
-        </Button>
-      </div>
+          }
+        }}
+      />
     );
   }
 
@@ -175,13 +170,11 @@ export function RunsPage(): ReactNode {
     }
     // Ready with no rows: the design-system no-runs empty state, no Start a run button.
     return (
-      <div
+      <EmptyState
         data-testid="runs-empty-no-runs"
-        className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center"
-      >
-        <h2 className="text-md font-medium text-text">No runs yet</h2>
-        <p className="text-sm text-subtext">A run starts from a tracked issue.</p>
-      </div>
+        title="No runs yet"
+        message="A run starts from a tracked issue."
+      />
     );
   }
 }

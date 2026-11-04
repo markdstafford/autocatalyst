@@ -40,7 +40,7 @@ describe('AppRoutes', () => {
   it('redirects / to /runs and shows the shell with the connect empty state', () => {
     renderAt('/');
     expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeDefined();
-    expect(screen.getByRole('heading', { name: 'Connect to the control plane' })).toBeDefined();
+    expect(screen.getByText('Connect to the control plane')).toBeDefined();
     expect(screen.getByRole('button', { name: 'Open connection settings' })).toBeDefined();
   });
 
