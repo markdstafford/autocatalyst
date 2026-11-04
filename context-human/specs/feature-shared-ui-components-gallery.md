@@ -72,7 +72,8 @@ When Olive presses keys, the matcher respects the new model. Plain `j` and `Shif
 
 - All new and existing shared components in `apps/web/src/ui/` have gallery entries and file comments that state Base UI wrapper versus custom.
 - Existing run list and run detail layout, wording, and geometry assertions remain unchanged after moving markup to shared components.
-- Shortcut matching and display support Shift, Alt, mod, alternates, two-step sequences, and three-step sequences with unit coverage.
+- Shortcut matching and display support lowercase-authored letter chords, CapsLock-safe matching, Shift, Alt via physical `event.code`, mod, alternates, two-step sequences, and three-step sequences with unit coverage.
+- Gallery theme coverage renders the three light themes in light mode, the five dark themes in dark mode, plus system mode under both OS color-scheme settings.
 - `/dev/components` is available only in Vite development, lazily imported, absent from production bundles, and routes to not-found in a production fake-mode serve.
 - Documentation records the new components, shortcut model, gallery usage, and the requirement to add gallery entries for new `ui/` components.
 
@@ -136,7 +137,16 @@ graph TD
 
 - Custom non-interactive label component.
 - Uses `--text-xs`, `--radius-sm`, no wrap, and token-only colors.
-- Tones: `neutral`, `muted`, `primary`, `green`, and `red`.
+- Tones map to tokens as follows:
+
+| Tone | Treatment |
+| --- | --- |
+| `neutral` | `--color-border` outline with `--color-text` |
+| `muted` | outline with `--color-subtext` |
+| `primary` | `--color-primary` fill with `--color-on-primary` |
+| `green` | outline with `--color-green` text |
+| `red` | outline with `--color-red` text |
+
 - Replaces the detail header work-kind chip and filled waiting chip without visual changes.
 
 #### EmptyState
@@ -234,19 +244,22 @@ graph TD
 
 #### Shortcut matching design
 
-- `ShellChord` becomes `{ key: string; mod?: 'mod'; shift?: boolean; alt?: boolean }`.
+- `ShellChord` becomes `{ key: string; code?: string; mod?: 'mod'; shift?: boolean; alt?: boolean }`. Letter chords are authored with lowercase `key` values. Chords that name `alt` also name a physical `code` such as `KeyK`, because macOS Option changes `event.key`.
 - `ActionDescriptor.keys` becomes `readonly Binding[]`, where `Binding = readonly [ShellChord, ...ShellChord[]]` or a runtime-validated non-empty readonly list if TypeScript ergonomics require an alias.
-- Letter chords without `shift` require Shift not held. Letter chords with `shift` require Shift held. Non-letter chords such as `?` and `[` ignore Shift because the key value already carries the printable result.
-- `mod` means Cmd on macOS and Ctrl elsewhere. If a chord does not name `mod`, the corresponding platform modifier must not be held unless the action's existing applies-when behavior explicitly allows it.
-- `alt` must match when named; AltGraph continues to block single-key shortcuts unless a future binding explicitly supports it.
+- Letter chord matching is CapsLock-safe: compare `event.key.toLowerCase()` to `chord.key`, then require `event.shiftKey === (chord.shift === true)`. Thus `{ key: 'j' }` matches plain `j` even when CapsLock reports `event.key === 'J'`, and `{ key: 'j', shift: true }` matches Shift+J.
+- Non-letter chords such as `?` and `[` compare `event.key` exactly and ignore Shift because the key value already carries the printable result.
+- The old blanket `modifierHeld` guard is replaced for shortcut actions by exact per-chord comparison of `mod`, `shift`, and `alt` against the event. `mod` means Cmd on macOS and Ctrl elsewhere; unnamed `mod` means that platform modifier must not be held. Unnamed `alt` means Alt must not be held; named `alt` requires Alt and matches the physical `code`. AltGraph remains blocked unless a future chord explicitly supports it.
+- The hard-coded settings-toggle and Escape special cases move into the generic matcher as registry actions. Their existing applies-when behavior is preserved: settings works anywhere, and Escape remains the layer-close action.
 - `SEQUENCE_TIMEOUT_MS = 1000` is a named exported constant.
-- A sequence fires only when the final chord matches and every prior chord matched in order within the timeout. Wrong key, `Escape`, or timeout clears pending steps. Guard rules apply to every chord of a sequence.
+- A sequence fires only when the final chord matches and every prior chord matched in order within the timeout. Wrong key, `Escape`, or timeout clears pending steps. After a wrong key clears a pending prefix, that same key is evaluated again as a fresh first chord, so `g` then `j` clears `g` and runs the `j` action if `j` is otherwise valid. Guard rules apply to every chord of a sequence.
+- Sequence state has one shared owner: either a module-level sequence tracker or a single dispatcher that all `useActionKeys` instances register handlers with. Every window keydown passes through the shared owner once, so multiple mounted hook instances cannot maintain conflicting pending states.
 - Registry validation fails when two actions share an identical binding or when a binding is both a complete action and the prefix of a sequence. Failure messages name both actions.
 
 #### Production gating design
 
 - Route registration checks `import.meta.env.DEV` at route-construction time.
-- The gallery route uses `lazy()`/dynamic import so production builds do not include gallery code.
+- The gallery route uses `lazy()`/dynamic import behind that DEV guard. Because Vite replaces `import.meta.env.DEV` with `false` in production, the guarded dynamic import is eliminated.
+- The production build output must contain no gallery code: no emitted chunk for the gallery module and no emitted file containing a unique marker string from the gallery module, such as its page title.
 - Production fake-mode serve of `apps/web/dist` returns the not-found page for `/dev/components`.
 
 ### Detailed design
@@ -260,6 +273,13 @@ No database, API-contract, SDK, or persistence schema changes. All data is local
 No HTTP API changes. The gallery intentionally does not call the control plane and must require no model or network call.
 
 #### Key algorithms and logic
+
+#### Gallery theming without preference writes
+
+- The gallery toolbar does not call `updatePreferences`.
+- The gallery owns local toolbar state and writes `data-theme` and `data-theme-mode` directly to `document.documentElement` so the page and Base UI portal content such as Dialog and Tooltip examples share the selected theme.
+- On mount, the gallery records the previous root `data-theme` and `data-theme-mode` values. On unmount, it restores those exact prior values, including removing an attribute that was previously absent.
+- The toolbar also sets local platform state for shortcut key caps; this never touches stored preferences.
 
 1. **ResizeHandle keyboard**
    - On ArrowLeft/ArrowRight for vertical or ArrowUp/ArrowDown for horizontal, compute signed delta from orientation and the `startAxisChange` direction prop.
@@ -275,17 +295,20 @@ No HTTP API changes. The gallery intentionally does not call the control plane a
 
 3. **Chord matching**
    - Normalize platform mod: macOS uses `metaKey`, other platforms use `ctrlKey`.
-   - Match exact `key`.
-   - For letter keys, require Shift equality based on `shift === true` or omitted/false.
-   - For non-letter keys, ignore Shift unless later requirements explicitly change this.
-   - Require Alt only when `alt === true`; otherwise Alt must not be held for guarded shortcuts.
-   - Preserve existing `anywhere`, `layer-open`, `no-text-entry`, and `list-focus` semantics.
+   - For letter chords, compare `event.key.toLowerCase()` to the lowercase-authored `chord.key`, then require Shift equality with `chord.shift === true`.
+   - For non-letter chords, compare `event.key` exactly and ignore Shift.
+   - For Alt chords, require `event.altKey === true` and compare the physical `event.code` to `chord.code`, because macOS Option changes `event.key`; when `alt` is not named, Alt must not be held.
+   - Replace blanket modifier blocking with exact per-chord comparison for `mod`, `shift`, and `alt`, while preserving applies-when gates for text entry, open layers, anywhere, layer-open, and list focus.
+   - Include tests for CapsLock-on letter matching, Shift+letter matching, and an Alt chord whose `event.key` changes but whose `event.code` matches.
 
 4. **Sequence state**
+   - Use one shared module-level tracker or one dispatcher shared by all `useActionKeys` instances.
    - Store pending `{ actionId, binding, nextIndex, lastMatchedAt }` candidates after a matching sequence prefix.
    - Clear state on wrong key, Escape, guard failure, or timeout.
+   - After a wrong key clears pending state, evaluate that same key as a fresh first chord.
    - Fire the action when the final chord matches, then clear state.
    - Do not ship any production action with a sequence in this issue; use scripted test registries and gallery examples for sequence display.
+   - Include a test with two mounted `useActionKeys` instances showing that a sequence handler owned by one instance completes through the shared tracker and that a wrong key clears pending state for both instances.
 
 5. **Gallery completeness**
    - A test lists non-spec component files in `apps/web/src/ui/`.
@@ -313,10 +336,12 @@ No HTTP API changes. The gallery intentionally does not call the control plane a
 - Shortcut matcher tests for plain vs Shift letters, `?`, `Cmd+Shift+K`, Alt, alternates, sequence timeout, wrong key, Escape, and guard rules on each sequence chord.
 - Registry validation tests for duplicate bindings and sequence-prefix conflicts, with failure messages naming both actions.
 - Shortcuts overlay tests proving `ShortcutList` shows all alternates without `CAP_CLASSES`.
-- Gallery render tests for all eight themes in each mode with no error and no console warning.
+- Gallery render tests for the exact theme matrix: three light themes in light mode, five dark themes in dark mode, plus system mode under mocked light and dark OS color-scheme settings, with no error and no console warning.
+- Gallery preference tests proving that changing every toolbar control leaves the `autocatalyst.preferences` storage value byte-identical and that unmounting restores the previous root `data-theme` and `data-theme-mode` attributes.
 - Gallery completeness test that names missing `ui/` files.
 - Route-table unit test proving `/dev/components` registers only when `import.meta.env.DEV` is true.
 - Playwright production-path test serving `apps/web/dist` in fake mode and asserting `/dev/components` shows not-found.
+- Production build-output assertion after `pnpm nx build web` that reads `apps/web/dist` and fails if an emitted file contains the gallery marker string or if a gallery chunk exists.
 - No test makes a model call.
 
 ### Alternatives considered
@@ -358,7 +383,8 @@ No HTTP API changes. The gallery intentionally does not call the control plane a
     - **Description**: Create a custom non-interactive `Chip` component with the required tone variants and migrate the run detail work-kind chip and run table filled waiting chip to use it without changing their rendered look.
     - **Acceptance criteria**:
       - [ ] `Chip` lives in `apps/web/src/ui/` and has a custom-component file comment.
-      - [ ] Tones `neutral`, `muted`, `primary`, `green`, and `red` use the required design tokens.
+      - [ ] Tones use the explicit mapping: `neutral` is `--color-border` outline with `--color-text`; `muted` is outline with `--color-subtext`; `primary` is `--color-primary` fill with `--color-on-primary`; `green` is outline with `--color-green` text; `red` is outline with `--color-red` text.
+      - [ ] Unit tests assert the class or computed color for each tone.
       - [ ] Chip uses `--text-xs`, `--radius-sm`, and no wrapping.
       - [ ] Detail header work-kind chip and table waiting chip render as before.
       - [ ] Existing detail header and run table tests pass.
@@ -405,13 +431,16 @@ No HTTP API changes. The gallery intentionally does not call the control plane a
     - **Description**: Update the pure matcher and hook state so letters distinguish Shift, named Alt and mod are required, non-letter printable keys such as `?` ignore Shift, and sequence state fires on the final chord within `SEQUENCE_TIMEOUT_MS`.
     - **Acceptance criteria**:
       - [ ] Tests prove `j` does not trigger `Shift+J` and `Shift+J` does not trigger `j`.
+      - [ ] Tests prove CapsLock-on plain `j` still matches a `{ key: 'j' }` chord.
       - [ ] Tests prove `?` triggers with Shift held.
       - [ ] Tests prove `Cmd+Shift+K` requires all named modifiers.
-      - [ ] Tests prove a chord naming `alt` needs Alt.
+      - [ ] Tests prove an Alt chord matches by physical `event.code` when `event.key` changes on macOS.
       - [ ] Fake-timer tests cover two-chord and three-chord sequences firing on the last chord.
       - [ ] Pending sequence state clears on wrong key, Escape, and after `SEQUENCE_TIMEOUT_MS`.
+      - [ ] A wrong key after a prefix is evaluated as a fresh first chord after clearing pending state.
       - [ ] Guard rules apply to every chord of a sequence.
       - [ ] `SEQUENCE_TIMEOUT_MS` is a named constant.
+      - [ ] A two-mounted-instance test proves shared sequence state across `useActionKeys` instances.
     - **Dependencies**: `Task: Upgrade shortcut registry types and display helpers`
   - [ ] **Task: Add registry conflict validation**
     - **Description**: Add deterministic validation that rejects duplicate bindings and rejects any chord binding that is also a sequence prefix, then cover validation with registry tests.
@@ -440,7 +469,8 @@ No HTTP API changes. The gallery intentionally does not call the control plane a
       - [ ] The route is registered only when `import.meta.env.DEV` is true.
       - [ ] Gallery code is lazily imported.
       - [ ] Toolbar changes update the page immediately.
-      - [ ] Toolbar changes do not write to the persisted preference record from #131.
+      - [ ] Toolbar changes do not call `updatePreferences` and do not change the byte value stored under `autocatalyst.preferences`.
+      - [ ] The gallery sets `data-theme` and `data-theme-mode` on `document.documentElement` from local state and restores previous root attributes on unmount.
       - [ ] The gallery has no row-density switch.
     - **Dependencies**: `Task: Implement `Kbd`, `Shortcut`, and `ShortcutList``
   - [ ] **Task: Add gallery entries for all `ui/` components**
@@ -455,7 +485,7 @@ No HTTP API changes. The gallery intentionally does not call the control plane a
   - [ ] **Task: Add gallery coverage tests**
     - **Description**: Add Vitest coverage for rendering the gallery in all themes and modes, plus a filesystem-based completeness test for `ui/` entries.
     - **Acceptance criteria**:
-      - [ ] Vitest renders the gallery for each of the eight themes in each mode.
+      - [ ] Vitest renders the exact matrix: three light themes in light mode, five dark themes in dark mode, plus system mode with mocked light and dark OS color-scheme settings.
       - [ ] The render test expects no error and no console warning.
       - [ ] A unit test lists non-spec files in `apps/web/src/ui/`.
       - [ ] The completeness test fails when a file has no gallery entry.
@@ -467,7 +497,7 @@ No HTTP API changes. The gallery intentionally does not call the control plane a
       - [ ] A route-table unit test shows `/dev/components` is registered only in development.
       - [ ] A Playwright production-path test serves `apps/web/dist` in fake mode and opens `/dev/components`.
       - [ ] The production-path test sees the not-found page.
-      - [ ] The production bundle does not eagerly include gallery code.
+      - [ ] The production build output contains no gallery code: no gallery chunk and no emitted file containing the gallery marker string.
     - **Dependencies**: `Task: Build the dev-only component gallery route`
 
 - [ ] **Story: Documentation and navigation updates**
@@ -494,7 +524,7 @@ No HTTP API changes. The gallery intentionally does not call the control plane a
 - [ ] Existing run screens keep their layout and wording after adopting shared components.
 - [ ] The resize handle supports vertical and horizontal orientation, ARIA separator semantics, pointer drag, keyboard resizing by 16 px, clamping, and existing side-pane behavior.
 - [ ] `Chip`, `EmptyState`, `DescriptionList`, `DescriptionItem`, `Kbd`, `Shortcut`, and `ShortcutList` meet the design and behavior described above.
-- [ ] Shortcut registry and matching support bindings, alternates, Shift, Alt, mod, two-step sequences, and three-step sequences.
+- [ ] Shortcut registry and matching support bindings, alternates, lowercase-authored letter chords, CapsLock-safe matching, Shift, Alt via physical `event.code`, mod, two-step sequences, and three-step sequences.
 - [ ] Registry validation rejects duplicate bindings and sequence-prefix conflicts with messages naming both actions.
 - [ ] `/dev/components` shows every `ui/` component in relevant states across themes and platforms in development only.
 - [ ] Production build/fake-mode serve shows not-found for `/dev/components`.
