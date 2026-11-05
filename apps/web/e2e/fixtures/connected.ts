@@ -2,11 +2,11 @@
  * Connected storage-state fixture.
  *
  * The only sanctioned way for a spec to obtain an authenticated client is to drive
- * the *real* Connection page once per fake server: enter the fixture token, test it,
- * save it, and capture the resulting browser storage state to a file in a temporary
- * directory. Other specs then create contexts from that state (`storageState`) and
- * never write browser storage themselves — no `page.route`, no injected token, no
- * test-only hook.
+ * the *real* Connection page once per fake server: enter the fixture token and commit
+ * it with `Enter` (apply-on-commit stores it on a successful check), then capture the
+ * resulting browser storage state to a file in a temporary directory. Other specs then
+ * create contexts from that state (`storageState`) and never write browser storage
+ * themselves — no `page.route`, no injected token, no test-only hook.
  */
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -32,10 +32,10 @@ export const test = fakeServerTest.extend<ConnectedFixtures>({
     await page.goto(`${fakeServer.baseUrl}/settings/connection`);
 
     await page.getByLabel('Bearer token').fill(FIXTURE_TOKEN);
-    await page.getByRole('button', { name: 'Test connection' }).click();
+    await page.getByLabel('Bearer token').press('Enter');
     await expect(page.getByText('Connected')).toBeVisible();
-    await page.getByRole('button', { name: 'Save' }).click();
-    await expect(page.getByText('Saved')).toBeVisible();
+    // Apply-on-commit stores the token on success and clears the field.
+    await expect(page.getByLabel(/Bearer token/)).toHaveValue('');
 
     await context.storageState({ path: statePath });
     await context.close();

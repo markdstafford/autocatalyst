@@ -72,6 +72,47 @@ describe('connection state', () => {
     expect(screen.queryByText('Connection lost')).toBeNull();
   });
 
+  it('tracks settingsCheckPending in state and exposes it live through isSettingsCheckPending', () => {
+    let live: boolean | undefined;
+    function Probe(): ReactNode {
+      const { settingsCheckPending, setSettingsCheckPending, isSettingsCheckPending } =
+        useConnectionState();
+      return (
+        <>
+          <span data-testid="pending">{String(settingsCheckPending)}</span>
+          <button
+            onClick={() => {
+              setSettingsCheckPending(true);
+              // Read synchronously in the same click, before a re-render: the ref is live.
+              live = isSettingsCheckPending();
+            }}
+          >
+            start check
+          </button>
+          <button onClick={() => setSettingsCheckPending(false)}>end check</button>
+        </>
+      );
+    }
+    render(
+      <ConnectionStateProvider>
+        <Probe />
+      </ConnectionStateProvider>
+    );
+    expect(screen.getByTestId('pending').textContent).toBe('false');
+
+    act(() => {
+      screen.getByText('start check').click();
+    });
+    // The live ref reflected the write immediately, and the rendered flag followed.
+    expect(live).toBe(true);
+    expect(screen.getByTestId('pending').textContent).toBe('true');
+
+    act(() => {
+      screen.getByText('end check').click();
+    });
+    expect(screen.getByTestId('pending').textContent).toBe('false');
+  });
+
   it('list success does not clear a health-driven lost state', async () => {
     const downFetch: typeof globalThis.fetch = async () => {
       throw new Error('down');

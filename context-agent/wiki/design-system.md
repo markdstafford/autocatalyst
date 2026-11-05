@@ -449,9 +449,13 @@ The detail pane has no empty state while the list has a run.
 
 ## Settings pages
 
-Settings replaces the sidebar with a settings sidebar (a title row of `--height-header-bar` with a close
-button, then one row per page: General, Appearance, Connection, Projects) and the main area with one page.
-The header shows "Settings" as the breadcrumb and the page name as the title. The footer is unchanged. A
+Settings replaces the sidebar with a settings sidebar (a title row of `--height-header-bar` whose first
+control is a `Back` icon button (`ArrowLeft`) before the `Settings` title, so the row reads `← Settings`,
+then one row per page: General, Appearance, Connection, Projects) and the main area with one page. Back has
+the accessible name `Back`, a tooltip of `Back` plus the `close-layer` key hint, and leaves settings the same
+way the former close button did by routing through the shared `closeSettings` path; while a Connection check
+is in flight it is soft-disabled (`aria-disabled`, still focusable). The header shows "Settings" as the
+breadcrumb and the page name as the title. The footer is unchanged. A
 page scrolls with 24 px padding and a content column of at most `--width-settings-column`. Its header is a
 title (`--text-lg`, weight 600) over a description (`--text-sm`, `--color-subtext`).
 
@@ -463,27 +467,50 @@ light theme, the dark theme, the primary and secondary accent, and a Preview: a 
 block on `--color-surface` showing a primary link, a primary button, a secondary-accent chip, and good, ok,
 and bad status chips. The preview uses the same tokens as the rest of the client.
 
-**Form pages (Connection and Projects).** A form has an action row: the test button at the left, a flexible
-gap, a "Saved" confirmation, Cancel (secondary), and Save (primary). Save is disabled until the form is
-valid, and Cancel restores the saved values. A field is a label above the control with an optional hint
-below. An input is `--height-control-base` high, `--radius-sm`, with a `--color-border` outline,
-`--color-background` fill, and `--text-sm`. Projects shows a list, and Add and Edit show one focused form
-that replaces the list.
+**Connection (apply on commit).** Connection is not a form page: it has only the write-only bearer-token
+field and a `role="status"` line, with no action row — no Test connection, Save, Cancel, or "Saved" control,
+and no native `required` validation (so committing an empty field shows no browser validation bubble and
+sends no request). A non-empty typed token is applied on commit: pressing `Enter` or an in-document blur
+(focus moving to another element, or to `document.body` from an in-page click) validates the token through a
+throwaway client and, on success, stores it. A blur caused by the window or tab losing focus
+(`document.hasFocus()` is false), or one that leaves focus on the field itself, does not commit, so a partial
+token copied from another app is never sent. While a check is in flight the status shows `Checking`, the
+field uses the input loading state (read-only, `aria-busy`, trailing spinner) and keeps focus, and duplicate
+`Enter`/blur are ignored; on success the field empties and the status shows `Connected`; on failure nothing
+is stored, the typed value stays editable, and `Failed` plus a one-line fix appears. `Escape` with a typed
+value clears the field and the status without sending a request (ignored while `Checking`); with an empty
+field it falls through to the shell layer order. The status region has an 8 px dot and one of three states:
+Checking (`--color-overlay` dot, `--color-subtext` text), Connected (`--color-green`), or Failed
+(`--color-red` error text, then the fix in `--color-subtext` one line below). While `Checking`, leaving
+settings is blocked: the shared close path (Back, `Cmd+,`/`Ctrl+,`, empty-field `Escape`, and settings-row
+navigation) refuses to close and Back shows `aria-disabled`, so the result is always visible before the
+operator leaves.
 
-The test button ("Test connection" or "Test credentials") is secondary and disabled while a test runs. Its
-result sits above the action row in a `role="status"` region with an 8 px dot and one of four states: Not
-tested and Testing (`--color-overlay` dot, `--color-subtext` text), Connected (`--color-green`), or Failed
+**Form pages (Projects).** A form has an action row: the test button at the left, a flexible gap, a "Saved"
+confirmation, Cancel (secondary), and Save (primary). Save is disabled until the form is valid, and Cancel
+restores the saved values. A field is a label above the control with an optional hint below. An input is
+`--height-control-base` high, `--radius-sm`, with a `--color-border` outline, `--color-background` fill, and
+`--text-sm`. Projects shows a list, and Add and Edit show one focused form that replaces the list.
+
+The Projects test button ("Test credentials") is secondary and disabled while a test runs. Its result sits
+above the action row in a `role="status"` region with an 8 px dot and one of four states: Not tested and
+Testing (`--color-overlay` dot, `--color-subtext` text), Connected (`--color-green`), or Failed
 (`--color-red` error text, then a suggested fix in `--color-subtext` one line below).
 
 **Write-only secret field.** A secret (bearer token, project credential) is a password input with
 `autocomplete="off"`. The control never receives a stored value, so it is empty every time the form opens.
 
 - There is no mask, no "stored" badge, no reveal button, and no clear or delete control.
-- With no secret stored, the label reads "Bearer token" (or "Credential") and the field is required.
+- With no secret stored, the label reads "Bearer token" (or "Credential") and the field is required on form
+  pages (Projects); Connection opts out of native `required` because it applies on commit.
 - With a secret stored, the label reads "Bearer token (leave blank to keep existing)", and the same pattern
   applies to "Credential". An empty field keeps the stored secret, and a new value replaces it.
-- After a save, the field empties. A failed test of a typed value leaves the value in the field and the
-  stored secret unchanged.
+- After a successful check when the field still contains the checked value, the field empties (Connection's
+  apply-on-commit). A failed check of a typed value leaves the value in the field and the stored secret
+  unchanged.
+- The component also forwards optional additive input wiring — `onBlur`, `onKeyDown`, and `loading` — to the
+  underlying input so a consumer can commit on Enter/blur and show the read-only busy state; callers that omit
+  them are unaffected.
 - The secret never appears in a URL, a log line, a toast, or an accessible name.
 
 **Input error and loading states.** The field supports two optional states on top of the label/hint pattern.

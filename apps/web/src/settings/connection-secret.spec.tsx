@@ -1,16 +1,16 @@
 /**
- * Secret-redaction tests for the Connection page.
+ * Secret-redaction tests for the Connection page's apply-on-commit flow.
  *
  * With a sentinel token, the token must never leak into visible text, accessible
- * names, status/failure messages, or console output after a save, a passing test, or
- * a failing test — and after a save the field is cleared, so the token is gone from
- * the DOM entirely.
+ * names, status/failure messages, or console output after a successful commit or a
+ * failed commit — and after a successful check the field is cleared, so the token is
+ * gone from the DOM entirely.
  *
  * The one place the typed value legitimately lives is the password control itself
  * while the operator is entering/retrying it (masked, write-only, never stored); that
  * is the field's `value`, not display text, an accessible name, a log, or a message.
  */
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -79,29 +79,29 @@ function assertNoLeakInTextOrLogs(): void {
 }
 
 describe('Connection page secret redaction', () => {
-  it('clears the token from the DOM entirely on save', async () => {
+  it('clears the token from the DOM entirely on a successful commit', async () => {
     renderPage();
     await userEvent.type(screen.getByLabelText('Bearer token'), SENTINEL);
-    await userEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(screen.getByText('Saved')).toBeDefined();
-    // Field cleared on save: the token is gone from the DOM, not just hidden.
+    fireEvent.keyDown(screen.getByLabelText('Bearer token'), { key: 'Enter' });
+    expect(await screen.findByText('Connected')).toBeDefined();
+    // Field cleared on success: the token is gone from the DOM, not just hidden.
     expect(document.body.innerHTML).not.toContain(SENTINEL);
     assertNoLeakInTextOrLogs();
   });
 
-  it('does not leak the token on a passing test', async () => {
+  it('does not leak the token on a successful commit', async () => {
     renderPage();
     await userEvent.type(screen.getByLabelText('Bearer token'), SENTINEL);
-    await userEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+    fireEvent.keyDown(screen.getByLabelText('Bearer token'), { key: 'Enter' });
     expect(await screen.findByText('Connected')).toBeDefined();
     assertNoLeakInTextOrLogs();
   });
 
-  it('does not leak the token on a failing test, including in the failure message', async () => {
+  it('does not leak the token on a failed commit, including in the failure message', async () => {
     mode = 'unauthorized';
     renderPage();
     await userEvent.type(screen.getByLabelText('Bearer token'), SENTINEL);
-    await userEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+    fireEvent.keyDown(screen.getByLabelText('Bearer token'), { key: 'Enter' });
     expect(await screen.findByText('Failed')).toBeDefined();
     assertNoLeakInTextOrLogs();
   });
