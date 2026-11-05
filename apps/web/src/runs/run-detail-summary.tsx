@@ -1,18 +1,21 @@
 /**
- * The Summary tab: a compact fact list — issue, work kind, state, pull request, time,
- * tokens, and cost. It is a fact list, not a progress view: there is no progress bar.
+ * The Summary tab: a compact fact list of the details the header does not already own.
+ * The header carries the issue, work kind, and state, so Summary shows only the step (for
+ * an in-progress run), the failure reason (for a failed run), the pull request, and the
+ * time, tokens, and cost totals. It is a fact list, not a progress view: there is no
+ * progress bar.
  *
  * Each fact renders its own loading, success, and error state, so a failed pull request
  * or sessions read shows an inline message on that fact alone and never blanks the
- * others. The run-derived facts (issue, work kind, state) come straight from the
- * selected run, which the list already loaded. Time, tokens, and cost are computed from
- * the sessions fact by the pure integer helpers in `run-summary-totals.ts`; the token
- * breakdown and the cost-unknown reason appear in tooltips.
+ * others. The step and failure facts come straight from the selected run, which the list
+ * already loaded. Time, tokens, and cost are computed from the sessions fact by the pure
+ * integer helpers in `run-summary-totals.ts`; the token breakdown and the cost-unknown
+ * reason appear in tooltips.
  */
 import type { Run } from '@autocatalyst/api-contract';
 import type { ReactNode } from 'react';
 
-import { CELL_DASH, rowTitle } from './run-fields.js';
+import { CELL_DASH } from './run-fields.js';
 import type { PullRequestFact, SessionsFact } from './run-detail-facts.js';
 import {
   computeSummaryTotals,
@@ -36,73 +39,26 @@ const COST_UNKNOWN_REASON = 'A model used in this run has no configured rate, so
 export function RunDetailSummary({ run, pullRequest, sessions }: RunDetailSummaryProps): ReactNode {
   return (
     <DescriptionList data-testid="pane-summary">
-      <DescriptionItem label="Issue">{renderIssue(run)}</DescriptionItem>
-      <DescriptionItem label="Work kind">
-        <span>{run.workKind}</span>
-      </DescriptionItem>
-      <DescriptionItem label="State">{renderState(run)}</DescriptionItem>
+      {run.status === 'in_progress' ? (
+        <DescriptionItem label="Step">
+          <span data-testid="pane-summary-step" className="font-mono">
+            {run.currentStep}
+          </span>
+        </DescriptionItem>
+      ) : null}
+      {run.status === 'failed' && run.failureReason !== undefined ? (
+        <DescriptionItem label="Failure">
+          <span data-testid="pane-summary-failure" className="text-red">
+            {run.failureReason}
+          </span>
+        </DescriptionItem>
+      ) : null}
       <DescriptionItem label="Pull request">{renderPullRequest(pullRequest)}</DescriptionItem>
       <DescriptionItem label="Time">{renderTime(sessions)}</DescriptionItem>
       <DescriptionItem label="Tokens">{renderTokens(sessions)}</DescriptionItem>
       <DescriptionItem label="Cost">{renderCost(sessions)}</DescriptionItem>
     </DescriptionList>
   );
-}
-
-function renderIssue(run: Run): ReactNode {
-  const title = rowTitle(run);
-  if (run.trackedIssue !== undefined) {
-    return (
-      <a
-        data-testid="pane-summary-issue"
-        href={run.trackedIssue.url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="text-text hover:underline"
-      >
-        #{run.trackedIssue.number} {title.title}
-      </a>
-    );
-  }
-  return <span data-testid="pane-summary-issue">{run.id}</span>;
-}
-
-function renderState(run: Run): ReactNode {
-  const statusLabel = STATUS_LABEL[run.status ?? 'unknown'] ?? CELL_DASH;
-  const waiting = run.status === 'in_progress' ? waitingText(run.waitingOn) : undefined;
-  return (
-    <div data-testid="pane-summary-state" className="flex flex-col gap-0.5">
-      <span>
-        {statusLabel}
-        {waiting !== undefined ? <span className="text-subtext"> · {waiting}</span> : null}
-      </span>
-      {run.status === 'in_progress' ? (
-        <span className="font-mono text-xs text-subtext">{run.currentStep}</span>
-      ) : null}
-      {run.status === 'failed' && run.failureReason !== undefined ? (
-        <span data-testid="pane-summary-failure" className="text-xs text-red">
-          {run.failureReason}
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
-const STATUS_LABEL: Readonly<Record<string, string>> = {
-  in_progress: 'In progress',
-  done: 'Done',
-  failed: 'Failed',
-  canceled: 'Canceled'
-};
-
-function waitingText(waitingOn: Run['waitingOn']): string | undefined {
-  if (waitingOn === 'human') {
-    return 'Waiting on you';
-  }
-  if (waitingOn === 'ai' || waitingOn === 'system') {
-    return 'Working';
-  }
-  return undefined;
 }
 
 function renderPullRequest(fact: PullRequestFact): ReactNode {
