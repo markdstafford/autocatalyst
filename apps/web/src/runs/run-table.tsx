@@ -22,7 +22,9 @@ import { useEffect, useRef, type KeyboardEvent, type ReactNode } from 'react';
 
 import { RUN_LIST_FOCUS_ATTR, isFocusInRunList } from '../shell/use-action-keys.js';
 import { Chip } from '../ui/chip.js';
-import { CELL_DASH, STATUS_DOT, formatAge, rowTitle, statusWord, waitingCell } from './run-fields.js';
+import { CELL_DASH, formatAge, rowTitle } from './run-fields.js';
+import { RUN_LIST_GRID_TEMPLATE, RUN_LIST_MIN_WIDTH_REM } from './run-list-constants.js';
+import { StatusChip } from './status-chip.js';
 
 export interface RunTableProps {
   readonly rows: readonly Run[];
@@ -39,13 +41,18 @@ export interface RunTableProps {
   loadNextPage(): void;
 }
 
-const COLUMNS = ['Title', 'Work kind', 'Status', 'Waiting on', 'Project', 'Age'] as const;
+const COLUMNS = ['Title', 'Work kind', 'Status', 'Project', 'Age'] as const;
 
-const HEADER_CELL =
-  'flex items-center px-3 text-xs font-medium text-subtext';
-const BODY_CELL = 'flex items-center px-3 text-base text-subtext';
-// The six columns: the title grows; the rest are sized to their content.
-const GRID_TEMPLATE = 'minmax(0,1fr) 7rem 7rem 9rem 9rem 4rem';
+// Every cell clips to its own box (`overflow-hidden`) and allows shrinking (`min-w-0`) so a
+// long value never bleeds into the next column; the title cell additionally truncates.
+const HEADER_CELL = 'flex min-w-0 items-center overflow-hidden px-3 text-xs font-medium text-subtext';
+const BODY_CELL = 'flex min-w-0 items-center overflow-hidden px-3 text-base text-subtext';
+// The five columns are sized from named constants; below the minimum the list scrolls
+// sideways rather than letting cells overlap.
+const GRID_STYLE = {
+  gridTemplateColumns: RUN_LIST_GRID_TEMPLATE,
+  minWidth: `${RUN_LIST_MIN_WIDTH_REM}rem`
+} as const;
 
 export function RunTable({
   rows,
@@ -111,12 +118,13 @@ export function RunTable({
       aria-label="Runs"
       className="flex h-full min-w-0 flex-col overflow-auto bg-background focus:outline-none"
     >
-      {/* Sticky column header, same height as the pane bar. */}
+      {/* Sticky column header, same height as the pane bar. It stays pinned during vertical
+          scroll and shares the rows' minimum width so it tracks them during horizontal scroll. */}
       <div
         role="row"
         data-testid="run-table-header"
         className="sticky top-0 z-10 grid h-pane-bar shrink-0 border-b border-border bg-background"
-        style={{ gridTemplateColumns: GRID_TEMPLATE }}
+        style={GRID_STYLE}
       >
         {COLUMNS.map((column) => (
           <div key={column} role="columnheader" className={HEADER_CELL}>
@@ -128,8 +136,6 @@ export function RunTable({
       {rows.map((run) => {
         const selected = run.id === selectedRunId;
         const title = rowTitle(run);
-        const waiting = waitingCell(run);
-        const dot = run.status !== undefined ? STATUS_DOT[run.status] : undefined;
         const projectName =
           run.projectId !== undefined ? projectNames.get(run.projectId) ?? CELL_DASH : CELL_DASH;
         return (
@@ -149,33 +155,20 @@ export function RunTable({
             className={`grid h-row-regular shrink-0 cursor-pointer border-b border-border-faint focus:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-focus ${
               selected ? 'bg-surface text-text' : 'hover:bg-hover-row'
             }`}
-            style={{ gridTemplateColumns: GRID_TEMPLATE }}
+            style={GRID_STYLE}
           >
-            <div role="gridcell" className={`${BODY_CELL} gap-2`}>
-              <span
-                aria-hidden
-                className={`inline-block size-2 shrink-0 rounded-full ${dot?.colorClass ?? 'bg-overlay'}`}
-              />
+            <div role="gridcell" data-testid={`run-cell-title-${run.id}`} className={`${BODY_CELL} gap-2`}>
               <span className="truncate text-md text-text">{title.title}</span>
               <span className="shrink-0 text-subtext">{title.number}</span>
             </div>
             <div role="gridcell" className={BODY_CELL}>
-              {run.workKind}
+              <Chip tone="neutral">{run.workKind}</Chip>
             </div>
             <div role="gridcell" className={BODY_CELL}>
-              {statusWord(run.status)}
+              {run.status !== undefined ? <StatusChip run={run} /> : CELL_DASH}
             </div>
             <div role="gridcell" className={BODY_CELL}>
-              {waiting.primary ? (
-                <Chip tone="primary">{waiting.label}</Chip>
-              ) : (
-                <span {...(waiting.tooltip !== undefined ? { title: waiting.tooltip } : {})}>
-                  {waiting.label}
-                </span>
-              )}
-            </div>
-            <div role="gridcell" className={`${BODY_CELL} truncate`}>
-              {projectName}
+              <span className="truncate">{projectName}</span>
             </div>
             <div role="gridcell" className={`${BODY_CELL} tabular-nums`}>
               {formatAge(run.createdAt, nowIso)}

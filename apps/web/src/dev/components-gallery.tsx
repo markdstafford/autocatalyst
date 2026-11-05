@@ -48,6 +48,8 @@ import { Shortcut, ShortcutList, type ShortcutPlatform } from '../ui/shortcut.js
 import { Tabs, TabPanel } from '../ui/tabs.js';
 import { Tooltip } from '../ui/tooltip.js';
 import { WriteOnlySecretField } from '../ui/write-only-secret-field.js';
+import { StatusChip } from '../runs/status-chip.js';
+import { makeRun } from '../runs/run-fixtures.js';
 import { GALLERY_ENTRIES, type GalleryEntry } from './component-gallery-registry.js';
 
 /** Unique marker proving (by its absence) that the gallery is excluded from production. */
@@ -359,13 +361,24 @@ function renderExample(id: string, platform: ShortcutPlatform, surface: GalleryS
       return <ResizeHandleExample />;
     case 'chip':
       return (
-        <Row>
-          <Chip tone="neutral">neutral</Chip>
-          <Chip tone="muted">muted</Chip>
-          <Chip tone="primary">primary</Chip>
-          <Chip tone="green">green</Chip>
-          <Chip tone="red">red</Chip>
-        </Row>
+        <div className="flex flex-col gap-4">
+          <Row>
+            <Chip tone="neutral">neutral</Chip>
+            <Chip tone="muted">muted</Chip>
+            <Chip tone="primary">primary</Chip>
+            <Chip tone="green">green</Chip>
+            <Chip tone="red">red</Chip>
+          </Row>
+          {/* StatusChip, built on Chip: the shared run status vocabulary in every state. */}
+          <Row>
+            <StatusChip run={makeRun({ status: 'in_progress', waitingOn: 'human' })} />
+            <StatusChip run={makeRun({ status: 'in_progress', waitingOn: 'ai' })} />
+            <StatusChip run={makeRun({ status: 'in_progress', waitingOn: 'none' })} />
+            <StatusChip run={makeRun({ status: 'done', terminal: true })} />
+            <StatusChip run={makeRun({ status: 'failed', terminal: true })} />
+            <StatusChip run={makeRun({ status: 'canceled', terminal: true })} />
+          </Row>
+        </div>
       );
     case 'empty-state':
       return (
@@ -385,9 +398,14 @@ function renderExample(id: string, platform: ShortcutPlatform, surface: GalleryS
     case 'description-list':
       return (
         <DescriptionList>
-          <DescriptionItem label="Issue">#175</DescriptionItem>
-          <DescriptionItem label="Work kind">feature</DescriptionItem>
-          <DescriptionItem label="State">Working</DescriptionItem>
+          <DescriptionItem label="Step">
+            <span className="font-mono">implementation.build</span>
+          </DescriptionItem>
+          <DescriptionItem label="Pull request">#175</DescriptionItem>
+          <DescriptionItem label="Cost">$0.30</DescriptionItem>
+          <DescriptionItem label="Failure">
+            A long value wraps inside the value column and never overlaps the fixed name column.
+          </DescriptionItem>
         </DescriptionList>
       );
     case 'shortcut':

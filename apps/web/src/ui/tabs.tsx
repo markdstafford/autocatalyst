@@ -30,6 +30,14 @@ export interface TabsProps {
   onValueChange(value: string): void;
   /** The tab panels, rendered under the list. Use {@link TabPanel} for each. */
   readonly children: ReactNode;
+  /**
+   * Extra utility classes merged onto the Base UI `Tabs.Root`. The detail pane uses this to
+   * make the root a flex column that fills the pane so the tab list stays pinned and only the
+   * active panel scrolls.
+   */
+  readonly className?: string;
+  /** Extra utility classes merged onto the `Tabs.List` (e.g. `shrink-0` to keep it pinned). */
+  readonly listClassName?: string;
 }
 
 const LIST_CLASSES = 'flex items-stretch gap-4 border-b border-border';
@@ -39,17 +47,30 @@ const TAB_CLASSES =
   'hover:text-text focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-focus ' +
   'aria-selected:border-primary aria-selected:text-text';
 
-export function Tabs({ label, tabs, value, onValueChange, children }: TabsProps): ReactNode {
+function mergeClasses(base: string, extra: string | undefined): string {
+  return typeof extra === 'string' && extra.length > 0 ? `${base} ${extra}` : base;
+}
+
+export function Tabs({
+  label,
+  tabs,
+  value,
+  onValueChange,
+  children,
+  className,
+  listClassName
+}: TabsProps): ReactNode {
   return (
     <BaseTabs.Root
       value={value}
+      className={className}
       onValueChange={(next) => {
         if (typeof next === 'string') {
           onValueChange(next);
         }
       }}
     >
-      <BaseTabs.List aria-label={label} activateOnFocus className={LIST_CLASSES}>
+      <BaseTabs.List aria-label={label} activateOnFocus className={mergeClasses(LIST_CLASSES, listClassName)}>
         {tabs.map((tab) => (
           <BaseTabs.Tab key={tab.id} value={tab.id} className={TAB_CLASSES}>
             {tab.label}

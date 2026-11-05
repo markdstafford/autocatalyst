@@ -71,7 +71,7 @@ own opacity:
 Color rules:
 
 1. The primary accent is for user intent: focus, the selected tab, links, the active view chip, the decision
-   button, and the "Waiting on you" chip.
+   button, and the "Needs review" status chip.
 2. The secondary accent is for neutral highlights, such as a hint chip. It is never a status color.
 3. Status uses `--color-green`, `--color-red`, and `--color-overlay`. Sentiment tokens need visible text
    beside them.
@@ -128,7 +128,7 @@ padding of rows and bars is 12 px, and the detail pane body padding is 16 px.
 | `--height-control-lg` | 2rem (32 px) | Large buttons, dialog primary actions. |
 | `--radius-xs` | 2 px | Comment highlights, progress segments. |
 | `--radius-sm` | 4 px | Buttons, inputs, cards, rows, code blocks, popovers, dialogs. |
-| `--radius-full` | 9999 px | View chips, status dots. |
+| `--radius-full` | 9999 px | View chips, the footer connection dot, step markers. |
 
 ### Elevation, layers, motion, icons
 
@@ -199,6 +199,7 @@ whether the sidebar or the pane is open, closed, or hidden. Footer content is ce
 | `--width-reading-column` | 46rem (736 px) | Maximum width of the spec text. |
 | `--width-settings-column` | 42rem (672 px) | Settings page content. |
 | `--width-hover-zone` | 0.5rem (8 px) | Left-edge strip that reveals the closed sidebar. |
+| `--width-description-label` | 7rem (112 px) | Fixed name column in the run detail Summary description list. |
 
 The sidebar width and the list and pane split are defined once, as these tokens and the pane width state.
 Every region reads them, and none computes its own copy.
@@ -273,12 +274,19 @@ horizontal padding, max width 12rem with truncation. Active is `--color-primary`
 "Create named view") uses the inactive style. The strip scrolls horizontally and does not wrap.
 
 **Table.**
+- The run list columns are Title, Work kind, Status, Project, and Age, in that order. There is no status
+  dot and no separate "Waiting on" column; work kind is a neutral `Chip` and status is the shared status
+  chip (see Status and waiting indicators). Fixed column widths are named constants in
+  `apps/web/src/runs/run-list-constants.ts`; the title column is `minmax(--run-list-title-min, 1fr)` with a
+  10rem minimum and the other columns are fixed rem widths.
 - The column header row is sticky, `--height-pane-bar` high, `--color-background` fill, `--text-xs`, weight
   500, `--color-subtext`, with a `--color-border` line below. The sorted column shows an 11 px arrow.
 - A row is `--height-row-compact` or `--height-row-regular` high, with a `--color-border-faint` line below.
-  The title cell holds an 8 px status dot, the title in `--text-md` (truncating), and the issue number in
-  `--color-subtext` (never truncating). Other cells are `--text-base` in `--color-subtext`. Time columns use
-  `tabular-nums`.
+  The title cell holds the title in `--text-md` (truncating) and the issue number in `--color-subtext`
+  (never truncating). Other cells are `--text-base` in `--color-subtext`. Time columns use `tabular-nums`.
+- Every cell clips its content to its own box (`overflow-hidden`), the title cell sets `min-width: 0` so the
+  title truncates, and below the grid's total minimum width the list scrolls horizontally with the header
+  row inside the same horizontal scroll context, so cells never overlap at narrow widths.
 - Hover is `--color-hover-row`. The selected row is `--color-surface` with `aria-selected="true"`, and it
   is the only row with that state. Rows are focusable, and `Enter` selects.
 - A row's "..." action button is hidden until the row is hovered or has focus inside it.
@@ -287,7 +295,7 @@ horizontal padding, max width 12rem with truncation. Active is `--color-primary`
 **Group headers.** A group header spans the row width, is 28 px high, `--color-mantle` fill, with a chevron,
 the label (`--text-xs`, weight 500, `--color-subtext`), and a `tabular-nums` count. It sticks under the
 column header while its group scrolls, and `aria-expanded` reports collapse. The list and board layouts use
-the same selection, hover, and status dot rules as the table.
+the same selection, hover, and status chip rules as the table.
 
 ## Detail pane
 
@@ -300,15 +308,22 @@ buttons; the position ("m of n", `--text-xs`, `tabular-nums`, `--color-subtext`)
 (on the Spec and Acceptance tabs when the document is ready); and the decision button while the run waits at a
 gate.
 
-**Header and tabs.** The pane body has 16 px padding and scrolls under the pane bar.
-- The title is `--text-lg`, weight 500. Clicking it, or the Rename action, turns it into an input with a
+**Header and tabs.** The pane bar, the detail header, and the tab list stay pinned; only the active tab's
+content scrolls beneath the tab list. The header block and the tab content keep 16 px horizontal padding.
+- The title is `--text-lg`, weight 500, capped at two lines with the full text in its `title` attribute so a
+  long title does not grow the fixed header. Clicking it, or the Rename action, turns it into an input with a
   `--color-primary` border. `Enter` saves and `Escape` cancels.
-- The meta line under it is `--text-sm` in `--color-subtext`: the issue number, the work kind chip (a
-  `--color-border` outline, `--text-xs`, `--color-text`, `--radius-sm`), and the status word. The pane
-  header shows no project name.
+- The meta line under it is `--text-sm` in `--color-subtext`: the issue number as a link when a tracked
+  issue exists, the work kind chip (a `--color-border` outline, `--text-xs`, `--color-text`, `--radius-sm`),
+  and the shared status chip. The header status chip always matches the selected list row because both come
+  from the one `runStateChip` mapping. The pane header shows no project name.
 - The tabs are, in order: Summary, Spec, Acceptance, Activity. A selected tab is `--color-text` with a
   2 px `--color-primary` underline. Others are `--color-subtext`, and `--color-text` on hover. Tab labels
   carry no counts. Every tab is present and enabled on every run.
+- The Summary tab is a description list that shows only details the header does not already own: the step
+  (in `--font-mono`, for an in-progress run), the failure reason (in `--color-red`, for a failed run), the
+  pull request, and the time, tokens, and cost totals. Its `DescriptionItem` rows use a fixed name column
+  (`--width-description-label`) beside a wrapping value column; both name and value are `--text-sm`.
 
 **Resizing.** The handle between the list and a side pane has `role="separator"` and
 `aria-orientation="vertical"`, and a bottom pane's handle uses `horizontal`. Arrow keys on a focused handle
@@ -389,18 +404,25 @@ count style.
 
 ## Status and waiting indicators
 
-**Status dot.** An 8 px circle (`--radius-full`) with a tooltip naming the status: in progress is
-`--color-primary`, done is `--color-green`, failed is `--color-red`, canceled is `--color-overlay`.
+**Status chip.** One shared chip presents a run's derived state everywhere the run appears — the list Status
+cell and the pane header — from the one `runStateChip(run)` mapping in `apps/web/src/runs/run-state.ts`,
+rendered by `StatusChip` (`apps/web/src/runs/status-chip.tsx`) on the design-system `Chip`. It is `--text-xs`,
+`--radius-sm`, no wrap. The complete vocabulary and tone mapping:
 
-**Waiting chip.** `--text-xs`, `--radius-sm`, no wrap. "Waiting on you" has `--color-primary` fill and
-`--color-on-primary` text. "Working" and "Paused" have a `--color-border` outline and `--color-subtext`
-text. A run that ended shows a dash.
+| `status` | `waitingOn` | Chip | Tone |
+| --- | --- | --- | --- |
+| `in_progress` | `human` | `Needs review` | `--color-primary` fill, `--color-on-primary` text (filled) |
+| `in_progress` | `ai` or `system` | `Working` | `--color-border` outline, `--color-subtext` text |
+| `in_progress` | `none` or missing | `Paused` | `--color-border` outline, `--color-subtext` text |
+| `done` | any | `Done` | `--color-border` outline, `--color-green` text |
+| `failed` | any | `Failed` | `--color-border` outline, `--color-red` text |
+| `canceled` | any | `Canceled` | `--color-border` outline, `--color-subtext` text |
+| absent | any | dash, no chip | the caller renders the dash placeholder |
 
-**Status word.** In the pane meta line: Done in `--color-green`, Failed in `--color-red`, Canceled in
-`--color-subtext`, and the waiting chip for a run in progress.
-
-"Waiting on you" is the only primary-filled signal in the run list and the pane header. No tab, count, or
-row carries a second attention signal.
+`Needs review` is the only primary-filled signal in the run list and the pane header; no tab, count, or row
+carries a second attention signal. `Paused` is a defensive, unit-tested-only mapping for impossible or
+malformed client input (an in-progress run with `waitingOn: none` or missing): the control plane sets
+`waitingOn` for non-terminal runs, so `Paused` is not expected in fake-mode demos or real run data.
 
 **Step markers** (Activity), 14 px: done is CheckCircle2 in `--color-green`, failed is XCircle in
 `--color-red`, canceled is XCircle in `--color-overlay`, waiting on you is Hand in `--color-primary`, running

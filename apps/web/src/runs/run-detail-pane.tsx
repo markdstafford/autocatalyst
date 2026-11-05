@@ -11,7 +11,10 @@
  * hook's independent fact states.
  *
  * The pane bar stays empty and `--height-pane-bar` high so its top and bottom align with
- * the table column header row; the body has 16 px padding and scrolls under the bar.
+ * the table column header row. The pane bar, the detail header, and the tab list stay
+ * pinned while only the active tab's content scrolls beneath the tab list, so the
+ * orientation elements never scroll away. Clamping the title to two lines keeps the fixed
+ * header block short. The body and tab content keep 16 px horizontal padding.
  */
 import type { ControlPlaneClient } from '@autocatalyst/sdk';
 import type { Run } from '@autocatalyst/api-contract';
@@ -53,10 +56,10 @@ export function RunDetailPane({ run, client, visible, replaceRun, onUnauthorized
       {...(run !== undefined ? { 'data-pane-run-id': run.id } : {})}
       className="flex h-full min-w-0 flex-col border-l border-border bg-background"
     >
-      {/* Empty pane bar; aligns with the table column header row. */}
+      {/* Empty pane bar; aligns with the table column header row. Stays pinned. */}
       <div data-testid="pane-bar" className="h-pane-bar shrink-0 border-b border-border px-3" />
 
-      <div data-testid="pane-body" className="min-h-0 flex-1 overflow-auto p-4">
+      <div data-testid="pane-body" className="flex min-h-0 flex-1 flex-col">
         {run === undefined ? (
           <EmptyState data-testid="pane-no-run" title="No run" />
         ) : detail.runGone ? (
@@ -76,31 +79,38 @@ export function RunDetailPane({ run, client, visible, replaceRun, onUnauthorized
     const availableTabs = tabsForRun();
     const visibleTab = resolveVisibleTab(keptTabId, availableTabs);
     const tabs = RUN_DETAIL_TABS.filter((tab) => availableTabs.includes(tab.id));
+    // The header block stays pinned (shrink-0); the Tabs root fills the rest as a flex column
+    // with a pinned tab list (shrink-0) and a scrolling active panel (flex-1 overflow-auto).
+    const panelClass = 'min-h-0 flex-1 overflow-auto pb-4 pt-3';
     return (
-      <div className="flex flex-col gap-4">
-        <RunDetailHeader run={selectedRun} />
+      <>
+        <div className="shrink-0 px-4 pb-4 pt-4">
+          <RunDetailHeader run={selectedRun} />
+        </div>
         <Tabs
           label="Run detail sections"
           tabs={tabs}
           value={visibleTab}
+          className="flex min-h-0 flex-1 flex-col px-4"
+          listClassName="shrink-0"
           onValueChange={(next) => {
             setKeptTabId(next as RunDetailTabId);
           }}
         >
-          <TabPanel value="summary" className="pt-3">
+          <TabPanel value="summary" className={panelClass}>
             <RunDetailSummary run={selectedRun} pullRequest={detail.pullRequest} sessions={detail.sessions} />
           </TabPanel>
-          <TabPanel value="spec" className="min-h-40 pt-3">
+          <TabPanel value="spec" className={panelClass}>
             <RunDetailSpecTab spec={detail.spec} />
           </TabPanel>
-          <TabPanel value="acceptance" className="min-h-40 pt-3">
+          <TabPanel value="acceptance" className={panelClass}>
             <EmptyState
               data-testid="pane-acceptance-empty"
               title={ACCEPTANCE_EMPTY_STATE.title}
               message={ACCEPTANCE_EMPTY_STATE.line}
             />
           </TabPanel>
-          <TabPanel value="activity" className="min-h-40 pt-3">
+          <TabPanel value="activity" className={panelClass}>
             <EmptyState
               data-testid="pane-activity-empty"
               title={ACTIVITY_EMPTY_STATE.title}
@@ -108,7 +118,7 @@ export function RunDetailPane({ run, client, visible, replaceRun, onUnauthorized
             />
           </TabPanel>
         </Tabs>
-      </div>
+      </>
     );
   }
 }

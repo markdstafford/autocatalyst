@@ -50,7 +50,8 @@ test.describe('run detail pane', () => {
       const pane = page.getByRole('complementary', { name: 'Run detail' });
       await expect(pane).toBeVisible();
       await expect(page.getByTestId('pane-run-title')).not.toHaveText('');
-      await expect(page.getByTestId('pane-summary-state')).toBeVisible();
+      // spec-review is in progress, so Summary shows the step row (the header owns the state).
+      await expect(page.getByTestId('pane-summary-step')).toBeVisible();
 
       // pr-open and merged show a linked pull request row.
       for (const scenario of ['pr-open', 'merged']) {
@@ -98,9 +99,10 @@ test.describe('run detail pane', () => {
     const { runId } = await fakeServer.seed({ scenario: 'spec-review' });
     const { page, close } = await openRun(browser, connectedStatePath, `${fakeServer.baseUrl}/runs/${runId}`);
     try {
-      // Waiting on the operator at spec review; the Summary state shows the spec step.
-      await expect(page.getByTestId('pane-status')).toHaveText('Waiting on you');
-      await expect(page.getByTestId('pane-summary-state')).toContainText('spec.human_review');
+      // Waiting on the operator at spec review; the header shows the Needs review chip and the
+      // Summary step row shows the spec step.
+      await expect(page.getByTestId('pane-status')).toHaveText('Needs review');
+      await expect(page.getByTestId('pane-summary-step')).toContainText('spec.human_review');
 
       // The Spec tab shows a spec empty state.
       await page.getByRole('tab', { name: 'Spec' }).click();
@@ -110,7 +112,7 @@ test.describe('run detail pane', () => {
       // The run advances past spec review into implementation — a change that sticks.
       await page.getByRole('tab', { name: 'Summary' }).click();
       await approve(fakeServer.baseUrl, runId);
-      await expect(page.getByTestId('pane-summary-state')).toContainText('implementation', { timeout: 15_000 });
+      await expect(page.getByTestId('pane-summary-step')).toContainText('implementation', { timeout: 15_000 });
     } finally {
       await close();
     }
@@ -124,15 +126,122 @@ test.describe('run detail pane', () => {
     const { runId } = await fakeServer.seed({ scenario: 'spec-review' });
     const { page, close } = await openRun(browser, connectedStatePath, `${fakeServer.baseUrl}/runs/${runId}`);
     try {
-      await expect(page.getByTestId('pane-summary-state')).toContainText('spec.human_review');
+      await expect(page.getByTestId('pane-summary-step')).toContainText('spec.human_review');
 
       // Bounce the control plane on the same port + state directory (no serve-fake).
       await fakeServer.restart();
 
       // After the client reconnects, approving drives the pane forward (catch-up):
-      // the state step advances past spec review into implementation.
+      // the step advances past spec review into implementation.
       await approve(fakeServer.baseUrl, runId);
-      await expect(page.getByTestId('pane-summary-state')).toContainText('implementation', { timeout: 30_000 });
+      await expect(page.getByTestId('pane-summary-step')).toContainText('implementation', { timeout: 30_000 });
+    } finally {
+      await close();
+    }
+  });
+
+  test('shows the same status chip text in the list row and the pane header for every scenario', async ({
+    browser,
+    fakeServer,
+    connectedStatePath
+  }) => {
+    const seeds: Record<string, string> = {};
+    for (const scenario of ['spec-review', 'implementation-review', 'pr-open', 'merged', 'failed']) {
+      const result = await fakeServer.seed({ scenario });
+      seeds[scenario] = result.runId;
+    }
+    const { page, close } = await openRun(browser, connectedStatePath, `${fakeServer.baseUrl}/runs`);
+    try {
+      await expect(page.locator('[role="row"][data-run-id]')).toHaveCount(5);
+      for (const scenario of ['spec-review', 'implementation-review', 'pr-open', 'merged', 'failed']) {
+        const runId = seeds[scenario];
+        await page.locator(`[role="row"][data-run-id="${runId}"]`).click();
+        await expect(page.getByRole('complementary', { name: 'Run detail' })).toHaveAttribute(
+          'data-pane-run-id',
+          runId ?? ''
+        );
+        // The list row's status cell is the third grid cell; its chip text must equal the pane
+        // header status chip text, because both derive from the one runStateChip mapping.
+        const rowChip = (
+          await page
+            .locator(`[role="row"][data-run-id="${runId}"] [role="gridcell"]`)
+            .nth(2)
+            .innerText()
+        ).trim();
+        const paneChip = (await page.getByTestId('pane-status').innerText()).trim();
+        expect(rowChip).not.toBe('');
+        expect(paneChip).toBe(rowChip);
+      }
+    } finally {
+      await close();
+    }
+  });
+
+  test('pins the pane bar, header, and tabs while only the active tab content scrolls', async ({
+    browser,
+    fakeServer,
+    connectedStatePath
+  }) => {
+    await fakeServer.seed({ scenario: 'spec-review' });
+    // A short viewport forces the Summary content to overflow its scroll region.
+    const { page, close } = await openRun(browser, connectedStatePath, `${fakeServer.baseUrl}/runs`, {
+      viewport: { width: 1024, height: 320 }
+    });
+    try {
+      await expect(page.locator('[role="row"][data-run-id]')).toHaveCount(1);
+
+      const topEdges = async (): Promise<{ bar: number; title: number; tabs: number }> => {
+        const bar = await page.getByTestId('pane-bar').boundingBox();
+        const title = await page.getByTestId('pane-run-title').boundingBox();
+        const tabs = await page.getByRole('tablist').boundingBox();
+        expect(bar && title && tabs).toBeTruthy();
+        return { bar: bar?.y ?? NaN, title: title?.y ?? NaN, tabs: tabs?.y ?? NaN };
+      };
+
+      const assertPinnedWhileTabScrolls = async (): Promise<void> => {
+        for (const tab of ['Summary', 'Spec', 'Acceptance', 'Activity']) {
+          await page.getByRole('tab', { name: tab }).click();
+          // Base UI keeps inactive panels mounted but `inert`; the active panel is the only
+          // non-inert tabpanel. Let the tab switch settle before measuring.
+          await page.waitForTimeout(150);
+          const panel = page.locator('[role="tabpanel"]:not([inert])');
+          const before = await topEdges();
+          // Scroll the active panel to its end; the pane chrome must not move.
+          await panel.evaluate((el) => {
+            el.scrollTop = el.scrollHeight;
+          });
+          if (tab === 'Summary') {
+            // Summary overflows the short viewport, so its panel genuinely scrolls.
+            const overflow = await panel.evaluate((el) => el.scrollHeight > el.clientHeight);
+            expect(overflow).toBe(true);
+            const scrolled = await panel.evaluate((el) => el.scrollTop);
+            expect(scrolled).toBeGreaterThan(0);
+          }
+          const after = await topEdges();
+          expect(Math.abs(after.bar - before.bar)).toBeLessThanOrEqual(EDGE);
+          expect(Math.abs(after.title - before.title)).toBeLessThanOrEqual(EDGE);
+          expect(Math.abs(after.tabs - before.tabs)).toBeLessThanOrEqual(EDGE);
+        }
+      };
+
+      // Default pane width.
+      await assertPinnedWhileTabScrolls();
+
+      // Minimum pane width (ArrowRight narrows the right-hand pane).
+      await page.getByRole('separator').focus();
+      for (let i = 0; i < 60; i += 1) {
+        await page.keyboard.press('ArrowRight');
+      }
+      await page.waitForTimeout(200);
+      await assertPinnedWhileTabScrolls();
+
+      // Maximum pane width (ArrowLeft widens it).
+      await page.getByRole('separator').focus();
+      for (let i = 0; i < 120; i += 1) {
+        await page.keyboard.press('ArrowLeft');
+      }
+      await page.waitForTimeout(200);
+      await assertPinnedWhileTabScrolls();
     } finally {
       await close();
     }

@@ -1,14 +1,29 @@
 /**
- * RunTable component tests: column cells, the missing-tracked-issue title fallback,
- * status/waiting mappings, project-name joining, age formatting, and the selection
- * contract (exactly one `aria-selected`, roving tab stop, click and Enter select).
+ * RunTable component tests: the Title / Work kind / Status / Project / Age columns, the
+ * work-kind and status chips, the missing-status dash, the missing-tracked-issue title
+ * fallback, the title cell clipping, project-name joining, age formatting, and the
+ * selection contract (exactly one `aria-selected`, roving tab stop, click and Enter
+ * select).
+ *
+ * The status dot, the status word, and the "Waiting on" column were removed with the shared
+ * status chip: status is now one `StatusChip` cell, covered here and in `status-chip.spec.tsx`.
  */
 import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { Run } from '@autocatalyst/api-contract';
+
 import { makeRun } from './run-fixtures.js';
 import { RunTable, type RunTableProps } from './run-table.js';
+
+/** A run with its API-read-only `status` stripped, for the missing-status dash case. */
+function runWithoutStatus(id: string): Run {
+  const run = makeRun({ id });
+  const { status: _status, ...rest } = run;
+  void _status;
+  return { ...rest } as Run;
+}
 
 function renderTable(overrides: Partial<RunTableProps> = {}): {
   select: ReturnType<typeof vi.fn>;
@@ -30,7 +45,14 @@ function renderTable(overrides: Partial<RunTableProps> = {}): {
   return { select, loadNextPage };
 }
 
-describe('RunTable cells', () => {
+describe('RunTable columns', () => {
+  it('shows the five columns in order with no Waiting on column', () => {
+    renderTable();
+    const headers = screen.getAllByRole('columnheader').map((cell) => cell.textContent);
+    expect(headers).toEqual(['Title', 'Work kind', 'Status', 'Project', 'Age']);
+    expect(screen.queryByRole('columnheader', { name: 'Waiting on' })).toBeNull();
+  });
+
   it('renders rows in the given order', () => {
     renderTable({
       rows: [makeRun({ id: 'run-a' }), makeRun({ id: 'run-b' })],
@@ -56,23 +78,39 @@ describe('RunTable cells', () => {
     expect(within(row).getAllByText('run-xyz').length).toBeGreaterThanOrEqual(2);
   });
 
-  it('maps in-progress waiting-on-human to the primary-filled label', () => {
-    renderTable({ rows: [makeRun({ status: 'in_progress', waitingOn: 'human' })] });
-    expect(screen.getByText('Waiting on you')).toBeDefined();
+  it('renders work kind as a neutral chip, not bare text', () => {
+    renderTable({ rows: [makeRun({ id: 'run-1', workKind: 'enhancement' })] });
+    const chip = screen.getByText('enhancement');
+    // The neutral chip uses the design-system outline classes.
+    expect(chip.className).toContain('border-border');
+    expect(chip.className).not.toContain('bg-primary');
   });
 
-  it('shows Working for ai/system waiting and a dash for ended runs', () => {
+  it('renders a StatusChip for in-progress human review as the primary-filled Needs review', () => {
+    renderTable({ rows: [makeRun({ status: 'in_progress', waitingOn: 'human' })] });
+    const chip = screen.getByText('Needs review');
+    expect(chip.className).toContain('bg-primary');
+  });
+
+  it('shows Working for ai waiting and the terminal word for an ended run', () => {
     renderTable({
       rows: [
         makeRun({ id: 'r-ai', status: 'in_progress', waitingOn: 'ai' }),
-        makeRun({ id: 'r-done', status: 'done' })
+        makeRun({ id: 'r-done', status: 'done', terminal: true })
       ],
       selectedRunId: 'r-ai'
     });
     expect(screen.getByText('Working')).toBeDefined();
     const doneRow = screen.getByTestId('run-row-r-done');
-    // Status word present; waiting shows a dash.
     expect(within(doneRow).getByText('Done')).toBeDefined();
+  });
+
+  it('renders a dash in the status cell when a run has no status', () => {
+    renderTable({ rows: [runWithoutStatus('r-nostatus')], selectedRunId: 'r-nostatus' });
+    const row = screen.getByTestId('run-row-r-nostatus');
+    // No status chip words appear; the status cell shows the dash instead.
+    expect(within(row).queryByText('Needs review')).toBeNull();
+    expect(within(row).getAllByText('—').length).toBeGreaterThanOrEqual(1);
   });
 
   it('shows the project name for a known id and a dash otherwise', () => {
@@ -96,6 +134,19 @@ describe('RunTable cells', () => {
       nowIso: '2026-01-01T02:00:00.000Z'
     });
     expect(screen.getByText('2h')).toBeDefined();
+  });
+});
+
+describe('RunTable title cell', () => {
+  it('has no status dot and clips its content', () => {
+    renderTable({ rows: [makeRun({ id: 'run-1' })] });
+    const cell = screen.getByTestId('run-cell-title-run-1');
+    // The old status dot (a rounded-full span) is gone.
+    expect(cell.querySelector('.rounded-full')).toBeNull();
+    // The cell clips overflow and may shrink below its content width so the title truncates.
+    expect(cell.className).toContain('min-w-0');
+    expect(cell.className).toContain('overflow-hidden');
+    expect(cell.querySelector('.truncate')).not.toBeNull();
   });
 });
 

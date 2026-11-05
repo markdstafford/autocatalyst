@@ -201,6 +201,134 @@ test.describe('run list', () => {
   });
 });
 
+test.describe('run list geometry', () => {
+  test('keeps every row cell within its own column with no overlap at min and max pane width', async ({
+    browser,
+    fakeServer,
+    connectedStatePath
+  }) => {
+    for (const scenario of ['spec-review', 'implementation-review', 'pr-open', 'merged', 'failed']) {
+      await fakeServer.seed({ scenario });
+    }
+    const { page, close } = await openRuns(browser, connectedStatePath, `${fakeServer.baseUrl}/runs`, {
+      viewport: { width: 1024, height: 700 }
+    });
+    try {
+      await expect(dataRows(page)).toHaveCount(5);
+
+      const assertNoOverlap = async (): Promise<void> => {
+        const rows = await dataRows(page).all();
+        for (const row of rows) {
+          const cells = row.locator('[role="gridcell"]');
+          const count = await cells.count();
+          expect(count).toBe(5);
+          let previousRight = -Infinity;
+          for (let i = 0; i < count; i += 1) {
+            const box = await cells.nth(i).boundingBox();
+            expect(box).not.toBeNull();
+            if (box) {
+              // Each cell starts at or after the previous cell's right edge: no overlap.
+              expect(box.x).toBeGreaterThanOrEqual(previousRight - EDGE);
+              previousRight = box.x + box.width;
+            }
+          }
+        }
+      };
+
+      await assertNoOverlap();
+
+      // Minimum pane width → widest list. ArrowRight narrows the right-hand pane.
+      await page.getByRole('separator').focus();
+      for (let i = 0; i < 60; i += 1) {
+        await page.keyboard.press('ArrowRight');
+      }
+      await page.waitForTimeout(200);
+      await assertNoOverlap();
+
+      // Maximum pane width → narrowest list. ArrowLeft widens the pane.
+      for (let i = 0; i < 120; i += 1) {
+        await page.keyboard.press('ArrowLeft');
+      }
+      await page.waitForTimeout(200);
+      await assertNoOverlap();
+    } finally {
+      await close();
+    }
+  });
+
+  test('keeps the column header sticky while the list scrolls vertically', async ({
+    browser,
+    fakeServer,
+    connectedStatePath
+  }) => {
+    for (const scenario of ['spec-review', 'implementation-review', 'pr-open', 'merged', 'failed']) {
+      await fakeServer.seed({ scenario });
+    }
+    const { page, close } = await openRuns(browser, connectedStatePath, `${fakeServer.baseUrl}/runs`, {
+      viewport: { width: 1024, height: 240 }
+    });
+    try {
+      await expect(dataRows(page)).toHaveCount(5);
+      const grid = page.getByRole('grid', { name: 'Runs' });
+      // The short viewport forces the list to scroll vertically.
+      expect(await grid.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+
+      const headerBefore = await page.getByTestId('run-table-header').boundingBox();
+      const firstRowBefore = await dataRows(page).first().boundingBox();
+      await grid.evaluate((el) => {
+        el.scrollTop = el.scrollHeight;
+      });
+      await page.waitForTimeout(100);
+      const headerAfter = await page.getByTestId('run-table-header').boundingBox();
+      const firstRowAfter = await dataRows(page).first().boundingBox();
+
+      expect(headerBefore && headerAfter && firstRowBefore && firstRowAfter).toBeTruthy();
+      if (headerBefore && headerAfter && firstRowBefore && firstRowAfter) {
+        // The sticky header's top edge is unchanged by the scroll.
+        expect(Math.abs(headerAfter.y - headerBefore.y)).toBeLessThanOrEqual(EDGE);
+        // The first row scrolled up, out from under the sticky header.
+        expect(firstRowAfter.y).toBeLessThan(firstRowBefore.y - 1);
+      }
+    } finally {
+      await close();
+    }
+  });
+
+  test('scrolls the list horizontally with an aligned header below the grid minimum width', async ({
+    browser,
+    fakeServer,
+    connectedStatePath
+  }) => {
+    await fakeServer.seed({ scenario: 'spec-review' });
+    const { page, close } = await openRuns(browser, connectedStatePath, `${fakeServer.baseUrl}/runs`, {
+      viewport: { width: 600, height: 700 }
+    });
+    try {
+      await expect(dataRows(page)).toHaveCount(1);
+      const grid = page.getByRole('grid', { name: 'Runs' });
+      // The grid's minimum width exceeds the 600px viewport, so it scrolls sideways.
+      expect(await grid.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
+
+      const headerCell = page.locator('[data-testid="run-table-header"] [role="columnheader"]').first();
+      const rowCell = page.locator('[role="row"][data-run-id] [role="gridcell"]').first();
+      await grid.evaluate((el) => {
+        el.scrollLeft = 80;
+      });
+      await page.waitForTimeout(100);
+      const headerBox = await headerCell.boundingBox();
+      const rowBox = await rowCell.boundingBox();
+      expect(headerBox && rowBox).toBeTruthy();
+      if (headerBox && rowBox) {
+        // The header row scrolls in the same horizontal context as the body: the first
+        // header cell and the first body cell keep aligned left edges.
+        expect(Math.abs(headerBox.x - rowBox.x)).toBeLessThanOrEqual(EDGE);
+      }
+    } finally {
+      await close();
+    }
+  });
+});
+
 for (const scheme of ['light', 'dark'] as const) {
   test.describe(`run list geometry (${scheme})`, () => {
     test.use({ colorScheme: scheme });

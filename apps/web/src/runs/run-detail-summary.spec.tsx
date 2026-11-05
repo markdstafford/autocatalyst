@@ -1,7 +1,8 @@
 /**
- * Summary fact tests: every fact's loading / success / error rendering, the three cost
- * cases, the failure reason, the pull request states, and that one failed read does not
- * blank the others.
+ * Summary fact tests: the header-owned Issue / Work kind / State rows are gone; Summary now
+ * shows the step (in-progress only), the failure reason (failed only), and the pull request,
+ * time, tokens, and cost facts, each with its own loading / success / error rendering, the
+ * three cost cases, and the rule that one failed read never blanks the others.
  */
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -32,29 +33,65 @@ describe('RunDetailSummary', () => {
     expect(screen.queryByRole('progressbar')).toBeNull();
   });
 
-  it('shows the in-progress state with waiting text and current step', () => {
+  it('never renders the header-owned Issue, Work kind, or State rows', () => {
     render(
+      <RunDetailSummary
+        run={makeRun({ workKind: 'feature', status: 'in_progress', waitingOn: 'human' })}
+        pullRequest={noPr}
+        sessions={sessionsOk([makeSession()])}
+      />
+    );
+    expect(screen.queryByTestId('pane-summary-issue')).toBeNull();
+    expect(screen.queryByTestId('pane-summary-state')).toBeNull();
+    expect(screen.queryByText('Issue')).toBeNull();
+    expect(screen.queryByText('Work kind')).toBeNull();
+    expect(screen.queryByText('State')).toBeNull();
+  });
+
+  it('shows the current step in a monospace Step row only for an in-progress run', () => {
+    const { rerender } = render(
       <RunDetailSummary
         run={{ ...makeRun({ status: 'in_progress', waitingOn: 'human' }), currentStep: 'spec.human_review' }}
         pullRequest={noPr}
         sessions={sessionsOk([makeSession()])}
       />
     );
-    const state = screen.getByTestId('pane-summary-state');
-    expect(state.textContent).toContain('In progress');
-    expect(state.textContent).toContain('Waiting on you');
-    expect(state.textContent).toContain('spec.human_review');
+    const step = screen.getByTestId('pane-summary-step');
+    expect(step.textContent).toBe('spec.human_review');
+    expect(step.className).toContain('font-mono');
+
+    // A terminal run shows no Step row.
+    rerender(
+      <RunDetailSummary
+        run={makeRun({ status: 'done', terminal: true })}
+        pullRequest={noPr}
+        sessions={sessionsOk([makeSession()])}
+      />
+    );
+    expect(screen.queryByTestId('pane-summary-step')).toBeNull();
   });
 
-  it('shows the failure reason for a failed run', () => {
-    render(
+  it('shows the failure reason in red only for a failed run with a reason', () => {
+    const { rerender } = render(
       <RunDetailSummary
         run={{ ...makeRun({ status: 'failed', terminal: true }), failureReason: 'spec_author_failed' }}
         pullRequest={noPr}
         sessions={sessionsOk([makeSession()])}
       />
     );
-    expect(screen.getByTestId('pane-summary-failure').textContent).toBe('spec_author_failed');
+    const failure = screen.getByTestId('pane-summary-failure');
+    expect(failure.textContent).toBe('spec_author_failed');
+    expect(failure.className).toContain('text-red');
+
+    // An in-progress run shows no Failure row.
+    rerender(
+      <RunDetailSummary
+        run={makeRun({ status: 'in_progress', waitingOn: 'human' })}
+        pullRequest={noPr}
+        sessions={sessionsOk([makeSession()])}
+      />
+    );
+    expect(screen.queryByTestId('pane-summary-failure')).toBeNull();
   });
 
   it('links the pull request when one exists', () => {
