@@ -72,25 +72,21 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
   { className, error = false, loading = false, readOnly, ...rest },
   ref
 ): ReactNode {
-  const control = (
-    <BaseInput
-      ref={ref}
-      {...rest}
-      className={classes(className, error, loading)}
-      readOnly={loading ? true : readOnly}
-      {...(error ? { 'aria-invalid': true } : {})}
-      {...(loading ? { 'aria-busy': true } : {})}
-    />
-  );
-
-  if (!loading) {
-    return control;
-  }
-
+  // The wrapper span is always present so toggling `loading` never changes the
+  // element type at this position: React keeps the same `<input>` DOM node, so a
+  // focused control (e.g. the Connection token field entering its checking state)
+  // keeps focus instead of being remounted. The spinner is the only conditional part.
   return (
     <span className="relative block w-full">
-      {control}
-      <Spinner />
+      <BaseInput
+        ref={ref}
+        {...rest}
+        className={classes(className, error, loading)}
+        readOnly={loading ? true : readOnly}
+        {...(error ? { 'aria-invalid': true } : {})}
+        {...(loading ? { 'aria-busy': true } : {})}
+      />
+      {loading ? <Spinner /> : null}
     </span>
   );
 });

@@ -57,9 +57,10 @@ describe('AppRoutes', () => {
     expect(screen.getByLabelText('Bearer token')).toBeDefined();
   });
 
-  it('renders the settings sidebar with a close control on the connection route', () => {
+  it('renders the settings sidebar with a Back control on the connection route', () => {
     renderAt('/settings/connection');
-    expect(screen.getByRole('button', { name: 'Close settings' })).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Back' })).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Close settings' })).toBeNull();
     const connection = screen.getByRole('link', { name: 'Connection' });
     expect(connection.getAttribute('aria-current')).toBe('page');
   });

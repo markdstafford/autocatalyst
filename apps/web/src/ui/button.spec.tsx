@@ -70,6 +70,22 @@ describe('Button', () => {
     expect(onClick).not.toHaveBeenCalled();
   });
 
+  it('with activateWhenAriaDisabled, still fires onClick while aria-disabled (handler is the guard)', async () => {
+    const onClick = vi.fn();
+    render(
+      <Button aria-label="Back" aria-disabled activateWhenAriaDisabled onClick={onClick}>
+        icon
+      </Button>
+    );
+    const button = screen.getByRole('button', { name: 'Back' });
+    // Still soft-disabled in appearance and ARIA, not natively disabled.
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    // ...but activation flows through so the handler can decide.
+    await userEvent.click(button);
+    expect(onClick).toHaveBeenCalledTimes(1);
+  });
+
   it('does not fire onClick when natively disabled', async () => {
     const onClick = vi.fn();
     render(

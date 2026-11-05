@@ -1,11 +1,14 @@
 /**
  * Write-only secret field tests: the two label states, `autocomplete="off"`, the
- * password type, the absence of reveal/mask/clear controls, and that the field is
- * empty when opened with a stored secret (it never receives the stored value).
+ * password type, the absence of reveal/mask/clear controls, that the field is empty
+ * when opened with a stored secret (it never receives the stored value), and that the
+ * additive optional `onBlur`/`onKeyDown`/`loading` wiring is forwarded to the input
+ * while existing callers can omit it.
  */
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { WriteOnlySecretField, secretFieldLabel } from './write-only-secret-field.js';
 
@@ -55,5 +58,47 @@ describe('WriteOnlySecretField', () => {
     render(<Harness hasStoredValue />);
     const input = screen.getByLabelText(STORED_LABEL) as HTMLInputElement;
     expect(input.value).toBe('');
+  });
+
+  it('forwards optional onKeyDown and onBlur handlers to the input', async () => {
+    const onKeyDown = vi.fn();
+    const onBlur = vi.fn();
+    render(
+      <>
+        <WriteOnlySecretField
+          hasStoredValue={false}
+          value=""
+          onValueChange={() => {}}
+          onKeyDown={onKeyDown}
+          onBlur={onBlur}
+        />
+        <button type="button">elsewhere</button>
+      </>
+    );
+    const input = screen.getByLabelText('Bearer token');
+    input.focus();
+    await userEvent.keyboard('{Enter}');
+    expect(onKeyDown).toHaveBeenCalled();
+    // Move focus away so the field blurs.
+    await userEvent.click(screen.getByRole('button', { name: 'elsewhere' }));
+    expect(onBlur).toHaveBeenCalled();
+  });
+
+  it('forwards optional loading, putting the input in the read-only busy state', () => {
+    render(
+      <WriteOnlySecretField hasStoredValue={false} value="x" onValueChange={() => {}} loading />
+    );
+    const input = screen.getByLabelText('Bearer token') as HTMLInputElement;
+    expect(input.getAttribute('aria-busy')).toBe('true');
+    expect(input.readOnly).toBe(true);
+  });
+
+  it('omits the new wiring without behavior change for existing callers', () => {
+    const { container } = render(<Harness hasStoredValue={false} />);
+    const input = screen.getByLabelText('Bearer token') as HTMLInputElement;
+    expect(input.getAttribute('aria-busy')).toBeNull();
+    expect(input.readOnly).toBe(false);
+    // Still no extra controls.
+    expect(container.querySelectorAll('button').length).toBe(0);
   });
 });

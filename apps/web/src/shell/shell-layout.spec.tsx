@@ -3,11 +3,11 @@
  * preferences (via the theme provider's single writer), settings open/close with
  * `Cmd+,`/`Ctrl+,` and Escape, and the sidebar → header → main → footer tab order.
  */
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AppRoutes } from '../app.js';
 import { clearBearerToken } from '../auth/token-store.js';
@@ -29,8 +29,21 @@ function renderApp(path = '/runs'): void {
   );
 }
 
+function renderAppWith(fetchImpl: typeof globalThis.fetch, path = '/runs'): void {
+  render(
+    <ThemeProvider>
+      <ControlPlaneClientProvider fetch={fetchImpl}>
+        <MemoryRouter initialEntries={[path]}>
+          <AppRoutes />
+        </MemoryRouter>
+      </ControlPlaneClientProvider>
+    </ThemeProvider>
+  );
+}
+
 afterEach(() => {
   clearBearerToken();
+  vi.restoreAllMocks();
 });
 
 describe('sidebar state', () => {
@@ -131,6 +144,159 @@ describe('settings frame shortcuts', () => {
 
     // Second Escape closes settings.
     fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeDefined();
+  });
+});
+
+describe('settings close guard while Connection is checking', () => {
+  interface Gate {
+    readonly fetchImpl: typeof globalThis.fetch;
+    release(): void;
+  }
+
+  function gatedProjectsFetch(): Gate {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetchImpl: typeof globalThis.fetch = async (input) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes('/v1/projects')) {
+        await gate;
+        return new Response(JSON.stringify({ projects: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      // Health and anything else answer immediately so only the token check is in flight.
+      return new Response(JSON.stringify({ status: 'ok', database: { status: 'reachable' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    };
+    return {
+      fetchImpl,
+      release: () => {
+        release?.();
+      }
+    };
+  }
+
+  async function startCheck(): Promise<void> {
+    await userEvent.type(screen.getByLabelText('Bearer token'), 'tok');
+    fireEvent.keyDown(screen.getByLabelText('Bearer token'), { key: 'Enter' });
+    expect(await screen.findByText('Checking')).toBeDefined();
+  }
+
+  it('refuses Ctrl+, while checking and allows it again after the check settles', async () => {
+    const gate = gatedProjectsFetch();
+    renderAppWith(gate.fetchImpl, '/settings/connection');
+    await startCheck();
+
+    // Toggle-settings is blocked by the shared guard while checking.
+    fireEvent.keyDown(document.body, { key: ',', ctrlKey: true });
+    expect(screen.getByRole('heading', { level: 1, name: 'Connection' })).toBeDefined();
+
+    await act(async () => {
+      gate.release();
+    });
+    expect(await screen.findByText('Connected')).toBeDefined();
+
+    // After the check settles, the same shortcut closes settings again.
+    fireEvent.keyDown(document.body, { key: ',', ctrlKey: true });
+    expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeDefined();
+  });
+
+  it('refuses Escape (close-layer) while checking and allows it again after the check settles', async () => {
+    const gate = gatedProjectsFetch();
+    renderAppWith(gate.fetchImpl, '/settings/connection');
+    await startCheck();
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(screen.getByRole('heading', { level: 1, name: 'Connection' })).toBeDefined();
+
+    await act(async () => {
+      gate.release();
+    });
+    expect(await screen.findByText('Connected')).toBeDefined();
+
+    // After success the field is empty, so Escape is an empty-field close-layer again.
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeDefined();
+  });
+
+  it('soft-disables Back while checking and leaves after a successful commit', async () => {
+    const gate = gatedProjectsFetch();
+    renderAppWith(gate.fetchImpl, '/settings/connection');
+    await startCheck();
+
+    const back = screen.getByRole('button', { name: 'Back' });
+    expect(back.getAttribute('aria-disabled')).toBe('true');
+    // Activating Back during the check does not leave settings.
+    await userEvent.click(back);
+    expect(screen.getByRole('heading', { level: 1, name: 'Connection' })).toBeDefined();
+
+    await act(async () => {
+      gate.release();
+    });
+    expect(await screen.findByText('Connected')).toBeDefined();
+    expect(screen.getByRole('button', { name: 'Back' }).getAttribute('aria-disabled')).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+    expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeDefined();
+  });
+
+  it('keeps a failed result visible when Back is pressed, then leaves after a good token', async () => {
+    let release: (() => void) | undefined;
+    let outcome: 'unauthorized' | 'ok' = 'unauthorized';
+    const fetchImpl: typeof globalThis.fetch = async (input) => {
+      const url =
+        typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes('/v1/projects')) {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        if (outcome === 'unauthorized') {
+          return new Response(JSON.stringify({ error: { code: 'unauthorized', message: 'no' } }), {
+            status: 401,
+            headers: { 'content-type': 'application/json' }
+          });
+        }
+        return new Response(JSON.stringify({ projects: [] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' }
+        });
+      }
+      return new Response(JSON.stringify({ status: 'ok', database: { status: 'reachable' } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    };
+    renderAppWith(fetchImpl, '/settings/connection');
+
+    await userEvent.type(screen.getByLabelText('Bearer token'), 'wrong');
+    fireEvent.keyDown(screen.getByLabelText('Bearer token'), { key: 'Enter' });
+    expect(await screen.findByText('Checking')).toBeDefined();
+
+    // Back while checking is refused; the operator stays to see the result.
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
+    await act(async () => {
+      release?.();
+    });
+    expect(await screen.findByText('Failed')).toBeDefined();
+    expect(screen.getByRole('heading', { level: 1, name: 'Connection' })).toBeDefined();
+
+    // Correct the token and commit again; success stores it and Back then leaves.
+    outcome = 'ok';
+    const field = screen.getByLabelText('Bearer token');
+    await userEvent.clear(field);
+    await userEvent.type(field, 'right');
+    fireEvent.keyDown(field, { key: 'Enter' });
+    await act(async () => {
+      release?.();
+    });
+    expect(await screen.findByText('Connected')).toBeDefined();
+    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
     expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeDefined();
   });
 });

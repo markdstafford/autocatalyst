@@ -11,10 +11,15 @@
  * - Label is `Bearer token` with nothing stored, and
  *   `Bearer token (leave blank to keep existing)` once a secret exists.
  * - No mask, no "stored" badge, no reveal button, no clear/delete control.
- * - The value is controlled by the parent so it can be emptied after a save; the
- *   field is empty every time the form opens.
+ * - The value is controlled by the parent so it can be emptied after a save or a
+ *   successful check; the field is empty every time the form opens.
+ *
+ * Optional, additive input wiring (`onBlur`, `onKeyDown`, `loading`) is forwarded to
+ * the underlying `Input` so a consumer like the Connection page can commit on
+ * Enter/blur and show the read-only busy state while checking. Callers that omit them
+ * are unaffected.
  */
-import type { ReactNode } from 'react';
+import type { FocusEventHandler, KeyboardEventHandler, ReactNode } from 'react';
 
 import { Field } from './field.js';
 import { Input } from './input.js';
@@ -32,6 +37,12 @@ export interface WriteOnlySecretFieldProps {
   readonly hint?: string;
   /** Whether the control is required (no stored value and nothing typed). */
   readonly required?: boolean;
+  /** Optional blur handler forwarded to the input (e.g. commit-on-blur). */
+  readonly onBlur?: FocusEventHandler<HTMLInputElement>;
+  /** Optional keydown handler forwarded to the input (e.g. Enter commit / Escape). */
+  readonly onKeyDown?: KeyboardEventHandler<HTMLInputElement>;
+  /** When true, the input shows the shared read-only busy state (`aria-busy`, spinner). */
+  readonly loading?: boolean;
   readonly id?: string;
   readonly name?: string;
 }
@@ -48,6 +59,9 @@ export function WriteOnlySecretField({
   secretName = 'Bearer token',
   hint,
   required,
+  onBlur,
+  onKeyDown,
+  loading,
   id,
   name
 }: WriteOnlySecretFieldProps): ReactNode {
@@ -63,6 +77,9 @@ export function WriteOnlySecretField({
           onValueChange(next);
         }}
         {...(required === true && !hasStoredValue ? { required: true } : {})}
+        {...(onBlur !== undefined ? { onBlur } : {})}
+        {...(onKeyDown !== undefined ? { onKeyDown } : {})}
+        {...(loading === true ? { loading: true } : {})}
         {...(id !== undefined ? { id } : {})}
         {...(name !== undefined ? { name } : {})}
       />

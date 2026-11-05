@@ -4,10 +4,11 @@
  *
  * These drive `apps/web/dist` served from the control plane's own origin — no
  * `page.route`, no injected browser storage, no test-only hook. They cover the
- * no-token empty state, the wrong/right token outcomes, save/clear, the stored-token
- * label after reload, the token's absence from page text, and the footer health
- * indicator going offline, recovering, and surviving a control-plane restart without
- * re-entering the token.
+ * no-token empty state, the apply-on-commit wrong/right token outcomes committed with
+ * `Enter` (no Test/Save controls), returning to Runs with Back, the stored-token label
+ * after reload, the token's absence from page text, and the footer health indicator
+ * going offline, recovering, and surviving a control-plane restart without re-entering
+ * the token.
  */
 import { expect, test } from './fixtures/fake-server.js';
 
@@ -20,7 +21,10 @@ async function visibleText(page: import('@playwright/test').Page): Promise<strin
   return page.evaluate(() => document.body.innerText);
 }
 
-test('connects, saves, and keeps the token out of page text', async ({ page, fakeServer }) => {
+test('applies a token on commit and keeps the token out of page text', async ({
+  page,
+  fakeServer
+}) => {
   await page.goto(`${fakeServer.baseUrl}/runs`);
 
   // No token stored: the connect empty state leads to Connection settings.
@@ -28,35 +32,34 @@ test('connects, saves, and keeps the token out of page text', async ({ page, fak
   await page.getByRole('button', { name: 'Open connection settings' }).click();
   await expect(page.getByRole('heading', { level: 1, name: 'Connection' })).toBeVisible();
 
-  // Wrong token: Failed with the 401 fix text.
+  // Wrong token committed with Enter: Failed with the 401 fix text; nothing is stored
+  // and the typed value stays for correction.
   await page.getByLabel('Bearer token').fill(WRONG_TOKEN);
-  await page.getByRole('button', { name: 'Test connection' }).click();
+  await page.getByLabel('Bearer token').press('Enter');
   await expect(page.getByText('Failed')).toBeVisible();
   await expect(page.getByText(REJECTED_FIX)).toBeVisible();
   expect(await visibleText(page)).not.toContain(WRONG_TOKEN);
 
-  // Right token: Connected.
+  // Right token committed with Enter: Connected, the token is stored, and the field
+  // clears (no separate Save step).
   await page.getByLabel('Bearer token').fill(FIXTURE_TOKEN);
-  await page.getByRole('button', { name: 'Test connection' }).click();
+  await page.getByLabel('Bearer token').press('Enter');
   await expect(page.getByText('Connected')).toBeVisible();
+  await expect(page.getByLabel(/Bearer token/)).toHaveValue('');
   expect(await visibleText(page)).not.toContain(FIXTURE_TOKEN);
 
-  // Save: confirmation shows and the field clears.
-  await page.getByRole('button', { name: 'Save' }).click();
-  await expect(page.getByText('Saved')).toBeVisible();
-  await expect(page.getByLabel(/Bearer token/)).toHaveValue('');
+  // Back returns to Runs, which no longer asks to connect: the run list works.
+  await page.getByRole('button', { name: 'Back' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Runs' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Connect to the control plane' })).toHaveCount(0);
 
-  // Reload: the stored-token label shows and the field is empty; the token never
-  // appears in page text.
-  await page.reload();
+  // Reload the Connection page: the stored-token label shows and the field is empty;
+  // the token never appears in page text.
+  await page.goto(`${fakeServer.baseUrl}/settings/connection`);
   await expect(
     page.getByLabel('Bearer token (leave blank to keep existing)')
   ).toHaveValue('');
   expect(await visibleText(page)).not.toContain(FIXTURE_TOKEN);
-
-  // Runs no longer asks to connect; the main area is empty until #134.
-  await page.goto(`${fakeServer.baseUrl}/runs`);
-  await expect(page.getByRole('heading', { name: 'Connect to the control plane' })).toHaveCount(0);
 
   expect(await fakeServer.readLaunchCount()).toBe(0);
 });
@@ -70,10 +73,8 @@ test('footer health: offline shows Connection lost, online clears it, and a rest
   // Connect first so the shell is in the signed-in state.
   await page.goto(`${fakeServer.baseUrl}/settings/connection`);
   await page.getByLabel('Bearer token').fill(FIXTURE_TOKEN);
-  await page.getByRole('button', { name: 'Test connection' }).click();
+  await page.getByLabel('Bearer token').press('Enter');
   await expect(page.getByText('Connected')).toBeVisible();
-  await page.getByRole('button', { name: 'Save' }).click();
-  await expect(page.getByText('Saved')).toBeVisible();
 
   // Healthy: no footer warning.
   await expect(page.getByText('Connection lost')).toHaveCount(0);

@@ -30,7 +30,7 @@ import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { hasBearerToken } from '../auth/token-store.js';
 import { clampPaneWidth } from '../theme/preferences.js';
 import { useTheme } from '../theme/theme-provider.js';
-import { ConnectionStateProvider } from './connection-state.js';
+import { ConnectionStateProvider, useConnectionState } from './connection-state.js';
 import { Footer } from './footer.js';
 import { Header } from './header.js';
 import { CONNECTION_PATH, RUNS_PATH, isRunsPath, isSettingsPath } from './navigation.js';
@@ -52,7 +52,18 @@ export interface RunsOutletContext {
 }
 
 export function ShellLayout(): ReactNode {
+  // The shell-level connection state must wrap the layout so `closeSettings`, the
+  // sidebar, and the Connection page (an outlet descendant) all read one provider.
+  return (
+    <ConnectionStateProvider>
+      <ShellLayoutInner />
+    </ConnectionStateProvider>
+  );
+}
+
+function ShellLayoutInner(): ReactNode {
   const { preferences, updatePreferences } = useTheme();
+  const connectionState = useConnectionState();
   const sidebarOpen = preferences.sidebarOpen;
   const location = useLocation();
   const navigate = useNavigate();
@@ -89,8 +100,16 @@ export function ShellLayout(): ReactNode {
   }, [navigate]);
 
   const closeSettings = useCallback((): void => {
+    // While the Connection page is checking a token, keep settings open so the result
+    // (`Connected` or `Failed`) is always visible before the operator leaves. This one
+    // guard covers Back, the settings toggle shortcut, and empty-field Escape, since
+    // they all route here. The ref read is live, so a blur-started check in the same
+    // gesture as the close attempt is observed even before a re-render.
+    if (connectionState.isSettingsCheckPending()) {
+      return;
+    }
     navigate(returnRouteRef.current || RUNS_PATH);
-  }, [navigate]);
+  }, [navigate, connectionState]);
 
   const togglePane = useCallback((): void => {
     // Off the runs route the pane does not exist, so `]` writes nothing.
@@ -150,7 +169,7 @@ export function ShellLayout(): ReactNode {
   };
 
   return (
-    <ConnectionStateProvider>
+    <>
       <div className="flex h-screen w-screen flex-col overflow-hidden bg-background text-text">
         <div className="flex min-h-0 flex-1">
           <Sidebar
@@ -158,6 +177,7 @@ export function ShellLayout(): ReactNode {
             mode={sidebarMode}
             settings={settings}
             onCloseSettings={closeSettings}
+            settingsCheckPending={connectionState.settingsCheckPending}
             {...(sidebarMode === 'overlay' ? { onPointerLeave: handleOverlayPointerLeave } : {})}
           />
 
@@ -196,6 +216,6 @@ export function ShellLayout(): ReactNode {
 
         <ShortcutsOverlay open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       </div>
-    </ConnectionStateProvider>
+    </>
   );
 }
