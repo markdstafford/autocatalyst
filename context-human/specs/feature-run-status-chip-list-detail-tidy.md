@@ -28,7 +28,7 @@ The list and pane also need to behave predictably in constrained layouts. Cells 
 
 ### Operator scans the run list
 
-Olive opens the Autocatalyst web client to review active and completed runs. Each row has a title, work kind chip, status chip, project, and age. The row needing input shows a filled `Needs review` chip, while rows still executing show `Working`, paused rows show `Paused`, and completed rows show terminal state chips.
+Olive opens the Autocatalyst web client to review active and completed runs. Each row has a title, work kind chip, status chip, project, and age. The row needing input shows a filled `Needs review` chip, rows still executing show `Working`, and completed rows show terminal state chips. `Paused` is kept as a defensive unit-tested mapping for impossible or malformed client input; operators should not see it in fake mode or real control-plane responses.
 
 Olive narrows the browser beside another window. The list keeps its columns separated, clips long content, and scrolls horizontally below its minimum width instead of letting cells overlap. When the list is tall enough to scroll, the column header stays visible.
 
@@ -142,7 +142,7 @@ graph TD
 - Summary removes Issue, Work kind, and State rows because the header owns those fields.
 - Summary rows are Step for in-progress runs, Failure for failed runs with `failureReason`, Pull request, Time, Tokens, and Cost.
 - Step values use `--font-mono`; Failure values use `--color-red`.
-- Summary uses `DescriptionList` with a fixed-width name column token `--width-description-label` set to 7rem. Names use `--text-sm` and `--color-subtext`; values use `--text-sm` and `--color-text`.
+- Summary uses the shared `DescriptionList` / `DescriptionItem` row layout with a fixed-width name column token `--width-description-label` set to 7rem. `DescriptionItem` changes from its merged label-above-value block (`flex-col`, `dt` in `--text-xs`, `dd` in `--text-base`) to this row layout because Summary is its only caller. Names use `--text-sm` and `--color-subtext`; values use `--text-sm` and `--color-text`, wrap inside the value column, and do not overlap the name column.
 - At the pane minimum width of 320px, with 288px content, the value column still has 176px.
 
 #### Detail pane scrolling
@@ -183,7 +183,7 @@ No new mockups are required. The implementation should use the design-system `Ch
 
 - **Status chip**: The single chip that presents derived run state from `status` and `waitingOn`.
 - **Needs review**: The filled primary state for any in-progress run waiting on a human.
-- **Paused**: The muted state for an in-progress run with `waitingOn: none` or missing `waitingOn`.
+- **Paused**: A defensive muted state for impossible or malformed client input where an in-progress run has `waitingOn: none` or missing `waitingOn`. The control plane sets `waitingOn` for non-terminal runs, and terminal derivation treats `waitingOn: none` as terminal, so `Paused` is unit-tested only and is not expected in fake-mode demos or real run data.
 
 ### System design and architecture
 
@@ -261,9 +261,9 @@ No data model, database schema, or API contract changes are required. This featu
 ### Testing plan
 
 - Unit tests cover `runStateChip(run)` for every table row, including missing `status` and missing `waitingOn` on an in-progress run.
-- Component tests cover `StatusChip`, list columns, work kind chip, dash behavior, title cell clipping, detail header, title clamp, Summary rows, and `DescriptionList` layout.
-- Playwright tests in fake mode cover all scenarios, row-cell non-overlap at specified viewports and pane widths, sticky list header, horizontal list scroll at 600px, matching row/header chip text, pinned pane header/tabs while tab content scrolls, and updated geometry in light/dark with sidebar open/closed.
-- Existing tests that assert old waiting text, status dots, Waiting on column, Summary State row, or whole-body pane scrolling are updated with equivalent coverage rather than deleted.
+- Component tests cover `StatusChip`, list columns, work kind chip, dash behavior, title cell clipping, detail header, title clamp, Summary rows, and the changed `DescriptionList` / `DescriptionItem` row layout, including long value wrapping without overlapping the name column.
+- Playwright tests in fake mode cover all scenarios, row-cell non-overlap at specified viewports and pane widths, sticky list header, horizontal list scroll at 600px, matching row/header chip text, pinned pane header/tabs while tab content scrolls, and updated geometry in light/dark with sidebar open/closed. No Playwright test or manual demo step expects a `Paused` chip because it is unreachable from control-plane/fake-mode data.
+- Existing tests that assert old waiting text, status dots, Waiting on column, Summary State row, or whole-body pane scrolling are updated with replacement coverage rather than deleted. Updated tests keep their query strength: role-based queries such as `columnheader`, `row`, `heading`, and `link` stay role-based and are never weakened to text-only queries. The pull request description lists each removed assertion next to its replacement, one line each. Every e2e test that does not assert removed behavior passes unchanged, and `pnpm nx run web:e2e` is run and passes before submission.
 
 ### Alternatives considered
 
@@ -302,7 +302,7 @@ No data model, database schema, or API contract changes are required. This featu
     - **Description**: Delete `STATUS_DOT`, `statusWord`, `WAITING_LABELS`, and `waitingCell` from `apps/web/src/runs/run-fields.ts`, move relevant tests to `runStateChip`, and update imports throughout `apps/web/src`.
     - **Acceptance criteria**:
       - [ ] No file in `apps/web/src` imports the removed helpers.
-      - [ ] Tests that previously covered legacy helpers now cover `runStateChip`.
+      - [ ] Tests in `run-fields.spec.ts` that previously covered legacy helpers move to `runStateChip` coverage without reducing the set of state combinations.
       - [ ] The web client builds without unused exports or imports from `run-fields.ts`.
     - **Dependencies**: "Task: Add shared run state mapping"; "Task: Add reusable StatusChip component"
 
@@ -314,7 +314,7 @@ No data model, database schema, or API contract changes are required. This featu
       - [ ] No title cell contains a status dot.
       - [ ] Work kind cells render neutral chips.
       - [ ] Status cells render `StatusChip` or a dash for missing status.
-      - [ ] Existing tests that asserted old waiting text, the status dot, or Waiting on column are updated with equivalent new coverage.
+      - [ ] Existing tests in `run-table.spec.tsx` that asserted the Waiting on column header, old waiting text, or status dot are updated with new status/work-kind chip coverage without weakening `columnheader` or `row` role queries.
     - **Dependencies**: "Task: Add reusable StatusChip component"; "Task: Remove legacy status and waiting helpers"
   - [ ] **Task: Add robust list sizing and clipping**
     - **Description**: Move fixed grid widths into `run-list-constants.ts`, add `RUN_LIST_TITLE_MIN_REM = 10`, give every cell overflow clipping, and ensure the title cell has `min-width: 0` and text truncation.
@@ -341,7 +341,7 @@ No data model, database schema, or API contract changes are required. This featu
       - [ ] Header shows title, issue link, work kind chip, and `StatusChip` for `spec-review`, `implementation-review`, `pr-open`, `merged`, and `failed`.
       - [ ] A run with no `trackedIssue` shows its run id as title and no issue link.
       - [ ] A 300-character title clamps to two lines and exposes the full text in the `title` attribute.
-      - [ ] Component tests cover header scenarios and title clamp.
+      - [ ] Component tests in `run-detail-header.spec.tsx` cover header scenarios and title clamp, preserving role-based `heading` and `link` queries where the old tests used them.
     - **Dependencies**: "Task: Add reusable StatusChip component"
   - [ ] **Task: Update Summary rows and DescriptionList layout**
     - **Description**: Update `run-detail-summary.tsx` to remove Issue, Work kind, and State rows; conditionally show Step and Failure; preserve Pull request, Time, Tokens, and Cost states; and use `DescriptionList` with the new fixed label width token.
@@ -351,8 +351,11 @@ No data model, database schema, or API contract changes are required. This featu
       - [ ] Failure appears only for failed runs with `failureReason` and uses `--color-red`.
       - [ ] Pull request, Time, Tokens, and Cost behavior remains covered for loading, error, and unknown-cost states from #135.
       - [ ] `--width-description-label` is added with value 7rem and documented in the design-system dimensions table.
+      - [ ] The shared `DescriptionItem` component changes from label-above-value (`flex-col`, `dt` `--text-xs`, `dd` `--text-base`) to the row layout because Summary is its only caller.
+      - [ ] Existing `DescriptionItem` unit tests that assert label-above-value classes are updated intentionally to assert the row classes, fixed name column, `--text-sm` name/value text, and wrapping value column.
+      - [ ] A unit test verifies a long value wraps inside the value column and does not overlap the name column.
       - [ ] The gallery `DescriptionList` entry shows the new name/value layout.
-      - [ ] Component tests cover each scenario's Summary rows.
+      - [ ] Component tests in `run-detail-summary.spec.tsx` cover each scenario's Summary rows, including removal of the old State row and preserving role/query strength where applicable.
     - **Dependencies**: "Task: Standardize the detail pane header"
   - [ ] **Task: Pin pane chrome and scroll only tab content**
     - **Description**: Update `run-detail-pane.tsx` layout so the pane bar, detail header, and tab list remain fixed while the active tab content scrolls beneath the tab list. Update geometry assertions for the new structure.
@@ -361,7 +364,7 @@ No data model, database schema, or API contract changes are required. This featu
       - [ ] The scroll test passes at default, minimum, and maximum pane widths.
       - [ ] The scroll test passes for each selected tab.
       - [ ] Existing geometry assertions for title, meta line, tabs, and body positioning pass in light and dark with sidebar open and closed.
-      - [ ] Existing tests that asserted whole body scrolling are updated with equivalent pinned-layout coverage.
+      - [ ] Existing tests that asserted whole-body scrolling in `e2e/run-detail.spec.ts` are updated with pinned-layout coverage without weakening role-based queries.
     - **Dependencies**: "Task: Standardize the detail pane header"; "Task: Update Summary rows and DescriptionList layout"
   - [ ] **Task: Assert list and pane status consistency**
     - **Description**: Add Playwright coverage that selects each seeded scenario and verifies the detail pane header status chip text equals the selected row status chip text.
@@ -371,13 +374,24 @@ No data model, database schema, or API contract changes are required. This featu
       - [ ] The test uses fake mode and makes no model calls.
     - **Dependencies**: "Task: Update run list columns and cells"; "Task: Standardize the detail pane header"
 
+  - [ ] **Task: Preserve test strength while updating removed-behavior assertions**
+    - **Description**: Audit changed tests that mention removed behavior and update them to assert the new behavior without weakening query style. Cover at least `run-fields.spec.ts`, `run-table.spec.tsx`, `run-detail-header.spec.tsx`, `run-detail-summary.spec.tsx`, and `e2e/run-detail.spec.ts`.
+    - **Acceptance criteria**:
+      - [ ] Role-based queries remain role-based; `columnheader`, `row`, `heading`, and `link` assertions are not replaced with weaker text-only queries.
+      - [ ] Removed assertions are named and paired with replacements in the pull request description, one line each.
+      - [ ] Removed-behavior assertions named in the audit include the Waiting on column header, status dot, Summary State row, and whole-body scrolling.
+      - [ ] Every e2e test that does not assert removed behavior passes unchanged.
+      - [ ] `pnpm nx run web:e2e` is run and passes before submission.
+    - **Dependencies**: "Task: Update run list columns and cells"; "Task: Standardize the detail pane header"; "Task: Update Summary rows and DescriptionList layout"; "Task: Pin pane chrome and scroll only tab content"
+
 - [ ] **Story: Update documentation and navigation context**
-  - [ ] **Task: Update design-system and concept docs**
-    - **Description**: Update `context-agent/wiki/design-system.md`, `context-human/concepts/run-detail.md`, and `context-human/concepts/collection.md` to describe the new status chip vocabulary, list columns, pane header, pinned scrolling behavior, and `--width-description-label` dimension.
+  - [ ] **Task: Update design-system and approved concept documentation**
+    - **Description**: Update `context-agent/wiki/design-system.md` to describe the new status chip vocabulary, list columns, pane header, pinned scrolling behavior, and `--width-description-label` dimension. Also update one approved sentence in human-owned `context-human/concepts/run-detail.md`: its Summary paragraph must say the header owns issue, work kind, and state, and Summary lists step while in progress, failure reason when failed, pull request, and totals. Approving this spec is the human approval for that single named edit. Leave `context-human/concepts/collection.md` unchanged because it still correctly names status and waiting-on as run item data used by #159 and #160.
     - **Acceptance criteria**:
       - [ ] `context-agent/wiki/design-system.md` updates Status and waiting indicators, Collection, Detail pane, and dimensions sections.
-      - [ ] Concept docs no longer describe the waiting chip, status dot, or Waiting on column as current behavior.
-      - [ ] The issue author or implementer greps for waiting chip, status dot, and Waiting on column references and updates applicable current-behavior docs.
+      - [ ] `context-human/concepts/run-detail.md` Summary paragraph is updated to say the header owns issue, work kind, and state, and Summary lists step while in progress, failure reason when failed, pull request, time, tokens, and cost totals.
+      - [ ] `context-human/concepts/collection.md` is left unchanged for this issue.
+      - [ ] No broad grep-driven edits are made to human-owned concept docs beyond the single approved `run-detail.md` Summary paragraph edit.
     - **Dependencies**: "Task: Update run list columns and cells"; "Task: Update Summary rows and DescriptionList layout"; "Task: Pin pane chrome and scroll only tab content"
   - [ ] **Task: Update code map and verify no model calls**
     - **Description**: Record the new `run-state.ts` and `status-chip.tsx` modules in `context-agent/wiki/code-map.md` and ensure new or updated tests use fake-mode/local fixtures only.
