@@ -9,14 +9,17 @@
  * or while the hover overlay is shown.
  *
  * Contents switch with the settings frame: the primary sidebar lists Runs and
- * Settings; the settings sidebar shows a close button and the single Connection row.
+ * Settings; the settings sidebar's title row is a Back button followed by the
+ * `Settings` label (reading `← Settings`), then the single Connection row.
  */
-import { ListChecks, PlugZap, Settings as SettingsIcon, X } from 'lucide-react';
+import { ArrowLeft, ListChecks, PlugZap, Settings as SettingsIcon } from 'lucide-react';
 import { forwardRef, type ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 
 import { Button } from '../ui/button.js';
 import { Tooltip } from '../ui/tooltip.js';
+import { actionTooltipKey } from './action-registry.js';
+import { isMacPlatform } from './key-utils.js';
 import { CONNECTION_PATH, RUNS_PATH } from './navigation.js';
 
 export type SidebarMode = 'docked' | 'overlay' | 'hidden';
@@ -56,24 +59,34 @@ function PrimaryNav(): ReactNode {
   );
 }
 
-function SettingsNav({ onCloseSettings }: { onCloseSettings(): void }): ReactNode {
+function SettingsNav({
+  onCloseSettings,
+  checkPending = false
+}: {
+  onCloseSettings(): void;
+  readonly checkPending?: boolean;
+}): ReactNode {
+  const isMac = isMacPlatform();
   return (
     <>
       <div className={TITLE_ROW_CLASSES} data-testid="sidebar-title">
+        <Tooltip label="Back" keyHint={actionTooltipKey('close-layer', isMac)}>
+          <Button
+            variant="secondary"
+            aria-label="Back"
+            // While Connection is checking a token, Back is soft-disabled: it stays
+            // focusable (no keyboard trap) but suppresses activation. The real refusal
+            // lives in the shared `closeSettings` guard, so keyboard close paths are
+            // blocked too; this only mirrors that state on the button.
+            aria-disabled={checkPending || undefined}
+            onClick={onCloseSettings}
+            className="aspect-square px-0"
+            size="control-sm"
+          >
+            <ArrowLeft aria-hidden size={14} />
+          </Button>
+        </Tooltip>
         <span className={TITLE_TEXT_CLASSES}>Settings</span>
-        <div className="ml-auto">
-          <Tooltip label="Close settings">
-            <Button
-              variant="secondary"
-              aria-label="Close settings"
-              onClick={onCloseSettings}
-              className="aspect-square px-0"
-              size="control-sm"
-            >
-              <X aria-hidden size={14} />
-            </Button>
-          </Tooltip>
-        </div>
       </div>
       <div className={LIST_CLASSES}>
         <NavLink to={CONNECTION_PATH} className={rowClass}>
@@ -102,11 +115,13 @@ export interface SidebarProps {
   readonly mode: SidebarMode;
   readonly settings: boolean;
   onCloseSettings(): void;
+  /** Whether Connection is checking a token; soft-disables the settings Back button. */
+  readonly settingsCheckPending?: boolean;
   onPointerLeave?(event: React.PointerEvent<HTMLElement>): void;
 }
 
 export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
-  { mode, settings, onCloseSettings, onPointerLeave },
+  { mode, settings, onCloseSettings, settingsCheckPending = false, onPointerLeave },
   ref
 ): ReactNode {
   const hidden = mode === 'hidden';
@@ -119,7 +134,11 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
       {...(hidden ? { inert: true, 'aria-hidden': true } : {})}
       {...(onPointerLeave !== undefined ? { onPointerLeave } : {})}
     >
-      {settings ? <SettingsNav onCloseSettings={onCloseSettings} /> : <PrimaryNav />}
+      {settings ? (
+        <SettingsNav onCloseSettings={onCloseSettings} checkPending={settingsCheckPending} />
+      ) : (
+        <PrimaryNav />
+      )}
     </nav>
   );
 });
