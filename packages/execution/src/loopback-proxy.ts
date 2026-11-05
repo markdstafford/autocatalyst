@@ -445,9 +445,19 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
           if (responseCommitted) return; // already writing to client, cannot send error envelope
           attemptResponseHandled = true;
 
-          // A request timeout is a safe terminal outcome recorded as `timeout`. The proxy does not
-          // retry it — session-level retry owns recovery for a stalled upstream.
+          // A pre-response request timeout is a transient connectivity failure. The proxy rides it
+          // out within the monotonic retry budget exactly like a transport error, so a short stall
+          // (e.g. a sleep/wake Wi-Fi reconnect before any response starts) is absorbed rather than
+          // escalated straight to session retry. Only once the budget is unrecovered do we expose a
+          // terminal `timeout` record; session-level retry then owns recovery for a stalled upstream.
           if (timedOut) {
+            const delayMs = computeRetryDelayMs({ attemptNumber, jitter: jitterFn() });
+            if (canRetry(delayMs)) {
+              emitFailureRecord(buildFailureRecord('retrying', {}));
+              writeResponseErrorDump();
+              void sleepFn(delayMs).then(attempt);
+              return;
+            }
             const record = buildFailureRecord('timeout', {});
             lastUnrecoveredFailure = record;
             emitFailureRecord(record);

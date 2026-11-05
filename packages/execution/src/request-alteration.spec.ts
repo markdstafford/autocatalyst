@@ -13,7 +13,7 @@ import {
   maximumMaxRetries,
   maximumRequestTimeoutMs,
   parseRetryAfterMs,
-  proxyRetryBudgetMs,
+  PROXY_RETRY_BUDGET_MS,
   ProviderAlterationError,
   redactProcessLaunchConfigForLog,
   redactProviderRequestForLog,
@@ -667,7 +667,7 @@ describe('retry policy helpers', () => {
 describe('resolveProxyRetryBudget — proxy-only; shared defaults unchanged', () => {
   it('leaves maxRetries UNSET when the endpoint has none, so the monotonic budget controls proxy attempts', () => {
     const budget = resolveProxyRetryBudget({});
-    expect(budget.budgetMs).toBe(proxyRetryBudgetMs);
+    expect(budget.budgetMs).toBe(PROXY_RETRY_BUDGET_MS);
     expect(budget.budgetMs).toBe(60000);
     expect(budget.maxRetries).toBeUndefined();
     expect(budget.transientHttpStatuses).toEqual([408, 429, 500, 502, 503, 504, 529]);

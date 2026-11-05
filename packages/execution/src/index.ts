@@ -168,7 +168,7 @@ export {
   isTransientProviderFailure,
   maximumMaxRetries,
   maximumRequestTimeoutMs,
-  proxyRetryBudgetMs,
+  PROXY_RETRY_BUDGET_MS,
   ProviderAlterationError,
   redactProcessLaunchConfigForLog,
   redactProviderRequestForLog,

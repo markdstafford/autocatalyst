@@ -94,7 +94,7 @@ export const maximumRetryDelayMs = 5_000;
  * constant used ONLY by the loopback proxy retry loop — it is NOT an environment variable and NOT a
  * `RunnerEndpointSettings` field, so it introduces no API-contract / OpenAPI / validation surface.
  */
-export const proxyRetryBudgetMs = 60_000;
+export const PROXY_RETRY_BUDGET_MS = 60_000;
 
 export interface ResolvedRetryPolicy extends RetryPolicy {
   readonly baseDelayMs: number;
@@ -117,7 +117,7 @@ export function resolveRetryPolicy(endpoint: RunnerEndpointSettings): ResolvedRe
  * policy (used by the fetch transport and the Claude SDK subprocess `CLAUDE_CODE_MAX_RETRIES`
  * mapping) always resolves `maxRetries` from `endpoint.maxRetries ?? defaultMaxRetries`, while the
  * proxy budget leaves `maxRetries` UNSET when the endpoint does not configure one so that the
- * monotonic {@link proxyRetryBudgetMs} window controls proxy attempts instead of the shared default.
+ * monotonic {@link PROXY_RETRY_BUDGET_MS} window controls proxy attempts instead of the shared default.
  */
 export interface ResolvedProxyRetryBudget {
   /** Monotonic time window for proxy retries, in milliseconds. */
@@ -139,7 +139,7 @@ export function resolveProxyRetryBudget(endpoint: RunnerEndpointSettings): Resol
   const rawRetries = endpoint.maxRetries;
   const cap = rawRetries === undefined ? undefined : Math.max(0, Math.min(rawRetries, maximumMaxRetries));
   return {
-    budgetMs: proxyRetryBudgetMs,
+    budgetMs: PROXY_RETRY_BUDGET_MS,
     ...(cap !== undefined ? { maxRetries: cap } : {}),
     transientHttpStatuses,
     baseDelayMs: defaultRetryBaseDelayMs,

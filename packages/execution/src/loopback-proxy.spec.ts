@@ -712,29 +712,80 @@ describe('createLoopbackProxy — safe failure records, monotonic budget, unreco
     await upstream.close();
   });
 
-  it('records a timeout outcome without retrying and exposes it as unrecovered evidence', async () => {
+  it('retries a pre-response timeout within the proxy budget and succeeds', async () => {
+    let attempts = 0;
     const held: import('node:http').ServerResponse[] = [];
     const upstream = await startFakeUpstream((req, res) => {
+      attempts += 1;
       req.resume();
-      held.push(res); // never respond — force a request timeout
+      if (attempts === 1) {
+        held.push(res); // never respond on the first attempt — force a pre-response timeout
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
     });
     const cap = captureConnectionLogger();
+    let mono = 0;
     const proxy = await createLoopbackProxy({
       upstreamBaseUrl: upstream.baseUrl,
       endpoint: {},
       telemetryContext: { runId: 'run_1', step: 'implementation.build' },
       logger: cap.logger,
       requestTimeoutMs: 60,
-      sleep: async () => undefined
+      retryBudget: { budgetMs: 60000, transientHttpStatuses: TRANSIENT_STATUSES, baseDelayMs: 250, maximumDelayMs: 5000 },
+      sleep: async (ms) => { mono += ms; },
+      jitter: () => 0,
+      monotonicNow: () => mono
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/v1/messages`, { method: 'POST', body: '{}' });
+    expect(response.status).toBe(200);
+
+    // The pre-response timeout is retried (one `retrying` record), then the retry succeeds and the
+    // successful response clears any unrecovered evidence.
+    const records = failureRecords(cap.warns);
+    expect(records.length).toBe(1);
+    expect(records[0]!.outcome).toBe('retrying');
+    expect(records[0]!.responseStarted).toBe(false);
+    expect(proxy.unrecoveredFailureRecord()).toBeUndefined();
+
+    held.forEach((res) => res.end());
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('retries persistent pre-response timeouts then records a terminal timeout as unrecovered evidence', async () => {
+    const held: import('node:http').ServerResponse[] = [];
+    const upstream = await startFakeUpstream((req, res) => {
+      req.resume();
+      held.push(res); // never respond — every attempt times out
+    });
+    const cap = captureConnectionLogger();
+    let mono = 0;
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: {},
+      telemetryContext: { runId: 'run_1', step: 'implementation.build' },
+      logger: cap.logger,
+      requestTimeoutMs: 40,
+      retryBudget: { budgetMs: 1000, transientHttpStatuses: TRANSIENT_STATUSES, baseDelayMs: 250, maximumDelayMs: 5000 },
+      sleep: async (ms) => { mono += ms; },
+      jitter: () => 0,
+      monotonicNow: () => mono
     });
 
     const response = await fetch(`${proxy.baseUrl}/v1/messages`, { method: 'POST', body: '{}' });
     expect(response.status).toBe(502);
 
+    // Earlier attempts are `retrying`; only after the monotonic budget is unrecovered is a terminal
+    // `timeout` record emitted and exposed as unrecovered evidence.
     const records = failureRecords(cap.warns);
-    expect(records.length).toBe(1);
-    expect(records[0]!.outcome).toBe('timeout');
-    expect(records[0]!.responseStarted).toBe(false);
+    expect(records.length).toBeGreaterThanOrEqual(2);
+    const last = records[records.length - 1]!;
+    expect(last.outcome).toBe('timeout');
+    expect(last.responseStarted).toBe(false);
+    expect(records.slice(0, -1).every((r) => r.outcome === 'retrying')).toBe(true);
     expect(proxy.unrecoveredFailureRecord()?.outcome).toBe('timeout');
 
     held.forEach((res) => res.end());
