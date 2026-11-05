@@ -21,6 +21,7 @@ import type { Run } from '@autocatalyst/api-contract';
 import { useEffect, useRef, type KeyboardEvent, type ReactNode } from 'react';
 
 import { RUN_LIST_FOCUS_ATTR, isFocusInRunList } from '../shell/use-action-keys.js';
+import { Chip } from '../ui/chip.js';
 import { CELL_DASH, STATUS_DOT, formatAge, rowTitle, statusWord, waitingCell } from './run-fields.js';
 
 export interface RunTableProps {
@@ -166,9 +167,7 @@ export function RunTable({
             </div>
             <div role="gridcell" className={BODY_CELL}>
               {waiting.primary ? (
-                <span className="inline-flex items-center rounded-sm bg-primary px-1.5 py-0.5 text-xs font-medium text-on-primary">
-                  {waiting.label}
-                </span>
+                <Chip tone="primary">{waiting.label}</Chip>
               ) : (
                 <span {...(waiting.tooltip !== undefined ? { title: waiting.tooltip } : {})}>
                   {waiting.label}

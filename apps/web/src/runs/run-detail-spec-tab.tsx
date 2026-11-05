@@ -8,9 +8,9 @@
  */
 import type { ReactNode } from 'react';
 
-import { RunDetailEmptyState } from './run-detail-empty-state.js';
 import { SPEC_EMPTY_STATES } from './run-detail-empty-states.js';
 import type { SpecDiscriminator } from './run-detail-facts.js';
+import { EmptyState } from '../ui/empty-state.js';
 
 export interface RunDetailSpecTabProps {
   readonly spec: SpecDiscriminator;
@@ -19,11 +19,11 @@ export interface RunDetailSpecTabProps {
 export function RunDetailSpecTab({ spec }: RunDetailSpecTabProps): ReactNode {
   switch (spec.status) {
     case 'no-spec':
-      return <RunDetailEmptyState testId="pane-spec-empty" copy={SPEC_EMPTY_STATES.noSpec} />;
+      return <EmptyState data-testid="pane-spec-empty" title={SPEC_EMPTY_STATES.noSpec.title} message={SPEC_EMPTY_STATES.noSpec.line} />;
     case 'drafting':
-      return <RunDetailEmptyState testId="pane-spec-empty" copy={SPEC_EMPTY_STATES.drafting} />;
+      return <EmptyState data-testid="pane-spec-empty" title={SPEC_EMPTY_STATES.drafting.title} message={SPEC_EMPTY_STATES.drafting.line} />;
     case 'ready':
-      return <RunDetailEmptyState testId="pane-spec-empty" copy={SPEC_EMPTY_STATES.ready} />;
+      return <EmptyState data-testid="pane-spec-empty" title={SPEC_EMPTY_STATES.ready.title} message={SPEC_EMPTY_STATES.ready.line} />;
     case 'error':
       return (
         <div data-testid="pane-spec-error" className="flex h-full flex-col items-center justify-center gap-1 p-6 text-center">

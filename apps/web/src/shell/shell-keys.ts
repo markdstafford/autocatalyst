@@ -41,13 +41,17 @@ function isShellKeyId(id: string): id is ShellKeyId {
   return (SHELL_KEY_IDS as readonly string[]).includes(id);
 }
 
-/** The four shell bindings, derived from the registry in the #132 shape. */
+/**
+ * The four shell bindings, derived from the registry in the #132 shape. Each registry
+ * alternate is now a {@link Binding} (a chord list); the shell actions are all single-chord
+ * combos, so the first chord of each binding is the #132 chord.
+ */
 export const SHELL_KEYS: readonly ShellKeyBinding[] = ACTIONS.filter((action) =>
   isShellKeyId(action.id)
 ).map((action) => ({
   id: action.id as ShellKeyId,
   label: action.name,
-  keys: action.keys,
+  keys: action.keys.map((binding) => binding[0]),
   appliesWhen: action.appliesWhen as Exclude<AppliesWhen, 'list-focus'> as ShellKeyScope
 }));
 

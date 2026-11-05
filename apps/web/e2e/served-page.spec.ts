@@ -61,6 +61,19 @@ test('serves /runs and the not-found page on direct loads', async ({ page, fakeS
   expect(await fakeServer.readLaunchCount()).toBe(0);
 });
 
+test('does not serve the dev component gallery from the production build', async ({ page, fakeServer }) => {
+  // The gallery route is registered only under `import.meta.env.DEV`, so the production
+  // build served here has no `/dev/components` route and falls through to not-found.
+  await page.goto(`${fakeServer.baseUrl}/dev/components`);
+  await expect(page.getByRole('heading', { name: 'Page not found' })).toBeVisible();
+
+  // The not-found page links back to /runs and navigation renders the shell.
+  await page.getByRole('link', { name: 'Back to runs' }).click();
+  await expect(page.getByRole('heading', { level: 1, name: 'Runs' })).toBeVisible();
+
+  expect(await fakeServer.readLaunchCount()).toBe(0);
+});
+
 test('applies a dark theme before mount under an emulated dark system preference', async ({
   page,
   fakeServer
