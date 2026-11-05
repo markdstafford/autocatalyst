@@ -63,7 +63,7 @@ describe('Sidebar (settings)', () => {
     expect(onCloseSettings).toHaveBeenCalledTimes(1);
   });
 
-  it('soft-disables Back (aria-disabled, still focusable) while a check is pending and suppresses activation', async () => {
+  it('soft-disables Back (aria-disabled, still focusable) while a check is pending but still routes activation through the guarded close path', async () => {
     const onCloseSettings = vi.fn();
     renderSidebar({
       settings: true,
@@ -75,8 +75,11 @@ describe('Sidebar (settings)', () => {
     expect(back.getAttribute('aria-disabled')).toBe('true');
     // Soft-disabled, not hard-disabled: it stays focusable (no keyboard trap).
     expect((back as HTMLButtonElement).disabled).toBe(false);
+    // Activation still reaches `onCloseSettings`. The button does not decide whether
+    // to leave; the shared `closeSettings` guard does (covered in shell-layout tests),
+    // so the guard stays the single behavior source.
     await userEvent.click(back);
-    expect(onCloseSettings).not.toHaveBeenCalled();
+    expect(onCloseSettings).toHaveBeenCalledTimes(1);
   });
 });
 

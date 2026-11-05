@@ -75,10 +75,13 @@ function SettingsNav({
             variant="secondary"
             aria-label="Back"
             // While Connection is checking a token, Back is soft-disabled: it stays
-            // focusable (no keyboard trap) but suppresses activation. The real refusal
-            // lives in the shared `closeSettings` guard, so keyboard close paths are
-            // blocked too; this only mirrors that state on the button.
+            // focusable (no keyboard trap) and looks dimmed, but activation still
+            // reaches `onCloseSettings`. The single source of truth is the shared
+            // `closeSettings` guard, which refuses to leave while a check is pending;
+            // `activateWhenAriaDisabled` keeps the button from short-circuiting that
+            // path, so click and keyboard activation both flow through the guard.
             aria-disabled={checkPending || undefined}
+            activateWhenAriaDisabled
             onClick={onCloseSettings}
             className="aspect-square px-0"
             size="control-sm"

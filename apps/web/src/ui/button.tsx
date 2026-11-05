@@ -11,6 +11,12 @@
  * (so an attached tooltip still works) while suppressing activation. This is the
  * state an icon-only button uses while its action is pending. Native `disabled`
  * is still supported for the hard-disabled case.
+ *
+ * Guarded activation: `activateWhenAriaDisabled` keeps the soft-disabled look and
+ * `aria-disabled` state but lets `onClick` fire anyway. Use it when the handler is
+ * itself the authoritative guard (e.g. settings Back routes to the shared
+ * `closeSettings`, which decides whether to leave), so the guard — not the button —
+ * is the single behavior source and keyboard/click activation both reach it.
  */
 import { Button as BaseButton } from '@base-ui/react/button';
 import {
@@ -29,6 +35,12 @@ export interface ButtonProps extends Omit<BaseButtonProps, 'className'> {
   readonly size?: ButtonSize;
   /** Extra utility classes merged after the variant/size classes. */
   readonly className?: string;
+  /**
+   * When soft-disabled (`aria-disabled`), still fire `onClick`. Keeps the dimmed
+   * look and `aria-disabled` state but defers the real decision to the handler.
+   * Defaults to `false`, preserving the suppress-on-`aria-disabled` behavior.
+   */
+  readonly activateWhenAriaDisabled?: boolean;
 }
 
 const BASE_CLASSES =
@@ -65,10 +77,17 @@ type ButtonClickHandler = NonNullable<BaseButtonProps['onClick']>;
 type ButtonClickEvent = Parameters<ButtonClickHandler>[0];
 
 export const Button = forwardRef<HTMLElement, ButtonProps>(function Button(
-  { variant = 'primary', size = 'control-base', className, onClick, ...rest },
+  {
+    variant = 'primary',
+    size = 'control-base',
+    className,
+    onClick,
+    activateWhenAriaDisabled = false,
+    ...rest
+  },
   ref
 ): ReactNode {
-  const softDisabled = isSoftDisabled(rest['aria-disabled']);
+  const softDisabled = !activateWhenAriaDisabled && isSoftDisabled(rest['aria-disabled']);
 
   const handleClick = (event: ButtonClickEvent): void => {
     if (softDisabled) {
