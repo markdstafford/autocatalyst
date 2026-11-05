@@ -27,8 +27,9 @@ exists.
 
 ## Summary
 
-The summary answers where the run is. It shows the issue (with a link), the work kind, the state and what
-the run is waiting on, the pull request once one exists, and totals for time, tokens, and cost. A progress
+The summary answers where the run is. The header owns the issue, work kind, and state, so the summary shows
+only what the header does not: the step while the run is in progress, the failure reason when it failed, the
+pull request once one exists, and totals for time, tokens, and cost. A progress
 bar shows the run's phases, with the current phase and step marked and gates shown within their phase.
 
 The phases come from the run's workflow, so a workflow that adds, drops, or reorders phases needs no change

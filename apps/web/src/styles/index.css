@@ -54,6 +54,7 @@
   --width-reading-column: 46rem;
   --width-settings-column: 42rem;
   --width-hover-zone: 0.5rem;
+  --width-description-label: 7rem;
 
   /* Motion */
   --duration-hover: 100ms;
