@@ -12,6 +12,7 @@ import type { Run } from '@autocatalyst/api-contract';
 import type { ReactNode } from 'react';
 
 import { rowTitle, statusWord, waitingCell } from './run-fields.js';
+import { Chip } from '../ui/chip.js';
 
 export interface RunDetailHeaderProps {
   readonly run: Run;
@@ -42,12 +43,9 @@ export function RunDetailHeader({ run }: RunDetailHeaderProps): ReactNode {
             #{run.trackedIssue.number}
           </a>
         ) : null}
-        <span
-          data-testid="pane-work-kind"
-          className="inline-flex items-center rounded-sm border border-border px-1.5 py-0.5 text-xs text-text"
-        >
+        <Chip tone="neutral" data-testid="pane-work-kind">
           {run.workKind}
-        </span>
+        </Chip>
         {renderStatus(run)}
       </div>
     </div>
@@ -57,23 +55,10 @@ export function RunDetailHeader({ run }: RunDetailHeaderProps): ReactNode {
 function renderStatus(run: Run): ReactNode {
   if (run.status === 'in_progress') {
     const waiting = waitingCell(run);
-    if (waiting.primary) {
-      return (
-        <span
-          data-testid="pane-status"
-          className="inline-flex items-center rounded-sm bg-primary px-1.5 py-0.5 text-xs font-medium text-on-primary"
-        >
-          {waiting.label}
-        </span>
-      );
-    }
     return (
-      <span
-        data-testid="pane-status"
-        className="inline-flex items-center rounded-sm border border-border px-1.5 py-0.5 text-xs text-subtext"
-      >
+      <Chip tone={waiting.primary ? 'primary' : 'muted'} data-testid="pane-status">
         {waiting.label}
-      </span>
+      </Chip>
     );
   }
   const colorClass = run.status !== undefined ? TERMINAL_STATUS_CLASS[run.status] ?? 'text-text' : 'text-text';

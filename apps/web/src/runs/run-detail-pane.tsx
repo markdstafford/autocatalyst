@@ -17,13 +17,13 @@ import type { ControlPlaneClient } from '@autocatalyst/sdk';
 import type { Run } from '@autocatalyst/api-contract';
 import { useState, type ReactNode } from 'react';
 
-import { RunDetailEmptyState } from './run-detail-empty-state.js';
 import { ACCEPTANCE_EMPTY_STATE, ACTIVITY_EMPTY_STATE } from './run-detail-empty-states.js';
 import { RunDetailHeader } from './run-detail-header.js';
 import { RunDetailSummary } from './run-detail-summary.js';
 import { RunDetailSpecTab } from './run-detail-spec-tab.js';
 import { RUN_DETAIL_TABS, resolveVisibleTab, tabsForRun, type RunDetailTabId } from './run-detail-tabs.js';
 import { useRunDetail } from './use-run-detail.js';
+import { EmptyState } from '../ui/empty-state.js';
 import { TabPanel, Tabs } from '../ui/tabs.js';
 
 export interface RunDetailPaneProps {
@@ -58,14 +58,13 @@ export function RunDetailPane({ run, client, visible, replaceRun, onUnauthorized
 
       <div data-testid="pane-body" className="min-h-0 flex-1 overflow-auto p-4">
         {run === undefined ? (
-          <div data-testid="pane-no-run" className="text-sm text-subtext">
-            No run
-          </div>
+          <EmptyState data-testid="pane-no-run" title="No run" />
         ) : detail.runGone ? (
-          <div data-testid="pane-run-gone" className="flex h-full flex-col items-center justify-center gap-1 p-6 text-center">
-            <div className="text-md font-medium text-text">This run is no longer available</div>
-            <p className="text-sm text-subtext">It may have been removed. Select another run from the list.</p>
-          </div>
+          <EmptyState
+            data-testid="pane-run-gone"
+            title="This run is no longer available"
+            message="It may have been removed. Select another run from the list."
+          />
         ) : (
           renderContent(run)
         )}
@@ -95,10 +94,18 @@ export function RunDetailPane({ run, client, visible, replaceRun, onUnauthorized
             <RunDetailSpecTab spec={detail.spec} />
           </TabPanel>
           <TabPanel value="acceptance" className="min-h-40 pt-3">
-            <RunDetailEmptyState testId="pane-acceptance-empty" copy={ACCEPTANCE_EMPTY_STATE} />
+            <EmptyState
+              data-testid="pane-acceptance-empty"
+              title={ACCEPTANCE_EMPTY_STATE.title}
+              message={ACCEPTANCE_EMPTY_STATE.line}
+            />
           </TabPanel>
           <TabPanel value="activity" className="min-h-40 pt-3">
-            <RunDetailEmptyState testId="pane-activity-empty" copy={ACTIVITY_EMPTY_STATE} />
+            <EmptyState
+              data-testid="pane-activity-empty"
+              title={ACTIVITY_EMPTY_STATE.title}
+              message={ACTIVITY_EMPTY_STATE.line}
+            />
           </TabPanel>
         </Tabs>
       </div>

@@ -9,14 +9,17 @@
  * A layout route renders the persistent `ShellLayout` (sidebar, header, main,
  * footer); its child routes fill the main area. `/` redirects to `/runs`;
  * `/settings` redirects to `/settings/connection`; the settings frame swaps the
- * sidebar and main area while keeping the footer. Anything unmatched renders the
- * not-found page outside the shell. `AppRoutes` is exported separately so tests can
- * mount it under a `MemoryRouter`.
+ * sidebar and main area while keeping the footer. In development only, the component
+ * gallery mounts at `/dev/components` outside the shell (see `dev/dev-routes.tsx`);
+ * production builds omit that route so it falls through to not-found. Anything unmatched
+ * renders the not-found page outside the shell. `AppRoutes` is exported separately so
+ * tests can mount it under a `MemoryRouter`.
  */
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 import type { ReactNode } from 'react';
 
 import { ControlPlaneClientProvider } from './client/client-provider.js';
+import { devRouteElements } from './dev/dev-routes.js';
 import { NotFoundPage } from './routes/not-found-page.js';
 import { RunsPage } from './routes/runs-page.js';
 import { ConnectionPage } from './settings/connection-page.js';
@@ -33,6 +36,7 @@ export function AppRoutes(): ReactNode {
         <Route path="/settings" element={<Navigate to="/settings/connection" replace />} />
         <Route path="/settings/connection" element={<ConnectionPage />} />
       </Route>
+      {devRouteElements()}
       <Route path="*" element={<NotFoundPage />} />
     </Routes>
   );

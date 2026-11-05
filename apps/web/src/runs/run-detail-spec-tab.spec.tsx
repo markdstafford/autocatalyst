@@ -1,34 +1,12 @@
 /**
- * Spec-tab and empty-state tests: the three Spec variants map to the shared copy
- * descriptors, and the reusable empty-state component renders title + line without a
- * button.
+ * Spec-tab tests: the three Spec variants map to the shared copy descriptors through the
+ * shared `EmptyState` component (whose own rendering is covered in `ui/empty-state.spec`).
  */
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
-import { RunDetailEmptyState } from './run-detail-empty-state.js';
 import { RunDetailSpecTab } from './run-detail-spec-tab.js';
-import {
-  ACCEPTANCE_EMPTY_STATE,
-  ACTIVITY_EMPTY_STATE,
-  SPEC_EMPTY_STATES
-} from './run-detail-empty-states.js';
-
-describe('RunDetailEmptyState', () => {
-  it('renders the descriptor title and line with no button', () => {
-    render(<RunDetailEmptyState testId="x" copy={ACCEPTANCE_EMPTY_STATE} />);
-    const region = screen.getByTestId('x');
-    expect(region.textContent).toContain(ACCEPTANCE_EMPTY_STATE.title);
-    expect(region.textContent).toContain(ACCEPTANCE_EMPTY_STATE.line);
-    expect(screen.queryByRole('button')).toBeNull();
-    expect(region.querySelector('img')).toBeNull();
-  });
-
-  it('renders the Activity copy', () => {
-    render(<RunDetailEmptyState testId="activity" copy={ACTIVITY_EMPTY_STATE} />);
-    expect(screen.getByTestId('activity').textContent).toContain(ACTIVITY_EMPTY_STATE.title);
-  });
-});
+import { SPEC_EMPTY_STATES } from './run-detail-empty-states.js';
 
 describe('RunDetailSpecTab', () => {
   it('shows the no-spec variant', () => {

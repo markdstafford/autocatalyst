@@ -21,6 +21,7 @@ import {
   formatNanoUsd,
   formatTokenBreakdown
 } from './run-summary-totals.js';
+import { DescriptionItem, DescriptionList } from '../ui/description-list.js';
 import { Tooltip } from '../ui/tooltip.js';
 
 export interface RunDetailSummaryProps {
@@ -34,26 +35,17 @@ const COST_UNKNOWN_REASON = 'A model used in this run has no configured rate, so
 
 export function RunDetailSummary({ run, pullRequest, sessions }: RunDetailSummaryProps): ReactNode {
   return (
-    <dl data-testid="pane-summary" className="flex flex-col gap-3">
-      <Fact label="Issue">{renderIssue(run)}</Fact>
-      <Fact label="Work kind">
+    <DescriptionList data-testid="pane-summary">
+      <DescriptionItem label="Issue">{renderIssue(run)}</DescriptionItem>
+      <DescriptionItem label="Work kind">
         <span>{run.workKind}</span>
-      </Fact>
-      <Fact label="State">{renderState(run)}</Fact>
-      <Fact label="Pull request">{renderPullRequest(pullRequest)}</Fact>
-      <Fact label="Time">{renderTime(sessions)}</Fact>
-      <Fact label="Tokens">{renderTokens(sessions)}</Fact>
-      <Fact label="Cost">{renderCost(sessions)}</Fact>
-    </dl>
-  );
-}
-
-function Fact({ label, children }: { label: string; children: ReactNode }): ReactNode {
-  return (
-    <div className="flex flex-col gap-0.5">
-      <dt className="text-xs font-medium text-subtext">{label}</dt>
-      <dd className="text-base text-text">{children}</dd>
-    </div>
+      </DescriptionItem>
+      <DescriptionItem label="State">{renderState(run)}</DescriptionItem>
+      <DescriptionItem label="Pull request">{renderPullRequest(pullRequest)}</DescriptionItem>
+      <DescriptionItem label="Time">{renderTime(sessions)}</DescriptionItem>
+      <DescriptionItem label="Tokens">{renderTokens(sessions)}</DescriptionItem>
+      <DescriptionItem label="Cost">{renderCost(sessions)}</DescriptionItem>
+    </DescriptionList>
   );
 }
 
