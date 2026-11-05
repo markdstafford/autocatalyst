@@ -16,6 +16,7 @@ import type {
 } from '@autocatalyst/execution';
 import {
   ClassifiedProviderFailureError,
+  ProviderConfigurationError,
   ProviderConnectionError,
   ProviderProtocolError,
   UnsupportedProviderCapabilityError,
@@ -25,7 +26,8 @@ import {
   filterSafeClassificationDetails,
   projectStepResultSchemaForProvider,
   runtimeSkillsCatalogRoot,
-  writeScratchStepResultFile
+  writeScratchStepResultFile,
+  type ProxyUpstreamFailureRecord
 } from '@autocatalyst/execution';
 
 import { materializeClaudeSkillPlugins } from './skill-materialization.js';
@@ -157,6 +159,97 @@ function redactString(value: string, knownSecretValues: readonly string[]): stri
     }
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Safe failure diagnostics (metadata-only: never raw messages, bodies, prompts,
+// headers, tokens, or secrets). Values are class names, numeric codes, and
+// allowlisted syscall/signal tokens only.
+// ---------------------------------------------------------------------------
+
+// Safe syscall error codes (ECONNRESET, ETIMEDOUT, ...) and POSIX signals (SIGKILL, ...) only.
+const SAFE_ERRNO_CODE = /^E[A-Z0-9]+$/u;
+const SAFE_SIGNAL = /^SIG[A-Z0-9]+$/u;
+
+function errorClassName(err: unknown): string {
+  if (err instanceof Error) {
+    const ctorName = (err as { constructor?: { name?: unknown } }).constructor?.name;
+    if (typeof ctorName === 'string' && ctorName.length > 0) return ctorName;
+    if (typeof err.name === 'string' && err.name.length > 0) return err.name;
+    return 'Error';
+  }
+  return typeof err;
+}
+
+// Walk the (bounded) cause chain and return only the class names — never any message text.
+function causeChainClassNames(err: unknown): string[] {
+  const chain: string[] = [];
+  let current: unknown = (err as { cause?: unknown } | undefined)?.cause;
+  let depth = 0;
+  const seen = new Set<unknown>();
+  while (current !== undefined && current !== null && depth < 8 && !seen.has(current)) {
+    seen.add(current);
+    chain.push(errorClassName(current));
+    current = (current as { cause?: unknown }).cause;
+    depth += 1;
+  }
+  return chain;
+}
+
+interface SafeDiagnosticScalars {
+  readonly errno?: number;
+  readonly code?: string;
+  readonly exitCode?: number;
+  readonly signal?: string;
+}
+
+function safeDiagnosticScalars(err: unknown): SafeDiagnosticScalars {
+  const shaped = (err ?? {}) as {
+    errno?: unknown; code?: unknown; exitCode?: unknown; signal?: unknown; status?: unknown;
+  };
+  const out: Record<string, unknown> = {};
+  if (typeof shaped.errno === 'number') out['errno'] = shaped.errno;
+  if (typeof shaped.code === 'string' && SAFE_ERRNO_CODE.test(shaped.code)) out['code'] = shaped.code;
+  if (typeof shaped.exitCode === 'number') out['exitCode'] = shaped.exitCode;
+  // Subprocess failures sometimes carry the exit code on `status`.
+  else if (typeof shaped.status === 'number') out['exitCode'] = shaped.status;
+  if (typeof shaped.signal === 'string' && SAFE_SIGNAL.test(shaped.signal)) out['signal'] = shaped.signal;
+  return out as SafeDiagnosticScalars;
+}
+
+const QUALIFYING_PROXY_OUTCOMES: ReadonlySet<ProxyUpstreamFailureRecord['outcome']> = new Set([
+  'exhausted',
+  'timeout',
+  'mid_stream'
+]);
+
+function proxyEvidenceQualifies(evidence: ProxyUpstreamFailureRecord | undefined): evidence is ProxyUpstreamFailureRecord {
+  return evidence !== undefined && QUALIFYING_PROXY_OUTCOMES.has(evidence.outcome);
+}
+
+// The proxy record is already safe (origin-only, metadata-only); surface a compact subset for logs.
+function safeProxyEvidenceFields(evidence: ProxyUpstreamFailureRecord): Record<string, unknown> {
+  return {
+    proxyFailureOutcome: evidence.outcome,
+    proxyUpstreamOrigin: evidence.upstreamOrigin,
+    proxyAttempt: evidence.attempt,
+    proxyElapsedMs: evidence.elapsedMs,
+    proxyResponseStarted: evidence.responseStarted,
+    proxyBodyBytesStreamed: evidence.bodyBytesStreamed,
+    ...(evidence.status !== undefined ? { proxyStatus: evidence.status } : {}),
+    ...(evidence.errorCode !== undefined ? { proxyErrorCode: evidence.errorCode } : {}),
+    ...(evidence.profileName !== undefined ? { proxyProfileName: evidence.profileName } : {})
+  };
+}
+
+// Structured provider errors are terminal/permanent and must never be promoted to a transient
+// classification on the strength of proxy evidence.
+function isNonRetryableStructuredError(err: unknown): boolean {
+  return err instanceof ProviderProtocolError
+    || err instanceof ProviderConnectionError
+    || err instanceof ProviderConfigurationError
+    || err instanceof UnsupportedProviderCapabilityError
+    || err instanceof ClassifiedProviderFailureError;
 }
 
 // Real SDK launch: dynamically imports @anthropic-ai/claude-agent-sdk and
@@ -419,6 +512,10 @@ export function createClaudeAgentAdapter(
         let tokenUsage: AgentTokenUsage = { available: false };
         let pendingResult: PendingResult | undefined;
         let capturedStructuredResult: { readonly value: unknown } | undefined;
+        // Safe session diagnostics captured for the failure path (counts/timing only, no content).
+        const sessionStartedAtMs = Date.now();
+        let sdkEventCount = 0;
+        let lastSdkEventType: string | undefined;
         // degradedCapabilities is populated after the launch config resolves;
         // declared here so the finally block can always reference it.
         let degradedCapabilities: ProviderCapabilityDegradation[] = [...inferenceDegradations];
@@ -513,6 +610,8 @@ export function createClaudeAgentAdapter(
           });
 
           for await (const ev of native) {
+            sdkEventCount += 1;
+            if (typeof ev.type === 'string') lastSdkEventType = ev.type;
             if (structuredResult !== undefined && ev.type === 'result' && ev.structuredOutput !== undefined) {
               if (capturedStructuredResult !== undefined) {
                 throw new ProviderProtocolError(
@@ -569,15 +668,40 @@ export function createClaudeAgentAdapter(
         } catch (err) {
           outcome = 'failed';
           skillMaterialization.cleanup();
-          const classified = classifySdkError(err);
+          let classified = classifySdkError(err);
+
+          // Read the proxy's safe unrecovered failure evidence (if any) for this session. Used both
+          // to enrich diagnostics and — only when the failure is otherwise unclassified and not a
+          // terminal structured provider error — to classify the death as a transient provider
+          // failure so the session-retry layer can recover it.
+          const proxyEvidence = connection.getProxyFailureEvidence?.();
+          if (
+            classified === undefined &&
+            !isNonRetryableStructuredError(err) &&
+            proxyEvidenceQualifies(proxyEvidence)
+          ) {
+            classified = new ClassifiedProviderFailureError('transient_provider_failure', {
+              providerKind: profile.providerKind
+            });
+          }
+
           const safeDetail = { ...buildSafeAdapterFailureLogDetail(err ?? {}, profile.providerKind), ...(classified?.safeDetails ?? {}) };
           const protocolErrorCode = err instanceof ProviderProtocolError ? err.code : undefined;
           const failureCode = typeof safeDetail.code === 'string' ? safeDetail.code : undefined;
+          const diagnosticScalars = safeDiagnosticScalars(err);
           safeLog('error', 'claude.adapter.session_failed', {
             runId,
             step,
             adapterId: claudeAgentAdapterId,
             ...safeDetail,
+            // Safe scalar diagnostics — class/cause/errno/exit/signal/timing/event counts only.
+            errorClass: errorClassName(err),
+            causeChain: causeChainClassNames(err),
+            ...diagnosticScalars,
+            elapsedMs: Date.now() - sessionStartedAtMs,
+            sdkEventCount,
+            ...(lastSdkEventType !== undefined ? { lastSdkEventType } : {}),
+            ...(proxyEvidenceQualifies(proxyEvidence) ? safeProxyEvidenceFields(proxyEvidence) : {}),
             ...(protocolErrorCode !== undefined ? { protocolErrorCode } : {}),
             ...(classified !== undefined ? { failureReason: classified.failureReason } : {}),
             ...(failureCode !== undefined ? { failureCode } : {}),

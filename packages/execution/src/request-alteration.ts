@@ -88,6 +88,14 @@ export interface RequestAlterationOptions {
 export const defaultRetryBaseDelayMs = 250;
 export const maximumRetryDelayMs = 5_000;
 
+/**
+ * Monotonic time budget, in milliseconds, that the loopback proxy is allowed to spend riding out
+ * transient pre-response connectivity failures for a single upstream request. This is a code
+ * constant used ONLY by the loopback proxy retry loop — it is NOT an environment variable and NOT a
+ * `RunnerEndpointSettings` field, so it introduces no API-contract / OpenAPI / validation surface.
+ */
+export const proxyRetryBudgetMs = 60_000;
+
 export interface ResolvedRetryPolicy extends RetryPolicy {
   readonly baseDelayMs: number;
   readonly maximumDelayMs: number;
@@ -98,6 +106,41 @@ export function resolveRetryPolicy(endpoint: RunnerEndpointSettings): ResolvedRe
   const maxRetries = Math.max(0, Math.min(rawRetries, maximumMaxRetries));
   return {
     maxRetries,
+    transientHttpStatuses,
+    baseDelayMs: defaultRetryBaseDelayMs,
+    maximumDelayMs: maximumRetryDelayMs
+  };
+}
+
+/**
+ * Resolved proxy-only retry budget. Distinct from {@link ResolvedRetryPolicy}: the shared retry
+ * policy (used by the fetch transport and the Claude SDK subprocess `CLAUDE_CODE_MAX_RETRIES`
+ * mapping) always resolves `maxRetries` from `endpoint.maxRetries ?? defaultMaxRetries`, while the
+ * proxy budget leaves `maxRetries` UNSET when the endpoint does not configure one so that the
+ * monotonic {@link proxyRetryBudgetMs} window controls proxy attempts instead of the shared default.
+ */
+export interface ResolvedProxyRetryBudget {
+  /** Monotonic time window for proxy retries, in milliseconds. */
+  readonly budgetMs: number;
+  /** Explicit attempt cap from `endpoint.maxRetries`, layered over the budget. Unset => budget-only. */
+  readonly maxRetries?: number;
+  readonly transientHttpStatuses: readonly number[];
+  readonly baseDelayMs: number;
+  readonly maximumDelayMs: number;
+}
+
+/**
+ * Resolve the proxy-only retry budget for an endpoint. Does NOT replace {@link resolveRetryPolicy}:
+ * when `endpoint.maxRetries` is unset, the returned budget has no `maxRetries` cap (the monotonic
+ * budget governs), leaving the shared `defaultMaxRetries = 1` behavior untouched for every other
+ * consumer.
+ */
+export function resolveProxyRetryBudget(endpoint: RunnerEndpointSettings): ResolvedProxyRetryBudget {
+  const rawRetries = endpoint.maxRetries;
+  const cap = rawRetries === undefined ? undefined : Math.max(0, Math.min(rawRetries, maximumMaxRetries));
+  return {
+    budgetMs: proxyRetryBudgetMs,
+    ...(cap !== undefined ? { maxRetries: cap } : {}),
     transientHttpStatuses,
     baseDelayMs: defaultRetryBaseDelayMs,
     maximumDelayMs: maximumRetryDelayMs

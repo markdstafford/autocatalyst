@@ -400,7 +400,7 @@ describe('sanitized failure reason — end-to-end acceptance', () => {
   );
 
   it(
-    'classifies raw provider-shaped error (status 429) as transient_provider_failure and never leaks sensitive message content',
+    'retries a persistently transient provider (status 429) and fails with transient_provider_session_retries_exhausted without leaking sensitive content',
     { timeout: 30000 },
     async () => {
       await withTempDatabasePath(async (databasePath) => {
@@ -504,14 +504,15 @@ describe('sanitized failure reason — end-to-end acceptance', () => {
           // Release the gate so the fake adapter can emit the transient failure.
           releaseGate();
 
-          // Collect SSE until we see the transient failure reason.
+          // The raw 429 classifies as transient_provider_failure, so bounded session retry kicks in
+          // and — since the adapter fails every attempt — the run ends with the exhausted reason.
           const sseBody = await collectSseUntilFailureReason(
             sseResp,
-            '"transient_provider_failure"',
+            '"transient_provider_session_retries_exhausted"',
             sseController
           );
 
-          // --- Assertion 1: GET /v1/runs/:id returns transient_provider_failure ---
+          // --- Assertion 1: GET /v1/runs/:id returns the exhausted session-retry reason ---
           const getRunResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: fetchHeaders });
           expect(getRunResp.status).toBe(200);
           const runBody = (await getRunResp.json()) as {
@@ -521,11 +522,11 @@ describe('sanitized failure reason — end-to-end acceptance', () => {
           };
           expect(runBody.terminal).toBe(true);
           expect(runBody.currentStep).toBe('failed');
-          expect(runBody.failureReason).toBe('transient_provider_failure');
+          expect(runBody.failureReason).toBe('transient_provider_session_retries_exhausted');
 
-          // --- Assertion 2: SSE stream contains the transient failure reason fields ---
-          expect(sseBody).toContain('"reason":"transient_provider_failure"');
-          expect(sseBody).toContain('"failureReason":"transient_provider_failure"');
+          // --- Assertion 2: SSE stream contains the exhausted failure reason fields ---
+          expect(sseBody).toContain('"reason":"transient_provider_session_retries_exhausted"');
+          expect(sseBody).toContain('"failureReason":"transient_provider_session_retries_exhausted"');
 
           // --- Assertion 3: sensitive content from error.message must not appear ---
           expect(sseBody).not.toContain('API Error: Overloaded');

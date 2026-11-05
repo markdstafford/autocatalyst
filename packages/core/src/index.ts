@@ -182,13 +182,19 @@ export {
   type StartupWorkspaceReconciliationSummary
 } from './startup-workspace-reconciler.js';
 
-export { createExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
+export {
+  createExecutionRunUnitOfWork,
+  isRetryableSessionFailure,
+  RUNNER_SESSION_MAX_RETRIES,
+  RUNNER_SESSION_RETRY_BASE_DELAY_MS
+} from './execution-run-unit-of-work.js';
 export type {
   ExecutionRunUnitOfWorkOptions,
   ExecutionRunUnitOfWork,
   DirectStepExecutionPort,
   DirectStepWorkInput,
-  ExecutionModeResolution
+  ExecutionModeResolution,
+  SessionRetryPolicyOptions
 } from './execution-run-unit-of-work.js';
 
 export { consumeRunnerEvents } from './runner-event-consumer.js';

@@ -168,10 +168,12 @@ export {
   isTransientProviderFailure,
   maximumMaxRetries,
   maximumRequestTimeoutMs,
+  proxyRetryBudgetMs,
   ProviderAlterationError,
   redactProcessLaunchConfigForLog,
   redactProviderRequestForLog,
   redactProviderResponseForLog,
+  resolveProxyRetryBudget,
   transientHttpStatuses,
   validateHttpHeaderName,
   type AlteredProviderRequest,
@@ -184,6 +186,7 @@ export {
   type RedactProviderRequestInput,
   type RedactProviderResponseInput,
   type RequestAlterationOptions,
+  type ResolvedProxyRetryBudget,
   type RetryPolicy
 } from './request-alteration.js';
 
@@ -365,3 +368,11 @@ export {
   type ProviderStructuredOutputSchema,
   type ProviderSchemaProjection
 } from './provider-schema-projection.js';
+
+export {
+  createLoopbackProxy,
+  type LoopbackProxyHandle,
+  type LoopbackProxyOptions,
+  type ProxyUpstreamFailureOutcome,
+  type ProxyUpstreamFailureRecord
+} from './loopback-proxy.js';

@@ -633,6 +633,7 @@ describe('createAgentConnection — proxy selection', () => {
         baseUrl: 'http://127.0.0.1:45678',
         startedAt: '2026-06-13T00:00:00.000Z',
         requestCount: () => 0,
+        unrecoveredFailureRecord: () => undefined,
         close: async () => undefined
       })
     });
@@ -657,7 +658,7 @@ describe('createAgentConnection — proxy selection', () => {
       telemetryContext: makeTelemetry(),
       proxyFactory: async () => {
         starts += 1;
-        return { baseUrl: 'http://127.0.0.1:45678', startedAt: new Date().toISOString(), requestCount: () => 0, close: async () => undefined };
+        return { baseUrl: 'http://127.0.0.1:45678', startedAt: new Date().toISOString(), requestCount: () => 0, unrecoveredFailureRecord: () => undefined, close: async () => undefined };
       }
     });
 
@@ -698,7 +699,7 @@ describe('createAgentConnection — proxy selection', () => {
       telemetryContext: makeTelemetry(),
       proxyFactory: async () => {
         proxyStarted = true;
-        return { baseUrl: 'http://127.0.0.1:45679', startedAt: new Date().toISOString(), requestCount: () => 0, close: async () => undefined };
+        return { baseUrl: 'http://127.0.0.1:45679', startedAt: new Date().toISOString(), requestCount: () => 0, unrecoveredFailureRecord: () => undefined, close: async () => undefined };
       }
     });
 
@@ -709,7 +710,7 @@ describe('createAgentConnection — proxy selection', () => {
     expect(proxyStarted).toBe(true);
   });
 
-  it('passes bounded timeout and retry policy into the loopback proxy', async () => {
+  it('passes bounded timeout and proxy retry budget into the loopback proxy', async () => {
     const proxyOptions: import('./loopback-proxy.js').LoopbackProxyOptions[] = [];
 
     const connection = await createAgentConnection({
@@ -724,15 +725,17 @@ describe('createAgentConnection — proxy selection', () => {
       telemetryContext: { runId: 'run_1', step: 'spec.author' },
       proxyFactory: async (options) => {
         proxyOptions.push(options);
-        return { baseUrl: 'http://127.0.0.1:45678', startedAt: '2025-01-01T00:00:00.000Z', requestCount: () => 0, close: async () => undefined };
+        return { baseUrl: 'http://127.0.0.1:45678', startedAt: '2025-01-01T00:00:00.000Z', requestCount: () => 0, unrecoveredFailureRecord: () => undefined, close: async () => undefined };
       }
     });
 
     await connection.createProcessLaunchConfig({ materializedEnvironment: { variables: {}, secretVariableNames: [] } });
 
     expect(proxyOptions[0]?.requestTimeoutMs).toBe(600000);
-    expect(proxyOptions[0]?.retryPolicy?.maxRetries).toBe(5);
-    expect(proxyOptions[0]?.retryPolicy?.transientHttpStatuses).toEqual([408, 429, 500, 502, 503, 504, 529]);
+    // Proxy budget: explicit maxRetries=99 clamps to 5 (the attempt cap); the monotonic budget default is 60s.
+    expect(proxyOptions[0]?.retryBudget?.maxRetries).toBe(5);
+    expect(proxyOptions[0]?.retryBudget?.budgetMs).toBe(60000);
+    expect(proxyOptions[0]?.retryBudget?.transientHttpStatuses).toEqual([408, 429, 500, 502, 503, 504, 529]);
   });
 
   it('does not auto-select proxy for process_environment profile with no proxy-requiring capabilities', async () => {
@@ -757,7 +760,7 @@ describe('createAgentConnection — proxy selection', () => {
       telemetryContext: makeTelemetry(),
       proxyFactory: async () => {
         proxyStarted = true;
-        return { baseUrl: 'http://127.0.0.1:45680', startedAt: new Date().toISOString(), requestCount: () => 0, close: async () => undefined };
+        return { baseUrl: 'http://127.0.0.1:45680', startedAt: new Date().toISOString(), requestCount: () => 0, unrecoveredFailureRecord: () => undefined, close: async () => undefined };
       }
     });
 
@@ -788,6 +791,7 @@ describe('createAgentConnection — proxy selection', () => {
         baseUrl: 'http://127.0.0.1:45678',
         startedAt: new Date().toISOString(),
         requestCount: () => 0,
+        unrecoveredFailureRecord: () => undefined,
         close: async () => undefined
       }),
       fetch: async (url, init) => {
