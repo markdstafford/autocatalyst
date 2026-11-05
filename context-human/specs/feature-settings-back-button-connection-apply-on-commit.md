@@ -158,7 +158,7 @@ graph TD
 
 ### Keyboard and layer behavior
 
-- `Escape` in the token field with typed text clears the field, clears `Connected`/`Failed` status, and stops propagation so no layer closes.
+- `Escape` in the token field with typed text clears the field, clears `Connected`/`Failed` status, and stops propagation so no layer closes. While `Checking`, `Escape` is ignored: the field is read-only and the check in flight cannot be cancelled, so it clears neither the field nor the status.
 - `Escape` in the empty token field follows the existing layer order: confirm popover, overlay, full page, then settings.
 - Back-button navigation, settings-row navigation, `Cmd+,`/`Ctrl+,`, and empty-field `Escape` all route through the shared shell close path. If a check starts, the shared guard keeps settings open until the check finishes.
 - Focus rings remain visible on the Back button and field.
@@ -256,11 +256,11 @@ Connection page logic:
 5. Handle blur by first deciding whether it is a commit blur. Ignore blur when `document.hasFocus()` is false, when `document.activeElement` is still the input, or when the value is empty. Commit when focus moves to another document element or to `document.body` because of an in-page click.
 6. On commit, read the current field value once and call `connection.createTestClient(committedValue)` and then `listProjects`.
 7. While a check is in flight, show `Checking`, pass `loading` to `WriteOnlySecretField`, and set shell-level `settingsCheckPending` through the connection-state context. The underlying `Input loading` behavior sets `aria-busy`, shows the trailing spinner, and makes the input read-only rather than disabled so focus is not lost.
-9. On success, call `connection.setToken(committedValue)` exactly once, clear the field, clear `settingsCheckPending`, and show `Connected`.
-10. On failure, do not call `connection.setToken`. Keep the committed value, clear `settingsCheckPending`, return the field to editable, show `Failed`, and show unchanged `failureFix`.
-11. `Connected` remains until the operator edits the field or leaves the page. `Failed` and its fix remain until the field is edited, cleared with `Escape`, or a new check starts. `Checking` replaces any previous result during a new request.
-12. `Escape` with a typed value clears the field and clears `Connected` or `Failed` status, sends no request, and stops propagation. `Escape` with an empty value falls through to existing layer handling.
-13. Use an unmount guard as a defensive measure. The browser's own Back button cannot be blocked by the app-level guard, so this defensive cleanup covers browser navigation, tab close, route replacement, and test-forced unmounts.
+8. On success, call `connection.setToken(committedValue)` exactly once, clear the field, clear `settingsCheckPending`, and show `Connected`.
+9. On failure, do not call `connection.setToken`. Keep the committed value, clear `settingsCheckPending`, return the field to editable, show `Failed`, and show unchanged `failureFix`.
+10. `Connected` remains until the operator edits the field or leaves the page. `Failed` and its fix remain until the field is edited, cleared with `Escape`, or a new check starts. `Checking` replaces any previous result during a new request.
+11. `Escape` with a typed value clears the field and clears `Connected` or `Failed` status, sends no request, and stops propagation. While `Checking`, `Escape` is ignored because the request in flight cannot be cancelled and the field is read-only. `Escape` with an empty value falls through to existing layer handling.
+12. Use an unmount guard as a defensive measure. The browser's own Back button cannot be blocked by the app-level guard, so this defensive cleanup covers browser navigation, tab close, route replacement, and test-forced unmounts.
 
 Back button logic:
 
@@ -304,13 +304,12 @@ Unit/component tests:
 - 401, other-status, and network failures show `Failed` and the fix, keep the typed value, call no `setToken`, and do not mutate app-wide authorization.
 - While checking, repeated `Enter` and blur do not start a second request.
 - While checking, the token field is read-only, keeps focus, exposes `aria-busy`, and shows the loading spinner.
-- Edit during a check, then success: the field keeps the newer text and a second check runs.
-- Edit during a check, then failure: the field keeps the newer text and a second check runs.
 - No field change during a check results in exactly one request.
 - Edit after `Connected` clears the status.
 - `Escape` after `Failed` clears the status and the field.
 - A new commit replaces the previous result with `Checking` and then the new result.
 - `Escape` with a typed value clears the field and makes no request; `Escape` with an empty field keeps existing layer behavior.
+- `Escape` while `Checking` does not clear the field or the status.
 - Unmount during an in-flight check, if forced directly by a test harness, does not set page-local state after unmount.
 - Existing secret-safety tests continue to pass.
 
@@ -464,8 +463,9 @@ Documentation checks:
       - [ ] `Escape` with a typed value empties the field.
       - [ ] `Escape` with a typed value clears `Connected` or `Failed` status.
       - [ ] `Escape` with a typed value makes no request.
+      - [ ] `Escape` while `Checking` is ignored: it clears neither the field nor the status.
       - [ ] `Escape` with an empty field closes the top layer as before.
-      - [ ] Unit tests cover non-empty Escape, Escape after `Failed`, and empty Escape behavior.
+      - [ ] Unit tests cover non-empty Escape, Escape after `Failed`, Escape while `Checking`, and empty Escape behavior.
     - **Dependencies**: `Task: Define status lifecycle and Escape reset`
   - [ ] **Task: Preserve write-only secret safety**
     - **Description**: Audit status text, labels, accessible names, errors, request paths, and new tests touched by the flow so the typed token never appears outside the password input value.
