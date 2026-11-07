@@ -13,7 +13,7 @@ This enhances `feature-spec-artifact-feedback-gate.md`, the spec artifact feedba
 
 ## What
 
-Spec feedback can carry an optional source-text anchor that the control plane validates and repairs. When an operator creates spec feedback with an anchor, the server checks that the supplied code-point offsets target the current spec artifact and reproduce the supplied quote. When feedback is read later, the server reconciles anchored spec comments against the current spec: unchanged anchors are returned as-is, moved quotes have their stored offsets repaired to the first matching occurrence, missing quotes are returned with a response-only `stale: true`, and legacy anchors without `quotedText` remain unchanged. Operators can also request changes over feedback items that already exist without creating a new item, and can resolve an addressed item or reopen a declined item through a feedback PATCH route.
+Spec feedback can carry an optional source-text anchor that the control plane validates and repairs. When an operator creates spec feedback with an anchor, the server checks that the supplied code-point offsets target the current spec artifact and reproduce the supplied quote. When feedback is read later, the server attempts to reconcile anchored spec comments against the current spec: unchanged anchors are returned as-is, moved quotes have their stored offsets repaired to the first matching occurrence, missing quotes are returned with a response-only `stale: true`, legacy anchors without `quotedText` remain unchanged, and an unreadable spec during a read leaves stored feedback available and unreconciled. Operators can request changes over already-raised open spec feedback without creating a new item, and can resolve an addressed item or reopen a declined item through a feedback PATCH route.
 
 ## Why
 
@@ -24,7 +24,7 @@ Spec comments currently point at passages that may move or disappear when an age
 - An operator can raise spec feedback with an anchor and know the control plane rejected stale or mismatched offsets before the item was created.
 - An operator can raise target-level spec feedback with no anchor when the comment concerns the whole artifact or came from a non-rendered channel.
 - An operator can read spec feedback after a revision and see anchored comments repaired to moved text, or marked stale when the quoted text no longer exists.
-- An operator can request changes for already-raised open feedback without creating a duplicate feedback item.
+- An operator can request changes for already-raised open spec feedback without creating a duplicate feedback item.
 - A feedback originator can resolve an addressed item, or reopen a declined item with an explanation, through the API.
 - A client developer can rely on the SDK and OpenAPI contract for anchor validation errors, request-changes replies, and feedback status updates.
 
@@ -43,8 +43,8 @@ flowchart TD
     D -- Invalid --> F[Return 422 invalid_feedback_anchor with reason]
     E --> G[Later read feedback]
     C --> G
-    G --> H{Stored spec anchor has quotedText?}
-    H -- No --> I[Return unchanged legacy anchor]
+    G --> H{Spec readable and stored spec anchor has quotedText?}
+    H -- No --> I[Return stored item unreconciled]
     H -- Yes --> J{Current offsets still match quote?}
     J -- Yes --> K[Return unchanged anchor]
     J -- No --> L{Quote found elsewhere?}
@@ -56,11 +56,11 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A[Run waiting at human review gate] --> B{Open feedback for gate target?}
+    A[Run waiting at human review gate] --> B{Open spec feedback?}
     B -- Yes --> C[Client offers Request changes]
     C --> D[POST reply kind request_changes]
     D --> E[Run applies revise directive]
-    E --> F[Producing step revises work and addresses open items]
+    E --> F[Spec author revises work and addresses open items]
     B -- No --> G[Client offers Approve]
     G --> H[Approve auto-resolves approver-owned addressed items, then advances if unblocked]
     F --> I[Originator reviews addressed or wont_fix item]
@@ -85,7 +85,7 @@ flowchart TD
 - `packages/api-contract/src/feedback.ts` — define PATCH request/response schemas, error shapes, and feedback response schemas that can include response-only stale anchors.
 - `packages/api-contract/src/run-replies.ts` — add `request_changes` to `runReplyRequestSchema` and reply response classification expectations.
 - `packages/api-contract/src/openapi.*` and OpenAPI tests — document optional anchors, spec-anchor validation errors, request-changes replies, and PATCH feedback responses.
-- `packages/core/src/control-plane-service.ts` — share current-spec markdown reading with `getRunSpec`, apply anchor validation on feedback creation, reconcile anchors on feedback reads and run-detail feedback embedding, and add the feedback update operation.
+- `packages/core/src/control-plane-service.ts` — share current-spec markdown reading with `getRunSpec`, apply anchor validation on feedback creation, reconcile anchors on feedback list reads and single-item feedback responses, and add the feedback update operation.
 - `packages/core/src/orchestrator.ts` — validate spec anchors before feedback replies create items or directives apply, implement `request_changes`, preserve implementation-gate anchor behavior, and wire resolve/reopen directives at gates.
 - `packages/core/src/feedback-lifecycle.ts` — reuse existing `resolveFeedback`, `reopenFeedback`, and lifecycle guards from the new route/service operation without weakening authority rules.
 - `packages/core/src/index.ts` — export any new validator/reconciler/service types needed by the control plane or tests.
@@ -156,7 +156,7 @@ Component breakdown:
 - Shared current spec reader: a core helper used by both `getRunSpec` and spec-anchor validation/reconciliation. It returns the current spec artifact id, path, and markdown source, and preserves `GET /v1/runs/:id/spec` failure semantics.
 - Spec anchor validator: a pure or mostly pure function that receives the current spec metadata/text and an optional anchor. It only validates present anchors for spec feedback and returns typed reasons: `wrong_kind`, `wrong_artifact`, `out_of_range`, `missing_quoted_text`, and `text_mismatch`.
 - Spec anchor reconciler: a read-side component that compares stored anchors with the current spec text, persists offset repairs, and decorates response anchors with `stale: true` only when the quote is absent.
-- Reply classifier: `request_changes` becomes a first-class reply kind that maps to revise only at human review gates with open feedback for that target.
+- Reply classifier: `request_changes` becomes a first-class reply kind that maps to revise only at `spec.human_review` when open artifact feedback exists.
 - Feedback update route: a policy-protected item operation that maps `{status: resolved}` to `resolveFeedback` and `{status: open, body}` to `reopenFeedback`.
 
 Primary write sequence:
@@ -228,7 +228,7 @@ Anchor validation algorithm:
 
 1. If target is not the spec artifact path handled by this issue, leave existing behavior unchanged.
 2. If no anchor is present, accept without reading the spec.
-3. Read the current spec using the shared spec reader. If no readable spec exists, return 404 matching `GET /v1/runs/:id/spec`.
+3. Read the current spec using the shared spec reader. If there is no spec artifact for the work kind, return 404 matching `GET /v1/runs/:id/spec`; if the spec artifact exists but the file is unreadable, preserve the existing persistence failure behavior from the spec reader.
 4. Validate `anchor.kind === "artifact_range"`; otherwise reject `wrong_kind`.
 5. Validate `anchor.artifactId === currentSpec.artifactId`; otherwise reject `wrong_artifact`.
 6. Validate `quotedText` is present and is a string; otherwise reject `missing_quoted_text`.
@@ -238,8 +238,8 @@ Anchor validation algorithm:
 
 Reconciliation algorithm:
 
-1. During `GET /v1/runs/:id/feedback` and run-detail reads that include feedback, identify items whose target is the spec artifact and whose anchor is `artifact_range` with `quotedText`. Include all item statuses.
-2. Read the current spec once for the request when at least one eligible item exists. If the spec cannot be read, return the same not-found/readability behavior used for spec reads for anchored spec feedback; unanchored and legacy-anchor-only reads should not force a spec read.
+1. During `GET /v1/runs/:id/feedback`, thread-reply responses, and PATCH feedback responses, identify items whose target is the spec artifact and whose anchor is `artifact_range` with `quotedText`. Include all item statuses.
+2. Read the current spec once for the request when at least one eligible item exists. If the spec cannot be read during a read response, do not fail `GET /v1/runs/:id/feedback`, thread-reply responses, or PATCH responses. Return the stored feedback items with their stored anchors unreconciled, omit `stale`, perform no writes, and log a safe warning with the run id. This is intentionally different from writes, because read-side repair is opportunistic and feedback history must remain readable after workspace pruning or file loss.
 3. For each eligible item, compare the code-point slice at stored offsets to `quotedText`. If it matches, return the stored anchor unchanged and do not write.
 4. If it differs, search the current spec text for the first code-point occurrence of `quotedText`.
 5. If found, persist only the repaired `from` and `to` offsets on the feedback item, return the repaired anchor, and omit `stale`.
@@ -255,17 +255,18 @@ API contracts:
 - `POST /v1/runs/{id}/replies`:
   - Existing `feedback` replies at `spec.human_review` apply the same spec-anchor validation before creating an item or applying a directive. Rejection leaves the run at the gate and creates no item.
   - Existing implementation-gate `feedback` replies keep optional anchors of any kind unchanged.
-  - New `request_changes` reply returns the existing reply response shape with `classification.directive = "revise"`, the gate target, and no `createdFeedbackId`. It returns 409 when there are no open items for the target or when the step does not accept the reply.
+  - New `request_changes` reply returns the existing reply response shape with `classification.directive = "revise"`, the artifact target, and no `createdFeedbackId`. It returns 409 when there are no open items for the target or when the step does not accept the reply.
 - `PATCH /v1/runs/{id}/feedback/{feedbackId}`:
   - Request: strict body with `status` of `resolved` or `open`, plus optional `body`.
   - Response: updated feedback item.
   - Errors: 400 invalid request body, 403 unauthorized or model principal, 404 missing item or item from another run, 409 invalid lifecycle state or reopen not applicable at current gate.
+- `POST /v1/runs/{id}/feedback/{feedbackId}/thread` and `PATCH /v1/runs/{id}/feedback/{feedbackId}` return one feedback item. These responses should pass that one item through the same reconciler used by list reads, with one spec read at most, and with read failures degrading to the stored item unreconciled.
 
 Business rules:
 
-- `request_changes` applies at `spec.human_review` and `implementation.human_review` only when at least one open feedback item exists for the gate target. It creates no items and leaves open items open until the producing step addresses them.
+- `request_changes` applies at `spec.human_review` only when at least one open artifact feedback item exists. It creates no items and leaves open items open until the spec author addresses them. At `implementation.human_review` and every other step, it returns the same 409 class as other replies that do not apply there.
 - `status: resolved` is valid only from `addressed` and only for the originating principal. Any other principal receives 403; any other status receives 409.
-- `status: open` is valid only from `wont_fix`, requires a body, and only for the originating principal. It applies the revise directive only when the run is waiting at the gate for that item's target; otherwise it returns 409.
+- `status: open` is valid only from `wont_fix`, requires a body, and only for the originating principal. This requires extending `reopenFeedback` with the same originator check used by `resolveFeedback`, throwing the same `feedback_not_originator` error code for 403 mapping, because the helper currently only checks `wont_fix` status and has no external callers beyond its module tests. Reopen applies the revise directive only when the run is waiting at the gate for that item's target; otherwise it returns 409.
 - Model principals cannot call the PATCH route.
 - Approve behavior remains: approving can auto-resolve the approver's own `addressed` items, but approval is blocked while any item is `open`, or `addressed` and raised by another principal.
 
@@ -299,7 +300,7 @@ Service and route tests:
 - `POST /v1/runs/:id/feedback` accepts unanchored artifact feedback, rejects invalid anchors with 422 details, and returns 404 for anchored spec feedback when no readable spec exists.
 - `feedback` replies at `spec.human_review` validate anchors before creation/directive; rejected replies leave the run unchanged and create no item.
 - Implementation review feedback replies remain unchanged and allow unanchored or arbitrary optional anchors.
-- Feedback reads reconcile once per request, including run-detail reads and all feedback statuses.
+- Feedback list reads reconcile once per request, and single-item thread-reply/PATCH responses reconcile the returned item once.
 - `request_changes` applies revise at spec and implementation review gates only when open target feedback exists; otherwise 409.
 - PATCH resolve/reopen enforces originator, status, body, policy, model-principal, run ownership, and gate applicability rules.
 - Approval tests cover auto-resolving approver-owned addressed items and blocking on open or other-principal addressed items.
@@ -312,7 +313,7 @@ Integration/wiring tests:
 Documentation tests:
 
 - OpenAPI generation lists the new reply kind, PATCH route, optional anchor requirements, 422 invalid anchor response, and 400/403/404/409 PATCH responses.
-- Human-owned concept docs are changed as proposed diffs through the docs review gate.
+- Human approval of this spec authorizes the implementer to edit only `context-human/concepts/feedback.md` and `context-human/concepts/api.md`, limited to the named passages for request-changes replies, reconciliation on read with response-only `stale`, and the PATCH feedback route; the PR diff must not make broader human-doc changes.
 - Agent-owned code map is updated directly during implementation.
 
 #### Alternatives considered
@@ -327,8 +328,8 @@ Documentation tests:
 
 - Duplicate quote first-match repair can move a comment to the wrong occurrence. This is accepted by ADR-033 and should be documented; future disambiguation context is out of scope.
 - Code-point indexing is easy to accidentally replace with JavaScript UTF-16 indexing. Validator and reconciler tests with emoji must guard this.
-- Read-side reconciliation writes during reads. Keep writes narrowly scoped to repaired offsets, avoid writing unchanged items, and ensure stale decoration is never persisted.
-- Run-detail feedback embedding may bypass list feedback reconciliation if implemented separately. Share the same reconciliation path.
+- Read-side reconciliation writes during reads. Keep writes narrowly scoped to repaired offsets, avoid writing unchanged items, ensure stale decoration is never persisted, and degrade to unreconciled stored feedback when the spec cannot be read.
+- Single-item responses from thread replies or PATCH may bypass list feedback reconciliation if implemented separately. Share the same one-item reconciliation path so clients never replace their cached item with an older range than a list read would return.
 - Policy ordering for PATCH must avoid leaking cross-run item existence or mutating before authorization. Tests should verify the policy point is called before work.
 
 ## Task list
@@ -386,13 +387,14 @@ Documentation tests:
       - [ ] Legacy anchors without `quotedText` are returned unchanged with no stale field.
       - [ ] Resolved and non-open items are reconciled too.
     - **Dependencies**: "Task: Add response-only stale anchor schema", "Task: Introduce shared current spec reader"
-  - [ ] **Task: Wire reconciliation into feedback and run-detail reads**
-    - **Description**: Apply the reconciler to `GET /v1/runs/:id/feedback` and all run-detail reads that include feedback, ensuring the current spec is read once per request when eligible anchors exist.
+  - [ ] **Task: Wire reconciliation into feedback and single-item responses**
+    - **Description**: Apply the reconciler to `GET /v1/runs/:id/feedback` and all single-item responses that include feedback, ensuring the current spec is read once per request when eligible anchors exist, and read failures degrade to unreconciled stored feedback rather than failing the feedback response.
     - **Acceptance criteria**:
       - [ ] Feedback list reads reconcile eligible spec anchors.
-      - [ ] Run-detail reads return the same repaired/stale anchors as feedback list reads.
+      - [ ] Thread-reply responses and PATCH responses reconcile their single returned feedback item with the same repaired/stale anchor behavior as list reads.
       - [ ] The spec markdown is read once per read request, not once per item.
       - [ ] Reads with only unanchored feedback or legacy anchors do not unnecessarily read the spec.
+      - [ ] If the spec file is missing or unreadable during a feedback list, thread-reply response, or PATCH response, the response still succeeds with stored anchors unreconciled, no `stale`, no writes, and a safe warning containing the run id but no spec text.
     - **Dependencies**: "Task: Build spec anchor reconciler"
   - [ ] **Task: Verify agents are not asked to maintain offsets**
     - **Description**: Add tests or source checks showing the spec author prompt and result contract carry no anchor offsets and no instruction asks an agent to update anchors.
@@ -406,18 +408,18 @@ Documentation tests:
     - **Description**: Extend `runReplyRequestSchema`, SDK typing, and OpenAPI so clients can send `{ "kind": "request_changes" }` with no other fields. Preserve the existing reply response shape.
     - **Acceptance criteria**:
       - [ ] `runReplyRequestSchema` accepts strict `request_changes` requests and rejects extra fields.
-      - [ ] The reply response supports `classification.directive = "revise"`, the gate target, and no `createdFeedbackId`.
+      - [ ] The reply response supports `classification.directive = "revise"`, the artifact target, and no `createdFeedbackId`.
       - [ ] SDK `replyToRun` accepts the new kind.
       - [ ] OpenAPI lists the new reply kind.
     - **Dependencies**: None
   - [ ] **Task: Implement request-changes orchestration**
-    - **Description**: At spec and implementation human-review gates, apply the revise directive when at least one open feedback item exists for the gate target. Return conflicts otherwise and leave existing feedback untouched until the producing step addresses it.
+    - **Description**: At the spec human-review gate, apply the revise directive when at least one open feedback item exists for the artifact target. Return conflicts otherwise and leave existing feedback untouched until the spec authoring step addresses it.
     - **Acceptance criteria**:
       - [ ] `request_changes` at `spec.human_review` with open artifact feedback sends the run back to spec production/revision.
-      - [ ] `request_changes` at `implementation.human_review` with open implementation feedback sends the run back to implementation production/revision.
-      - [ ] With no open feedback for the target, the response is 409 with a message saying no open feedback exists.
+      - [ ] `request_changes` at `implementation.human_review` returns the same 409 class as other inapplicable replies, because this issue defines no supported flow that leaves open implementation feedback standing at that gate.
+      - [ ] At `spec.human_review` with no open artifact feedback, the response is 409 with a message saying no open feedback exists.
       - [ ] At any other step, the response is the same 409 class as other inapplicable replies.
-      - [ ] Open items stay open until the agent addresses them; a scripted revision test sees them move to `addressed`.
+      - [ ] Open spec items stay open until the spec author addresses them; a scripted revision test sees them move to `addressed`.
     - **Dependencies**: "Task: Add `request_changes` reply contract"
 
 - [ ] **Story: Resolve and reopen feedback through the API**
@@ -435,8 +437,9 @@ Documentation tests:
     - **Acceptance criteria**:
       - [ ] `status: resolved` succeeds only from `addressed` for the principal who raised the item.
       - [ ] Another principal resolving receives 403; invalid source statuses receive 409.
+      - [ ] `reopenFeedback` itself is extended to check the actor against `feedback.thread[0].author`, throw `feedback_not_originator` for non-originators, and its unit tests cover the new guard.
       - [ ] `status: open` succeeds only from `wont_fix`, requires `body`, and only for the originator.
-      - [ ] Another principal reopening receives 403.
+      - [ ] Another principal reopening receives 403 and changes nothing: the item stays `wont_fix`, the thread is unchanged, and no revise directive is applied.
       - [ ] A model principal receives 403.
       - [ ] Missing feedback or feedback from another run returns 404.
       - [ ] Tests verify the policy point is called before mutation with the new resource descriptor and action.
@@ -459,19 +462,19 @@ Documentation tests:
       - [ ] The test reads the spec and posts a valid anchored comment.
       - [ ] The test posts an unanchored comment.
       - [ ] The test sees wrong quoted text rejected.
-      - [ ] The test requests changes and sees scripted revision address comments.
-      - [ ] The test sees an anchored comment's offsets repaired on next read.
+      - [ ] The test requests changes at the spec gate and sees scripted revision address comments.
+      - [ ] The test sees an anchored comment's offsets repaired on the next feedback read.
       - [ ] The test sees a removed quote marked stale and still listed.
       - [ ] The test resolves one comment as originator and approves.
       - [ ] No test makes a model call.
-    - **Dependencies**: "Task: Wire reconciliation into feedback and run-detail reads", "Task: Implement request-changes orchestration", "Task: Apply revise directive on reopen and preserve approval semantics"
+    - **Dependencies**: "Task: Wire reconciliation into feedback and single-item responses", "Task: Implement request-changes orchestration", "Task: Apply revise directive on reopen and preserve approval semantics"
   - [ ] **Task: Prepare human-owned concept doc diffs**
-    - **Description**: Update `context-human/concepts/feedback.md` and `context-human/concepts/api.md` as proposed diffs in the same PR, following `context-agent/standards/doc-maintenance.md` and the docs review gate.
+    - **Description**: Update `context-human/concepts/feedback.md` and `context-human/concepts/api.md` as proposed diffs in the same PR, limited to the passages authorized by approval of this spec; the current workflow has no separate documentation approval step.
     - **Acceptance criteria**:
-      - [ ] `feedback.md` describes request-changes replies over existing comments.
+      - [ ] `feedback.md` describes request-changes replies over existing spec comments.
       - [ ] `feedback.md` describes reconciliation on read and response-only `stale`.
       - [ ] `api.md` describes the new reply kind, PATCH feedback route, and relevant errors.
-      - [ ] Human-owned docs changes are routed through the docs review gate.
+      - [ ] The PR diff touches only `context-human/concepts/feedback.md` and `context-human/concepts/api.md` for human-owned docs, and only in the named passages authorized by this approved spec.
     - **Dependencies**: "Task: Add `request_changes` reply contract", "Task: Add feedback update contract and SDK method", "Task: Add response-only stale anchor schema"
   - [ ] **Task: Update agent code map**
     - **Description**: Record durable navigation notes for the validator, reconciler, shared spec reader, request-changes reply kind, and PATCH route in `context-agent/wiki/code-map.md`.
