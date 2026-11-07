@@ -21,7 +21,8 @@ import {
   ClassifiedProviderFailureError,
   ProviderProtocolError,
   UnsupportedProviderCapabilityError,
-  resolveSkills
+  resolveSkills,
+  type ProxyUpstreamFailureRecord
 } from '@autocatalyst/execution';
 
 import {
@@ -1154,5 +1155,178 @@ describe('createClaudeAgentAdapter — read-only reviewer satisfied verdict regr
     } finally {
       await rm(scratchDir, { recursive: true });
     }
+  });
+});
+
+describe('createClaudeAgentAdapter — safe session diagnostics and proxy-backed classification', () => {
+  function makeLogger() {
+    const logs: Array<{ level: string; event: string; fields: Record<string, unknown> }> = [];
+    return {
+      logs,
+      logger: {
+        info: (event: string, fields: unknown) => logs.push({ level: 'info', event, fields: fields as Record<string, unknown> }),
+        warn: (event: string, fields: unknown) => logs.push({ level: 'warn', event, fields: fields as Record<string, unknown> }),
+        error: (event: string, fields: unknown) => logs.push({ level: 'error', event, fields: fields as Record<string, unknown> })
+      }
+    };
+  }
+
+  function sessionFailedLog(logs: Array<{ event: string; fields: Record<string, unknown> }>): Record<string, unknown> | undefined {
+    return logs.find((l) => l.event === 'claude.adapter.session_failed')?.fields;
+  }
+
+  function withProxyEvidence(
+    input: AgentProviderSessionInput,
+    evidence: ProxyUpstreamFailureRecord | undefined
+  ): AgentProviderSessionInput {
+    return {
+      ...input,
+      connection: { ...input.connection, getProxyFailureEvidence: () => evidence }
+    };
+  }
+
+  async function drainExpectingThrow(session: { events: AsyncIterable<RunnerEvent>; metadata: Promise<unknown> }): Promise<unknown> {
+    session.metadata.catch(() => undefined);
+    try {
+      for await (const _event of session.events) { /* drain */ }
+    } catch (e) {
+      return e;
+    }
+    return undefined;
+  }
+
+  it('enriches session_failed with safe scalar diagnostics (class, cause chain, errno/code, event counts)', async () => {
+    const { logs, logger } = makeLogger();
+    // Real subclasses: errorClass is derived from the constructor name (safe), never the mutable
+    // `.name` property which could carry attacker-controlled text.
+    class SocketError extends Error {}
+    class RequestError extends Error {}
+    const rootCause = new SocketError('socket hang up');
+    const streamError = Object.assign(new RequestError('request failed'), {
+      code: 'ECONNRESET',
+      errno: -54,
+      cause: rootCause
+    });
+    const adapter = createClaudeAgentAdapter({
+      launchClaudeSession: async function* () {
+        yield { type: 'assistant', content: 'working' };
+        yield await Promise.reject<ClaudeNativeEvent>(streamError);
+      },
+      logger
+    });
+    const { input } = makeSessionInput();
+    const session = adapter.startSession(input);
+    await drainExpectingThrow(session);
+
+    const failed = sessionFailedLog(logs)!;
+    expect(failed).toBeDefined();
+    expect(failed['errorClass']).toBe('RequestError');
+    expect(Array.isArray(failed['causeChain'])).toBe(true);
+    expect(failed['causeChain']).toContain('SocketError');
+    expect(failed['code']).toBe('ECONNRESET');
+    expect(failed['errno']).toBe(-54);
+    // One event was delivered before the stream rejected.
+    expect(failed['sdkEventCount']).toBe(1);
+    expect(failed['lastSdkEventType']).toBe('assistant');
+    expect(typeof failed['elapsedMs']).toBe('number');
+  });
+
+  it('classifies an unclassified pre-terminal failure as transient when proxy evidence qualifies', async () => {
+    const { logs, logger } = makeLogger();
+    const evidence: ProxyUpstreamFailureRecord = {
+      upstreamOrigin: 'https://gateway.example.test',
+      attempt: 3,
+      outcome: 'exhausted',
+      elapsedMs: 60000,
+      responseStarted: false,
+      bodyBytesStreamed: 0
+    };
+    const adapter = createClaudeAgentAdapter({
+      launchClaudeSession: async function* () { yield await Promise.reject<ClaudeNativeEvent>(new Error('runner died')); },
+      logger
+    });
+    const { input } = makeSessionInput();
+    const thrown = await drainExpectingThrow(adapter.startSession(withProxyEvidence(input, evidence)));
+    expect(thrown).toBeInstanceOf(ClassifiedProviderFailureError);
+    expect((thrown as ClassifiedProviderFailureError).failureReason).toBe('transient_provider_failure');
+    const failed = sessionFailedLog(logs)!;
+    expect(failed['proxyFailureOutcome']).toBe('exhausted');
+    expect(failed['failureReason']).toBe('transient_provider_failure');
+  });
+
+  it('classifies a mid_stream proxy drop as transient', async () => {
+    const evidence: ProxyUpstreamFailureRecord = {
+      upstreamOrigin: 'https://gateway.example.test',
+      attempt: 1,
+      outcome: 'mid_stream',
+      elapsedMs: 1200,
+      responseStarted: true,
+      bodyBytesStreamed: 4096
+    };
+    const adapter = createClaudeAgentAdapter({
+      launchClaudeSession: async function* () { yield await Promise.reject<ClaudeNativeEvent>(new Error('stream dropped')); }
+    });
+    const { input } = makeSessionInput();
+    const thrown = await drainExpectingThrow(adapter.startSession(withProxyEvidence(input, evidence)));
+    expect(thrown).toBeInstanceOf(ClassifiedProviderFailureError);
+    expect((thrown as ClassifiedProviderFailureError).failureReason).toBe('transient_provider_failure');
+  });
+
+  it('does not classify as transient when there is no unrecovered proxy evidence (recovered blip then unrelated crash)', async () => {
+    const adapter = createClaudeAgentAdapter({
+      launchClaudeSession: async function* () { yield await Promise.reject<ClaudeNativeEvent>(new Error('unrelated crash')); }
+    });
+    const { input } = makeSessionInput();
+    const thrown = await drainExpectingThrow(adapter.startSession(withProxyEvidence(input, undefined)));
+    expect(thrown).not.toBeInstanceOf(ClassifiedProviderFailureError);
+  });
+
+  it('does not treat a retrying record as qualifying evidence', async () => {
+    const evidence: ProxyUpstreamFailureRecord = {
+      upstreamOrigin: 'https://gateway.example.test',
+      attempt: 1,
+      outcome: 'retrying',
+      elapsedMs: 250,
+      responseStarted: false,
+      bodyBytesStreamed: 0
+    };
+    const adapter = createClaudeAgentAdapter({
+      launchClaudeSession: async function* () { yield await Promise.reject<ClaudeNativeEvent>(new Error('crash')); }
+    });
+    const { input } = makeSessionInput();
+    const thrown = await drainExpectingThrow(adapter.startSession(withProxyEvidence(input, evidence)));
+    expect(thrown).not.toBeInstanceOf(ClassifiedProviderFailureError);
+  });
+
+  it('keeps a permanent classified failure even when proxy evidence exists', async () => {
+    const evidence: ProxyUpstreamFailureRecord = {
+      upstreamOrigin: 'https://gateway.example.test',
+      attempt: 2,
+      outcome: 'exhausted',
+      elapsedMs: 60000,
+      responseStarted: false,
+      bodyBytesStreamed: 0
+    };
+    const authError = Object.assign(new Error('unauthorized'), { name: 'AuthenticationError', status: 401 });
+    const adapter = createClaudeAgentAdapter({
+      launchClaudeSession: async function* () { yield await Promise.reject<ClaudeNativeEvent>(authError); }
+    });
+    const { input } = makeSessionInput();
+    const thrown = await drainExpectingThrow(adapter.startSession(withProxyEvidence(input, evidence)));
+    expect(thrown).toBeInstanceOf(ClassifiedProviderFailureError);
+    expect((thrown as ClassifiedProviderFailureError).failureReason).toBe('provider_auth_failed');
+  });
+
+  it('redacts a sentinel secret in an error message from the session_failed log', async () => {
+    const { logs, logger } = makeLogger();
+    const leaky = Object.assign(new Error('provider error sk-test-secret /Users/mark/private raw SDK diagnostic'), { name: 'StreamError' });
+    const adapter = createClaudeAgentAdapter({
+      launchClaudeSession: async function* () { yield await Promise.reject<ClaudeNativeEvent>(leaky); },
+      logger
+    });
+    const { input } = makeSessionInput();
+    await drainExpectingThrow(adapter.startSession(input));
+    const serialized = JSON.stringify(logs);
+    expectNoSentinels(serialized);
   });
 });

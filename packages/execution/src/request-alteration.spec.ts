@@ -13,10 +13,12 @@ import {
   maximumMaxRetries,
   maximumRequestTimeoutMs,
   parseRetryAfterMs,
+  PROXY_RETRY_BUDGET_MS,
   ProviderAlterationError,
   redactProcessLaunchConfigForLog,
   redactProviderRequestForLog,
   redactProviderResponseForLog,
+  resolveProxyRetryBudget,
   resolveRetryPolicy,
   validateHttpHeaderName,
   type ClaudeProcessLaunchInput,
@@ -659,5 +661,37 @@ describe('retry policy helpers', () => {
     expect(computeRetryDelayMs({ attemptNumber: 2, jitter: 0.5, nowMs: 0 })).toBe(625);
     expect(computeRetryDelayMs({ attemptNumber: 20, jitter: 1, nowMs: 0 })).toBe(5000);
     expect(computeRetryDelayMs({ attemptNumber: 1, retryAfter: '1', jitter: 1, nowMs: 0 })).toBe(1000);
+  });
+});
+
+describe('resolveProxyRetryBudget — proxy-only; shared defaults unchanged', () => {
+  it('leaves maxRetries UNSET when the endpoint has none, so the monotonic budget controls proxy attempts', () => {
+    const budget = resolveProxyRetryBudget({});
+    expect(budget.budgetMs).toBe(PROXY_RETRY_BUDGET_MS);
+    expect(budget.budgetMs).toBe(60000);
+    expect(budget.maxRetries).toBeUndefined();
+    expect(budget.transientHttpStatuses).toEqual([408, 429, 500, 502, 503, 504, 529]);
+  });
+
+  it('preserves an explicit endpoint.maxRetries as a bounded proxy attempt cap', () => {
+    expect(resolveProxyRetryBudget({ maxRetries: 3 }).maxRetries).toBe(3);
+    expect(resolveProxyRetryBudget({ maxRetries: 99 }).maxRetries).toBe(maximumMaxRetries);
+    expect(resolveProxyRetryBudget({ maxRetries: -1 }).maxRetries).toBe(0);
+  });
+
+  it('does NOT change the shared fetch-transport retry policy for an endpoint with no maxRetries', () => {
+    // The non-proxy fetch transport keeps the shared default of 1 retry.
+    expect(resolveRetryPolicy({}).maxRetries).toBe(defaultMaxRetries);
+    expect(resolveRetryPolicy({}).maxRetries).toBe(1);
+  });
+
+  it('does NOT change the Claude subprocess CLAUDE_CODE_MAX_RETRIES for an endpoint with no maxRetries', () => {
+    const result = buildClaudeProcessLaunchEnvironment({
+      endpoint: {},
+      credential: 'secret-grove-key',
+      materializedEnvironment: { variables: {}, secretVariableNames: [] }
+    });
+    expect(result.environment['CLAUDE_CODE_MAX_RETRIES']).toBe(String(defaultMaxRetries));
+    expect(result.environment['CLAUDE_CODE_MAX_RETRIES']).toBe('1');
   });
 });

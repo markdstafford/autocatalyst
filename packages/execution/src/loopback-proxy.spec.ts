@@ -4,7 +4,36 @@ import { mkdtemp, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { createLoopbackProxy } from './loopback-proxy.js';
+import { createLoopbackProxy, type ProxyUpstreamFailureRecord } from './loopback-proxy.js';
+
+const TRANSIENT_STATUSES = [408, 429, 500, 502, 503, 504, 529];
+
+interface CapturedLog { readonly event: string; readonly fields: unknown; }
+
+function captureConnectionLogger(): {
+  logger: { info(e: string, f: unknown): void; warn(e: string, f: unknown): void; error(e: string, f: unknown): void };
+  infos: CapturedLog[];
+  warns: CapturedLog[];
+  errors: CapturedLog[];
+} {
+  const infos: CapturedLog[] = [];
+  const warns: CapturedLog[] = [];
+  const errors: CapturedLog[] = [];
+  return {
+    logger: {
+      info: (event, fields) => { infos.push({ event, fields }); },
+      warn: (event, fields) => { warns.push({ event, fields }); },
+      error: (event, fields) => { errors.push({ event, fields }); }
+    },
+    infos,
+    warns,
+    errors
+  };
+}
+
+function failureRecords(warns: CapturedLog[]): ProxyUpstreamFailureRecord[] {
+  return warns.filter((w) => w.event === 'proxy.upstream_failure').map((w) => w.fields as ProxyUpstreamFailureRecord);
+}
 
 async function startFakeUpstream(handler: http.RequestListener): Promise<{ baseUrl: string; close(): Promise<void> }> {
   const server = http.createServer(handler);
@@ -77,10 +106,15 @@ describe('createLoopbackProxy', () => {
   });
 
   it('returns a safe 502 JSON envelope on upstream transport failure', async () => {
+    // With no endpoint.maxRetries, the monotonic proxy budget controls retries. Advance the injected
+    // monotonic clock past the 60s budget immediately so the single attempt exhausts without real delay.
+    let mono = 0;
     const proxy = await createLoopbackProxy({
       upstreamBaseUrl: 'http://127.0.0.1:9',
       endpoint: {},
-      telemetryContext: { runId: 'run_1', step: 'spec.author' }
+      telemetryContext: { runId: 'run_1', step: 'spec.author' },
+      sleep: async () => undefined,
+      monotonicNow: () => { const v = mono; mono += 70_000; return v; }
     });
 
     const response = await fetch(`${proxy.baseUrl}/v1/messages`, { method: 'POST', body: '{}' });
@@ -551,5 +585,377 @@ describe('createLoopbackProxy', () => {
 
     await proxy.close();
     await new Promise<void>((resolve) => rawServer.close(() => resolve()));
+  });
+});
+
+describe('createLoopbackProxy — safe failure records, monotonic budget, unrecovered evidence', () => {
+  it('records retrying attempts then exhausted for a persistently transient upstream', async () => {
+    const upstream = await startFakeUpstream((req, res) => {
+      req.resume();
+      res.writeHead(503, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'temporary' }));
+    });
+    const cap = captureConnectionLogger();
+    let mono = 0;
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: {},
+      telemetryContext: { runId: 'run_1', step: 'implementation.build', profileName: 'grove-cp3' },
+      logger: cap.logger,
+      retryBudget: { budgetMs: 1000, transientHttpStatuses: TRANSIENT_STATUSES, baseDelayMs: 250, maximumDelayMs: 5000 },
+      sleep: async (ms) => { mono += ms; },
+      jitter: () => 0,
+      monotonicNow: () => mono
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/v1/messages`, { method: 'POST', body: '{}' });
+    expect(response.status).toBe(502);
+
+    const records = failureRecords(cap.warns);
+    expect(records.length).toBeGreaterThanOrEqual(2);
+    const last = records[records.length - 1]!;
+    expect(last.outcome).toBe('exhausted');
+    expect(last.status).toBe(503);
+    expect(last.responseStarted).toBe(false);
+    expect(last.bodyBytesStreamed).toBe(0);
+    expect(last.profileName).toBe('grove-cp3');
+    expect(last.upstreamOrigin).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
+    expect(records.slice(0, -1).every((r) => r.outcome === 'retrying')).toBe(true);
+    // Monotonic elapsed advances across attempts.
+    expect(last.elapsedMs).toBeGreaterThan(0);
+
+    const evidence = proxy.unrecoveredFailureRecord();
+    expect(evidence?.outcome).toBe('exhausted');
+
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('emits a retry-success info record and clears unrecovered evidence after a transient blip', async () => {
+    let attempts = 0;
+    const upstream = await startFakeUpstream((req, res) => {
+      attempts += 1;
+      req.resume();
+      if (attempts === 1) {
+        res.writeHead(503, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'blip' }));
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const cap = captureConnectionLogger();
+    let mono = 0;
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: {},
+      telemetryContext: { runId: 'run_1', step: 'implementation.build' },
+      logger: cap.logger,
+      retryBudget: { budgetMs: 60000, transientHttpStatuses: TRANSIENT_STATUSES, baseDelayMs: 250, maximumDelayMs: 5000 },
+      sleep: async (ms) => { mono += ms; },
+      jitter: () => 0,
+      monotonicNow: () => mono
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/v1/messages`, { method: 'POST', body: '{}' });
+    expect(response.status).toBe(200);
+
+    const records = failureRecords(cap.warns);
+    expect(records.length).toBe(1);
+    expect(records[0]!.outcome).toBe('retrying');
+
+    const successRecords = cap.infos.filter((i) => i.event === 'proxy.upstream_retry_success');
+    expect(successRecords.length).toBe(1);
+    expect((successRecords[0]!.fields as { attempt: number }).attempt).toBe(2);
+
+    // A completed upstream response clears the unrecovered evidence.
+    expect(proxy.unrecoveredFailureRecord()).toBeUndefined();
+
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('a retrying record never qualifies as unrecovered evidence mid-flight', async () => {
+    let released: (() => void) | undefined;
+    let attempts = 0;
+    const upstream = await startFakeUpstream((req, res) => {
+      attempts += 1;
+      req.resume();
+      if (attempts === 1) {
+        res.writeHead(503, {});
+        res.end('blip');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: {},
+      telemetryContext: { runId: 'run_1', step: 'implementation.build' },
+      // Pause during the retry sleep so we can inspect evidence while a 'retrying' record is the latest.
+      sleep: () => new Promise<void>((resolve) => { released = resolve; }),
+      jitter: () => 0
+    });
+
+    const fetchPromise = fetch(`${proxy.baseUrl}/v1/messages`, { method: 'POST', body: '{}' });
+    await new Promise<void>((resolve) => {
+      const poll = setInterval(() => { if (released !== undefined) { clearInterval(poll); resolve(); } }, 5);
+    });
+    // Mid-flight: a 'retrying' record is the latest, but it must not qualify as unrecovered evidence.
+    expect(proxy.unrecoveredFailureRecord()).toBeUndefined();
+    released!();
+    const response = await fetchPromise;
+    expect(response.status).toBe(200);
+
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('retries a pre-response timeout within the proxy budget and succeeds', async () => {
+    let attempts = 0;
+    const held: import('node:http').ServerResponse[] = [];
+    const upstream = await startFakeUpstream((req, res) => {
+      attempts += 1;
+      req.resume();
+      if (attempts === 1) {
+        held.push(res); // never respond on the first attempt — force a pre-response timeout
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    const cap = captureConnectionLogger();
+    let mono = 0;
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: {},
+      telemetryContext: { runId: 'run_1', step: 'implementation.build' },
+      logger: cap.logger,
+      requestTimeoutMs: 60,
+      retryBudget: { budgetMs: 60000, transientHttpStatuses: TRANSIENT_STATUSES, baseDelayMs: 250, maximumDelayMs: 5000 },
+      sleep: async (ms) => { mono += ms; },
+      jitter: () => 0,
+      monotonicNow: () => mono
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/v1/messages`, { method: 'POST', body: '{}' });
+    expect(response.status).toBe(200);
+
+    // The pre-response timeout is retried (one `retrying` record), then the retry succeeds and the
+    // successful response clears any unrecovered evidence.
+    const records = failureRecords(cap.warns);
+    expect(records.length).toBe(1);
+    expect(records[0]!.outcome).toBe('retrying');
+    expect(records[0]!.responseStarted).toBe(false);
+    expect(proxy.unrecoveredFailureRecord()).toBeUndefined();
+
+    held.forEach((res) => res.end());
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('retries persistent pre-response timeouts then records a terminal timeout as unrecovered evidence', async () => {
+    const held: import('node:http').ServerResponse[] = [];
+    const upstream = await startFakeUpstream((req, res) => {
+      req.resume();
+      held.push(res); // never respond — every attempt times out
+    });
+    const cap = captureConnectionLogger();
+    let mono = 0;
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: {},
+      telemetryContext: { runId: 'run_1', step: 'implementation.build' },
+      logger: cap.logger,
+      requestTimeoutMs: 40,
+      retryBudget: { budgetMs: 1000, transientHttpStatuses: TRANSIENT_STATUSES, baseDelayMs: 250, maximumDelayMs: 5000 },
+      sleep: async (ms) => { mono += ms; },
+      jitter: () => 0,
+      monotonicNow: () => mono
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/v1/messages`, { method: 'POST', body: '{}' });
+    expect(response.status).toBe(502);
+
+    // Earlier attempts are `retrying`; only after the monotonic budget is unrecovered is a terminal
+    // `timeout` record emitted and exposed as unrecovered evidence.
+    const records = failureRecords(cap.warns);
+    expect(records.length).toBeGreaterThanOrEqual(2);
+    const last = records[records.length - 1]!;
+    expect(last.outcome).toBe('timeout');
+    expect(last.responseStarted).toBe(false);
+    expect(records.slice(0, -1).every((r) => r.outcome === 'retrying')).toBe(true);
+    expect(proxy.unrecoveredFailureRecord()?.outcome).toBe('timeout');
+
+    held.forEach((res) => res.end());
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('records a mid_stream failure (responseStarted, streamed bytes) and does not proxy-retry it', async () => {
+    let attempts = 0;
+    let destroyUpstream: (() => void) | undefined;
+    const upstream = await startFakeUpstream((_req, res) => {
+      attempts += 1;
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: partial\n\n');
+      destroyUpstream = () => res.destroy();
+    });
+    const cap = captureConnectionLogger();
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: { maxRetries: 3 },
+      telemetryContext: { runId: 'run_1', step: 'implementation.build' },
+      logger: cap.logger,
+      sleep: async () => undefined
+    });
+
+    const fetchPromise = fetch(`${proxy.baseUrl}/events`);
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    destroyUpstream?.();
+    try { await fetchPromise; } catch { /* stream aborts mid-flight */ }
+    await new Promise<void>((resolve) => setTimeout(resolve, 80));
+
+    const records = failureRecords(cap.warns);
+    const midStream = records.find((r) => r.outcome === 'mid_stream');
+    expect(midStream).toBeDefined();
+    expect(midStream!.responseStarted).toBe(true);
+    expect(midStream!.bodyBytesStreamed).toBeGreaterThan(0);
+    // No proxy retry after the response started.
+    expect(attempts).toBe(1);
+    expect(proxy.unrecoveredFailureRecord()?.outcome).toBe('mid_stream');
+
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('uses the injected monotonic clock for the budget so a wall-clock jump cannot consume it', async () => {
+    let attempts = 0;
+    const upstream = await startFakeUpstream((req, res) => {
+      attempts += 1;
+      req.resume();
+      if (attempts === 1) {
+        res.writeHead(503, {});
+        res.end('blip');
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+    });
+    // Monotonic time barely advances even though the (simulated 10-minute) sleep "passed" a lot of
+    // wall-clock time. Budget decisions use the monotonic clock, so the retry still fits and succeeds.
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: {},
+      telemetryContext: { runId: 'run_1', step: 'implementation.build' },
+      sleep: async () => undefined, // represents ~10 minutes of wall-clock sleep/wake
+      jitter: () => 0,
+      monotonicNow: () => 5 // monotonic clock essentially unmoved
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/v1/messages`, { method: 'POST', body: '{}' });
+    expect(response.status).toBe(200);
+    expect(attempts).toBe(2);
+
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('caps proxy attempts at endpoint.maxRetries even when monotonic budget remains', async () => {
+    let attempts = 0;
+    const upstream = await startFakeUpstream((req, res) => {
+      attempts += 1;
+      req.resume();
+      res.writeHead(503, {});
+      res.end('temporary');
+    });
+    const cap = captureConnectionLogger();
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: { maxRetries: 1 },
+      telemetryContext: { runId: 'run_1', step: 'implementation.build' },
+      logger: cap.logger,
+      // Large budget; the maxRetries cap must stop retries first.
+      retryBudget: { budgetMs: 60000, maxRetries: 1, transientHttpStatuses: TRANSIENT_STATUSES, baseDelayMs: 250, maximumDelayMs: 5000 },
+      sleep: async () => undefined,
+      jitter: () => 0
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/v1/messages`, { method: 'POST', body: '{}' });
+    expect(response.status).toBe(502);
+    expect(attempts).toBe(2); // initial + 1 retry
+    expect(failureRecords(cap.warns).at(-1)?.outcome).toBe('exhausted');
+
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('never leaks a sentinel secret from request header or body into failure records', async () => {
+    const sentinel = 'sk-SENTINEL-LEAK-TEST-0001';
+    const upstream = await startFakeUpstream((req, res) => {
+      req.resume();
+      res.writeHead(503, {});
+      res.end('temporary');
+    });
+    const cap = captureConnectionLogger();
+    let mono = 0;
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: {},
+      credential: sentinel,
+      telemetryContext: { runId: 'run_1', step: 'implementation.build' },
+      logger: cap.logger,
+      retryBudget: { budgetMs: 800, transientHttpStatuses: TRANSIENT_STATUSES, baseDelayMs: 250, maximumDelayMs: 5000 },
+      sleep: async (ms) => { mono += ms; },
+      jitter: () => 0,
+      monotonicNow: () => mono
+    });
+
+    await fetch(`${proxy.baseUrl}/v1/messages`, {
+      method: 'POST',
+      headers: { 'x-secret': sentinel, authorization: `Bearer ${sentinel}` },
+      body: JSON.stringify({ prompt: `uses ${sentinel}` })
+    });
+
+    const dump = JSON.stringify(cap.warns);
+    expect(dump).not.toContain(sentinel);
+    expect(failureRecords(cap.warns).length).toBeGreaterThan(0);
+
+    await proxy.close();
+    await upstream.close();
+  });
+
+  it('spends about the default 60s monotonic budget on a fully-down upstream (simulated clock, no real delay)', async () => {
+    // Full network outage: every attempt returns a transient status and the proxy rides the default
+    // 60000 ms budget via the injected monotonic clock. This is the per-request proxy term of the
+    // worst-case formula (1 + SDK retries) × PROXY_RETRY_BUDGET_MS × (1 + RUNNER_SESSION_MAX_RETRIES).
+    const upstream = await startFakeUpstream((req, res) => {
+      req.resume();
+      res.writeHead(503, {});
+      res.end('down');
+    });
+    const cap = captureConnectionLogger();
+    let mono = 0;
+    const proxy = await createLoopbackProxy({
+      upstreamBaseUrl: upstream.baseUrl,
+      endpoint: {}, // no maxRetries => budget-controlled, default 60000 ms
+      telemetryContext: { runId: 'run_1', step: 'implementation.build' },
+      logger: cap.logger,
+      sleep: async (ms) => { mono += ms; },
+      jitter: () => 0,
+      monotonicNow: () => mono
+    });
+
+    const response = await fetch(`${proxy.baseUrl}/v1/messages`, { method: 'POST', body: '{}' });
+    expect(response.status).toBe(502);
+    const last = failureRecords(cap.warns).at(-1)!;
+    expect(last.outcome).toBe('exhausted');
+    // The budget window is ~60s; we stop just before a delay would overshoot it.
+    expect(last.elapsedMs).toBeGreaterThanOrEqual(55000);
+    expect(last.elapsedMs).toBeLessThanOrEqual(60000);
+
+    await proxy.close();
+    await upstream.close();
   });
 });

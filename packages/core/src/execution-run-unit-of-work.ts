@@ -4,7 +4,8 @@ import {
   PreTerminalRunnerFailure,
   type ExecutionBoundaryEvent,
   type DirectCallRequest,
-  type DirectOrchestratorCallResult
+  type DirectOrchestratorCallResult,
+  type RunnerSessionMetadata
 } from '@autocatalyst/execution';
 import type { ExecutionEntryPoint } from '@autocatalyst/execution';
 import type { RunWorkInput, RunWorkResult, RunUnitOfWork } from './orchestrator.js';
@@ -35,6 +36,13 @@ export type ExecutionModeResolution =
   | { readonly mode: 'agent' }
   | { readonly mode: 'direct'; readonly directCall: DirectCallRequest };
 
+export interface SessionRetryPolicyOptions {
+  /** Max session retries after the initial attempt. Default RUNNER_SESSION_MAX_RETRIES (2). */
+  readonly maxRetries?: number;
+  /** Base backoff before the first retry, doubled per retry. Default RUNNER_SESSION_RETRY_BASE_DELAY_MS (2000). */
+  readonly baseDelayMs?: number;
+}
+
 export interface ExecutionRunUnitOfWorkOptions {
   readonly execute: ExecutionEntryPoint;
   readonly resolveContext: (input: RunWorkInput) => Promise<ExecutionContext>;
@@ -50,6 +58,44 @@ export interface ExecutionRunUnitOfWorkOptions {
   readonly sessions?: SessionRepository;
   /** Optional logger for session recording errors (only logs runId, step, role, error name/code). */
   readonly logger?: ExecutionSessionRecorderLogger;
+  /** Optional bounded session-retry policy for transient pre-terminal session failures. */
+  readonly sessionRetry?: SessionRetryPolicyOptions;
+  /** Injected sleep for retry backoff (tests pass a no-op; defaults to a real timer). */
+  readonly sleep?: (ms: number) => Promise<void>;
+  /**
+   * Optional check consulted before each session retry. When it resolves true, retrying stops and
+   * cancellation semantics are preserved. When absent, no cancellation check is performed.
+   */
+  readonly isRunCanceled?: (runId: string) => boolean | Promise<boolean>;
+}
+
+// ---------------------------------------------------------------------------
+// Session retry policy
+// ---------------------------------------------------------------------------
+
+/**
+ * Default session-retry limit: one initial session plus up to this many retries. Worst-case default
+ * time before a fully-down Grove network fails a run is about 366000 ms —
+ * `(1 + SDK retries) × PROXY_RETRY_BUDGET_MS × (1 + RUNNER_SESSION_MAX_RETRIES)` plus
+ * `2000 + 4000` ms of session backoff, i.e. `(1 + 1) × 60000 × (1 + 2) + 6000 = 366000`.
+ */
+export const RUNNER_SESSION_MAX_RETRIES = 2;
+/** Base session-retry backoff, doubled per retry (2000 → 4000 …). */
+export const RUNNER_SESSION_RETRY_BASE_DELAY_MS = 2000;
+
+const defaultRetrySleep = (ms: number): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Decide whether a caught dispatch error is a retryable pre-terminal transient session failure.
+ * Only a {@link PreTerminalRunnerFailure} whose underlying cause classifies as
+ * `transient_provider_failure` qualifies — this covers both an explicitly-classified transient
+ * failure and an unclassified failure the Claude adapter promoted on qualifying unrecovered proxy
+ * evidence. Permanent failures (auth, protocol, validation/contract, unsupported capability,
+ * workspace/materialization) and plain errors are never retryable.
+ */
+export function isRetryableSessionFailure(error: unknown): boolean {
+  if (!(error instanceof PreTerminalRunnerFailure)) return false;
+  return safeFailureReasonFromError(error.cause) === 'transient_provider_failure';
 }
 
 export type ExecutionRunUnitOfWorkResult = RunWorkResult & {
@@ -196,85 +242,125 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
       }
 
       // Agent continuity is bound to materialized scratch by the agent orchestrator.
-      const events = options.execute.execute({ context, correlationId: input.runId });
       const onEvent = options.onEvent;
-      const tapped = onEvent === undefined
-        ? events
-        : (async function* () {
-            for await (const event of events) {
-              try {
-                await onEvent(event);
-              } catch {
-                throw new RunnerProtocolError('runner_failed', 'Telemetry onEvent hook threw during event processing.');
-              }
-              yield event;
-            }
-          })();
       const eventsStore = options.eventsStore ?? new InMemoryRetainedRunEventStore();
+
+      // Session-retry configuration. Each in-dispatch attempt re-runs the model session in the SAME
+      // workspace (the execution context is unchanged) and records a durable failed session row;
+      // no new run-step occurrence is created, so convergence-round accounting is untouched.
+      const maxSessionRetries = options.sessionRetry?.maxRetries ?? RUNNER_SESSION_MAX_RETRIES;
+      const sessionRetryBaseDelayMs = options.sessionRetry?.baseDelayMs ?? RUNNER_SESSION_RETRY_BASE_DELAY_MS;
+      const sleep = options.sleep ?? defaultRetrySleep;
+
+      // Record a durable failed session row from the cached pre-terminal metadata. Persistence
+      // failures here are logged but must never replace the original sanitized terminal reason.
+      async function recordPreTerminalFailedSession(
+        preTerminalMeta: RunnerSessionMetadata
+      ): Promise<void> {
+        if (options.sessions === undefined) return;
+        try {
+          await recordExecutionSession(
+            { sessions: options.sessions, ...(options.logger !== undefined ? { logger: options.logger } : {}) },
+            {
+              runId: input.runId,
+              phase: derivePhase(input),
+              step: input.run.currentStep,
+              role: deriveRole(input) as 'implementer' | 'reviewer',
+              round: deriveRound(input),
+              startedAt: preTerminalMeta.startedAt,
+              endedAt: preTerminalMeta.endedAt,
+              outcome: 'failed',
+              model: preTerminalMeta.model,
+              inferenceSettings: preTerminalMeta.inferenceSettings,
+              ...(preTerminalMeta.usageAvailable === true && preTerminalMeta.tokens !== undefined
+                ? { tokens: preTerminalMeta.tokens, usageAvailable: true }
+                : { usageAvailable: false }),
+              ...(preTerminalMeta.assistantTurnCount !== undefined ? { assistantTurnCount: preTerminalMeta.assistantTurnCount } : {}),
+              ...(preTerminalMeta.toolCallCount !== undefined ? { toolCallCount: preTerminalMeta.toolCallCount } : {})
+            }
+          );
+        } catch (recordError) {
+          options.logger?.error(
+            {
+              runId: input.runId,
+              step: input.run.currentStep,
+              role: deriveRole(input),
+              errorName: recordError instanceof Error ? recordError.name : 'UnknownError',
+              ...(recordError instanceof ExecutionSessionRecordingError && recordError.code !== undefined
+                ? { errorCode: recordError.code }
+                : {})
+            },
+            'Failed to record session for pre-terminal runner failure; original failure reason preserved.'
+          );
+        }
+      }
+
       let consumeResult: Awaited<ReturnType<typeof consumeRunnerEvents>>;
-      try {
-        consumeResult = await consumeRunnerEvents({
-          eventsStore,
-          events: tapped,
-          runId: input.runId,
-          tenant: input.tenant
-        });
-      } catch (error) {
-        if (error instanceof RunnerProtocolError) {
-          throw error;
-        }
-        // A RunnerProtocolError wrapped in PreTerminalRunnerFailure (because the runner cached
-        // metadata before the protocol violation) must still propagate as a protocol error,
-        // not be downgraded to an ordinary run failure.
-        if (error instanceof PreTerminalRunnerFailure && error.cause instanceof RunnerProtocolError) {
-          throw error.cause;
-        }
-        // For pre-terminal runner failures, try to record a failed session row from the cached
-        // metadata before returning. Persistence failures here are logged but must not replace
-        // the original sanitized terminal reason.
-        const preTerminalMeta = error instanceof PreTerminalRunnerFailure ? error.sessionMetadata : undefined;
-        const actualError = error instanceof PreTerminalRunnerFailure ? error.cause : error;
-        const reason = safeFailureReasonFromError(actualError) ?? 'Runner failed before terminal result.';
-
-        if (options.sessions !== undefined && preTerminalMeta !== undefined) {
-          try {
-            await recordExecutionSession(
-              { sessions: options.sessions, ...(options.logger !== undefined ? { logger: options.logger } : {}) },
-              {
-                runId: input.runId,
-                phase: derivePhase(input),
-                step: input.run.currentStep,
-                role: deriveRole(input) as 'implementer' | 'reviewer',
-                round: deriveRound(input),
-                startedAt: preTerminalMeta.startedAt,
-                endedAt: preTerminalMeta.endedAt,
-                outcome: 'failed',
-                model: preTerminalMeta.model,
-                inferenceSettings: preTerminalMeta.inferenceSettings,
-                ...(preTerminalMeta.usageAvailable === true && preTerminalMeta.tokens !== undefined
-                  ? { tokens: preTerminalMeta.tokens, usageAvailable: true }
-                  : { usageAvailable: false }),
-                ...(preTerminalMeta.assistantTurnCount !== undefined ? { assistantTurnCount: preTerminalMeta.assistantTurnCount } : {}),
-                ...(preTerminalMeta.toolCallCount !== undefined ? { toolCallCount: preTerminalMeta.toolCallCount } : {})
+      let retriesUsed = 0;
+      // Bounded session-retry loop. Breaks out on a terminal result (advance/needs_input/fail) and
+      // returns a fail directive when a transient session failure cannot be recovered.
+      for (;;) {
+        const events = options.execute.execute({ context, correlationId: input.runId });
+        const tapped = onEvent === undefined
+          ? events
+          : (async function* () {
+              for await (const event of events) {
+                try {
+                  await onEvent(event);
+                } catch {
+                  throw new RunnerProtocolError('runner_failed', 'Telemetry onEvent hook threw during event processing.');
+                }
+                yield event;
               }
-            );
-          } catch (recordError) {
-            options.logger?.error(
-              {
-                runId: input.runId,
-                step: input.run.currentStep,
-                role: deriveRole(input),
-                errorName: recordError instanceof Error ? recordError.name : 'UnknownError',
-                ...(recordError instanceof ExecutionSessionRecordingError && recordError.code !== undefined
-                  ? { errorCode: recordError.code }
-                  : {})
-              },
-              'Failed to record session for pre-terminal runner failure; original failure reason preserved.'
-            );
+            })();
+        try {
+          consumeResult = await consumeRunnerEvents({
+            eventsStore,
+            events: tapped,
+            runId: input.runId,
+            tenant: input.tenant
+          });
+          break;
+        } catch (error) {
+          if (error instanceof RunnerProtocolError) {
+            throw error;
           }
-        }
+          // A RunnerProtocolError wrapped in PreTerminalRunnerFailure (because the runner cached
+          // metadata before the protocol violation) must still propagate as a protocol error,
+          // not be downgraded to an ordinary run failure.
+          if (error instanceof PreTerminalRunnerFailure && error.cause instanceof RunnerProtocolError) {
+            throw error.cause;
+          }
+          // For pre-terminal runner failures, record a failed session row from the cached metadata.
+          const preTerminalMeta = error instanceof PreTerminalRunnerFailure ? error.sessionMetadata : undefined;
+          const actualError = error instanceof PreTerminalRunnerFailure ? error.cause : error;
+          const reason = safeFailureReasonFromError(actualError) ?? 'Runner failed before terminal result.';
 
-        return { workResult: { directive: 'fail', reason } };
+          if (preTerminalMeta !== undefined) {
+            await recordPreTerminalFailedSession(preTerminalMeta);
+          }
+
+          if (isRetryableSessionFailure(error)) {
+            if (retriesUsed >= maxSessionRetries) {
+              // Budget exhausted: fail through the normal run-failure flow with a safe reason so
+              // POST /v1/runs/:id/recover remains available.
+              return { workResult: { directive: 'fail', reason: 'transient_provider_session_retries_exhausted' } };
+            }
+            // Honor cancellation/transition before spending another attempt.
+            const canceled = options.isRunCanceled !== undefined
+              ? await options.isRunCanceled(input.runId)
+              : false;
+            if (canceled) {
+              return { workResult: { directive: 'fail', reason } };
+            }
+            const delayMs = sessionRetryBaseDelayMs * Math.pow(2, retriesUsed);
+            retriesUsed += 1;
+            await sleep(delayMs);
+            continue;
+          }
+
+          return { workResult: { directive: 'fail', reason } };
+        }
       }
 
       // Record durable session when session metadata and sessions repo are available.

@@ -13,8 +13,8 @@ import {
   computeRetryDelayMs,
   defaultRequestTimeoutMs,
   maximumRequestTimeoutMs,
-  resolveRetryPolicy,
-  type ResolvedRetryPolicy
+  resolveProxyRetryBudget,
+  type ResolvedProxyRetryBudget
 } from './request-alteration.js';
 
 export type ProxyFailureCode =
@@ -30,6 +30,28 @@ export interface SafeProxyErrorEnvelope {
   readonly error: { readonly code: ProxyFailureCode; readonly message: string };
 }
 
+// ---------------------------------------------------------------------------
+// Safe upstream failure records (metadata-only; never carry bodies, headers,
+// prompts, raw messages, secrets, full URLs, or filesystem paths).
+// ---------------------------------------------------------------------------
+
+export type ProxyUpstreamFailureOutcome = 'retrying' | 'exhausted' | 'mid_stream' | 'timeout';
+
+export interface ProxyUpstreamFailureRecord {
+  readonly profileName?: string;
+  /** Origin only (scheme + host + port). Never the full URL, path, or query. */
+  readonly upstreamOrigin: string;
+  readonly attempt: number;
+  readonly outcome: ProxyUpstreamFailureOutcome;
+  readonly status?: number;
+  /** Safe transport error code such as ECONNRESET, ETIMEDOUT, ENOTFOUND, EAI_AGAIN. */
+  readonly errorCode?: string;
+  /** Monotonic elapsed time since the retry clock started, in milliseconds. */
+  readonly elapsedMs: number;
+  readonly responseStarted: boolean;
+  readonly bodyBytesStreamed: number;
+}
+
 export interface LoopbackProxyOptions {
   readonly upstreamBaseUrl: string;
   readonly endpoint: RunnerEndpointSettings;
@@ -39,16 +61,25 @@ export interface LoopbackProxyOptions {
   readonly requestTimeoutMs?: number;
   readonly logging?: ProxyRequestLoggingOptions;
   readonly logger?: ProviderConnectionLogger;
-  readonly retryPolicy?: ResolvedRetryPolicy;
+  /** Proxy-only retry budget. Defaults to resolveProxyRetryBudget(endpoint). */
+  readonly retryBudget?: ResolvedProxyRetryBudget;
   readonly requestBodyBufferLimitBytes?: number;
   readonly sleep?: (ms: number) => Promise<void>;
   readonly jitter?: () => number;
+  /** Injected monotonic clock (ms). Budget decisions and elapsedMs come from this, not wall clock. */
+  readonly monotonicNow?: () => number;
 }
 
 export interface LoopbackProxyHandle {
   readonly baseUrl: string;
   readonly startedAt: string;
   requestCount(): number;
+  /**
+   * The latest unrecovered safe failure record for this proxy instance, or undefined when none
+   * qualifies. Outcomes `exhausted`, `timeout`, and `mid_stream` qualify until a later upstream
+   * response completes successfully (which clears the record). A `retrying` record never qualifies.
+   */
+  unrecoveredFailureRecord(): ProxyUpstreamFailureRecord | undefined;
   close(): Promise<void>;
 }
 
@@ -59,6 +90,16 @@ const hopByHopResponseHeaders = new Set([
 
 const defaultRequestBodyBufferLimitBytes = 10 * 1024 * 1024; // 10 MB
 const defaultSleepFn = (ms: number): Promise<void> => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// Only pass through inherently-safe syscall/transport error codes (ALL-CAPS E-codes). This excludes
+// any arbitrary SDK-provided message text so no secret or path can leak into a failure record.
+const safeTransportErrorCode = /^E[A-Z0-9]+$/u;
+
+function extractSafeErrorCode(err: unknown): string | undefined {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  if (typeof code === 'string' && safeTransportErrorCode.test(code)) return code;
+  return undefined;
+}
 
 function sendJsonError(res: http.ServerResponse, status: number, envelope: SafeProxyErrorEnvelope): void {
   if (res.headersSent) return;
@@ -81,6 +122,10 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
     throw new Error(`proxy_invalid_upstream: Unsupported upstream scheme "${parsedUpstream.protocol}" — only http and https are allowed`);
   }
 
+  const upstreamOrigin = parsedUpstream.origin;
+  const profileName = options.telemetryContext.profileName;
+  const connectionLogger = options.logger;
+
   const knownSecretValues = credential !== undefined ? [credential] : [];
   const logger = await createProxyRequestLogger(
     options.logging ?? { enabled: false, diagnosticRoot: '' },
@@ -90,10 +135,16 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
   let requestCounter = 0;
   let closed = false;
 
+  // Proxy-instance-scoped unrecovered failure evidence. Set on exhausted/timeout/mid_stream; cleared
+  // when any upstream response is committed (connectivity proven) so an earlier recovered blip cannot
+  // explain a later unrelated SDK crash. A `retrying` record never sets this.
+  let lastUnrecoveredFailure: ProxyUpstreamFailureRecord | undefined;
+
+  const monotonicNow = options.monotonicNow ?? (() => performance.now());
+
   const server = http.createServer((req, res) => {
     requestCounter += 1;
 
-    const requestStartMs = performance.now();
     const requestStartWallClock = Date.now();
     let dumpId: string | undefined;
 
@@ -123,8 +174,9 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
     const isHttps = upstreamUrl.protocol === 'https:';
     const requestModule = isHttps ? https : http;
 
-    const retryPolicy = options.retryPolicy ?? resolveRetryPolicy(endpoint);
-    const maxRetries = retryPolicy.maxRetries;
+    const retryBudget = options.retryBudget ?? resolveProxyRetryBudget(endpoint);
+    const transientStatuses = retryBudget.transientHttpStatuses;
+    const maxRetries = retryBudget.maxRetries; // undefined => budget-controlled only
     const bodyLimit = options.requestBodyBufferLimitBytes ?? defaultRequestBodyBufferLimitBytes;
     const sleepFn = options.sleep ?? defaultSleepFn;
     const jitterFn = options.jitter ?? Math.random;
@@ -174,14 +226,67 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
 
       // Retry loop
       let attemptNumber = 0;
+      // Monotonic retry clock starts before the first proxy attempt.
+      const retryStartMono = monotonicNow();
       // Set to true only once we call res.writeHead() to commit headers to the downstream client.
-      // At that point the response body may already be streaming and we can no longer send an error envelope.
+      // At that point the response body may already be streaming and we can no longer retry.
       let responseCommitted = false;
+      // True once upstream headers were received for the committed response (used by failure records).
+      let responseStarted = false;
+      // Count of upstream body bytes streamed downstream before a mid-stream failure (always-on).
+      let streamedBytes = 0;
       let clientDisconnected = false;
 
       res.on('close', () => {
         clientDisconnected = true;
       });
+
+      function elapsedMono(): number {
+        return Math.round(monotonicNow() - retryStartMono);
+      }
+
+      function buildFailureRecord(
+        outcome: ProxyUpstreamFailureOutcome,
+        extra: { status?: number; errorCode?: string }
+      ): ProxyUpstreamFailureRecord {
+        return {
+          ...(profileName !== undefined ? { profileName } : {}),
+          upstreamOrigin,
+          attempt: attemptNumber,
+          outcome,
+          ...(extra.status !== undefined ? { status: extra.status } : {}),
+          ...(extra.errorCode !== undefined ? { errorCode: extra.errorCode } : {}),
+          elapsedMs: elapsedMono(),
+          responseStarted,
+          bodyBytesStreamed: streamedBytes
+        };
+      }
+
+      function emitFailureRecord(record: ProxyUpstreamFailureRecord): void {
+        connectionLogger?.warn('proxy.upstream_failure', record);
+      }
+
+      // Decide whether another proxy attempt is allowed given the proposed backoff delay.
+      // Pre-response only: once headers are received the proxy never retries.
+      function canRetry(delayMs: number): boolean {
+        if (clientDisconnected) return false;
+        const remaining = retryBudget.budgetMs - (monotonicNow() - retryStartMono);
+        if (remaining <= 0) return false;
+        if (maxRetries !== undefined && attemptNumber > maxRetries) return false;
+        // Honor Retry-After / backoff only when it fits inside the remaining monotonic budget.
+        if (delayMs > remaining) return false;
+        return true;
+      }
+
+      function writeResponseErrorDump(): void {
+        if (!logger.enabled || !dumpId) return;
+        void logger.writeResponseError(dumpId, {
+          timestamp: new Date().toISOString(),
+          error_code: 'proxy_upstream_failed',
+          elapsed_ms: elapsedMono(),
+          upstream: { origin: upstreamOrigin }
+        }).catch(() => undefined);
+      }
 
       function attempt(): void {
         if (clientDisconnected) return;
@@ -190,6 +295,7 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
         // (e.g. socket close fires concurrently with the response callback for a transient status).
         // Reset per-attempt so that a fresh attempt after a transient retry can still be handled.
         let attemptResponseHandled = false;
+        let timedOut = false;
 
         // Update content-length to match buffered body
         const attemptHeaders = { ...forwardHeaders, 'content-length': String(bodyBuffer.length) };
@@ -205,26 +311,40 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
             attemptResponseHandled = true;
 
             const status = upstreamRes.statusCode ?? 200;
-            const isTransient = retryPolicy.transientHttpStatuses.includes(status);
+            const isTransient = transientStatuses.includes(status);
 
-            if (isTransient && attemptNumber <= maxRetries) {
-              // Drain the body and retry after delay
+            if (isTransient) {
+              // Drain the body; transient responses are never streamed downstream.
               const retryAfterHeader = upstreamRes.headers['retry-after'];
               const retryAfter = Array.isArray(retryAfterHeader) ? retryAfterHeader[0] : retryAfterHeader;
               upstreamRes.resume(); // drain
               const delayMs = computeRetryDelayMs({ attemptNumber, retryAfter, jitter: jitterFn(), requestTimeoutMs: timeoutMs });
-              void sleepFn(delayMs).then(attempt);
-              return;
-            }
-
-            if (isTransient && attemptNumber > maxRetries) {
-              upstreamRes.resume(); // drain
+              if (canRetry(delayMs)) {
+                emitFailureRecord(buildFailureRecord('retrying', { status }));
+                void sleepFn(delayMs).then(attempt);
+                return;
+              }
+              const record = buildFailureRecord('exhausted', { status });
+              lastUnrecoveredFailure = record;
+              emitFailureRecord(record);
               sendJsonError(res, 502, { error: { code: 'proxy_upstream_failed', message: 'Provider proxy upstream request failed.' } });
               return;
             }
 
-            // Non-transient — commit to downstream client. After this point we cannot retry.
+            // Non-transient — commit to downstream client. After this point we cannot retry, and a
+            // committed upstream response proves connectivity: clear any unrecovered blip evidence.
             responseCommitted = true;
+            responseStarted = true;
+            lastUnrecoveredFailure = undefined;
+            if (attemptNumber > 1) {
+              connectionLogger?.info('proxy.upstream_retry_success', {
+                ...(profileName !== undefined ? { profileName } : {}),
+                upstreamOrigin,
+                attempt: attemptNumber,
+                elapsedMs: elapsedMono()
+              });
+            }
+
             const safeHeaders: Record<string, string | string[]> = {};
             for (const [name, value] of Object.entries(upstreamRes.headers)) {
               if (!hopByHopResponseHeaders.has(name.toLowerCase()) && value !== undefined) {
@@ -234,7 +354,7 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
 
             res.writeHead(status, safeHeaders);
 
-            const headersMs = performance.now() - requestStartMs;
+            const headersMs = elapsedMono();
             let firstBodyByteMs: number | undefined;
             let responseCapture: CapturedBody | undefined;
             let responseTotalBytes = 0;
@@ -244,7 +364,7 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
 
             const writeResponseDump = (streamState: 'completed' | 'aborted' | 'errored'): void => {
               if (!logger.enabled || !dumpId) return;
-              const totalMs = performance.now() - requestStartMs;
+              const totalMs = elapsedMono();
               const contentType = upstreamResHeaders['content-type'];
               const parsedBody = responseCapture
                 ? parseCapturedBody(responseCapture.captured, contentType, { knownSecretValues })
@@ -268,8 +388,9 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
 
             // Stream chunks with backpressure
             upstreamRes.on('data', (chunk: Buffer) => {
+              streamedBytes += chunk.length;
               if (logger.enabled) {
-                if (firstBodyByteMs === undefined) firstBodyByteMs = performance.now() - requestStartMs;
+                if (firstBodyByteMs === undefined) firstBodyByteMs = elapsedMono();
                 responseCapture = captureBodyChunk(responseCapture, chunk, logger.bodyCaptureBytes);
                 responseTotalBytes += chunk.length;
               }
@@ -286,8 +407,12 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
               writeResponseDump('completed');
             });
 
-            // Upstream stream error after headers received (e.g. truncated body)
+            // Upstream stream error after headers received (e.g. truncated body). Not replayable at the
+            // proxy: record a mid_stream failure and destroy the connection as today.
             upstreamRes.on('error', () => {
+              const record = buildFailureRecord('mid_stream', {});
+              lastUnrecoveredFailure = record;
+              emitFailureRecord(record);
               if (!streamEndWritten) {
                 streamEndWritten = true;
                 writeResponseDump('errored');
@@ -311,35 +436,49 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
         );
 
         upstreamReq.setTimeout(timeoutMs, () => {
+          timedOut = true;
           upstreamReq.destroy();
         });
 
-        upstreamReq.on('error', () => {
+        upstreamReq.on('error', (err) => {
           if (attemptResponseHandled) return; // response callback already owns this attempt
           if (responseCommitted) return; // already writing to client, cannot send error envelope
           attemptResponseHandled = true;
-          if (attemptNumber <= maxRetries) {
-            if (logger.enabled && dumpId) {
-              void logger.writeResponseError(dumpId, {
-                timestamp: new Date().toISOString(),
-                error_code: 'proxy_upstream_failed',
-                elapsed_ms: Math.round(performance.now() - requestStartMs),
-                upstream: { origin: new URL(upstreamBaseUrl).origin }
-              }).catch(() => undefined);
-            }
+
+          // A pre-response request timeout is a transient connectivity failure. The proxy rides it
+          // out within the monotonic retry budget exactly like a transport error, so a short stall
+          // (e.g. a sleep/wake Wi-Fi reconnect before any response starts) is absorbed rather than
+          // escalated straight to session retry. Only once the budget is unrecovered do we expose a
+          // terminal `timeout` record; session-level retry then owns recovery for a stalled upstream.
+          if (timedOut) {
             const delayMs = computeRetryDelayMs({ attemptNumber, jitter: jitterFn() });
-            void sleepFn(delayMs).then(attempt);
-          } else {
-            if (logger.enabled && dumpId) {
-              void logger.writeResponseError(dumpId, {
-                timestamp: new Date().toISOString(),
-                error_code: 'proxy_upstream_failed',
-                elapsed_ms: Math.round(performance.now() - requestStartMs),
-                upstream: { origin: new URL(upstreamBaseUrl).origin }
-              }).catch(() => undefined);
+            if (canRetry(delayMs)) {
+              emitFailureRecord(buildFailureRecord('retrying', {}));
+              writeResponseErrorDump();
+              void sleepFn(delayMs).then(attempt);
+              return;
             }
+            const record = buildFailureRecord('timeout', {});
+            lastUnrecoveredFailure = record;
+            emitFailureRecord(record);
+            writeResponseErrorDump();
             sendJsonError(res, 502, { error: { code: 'proxy_upstream_failed', message: 'Provider proxy upstream request failed.' } });
+            return;
           }
+
+          const errorCode = extractSafeErrorCode(err);
+          const delayMs = computeRetryDelayMs({ attemptNumber, jitter: jitterFn() });
+          if (canRetry(delayMs)) {
+            emitFailureRecord(buildFailureRecord('retrying', { ...(errorCode !== undefined ? { errorCode } : {}) }));
+            writeResponseErrorDump();
+            void sleepFn(delayMs).then(attempt);
+            return;
+          }
+          const record = buildFailureRecord('exhausted', { ...(errorCode !== undefined ? { errorCode } : {}) });
+          lastUnrecoveredFailure = record;
+          emitFailureRecord(record);
+          writeResponseErrorDump();
+          sendJsonError(res, 502, { error: { code: 'proxy_upstream_failed', message: 'Provider proxy upstream request failed.' } });
         });
 
         upstreamReq.end(bodyBuffer);
@@ -360,6 +499,7 @@ export async function createLoopbackProxy(options: LoopbackProxyOptions): Promis
     baseUrl,
     startedAt,
     requestCount: () => requestCounter,
+    unrecoveredFailureRecord: () => lastUnrecoveredFailure,
     close: async () => {
       if (closed) return;
       closed = true;

@@ -2,11 +2,16 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ExecutionContext } from '@autocatalyst/api-contract';
 import type { ExecutionBoundaryEvent, ExecutionEntryPoint, ExecutionEntryPointInput, RunnerSessionMetadata } from '@autocatalyst/execution';
-import { PreTerminalRunnerFailure, RunnerProtocolError } from '@autocatalyst/execution';
+import { ClassifiedProviderFailureError, PreTerminalRunnerFailure, RunnerProtocolError } from '@autocatalyst/execution';
 import type { Session } from '@autocatalyst/api-contract';
 import type { SessionRepository } from './domain-repositories.js';
 import type { RunWorkInput, RunWorkResult } from './orchestrator.js';
-import { createExecutionRunUnitOfWork } from './execution-run-unit-of-work.js';
+import {
+  createExecutionRunUnitOfWork,
+  isRetryableSessionFailure,
+  RUNNER_SESSION_MAX_RETRIES,
+  RUNNER_SESSION_RETRY_BASE_DELAY_MS
+} from './execution-run-unit-of-work.js';
 import type { DirectStepExecutionPort } from './execution-run-unit-of-work.js';
 import { InMemoryRetainedRunEventStore } from './run-events.js';
 import { ExecutionSessionRecordingError } from './execution-session-recorder.js';
@@ -607,6 +612,186 @@ describe('execution-run-unit-of-work session persistence', () => {
     await expect(unitOfWork.run(makeRoleInput('implementer', 1))).rejects.toBeInstanceOf(RunnerProtocolError);
     // Must NOT silently swallow into a { directive: 'fail' } and must NOT call sessions.create
     expect(sessions.create).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Bounded session retry (transient pre-terminal failures)
+// ---------------------------------------------------------------------------
+
+function makeTransientPreTerminal(): PreTerminalRunnerFailure {
+  const meta: RunnerSessionMetadata = { ...baseSessionMetadata, outcome: 'failed' };
+  return new PreTerminalRunnerFailure(new ClassifiedProviderFailureError('transient_provider_failure'), meta);
+}
+
+function makePermanentPreTerminal(): PreTerminalRunnerFailure {
+  const meta: RunnerSessionMetadata = { ...baseSessionMetadata, outcome: 'failed' };
+  return new PreTerminalRunnerFailure(new ClassifiedProviderFailureError('provider_auth_failed'), meta);
+}
+
+type SequencedStep = { readonly throw: unknown } | { readonly events: ExecutionBoundaryEvent[] };
+
+// Entry point whose behavior advances per attempt (execute() is called once per in-dispatch attempt).
+function makeSequencedEntryPoint(steps: readonly SequencedStep[]): { entry: ExecutionEntryPoint; calls: () => number } {
+  let i = 0;
+  return {
+    calls: () => i,
+    entry: {
+      execute(_input: ExecutionEntryPointInput): AsyncIterable<ExecutionBoundaryEvent> {
+        const step = steps[Math.min(i, steps.length - 1)]!;
+        i += 1;
+        return (async function* () {
+          if ('throw' in step) throw step.throw;
+          for (const event of step.events) yield event;
+        })();
+      }
+    }
+  };
+}
+
+// Real in-memory session repository with monotonic per-run sequence assignment.
+function makeStoringSessions(): { sessions: SessionRepository; rows: () => Session[] } {
+  const rows: Session[] = [];
+  let seq = 0;
+  const sessions: SessionRepository = {
+    async create(input) {
+      seq += 1;
+      const row = { ...makeSession(), ...(input as Partial<Session>), id: `session_${seq}`, sequence: seq } as Session;
+      rows.push(row);
+      return row;
+    },
+    async findById(id) { return rows.find((r) => r.id === id) ?? null; },
+    async listByRun(_runId) { return rows.slice(); }
+  };
+  return { sessions, rows: () => rows.slice() };
+}
+
+describe('execution-run-unit-of-work bounded session retry', () => {
+  it('isRetryableSessionFailure only accepts transient pre-terminal failures', () => {
+    expect(isRetryableSessionFailure(makeTransientPreTerminal())).toBe(true);
+    expect(isRetryableSessionFailure(makePermanentPreTerminal())).toBe(false);
+    expect(isRetryableSessionFailure(new Error('plain'))).toBe(false);
+    expect(isRetryableSessionFailure(new ClassifiedProviderFailureError('transient_provider_failure'))).toBe(false);
+  });
+
+  it('retries a transient pre-terminal failure and succeeds in the same workspace', async () => {
+    const sessions = makeSessions();
+    const sleeps: number[] = [];
+    const { entry, calls } = makeSequencedEntryPoint([
+      { throw: makeTransientPreTerminal() },
+      { events: [makeTerminalEvent('advance')] }
+    ]);
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: entry,
+      resolveContext: async () => makeContext(),
+      eventsStore: newStore(),
+      sessions,
+      sleep: async (ms) => { sleeps.push(ms); }
+    });
+
+    const result = await unitOfWork.run(makeRoleInput('implementer', 1));
+    expect(result).toEqual({ directive: 'advance' });
+    expect(calls()).toBe(2); // initial + one retry
+    expect(sleeps).toEqual([RUNNER_SESSION_RETRY_BASE_DELAY_MS]); // 2000
+    // One failed attempt row + one succeeded row.
+    expect((sessions.create as ReturnType<typeof vi.fn>).mock.calls.length).toBe(2);
+    expect((sessions.create as ReturnType<typeof vi.fn>).mock.calls[0][0].outcome).toBe('failed');
+    expect((sessions.create as ReturnType<typeof vi.fn>).mock.calls[1][0].outcome).toBe('succeeded');
+  });
+
+  it('exhausts the retry budget and fails with transient_provider_session_retries_exhausted', async () => {
+    const sessions = makeSessions();
+    const sleeps: number[] = [];
+    const { entry, calls } = makeSequencedEntryPoint([{ throw: makeTransientPreTerminal() }]);
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: entry,
+      resolveContext: async () => makeContext(),
+      eventsStore: newStore(),
+      sessions,
+      sleep: async (ms) => { sleeps.push(ms); }
+    });
+
+    const result = await unitOfWork.run(makeRoleInput('implementer', 1));
+    expect(result).toEqual({ directive: 'fail', reason: 'transient_provider_session_retries_exhausted' });
+    expect(calls()).toBe(1 + RUNNER_SESSION_MAX_RETRIES); // 3 attempts
+    expect(sleeps).toEqual([2000, 4000]); // exponential backoff
+    // A failed session row is recorded for every attempt.
+    expect((sessions.create as ReturnType<typeof vi.fn>).mock.calls.length).toBe(3);
+  });
+
+  it('does not retry a permanent (classified) pre-terminal failure', async () => {
+    const sessions = makeSessions();
+    const sleeps: number[] = [];
+    const { entry, calls } = makeSequencedEntryPoint([{ throw: makePermanentPreTerminal() }]);
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: entry,
+      resolveContext: async () => makeContext(),
+      eventsStore: newStore(),
+      sessions,
+      sleep: async (ms) => { sleeps.push(ms); }
+    });
+
+    const result = await unitOfWork.run(makeRoleInput('implementer', 1));
+    expect(result).toEqual({ directive: 'fail', reason: 'provider_auth_failed' });
+    expect(calls()).toBe(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it('stops retrying when the run is canceled between attempts and preserves cancellation semantics', async () => {
+    const sessions = makeSessions();
+    const sleeps: number[] = [];
+    const { entry, calls } = makeSequencedEntryPoint([{ throw: makeTransientPreTerminal() }]);
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: entry,
+      resolveContext: async () => makeContext(),
+      eventsStore: newStore(),
+      sessions,
+      sleep: async (ms) => { sleeps.push(ms); },
+      isRunCanceled: async () => true
+    });
+
+    const result = await unitOfWork.run(makeRoleInput('implementer', 1));
+    // Canceled before the first retry: not exhausted, no further attempts.
+    expect(result).toEqual({ directive: 'fail', reason: 'transient_provider_failure' });
+    expect(calls()).toBe(1);
+    expect(sleeps).toEqual([]);
+  });
+
+  it('persists a durable failed row per attempt with increasing sequence while convergence round is unchanged', async () => {
+    const { sessions, rows } = makeStoringSessions();
+    const { entry } = makeSequencedEntryPoint([
+      { throw: makeTransientPreTerminal() },
+      { events: [makeTerminalEvent('advance')] }
+    ]);
+    const unitOfWork = createExecutionRunUnitOfWork({
+      execute: entry,
+      resolveContext: async () => makeContext(),
+      eventsStore: newStore(),
+      sessions,
+      sleep: async () => undefined
+    });
+
+    const result = await unitOfWork.run(makeRoleInput('reviewer', 2));
+    expect(result).toEqual({ directive: 'advance' });
+
+    const persisted = rows();
+    expect(persisted.length).toBe(2);
+    // Sessions share step/role/round; sequence increases; no new run-step occurrence is created here.
+    expect(persisted.map((r) => r.sequence)).toEqual([1, 2]);
+    expect(persisted.every((r) => r.round === 2)).toBe(true);
+    expect(persisted.every((r) => r.role === 'reviewer')).toBe(true);
+    expect(persisted.every((r) => r.step === 'implementation.build')).toBe(true);
+    expect(persisted[0]!.outcome).toBe('failed');
+    expect(persisted[1]!.outcome).toBe('succeeded');
+  });
+
+  it('documents the worst-case default failure time formula (~366000 ms)', () => {
+    // (1 + SDK retries) × PROXY_RETRY_BUDGET_MS × (1 + RUNNER_SESSION_MAX_RETRIES) + session backoff.
+    const PROXY_RETRY_BUDGET_MS = 60000;
+    const sdkRetries = 1;
+    const sessionBackoff = RUNNER_SESSION_RETRY_BASE_DELAY_MS + RUNNER_SESSION_RETRY_BASE_DELAY_MS * 2; // 2000 + 4000
+    const worstCase = (1 + sdkRetries) * PROXY_RETRY_BUDGET_MS * (1 + RUNNER_SESSION_MAX_RETRIES) + sessionBackoff;
+    expect(worstCase).toBe(366000);
   });
 });
 
