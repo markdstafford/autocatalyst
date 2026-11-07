@@ -199,6 +199,16 @@ export async function reopenFeedback(
   const feedback = await requireFeedback(input.feedbackId, deps);
   requireStatus(feedback, 'wont_fix');
 
+  // Only the originator (the author of the first thread entry) may reopen a declined item. This
+  // mirrors resolveFeedback's authority check so the PATCH route can map 403 the same way.
+  const originator = feedback.thread[0]?.author;
+  if (originator === undefined || input.actor.id !== originator.id) {
+    throw new FeedbackLifecycleError(
+      'feedback_not_originator',
+      'Only the originator of the feedback may reopen it.'
+    );
+  }
+
   return deps.feedback.updateStatusAndAppendThread({
     feedbackId: input.feedbackId,
     expectedStatus: 'wont_fix',

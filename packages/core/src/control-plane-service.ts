@@ -1,8 +1,11 @@
 import type {
+  Artifact,
   CreateConversationWithFirstRunRequest,
   CreateConversationWithFirstRunResponse,
   CreateRunFeedbackRequest,
   Feedback,
+  FeedbackResponse,
+  FeedbackTarget,
   NonModelPrincipal,
   Principal,
   Run,
@@ -16,9 +19,11 @@ import type {
   RunSessionListResponse,
   RunSpecResponse,
   RunStep,
-  Session
+  Session,
+  SpecAuthorFrontmatter,
+  UpdateRunFeedbackRequest
 } from '@autocatalyst/api-contract';
-import { createConversationWithFirstRunResponseSchema, pullRequestReconciliationResponseSchema, runFeedbackListResponseSchema, runPullRequestResponseSchema, runRecoveryResponseSchema, runReplyResponseSchema, runSessionListResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
+import { createConversationWithFirstRunResponseSchema, feedbackResponseSchema, pullRequestReconciliationResponseSchema, runFeedbackListResponseSchema, runPullRequestResponseSchema, runRecoveryResponseSchema, runReplyResponseSchema, runSessionListResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
 import type { ReconcilePullRequestsResponse } from '@autocatalyst/api-contract';
 
 import {
@@ -34,7 +39,9 @@ import {
 
 import type { ArtifactRepository, FeedbackRepository, ListRunsByTenantFilters, ListRunsByTenantOptions, ProjectRepository, PullRequestRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository, SessionRepository } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
-import { appendFeedbackThreadReply, createArtifactFeedback, FeedbackLifecycleError } from './feedback-lifecycle.js';
+import { appendFeedbackThreadReply, createArtifactFeedback, FeedbackLifecycleError, reopenFeedback, resolveFeedback } from './feedback-lifecycle.js';
+import { SpecAnchorValidationError, validateSpecAnchor } from './spec-anchor-validator.js';
+import { reconcileSpecFeedback, type ReconcileSpecFeedbackDependencies } from './spec-anchor-reconciler.js';
 import type { IssueReferenceIntakeResolver, ResolvedConversationCreate } from './issue-reference-intake.js';
 import { IssueReferenceIntakeError } from './issue-reference-intake.js';
 import {
@@ -62,6 +69,7 @@ export type ControlPlaneServiceErrorCode =
   | 'unauthorized'
   | 'conflict'
   | 'invalid_transition'
+  | 'invalid_feedback_anchor'
   | 'unsupported_pause';
 
 export interface ControlPlaneServiceConflictDetails {
@@ -184,7 +192,7 @@ export interface ServiceListRunFeedbackInput {
 }
 
 export interface ServiceListRunFeedbackResult {
-  readonly feedback: readonly Feedback[];
+  readonly feedback: readonly FeedbackResponse[];
 }
 
 export interface AppendRunFeedbackThreadReplyInput {
@@ -193,6 +201,14 @@ export interface AppendRunFeedbackThreadReplyInput {
   readonly runId: string;
   readonly feedbackId: string;
   readonly body: string;
+}
+
+export interface ServiceUpdateRunFeedbackInput {
+  readonly principal: Principal;
+  readonly tenant: string;
+  readonly runId: string;
+  readonly feedbackId: string;
+  readonly request: UpdateRunFeedbackRequest;
 }
 
 export interface ServiceReplyToRunInput {
@@ -249,7 +265,8 @@ export interface ControlPlaneService {
   getRunSpec(input: ServiceGetRunSpecInput): Promise<ServiceGetRunSpecResult>;
   createRunFeedback(input: ServiceCreateRunFeedbackInput): Promise<ServiceCreateRunFeedbackResult>;
   listRunFeedback(input: ServiceListRunFeedbackInput): Promise<ServiceListRunFeedbackResult>;
-  appendRunFeedbackThreadReply(input: AppendRunFeedbackThreadReplyInput): Promise<Feedback>;
+  appendRunFeedbackThreadReply(input: AppendRunFeedbackThreadReplyInput): Promise<FeedbackResponse>;
+  updateRunFeedback(input: ServiceUpdateRunFeedbackInput): Promise<FeedbackResponse>;
   replyToRun(input: ServiceReplyToRunInput): Promise<RunReplyResponse>;
   recoverRun(input: ServiceRecoverRunInput): Promise<ServiceRecoverRunResult>;
   reconcilePullRequests(input: ServiceReconcilePullRequestsInput): Promise<ServiceReconcilePullRequestsResult>;
@@ -303,6 +320,14 @@ function mapOrchestratorErrorCode(code: OrchestratorErrorCode): ControlPlaneServ
 function specArtifactKindForRun(workKind: string): 'feature_spec' | 'enhancement_spec' | null {
   if (workKind === 'feature') return 'feature_spec';
   if (workKind === 'enhancement') return 'enhancement_spec';
+  return null;
+}
+
+// The human-review gate step a feedback item's target is reviewed at. Reopen only applies its
+// revise directive when the run is waiting at this step. docs/pr targets have no gate here.
+function gateStepForFeedbackTarget(target: FeedbackTarget): 'spec.human_review' | 'implementation.human_review' | null {
+  if (target === 'artifact') return 'spec.human_review';
+  if (target === 'implementation') return 'implementation.human_review';
   return null;
 }
 
@@ -688,13 +713,23 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       throw new ControlPlaneServiceError('not_found', 'Run not accessible.');
     }
 
-    // Select the spec artifact kind based on run work kind
+    const { artifact, markdown, frontmatter } = await this.#readCurrentSpec(run);
+    return runSpecResponseSchema.parse({ artifact, markdown, frontmatter });
+  }
+
+  /**
+   * Shared current-spec reader used by {@link getRunSpec} and spec-anchor validation/reconciliation.
+   * Returns the current spec artifact, its committed markdown, and parsed frontmatter while
+   * preserving `GET /v1/runs/:id/spec` failure semantics: a run whose work kind has no spec, or a
+   * run with no spec artifact, is `not_found` (404); an unreadable or unparseable spec file is a
+   * persistence failure (500), not a 404.
+   */
+  async #readCurrentSpec(run: Run): Promise<{ artifact: Artifact; markdown: string; frontmatter: SpecAuthorFrontmatter }> {
     const artifactKind = specArtifactKindForRun(run.workKind);
     if (artifactKind === null) {
       throw new ControlPlaneServiceError('not_found', `Run work kind '${run.workKind}' does not support spec reads.`);
     }
 
-    // Find the current spec artifact
     const artifact = await this.#artifacts.findByRunAndKind({ runId: run.id, kind: artifactKind });
     if (artifact === null) {
       throw new ControlPlaneServiceError('not_found', `No spec artifact found for run '${run.id}'.`);
@@ -703,7 +738,6 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       throw new ControlPlaneServiceError('not_found', `Spec artifact for run '${run.id}' is not file-canonical.`);
     }
 
-    // Load workspace metadata
     let workspaceMetadata;
     try {
       workspaceMetadata = await this.#runWorkspaceMetadata.findByRunId(run.id);
@@ -714,7 +748,6 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       throw persistenceFailed('Run workspace metadata is not available.');
     }
 
-    // Read the committed spec file
     let markdown: string;
     try {
       markdown = await this.#workspaceFilesystem.readFile({
@@ -725,15 +758,64 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       throw persistenceFailed('Failed to read spec file.', error);
     }
 
-    // Parse frontmatter
-    let frontmatter;
+    let frontmatter: SpecAuthorFrontmatter;
     try {
       frontmatter = parseSpecFrontmatter(markdown);
     } catch (error) {
       throw persistenceFailed('Failed to parse spec frontmatter.', error);
     }
 
-    return runSpecResponseSchema.parse({ artifact, markdown, frontmatter });
+    return { artifact, markdown, frontmatter };
+  }
+
+  /**
+   * Reconcile spec feedback anchors for a read response (list, thread-reply, PATCH). Reads the spec
+   * at most once, only when an eligible anchor exists, persists repaired offsets when the repository
+   * supports it, and degrades to stored-unreconciled items when the spec cannot be read.
+   */
+  async #reconcileFeedbackForResponse(run: Run, items: readonly Feedback[]): Promise<readonly FeedbackResponse[]> {
+    const deps: ReconcileSpecFeedbackDependencies = {
+      runId: run.id,
+      readCurrentSpec: async () => {
+        try {
+          const { artifact, markdown } = await this.#readCurrentSpec(run);
+          return { artifactId: artifact.id, markdown };
+        } catch {
+          // Any failure (no spec artifact, unreadable file) degrades the read to unreconciled.
+          return null;
+        }
+      },
+      ...(this.#feedback.updateAnchorOffsets !== undefined
+        ? {
+            persistRepairedOffsets: async ({ feedbackId, from, to }) => {
+              await this.#feedback.updateAnchorOffsets!({ feedbackId, from, to });
+            }
+          }
+        : {})
+    };
+    return reconcileSpecFeedback(items, deps);
+  }
+
+  /**
+   * Validate a present spec feedback anchor against the current spec. No-op when the anchor is
+   * absent (unanchored feedback is accepted without reading the spec). Maps a validation failure to
+   * an `invalid_feedback_anchor` service error (422) carrying the typed reason. A missing spec
+   * artifact surfaces as the same 404 as `GET /v1/runs/:id/spec`; an unreadable spec file is the
+   * existing persistence failure.
+   */
+  async #validateSpecAnchorIfPresent(run: Run, anchor: CreateRunFeedbackRequest['anchor']): Promise<void> {
+    if (anchor === undefined) return;
+    const { artifact, markdown } = await this.#readCurrentSpec(run);
+    try {
+      validateSpecAnchor({ anchor, currentSpec: { artifactId: artifact.id, markdown } });
+    } catch (error) {
+      if (error instanceof SpecAnchorValidationError) {
+        throw new ControlPlaneServiceError('invalid_feedback_anchor', error.message, {
+          details: { reason: error.reason }
+        });
+      }
+      throw error;
+    }
   }
 
   async createRunFeedback(input: ServiceCreateRunFeedbackInput): Promise<ServiceCreateRunFeedbackResult> {
@@ -755,6 +837,10 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     if (run.tenant !== input.tenant) {
       throw new ControlPlaneServiceError('not_found', 'Run not accessible.');
     }
+
+    // A present spec anchor is validated against the current spec before any item is created. An
+    // absent anchor is accepted without reading the spec (target-level feedback).
+    await this.#validateSpecAnchorIfPresent(run, input.request.anchor);
 
     try {
       return await createArtifactFeedback({
@@ -796,7 +882,8 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       throw persistenceFailed('Failed to list feedback.', error);
     }
 
-    return runFeedbackListResponseSchema.parse({ feedback: feedbackItems });
+    const reconciled = await this.#reconcileFeedbackForResponse(run, feedbackItems);
+    return runFeedbackListResponseSchema.parse({ feedback: reconciled });
   }
 
   async appendRunFeedbackThreadReply(input: AppendRunFeedbackThreadReplyInput): Promise<Feedback> {
@@ -821,8 +908,9 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       throw new ControlPlaneServiceError('not_found', 'Feedback not found.');
     }
 
+    let updated: Feedback;
     try {
-      return await appendFeedbackThreadReply({
+      updated = await appendFeedbackThreadReply({
         feedbackId: input.feedbackId,
         actor,
         body: input.body
@@ -833,6 +921,123 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       }
       throw persistenceFailed('Failed to append feedback thread reply.', error);
     }
+
+    // Single-item responses pass through the same reconciler as list reads so a client never
+    // replaces a cached item with an older range than a list read would have returned.
+    const [reconciled] = await this.#reconcileFeedbackForResponse(run, [updated]);
+    return feedbackResponseSchema.parse(reconciled ?? updated);
+  }
+
+  async updateRunFeedback(input: ServiceUpdateRunFeedbackInput): Promise<FeedbackResponse> {
+    // Policy decision FIRST, before loading or mutating any feedback, so cross-run item existence
+    // is never leaked and no mutation happens before authorization.
+    const decision = await this.#policy.authorize({
+      principal: input.principal,
+      action: 'run_feedback.update',
+      resource: { kind: 'run_feedback_item', id: input.runId, path: '/v1/runs/:id/feedback/:feedbackId' }
+    });
+    if (!decision.allowed) {
+      throw new ControlPlaneServiceError('forbidden', 'Not authorized to update run feedback.');
+    }
+
+    // Model principals are authors, not operators, for this route (maps to 403).
+    const actor = requireNonModelPrincipal(input.principal);
+
+    // Load + tenant-scope the run. Missing and cross-tenant both resolve to 404.
+    const run = await this.#runs.findById(input.runId);
+    if (run === null || run.tenant !== input.tenant) {
+      throw new ControlPlaneServiceError('not_found', `Run '${input.runId}' not found.`);
+    }
+
+    // Load the feedback. A missing item, or an item from another run/tenant, is 404 (no cross-run
+    // existence disclosure).
+    let feedback: Feedback | null;
+    try {
+      feedback = await this.#feedback.findById(input.feedbackId);
+    } catch (error) {
+      throw persistenceFailed('Failed to load feedback.', error);
+    }
+    if (feedback === null || feedback.tenant !== input.tenant || feedback.runId !== run.id) {
+      throw new ControlPlaneServiceError('not_found', 'Feedback not found.');
+    }
+
+    const request = input.request;
+
+    if (request.status === 'resolved') {
+      const result = await this.#resolveViaLifecycle(input.feedbackId, actor, request.body);
+      const [reconciled] = await this.#reconcileFeedbackForResponse(run, [result]);
+      return feedbackResponseSchema.parse(reconciled ?? result);
+    }
+
+    // status === 'open' (reopen).
+    if (request.body === undefined || request.body.length === 0) {
+      throw new ControlPlaneServiceError('invalid_transition', 'Reopening a feedback item requires an explanatory body.');
+    }
+
+    // Reopen only applies at the gate for the item's target; otherwise 409 and nothing changes.
+    const gateStep = gateStepForFeedbackTarget(feedback.target);
+    if (gateStep === null || run.terminal || run.currentStep !== gateStep) {
+      throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' is not waiting at the gate for this feedback target; reopen is not applicable.`);
+    }
+
+    const reopened = await this.#reopenViaLifecycle(input.feedbackId, actor, request.body);
+
+    // Send the run back to revise for the reopened item's target.
+    try {
+      await this.#orchestrator.applyDirective({
+        runId: run.id,
+        tenant: run.tenant,
+        directive: 'revise',
+        origin: 'human',
+        principal: actor
+      });
+    } catch (error) {
+      if (error instanceof OrchestratorError) {
+        throw new ControlPlaneServiceError('conflict', error.message, {
+          ...(error.details !== undefined ? { details: error.details } : {}),
+          cause: error
+        });
+      }
+      throw error;
+    }
+
+    const [reconciled] = await this.#reconcileFeedbackForResponse(run, [reopened]);
+    return feedbackResponseSchema.parse(reconciled ?? reopened);
+  }
+
+  async #resolveViaLifecycle(feedbackId: string, actor: NonModelPrincipal, body?: string): Promise<Feedback> {
+    try {
+      return await resolveFeedback(
+        { feedbackId, actor, ...(body !== undefined ? { body } : {}) },
+        this.#feedbackLifecycle
+      );
+    } catch (error) {
+      throw this.#mapFeedbackLifecycleError(error);
+    }
+  }
+
+  async #reopenViaLifecycle(feedbackId: string, actor: NonModelPrincipal, body: string): Promise<Feedback> {
+    try {
+      return await reopenFeedback({ feedbackId, actor, body }, this.#feedbackLifecycle);
+    } catch (error) {
+      throw this.#mapFeedbackLifecycleError(error);
+    }
+  }
+
+  #mapFeedbackLifecycleError(error: unknown): ControlPlaneServiceError {
+    if (error instanceof FeedbackLifecycleError) {
+      switch (error.code) {
+        case 'feedback_missing':
+          return new ControlPlaneServiceError('not_found', 'Feedback not found.');
+        case 'feedback_not_originator':
+          return new ControlPlaneServiceError('forbidden', error.message);
+        case 'feedback_invalid_transition':
+          return new ControlPlaneServiceError('conflict', error.message);
+        case 'feedback_invalid_input':
+          return new ControlPlaneServiceError('invalid_transition', error.message);
+      }
+    }
+    return persistenceFailed('Failed to update feedback.', error);
   }
 
   async reconcilePullRequests(input: ServiceReconcilePullRequestsInput): Promise<ServiceReconcilePullRequestsResult> {
@@ -909,6 +1114,18 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     const stepDefinition = getRunStepDefinition(run.currentStep);
     if (stepDefinition?.waitingOn !== 'human') throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' is not waiting on human input.`);
 
+    // At the spec review gate, a present anchor on a feedback reply is validated against the current
+    // spec before the orchestrator creates an item or applies a directive. Rejection leaves the run
+    // at the gate and creates no item. Implementation-gate feedback replies keep arbitrary optional
+    // anchors unchanged and are not validated here.
+    if (
+      input.request.kind === 'feedback' &&
+      input.request.anchor !== undefined &&
+      run.currentStep === 'spec.human_review'
+    ) {
+      await this.#validateSpecAnchorIfPresent(run, input.request.anchor);
+    }
+
     try {
       const result = await this.#orchestrator.replyToRun({
         runId: input.runId,
@@ -925,7 +1142,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
         }
         if (error.code === 'invalid_transition') {
           const details = error.details as { code?: unknown } | null;
-          if (details !== null && typeof details === 'object' && details.code === 'feedback_gate_blocked') {
+          if (details !== null && typeof details === 'object' && (details.code === 'feedback_gate_blocked' || details.code === 'request_changes_conflict')) {
             throw new ControlPlaneServiceError('conflict', error.message, { details: error.details, cause: error });
           }
           throw new ControlPlaneServiceError('invalid_transition', error.message, { details: error.details, cause: error });
