@@ -5,6 +5,9 @@ import type { RunnerRunInput } from './runner.js';
 import type { ProviderCapabilityDegradation, ProviderRequest } from './request-alteration.js';
 import type { StructuredAgentResultCapture } from './structured-result-capture.js';
 import type { AgentModelMemoryContinuity } from './agent-model-memory.js';
+// Type-only import (erased at runtime; the loopback-proxy <-> agent-provider-adapter cycle is
+// type-level only). Exposes the proxy's safe failure evidence to connection consumers.
+import type { ProxyUpstreamFailureRecord } from './loopback-proxy.js';
 
 export type ProviderConnectionMechanism = 'fetch_transport' | 'process_environment';
 
@@ -67,6 +70,12 @@ export interface AgentConnection {
   readonly credentialResolved: boolean;
   createFetchTransport(): ProviderFetchTransport;
   createProcessLaunchConfig(input: ProcessLaunchConfigInput): ProcessLaunchConfig | Promise<ProcessLaunchConfig>;
+  /**
+   * Returns the loopback proxy's latest unrecovered safe failure record for this connection, or
+   * undefined when there is none (or the connection does not use the proxy). Lets the adapter
+   * classify an otherwise-unclassified session death as transient without scraping logs.
+   */
+  getProxyFailureEvidence?(): ProxyUpstreamFailureRecord | undefined;
   close?(): Promise<void>;
 }
 

@@ -25,8 +25,9 @@ import {
   redactProcessLaunchConfigForLog,
   redactProviderRequestForLog,
   redactProviderResponseForLog,
-  resolveRetryPolicy
+  resolveProxyRetryBudget
 } from './request-alteration.js';
+import type { ProxyUpstreamFailureRecord } from './loopback-proxy.js';
 
 // Re-export the types that callers expect from connection.ts
 export type { AgentConnection, ProcessLaunchConfig, ProcessLaunchConfigInput, ProviderFetchTransport };
@@ -200,7 +201,9 @@ export async function createAgentConnection(
       ...(logger !== undefined ? { logger } : {}),
       telemetryContext,
       requestTimeoutMs: Math.min(profile.endpoint.requestTimeoutMs ?? defaultRequestTimeoutMs, maximumRequestTimeoutMs),
-      retryPolicy: resolveRetryPolicy(profile.endpoint),
+      // Proxy-only retry budget. When endpoint.maxRetries is unset, the monotonic budget controls
+      // proxy attempts — the shared defaultMaxRetries=1 policy is intentionally NOT applied here.
+      retryBudget: resolveProxyRetryBudget(profile.endpoint),
     }).then((handle) => {
       proxyHandle = handle;
       return handle;
@@ -469,6 +472,13 @@ export async function createAgentConnection(
         degradedCapabilities: launchResult.degradedCapabilities,
         redacted
       };
+    },
+
+    // ----------------------------------------------------------------
+    // getProxyFailureEvidence
+    // ----------------------------------------------------------------
+    getProxyFailureEvidence(): ProxyUpstreamFailureRecord | undefined {
+      return proxyHandle?.unrecoveredFailureRecord();
     },
 
     // ----------------------------------------------------------------

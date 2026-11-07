@@ -24,6 +24,7 @@ export const knownFailureReasonCodes = [
   'skill_materialization_failed',
   'schema_validation_failed',
   'transient_provider_failure',
+  'transient_provider_session_retries_exhausted',
   'reviewer_result_missing',
   'reviewer_result_invalid',
   'disposition_missing',
