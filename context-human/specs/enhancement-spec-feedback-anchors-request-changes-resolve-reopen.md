@@ -197,7 +197,7 @@ sequenceDiagram
     participant D as Repository
     participant G as Shared spec reader
     participant X as Reconciler
-    C->>S: GET run feedback or run detail
+    C->>S: GET run feedback or a single-item feedback response
     S->>D: list feedback items
     D-->>S: stored items
     alt at least one spec artifact_range anchor with quotedText
@@ -251,7 +251,7 @@ API contracts:
 - `POST /v1/runs/{id}/feedback` with target `artifact`:
   - Accepts absent `anchor`.
   - With present spec anchor, can return `422` `{ code: "invalid_feedback_anchor", details: { reason } }`.
-  - Returns `404` when an anchored spec comment cannot read the current spec.
+  - Returns `404` when the run has no spec artifact for its work kind, the same as `GET /v1/runs/:id/spec`. If the spec artifact exists but its file cannot be read, the write fails with the existing spec-reader persistence failure, not a 404.
 - `POST /v1/runs/{id}/replies`:
   - Existing `feedback` replies at `spec.human_review` apply the same spec-anchor validation before creating an item or applying a directive. Rejection leaves the run at the gate and creates no item.
   - Existing implementation-gate `feedback` replies keep optional anchors of any kind unchanged.
@@ -297,7 +297,7 @@ Unit tests:
 
 Service and route tests:
 
-- `POST /v1/runs/:id/feedback` accepts unanchored artifact feedback, rejects invalid anchors with 422 details, and returns 404 for anchored spec feedback when no readable spec exists.
+- `POST /v1/runs/:id/feedback` accepts unanchored artifact feedback, rejects invalid anchors with 422 details, and returns 404 for anchored spec feedback when the run has no spec artifact for its work kind (an unreadable spec file is the existing persistence failure, not a 404).
 - `feedback` replies at `spec.human_review` validate anchors before creation/directive; rejected replies leave the run unchanged and create no item.
 - Implementation review feedback replies remain unchanged and allow unanchored or arbitrary optional anchors.
 - Feedback list reads reconcile once per request, and single-item thread-reply/PATCH responses reconcile the returned item once.
@@ -340,7 +340,7 @@ Documentation tests:
     - **Acceptance criteria**:
       - [ ] `getRunSpec` behavior and response data remain unchanged through existing tests.
       - [ ] Anchor validation can call the same helper and receive the same markdown/path/artifact id.
-      - [ ] A run with no readable spec produces the same 404 behavior for anchored spec feedback as `GET /v1/runs/:id/spec`.
+      - [ ] A run with no spec artifact for its work kind produces the same 404 for anchored spec feedback as `GET /v1/runs/:id/spec`, and an unreadable spec file produces the same persistence failure, not a 404.
     - **Dependencies**: None
   - [ ] **Task: Build spec anchor validator**
     - **Description**: Add a validator for optional spec feedback anchors that enforces `artifact_range`, current spec artifact id, code-point bounds, required `quotedText`, and exact quote reproduction. Return typed invalid reasons for route error mapping.
