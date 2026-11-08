@@ -235,8 +235,8 @@ are the AI steps that launch a scripted session: `spec.author`, `implementation.
 ## Scripted spec content and revision
 
 For feature and enhancement runs, the first scripted `spec.author` spec contains a heading,
-paragraphs, a table, a bullet list, a fenced code block, an emoji (`✨`) before passage A, and
-passages A through D. Passages C and D appear before passage A; passage B and an `## Open questions`
+paragraphs, a table, a bullet list, a fenced code block, an astral emoji (`🚀`, outside the Basic
+Multilingual Plane) before passage A, and passages A through D. Passages C and D appear before passage A; passage B and an `## Open questions`
 heading appear after it.
 
 A revision — triggered by request-changes at the spec gate or a feedback reply that requests

@@ -11,6 +11,7 @@ import { readControlPlaneAppConfig } from '../config.js';
 import { createControlPlaneServer } from '../server.js';
 import {
   FAKE_FIXTURE_PROJECT,
+  SPEC_EMOJI,
   SPEC_OPEN_QUESTIONS_HEADING,
   SPEC_PASSAGE_A,
   SPEC_PASSAGE_B,
@@ -164,7 +165,7 @@ describe('fake mode end-to-end (in-process)', () => {
     const markdown = specResp.json().markdown as string;
     expect(markdown).toContain('A. Names must be unique within a tenant.');
     expect(markdown).toContain('| Field | Type |');
-    expect(markdown).toContain('✨');
+    expect(markdown).toContain(SPEC_EMOJI);
 
     await approve(app, runId);
     await waitForStep(app, runId, 'implementation.human_review');

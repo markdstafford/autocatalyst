@@ -49,8 +49,16 @@ export const FAKE_SCENARIO_DEFINITIONS: Readonly<Record<FakeScenario, FakeScenar
 // Deterministic scripted spec content (feature / enhancement spec.author)
 // ---------------------------------------------------------------------------
 
-/** Emoji rendered immediately before passage A. */
-export const SPEC_EMOJI = '✨';
+/**
+ * Emoji rendered immediately before passage A.
+ *
+ * Deliberately an **astral** emoji (U+1F680, outside the Basic Multilingual Plane) so the
+ * end-to-end offset proof exercises the code-point vs UTF-16 distinction: the rocket is one
+ * Unicode code point but two JavaScript UTF-16 code units, so passage A's code-point `from`
+ * anchor is exactly one lower than its UTF-16 index. The `scripted-results.spec.ts` guard
+ * asserts `SPEC_EMOJI.codePointAt(0) > 0xFFFF` so this never regresses to a BMP glyph.
+ */
+export const SPEC_EMOJI = '🚀';
 
 /** Passage literals the scripted first spec must contain exactly. */
 export const SPEC_PASSAGE_A = 'A. Names must be unique within a tenant.';

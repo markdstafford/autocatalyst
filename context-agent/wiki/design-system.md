@@ -374,6 +374,14 @@ Resolve (Reopen on a resolved card). The composer appears at the selection with 
 primary Comment button (disabled while empty), and Cancel, and uses a `--color-primary` outline and
 `--shadow-popover`. `Ctrl+Enter` or `Cmd+Enter` submits, and `Escape` cancels.
 
+**Comment column groups.** Anchored cards come first, in document order, each positioned beside its anchor.
+After them, and only when such comments exist, come two end-of-column groups, each under a small
+`--text-xs`/`--color-subtext` heading and carrying no document marker: a **stale** group for anchored comments
+whose quoted text no longer appears in the current spec (each shows its quote and a `stale` chip), then a
+**no-range** group for feedback with no artifact range (each shows its body, omitting the quote line when there
+is no quoted text). A spec with no comments shows an empty column with a short hint that selecting text starts
+a comment.
+
 The detail pane zone shows "N open, M resolved" in `--text-xs` and the previous and next comment buttons.
 
 ## Gate decision

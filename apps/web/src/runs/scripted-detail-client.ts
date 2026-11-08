@@ -11,8 +11,12 @@
  * the reader wakes exactly as it would when a real fetch is aborted.
  */
 import type {
+  CreateRunFeedbackRequest,
+  Feedback,
+  FeedbackResponse,
   PullRequest,
   Run,
+  RunFeedbackListResponse,
   RunPullRequestResponse,
   RunSessionListResponse,
   RunSpecResponse,
@@ -53,6 +57,10 @@ export interface ScriptedDetailClient {
   /** 'ready' => getRunSpec resolves; 'drafting' => 404; an error => rejects. */
   setSpec(outcome: 'ready' | 'drafting'): void;
   setSpecError(error: unknown): void;
+  /** Set the markdown returned by a successful getRunSpec. */
+  setSpecMarkdown(markdown: string): void;
+  /** Set the feedback returned by listRunFeedback. */
+  setFeedback(feedback: readonly FeedbackResponse[]): void;
   // Gate: hold reads until released (to keep a refresh in flight).
   hold(): void;
   release(): void;
@@ -117,6 +125,8 @@ export function createScriptedDetailClient(init?: { run?: Run }): ScriptedDetail
   let sessionsError: unknown;
   let specOutcome: 'ready' | 'drafting' = 'drafting';
   let specError: unknown;
+  let specMarkdown = '# Spec';
+  let feedbackList: FeedbackResponse[] = [];
 
   let gate: { promise: Promise<void>; resolve: () => void } | undefined;
   const subscribeErrors: unknown[] = [];
@@ -200,7 +210,7 @@ export function createScriptedDetailClient(init?: { run?: Run }): ScriptedDetail
       // A minimal valid-enough spec response; the hook only cares that it resolved.
       return {
         artifact: { id: 'artifact-1', kind: 'feature_spec' } as unknown as RunSpecResponse['artifact'],
-        markdown: '# Spec',
+        markdown: specMarkdown,
         frontmatter: {} as unknown as RunSpecResponse['frontmatter']
       };
     },
@@ -248,8 +258,28 @@ export function createScriptedDetailClient(init?: { run?: Run }): ScriptedDetail
     createConversationWithFirstRun: notImplemented('createConversationWithFirstRun'),
     listRuns: notImplemented('listRuns'),
     listRunSteps: notImplemented('listRunSteps'),
-    createRunFeedback: notImplemented('createRunFeedback'),
-    listRunFeedback: notImplemented('listRunFeedback'),
+    async createRunFeedback(_id: string, request: CreateRunFeedbackRequest): Promise<Feedback> {
+      const created: FeedbackResponse = {
+        id: `fb-${feedbackList.length + 1}`,
+        runId: run.id,
+        owner: { id: 'user-1', kind: 'human', tenantId: 'tenant-1', displayName: 'Phoebe' },
+        tenant: 'tenant-1',
+        target: request.target,
+        status: 'open',
+        title: request.title,
+        body: request.body,
+        ...(request.anchor !== undefined ? { anchor: request.anchor as FeedbackResponse['anchor'] } : {}),
+        thread: [{ id: 't1', author: { id: 'user-1', kind: 'human', tenantId: 'tenant-1' }, body: request.body, createdAt: '2026-11-08T00:00:00.000Z' }],
+        createdAt: '2026-11-08T00:00:00.000Z',
+        updatedAt: '2026-11-08T00:00:00.000Z'
+      };
+      feedbackList = [...feedbackList, created];
+      return created as unknown as Feedback;
+    },
+    async listRunFeedback(): Promise<RunFeedbackListResponse> {
+      await gated();
+      return { feedback: [...feedbackList] };
+    },
     appendRunFeedbackThreadReply: notImplemented('appendRunFeedbackThreadReply'),
     replyToRun: notImplemented('replyToRun'),
     recoverRun: notImplemented('recoverRun'),
@@ -285,6 +315,12 @@ export function createScriptedDetailClient(init?: { run?: Run }): ScriptedDetail
     },
     setSpecError(error) {
       specError = error;
+    },
+    setSpecMarkdown(markdown) {
+      specMarkdown = markdown;
+    },
+    setFeedback(next) {
+      feedbackList = [...next];
     },
     hold() {
       if (gate === undefined) {
