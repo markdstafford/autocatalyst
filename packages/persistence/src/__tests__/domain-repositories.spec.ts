@@ -1461,6 +1461,46 @@ describe('DrizzleDomainRepositories round-trip', () => {
     });
   });
 
+  it('feedback.updateAnchorOffsets persists repaired offsets and leaves other fields untouched', async () => {
+    await withRepositories(async (repos) => {
+      const setup = await createProjectConversationAndTopic(repos, {
+        tenant: 'tenant_1',
+        owner,
+        identity: 'anchor-repair',
+        title: 'Anchor repair'
+      });
+      const run = await repos.runs.create({
+        topicId: setup.topic.id,
+        owner,
+        tenant: 'tenant_1',
+        workKind: 'feature',
+        currentStep: 'spec.author',
+        terminal: false
+      });
+
+      const fb = await repos.feedback.create({
+        runId: run.id,
+        owner,
+        tenant: 'tenant_1',
+        target: 'artifact',
+        status: 'open',
+        title: 'Range feedback',
+        body: 'Repair me.',
+        anchor: { kind: 'artifact_range', artifactId: 'art_spec_1', from: 0, to: 5, quotedText: 'scope' },
+        thread: [{ id: 'thread_1', author: owner, body: 'Repair me.', createdAt: '2026-06-14T00:00:00.000Z' }]
+      });
+
+      const updated = await repos.feedback.updateAnchorOffsets({ feedbackId: fb.id, from: 42, to: 47 });
+      expect(updated.anchor).toEqual({ kind: 'artifact_range', artifactId: 'art_spec_1', from: 42, to: 47, quotedText: 'scope' });
+      // Status, thread, and quotedText are untouched by an offset repair.
+      expect(updated.status).toBe('open');
+      expect(updated.thread).toHaveLength(1);
+
+      const found = await repos.feedback.findById(fb.id);
+      expect(found?.anchor).toMatchObject({ from: 42, to: 47, quotedText: 'scope' });
+    });
+  });
+
   it('clears stale failureReason when a transition targets a non-failed state', async () => {
     await withRepositories(async (repos) => {
       const setup = await createProjectConversationAndTopic(repos, {

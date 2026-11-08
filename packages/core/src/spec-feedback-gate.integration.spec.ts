@@ -585,6 +585,46 @@ describe('spec feedback gate integration', () => {
       .rejects.toMatchObject({ code: 'invalid_transition' });
   });
 
+  it('request_changes with open artifact feedback sends the run back to revise with no createdFeedbackId', async () => {
+    const harness = await makeAuthoredSpecAtReviewHarness();
+    const phoebe = principal('phoebe');
+
+    await createArtifactFeedback({
+      runId: harness.run.id,
+      owner: phoebe,
+      tenant: harness.run.tenant,
+      principal: phoebe,
+      title: 'Clarify scope',
+      body: 'The scope is ambiguous.'
+    }, harness.feedbackDeps);
+
+    const result = await harness.orchestrator.replyToRun({
+      runId: harness.run.id,
+      tenant: harness.run.tenant,
+      principal: phoebe,
+      request: { kind: 'request_changes' }
+    });
+
+    expect(result.classification.directive).toBe('revise');
+    expect(result.classification.target).toBe('artifact');
+    expect(result.classification.createdFeedbackId).toBeUndefined();
+    expect(result.run.currentStep).not.toBe('spec.human_review');
+
+    // The open item stays open until the spec author addresses it.
+    const items = await harness.repos.feedback.listByRun(harness.run.id);
+    expect(items.every((item) => item.status === 'open')).toBe(true);
+  });
+
+  it('request_changes with no open artifact feedback is a request_changes_conflict', async () => {
+    const harness = await makeAuthoredSpecAtReviewHarness();
+    await expect(harness.orchestrator.replyToRun({
+      runId: harness.run.id,
+      tenant: harness.run.tenant,
+      principal: principal('phoebe'),
+      request: { kind: 'request_changes' }
+    })).rejects.toMatchObject({ code: 'invalid_transition', details: expect.objectContaining({ code: 'request_changes_conflict' }) });
+  });
+
   it('can approve spec after simulated server restart by resolving workspace from persistent metadata', async () => {
     // Run was authored before the simulated restart
     const harness = await makeAuthoredSpecAtReviewHarness();

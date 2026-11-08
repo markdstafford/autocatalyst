@@ -223,12 +223,25 @@ export interface FeedbackThreadAppendPersistenceInput {
   readonly updatedAt: string;
 }
 
+export interface FeedbackAnchorOffsetsPersistenceInput {
+  readonly feedbackId: string;
+  readonly from: number;
+  readonly to: number;
+}
+
 export interface FeedbackRepository {
   create(input: CreateFeedbackInput): Promise<Feedback>;
   findById(id: string): Promise<Feedback | null>;
   listByRun(runId: string): Promise<readonly Feedback[]>;
   updateStatusAndAppendThread(input: FeedbackStatusTransitionPersistenceInput): Promise<Feedback>;
   appendThreadEntry(input: FeedbackThreadAppendPersistenceInput): Promise<Feedback>;
+  /**
+   * Persist repaired `from`/`to` offsets on an existing `artifact_range` anchor (read-side spec
+   * anchor reconciliation, ADR-033). Optional so existing test doubles need not implement it; when
+   * absent, read-side repairs are returned in responses but not persisted. Implementations must
+   * leave status, thread, quotedText, and all other fields untouched.
+   */
+  updateAnchorOffsets?(input: FeedbackAnchorOffsetsPersistenceInput): Promise<Feedback>;
 }
 
 export interface PublicationRepository {

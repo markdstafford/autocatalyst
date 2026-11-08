@@ -1098,6 +1098,26 @@ export class DefaultOrchestrator implements Orchestrator {
     }
     const target = getHumanReviewGateFeedbackTarget(input.run.currentStep);
 
+    if (input.request.kind === 'request_changes') {
+      // Request changes operates over feedback already raised; it creates no item. It applies the
+      // revise directive at a human-review gate (spec or implementation) when at least one open
+      // feedback item exists for that gate's target. When no open feedback exists for the target,
+      // it is a conflict (mapped to 409), matching other inapplicable replies. The target is
+      // resolved per gate step by getHumanReviewGateFeedbackTarget above.
+      const items = await this.#feedbackLifecycleDependencies.feedback.listByRun(input.run.id);
+      const openForTarget = items.filter((item) => item.target === target && item.status === 'open');
+      if (openForTarget.length === 0) {
+        throw new OrchestratorError(
+          'invalid_transition',
+          `No open feedback exists for '${target}'; raise feedback before requesting changes.`,
+          { details: { code: 'request_changes_conflict' } }
+        );
+      }
+      const moved = await this.applyDirective({ runId: input.runId, tenant: input.tenant, directive: 'revise', origin: 'human', principal: input.principal });
+      // Intentionally no createdFeedbackId: request_changes operates over existing comments.
+      return { ...moved, classification: { directive: 'revise', target } };
+    }
+
     if (input.request.kind === 'feedback') {
       const feedback = await createGateFeedback({
         runId: input.run.id,

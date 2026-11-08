@@ -81,6 +81,7 @@ export type {
   ConversationIngressRepository,
   CreateConversationTopicMessageAndRunInput,
   CreateConversationTopicMessageAndRunResult,
+  FeedbackAnchorOffsetsPersistenceInput,
   FeedbackStatusTransitionPersistenceInput,
   FeedbackThreadAppendPersistenceInput,
   FeedbackThreadEntryPersistenceInput,
@@ -250,6 +251,20 @@ export {
   SpecReviewGateBlockedError,
   assertSpecReviewGateCanAdvance
 } from './spec-review-gate.js';
+export {
+  SpecAnchorValidationError,
+  validateSpecAnchor,
+  type SpecAnchorInvalidReason,
+  type CurrentSpecForAnchor
+} from './spec-anchor-validator.js';
+export {
+  isReconcilableSpecFeedback,
+  reconcileAnchorAgainstSpec,
+  reconcileSpecFeedback,
+  type AnchorReconciliation,
+  type ReconcileSpecFeedbackDependencies,
+  type ReconcileLogger
+} from './spec-anchor-reconciler.js';
 export type {
   SpecAuthoringErrorCode,
   WorkspaceFileSystemPort,

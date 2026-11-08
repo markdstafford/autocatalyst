@@ -18,6 +18,7 @@ export type PolicyResourceDescriptor =
   | { readonly kind: 'run_spec'; readonly id: string; readonly path: '/v1/runs/:id/spec' }
   | { readonly kind: 'run_feedback'; readonly id: string; readonly path: '/v1/runs/:id/feedback' }
   | { readonly kind: 'run_feedback_thread'; readonly id: string; readonly path: '/v1/runs/:id/feedback/:feedbackId/thread' }
+  | { readonly kind: 'run_feedback_item'; readonly id: string; readonly path: '/v1/runs/:id/feedback/:feedbackId' }
   | { readonly kind: 'run_replies'; readonly id: string; readonly path: '/v1/runs/:id/replies' }
   | { readonly kind: 'run_recovery'; readonly id: string; readonly path: '/v1/runs/:id/recover' }
   | { readonly kind: 'pull_request_reconciliation'; readonly path: '/v1/pull-requests/reconcile' }
@@ -49,6 +50,7 @@ export type PolicyAction =
   | 'run_feedback.create'
   | 'run_feedback.list'
   | 'run_feedback.thread.append'
+  | 'run_feedback.update'
   | 'run_replies.create'
   | 'run_recovery.create'
   | 'pull_request.reconcile'

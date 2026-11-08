@@ -1,6 +1,6 @@
 ---
 created: 2026-06-06
-last_updated: 2026-10-30
+last_updated: 2026-11-07
 status: active
 roadmap: flow
 ---
@@ -55,6 +55,28 @@ the implementation does, or a comment typed into a chat thread. When an item doe
 spec, the control plane rejects one that does not resolve to a region of the current spec. A client may
 require an anchor of its own comments, as the web client does for the spec (`run-detail`).
 
+## Spec anchors: validated on write, reconciled on read
+
+A spec anchor is a region of the current spec markdown, expressed as Unicode code-point offsets plus
+the `quotedText` those offsets reproduce (ADR-033). When a spec anchor is supplied — on feedback
+creation, or on a feedback reply at the spec gate — the control plane validates it against the current
+spec before the item exists: the anchor must be an `artifact_range` for the current spec artifact whose
+offsets reproduce the quoted text, or the write is rejected and no item is created. An absent anchor is
+accepted without reading the spec, so a target-level comment or a comment from a chat channel needs no
+region.
+
+Because an agent can rewrite the whole spec between the moment a comment is anchored and the moment it
+is read, anchored spec comments are reconciled against the current spec each time feedback is read. An
+anchor whose offsets still reproduce its quote is returned unchanged. An anchor whose quote has moved has
+its stored offsets repaired to the first matching occurrence and the repair is persisted, so every client
+reads the same range. An anchor whose quote no longer appears is returned with a response-only
+`stale: true`: the comment stays visible and attached to its quote, nothing is persisted, and the item's
+status and thread are untouched — a later revision that restores the text repairs the anchor on the next
+read and drops `stale`. `stale` is response-only state: it is never stored and a client never sends it
+back. Legacy anchors with no `quotedText` are returned unchanged and never marked stale. Reconciliation
+reads the current spec at most once per read; if the spec cannot be read, feedback history stays readable
+with its stored anchors returned unreconciled.
+
 ## Disposition authority
 
 A feedback item moves through its lifecycle under a fixed division of authority, so that no actor can
@@ -95,6 +117,17 @@ Approving the gate confirms the approver's own `addressed` items, moving them to
 action; the approval is the originator's acceptance of the items they raised. A model therefore cannot
 carry a run past a gate by marking everything `wont_fix`: the person still has to approve, and before
 approving can reopen any item they think was waved off rather than handled.
+
+## Requesting changes over raised feedback
+
+Raising comments and sending the run back for revision are separate actions. An operator raises spec
+comments as feedback items, then issues a single *request changes* reply at the spec gate to send the run
+back to revise. Request changes operates over the comments already raised: it creates no new item, and it
+applies the `revise` directive only when at least one open artifact item exists for the spec. Its reply
+response classifies the directive as `revise` and intentionally carries no `createdFeedbackId`, because
+nothing was created. With no open spec feedback it is a conflict — there is nothing to request changes
+over — and it is a conflict anywhere other than the spec gate. The open items stay open until the spec
+author takes them up in the revise pass and moves each to `addressed`.
 
 ## Batch addressing and reviewer findings
 

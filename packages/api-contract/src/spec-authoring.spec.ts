@@ -24,6 +24,30 @@ describe('spec authoring schemas', () => {
     })).toMatchObject({ kind: 'feature_spec' });
   });
 
+  it('does not carry anchor offsets in the spec author output contract (ADR-033)', () => {
+    // The spec author never emits or maintains anchor offsets; they are a control-plane concern.
+    // The result schema is strict, so an anchor/offset field must be rejected, and the accepted
+    // shape must expose no anchor-related keys.
+    const valid = specAuthorResultSchema.parse({
+      kind: 'feature_spec',
+      slug: 'no-anchors',
+      relativePath: 'context-human/specs/feature-no-anchors.md',
+      frontmatter: validFrontmatter,
+      body: '# Feature: No anchors\n\n## Goals\n\n- Keep offsets out of the author contract.'
+    });
+    expect(Object.keys(valid)).not.toContain('anchor');
+    expect(Object.keys(valid)).not.toContain('anchors');
+    expect(Object.keys(valid.frontmatter)).not.toContain('anchor');
+    expect(() => specAuthorResultSchema.parse({
+      kind: 'feature_spec',
+      slug: 'no-anchors',
+      relativePath: 'context-human/specs/feature-no-anchors.md',
+      frontmatter: validFrontmatter,
+      body: '# Feature: No anchors\n\n## Goals\n\n- x',
+      anchors: [{ from: 0, to: 5 }]
+    })).toThrow();
+  });
+
   it('accepts autocatalyst as a service specced_by identity', () => {
     expect(specAuthorFrontmatterSchema.parse(validFrontmatter).specced_by).toBe('autocatalyst');
   });

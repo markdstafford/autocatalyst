@@ -840,6 +840,65 @@ describe('ControlPlaneClient.appendRunFeedbackThreadReply', () => {
   });
 });
 
+describe('ControlPlaneClient.updateRunFeedback', () => {
+  const resolvedItem = {
+    id: 'fb_1', runId: 'run_1',
+    owner: { kind: 'human', id: 'user_1', tenantId: 'tenant_1', displayName: 'Phoebe' },
+    tenant: 'tenant_1', target: 'artifact', status: 'resolved',
+    title: 'Scope unclear', body: 'Please clarify.',
+    anchor: { kind: 'artifact_range', artifactId: 'art_1', from: 0, to: 5, quotedText: 'Scope', stale: true },
+    thread: [
+      { id: 'th_1', author: { kind: 'human', id: 'user_1', tenantId: 'tenant_1', displayName: 'Phoebe' }, body: 'Please clarify.', createdAt: '2026-06-12T00:00:00.000Z' },
+      { id: 'th_2', author: { kind: 'human', id: 'user_1', tenantId: 'tenant_1', displayName: 'Phoebe' }, body: 'Confirmed.', createdAt: '2026-06-14T00:00:00.000Z' }
+    ],
+    createdAt: '2026-06-12T00:00:00.000Z', updatedAt: '2026-06-14T00:00:00.000Z'
+  };
+
+  it('sends PATCH to /v1/runs/:id/feedback/:feedbackId and parses a response anchor with stale', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => resolvedItem });
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', bearerToken: 'test-token', fetch: mockFetch });
+    const result = await client.updateRunFeedback('run_1', 'fb_1', { status: 'resolved' });
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.objectContaining({ href: expect.stringContaining('/v1/runs/run_1/feedback/fb_1') }),
+      expect.objectContaining({ method: 'PATCH', headers: expect.objectContaining({ authorization: 'Bearer test-token' }) })
+    );
+    expect(result.status).toBe('resolved');
+    expect(result.anchor).toMatchObject({ stale: true });
+  });
+
+  it('validates the request body before sending (rejects an unknown status)', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, json: async () => resolvedItem });
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', bearerToken: 'test-token', fetch: mockFetch });
+    await expect(client.updateRunFeedback('run_1', 'fb_1', { status: 'addressed' } as never)).rejects.toThrow();
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('throws ControlPlaneClientError on a 409 conflict', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({ ok: false, status: 409, json: async () => ({ error: { code: 'conflict', message: 'Not applicable.' } }) });
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', bearerToken: 'test-token', fetch: mockFetch });
+    await expect(client.updateRunFeedback('run_1', 'fb_1', { status: 'open', body: 'Reopen.' })).rejects.toBeInstanceOf(ControlPlaneClientError);
+  });
+
+  it('accepts the request_changes reply kind through replyToRun typing', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        run: {
+          id: 'run_1', topicId: 'topic_1', owner: { kind: 'human', id: 'user_1', tenantId: 'tenant_1' }, tenant: 'tenant_1',
+          workKind: 'feature', currentStep: 'spec.author', waitingOn: 'ai', terminal: false,
+          createdAt: '2026-06-12T00:00:00.000Z', updatedAt: '2026-06-12T00:00:00.000Z'
+        },
+        classification: { directive: 'revise', target: 'artifact' }
+      })
+    });
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', bearerToken: 'test-token', fetch: mockFetch });
+    const response = await client.replyToRun('run_1', { kind: 'request_changes' });
+    expect(response.classification.directive).toBe('revise');
+    expect(response.classification.createdFeedbackId).toBeUndefined();
+  });
+});
+
 describe('ControlPlaneClient.reconcilePullRequests', () => {
   it('sends POST to /v1/pull-requests/reconcile with bearer token and returns parsed response', async () => {
     const reconciliationResponse = { checked: 5, merged: 2, closed: 1, failed: 0, timedOut: false };

@@ -84,6 +84,7 @@ import type {
   CreateConversationTopicMessageAndRunInput,
   CreateConversationTopicMessageAndRunResult,
   DomainRepositories,
+  FeedbackAnchorOffsetsPersistenceInput,
   FeedbackRepository,
   FeedbackStatusTransitionPersistenceInput,
   FeedbackThreadAppendPersistenceInput,
@@ -1195,6 +1196,30 @@ export class DrizzleFeedbackRepository implements FeedbackRepository {
         .run();
       const updatedRows = tx.select().from(feedback).where(eq(feedback.id, input.feedbackId)).limit(1).all();
       const updated = updatedRows[0];
+      if (updated === undefined) {
+        throw new Error(`Feedback '${input.feedbackId}' does not exist after update.`);
+      }
+      return this.#rowToFeedback(updated);
+    });
+  }
+
+  async updateAnchorOffsets(input: FeedbackAnchorOffsetsPersistenceInput): Promise<Feedback> {
+    return this.#database.drizzle.transaction((tx) => {
+      const current = tx.select().from(feedback).where(eq(feedback.id, input.feedbackId)).limit(1).all()[0];
+      if (current === undefined) {
+        throw new Error(`Feedback '${input.feedbackId}' does not exist.`);
+      }
+      const anchor = parseNullableJsonValue(feedbackAnchorSchema, current.anchorJson);
+      if (anchor === null || anchor.kind !== 'artifact_range') {
+        throw new Error(`Feedback '${input.feedbackId}' has no artifact_range anchor to repair.`);
+      }
+      // Persist only the repaired offsets; leave quotedText, status, thread, and updatedAt untouched.
+      const repaired = { ...anchor, from: input.from, to: input.to };
+      tx.update(feedback)
+        .set({ anchorJson: nullableJsonForRow(feedbackAnchorSchema, repaired) })
+        .where(eq(feedback.id, input.feedbackId))
+        .run();
+      const updated = tx.select().from(feedback).where(eq(feedback.id, input.feedbackId)).limit(1).all()[0];
       if (updated === undefined) {
         throw new Error(`Feedback '${input.feedbackId}' does not exist after update.`);
       }

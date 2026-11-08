@@ -21,6 +21,12 @@ export const runReplyRequestSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('guidance'),
     body: z.string().min(1)
+  }).strict(),
+  // Request changes over already-raised open feedback. Carries no other fields: it operates on
+  // comments already raised rather than creating a new item, so the reply response classifies the
+  // directive as `revise` with no `createdFeedbackId`.
+  z.object({
+    kind: z.literal('request_changes')
   }).strict()
 ]);
 

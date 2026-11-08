@@ -1,6 +1,6 @@
 ---
 created: 2026-06-04
-last_updated: 2026-10-30
+last_updated: 2026-11-07
 status: active
 roadmap: core
 ---
@@ -70,14 +70,26 @@ Two further operations support a client that starts runs from tracked issues:
 Operator actions are action sub-resources, authenticated and routed through the single authority
 (`orchestrator`, ADR-009): `POST /runs/{id}/cancel`, `POST /runs/{id}/set-step`. `Feedback` has
 first-class endpoints because it gates run completion: `POST /runs/{id}/feedback` raises an item, and
-`PATCH /runs/{id}/feedback/{id}` resolves, reopens, or marks it `wont_fix`.
+`PATCH /runs/{id}/feedback/{feedbackId}` carries the item through the lifecycle transitions a client may
+drive — a strict body with `status: resolved` to resolve an `addressed` item, or `status: open` with a
+body to reopen a `wont_fix` item. Both transitions are the originating principal's alone: another
+principal is `403`, and a model principal cannot call the route at all. The policy point runs before the
+item is read or mutated, so the route never discloses a cross-run item's existence. Resolving from any
+status but `addressed`, or reopening when the run is not waiting at that item's gate, is `409`.
+
+A separate reply kind, `request_changes` on `POST /runs/{id}/replies`, sends a run at the spec gate back
+for revision over the open feedback already raised; it creates no item and its reply classifies the
+directive as `revise` with no `createdFeedbackId` (`feedback`, `hitl`).
 
 A client can also archive a run, which is the archive action of `commands`: the run leaves active
 listings and no data is destroyed. Recovering a stopped run is its own contract (`hitl`).
 
-Feedback on a spec can carry an anchor, and the server rejects an anchor that does not resolve in the
-current spec (`feedback`). A run's testing guide and the results of a test pass, per item and general,
-are read and written through the run (`acceptance-testing`).
+Feedback on a spec can carry an anchor; the anchor is optional, and when present on spec feedback the
+server validates it against the current spec and rejects one that does not reproduce its quoted text with
+`422 invalid_feedback_anchor`. When feedback is read back, anchored spec comments are reconciled against
+the current spec — moved quotes come back with repaired offsets, a vanished quote comes back with a
+response-only `stale: true` that a client never sends back (`feedback`). A run's testing guide and the
+results of a test pass, per item and general, are read and written through the run (`acceptance-testing`).
 
 ## Reads and streaming
 

@@ -34,6 +34,7 @@ import {
   errorResponseSchema,
   eventsStreamPath,
   feedbackSchema,
+  feedbackResponseSchema,
   forbiddenErrorCode,
   getRunPullRequestSuccessStatusCode,
   getRunSpecSuccessStatusCode,
@@ -67,6 +68,10 @@ import {
   runFeedbackPath,
   runFeedbackThreadPath,
   runFeedbackThreadParamsSchema,
+  updateRunFeedbackPath,
+  updateRunFeedbackParamsSchema,
+  updateRunFeedbackRequestSchema,
+  updateRunFeedbackSuccessStatusCode,
   runIdParamsSchema,
   runPullRequestPath,
   runPullRequestResponseSchema,
@@ -99,6 +104,7 @@ import {
   type CreateProbeResourceRequest,
   type CreateProjectRequest,
   type CreateRunFeedbackRequest,
+  type UpdateRunFeedbackRequest,
   type CreateSecretRequest,
   type ProjectIdParams,
   type UpdateProjectRequest,
@@ -240,6 +246,9 @@ async function handleControlPlaneServiceError(
       return;
     case 'invalid_transition':
       await reply.status(400).send(errorResponse('invalid_transition', error.message, error.details));
+      return;
+    case 'invalid_feedback_anchor':
+      await reply.status(422).send(errorResponse('invalid_feedback_anchor', error.message, error.details));
       return;
     case 'unsupported_pause':
       await reply.status(409).send(errorResponse('unsupported_pause', error.message, error.details));
@@ -913,7 +922,43 @@ export async function registerControlPlaneRoutes(
           feedbackId: params.feedbackId,
           body: body.body
         });
-        await reply.status(appendRunFeedbackThreadSuccessStatusCode).send(feedbackSchema.parse(feedback));
+        await reply.status(appendRunFeedbackThreadSuccessStatusCode).send(feedbackResponseSchema.parse(feedback));
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(request, reply, error);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    // Spec review: PATCH /v1/runs/:id/feedback/:feedbackId (resolve / reopen)
+    protectedApp.patch(updateRunFeedbackPath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'run_feedback.update', (request) => ({
+        kind: 'run_feedback_item' as const,
+        id: (request.params as { id: string }).id,
+        path: '/v1/runs/:id/feedback/:feedbackId' as const
+      }))
+    }, async (request, reply) => {
+      let params: z.infer<typeof updateRunFeedbackParamsSchema>;
+      let body: UpdateRunFeedbackRequest;
+      try {
+        params = updateRunFeedbackParamsSchema.parse(request.params);
+        body = updateRunFeedbackRequestSchema.parse(request.body);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+      const principal = requirePrincipalFromRequest(request);
+      try {
+        const feedback = await dependencies.controlPlane.updateRunFeedback({
+          principal,
+          tenant: principal.tenantId,
+          runId: params.id,
+          feedbackId: params.feedbackId,
+          request: body
+        });
+        await reply.status(updateRunFeedbackSuccessStatusCode).send(feedbackResponseSchema.parse(feedback));
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
           await handleControlPlaneServiceError(request, reply, error);

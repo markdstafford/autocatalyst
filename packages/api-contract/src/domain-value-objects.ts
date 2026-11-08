@@ -100,6 +100,36 @@ const feedbackAnchorArtifactRangeSchema = z.object({
   })
 }).strict();
 
+// Response-only variant of the artifact_range anchor. Read responses may decorate an anchor with
+// `stale: true` when the quoted text no longer appears in the current spec. Staleness is never
+// persisted and never sent back by clients: fresh and repaired anchors omit `stale` entirely and
+// never send `stale: false`.
+const responseFeedbackAnchorArtifactRangeSchema = feedbackAnchorArtifactRangeSchema.extend({
+  stale: z.literal(true).optional().openapi({
+    description: 'Response-only. Present and true when the quoted text is absent from the current spec. Never persisted; never sent by clients.'
+  })
+}).strict();
+
+function refineAnchorRanges(
+  anchor: { kind: string; endLine?: number; startLine?: number; from?: number; to?: number },
+  ctx: z.RefinementCtx
+): void {
+  if (anchor.kind === 'file_range' && anchor.endLine !== undefined && anchor.startLine !== undefined && anchor.endLine < anchor.startLine) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'endLine must be greater than or equal to startLine.',
+      path: ['endLine']
+    });
+  }
+  if (anchor.kind === 'artifact_range' && anchor.to !== undefined && anchor.from !== undefined && anchor.to <= anchor.from) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'to must be greater than from.',
+      path: ['to']
+    });
+  }
+}
+
 export const feedbackAnchorSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('artifact'), artifactId: z.string().min(1) }).strict(),
   feedbackAnchorArtifactRangeSchema,
@@ -107,22 +137,19 @@ export const feedbackAnchorSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('message'), messageId: z.string().min(1) }).strict(),
   z.object({ kind: z.literal('run_step'), runStepId: z.string().min(1) }).strict(),
   z.object({ kind: z.literal('external'), url: z.string().url() }).strict()
-]).superRefine((anchor, ctx) => {
-  if (anchor.kind === 'file_range' && anchor.endLine < anchor.startLine) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'endLine must be greater than or equal to startLine.',
-      path: ['endLine']
-    });
-  }
-  if (anchor.kind === 'artifact_range' && anchor.to <= anchor.from) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'to must be greater than from.',
-      path: ['to']
-    });
-  }
-});
+]).superRefine(refineAnchorRanges);
+
+// The stored anchor schema is the authoritative, strict shape persisted in the database. Read
+// responses use {@link responseFeedbackAnchorSchema}, which additionally permits a response-only
+// `stale` flag on artifact_range anchors. The stored schema keeps rejecting any `stale` key.
+export const responseFeedbackAnchorSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('artifact'), artifactId: z.string().min(1) }).strict(),
+  responseFeedbackAnchorArtifactRangeSchema,
+  feedbackAnchorFileRangeSchema,
+  z.object({ kind: z.literal('message'), messageId: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal('run_step'), runStepId: z.string().min(1) }).strict(),
+  z.object({ kind: z.literal('external'), url: z.string().url() }).strict()
+]).superRefine(refineAnchorRanges);
 
 export const feedbackThreadEntrySchema = z.object({
   id: z.string().min(1),
@@ -195,6 +222,7 @@ export type Cost = z.infer<typeof costSchema>;
 export type CredentialReference = z.infer<typeof credentialReferenceSchema>;
 export type ChannelReference = z.infer<typeof channelReferenceSchema>;
 export type FeedbackAnchor = z.infer<typeof feedbackAnchorSchema>;
+export type ResponseFeedbackAnchor = z.infer<typeof responseFeedbackAnchorSchema>;
 export type FeedbackThreadEntry = z.infer<typeof feedbackThreadEntrySchema>;
 export type FeedbackThread = z.infer<typeof feedbackThreadSchema>;
 export type TestResultEvidence = z.infer<typeof testResultEvidenceSchema>;

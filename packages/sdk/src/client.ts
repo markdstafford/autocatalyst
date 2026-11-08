@@ -25,7 +25,11 @@ import {
   createRunFeedbackSuccessStatusCode,
   createRunReplySuccessStatusCode,
   feedbackSchema,
+  feedbackResponseSchema,
   runFeedbackThreadPath,
+  updateRunFeedbackPath,
+  updateRunFeedbackRequestSchema,
+  updateRunFeedbackSuccessStatusCode,
   getRunPullRequestSuccessStatusCode,
   getRunSpecSuccessStatusCode,
   listRunFeedbackSuccessStatusCode,
@@ -81,6 +85,8 @@ import {
   type UpdateProjectRequest,
   type AppendRunFeedbackThreadRequest,
   type CreateRunFeedbackRequest,
+  type UpdateRunFeedbackRequest,
+  type FeedbackResponse,
   type CreateSecretRequest,
   type ReconcilePullRequestsResponse,
   type RunRecoveryRequest,
@@ -146,7 +152,8 @@ export interface ControlPlaneClient {
   getRunSpec(id: string): Promise<RunSpecResponse>;
   createRunFeedback(id: string, request: CreateRunFeedbackRequest): Promise<Feedback>;
   listRunFeedback(id: string): Promise<RunFeedbackListResponse>;
-  appendRunFeedbackThreadReply(id: string, feedbackId: string, request: AppendRunFeedbackThreadRequest): Promise<Feedback>;
+  appendRunFeedbackThreadReply(id: string, feedbackId: string, request: AppendRunFeedbackThreadRequest): Promise<FeedbackResponse>;
+  updateRunFeedback(id: string, feedbackId: string, request: UpdateRunFeedbackRequest): Promise<FeedbackResponse>;
   replyToRun(id: string, request: RunReplyRequest): Promise<RunReplyResponse>;
   recoverRun(id: string, request?: RunRecoveryRequest): Promise<RunRecoveryResponse>;
   reconcilePullRequests(): Promise<ReconcilePullRequestsResponse>;
@@ -556,7 +563,27 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
       if (response.status !== appendRunFeedbackThreadSuccessStatusCode) {
         throw new Error(`Expected ${appendRunFeedbackThreadSuccessStatusCode} from appendRunFeedbackThreadReply, received ${response.status}.`);
       }
-      return feedbackSchema.parse(await parseJson(response));
+      return feedbackResponseSchema.parse(await parseJson(response));
+    },
+
+    async updateRunFeedback(id, feedbackId, request) {
+      const body = updateRunFeedbackRequestSchema.parse(request);
+      const path = updateRunFeedbackPath
+        .replace(':id', id)
+        .replace(':feedbackId', feedbackId);
+      const response = await fetchImplementation(
+        urlFor(baseUrl, path),
+        {
+          method: 'PATCH',
+          headers: protectedHeaders(bearerToken, { 'content-type': 'application/json' }),
+          body: JSON.stringify(body)
+        }
+      );
+      await throwForError(response);
+      if (response.status !== updateRunFeedbackSuccessStatusCode) {
+        throw new Error(`Expected ${updateRunFeedbackSuccessStatusCode} from updateRunFeedback, received ${response.status}.`);
+      }
+      return feedbackResponseSchema.parse(await parseJson(response));
     },
 
     async replyToRun(id, request) {
