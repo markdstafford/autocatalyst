@@ -366,6 +366,8 @@ sequenceDiagram
 - apps/web/src/runs/run-detail-spec-tab.tsx and related run-detail modules — replace ready-spec placeholder with the rendered review surface while preserving empty states.
 - apps/control-plane/src/fake/constants.ts — change SPEC_EMOJI to an astral emoji for the E2E offset proof.
 - apps/control-plane/src/fake/scripted-results.spec.ts or nearby fake constants test — assert the fixture emoji is outside the BMP.
+- apps/control-plane/src/fake/fake-mode.integration.spec.ts — replace the hard-coded `'✨'` assertion (line 167) with `SPEC_EMOJI`, so the test follows the fixture and still checks the same thing.
+- docs/operators/fake-mode.md — update the line that describes the fixture's emoji (`✨`) before passage A to name the astral emoji.
 - context-agent/wiki/code-map.md — record mapping module, code-point helpers, render function, anchor placement rule, and tests.
 - context-agent/wiki/design-system.md — add stale/no-range group rule to Spec reading column.
 
@@ -519,10 +521,12 @@ sequenceDiagram
       - [ ] Existing tabs, pane layout, and live update behavior remain intact.
     - **Dependencies**: "Task: Load and classify artifact feedback", "Task: Build the selectionchange-driven composer"
   - [ ] **Task: Update fake-mode emoji fixture for astral offset proof**
-    - **Description**: Change SPEC_EMOJI in apps/control-plane/src/fake/constants.ts from the BMP sparkle to an astral emoji such as 🚀, and add a unit test so the fixture keeps proving code-point versus UTF-16 behavior.
+    - **Description**: Change SPEC_EMOJI in apps/control-plane/src/fake/constants.ts from the BMP sparkle to an astral emoji such as 🚀, and add a unit test so the fixture keeps proving code-point versus UTF-16 behavior. Two other places hard-code the old glyph and change with it: the assertion in `fake-mode.integration.spec.ts` and the fixture description in `docs/operators/fake-mode.md`.
     - **Acceptance criteria**:
       - [ ] SPEC_EMOJI.codePointAt(0) > 0xFFFF in a fake constants/scripted results unit test.
       - [ ] Existing scripted spec tests still assert the spec body contains `${SPEC_EMOJI} ${SPEC_PASSAGE_A}`.
+      - [ ] `fake-mode.integration.spec.ts` asserts the emoji through `SPEC_EMOJI` instead of the literal `✨`. The assertion is not weakened: it still checks that the served spec contains the fixture emoji.
+      - [ ] `docs/operators/fake-mode.md` names the astral emoji where it now mentions `✨`.
       - [ ] No hard-coded fixture offsets require updates.
     - **Dependencies**: None
   - [ ] **Task: Apply design-system styling and docs updates**
