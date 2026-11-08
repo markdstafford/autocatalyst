@@ -1100,22 +1100,16 @@ export class DefaultOrchestrator implements Orchestrator {
 
     if (input.request.kind === 'request_changes') {
       // Request changes operates over feedback already raised; it creates no item. It applies the
-      // revise directive only at spec.human_review when at least one open artifact feedback item
-      // exists. Everywhere else it is a conflict (mapped to 409), matching other inapplicable
-      // replies — this issue defines no supported request_changes flow at implementation.human_review.
-      if (input.run.currentStep !== 'spec.human_review') {
-        throw new OrchestratorError(
-          'invalid_transition',
-          `request_changes is not supported at step '${input.run.currentStep}'.`,
-          { details: { code: 'request_changes_conflict' } }
-        );
-      }
+      // revise directive at a human-review gate (spec or implementation) when at least one open
+      // feedback item exists for that gate's target. When no open feedback exists for the target,
+      // it is a conflict (mapped to 409), matching other inapplicable replies. The target is
+      // resolved per gate step by getHumanReviewGateFeedbackTarget above.
       const items = await this.#feedbackLifecycleDependencies.feedback.listByRun(input.run.id);
       const openForTarget = items.filter((item) => item.target === target && item.status === 'open');
       if (openForTarget.length === 0) {
         throw new OrchestratorError(
           'invalid_transition',
-          'No open feedback exists for the spec; raise feedback before requesting changes.',
+          `No open feedback exists for '${target}'; raise feedback before requesting changes.`,
           { details: { code: 'request_changes_conflict' } }
         );
       }
