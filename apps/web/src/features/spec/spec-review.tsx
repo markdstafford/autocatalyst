@@ -16,6 +16,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 
 import { codePointLength } from './code-points.js';
+import { layoutCommentColumn } from './comment-layout.js';
 import {
   classifySpecFeedback,
   markerStyleForStatus,
@@ -29,6 +30,37 @@ import { sourceRangeRects } from './source-to-dom.js';
 import { SpecDocument } from './spec-render.js';
 import { firstLineTitle } from './spec-title.js';
 import { formatAge } from '../../runs/run-fields.js';
+import { Textarea } from '../../ui/textarea.js';
+
+/** Vertical gap between adjacent anchored cards. */
+const CARD_GAP = 8;
+/** Larger gap before an end-of-column group (stale / no-range). */
+const GROUP_GAP = 24;
+/** Height assumed for a card/section before its real height is measured (first paint, headless DOM). */
+const FALLBACK_CARD_HEIGHT = 96;
+const FALLBACK_SECTION_HEIGHT = 112;
+
+interface MeasuredHeights {
+  readonly cards: Map<string, number>;
+  readonly stale: number;
+  readonly noRange: number;
+}
+
+function numberMapsEqual(a: Map<string, number>, b: Map<string, number>): boolean {
+  if (a.size !== b.size) {
+    return false;
+  }
+  for (const [key, value] of a) {
+    if (b.get(key) !== value) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function heightsEqual(a: MeasuredHeights, b: MeasuredHeights): boolean {
+  return a.stale === b.stale && a.noRange === b.noRange && numberMapsEqual(a.cards, b.cards);
+}
 
 /** The maximum quotedText length the API accepts, counted as JavaScript string length. */
 export const MAX_QUOTED_TEXT_LENGTH = 2000;
@@ -84,10 +116,17 @@ export function SpecReview(props: SpecReviewProps): ReactNode {
   const [layoutTick, setLayoutTick] = useState(0);
   const [markerRects, setMarkerRects] = useState<Map<string, Rect[]>>(new Map());
   const [pendingRects, setPendingRects] = useState<Rect[]>([]);
-  const [cardTops, setCardTops] = useState<Map<string, number>>(new Map());
+  const [heights, setHeights] = useState<MeasuredHeights>({ cards: new Map(), stale: 0, noRange: 0 });
 
   const composerRef = useRef<ComposerState | null>(composer);
   composerRef.current = composer;
+
+  // Live DOM refs for the measurement pass: each anchored card wrapper by id, and the two group
+  // sections. Card heights depend on their content and the column width, not on their `top`, so one
+  // post-render measurement is enough to lay the column out without a second positioning pass.
+  const cardElsRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  const staleSectionRef = useRef<HTMLElement | null>(null);
+  const noRangeSectionRef = useRef<HTMLElement | null>(null);
 
   const docRoot = (): HTMLElement | null =>
     wrapperRef.current?.querySelector<HTMLElement>('[data-spec-document]') ?? null;
@@ -169,21 +208,40 @@ export function SpecReview(props: SpecReviewProps): ReactNode {
         : []
     );
 
-    // Card tops: each anchored card sits at its marker's top, pushed down below the previous card.
-    const tops = new Map<string, number>();
-    let cursor = 0;
-    const CARD_GAP = 8;
-    const CARD_ESTIMATE = 96;
+    // Measure each rendered card and group section so the column lays out from real heights (a
+    // multi-line comment is taller than a one-liner) instead of a fixed estimate. Guarded so an
+    // unchanged measurement does not loop.
+    const nextCardHeights = new Map<string, number>();
     for (const comment of groups.anchored) {
-      const rects = nextMarkers.get(comment.id) ?? [];
-      const anchorTop = rects[0]?.top ?? cursor;
-      const top = Math.max(anchorTop, cursor);
-      tops.set(comment.id, top);
-      cursor = top + CARD_ESTIMATE + CARD_GAP;
+      const el = cardElsRef.current.get(comment.id);
+      if (el !== undefined) {
+        nextCardHeights.set(comment.id, el.offsetHeight);
+      }
     }
-    setCardTops(tops);
+    const nextHeights: MeasuredHeights = {
+      cards: nextCardHeights,
+      stale: staleSectionRef.current?.offsetHeight ?? 0,
+      noRange: noRangeSectionRef.current?.offsetHeight ?? 0
+    };
+    setHeights((prev) => (heightsEqual(prev, nextHeights) ? prev : nextHeights));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [markdown, feedback, composer, selectedId, layoutTick]);
+
+  // Column geometry derived from marker tops and measured heights: non-overlapping card tops and the
+  // total height the column must grow to so every card stays reachable, even near the document end.
+  const columnLayout = layoutCommentColumn({
+    anchored: groups.anchored.map((comment) => ({
+      id: comment.id,
+      anchorTop: markerRects.get(comment.id)?.[0]?.top ?? null,
+      // `|| fallback`, not `??`: a measured 0 (first paint / headless DOM) means "not yet measured",
+      // so fall back to the estimate rather than collapsing the card to zero height.
+      height: heights.cards.get(comment.id) || FALLBACK_CARD_HEIGHT
+    })),
+    staleHeight: groups.stale.length > 0 ? heights.stale || FALLBACK_SECTION_HEIGHT : 0,
+    noRangeHeight: groups.noRange.length > 0 ? heights.noRange || FALLBACK_SECTION_HEIGHT : 0,
+    gap: CARD_GAP,
+    groupGap: GROUP_GAP
+  });
 
   // Bump the layout tick on container resize and when Shiki rewrites code (mutations under the doc).
   useEffect(() => {
@@ -248,7 +306,7 @@ export function SpecReview(props: SpecReviewProps): ReactNode {
   const hasComments = groups.anchored.length + groups.stale.length + groups.noRange.length > 0;
 
   return (
-    <div ref={wrapperRef} className="flex h-full gap-4">
+    <div ref={wrapperRef} className="flex min-h-full gap-4">
       <div data-doc-column className="relative min-w-0 flex-1">
         <SpecDocument markdown={markdown} />
 
@@ -293,7 +351,7 @@ export function SpecReview(props: SpecReviewProps): ReactNode {
 
       <div
         data-testid="comment-column"
-        style={{ width: 'var(--width-comment-column)' }}
+        style={{ width: 'var(--width-comment-column)', minHeight: columnLayout.height }}
         className="relative shrink-0 overflow-visible"
       >
         {!hasComments ? (
@@ -305,7 +363,14 @@ export function SpecReview(props: SpecReviewProps): ReactNode {
         {groups.anchored.map((comment) => (
           <div
             key={comment.id}
-            style={{ position: 'absolute', top: cardTops.get(comment.id) ?? 0, left: 0, right: 0 }}
+            ref={(el) => {
+              if (el !== null) {
+                cardElsRef.current.set(comment.id, el);
+              } else {
+                cardElsRef.current.delete(comment.id);
+              }
+            }}
+            style={{ position: 'absolute', top: columnLayout.tops.get(comment.id) ?? 0, left: 0, right: 0 }}
           >
             <CommentCard
               comment={comment}
@@ -317,7 +382,11 @@ export function SpecReview(props: SpecReviewProps): ReactNode {
         ))}
 
         {groups.stale.length > 0 ? (
-          <section data-testid="comment-group-stale" style={{ position: 'absolute', top: staleGroupTop(cardTops, groups.anchored), left: 0, right: 0 }}>
+          <section
+            ref={staleSectionRef}
+            data-testid="comment-group-stale"
+            style={{ position: 'absolute', top: columnLayout.staleTop, left: 0, right: 0 }}
+          >
             <h3 className="mb-1 text-xs font-semibold text-subtext">Stale</h3>
             {groups.stale.map((comment) => (
               <CommentCard
@@ -332,7 +401,11 @@ export function SpecReview(props: SpecReviewProps): ReactNode {
         ) : null}
 
         {groups.noRange.length > 0 ? (
-          <section data-testid="comment-group-no-range" style={{ position: 'absolute', top: noRangeGroupTop(cardTops, groups.anchored, groups.stale.length), left: 0, right: 0 }}>
+          <section
+            ref={noRangeSectionRef}
+            data-testid="comment-group-no-range"
+            style={{ position: 'absolute', top: columnLayout.noRangeTop, left: 0, right: 0 }}
+          >
             <h3 className="mb-1 text-xs font-semibold text-subtext">No range</h3>
             {groups.noRange.map((comment) => (
               <CommentCard
@@ -350,16 +423,6 @@ export function SpecReview(props: SpecReviewProps): ReactNode {
   );
 }
 
-function staleGroupTop(cardTops: Map<string, number>, anchored: readonly AnchoredComment[]): number {
-  const last = anchored[anchored.length - 1];
-  const base = last !== undefined ? cardTops.get(last.id) ?? 0 : 0;
-  return base + (anchored.length > 0 ? 112 : 0);
-}
-
-function noRangeGroupTop(cardTops: Map<string, number>, anchored: readonly AnchoredComment[], staleCount: number): number {
-  return staleGroupTop(cardTops, anchored) + (staleCount > 0 ? staleCount * 112 + 24 : 0);
-}
-
 interface MarkerButtonProps {
   readonly comment: AnchoredComment;
   readonly rects: readonly Rect[];
@@ -369,8 +432,11 @@ interface MarkerButtonProps {
 
 function MarkerButton({ comment, rects, selected, onSelect }: MarkerButtonProps): ReactNode {
   const style = markerStyleForStatus(comment.status);
+  // Selected is deliberately much louder than open/resolved: a stronger translucent fill, a thicker
+  // 3px primary underline (vs 2px), and an inset primary ring, so the active marker is unmistakable in
+  // both light and dark themes rather than a faint tint shift.
   const className = selected
-    ? 'bg-[var(--color-comment-selected-bg)] [border-bottom:2px_solid_var(--color-primary)]'
+    ? 'bg-[var(--color-comment-selected-bg)] [border-bottom:3px_solid_var(--color-primary)] ring-2 ring-inset ring-primary'
     : style === 'open'
       ? 'bg-[var(--color-comment-open-bg)] [border-bottom:2px_solid_var(--color-comment-open-line)]'
       : 'bg-[var(--color-comment-resolved-bg)]';
@@ -404,7 +470,9 @@ interface CommentCardProps {
 
 function CommentCard({ comment, nowIso, selected, onSelect }: CommentCardProps): ReactNode {
   const resolved = comment.status !== 'open';
-  const outlineClass = selected ? 'border-primary shadow-popover' : 'border-border-subtle';
+  // A selected card gets a primary border, an inset primary ring, and the popover shadow so it clearly
+  // reads as the active card next to its unselected neighbours.
+  const outlineClass = selected ? 'border-primary ring-2 ring-inset ring-primary shadow-popover' : 'border-border-subtle';
   const dimClass = resolved && comment.kind !== 'anchored' ? '' : resolved ? 'opacity-80' : '';
   return (
     <button
@@ -506,14 +574,13 @@ function Composer({ state, rect, onChangeBody, onSubmit, onCancel }: ComposerPro
       <p data-testid="composer-quote" className="mb-1 border-l-2 border-border pl-2 text-xs italic text-subtext">
         {state.anchor.quotedText}
       </p>
-      <textarea
+      <Textarea
         ref={textareaRef}
         data-testid="composer-textarea"
         aria-label="Comment"
         value={state.body}
         onChange={(event) => onChangeBody(event.target.value)}
         rows={3}
-        className="w-full rounded-sm border border-border bg-surface p-1 text-sm"
       />
       {state.message !== undefined ? (
         <p data-testid="composer-message" className="mt-1 text-xs text-red">

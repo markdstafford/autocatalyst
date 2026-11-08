@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import {
   SPEC_EMOJI,
+  SPEC_LINKS_PARAGRAPH,
   SPEC_OPEN_QUESTIONS_HEADING,
   SPEC_PASSAGE_A,
   SPEC_PASSAGE_B,
   SPEC_PASSAGE_C,
   SPEC_PASSAGE_D,
   SPEC_REVISION_INSERT,
+  SPEC_SAFE_LINK_URL,
+  SPEC_UNSAFE_LINK_URL,
   buildFirstSpecBody,
   buildRevisedSpecBody,
   buildSpecBodyForPass
@@ -48,6 +51,16 @@ describe('scripted spec content', () => {
     expect(body).toContain(SPEC_PASSAGE_D);
     expect(body).toContain(SPEC_OPEN_QUESTIONS_HEADING);
     expect(body.trimEnd().endsWith('Pass 1.')).toBe(true);
+  });
+
+  it('includes a safe https link and an unsafe-scheme link so link rendering is checkable', () => {
+    const first = buildFirstSpecBody(title);
+    const revised = buildRevisedSpecBody(title);
+    for (const body of [first, revised]) {
+      expect(body).toContain(SPEC_LINKS_PARAGRAPH);
+      expect(body).toContain(`(${SPEC_SAFE_LINK_URL})`);
+      expect(body).toContain(`(${SPEC_UNSAFE_LINK_URL})`);
+    }
   });
 
   it('revision removes passage B and its heading while keeping C and D', () => {

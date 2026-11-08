@@ -20,6 +20,9 @@ const PASSAGE_A = 'A. Names must be unique within a tenant.';
 const PASSAGE_B = 'B. Deletion cascades to every child record.';
 const TABLE_CELL = 'createdAt';
 const CODE_LINE = 'const fixture = { name: "demo" };';
+const SAFE_LINK_URL = 'https://github.com/autocatalyst-fixtures/demo-app';
+const SAFE_LINK_LABEL = 'the fixture repository';
+const UNSAFE_LINK_LABEL = 'this unsafe link';
 
 const AUTH = { authorization: `Bearer ${FIXTURE_TOKEN}`, 'content-type': 'application/json' } as const;
 
@@ -140,6 +143,14 @@ test.describe('spec review', () => {
       await expect(doc.locator('li', { hasText: 'First requirement bullet.' })).toBeVisible();
       // Shiki highlights the code block into coloured token spans.
       await expect(doc.locator('code[data-spec-code] span[style]').first()).toBeVisible();
+
+      // The safe https link renders as a real anchor; the unsafe-scheme link renders as plain text
+      // (its label is present, but there is no anchor carrying a javascript: href).
+      const safeLink = doc.locator(`a[href="${SAFE_LINK_URL}"]`);
+      await expect(safeLink).toHaveText(SAFE_LINK_LABEL);
+      await expect(safeLink).toHaveAttribute('rel', /noopener/);
+      await expect(doc).toContainText(UNSAFE_LINK_LABEL);
+      await expect(doc.locator('a', { hasText: UNSAFE_LINK_LABEL })).toHaveCount(0);
     } finally {
       await close();
     }

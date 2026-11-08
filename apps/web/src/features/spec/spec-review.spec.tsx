@@ -239,4 +239,52 @@ describe('SpecReview — composer', () => {
     );
     expect(within(root).queryByTestId('composer')).toBeNull();
   });
+
+  it('styles the composer textarea with the shared form-input tokens (not a grey fill)', async () => {
+    const { root } = renderReview();
+    await selectText(root, 'Alpha paragraph here.');
+    const textarea = within(root).getByTestId('composer-textarea');
+    // Reuses the Input/Textarea tokens: near-white background fill, token border, focus ring.
+    expect(textarea.className).toContain('bg-background');
+    expect(textarea.className).toContain('border-border');
+    expect(textarea.className).toContain('focus:ring-focus');
+    expect(textarea.className).not.toContain('bg-surface');
+  });
+});
+
+describe('SpecReview — finding fixes (highlight, selected state, layout)', () => {
+  // The translucency of the highlight/marker fills is guarded by styles/comment-tokens.spec.ts; the
+  // pending-highlight element itself only renders once the DOM has layout geometry (not in jsdom).
+  it('makes a selected marker clearly louder than an open one (thicker underline + ring)', () => {
+    const { from, to } = alphaOffsets();
+    const { root } = renderReview({ feedback: [feedback({ id: 'c1', anchor: range(from, to) })] });
+    const marker = root.querySelector('[data-marker-for="c1"]') as HTMLElement;
+    // Before selection: open style, 2px underline, no ring.
+    expect(marker.getAttribute('data-marker-style')).toBe('open');
+    expect(marker.className).not.toContain('ring-primary');
+    fireEvent.click(marker);
+    const selectedMarker = root.querySelector('[data-marker-for="c1"]') as HTMLElement;
+    expect(selectedMarker.getAttribute('data-marker-style')).toBe('selected');
+    expect(selectedMarker.className).toContain('ring-primary');
+    expect(selectedMarker.className).toContain('3px');
+  });
+
+  it('gives the selected card a primary ring and shadow so it stands out', () => {
+    const { from, to } = alphaOffsets();
+    const { root } = renderReview({ feedback: [feedback({ id: 'c1', anchor: range(from, to) })] });
+    const card = root.querySelector('[data-card-for="c1"]') as HTMLElement;
+    expect(card.className).not.toContain('ring-primary');
+    fireEvent.click(card);
+    const selectedCard = root.querySelector('[data-card-for="c1"]') as HTMLElement;
+    expect(selectedCard.getAttribute('data-selected')).toBe('true');
+    expect(selectedCard.className).toContain('ring-primary');
+    expect(selectedCard.className).toContain('shadow-popover');
+  });
+
+  it('grows the comment column to contain its cards (min-height from the layout)', () => {
+    const { from, to } = alphaOffsets();
+    const { root } = renderReview({ feedback: [feedback({ id: 'c1', anchor: range(from, to) })] });
+    const column = within(root).getByTestId('comment-column');
+    expect(parseFloat((column as HTMLElement).style.minHeight)).toBeGreaterThan(0);
+  });
 });
