@@ -250,8 +250,9 @@ describe('resolveFeedback', () => {
 // ---- reopenFeedback ---------------------------------------------------------
 
 describe('reopenFeedback', () => {
-  it('persists wont_fix → open with actor thread entry', async () => {
-    const wontFixFeedback = feedbackItem({ id: 'fb_1', status: 'wont_fix' });
+  it('persists wont_fix → open with the originator thread entry', async () => {
+    // The originator is the author of the first thread entry (alice here).
+    const wontFixFeedback = feedbackItem({ id: 'fb_1', status: 'wont_fix', thread: [thread('alice')] });
     const deps = makeFeedbackDeps({ findById: wontFixFeedback, ids: () => 'thread_reopen', clock: () => '2026-06-11T14:00:00.000Z' });
 
     const updated = await reopenFeedback({ feedbackId: 'fb_1', actor: principal('alice'), body: 'Still relevant.' }, deps);
@@ -266,9 +267,19 @@ describe('reopenFeedback', () => {
   });
 
   it('throws feedback_invalid_transition when feedback is not wont_fix', async () => {
-    const deps = makeFeedbackDeps({ findById: feedbackItem({ id: 'fb_1', status: 'open' }) });
+    const deps = makeFeedbackDeps({ findById: feedbackItem({ id: 'fb_1', status: 'open', thread: [thread('alice')] }) });
     await expect(reopenFeedback({ feedbackId: 'fb_1', actor: principal('alice'), body: 'body' }, deps))
       .rejects.toMatchObject({ code: 'feedback_invalid_transition' });
+  });
+
+  it('throws feedback_not_originator when a non-originator attempts to reopen', async () => {
+    // Originator is alice (first thread author); bob may not reopen.
+    const wontFixFeedback = feedbackItem({ id: 'fb_1', status: 'wont_fix', thread: [thread('alice')] });
+    const deps = makeFeedbackDeps({ findById: wontFixFeedback });
+
+    await expect(reopenFeedback({ feedbackId: 'fb_1', actor: principal('bob'), body: 'Let me reopen.' }, deps))
+      .rejects.toMatchObject({ code: 'feedback_not_originator' });
+    expect(deps.feedback.updateStatusAndAppendThread).not.toHaveBeenCalled();
   });
 });
 

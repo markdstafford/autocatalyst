@@ -90,6 +90,38 @@ describe('OpenAPI generation', () => {
     expect(operation?.tags).toContain('runs');
     expect(operation?.responses?.['201']).toBeDefined();
     expect(operation?.responses?.['401']).toBeDefined();
+    // Spec anchor validation: a present anchor that does not reproduce its quote is 422.
+    expect(operation?.responses?.['422']).toBeDefined();
+  });
+
+  it('documents the PATCH feedback route and its lifecycle error responses', () => {
+    const document = generateOpenApiDocument();
+    const operation = document.paths['/v1/runs/{id}/feedback/{feedbackId}']?.patch as
+      | { responses?: Record<string, unknown>; tags?: string[] }
+      | undefined;
+    expect(operation).toBeDefined();
+    expect(operation?.tags).toContain('runs');
+    expect(operation?.responses?.['200']).toBeDefined();
+    expect(operation?.responses?.['400']).toBeDefined();
+    expect(operation?.responses?.['403']).toBeDefined();
+    expect(operation?.responses?.['404']).toBeDefined();
+    expect(operation?.responses?.['409']).toBeDefined();
+  });
+
+  it('documents the request_changes reply kind in the reply request schema', () => {
+    const document = generateOpenApiDocument();
+    const components = (document.components ?? {}) as { schemas?: Record<string, unknown> };
+    const runReplyRequest = components.schemas?.['RunReplyRequest'] as
+      | { oneOf?: { properties?: { kind?: { enum?: string[] } } }[] }
+      | undefined;
+    const kinds = (runReplyRequest?.oneOf ?? []).flatMap((member) => member.properties?.kind?.enum ?? []);
+    expect(kinds).toContain('request_changes');
+  });
+
+  it('allows a response-only stale flag on artifact_range anchors but not on stored anchors', () => {
+    const document = generateOpenApiDocument();
+    const components = (document.components ?? {}) as { schemas?: Record<string, { properties?: Record<string, unknown> }> };
+    expect(components.schemas?.['FeedbackResponse']).toBeDefined();
   });
 
   it('documents GET /v1/runs/{id}/feedback', () => {

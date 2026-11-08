@@ -41,6 +41,22 @@ describe('run replies contract', () => {
     });
   });
 
+  it('accepts a strict request_changes reply with no other fields', () => {
+    expect(runReplyRequestSchema.parse({ kind: 'request_changes' })).toEqual({ kind: 'request_changes' });
+  });
+
+  it('rejects request_changes with any additional fields', () => {
+    expect(() => runReplyRequestSchema.parse({ kind: 'request_changes', body: 'extra' })).toThrow();
+    expect(() => runReplyRequestSchema.parse({ kind: 'request_changes', target: 'artifact' })).toThrow();
+  });
+
+  it('classifies request_changes as a revise directive with no createdFeedbackId', () => {
+    expect(runReplyResponseSchema.parse({ run, classification: { directive: 'revise', target: 'artifact' } })).toEqual({
+      run,
+      classification: { directive: 'revise', target: 'artifact' }
+    });
+  });
+
   it('rejects malformed or extra request fields', () => {
     expect(() => runReplyRequestSchema.parse({ kind: 'answer', body: '42' })).toThrow();
     expect(() => runReplyRequestSchema.parse({ kind: 'feedback', body: 'Missing title' })).toThrow();

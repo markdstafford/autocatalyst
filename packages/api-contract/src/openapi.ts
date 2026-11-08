@@ -73,10 +73,15 @@ import {
   createRunFeedbackSuccessStatusCode,
   listRunFeedbackSuccessStatusCode,
   feedbackSchema,
+  feedbackResponseSchema,
   runFeedbackThreadPath,
   appendRunFeedbackThreadRequestSchema,
   appendRunFeedbackThreadSuccessStatusCode,
-  runFeedbackThreadParamsSchema
+  runFeedbackThreadParamsSchema,
+  updateRunFeedbackPath,
+  updateRunFeedbackParamsSchema,
+  updateRunFeedbackRequestSchema,
+  updateRunFeedbackSuccessStatusCode
 } from './feedback.js';
 import {
   createRunReplySuccessStatusCode,
@@ -166,8 +171,11 @@ export function generateOpenApiDocument(): OpenApiDocument {
   const CreateRunFeedbackRequest = registry.register('CreateRunFeedbackRequest', createRunFeedbackRequestSchema);
   const RunFeedbackListResponse = registry.register('RunFeedbackListResponse', runFeedbackListResponseSchema);
   const Feedback = registry.register('Feedback', feedbackSchema);
+  const FeedbackResponse = registry.register('FeedbackResponse', feedbackResponseSchema);
   const AppendRunFeedbackThreadRequest = registry.register('AppendRunFeedbackThreadRequest', appendRunFeedbackThreadRequestSchema);
   const RunFeedbackThreadParams = registry.register('RunFeedbackThreadParams', runFeedbackThreadParamsSchema);
+  const UpdateRunFeedbackParams = registry.register('UpdateRunFeedbackParams', updateRunFeedbackParamsSchema);
+  const UpdateRunFeedbackRequest = registry.register('UpdateRunFeedbackRequest', updateRunFeedbackRequestSchema);
   const RunReplyRequest = registry.register('RunReplyRequest', runReplyRequestSchema);
   const RunReplyResponse = registry.register('RunReplyResponse', runReplyResponseSchema);
   const RunReplyParams = registry.register('RunReplyParams', z.object({ id: z.string().min(1) }).strict());
@@ -535,6 +543,11 @@ export function generateOpenApiDocument(): OpenApiDocument {
     method: 'post',
     path: runFeedbackPath.replace(':id', '{id}') as '/v1/runs/{id}/feedback',
     tags: ['runs'],
+    summary: 'Create artifact (spec) feedback',
+    description:
+      'Creates spec feedback. The anchor is optional: omit it for target-level comments. A present ' +
+      'spec anchor must be an artifact_range for the current spec artifact whose code-point offsets ' +
+      'reproduce its quotedText exactly, or the request is rejected with 422 invalid_feedback_anchor.',
     request: {
       params: RunIdParams,
       body: { content: { 'application/json': { schema: CreateRunFeedbackRequest } } }
@@ -543,7 +556,8 @@ export function generateOpenApiDocument(): OpenApiDocument {
       [createRunFeedbackSuccessStatusCode]: jsonResponse(Feedback, 'Created feedback item.'),
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
       400: jsonResponse(ErrorResponse, 'Validation error.'),
-      404: jsonResponse(ErrorResponse, 'Run not found.')
+      404: jsonResponse(ErrorResponse, 'Run has no spec artifact for its work kind.'),
+      422: jsonResponse(ErrorResponse, 'invalid_feedback_anchor. details.reason is one of wrong_kind, wrong_artifact, out_of_range, missing_quoted_text, text_mismatch.')
     }
   });
 
@@ -552,6 +566,9 @@ export function generateOpenApiDocument(): OpenApiDocument {
     method: 'get',
     path: runFeedbackPath.replace(':id', '{id}') as '/v1/runs/{id}/feedback',
     tags: ['runs'],
+    description:
+      'Lists run feedback. Spec anchors with quotedText are reconciled against the current spec: ' +
+      'moved quotes return repaired offsets, missing quotes return a response-only stale:true.',
     request: { params: RunIdParams },
     responses: {
       [listRunFeedbackSuccessStatusCode]: jsonResponse(RunFeedbackListResponse, 'Feedback items for the run.'),
@@ -570,10 +587,34 @@ export function generateOpenApiDocument(): OpenApiDocument {
       body: { content: { 'application/json': { schema: AppendRunFeedbackThreadRequest } } }
     },
     responses: {
-      [appendRunFeedbackThreadSuccessStatusCode]: jsonResponse(Feedback, 'Updated feedback item with appended thread reply.'),
+      [appendRunFeedbackThreadSuccessStatusCode]: jsonResponse(FeedbackResponse, 'Updated feedback item with appended thread reply, reconciled like a list read.'),
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
       400: jsonResponse(ErrorResponse, 'Validation error.'),
       404: jsonResponse(ErrorResponse, 'Run or feedback item not found.')
+    }
+  });
+
+  // PATCH /v1/runs/{id}/feedback/{feedbackId}
+  registry.registerPath({
+    method: 'patch',
+    path: updateRunFeedbackPath.replace(':id', '{id}').replace(':feedbackId', '{feedbackId}') as '/v1/runs/{id}/feedback/{feedbackId}',
+    tags: ['runs'],
+    summary: 'Resolve or reopen a feedback item',
+    description:
+      'Resolves an addressed item (status: resolved) or reopens a wont_fix item (status: open, body ' +
+      'required). Only the originating principal may resolve or reopen. Model principals cannot call ' +
+      'this route. The returned item is reconciled like a list read.',
+    request: {
+      params: UpdateRunFeedbackParams,
+      body: { content: { 'application/json': { schema: UpdateRunFeedbackRequest } } }
+    },
+    responses: {
+      [updateRunFeedbackSuccessStatusCode]: jsonResponse(FeedbackResponse, 'Updated feedback item.'),
+      400: jsonResponse(ErrorResponse, 'Invalid request body.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      403: jsonResponse(ErrorResponse, 'Not the originator, or a model principal.'),
+      404: jsonResponse(ErrorResponse, 'Run or feedback item not found.'),
+      409: jsonResponse(ErrorResponse, 'Invalid lifecycle transition, or reopen not applicable at the current gate.')
     }
   });
 
@@ -583,7 +624,11 @@ export function generateOpenApiDocument(): OpenApiDocument {
     path: runRepliesPath.replace(':id', '{id}') as '/v1/runs/{id}/replies',
     tags: ['runs'],
     summary: 'Reply to a paused run',
-    description: 'Accepts a structured human reply for supported human-waiting run steps.',
+    description:
+      'Accepts a structured human reply for supported human-waiting run steps. Reply kinds: approve, ' +
+      'feedback (optional anchor; a present spec anchor must reproduce its quotedText), guidance, and ' +
+      'request_changes (operates over existing open spec feedback; classified as a revise directive ' +
+      'with no createdFeedbackId).',
     request: {
       params: RunReplyParams,
       body: {

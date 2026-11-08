@@ -136,6 +136,17 @@ describe('spec-authoring context builders', () => {
     expect(prompt).not.toContain('Frontmatter must include `created`, `last_updated`, and `status: "draft"`');
   });
 
+  it('never instructs the agent to maintain feedback anchor offsets (ADR-033)', () => {
+    // Offsets are maintained by the control-plane reconciler, never by the spec author. If prompt
+    // text starts asking the agent to track offsets/anchors, this guard fails.
+    const prompt = buildSpecAuthorPrompt(baseInput).toLowerCase();
+    expect(prompt).not.toContain('anchor');
+    expect(prompt).not.toContain('offset');
+    expect(prompt).not.toContain('code point');
+    expect(prompt).not.toContain('codepoint');
+    expect(prompt).not.toContain('quotedtext');
+  });
+
   it('builds feature task inputs with schema id, exact file rules, issue guidance, and chronological messages', () => {
     const inputs = buildSpecAuthorTaskInputs(baseInput);
     expect(inputs.outputContract.schemaId).toBe('autocatalyst.spec_author.v1');

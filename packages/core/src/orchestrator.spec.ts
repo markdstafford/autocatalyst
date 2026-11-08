@@ -2853,6 +2853,58 @@ describe('DefaultOrchestrator.replyToRun', () => {
     expect(typeof result.classification.createdFeedbackId).toBe('string');
   });
 
+  // --- implementation.human_review request_changes ---
+
+  it('implementation gate request_changes with open implementation feedback — revises run with no createdFeedbackId', async () => {
+    const openFeedback = makeOpenImplementationFeedback();
+    const existing = makeRun({ currentStep: 'implementation.human_review' });
+    const updated = makeRun({ currentStep: 'implementation.build' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.build', phase: 'implementation' });
+    const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: recordTransition
+    });
+    const feedbackLifecycleDependencies = makeFeedbackLifecycleDeps([openFeedback]);
+
+    const { orchestrator } = makeOrchestrator({ runs, feedbackLifecycleDependencies });
+
+    const result = await orchestrator.replyToRun({
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      principal: principal('phoebe'),
+      request: { kind: 'request_changes' }
+    });
+
+    expect(result.run.currentStep).toBe('implementation.build');
+    expect(result.classification.directive).toBe('revise');
+    expect(result.classification.target).toBe('implementation');
+    expect(result.classification.createdFeedbackId).toBeUndefined();
+    // request_changes creates no new feedback item — the open item is operated over, not duplicated.
+    expect(feedbackLifecycleDependencies.feedback.create).not.toHaveBeenCalled();
+  });
+
+  it('implementation gate request_changes with no open implementation feedback — request_changes_conflict', async () => {
+    const existing = makeRun({ currentStep: 'implementation.human_review' });
+    const runs = makeFakeRunRepo({
+      findById: vi.fn().mockResolvedValue(existing),
+      recordRunStepTransition: vi.fn()
+    });
+    const feedbackLifecycleDependencies = makeFeedbackLifecycleDeps();
+
+    const { orchestrator } = makeOrchestrator({ runs, feedbackLifecycleDependencies });
+
+    await expect(orchestrator.replyToRun({
+      runId: 'run_1',
+      tenant: 'tenant_1',
+      principal: principal('phoebe'),
+      request: { kind: 'request_changes' }
+    })).rejects.toMatchObject({
+      code: 'invalid_transition',
+      details: expect.objectContaining({ code: 'request_changes_conflict' })
+    });
+  });
+
   // --- implementation.human_review approval blocked by open feedback ---
 
   it('implementation gate approval blocked by open feedback — throws invalid_transition with feedback_gate_blocked details', async () => {

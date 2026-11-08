@@ -5,7 +5,12 @@ import {
   createRunFeedbackSuccessStatusCode,
   listRunFeedbackSuccessStatusCode,
   createRunFeedbackRequestSchema,
-  runFeedbackListResponseSchema
+  runFeedbackListResponseSchema,
+  feedbackResponseSchema,
+  feedbackSchema,
+  updateRunFeedbackPath,
+  updateRunFeedbackSuccessStatusCode,
+  updateRunFeedbackRequestSchema
 } from './feedback.js';
 
 const validFeedbackItem = {
@@ -107,5 +112,95 @@ describe('run feedback route contracts', () => {
       feedback: [],
       total: 0
     })).toThrow();
+  });
+});
+
+const anchoredItem = (anchor: unknown) => ({
+  ...validFeedbackItem,
+  anchor
+});
+
+describe('feedback response stale anchor', () => {
+  it('accepts an artifact_range response anchor with stale: true', () => {
+    const parsed = feedbackResponseSchema.parse(anchoredItem({
+      kind: 'artifact_range',
+      artifactId: 'art_1',
+      from: 0,
+      to: 5,
+      quotedText: 'Scope',
+      stale: true
+    }));
+    expect(parsed.anchor).toMatchObject({ stale: true });
+  });
+
+  it('accepts a fresh artifact_range response anchor with no stale key', () => {
+    const parsed = feedbackResponseSchema.parse(anchoredItem({
+      kind: 'artifact_range',
+      artifactId: 'art_1',
+      from: 0,
+      to: 5,
+      quotedText: 'Scope'
+    }));
+    expect(parsed.anchor && 'stale' in parsed.anchor).toBe(false);
+  });
+
+  it('rejects stale: false in a response anchor', () => {
+    expect(() => feedbackResponseSchema.parse(anchoredItem({
+      kind: 'artifact_range',
+      artifactId: 'art_1',
+      from: 0,
+      to: 5,
+      quotedText: 'Scope',
+      stale: false
+    }))).toThrow();
+  });
+
+  it('rejects a stale key on the stored feedback schema', () => {
+    expect(() => feedbackSchema.parse(anchoredItem({
+      kind: 'artifact_range',
+      artifactId: 'art_1',
+      from: 0,
+      to: 5,
+      quotedText: 'Scope',
+      stale: true
+    }))).toThrow();
+  });
+
+  it('rejects a list response item carrying a stored stale key (list uses response schema but rejects stale:false)', () => {
+    // Reconciliation only ever emits stale: true; stale: false must never appear on the wire.
+    expect(() => runFeedbackListResponseSchema.parse({ feedback: [anchoredItem({
+      kind: 'artifact_range', artifactId: 'art_1', from: 0, to: 5, quotedText: 'Scope', stale: false
+    })] })).toThrow();
+  });
+});
+
+describe('updateRunFeedbackRequestSchema', () => {
+  it('exports the PATCH path and success code', () => {
+    expect(updateRunFeedbackPath).toBe('/v1/runs/:id/feedback/:feedbackId');
+    expect(updateRunFeedbackSuccessStatusCode).toBe(200);
+  });
+
+  it('accepts status resolved with no body', () => {
+    expect(updateRunFeedbackRequestSchema.parse({ status: 'resolved' }).status).toBe('resolved');
+  });
+
+  it('accepts status resolved with a body', () => {
+    expect(updateRunFeedbackRequestSchema.parse({ status: 'resolved', body: 'Looks good.' }).body).toBe('Looks good.');
+  });
+
+  it('accepts status open with a body', () => {
+    expect(updateRunFeedbackRequestSchema.parse({ status: 'open', body: 'Still broken.' }).status).toBe('open');
+  });
+
+  it('rejects an unknown status', () => {
+    expect(() => updateRunFeedbackRequestSchema.parse({ status: 'addressed' })).toThrow();
+  });
+
+  it('rejects extra fields (strict)', () => {
+    expect(() => updateRunFeedbackRequestSchema.parse({ status: 'resolved', extra: 1 })).toThrow();
+  });
+
+  it('rejects an empty body', () => {
+    expect(() => updateRunFeedbackRequestSchema.parse({ status: 'open', body: '' })).toThrow();
   });
 });
