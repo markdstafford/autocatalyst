@@ -58,6 +58,12 @@ export const GALLERY_ENTRIES: readonly GalleryEntry[] = [
     kind: 'custom'
   },
   {
+    id: 'textarea',
+    title: 'Textarea',
+    description: 'Multi-line text input sharing the form-input tokens, in default and error states.',
+    kind: 'custom'
+  },
+  {
     id: 'button',
     title: 'Button',
     description: 'Primary, secondary, and destructive variants across sizes and disabled states.',

@@ -49,14 +49,41 @@ export const FAKE_SCENARIO_DEFINITIONS: Readonly<Record<FakeScenario, FakeScenar
 // Deterministic scripted spec content (feature / enhancement spec.author)
 // ---------------------------------------------------------------------------
 
-/** Emoji rendered immediately before passage A. */
-export const SPEC_EMOJI = '✨';
+/**
+ * Emoji rendered immediately before passage A.
+ *
+ * Deliberately an **astral** emoji (U+1F680, outside the Basic Multilingual Plane) so the
+ * end-to-end offset proof exercises the code-point vs UTF-16 distinction: the rocket is one
+ * Unicode code point but two JavaScript UTF-16 code units, so passage A's code-point `from`
+ * anchor is exactly one lower than its UTF-16 index. The `scripted-results.spec.ts` guard
+ * asserts `SPEC_EMOJI.codePointAt(0) > 0xFFFF` so this never regresses to a BMP glyph.
+ */
+export const SPEC_EMOJI = '🚀';
 
 /** Passage literals the scripted first spec must contain exactly. */
 export const SPEC_PASSAGE_A = 'A. Names must be unique within a tenant.';
 export const SPEC_PASSAGE_B = 'B. Deletion cascades to every child record.';
 export const SPEC_PASSAGE_C = 'C. Timestamps use ISO-8601 in UTC.';
 export const SPEC_PASSAGE_D = 'D. All identifiers are opaque strings.';
+
+/**
+ * Links embedded in the fixture so link rendering can be checked by hand and by test.
+ *
+ * `SPEC_SAFE_LINK_URL` is an `https:` link that must render as a real clickable anchor; the
+ * `SPEC_UNSAFE_LINK_URL` uses an unsupported scheme and must render as plain, non-clickable text
+ * (the web renderer only makes http/https/mailto clickable). They sit in a paragraph before the table
+ * — ahead of every anchored passage and the revision insertion point — so adding them does not move
+ * passages A–D relative to one another and the deterministic revision offsets are unchanged.
+ */
+export const SPEC_SAFE_LINK_LABEL = 'the fixture repository';
+export const SPEC_SAFE_LINK_URL = 'https://github.com/autocatalyst-fixtures/demo-app';
+export const SPEC_UNSAFE_LINK_LABEL = 'this unsafe link';
+export const SPEC_UNSAFE_LINK_URL = 'javascript:alert(1)';
+
+/** Paragraph (identical in the first and revised specs) carrying the safe and unsafe links. */
+export const SPEC_LINKS_PARAGRAPH =
+  `See [${SPEC_SAFE_LINK_LABEL}](${SPEC_SAFE_LINK_URL}) for context; ` +
+  `[${SPEC_UNSAFE_LINK_LABEL}](${SPEC_UNSAFE_LINK_URL}) uses an unsupported scheme and renders as plain text.`;
 
 /** Source text the revision inserts immediately before passage A. */
 export const SPEC_REVISION_INSERT = '- A name is trimmed of leading and trailing spaces.\n';
@@ -83,6 +110,8 @@ export function buildFirstSpecBody(title: string): string {
     'This fixture specification exercises the deterministic fake-mode scripted author.',
     '',
     'It contains structured markdown so client and browser checks have realistic content.',
+    '',
+    SPEC_LINKS_PARAGRAPH,
     '',
     '| Field | Type |',
     '| --- | --- |',
@@ -118,6 +147,8 @@ export function buildRevisedSpecBody(title: string): string {
     'This fixture specification exercises the deterministic fake-mode scripted author.',
     '',
     'It contains structured markdown so client and browser checks have realistic content.',
+    '',
+    SPEC_LINKS_PARAGRAPH,
     '',
     '| Field | Type |',
     '| --- | --- |',

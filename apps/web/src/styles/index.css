@@ -119,11 +119,18 @@
   --color-sentiment-bad-bg: color-mix(in srgb, var(--color-red) 16%, var(--color-background));
   --color-sentiment-bad-border: color-mix(in srgb, var(--color-red) 45%, var(--color-background));
   --color-sentiment-bad-text: var(--color-text);
-  --color-comment-open-bg: color-mix(in srgb, var(--color-primary) 14%, var(--color-background));
+  /*
+   * Comment marker fills are **translucent** (mixed with `transparent`, not the
+   * background) so the overlay boxes tint the anchored text instead of painting over
+   * it — the underlying words stay fully readable while selecting and after a comment
+   * lands. Selected is deliberately much stronger than open so the selected marker and
+   * its pending highlight read as the active one, not a 6-point tint difference.
+   */
+  --color-comment-open-bg: color-mix(in srgb, var(--color-primary) 20%, transparent);
   --color-comment-open-line: var(--color-primary);
-  --color-comment-resolved-bg: color-mix(in srgb, var(--color-green) 12%, var(--color-background));
-  --color-comment-selected-bg: color-mix(in srgb, var(--color-primary) 20%, var(--color-background));
-  --color-comment-flash-bg: color-mix(in srgb, var(--color-primary) 30%, var(--color-background));
+  --color-comment-resolved-bg: color-mix(in srgb, var(--color-green) 20%, transparent);
+  --color-comment-selected-bg: color-mix(in srgb, var(--color-primary) 40%, transparent);
+  --color-comment-flash-bg: color-mix(in srgb, var(--color-primary) 55%, transparent);
 }
 
 /* Base document surface follows the theme. */

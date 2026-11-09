@@ -353,26 +353,42 @@ start a comment, and there is no general comment box. `h1` is `--text-xl`, `h2` 
 `--color-border` outline, `--radius-sm`, `--font-mono` at `--text-sm`, and scroll horizontally.
 
 **Comment markers.** A marker is a highlight on the anchored text with `--radius-xs` and a
-`--duration-enter` background transition. It is clickable and selects its comment.
+`--duration-enter` background transition. It is clickable and selects its comment. The fills are
+**translucent** (mixed with `transparent`) because each marker is an overlay box drawn above the text;
+a translucent fill tints the anchored words so they stay fully readable instead of being painted over.
 
 | State | Style |
 | --- | --- |
 | Open | `--color-comment-open-bg` fill and a 2 px `--color-comment-open-line` underline. |
 | Resolved | `--color-comment-resolved-bg` fill and no underline. |
-| Selected | `--color-comment-selected-bg` fill and a 2 px `--color-primary` underline. |
+| Selected | `--color-comment-selected-bg` fill (noticeably stronger than open), a 3 px `--color-primary` underline, and an inset `--color-primary` ring. |
 | Jump target | `--color-comment-flash-bg`, fading out once, when a comment is reached with the previous and next buttons. |
 
 Open and resolved differ by the underline as well as the color, so the underline is the non-color signal. A
-selected marker replaces the open or resolved style until another comment is selected.
+selected marker replaces the open or resolved style until another comment is selected, and reads clearly
+louder than an open one — a stronger fill, a thicker underline, and a ring — not just a small tint shift.
 
 **Comment cards.** Cards stand in the comment column, each at the top of its anchor and pushed down so cards
-do not overlap. A card is `--color-mantle` fill, `--color-border-subtle` outline, `--radius-sm`, `--text-sm`.
-A resolved card is dimmed. The selected card has a `--color-primary` outline and `--shadow-popover`. A card
+do not overlap. Card tops come from each card's **measured** rendered height (not a fixed estimate), so
+multi-line comments lay out correctly and the stale/no-range groups follow from real heights too. The
+comment column grows (its `min-height` is the bottom of the last card) so every card stays reachable even
+when an anchor is near the bottom of the spec or the cards run past the end of the document. A card is
+`--color-mantle` fill, `--color-border-subtle` outline, `--radius-sm`, `--text-sm`.
+A resolved card is dimmed. The selected card has a `--color-primary` outline, an inset `--color-primary`
+ring, and `--shadow-popover`. A card
 holds the author, age, and a state chip (open uses `--color-primary`, resolved uses `--color-green`), the
 quoted text (left border, `--text-xs`, italic, `--color-subtext`), the body, replies, and a reply input with
 Resolve (Reopen on a resolved card). The composer appears at the selection with a quote line, a textarea, a
 primary Comment button (disabled while empty), and Cancel, and uses a `--color-primary` outline and
 `--shadow-popover`. `Ctrl+Enter` or `Cmd+Enter` submits, and `Escape` cancels.
+
+**Comment column groups.** Anchored cards come first, in document order, each positioned beside its anchor.
+After them, and only when such comments exist, come two end-of-column groups, each under a small
+`--text-xs`/`--color-subtext` heading and carrying no document marker: a **stale** group for anchored comments
+whose quoted text no longer appears in the current spec (each shows its quote and a `stale` chip), then a
+**no-range** group for feedback with no artifact range (each shows its body, omitting the quote line when there
+is no quoted text). A spec with no comments shows an empty column with a short hint that selecting text starts
+a comment.
 
 The detail pane zone shows "N open, M resolved" in `--text-xs` and the previous and next comment buttons.
 

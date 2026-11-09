@@ -104,9 +104,9 @@ test.describe('run detail pane', () => {
       await expect(page.getByTestId('pane-status')).toHaveText('Needs review');
       await expect(page.getByTestId('pane-summary-step')).toContainText('spec.human_review');
 
-      // The Spec tab shows a spec empty state.
+      // The Spec tab now renders the spec document (the review surface, not the empty placeholder).
       await page.getByRole('tab', { name: 'Spec' }).click();
-      await expect(page.getByTestId('pane-spec-empty')).toBeVisible();
+      await expect(page.getByTestId('spec-document')).toBeVisible();
 
       // Approve through the API; the stream drives the pane forward without a reload.
       // The run advances past spec review into implementation — a change that sticks.

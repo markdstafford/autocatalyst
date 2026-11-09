@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest';
 
 import {
   SPEC_EMOJI,
+  SPEC_LINKS_PARAGRAPH,
   SPEC_OPEN_QUESTIONS_HEADING,
   SPEC_PASSAGE_A,
   SPEC_PASSAGE_B,
   SPEC_PASSAGE_C,
   SPEC_PASSAGE_D,
   SPEC_REVISION_INSERT,
+  SPEC_SAFE_LINK_URL,
+  SPEC_UNSAFE_LINK_URL,
   buildFirstSpecBody,
   buildRevisedSpecBody,
   buildSpecBodyForPass
@@ -28,6 +31,15 @@ function codepointIndex(haystack: string, needle: string): number {
 describe('scripted spec content', () => {
   const title = 'Fixture spec';
 
+  it('uses an astral (non-BMP) emoji so the offset proof exercises code points vs UTF-16', () => {
+    // A rocket (U+1F680) is one code point but two UTF-16 units. If this regressed to a BMP
+    // glyph like ✨ (U+2728), passage A's code-point and UTF-16 offsets would coincide and the
+    // end-to-end anchor proof would stop testing the distinction it exists to test.
+    const firstCodePoint = SPEC_EMOJI.codePointAt(0);
+    expect(firstCodePoint).toBeDefined();
+    expect(firstCodePoint as number).toBeGreaterThan(0xffff);
+  });
+
   it('first spec includes the table, bullet list, code block, emoji, and passages A-D', () => {
     const body = buildFirstSpecBody(title);
     expect(body).toContain('| Field | Type |');
@@ -39,6 +51,16 @@ describe('scripted spec content', () => {
     expect(body).toContain(SPEC_PASSAGE_D);
     expect(body).toContain(SPEC_OPEN_QUESTIONS_HEADING);
     expect(body.trimEnd().endsWith('Pass 1.')).toBe(true);
+  });
+
+  it('includes a safe https link and an unsafe-scheme link so link rendering is checkable', () => {
+    const first = buildFirstSpecBody(title);
+    const revised = buildRevisedSpecBody(title);
+    for (const body of [first, revised]) {
+      expect(body).toContain(SPEC_LINKS_PARAGRAPH);
+      expect(body).toContain(`(${SPEC_SAFE_LINK_URL})`);
+      expect(body).toContain(`(${SPEC_UNSAFE_LINK_URL})`);
+    }
   });
 
   it('revision removes passage B and its heading while keeping C and D', () => {
