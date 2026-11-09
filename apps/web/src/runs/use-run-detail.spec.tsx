@@ -308,3 +308,115 @@ describe('useRunDetail reconnect and error handling', () => {
     expect(scripted.counts.subscribe).toBe(2); // retried after the base delay
   });
 });
+
+describe('useRunDetail gate decisions and feedback lifecycle', () => {
+  function readyScripted(feedback?: Parameters<ReturnType<typeof createScriptedDetailClient>['setFeedback']>[0]) {
+    const scripted = createScriptedDetailClient({ run: makeRun({ id: 'r1', workKind: 'feature' }) });
+    scripted.setPullRequest(null);
+    scripted.setSessions([makeSession()]);
+    scripted.setSpec('ready');
+    scripted.setSpecMarkdown('# Spec\n\nBody');
+    if (feedback !== undefined) {
+      scripted.setFeedback(feedback);
+    }
+    return scripted;
+  }
+
+  function addressedFeedback(id: string) {
+    return {
+      id,
+      runId: 'r1',
+      owner: { id: 'user-1', kind: 'human', tenantId: 'tenant-1', displayName: 'Phoebe' },
+      tenant: 'tenant-1',
+      target: 'artifact',
+      status: 'addressed',
+      title: 'T',
+      body: 'B',
+      thread: [{ id: `${id}-t`, author: { id: 'user-1', kind: 'human', tenantId: 'tenant-1' }, body: 'B', createdAt: '2026-11-08T00:00:00.000Z' }],
+      createdAt: '2026-11-08T00:00:00.000Z',
+      updatedAt: '2026-11-08T00:00:00.000Z'
+    } as const;
+  }
+
+  it('sends exactly approve and refreshes the run', async () => {
+    const scripted = readyScripted();
+    const { result } = renderHook((p: UseRunDetailOptions) => useRunDetail(p), {
+      initialProps: props({ client: scripted.client, run: makeRun({ id: 'r1', workKind: 'feature' }) })
+    });
+    await waitFor(() => expect(scripted.counts.getRun).toBe(1));
+    let outcome: Awaited<ReturnType<typeof result.current.replyToGate>> | undefined;
+    await act(async () => {
+      outcome = await result.current.replyToGate('approve');
+    });
+    expect(scripted.replyCalls).toEqual([{ kind: 'approve' }]);
+    expect(outcome).toEqual({ status: 'ok' });
+    await waitFor(() => expect(scripted.counts.getRun).toBeGreaterThanOrEqual(2));
+  });
+
+  it('sends exactly request_changes', async () => {
+    const scripted = readyScripted();
+    const { result } = renderHook((p: UseRunDetailOptions) => useRunDetail(p), {
+      initialProps: props({ client: scripted.client, run: makeRun({ id: 'r1', workKind: 'feature' }) })
+    });
+    await waitFor(() => expect(scripted.counts.getRun).toBe(1));
+    await act(async () => {
+      await result.current.replyToGate('request_changes');
+    });
+    expect(scripted.replyCalls).toEqual([{ kind: 'request_changes' }]);
+  });
+
+  it('returns the error on a failed decision without advancing', async () => {
+    const scripted = readyScripted();
+    scripted.setReplyError(serverError());
+    const { result } = renderHook((p: UseRunDetailOptions) => useRunDetail(p), {
+      initialProps: props({ client: scripted.client, run: makeRun({ id: 'r1', workKind: 'feature' }) })
+    });
+    await waitFor(() => expect(scripted.counts.getRun).toBe(1));
+    let outcome: Awaited<ReturnType<typeof result.current.replyToGate>> | undefined;
+    await act(async () => {
+      outcome = await result.current.replyToGate('approve');
+    });
+    expect(outcome?.status).toBe('error');
+  });
+
+  it('resolves a comment with status resolved and refreshes', async () => {
+    const scripted = readyScripted([addressedFeedback('fb-1')]);
+    const { result } = renderHook((p: UseRunDetailOptions) => useRunDetail(p), {
+      initialProps: props({ client: scripted.client, run: makeRun({ id: 'r1', workKind: 'feature' }) })
+    });
+    await waitFor(() => expect(scripted.counts.getRun).toBe(1));
+    await act(async () => {
+      await result.current.resolveComment('fb-1');
+    });
+    expect(scripted.feedbackUpdateCalls).toEqual([{ feedbackId: 'fb-1', request: { status: 'resolved' } }]);
+    await waitFor(() => expect(scripted.counts.getRun).toBeGreaterThanOrEqual(2));
+  });
+
+  it('reopens a comment with the reason as the body', async () => {
+    const scripted = readyScripted([{ ...addressedFeedback('fb-1'), status: 'wont_fix' }]);
+    const { result } = renderHook((p: UseRunDetailOptions) => useRunDetail(p), {
+      initialProps: props({ client: scripted.client, run: makeRun({ id: 'r1', workKind: 'feature' }) })
+    });
+    await waitFor(() => expect(scripted.counts.getRun).toBe(1));
+    await act(async () => {
+      await result.current.reopenComment('fb-1', 'Please reconsider');
+    });
+    expect(scripted.feedbackUpdateCalls).toEqual([
+      { feedbackId: 'fb-1', request: { status: 'open', body: 'Please reconsider' } }
+    ]);
+  });
+
+  it('returns the error on a failed resolve', async () => {
+    const scripted = readyScripted([addressedFeedback('fb-1')]);
+    scripted.setFeedbackUpdateError(serverError());
+    const { result } = renderHook((p: UseRunDetailOptions) => useRunDetail(p), {
+      initialProps: props({ client: scripted.client, run: makeRun({ id: 'r1', workKind: 'feature' }) })
+    });
+    await waitFor(() => expect(scripted.counts.getRun).toBe(1));
+    let outcome: Awaited<ReturnType<typeof result.current.resolveComment>> | undefined;
+    await act(async () => {
+      outcome = await result.current.resolveComment('fb-1');
+    });
+    expect(outcome?.status).toBe('error');
+  });
+});

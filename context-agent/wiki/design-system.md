@@ -364,7 +364,9 @@ a translucent fill tints the anchored words so they stay fully readable instead 
 | Selected | `--color-comment-selected-bg` fill (noticeably stronger than open), a 3 px `--color-primary` underline, and an inset `--color-primary` ring. |
 | Jump target | `--color-comment-flash-bg`, fading out once, when a comment is reached with the previous and next buttons. |
 
-Open and resolved differ by the underline as well as the color, so the underline is the non-color signal. A
+`addressed`, `resolved`, and `wont_fix` all use the resolved marker style (no underline); `open` uses the open
+style. Open and resolved differ by the underline as well as the color, so the underline is the non-color
+signal. A
 selected marker replaces the open or resolved style until another comment is selected, and reads clearly
 louder than an open one — a stronger fill, a thicker underline, and a ring — not just a small tint shift.
 
@@ -374,11 +376,17 @@ multi-line comments lay out correctly and the stale/no-range groups follow from 
 comment column grows (its `min-height` is the bottom of the last card) so every card stays reachable even
 when an anchor is near the bottom of the spec or the cards run past the end of the document. A card is
 `--color-mantle` fill, `--color-border-subtle` outline, `--radius-sm`, `--text-sm`.
-A resolved card is dimmed. The selected card has a `--color-primary` outline, an inset `--color-primary`
+`resolved` and `wont_fix` cards are dimmed resolved-style; an `addressed` card is not dimmed. The selected
+card has a `--color-primary` outline, an inset `--color-primary`
 ring, and `--shadow-popover`. A card
-holds the author, age, and a state chip (open uses `--color-primary`, resolved uses `--color-green`), the
-quoted text (left border, `--text-xs`, italic, `--color-subtext`), the body, replies, and a reply input with
-Resolve (Reopen on a resolved card). The composer appears at the selection with a quote line, a textarea, a
+holds the author, age, and a state chip (open uses `--color-primary`, resolved uses `--color-green`; the chip
+always shows the actual status string, `open`/`addressed`/`resolved`/`wont_fix`), the
+quoted text (left border, `--text-xs`, italic, `--color-subtext`), the body, replies, and a reply input. The
+card's lifecycle action depends on status and shows only while the run waits at `spec.human_review` and the
+loaded current operator raised the comment (`thread[0].author.id`): an `addressed` card shows **Resolve** (an
+optional early confirmation); a `wont_fix` (declined) card shows **Reopen**, which asks for a reason and sends
+it as the reopen body; a `resolved` card shows no Reopen, because the control plane only reopens declined
+comments. The composer appears at the selection with a quote line, a textarea, a
 primary Comment button (disabled while empty), and Cancel, and uses a `--color-primary` outline and
 `--shadow-popover`. `Ctrl+Enter` or `Cmd+Enter` submits, and `Escape` cancels.
 
@@ -390,7 +398,10 @@ whose quoted text no longer appears in the current spec (each shows its quote an
 is no quoted text). A spec with no comments shows an empty column with a short hint that selecting text starts
 a comment.
 
-The detail pane zone shows "N open, M resolved" in `--text-xs` and the previous and next comment buttons.
+On the Spec tab the footer's detail pane zone shows "N open, M resolved" in `--text-xs` and the previous and
+next comment buttons. When the full-screen overlay is open the footer is covered, so the counts and the
+previous and next controls move into the overlay. In the overlay the document column is at most
+`--width-reading-column` and the comment column keeps `--width-comment-column`.
 
 ## Gate decision
 
@@ -403,7 +414,12 @@ Both labels share one style: `--height-control-sm` high, `--radius-sm`, `--text-
 `--color-primary` fill, `--color-on-primary` text, with `tabular-nums` for N. Hover and pressed dim the fill
 a step each, and focus shows the `--color-focus` ring with an offset. The label changes in place when the
 count crosses zero. Activating the button opens a confirm popover under it: `Enter` confirms and `Escape`
-cancels. The popover is keyed to the action, so it resets when the label changes. Destructive run actions
+cancels. The popover is keyed to the action, so it resets when the label changes. The approve confirm says
+"Approving also confirms K of your addressed comments" when the current operator has K addressed comments
+(omitted when the current operator identity is unknown); the request-changes confirm names the open-comment
+count and sends no new feedback. Control-plane errors stay in the popover: `feedback_gate_blocked` shows the
+returned message, and other errors also offer a retry. The decision button is disabled while a decision is in
+flight. Destructive run actions
 (cancel) use an alert dialog whose confirm button is `--color-red` fill with `--color-on-destructive` text.
 
 ## Acceptance tab

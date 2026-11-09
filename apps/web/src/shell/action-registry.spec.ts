@@ -34,12 +34,17 @@ describe('registry shape', () => {
     const ids = ACTIONS.map((a) => a.id).sort();
     expect(ids).toEqual([
       'close-layer',
+      'expand-spec',
+      'next-comment',
       'open-shortcuts',
       'pane-toggle',
+      'previous-comment',
+      'resolve-comment',
       'select-next',
       'select-previous',
       'settings-toggle',
-      'sidebar-toggle'
+      'sidebar-toggle',
+      'spec-gate-decision'
     ]);
   });
 

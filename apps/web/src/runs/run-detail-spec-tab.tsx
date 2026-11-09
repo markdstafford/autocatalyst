@@ -12,6 +12,7 @@ import type { ReactNode } from 'react';
 
 import { SPEC_EMPTY_STATES } from './run-detail-empty-states.js';
 import type { SpecDiscriminator } from './run-detail-facts.js';
+import type { SpecReviewController } from './use-spec-review-controller.js';
 import { EmptyState } from '../ui/empty-state.js';
 import { SpecReview, type CreateCommentInput, type CreateCommentResult } from '../features/spec/spec-review.js';
 
@@ -21,11 +22,13 @@ export interface RunDetailSpecTabProps {
   readonly spec: SpecDiscriminator;
   /** The selected run, used to decide whether commenting is allowed (spec gate only). */
   readonly run: Run;
+  /** The pane-level controller shared with the footer and overlay (selection, nav, lifecycle). */
+  readonly controller?: SpecReviewController;
   onCreateComment(input: CreateCommentInput): Promise<CreateCommentResult>;
   onReloadNeeded(): void;
 }
 
-export function RunDetailSpecTab({ spec, run, onCreateComment, onReloadNeeded }: RunDetailSpecTabProps): ReactNode {
+export function RunDetailSpecTab({ spec, run, controller, onCreateComment, onReloadNeeded }: RunDetailSpecTabProps): ReactNode {
   switch (spec.status) {
     case 'no-spec':
       return <EmptyState data-testid="pane-spec-empty" title={SPEC_EMPTY_STATES.noSpec.title} message={SPEC_EMPTY_STATES.noSpec.line} />;
@@ -38,6 +41,7 @@ export function RunDetailSpecTab({ spec, run, onCreateComment, onReloadNeeded }:
           artifactId={spec.artifactId}
           feedback={spec.feedback}
           canComment={run.currentStep === SPEC_GATE_STEP}
+          {...(controller !== undefined ? { controller } : {})}
           onCreateComment={onCreateComment}
           onReloadNeeded={onReloadNeeded}
         />

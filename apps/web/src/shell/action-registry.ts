@@ -35,7 +35,12 @@ export type ActionId =
   | 'close-layer'
   | 'open-shortcuts'
   | 'select-next'
-  | 'select-previous';
+  | 'select-previous'
+  | 'spec-gate-decision'
+  | 'resolve-comment'
+  | 'previous-comment'
+  | 'next-comment'
+  | 'expand-spec';
 
 export type AppliesWhen = 'no-text-entry' | 'anywhere' | 'layer-open' | 'list-focus';
 
@@ -60,7 +65,17 @@ export const ACTIONS: readonly ActionDescriptor[] = [
   { id: 'open-shortcuts', name: 'Keyboard shortcuts', keys: [[{ key: '?' }]], appliesWhen: 'no-text-entry' },
   { id: 'close-layer', name: 'Close', keys: [[{ key: 'Escape' }]], appliesWhen: 'layer-open' },
   { id: 'select-next', name: 'Next run', keys: [[{ key: 'j' }], [{ key: 'ArrowDown' }]], appliesWhen: 'list-focus' },
-  { id: 'select-previous', name: 'Previous run', keys: [[{ key: 'k' }], [{ key: 'ArrowUp' }]], appliesWhen: 'list-focus' }
+  { id: 'select-previous', name: 'Previous run', keys: [[{ key: 'k' }], [{ key: 'ArrowUp' }]], appliesWhen: 'list-focus' },
+  // Spec-gate actions. The decision opens a destructive confirm popover, so it has no single-key
+  // shortcut and no key hint. The lifecycle/navigation actions use single keys and are suppressed in
+  // text entry, menus, and dialogs (including the expanded spec overlay). Beyond the focus-context
+  // guard, the handlers registered in the run-detail pane apply run/spec guards (they no-op when the
+  // Spec tab is not active, the run is not at the gate, or no comment is selected/resolvable).
+  { id: 'spec-gate-decision', name: 'Spec gate decision', keys: [], appliesWhen: 'no-text-entry' },
+  { id: 'resolve-comment', name: 'Resolve comment', keys: [[{ key: 'r' }]], appliesWhen: 'no-text-entry' },
+  { id: 'previous-comment', name: 'Previous comment', keys: [[{ key: 'c', shift: true }]], appliesWhen: 'no-text-entry' },
+  { id: 'next-comment', name: 'Next comment', keys: [[{ key: 'c' }]], appliesWhen: 'no-text-entry' },
+  { id: 'expand-spec', name: 'Expand spec', keys: [[{ key: 'x' }]], appliesWhen: 'no-text-entry' }
 ];
 
 /** Look up an action by id. Throws on an unknown id (a programming error). */

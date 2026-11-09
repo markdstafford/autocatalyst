@@ -21,6 +21,7 @@ import { hasBearerToken } from '../auth/token-store.js';
 import { useControlPlaneConnection } from '../client/client-provider.js';
 import { RunDetailPane } from '../runs/run-detail-pane.js';
 import { RunTable } from '../runs/run-table.js';
+import { useCurrentPrincipalId } from '../runs/use-current-principal.js';
 import { useRunList } from '../runs/use-run-list.js';
 import { useConnectionState } from '../shell/connection-state.js';
 import { CONNECTION_PATH, runPath } from '../shell/navigation.js';
@@ -35,6 +36,7 @@ export function RunsPage(): ReactNode {
   const { runId: routeRunId } = useParams();
   const connected = hasBearerToken();
   const { client, authorization } = useControlPlaneConnection();
+  const currentPrincipalId = useCurrentPrincipalId(client, connected);
   const { setListLost } = useConnectionState();
   const { detailPaneVisible, sidePaneWidthPx, setPaneWidth } = useOutletContext<RunsOutletContext>();
   const mainRef = useRef<HTMLDivElement | null>(null);
@@ -121,6 +123,7 @@ export function RunsPage(): ReactNode {
               run={selectedRun}
               client={client}
               visible={detailPaneVisible}
+              {...(currentPrincipalId !== undefined ? { currentPrincipalId } : {})}
               replaceRun={state.replaceRun}
               onUnauthorized={() => {
                 navigate(CONNECTION_PATH);

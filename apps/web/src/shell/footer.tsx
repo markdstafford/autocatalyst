@@ -16,6 +16,8 @@
 import { PanelLeft, PanelRight } from 'lucide-react';
 import type { CSSProperties, ReactNode } from 'react';
 
+import type { RunDetailFooterContent } from '../runs/run-detail-footer.js';
+import { SpecCommentCounts, SpecCommentNavButtons } from '../runs/spec-comment-nav.js';
 import { Button } from '../ui/button.js';
 import { Tooltip } from '../ui/tooltip.js';
 import { actionTooltipKey, getAction } from './action-registry.js';
@@ -53,6 +55,8 @@ export interface FooterProps {
   readonly paneWidthPx?: number;
   /** Toggle the detail pane (only meaningful when enabled). */
   onTogglePane?(): void;
+  /** Spec-tab comment counts and previous/next controls published by the run detail pane. */
+  readonly detailFooter?: RunDetailFooterContent | null;
 }
 
 export function Footer({
@@ -61,7 +65,8 @@ export function Footer({
   paneEnabled = false,
   paneVisible = false,
   paneWidthPx = 0,
-  onTogglePane
+  onTogglePane,
+  detailFooter = null
 }: FooterProps): ReactNode {
   const isMac = isMacPlatform();
   // The sidebar zone fills the remainder of the sidebar width after the left control
@@ -108,9 +113,22 @@ export function Footer({
 
       <FooterZone
         name="Detail pane"
-        className="overflow-hidden transition-[width] duration-layout"
+        className={`overflow-hidden transition-[width] duration-layout ${detailFooter !== null ? '!justify-between gap-2 px-3' : ''}`}
         style={{ width: paneZoneWidth }}
-      />
+      >
+        {detailFooter !== null ? (
+          <>
+            <SpecCommentCounts openCount={detailFooter.openCount} resolvedCount={detailFooter.resolvedCount} />
+            <SpecCommentNavButtons
+              hasComments={detailFooter.hasComments}
+              canPrevious={detailFooter.canPrevious}
+              canNext={detailFooter.canNext}
+              onPrevious={detailFooter.onPrevious}
+              onNext={detailFooter.onNext}
+            />
+          </>
+        ) : null}
+      </FooterZone>
 
       <FooterZone name="Right control" className="w-footer-control shrink-0">
         <Tooltip label={paneLabel} keyHint={actionTooltipKey('pane-toggle', isMac)}>

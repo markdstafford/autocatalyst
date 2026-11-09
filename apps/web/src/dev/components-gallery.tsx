@@ -40,6 +40,7 @@ import { Button } from '../ui/button.js';
 import { Chip } from '../ui/chip.js';
 import { DescriptionItem, DescriptionList } from '../ui/description-list.js';
 import { Dialog } from '../ui/dialog.js';
+import { Popover } from '../ui/popover.js';
 import { EmptyState } from '../ui/empty-state.js';
 import { Field } from '../ui/field.js';
 import { Input } from '../ui/input.js';
@@ -482,6 +483,8 @@ function renderExample(id: string, platform: ShortcutPlatform, surface: GalleryS
           <Button variant="secondary">Hover or focus me</Button>
         </Tooltip>
       );
+    case 'popover':
+      return <PopoverExample />;
     default:
       return (
         <p className="text-sm text-red">
@@ -598,5 +601,29 @@ function DialogExample(): ReactNode {
         <p className="text-sm text-text">Dialog body content goes here.</p>
       </Dialog>
     </>
+  );
+}
+
+function PopoverExample(): ReactNode {
+  const [open, setOpen] = useState(false);
+  return (
+    <Popover
+      open={open}
+      onOpenChange={setOpen}
+      label="Confirm action"
+      trigger={<Button variant="primary">Open popover</Button>}
+    >
+      <div className="w-56">
+        <p className="text-sm text-text">Confirm this action?</p>
+        <div className="mt-3 flex justify-end gap-2">
+          <Button variant="secondary" size="control-sm" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button variant="primary" size="control-sm" onClick={() => setOpen(false)}>
+            Confirm
+          </Button>
+        </div>
+      </div>
+    </Popover>
   );
 }

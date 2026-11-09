@@ -28,6 +28,7 @@ import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 
 import { hasBearerToken } from '../auth/token-store.js';
+import { RunDetailFooterProvider, useRunDetailFooter } from '../runs/run-detail-footer.js';
 import { clampPaneWidth } from '../theme/preferences.js';
 import { useTheme } from '../theme/theme-provider.js';
 import { ConnectionStateProvider, useConnectionState } from './connection-state.js';
@@ -56,7 +57,9 @@ export function ShellLayout(): ReactNode {
   // sidebar, and the Connection page (an outlet descendant) all read one provider.
   return (
     <ConnectionStateProvider>
-      <ShellLayoutInner />
+      <RunDetailFooterProvider>
+        <ShellLayoutInner />
+      </RunDetailFooterProvider>
     </ConnectionStateProvider>
   );
 }
@@ -64,6 +67,7 @@ export function ShellLayout(): ReactNode {
 function ShellLayoutInner(): ReactNode {
   const { preferences, updatePreferences } = useTheme();
   const connectionState = useConnectionState();
+  const runDetailFooter = useRunDetailFooter();
   const sidebarOpen = preferences.sidebarOpen;
   const location = useLocation();
   const navigate = useNavigate();
@@ -198,6 +202,7 @@ function ShellLayoutInner(): ReactNode {
           paneVisible={paneVisible}
           paneWidthPx={preferences.sidePaneWidthPx}
           onTogglePane={togglePane}
+          detailFooter={paneVisible ? runDetailFooter.content : null}
         />
 
         {/* Left-edge hover strip: only while the sidebar is closed and not already

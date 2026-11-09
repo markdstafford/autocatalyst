@@ -14,13 +14,18 @@ import type {
   CreateRunFeedbackRequest,
   Feedback,
   FeedbackResponse,
+  Principal,
+  PrincipalDiagnosticResponse,
   PullRequest,
   Run,
   RunFeedbackListResponse,
   RunPullRequestResponse,
+  RunReplyRequest,
+  RunReplyResponse,
   RunSessionListResponse,
   RunSpecResponse,
-  Session
+  Session,
+  UpdateRunFeedbackRequest
 } from '@autocatalyst/api-contract';
 import {
   ControlPlaneClientError,
@@ -61,6 +66,21 @@ export interface ScriptedDetailClient {
   setSpecMarkdown(markdown: string): void;
   /** Set the feedback returned by listRunFeedback. */
   setFeedback(feedback: readonly FeedbackResponse[]): void;
+  /**
+   * Set the principal returned by getPrincipal. Passing `undefined` makes getPrincipal reject
+   * (simulating an unknown-identity failure).
+   */
+  setPrincipal(principal: Principal | undefined): void;
+  /** Make the next getPrincipal call reject with an unauthorized error, then resume. */
+  failPrincipalOnce(): void;
+  /** Make replyToRun reject with this error until cleared with a successful setter. */
+  setReplyError(error: unknown): void;
+  /** Make updateRunFeedback reject with this error. */
+  setFeedbackUpdateError(error: unknown): void;
+  /** Every replyToRun request, in order. */
+  readonly replyCalls: RunReplyRequest[];
+  /** Every updateRunFeedback call, in order. */
+  readonly feedbackUpdateCalls: { feedbackId: string; request: UpdateRunFeedbackRequest }[];
   // Gate: hold reads until released (to keep a refresh in flight).
   hold(): void;
   release(): void;
@@ -77,6 +97,9 @@ export interface ScriptedDetailClient {
     sessions: number;
     spec: number;
     subscribe: number;
+    principal: number;
+    reply: number;
+    feedbackUpdate: number;
   };
 }
 
@@ -127,12 +150,19 @@ export function createScriptedDetailClient(init?: { run?: Run }): ScriptedDetail
   let specError: unknown;
   let specMarkdown = '# Spec';
   let feedbackList: FeedbackResponse[] = [];
+  // Default principal matches createRunFeedback's synthesized owner.
+  let principal: Principal | undefined = { id: 'user-1', kind: 'human', tenantId: 'tenant-1', displayName: 'Phoebe' };
+  let failPrincipalCount = 0;
+  let replyError: unknown;
+  let feedbackUpdateError: unknown;
+  const replyCalls: RunReplyRequest[] = [];
+  const feedbackUpdateCalls: { feedbackId: string; request: UpdateRunFeedbackRequest }[] = [];
 
   let gate: { promise: Promise<void>; resolve: () => void } | undefined;
   const subscribeErrors: unknown[] = [];
   const subscribeCalls: (RunEventsStreamOptions | undefined)[] = [];
   const streams: StreamHandle[] = [];
-  const counts = { getRun: 0, pullRequest: 0, sessions: 0, spec: 0, subscribe: 0 };
+  const counts = { getRun: 0, pullRequest: 0, sessions: 0, spec: 0, subscribe: 0, principal: 0, reply: 0, feedbackUpdate: 0 };
 
   async function gated(): Promise<void> {
     if (gate !== undefined) {
@@ -280,8 +310,45 @@ export function createScriptedDetailClient(init?: { run?: Run }): ScriptedDetail
       await gated();
       return { feedback: [...feedbackList] };
     },
+    async getPrincipal(): Promise<PrincipalDiagnosticResponse> {
+      counts.principal += 1;
+      await gated();
+      if (failPrincipalCount > 0) {
+        failPrincipalCount -= 1;
+        throw unauthorizedError();
+      }
+      if (principal === undefined) {
+        throw unauthorizedError();
+      }
+      return { principal };
+    },
+    async updateRunFeedback(_id: string, feedbackId: string, request: UpdateRunFeedbackRequest): Promise<FeedbackResponse> {
+      counts.feedbackUpdate += 1;
+      feedbackUpdateCalls.push({ feedbackId, request });
+      await gated();
+      if (feedbackUpdateError !== undefined) {
+        throw feedbackUpdateError;
+      }
+      const index = feedbackList.findIndex((item) => item.id === feedbackId);
+      const existing = feedbackList[index];
+      if (existing === undefined) {
+        throw notFoundError();
+      }
+      const updated: FeedbackResponse = { ...existing, status: request.status };
+      feedbackList = feedbackList.map((item, i) => (i === index ? updated : item));
+      return updated;
+    },
     appendRunFeedbackThreadReply: notImplemented('appendRunFeedbackThreadReply'),
-    replyToRun: notImplemented('replyToRun'),
+    async replyToRun(_id: string, request: RunReplyRequest): Promise<RunReplyResponse> {
+      counts.reply += 1;
+      replyCalls.push(request);
+      await gated();
+      if (replyError !== undefined) {
+        throw replyError;
+      }
+      const directive = request.kind === 'approve' ? 'advance' : 'revise';
+      return { run, classification: { directive } } as RunReplyResponse;
+    },
     recoverRun: notImplemented('recoverRun'),
     reconcilePullRequests: notImplemented('reconcilePullRequests')
   } as ControlPlaneClient;
@@ -322,6 +389,20 @@ export function createScriptedDetailClient(init?: { run?: Run }): ScriptedDetail
     setFeedback(next) {
       feedbackList = [...next];
     },
+    setPrincipal(next) {
+      principal = next;
+    },
+    failPrincipalOnce() {
+      failPrincipalCount += 1;
+    },
+    setReplyError(error) {
+      replyError = error;
+    },
+    setFeedbackUpdateError(error) {
+      feedbackUpdateError = error;
+    },
+    replyCalls,
+    feedbackUpdateCalls,
     hold() {
       if (gate === undefined) {
         let resolve!: () => void;
