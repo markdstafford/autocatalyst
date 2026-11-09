@@ -162,16 +162,16 @@ graph TD
 
 #### Comment card lifecycle actions
 
-- An `addressed` card shows `Resolve`; this is an optional early confirmation and is not required before the same operator approves.
-- A `wont_fix` card shows `Reopen`; activating it asks for a reason and sends that reason as the reopen body.
-- A `resolved` card shows no `Reopen`, because the control plane only reopens declined comments.
+- An `addressed` card shows `Resolve` only while the run is at `spec.human_review` and the loaded current operator principal id matches the card originator (`thread[0].author.id`). This is an optional early confirmation and is not required before the same operator approves.
+- A `wont_fix` card shows `Reopen` only while the run is at `spec.human_review` and the loaded current operator principal id matches the card originator. Activating it asks for a reason and sends that reason as the reopen body.
+- A `resolved` card shows no `Reopen`, because the control plane only reopens declined comments. No lifecycle buttons show after the spec gate advances, while the run revises, at implementation review, when done, or when current operator identity is unknown.
 - `resolved`, `wont_fix`, and `addressed` count as resolved-style for the footer. `resolved` and `wont_fix` cards are dimmed as the design system states for resolved cards. The status chip still shows the actual status string drawn by issue #137.
 
 #### Footer comment zone
 
 - On the Spec tab only, when a spec exists, the detail pane zone of the footer shows `N open, M resolved`. N counts only `open`; M counts `addressed`, `resolved`, and `wont_fix`.
 - Previous and next icon buttons sit in the same zone. They move selection through all comments in document order, including stale and no-range groups after anchored comments. Buttons disable at bounds and disable with a tooltip when there are no comments.
-- Icon-only tooltips read `Label (key)` and use the action registry names/keys. Other tabs and runs without a spec show no comment counts.
+- Icon-only tooltips read `Label (key)` where a key is active and use the action registry names/keys. In the expanded dialog, shortcut keys are suppressed by the dialog guard, so overlay tooltips omit key hints. Other tabs and runs without a spec show no comment counts.
 
 #### Larger spec view
 
@@ -194,7 +194,7 @@ graph TD
 - Depends on issue #135 for the run detail pane, pane bar, tab model, action registry, footer zones, run event stream, and selected-run refresh model.
 - Depends on issue #137 for the Spec tab document, anchored comments, marker/card rendering, stale and no-range groups, feedback loading, and fake-mode seeded `spec-review` surface.
 - Depends through #137 on issue #136 for `replyToRun({ kind: 'request_changes' })`, `replyToRun({ kind: 'approve' })`, `updateRunFeedback`, feedback statuses, and fake-mode revision behavior.
-- Uses the SDK public interface only. No control-plane route, schema, or persistence change is planned.
+- Uses the SDK public interface only for existing control-plane routes. This feature adds an SDK wrapper for the existing diagnostic `GET /v1/principal` route so the client can learn the current operator principal id; no control-plane route, schema, or persistence change is planned.
 - ADR-031 keeps the web client stateless. ADR-032 requires app screens to import shared UI wrappers rather than Base UI directly. ADR-033 defines spec anchor behavior used by navigation.
 
 #### Technical goals
@@ -244,12 +244,16 @@ graph TD
 #### Component breakdown
 
 - Shared `Popover` UI wrapper: wraps Base UI popover behavior, styling, focus management, keyboard close, and test ids consistent with `Dialog` and other shared wrappers.
+- Principal identity SDK and connection state: add `getPrincipal()` to `packages/sdk/src` for the existing `GET /v1/principal` route, load it once after connection/token validation, and expose `currentPrincipalId | unknown` to run-detail components. Unknown identity is non-fatal: the client omits the approve popover's addressed-confirmation copy and hides originator-only lifecycle actions, while server-side 403/409 remains authoritative.
+- Dialog full-screen variant: extend the existing shared `Dialog` wrapper with a first-class full-screen variant prop instead of overriding centered-modal classes. The variant provides viewport coverage, background fill, focus trap, and Base UI Escape handling for the expanded spec overlay.
 - Spec decision helpers: pure functions classify gate availability, count statuses, compute button label, compute approval addressed-confirmation copy, and map control-plane errors for display.
 - Run detail pane bar additions: place decision button and expand button in the existing pane bar without changing tab semantics.
-- Spec feedback actions: add resolve/reopen callbacks to the existing Spec review card surface and use `updateRunFeedback` through `useRunDetail`.
+- Spec feedback actions: add resolve/reopen callbacks to the existing Spec review card surface and use `updateRunFeedback` through `useRunDetail`. Show `Resolve` only when the run is currently waiting at `spec.human_review`, the card status is `addressed`, and `feedback.thread[0].author.id` equals the loaded current principal id. Show `Reopen` only when the run is currently waiting at `spec.human_review`, the card status is `wont_fix`, and `feedback.thread[0].author.id` equals the loaded current principal id. Hide both actions after approval, while the run revises, at implementation review, when done, and when current identity is unknown. Keep 403/409 card errors as race fallbacks.
+- Pane-level spec review controller: lift selection and navigation state above `SpecReview`. The controller owns selected feedback id, document-order list, previous/next availability, scroll requests, marker flash requests, counts, and callbacks. `SpecReview` becomes controlled for selected id and navigation commands rather than owning local `selectedId` for cross-surface behavior.
+- Footer bridge: expose the pane-level controller to the shell footer detail-pane zone through a small run-detail footer context/slot owned by the runs page layout. This keeps the client stateless per ADR-031 while allowing the footer to render counts and previous/next controls from the selected pane.
 - Comment navigation state: tracks selected feedback id, document-order list, previous/next availability, marker flash trigger, and scroll request.
-- Expanded spec dialog: composes the existing Spec review document/comment columns with overlay chrome and shared decision/navigation controls.
-- Action registry entries: Approve, Request changes, Resolve, Previous comment, Next comment, and Expand spec.
+- Expanded spec dialog: renders one `SpecReview` instance at a time. When the overlay is open, unmount the pane's `SpecReview` and mount the overlay instance using the same pane-level controller. This avoids duplicate `spec-document`/composer test ids and duplicate `selectionchange` listeners. Preserving an unsent composer draft across expand/collapse is out of scope.
+- Action registry entries: one dynamic Spec gate decision action, Resolve, Previous comment, Next comment, and Expand spec. Use handler-level run/spec guards in addition to focus-context guards rather than expanding `appliesWhen` for run state; registry tests cover the guard helpers and handler no-ops. Keys: decision has no single-key shortcut and no key hint because it opens a destructive confirm popover; Resolve uses `r`; Previous comment uses `Shift+C`; Next comment uses `c`; Expand spec uses `x`. Tooltips include `Label (key)` only where a key is active. Inside the expanded dialog, shortcuts remain suppressed by the dialog guard, so overlay tooltips omit key hints rather than advertising inactive keys.
 
 #### Sequence: request changes and revision
 
@@ -316,7 +320,7 @@ No new persisted data model or API schema is required. The client consumes exist
 - `resolvedCount = feedback.filter(status in ['addressed', 'resolved', 'wont_fix']).length`.
 - Button label is `Approve` when `openCount === 0`; otherwise `Request changes (${openCount})`.
 - The request-changes confirmation uses `openCount`. It never calls `createRunFeedback`.
-- The approve confirmation counts addressed feedback whose originator is the current operator, using the same originator field/first-thread-author convention exposed by feedback responses. If the control plane rejects because another principal's addressed feedback blocks approval, show the returned message.
+- The approve confirmation counts addressed feedback whose originator is the current operator, comparing `feedback.thread[0].author.id` to the loaded current principal id from `getPrincipal()`. If current principal id is unknown, omit the `Approving also confirms K of your addressed comments` copy entirely. If the control plane rejects because another principal's addressed feedback blocks approval, show the returned message.
 
 #### Refresh behavior
 
@@ -328,7 +332,7 @@ No new persisted data model or API schema is required. The client consumes exist
 
 - Decision `feedback_gate_blocked` errors keep the popover open and render the control-plane message.
 - Other decision errors render the control-plane message and a retry affordance in the popover.
-- Resolve/reopen `403` or `409` errors render the control-plane message on the relevant card and leave the local card state unchanged.
+- Resolve/reopen `403` or `409` errors render the control-plane message on the relevant card and leave the local card state unchanged. These are fallback race/error paths; normally the actions are hidden unless the run is at `spec.human_review` and the loaded current principal id matches `feedback.thread[0].author.id`.
 - In-flight actions disable only the relevant action and prevent duplicate requests.
 
 #### Comment navigation
@@ -339,8 +343,8 @@ No new persisted data model or API schema is required. The client consumes exist
 
 #### Overlay behavior
 
-- Use the existing shared `Dialog` wrapper. The overlay is full viewport and closes on `Escape` only when no nested confirm popover is open.
-- The overlay receives the same run, spec, feedback, callbacks, selected comment id, and action state as the pane. No parallel data loader is introduced.
+- Use the existing shared `Dialog` wrapper with a new full-screen variant prop. The overlay is full viewport and closes on `Escape` only when no nested confirm popover is open.
+- The overlay receives the same run, spec, feedback, callbacks, selected comment id, and action state as the pane through the pane-level controller. No parallel data loader is introduced. The pane `SpecReview` is unmounted while the overlay is open.
 - The overlay top row includes the decision button and close button; the comment column includes counts and previous/next controls.
 
 ### Security, privacy, and compliance
@@ -348,7 +352,7 @@ No new persisted data model or API schema is required. The client consumes exist
 - The client performs no authorization decisions beyond hiding inapplicable controls. The control plane remains authoritative for approval, request changes, resolve, and reopen.
 - Reopen reason input is user-provided text sent to an existing endpoint. It must use existing textarea/input escaping patterns and must not render as raw HTML.
 - Error messages are displayed from the control plane's safe public response envelope; do not log bearer tokens or raw request bodies.
-- Keyboard shortcuts must not fire while focus is in text entry controls, including the comment composer and reopen reason input.
+- Keyboard shortcuts must not fire while focus is in text entry controls, including the comment composer and reopen reason input. Overlay and popover Escape handling is owned by those layers' Base UI handlers; the shell `close-layer` binding must not also act. Tests cover pressing Escape once closes the confirm popover and leaves the overlay open, then pressing Escape again closes the overlay.
 
 ### Observability
 
@@ -374,7 +378,7 @@ No new persisted data model or API schema is required. The client consumes exist
 
 ### Risks
 
-- Originator detection for addressed approval copy may be wrong if the client shape changes. Mitigate with component tests against the public SDK feedback shape and by treating control-plane `409` as authoritative.
+- Current-operator identity can be unavailable if the existing principal route fails or the SDK call is unauthorized. Mitigate by loading it once on connect, treating it as unknown on failure, omitting the addressed-confirmation copy when unknown, hiding originator-only Resolve/Reopen actions when unknown, and leaving the control plane authoritative for races.
 - Stream and action refreshes can race. Mitigate with existing stale guards and targeted tests that change feedback status while the selected run updates.
 - Geometry regressions are likely because the pane bar, footer, and overlay all share constrained space. Mitigate with Playwright geometry tests across sidebar and theme states.
 - Fake-mode timing can make end-to-end tests flaky. Mitigate by waiting on observable run state and UI changes rather than fixed sleeps.
@@ -397,6 +401,15 @@ No new persisted data model or API schema is required. The client consumes exist
       - [ ] Labels are exactly `Approve` and `Request changes (N)`.
       - [ ] Tests cover zero, one, and many open comments plus addressed comments from current and other principals.
     - **Dependencies**: None
+  - [ ] **Task: Add SDK principal lookup and connected-operator state**
+    - **Description**: Add `getPrincipal()` to `packages/sdk/src` for the existing `GET /v1/principal` route, load it once after the web client connects, and expose the loaded current principal id to run-detail decision and feedback components. Treat lookup failure as unknown identity rather than blocking the app.
+    - **Acceptance criteria**:
+      - [ ] The SDK wraps the existing principal route without adding a control-plane route or schema.
+      - [ ] The web client loads the principal once on connect/token validation and stores `currentPrincipalId` for the session.
+      - [ ] On lookup failure, approval still works but omits the addressed-confirmation copy, and Resolve/Reopen actions are hidden.
+      - [ ] SDK tests cover successful parsing and public error handling for the principal route.
+      - [ ] Component tests cover known-current-operator and unknown-operator behavior.
+    - **Dependencies**: None
 
 - [ ] **Story: Wire the spec gate decision button**
   - [ ] **Task: Add the pane-bar decision button and confirm popover**
@@ -407,7 +420,7 @@ No new persisted data model or API schema is required. The client consumes exist
       - [ ] A non-gate run, pull-request-gate run, done run, failed run, and implementation-review run show no decision button.
       - [ ] `Enter` confirms and `Escape` cancels the popover.
       - [ ] The button matches design-system visual rules and geometry.
-    - **Dependencies**: `Task: Create the shared Popover wrapper`, `Task: Implement pure spec decision helpers`
+    - **Dependencies**: `Task: Create the shared Popover wrapper`, `Task: Implement pure spec decision helpers`, `Task: Add SDK principal lookup and connected-operator state`
   - [ ] **Task: Call `replyToRun` for approve and request changes**
     - **Description**: Wire confirmation to `replyToRun` with `approve` or `request_changes`, disable the button while in flight, prevent duplicate requests, and avoid creating feedback when requesting changes.
     - **Acceptance criteria**:
@@ -430,19 +443,21 @@ No new persisted data model or API schema is required. The client consumes exist
   - [ ] **Task: Wire addressed comment resolution**
     - **Description**: Add a `Resolve` action for `addressed` cards that calls `updateRunFeedback` with `status: 'resolved'`, refreshes feedback, and moves the card into the resolved visual style.
     - **Acceptance criteria**:
-      - [ ] Only `addressed` cards show `Resolve`.
+      - [ ] Only `addressed` cards raised by the loaded current operator show `Resolve`, and only while the run is at `spec.human_review`.
       - [ ] Resolve sends exactly `updateRunFeedback(runId, feedbackId, { status: 'resolved' })`.
       - [ ] Success updates the card style and footer counts.
       - [ ] `403` and `409` errors show the control-plane message on the card and leave the card unchanged.
+      - [ ] Component tests cover hidden Resolve for other-originator comments, unknown current operator, revising runs, implementation-gate runs, and approved/done runs.
     - **Dependencies**: `Task: Implement pure spec decision helpers`
   - [ ] **Task: Wire declined comment reopening**
     - **Description**: Add a `Reopen` action for `wont_fix` cards, prompt for a reason, call `updateRunFeedback` with `status: 'open'` and the reason body, and refresh the run/feedback state after the run returns to revise.
     - **Acceptance criteria**:
-      - [ ] Only `wont_fix` cards show `Reopen`; `resolved` cards do not.
+      - [ ] Only `wont_fix` cards raised by the loaded current operator show `Reopen`, and only while the run is at `spec.human_review`; `resolved` cards do not.
       - [ ] Reopen requires a non-empty reason.
       - [ ] Reopen sends exactly `updateRunFeedback(runId, feedbackId, { status: 'open', body: reason })`.
       - [ ] Success returns the run to revise and updates counts after refresh.
       - [ ] `403` and `409` errors show the control-plane message on the card and leave the card unchanged.
+      - [ ] Component tests cover hidden Reopen for other-originator comments, unknown current operator, revising runs, implementation-gate runs, approved/done runs, and resolved comments.
     - **Dependencies**: `Task: Wire addressed comment resolution`
   - [ ] **Task: Update card styles for addressed, resolved, and declined statuses**
     - **Description**: Align card and marker rendering with this issue's lifecycle mapping while preserving issue #137 status chips and grouping behavior.
@@ -462,8 +477,9 @@ No new persisted data model or API schema is required. The client consumes exist
       - [ ] Counts update after comment creation, request changes, revision, resolve, reopen, and approval refreshes.
       - [ ] Other tabs and runs without specs show no comment counts.
     - **Dependencies**: `Task: Implement pure spec decision helpers`
-  - [ ] **Task: Implement previous and next comment actions**
-    - **Description**: Add footer previous/next buttons and state that move through comments in document order, select the matching card, scroll to the anchor or group, and flash the marker once.
+  - [ ] **Task: Lift spec selection state and implement previous/next actions**
+    - **Description**: Move selected comment id, navigation list, scroll requests, and marker flash requests into a pane-level controller above `SpecReview`, then add footer previous/next buttons that use the controller to move through comments in document order.
+
     - **Acceptance criteria**:
       - [ ] Buttons move through anchored comments in document order, then stale and no-range groups.
       - [ ] The selected card and marker are visibly selected after navigation.
@@ -471,6 +487,14 @@ No new persisted data model or API schema is required. The client consumes exist
       - [ ] Previous disables at the first comment and next disables at the last.
       - [ ] Both buttons disable with a tooltip when there are no comments.
     - **Dependencies**: `Task: Render Spec-tab footer counts`
+  - [ ] **Task: Bridge pane comment controls into the shell footer**
+    - **Description**: Add a small run-detail footer context or slot so the shell footer detail-pane zone can render the selected pane's counts and navigation callbacks without duplicating run state.
+    - **Acceptance criteria**:
+      - [ ] The footer receives counts, disabled states, tooltips, and previous/next callbacks from the selected run detail pane.
+      - [ ] The bridge clears its content when the Spec tab is not active, the selected run has no spec, or the pane unmounts.
+      - [ ] The bridge does not persist server data and remains consistent with the stateless-client ADR.
+      - [ ] Tests cover footer cleanup when changing tabs, changing runs, and opening/closing the overlay.
+    - **Dependencies**: `Task: Lift spec selection state and implement previous/next actions`
   - [ ] **Task: Register footer and comment navigation actions**
     - **Description**: Register previous and next comment actions in the #134 action registry with names, keys, applicability rules, and `Label (key)` tooltips.
     - **Acceptance criteria**:
@@ -478,33 +502,35 @@ No new persisted data model or API schema is required. The client consumes exist
       - [ ] Tooltips include the label and key.
       - [ ] Single-key shortcuts do not fire in the composer, reopen reason input, any input, menus, dialogs, or with modifiers held.
       - [ ] Component tests cover applicability and shortcut suppression.
-    - **Dependencies**: `Task: Implement previous and next comment actions`
+    - **Dependencies**: `Task: Bridge pane comment controls into the shell footer`
 
 - [ ] **Story: Add the expanded spec view**
   - [ ] **Task: Add the pane-bar expand action and full-screen dialog**
-    - **Description**: Show an expand button when the spec has loaded and open a full-screen `Dialog` overlay that covers the viewport including the footer.
+    - **Description**: Add a full-screen variant prop to the shared `Dialog` wrapper, then show an expand button when the spec has loaded and open a full-screen dialog overlay that covers the viewport including the footer.
     - **Acceptance criteria**:
       - [ ] Expand is hidden until the spec is ready.
+      - [ ] The shared `Dialog` wrapper has a tested full-screen variant rather than class overrides fighting centered-modal defaults.
       - [ ] The overlay has `role="dialog"` and covers the viewport including the footer.
       - [ ] The top row shows run title, position, decision button, and close button.
       - [ ] `Escape` closes the overlay when no confirm popover is open.
       - [ ] The document column and comment column obey the design-system width tokens.
-    - **Dependencies**: `Task: Add the pane-bar decision button and confirm popover`, `Task: Implement previous and next comment actions`
+    - **Dependencies**: `Task: Add the pane-bar decision button and confirm popover`, `Task: Lift spec selection state and implement previous/next actions`
   - [ ] **Task: Share decision, counts, and comments between pane and overlay**
     - **Description**: Compose the overlay from the same spec, feedback, selection, and action callbacks as the pane so decisions and comments made in either place are reflected in the other.
     - **Acceptance criteria**:
       - [ ] The overlay comment column shows open/resolved counts and previous/next buttons.
       - [ ] A decision made from the overlay has the same effect as one made from the pane.
-      - [ ] `Escape` closes a confirm popover first and the overlay second.
+      - [ ] `Escape` closes a confirm popover first and the overlay second, with no extra shell `close-layer` action firing.
       - [ ] Comments made in the overlay appear in the pane after close, and pane comments appear in the overlay.
+      - [ ] Only one `SpecReview` instance is mounted at a time; tests do not find duplicate `spec-document` or composer test ids while the overlay is open.
     - **Dependencies**: `Task: Add the pane-bar expand action and full-screen dialog`
   - [ ] **Task: Register approve, request changes, resolve, and expand actions**
     - **Description**: Add action registry entries for Approve, Request changes, Resolve, and Expand with names, keys, applicability rules, and tooltips.
     - **Acceptance criteria**:
       - [ ] Each action has a stable registry name, key, and applicability rule.
-      - [ ] Tooltips read `Label (key)`.
-      - [ ] Shortcuts are suppressed in text inputs, composers, menus, dialogs, and modifier combinations.
-      - [ ] Registry tests cover spec-gate and non-spec-gate applicability.
+      - [ ] Tooltips read `Label (key)` where a key is active; the decision action and overlay controls omit inactive key hints.
+      - [ ] Shortcuts are suppressed in text inputs, composers, menus, dialogs, and modifier combinations; overlay tooltips omit key hints while dialog suppression makes keys inactive.
+      - [ ] Registry/handler tests cover spec-gate and non-spec-gate applicability through handler-level guards.
     - **Dependencies**: `Task: Share decision, counts, and comments between pane and overlay`
 
 - [ ] **Story: Keep run, spec, and feedback state fresh**
