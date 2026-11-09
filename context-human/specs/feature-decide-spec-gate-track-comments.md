@@ -524,10 +524,10 @@ No new persisted data model or API schema is required. The client consumes exist
       - [ ] Comments made in the overlay appear in the pane after close, and pane comments appear in the overlay.
       - [ ] Only one `SpecReview` instance is mounted at a time; tests do not find duplicate `spec-document` or composer test ids while the overlay is open.
     - **Dependencies**: `Task: Add the pane-bar expand action and full-screen dialog`
-  - [ ] **Task: Register approve, request changes, resolve, and expand actions**
-    - **Description**: Add action registry entries for Approve, Request changes, Resolve, and Expand with names, keys, applicability rules, and tooltips.
+  - [ ] **Task: Register the decision, resolve, and expand actions**
+    - **Description**: Add action registry entries for the one dynamic spec gate decision action (its label follows the open count, so Approve and Request changes are not separate entries), Resolve, and Expand with names, applicability rules, and tooltips. Resolve acts on the selected comment and does nothing when none is selected or the selected comment cannot be resolved.
     - **Acceptance criteria**:
-      - [ ] Each action has a stable registry name, key, and applicability rule.
+      - [ ] Each action has a stable registry name and applicability rule. Resolve uses `r` and Expand uses `x`; the decision action has no key.
       - [ ] Tooltips read `Label (key)` where a key is active; the decision action and overlay controls omit inactive key hints.
       - [ ] Shortcuts are suppressed in text inputs, composers, menus, dialogs, and modifier combinations; overlay tooltips omit key hints while dialog suppression makes keys inactive.
       - [ ] Registry/handler tests cover spec-gate and non-spec-gate applicability through handler-level guards.
