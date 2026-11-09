@@ -1024,3 +1024,42 @@ describe('control-plane SDK client against a test server', () => {
     await expect(client.getProbeResource('missing')).rejects.toBeInstanceOf(ControlPlaneClientError);
   });
 });
+
+describe('ControlPlaneClient.getPrincipal', () => {
+  it('calls GET /v1/principal with bearer header and parses the principal', async () => {
+    const principal = { id: 'user-1', kind: 'human', tenantId: 'tenant-1', displayName: 'Phoebe' };
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ principal })
+    });
+    const client = createControlPlaneClient({
+      baseUrl: 'http://localhost:3000',
+      bearerToken: 'test-token',
+      fetch: mockFetch
+    });
+    const result = await client.getPrincipal();
+    expect(result).toEqual({ principal });
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.objectContaining({ href: expect.stringContaining('/v1/principal') }),
+      expect.objectContaining({ method: 'GET', headers: expect.objectContaining({ authorization: 'Bearer test-token' }) })
+    );
+  });
+
+  it('throws ControlPlaneClientError with the right status on an error envelope', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: async () => ({ error: { code: 'unauthorized', message: 'Unauthorized.' } })
+    });
+    const client = createControlPlaneClient({
+      baseUrl: 'http://localhost:3000',
+      bearerToken: 'test-token',
+      fetch: mockFetch
+    });
+    await expect(client.getPrincipal()).rejects.toMatchObject({
+      name: 'ControlPlaneClientError',
+      status: 401
+    });
+  });
+});

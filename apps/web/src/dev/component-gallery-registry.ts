@@ -104,6 +104,12 @@ export const GALLERY_ENTRIES: readonly GalleryEntry[] = [
     title: 'Tooltip',
     description: 'Hover/focus tooltip attached to a button.',
     kind: 'base-ui-wrapper'
+  },
+  {
+    id: 'popover',
+    title: 'Popover',
+    description: 'Anchored confirm popover opened from a trigger button, closing on Escape.',
+    kind: 'base-ui-wrapper'
   }
 ];
 

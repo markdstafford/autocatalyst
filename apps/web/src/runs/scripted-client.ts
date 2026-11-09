@@ -105,6 +105,7 @@ export function createScriptedClient(init?: { runs?: readonly Run[]; projects?: 
       listRunFeedback: notImplemented('listRunFeedback'),
       appendRunFeedbackThreadReply: notImplemented('appendRunFeedbackThreadReply'),
       replyToRun: notImplemented('replyToRun'),
+      getPrincipal: notImplemented('getPrincipal'),
       recoverRun: notImplemented('recoverRun'),
       reconcilePullRequests: notImplemented('reconcilePullRequests')
     } as ControlPlaneClient
