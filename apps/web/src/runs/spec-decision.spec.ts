@@ -87,6 +87,50 @@ describe('isSpecGateDecisionAvailable', () => {
   it('is false for an in-progress non-gate step', () => {
     expect(isSpecGateDecisionAvailable(makeRun({ currentStep: 'spec.author' }))).toBe(false);
   });
+
+  // Contract gap: a stale / derived run can retain currentStep 'spec.human_review' while it is
+  // no longer waiting at the gate. The step alone must not expose the decision controls.
+  it('is false when the run retains the gate step but is terminal', () => {
+    expect(
+      isSpecGateDecisionAvailable(makeRun({ currentStep: SPEC_GATE_STEP, terminal: true }))
+    ).toBe(false);
+  });
+
+  it('is false when the run retains the gate step but has a finished status', () => {
+    for (const status of ['done', 'failed', 'canceled'] as const) {
+      expect(
+        isSpecGateDecisionAvailable(makeRun({ currentStep: SPEC_GATE_STEP, status, terminal: true }))
+      ).toBe(false);
+      // Even if a stale object left terminal=false, a finished status is still non-gate.
+      expect(
+        isSpecGateDecisionAvailable(makeRun({ currentStep: SPEC_GATE_STEP, status, terminal: false }))
+      ).toBe(false);
+    }
+  });
+
+  it('is false when the run retains the gate step but is not waiting on a human', () => {
+    for (const waitingOn of ['system', 'ai', 'none'] as const) {
+      expect(
+        isSpecGateDecisionAvailable(makeRun({ currentStep: SPEC_GATE_STEP, waitingOn }))
+      ).toBe(false);
+    }
+  });
+
+  it('is true at the gate step when status and waitingOn are absent (additive compatibility)', () => {
+    expect(
+      isSpecGateDecisionAvailable(
+        makeRun({ currentStep: SPEC_GATE_STEP, status: undefined, waitingOn: undefined })
+      )
+    ).toBe(true);
+  });
+
+  it('requires all of step, non-terminal, in-progress, and waiting-on-human together', () => {
+    expect(
+      isSpecGateDecisionAvailable(
+        makeRun({ currentStep: SPEC_GATE_STEP, status: 'in_progress', waitingOn: 'human', terminal: false })
+      )
+    ).toBe(true);
+  });
 });
 
 describe('countOpenFeedback / countResolvedFeedback', () => {

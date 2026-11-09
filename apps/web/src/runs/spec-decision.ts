@@ -21,9 +21,29 @@ import { ControlPlaneClientError } from '@autocatalyst/sdk';
 /** The workflow step at which a run waits for the operator's spec decision. */
 export const SPEC_GATE_STEP = 'spec.human_review';
 
-/** Decision button visible only when the run is waiting at the spec human-review gate. */
+/**
+ * Decision button visible only when the run is *waiting* at the spec human-review gate.
+ *
+ * `currentStep === 'spec.human_review'` alone is not sufficient: a stale or derived run object
+ * can retain that step while already terminal (`terminal: true`), in a finished `status`
+ * (`done` | `failed` | `canceled`), or waiting on a non-human actor (`waitingOn` of `system` |
+ * `ai` | `none`). Exposing Approve / Request-changes (and the originator-only Resolve / Reopen
+ * controls that gate on this helper) against such a run would offer a decision the control plane
+ * no longer accepts. The gate is available only when the run is at the step, not terminal, still
+ * in progress, and waiting on the human operator.
+ *
+ * `status` and `waitingOn` are optional on the resource schema (persisted rows and event payloads
+ * parse without them), so an absent value is treated as compatible and the authoritative checks
+ * fall back to `terminal` plus the step. The control plane remains authoritative for the decision
+ * itself; this is a client-side visibility guard only.
+ */
 export function isSpecGateDecisionAvailable(run: Run): boolean {
-  return run.currentStep === SPEC_GATE_STEP;
+  return (
+    run.currentStep === SPEC_GATE_STEP &&
+    run.terminal === false &&
+    (run.status === undefined || run.status === 'in_progress') &&
+    (run.waitingOn === undefined || run.waitingOn === 'human')
+  );
 }
 
 /** Count of artifact-target feedback with status 'open'. */
