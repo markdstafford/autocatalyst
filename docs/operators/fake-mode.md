@@ -235,9 +235,15 @@ are the AI steps that launch a scripted session: `spec.author`, `implementation.
 ## Scripted spec content and revision
 
 For feature and enhancement runs, the first scripted `spec.author` spec contains a heading,
-paragraphs, a table, a bullet list, a fenced code block, an emoji (`✨`) before passage A, and
-passages A through D. Passages C and D appear before passage A; passage B and an `## Open questions`
+paragraphs, a table, a bullet list, a fenced code block, an astral emoji (`🚀`, outside the Basic
+Multilingual Plane) before passage A, and passages A through D. Passages C and D appear before passage A; passage B and an `## Open questions`
 heading appear after it.
+
+A paragraph before the table carries two links so link rendering can be checked by hand: a safe
+`https://github.com/autocatalyst-fixtures/demo-app` link that renders as a real clickable anchor, and
+a `javascript:alert(1)` link using an unsupported scheme that must render as plain, non-clickable
+text. The links sit ahead of every anchored passage and the revision insertion point, so they do not
+change the deterministic anchor offsets.
 
 A revision — triggered by request-changes at the spec gate or a feedback reply that requests
 changes — deterministically:

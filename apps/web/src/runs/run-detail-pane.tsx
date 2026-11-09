@@ -101,7 +101,12 @@ export function RunDetailPane({ run, client, visible, replaceRun, onUnauthorized
             <RunDetailSummary run={selectedRun} pullRequest={detail.pullRequest} sessions={detail.sessions} />
           </TabPanel>
           <TabPanel value="spec" className={panelClass}>
-            <RunDetailSpecTab spec={detail.spec} />
+            <RunDetailSpecTab
+              spec={detail.spec}
+              run={selectedRun}
+              onCreateComment={detail.createSpecComment}
+              onReloadNeeded={detail.reloadSpec}
+            />
           </TabPanel>
           <TabPanel value="acceptance" className={panelClass}>
             <EmptyState

@@ -28,7 +28,7 @@
  */
 import type { ControlPlaneClient } from '@autocatalyst/sdk';
 import { ControlPlaneClientError } from '@autocatalyst/sdk';
-import type { Run } from '@autocatalyst/api-contract';
+import type { FeedbackResponse, Run } from '@autocatalyst/api-contract';
 import { useEffect, useRef, useState } from 'react';
 
 import type { FrameReaderLogger } from './run-events-frame-reader.js';
@@ -40,6 +40,9 @@ import {
 } from './run-events-reconnect.js';
 import type { PullRequestFact, SessionsFact, SpecDiscriminator } from './run-detail-facts.js';
 import { isSpecCapableWorkKind } from './run-spec-kinds.js';
+import { codePointLength } from '../features/spec/code-points.js';
+import { hasOutOfBoundsArtifactAnchors } from '../features/spec/spec-comments.js';
+import type { CreateCommentInput, CreateCommentResult } from '../features/spec/spec-review.js';
 
 export interface UseRunDetailOptions {
   readonly client: ControlPlaneClient;
@@ -65,6 +68,14 @@ export interface RunDetailState {
   readonly spec: SpecDiscriminator;
   /** True once the run is reported gone (a 404 on the stream or a reread). */
   readonly runGone: boolean;
+  /**
+   * Create an anchored spec comment through the SDK. On success the returned feedback is appended
+   * to the spec state immediately (no reread). Returns a typed result so the composer can keep the
+   * draft and show the right message on an invalid anchor or other error.
+   */
+  createSpecComment(input: CreateCommentInput): Promise<CreateCommentResult>;
+  /** Reread the spec and its feedback (used after an invalid anchor or out-of-bounds offsets). */
+  reloadSpec(): void;
 }
 
 function isStatus(error: unknown, status: number): boolean {
@@ -103,6 +114,11 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
   const trailingRefreshRef = useRef(false);
   const cursorRef = useRef<string | undefined>(undefined);
   const latestTerminalRef = useRef(false);
+
+  // Spec review state read inside the create-comment / reload callbacks.
+  const specRef = useRef<SpecDiscriminator>(spec);
+  specRef.current = spec;
+  const refreshRef = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     if (!visible || runId === undefined || run === undefined) {
@@ -203,14 +219,20 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
 
       if (capableNow) {
         reads.push(
-          client
-            .getRunSpec(thisRunId)
-            .then(() => {
-              if (guard(thisRunId, thisSeq)) {
-                setSpec({ status: 'ready' });
+          (async () => {
+            try {
+              let specResp = await client.getRunSpec(thisRunId);
+              let feedback = await listFeedbackSafe(thisRunId);
+              // If a returned anchor falls outside the held markdown, reread spec+feedback once; any
+              // anchor still out of bounds is then shown in the stale group by the classifier.
+              if (hasOutOfBoundsArtifactAnchors(feedback, codePointLength(specResp.markdown))) {
+                specResp = await client.getRunSpec(thisRunId);
+                feedback = await listFeedbackSafe(thisRunId);
               }
-            })
-            .catch((error: unknown) => {
+              if (guard(thisRunId, thisSeq)) {
+                setSpec({ status: 'ready', markdown: specResp.markdown, artifactId: specResp.artifact.id, feedback });
+              }
+            } catch (error: unknown) {
               if (!guard(thisRunId, thisSeq)) {
                 return;
               }
@@ -219,8 +241,18 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
               } else {
                 setSpec({ status: 'error', message: errorMessage(error, 'Spec could not be read.') });
               }
-            })
+            }
+          })()
         );
+      }
+
+      /** List artifact feedback, treating a read failure as "no feedback" so the spec still renders. */
+      async function listFeedbackSafe(id: string): Promise<FeedbackResponse[]> {
+        try {
+          return [...(await client.listRunFeedback(id)).feedback];
+        } catch {
+          return [];
+        }
       }
 
       await Promise.allSettled(reads);
@@ -359,6 +391,11 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
     }
 
 
+    // Expose a reload hook that rereads spec + feedback (and the other facts) on demand.
+    refreshRef.current = () => {
+      void refresh();
+    };
+
     void streamLoop();
 
     return () => {
@@ -369,5 +406,47 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client, runId, visible]);
 
-  return { pullRequest, sessions, spec, runGone };
+  async function createSpecComment(input: CreateCommentInput): Promise<CreateCommentResult> {
+    const currentSpec = specRef.current;
+    const currentRunId = runIdRef.current;
+    if (currentSpec.status !== 'ready' || currentRunId === undefined) {
+      return { status: 'error', message: 'The spec is not ready for comments.' };
+    }
+    try {
+      const created = await client.createRunFeedback(currentRunId, {
+        target: 'artifact',
+        title: input.title,
+        body: input.body,
+        anchor: {
+          kind: 'artifact_range',
+          artifactId: currentSpec.artifactId,
+          from: input.from,
+          to: input.to,
+          quotedText: input.quotedText
+        }
+      });
+      // Insert the created feedback immediately so the card/marker appears without a reread.
+      setSpec((previous) =>
+        previous.status === 'ready'
+          ? { ...previous, feedback: [...previous.feedback, created as unknown as FeedbackResponse] }
+          : previous
+      );
+      return { status: 'created' };
+    } catch (error: unknown) {
+      if (
+        error instanceof ControlPlaneClientError &&
+        error.status === 422 &&
+        error.response.error.code === 'invalid_feedback_anchor'
+      ) {
+        return { status: 'invalid_anchor' };
+      }
+      return { status: 'error', message: errorMessage(error, 'The comment could not be created.') };
+    }
+  }
+
+  function reloadSpec(): void {
+    refreshRef.current();
+  }
+
+  return { pullRequest, sessions, spec, runGone, createSpecComment, reloadSpec };
 }

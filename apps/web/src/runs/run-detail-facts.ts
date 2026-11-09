@@ -6,7 +6,7 @@
  * read never blanks the other facts. Defined here (not in the data hook) so the display
  * components can import the types without importing the hook.
  */
-import type { PullRequest, Session } from '@autocatalyst/api-contract';
+import type { FeedbackResponse, PullRequest, Session } from '@autocatalyst/api-contract';
 
 /** A single independently-loaded fact: loading, a value, or an inline error. */
 export type FactState<T> =
@@ -25,12 +25,18 @@ export type SessionsFact = FactState<readonly Session[]>;
  * - `no-spec`: the run's work kind has no API-served spec (no read is made).
  * - `loading`: the spec read is in flight.
  * - `drafting`: a spec-capable run whose spec is not ready yet (`getRunSpec` 404).
- * - `ready`: a spec-capable run whose spec exists (success).
+ * - `ready`: a spec-capable run whose spec exists; carries the markdown, the target artifact id, and
+ *   the reconciled artifact feedback so the Spec tab can render the review surface.
  * - `error`: a non-404 spec read failure.
  */
 export type SpecDiscriminator =
   | { readonly status: 'no-spec' }
   | { readonly status: 'loading' }
   | { readonly status: 'drafting' }
-  | { readonly status: 'ready' }
+  | {
+      readonly status: 'ready';
+      readonly markdown: string;
+      readonly artifactId: string;
+      readonly feedback: readonly FeedbackResponse[];
+    }
   | { readonly status: 'error'; readonly message: string };

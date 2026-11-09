@@ -46,6 +46,7 @@ import { Input } from '../ui/input.js';
 import { ResizeHandle } from '../ui/resize-handle.js';
 import { Shortcut, ShortcutList, type ShortcutPlatform } from '../ui/shortcut.js';
 import { Tabs, TabPanel } from '../ui/tabs.js';
+import { Textarea } from '../ui/textarea.js';
 import { Tooltip } from '../ui/tooltip.js';
 import { WriteOnlySecretField } from '../ui/write-only-secret-field.js';
 import { StatusChip } from '../runs/status-chip.js';
@@ -459,6 +460,14 @@ function renderExample(id: string, platform: ShortcutPlatform, surface: GalleryS
           <Input placeholder="Disabled" disabled />
           <Input defaultValue="Invalid value" error aria-label="Input in error state" />
           <Input defaultValue="Loading value" loading aria-label="Input in loading state" />
+        </div>
+      );
+    case 'textarea':
+      return (
+        <div className="flex max-w-sm flex-col gap-3">
+          <Textarea placeholder="Default" aria-label="Textarea default" rows={3} />
+          <Textarea defaultValue="Filled multi-line value" aria-label="Textarea filled" rows={3} />
+          <Textarea defaultValue="Invalid value" error aria-label="Textarea in error state" rows={3} />
         </div>
       );
     case 'write-only-secret-field':
