@@ -34,6 +34,8 @@ import {
   getRunSpecSuccessStatusCode,
   listRunFeedbackSuccessStatusCode,
   listRunSessionsSuccessStatusCode,
+  principalDiagnosticPath,
+  principalDiagnosticResponseSchema,
   pullRequestReconciliationPath,
   pullRequestReconciliationResponseSchema,
   reconcilePullRequestsSuccessStatusCode,
@@ -97,6 +99,7 @@ import {
   type ErrorResponse,
   type Feedback,
   type HealthResponse,
+  type PrincipalDiagnosticResponse,
   type ProbeResource,
   type Run,
   type RunFeedbackListResponse,
@@ -155,6 +158,7 @@ export interface ControlPlaneClient {
   appendRunFeedbackThreadReply(id: string, feedbackId: string, request: AppendRunFeedbackThreadRequest): Promise<FeedbackResponse>;
   updateRunFeedback(id: string, feedbackId: string, request: UpdateRunFeedbackRequest): Promise<FeedbackResponse>;
   replyToRun(id: string, request: RunReplyRequest): Promise<RunReplyResponse>;
+  getPrincipal(): Promise<PrincipalDiagnosticResponse>;
   recoverRun(id: string, request?: RunRecoveryRequest): Promise<RunRecoveryResponse>;
   reconcilePullRequests(): Promise<ReconcilePullRequestsResponse>;
 }
@@ -601,6 +605,15 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
         throw new Error(`Expected ${createRunReplySuccessStatusCode} from replyToRun, received ${response.status}.`);
       }
       return runReplyResponseSchema.parse(await parseJson(response));
+    },
+
+    async getPrincipal() {
+      const response = await fetchImplementation(
+        urlFor(baseUrl, principalDiagnosticPath),
+        { method: 'GET', headers: protectedHeaders(bearerToken) }
+      );
+      await throwForError(response);
+      return principalDiagnosticResponseSchema.parse(await parseJson(response));
     },
 
     async recoverRun(id, request) {

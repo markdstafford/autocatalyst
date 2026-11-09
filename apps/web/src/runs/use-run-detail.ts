@@ -76,7 +76,20 @@ export interface RunDetailState {
   createSpecComment(input: CreateCommentInput): Promise<CreateCommentResult>;
   /** Reread the spec and its feedback (used after an invalid anchor or out-of-bounds offsets). */
   reloadSpec(): void;
+  /**
+   * Decide the spec gate with the existing run-reply operation. On success the run/spec/feedback
+   * are refreshed and the stream follows the next run state; on failure the raw error is returned so
+   * the caller can distinguish `feedback_gate_blocked` from other control-plane errors.
+   */
+  replyToGate(kind: 'approve' | 'request_changes'): Promise<RunActionResult>;
+  /** Resolve an addressed comment (`updateRunFeedback` with `status: 'resolved'`), then refresh. */
+  resolveComment(feedbackId: string): Promise<RunActionResult>;
+  /** Reopen a declined comment with a reason (`updateRunFeedback` with `status: 'open'`), then refresh. */
+  reopenComment(feedbackId: string, reason: string): Promise<RunActionResult>;
 }
+
+/** The outcome of a decision/lifecycle action: `ok`, or the raw error for the caller to classify. */
+export type RunActionResult = { readonly status: 'ok' } | { readonly status: 'error'; readonly error: unknown };
 
 function isStatus(error: unknown, status: number): boolean {
   return error instanceof ControlPlaneClientError && error.status === status;
@@ -448,5 +461,58 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
     refreshRef.current();
   }
 
-  return { pullRequest, sessions, spec, runGone, createSpecComment, reloadSpec };
+  async function replyToGate(kind: 'approve' | 'request_changes'): Promise<RunActionResult> {
+    const currentRunId = runIdRef.current;
+    if (currentRunId === undefined) {
+      return { status: 'error', error: new Error('No run is selected.') };
+    }
+    try {
+      await client.replyToRun(currentRunId, { kind });
+      // Refresh immediately; the stream transition also triggers a refresh as the run moves.
+      refreshRef.current();
+      return { status: 'ok' };
+    } catch (error: unknown) {
+      return { status: 'error', error };
+    }
+  }
+
+  async function resolveComment(feedbackId: string): Promise<RunActionResult> {
+    const currentRunId = runIdRef.current;
+    if (currentRunId === undefined) {
+      return { status: 'error', error: new Error('No run is selected.') };
+    }
+    try {
+      await client.updateRunFeedback(currentRunId, feedbackId, { status: 'resolved' });
+      refreshRef.current();
+      return { status: 'ok' };
+    } catch (error: unknown) {
+      return { status: 'error', error };
+    }
+  }
+
+  async function reopenComment(feedbackId: string, reason: string): Promise<RunActionResult> {
+    const currentRunId = runIdRef.current;
+    if (currentRunId === undefined) {
+      return { status: 'error', error: new Error('No run is selected.') };
+    }
+    try {
+      await client.updateRunFeedback(currentRunId, feedbackId, { status: 'open', body: reason });
+      refreshRef.current();
+      return { status: 'ok' };
+    } catch (error: unknown) {
+      return { status: 'error', error };
+    }
+  }
+
+  return {
+    pullRequest,
+    sessions,
+    spec,
+    runGone,
+    createSpecComment,
+    reloadSpec,
+    replyToGate,
+    resolveComment,
+    reopenComment
+  };
 }

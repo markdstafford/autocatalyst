@@ -5,7 +5,10 @@
  * Data in: the spec `markdown`, the target `artifactId`, the reconciled `feedback` list, and whether
  * the run is at the spec gate (`canComment`). Behaviour out: `onCreateComment` (the SDK write, owned
  * by the caller) and `onReloadNeeded` (reread spec+feedback after an invalid anchor). The component
- * owns only view state: which comment is selected and the composer.
+ * owns only the composer; comment selection, navigation, and the resolve/reopen lifecycle are owned by
+ * the optional pane-level {@link SpecReviewController} so the pane, footer, and expanded overlay share
+ * one source of truth. Without a controller the surface falls back to internal selection (used by the
+ * standalone rendering tests).
  *
  * Anchoring rules live in the pure modules this composes: `selection-source-map` (DOM Range →
  * source anchor), `source-to-dom` (anchor → DOM rects for markers and the pending highlight), and
@@ -30,6 +33,7 @@ import { sourceRangeRects } from './source-to-dom.js';
 import { SpecDocument } from './spec-render.js';
 import { firstLineTitle } from './spec-title.js';
 import { formatAge } from '../../runs/run-fields.js';
+import type { CardActionState, ScrollTarget, SpecReviewController } from '../../runs/use-spec-review-controller.js';
 import { Textarea } from '../../ui/textarea.js';
 
 /** Vertical gap between adjacent anchored cards. */
@@ -39,6 +43,8 @@ const GROUP_GAP = 24;
 /** Height assumed for a card/section before its real height is measured (first paint, headless DOM). */
 const FALLBACK_CARD_HEIGHT = 96;
 const FALLBACK_SECTION_HEIGHT = 112;
+/** How long a navigated-to marker flashes before fading back to its status style. */
+const FLASH_MS = 1000;
 
 interface MeasuredHeights {
   readonly cards: Map<string, number>;
@@ -89,6 +95,12 @@ export interface SpecReviewProps {
   onCreateComment(input: CreateCommentInput): Promise<CreateCommentResult>;
   /** Reread spec + feedback (after an invalid anchor, or an out-of-bounds returned offset). */
   onReloadNeeded(): void;
+  /**
+   * The pane-level controller. When supplied, selection, scroll/flash navigation, and the
+   * resolve/reopen lifecycle are driven by it (shared with the footer and the expanded overlay).
+   * Omitted in the standalone rendering tests, where internal selection is used.
+   */
+  readonly controller?: SpecReviewController;
   /** Test/display seam for comment ages; defaults to the current time. */
   readonly nowIso?: string;
 }
@@ -105,18 +117,21 @@ type ComposerState =
   | { readonly mode: 'too-long' };
 
 export function SpecReview(props: SpecReviewProps): ReactNode {
-  const { markdown, feedback, canComment, onCreateComment, onReloadNeeded } = props;
+  const { markdown, feedback, canComment, onCreateComment, onReloadNeeded, controller } = props;
   const nowIso = props.nowIso ?? new Date().toISOString();
   const markdownLength = codePointLength(markdown);
   const groups = classifySpecFeedback(feedback, markdownLength);
 
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [internalSelectedId, setInternalSelectedId] = useState<string | null>(null);
+  const [flashId, setFlashId] = useState<string | null>(null);
   const [composer, setComposer] = useState<ComposerState | null>(null);
   const [layoutTick, setLayoutTick] = useState(0);
   const [markerRects, setMarkerRects] = useState<Map<string, Rect[]>>(new Map());
   const [pendingRects, setPendingRects] = useState<Rect[]>([]);
   const [heights, setHeights] = useState<MeasuredHeights>({ cards: new Map(), stale: 0, noRange: 0 });
+
+  const selectedId = controller !== undefined ? controller.selectedId : internalSelectedId;
 
   const composerRef = useRef<ComposerState | null>(composer);
   composerRef.current = composer;
@@ -131,12 +146,42 @@ export function SpecReview(props: SpecReviewProps): ReactNode {
   const docRoot = (): HTMLElement | null =>
     wrapperRef.current?.querySelector<HTMLElement>('[data-spec-document]') ?? null;
 
+  function scrollTo(id: string, scrollTarget: ScrollTarget): void {
+    const selector = scrollTarget === 'marker' ? `[data-marker-for="${id}"]` : `[data-card-for="${id}"]`;
+    const target = wrapperRef.current?.querySelector(selector);
+    if (target !== null && target !== undefined && typeof (target as HTMLElement).scrollIntoView === 'function') {
+      (target as HTMLElement).scrollIntoView({ block: 'nearest' });
+    }
+  }
+
   // When the run leaves the spec gate, close the composer and discard the draft.
   useEffect(() => {
     if (!canComment) {
       setComposer(null);
     }
   }, [canComment]);
+
+  // Controlled navigation: when the controller bumps its nav signal, scroll to the target and flash
+  // an anchored marker once. A one-shot effect keyed on the signal.
+  const navSignal = controller?.navSignal ?? 0;
+  useEffect(() => {
+    if (controller === undefined) {
+      return;
+    }
+    const id = controller.navTargetId;
+    const kind = controller.navTargetKind;
+    if (id === null || kind === null) {
+      return;
+    }
+    scrollTo(id, kind);
+    if (kind === 'marker') {
+      setFlashId(id);
+      const timer = setTimeout(() => setFlashId(null), FLASH_MS);
+      return () => clearTimeout(timer);
+    }
+    return undefined;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [navSignal]);
 
   // Selection-driven composer: open after a debounced selectionchange while at the gate.
   useEffect(() => {
@@ -265,13 +310,13 @@ export function SpecReview(props: SpecReviewProps): ReactNode {
     return () => observers.forEach((o) => o.disconnect());
   }, [markdown]);
 
-  function selectComment(id: string, scrollTarget: 'marker' | 'card'): void {
-    setSelectedId(id);
-    const selector = scrollTarget === 'marker' ? `[data-marker-for="${id}"]` : `[data-card-for="${id}"]`;
-    const target = wrapperRef.current?.querySelector(selector);
-    if (target !== null && target !== undefined && typeof (target as HTMLElement).scrollIntoView === 'function') {
-      (target as HTMLElement).scrollIntoView({ block: 'nearest' });
+  function selectComment(id: string, scrollTarget: ScrollTarget): void {
+    if (controller !== undefined) {
+      controller.select(id, scrollTarget);
+      return;
     }
+    setInternalSelectedId(id);
+    scrollTo(id, scrollTarget);
   }
 
   async function submitComposer(): Promise<void> {
@@ -305,6 +350,25 @@ export function SpecReview(props: SpecReviewProps): ReactNode {
 
   const hasComments = groups.anchored.length + groups.stale.length + groups.noRange.length > 0;
 
+  function cardActionsFor(id: string): CardActionProps | undefined {
+    if (controller === undefined) {
+      return undefined;
+    }
+    const canResolve = controller.canResolve(id);
+    const canReopen = controller.canReopen(id);
+    const state = controller.cardState(id);
+    if (!canResolve && !canReopen && state.error === undefined && !state.busy) {
+      return undefined;
+    }
+    return {
+      canResolve,
+      canReopen,
+      state,
+      onResolve: () => controller.resolve(id),
+      onReopen: (reason) => controller.reopen(id, reason)
+    };
+  }
+
   return (
     <div ref={wrapperRef} className="flex min-h-full gap-4">
       <div data-doc-column className="relative min-w-0 flex-1">
@@ -320,6 +384,7 @@ export function SpecReview(props: SpecReviewProps): ReactNode {
                 comment={comment}
                 rects={markerRects.get(comment.id) ?? []}
                 selected={selectedId === comment.id}
+                flashing={flashId === comment.id}
                 onSelect={() => selectComment(comment.id, 'card')}
               />
             ))}
@@ -376,6 +441,7 @@ export function SpecReview(props: SpecReviewProps): ReactNode {
               comment={comment}
               nowIso={nowIso}
               selected={selectedId === comment.id}
+              actions={cardActionsFor(comment.id)}
               onSelect={() => selectComment(comment.id, 'marker')}
             />
           </div>
@@ -394,7 +460,8 @@ export function SpecReview(props: SpecReviewProps): ReactNode {
                 comment={comment}
                 nowIso={nowIso}
                 selected={selectedId === comment.id}
-                onSelect={() => setSelectedId(comment.id)}
+                actions={cardActionsFor(comment.id)}
+                onSelect={() => selectComment(comment.id, 'card')}
               />
             ))}
           </section>
@@ -413,7 +480,8 @@ export function SpecReview(props: SpecReviewProps): ReactNode {
                 comment={comment}
                 nowIso={nowIso}
                 selected={selectedId === comment.id}
-                onSelect={() => setSelectedId(comment.id)}
+                actions={cardActionsFor(comment.id)}
+                onSelect={() => selectComment(comment.id, 'card')}
               />
             ))}
           </section>
@@ -427,19 +495,23 @@ interface MarkerButtonProps {
   readonly comment: AnchoredComment;
   readonly rects: readonly Rect[];
   readonly selected: boolean;
+  readonly flashing: boolean;
   onSelect(): void;
 }
 
-function MarkerButton({ comment, rects, selected, onSelect }: MarkerButtonProps): ReactNode {
+function MarkerButton({ comment, rects, selected, flashing, onSelect }: MarkerButtonProps): ReactNode {
   const style = markerStyleForStatus(comment.status);
   // Selected is deliberately much louder than open/resolved: a stronger translucent fill, a thicker
   // 3px primary underline (vs 2px), and an inset primary ring, so the active marker is unmistakable in
-  // both light and dark themes rather than a faint tint shift.
-  const className = selected
-    ? 'bg-[var(--color-comment-selected-bg)] [border-bottom:3px_solid_var(--color-primary)] ring-2 ring-inset ring-primary'
-    : style === 'open'
-      ? 'bg-[var(--color-comment-open-bg)] [border-bottom:2px_solid_var(--color-comment-open-line)]'
-      : 'bg-[var(--color-comment-resolved-bg)]';
+  // both light and dark themes rather than a faint tint shift. A one-shot flash (jump target) uses the
+  // flash fill so navigation lands visibly.
+  const className = flashing
+    ? 'bg-[var(--color-comment-flash-bg)] [border-bottom:3px_solid_var(--color-primary)] ring-2 ring-inset ring-primary'
+    : selected
+      ? 'bg-[var(--color-comment-selected-bg)] [border-bottom:3px_solid_var(--color-primary)] ring-2 ring-inset ring-primary'
+      : style === 'open'
+        ? 'bg-[var(--color-comment-open-bg)] [border-bottom:2px_solid_var(--color-comment-open-line)]'
+        : 'bg-[var(--color-comment-resolved-bg)]';
   // One clickable box per client rect; in a headless DOM with no layout there are none, so a single
   // zero-size hit target is still rendered so marker/card pairing works in component tests.
   const boxes = rects.length > 0 ? rects : [{ top: 0, left: 0, width: 0, height: 0 }];
@@ -461,26 +533,45 @@ function MarkerButton({ comment, rects, selected, onSelect }: MarkerButtonProps)
   );
 }
 
+/** The lifecycle actions available on a comment card, derived from the controller. */
+export interface CardActionProps {
+  readonly canResolve: boolean;
+  readonly canReopen: boolean;
+  readonly state: CardActionState;
+  onResolve(): void;
+  onReopen(reason: string): void;
+}
+
 interface CommentCardProps {
   readonly comment: AnchoredComment | StaleComment | NoRangeComment;
   readonly nowIso: string;
   readonly selected: boolean;
+  readonly actions?: CardActionProps;
   onSelect(): void;
 }
 
-function CommentCard({ comment, nowIso, selected, onSelect }: CommentCardProps): ReactNode {
-  const resolved = comment.status !== 'open';
+function CommentCard({ comment, nowIso, selected, actions, onSelect }: CommentCardProps): ReactNode {
+  // `resolved` and `wont_fix` are dimmed resolved-style history; `addressed` stays full-strength
+  // because it is an optional early confirmation, not resolved yet.
+  const dimmed = comment.status === 'resolved' || comment.status === 'wont_fix';
   // A selected card gets a primary border, an inset primary ring, and the popover shadow so it clearly
   // reads as the active card next to its unselected neighbours.
   const outlineClass = selected ? 'border-primary ring-2 ring-inset ring-primary shadow-popover' : 'border-border-subtle';
-  const dimClass = resolved && comment.kind !== 'anchored' ? '' : resolved ? 'opacity-80' : '';
+  const dimClass = dimmed ? 'opacity-80' : '';
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       data-card-for={comment.id}
       data-selected={selected ? 'true' : 'false'}
       onClick={onSelect}
-      className={`mb-2 block w-full rounded-sm border bg-mantle p-2 text-left text-sm ${outlineClass} ${dimClass}`}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
+      className={`mb-2 block w-full cursor-pointer rounded-sm border bg-mantle p-2 text-left text-sm ${outlineClass} ${dimClass}`}
     >
       <div className="flex items-center justify-between gap-2">
         <span className="truncate font-medium text-text">{comment.authorName}</span>
@@ -504,7 +595,89 @@ function CommentCard({ comment, nowIso, selected, onSelect }: CommentCardProps):
           ))}
         </div>
       ) : null}
-    </button>
+      {actions !== undefined ? <CardActions commentId={comment.id} actions={actions} /> : null}
+    </div>
+  );
+}
+
+function CardActions({ commentId, actions }: { readonly commentId: string; readonly actions: CardActionProps }): ReactNode {
+  const [reopening, setReopening] = useState(false);
+  const [reason, setReason] = useState('');
+  const stop = (event: { stopPropagation(): void }): void => event.stopPropagation();
+
+  return (
+    <div className="mt-2 border-t border-border-subtle pt-2" onClick={stop} onKeyDown={stop}>
+      {actions.state.error !== undefined ? (
+        <p data-testid={`card-error-${commentId}`} className="mb-1 text-xs text-red">
+          {actions.state.error}
+        </p>
+      ) : null}
+      {reopening ? (
+        <div>
+          <Textarea
+            data-testid={`reopen-reason-${commentId}`}
+            aria-label="Reopen reason"
+            value={reason}
+            onChange={(event) => setReason(event.target.value)}
+            rows={2}
+          />
+          <div className="mt-1 flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setReopening(false);
+                setReason('');
+              }}
+              className="rounded-sm border border-border px-2 py-1 text-xs"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              data-testid={`reopen-confirm-${commentId}`}
+              disabled={reason.trim() === '' || actions.state.busy}
+              onClick={() => {
+                if (reason.trim() === '') {
+                  return;
+                }
+                actions.onReopen(reason);
+                setReopening(false);
+                setReason('');
+              }}
+              className="rounded-sm bg-primary px-2 py-1 text-xs text-on-primary disabled:opacity-50"
+            >
+              Reopen
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex justify-end gap-2">
+          {actions.canResolve ? (
+            <button
+              type="button"
+              data-testid={`resolve-${commentId}`}
+              disabled={actions.state.busy}
+              aria-busy={actions.state.busy}
+              onClick={actions.onResolve}
+              className="rounded-sm border border-border px-2 py-1 text-xs disabled:opacity-50"
+            >
+              Resolve
+            </button>
+          ) : null}
+          {actions.canReopen ? (
+            <button
+              type="button"
+              data-testid={`reopen-${commentId}`}
+              disabled={actions.state.busy}
+              onClick={() => setReopening(true)}
+              className="rounded-sm border border-border px-2 py-1 text-xs disabled:opacity-50"
+            >
+              Reopen
+            </button>
+          ) : null}
+        </div>
+      )}
+    </div>
   );
 }
 
