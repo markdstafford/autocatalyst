@@ -129,6 +129,15 @@ pnpm validate
 
 `pnpm validate` runs build, lint, test, then the committed execution-boundary test.
 
+## Targeted pull request refresh (#139)
+
+- `packages/api-contract/src/pull-request.ts` owns the strict refresh request, persisted PR + run response, and the four `502` reasons. `openapi.ts` registers `POST /v1/runs/{id}/pull-request/refresh`. `packages/sdk/src/client.ts` exposes `refreshRunPullRequest(id)`.
+- `packages/core/src/routes.ts` authenticates refresh before parsing its JSON body and checks `run_pull_request.refresh`. `control-plane-service.ts` repeats authorization for direct calls, denies model principals, and uses the shared run-read projection.
+- `packages/core/src/pr-lifecycle.ts` checks one run, reads outside the lock, and revalidates the PR ID and open `RunStep` occurrence before writing. A stored terminal PR replays a matching run or repairs a still-gated run without a host read. Stored-state `GET` never checks the host; batch and ticker retain their open-PR selection and counters and do not repair terminal rows.
+- `DefaultOrchestrator` owns the tenant/run mutation lock used by refresh, batch/ticker commits, public directives, and recovery's failed-only reopen. The internal directive path runs under the lock, publishes the ordinary transition event, and schedules any follow-on dispatch only after releasing it. See [PR mutation lock](../decisions/pr-mutation-lock.md).
+- `apps/control-plane/src/code-host-credential-resolver.ts` implements the default `ResolveCodeHostCredential`. Only `CodeHostCredentialMissingError` means a missing credential; other resolver faults stay internal. The Drizzle PR repository throws `PullRequestStateConflictError` only for a failed `expectedState` check on an existing tenant-owned row.
+- Proofs: `packages/core/src/pr-lifecycle.spec.ts` (error classification, stale reads, repair and contention), `routes.run-observability.spec.ts` (protected ingress), and `apps/control-plane/src/pr-lifecycle.integration.spec.ts` (real SQLite and scripted `gh`). `tick` explicitly starts a batch check even when the optional ticker is off; count setup reads separately in targeted tests.
+
 ## Control-plane service envelope commands
 
 ```bash

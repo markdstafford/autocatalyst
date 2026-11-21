@@ -73,6 +73,13 @@ import {
   updateRunFeedbackRequestSchema,
   updateRunFeedbackSuccessStatusCode,
   runIdParamsSchema,
+  pullRequestCheckFailedErrorCode,
+  pullRequestCheckFailedMessage,
+  pullRequestCheckFailedResponseSchema,
+  refreshRunPullRequestSuccessStatusCode,
+  runPullRequestRefreshPath,
+  runPullRequestRefreshRequestSchema,
+  runPullRequestRefreshResponseSchema,
   runPullRequestPath,
   runPullRequestResponseSchema,
   runSessionListResponseSchema,
@@ -253,6 +260,14 @@ async function handleControlPlaneServiceError(
     case 'unsupported_pause':
       await reply.status(409).send(errorResponse('unsupported_pause', error.message, error.details));
       return;
+    case pullRequestCheckFailedErrorCode: {
+      const response = pullRequestCheckFailedResponseSchema.parse({
+        error: { code: pullRequestCheckFailedErrorCode, message: pullRequestCheckFailedMessage, details: error.details }
+      });
+      logServerFault(request, 502, undefined, pullRequestCheckFailedErrorCode);
+      await reply.status(502).send(response);
+      return;
+    }
     case 'conflict':
       await reply.status(409).send(errorResponse('conflict', error.message, error.details));
       return;
@@ -344,6 +359,62 @@ export async function registerControlPlaneRoutes(
     const health = healthResponseSchema.parse(await getHealth(dependencies.health));
     const statusCode = health.status === 'ok' ? 200 : degradedHealthStatusCode;
     await reply.status(statusCode).send(health);
+  });
+
+  // Authenticate refresh before parsing its required JSON body; leave other routes unchanged.
+  await app.register(async (protectedApp) => {
+    await registerBearerAuthHook(protectedApp, dependencies.auth, 'onRequest');
+
+    protectedApp.post(runPullRequestRefreshPath, {
+      onRequest: async (request, reply) => {
+        const mediaType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase();
+        if (mediaType !== undefined && mediaType !== 'application/json') {
+          await reply.status(415).send(errorResponse('unsupported_media_type', 'Expected an application/json body.'));
+        }
+      },
+      preHandler: authorizePreHandler(dependencies.policy, 'run_pull_request.refresh', (request) => ({
+        kind: 'run_pull_request_refresh',
+        id: (request.params as RunIdParams).id,
+        path: runPullRequestRefreshPath
+      })),
+      errorHandler: async (error, request, reply) => {
+        if (error.code === 'FST_ERR_CTP_INVALID_MEDIA_TYPE') {
+          await reply.status(415).send(errorResponse('unsupported_media_type', 'Expected an application/json body.'));
+          return;
+        }
+        if (error instanceof ZodError || error.code === 'FST_ERR_CTP_INVALID_JSON_BODY' ||
+            error.code === 'FST_ERR_CTP_EMPTY_JSON_BODY' || error.code === 'FST_ERR_CTP_BODY_TOO_LARGE' ||
+            error.code === 'FST_ERR_CTP_INVALID_CONTENT_LENGTH') {
+          await sendValidationError(reply, undefined);
+          return;
+        }
+        // Do not pass arbitrary provider, wiring, or parser exceptions to request logs.
+        logServerFault(request, 500, undefined, 'internal_error');
+        await reply.status(500).send(errorResponse('internal_error', 'An internal server error occurred.'));
+      }
+    }, async (request, reply) => {
+      const principal = requirePrincipalFromRequest(request);
+      if (principal.kind === 'model') {
+        await reply.status(403).send(errorResponse(forbiddenErrorCode, 'Forbidden.'));
+        return;
+      }
+      const { id } = runIdParamsSchema.parse(request.params);
+      runPullRequestRefreshRequestSchema.parse(request.body);
+      let result;
+      try {
+        result = await dependencies.controlPlane.refreshRunPullRequest({ principal, runId: id });
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError && error.code !== 'persistence_failed') {
+          await handleControlPlaneServiceError(request, reply, error);
+          return;
+        }
+        // Wrap even a Zod error raised by local wiring; it is not invalid caller input.
+        throw new Error('Failed to refresh run pull request.');
+      }
+      const parsed = runPullRequestRefreshResponseSchema.safeParse(result);
+      if (!parsed.success) throw new Error('Invalid refresh response.');
+      await reply.status(refreshRunPullRequestSuccessStatusCode).send(parsed.data);
+    });
   });
 
   // PROTECTED: All /v1 routes

@@ -114,7 +114,7 @@ import type {
   UpdatePullRequestStateInput,
   UpdateRunStepCheckpointInput
 } from '@autocatalyst/core';
-import { FeedbackConcurrentModificationError, runStepDefinitions } from '@autocatalyst/core';
+import { FeedbackConcurrentModificationError, PullRequestStateConflictError, runStepDefinitions } from '@autocatalyst/core';
 
 import { ActiveRunConflictPersistenceError, isActiveRunConstraintViolation } from './active-run-conflict.js';
 import {
@@ -1394,9 +1394,7 @@ export class DrizzlePullRequestRepository implements PullRequestRepository {
         throw new Error(`PullRequest for run '${input.runId}' and tenant '${input.tenant}' does not exist.`);
       }
       if (input.expectedState !== undefined && current.state !== input.expectedState) {
-        throw new Error(
-          `PullRequest state mismatch: expected '${input.expectedState}' but found '${current.state}'.`
-        );
+        throw new PullRequestStateConflictError();
       }
       tx.update(pullRequests)
         .set({ state: input.state, updatedAt: input.updatedAt })

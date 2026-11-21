@@ -1,4 +1,5 @@
-import type { JsonValue, PullRequest } from '@autocatalyst/api-contract';
+import { pullRequestStateSchema, type PullRequest, type PullRequestCheckFailureReason, type Run } from '@autocatalyst/api-contract';
+import { z } from 'zod';
 
 import type {
   ConversationRepository,
@@ -7,10 +8,18 @@ import type {
   RunRepository,
   TopicRepository
 } from './domain-repositories.js';
-import type { CodeHostCredential, CodeHostPort, CodeHostTarget } from './code-host.js';
-import { isCodeHostError } from './code-host.js';
+import { PullRequestStateConflictError } from './domain-repositories.js';
+import {
+  CodeHostCredentialMissingError,
+  isCodeHostError,
+  type CodeHostCredential,
+  type CodeHostPort,
+  type CodeHostPullRequestFacts,
+  type CodeHostTarget,
+  type ResolveCodeHostCredential
+} from './code-host.js';
 import type { CodeHostRegistry } from './code-host-registry.js';
-import type { ApplyOrchestratedDirectiveInput, OrchestratedRunResult } from './orchestrator.js';
+import { OrchestratorError, type ApplyOrchestratedDirectiveInput, type OrchestratedRunResult } from './orchestrator.js';
 
 // --- Public types ---
 
@@ -28,6 +37,14 @@ export interface PullRequestStatusReconciliationResult {
   readonly timedOut: boolean;
 }
 
+type ApplyDirective = (input: ApplyOrchestratedDirectiveInput) => Promise<OrchestratedRunResult>;
+type WithRunMutation = <T>(input: PullRequestRunKey, work: (applyDirective: ApplyDirective) => Promise<T>) => Promise<T>;
+
+interface PullRequestRunKey {
+  readonly tenant: string;
+  readonly runId: string;
+}
+
 export interface PullRequestLifecycleDependencies {
   readonly runs: RunRepository;
   readonly conversations: ConversationRepository;
@@ -35,8 +52,9 @@ export interface PullRequestLifecycleDependencies {
   readonly projects: ProjectRepository;
   readonly pullRequests: PullRequestRepository;
   readonly codeHosts: CodeHostRegistry;
-  readonly resolveCredential: (ref: unknown) => Promise<CodeHostCredential>;
-  readonly applyDirective: (input: ApplyOrchestratedDirectiveInput) => Promise<OrchestratedRunResult>;
+  readonly resolveCredential: ResolveCodeHostCredential;
+  readonly applyDirective: ApplyDirective;
+  readonly withRunMutation?: WithRunMutation;
   readonly clock?: () => string;
   readonly now?: () => number;
 }
@@ -64,132 +82,247 @@ function resolveCodeHostBinding(project: {
   };
 }
 
-// --- Per-PR outcome ---
+// --- Shared read and commit ---
 
-type PerOutcome =
-  | { readonly kind: 'open' }
-  | { readonly kind: 'merged' }
-  | { readonly kind: 'closed' }
-  | { readonly kind: 'failed' };
+type PullRequestReadOutcome =
+  | { readonly kind: 'observed'; readonly facts: CodeHostPullRequestFacts }
+  | { readonly kind: 'read_failed'; readonly reason: PullRequestCheckFailureReason }
+  | { readonly kind: 'internal_failure' };
 
-async function reconcileSinglePullRequest(
+const codeHostReadFactsSchema = z.object({
+  provider: z.string().min(1),
+  number: z.number().int().positive(),
+  url: z.string().url(),
+  state: pullRequestStateSchema,
+  branch: z.string().min(1)
+});
+
+async function readPullRequest(
+  run: Run,
   pr: PullRequest,
   deps: PullRequestLifecycleDependencies,
-  clock: () => string
-): Promise<PerOutcome> {
-  // Run was already loaded and validated by the caller; re-load to get the
-  // topicId (the caller does not need it). A missing/terminal run here would
-  // be a race we treat as failure.
-  const run = await deps.runs.findById(pr.runId);
-  if (run === null || run.tenant !== pr.tenant || run.terminal) {
-    return { kind: 'failed' };
+  requireIdentityMatch = false
+): Promise<PullRequestReadOutcome> {
+  let binding;
+  try {
+    const topic = await deps.topics.findById(run.topicId);
+    if (topic === null || topic.tenant !== run.tenant) return { kind: 'internal_failure' };
+    const conversation = await deps.conversations.findById(topic.conversationId);
+    if (conversation === null || conversation.tenant !== run.tenant) return { kind: 'internal_failure' };
+    const project = await deps.projects.findById(conversation.projectId);
+    if (project === null || project.tenant !== run.tenant) return { kind: 'internal_failure' };
+    binding = resolveCodeHostBinding(project);
+  } catch {
+    return { kind: 'internal_failure' };
   }
+  if (binding === null) return { kind: 'read_failed', reason: 'credential_missing' };
 
-  // 2. Walk topic -> conversation -> project.
-  const topic = await deps.topics.findById(run.topicId);
-  if (topic === null) return { kind: 'failed' };
-  const conversation = await deps.conversations.findById(topic.conversationId);
-  if (conversation === null) return { kind: 'failed' };
-  const project = await deps.projects.findById(conversation.projectId);
-  if (project === null) return { kind: 'failed' };
-
-  const binding = resolveCodeHostBinding(project);
-  if (binding === null) return { kind: 'failed' };
-
-  // 3. Resolve credential.
   let credential: CodeHostCredential;
   try {
     credential = await deps.resolveCredential(binding.credentialRef);
-  } catch {
-    return { kind: 'failed' };
+  } catch (error) {
+    return error instanceof CodeHostCredentialMissingError
+      ? { kind: 'read_failed', reason: 'credential_missing' }
+      : { kind: 'internal_failure' };
   }
 
-  // 4. Resolve code-host port.
-  let codeHostPort: CodeHostPort;
+  let port: CodeHostPort;
   try {
-    codeHostPort = deps.codeHosts.get(binding.target.provider);
-  } catch {
-    return { kind: 'failed' };
+    port = deps.codeHosts.get(binding.target.provider);
+    if (typeof port?.read !== 'function') return { kind: 'internal_failure' };
+  } catch (error) {
+    return isCodeHostError(error) && error.code === 'unsupported_provider'
+      ? { kind: 'read_failed', reason: 'provider_unavailable' }
+      : { kind: 'internal_failure' };
   }
 
-  // 5. Read provider state.
-  let facts;
   try {
-    facts = await codeHostPort.read({
-      target: binding.target,
-      number: pr.number,
-      credential
-    });
-  } catch (cause) {
-    if (isCodeHostError(cause)) return { kind: 'failed' };
-    return { kind: 'failed' };
-  }
-
-  if (facts.state === 'open') {
-    return { kind: 'open' };
-  }
-
-  if (facts.state === 'merged') {
-    try {
-      await deps.pullRequests.updateState({
-        runId: pr.runId,
-        tenant: pr.tenant,
-        state: 'merged',
-        updatedAt: clock(),
-        expectedState: 'open'
-      });
-    } catch {
-      return { kind: 'failed' };
+    const raw = await port.read({ target: binding.target, number: pr.number, credential });
+    const facts = codeHostReadFactsSchema.safeParse(raw);
+    if (!facts.success || (requireIdentityMatch && (facts.data.number !== pr.number || facts.data.provider !== binding.target.provider))) {
+      return { kind: 'read_failed', reason: 'provider_unavailable' };
     }
-    try {
-      const checkpoint = {
-        kind: 'pull_request_merged' as const,
-        provider: facts.provider,
-        number: facts.number,
-        url: facts.url,
-        mergedAt: clock()
+    return { kind: 'observed', facts: facts.data };
+  } catch (error) {
+    if (isCodeHostError(error)) {
+      if (error.code === 'authentication_failed') return { kind: 'read_failed', reason: 'authentication_failed' };
+      if (error.code === 'resource_not_found') return { kind: 'read_failed', reason: 'not_found' };
+    }
+    return { kind: 'read_failed', reason: 'provider_unavailable' };
+  }
+}
+
+type TerminalPullRequestState = Exclude<PullRequest['state'], 'open'>;
+const closedWithoutMerge = 'pull_request_closed_without_merge';
+const systemClock = () => new Date().toISOString();
+
+function writeTerminalPullRequest(
+  pr: PullRequest, state: TerminalPullRequestState, deps: PullRequestLifecycleDependencies
+): Promise<PullRequest> {
+  return deps.pullRequests.updateState({
+    runId: pr.runId,
+    tenant: pr.tenant,
+    state,
+    updatedAt: (deps.clock ?? systemClock)(),
+    expectedState: 'open'
+  });
+}
+
+function terminalDirective(
+  pr: PullRequestRunKey,
+  state: TerminalPullRequestState,
+  checkpoint: Pick<PullRequest, 'provider' | 'number' | 'url'>,
+  mergedAt: () => string
+): ApplyOrchestratedDirectiveInput {
+  const { runId, tenant } = pr;
+  return state === 'closed'
+    ? { runId, tenant, directive: 'fail', origin: 'system', reason: closedWithoutMerge }
+    : {
+        runId, tenant, directive: 'advance', origin: 'system',
+        checkpointResult: {
+          kind: 'pull_request_merged', provider: checkpoint.provider, number: checkpoint.number,
+          url: checkpoint.url, mergedAt: mergedAt()
+        }
       };
-      await deps.applyDirective({
-        runId: pr.runId,
-        tenant: pr.tenant,
-        directive: 'advance',
-        origin: 'system',
-        checkpointResult: checkpoint as unknown as JsonValue
-      });
-    } catch {
-      return { kind: 'failed' };
+}
+
+type PerOutcome = Exclude<PullRequestReadOutcome, { kind: 'observed' }> | { kind: PullRequest['state'] };
+
+async function reconcileSinglePullRequest(
+  pr: PullRequest,
+  deps: PullRequestLifecycleDependencies
+): Promise<PerOutcome> {
+  const run = await deps.runs.findById(pr.runId);
+  if (run === null || run.tenant !== pr.tenant || run.terminal) return { kind: 'internal_failure' };
+  const observation = await readPullRequest(run, pr, deps);
+  if (observation.kind !== 'observed') return observation;
+  const { facts } = observation;
+  const { state } = facts;
+  if (state === 'open') return { kind: 'open' };
+
+  const commit = async (applyDirective: ApplyDirective): Promise<PerOutcome> => {
+    await writeTerminalPullRequest(pr, state, deps);
+    await applyDirective(terminalDirective(pr, state, facts, deps.clock ?? systemClock));
+    return { kind: state };
+  };
+  return deps.withRunMutation === undefined
+    ? commit(deps.applyDirective)
+    : deps.withRunMutation(pr, commit);
+}
+
+// --- Targeted refresh ---
+
+export interface RefreshPullRequestDependencies extends PullRequestLifecycleDependencies {
+  readonly withRunMutation: WithRunMutation;
+}
+
+interface StoredPair {
+  readonly run: Run;
+  readonly pullRequest: PullRequest;
+}
+
+type MissingPair = { readonly kind: 'not_found'; readonly resource: 'run' | 'pull_request' };
+type RefreshFailure = Exclude<PullRequestReadOutcome, { kind: 'observed' }> | MissingPair
+  | { readonly kind: 'conflict'; readonly message: string };
+export type RefreshPullRequestOutcome = ({ readonly kind: 'refreshed' } & StoredPair) | RefreshFailure;
+type GatedObservation = { readonly kind: 'read'; readonly pair: StoredPair; readonly gateId: string };
+
+const notAtGate = { kind: 'conflict', message: 'Run is not waiting at the pull request gate.' } as const;
+const outcomeMismatch = { kind: 'conflict', message: 'The stored pull request outcome does not match the run state.' } as const;
+
+async function loadPair(input: PullRequestRunKey, deps: RefreshPullRequestDependencies): Promise<StoredPair | MissingPair> {
+  const run = await deps.runs.findById(input.runId);
+  if (run === null || run.tenant !== input.tenant) return { kind: 'not_found', resource: 'run' };
+  const pullRequest = await deps.pullRequests.findByRun(input.runId);
+  if (pullRequest === null || pullRequest.tenant !== input.tenant) return { kind: 'not_found', resource: 'pull_request' };
+  return { run, pullRequest };
+}
+
+function isAtPullRequestGate(run: Run): boolean {
+  return !run.terminal && run.currentStep === 'pr.human_review';
+}
+
+async function loadGateId(run: Run, deps: RefreshPullRequestDependencies): Promise<string> {
+  const gate = await deps.runs.findLatestOpenRunStep?.({ runId: run.id, step: 'pr.human_review' });
+  if (gate == null) throw new Error('Missing open pull request gate occurrence.');
+  return gate.id;
+}
+
+function matchesTerminalOutcome({ run, pullRequest }: StoredPair): boolean {
+  return run.terminal && (
+    (pullRequest.state === 'merged' && run.currentStep === 'done') ||
+    (pullRequest.state === 'closed' && run.currentStep === 'failed' && run.failureReason === closedWithoutMerge)
+  );
+}
+
+/** Finish a terminal pair once, or replay it. Caller holds the run mutation lock. */
+async function completeTerminalPair(
+  pair: StoredPair,
+  applyDirective: ApplyDirective,
+  deps: RefreshPullRequestDependencies
+): Promise<RefreshPullRequestOutcome> {
+  if (matchesTerminalOutcome(pair)) return { kind: 'refreshed', ...pair };
+  if (!isAtPullRequestGate(pair.run)) return outcomeMismatch;
+
+  const pr = pair.pullRequest;
+  if (pr.state === 'open') return { kind: 'internal_failure' };
+  try {
+    await applyDirective(terminalDirective(pr, pr.state, pr, () => pr.updatedAt));
+  } catch (error) {
+    if (!(error instanceof OrchestratorError) || (error.code !== 'terminal_run' && error.code !== 'invalid_transition')) {
+      return { kind: 'internal_failure' };
     }
-    return { kind: 'merged' };
+    // These two faults can mean another writer completed or moved the run. Never retry here.
   }
 
-  if (facts.state === 'closed') {
-    try {
-      await deps.pullRequests.updateState({
-        runId: pr.runId,
-        tenant: pr.tenant,
-        state: 'closed',
-        updatedAt: clock(),
-        expectedState: 'open'
-      });
-    } catch {
-      return { kind: 'failed' };
-    }
-    try {
-      await deps.applyDirective({
-        runId: pr.runId,
-        tenant: pr.tenant,
-        directive: 'fail',
-        origin: 'system',
-        reason: 'pull_request_closed_without_merge'
-      });
-    } catch {
-      return { kind: 'failed' };
-    }
-    return { kind: 'closed' };
-  }
+  const persisted = await loadPair(pr, deps);
+  if ('kind' in persisted) return persisted;
+  if (matchesTerminalOutcome(persisted)) return { kind: 'refreshed', ...persisted };
+  return isAtPullRequestGate(persisted.run) ? { kind: 'internal_failure' } : outcomeMismatch;
+}
 
-  // Unknown provider state: treat as failure rather than silently progressing.
-  return { kind: 'failed' };
+export async function refreshPullRequest(
+  input: PullRequestRunKey,
+  deps: RefreshPullRequestDependencies
+): Promise<RefreshPullRequestOutcome> {
+  try {
+    const start = await deps.withRunMutation<GatedObservation | RefreshPullRequestOutcome>(input, async (applyDirective) => {
+      const pair = await loadPair(input, deps);
+      if ('kind' in pair) return pair;
+      if (pair.pullRequest.state !== 'open') return completeTerminalPair(pair, applyDirective, deps);
+      if (!isAtPullRequestGate(pair.run)) return notAtGate;
+      return { kind: 'read', pair, gateId: await loadGateId(pair.run, deps) };
+    });
+    if (start.kind !== 'read') return start;
+
+    const observation = await readPullRequest(start.pair.run, start.pair.pullRequest, deps, true);
+    if (observation.kind !== 'observed') return observation;
+
+    return await deps.withRunMutation<RefreshPullRequestOutcome>(input, async (applyDirective) => {
+      const pair = await loadPair(input, deps);
+      if ('kind' in pair) return pair;
+      if (pair.pullRequest.state !== 'open') return completeTerminalPair(pair, applyDirective, deps);
+      if (!isAtPullRequestGate(pair.run)) return notAtGate;
+      if (pair.pullRequest.id !== start.pair.pullRequest.id || await loadGateId(pair.run, deps) !== start.gateId) {
+        return { kind: 'conflict', message: 'The pull request or its review gate changed during the check.' };
+      }
+      if (observation.facts.state === 'open') return { kind: 'refreshed', ...pair };
+
+      let written: PullRequest;
+      try {
+        written = await writeTerminalPullRequest(pair.pullRequest, observation.facts.state, deps);
+      } catch (error) {
+        if (!(error instanceof PullRequestStateConflictError)) throw error;
+        const current = await loadPair(input, deps);
+        if ('kind' in current) return current;
+        if (current.pullRequest.state === 'open') return { kind: 'internal_failure' };
+        return completeTerminalPair(current, applyDirective, deps);
+      }
+      return completeTerminalPair({ run: pair.run, pullRequest: written }, applyDirective, deps);
+    });
+  } catch {
+    return { kind: 'internal_failure' };
+  }
 }
 
 // --- Public entry point ---
@@ -198,7 +331,6 @@ export async function detectPullRequestMerges(
   input: DetectPullRequestMergesInput,
   deps: PullRequestLifecycleDependencies
 ): Promise<PullRequestStatusReconciliationResult> {
-  const clock = deps.clock ?? (() => new Date().toISOString());
   const now = deps.now ?? (() => Date.now());
 
   const startMs = now();
@@ -232,7 +364,7 @@ export async function detectPullRequestMerges(
       if (run === null || run.tenant !== pr.tenant || run.terminal) {
         continue;
       }
-      outcome = await reconcileSinglePullRequest(pr, deps, clock);
+      outcome = await reconcileSinglePullRequest(pr, deps);
     } catch {
       failed += 1;
       continue;
@@ -248,7 +380,8 @@ export async function detectPullRequestMerges(
       case 'closed':
         closed += 1;
         break;
-      case 'failed':
+      case 'read_failed':
+      case 'internal_failure':
         failed += 1;
         break;
     }

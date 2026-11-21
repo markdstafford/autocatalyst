@@ -224,6 +224,38 @@ describe('OpenAPI generation', () => {
     expect(operation?.responses?.['409']).toBeDefined();
   });
 
+  it('documents targeted PR refresh with strict JSON and safe check failures', () => {
+    const document = generateOpenApiDocument();
+    const operation = document.paths['/v1/runs/{id}/pull-request/refresh']?.post;
+    expect(operation?.security).toEqual([{ bearerAuth: [] }]);
+    expect(operation?.requestBody).toMatchObject({
+      required: true,
+      content: { 'application/json': { schema: { $ref: '#/components/schemas/RunPullRequestRefreshRequest' } } }
+    });
+    expect(operation?.responses?.['200']).toMatchObject({
+      content: { 'application/json': { schema: { $ref: '#/components/schemas/RunPullRequestRefreshResponse' } } }
+    });
+    for (const status of [400, 401, 403, 404, 409, 415, 500, 502]) {
+      expect(operation?.responses?.[String(status)]).toBeDefined();
+    }
+    expect(operation?.responses?.['502']).toMatchObject({
+      content: { 'application/json': { schema: { $ref: '#/components/schemas/PullRequestCheckFailedResponse' } } }
+    });
+    const schemas = document.components?.schemas;
+    expect(schemas?.['RunPullRequestRefreshRequest']).toMatchObject({
+      type: 'object', additionalProperties: false
+    });
+    expect(schemas?.['RunPullRequestRefreshResponse']).toMatchObject({
+      additionalProperties: false, required: ['pullRequest', 'run'],
+      properties: { pullRequest: expect.any(Object), run: expect.any(Object) }
+    });
+    expect(schemas?.['PullRequestCheckFailedResponse']).toMatchObject({
+      properties: { error: { properties: { details: { properties: {
+        reason: { enum: ['credential_missing', 'authentication_failed', 'not_found', 'provider_unavailable'] }
+      } } } } }
+    });
+  });
+
   it('documents POST /v1/pull-requests/reconcile', () => {
     const document = generateOpenApiDocument();
     const operation = document.paths['/v1/pull-requests/reconcile']?.post as

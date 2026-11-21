@@ -45,7 +45,7 @@ import {
   type RunRecoveryDependencies,
   StaticIssueTrackerRegistry,
   type AutoDispatchOptions,
-  type CodeHostCredential,
+  type ResolveCodeHostCredential,
   type ConvergenceEngine,
   type ControlPlaneService,
   type DomainRepositories,
@@ -77,6 +77,7 @@ import {
 } from '@autocatalyst/core';
 import { GitHubIssueTracker } from '@autocatalyst/github-issue-tracker-adapter';
 import { createGitHubCodeHostAdapter, type ExecuteGhFunction, type SafeGitExecutor } from '@autocatalyst/github-code-host-adapter';
+import { createCodeHostCredentialResolver } from './code-host-credential-resolver.js';
 import { createReviewedExecutionDispatcher } from './reviewed-execution-dispatcher.js';
 import { createRunWorkspaceGitPort } from './run-workspace-git-port.js';
 import { createStaticClientNotFoundHandler, registerStaticClientRoutes } from './static-client.js';
@@ -258,7 +259,7 @@ export interface ControlPlaneServerOptions {
    * Injectable credential resolver for integration tests. When provided, replaces the
    * default secret-store lookup so tests can supply a credential without a live secret store.
    */
-  readonly resolveCredential?: (ref: unknown) => Promise<CodeHostCredential>;
+  readonly resolveCredential?: ResolveCodeHostCredential;
   /**
    * Optional background ticker that calls reconcilePullRequests on a fixed interval.
    * When provided and `enabled` is true, the ticker is started after the server is
@@ -1664,17 +1665,7 @@ export async function createControlPlaneServer(
     pullRequests: domainRepos.pullRequests,
     codeHosts: codeHostRegistry,
     ...(runWorkspaceGit !== undefined ? { runWorkspaceGit } : {}),
-    resolveCredential: options.resolveCredential ?? (async (ref): Promise<CodeHostCredential> => {
-      const credRef = ref as { id?: unknown };
-      if (typeof credRef?.id !== 'string' || credRef.id.length === 0) {
-        throw new Error('Invalid credential reference: missing id field.');
-      }
-      const token = await secretStore.resolveSecret(credRef.id);
-      if (token === undefined || token.length === 0) {
-        throw new Error('Secret not found for code-host credential.');
-      }
-      return { token, secretRef: credRef.id };
-    })
+    resolveCredential: options.resolveCredential ?? createCodeHostCredentialResolver(secretStore)
   };
 
   const feedbackLifecycleDependencies: FeedbackLifecycleDependencies = {

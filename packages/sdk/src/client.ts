@@ -44,6 +44,9 @@ import {
   runFeedbackListResponseSchema,
   runFeedbackPath,
   runListResponseSchema,
+  refreshRunPullRequestSuccessStatusCode,
+  runPullRequestRefreshPath,
+  runPullRequestRefreshResponseSchema,
   runPullRequestPath,
   runPullRequestResponseSchema,
   runRepliesPath,
@@ -105,6 +108,7 @@ import {
   type RunFeedbackListResponse,
   type RunListResponse,
   type RunPullRequestResponse,
+  type RunPullRequestRefreshResponse,
   type RunSessionListResponse,
   type RunStepListResponse,
   type RunSpecResponse,
@@ -149,6 +153,7 @@ export interface ControlPlaneClient {
   listRuns(options?: ListRunsOptions): Promise<RunListResponse>;
   getRun(id: string): Promise<Run>;
   listRunSteps(id: string): Promise<RunStepListResponse>;
+  refreshRunPullRequest(id: string): Promise<RunPullRequestRefreshResponse>;
   getRunPullRequest(id: string): Promise<RunPullRequestResponse>;
   listRunSessions(id: string): Promise<RunSessionListResponse>;
   subscribeRunEvents(id: string, options?: RunEventsStreamOptions): Promise<RunEventsResponse>;
@@ -451,6 +456,18 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
       );
       await throwForError(response);
       return runStepListResponseSchema.parse(await parseJson(response));
+    },
+
+    async refreshRunPullRequest(id) {
+      const response = await fetchImplementation(
+        urlFor(baseUrl, runPullRequestRefreshPath.replace(':id', encodeURIComponent(id))),
+        { method: 'POST', headers: protectedHeaders(bearerToken, { 'content-type': 'application/json' }), body: '{}' }
+      );
+      await throwForError(response);
+      if (response.status !== refreshRunPullRequestSuccessStatusCode) {
+        throw new Error(`Expected ${refreshRunPullRequestSuccessStatusCode} from refreshRunPullRequest, received ${response.status}.`);
+      }
+      return runPullRequestRefreshResponseSchema.parse(await parseJson(response));
     },
 
     async getRunPullRequest(id) {
