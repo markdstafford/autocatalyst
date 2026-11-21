@@ -13,10 +13,12 @@
  * reason appear in tooltips.
  */
 import type { Run } from '@autocatalyst/api-contract';
+import { LoaderCircle } from 'lucide-react';
 import type { ReactNode } from 'react';
 
 import { CELL_DASH } from './run-fields.js';
-import type { PullRequestFact, SessionsFact } from './run-detail-facts.js';
+import type { PullRequestCheck, PullRequestFact, SessionsFact } from './run-detail-facts.js';
+import { formatRunFailureReason } from './run-failure-reason.js';
 import {
   computeSummaryTotals,
   formatCompactTokens,
@@ -25,18 +27,24 @@ import {
   formatTokenBreakdown
 } from './run-summary-totals.js';
 import { DescriptionItem, DescriptionList } from '../ui/description-list.js';
+import { Button } from '../ui/button.js';
 import { Tooltip } from '../ui/tooltip.js';
 
 export interface RunDetailSummaryProps {
   readonly run: Run;
   readonly pullRequest: PullRequestFact;
+  readonly pullRequestCheck?: PullRequestCheck;
+  readonly onCheckPullRequest?: () => void;
   readonly sessions: SessionsFact;
 }
 
 /** The reason shown when at least one session has no priced cost. */
 const COST_UNKNOWN_REASON = 'A model used in this run has no configured rate, so the cost is unknown.';
 
-export function RunDetailSummary({ run, pullRequest, sessions }: RunDetailSummaryProps): ReactNode {
+export function RunDetailSummary({
+  run, pullRequest, pullRequestCheck = {}, onCheckPullRequest, sessions
+}: RunDetailSummaryProps): ReactNode {
+  const failureReason = run.status === 'failed' ? formatRunFailureReason(run.failureReason) : undefined;
   return (
     <DescriptionList data-testid="pane-summary">
       {run.status === 'in_progress' ? (
@@ -46,14 +54,16 @@ export function RunDetailSummary({ run, pullRequest, sessions }: RunDetailSummar
           </span>
         </DescriptionItem>
       ) : null}
-      {run.status === 'failed' && run.failureReason !== undefined ? (
+      {failureReason !== undefined ? (
         <DescriptionItem label="Failure">
           <span data-testid="pane-summary-failure" className="text-red">
-            {run.failureReason}
+            {failureReason}
           </span>
         </DescriptionItem>
       ) : null}
-      <DescriptionItem label="Pull request">{renderPullRequest(pullRequest)}</DescriptionItem>
+      <DescriptionItem label="Pull request">
+        {renderPullRequest(pullRequest, pullRequestCheck, onCheckPullRequest)}
+      </DescriptionItem>
       <DescriptionItem label="Time">{renderTime(sessions)}</DescriptionItem>
       <DescriptionItem label="Tokens">{renderTokens(sessions)}</DescriptionItem>
       <DescriptionItem label="Cost">{renderCost(sessions)}</DescriptionItem>
@@ -61,7 +71,13 @@ export function RunDetailSummary({ run, pullRequest, sessions }: RunDetailSummar
   );
 }
 
-function renderPullRequest(fact: PullRequestFact): ReactNode {
+const PR_STATE = {
+  open: { label: 'Open', color: 'text-subtext' },
+  merged: { label: 'Merged', color: 'text-green' },
+  closed: { label: 'Closed', color: 'text-red' }
+} as const;
+
+function renderPullRequest(fact: PullRequestFact, check: PullRequestCheck, onCheck: (() => void) | undefined): ReactNode {
   if (fact.status === 'loading') {
     return <span data-testid="pane-summary-pr" className="text-subtext">Loading…</span>;
   }
@@ -76,16 +92,40 @@ function renderPullRequest(fact: PullRequestFact): ReactNode {
     return <span data-testid="pane-summary-pr">{CELL_DASH}</span>;
   }
   const pr = fact.value;
+  const { label, color } = PR_STATE[pr.state];
   return (
-    <a
-      data-testid="pane-summary-pr"
-      href={pr.url}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="text-text hover:underline"
-    >
-      #{pr.number} · {pr.state}
-    </a>
+    <>
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <a
+          data-testid="pane-summary-pr"
+          href={pr.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-text hover:underline"
+        >
+          #{pr.number} · <span className={color} aria-live="polite">{label}</span>
+        </a>
+        {onCheck !== undefined ? (
+          <Button variant="secondary" size="control-sm" aria-disabled={check.pending || check.locked} onClick={onCheck}>
+            Check now
+          </Button>
+        ) : null}
+      </div>
+      <div role="status" className="text-xs text-subtext">
+        {check.pending ? (
+          <span className="inline-flex items-center gap-1">
+            <LoaderCircle size={12} className="motion-safe:animate-spin" aria-hidden="true" /> Checking
+          </span>
+        ) : check.error !== undefined ? (
+          <span className="text-red">{check.error}</span>
+        ) : check.checkedAt !== undefined ? 'Checked just now' : null}
+        {check.checkedAt !== undefined ? (
+          <span className="block">
+            Last checked: <time dateTime={check.checkedAt}>{new Date(check.checkedAt).toLocaleTimeString()}</time>
+          </span>
+        ) : null}
+      </div>
+    </>
   );
 }
 

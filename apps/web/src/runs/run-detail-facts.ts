@@ -17,6 +17,15 @@ export type FactState<T> =
 /** The pull request fact. A successful `null` value is the normal no-PR (404) state. */
 export type PullRequestFact = FactState<PullRequest | null>;
 
+/** Transient check feedback, separate from the stored pull request read. */
+export interface PullRequestCheck {
+  readonly pending?: boolean;
+  /** Held until a check of the replaced PR settles; its status is no longer displayed. */
+  readonly locked?: boolean;
+  readonly checkedAt?: string;
+  readonly error?: string;
+}
+
 /** The sessions fact, from which the time/token/cost totals are computed. */
 export type SessionsFact = FactState<readonly Session[]>;
 
