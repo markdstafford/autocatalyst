@@ -104,7 +104,9 @@ describe('RunDetailSummary', () => {
     );
     const link = screen.getByTestId('pane-summary-pr');
     expect(link.textContent).toContain('#108');
-    expect(link.textContent).toContain('merged');
+    expect(link.textContent).toContain('Merged');
+    expect(link.querySelector('span')?.className).toBe('text-green');
+    expect(link.getAttribute('target')).toBe('_blank');
     expect(link.getAttribute('rel')).toBe('noopener noreferrer');
   });
 

@@ -18,6 +18,8 @@
 import type { FeedbackResponse, Run } from '@autocatalyst/api-contract';
 import { ControlPlaneClientError } from '@autocatalyst/sdk';
 
+import { canDecideGate } from './gate-decision.js';
+
 /** The workflow step at which a run waits for the operator's spec decision. */
 export const SPEC_GATE_STEP = 'spec.human_review';
 
@@ -38,12 +40,7 @@ export const SPEC_GATE_STEP = 'spec.human_review';
  * itself; this is a client-side visibility guard only.
  */
 export function isSpecGateDecisionAvailable(run: Run): boolean {
-  return (
-    run.currentStep === SPEC_GATE_STEP &&
-    run.terminal === false &&
-    (run.status === undefined || run.status === 'in_progress') &&
-    (run.waitingOn === undefined || run.waitingOn === 'human')
-  );
+  return canDecideGate(run, SPEC_GATE_STEP);
 }
 
 /** Count of artifact-target feedback with status 'open'. */

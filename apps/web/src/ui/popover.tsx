@@ -14,7 +14,7 @@
  * clicks; portaling into a container inside the dialog keeps it clickable, not just keyboard-operable.
  */
 import { Popover as BasePopover } from '@base-ui/react/popover';
-import type { ReactElement, ReactNode } from 'react';
+import type { ReactElement, ReactNode, RefObject } from 'react';
 
 export interface PopoverProps {
   readonly open: boolean;
@@ -33,6 +33,8 @@ export interface PopoverProps {
   readonly className?: string;
   /** Portal the popup into this element instead of the document body (e.g. inside a modal overlay). */
   readonly container?: HTMLElement | null;
+  /** An optional control to focus when opening. */
+  readonly initialFocus?: RefObject<HTMLElement | null>;
   /** Optional test id placed on the popup. */
   readonly 'data-testid'?: string;
 }
@@ -51,6 +53,7 @@ export function Popover({
   align,
   className,
   container,
+  initialFocus,
   'data-testid': testId
 }: PopoverProps): ReactNode {
   return (
@@ -62,6 +65,7 @@ export function Popover({
             className={`${POPUP_CLASSES} ${className ?? ''}`.trim()}
             aria-label={label}
             data-testid={testId}
+            initialFocus={initialFocus}
           >
             {children}
           </BasePopover.Popup>

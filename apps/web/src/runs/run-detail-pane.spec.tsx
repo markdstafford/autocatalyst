@@ -7,7 +7,7 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { makePullRequest, makeRun, makeSession } from './run-fixtures.js';
-import { RunDetailPane } from './run-detail-pane.js';
+import { RunDetailHarness as RunDetailPane } from './run-detail-pane.test-helper.js';
 import { createScriptedDetailClient } from './scripted-detail-client.js';
 import {
   ACCEPTANCE_EMPTY_STATE,

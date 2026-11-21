@@ -22,6 +22,7 @@ import { useControlPlaneConnection } from '../client/client-provider.js';
 import { RunDetailPane } from '../runs/run-detail-pane.js';
 import { RunTable } from '../runs/run-table.js';
 import { useCurrentPrincipalId } from '../runs/use-current-principal.js';
+import { useRunDetail } from '../runs/use-run-detail.js';
 import { useRunList } from '../runs/use-run-list.js';
 import { useConnectionState } from '../shell/connection-state.js';
 import { CONNECTION_PATH, runPath } from '../shell/navigation.js';
@@ -54,6 +55,16 @@ export function RunsPage(): ReactNode {
     routeRunId,
     navigateToRun,
     onListLostChange: setListLost
+  });
+
+  // Detail reads and check state belong to the selection even while the pane is closed.
+  const selectedRun: Run | undefined = connected ? state.rows.find((run) => run.id === state.selectedRunId) : undefined;
+  const detail = useRunDetail({
+    run: selectedRun,
+    client,
+    visible: detailPaneVisible,
+    replaceRun: state.replaceRun,
+    onUnauthorized: () => navigate(CONNECTION_PATH)
   });
 
   // The run list owns the selection keys. The registry gates `j`/`k`/arrows on focus
@@ -98,7 +109,6 @@ export function RunsPage(): ReactNode {
     );
   }
 
-  const selectedRun: Run | undefined = state.rows.find((run) => run.id === state.selectedRunId);
   const hasRows = state.rows.length > 0;
 
   return (
@@ -121,13 +131,8 @@ export function RunsPage(): ReactNode {
           <div className="shrink-0" style={{ width: `${sidePaneWidthPx}px` }}>
             <RunDetailPane
               run={selectedRun}
-              client={client}
-              visible={detailPaneVisible}
+              detail={detail}
               {...(currentPrincipalId !== undefined ? { currentPrincipalId } : {})}
-              replaceRun={state.replaceRun}
-              onUnauthorized={() => {
-                navigate(CONNECTION_PATH);
-              }}
             />
           </div>
         </>
