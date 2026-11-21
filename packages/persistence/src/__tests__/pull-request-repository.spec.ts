@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { PullRequestStateConflictError } from '@autocatalyst/core';
 
 import {
   createDrizzleDomainRepositories,
@@ -141,9 +142,10 @@ describe('DrizzlePullRequestRepository — updateState and listOpen', () => {
           runId: 'run_nonexistent',
           tenant: 'tenant_1',
           state: 'merged',
-          updatedAt: '2026-06-16T12:00:00.000Z'
+          updatedAt: '2026-06-16T12:00:00.000Z',
+          expectedState: 'open'
         })
-      ).rejects.toThrow();
+      ).rejects.not.toBeInstanceOf(PullRequestStateConflictError);
     });
   });
 
@@ -167,9 +169,10 @@ describe('DrizzlePullRequestRepository — updateState and listOpen', () => {
           runId: run.id,
           tenant: 'tenant_1',
           state: 'merged',
-          updatedAt: '2026-06-16T12:00:00.000Z'
+          updatedAt: '2026-06-16T12:00:00.000Z',
+          expectedState: 'open'
         })
-      ).rejects.toThrow();
+      ).rejects.not.toBeInstanceOf(PullRequestStateConflictError);
     });
   });
 
@@ -195,7 +198,7 @@ describe('DrizzlePullRequestRepository — updateState and listOpen', () => {
           updatedAt: '2026-06-16T13:00:00.000Z',
           expectedState: 'merged'
         })
-      ).rejects.toThrow();
+      ).rejects.toBeInstanceOf(PullRequestStateConflictError);
     });
   });
 

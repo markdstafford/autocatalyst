@@ -12,6 +12,7 @@ import type {
   RunListCursor,
   RunStatus,
   RunPullRequestResponse,
+  RunPullRequestRefreshResponse,
   RunRecoveryRequest,
   RunRecoveryResponse,
   RunReplyRequest,
@@ -23,7 +24,7 @@ import type {
   SpecAuthorFrontmatter,
   UpdateRunFeedbackRequest
 } from '@autocatalyst/api-contract';
-import { createConversationWithFirstRunResponseSchema, feedbackResponseSchema, pullRequestReconciliationResponseSchema, runFeedbackListResponseSchema, runPullRequestResponseSchema, runRecoveryResponseSchema, runReplyResponseSchema, runSessionListResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
+import { createConversationWithFirstRunResponseSchema, feedbackResponseSchema, pullRequestReconciliationResponseSchema, runFeedbackListResponseSchema, runPullRequestResponseSchema, runPullRequestRefreshPath, runPullRequestRefreshResponseSchema, pullRequestCheckFailedErrorCode, pullRequestCheckFailedMessage, runRecoveryResponseSchema, runReplyResponseSchema, runSessionListResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
 import type { ReconcilePullRequestsResponse } from '@autocatalyst/api-contract';
 
 import {
@@ -70,7 +71,8 @@ export type ControlPlaneServiceErrorCode =
   | 'conflict'
   | 'invalid_transition'
   | 'invalid_feedback_anchor'
-  | 'unsupported_pause';
+  | 'unsupported_pause'
+  | typeof pullRequestCheckFailedErrorCode;
 
 export interface ControlPlaneServiceConflictDetails {
   readonly topicId: string;
@@ -241,6 +243,7 @@ export interface ServiceGetRunPullRequestInput {
 }
 
 export type ServiceGetRunPullRequestResult = RunPullRequestResponse;
+export type ServiceRefreshRunPullRequestInput = Pick<ServiceGetRunPullRequestInput, 'principal' | 'runId'>;
 
 export interface ServiceListRunSessionsInput {
   readonly principal: Principal;
@@ -270,6 +273,7 @@ export interface ControlPlaneService {
   replyToRun(input: ServiceReplyToRunInput): Promise<RunReplyResponse>;
   recoverRun(input: ServiceRecoverRunInput): Promise<ServiceRecoverRunResult>;
   reconcilePullRequests(input: ServiceReconcilePullRequestsInput): Promise<ServiceReconcilePullRequestsResult>;
+  refreshRunPullRequest(input: ServiceRefreshRunPullRequestInput): Promise<RunPullRequestRefreshResponse>;
   getRunPullRequest(input: ServiceGetRunPullRequestInput): Promise<ServiceGetRunPullRequestResult>;
   listRunSessions(input: ServiceListRunSessionsInput): Promise<ServiceListRunSessionsResult>;
 }
@@ -390,7 +394,7 @@ function withDerivedWaitingOn(run: Run): Run {
 /**
  * The single source for API-only run row fields. Fills `waitingOn` and `status` from the step
  * catalog, and `projectId` from either a batched list-row value already on the run (set by the
- * repository join) or an explicit single-run lookup. Used by list, get, reply, and recover
+ * repository join) or an explicit single-run lookup. Used by list, get, reply, recover, and PR refresh
  * responses so those row fields agree for the same run. Run events deliberately use
  * {@link withDerivedWaitingOn} instead so they do not claim `status`/`projectId`.
  */
@@ -1062,6 +1066,48 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     }
   }
 
+  async refreshRunPullRequest(input: ServiceRefreshRunPullRequestInput): Promise<RunPullRequestRefreshResponse> {
+    const { principal, runId } = input;
+    const decision = await this.#policy.authorize({
+      principal,
+      action: 'run_pull_request.refresh',
+      resource: { kind: 'run_pull_request_refresh', id: runId, path: runPullRequestRefreshPath }
+    });
+    if (!decision.allowed || principal.kind === 'model') {
+      throw new ControlPlaneServiceError('forbidden', 'Forbidden.');
+    }
+
+    let result;
+    try {
+      result = await this.#orchestrator.refreshRunPullRequest({ runId, tenant: principal.tenantId });
+    } catch {
+      throw persistenceFailed('Failed to refresh run pull request.');
+    }
+    switch (result.kind) {
+      case 'not_found':
+        throw new ControlPlaneServiceError('not_found', result.resource === 'run'
+          ? `Run '${runId}' not found.`
+          : `Pull request for run '${runId}' not found.`);
+      case 'conflict':
+        throw new ControlPlaneServiceError('conflict', result.message);
+      case 'read_failed':
+        throw new ControlPlaneServiceError(pullRequestCheckFailedErrorCode, pullRequestCheckFailedMessage, {
+          details: { reason: result.reason }
+        });
+      case 'internal_failure':
+        throw persistenceFailed('Failed to refresh run pull request.');
+      case 'refreshed':
+        try {
+          return runPullRequestRefreshResponseSchema.parse({
+            pullRequest: result.pullRequest,
+            run: mapRunToApiRun(result.run, await this.#resolveRunProjectId(result.run))
+          });
+        } catch {
+          throw persistenceFailed('Failed to project refreshed run pull request.');
+        }
+    }
+  }
+
   async getRunPullRequest(input: ServiceGetRunPullRequestInput): Promise<ServiceGetRunPullRequestResult> {
     await requireTenantRun({ runs: this.#runs, runId: input.runId, tenant: input.tenant });
 
@@ -1173,7 +1219,6 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       throw persistenceFailed('Run repository does not support recovery.');
     }
     const recovery = this.#recovery;
-    const recoverFailedRun = this.#runs.recoverFailedRun.bind(this.#runs);
 
     // Load + tenant scope. Missing and cross-tenant both resolve to 404 (no tenant disclosure).
     const run = await this.#runs.findById(input.runId);
@@ -1255,11 +1300,11 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     const startedAt = new Date().toISOString();
     let reopened;
     try {
-      reopened = await recoverFailedRun({
+      reopened = await this.#orchestrator.reopenFailedRun({
         runId: run.id,
         reDispatchStep: plan.reDispatchStep,
         runStep: buildEntryRunStep(reDispatchDefinition, startedAt)
-      });
+      }, input.tenant);
     } catch (error) {
       if (isActiveRunConflictError(error)) {
         throw new ControlPlaneServiceError('active_run_conflict', `Active run conflict for run '${input.runId}'.`, { cause: error });

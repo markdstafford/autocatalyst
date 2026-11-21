@@ -263,10 +263,19 @@ export interface ListOpenPullRequestsInput {
   readonly limit: number;
 }
 
+/** A tenant-owned PR exists but its state did not match the guarded write. */
+export class PullRequestStateConflictError extends Error {
+  constructor() {
+    super('PullRequest state mismatch.');
+    this.name = 'PullRequestStateConflictError';
+  }
+}
+
 export interface PullRequestRepository {
   create(input: CreatePullRequestInput): Promise<PullRequest>;
   findById(id: string): Promise<PullRequest | null>;
   findByRun(runId: string): Promise<PullRequest | null>;
+  /** Throws PullRequestStateConflictError only on an existing row’s expectedState mismatch. */
   updateState(input: UpdatePullRequestStateInput): Promise<PullRequest>;
   listOpen(input: ListOpenPullRequestsInput): Promise<readonly PullRequest[]>;
 }

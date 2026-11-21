@@ -6,6 +6,7 @@ import {
   listRunSessionsSuccessStatusCode,
   pullRequestSchema,
   runPullRequestPath,
+  runPullRequestRefreshPath,
   runPullRequestResponseSchema,
   runSessionListResponseSchema,
   runSessionsPath,
@@ -82,6 +83,7 @@ function createFakeControlPlaneService(): ControlPlaneService {
       throw new Error('not stubbed');
     }),
     reconcilePullRequests: vi.fn().mockResolvedValue({ checked: 0, merged: 0, closed: 0, failed: 0, timedOut: false }),
+    refreshRunPullRequest: vi.fn(),
     getRunPullRequest: vi.fn(async () => {
       throw new Error('not stubbed');
     }),
@@ -504,5 +506,97 @@ describe('run observability routes', () => {
       expect(logFields.method).toBe('GET');
       expect(logFields.statusCode).toBe(500);
     });
+  });
+});
+
+describe('POST /v1/runs/:id/pull-request/refresh', () => {
+  const url = runPullRequestRefreshPath.replace(':id', 'run_1');
+  let server: Awaited<ReturnType<typeof buildServer>>['app'] | undefined;
+  afterEach(async () => { await server?.close(); });
+
+  it('requires bearer auth before attempting to parse JSON', async () => {
+    const { app, controlPlane } = await buildServer();
+    server = app;
+    const result = await app.inject({
+      method: 'POST', url, headers: { 'content-type': 'application/json' }, payload: '{"raw_secret":'
+    });
+    expect(result.statusCode).toBe(401);
+    expect(controlPlane.refreshRunPullRequest).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [undefined, undefined, 400],
+    ['application/json', undefined, 400],
+    ['application/json', '{"SECRET_SENTINEL":', 400],
+    ['application/json', '{"tenant":"other"}', 400],
+    ['application/json', 'null', 400],
+    ['application/json', '[]', 400],
+    ['application/json', '42', 400],
+    ['text/plain', '{}', 415],
+    ['application/xml', '{}', 415]
+  ] as const)('rejects content-type %s with body %s', async (contentType, payload, status) => {
+    const { app, authorization, controlPlane } = await buildServer();
+    server = app;
+    const result = await app.inject({
+      method: 'POST', url,
+      headers: { ...authorization, ...(contentType !== undefined ? { 'content-type': contentType } : {}) },
+      ...(payload !== undefined ? { payload } : {})
+    });
+    expect(result.statusCode).toBe(status);
+    expect(result.json()).toEqual({
+      error: status === 400
+        ? { code: 'validation_error', message: 'Request validation failed.' }
+        : { code: 'unsupported_media_type', message: 'Expected an application/json body.' }
+    });
+    expect(controlPlane.refreshRunPullRequest).not.toHaveBeenCalled();
+  });
+
+  it('passes the exact action and resource to policy before service work', async () => {
+    const authorize = vi.fn().mockResolvedValue({ allowed: false });
+    const { app, authorization, controlPlane } = await buildServer({ policy: { authorize } });
+    server = app;
+    const result = await app.inject({ method: 'POST', url, headers: authorization, payload: {} });
+    expect(result.statusCode).toBe(403);
+    expect(authorize).toHaveBeenCalledExactlyOnceWith({
+      principal: expect.objectContaining({ tenantId: 'tenant_dev' }),
+      action: 'run_pull_request.refresh',
+      resource: { kind: 'run_pull_request_refresh', id: 'run_1', path: '/v1/runs/:id/pull-request/refresh' }
+    });
+    expect(controlPlane.refreshRunPullRequest).not.toHaveBeenCalled();
+  });
+
+  it('denies model principals even under permissive policy', async () => {
+    const { app, authorization, controlPlane } = await buildServer({
+      auth: { bearerToken: 'test-token', resolvePrincipal: () => ({ kind: 'model', id: 'm1', tenantId: 'tenant_dev' }) }
+    });
+    server = app;
+    const result = await app.inject({ method: 'POST', url, headers: authorization, payload: {} });
+    expect(result.statusCode).toBe(403);
+    expect(result.json()).toEqual({ error: { code: 'forbidden', message: 'Forbidden.' } });
+    expect(controlPlane.refreshRunPullRequest).not.toHaveBeenCalled();
+  });
+
+  it('uses a fixed 502 message and only its stable reason', async () => {
+    const { app, authorization, controlPlane } = await buildServer();
+    server = app;
+    vi.mocked(controlPlane.refreshRunPullRequest).mockRejectedValueOnce(
+      new ControlPlaneServiceError('pull_request_check_failed', 'SECRET_SENTINEL', { details: { reason: 'authentication_failed' } })
+    );
+    const result = await app.inject({ method: 'POST', url, headers: authorization, payload: {} });
+    expect(result.statusCode).toBe(502);
+    expect(result.json()).toEqual({
+      error: { code: 'pull_request_check_failed', message: 'Could not check the pull request.', details: { reason: 'authentication_failed' } }
+    });
+  });
+
+  it('sanitizes local exception responses and logs', async () => {
+    const { logger, entries } = createCapturingLogger();
+    const { app, authorization, controlPlane } = await buildServer(undefined, logger);
+    server = app;
+    vi.mocked(controlPlane.refreshRunPullRequest).mockRejectedValueOnce(new Error('SECRET_SENTINEL\nraw provider output'));
+    const result = await app.inject({ method: 'POST', url, headers: authorization, payload: {} });
+    expect(result.statusCode).toBe(500);
+    expect(result.json()).toEqual({ error: { code: 'internal_error', message: 'An internal server error occurred.' } });
+    expect(JSON.stringify(entries)).not.toMatch(/SECRET_SENTINEL|raw provider output/u);
   });
 });

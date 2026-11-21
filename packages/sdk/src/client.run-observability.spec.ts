@@ -57,3 +57,43 @@ describe('ControlPlaneClient run observability methods', () => {
     await expect(client.getRunPullRequest('run_1')).rejects.toThrow();
   });
 });
+
+describe('ControlPlaneClient.refreshRunPullRequest', () => {
+  const { owner, tenant, createdAt, updatedAt } = pullRequestResponse.pullRequest;
+  const success = {
+    ...pullRequestResponse,
+    run: {
+      id: 'run_1', owner, tenant, createdAt, updatedAt, projectId: 'project_1', topicId: 'topic_1',
+      workKind: 'feature', currentStep: 'pr.human_review', terminal: false, waitingOn: 'human', status: 'in_progress'
+    }
+  };
+
+  it('posts authenticated JSON {} and parses the persisted pair', async () => {
+    const fetch = vi.fn().mockResolvedValue(Response.json(success));
+    const client = createControlPlaneClient({ baseUrl: 'https://api.test', bearerToken: 'token_1', fetch });
+    await expect(client.refreshRunPullRequest('run_1')).resolves.toEqual(success);
+    expect(String(fetch.mock.calls[0]?.[0])).toBe('https://api.test/v1/runs/run_1/pull-request/refresh');
+    expect(fetch.mock.calls[0]?.[1]).toEqual({
+      method: 'POST', headers: { authorization: 'Bearer token_1', 'content-type': 'application/json' }, body: '{}'
+    });
+  });
+
+  it('rejects a success envelope with an unknown field or an invalid run', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(Response.json({ ...success, extra: true }))
+      .mockResolvedValueOnce(Response.json({ ...success, run: { ...success.run, terminal: 0 } }));
+    const client = createControlPlaneClient({ baseUrl: 'https://api.test', fetch });
+    await expect(client.refreshRunPullRequest('run_1')).rejects.toThrow();
+    await expect(client.refreshRunPullRequest('run_1')).rejects.toThrow();
+  });
+
+  it('retains check-failure reason on the SDK error response', async () => {
+    const error = {
+      code: 'pull_request_check_failed', message: 'Could not check the pull request.', details: { reason: 'not_found' }
+    };
+    const fetch = vi.fn().mockResolvedValue(Response.json({ error }, { status: 502 }));
+    const client = createControlPlaneClient({ baseUrl: 'https://api.test', fetch });
+    await expect(client.refreshRunPullRequest('run_1')).rejects.toMatchObject({
+      name: 'ControlPlaneClientError', status: 502, response: { error }
+    });
+  });
+});
