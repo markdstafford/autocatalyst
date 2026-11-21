@@ -73,7 +73,7 @@ function makeService(options?: {
     listByRun: vi.fn().mockResolvedValue(options?.steps ?? failedImplHistory)
   } as unknown as RunStepRepository;
 
-  const orchestrator = { admitForDispatch } as unknown as Orchestrator;
+  const orchestrator = { admitForDispatch, reopenFailedRun: recoverFailedRun } as unknown as Orchestrator;
 
   const service = new DefaultControlPlaneService({
     orchestrator,
@@ -112,7 +112,7 @@ describe('DefaultControlPlaneService.recoverRun', () => {
     expect(result.mode).toBe('resume');
     expect(result.run.currentStep).toBe('implementation.build');
     expect(recovery.materializeWorkspace).toHaveBeenCalledWith(expect.objectContaining({ baseKind: 'run_branch', existingWorkspaceBehavior: 'keep' }));
-    expect(recoverFailedRun).toHaveBeenCalledWith(expect.objectContaining({ reDispatchStep: 'implementation.build' }));
+    expect(recoverFailedRun).toHaveBeenCalledWith(expect.objectContaining({ reDispatchStep: 'implementation.build' }), owner.tenantId);
     expect(admitForDispatch).toHaveBeenCalledWith({ runId: 'run_1', tenant: 'tenant_1' });
   });
 
@@ -128,7 +128,7 @@ describe('DefaultControlPlaneService.recoverRun', () => {
     expect(result.mode).toBe('start_over');
     expect(recovery.detectCommittedCheckpoints).not.toHaveBeenCalled();
     expect(recovery.materializeWorkspace).toHaveBeenCalledWith(expect.objectContaining({ baseKind: 'current_default_branch', existingWorkspaceBehavior: 'replace' }));
-    expect(recoverFailedRun).toHaveBeenCalledWith(expect.objectContaining({ reDispatchStep: 'spec.author' }));
+    expect(recoverFailedRun).toHaveBeenCalledWith(expect.objectContaining({ reDispatchStep: 'spec.author' }), owner.tenantId);
   });
 
   it('honors explicit resume for a spec failure', async () => {

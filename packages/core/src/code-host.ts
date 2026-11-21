@@ -22,6 +22,17 @@ export interface CodeHostCredential {
   readonly secretRef?: string;
 }
 
+/** Throw only for an invalid credential reference or an absent/empty secret. */
+export class CodeHostCredentialMissingError extends Error {
+  constructor() {
+    super('Code-host credential is missing.');
+    this.name = 'CodeHostCredentialMissingError';
+  }
+}
+
+/** Resolves a credential; only CodeHostCredentialMissingError denotes a missing credential. */
+export type ResolveCodeHostCredential = (ref: unknown) => Promise<CodeHostCredential>;
+
 export interface PullRequestContent {
   readonly title: string;
   readonly body: string;

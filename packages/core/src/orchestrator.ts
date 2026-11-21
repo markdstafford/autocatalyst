@@ -42,19 +42,24 @@ import type {
   LifecycleRunStepInput,
   ProjectRepository,
   PullRequestRepository,
+  RecoverFailedRunInput,
+  RecoverFailedRunResult,
   RunRepository,
   RunStepRepository,
   RunWorkspaceMetadataRepository,
   TopicRepository
 } from './domain-repositories.js';
-import type { CodeHostCredential } from './code-host.js';
+import type { ResolveCodeHostCredential } from './code-host.js';
 import type { CodeHostRegistry } from './code-host-registry.js';
 import type { RunWorkspaceGitPort } from './run-workspace-git.js';
 import { handlePullRequestOpen } from './pr-open-handler.js';
 import { buildCumulativeImplementationSummary, buildImplementationSummaryRoundInputs } from './implementation-summary.js';
 import {
   detectPullRequestMerges,
-  type PullRequestStatusReconciliationResult
+  refreshPullRequest,
+  type PullRequestStatusReconciliationResult,
+  type RefreshPullRequestDependencies,
+  type RefreshPullRequestOutcome
 } from './pr-lifecycle.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
 import { createGateFeedback, listBlockingFeedback, resolveApproverAddressedFeedback } from './feedback-lifecycle.js';
@@ -215,6 +220,9 @@ export interface Orchestrator {
   tick(input: TickInput): Promise<TickResult>;
   replyToRun(input: ReplyToRunInput): Promise<ReplyToRunResult>;
   detectMerges(tenant: string): Promise<PullRequestStatusReconciliationResult>;
+  refreshRunPullRequest(input: DispatchRunInput): Promise<RefreshPullRequestOutcome>;
+  /** Serialize the repository's failed-only reopen, without admitting the run for dispatch. */
+  reopenFailedRun(input: RecoverFailedRunInput, tenant: string): Promise<RecoverFailedRunResult>;
   /**
    * Admit an already-reopened run (e.g. after recovery) for dispatch through the existing
    * queue, per-run serialization, and concurrency controls — without calling the runner
@@ -270,7 +278,7 @@ export interface PullRequestOpenWiringDependencies {
   readonly projects: ProjectRepository;
   readonly pullRequests: PullRequestRepository;
   readonly codeHosts: CodeHostRegistry;
-  readonly resolveCredential: (ref: unknown) => Promise<CodeHostCredential>;
+  readonly resolveCredential: ResolveCodeHostCredential;
   readonly runWorkspaceGit?: Pick<RunWorkspaceGitPort, 'getChangedFiles'>;
 }
 
@@ -312,6 +320,7 @@ export class DefaultOrchestrator implements Orchestrator {
   readonly #pullRequestOpenDependencies: PullRequestOpenWiringDependencies | undefined;
   readonly #autoDispatchEnabled: boolean;
   readonly #autoDispatchInFlightRunIds = new Set<string>();
+  readonly #runMutationTails = new Map<string, Promise<void>>();
 
   constructor(options: DefaultOrchestratorOptions) {
     this.#runs = options.runs;
@@ -491,7 +500,50 @@ export class DefaultOrchestrator implements Orchestrator {
     return result;
   }
 
-  async applyDirective(input: ApplyOrchestratedDirectiveInput): Promise<OrchestratedRunResult> {
+  // This lock serializes short mutations, not runner dispatch or provider reads.
+  async #withRunMutation<T>(
+    { tenant, runId }: DispatchRunInput,
+    work: (applyDirective: Orchestrator['applyDirective']) => Promise<T>
+  ): Promise<T> {
+    const key = JSON.stringify([tenant, runId]);
+    const previous = this.#runMutationTails.get(key);
+    let release!: () => void;
+    const tail = new Promise<void>((resolve) => { release = resolve; });
+    this.#runMutationTails.set(key, tail);
+    await previous;
+
+    let transitionedRun: Run | undefined;
+    try {
+      return await work(async (input) => {
+        const result = await this.#applyDirectiveUnderLock(input);
+        transitionedRun = result.run;
+        return result;
+      });
+    } finally {
+      if (this.#runMutationTails.get(key) === tail) this.#runMutationTails.delete(key);
+      release();
+      if (transitionedRun !== undefined) this.#scheduleAutoDispatch(transitionedRun);
+    }
+  }
+
+  applyDirective(input: ApplyOrchestratedDirectiveInput): Promise<OrchestratedRunResult> {
+    return this.#withRunMutation(input, (applyDirective) => applyDirective(input));
+  }
+
+  reopenFailedRun(input: RecoverFailedRunInput, tenant: string): Promise<RecoverFailedRunResult> {
+    return this.#withRunMutation({ runId: input.runId, tenant }, async () => {
+      if (this.#runs.recoverFailedRun === undefined) {
+        throw new OrchestratorError('persistence_failed', 'Run repository does not support recovery.');
+      }
+      const run = await this.#runs.findById(input.runId);
+      if (run === null || run.tenant !== tenant) {
+        throw new OrchestratorError('missing_run', 'Run not found.');
+      }
+      return this.#runs.recoverFailedRun(input);
+    });
+  }
+
+  async #applyDirectiveUnderLock(input: ApplyOrchestratedDirectiveInput): Promise<OrchestratedRunResult> {
     const existing = await this.#runs.findById(input.runId);
     if (existing === null) {
       throw new OrchestratorError('missing_run', `Run '${input.runId}' does not exist.`);
@@ -621,8 +673,6 @@ export class DefaultOrchestrator implements Orchestrator {
       tenant: state.run.tenant,
       ...(normalizedFailureReason !== undefined ? { reason: normalizedFailureReason } : {})
     });
-
-    this.#scheduleAutoDispatch(state.run);
 
     return { run: state.run, runStep: state.runStep };
   }
@@ -997,28 +1047,29 @@ export class DefaultOrchestrator implements Orchestrator {
     );
   }
 
-  async detectMerges(tenant: string): Promise<PullRequestStatusReconciliationResult> {
-    if (this.#pullRequestOpenDependencies === undefined) {
-      throw new OrchestratorError(
-        'persistence_failed',
-        'Pull-request lifecycle dependencies are not configured.'
-      );
+  #pullRequestLifecycleDependencies(): RefreshPullRequestDependencies {
+    const deps = this.#pullRequestOpenDependencies;
+    if (deps === undefined) {
+      throw new OrchestratorError('persistence_failed', 'Pull-request lifecycle dependencies are not configured.');
     }
-    const prDeps = this.#pullRequestOpenDependencies;
+    return {
+      ...deps,
+      runs: this.#runs,
+      applyDirective: (input) => this.applyDirective(input),
+      withRunMutation: (input, work) => this.#withRunMutation(input, work),
+      ...(this.#clock !== undefined ? { clock: this.#clock } : {})
+    };
+  }
+
+  async detectMerges(tenant: string): Promise<PullRequestStatusReconciliationResult> {
     return detectPullRequestMerges(
       { tenant, maxCount: 50, timeoutMs: 30_000 },
-      {
-        runs: this.#runs,
-        conversations: prDeps.conversations,
-        topics: prDeps.topics,
-        projects: prDeps.projects,
-        pullRequests: prDeps.pullRequests,
-        codeHosts: prDeps.codeHosts,
-        resolveCredential: prDeps.resolveCredential,
-        applyDirective: (directiveInput) => this.applyDirective(directiveInput),
-        ...(this.#clock !== undefined ? { clock: this.#clock } : {})
-      }
+      this.#pullRequestLifecycleDependencies()
     );
+  }
+
+  async refreshRunPullRequest(input: DispatchRunInput): Promise<RefreshPullRequestOutcome> {
+    return refreshPullRequest(input, this.#pullRequestLifecycleDependencies());
   }
 
   async admitForDispatch(input: DispatchRunInput): Promise<void> {

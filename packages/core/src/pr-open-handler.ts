@@ -11,7 +11,7 @@ import type {
   RunWorkspaceMetadataRepository,
   TopicRepository
 } from './domain-repositories.js';
-import type { CodeHostCredential, CodeHostPort, CodeHostPullRequestFacts, CodeHostTarget } from './code-host.js';
+import type { CodeHostCredential, CodeHostPort, CodeHostPullRequestFacts, CodeHostTarget, ResolveCodeHostCredential } from './code-host.js';
 import { CodeHostError, isCodeHostError } from './code-host.js';
 import type { CodeHostRegistry } from './code-host-registry.js';
 import type { RunEventPublisher } from './run-events.js';
@@ -76,7 +76,7 @@ export interface PullRequestOpenHandlerDependencies {
   readonly runSteps: RunStepRepository;
   readonly runWorkspaceMetadata: RunWorkspaceMetadataRepository;
   readonly codeHosts: CodeHostRegistry;
-  readonly resolveCredential: (ref: unknown) => Promise<CodeHostCredential>;
+  readonly resolveCredential: ResolveCodeHostCredential;
   readonly events: RunEventPublisher;
   readonly applyDirective: (input: ApplyOrchestratedDirectiveInput) => Promise<OrchestratedRunResult>;
   readonly clock: () => string;

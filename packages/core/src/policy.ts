@@ -23,6 +23,7 @@ export type PolicyResourceDescriptor =
   | { readonly kind: 'run_recovery'; readonly id: string; readonly path: '/v1/runs/:id/recover' }
   | { readonly kind: 'pull_request_reconciliation'; readonly path: '/v1/pull-requests/reconcile' }
   | { readonly kind: 'run_pull_request'; readonly id: string; readonly path: '/v1/runs/:id/pull-request' }
+  | { readonly kind: 'run_pull_request_refresh'; readonly id: string; readonly path: '/v1/runs/:id/pull-request/refresh' }
   | { readonly kind: 'run_sessions'; readonly id: string; readonly path: '/v1/runs/:id/sessions' };
 
 export type PolicyAction =
@@ -55,6 +56,7 @@ export type PolicyAction =
   | 'run_recovery.create'
   | 'pull_request.reconcile'
   | 'run_pull_request.read'
+  | 'run_pull_request.refresh'
   | 'run_sessions.list';
 
 export interface PolicyDecisionInput {

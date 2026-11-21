@@ -102,6 +102,11 @@ import {
 } from './pr-reconciliation.js';
 import {
   getRunPullRequestSuccessStatusCode,
+  pullRequestCheckFailedResponseSchema,
+  refreshRunPullRequestSuccessStatusCode,
+  runPullRequestRefreshPath,
+  runPullRequestRefreshRequestSchema,
+  runPullRequestRefreshResponseSchema,
   runPullRequestPath,
   runPullRequestResponseSchema
 } from './pull-request.js';
@@ -184,6 +189,9 @@ export function generateOpenApiDocument(): OpenApiDocument {
   const RunRecoveryParams = registry.register('RunRecoveryParams', z.object({ id: z.string().min(1) }).strict());
   const PullRequestReconciliationResponse = registry.register('PullRequestReconciliationResponse', pullRequestReconciliationResponseSchema);
   const RunPullRequestResponse = registry.register('RunPullRequestResponse', runPullRequestResponseSchema);
+  const RunPullRequestRefreshRequest = registry.register('RunPullRequestRefreshRequest', runPullRequestRefreshRequestSchema);
+  const RunPullRequestRefreshResponse = registry.register('RunPullRequestRefreshResponse', runPullRequestRefreshResponseSchema);
+  const PullRequestCheckFailedResponse = registry.register('PullRequestCheckFailedResponse', pullRequestCheckFailedResponseSchema);
   const RunSessionListResponse = registry.register('RunSessionListResponse', runSessionListResponseSchema);
   const CreateProjectRequest = registry.register('CreateProjectRequest', createProjectRequestSchema);
   const UpdateProjectRequest = registry.register('UpdateProjectRequest', updateProjectRequestSchema);
@@ -703,6 +711,28 @@ export function generateOpenApiDocument(): OpenApiDocument {
       403: jsonResponse(ErrorResponse, 'Forbidden.'),
       404: jsonResponse(ErrorResponse, 'Run or pull request not found.'),
       500: jsonResponse(ErrorResponse, 'Internal server error.')
+    }
+  });
+
+  registry.registerPath({
+    method: 'post',
+    path: runPullRequestRefreshPath.replace(':id', '{id}'),
+    tags: ['runs'],
+    security: [{ bearerAuth: [] }],
+    request: {
+      params: RunIdParams,
+      body: { required: true, content: { 'application/json': { schema: RunPullRequestRefreshRequest } } }
+    },
+    responses: {
+      [refreshRunPullRequestSuccessStatusCode]: jsonResponse(RunPullRequestRefreshResponse, 'Persisted pull request and resulting run.'),
+      400: jsonResponse(ErrorResponse, 'Invalid parameters or JSON body.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      403: jsonResponse(ErrorResponse, 'Forbidden.'),
+      404: jsonResponse(ErrorResponse, 'Run or pull request not found.'),
+      409: jsonResponse(ErrorResponse, 'Run is not eligible or does not match the stored outcome.'),
+      415: jsonResponse(ErrorResponse, 'Unsupported request media type.'),
+      500: jsonResponse(ErrorResponse, 'Internal server error.'),
+      502: jsonResponse(PullRequestCheckFailedResponse, 'The pull request could not be read; no state was written.')
     }
   });
 

@@ -28,12 +28,16 @@ function unauthorizedResponse() {
   });
 }
 
-export async function registerBearerAuthHook(app: FastifyInstance, options: BearerAuthOptions): Promise<void> {
+export async function registerBearerAuthHook(
+  app: FastifyInstance,
+  options: BearerAuthOptions,
+  phase: 'preHandler' | 'onRequest' = 'preHandler'
+): Promise<void> {
   if (options.bearerToken.trim().length === 0) {
     throw new Error('Bearer token is required.');
   }
 
-  app.addHook('preHandler', async (request, reply) => {
+  app.addHook(phase, async (request, reply) => {
     const authorization = request.headers.authorization;
     const prefix = 'Bearer ';
     if (authorization === undefined || !authorization.startsWith(prefix)) {

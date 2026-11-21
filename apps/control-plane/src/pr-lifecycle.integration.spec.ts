@@ -17,6 +17,7 @@ import {
   permissivePolicyDecisionPoint,
   registerControlPlaneRoutes,
   type CodeHostCredential,
+  type ControlPlaneService,
   type ConvergenceEngine,
   type PullRequestOpenWiringDependencies,
   type RunUnitOfWork,
@@ -24,16 +25,18 @@ import {
   type SpecFreezeDependencies,
   type WorkspaceFileSystemPort
 } from '@autocatalyst/core';
-import type { ConvergenceCheckpoint, NonModelPrincipal } from '@autocatalyst/api-contract';
+import type { ConvergenceCheckpoint, NonModelPrincipal, Principal, PullRequest } from '@autocatalyst/api-contract';
 import {
   pullRequestReconciliationPath,
-  reconcilePullRequestsSuccessStatusCode
+  reconcilePullRequestsSuccessStatusCode,
+  runPullRequestRefreshResponseSchema
 } from '@autocatalyst/api-contract';
 import {
   DrizzleConversationIngressRepository,
   DrizzleConfigurationRecordRepository,
   DrizzleProbeResourceRepository,
   SqliteSecretStore,
+  asInternalSqliteDatabase,
   createDrizzleDomainRepositories,
   createSqliteDatabase,
   migrateSqliteDatabase
@@ -42,8 +45,8 @@ import {
   createGitHubCodeHostAdapter,
   type ExecuteGhFunction
 } from '@autocatalyst/github-code-host-adapter';
-import type { GhExecInput, GhExecResult } from '@autocatalyst/github-issue-tracker-adapter';
-import Fastify, { type FastifyInstance } from 'fastify';
+import { GhExecError, type GhExecInput, type GhExecResult } from '@autocatalyst/github-issue-tracker-adapter';
+import Fastify, { type FastifyInstance, type LightMyRequestResponse } from 'fastify';
 
 import { createPullRequestReconciliationTicker } from './pr-reconciliation-ticker.js';
 import { createControlPlaneServer } from './server.js';
@@ -1512,4 +1515,233 @@ describe('PR lifecycle integration: closed-without-merge containment', () => {
       harness.database.close();
     }
   }, 20000);
+});
+
+describe('PR refresh through createControlPlaneServer', () => {
+  const at = '2026-06-17T00:00:00.000Z';
+
+  async function withRefreshServer(test: (fixtures: {
+    app: FastifyInstance;
+    service: ControlPlaneService;
+    fakeGh: FakeGhHandle;
+    projectId: string;
+    refresh(runId: string): Promise<LightMyRequestResponse>;
+    seedRun(label: string, step?: string, state?: PullRequest['state']): Promise<string>;
+    setPrincipal(principal: Principal): void;
+    rejectHostRead(code: GhExecError['code']): void;
+    failPrWrite(): void;
+  }) => Promise<void>) {
+    const dir = await mkdtemp(join(tmpdir(), 'ac-pr-refresh-'));
+    const databasePath = join(dir, 'refresh.sqlite');
+    const database = createSqliteDatabase({ path: databasePath });
+    let app: FastifyInstance | undefined;
+    try {
+      await migrateSqliteDatabase(database);
+      const masterSecret = 'refresh-integration-master-secret';
+      const secretStore = new SqliteSecretStore(database);
+      await secretStore.unlock(masterSecret);
+      const { handle } = await secretStore.createSecret({ value: TEST_TOKEN });
+      const repos = createDrizzleDomainRepositories(database);
+      const project = await repos.projects.create({
+        owner, tenant: owner.tenantId, displayName: 'Refresh integration project',
+        repoUrl: `https://github.com/${REPO_SLUG}`,
+        hostRepository: { provider: 'github', owner: REPO_OWNER, name: REPO_NAME },
+        workspaceRootOverride: null, issueTrackerSetting: null, credentialRefs: [],
+        codeHostSetting: { provider: 'github', credentialRef: { id: handle, purpose: 'code_host' } }
+      });
+      const branch = 'feature/refresh-integration';
+      const fakeGh = makeFakeGh({ branch });
+      const ingress = new DrizzleConversationIngressRepository(database);
+
+      async function seedRun(label: string, step = 'pr.human_review', state: PullRequest['state'] = 'open') {
+        const { run } = await ingress.createConversationTopicMessageAndRun({
+          conversation: { projectId: project.id, owner, tenant: owner.tenantId, identity: label, activeTopicId: null },
+          topic: { owner, tenant: owner.tenantId, title: label, kind: 'main' },
+          message: { owner, tenant: owner.tenantId, author: owner, direction: 'inbound', body: label },
+          run: { owner, tenant: owner.tenantId, workKind: 'feature', currentStep: step, terminal: false },
+          runStep: { phase: 'pr', step, role: 'none', startedAt: at, endedAt: null, durationMs: null }
+        });
+        await repos.pullRequests.create({
+          runId: run.id, owner, tenant: owner.tenantId, provider: 'github', number: PR_NUMBER, url: PR_URL, state: 'open', branch
+        });
+        if (state !== 'open') {
+          await repos.pullRequests.updateState({ runId: run.id, tenant: owner.tenantId, state, updatedAt: at, expectedState: 'open' });
+        }
+        return run.id;
+      }
+
+      let principal: Principal = owner;
+      let readError: GhExecError['code'] | undefined;
+      let service: ControlPlaneService | undefined;
+      const bearerToken = 'targeted-refresh-token';
+      const server = await createControlPlaneServer({
+        databasePath, masterSecret, bearerToken,
+        resolvePrincipal: () => principal,
+        autoDispatch: { enabled: false },
+        pullRequestReconciliationTicker: { enabled: false, tenant: owner.tenantId, intervalMs: 50 },
+        onControlPlaneReady: (ready) => { service = ready; },
+        codeHost: {
+          executeGh: async (input) => {
+            if (readError !== undefined) throw new GhExecError(readError, 'SECRET_SENTINEL provider credential ' + TEST_TOKEN);
+            return fakeGh.executeGh(input);
+          }
+        }
+      });
+      app = server;
+      if (service === undefined) throw new Error('Control plane not ready');
+      await test({
+        app: server, service, fakeGh, projectId: project.id,
+        refresh: (runId) => server.inject({
+          method: 'POST', url: `/v1/runs/${runId}/pull-request/refresh`,
+          headers: { authorization: `Bearer ${bearerToken}`, 'content-type': 'application/json' }, payload: '{}'
+        }),
+        seedRun,
+        setPrincipal: (value) => { principal = value; },
+        rejectHostRead: (code) => { readError = code; },
+        failPrWrite: () => {
+          asInternalSqliteDatabase(database).client.exec(
+            "CREATE TRIGGER fail_pr_write BEFORE UPDATE ON pull_requests " +
+            "BEGIN SELECT RAISE(ABORT, 'SECRET_SENTINEL local write fault'); END;"
+          );
+        }
+      });
+    } finally {
+      await app?.close();
+      database.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+
+  async function transitions(service: ControlPlaneService, runId: string) {
+    const replay = await service.replayRunEvents({ principal: owner, tenant: owner.tenantId, runId, replay: 'retained' });
+    if (replay.status !== 'ok') throw new Error('Expected retained replay');
+    return replay.events.filter((event) => event.type === 'run_state_transition');
+  }
+
+  it('checks open, detects merge, and replays without contacting GitHub', async () => {
+    await withRefreshServer(async ({ service, fakeGh, projectId, refresh, seedRun }) => {
+      // Exercise the production pr.open resume path with an already-recorded open PR.
+      const runId = await seedRun('merge', 'pr.open');
+      const scope = { principal: owner, tenant: owner.tenantId, runId };
+      await service.tick(scope);
+      const getReads = () => fakeGh.calls.filter((call) => call.args[1] === 'view');
+      // tick dispatches pr.open and also starts a detached batch check, even with the ticker off.
+      await vi.waitFor(() => expect(getReads()).toHaveLength(2));
+      const setupReads = getReads().length;
+      const beforeRun = await service.getRun(scope);
+      const beforePr = await service.getRunPullRequest(scope);
+      const beforeEvents = await transitions(service, runId);
+      expect(beforeRun.run).toMatchObject({ currentStep: 'pr.human_review', projectId, waitingOn: 'human', status: 'in_progress' });
+
+      const open = await refresh(runId);
+      expect(open.statusCode).toBe(200);
+      expect(runPullRequestRefreshResponseSchema.parse(open.json())).toEqual({ ...beforeRun, ...beforePr });
+      expect(await transitions(service, runId)).toEqual(beforeEvents);
+      expect(getReads()).toHaveLength(setupReads + 1);
+      expect(fakeGh.calls.at(-1)).toMatchObject({ args: expect.arrayContaining(['pr', 'view', String(PR_NUMBER), REPO_SLUG]), token: TEST_TOKEN });
+
+      fakeGh.setMerged();
+      const merged = await refresh(runId);
+      expect(merged.statusCode).toBe(200);
+      expect(runPullRequestRefreshResponseSchema.parse(merged.json())).toMatchObject({
+        pullRequest: { state: 'merged' },
+        run: { currentStep: 'done', terminal: true, status: 'done', waitingOn: 'none', projectId }
+      });
+      const reads = getReads();
+      expect(reads).toHaveLength(setupReads + 2);
+      expect(await transitions(service, runId)).toHaveLength(beforeEvents.length + 1);
+      expect((await refresh(runId)).json()).toEqual(merged.json());
+      expect(getReads()).toEqual(reads);
+      expect(await transitions(service, runId)).toHaveLength(beforeEvents.length + 1);
+    });
+  }, 15000);
+
+  it('masks foreign runs and distinguishes ineligibility, closure, and provider auth failure', async () => {
+    await withRefreshServer(async ({ service, fakeGh, refresh, seedRun, setPrincipal, rejectHostRead }) => {
+      const offGate = await seedRun('off-gate', 'pr.finalize');
+      const mismatch = await seedRun('mismatch', 'pr.finalize', 'merged');
+      const closeRun = await seedRun('close');
+      const authRun = await seedRun('auth');
+      const offGateResult = await refresh(offGate);
+      expect(offGateResult.statusCode).toBe(409);
+      expect(offGateResult.json()).toEqual({
+        error: { code: 'conflict', message: 'Run is not waiting at the pull request gate.' }
+      });
+      const incompatible = await refresh(mismatch);
+      expect(incompatible.statusCode).toBe(409);
+      expect(incompatible.json()).toEqual({
+        error: { code: 'conflict', message: 'The stored pull request outcome does not match the run state.' }
+      });
+      const absent = await refresh('missing');
+      expect(absent.statusCode).toBe(404);
+      setPrincipal({ ...owner, tenantId: 'other_tenant' });
+      const foreign = await refresh(closeRun);
+      expect(foreign.statusCode).toBe(404);
+      expect(foreign.json().error.code).toBe('not_found');
+      // Direct service callers cannot bypass the protected action's model denial.
+      await expect(service.refreshRunPullRequest({
+        principal: { kind: 'model', id: 'model_refresh', tenantId: owner.tenantId },
+        runId: closeRun
+      })).rejects.toMatchObject({ code: 'forbidden' });
+      expect(fakeGh.calls).toHaveLength(0);
+      setPrincipal(owner);
+
+      fakeGh.setClosed();
+      const closed = await refresh(closeRun);
+      expect(closed.statusCode).toBe(200);
+      expect(closed.json()).toMatchObject({
+        pullRequest: { state: 'closed' },
+        run: { currentStep: 'failed', status: 'failed', failureReason: 'pull_request_closed_without_merge' }
+      });
+      expect(await transitions(service, closeRun)).toHaveLength(1);
+
+      rejectHostRead('gh_auth_failed');
+      const scope = { principal: owner, tenant: owner.tenantId, runId: authRun };
+      const before = { ...await service.getRun(scope), ...await service.getRunPullRequest(scope) };
+      const unauthorized = await refresh(authRun);
+      expect(unauthorized.statusCode).toBe(502);
+      expect(unauthorized.json()).toEqual({
+        error: { code: 'pull_request_check_failed', message: 'Could not check the pull request.', details: { reason: 'authentication_failed' } }
+      });
+      expect({ ...await service.getRun(scope), ...await service.getRunPullRequest(scope) }).toEqual(before);
+      expect(await transitions(service, authRun)).toHaveLength(0);
+    });
+  }, 15000);
+
+  it('does not report a SQLite write fault as a failed host check or as a successful merge', async () => {
+    await withRefreshServer(async ({ service, fakeGh, refresh, seedRun, failPrWrite }) => {
+      const runId = await seedRun('write-fault');
+      const scope = { principal: owner, tenant: owner.tenantId, runId };
+      const before = { ...await service.getRun(scope), ...await service.getRunPullRequest(scope) };
+      failPrWrite();
+      fakeGh.setMerged();
+
+      const result = await refresh(runId);
+      expect(result.statusCode).toBe(500);
+      expect(result.json()).toEqual({
+        error: { code: 'internal_error', message: 'An internal server error occurred.' }
+      });
+      expect(fakeGh.calls.filter((call) => call.args[1] === 'view')).toHaveLength(1);
+      expect({ ...await service.getRun(scope), ...await service.getRunPullRequest(scope) }).toEqual(before);
+      expect(await transitions(service, runId)).toHaveLength(0);
+    });
+  }, 15000);
+
+  it('repairs a stored merge and replays it without reading GitHub or touching the PR', async () => {
+    await withRefreshServer(async ({ service, fakeGh, refresh, rejectHostRead, seedRun }) => {
+      const runId = await seedRun('repair', 'pr.human_review', 'merged');
+      rejectHostRead('gh_timeout');
+      const before = await service.getRunPullRequest({ principal: owner, tenant: owner.tenantId, runId });
+      const result = await refresh(runId);
+      expect(result.statusCode).toBe(200);
+      expect(result.json()).toMatchObject({ ...before, run: { currentStep: 'done', status: 'done' } });
+      expect((await refresh(runId)).json()).toEqual(result.json());
+      expect(fakeGh.calls).toHaveLength(0);
+      expect(await transitions(service, runId)).toHaveLength(1);
+      const { steps } = await service.listRunSteps({ principal: owner, tenant: owner.tenantId, runId });
+      expect(steps.find((step) => step.step === 'pr.human_review')?.checkpointResult).toEqual({
+        kind: 'pull_request_merged', provider: 'github', number: PR_NUMBER, url: PR_URL, mergedAt: at
+      });
+    });
+  }, 15000);
 });
