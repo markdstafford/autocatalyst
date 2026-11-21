@@ -9,135 +9,139 @@ specced_by: autocatalyst
 
 ## What
 
-An operator can approve an implementation from the web client and follow the run through its pull request. The run shows Done when the pull request merges, or Failed with a reason when the pull request closes without merging.
+Operators can approve an implementation from the web client and follow the run through its pull request. The client shows Done when the pull request merges and Failed with a reason when it closes without merging. The operator still merges on the code host.
 
 ## Why
 
-An operator reached implementation review but could not approve it from the client. Closing that gap lets the operator advance the run and return after acting on the code host to see whether the work finished or why it failed.
+An operator reached implementation review but could not approve the run from the client. This feature closes that gap and lets the operator see whether the work finished or why it failed, without having to reconcile the run's status and the pull request by hand.
 
 ## Personas
 
-- **Enzo: Engineer** — approves completed implementation, follows the pull request, and reads the outcome.
-- **Phoebe: PM** — approves a revised spec and can see when the run is ready for implementation review or has finished.
+- **Enzo: Engineer** — reviews the implementation, approves the run, and follows its pull request to an outcome.
+- **Phoebe: PM** — reviews the spec and confirms that the run advances to implementation review after the revision and approval flow.
 
 ## Narratives
 
 ### From spec review to a merged pull request
 
-Phoebe comments on a spec and requests changes. After the revision addresses her comment, she confirms approval, including confirmation of the addressed comment. The run reaches implementation review.
+Phoebe comments on a spec and requests changes. When the revision addresses her comment, she approves the spec and confirms the addressed comment. The run advances to implementation review.
 
-Enzo selects the run and confirms Approve. The run advances, and the Summary shows an open pull request. Enzo follows the link and merges it on the code host. Back in the client, he presses Check now and sees Merged on the pull request and Done on the run.
+Enzo confirms Approve on the implementation. The run advances to the pull request gate. He follows the link in Summary, merges the pull request on the code host, then returns to the client and presses Check now. Summary shows Merged and the run shows Done.
 
 ### A pull request closes without merging
 
-Enzo checks an open pull request after it was closed on the code host. The Summary shows Closed, and the run shows Failed with the reason “The pull request was closed without merging.” Neither Approve nor Check now is offered.
+Enzo selects a run whose pull request is open and awaiting review. The first check still finds it open. Later, another reviewer closes the pull request on the code host without merging it.
+
+Enzo presses Check now. The row shows Closed, the run shows Failed, and Summary explains that the pull request was closed without merging. Neither Approve nor Check now is available on the failed run.
 
 ## User stories
 
 **From spec review to a merged pull request**
 
-- Phoebe can approve a revised spec and see that the run reached implementation review.
-- Enzo can confirm implementation approval without filing feedback.
-- Enzo can open the pull request from the Summary and check it again after acting on the code host.
-- Enzo can distinguish a run that needs review from one that is done.
+- Phoebe can request a spec revision, approve the revision, and see that the run reached implementation review.
+- Enzo can approve an implementation without entering feedback or opening a particular tab.
+- Enzo can follow the pull request link, check its state again, and distinguish a run that needs review from one that is done.
 
 **A pull request closes without merging**
 
 - Enzo can distinguish a closed pull request from a merged one and read why the run failed.
-- Enzo can see why a pull request check could not finish without mistaking the check error for a run failure.
+- Enzo can tell when a check failed without mistaking that error for a run failure.
 
 ## Goals
 
-- Show exactly one decision, Approve, at implementation review; remove it once the run leaves that gate.
-- Check an open pull request once per selection and once per accepted manual click. Send zero additional check requests during a 10-second idle test.
-- Show the pull request state and the run's resulting status without a reload after a successful check.
-- Show a readable reason on failed runs and keep check errors in the pull request row without changing the run.
+- Offer exactly one decision, Approve, at the implementation gate. Remove it when the run leaves the gate.
+- Check eligible runs once per selection and once per accepted manual click. Send no extra refresh POST during a 10-second idle test.
+- Update the pull request row and run status from a successful check without a page reload.
+- Show stored failure reasons in Summary and show check errors inline without changing the run's status.
 
 ## Non-goals
 
-- A testing guide, test result recording, or feedback at the implementation gate. Keep the existing Acceptance empty state.
-- Merging from the client or the control plane, or showing pull request checks, review state, or mergeability.
-- Polling, timers, or automatic retry for pull request checks.
-- Failure recovery (#121), changes to the Activity tab, or changes to the phase bar.
+- A testing guide, test results, or implementation feedback. Keep the existing Acceptance empty state.
+- Merging from the client or control plane, or displaying pull request checks, review state, or mergeability.
+- Polling, timers, or automatic retries for pull request checks.
+- Failed-run recovery (#121), Activity changes, and phase bar changes.
 
 ## Design spec
 
-Follow [Run detail](../concepts/run-detail.md), [UX](../concepts/ux.md), and the [design system](../../context-agent/wiki/design-system.md) sections on the detail pane, gate decision, status indicators, and empty states. Reuse the pane bar, confirmation popover, Summary fact row, and status chip. The row states below are the visual reference; no new layout or tokens are needed.
+Follow [Run detail](../concepts/run-detail.md), [UX](../concepts/ux.md), and the [design system](../../context-agent/wiki/design-system.md) for the detail pane, gate decision, status indicators, and empty states. Reuse the pane bar, confirmation popover, Summary fact row, and shared status chip. The table below is the visual reference; no new layout or tokens are needed.
 
 ### Approve implementation
 
 ```mermaid
 flowchart LR
-  A[Select run at implementation review] --> B[Choose Approve in the pane bar]
+  A[Select run at implementation review] --> B[Press Approve in the pane bar]
   B --> C{Confirm?}
   C -->|Cancel| A
-  C -->|Confirm| D[Wait for control plane to advance the run]
-  D --> E[Open Summary at pull request gate]
-  E --> F[Follow pull request link to code host]
+  C -->|Confirm| D[Wait for server to advance the run]
+  D --> E[See Open pull request in Summary]
+  E --> F[Follow link to code host]
 ```
 
-Use the #138 decision control and confirmation interaction, with the prompt “Approve this implementation?” No spec comment counts, addressed-comment copy, or Request changes action apply to this decision. It is available regardless of the active tab or spec readiness. Keep the #135 Acceptance copy unchanged. Disable the decision during submission and keep approval errors in the confirmation popover. The pull request gate and terminal runs have no decision button. The spec gate keeps its existing behavior, including addressed-comment confirmation and the spec overlay.
+Reuse #138's decision interaction with the prompt “Approve this implementation?” Show Approve on any tab, independent of spec readiness. Do not show Request changes, spec comment counts, or addressed-comment copy for implementation. Disable the control while submitting and keep submission errors in the popover. Preserve the spec gate's comment and confirmation behavior, including the spec overlay. The pull request gate and terminal runs have no decision button. Keep #135's Acceptance copy unchanged.
 
 ### Check the pull request
 
 ```mermaid
 flowchart TD
-  S[Select or reselect run] --> P{Stored pull request is open?}
-  P -->|No| N[Show dash or stored terminal state without checking]
-  P -->|Yes| C[Check once]
-  M[Press Check now] --> C
+  S[Select or reselect a run] --> G{Has a pull request and is waiting at the PR gate?}
+  G -->|No| N[Show stored facts without checking]
+  G -->|Yes| C[Check once]
+  M[Press Check now on an eligible row] --> C
   C --> O[Still open: show checked time]
   C --> D[Merged: show Done]
-  C --> F[Closed without merge: show Failed and reason]
-  C --> E[Cannot check: show inline message and keep stored state]
+  C --> F[Closed: show Failed and reason]
+  C --> E[Check failed: show inline message]
 ```
+
+Both selection and Check now require an existing pull request and a nonterminal run waiting on a human at `pr.human_review`. Eligibility follows the run, not the pull request state alone.
 
 | Summary row state | Presentation |
 | --- | --- |
-| No pull request | Keep the existing dash. |
-| Open | Show its number and link, `Open` in `--color-subtext`, and `Check now`. Omit the button on failed runs, even if the stored pull request is open. |
-| Checking | Keep the known state and link. Disable `Check now`; show a spinner and the status line `Checking`. |
-| Checked and still open | Show `Checked just now` with the time of the successful check. Nothing else changes. |
-| Merged | Show `Merged` in `--color-green`; remove `Check now`. The run chip shows `Done`, not `Needs review`, after the run advances. |
-| Closed | Show `Closed` in `--color-red`; remove `Check now`. A run closed without a merge shows `Failed` and its reason on the Summary state line. |
-| Check error | Keep the known state and link. Show the message in the row, not a toast. Re-enable `Check now` wherever it is normally available. |
+| No pull request | Keep the existing dash. No Check now. |
+| Open | Show `Open` in `--color-subtext`. Show Check now only if the run is eligible. |
+| Checking | Keep the known state and link. Disable Check now while a request is in flight; show a spinner and the status line `Checking`. |
+| Checked and still open | Show `Checked just now` and the time of the last successful check. The pull request and run states do not change. |
+| Merged | Show `Merged` in `--color-green`. Keep Check now only while the run still qualifies at the pull request gate. Once the run advances, show Done and remove Check now. |
+| Closed | Show `Closed` in `--color-red`. Keep Check now only while the run still qualifies at the pull request gate. Once the run fails, show Failed and the reason, and remove Check now. |
+| Check error | Keep the known state and link. Show the message in the row, not a toast. Re-enable Check now if the run is still eligible. |
 
-Keep the existing numbered `url` link opening in a new tab (`target="_blank"`, `rel="noopener noreferrer"`). State is always a word as well as a color. Announce check status changes without moving focus. Keep the shared #176 chip: `Needs review` while waiting on the operator, `Done` on completion, and `Failed` on failure.
+Keep the numbered link to the pull request's `url` with `target="_blank"` and `rel="noopener noreferrer"`. Use state words as well as color. Announce check status without moving focus. Keep #176's shared chip for the list and pane: Needs review while waiting on the operator, Done on completion, and Failed on failure.
 
 ### Error and failure copy
 
 | Check result | Inline message |
 | --- | --- |
-| `409 conflict` | The control plane's conflict message. |
-| `502` / `credential_missing` | “The code host credential is missing. Update it in this project's settings.” |
-| `502` / `authentication_failed` | “The code host rejected the credential. Update it in this project's settings.” |
-| `502` / `not_found` | “The pull request was not found.” |
-| `502` / `provider_unavailable` | “The code host could not be reached.” |
+| `409 conflict` | The control plane's public conflict message. |
+| `502` / `credential_missing` | The code host credential is missing. Update it in this project's settings. |
+| `502` / `authentication_failed` | The code host rejected the credential. Update it in this project's settings. |
+| `502` / `not_found` | The pull request was not found. |
+| `502` / `provider_unavailable` | The code host could not be reached. |
+| Other check failure | Could not check the pull request. |
 
-A failure reason is separate from a check error. Show `pull_request_closed_without_merge` as “The pull request was closed without merging.” Show any other stored `failureReason` as plain text without rewriting it. For legacy records without a reason, keep the Failed chip and do not invent a reason.
+A check error is separate from a failed run's reason. In the existing Summary failure line, display `pull_request_closed_without_merge` as “The pull request was closed without merging.” Display other stored `failureReason` values as plain text without rewriting them. If a legacy record has no reason, keep the Failed chip without inventing one.
 
 ## Tech spec
 
 ### Introduction and overview
 
-This is the web client slice of [#140](https://github.com/markdstafford/autocatalyst/issues/140). It builds on [#135: run detail pane](feature-run-detail-pane.md), [#138: spec gate decision](feature-decide-spec-gate-track-comments.md), [#139: targeted pull request refresh](feature-refresh-one-pull-request.md), and [#176: shared status chip](feature-run-status-chip-list-detail-tidy.md). #139 is present in PR #186's merge on the current baseline. Playwright uses the #130 fake-server fixture and #128 seed scenarios; the control plane serves the built client as in #129.
+[#140](https://github.com/markdstafford/autocatalyst/issues/140) builds on [#135: run detail](feature-run-detail-pane.md), [#138: spec gate decisions](feature-decide-spec-gate-track-comments.md), [#139: targeted refresh](feature-refresh-one-pull-request.md), and [#176: status chip](feature-run-status-chip-list-detail-tidy.md). The current baseline includes #139 from PR #186. Testing uses #128's fake seeds, #129's served client, and #130's fake-server fixture.
 
-[ADR-031](../adrs/adr-031-web-client-architecture.md) and [ADR-032](../adrs/adr-032-web-client-stack.md) govern client state, SDK use, and UI primitives. Use the existing typed REST, authentication, and persistence boundaries (ADRs 004, 005, 007, and 009). A gate is a workflow step at which a run waits for a human; the run, human-pause, and tracker contracts remain in [Run](../concepts/run.md), [HITL](../concepts/hitl.md), and [Trackers](../concepts/trackers.md). A check means a targeted code-host observation through the control plane, not a read of the stored pull request or a CI check.
+Follow [ADR-031](../adrs/adr-031-web-client-architecture.md) and [ADR-032](../adrs/adr-032-web-client-stack.md) for client boundaries and UI primitives. Use the existing [API](../concepts/api.md), [run](../concepts/run.md), [human pause](../concepts/hitl.md), and [tracker](../concepts/trackers.md) contracts. A *check* is a call to the targeted refresh endpoint, not a read of the stored pull request or a code-host CI check. No server, SDK contract, or persistence changes are in scope.
 
 ### System design and architecture
 
 ```mermaid
 flowchart LR
-  W[Web client: run selection, decision, Summary] --> K[Typed SDK]
+  W[Web client: selection, decision, Summary] --> K[Typed SDK]
   K --> C[Control plane: replies and targeted refresh]
   C --> D[(Stored run and pull request)]
-  C --> H[Code-host adapter]
+  C -->|Read for eligible open pull requests| H[Code-host adapter]
   C -->|Run events| W
 ```
 
-- `runs/run-detail-pane.tsx` composes the shared gate decision and Summary. Extend `runs/spec-gate-decision.tsx` or extract its shared button and popover so spec and implementation use the same interaction with separate decision rules.
-- `runs/use-run-detail.ts` already loads the stored pull request and reads new facts on run events. Coordinate the check action with these reads and with the selection lifecycle in `routes/runs-page.tsx`. Keep selected-run updates on the `replaceRun` path in `use-run-list.ts` so the list and pane derive status from the same run.
-- `runs/run-detail-summary.tsx` renders check controls and messages beside the pull request fact. Keep check feedback separate from the stored fact's loading, missing, or read-error state. Use one tested module to format failed-run reasons.
+- Extend the shared decision in `apps/web/src/runs/run-detail-pane.tsx` and `spec-gate-decision.tsx`, keeping gate-specific rules separate from the confirmation interaction.
+- Coordinate checks with selection in `routes/runs-page.tsx` and detail reads in `runs/use-run-detail.ts`. Use `replaceRun` from `runs/use-run-list.ts` to update the selected run and list together.
+- Extend `runs/run-detail-summary.tsx` to present the check action and status separately from stored pull request loading and read errors. Put failure-reason formatting in one tested module.
 
 ```mermaid
 sequenceDiagram
@@ -146,57 +150,63 @@ sequenceDiagram
   participant CP as Control plane via SDK
   participant Host as Code host
   Operator->>Web: Select run
-  Web->>CP: getRunPullRequest(id)
-  CP-->>Web: Stored open pull request
-  Web->>CP: refreshRunPullRequest(id), once for selection
-  CP->>Host: Read its current state
-  Host-->>CP: Open
-  CP-->>Web: Stored pull request and run
-  Operator->>Host: Merge pull request
-  Operator->>Web: Check now
-  Web->>CP: refreshRunPullRequest(id)
-  CP->>Host: Read its current state
-  Host-->>CP: Merged
-  CP-->>Web: Persisted merged pull request and done run
-  Web-->>Operator: Show Merged and Done
+  Web->>CP: Read run and stored pull request
+  CP-->>Web: Run and pull request facts
+  alt Human-waiting PR gate with a stored pull request
+    Web->>CP: refreshRunPullRequest(id), once for selection
+    alt Stored state is open
+      CP->>Host: Read current pull request state
+      Host-->>CP: Open, merged, or closed
+    else Stored state is merged or closed
+      Note over CP: Complete the missing run transition without a host read
+    end
+    CP-->>Web: Persisted pull request and run, or public error
+  else Not eligible
+    Note over Web: Render stored facts without a refresh POST
+  end
 ```
 
 ### Detailed design
 
-**Existing interfaces.** Use `getRunPullRequest(id)` (`GET /v1/runs/:id/pull-request`) to read `{ pullRequest }`; handle the existing missing-record response as a dash. Use `refreshRunPullRequest(id)` (`POST /v1/runs/:id/pull-request/refresh`, JSON `{}`) for checks. Its `200` contains `{ pullRequest, run }`; the shapes and public check reasons are in [`pull-request.ts`](../../packages/api-contract/src/pull-request.ts) and [`run.ts`](../../packages/api-contract/src/run.ts). No new API, SDK method, data schema, or migration is needed.
+**Existing interfaces.** Read `{ pullRequest }` with `getRunPullRequest(id)` (`GET /v1/runs/:id/pull-request`); retain the existing dash for a missing record. Check with `refreshRunPullRequest(id)` (`POST /v1/runs/:id/pull-request/refresh`, body `{}`). Apply the `200` response `{ pullRequest, run }` rather than inferring the run status from the pull request. See [`pull-request.ts`](../../packages/api-contract/src/pull-request.ts) and [`run.ts`](../../packages/api-contract/src/run.ts).
 
-**Approval.** Show the implementation decision only at `implementation.human_review` on a nonterminal run waiting on a human. Follow #138's guard conventions for optional run fields and suppress the control for explicit non-human waiting or non-live status. Confirm via `replyToGate('approve')`, which calls `replyToRun(id, { kind: 'approve' })`; never send an implementation `request_changes` reply or create feedback. Refresh from the server and let its step transition remove the button. Do not infer the next step in the client. Reset pending confirmation state on run or gate changes.
+**Approval.** Use #138's gate guard pattern for `implementation.human_review`: require a nonterminal run and reject explicit non-live status or non-human waiting. Follow the existing spec guard's fallback for omitted status or waiting fields. Confirm through `replyToGate('approve')`, which sends `replyToRun(id, { kind: 'approve' })`. Do not create feedback or send `request_changes`. Use the server's run transition to remove the button; reset the confirmation when the selected run or gate changes.
 
-**Selection and manual checks.** Track one automatic-check opportunity for each selection, including direct navigation and A → B → A. Use the initial stored pull request read for that selection to decide whether to spend it; only `open` triggers a POST. A missing, merged, or closed record does not. If approval later creates a pull request while the selection remains unchanged, read and show it through the normal detail updates; do not turn that update into a check. Tab switches, pane visibility changes, renders, list reads, run events, and stream reconnects do not create another selection. Route automatic and manual checks through the same in-flight guard so a click cannot overlap an automatic check.
+**Check eligibility.** Use one predicate for the selection trigger and Check now. Follow the guard style in `runs/spec-decision.ts`: require `currentStep === 'pr.human_review'`, `terminal === false`, and no status other than `in_progress` when present. Require `waitingOn === 'human'` from the run read projection and a successfully loaded pull request for that run. An event with omitted waiting metadata is not evidence of a new human wait; use the projected run. An open pull request on a failed, canceled, or off-gate run is displayed without a POST, action, or check error on selection. Recheck eligibility against the latest facts before dispatching a manual check. The server remains authoritative if the run moves after the client evaluates the guard.
 
-**Apply results.** Associate check state and responses with the selection occurrence and pull request identity, not just the run ID. Drop stale responses after a selection change, including a return to the same run, and prevent older detail reads from restoring an Open row after a successful terminal check. On `200`, publish the returned pull request and pass the returned run through `replaceRun`, preserving the existing stale-run protections. Record the completion time locally for an Open result; it is a display fact, not a persisted field or a timer. Never derive run status from the pull request word alone.
+**Review decision: terminal pull request repair.** Confirm at spec review the narrow exception to #140's rule against refreshing stored Merged or Closed rows on selection. If the run is still nonterminal and waiting at `pr.human_review`, both triggers are eligible even when the stored pull request is terminal. #139 can persist the pull request before applying the run directive; its refresh completes the missing advance or fail without reading the code host. A completed pair such as Merged and Done or Closed and Failed never triggers a selection POST or shows Check now. This exception does not recover a failed run.
 
-**Handle errors.** The control plane enforces transition eligibility: a stored Open pull request off `pr.human_review`, including one on a terminal run, returns `409 conflict`. Do not preempt that response with a client-side gate check or try to move the run. On `409`, show only the public conflict message. On `502 pull_request_check_failed`, map `ControlPlaneClientError.response.error.details.reason` to the copy above and do not render the raw message, details, or exception. For unexpected check failures, use a generic inline message such as “Could not check the pull request.” Leave the stored pull request, run, and last successful check time intact on failure. Never retry automatically.
+**Selection and manual checks.** Evaluate one automatic opportunity per selection against the initial stored pull request read and the current run read for that selection. If either fact is missing, unreadable, or ineligible, do not send the POST or re-arm on subsequent reads. Selecting another run and returning, or navigating directly to a run, starts a new selection. Tab switches, pane visibility changes, renders, stream reconnects, and run-event rereads do not. If approval creates a pull request while the operator stays on the run, show it through normal detail updates and offer Check now at the gate; do not start a new automatic check. Use one in-flight guard for both triggers so a manual click cannot overlap the current check. Do not poll or retry.
+
+**Apply results.** Key transient check state and responses to the selection occurrence and pull request identity, not just the run ID. Ignore a late result from a prior selection, including A → B → A. Coordinate stored reads and checks so an older detail read cannot restore Open after a terminal result or overwrite a newer fact. On success update the pull request fact and send the returned run through `replaceRun`, preserving stale-run protection. For an Open result, capture the successful completion time locally; no persisted timestamp or timer is needed.
+
+**Handle errors.** A run or gate can move while the operator clicks or while a check runs. On `409`, show the public conflict message in the row and leave the run and stored fact unchanged. On `502 pull_request_check_failed`, use the public `details.reason` from the typed SDK error to choose the specified copy. Use the generic message for unexpected failures. Keep the last successful check time and stored facts intact on errors; never render raw provider details.
 
 ### Security, privacy, and compliance
 
-Use the existing authenticated SDK client and rely on the control plane to enforce run ownership, route authorization, and request validation. The browser neither reads nor stores code-host credentials and does not call the provider to check state. Render public messages and persisted failure reasons as text, not HTML; never include raw provider output, credentials, or raw exceptions in check feedback or client logs. The operator's explicit external link is the only navigation to the code host in this flow.
+Use the authenticated SDK and existing server authorization and validation. The browser does not handle code-host credentials or call the code host to check state. Render conflict messages and stored failure reasons as text, not HTML. Do not put credentials, provider output, or raw exceptions in check messages or client logs. The numbered link is the operator's explicit navigation to the code host.
 
 ### Observability
 
-Use the row's checking, checked-time, and inline error states to show what happened. Keep existing control-plane request logging for #139 and the existing run events for transitions. Add no client telemetry, metrics, or alerts for this slice.
+Show checking, checked time, and check errors in the row. Use the existing control-plane request logs and run transition events. Add no client telemetry, metrics, or alerts.
 
 ### Testing plan
 
-- **Unit and component:** Test the failure-reason formatter for the known code, an unknown stored reason, and absence. Use a fake at the public SDK interface to cover all four `502` reasons, `409`, and a generic unexpected error. Assert inline copy, no raw details, unchanged facts, and manual availability where eligible. Cover approval visibility independent of spec readiness, approval submission, and check coordination including stale responses and duplicate triggers.
-- **Playwright:** Extend the spec-gate journey and add production-path implementation and pull request coverage using `apps/web/e2e/fixtures/fake-server.ts` and the built client. Each spec uses a free port and fresh state directory and seeds through the existing seed command. Use `fakeServer.writePullRequestState(number, state)` for `<state directory>/pull-requests/<number>.state`; take the number from the seed or row. Observe actual refresh POSTs, without intercepting their responses. The browser talks only to the loopback fake server; no external network or model calls, mocked SDK, injected run data, or client test hooks.
-- **Manual smoke test:** Build with `pnpm nx build web`; start `AUTOCATALYST_CLIENT_DIR=apps/web/dist pnpm nx run control-plane:serve-fake` and seed with `pnpm nx run control-plane:seed-fake -- --scenario all`. Connect at `http://127.0.0.1:4010` with `fake-mode-token`. Approve the implementation-review seed and confirm Open in Summary. Wait 30 seconds and verify no extra refresh POST. Check while open; then write `merged` to the numbered state file and check for Merged and Done. Repeat the closed path on `--scenario pr-open --issue 8`, using that seed's own state file. See [fake mode](../../docs/operators/fake-mode.md).
+- **Unit and component:** Test the known failure code, unknown stored text, and absence. Fake the SDK at its public interface to cover each `502` reason, a `409` returned from an eligible manual check after a gate race, and the safe fallback. Verify no changes to stored facts on error. Selecting a failed run with a stored Open pull request and selecting a run at `pr.finalize` with a stored Open pull request must each produce zero refresh POSTs, no Check now, and no check error. Cover both Merged and Closed stored pull requests with a human-waiting run still at the gate: selection sends one refresh and applies the returned Done or Failed run. Also verify Check now remains available if a repair check fails while the run is still eligible, then disappears after a successful manual repair. Cover selection races and duplicate triggers.
+- **Playwright:** Use the built client with `apps/web/e2e/fixtures/fake-server.ts`. Each spec file starts a fake server on a free port with a fresh state directory and uses the fixture's seed command. Register request observers before selecting a run. Observe real refresh POSTs without replacing responses. Use `writePullRequestState(number, state)` to change only the numbered fake host state file. The browser uses the loopback fake server only; no external network or model calls, mocked SDK, injected run data, new route, or client test hook.
+- **Manual smoke test:** Build with `pnpm nx build web`. Start `AUTOCATALYST_CLIENT_DIR=apps/web/dist pnpm nx run control-plane:serve-fake` and seed with `pnpm nx run control-plane:seed-fake -- --scenario all`. Connect at `http://127.0.0.1:4010` with `fake-mode-token`. Select the implementation-review run, verify Acceptance is unchanged, and approve. Confirm the pull request row is Open and the decision is gone. Wait 30 seconds and verify no extra refresh POST. Press Check now while open and verify the checked time. Write `merged` to the file for the number shown in the row, then check for Merged and Done. For the close path, run `pnpm nx run control-plane:seed-fake -- --scenario pr-open --issue 9`. Select that run, wait for its initial Open check to finish, then write `closed` to `.autocatalyst-fake/pull-requests/<number>.state` using the number from that seed's output. Press Check now and verify Closed, Failed, and the readable reason. Select the seeded failed run and verify its stored reason. In a fresh fake-mode session, verify the spec-review revision and approval path reaches implementation review. See [fake mode](../../docs/operators/fake-mode.md).
 
 ### Alternatives considered
 
-- **Poll or trigger a check on every detail refresh.** This would detect host changes without an operator action, but it would also call the host while the operator stays on one run. A selection check plus Check now gives prompt feedback with a bounded number of calls.
-- **Show a separate implementation-only confirmation.** This would avoid touching the spec control but duplicate its keyboard, busy, and error behavior. Share the interaction while keeping the gate-specific rules separate.
+- **Check on every detail reread.** This might detect host changes sooner, but it would send requests while the operator stays on one run. Limit checks to selection and explicit clicks.
+- **Skip all stored terminal pull requests.** This avoids unnecessary calls for completed pairs but strands a still-gated run after an interrupted transition. Reuse #139's no-host-read repair only for the gated mismatch.
+- **Create an implementation-only confirmation control.** That avoids touching the spec control but duplicates its keyboard, pending, and error behavior. Share the interaction without sharing the spec decision rules.
 
 ### Risks
 
-- Existing list and event-driven rereads can race a check or an approval. Reuse the shared run replacement path and guard pull request responses by selection and read order. Test late responses and a pull request that appears after approval.
-- Prerequisite UI behavior can regress when sharing the decision control. Keep the spec overlay and comment rules unchanged and prove the existing comment-to-revision-to-approval path in Playwright.
-- A test may edit the wrong pull request's file or start counting after selection. Use the seed's returned number and register the exact run-specific POST observer before navigation; use a separate issue for the closed seed.
+- List and detail rereads can race checks and approvals. Guard responses by selection and read order and use the existing run replacement path.
+- Sharing the decision control could change spec review. Preserve the spec overlay and comment rules and prove the revision-to-approval flow in Playwright.
+- `pr-open` on spare issue 8 stalls at the enhancement's spec gate. Use spare bug issue 9, as the existing seed test does, and use the pull request number returned by that seed rather than guessing the file name.
 
 ## Task list
 
@@ -204,54 +214,61 @@ This list is for planning and does not authorize implementation.
 
 - [ ] **Story: Approve implementation in the run pane**
   - [ ] **Task: Extend the shared gate decision**
-    - **Description**: Reuse the #138 pane-bar button and confirmation popover for implementation, with a distinct approve-only decision rule.
+    - **Description**: Reuse the #138 confirmation interaction for implementation with a distinct approve-only rule.
     - **Acceptance criteria**:
-      - [ ] A run waiting at `implementation.human_review` shows one Approve button on any tab, even before the spec loads. It has neither Request changes nor spec comment confirmation copy.
-      - [ ] Confirming calls `replyToRun` once with kind `approve`, creates no feedback, and removes the button after the server advances the run. Cancel sends nothing, and errors stay in the popover.
-      - [ ] No decision appears at the pull request gate or on done or failed runs. Spec decisions and #135's Acceptance empty state stay unchanged.
+      - [ ] A run waiting at `implementation.human_review` shows Approve on any tab, independent of spec readiness, with no Request changes or spec comment copy.
+      - [ ] Confirm sends one `replyToRun` with kind `approve` and creates no feedback. Cancel sends nothing. Submission errors stay in the popover.
+      - [ ] The button leaves after the server advances the run and is absent at the pull request gate and on terminal runs. The spec gate and Acceptance empty state are unchanged.
     - **Dependencies**: #135, #138.
-  - [ ] **Task: Prove both approvals in Playwright**
-    - **Description**: Extend the existing seeded spec-gate journey and cover the separately seeded implementation gate through the production web client.
+  - [ ] **Task: Prove both approval gates in Playwright**
+    - **Description**: Exercise spec revision and both approvals against the production client served by the fake control plane.
     - **Acceptance criteria**:
-      - [ ] On `spec-review`, comment, request changes, wait for the revision and addressed comment, confirm spec approval including the addressed comment, and see `implementation.human_review` with Approve.
-      - [ ] On `implementation-review`, confirm Approve and see `pr.human_review`, an Open pull request in Summary, and no decision button. Verify the existing Acceptance empty state before approval.
+      - [ ] On `spec-review`, comment, request changes, wait for revision, confirm approval including the addressed comment, and see implementation review with Approve.
+      - [ ] On `implementation-review`, verify the Acceptance empty state, confirm Approve, and see the pull request gate with an Open row and no decision button.
     - **Dependencies**: Task: Extend the shared gate decision; #130.
 - [ ] **Story: Follow the pull request to its outcome**
   - [ ] **Task: Coordinate targeted checks with run selection**
-    - **Description**: Add the selection and manual triggers to the detail flow. Apply successful SDK responses to the stored fact view and shared run row; keep transient check state separate.
+    - **Description**: Add the shared eligibility guard and single-flight check flow. Apply the SDK response to the pull request fact and the shared run record.
     - **Acceptance criteria**:
-      - [ ] First selection and A → B → A each check an open stored pull request once. Missing, merged, and closed stored facts do not trigger a check. Staying on the same run produces no additional POST, including after approval, tab changes, event rereads, or reconnects.
-      - [ ] One check is in flight per current selection; stale responses cannot update another selection or overwrite newer terminal facts. No timer, interval, or retry calls the endpoint.
-      - [ ] A `200` updates the pull request and run from the response; Open records a successful check time. Errors leave run and stored fact unchanged.
-    - **Dependencies**: #135, #139.
+      - [ ] Selection and reselection check once only when the run is nonterminal and human-waiting at `pr.human_review` with a stored pull request. A gated Merged or Closed pair is eligible for #139 repair; a completed pair is not.
+      - [ ] Tab switches, pane visibility changes, run updates, approval on the same selection, and stream reconnects do not trigger another POST. No timer, interval, or retry calls the route.
+      - [ ] Overlapping triggers do not duplicate an in-flight check. Stale responses cannot update another selection or restore older facts. Success applies the returned run and pull request; errors preserve both.
+    - **Dependencies**: #135, #139; spec review confirmation of the gated terminal-state exception.
   - [ ] **Task: Render pull request checks and inline messages**
-    - **Description**: Extend the Summary pull request row with state words and tokens, manual action, and the check status and error copy in the design spec.
+    - **Description**: Extend the Summary row with the existing safe link, state styling, manual action, and check feedback.
     - **Acceptance criteria**:
-      - [ ] The number link retains its URL, new-tab behavior and `rel="noopener noreferrer"`; no pull request still shows a dash. Open, Merged, and Closed use the specified tokens.
-      - [ ] Check now is available for Open except on failed runs. It is disabled while checking, with a spinner and `Checking`; a successful Open check shows `Checked just now` with a time.
-      - [ ] Component tests fake the public SDK and cover each `502` reason, a `409` with the control plane's message, and a safe fallback for other failures. Errors stay inline, disclose no raw provider output or credentials, and leave manual checking available when eligible.
+      - [ ] The existing link and dash behavior are preserved. Open, Merged, and Closed use the specified text and tokens.
+      - [ ] Check now uses the selection eligibility guard, including gated terminal-state repair, and is absent on terminal or off-gate runs. During a check it is disabled with a spinner and Checking; a successful Open check shows Checked just now with a time.
+      - [ ] Conflict, known provider reason codes, and unexpected failures use the specified inline copy. No toast, credential, or raw provider output appears. Manual checking stays available after an error if still eligible.
     - **Dependencies**: Task: Coordinate targeted checks with run selection.
-  - [ ] **Task: Show failed-run reasons**
-    - **Description**: Format `failureReason` in the Summary state line with one tested module, and use the shared status chip for the run outcome.
+  - [ ] **Task: Cover check eligibility, repair, and errors at the SDK boundary**
+    - **Description**: Use the public SDK test double for component tests; keep the production wiring tests separate.
     - **Acceptance criteria**:
-      - [ ] The formatter maps `pull_request_closed_without_merge` to “The pull request was closed without merging.” and returns other stored reasons unchanged. Absence does not fabricate a reason.
-      - [ ] The list and pane show the shared Needs review, Done, or Failed chip from the run state. Failed runs show their stored reason when present and neither decision nor Check now.
+      - [ ] Selecting a failed run or a run at `pr.finalize`, each with a stored Open pull request, sends zero refresh POSTs and shows neither Check now nor a check error.
+      - [ ] For each stored terminal state with a human-waiting run at `pr.human_review`, selection calls refresh once and applies the returned outcome. A failed repair check keeps Check now available; a successful repair removes it.
+      - [ ] Each of the four `502` reasons, the manual `409` race, and the unexpected-error fallback show safe inline copy without changing the stored facts. Tests also cover duplicate triggers and stale results across selections.
+    - **Dependencies**: Task: Render pull request checks and inline messages.
+  - [ ] **Task: Show failed-run reasons**
+    - **Description**: Format `failureReason` in the existing Summary failure line and reuse the shared status chip for the run outcome.
+    - **Acceptance criteria**:
+      - [ ] One tested module maps `pull_request_closed_without_merge` to “The pull request was closed without merging.” Other stored text is unchanged and absence does not invent a reason.
+      - [ ] The list and pane show the shared Needs review, Done, or Failed chip from the run state. Failed runs have neither the decision button nor Check now.
     - **Dependencies**: #135, #176; Task: Extend the shared gate decision; Task: Render pull request checks and inline messages.
   - [ ] **Task: Prove open and merged pull request behavior in Playwright**
-    - **Description**: Observe real run-specific refresh POSTs and change only the fake host state file to drive merge detection.
+    - **Description**: Observe real run-specific refresh POSTs and drive merge detection using only the fake host state file.
     - **Acceptance criteria**:
-      - [ ] On `pr-open`, selection makes one refresh POST; a 10-second idle wait makes zero more. Selecting another run and returning makes one more.
-      - [ ] Check now with the file still `open` shows `Checked just now` and leaves Open and Needs review unchanged. Writing `merged` to that pull request's file and checking shows Merged and Done without Needs review.
+      - [ ] Selecting `pr-open` sends one refresh POST. Ten idle seconds send none; selecting another run and returning sends one more.
+      - [ ] Check now with the file still `open` shows the checked time and leaves Open and Needs review unchanged. Writing `merged` to that run's file and checking shows Merged and Done without Needs review.
       - [ ] Selecting the `merged` seed shows Done and Merged with no refresh POST.
     - **Dependencies**: Task: Render pull request checks and inline messages; Task: Show failed-run reasons; #130.
   - [ ] **Task: Prove closed and prefailed run behavior in Playwright**
-    - **Description**: Verify close-without-merge and a seeded failure through the production client without injecting run data.
+    - **Description**: Seed the second `pr-open` run on spare bug issue 9 and use the pull request number from the seed output.
     - **Acceptance criteria**:
-      - [ ] Seed a second `pr-open` run on the spare labeled issue (`--issue 8`), write `closed` to that pull request's own state file, and press Check now. The row shows Closed and the run shows Failed with the readable close reason.
-      - [ ] Select the `failed` seed and see Failed and its stored reason. Both failed runs lack a decision button and Check now.
+      - [ ] Seed with `--scenario pr-open --issue 9` (fixture `seed({ scenario: 'pr-open', issue: 9 })`). Select the run and wait for its initial Open check. Write `closed` to its own numbered state file and press Check now. The row shows Closed and the run shows Failed with the readable reason.
+      - [ ] Select the `failed` seed and see Failed and its stored reason. Both failed runs lack Approve and Check now.
     - **Dependencies**: Task: Render pull request checks and inline messages; Task: Show failed-run reasons; #130.
   - [ ] **Task: Record the client wiring in the code map**
-    - **Description**: Update `context-agent/wiki/code-map.md` with the Summary pull request row, check triggers and response handling, and failed-run reason module.
+    - **Description**: Record the owner modules and behavior in `context-agent/wiki/code-map.md`.
     - **Acceptance criteria**:
-      - [ ] The map names the modules that own the row, the two check triggers, and failure-reason formatting. Change the design system only if the implementation adds a rule.
+      - [ ] The map names the row, eligibility guard, two check triggers, terminal-pair repair exception, and failure reason formatter. Change the design system only if a rule is added.
     - **Dependencies**: Task: Coordinate targeted checks with run selection; Task: Render pull request checks and inline messages; Task: Show failed-run reasons.
