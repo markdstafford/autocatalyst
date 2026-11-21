@@ -188,12 +188,11 @@ test.describe('spec gate', () => {
       await page.getByTestId('spec-gate-decision').click();
       await expect(page.getByTestId('spec-gate-decision-copy')).toBeVisible();
 
-      // Confirm the approve; the run advances past spec review into the implementation gate. The pane
-      // state reflects implementation (see run-detail.spec.ts `approve` assertions).
-      await page.getByRole('tab', { name: 'Summary' }).click();
-      await page.getByTestId('spec-gate-decision').click();
+      // Confirm the addressed-comment approval and wait for the distinct implementation decision.
       await page.getByTestId('spec-gate-decision-confirm').click();
-      await expect(page.getByTestId('pane-summary-step')).toContainText('implementation', { timeout: 30_000 });
+      await expect(page.getByTestId('implementation-gate-decision')).toHaveText('Approve', { timeout: 30_000 });
+      await page.getByRole('tab', { name: 'Summary' }).click();
+      await expect(page.getByTestId('pane-summary-step')).toHaveText('implementation.human_review');
     } finally {
       await close();
     }

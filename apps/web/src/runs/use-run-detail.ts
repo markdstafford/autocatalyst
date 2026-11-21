@@ -7,19 +7,18 @@
  * The selected run has one source of truth — the run list state. This hook never holds a
  * second authoritative run copy: the run it displays is the `run` prop (read from list
  * state), and every transition reread flows back through `replaceRun(run)`. The hook
- * owns only the facts that come from their own reads (pull request, sessions) and the
- * Spec discriminator.
+ * owns the independent facts (pull request, sessions, and spec) and transient check feedback.
  *
  * Lifecycle, per ADR-031 (stateless client) and the spec's stream-first ordering:
- *  1. On selection or pane show, abort any previous stream, subscribe (with the current
+ *  1. With the pane visible, subscribe (with the current
  *     cursor), and wait for the stream response to begin BEFORE the initial reads, so a
- *     transition that lands between attach and the first read is not missed.
+ *     transition that lands between attach and the first read is not missed. A hidden
+ *     pane can still load selection facts without keeping a stream open.
  *  2. Transition frames are invalidation triggers: they coalesce into at most one
  *     trailing refresh while a refresh is in flight, so three quick transitions cause at
  *     most two refreshes.
- *  3. Every read is tagged with the run id and a refresh sequence; a result is applied
- *     only when both are still current, so a late read for a previous selection is
- *     dropped and a stale poll cannot revert a transition refresh.
+ *  3. Reads and pull request checks belong to a selection, not to the stream. A check
+ *     can supersede an older pull request read; all run updates go through replaceRun.
  *  4. Reconnect uses exponential backoff, resumes from the last frame id, and resets the
  *     backoff after any valid frame. A 409 cursor-loss clears the id, resubscribes
  *     without one, waits for attachment, then refreshes. A 401 stops and navigates to the
@@ -29,7 +28,7 @@
 import type { ControlPlaneClient } from '@autocatalyst/sdk';
 import { ControlPlaneClientError } from '@autocatalyst/sdk';
 import type { FeedbackResponse, Run } from '@autocatalyst/api-contract';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import type { FrameReaderLogger } from './run-events-frame-reader.js';
 import { readRunEventFrames } from './run-events-frame-reader.js';
@@ -38,7 +37,9 @@ import {
   RUN_EVENTS_RECONNECT_DELAY_MS,
   RUN_EVENTS_RECONNECT_MAX_DELAY_MS
 } from './run-events-reconnect.js';
-import type { PullRequestFact, SessionsFact, SpecDiscriminator } from './run-detail-facts.js';
+import { canCheckPullRequest, pullRequestCheckErrorMessage } from './pull-request-check.js';
+import type { PullRequestCheck, PullRequestFact, SessionsFact, SpecDiscriminator } from './run-detail-facts.js';
+import { isStrictlyNewer } from './run-row-merge.js';
 import { isSpecCapableWorkKind } from './run-spec-kinds.js';
 import { codePointLength } from '../features/spec/code-points.js';
 import { hasOutOfBoundsArtifactAnchors } from '../features/spec/spec-comments.js';
@@ -64,6 +65,8 @@ export interface UseRunDetailOptions {
 
 export interface RunDetailState {
   readonly pullRequest: PullRequestFact;
+  readonly pullRequestCheck: PullRequestCheck;
+  readonly checkPullRequest?: () => void;
   readonly sessions: SessionsFact;
   readonly spec: SpecDiscriminator;
   /** True once the run is reported gone (a 404 on the stream or a reread). */
@@ -77,7 +80,7 @@ export interface RunDetailState {
   /** Reread the spec and its feedback (used after an invalid anchor or out-of-bounds offsets). */
   reloadSpec(): void;
   /**
-   * Decide the spec gate with the existing run-reply operation. On success the run/spec/feedback
+   * Decide a gate with the existing run-reply operation. On success the run/spec/feedback
    * are refreshed and the stream follows the next run state; on failure the raw error is returned so
    * the caller can distinguish `feedback_gate_blocked` from other control-plane errors.
    */
@@ -99,6 +102,17 @@ function errorMessage(error: unknown, fallback: string): string {
   return error instanceof ControlPlaneClientError ? error.response.error.message : fallback;
 }
 
+function latestProjection(detailRun: Run | undefined, listRun: Run | undefined): Run | undefined {
+  if (detailRun === undefined || detailRun.id !== listRun?.id) {
+    return undefined;
+  }
+  return isStrictlyNewer(listRun, detailRun) ? listRun : detailRun;
+}
+
+function pullRequestIdentity(fact: PullRequestFact): string | undefined {
+  return fact.status === 'success' ? fact.value?.id : undefined;
+}
+
 export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
   const { client, run, visible, replaceRun, onUnauthorized, log } = options;
   const runId = run?.id;
@@ -106,6 +120,9 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
   const maxDelayMs = options.reconnectMaxDelayMs ?? RUN_EVENTS_RECONNECT_MAX_DELAY_MS;
 
   const [pullRequest, setPullRequest] = useState<PullRequestFact>({ status: 'loading' });
+  const [pullRequestCheck, setPullRequestCheck] = useState<PullRequestCheck>({});
+  // For eligibility only; the list row remains the displayed run.
+  const [projectedRun, setProjectedRun] = useState<Run>();
   const [sessions, setSessions] = useState<SessionsFact>({ status: 'loading' });
   const [spec, setSpec] = useState<SpecDiscriminator>({ status: 'loading' });
   const [runGone, setRunGone] = useState(false);
@@ -120,111 +137,189 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
   const logRef = useRef(log);
   logRef.current = log;
 
-  // Per-selection coordination.
-  const runIdRef = useRef<string | undefined>(runId);
-  const seqRef = useRef(0);
-  const refreshInFlightRef = useRef(false);
-  const trailingRefreshRef = useRef(false);
-  const cursorRef = useRef<string | undefined>(undefined);
-  const latestTerminalRef = useRef(false);
-
   // Spec review state read inside the create-comment / reload callbacks.
   const specRef = useRef<SpecDiscriminator>(spec);
   specRef.current = spec;
-  const refreshRef = useRef<() => void>(() => undefined);
+  const selectionRef = useRef<{
+    refresh(): void;
+    readIfInitial(): void;
+    skipSelectionCheck(): void;
+    streamLoop(signal: AbortSignal): Promise<void>;
+    check(): Promise<void>;
+  } | undefined>(undefined);
 
-  useEffect(() => {
-    if (!visible || runId === undefined || run === undefined) {
+  useLayoutEffect(() => {
+    if (runId === undefined) {
       return;
     }
 
     const controller = new AbortController();
     const { signal } = controller;
 
-    // New selection: reset coordination, cursor, and fact states.
-    runIdRef.current = runId;
-    seqRef.current = 0;
-    refreshInFlightRef.current = false;
-    trailingRefreshRef.current = false;
-    cursorRef.current = undefined;
-    latestTerminalRef.current = run.terminal;
-    const capable = isSpecCapableWorkKind(run.workKind);
-    setPullRequest({ status: 'loading' });
+    // New selection (including A → B → A): all async work closes over this owner.
+    const id = runId;
+    let refreshInFlight = false;
+    let trailingRefresh = false;
+    let initialRead = true;
+    let skipSelectionCheck = false;
+    let readRun: Run | undefined;
+    let gone = false;
+    let fact: PullRequestFact = { status: 'loading' };
+    let checkInfo: PullRequestCheck = {};
+    let checkInFlight = false;
+    let checkVersion = 0; // Successful checks supersede GETs already in flight.
+    setPullRequest(fact);
+    setPullRequestCheck(checkInfo);
+    setProjectedRun(undefined);
     setSessions({ status: 'loading' });
-    setSpec(capable ? { status: 'loading' } : { status: 'no-spec' });
+    setSpec(isSpecCapableWorkKind(runRef.current?.workKind ?? '') ? { status: 'loading' } : { status: 'no-spec' });
     setRunGone(false);
 
-    /** A read result applies only if the selection and refresh sequence are still current. */
-    function guard(thisRunId: string, thisSeq: number): boolean {
-      return !signal.aborted && runIdRef.current === thisRunId && seqRef.current === thisSeq;
+    function publishCheck(next: PullRequestCheck): void {
+      checkInfo = next;
+      setPullRequestCheck(next);
+    }
+
+    function publishFact(next: PullRequestFact): void {
+      if (pullRequestIdentity(next) !== pullRequestIdentity(fact)) {
+        publishCheck(checkInFlight ? { locked: true } : {});
+      }
+      fact = next;
+      setPullRequest(next);
+    }
+
+    function applyRun(fresh: Run): void {
+      if (readRun === undefined || isStrictlyNewer(fresh, readRun)) {
+        readRun = fresh;
+        setProjectedRun(fresh);
+      }
+      replaceRunRef.current(fresh);
+    }
+
+    async function check(): Promise<void> {
+      if (
+        signal.aborted || gone || checkInFlight ||
+        !canCheckPullRequest(latestProjection(readRun, runRef.current), fact) ||
+        fact.status !== 'success' || fact.value === null
+      ) {
+        return;
+      }
+      const pr = fact.value;
+      checkInFlight = true;
+      const { checkedAt } = checkInfo;
+      const lastCheck = checkedAt === undefined ? {} : { checkedAt };
+      publishCheck({ ...lastCheck, pending: true });
+      // An intervening identity change clears the check info, even if that identity returns.
+      const pendingInfo = checkInfo;
+      const isCurrent = (): boolean => !signal.aborted && !gone && checkInfo === pendingInfo;
+      try {
+        const result = await client.refreshRunPullRequest(id);
+        if (!isCurrent()) {
+          return;
+        }
+        if (result.pullRequest.id !== pr.id || result.pullRequest.runId !== id || result.run.id !== id) {
+          publishCheck(lastCheck);
+          return;
+        }
+        if (
+          fact.status === 'success' && fact.value !== null &&
+          Date.parse(fact.value.updatedAt) <= Date.parse(result.pullRequest.updatedAt)
+        ) {
+          checkVersion += 1;
+          publishFact({ status: 'success', value: result.pullRequest });
+        }
+        applyRun(result.run);
+        publishCheck(
+          result.pullRequest.state === 'open' && fact.status === 'success' && fact.value?.state === 'open'
+            ? { checkedAt: new Date().toISOString() }
+            : {}
+        );
+      } catch (error: unknown) {
+        if (isCurrent()) {
+          publishCheck({ ...lastCheck, error: pullRequestCheckErrorMessage(error) });
+        }
+      } finally {
+        checkInFlight = false;
+        if (!signal.aborted && checkInfo.locked) {
+          publishCheck({});
+        }
+      }
     }
 
     function stopGone(): void {
       if (!signal.aborted) {
+        gone = true;
         setRunGone(true);
       }
     }
 
     async function refresh(): Promise<void> {
-      if (refreshInFlightRef.current) {
-        // Coalesce: one trailing refresh runs after the in-flight one completes.
-        trailingRefreshRef.current = true;
+      if (signal.aborted || gone) {
         return;
       }
-      refreshInFlightRef.current = true;
-      const thisRunId = runId as string;
-      seqRef.current += 1;
-      const thisSeq = seqRef.current;
+      if (refreshInFlight) {
+        // Coalesce: one trailing refresh runs after the in-flight one completes.
+        trailingRefresh = true;
+        return;
+      }
+      refreshInFlight = true;
+      const trySelectionCheck = initialRead;
+      initialRead = false;
+      const readVersion = checkVersion;
       const capableNow = isSpecCapableWorkKind(runRef.current?.workKind ?? '');
 
       const reads: Promise<void>[] = [];
 
-      reads.push(
-        client
-          .getRun(thisRunId)
-          .then((fresh) => {
-            if (guard(thisRunId, thisSeq)) {
-              latestTerminalRef.current = fresh.terminal;
-              replaceRunRef.current(fresh);
-            }
-          })
-          .catch((error: unknown) => {
-            if (isStatus(error, 404)) {
-              stopGone();
-            }
-          })
-      );
+      const runRead = client.getRun(id).then((fresh) => {
+        if (signal.aborted || fresh.id !== id) {
+          return undefined;
+        }
+        applyRun(fresh);
+        return fresh;
+      }).catch((error: unknown) => {
+        if (isStatus(error, 404)) {
+          stopGone();
+        }
+        return undefined;
+      });
+
+      const prRead = client.getRunPullRequest(id).then(({ pullRequest: fresh }) => {
+        if (!signal.aborted && readVersion === checkVersion && fresh.runId === id) {
+          const stored = fact.status === 'success' ? fact.value : null;
+          if (stored?.id !== fresh.id || Date.parse(fresh.updatedAt) > Date.parse(stored.updatedAt)) {
+            publishFact({ status: 'success', value: fresh });
+          }
+          return true;
+        }
+        return false;
+      }).catch((error: unknown) => {
+        if (!signal.aborted && readVersion === checkVersion) {
+          if (isStatus(error, 404)) {
+            publishFact({ status: 'success', value: null });
+          } else if (!checkInFlight || fact.status !== 'success' || fact.value === null) {
+            // A transient GET error must not invalidate a check of an already loaded PR.
+            publishFact({ status: 'error', message: errorMessage(error, 'Pull request could not be read.') });
+          }
+        }
+        return false;
+      });
+
+      reads.push(Promise.all([runRead, prRead]).then(([loadedRun, loadedPr]) => {
+        if (trySelectionCheck && !skipSelectionCheck && loadedPr && canCheckPullRequest(loadedRun, fact)) {
+          void check();
+        }
+      }));
 
       reads.push(
         client
-          .getRunPullRequest(thisRunId)
+          .listRunSessions(id)
           .then((response) => {
-            if (guard(thisRunId, thisSeq)) {
-              setPullRequest({ status: 'success', value: response.pullRequest });
-            }
-          })
-          .catch((error: unknown) => {
-            if (!guard(thisRunId, thisSeq)) {
-              return;
-            }
-            if (isStatus(error, 404)) {
-              setPullRequest({ status: 'success', value: null });
-            } else {
-              setPullRequest({ status: 'error', message: errorMessage(error, 'Pull request could not be read.') });
-            }
-          })
-      );
-
-      reads.push(
-        client
-          .listRunSessions(thisRunId)
-          .then((response) => {
-            if (guard(thisRunId, thisSeq)) {
+            if (!signal.aborted) {
               setSessions({ status: 'success', value: response.sessions });
             }
           })
           .catch((error: unknown) => {
-            if (guard(thisRunId, thisSeq)) {
+            if (!signal.aborted) {
               setSessions({ status: 'error', message: errorMessage(error, 'Sessions could not be read.') });
             }
           })
@@ -234,19 +329,19 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
         reads.push(
           (async () => {
             try {
-              let specResp = await client.getRunSpec(thisRunId);
-              let feedback = await listFeedbackSafe(thisRunId);
+              let specResp = await client.getRunSpec(id);
+              let feedback = await listFeedbackSafe(id);
               // If a returned anchor falls outside the held markdown, reread spec+feedback once; any
               // anchor still out of bounds is then shown in the stale group by the classifier.
               if (hasOutOfBoundsArtifactAnchors(feedback, codePointLength(specResp.markdown))) {
-                specResp = await client.getRunSpec(thisRunId);
-                feedback = await listFeedbackSafe(thisRunId);
+                specResp = await client.getRunSpec(id);
+                feedback = await listFeedbackSafe(id);
               }
-              if (guard(thisRunId, thisSeq)) {
+              if (!signal.aborted) {
                 setSpec({ status: 'ready', markdown: specResp.markdown, artifactId: specResp.artifact.id, feedback });
               }
             } catch (error: unknown) {
-              if (!guard(thisRunId, thisSeq)) {
+              if (signal.aborted) {
                 return;
               }
               if (isStatus(error, 404)) {
@@ -269,28 +364,28 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
       }
 
       await Promise.allSettled(reads);
-      refreshInFlightRef.current = false;
-      if (trailingRefreshRef.current && !signal.aborted && runIdRef.current === thisRunId) {
-        trailingRefreshRef.current = false;
+      refreshInFlight = false;
+      if (trailingRefresh) {
+        trailingRefresh = false;
         void refresh();
       }
     }
 
-    function abortableDelay(ms: number): Promise<void> {
+    function abortableDelay(ms: number, streamSignal: AbortSignal): Promise<void> {
       return new Promise((resolve) => {
-        if (signal.aborted) {
+        if (streamSignal.aborted) {
           resolve();
           return;
         }
         const timer = setTimeout(() => {
-          signal.removeEventListener('abort', onAbort);
+          streamSignal.removeEventListener('abort', onAbort);
           resolve();
         }, ms);
         function onAbort(): void {
           clearTimeout(timer);
           resolve();
         }
-        signal.addEventListener('abort', onAbort, { once: true });
+        streamSignal.addEventListener('abort', onAbort, { once: true });
       });
     }
 
@@ -303,22 +398,25 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
       return Math.min(current * 2, maxDelayMs);
     }
 
-    async function streamLoop(): Promise<void> {
+    async function streamLoop(streamSignal: AbortSignal): Promise<void> {
+      let cursor: string | undefined;
       let backoff: number | undefined;
       let firstAttach = true;
       let recoverAfterAttach = false;
 
-      while (!signal.aborted) {
+      while (!streamSignal.aborted && !signal.aborted) {
         let body: ReadableStream<Uint8Array> | null = null;
         try {
-          const cursor = cursorRef.current;
-          const { response } = await client.subscribeRunEvents(runId as string, {
+          const { response } = await client.subscribeRunEvents(id, {
             ...(cursor !== undefined ? { lastEventId: cursor } : {}),
-            signal
+            signal: streamSignal
           });
+          if (streamSignal.aborted || signal.aborted) {
+            return;
+          }
           body = response.body;
         } catch (error) {
-          if (signal.aborted) {
+          if (streamSignal.aborted || signal.aborted) {
             return;
           }
           const reaction = classifyStreamError(error);
@@ -331,13 +429,13 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
             return;
           }
           if (reaction === 'cursor_lost') {
-            cursorRef.current = undefined;
+            cursor = undefined;
             recoverAfterAttach = true;
             backoff = undefined;
             continue;
           }
           backoff = nextDelay(backoff);
-          await abortableDelay(backoff);
+          await abortableDelay(backoff, streamSignal);
           continue;
         }
 
@@ -354,12 +452,12 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
         try {
           if (body !== null) {
             for await (const frame of readRunEventFrames(body, logRef.current === undefined ? {} : { log: logRef.current })) {
-              if (signal.aborted) {
+              if (streamSignal.aborted || signal.aborted) {
                 return;
               }
               backoff = undefined; // a valid frame resets the backoff
               if (frame.id !== undefined) {
-                cursorRef.current = frame.id;
+                cursor = frame.id;
               }
               if (frame.event.type === 'run_state_transition') {
                 void refresh();
@@ -367,7 +465,7 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
             }
           }
         } catch (error) {
-          if (signal.aborted) {
+          if (streamSignal.aborted || signal.aborted) {
             return;
           }
           const reaction = classifyStreamError(error);
@@ -380,48 +478,65 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
             return;
           }
           if (reaction === 'cursor_lost') {
-            cursorRef.current = undefined;
+            cursor = undefined;
             recoverAfterAttach = true;
             backoff = undefined;
             continue;
           }
           backoff = nextDelay(backoff);
-          await abortableDelay(backoff);
+          await abortableDelay(backoff, streamSignal);
           continue;
         }
 
         // Stream ended cleanly. Stop reconnecting only once the latest run is terminal;
         // otherwise a recovery can reopen a failed run and the transition must be seen.
-        if (signal.aborted) {
+        if (streamSignal.aborted || signal.aborted) {
           return;
         }
-        if (latestTerminalRef.current) {
+        if ((latestProjection(readRun, runRef.current) ?? runRef.current)?.terminal) {
           return;
         }
         backoff = nextDelay(backoff);
-        await abortableDelay(backoff);
+        await abortableDelay(backoff, streamSignal);
       }
     }
 
 
-    // Expose a reload hook that rereads spec + feedback (and the other facts) on demand.
-    refreshRef.current = () => {
-      void refresh();
+    selectionRef.current = {
+      refresh: () => void refresh(),
+      readIfInitial: () => {
+        if (initialRead) {
+          void refresh();
+        }
+      },
+      skipSelectionCheck: () => { skipSelectionCheck = true; },
+      streamLoop,
+      check
     };
-
-    void streamLoop();
-
     return () => {
       controller.abort();
+      selectionRef.current = undefined;
     };
-    // The stream lifecycle keys only on the selected run id and visibility; other run
-    // fields are read through refs so a row update never tears down the stream.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [client, runId, visible]);
+  }, [client, runId, baseDelayMs, maxDelayMs]);
+
+  useEffect(() => {
+    const selection = selectionRef.current;
+    if (selection === undefined) {
+      return;
+    }
+    if (!visible) {
+      selection.readIfInitial();
+      return;
+    }
+    const stream = new AbortController();
+    void selection.streamLoop(stream.signal);
+    return () => stream.abort();
+  }, [client, runId, visible, baseDelayMs, maxDelayMs]);
 
   async function createSpecComment(input: CreateCommentInput): Promise<CreateCommentResult> {
     const currentSpec = specRef.current;
-    const currentRunId = runIdRef.current;
+    const currentRunId = runId;
+    const selection = selectionRef.current;
     if (currentSpec.status !== 'ready' || currentRunId === undefined) {
       return { status: 'error', message: 'The spec is not ready for comments.' };
     }
@@ -438,12 +553,14 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
           quotedText: input.quotedText
         }
       });
-      // Insert the created feedback immediately so the card/marker appears without a reread.
-      setSpec((previous) =>
-        previous.status === 'ready'
-          ? { ...previous, feedback: [...previous.feedback, created as unknown as FeedbackResponse] }
-          : previous
-      );
+      if (selection === selectionRef.current) {
+        // Insert the created feedback immediately so the card/marker appears without a reread.
+        setSpec((previous) =>
+          previous.status === 'ready'
+            ? { ...previous, feedback: [...previous.feedback, created as unknown as FeedbackResponse] }
+            : previous
+        );
+      }
       return { status: 'created' };
     } catch (error: unknown) {
       if (
@@ -458,18 +575,23 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
   }
 
   function reloadSpec(): void {
-    refreshRef.current();
+    selectionRef.current?.refresh();
   }
 
   async function replyToGate(kind: 'approve' | 'request_changes'): Promise<RunActionResult> {
-    const currentRunId = runIdRef.current;
+    const currentRunId = runId;
+    const selection = selectionRef.current;
     if (currentRunId === undefined) {
       return { status: 'error', error: new Error('No run is selected.') };
+    }
+    if (kind === 'approve' && run?.currentStep === 'implementation.human_review') {
+      // Even if the initial reads are delayed, a PR opened by this approval is manual-only.
+      selection?.skipSelectionCheck();
     }
     try {
       await client.replyToRun(currentRunId, { kind });
       // Refresh immediately; the stream transition also triggers a refresh as the run moves.
-      refreshRef.current();
+      selection?.refresh();
       return { status: 'ok' };
     } catch (error: unknown) {
       return { status: 'error', error };
@@ -477,13 +599,14 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
   }
 
   async function resolveComment(feedbackId: string): Promise<RunActionResult> {
-    const currentRunId = runIdRef.current;
+    const currentRunId = runId;
+    const selection = selectionRef.current;
     if (currentRunId === undefined) {
       return { status: 'error', error: new Error('No run is selected.') };
     }
     try {
       await client.updateRunFeedback(currentRunId, feedbackId, { status: 'resolved' });
-      refreshRef.current();
+      selection?.refresh();
       return { status: 'ok' };
     } catch (error: unknown) {
       return { status: 'error', error };
@@ -491,21 +614,27 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
   }
 
   async function reopenComment(feedbackId: string, reason: string): Promise<RunActionResult> {
-    const currentRunId = runIdRef.current;
+    const currentRunId = runId;
+    const selection = selectionRef.current;
     if (currentRunId === undefined) {
       return { status: 'error', error: new Error('No run is selected.') };
     }
     try {
       await client.updateRunFeedback(currentRunId, feedbackId, { status: 'open', body: reason });
-      refreshRef.current();
+      selection?.refresh();
       return { status: 'ok' };
     } catch (error: unknown) {
       return { status: 'error', error };
     }
   }
 
+  const selectedOwner = selectionRef.current;
   return {
     pullRequest,
+    pullRequestCheck,
+    ...(selectedOwner !== undefined && !runGone && canCheckPullRequest(latestProjection(projectedRun, run), pullRequest)
+      ? { checkPullRequest: () => void selectedOwner.check() }
+      : {}),
     sessions,
     spec,
     runGone,

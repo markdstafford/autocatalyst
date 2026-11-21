@@ -324,6 +324,10 @@ content scrolls beneath the tab list. The header block and the tab content keep 
   (in `--font-mono`, for an in-progress run), the failure reason (in `--color-red`, for a failed run), the
   pull request, and the time, tokens, and cost totals. Its `DescriptionItem` rows use a fixed name column
   (`--width-description-label`) beside a wrapping value column; both name and value are `--text-sm`.
+- The pull request row keeps the numbered link and labels the state Open (`--color-subtext`),
+  Merged (`--color-green`), or Closed (`--color-red`). When eligible, Check now is a secondary
+  small button. It stays focusable but cannot be activated during a check. The status and any
+  error appear inline and are announced without moving focus.
 
 **Resizing.** The handle between the list and a side pane has `role="separator"` and
 `aria-orientation="vertical"`, and a bottom pane's handle uses `horizontal`. Arrow keys on a focused handle
@@ -405,10 +409,11 @@ previous and next controls move into the overlay. In the overlay the document co
 
 ## Gate decision
 
-The decision is one button, at the far right of the pane bar and of the overlay top row. A run not waiting at
-a gate shows no button. A run waiting at the spec or implementation gate shows "Approve" when no comment is
-open, and "Request changes (N)" when N comments are open. Resolved comments do not count. A pull request
-gate has no button.
+The decision is one button, at the far right of the pane bar and of the spec overlay top row. At the
+spec gate it reads "Approve" when no comment is open, or "Request changes (N)" when N comments are open.
+Resolved comments do not count. At the implementation gate it only offers "Approve" and the confirmation
+asks "Approve this implementation?" without comment copy. The pull request gate and terminal runs have
+no decision button.
 
 Both labels share one style: `--height-control-sm` high, `--radius-sm`, `--text-xs`, weight 500,
 `--color-primary` fill, `--color-on-primary` text, with `tabular-nums` for N. Hover and pressed dim the fill

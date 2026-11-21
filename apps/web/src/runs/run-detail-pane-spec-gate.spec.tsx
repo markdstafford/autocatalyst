@@ -11,7 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { makeRun, makeSession } from './run-fixtures.js';
 import { RunDetailFooterProvider, useRunDetailFooter } from './run-detail-footer.js';
-import { RunDetailPane } from './run-detail-pane.js';
+import { RunDetailHarness as RunDetailPane } from './run-detail-pane.test-helper.js';
 import { createScriptedDetailClient } from './scripted-detail-client.js';
 
 const NOW = '2026-11-08T01:00:00.000Z';

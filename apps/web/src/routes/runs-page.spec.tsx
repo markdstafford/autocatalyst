@@ -14,10 +14,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AppRoutes } from '../app.js';
 import { clearBearerToken, writeBearerToken } from '../auth/token-store.js';
 import { ControlPlaneClientProvider } from '../client/client-provider.js';
-import { makeProject, makeRun } from '../runs/run-fixtures.js';
+import { makeProject, makePullRequest, makeRun } from '../runs/run-fixtures.js';
 import { readPreferences } from '../theme/preferences.js';
 import { ThemeProvider } from '../theme/theme-provider.js';
-import type { Project, Run } from '@autocatalyst/api-contract';
+import type { Project, PullRequest, Run, RunPullRequestRefreshResponse } from '@autocatalyst/api-contract';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
@@ -33,9 +33,12 @@ interface SeamState {
   runs: Run[];
   projects: Project[];
   runsStatus: number;
+  pullRequest?: PullRequest;
+  refreshResponse?: RunPullRequestRefreshResponse;
+  checks: string[];
 }
 
-const seam: SeamState = { runs: [], projects: [], runsStatus: 200 };
+const seam: SeamState = { runs: [], projects: [], runsStatus: 200, checks: [] };
 
 function errorResponse(code: string, status: number): Response {
   return jsonResponse({ error: { code, message: 'x' } }, status);
@@ -76,7 +79,7 @@ const fetchSeam: typeof globalThis.fetch = async (input, init) => {
     return jsonResponse({ projects: seam.projects }, 200);
   }
   // Selected-run detail reads (checked before the run collection/resource).
-  const detailMatch = /\/v1\/runs\/([^/?]+)\/(pull-request|sessions|spec|events)/u.exec(url);
+  const detailMatch = /\/v1\/runs\/([^/?]+)\/(pull-request\/refresh|pull-request|sessions|spec|events)/u.exec(url);
   if (detailMatch !== null) {
     const kind = detailMatch[2];
     if (kind === 'events') {
@@ -84,6 +87,16 @@ const fetchSeam: typeof globalThis.fetch = async (input, init) => {
     }
     if (kind === 'sessions') {
       return jsonResponse({ sessions: [] }, 200);
+    }
+    if (kind === 'pull-request/refresh' && init?.method === 'POST' && detailMatch[1] !== undefined) {
+      seam.checks.push(detailMatch[1]);
+      return jsonResponse(seam.refreshResponse ?? {
+        pullRequest: seam.pullRequest,
+        run: seam.runs.find(({ id }) => id === detailMatch[1])
+      });
+    }
+    if (kind === 'pull-request' && seam.pullRequest?.runId === detailMatch[1]) {
+      return jsonResponse({ pullRequest: seam.pullRequest });
     }
     // No pull request and no spec artifact yet (normal 404s).
     return errorResponse('not_found', 404);
@@ -129,6 +142,9 @@ beforeEach(() => {
   seam.runs = [];
   seam.projects = [];
   seam.runsStatus = 200;
+  seam.checks = [];
+  delete seam.pullRequest;
+  delete seam.refreshResponse;
 });
 
 afterEach(() => {
@@ -240,6 +256,34 @@ describe('RunsPage with runs', () => {
       expect(screen.queryByRole('complementary', { name: 'Run detail' })).toBeNull();
     });
     expect(readPreferences().detailPaneVisible).toBe(false);
+  });
+
+  it('checks a selected run while the pane is hidden and replaces both status chips on a manual check', async () => {
+    const waiting: Run = { ...makeRun({ id: 'run-b' }), currentStep: 'pr.human_review' };
+    seam.runs[1] = waiting;
+    seam.pullRequest = makePullRequest({ runId: waiting.id });
+    renderRuns('/runs/run-a');
+    const row = await screen.findByTestId('run-row-run-b');
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Toggle detail pane' }));
+    await user.click(row);
+    await waitFor(() => expect(seam.checks).toEqual(['run-b']));
+    expect(screen.queryByRole('complementary', { name: 'Run detail' })).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Toggle detail pane' }));
+    await screen.findByText('Checked just now');
+    expect(seam.checks).toEqual(['run-b']);
+    const updatedAt = '2026-01-01T00:02:00.000Z';
+    seam.refreshResponse = {
+      pullRequest: { ...seam.pullRequest, state: 'merged', updatedAt },
+      run: { ...waiting, currentStep: 'done', terminal: true, waitingOn: 'none', status: 'done', updatedAt }
+    };
+    await user.click(screen.getByRole('button', { name: 'Check now' }));
+    await waitFor(() => expect(screen.getByTestId('pane-status').textContent).toBe('Done'));
+    expect(within(row).getByText('Done')).toBeDefined();
+    expect(screen.getByText('Merged')).toBeDefined();
+    expect(screen.queryByRole('button', { name: 'Check now' })).toBeNull();
+    expect(seam.checks).toEqual(['run-b', 'run-b']);
   });
 });
 

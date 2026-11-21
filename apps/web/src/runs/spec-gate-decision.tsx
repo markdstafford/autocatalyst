@@ -1,20 +1,11 @@
 /**
- * The spec-gate decision button and its confirm popover.
- *
- * One button communicates the whole gate state: `Approve` when no comment is open, or
- * `Request changes (N)` when N comments are open. It renders only while the run waits at
- * `spec.human_review`. Activating it opens a confirm popover that names the action; confirming sends
- * exactly one existing run-reply operation (`approve` or `request_changes`) — never `createRunFeedback`.
- *
- * The decision is derived, not stored: the label comes from the live feedback list through the pure
- * helpers in `spec-decision.ts`, so it updates in place as comments change, and an open popover resets
- * whenever the label changes. Control-plane errors keep the popover open with the returned message;
- * `feedback_gate_blocked` shows the message, other errors also offer a retry. The button is disabled
- * while a decision is in flight so a second activation sends no second request.
+ * Gate-specific rules compose a shared confirmation popover. Spec approval can
+ * co-confirm addressed comments; implementation is an approve-only reply.
  */
 import type { FeedbackResponse, Run } from '@autocatalyst/api-contract';
-import { useEffect, useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 
+import { canDecideGate } from './gate-decision.js';
 import {
   addressedConfirmationCopy,
   countAddressedByPrincipal,
@@ -47,58 +38,91 @@ interface DecisionError {
 }
 
 export function SpecGateDecision(props: SpecGateDecisionProps): ReactNode {
-  const { run, feedback, currentPrincipalId, onApprove, onRequestChanges, side = 'bottom', popoverContainer } = props;
-  const [open, setOpen] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<DecisionError | null>(null);
-
-  const available = isSpecGateDecisionAvailable(run);
-  const openCount = countOpenFeedback(feedback);
-  const kind = decisionKind(openCount);
-  const label = decisionLabel(openCount);
-
-  // Reset the popover whenever the computed label changes (comments created/resolved, revision
-  // returned). A stale confirm must never apply to a changed gate.
-  useEffect(() => {
-    setOpen(false);
-    setError(null);
-    setBusy(false);
-  }, [label]);
-
-  if (!available) {
+  const { run, feedback, currentPrincipalId, onApprove, onRequestChanges, side = 'bottom', popoverContainer = null } = props;
+  if (!isSpecGateDecisionAvailable(run)) {
     return null;
   }
 
+  const openCount = countOpenFeedback(feedback);
+  const label = decisionLabel(openCount);
+  const approve = decisionKind(openCount) === 'approve';
+  const comments = openCount === 1 ? 'comment' : 'comments';
+  return (
+    <GateDecisionConfirmation
+      key={`${run.id}:${label}`}
+      testId="spec-gate-decision"
+      label={label}
+      prompt={approve ? 'Approve this spec?' : `Request changes on ${openCount} open ${comments}?`}
+      confirmLabel={approve ? 'Approve' : 'Request changes'}
+      confirmCopy={approve
+        ? addressedConfirmationCopy(countAddressedByPrincipal(feedback, currentPrincipalId))
+        : `This sends your ${openCount} open ${comments} back for revision.`}
+      submit={approve ? onApprove : onRequestChanges}
+      side={side}
+      popoverContainer={popoverContainer}
+    />
+  );
+}
+
+export function ImplementationGateDecision({ run, onApprove }: {
+  readonly run: Run;
+  onApprove(): Promise<RunActionResult>;
+}): ReactNode {
+  return canDecideGate(run, 'implementation.human_review') ? (
+    <GateDecisionConfirmation
+      key={run.id}
+      testId="implementation-gate-decision"
+      label="Approve"
+      prompt="Approve this implementation?"
+      confirmLabel="Approve"
+      submit={onApprove}
+    />
+  ) : null;
+}
+
+interface GateDecisionConfirmationProps {
+  readonly testId: string;
+  readonly label: string;
+  readonly prompt: string;
+  readonly confirmLabel: string;
+  readonly confirmCopy?: string | undefined;
+  readonly side?: 'top' | 'bottom';
+  readonly popoverContainer?: HTMLElement | null;
+  submit(): Promise<RunActionResult>;
+}
+
+function GateDecisionConfirmation({
+  testId, label, prompt, confirmLabel, confirmCopy, submit, side = 'bottom', popoverContainer = null
+}: GateDecisionConfirmationProps): ReactNode {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<DecisionError | null>(null);
+  const submitting = useRef(false);
+  const confirmButton = useRef<HTMLElement | null>(null);
+
   async function confirm(): Promise<void> {
-    if (busy) {
+    if (submitting.current) {
       return;
     }
+    submitting.current = true;
     setBusy(true);
     setError(null);
-    const result = kind === 'approve' ? await onApprove() : await onRequestChanges();
+    const result = await submit();
+    submitting.current = false;
+    setBusy(false);
     if (result.status === 'ok') {
       // The run leaves the gate; close the popover (the button hides after the refresh).
-      setBusy(false);
       setOpen(false);
       return;
     }
     const info = decisionErrorInfo(result.error);
-    setBusy(false);
     setError({ message: info.message, retryable: !isFeedbackGateBlocked(result.error) });
   }
-
-  const addressedCount = countAddressedByPrincipal(feedback, currentPrincipalId);
-  const confirmCopy =
-    kind === 'approve'
-      ? addressedConfirmationCopy(addressedCount)
-      : `This sends your ${openCount} open ${openCount === 1 ? 'comment' : 'comments'} back for revision.`;
-  const confirmLabel = kind === 'approve' ? 'Approve' : 'Request changes';
-  const prompt = kind === 'approve' ? 'Approve this spec?' : `Request changes on ${openCount} open ${openCount === 1 ? 'comment' : 'comments'}?`;
 
   // The Base UI Popover trigger owns the open/close toggle through `onOpenChange`; the button itself
   // carries no onClick so the two never fight over the controlled `open` state.
   const trigger = (
-    <Button variant="primary" size="control-sm" data-testid="spec-gate-decision" className="tabular-nums">
+    <Button variant="primary" size="control-sm" data-testid={testId} disabled={busy} className="tabular-nums">
       {label}
     </Button>
   );
@@ -115,26 +139,19 @@ export function SpecGateDecision(props: SpecGateDecisionProps): ReactNode {
       trigger={trigger}
       side={side}
       container={popoverContainer}
+      initialFocus={confirmButton}
       label={prompt}
-      data-testid="spec-gate-decision-popover"
+      data-testid={`${testId}-popover`}
     >
-      <div
-        className="w-64"
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' && !busy) {
-            event.preventDefault();
-            void confirm();
-          }
-        }}
-      >
+      <div className="w-64">
         <p className="text-sm text-text">{prompt}</p>
         {confirmCopy !== undefined ? (
-          <p data-testid="spec-gate-decision-copy" className="mt-1 text-xs text-subtext">
+          <p data-testid={`${testId}-copy`} className="mt-1 text-xs text-subtext">
             {confirmCopy}
           </p>
         ) : null}
         {error !== null ? (
-          <p data-testid="spec-gate-decision-error" className="mt-2 text-xs text-red">
+          <p data-testid={`${testId}-error`} className="mt-2 text-xs text-red">
             {error.message}
           </p>
         ) : null}
@@ -143,9 +160,10 @@ export function SpecGateDecision(props: SpecGateDecisionProps): ReactNode {
             Cancel
           </Button>
           <Button
+            ref={confirmButton}
             variant="primary"
             size="control-sm"
-            data-testid="spec-gate-decision-confirm"
+            data-testid={`${testId}-confirm`}
             disabled={busy}
             aria-busy={busy}
             onClick={() => void confirm()}

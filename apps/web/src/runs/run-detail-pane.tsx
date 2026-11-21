@@ -5,19 +5,18 @@
  *
  * The selected run is the single source of truth from the run list state (the `run`
  * prop). This component holds no second authoritative run copy: the data hook
- * (`useRunDetail`) rereads the run on every transition and feeds it back through
+ * (`useRunDetail`, owned by the Runs route) rereads the run on transitions and feeds it back through
  * `replaceRun`, which updates both the list row and — because the pane reads the run from
  * that state — the pane. The pane owns only the kept-tab preference, the overlay toggle,
  * and the pane-level spec-review controller.
  *
  * Pane bar: besides staying aligned with the table column header row, the far right holds
- * (when the loaded spec is ready) the full-screen expand button and (while the run waits at
- * `spec.human_review`) the one gate decision button. The spec-tab comment counts and
+ * (when the loaded spec is ready) the full-screen expand button and (at the spec or
+ * implementation gate) the one decision button. The spec-tab comment counts and
  * previous/next controls are published to the shell footer through the run-detail footer
  * bridge; when the overlay is open the footer is covered, so those controls move into the
  * overlay and the bridge clears.
  */
-import type { ControlPlaneClient } from '@autocatalyst/sdk';
 import type { Run } from '@autocatalyst/api-contract';
 import { Maximize2 } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
@@ -29,9 +28,9 @@ import { RunDetailSummary } from './run-detail-summary.js';
 import { RunDetailSpecTab } from './run-detail-spec-tab.js';
 import { RunDetailSpecOverlay } from './run-detail-spec-overlay.js';
 import { RUN_DETAIL_TABS, resolveVisibleTab, tabsForRun, type RunDetailTabId } from './run-detail-tabs.js';
-import { SpecGateDecision } from './spec-gate-decision.js';
+import { ImplementationGateDecision, SpecGateDecision } from './spec-gate-decision.js';
 import { isSpecGateDecisionAvailable } from './spec-decision.js';
-import { useRunDetail, type RunDetailState } from './use-run-detail.js';
+import type { RunDetailState } from './use-run-detail.js';
 import { useSpecReviewController } from './use-spec-review-controller.js';
 import { actionTooltipKey, getAction } from '../shell/action-registry.js';
 import { isMacPlatform } from '../shell/key-utils.js';
@@ -44,30 +43,18 @@ import { TabPanel, Tabs } from '../ui/tabs.js';
 export interface RunDetailPaneProps {
   /** The selected run, or undefined in the no-runs state. Read from the list state. */
   readonly run: Run | undefined;
-  /** The SDK client used for the selected-run reads and event stream. */
-  readonly client: ControlPlaneClient;
-  /** Whether the pane is shown (always true while mounted; drives the stream lifecycle). */
-  readonly visible: boolean;
+  readonly detail: RunDetailState;
   /** The loaded current operator principal id, or undefined when unknown (non-fatal). */
   readonly currentPrincipalId?: string;
-  /** Push an authoritative `getRun` result back into the list state (live-update path). */
-  replaceRun(run: Run): void;
-  /** Navigate to the connection page on a 401 from the selected-run stream. */
-  onUnauthorized(): void;
 }
 
 const EMPTY_PANE_BAR = <div data-testid="pane-bar" className="h-pane-bar shrink-0 border-b border-border px-3" />;
 
 export function RunDetailPane({
   run,
-  client,
-  visible,
-  currentPrincipalId,
-  replaceRun,
-  onUnauthorized
+  detail,
+  currentPrincipalId
 }: RunDetailPaneProps): ReactNode {
-  const detail = useRunDetail({ client, run, visible, replaceRun, onUnauthorized });
-
   return (
     <aside
       role="complementary"
@@ -207,7 +194,7 @@ function RunDetailBody({ run, detail, currentPrincipalId }: RunDetailBodyProps):
             onApprove={onApprove}
             onRequestChanges={onRequestChanges}
           />
-        ) : null}
+        ) : <ImplementationGateDecision run={run} onApprove={onApprove} />}
       </div>
 
       <div data-testid="pane-body" className="flex min-h-0 flex-1 flex-col">
@@ -225,7 +212,13 @@ function RunDetailBody({ run, detail, currentPrincipalId }: RunDetailBodyProps):
           }}
         >
           <TabPanel value="summary" className={panelClass}>
-            <RunDetailSummary run={run} pullRequest={detail.pullRequest} sessions={detail.sessions} />
+            <RunDetailSummary
+              run={run}
+              pullRequest={detail.pullRequest}
+              pullRequestCheck={detail.pullRequestCheck}
+              {...(detail.checkPullRequest !== undefined ? { onCheckPullRequest: detail.checkPullRequest } : {})}
+              sessions={detail.sessions}
+            />
           </TabPanel>
           <TabPanel value="spec" className={panelClass}>
             {overlayOpen ? (
