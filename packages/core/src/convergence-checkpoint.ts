@@ -1,11 +1,30 @@
-import type { JsonValue, Run, RunStep } from '@autocatalyst/api-contract';
+import type { ConvergenceCheckpoint, JsonValue, Run, RunStep } from '@autocatalyst/api-contract';
 import type { RunStepRepository } from './domain-repositories.js';
 
-export interface ConvergenceEscalationPauseCheckpoint {
+export type ConvergenceEscalationPauseCheckpoint = {
   readonly pause: {
     readonly kind: 'convergence_escalation';
     readonly producingStep: 'implementation.build';
+    /** Older pause markers can lack a question. */
+    readonly question?: string;
     readonly humanGuidance?: string;
+  };
+};
+
+export function buildConvergenceEscalationPause(
+  checkpoint: ConvergenceCheckpoint
+): ConvergenceEscalationPauseCheckpoint | null {
+  if (checkpoint.outcome !== 'oscillation' && checkpoint.outcome !== 'max_rounds') return null;
+
+  const openFeedback = checkpoint.openFeedbackIds.length > 0
+    ? `Open feedback: ${checkpoint.openFeedbackIds.join(', ')}.`
+    : 'No open feedback items.';
+  return {
+    pause: {
+      kind: 'convergence_escalation',
+      producingStep: 'implementation.build',
+      question: `Convergence escalated: ${checkpoint.outcome}. ${openFeedback} What guidance should the implementer follow?`
+    }
   };
 }
 
