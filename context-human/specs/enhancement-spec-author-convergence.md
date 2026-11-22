@@ -9,22 +9,22 @@ specced_by: autocatalyst
 
 ## Parent feature
 
-[Producing-step implementer/reviewer convergence](feature-producing-step-convergence-loop.md) defines the two-role loop. This enhancement applies it to [real spec authoring](feature-author-real-conformant-spec.md). Unlike the parent feature’s proposed per-round spec commits, this enhancement reviews drafts in scratch and commits only the selected draft.
+[Producing-step implementer/reviewer convergence](feature-producing-step-convergence-loop.md) defines the two-role loop. This enhancement applies it to [real spec authoring](feature-author-real-conformant-spec.md). Instead of committing a draft each round as the parent feature proposed, the host reviews drafts in scratch and commits only the selected draft.
 
 ## What
 
-Before a feature or enhancement spec reaches human review, a separate reviewer checks the draft against the request and the repository’s architecture contracts. The author receives the findings and records what it fixed or declined. If automated review reaches its limit, the human sees the last reviewed draft and can request another revision or explicitly decline each outstanding model finding before approving. Approval always remains a separate human action.
+Before a feature or enhancement spec reaches human review, a separate reviewer checks it against the request and the repository’s architecture contracts. The author receives the findings and records what it fixed or declined. Passage-specific findings point to the relevant text in the committed spec when the passage can still be identified. If the loop reaches its limit, the human receives the last validly reviewed draft with outstanding findings visible. Approval remains a separate human action.
 
 ## Why
 
-`spec.author` declares both roles, but production dispatch currently runs only the author. This makes the human gate the first independent check. A bounded review catches gaps earlier and shows the human what changed, what the author declined, and what still needs a decision.
+`spec.author` declares both roles, but production dispatch currently runs only the author. That makes the human gate the first independent check. Reviewing earlier catches gaps before handoff, and highlighting the passage behind each finding lets the approver evaluate it without searching the spec by hand.
 
 ## User stories
 
-- A spec approver can read the reviewed draft alongside the reviewer’s findings and the author’s responses.
+- A spec approver can read the reviewed draft alongside the reviewer’s findings and the author’s responses, and jump from a passage finding to its highlight.
+- A spec approver can distinguish a converged draft from one handed off at the review limit and decide what to do about outstanding findings.
 - A spec approver can request changes and receive an independently reviewed revision.
-- A spec approver can distinguish convergence from a bounded handoff and decide what to do about each outstanding finding.
-- An operator can answer a question from either role and have the interrupted review resume without losing completed rounds.
+- An operator can answer a question from either role and resume the interrupted review without losing completed rounds.
 
 ## Design changes
 
@@ -32,22 +32,22 @@ Before a feature or enhancement spec reaches human review, a separate reviewer c
 
 ```mermaid
 flowchart TD
-  A[Author drafts or revises] --> B[Reviewer reads draft in scratch]
-  B -->|Findings and budget remains| A
-  B -->|Converged or review limit reached| C[Commit the selected draft]
+  A[Author drafts or revises] --> B[Reviewer reads the scratch draft]
+  B -->|More work and rounds remain| A
+  B -->|Converged or bounded handoff| C[Commit selected draft and attach passage anchors]
   C --> D[Wait at spec.human_review]
-  D -->|Request changes over open findings| A
-  D -->|Decline an outstanding model finding with a reason| D
-  D -->|All feedback dispositioned and human approves| E[Existing implementation planning step]
+  D -->|Request changes| A
+  D -->|Decline an eligible open finding with a reason| D
+  D -->|Feedback settled and human approves| E[Existing implementation planning step]
   A -->|Needs input| Q[Wait at spec.awaiting_input]
   B -->|Needs input| Q
   Q -->|Human answers| R[Resume the interrupted role]
   B -->|Invalid result after correction| F[Fail with a clear reason]
 ```
 
-Use the existing Spec feedback list and Activity view. Activity shows both sessions under `spec.author`. The feedback list shows reviewer findings even when they have no text anchor. A fixed reviewer finding is `resolved`, with the author’s fix summary in its thread. A declined finding is `wont_fix`, with the reason visible. Neither state implies human approval. If the approver disagrees with an already settled model finding, they can raise a human comment and request changes.
+Reuse the Spec feedback cards and Activity view. Activity shows both sessions under `spec.author`. A passage finding with a valid range uses the existing spec highlight and navigation. A document-wide finding or a passage that cannot be located stays visible in the feedback list without a highlight. A fixed model finding shows `resolved` with the author’s fix summary. A declined finding shows `wont_fix` with the author’s reason. Neither state means that the human has approved the spec. How a human closes a comment the author declined is tracked in #192; this enhancement does not change that workflow.
 
-For a bounded handoff, show that automated review did not converge. Every open item still counts toward Request changes and blocks approval. For eligible open model findings, show **Decline finding** on the feedback card with a required reason and a confirmation. The action changes only that item to `wont_fix`; it does not advance the run. Refresh the card and decision controls on success, and show any rejection without changing the local status. The standard Approve action becomes available under the existing gate rules. Reuse the run reply surface for model questions, with enough context to identify the asking role. No new screen is needed.
+For a bounded handoff, show that automated review did not converge. Keep Request changes available when items are open, and keep approval subject to the existing gate rules. For eligible **open model findings** at that handoff, show **Decline finding** on the card with a required reason and confirmation. This handles a finding the loop did not settle, not a comment the author already declined. On success, refresh the card and gate controls without advancing the run. On rejection, show the error and keep the displayed item unchanged. Reuse the run reply surface for questions from either role, identifying the asking role. No new screen or visual component is needed.
 
 ## Technical changes
 
@@ -55,13 +55,13 @@ For a bounded handoff, show that automated review did not converge. Every open i
 
 *(Populated during tech specs stage — list files that will change and why)*
 
-- `packages/core/src/orchestrator.ts`, `run-workflows.ts`, `convergence-policy.ts`, `convergence-checkpoint.ts`, and `layered-convergence-engine.ts` — dispatch, bound, checkpoint, resume, and complete reviewed spec occurrences.
-- `packages/core/src/spec-authoring-context.ts`, `spec-authoring-service.ts`, and `spec-frontmatter.ts`; `apps/control-plane/src/server.ts` and `spec-authoring-context-loader.ts` — build role context, render candidates, and persist the selected spec.
-- `packages/core/src/convergence-feedback.ts`, `feedback-lifecycle.ts`, `control-plane-service.ts`, and `routes.ts`; `packages/api-contract/src/feedback.ts` and `run-replies.ts` — record dispositions and add scoped model-finding decline and spec-question replies. Keep `spec-review-gate.ts` and `listBlockingFeedback` approval semantics unchanged.
-- `packages/api-contract/src/convergence.ts` and `spec-authoring.ts`; `packages/execution/src/result-contracts.ts`, `result-normalizers.ts`, and `provider-schema-projection.ts` — add the reviewed author result, role-specific capture, and spec checkpoint support without breaking existing build or one-shot shapes.
-- `apps/web/src/runs/spec-decision.ts`, `use-spec-review-controller.ts`, `use-run-detail.ts`, and `apps/web/src/features/spec/` — show the bounded handoff, model feedback, and per-item decline action in existing views. Update client contracts and test doubles with the API.
-- `apps/control-plane/src/fake/` — update scripted role results, launch and author-pass accounting, seed checks, and `full-wiring.e2e.spec.ts`. Update `apps/web/e2e/{spec-gate,spec-review,start-run-from-issue}.spec.ts` and any shared fixtures or wait conditions that assume one role per spec pass.
-- `context-human/concepts/review.md` and `feedback.md`, `docs/operators/fake-mode.md`, and `context-agent/wiki/code-map.md` — document reviewed spec dispatch, the explicit human disposition action, fake behavior, and module entry points.
+- `packages/core/src/orchestrator.ts`, `run-workflows.ts`, `convergence-policy.ts`, `convergence-checkpoint.ts`, and `layered-convergence-engine.ts` — select the spec strategy in normal dispatch, apply workflow policy, and resume and complete reviewed occurrences.
+- `packages/core/src/spec-authoring-context.ts`, `spec-authoring-service.ts`, `spec-frontmatter.ts`, and `spec-anchor-validator.ts` — build the role contexts, render and commit the selected candidate, and validate host-computed anchors. Wire the contexts in `apps/control-plane/src/server.ts` and `spec-authoring-context-loader.ts`.
+- `packages/core/src/convergence-feedback.ts`, `feedback-lifecycle.ts`, `domain-repositories.ts`, and `control-plane-service.ts`; `packages/persistence/src/domain-repositories.ts`; and control-plane feedback routes — persist findings, bind their anchors, and settle dispositions. Keep `spec-review-gate.ts` and `listBlockingFeedback` approval semantics unchanged.
+- `packages/api-contract/src/{convergence,spec-authoring,feedback,run-replies}.ts` and `packages/execution/src/{result-contracts,result-normalizers,provider-schema-projection}.ts` — define the reviewed-author envelope, the spec reviewer finding variant, role-specific capture, and scoped feedback and question replies.
+- `apps/web/src/runs/` and `apps/web/src/features/spec/` — show bounded handoff and the open-finding action, and verify that existing highlights work for model findings. Update client contracts, test doubles, and web E2E waits.
+- `apps/control-plane/src/fake/`, production-path integration tests, and `docs/operators/fake-mode.md` — exercise two-role spec dispatch, fixture revisions, and launch accounting.
+- `context-human/concepts/{review,feedback}.md` and `context-agent/wiki/code-map.md` — document the spec loop, quote binding, disposition rules, and module entry points.
 
 ### Changes
 
@@ -69,111 +69,125 @@ For a bounded handoff, show that automated review did not converge. Every open i
 
 #### Dispatch and policy
 
-Use the existing layered convergence driver and the orchestrator’s normal dispatch queue. For `spec.author`, select the reviewed path when the workflow produces a file-canonical spec and the step carries both roles. Resolve routes by `(spec.author, implementer)` and `(spec.author, reviewer)`. If only one model is configured, keep separate sessions and emit the existing distinctness warning. Missing production wiring or an unusable role route fails clearly; it never silently skips review. Fake mode uses this same path. An explicitly injected one-shot test seam is not a production fallback.
+Use the layered convergence engine on the normal dispatch queue. Select its spec strategy for `spec.author` when the workflow produces a file-canonical spec and the step has both roles. Resolve `(spec.author, implementer)` and `(spec.author, reviewer)` through the existing routing table. When both resolve to the same model, keep separate sessions and emit the existing distinctness warning. Unusable routes, missing production wiring, or an adapter that cannot enforce reviewer access or capture its result fail explicitly; none may silently fall back to one-shot authoring.
 
-Feature and enhancement runs are in scope. Bug triage is issue-canonical, and file-issue runs use `spec.author` to prepare issue intake. Neither workflow commits a spec or uses `spec.human_review`, so both retain their existing dispatch and completion paths. Do not add review to `implementation.plan` or `docs.update`, change routing defaults, or change the implementation loop’s result, commit, checkpoint, or escalation behavior.
+Feature and enhancement runs use the loop. Bug triage and `file_issue` use `spec.author` to produce issue-canonical output, not a Markdown spec or a `spec.human_review` gate. Keep their current one-shot paths. This enhancement does not add review to `implementation.plan` or `docs.update`, change routing defaults, or change build convergence behavior.
 
-Resolve `maxRounds` and `depth` from the workflow policy for `spec.author`. Default to three rounds per altitude and one whole-spec altitude. An altitude is the focus of a review pass. Reuse the depth ordering: `build_only` runs whole-spec review; `layout` adds requirements and structure review before it; `public_api` also adds behavior and contract review; `full` also adds internal design and testability review before the final whole-spec pass. Every pass sees the complete draft. The spec strategy does not run build-contract checks, create build checkpoint refs, or make per-round git commits.
+Read `depth` and `maxRounds` from the workflow’s policy for `spec.author`. Default to three rounds per altitude and one whole-spec altitude. An altitude is the focus of a review pass: `build_only` is whole-spec review; `layout` prepends requirements and structure; `public_api` also adds behavior and contracts; `full` also adds internal design and testability before the final whole-spec pass. Each pass sees the complete draft. Only the build strategy runs build-contract checks, creates build checkpoint refs, or commits each round.
 
-#### Author and reviewer results
+#### Role inputs and results
 
-1. Keep the materialized `mm:planning` and `mm:writing-guidelines` inputs and existing issue, request, work-kind, and ownership context. Give the author the previous draft, the exact feedback IDs it must address, their text and prior dispositions, and any human answer meant for this session. On a gate revision, pin the existing spec path.
-2. Register a separate reviewed-author round contract with a strict `{ spec, dispositions }` envelope. `spec` retains the `autocatalyst.spec_author.v1` payload and its trusted frontmatter normalization, stamping, and validation. `dispositions` reuses `FindingDisposition`: `fixed` requires a summary and `declined` requires a reason. Require exactly one disposition per carried ID and reject missing, duplicate, or unrelated IDs after bounded correction. An empty array is valid only when no IDs were carried. Keep the bare spec-author contract unchanged for callers that still use it.
-3. Render validated Markdown with the completion renderer into a host-owned, contained scratch candidate. Give the reviewer the current candidate path and canonical destination separately, along with the request, linked issue if present, and repository context. The reviewer reads the candidate and relevant cited concepts or ADRs and checks scope, contradictions, edge cases, and testability. It runs in a fresh context with enforced read-only access to both roots. It cannot edit the spec or invoke state-changing tools.
-4. Resolve result capture and validation by trusted step and role before generic spec-author handling. Use `autocatalyst.reviewer_result.v1` for reviewer verdicts, with host or adapter capture rather than a reviewer write tool. Separate scratch outputs by occurrence, altitude, round, role, and retry. A valid runner `needs_input` result is handled before requiring a completed role payload. Missing or malformed reviewer verdicts after bounded correction fail with a sanitized reason, not `satisfied`. Fail safely if the selected adapter cannot enforce the reviewer’s access policy or capture the required result.
+1. Keep the materialized `mm:planning` and `mm:writing-guidelines` inputs and existing issue, request, and ownership context. Give the author the previous draft, the exact feedback IDs it must address, finding text and prior dispositions, and any answer intended for the current session. Pin the existing spec path on a gate revision. The author returns a structured result; only the host writes the canonical spec and commits it.
+2. Register a strict reviewed-author `{ spec, dispositions }` envelope. The nested `spec` retains the `autocatalyst.spec_author.v1` payload and trusted frontmatter stamping and validation. Reuse `FindingDisposition`: require a fix summary or a decline reason and exactly one disposition for every carried ID. Reject missing, duplicate, and unrelated IDs after bounded correction. Keep the bare one-shot author contract unchanged.
+3. Render validated, system-stamped Markdown with the completion renderer into a host-owned, contained scratch candidate. Give the reviewer the candidate path and canonical destination separately, together with the request and linked issue, if any. In a fresh session, the reviewer reads the candidate file and relevant cited concepts or ADRs and checks scope, contradictions, edge cases, and testability. The reviewer has read-only access to both roots and no state-changing tools.
+4. Require the reviewer to mark each finding as `scope: 'passage'` or `scope: 'document'`. For each passage finding, instruct it to copy one short, exact, contiguous quote from the candidate Markdown source into `passageQuote`, and check that the quote appears only once. Use document scope only for genuinely document-wide concerns such as a missing section or overall scope. The reviewer supplies the quote verbatim, not an offset, path, or artifact ID; it must not supply `anchor`.
+5. Keep `autocatalyst.reviewer_result.v1` and its `satisfied`/`findings` envelope. Select its strict spec finding variant by trusted step and role for capture, provider projection, and validation. The variant adds the required scope and a passage-only `passageQuote` string; it does not accept `anchor`. The passage prompt requires a quote, but validation tolerates omitted or whitespace-only passage quotes as location failures, not as lost findings. A document finding must omit the quote. Keep the build variant and existing anchor input unchanged. Do not trim or normalize a nonblank quote during capture or result repair.
+6. Capture the reviewer result through the host or adapter, not a reviewer write tool. Separate scratch outputs by occurrence, altitude, round, role, and retry. Handle a valid runner `needs_input` result before requiring a completed payload. If the reviewer verdict is missing or invalid after bounded correction, fail with an actionable, sanitized reason. Never interpret an invalid verdict as `satisfied`.
 
-#### Feedback and human sign-off
+#### Feedback, quotes, and anchor binding
 
-Persist validated reviewer findings as `artifact` feedback with model attribution derived from the routed session. Record severity, session references, feedback IDs, and dispositions in the round audit. Keep an anchor only when it validates against the reviewed candidate and still maps unambiguously to the selected draft; otherwise use target-level feedback. Feed all open model findings into the next author round, regardless of severity: an `info` finding that is recorded as feedback still requires a disposition. Match materially unchanged repeats to the same finding ID within the attempt and record the repeat in the audit. A repeat of a valid decline does not start another round. A repeat of a claimed fix remains open and requires another disposition or bounded handoff. A new concern gets its own ID.
+Persist valid model findings as `artifact` feedback with the routed reviewer session’s model attribution. The item starts without an anchor because the artifact may not exist yet. Keep the stable feedback ID, severity, scope, original quote, candidate digest, and quote lookup result in host-owned round state. At intake, perform an exact lookup against the bytes the reviewer read. Record whether the quote was absent, not found, unique, or non-unique. Feed open model findings, including `info`, into the next author round. Reuse the ID for a materially unchanged repeat of the same concern; do not merge separate passages just because they have the same title. Record which round supplied the binding evidence. A repeat of a valid decline does not force another round. A repeat of a claimed fix stays open and needs a new disposition or a bounded handoff.
 
-Apply dispositions only for the selected draft. For a fixed reviewer item, record `addressed` with the author’s summary and have the system finish it as `resolved` before entering the gate. This is convergence acceptance, as in build, not confirmation by the human approver. Keep declined reviewer items `wont_fix` with the author’s reason. **A valid decline does not block approval, even for a blocker**, but it never substitutes for approval. A converged spec has no open or addressed reviewer items from the loop. Do not enter the gate on a partial disposition write; retry by feedback ID and expected status without duplicating thread entries.
+After committing the selected draft and creating or recovering its artifact, bind the tracked findings before opening the gate. Use the exact committed Markdown returned by the spec API, including frontmatter. Apply these rules to findings from the occurrence and to carried open model findings it re-evaluates; leave human anchors and unrelated historical feedback alone.
 
-At `max_rounds` or `oscillation`, hand off the last draft that received a valid review, record the actual outcome, settle dispositions that still apply to that draft, and leave undisposed reviewer findings open. `spec.human_review` is the human escalation point as well as the approval gate; `spec.awaiting_input` is only for questions from a role. Do not auto-dispose an open finding because a limit was reached. The human can request changes over open findings, or explicitly decline eligible findings one at a time and then approve. There is no advisory exemption in the client or server. `feedback.md` and ADR-018’s requirement that all feedback be dispositioned before advancing remains intact.
+1. Leave intentionally document-wide findings unanchored and record `document_scope` in the round audit. For a passage finding, require a nonblank quote that was unique in the candidate where it was reported. Otherwise leave it at target level and audit `quote_missing`, `quote_not_found_in_candidate`, or `quote_non_unique_in_candidate`.
+2. Search the selected Markdown for that exact quote. Do not use fuzzy matching, normalization, or a first-match shortcut; count overlapping matches too. If the quote is gone or now appears more than once, keep the feedback at target level and audit `quote_removed_from_selected` or `quote_non_unique_in_selected`.
+3. For a unique match, build `{ kind: 'artifact_range', artifactId, from, to, quotedText }` using the committed artifact’s ID. Compute zero-based, half-open offsets in Unicode code points, for example by matching over `Array.from(markdown)`. Validate against the selected artifact and Markdown with `validateSpecAnchor` ([ADR-033](../adrs/adr-033-spec-comment-anchors.md)) before persisting. The range must reproduce the exact quote even when astral characters precede it. A validator mismatch after a unique match indicates a host error; retry or fail completion rather than silently dropping the anchor.
+4. Add a host-only repository operation that sets or clears the anchor on the existing feedback ID; do not create a second feedback row or expose a new public anchor format. Verify run, tenant, artifact target, and model-review provenance. Make writes idempotent: a repeated bind of the same anchor is a no-op, and a carried finding that falls back loses any prior range that would misidentify a passage. Record the outcome and reason against the finding in the round audit. Existing human-anchor validation and read-time reconciliation remain unchanged.
 
-Extend `PATCH /v1/runs/:id/feedback/:feedbackId` with `{ status: 'wont_fix', body: '<reason>' }`, where the reason must contain non-whitespace text. Use existing feedback-update authorization and additionally require a human principal. Accept only an open `artifact` item with trusted model-review provenance that the active completed spec checkpoint lists as outstanding at a bounded handoff. This includes an item carried from an earlier occurrence if it is still outstanding in the current one. Check run and tenant ownership and serialize the status change against gate replies; use a compare-and-set status transition and append the human’s reason. Return the updated item on `200`, validation error on malformed input, `403` for denied authority, `404` for missing or out-of-scope run/item, and `409` for a stale gate, wrong provenance/target, or invalid state. Existing resolve/reopen operations and originator rules stay unchanged. This is a narrow additional disposition authority, not a change to the gate predicate; document it in `feedback.md` through human review.
+#### Dispositions and human sign-off
 
-A human revise reply opens a fresh convergence occurrence with the committed spec and all open artifact feedback applicable to that revision, including open model findings from a prior handoff. Human feedback becomes `addressed` only when a valid `fixed` disposition applies to the selected draft. A declined or unfixed human item remains open, with the reason recorded if declined. Do not use the blanket open-to-addressed update in reviewed completion. Approval still confirms only the approver’s own addressed human items, then applies the existing per-target precondition. Other open or unconfirmed items continue to block.
+Apply dispositions only for the selected draft. When a model finding is fixed and not re-raised, mark it `addressed` with the author’s summary and finish it as `resolved` by the system before entering the gate. This is convergence acceptance, not human confirmation. Keep declined model findings `wont_fix` with the author’s reason. **A valid author decline does not block approval, even for a blocker**, but the approver still decides whether to approve or request another revision. A converged spec has no open or addressed model findings from the loop.
 
-#### Checkpoint, pause, and commit boundary
+At `max_rounds` or `oscillation`, hand off the last draft that received a valid review, record the actual outcome, and leave undisposed findings open. Do not auto-close them or exempt them from the approval predicate. `spec.human_review` is the escalation point for review limits; `spec.awaiting_input` is for questions from a role. A human can request changes over open findings, or decline eligible open model findings one at a time before separately approving.
 
-Persist a spec checkpoint with `producingStep: 'spec.author'`, a logical occurrence ID, altitude and round progress, role session references, findings and dispositions keyed by ID, and outcome. Retain completion metadata alongside the round record. No new table or backfill is needed. Keep existing build checkpoint readers and writers compatible. Store candidate bytes in scratch, not in public checkpoint JSON; publish only safe identifiers and outcome metadata.
+Extend `PATCH /v1/runs/:id/feedback/:feedbackId` to accept `{ status: 'wont_fix', body: '<nonblank reason>' }` for that bounded handoff. Use existing feedback-update authorization, additionally require a human principal, and restrict the operation to an open `artifact` item with trusted model-review provenance that the active completed spec checkpoint lists as outstanding. Scope both run and feedback to the tenant. Serialize with gate replies and use a compare-and-set status update that appends the reason. Return the updated item on `200`, `400` for malformed input, `403` for denied authority, `404` for missing or out-of-scope resources, and `409` for a stale gate, ineligible item, or invalid state. Do not expand resolve/reopen authority or change the rules for handling author-declined comments (#192).
 
-For a question from either role, save the asking role, question, occurrence, altitude, round, completed-round state, and any pending candidate key and digest. Transition via `needs_input` to `spec.awaiting_input` without completion. Extend the existing replies contract so `guidance` at that pause includes the active pause step ID and response classification identifies a spec question, distinct from build escalation. Reject stale or already consumed replies; preserve the existing build request shape. Use the workflow edge back to `spec.author` and feed the answer to the interrupted role without resetting completed rounds or recreating findings. If the pending candidate is lost on rematerialization, regenerate only the interrupted candidate and obtain a valid review of the replacement before selecting it.
+A human revise reply opens a fresh convergence occurrence with the committed spec and applicable open artifact feedback, including open model findings from a prior handoff. A valid fixed disposition on human feedback moves it to `addressed`; a declined or unfixed human item stays open, with the reason recorded if declined. Do not use reviewed completion’s predecessor behavior of blanket-addressing open items. Approval still confirms only the approver’s own addressed human items and checks the normal per-target precondition. Other open or unconfirmed items continue to block.
 
-On convergence or bounded handoff, return the selected validated result and checkpoint to the orchestrator. Run `#runSpecAuthoringCompletion` once per completed occurrence, before `applyDirective` enters `spec.human_review`. Commit the exact bytes reviewed in the selected round; verify the candidate digest and reuse the same trusted rendering. Keep creation identity stable on revisions and avoid a date-only change when the approved-for-handoff content is unchanged. Compare against `HEAD`, stage only the canonical spec path, and make one commit for a changed draft and none for an unchanged draft. Never make empty, duplicate, or intermediate spec commits. Completion must be retry-safe if git succeeds before artifact or checkpoint persistence: recover the matching commit and artifact metadata without committing again. Do not advance until the selected spec and its required records are durable. No completion runs for an input pause or failed review.
+#### Checkpoints, pause, and completion
 
-#### Fake mode and verification
+Store `producingStep: 'spec.author'`, logical occurrence ID, altitude, round, role session IDs, findings and dispositions by ID, outcome, and completion metadata in the existing checkpoint storage. Keep build checkpoints compatible and do not add a table or backfill. Keep candidate bytes in scratch; keep resume-only data private and expose safe audit fields, including location reason codes. Do not expose scratch paths or raw quotes in logs or telemetry.
 
-Fake mode exercises the production spec loop, as it does for build. Select scripted payloads by role and result contract. For feature and enhancement reviewers, return `{ status: 'satisfied' }` by default. For reviewed implementers, return the scripted spec and one `fixed` disposition with a summary for each carried feedback ID, using the IDs in trusted task inputs rather than reading or updating feedback directly. The first pass has an empty disposition array. Keep deterministic passage edits and anchor offsets on revision. Human comments become `addressed` through the same disposition path as live review, not a fake-only or blanket status update.
+On a question from either role, persist the asking role, question, occurrence, round, completed-round state, and any pending candidate key and digest. Follow `needs_input` to `spec.awaiting_input` without completing. Extend the existing guidance reply contract to identify the active pause step and distinguish a spec question from build escalation; reject stale or consumed replies. Resume the interrupted role via the existing edge to `spec.author`, passing the answer without resetting the budget or recreating findings. If a pending candidate is lost, regenerate that candidate and obtain a valid review of its replacement before selecting it.
 
-Count every actual scripted provider launch in `launch.count`: an ordinary initial reviewed spec or revision has two launches, one per role. Keep the per-run spec author pass counter implementer-only so reviewer launches do not advance the fixture revision. Preserve the one-shot accounting for bugs and file-issue runs and the failure fixture’s first matching launch behavior. Update `spec-review`, `implementation-review`, and `failed` seed expectations, fake-mode documentation, full-wiring assertions, and web tests; use persisted step and role events to wait for completion rather than relying on a single launch.
+Once the loop selects a draft, run `#runSpecAuthoringCompletion` once logically per completed occurrence before applying the directive into `spec.human_review`. Verify the candidate digest and commit the exact reviewed bytes. Preserve creation metadata on revision and keep an unchanged draft from producing a date-only commit. Compare with `HEAD` and commit only the canonical spec path if changed; do not make empty, duplicate, or intermediate commits. Checkpoint the selected digest and completion progress so a retry after git succeeds can recover the commit and artifact, bind anchors, and apply dispositions without duplicate rows or thread entries. Do not enter the gate until the spec, artifact, anchor decisions, dispositions, and completion record are durable. Do not run completion for an input pause or a failed review.
 
-Use a production control-plane dispatch test with deterministic provider results and a real git workspace. Confirm both role routes and sessions, reviewer read-only access, reviewed bytes at `HEAD`, feedback and summaries, and the exact `spec.human_review` stop. Exercise an invalid reviewer result after correction, default and nondefault depth, a declined blocker, a converged fix with no reviewer items left `addressed`, and a bounded handoff where approval fails until open items are explicitly handled. Cover human revision, input from both roles, stale replies, commit recovery, no-op revisions, and unchanged build and issue-canonical paths. Record run, step, role, altitude, round, outcome, and safe error code through existing telemetry; do not log draft text, feedback bodies, credentials, or host paths.
+#### Verification and operational impact
 
-A separate reviewer step would duplicate routing, question handling, and feedback. Per-round spec commits would publish throwaway drafts and compete with the existing completion write. A gate exemption would hide unresolved state from the common approval predicate. The chosen design keeps one round driver, verifies the draft’s bytes before committing, and makes every outstanding gate disposition explicit.
+Use deterministic providers at the production dispatch boundary and a real git workspace. Verify both routes and sessions, exact selected bytes at `HEAD`, stable feedback IDs and fix summaries, valid anchors as returned through `GET /v1/runs/:id/feedback`, and the stop at `spec.human_review`. Test unique, missing, non-unique, and vanished quotes; include a match after `🚀` that fails if counted in UTF-16 units. Include a quote that moves but stays unique, a quote that becomes ambiguous after revision, and a document-wide finding that intentionally has no anchor. Assert fallback audit reasons and that retrying after the commit does not create duplicate feedback or commits. Cover invalid reviewer results, declines, review limits, human revise, questions from both roles, stale replies, and unchanged build and issue-canonical paths.
+
+Fake mode uses the normal dispatch path, a satisfied reviewer by default, and one fixed disposition per carried ID from trusted inputs. An ordinary spec pass launches two sessions but increments the implementer’s fixture-pass counter only once. Preserve deterministic fixture revisions and human anchor behavior, one-shot accounting for bug and file-issue runs, and the failure fixture’s first matching launch. Update seed expectations and wait for persisted role or step state in end-to-end tests instead of waiting for a single launch. Record run, step, role, altitude, round, outcome, fallback code, and safe failure code in existing telemetry. Do not log spec text, feedback bodies, quotes, credentials, or host paths.
+
+A separate reviewer step would duplicate routing, pause handling, and feedback. Per-round spec commits would publish intermediate drafts and compete with the existing final write. Model-supplied offsets would be unreliable, and the final artifact ID may not exist during review. Quote-only capture keeps the reviewer read-only and leaves range calculation to the host. The trade-off is that a valid critique can lose its highlight when the text changes; the finding remains visible and the audit explains why.
 
 ## Task list
 
 *(Added by task decomposition stage)*
 
-- [ ] **Story: Run the spec author and reviewer through production dispatch**
-  - [ ] **Task: Add reviewed spec role contracts and context**
-    - **Description**: Add the author envelope, separate role prompts and capture, and reviewer read-only tooling. Preserve the one-shot contract and nested frontmatter stamping.
+- [ ] **Story: Run spec review through production dispatch**
+  - [ ] **Task: Define spec role prompts and result contracts**
+    - **Description**: Add the reviewed-author envelope and read-only reviewer context. Select the spec reviewer variant and its provider projection by trusted step and role.
     - **Acceptance criteria**:
-      - [ ] The author receives the planning skills, previous draft, and exact disposition IDs; invalid IDs fail after bounded correction.
-      - [ ] The reviewer reads the current scratch candidate, checks the issue and cited contracts, and returns `autocatalyst.reviewer_result.v1` without write access.
-      - [ ] Role outputs cannot overwrite one another, and invalid reviewer output cannot be interpreted as satisfied.
+      - [ ] The author receives the previous draft, human revision input, and exact carried IDs; invalid dispositions fail after bounded correction.
+      - [ ] The reviewer reads the rendered candidate, the issue, and cited concepts. Its prompt requires a short, exact, unique quote for passage findings and reserves document scope for whole-spec concerns.
+      - [ ] Capture accepts quote-only spec findings under `autocatalyst.reviewer_result.v1`, preserves exact quote text, rejects model-authored anchors, and leaves the build shape unchanged. The reviewer cannot edit either root.
     - **Dependencies**: None
   - [ ] **Task: Wire the spec strategy into the shared driver**
-    - **Description**: Select reviewed dispatch for file-canonical `spec.author` and apply the spec policy, candidate renderer, and exit outcomes.
+    - **Description**: Select file-canonical spec dispatch, apply workflow policy, and checkpoint progress and outcomes without invoking build-only checks or git writes.
     - **Acceptance criteria**:
-      - [ ] Both spec role routes record sessions; same-model routing still reviews and warns.
-      - [ ] One altitude and three rounds per altitude are the defaults; configured depth and round limit are honored.
-      - [ ] Bug and file-issue runs keep one-shot dispatch, and build retains its present behavior.
-    - **Dependencies**: Task: Add reviewed spec role contracts and context
+      - [ ] Both spec routes record sessions; same-model routing warns but still reviews, and missing wiring fails clearly.
+      - [ ] Default policy is one altitude and three rounds per altitude; configured limits and depth are honored.
+      - [ ] The checkpoint identifies `spec.author`. Bug and file-issue dispatch and build convergence remain unchanged.
+    - **Dependencies**: Task: Define spec role prompts and result contracts
   - [ ] **Task: Persist and resume spec questions**
-    - **Description**: Save the interrupted role and round and route its answer through the existing awaiting-input workflow edge.
+    - **Description**: Save the interrupted role and round and deliver a valid answer to that role through `spec.awaiting_input`.
     - **Acceptance criteria**:
-      - [ ] Either role can pause at `spec.awaiting_input`; a matching reply resumes that role with the answer, without losing completed rounds or duplicating feedback.
-      - [ ] A stale reply is rejected, scratch recovery cannot select an unreviewed draft, and build guidance remains compatible.
+      - [ ] Both roles can pause and resume without resetting completed rounds, committing a draft, or duplicating findings. Stale or consumed replies are rejected.
+      - [ ] A lost pending candidate is regenerated and reviewed before selection. Build replies retain their shape and behavior.
     - **Dependencies**: Task: Wire the spec strategy into the shared driver
-- [ ] **Story: Hand off the selected spec under the existing approval contract**
-  - [ ] **Task: Record and settle findings by ID**
-    - **Description**: Persist reviewer feedback and round history, replace blanket addressing with validated dispositions, and feed open items into gate revisions.
+- [ ] **Story: Hand off the selected spec with traceable feedback**
+  - [ ] **Task: Track findings and dispositions by ID**
+    - **Description**: Persist `artifact` feedback with model provenance, carry findings and human revisions into author prompts, and evaluate dispositions for the selected draft.
     - **Acceptance criteria**:
-      - [ ] Fixed reviewer findings reach `resolved` with the fix summary; convergence leaves no reviewer item open or addressed. A declined blocker is `wont_fix` and does not block explicit approval.
-      - [ ] Bounded handoff preserves open findings and its nonconverged outcome. A repeated claimed fix remains open rather than being silently resolved.
-      - [ ] Human revise triggers fresh review. Only valid fixed human IDs become `addressed`, and the approver’s confirmation still follows existing rules.
+      - [ ] Fixed model findings pass through `addressed` and reach `resolved` with their summaries before the gate. A declined blocker remains visible as `wont_fix` and does not block explicit approval.
+      - [ ] A repeated claimed fix stays open; bounded handoff preserves open items and the nonconverged outcome. Human feedback is addressed only by a valid fixed disposition.
     - **Dependencies**: Task: Wire the spec strategy into the shared driver
+  - [ ] **Task: Bind passage quotes to the selected artifact**
+    - **Description**: Record candidate quote checks, locate each eligible quote in the selected Markdown, and persist or clear only the model finding’s anchor with an audit entry.
+    - **Acceptance criteria**:
+      - [ ] A unique passage quote becomes a valid `artifact_range` on the committed artifact, with exact code-point offsets after `🚀`. A relocated unique quote binds at the new range.
+      - [ ] Missing, non-unique, and vanished quotes fall back to target level with the corresponding round audit reason. Document scope is distinguishable from failed passage binding.
+      - [ ] Rebinding is idempotent, does not create feedback rows, and does not modify human anchors or unrelated feedback.
+    - **Dependencies**: Task: Track findings and dispositions by ID
   - [ ] **Task: Complete and commit the selected draft**
-    - **Description**: Invoke spec completion once after the shared loop returns a selected draft. Persist spec metadata with the `spec.author` checkpoint.
+    - **Description**: Invoke spec completion after selection. Persist the artifact, anchor decisions, and dispositions before advancing to the gate.
     - **Acceptance criteria**:
-      - [ ] Git contains the exact bytes last selected for handoff, with one spec-only commit on change and none for unchanged content, interrupted rounds, or failure.
-      - [ ] A retry after commit-before-artifact failure recovers without duplicate commits, artifacts, or thread entries; incomplete persistence does not enter the gate.
-    - **Dependencies**: Task: Record and settle findings by ID
-  - [ ] **Task: Add explicit decline at a bounded spec handoff**
-    - **Description**: Add the scoped feedback update and card action, show the handoff outcome, and keep the common blocking predicate.
+      - [ ] Only changed selected bytes generate a spec-only commit. No-op revisions, intermediate rounds, pauses, and failed reviews generate no spec commit.
+      - [ ] A retry after git succeeds recovers the same commit and artifact without duplicate rows, anchors, or thread entries. Partial completion cannot advance to the gate.
+    - **Dependencies**: Task: Bind passage quotes to the selected artifact
+  - [ ] **Task: Add explicit decline for open findings at a bounded handoff**
+    - **Description**: Show the handoff outcome and add the scoped feedback update and card action without changing the approval predicate.
     - **Acceptance criteria**:
-      - [ ] Open findings at the cap block approval; Request changes remains available. An authorized human can decline an eligible item with a reason and must still approve separately.
-      - [ ] Wrong tenant, provenance, state, or stale gate cannot change an item. Human-originated items and originator-only resolve/reopen behavior are unaffected.
+      - [ ] Open findings at the cap block approval. The approver can request changes or decline an eligible open item with a reason and must still approve separately.
+      - [ ] Wrong tenant, provenance, state, or stale gate cannot change an item. Human-originated items and author-declined comment handling are unaffected.
     - **Dependencies**: Task: Complete and commit the selected draft
-- [ ] **Story: Keep fake runs, end-to-end tests, and operator guidance working**
+- [ ] **Story: Prove the loop and document it**
   - [ ] **Task: Make scripted spec sessions role-aware**
-    - **Description**: Emit the reviewed author envelope with one fixed disposition per carried ID, script a satisfied reviewer, and separate author-pass from launch accounting.
+    - **Description**: Add reviewed role payloads to fake mode and separate provider launch accounting from the author-pass counter.
     - **Acceptance criteria**:
-      - [ ] Fake mode uses the normal reviewed path. An ordinary spec pass has two launches but advances the author-pass counter once; fixture revisions still mark human comments `addressed` through the real disposition path.
-      - [ ] `spec-review`, `implementation-review`, and `failed` seeds reach their expected states; `full-wiring.e2e.spec.ts` verifies both spec roles and the failure fixture.
+      - [ ] An ordinary pass launches two sessions and increments the author-pass counter once. Human feedback is addressed through real dispositions.
+      - [ ] The `spec-review`, `implementation-review`, and `failed` seeds reach their expected states. Full-wiring and web tests wait for persisted role or step state.
     - **Dependencies**: Task: Complete and commit the selected draft
-  - [ ] **Task: Exercise review through production dispatch on real git**
-    - **Description**: Use deterministic providers at the dispatch boundary and assert persisted state, git history, and the human gate. Update web end-to-end fixtures and waits for the two-role pass.
+  - [ ] **Task: Exercise production dispatch on real git**
+    - **Description**: Run a feature workflow with deterministic providers through normal control-plane dispatch and inspect sessions, feedback API output, and branch history.
     - **Acceptance criteria**:
-      - [ ] A feature run has a persisted spec reviewer session, a resolved artifact finding with a fix in the selected Markdown, no blocking reviewer items, and a committed draft waiting at `spec.human_review`.
-      - [ ] Invalid reviewer output fails clearly; tests cover decline, cap disposition before approval, human revision, both input-pause roles, and enhancement kind and path.
-      - [ ] Web `spec-gate`, `spec-review`, and `start-run-from-issue` still verify the scripted revision and gate behavior.
-    - **Dependencies**: Task: Persist and resume spec questions; Task: Add explicit decline at a bounded spec handoff; Task: Make scripted spec sessions role-aware
+      - [ ] A feature run stops at `spec.human_review` with both role sessions, a committed fix, and a resolved `artifact` finding anchored to the correct passage. Missing, repeated, and vanished quotes remain visible as target-level feedback.
+      - [ ] A forced invalid reviewer result fails clearly. Tests cover the review limit, a declined blocker, human revise, both question roles, and unchanged build and issue-canonical behavior.
+    - **Dependencies**: Task: Persist and resume spec questions; Task: Add explicit decline for open findings at a bounded handoff; Task: Make scripted spec sessions role-aware
   - [ ] **Task: Update documentation and run validation**
-    - **Description**: Update the review and feedback concepts through the human-doc approval path, refresh the agent code map, and update fake-mode launch-count, seed, failure, and revision documentation.
+    - **Description**: Document scratch review, quote binding, cap handoff, and fake-mode accounting. Update the human concepts through the approval path and refresh the agent code map.
     - **Acceptance criteria**:
-      - [ ] The docs explain scratch review, the spec cap handoff, unchanged approval preconditions, reasoned model-finding decline, and two launches per ordinary fake spec pass.
-      - [ ] `pnpm nx run-many -t lint,typecheck,test -p core control-plane` and `pnpm nx run web:e2e` pass. Targeted contract and execution checks cover the new role and API schemas.
-    - **Dependencies**: Task: Exercise review through production dispatch on real git
+      - [ ] `context-human/concepts/review.md` and `context-agent/wiki/code-map.md` explain the spec loop. Feedback and operator docs explain anchor fallback and distinguish convergence from human approval.
+      - [ ] `pnpm nx run-many -t lint,typecheck,test -p core control-plane` and `pnpm nx run web:e2e` pass. Targeted contract and execution tests cover role-specific schema capture and feedback updates.
+    - **Dependencies**: Task: Exercise production dispatch on real git
