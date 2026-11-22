@@ -118,8 +118,12 @@ describe('Projects page and editor', () => {
     expect(client.createProject).not.toHaveBeenCalled();
     fireEvent.change(url, { target: { value: PROJECT.repoUrl } });
     await user.click(button('Save'));
-    await waitFor(() => expect(feedback().textContent).toBe('Saved'));
-    expect(screen.getByTestId('address').textContent).toBe(EDIT);
+    // Saved state and the router transition can commit separately. Verify both
+    // together before checking that the editor survived the address replacement.
+    await waitFor(() => {
+      expect(feedback().textContent).toBe('Saved');
+      expect(screen.getByTestId('address').textContent).toBe(EDIT);
+    });
     expect(client.getProject).not.toHaveBeenCalled();
     expect(client.createProject).toHaveBeenCalledExactlyOnceWith({
       displayName: PROJECT.displayName, repoUrl: PROJECT.repoUrl, hostRepository: PROJECT.hostRepository,
