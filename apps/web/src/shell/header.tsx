@@ -11,9 +11,9 @@ import { useLocation } from 'react-router-dom';
 
 import { headerContentForPath } from './navigation.js';
 
-export function Header(): ReactNode {
+export function Header({ projectName }: { readonly projectName?: string | undefined }): ReactNode {
   const location = useLocation();
-  const { breadcrumb, title } = headerContentForPath(location.pathname);
+  const { breadcrumb, title } = headerContentForPath(location.pathname, projectName);
 
   return (
     <header className="flex h-header-bar shrink-0 items-center gap-1.5 border-b border-border px-3">

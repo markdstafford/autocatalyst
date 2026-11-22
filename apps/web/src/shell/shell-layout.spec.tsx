@@ -246,6 +246,24 @@ describe('settings close guard while Connection is checking', () => {
     expect(screen.getByRole('heading', { level: 1, name: 'Runs' })).toBeDefined();
   });
 
+  it('keeps Connection open if clicking Projects starts a check on blur', async () => {
+    vi.spyOn(document, 'hasFocus').mockReturnValue(true);
+    const gate = gatedProjectsFetch();
+    renderAppWith(gate.fetchImpl, '/settings/connection');
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText('Bearer token'), 'tok');
+    const projects = screen.getByRole('link', { name: 'Projects' });
+    await user.click(projects);
+    expect(await screen.findByText('Checking')).toBeDefined();
+    expect(projects.getAttribute('aria-disabled')).toBe('true');
+    expect(screen.getByRole('heading', { level: 1, name: 'Connection' })).toBeDefined();
+
+    await act(async () => { gate.release(); });
+    expect(await screen.findByText('Connected')).toBeDefined();
+    await user.click(projects);
+    expect(screen.getByRole('heading', { level: 1, name: 'Projects' })).toBeDefined();
+  });
+
   it('keeps a failed result visible when Back is pressed, then leaves after a good token', async () => {
     let release: (() => void) | undefined;
     let outcome: 'unauthorized' | 'ok' = 'unauthorized';

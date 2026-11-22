@@ -523,16 +523,22 @@ settings is blocked: the shared close path (Back, `Cmd+,`/`Ctrl+,`, empty-field 
 navigation) refuses to close and Back shows `aria-disabled`, so the result is always visible before the
 operator leaves.
 
-**Form pages (Projects).** A form has an action row: the test button at the left, a flexible gap, a "Saved"
-confirmation, Cancel (secondary), and Save (primary). Save is disabled until the form is valid, and Cancel
-restores the saved values. A field is a label above the control with an optional hint below. An input is
-`--height-control-base` high, `--radius-sm`, with a `--color-border` outline, `--color-background` fill, and
-`--text-sm`. Projects shows a list, and Add and Edit show one focused form that replaces the list.
+**Form pages (Projects, #142).** Projects shows a list. Add and Edit replace the list with a focused
+form. A field has a visible label and linked hint or error. Use the shared `Select` for provider choices,
+including **Not configured** in both optional integrations. Inputs are `--height-control-base` high,
+`--radius-sm`, with a `--color-border` outline, `--color-background` fill, and `--text-sm`.
+Place the secondary Cancel to the left of the primary Save and align them to the right of the settings
+column. Save is disabled for invalid or unchanged drafts. Cancel discards the draft and restores focus
+to the list action or row. After a successful save, Done (or Back to runs for first-project setup) leaves
+the form; keep the result visible until the operator acts.
 
-The Projects test button ("Test credentials") is secondary and disabled while a test runs. Its result sits
-above the action row in a `role="status"` region with an 8 px dot and one of four states: Not tested and
-Testing (`--color-overlay` dot, `--color-subtext` text), Connected (`--color-green`), or Failed
-(`--color-red` error text, then a suggested fix in `--color-subtext` one line below).
+Use one `role="status"` above the action row. Start empty. Show an 8 px decorative dot and text:
+Saving uses `--color-overlay` and `--color-subtext`, Saved uses `--color-green`, and Failed uses
+`--color-red` with a one-line fix in `--color-subtext`. There is no Test credentials button,
+save-time connection test, or Connected result on Projects. The handle existence check in
+[`packages/core/src/project.ts:101-125`](../../packages/core/src/project.ts#L101-L125) does not verify
+provider credentials. This intentionally differs from the Settings and UX concepts; a separate
+on-demand credential check owns any future test action.
 
 **Write-only secret field.** A secret (bearer token, project credential) is a password input with
 `autocomplete="off"`. The control never receives a stored value, so it is empty every time the form opens.
@@ -543,8 +549,8 @@ Testing (`--color-overlay` dot, `--color-subtext` text), Connected (`--color-gre
 - With a secret stored, the label reads "Bearer token (leave blank to keep existing)", and the same pattern
   applies to "Credential". An empty field keeps the stored secret, and a new value replaces it.
 - After a successful check when the field still contains the checked value, the field empties (Connection's
-  apply-on-commit). A failed check of a typed value leaves the value in the field and the stored secret
-  unchanged.
+  apply-on-commit) or after a successful project save. A failure keeps the typed value in the live form
+  for retry and does not change the saved reference.
 - The component also forwards optional additive input wiring — `onBlur`, `onKeyDown`, and `loading` — to the
   underlying input so a consumer can commit on Enter/blur and show the read-only busy state; callers that omit
   them are unaffected.

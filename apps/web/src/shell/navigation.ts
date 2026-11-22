@@ -1,13 +1,25 @@
 /**
  * Shell routes and the header title/breadcrumb rules.
  *
- * These are the destinations that exist now: Runs and Settings → Connection.
- * Later issues add rows here; the header rule is pure so it is unit-tested for both
- * a top-level route (Runs) and a second-level route (Settings / Connection).
+ * Keep project scopes in the search string, independent of the selected run path.
  */
 export const RUNS_PATH = '/runs';
 export const SETTINGS_PATH = '/settings';
 export const CONNECTION_PATH = '/settings/connection';
+export const PROJECTS_PATH = '/settings/projects';
+export const NEW_PROJECT_PATH = `${PROJECTS_PATH}/new`;
+
+export function projectPath(id: string): string {
+  return `${PROJECTS_PATH}/${encodeURIComponent(id)}`;
+}
+
+export function projectIdFromSearch(search: string): string | undefined {
+  return new URLSearchParams(search).get('project') ?? undefined;
+}
+
+export function projectRunsPath(id: string, path = RUNS_PATH): string {
+  return `${path}?${new URLSearchParams({ project: id })}`;
+}
 
 /** Whether a pathname is inside the settings frame. */
 export function isSettingsPath(pathname: string): boolean {
@@ -37,11 +49,12 @@ export interface HeaderContent {
 
 /**
  * Header content for a pathname. Top-level views show only a title; deeper views
- * show a breadcrumb plus a title. Only Connection exists under settings today.
+ * show a breadcrumb plus a title.
  */
-export function headerContentForPath(pathname: string): HeaderContent {
+export function headerContentForPath(pathname: string, projectName?: string): HeaderContent {
   if (isSettingsPath(pathname)) {
-    return { breadcrumb: 'Settings', title: 'Connection' };
+    const projects = pathname === PROJECTS_PATH || pathname.startsWith(`${PROJECTS_PATH}/`);
+    return { breadcrumb: 'Settings', title: projects ? 'Projects' : 'Connection' };
   }
-  return { title: 'Runs' };
+  return { title: projectName ?? 'Runs' };
 }

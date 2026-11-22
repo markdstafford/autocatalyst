@@ -8,19 +8,19 @@
  * operator reaches entries only by reopening the sidebar (`[` or the footer toggle)
  * or while the hover overlay is shown.
  *
- * Contents switch with the settings frame: the primary sidebar lists Runs and
- * Settings; the settings sidebar's title row is a Back button followed by the
- * `Settings` label (reading `← Settings`), then the single Connection row.
+ * Contents switch with the settings frame. Project links live between Runs and
+ * Settings. In settings, Connection and Projects sit below the Back button.
  */
-import { ArrowLeft, ListChecks, PlugZap, Settings as SettingsIcon } from 'lucide-react';
+import type { Project } from '@autocatalyst/api-contract';
+import { ArrowLeft, FolderGit2, ListChecks, PlugZap, Settings as SettingsIcon } from 'lucide-react';
 import { forwardRef, type ReactNode } from 'react';
-import { NavLink } from 'react-router-dom';
+import { Link, NavLink, useLocation } from 'react-router-dom';
 
 import { Button } from '../ui/button.js';
 import { Tooltip } from '../ui/tooltip.js';
 import { actionTooltipKey } from './action-registry.js';
 import { isMacPlatform } from './key-utils.js';
-import { CONNECTION_PATH, RUNS_PATH } from './navigation.js';
+import { CONNECTION_PATH, PROJECTS_PATH, RUNS_PATH, isRunsPath, projectIdFromSearch, projectRunsPath } from './navigation.js';
 
 export type SidebarMode = 'docked' | 'overlay' | 'hidden';
 
@@ -29,7 +29,7 @@ const TITLE_TEXT_CLASSES = 'text-md font-medium text-text';
 const LIST_CLASSES = 'flex flex-col gap-0.5 p-2';
 
 const ROW_BASE =
-  'flex h-control-base items-center gap-2 rounded-sm px-2 text-sm ' +
+  'flex h-control-base shrink-0 items-center gap-2 rounded-sm px-2 text-sm ' +
   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus ' +
   'focus-visible:ring-offset-1 focus-visible:ring-offset-mantle';
 
@@ -39,17 +39,42 @@ function rowClass({ isActive }: { isActive: boolean }): string {
     : `${ROW_BASE} text-subtext hover:bg-hover hover:text-text`;
 }
 
-function PrimaryNav(): ReactNode {
+function PrimaryNav({ projects }: { readonly projects: readonly Project[] }): ReactNode {
+  const location = useLocation();
+  const runs = isRunsPath(location.pathname);
+  const projectId = runs ? projectIdFromSearch(location.search) : undefined;
+  const allRunsActive = runs && projectId === undefined;
   return (
     <>
       <div className={TITLE_ROW_CLASSES} data-testid="sidebar-title">
         <span className={TITLE_TEXT_CLASSES}>Autocatalyst</span>
       </div>
-      <div className={LIST_CLASSES}>
-        <NavLink to={RUNS_PATH} className={rowClass}>
+      <div className={`${LIST_CLASSES} min-h-0`}>
+        <Link to={RUNS_PATH} className={rowClass({ isActive: allRunsActive })} aria-current={allRunsActive ? 'page' : undefined}>
           <ListChecks aria-hidden size={14} />
           <span>Runs</span>
-        </NavLink>
+        </Link>
+        {projects.length > 0 ? (
+          <div role="group" aria-label="Projects" className="flex min-h-0 flex-col gap-0.5 overflow-auto">
+            <div className="flex items-center gap-2 px-2 py-1 text-xs font-medium text-subtext">
+              <FolderGit2 aria-hidden size={14} /> Projects
+            </div>
+            {projects.map((project) => {
+              const active = project.id === projectId;
+              return (
+                <Link
+                  key={project.id}
+                  data-project-link
+                  to={projectRunsPath(project.id)}
+                  aria-current={active ? 'page' : undefined}
+                  className={`${rowClass({ isActive: active })} pl-7`}
+                >
+                  <span className="truncate">{project.displayName}</span>
+                </Link>
+              );
+            })}
+          </div>
+        ) : null}
         <NavLink to={CONNECTION_PATH} className={rowClass}>
           <SettingsIcon aria-hidden size={14} />
           <span>Settings</span>
@@ -61,10 +86,12 @@ function PrimaryNav(): ReactNode {
 
 function SettingsNav({
   onCloseSettings,
-  checkPending = false
+  checkPending = false,
+  canLeaveConnection
 }: {
   onCloseSettings(): void;
   readonly checkPending?: boolean;
+  canLeaveConnection?(): boolean;
 }): ReactNode {
   const isMac = isMacPlatform();
   return (
@@ -96,6 +123,17 @@ function SettingsNav({
           <PlugZap aria-hidden size={14} />
           <span>Connection</span>
         </NavLink>
+        <NavLink
+          to={PROJECTS_PATH}
+          className={(state) => `${rowClass(state)} aria-disabled:cursor-not-allowed aria-disabled:opacity-60`}
+          aria-disabled={checkPending || undefined}
+          onClick={(event) => {
+            if (!(canLeaveConnection?.() ?? !checkPending)) event.preventDefault();
+          }}
+        >
+          <FolderGit2 aria-hidden size={14} />
+          <span>Projects</span>
+        </NavLink>
       </div>
     </>
   );
@@ -117,6 +155,8 @@ const BASE_NAV_CLASSES = 'flex flex-col bg-mantle';
 export interface SidebarProps {
   readonly mode: SidebarMode;
   readonly settings: boolean;
+  readonly projects?: readonly Project[];
+  canLeaveConnection?(): boolean;
   onCloseSettings(): void;
   /** Whether Connection is checking a token; soft-disables the settings Back button. */
   readonly settingsCheckPending?: boolean;
@@ -124,7 +164,7 @@ export interface SidebarProps {
 }
 
 export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
-  { mode, settings, onCloseSettings, settingsCheckPending = false, onPointerLeave },
+  { mode, settings, projects = [], canLeaveConnection, onCloseSettings, settingsCheckPending = false, onPointerLeave },
   ref
 ): ReactNode {
   const hidden = mode === 'hidden';
@@ -138,9 +178,10 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
       {...(onPointerLeave !== undefined ? { onPointerLeave } : {})}
     >
       {settings ? (
-        <SettingsNav onCloseSettings={onCloseSettings} checkPending={settingsCheckPending} />
+        <SettingsNav onCloseSettings={onCloseSettings} checkPending={settingsCheckPending}
+          {...(canLeaveConnection !== undefined ? { canLeaveConnection } : {})} />
       ) : (
-        <PrimaryNav />
+        <PrimaryNav projects={projects} />
       )}
     </nav>
   );

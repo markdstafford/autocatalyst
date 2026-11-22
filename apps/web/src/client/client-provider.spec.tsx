@@ -134,6 +134,21 @@ describe('ControlPlaneClientProvider', () => {
     expect(conn().authorization).toBe('unauthorized');
   });
 
+  it('ignores a late 401 from the previous client after replacing the token', async () => {
+    let finish!: (response: Response) => void;
+    const stub: typeof globalThis.fetch = () => new Promise((resolve) => { finish = resolve; });
+    renderWithStub(stub);
+    const oldClient = conn().client;
+    const read = oldClient.listProjects().catch(() => undefined);
+    await act(async () => { conn().setToken('replacement-test-token'); });
+    expect(conn().client).not.toBe(oldClient);
+    await act(async () => {
+      finish(jsonResponse({ error: { code: 'unauthorized', message: 'Unauthorized' } }, 401));
+      await read;
+    });
+    expect(conn().authorization).toBe('unknown');
+  });
+
   it('createTestClient sends the typed token but does not flip app-wide authorization on 401', async () => {
     const calls: RecordedCall[] = [];
     const stub: typeof globalThis.fetch = async (input, init) => {

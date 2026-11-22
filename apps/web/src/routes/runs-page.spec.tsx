@@ -8,7 +8,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
-import { MemoryRouter, useLocation } from 'react-router-dom';
+import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { AppRoutes } from '../app.js';
@@ -33,12 +33,14 @@ interface SeamState {
   runs: Run[];
   projects: Project[];
   runsStatus: number;
+  projectsStatus: number;
+  filters: (string | null)[];
   pullRequest?: PullRequest;
   refreshResponse?: RunPullRequestRefreshResponse;
   checks: string[];
 }
 
-const seam: SeamState = { runs: [], projects: [], runsStatus: 200, checks: [] };
+const seam: SeamState = { runs: [], projects: [], runsStatus: 200, projectsStatus: 200, filters: [], checks: [] };
 
 function errorResponse(code: string, status: number): Response {
   return jsonResponse({ error: { code, message: 'x' } }, status);
@@ -76,7 +78,7 @@ function sseResponse(init?: RequestInit): Response {
 const fetchSeam: typeof globalThis.fetch = async (input, init) => {
   const url = requestUrl(input);
   if (url.includes('/v1/projects')) {
-    return jsonResponse({ projects: seam.projects }, 200);
+    return seam.projectsStatus === 200 ? jsonResponse({ projects: seam.projects }, 200) : errorResponse('internal_error', seam.projectsStatus);
   }
   // Selected-run detail reads (checked before the run collection/resource).
   const detailMatch = /\/v1\/runs\/([^/?]+)\/(pull-request\/refresh|pull-request|sessions|spec|events)/u.exec(url);
@@ -114,7 +116,9 @@ const fetchSeam: typeof globalThis.fetch = async (input, init) => {
     if (seam.runsStatus !== 200) {
       return jsonResponse({ error: { code: 'internal_error', message: 'boom' } }, seam.runsStatus);
     }
-    return jsonResponse({ runs: seam.runs }, 200);
+    const project = new URL(url).searchParams.get('projectId');
+    seam.filters.push(project);
+    return jsonResponse({ runs: project === null ? seam.runs : seam.runs.filter((run) => run.projectId === project) }, 200);
   }
   // Health and anything else.
   return jsonResponse({ status: 'ok', database: { status: 'reachable' } }, 200);
@@ -122,7 +126,11 @@ const fetchSeam: typeof globalThis.fetch = async (input, init) => {
 
 function LocationProbe(): ReactNode {
   const location = useLocation();
-  return <span data-testid="location">{location.pathname}</span>;
+  const navigate = useNavigate();
+  return <>
+    <span data-testid="location">{location.pathname}{location.search}</span>
+    <button onClick={() => navigate(-1)}>History back</button>
+  </>;
 }
 
 function renderRuns(path = '/runs'): void {
@@ -142,6 +150,8 @@ beforeEach(() => {
   seam.runs = [];
   seam.projects = [];
   seam.runsStatus = 200;
+  seam.projectsStatus = 200;
+  seam.filters = [];
   seam.checks = [];
   delete seam.pullRequest;
   delete seam.refreshResponse;
@@ -305,10 +315,79 @@ describe('RunsPage first-page failure', () => {
   });
 });
 
+describe('RunsPage project scope', () => {
+  beforeEach(() => {
+    writeBearerToken('token-abc');
+    seam.projects = [makeProject({ id: 'alpha', displayName: 'Alpha' }), makeProject({ id: 'beta', displayName: 'Beta' })];
+    seam.runs = [
+      makeRun({ id: 'a1', projectId: 'alpha' }),
+      makeRun({ id: 'a2', projectId: 'alpha' }),
+      makeRun({ id: 'b1', projectId: 'beta' })
+    ];
+  });
+
+  it('keeps the filter through selection and browser back, and clears it through Runs', async () => {
+    const user = userEvent.setup();
+    renderRuns('/runs?project=alpha');
+    await screen.findByTestId('run-row-a1');
+    const location = () => screen.getByTestId('location').textContent;
+    await waitFor(() => expect(location()).toBe('/runs/a1?project=alpha'));
+    expect(screen.getByRole('heading', { name: 'Alpha' })).toBeDefined();
+    expect(screen.queryByTestId('run-row-b1')).toBeNull();
+    await user.click(screen.getByTestId('run-row-a2'));
+    expect(location()).toBe('/runs/a2?project=alpha');
+    await user.click(screen.getByRole('button', { name: 'History back' }));
+    await waitFor(() => expect(location()).toBe('/runs/a1?project=alpha'));
+
+    await user.click(screen.getByRole('link', { name: 'Beta' }));
+    await screen.findByTestId('run-row-b1');
+    await waitFor(() => expect(location()).toBe('/runs/b1?project=beta'));
+    expect(screen.queryByTestId('run-row-a1')).toBeNull();
+
+    await user.click(screen.getByRole('link', { name: 'Runs' }));
+    await screen.findByTestId('run-row-a1');
+    await waitFor(() => expect(location()).toBe('/runs/a1'));
+    expect(seam.filters).toEqual(['alpha', 'beta', null]);
+  });
+
+  it('uses a generic header while keeping an unknown id scoped', async () => {
+    renderRuns('/runs?project=unknown');
+    await screen.findByText('No runs yet');
+    expect(screen.getByRole('heading', { name: 'Runs' })).toBeDefined();
+    expect(screen.queryByRole('grid')).toBeNull();
+    expect(seam.filters).toEqual(['unknown']);
+  });
+
+  it('keeps rows usable when project names fail to load', async () => {
+    seam.projectsStatus = 500;
+    renderRuns();
+    await screen.findByTestId('run-row-a1');
+    expect(screen.queryByText('Add a project to get started')).toBeNull();
+  });
+});
+
 describe('RunsPage empty state', () => {
+  it('offers first-project setup only after a successful empty directory read', async () => {
+    writeBearerToken('token-abc');
+    renderRuns();
+    await screen.findByRole('heading', { name: 'Add a project to get started' });
+    expect(screen.getByRole('button', { name: 'Add project' })).toBeDefined();
+    expect(screen.queryByText('No runs yet')).toBeNull();
+  });
+
+  it('shows a project failure instead of no projects or no runs if the directory read fails', async () => {
+    writeBearerToken('token-abc');
+    seam.projectsStatus = 500;
+    renderRuns();
+    await screen.findByRole('heading', { name: 'Projects could not be loaded' });
+    expect(screen.queryByText('No runs yet')).toBeNull();
+    expect(screen.queryByText('Add a project to get started')).toBeNull();
+  });
+
   it('shows the no-runs empty state without a Start a run button', async () => {
     writeBearerToken('token-abc');
     seam.runs = [];
+    seam.projects = [makeProject()];
     renderRuns('/runs');
     await screen.findByTestId('runs-empty-no-runs');
     expect(screen.getByText('A run starts from a tracked issue.')).toBeDefined();
