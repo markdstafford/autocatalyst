@@ -1,25 +1,22 @@
 /**
  * A scripted `ControlPlaneClient` for run list tests.
  *
- * It implements only the methods the run list uses (`listRuns`, `listProjects`) and
- * leaves the rest throwing, so tests exercise the real SDK interface without mocking
- * client internals. The run source is cursor-paged (cursor = next start index), with
+ * It implements the SDK listRuns method so tests exercise the public interface
+ * without mocking client internals. The run source is cursor-paged (cursor = next start index), with
  * an optional `pageSize` cap so paging can be driven with a small fixture, and a
  * failure queue so a single poll/page/initial call can be made to fail.
  */
-import type { Project, ProjectListResponse, Run, RunListResponse } from '@autocatalyst/api-contract';
-import { ControlPlaneClientError, type ControlPlaneClient, type ListRunsOptions } from '@autocatalyst/sdk';
+import type { Run, RunListResponse } from '@autocatalyst/api-contract';
+import { ControlPlaneClientError, type ControlPlaneClient } from '@autocatalyst/sdk';
+
+type ListRunsOptions = NonNullable<Parameters<ControlPlaneClient['listRuns']>[0]>;
 
 export interface ScriptedClient {
-  readonly client: ControlPlaneClient;
+  readonly client: Pick<ControlPlaneClient, 'listRuns'>;
   /** Every `listRuns` call's options, in order. */
   readonly listRunsCalls: (ListRunsOptions | undefined)[];
-  /** Count of `listProjects` calls. */
-  listProjectsCalls: number;
   /** Replace the run source. */
   setRuns(runs: readonly Run[]): void;
-  /** Replace the projects source. */
-  setProjects(projects: readonly Project[]): void;
   /** Cap page size regardless of the requested limit (forces paging). */
   setPageSize(size: number): void;
   /** Make the next N `listRuns` calls reject with this error, then resume. */
@@ -36,27 +33,16 @@ export function validationError(): ControlPlaneClientError {
   return new ControlPlaneClientError(400, { error: { code: 'validation_error', message: 'Malformed cursor.' } });
 }
 
-function notImplemented(name: string): () => never {
-  return () => {
-    throw new Error(`scripted client: ${name} is not implemented`);
-  };
-}
-
-export function createScriptedClient(init?: { runs?: readonly Run[]; projects?: readonly Project[] }): ScriptedClient {
+export function createScriptedClient(init?: { runs?: readonly Run[] }): ScriptedClient {
   let runs: readonly Run[] = init?.runs ?? [];
-  let projects: readonly Project[] = init?.projects ?? [];
   let pageSize = Number.POSITIVE_INFINITY;
   const pendingErrors: unknown[] = [];
   const listRunsCalls: (ListRunsOptions | undefined)[] = [];
 
   const controller: ScriptedClient = {
-    listProjectsCalls: 0,
     listRunsCalls,
     setRuns(next) {
       runs = next;
-    },
-    setProjects(next) {
-      projects = next;
     },
     setPageSize(size) {
       pageSize = size;
@@ -77,39 +63,8 @@ export function createScriptedClient(init?: { runs?: readonly Run[]; projects?: 
         const end = start + slice.length;
         const nextCursor = end < runs.length ? String(end) : undefined;
         return { runs: [...slice], ...(nextCursor !== undefined ? { nextCursor } : {}) };
-      },
-      async listProjects(): Promise<ProjectListResponse> {
-        controller.listProjectsCalls += 1;
-        return { projects: [...projects] };
-      },
-      getHealth: notImplemented('getHealth'),
-      createProbeResource: notImplemented('createProbeResource'),
-      getProbeResource: notImplemented('getProbeResource'),
-      createConfigurationRecord: notImplemented('createConfigurationRecord'),
-      listConfigurationRecords: notImplemented('listConfigurationRecords'),
-      getConfigurationRecord: notImplemented('getConfigurationRecord'),
-      updateConfigurationRecord: notImplemented('updateConfigurationRecord'),
-      deleteConfigurationRecord: notImplemented('deleteConfigurationRecord'),
-      createSecret: notImplemented('createSecret'),
-      createProject: notImplemented('createProject'),
-      getProject: notImplemented('getProject'),
-      lookupProjectIssue: notImplemented('lookupProjectIssue'),
-      updateProject: notImplemented('updateProject'),
-      createConversationWithFirstRun: notImplemented('createConversationWithFirstRun'),
-      getRun: notImplemented('getRun'),
-      listRunSteps: notImplemented('listRunSteps'),
-      getRunPullRequest: notImplemented('getRunPullRequest'),
-      listRunSessions: notImplemented('listRunSessions'),
-      subscribeRunEvents: notImplemented('subscribeRunEvents'),
-      getRunSpec: notImplemented('getRunSpec'),
-      createRunFeedback: notImplemented('createRunFeedback'),
-      listRunFeedback: notImplemented('listRunFeedback'),
-      appendRunFeedbackThreadReply: notImplemented('appendRunFeedbackThreadReply'),
-      replyToRun: notImplemented('replyToRun'),
-      getPrincipal: notImplemented('getPrincipal'),
-      recoverRun: notImplemented('recoverRun'),
-      reconcilePullRequests: notImplemented('reconcilePullRequests')
-    } as ControlPlaneClient
+      }
+    }
   };
   return controller;
 }

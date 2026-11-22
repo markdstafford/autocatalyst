@@ -16,7 +16,9 @@ import {
   createContext,
   useCallback,
   useContext,
+  useLayoutEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode
 } from 'react';
@@ -62,34 +64,42 @@ export function ControlPlaneClientProvider({
   fetch: fetchImpl
 }: ControlPlaneClientProviderProps): ReactNode {
   const [token, setTokenState] = useState<string | undefined>(() => readBearerToken());
-  const [authorization, setAuthorization] = useState<AuthorizationState>('unknown');
+  const [unauthorizedClient, setUnauthorizedClient] = useState<ControlPlaneClient>();
+  const activeClient = useRef<ControlPlaneClient | undefined>(undefined);
 
   const baseFetch = fetchImpl ?? globalThis.fetch;
 
   const client = useMemo<ControlPlaneClient>(() => {
     const observingFetch: typeof globalThis.fetch = async (input, init) => {
       const response = await baseFetch(input, init);
-      if (response.status === UNAUTHORIZED_STATUS) {
-        setAuthorization('unauthorized');
+      if (response.status === UNAUTHORIZED_STATUS && activeClient.current === scopedClient) {
+        setUnauthorizedClient(scopedClient);
       }
       return response;
     };
-    return createControlPlaneClient({
+    const scopedClient = createControlPlaneClient({
       baseUrl: window.location.origin,
       fetch: observingFetch,
       ...(token !== undefined ? { bearerToken: token } : {})
     });
+    return scopedClient;
   }, [token, baseFetch]);
+
+  useLayoutEffect(() => {
+    activeClient.current = client;
+    return () => { activeClient.current = undefined; };
+  }, [client]);
+  const authorization: AuthorizationState = unauthorizedClient === client ? 'unauthorized' : 'unknown';
 
   const setToken = useCallback((next: string): void => {
     writeBearerToken(next);
-    setAuthorization('unknown');
+    setUnauthorizedClient(undefined);
     setTokenState(next);
   }, []);
 
   const clearToken = useCallback((): void => {
     clearBearerToken();
-    setAuthorization('unknown');
+    setUnauthorizedClient(undefined);
     setTokenState(undefined);
   }, []);
 

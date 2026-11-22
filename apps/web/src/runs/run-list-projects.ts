@@ -1,13 +1,4 @@
-/**
- * Pure project-name join rules for the run list.
- *
- * The list fetches `listProjects` once on load and then refetches only when a poll
- * or page introduces a *defined* `projectId` that is neither already known nor
- * already looked up since the last fetch. A "missing" set records ids still absent
- * after a fetch so an unresolved id does not trigger a refetch on every poll; it is
- * rebuilt after each successful fetch so a genuinely new id can trigger one future
- * refetch. Rows with an undefined or unknown `projectId` render a dash.
- */
+/** Project-name join and referenced project ids for run rows. */
 import type { Project } from '@autocatalyst/api-contract';
 
 import { CELL_DASH } from './run-fields.js';
@@ -34,7 +25,7 @@ export function projectName(
 
 /** The defined project ids referenced by the rows, deduped. */
 export function referencedProjectIds(
-  rows: readonly { readonly projectId?: string }[]
+  rows: readonly { readonly projectId?: string | undefined }[]
 ): string[] {
   const ids = new Set<string>();
   for (const row of rows) {
@@ -43,30 +34,4 @@ export function referencedProjectIds(
     }
   }
   return [...ids];
-}
-
-/**
- * Whether a project refetch is warranted: some row references a defined id that is
- * neither known nor already recorded as missing since the last fetch.
- */
-export function needsProjectRefetch(
-  rows: readonly { readonly projectId?: string }[],
-  known: ReadonlyMap<string, string>,
-  missing: ReadonlySet<string>
-): boolean {
-  return referencedProjectIds(rows).some((id) => !known.has(id) && !missing.has(id));
-}
-
-/** The set of referenced ids still absent from `known` (recomputed after a fetch). */
-export function computeMissingProjectIds(
-  rows: readonly { readonly projectId?: string }[],
-  known: ReadonlyMap<string, string>
-): Set<string> {
-  const missing = new Set<string>();
-  for (const id of referencedProjectIds(rows)) {
-    if (!known.has(id)) {
-      missing.add(id);
-    }
-  }
-  return missing;
 }

@@ -24,17 +24,18 @@
  * `]` toggles the detail pane on the runs route, and `?` opens the shortcuts overlay.
  * All keys flow through the action registry.
  */
-import { useCallback, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 
 import { hasBearerToken } from '../auth/token-store.js';
+import { ProjectDirectoryProvider, useProjectDirectory } from '../projects/project-directory.js';
 import { RunDetailFooterProvider, useRunDetailFooter } from '../runs/run-detail-footer.js';
 import { clampPaneWidth } from '../theme/preferences.js';
 import { useTheme } from '../theme/theme-provider.js';
 import { ConnectionStateProvider, useConnectionState } from './connection-state.js';
 import { Footer } from './footer.js';
 import { Header } from './header.js';
-import { CONNECTION_PATH, RUNS_PATH, isRunsPath, isSettingsPath } from './navigation.js';
+import { CONNECTION_PATH, RUNS_PATH, isRunsPath, isSettingsPath, projectIdFromSearch } from './navigation.js';
 import { ShortcutsOverlay } from './shortcuts-overlay.js';
 import { Sidebar, type SidebarMode } from './sidebar.js';
 import { useShellKeys } from './use-shell-keys.js';
@@ -58,7 +59,9 @@ export function ShellLayout(): ReactNode {
   return (
     <ConnectionStateProvider>
       <RunDetailFooterProvider>
-        <ShellLayoutInner />
+        <ProjectDirectoryProvider>
+          <ShellLayoutInner />
+        </ProjectDirectoryProvider>
       </RunDetailFooterProvider>
     </ConnectionStateProvider>
   );
@@ -68,11 +71,14 @@ function ShellLayoutInner(): ReactNode {
   const { preferences, updatePreferences } = useTheme();
   const connectionState = useConnectionState();
   const runDetailFooter = useRunDetailFooter();
+  const { projects } = useProjectDirectory();
   const sidebarOpen = preferences.sidebarOpen;
   const location = useLocation();
   const navigate = useNavigate();
   const settings = isSettingsPath(location.pathname);
   const paneEnabled = isRunsPath(location.pathname);
+  const activeProjectId = paneEnabled ? projectIdFromSearch(location.search) : undefined;
+  const projectName = projects.find((project) => project.id === activeProjectId)?.displayName;
   // The pane only renders once a run list exists, i.e. with a stored token. Without
   // one the runs route shows the connect prompt, so the footer's detail-pane zone must
   // stay zero width even though the toggle itself is enabled on the route.
@@ -81,6 +87,15 @@ function ShellLayoutInner(): ReactNode {
   const [hoverOpen, setHoverOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const sidebarRef = useRef<HTMLElement | null>(null);
+  const focusProjects = useRef(false);
+  useLayoutEffect(() => {
+    if (sidebarOpen && focusProjects.current) {
+      focusProjects.current = false;
+      const nav = sidebarRef.current;
+      (nav?.querySelector<HTMLElement>('[data-project-link][aria-current]') ??
+        nav?.querySelector<HTMLElement>('[data-project-link]'))?.focus();
+    }
+  }, [sidebarOpen]);
 
   // Remember the route to return to when settings closes. Updated whenever the
   // operator is not in settings.
@@ -180,13 +195,15 @@ function ShellLayoutInner(): ReactNode {
             ref={sidebarRef}
             mode={sidebarMode}
             settings={settings}
+            projects={projects}
             onCloseSettings={closeSettings}
             settingsCheckPending={connectionState.settingsCheckPending}
+            canLeaveConnection={() => !connectionState.isSettingsCheckPending()}
             {...(sidebarMode === 'overlay' ? { onPointerLeave: handleOverlayPointerLeave } : {})}
           />
 
           <div className="flex min-w-0 flex-1 flex-col">
-            <Header />
+            <Header projectName={projectName} />
             <main className="min-h-0 flex-1 overflow-hidden bg-background">
               <Outlet context={outletContext} />
             </main>
@@ -198,6 +215,12 @@ function ShellLayoutInner(): ReactNode {
           onToggleSidebar={() => {
             setSidebarOpen(!sidebarOpen);
           }}
+          {...(!settings && sidebarMode === 'hidden' && projects.length > 0 ? {
+            onExpandProjects: () => {
+              focusProjects.current = true;
+              setSidebarOpen(true);
+            }
+          } : {})}
           paneEnabled={paneEnabled}
           paneVisible={paneVisible}
           paneWidthPx={preferences.sidePaneWidthPx}

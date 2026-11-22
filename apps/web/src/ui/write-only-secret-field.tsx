@@ -1,7 +1,7 @@
 /**
  * Write-only secret field (design-system "write-only secret field").
  *
- * A secret — the bearer token today, a project credential later (#142) — is a
+ * A bearer token or project credential is a
  * password input that can *replace* a stored secret but never receives or displays
  * the stored value. The component is handed only `hasStoredValue`, never the secret
  * itself, so the stored secret cannot leak through props, the DOM, or an accessible
@@ -14,10 +14,10 @@
  * - The value is controlled by the parent so it can be emptied after a save or a
  *   successful check; the field is empty every time the form opens.
  *
- * Optional, additive input wiring (`onBlur`, `onKeyDown`, `loading`) is forwarded to
+ * The optional blur, keydown, and loading wiring is forwarded to
  * the underlying `Input` so a consumer like the Connection page can commit on
  * Enter/blur and show the read-only busy state while checking. Callers that omit them
- * are unaffected.
+ * are unaffected. Disabled and error states use the same shared form controls.
  */
 import type { FocusEventHandler, KeyboardEventHandler, ReactNode } from 'react';
 
@@ -37,6 +37,8 @@ export interface WriteOnlySecretFieldProps {
   readonly hint?: string;
   /** Whether the control is required (no stored value and nothing typed). */
   readonly required?: boolean;
+  readonly disabled?: boolean;
+  readonly error?: string | undefined;
   /** Optional blur handler forwarded to the input (e.g. commit-on-blur). */
   readonly onBlur?: FocusEventHandler<HTMLInputElement>;
   /** Optional keydown handler forwarded to the input (e.g. Enter commit / Escape). */
@@ -59,6 +61,8 @@ export function WriteOnlySecretField({
   secretName = 'Bearer token',
   hint,
   required,
+  disabled,
+  error,
   onBlur,
   onKeyDown,
   loading,
@@ -68,11 +72,12 @@ export function WriteOnlySecretField({
   const label = secretFieldLabel(secretName, hasStoredValue);
 
   return (
-    <Field label={label} hint={hint}>
+    <Field label={label} {...(hint !== undefined ? { hint } : {})} {...(error !== undefined ? { error } : {})}>
       <Input
         type="password"
         autoComplete="off"
         value={value}
+        disabled={disabled}
         onValueChange={(next) => {
           onValueChange(next);
         }}

@@ -14,26 +14,31 @@
  * shell `listLost` flag, which the footer reads.
  */
 import type { Run } from '@autocatalyst/api-contract';
-import { useCallback, useEffect, useRef, type ReactNode } from 'react';
-import { useNavigate, useOutletContext, useParams } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { useLocation, useNavigate, useOutletContext, useParams } from 'react-router-dom';
 
 import { hasBearerToken } from '../auth/token-store.js';
 import { useControlPlaneConnection } from '../client/client-provider.js';
+import { useProjectDirectory } from '../projects/project-directory.js';
+import { ProjectEmptyState } from '../projects/project-empty-state.js';
 import { RunDetailPane } from '../runs/run-detail-pane.js';
+import { buildProjectNameMap, referencedProjectIds } from '../runs/run-list-projects.js';
 import { RunTable } from '../runs/run-table.js';
 import { useCurrentPrincipalId } from '../runs/use-current-principal.js';
 import { useRunDetail } from '../runs/use-run-detail.js';
 import { useRunList } from '../runs/use-run-list.js';
 import { useConnectionState } from '../shell/connection-state.js';
-import { CONNECTION_PATH, runPath } from '../shell/navigation.js';
+import { CONNECTION_PATH, projectIdFromSearch, projectRunsPath, runPath } from '../shell/navigation.js';
 import { useActionKeys } from '../shell/use-action-keys.js';
 import type { RunsOutletContext } from '../shell/shell-layout.js';
 import { PANE_WIDTH_MAX, PANE_WIDTH_MIN } from '../theme/preferences.js';
+import { Button } from '../ui/button.js';
 import { EmptyState } from '../ui/empty-state.js';
 import { ResizeHandle } from '../ui/resize-handle.js';
 
 export function RunsPage(): ReactNode {
   const navigate = useNavigate();
+  const projectId = projectIdFromSearch(useLocation().search);
   const { runId: routeRunId } = useParams();
   const connected = hasBearerToken();
   const { client, authorization } = useControlPlaneConnection();
@@ -44,9 +49,10 @@ export function RunsPage(): ReactNode {
 
   const navigateToRun = useCallback(
     (id: string, options: { readonly replace: boolean }): void => {
-      navigate(runPath(id), { replace: options.replace });
+      const path = runPath(id);
+      navigate(projectId === undefined ? path : projectRunsPath(projectId, path), options);
     },
-    [navigate]
+    [navigate, projectId]
   );
 
   const state = useRunList({
@@ -54,8 +60,18 @@ export function RunsPage(): ReactNode {
     connected,
     routeRunId,
     navigateToRun,
-    onListLostChange: setListLost
+    onListLostChange: setListLost,
+    ...(projectId !== undefined ? { requestArgs: { projectId } } : {})
   });
+
+  const { phase: projectsPhase, projects, lookup, refresh } = useProjectDirectory();
+  const projectNames = useMemo(() => buildProjectNameMap(projects), [projects]);
+  useEffect(() => {
+    if (!connected) return;
+    const ids = referencedProjectIds(state.rows);
+    if (projectId !== undefined) ids.push(projectId);
+    lookup(ids);
+  }, [connected, state.rows, projectId, lookup]);
 
   // Detail reads and check state belong to the selection even while the pane is closed.
   const selectedRun: Run | undefined = connected ? state.rows.find((run) => run.id === state.selectedRunId) : undefined;
@@ -110,6 +126,9 @@ export function RunsPage(): ReactNode {
   }
 
   const hasRows = state.rows.length > 0;
+  if (!hasRows && projectsPhase === 'ready' && projects.length === 0 && state.phase === 'ready') {
+    return <ProjectEmptyState fromRuns />;
+  }
 
   return (
     <div ref={mainRef} className="flex h-full min-w-0">
@@ -146,7 +165,7 @@ export function RunsPage(): ReactNode {
         <RunTable
           rows={state.rows}
           selectedRunId={state.selectedRunId}
-          projectNames={state.projectNames}
+          projectNames={projectNames}
           nowIso={state.nowIso}
           hasNextPage={state.hasNextPage}
           isPaging={state.isPaging}
@@ -155,7 +174,7 @@ export function RunsPage(): ReactNode {
         />
       );
     }
-    if (state.phase === 'loading') {
+    if (state.phase !== 'error' && (state.phase === 'loading' || projectsPhase === 'loading')) {
       return (
         <div
           data-testid="runs-loading"
@@ -173,6 +192,14 @@ export function RunsPage(): ReactNode {
         >
           <h2 className="text-md font-medium text-text">Runs could not be loaded</h2>
           <p className="text-sm text-subtext">The client will try again on the next poll.</p>
+        </div>
+      );
+    }
+    if (projectsPhase === 'error') {
+      return (
+        <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center">
+          <h2 className="text-md font-medium text-text">Projects could not be loaded</h2>
+          <Button variant="secondary" onClick={() => { void refresh(); }}>Retry</Button>
         </div>
       );
     }

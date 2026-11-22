@@ -5,7 +5,7 @@
  * dedupe, poll/page failure raising only listLost (401 excepted), unmount clearing
  * listLost, and bounded project-name refetch.
  */
-import type { ListRunsOptions } from '@autocatalyst/sdk';
+import type { ControlPlaneClient } from '@autocatalyst/sdk';
 import type { RunListResponse } from '@autocatalyst/api-contract';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -14,10 +14,11 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Run } from '@autocatalyst/api-contract';
 
-import { makeProject, makeRun } from './run-fixtures.js';
+import { makeRun } from './run-fixtures.js';
 import { createScriptedClient, unauthorizedError } from './scripted-client.js';
-import { projectName } from './run-list-projects.js';
 import { useRunList, type UseRunListOptions } from './use-run-list.js';
+
+type ListRunsOptions = NonNullable<Parameters<ControlPlaneClient['listRuns']>[0]>;
 
 interface HarnessProps extends Omit<UseRunListOptions, 'navigateToRun' | 'onListLostChange'> {
   readonly navigateToRun: UseRunListOptions['navigateToRun'];
@@ -38,9 +39,6 @@ function Harness(props: HarnessProps): ReactNode {
       <span data-testid="paging">{String(state.isPaging)}</span>
       {state.rows.map((r) => (
         <div key={r.id}>
-          <span data-testid={`proj-${r.id}`}>
-            {projectName(r.projectId, state.projectNames)}
-          </span>
           <button data-testid={`select-${r.id}`} onClick={() => state.select(r.id)}>
             select {r.id}
           </button>
@@ -77,10 +75,9 @@ afterEach(() => {
 });
 
 describe('useRunList initial load', () => {
-  it('loads the first page, renders rows in order, selects the first, and joins projects once', async () => {
+  it('loads the first page, renders rows in order, and selects the first', async () => {
     const client = createScriptedClient({
-      runs: [makeRun({ id: 'r1', projectId: 'p1' }), makeRun({ id: 'r2', projectId: 'p1' })],
-      projects: [makeProject({ id: 'p1', displayName: 'Alpha' })]
+      runs: [makeRun({ id: 'r1', projectId: 'p1' }), makeRun({ id: 'r2', projectId: 'p1' })]
     });
     const spies = defaults();
     render(<Harness client={client.client} connected routeRunId={undefined} {...spies} />);
@@ -88,8 +85,6 @@ describe('useRunList initial load', () => {
     await waitFor(() => expect(screen.getByTestId('phase').textContent).toBe('ready'));
     expect(screen.getByTestId('rows').textContent).toBe('r1,r2');
     expect(screen.getByTestId('selected').textContent).toBe('r1');
-    expect(screen.getByTestId('proj-r1').textContent).toBe('Alpha');
-    expect(client.listProjectsCalls).toBe(1);
     expect(spies.navigateToRun).toHaveBeenCalledWith('r1', { replace: true });
 
     const first = client.listRunsCalls[0];
@@ -112,7 +107,6 @@ describe('useRunList initial load', () => {
     await act(async () => {});
     expect(screen.getByTestId('phase').textContent).toBe('no-token');
     expect(client.listRunsCalls).toHaveLength(0);
-    expect(client.listProjectsCalls).toBe(0);
   });
 
   it('passes request args through to listRuns', async () => {
@@ -196,11 +190,8 @@ describe('useRunList polling', () => {
         return new Promise<RunListResponse>((resolve) => {
           releasers.push(() => resolve({ runs: [makeRun({ id: 'r1' })] }));
         });
-      },
-      async listProjects() {
-        return { projects: [] };
       }
-    } as unknown as import('@autocatalyst/sdk').ControlPlaneClient;
+    };
     const spies = defaults();
     render(<Harness client={client} connected routeRunId={undefined} pollIntervalMs={1000} {...spies} />);
     await act(async () => {
@@ -365,36 +356,59 @@ describe('useRunList paging', () => {
   });
 });
 
-describe('useRunList project refetch', () => {
-  it('refetches once for a newly introduced unknown project id, not every poll', async () => {
+describe('useRunList scope', () => {
+  it('rereads every loaded page with the active filter and drops an old in-flight page on scope change', async () => {
     vi.useFakeTimers();
-    const client = createScriptedClient({
-      runs: [makeRun({ id: 'r1', projectId: 'p1' })],
-      projects: [makeProject({ id: 'p1', displayName: 'Alpha' })]
-    });
+    let finishOldPage!: (page: RunListResponse) => void;
+    const listRuns = vi.fn<ControlPlaneClient['listRuns']>()
+      .mockResolvedValueOnce({ runs: [makeRun({ id: 'old-1', projectId: 'old' })], nextCursor: 'old-cursor' })
+      .mockResolvedValueOnce({ runs: [makeRun({ id: 'old-2', projectId: 'old' })], nextCursor: 'old-third' })
+      .mockResolvedValueOnce({ runs: [makeRun({ id: 'old-1', projectId: 'old' })], nextCursor: 'old-cursor' })
+      .mockImplementationOnce(() => new Promise((resolve) => { finishOldPage = resolve; }))
+      .mockResolvedValue({ runs: [makeRun({ id: 'new-1', projectId: 'new' })] });
+    const client = { listRuns };
     const spies = defaults();
-    render(
-      <Harness client={client.client} connected routeRunId={undefined} pollIntervalMs={1000} {...spies} />
-    );
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(0);
-    });
-    expect(client.listProjectsCalls).toBe(1);
+    const props = { client, connected: true, routeRunId: undefined, pollIntervalMs: 1000, ...spies };
+    const { rerender } = render(<Harness {...props} requestArgs={{ projectId: 'old' }} />);
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { screen.getByTestId('load').click(); });
+    expect(screen.getByTestId('rows').textContent).toBe('old-1,old-2');
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(listRuns.mock.calls.map(([args]) => args)).toEqual([
+      { limit: 50, projectId: 'old' }, { limit: 50, projectId: 'old', cursor: 'old-cursor' },
+      { limit: 50, projectId: 'old' }, { limit: 50, projectId: 'old', cursor: 'old-cursor' }
+    ]);
 
-    // Poll introduces a run with an unknown project id -> exactly one refetch.
-    client.setRuns([makeRun({ id: 'r1', projectId: 'p1' }), makeRun({ id: 'r2', projectId: 'p-missing' })]);
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(1000);
-    });
-    expect(client.listProjectsCalls).toBe(2);
+    rerender(<Harness {...props} requestArgs={{ projectId: 'new' }} />);
+    expect(screen.getByTestId('rows').textContent).toBe('');
+    expect(screen.getByTestId('hasNext').textContent).toBe('false');
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(screen.getByTestId('rows').textContent).toBe('new-1');
+    expect(screen.getByTestId('selected').textContent).toBe('new-1');
+    expect(spies.navigateToRun).toHaveBeenLastCalledWith('new-1', { replace: true });
 
-    // The id is still missing after the refetch; further polls do not refetch again.
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1000);
+      finishOldPage({ runs: [makeRun({ id: 'old-late', projectId: 'old' })], nextCursor: 'old-third' });
       await vi.advanceTimersByTimeAsync(1000);
     });
-    expect(client.listProjectsCalls).toBe(2);
-    expect(screen.getByTestId('proj-r2').textContent).toBe('—');
+    expect(screen.getByTestId('rows').textContent).toBe('new-1');
+    expect(screen.getByTestId('hasNext').textContent).toBe('false');
+    expect(listRuns.mock.calls.slice(4)).toEqual([
+      [{ limit: 50, projectId: 'new' }], [{ limit: 50, projectId: 'new' }]
+    ]);
+  });
+
+  it('ignores an initial read from a retired client even at the same filter', async () => {
+    let finish!: (page: RunListResponse) => void;
+    const old = { listRuns: () => new Promise<RunListResponse>((resolve) => { finish = resolve; }) };
+    const next = createScriptedClient({ runs: [makeRun({ id: 'new' })] }).client;
+    const props = { connected: true, routeRunId: undefined, ...defaults() };
+    const { rerender } = render(<Harness {...props} client={old} />);
+    rerender(<Harness {...props} client={next} />);
+    await waitFor(() => expect(screen.getByTestId('rows').textContent).toBe('new'));
+    await act(async () => { finish({ runs: [makeRun({ id: 'wrong' })] }); });
+    expect(screen.getByTestId('rows').textContent).toBe('new');
+    expect(props.navigateToRun).toHaveBeenCalledExactlyOnceWith('new', { replace: true });
   });
 });
 

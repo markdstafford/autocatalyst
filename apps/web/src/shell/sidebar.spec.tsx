@@ -35,7 +35,7 @@ describe('Sidebar (primary)', () => {
 });
 
 describe('Sidebar (settings)', () => {
-  it('shows a Back button then the Connection row, and no stale close button or primary rows', () => {
+  it('shows Back, Connection, and Projects, without primary or future rows', () => {
     renderSidebar({ settings: true, path: '/settings/connection' });
     const connection = screen.getByRole('link', { name: 'Connection' });
     expect(connection.getAttribute('aria-current')).toBe('page');
@@ -43,17 +43,19 @@ describe('Sidebar (settings)', () => {
     // The old right-aligned close button is gone.
     expect(screen.queryByRole('button', { name: 'Close settings' })).toBeNull();
     expect(screen.queryByRole('link', { name: 'Runs' })).toBeNull();
-    for (const absent of ['General', 'Appearance', 'Projects']) {
+    expect(screen.getByRole('link', { name: 'Projects' }).getAttribute('href')).toBe('/settings/projects');
+    for (const absent of ['General', 'Appearance']) {
       expect(screen.queryByRole('link', { name: absent })).toBeNull();
     }
   });
 
-  it('orders the Back button before the Connection row (tab order: Back, then Connection)', () => {
+  it('orders Back, Connection, and Projects', () => {
     renderSidebar({ settings: true, path: '/settings/connection' });
     const back = screen.getByRole('button', { name: 'Back' });
     const connection = screen.getByRole('link', { name: 'Connection' });
     const FOLLOWING = Node.DOCUMENT_POSITION_FOLLOWING;
     expect(back.compareDocumentPosition(connection) & FOLLOWING).toBeTruthy();
+    expect(connection.compareDocumentPosition(screen.getByRole('link', { name: 'Projects' })) & FOLLOWING).toBeTruthy();
   });
 
   it('calls onCloseSettings from the Back control when no check is pending', async () => {

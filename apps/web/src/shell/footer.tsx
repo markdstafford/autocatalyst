@@ -13,7 +13,7 @@
  * Tooltip labels and key hints come from the action registry, so the footer never
  * hard-codes a shortcut key.
  */
-import { PanelLeft, PanelRight } from 'lucide-react';
+import { FolderGit2, PanelLeft, PanelRight } from 'lucide-react';
 import type { CSSProperties, ReactNode } from 'react';
 
 import type { RunDetailFooterContent } from '../runs/run-detail-footer.js';
@@ -47,6 +47,7 @@ function FooterZone({ name, className, style, children }: FooterZoneProps): Reac
 export interface FooterProps {
   readonly sidebarOpen: boolean;
   onToggleSidebar(): void;
+  onExpandProjects?(): void;
   /** Whether the detail pane toggle is enabled (true on the runs route). */
   readonly paneEnabled?: boolean;
   /** Whether the detail pane is currently shown. */
@@ -62,6 +63,7 @@ export interface FooterProps {
 export function Footer({
   sidebarOpen,
   onToggleSidebar,
+  onExpandProjects,
   paneEnabled = false,
   paneVisible = false,
   paneWidthPx = 0,
@@ -107,7 +109,17 @@ export function Footer({
         style={sidebarZoneStyle}
       />
 
-      <FooterZone name="List" className="min-w-0 flex-1">
+      <FooterZone name="List" className="relative min-w-0 flex-1">
+        {onExpandProjects !== undefined ? (
+          <div className="absolute left-0">
+            <Tooltip label="Projects">
+              <Button variant="secondary" size="control-sm" aria-label="Projects" onClick={onExpandProjects}
+                className="aspect-square border-0 bg-transparent px-0 text-subtext hover:bg-hover hover:text-text">
+                <FolderGit2 aria-hidden size={14} />
+              </Button>
+            </Tooltip>
+          </div>
+        ) : null}
         <HealthIndicator />
       </FooterZone>
 
