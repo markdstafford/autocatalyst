@@ -478,6 +478,8 @@ has no illustration. Patterns:
 - No projects: "Add a project to get started" with an "Add project" button. With no connection set, the
   button opens Connection settings first.
 - No runs: says a run starts from a tracked issue and shows a "Start a run" button.
+- Missing work kind: show "Needs a work kind" and one line explaining why. Keep "Start run" disabled
+  until the operator chooses a work kind.
 - A tab with nothing to show: says why, with no button. For a work kind without a spec, it explains that
   the work kind has no spec. For a spec not yet written, it says the spec is being drafted and that the
   operator will be asked to review it here.

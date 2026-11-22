@@ -6,6 +6,7 @@
  * factory is reused across the table, hook, selection, and routing tests.
  */
 import type {
+  CreateConversationWithFirstRunResponse,
   Project,
   PullRequest,
   PullRequestState,
@@ -209,5 +210,18 @@ export function makeProject(overrides: MakeProjectOverrides = {}): Project {
     credentialRefs: [],
     createdAt: '2026-01-01T00:00:00.000Z',
     updatedAt: '2026-01-01T00:00:00.000Z'
+  };
+}
+
+export function makeCreateRunResponse(run: Run): CreateConversationWithFirstRunResponse {
+  const { createdAt, updatedAt, owner, tenant, topicId } = run;
+  return {
+    run,
+    conversation: { id: 'conv', owner, tenant, createdAt, updatedAt, projectId: run.projectId ?? 'project',
+      identity: 'web', activeTopicId: topicId },
+    topic: { id: topicId, conversationId: 'conv', kind: 'main', owner, tenant,
+      title: run.trackedIssue?.title ?? 'Start run', createdAt, updatedAt },
+    runStep: { id: 'step', runId: run.id, phase: null, step: 'start', role: 'orchestrator', startedAt: createdAt,
+      endedAt: null, durationMs: null, occurrence: { index: 0, attempt: 1 }, checkpointResult: null }
   };
 }

@@ -3,12 +3,14 @@
 - Runtime Micromanager source, pin, synchronization, fidelity checks and E2E handoff: [micromanager-runtime.md](micromanager-runtime.md).
 - Web client design system (tokens, shell dimensions, alignment rules, component rules): [design-system.md](design-system.md).
 
-Last updated: 2026-11-22 (project and credential setup, #142).
+Last updated: 2026-11-22 (start a run from an issue, #143).
 
 > How agents navigate the codebase. Keep this current: whenever you add, move, or significantly
 > change a module, update the relevant section in the same change.
 
 ## Recent agent notes
+
+- 2026-11-22: Start a run from an issue (#143, web only). The shell mounts one `apps/web/src/runs/start-run-dialog.tsx` for both the sidebar and Runs empty state, defers the Runs 401 redirect while it is open, and delegates focus trapping and return to `ui/dialog.tsx`. `runs/issue-reference.ts` parses supported references without normalizing the submitted body; `runs/start-run-errors.ts` maps fixed feedback from the public lookup envelope and never shows lookup messages. `projects/project-directory.tsx` masks an unavailable project until a read started after its 404 reconciles it. `routes/runs-page.tsx` passes the server-created row once to `runs/use-run-list.ts` on the destination route, retiring old reads before navigation. See [handoff decision](../decisions/web-start-run-handoff.md). Proofs: `runs/start-run-dialog.spec.tsx`, `routes/runs-page.spec.tsx`, and the unseeded built-client loop in `apps/web/e2e/start-run-from-issue.spec.ts`. Run `pnpm nx test web`, `pnpm nx build web`, and `pnpm nx e2e web`.
 
 - 2026-11-21: `apps/web/src/projects/projects-page.spec.tsx` waits for both Saved and the edit address in the create-flow test. React state and the router transition may commit separately; observing Saved alone does not imply navigation has completed.
 
