@@ -6,7 +6,9 @@
  * no injected token). Scenarios are seeded through the SDK-backed seed entry, never by
  * writing browser storage or routing around the API, and no test makes a model call.
  */
-import { expect, test } from './fixtures/connected.js';
+import { createControlPlaneClient } from '@autocatalyst/sdk';
+
+import { expect, FIXTURE_TOKEN, test } from './fixtures/connected.js';
 import type { Browser, BrowserContextOptions, Page } from '@playwright/test';
 
 const EDGE = 0.5;
@@ -185,11 +187,17 @@ test.describe('run list', () => {
     }
   });
 
-  test('an empty server shows the no-runs state without a Start a run button', async ({
+  test('a project without runs shows the no-runs state without a Start a run button', async ({
     browser,
     fakeServer,
     connectedStatePath
   }) => {
+    const sdk = createControlPlaneClient({ baseUrl: fakeServer.baseUrl, bearerToken: FIXTURE_TOKEN });
+    await sdk.createProject({
+      displayName: 'Fixture app',
+      repoUrl: 'https://github.com/autocatalyst-fixtures/demo-app',
+      hostRepository: { provider: 'github', owner: 'autocatalyst-fixtures', name: 'demo-app' }
+    });
     const { page, close } = await openRuns(browser, connectedStatePath, `${fakeServer.baseUrl}/runs`);
     try {
       await expect(page.getByTestId('runs-empty-no-runs')).toBeVisible();

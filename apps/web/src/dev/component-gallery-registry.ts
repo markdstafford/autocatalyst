@@ -82,6 +82,12 @@ export const GALLERY_ENTRIES: readonly GalleryEntry[] = [
     kind: 'base-ui-wrapper'
   },
   {
+    id: 'select',
+    title: 'Select',
+    description: 'Labelled single selection with keyboard navigation and disabled and error states.',
+    kind: 'base-ui-wrapper'
+  },
+  {
     id: 'write-only-secret-field',
     title: 'Write-only secret field',
     description: 'Password field whose label changes when a secret is already stored.',

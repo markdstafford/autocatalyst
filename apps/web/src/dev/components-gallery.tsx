@@ -45,6 +45,7 @@ import { EmptyState } from '../ui/empty-state.js';
 import { Field } from '../ui/field.js';
 import { Input } from '../ui/input.js';
 import { ResizeHandle } from '../ui/resize-handle.js';
+import { Select } from '../ui/select.js';
 import { Shortcut, ShortcutList, type ShortcutPlatform } from '../ui/shortcut.js';
 import { Tabs, TabPanel } from '../ui/tabs.js';
 import { Textarea } from '../ui/textarea.js';
@@ -471,6 +472,8 @@ function renderExample(id: string, platform: ShortcutPlatform, surface: GalleryS
           <Textarea defaultValue="Invalid value" error aria-label="Textarea in error state" rows={3} />
         </div>
       );
+    case 'select':
+      return <SelectExample />;
     case 'write-only-secret-field':
       return <WriteOnlySecretExample />;
     case 'tabs':
@@ -550,6 +553,20 @@ function ShortcutExample({ platform }: { platform: ShortcutPlatform }): ReactNod
         <ShortcutList bindings={selectNext} platform={platform} />
       </DescriptionItem>
     </DescriptionList>
+  );
+}
+
+function SelectExample(): ReactNode {
+  const [value, setValue] = useState('none');
+  const [required, setRequired] = useState('');
+  const options = [{ value: 'none', label: 'Not configured' }, { value: 'github', label: 'GitHub' }];
+  return (
+    <div className="flex max-w-sm flex-col gap-3">
+      <Select label="Provider example" options={options} value={value} onValueChange={setValue} />
+      <Select label="Disabled provider" options={options} value="github" onValueChange={() => {}} disabled />
+      <Select label="Required provider" options={options.slice(1)} value={required} onValueChange={setRequired}
+        required placeholder="Select a provider" error={required === '' ? 'Select a provider.' : undefined} />
+    </div>
   );
 }
 

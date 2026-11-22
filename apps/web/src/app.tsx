@@ -20,6 +20,7 @@ import type { ReactNode } from 'react';
 
 import { ControlPlaneClientProvider } from './client/client-provider.js';
 import { devRouteElements } from './dev/dev-routes.js';
+import { ProjectsPage } from './projects/projects-page.js';
 import { NotFoundPage } from './routes/not-found-page.js';
 import { RunsPage } from './routes/runs-page.js';
 import { ConnectionPage } from './settings/connection-page.js';
@@ -35,6 +36,7 @@ export function AppRoutes(): ReactNode {
         <Route path="/runs/:runId" element={<RunsPage />} />
         <Route path="/settings" element={<Navigate to="/settings/connection" replace />} />
         <Route path="/settings/connection" element={<ConnectionPage />} />
+        <Route path="/settings/projects/:projectId?" element={<ProjectsPage />} />
       </Route>
       {devRouteElements()}
       <Route path="*" element={<NotFoundPage />} />
