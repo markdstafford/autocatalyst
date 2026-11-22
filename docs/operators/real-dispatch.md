@@ -78,3 +78,53 @@ are not written to logs.
 The default request timeout is 60 000 ms. Profiles without an explicit `endpoint.requestTimeoutMs`
 use that default, which is too low for long-running spec-authoring steps — always set it to
 `600000` for agent-backed dispatch.
+
+## Spec review before the human gate
+
+Feature and enhancement runs use two sessions per review round under `spec.author`: an author and
+a read-only reviewer. The reviewer reads the draft in scratch, not a commit. Only the selected,
+validly reviewed draft can become the committed spec. If either role asks a question, answer at
+`spec.awaiting_input` to resume that role.
+
+### Passage highlights and target-level feedback
+
+For a passage finding, the reviewer supplies a short, exact quote from the draft's Markdown. The
+server binds the finding to a text range only if the quote occurs exactly once in the reviewed
+draft and exactly once in the selected, committed Markdown. The Spec tab highlights the range.
+A unique quote can move between drafts and still bind. If the server cannot bind it safely, the
+finding stays visible on the spec as target-level feedback, without a highlight.
+
+The spec step's checkpoint audit records the location decision for each finding:
+
+| Code | Meaning |
+|---|---|
+| `bound` | The exact quote was unique in both drafts and the finding has a highlight. |
+| `document_scope` | The finding concerns the whole spec and needs no highlight. |
+| `quote_missing` | The reviewer omitted the passage quote or supplied only whitespace. |
+| `quote_not_found_in_candidate` | The quote did not occur in the reviewed draft. |
+| `quote_non_unique_in_candidate` | The quote occurred more than once in the reviewed draft. |
+| `quote_removed_from_selected` | The quote did not occur in the selected draft. |
+| `quote_non_unique_in_selected` | The quote occurred more than once in the selected draft. |
+
+The structured logs use `spec_convergence_round` for round outcomes,
+`spec_convergence_binding` for binding decisions (including `fallbackCode` for target-level
+feedback), and `spec_convergence_failed` for safe failure codes. These events omit draft text,
+feedback bodies, quotes, and workspace paths.
+
+### Review limits and approval
+
+A model finding marked `resolved` means automated review accepted the fix, not that a human
+confirmed it or approved the spec. An author who declines a finding leaves it visible as
+`wont_fix`, with a reason. Whether review converges or reaches a limit, approval at
+`spec.human_review` remains a separate human action.
+
+At `max_rounds` (the review limit) or `oscillation` (a repeated unresolved concern), the run
+hands off the last validly reviewed draft with outstanding findings still open. Open findings
+block approval under the normal gate rules. You can request changes or select **Decline finding**
+on an eligible open model finding in this handoff. The API equivalent is
+`PATCH /v1/runs/:id/feedback/:feedbackId` with
+`{ "status": "wont_fix", "body": "<nonblank reason>" }`. This updates one finding without
+advancing the run. It does not apply to human comments or to findings the author already declined.
+
+See [fake-mode launch accounting](fake-mode.md#scripted-spec-content-and-revision) to verify the
+two-role dispatch without a live provider.

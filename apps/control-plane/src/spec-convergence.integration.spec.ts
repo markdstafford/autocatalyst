@@ -83,9 +83,14 @@ async function harness(script: (launch: Launch, previous: readonly Launch[]) => 
 
   const launches: Launch[] = [];
   const failures: unknown[] = [];
+  const telemetry: Record<string, unknown>[] = [];
   const adapter = createClaudeAgentAdapter();
   const app = await createControlPlaneServer({
     ...options, realRunnerDispatch: { enabled: true },
+    logger: { stream: { write(line: string) {
+      const record = JSON.parse(line) as Record<string, unknown>;
+      if (record['component'] === 'spec-convergence') telemetry.push(record);
+    } } },
     providerAdapters: new Map([[buildProviderAdapterKey(claudeProviderKind, claudeAgentAdapterId), () => ({
       ...adapter,
       async startSession(input: AgentProviderSessionInput) {
@@ -140,7 +145,8 @@ async function harness(script: (launch: Launch, previous: readonly Launch[]) => 
   }, { timeout: 4500, interval: 30 });
   const git = (...args: string[]) => execFileSync('git', args, { cwd: launches[0]!.repoRoot, encoding: 'utf8' });
   return {
-    paths, start, request, wait, git, launches,
+    paths, start, request, wait, git, launches, telemetry,
+    get runId() { return runId; },
     async steps() { return (await request('GET', '/steps')).json().steps as RunStep[]; },
     async feedback() { return (await request('GET', '/feedback')).json().feedback as FeedbackResponse[]; },
     async close() { await app.close(); }
@@ -186,10 +192,22 @@ it('commits only the selected candidate, settles findings, and binds exact quote
     const steps = await runtime.steps();
     const result = steps.find(step => step.step === 'spec.author')?.checkpointResult;
     expect(JSON.stringify(result)).not.toMatch(/passageQuote|privateSpecReview|spec-candidate-|vanish later/u);
+    const fallbackCodes = ['quote_missing', 'quote_not_found_in_candidate', 'quote_non_unique_in_candidate',
+      'quote_removed_from_selected', 'quote_non_unique_in_selected', 'document_scope'];
     expect(result).toMatchObject({ outcome: 'converged', artifactId: artifact.id,
-      findings: expect.arrayContaining(['bound', 'quote_missing', 'quote_not_found_in_candidate',
-        'quote_non_unique_in_candidate', 'quote_removed_from_selected', 'quote_non_unique_in_selected',
-        'document_scope'].map(location => expect.objectContaining({ location }))) });
+      findings: expect.arrayContaining(['bound', ...fallbackCodes].map(location => expect.objectContaining({ location }))) });
+    const tags = { runId: runtime.runId, phase: 'spec', step: 'spec.author', altitude: 'build', role: 'reviewer' };
+    expect(runtime.telemetry.filter(event => event['event'] === 'spec_convergence_round')).toMatchObject([
+      { ...tags, round: 1, outcome: 'continue' },
+      { ...tags, round: 2, outcome: 'converged' }
+    ]);
+    const bindings = runtime.telemetry.filter(event => event['event'] === 'spec_convergence_binding');
+    expect(bindings).toHaveLength(7);
+    expect(bindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ...tags, round: 1, outcome: 'bound', feedbackId: feedback.find(item => item.title === 'moved')!.id }),
+      ...fallbackCodes.map(fallbackCode => expect.objectContaining({ ...tags, round: 1, outcome: 'target_level', fallbackCode }))
+    ]));
+    expect(JSON.stringify(runtime.telemetry)).not.toMatch(/passageQuote|keep once|made up|vanish later|Draft|needs attention|Clarified the draft|spec-candidate-|feature-reviewed-draft\.md|ac-spec-convergence-/u);
     const { sessions } = (await runtime.request('GET', '/sessions')).json() as { sessions: Session[] };
     expect(sessions.map(session => session.role)).toEqual(['implementer', 'reviewer', 'implementer', 'reviewer']);
     expect(new Set(runtime.launches.map(launch => launch.resultFile)).size).toBe(4);
@@ -229,6 +247,11 @@ it('resumes both roles by pause occurrence, rejects stale replies, and regenerat
     expect((await reply(second.id, 'Error answer')).statusCode).toBe(200);
     await runtime.wait('spec.human_review');
     expect(runtime.launches.map(launch => launch.role)).toEqual(['implementer', 'implementer', 'reviewer', 'implementer', 'reviewer']);
+    expect(runtime.telemetry.filter(event => event['event'] === 'spec_convergence_paused')).toMatchObject([
+      { role: 'implementer', round: 1, outcome: 'needs_input' },
+      { role: 'reviewer', round: 1, outcome: 'needs_input' }
+    ]);
+    expect(JSON.stringify(runtime.telemetry)).not.toMatch(/What is the scope|What about errors|Scope answer|Error answer/u);
     const authors = (await runtime.steps()).filter(s => s.step === 'spec.author');
     const occurrences = authors.map(s => (s.checkpointResult as { occurrenceId?: string }).occurrenceId);
     expect(new Set(occurrences).size).toBe(1);
@@ -247,6 +270,9 @@ it('bounds repeated fixes, lets a human decline an open finding without advancin
     expect(runtime.launches[2]!.ids).toEqual([item!.id]);
     const authorStep = (await runtime.steps()).find(s => s.step === 'spec.author');
     expect(authorStep?.checkpointResult).toMatchObject({ outcome: 'oscillation', openFeedbackIds: [item!.id] });
+    expect(runtime.telemetry).toContainEqual(expect.objectContaining({
+      event: 'spec_convergence_round', round: 2, outcome: 'oscillation'
+    }));
     expect((await runtime.request('POST', '/replies', { kind: 'approve' })).statusCode).toBe(409);
     expect((await runtime.request('PATCH', `/feedback/${item!.id}`, { status: 'wont_fix', body: '   ' })).statusCode).toBe(400);
     expect((await runtime.request('PATCH', '/feedback/fb_unknown', { status: 'wont_fix', body: 'Out of scope.' })).statusCode).toBe(404);
@@ -261,7 +287,7 @@ it('bounds repeated fixes, lets a human decline an open finding without advancin
 }, 15000);
 
 it('retries an invalid reviewer verdict once and does not commit an unreviewed draft', async () => {
-  const runtime = await harness(launch => launch.role === 'implementer' ? author('# Draft') : {});
+  const runtime = await harness(launch => launch.role === 'implementer' ? author('# Draft') : { reason: 'private verdict text' });
   try {
     await runtime.start();
     expect((await runtime.wait('failed')).failureReason).toBe('reviewer_result_invalid');
@@ -269,6 +295,11 @@ it('retries an invalid reviewer verdict once and does not commit an unreviewed d
     expect(runtime.launches[2]!.resultFile).not.toBe(runtime.launches[1]!.resultFile);
     expect(runtime.git('log', '--format=%s', '--', specPath)).toBe('');
     expect(await runtime.feedback()).toEqual([]);
+    expect(runtime.telemetry).toMatchObject([{
+      event: 'spec_convergence_failed', runId: runtime.runId, phase: 'spec', step: 'spec.author',
+      role: 'reviewer', altitude: 'build', round: 1, outcome: 'failed', failureCode: 'reviewer_result_invalid'
+    }]);
+    expect(JSON.stringify(runtime.telemetry)).not.toContain('private verdict text');
   } finally { await runtime.close(); }
 }, 15000);
 
@@ -281,6 +312,9 @@ it('recovers after committing but before persisting the artifact without relaunc
     database.exec("CREATE TRIGGER fail_spec_artifact BEFORE INSERT ON artifacts WHEN NEW.kind='feature_spec' BEGIN SELECT RAISE(ABORT, 'injected artifact outage'); END");
     await runtime.start();
     await runtime.wait('failed');
+    expect(runtime.telemetry).toContainEqual(expect.objectContaining({
+      event: 'spec_convergence_failed', role: 'none', round: 2, failureCode: 'spec_authoring_failed'
+    }));
     expect(runtime.git('log', '--format=%s', '--', specPath)).toBe('docs: add feature spec reviewed-draft\n');
     const [original] = await runtime.feedback();
     expect(original?.status).toBe('open');
@@ -316,6 +350,9 @@ it('hands off at the default round cap and carries an open finding into a fresh,
     const first = (await runtime.steps()).find(step => step.step === 'spec.author')!;
     const [open] = (await runtime.feedback()).filter(item => item.status === 'open');
     expect(first.checkpointResult).toMatchObject({ outcome: 'max_rounds', openFeedbackIds: [open!.id] });
+    expect(runtime.telemetry).toContainEqual(expect.objectContaining({
+      event: 'spec_convergence_round', round: 3, outcome: 'max_rounds'
+    }));
     expect(runtime.launches).toHaveLength(6);
     const revise = await runtime.request('POST', '/replies', { kind: 'request_changes' });
     expect(revise.statusCode).toBe(200);

@@ -241,10 +241,13 @@ Multilingual Plane) before passage A, and passages A through D. Passages C and D
 heading appear after it.
 
 Each feature or enhancement pass launches an author and a separate read-only reviewer under
-`spec.author`. The scripted reviewer is satisfied by default. The selected draft reaches
-`spec.human_review` only after both sessions are recorded; this review does not approve the spec.
+`spec.author`. An ordinary pass adds two to `counters/launch.count` but only one to the run's
+`counters/spec-author-<runId>.count`, so a reviewer launch does not change the revision fixture.
+The scripted reviewer is satisfied by default. The selected draft reaches `spec.human_review`
+only after both sessions are recorded; this review does not approve the spec.
 When checking launch counts in tests, wait for the persisted gate or both role sessions, not just the
-first launch record.
+first launch record. See [spec review before the human gate](real-dispatch.md#spec-review-before-the-human-gate)
+for scratch review, passage highlights, and what happens when review reaches a limit.
 
 A paragraph before the table carries two links so link rendering can be checked by hand: a safe
 `https://github.com/autocatalyst-fixtures/demo-app` link that renders as a real clickable anchor, and

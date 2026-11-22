@@ -1643,6 +1643,12 @@ export async function createControlPlaneServer(
         logger: {
           warn(message: string, details?: unknown) {
             console.warn(message, details);
+          },
+          info(event, fields) {
+            app.log.info({ ...fields, event }, event);
+          },
+          error(event, fields) {
+            app.log.error({ ...fields, event }, event);
           }
         },
         workspaceContextRefresher: async (runId) => {

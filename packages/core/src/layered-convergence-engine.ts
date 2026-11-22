@@ -58,7 +58,11 @@ export interface LayeredConvergenceEngineOptions {
     workflow: RunWorkflowDefinition,
     step: RunStepId
   ) => ResolvedStepConvergencePolicy;
-  readonly logger?: { warn(message: string, details?: unknown): void };
+  readonly logger?: {
+    warn(message: string, details?: unknown): void;
+    info?(event: string, fields: Record<string, unknown>): void;
+    error?(event: string, fields: Record<string, unknown>): void;
+  };
   readonly clock?: () => string;
   readonly idGenerator?: () => string;
   readonly reviewerPrincipal?: Principal;

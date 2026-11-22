@@ -7,6 +7,7 @@ import {
   type Feedback, type FindingDisposition, type JsonValue, type Principal, type Run,
   type SpecAuthorResult, type SpecReviewerFinding, type ImplementationAltitude
 } from '@autocatalyst/api-contract';
+import { makeSanitizedFailureReason } from '@autocatalyst/execution';
 import { resolveReviewedRoutes, type ConvergenceEngineInput } from './convergence-engine.js';
 import { getImplementationAltitudeLadder, getStepConvergencePolicy } from './convergence-policy.js';
 import type { LayeredConvergenceEngineOptions } from './layered-convergence-engine.js';
@@ -14,12 +15,14 @@ import type { CompleteSpecAuthoringOutput } from './spec-authoring-service.js';
 import type { WorkspaceContext } from './orchestrator.js';
 import { parseSpecFrontmatter, renderReviewedSpecCandidate } from './spec-frontmatter.js';
 import { locateSpecQuote, validateSpecAnchor, type SpecQuoteLookup } from './spec-anchor-validator.js';
+import { safeFailureReasonFromError } from './safe-failure-reason.js';
 
 type Role = 'implementer' | 'reviewer';
 type Outcome = 'converged' | 'max_rounds' | 'oscillation';
 type Location =
   | 'bound' | 'document_scope' | 'quote_missing' | 'quote_not_found_in_candidate'
   | 'quote_non_unique_in_candidate' | 'quote_removed_from_selected' | 'quote_non_unique_in_selected';
+type ReviewProgress = { altitude: ImplementationAltitude; round: number; role: Role | 'none' };
 
 type Candidate = {
   path: string;
@@ -240,6 +243,34 @@ export async function runSpecConvergence(
   input: SpecConvergenceInput,
   options: LayeredConvergenceEngineOptions
 ): Promise<SpecConvergenceResult> {
+  const policy = (options.getPolicy ?? getStepConvergencePolicy)(input.workflow, 'spec.author');
+  const progress: ReviewProgress = { altitude: getImplementationAltitudeLadder(policy)[0]!, round: 1, role: 'none' };
+  const tags = { component: 'spec-convergence', runId: input.run.id, phase: 'spec', step: 'spec.author' };
+  const logFailure = (reason: unknown) => {
+    // Only allowlisted codes/phrases may reach telemetry, never a runner reason verbatim.
+    const safe = makeSanitizedFailureReason(reason);
+    const failureCode = !safe || safe === 'Runner failed before terminal result.'
+      ? 'runner_failed_before_terminal_result' : safe.replace(/^Execution failed: /u, '');
+    options.logger?.error?.('spec_convergence_failed', { ...tags, ...progress, outcome: 'failed', failureCode });
+  };
+  let result: SpecConvergenceResult;
+  try {
+    result = await runSpecReview(input, options, policy, progress, tags);
+  } catch (cause) {
+    logFailure((cause == null ? undefined : safeFailureReasonFromError(cause)) ?? 'spec_authoring_failed');
+    throw cause;
+  }
+  if (result.directive === 'fail') logFailure(result.reason);
+  return result;
+}
+
+async function runSpecReview(
+  input: SpecConvergenceInput,
+  options: LayeredConvergenceEngineOptions,
+  policy: ReturnType<typeof getStepConvergencePolicy>,
+  progress: ReviewProgress,
+  tags: Readonly<Record<string, string>>
+): Promise<SpecConvergenceResult> {
   const { run, runStep } = input;
   const fail = (reason: string): SpecConvergenceResult => ({ directive: 'fail', reason });
   if (!options.feedback.createSpecReviewFinding || !options.feedback.bindSpecReviewAnchor) {
@@ -247,7 +278,6 @@ export async function runSpecConvergence(
   }
   const kind = input.workflow.artifactKind;
   if (kind !== 'feature_spec' && kind !== 'enhancement_spec') return fail('spec_review_not_configured');
-  const policy = (options.getPolicy ?? getStepConvergencePolicy)(input.workflow, 'spec.author');
   let state = stateOf(runStep.checkpointResult);
   if (!state && input.answer) {
     const previous = stateOf(input.steps.find(step => step.id === input.answer?.sourceStepId)?.checkpointResult);
@@ -273,6 +303,9 @@ export async function runSpecConvergence(
   }
 
   const current = state;
+  const ladder = getImplementationAltitudeLadder(current);
+  progress.altitude = ladder[current.altitudeIndex]!;
+  progress.round = current.round;
   if (current.pause) return { directive: 'needs_input', pause: current.pause, checkpoint: checkpoint(current) };
   const persist = async () => {
     await options.runSteps.updateCheckpoint({ runStepId: runStep.id, runId: run.id, tenant: run.tenant,
@@ -291,6 +324,7 @@ export async function runSpecConvergence(
     current.pause = { kind: 'spec_question', producingStep: 'spec.author', role,
       question: safeQuestion, sourceStepId: runStep.id, ...(sessionId ? { sessionId } : {}) };
     await persist();
+    options.logger?.info?.('spec_convergence_paused', { ...tags, ...progress, outcome: 'needs_input' });
     return { directive: 'needs_input', pause: current.pause, checkpoint: checkpoint(current) };
   };
 
@@ -305,11 +339,11 @@ export async function runSpecConvergence(
         runId: run.id, step: 'spec.author', warningCode: 'role_distinct_unsatisfied'
       });
     }
-    const ladder = getImplementationAltitudeLadder(current);
     const canonical = await input.readCanonicalSpec();
     while (!current.outcome) {
       const altitude = ladder[current.altitudeIndex]!;
       const round = current.round;
+      Object.assign(progress, { altitude, round, role: 'none' });
       const base = { run, runId: run.id, tenant: run.tenant, round };
       let pending = current.pending;
       let markdown = pending ? await readCandidate(await getWorkspace(), pending) : undefined;
@@ -317,14 +351,16 @@ export async function runSpecConvergence(
       const previousDraft = previousMarkdown ?? canonical?.markdown;
       const canonicalPath = canonical?.path ?? current.last?.path ?? pending?.path;
 
-      const runRole = (role: Role, attempt: number, task: Omit<SpecReviewSessionInput, 'resultFile' | 'focus'>) =>
-        options.dispatcher.runRole({
+      const runRole = (role: Role, attempt: number, task: Omit<SpecReviewSessionInput, 'resultFile' | 'focus'>) => {
+        progress.role = role;
+        return options.dispatcher.runRole({
           ...base, role, route: role === 'reviewer' ? routes.reviewerRoute : routes.implementerRoute,
           toolPolicyMode: 'read_only',
           specReview: { ...task, focus: focusByAltitude[altitude],
             resultFile: `spec-review-${digest(current.occurrenceId).slice(0, 12)}-${altitude}-${round}-${role}-${attempt}-${randomUUID()}.json`,
             ...(current.answer?.role === role ? { answer: current.answer.body } : {}) }
         });
+      };
 
       if (!pending || markdown === undefined) {
         if (pending && current.intake) {
@@ -475,9 +511,11 @@ export async function runSpecConvergence(
         current.round++;
       }
       await persist();
+      options.logger?.info?.('spec_convergence_round', { ...tags, altitude, round, role: 'reviewer', outcome });
     }
   }
 
+  progress.role = 'none';
   if (current.completion) return { directive: 'advance', checkpoint: checkpoint(current) };
   const selected = current.last;
   if (!selected) return fail('spec_review_checkpoint_invalid');
@@ -493,6 +531,11 @@ export async function runSpecConvergence(
       feedbackId: evidence.id, anchor: binding.anchor
     });
     evidence.location = binding.location;
+    options.logger?.info?.('spec_convergence_binding', {
+      ...tags, altitude: evidence.altitude, round: evidence.round, role: 'reviewer', feedbackId: evidence.id,
+      outcome: binding.location === 'bound' ? 'bound' : 'target_level',
+      ...(binding.location !== 'bound' ? { fallbackCode: binding.location } : {})
+    });
   }
 
   for (const disposition of Object.values(current.decisions)) {
