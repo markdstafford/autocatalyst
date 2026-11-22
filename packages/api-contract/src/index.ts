@@ -110,6 +110,17 @@ export type {
 
 export * from './domain-value-objects.js';
 export * from './project.js';
+export * from './project-issue.js';
+export {
+  intakeRoutingErrorDetailsSchema,
+  intakeRoutingErrorResponseSchema,
+  issueTrackerErrorCodeSchema
+} from './intake-errors.js';
+export type {
+  IntakeRoutingErrorDetails,
+  IssueReferenceIntakeErrorCode,
+  IssueTrackerErrorCode
+} from './intake-errors.js';
 export * from './conversation.js';
 export * from './conversation-ingress.js';
 export * from './topic.js';

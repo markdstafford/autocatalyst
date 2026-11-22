@@ -58,7 +58,9 @@ export const listRunsSuccessStatusCode = 200 as const;
 /** Maximum accepted page size for the run collection read; also the server default page size. */
 export const maxRunListLimit = 100 as const;
 
-export const createRunWorkKindSchema = z.enum(['feature', 'enhancement', 'bug', 'chore', 'file_issue', 'question']);
+export const issueWorkKindSchema = z.enum(['feature', 'enhancement', 'bug', 'chore']);
+export type IssueWorkKind = z.infer<typeof issueWorkKindSchema>;
+export const createRunWorkKindSchema = z.enum([...issueWorkKindSchema.options, 'file_issue', 'question']);
 
 export const runIdParamsSchema = z.object({ id: z.string().min(1) }).strict();
 

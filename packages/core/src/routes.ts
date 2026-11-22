@@ -48,6 +48,7 @@ import {
   runListResponseSchema,
   healthResponseSchema,
   intakeRoutingErrorCode,
+  intakeRoutingErrorResponseSchema,
   listRunStepsSuccessStatusCode,
   notFoundErrorCode,
   principalDiagnosticPath,
@@ -95,9 +96,14 @@ import {
   createProjectRequestSchema,
   createProjectSuccessStatusCode,
   getProjectSuccessStatusCode,
+  lookupProjectIssueSuccessStatusCode,
   listProjectsSuccessStatusCode,
   projectCollectionPath,
   projectIdParamsSchema,
+  projectIssueLookupResponseSchema,
+  projectIssueNotFoundResponseSchema,
+  projectIssueParamsSchema,
+  projectIssuePath,
   projectListResponseSchema,
   projectResponseSchema,
   updateProjectRequestSchema,
@@ -242,7 +248,9 @@ async function handleControlPlaneServiceError(
       await reply.status(403).send(errorResponse(forbiddenErrorCode, error.message));
       return;
     case 'intake_routing_error':
-      await reply.status(400).send(errorResponse(intakeRoutingErrorCode, error.message, error.details));
+      await reply.status(400).send(intakeRoutingErrorResponseSchema.parse({
+        error: { code: intakeRoutingErrorCode, message: error.message, details: error.details }
+      }));
       return;
     case 'active_run_conflict':
       await reply.status(409).send(errorResponse(activeRunConflictErrorCode, error.message, error.details));
@@ -740,6 +748,45 @@ export async function registerControlPlaneRoutes(
         return;
       }
       await reply.status(getProjectSuccessStatusCode).send(projectResponseSchema.parse(project));
+    });
+
+    protectedApp.get(projectIssuePath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'project_issue.read', (request) => {
+        const { id, number } = request.params as { id: string; number: string };
+        return { kind: 'project_issue', id, issueNumber: number, path: projectIssuePath };
+      }),
+      errorHandler: async (_error, request, reply) => {
+        logServerFault(request, 500, undefined, 'internal_error');
+        await reply.status(500).send(errorResponse('internal_error', 'An internal server error occurred.'));
+      }
+    }, async (request, reply) => {
+      const principal = requirePrincipalFromRequest(request);
+      if (principal.kind === 'model') {
+        await reply.status(403).send(errorResponse(forbiddenErrorCode, 'Forbidden.'));
+        return;
+      }
+      const params = projectIssueParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        await sendValidationError(reply, params.error);
+        return;
+      }
+      try {
+        const result = await dependencies.controlPlane.lookupProjectIssue({
+          principal,
+          projectId: params.data.id,
+          issueNumber: params.data.number
+        });
+        await reply.status(lookupProjectIssueSuccessStatusCode).send(projectIssueLookupResponseSchema.parse(result));
+      } catch (error) {
+        if (!(error instanceof ControlPlaneServiceError)) throw error;
+        if (error.code === 'not_found') {
+          await reply.status(404).send(projectIssueNotFoundResponseSchema.parse({
+            error: { code: notFoundErrorCode, message: error.message, details: error.details }
+          }));
+        } else {
+          await handleControlPlaneServiceError(request, reply, error);
+        }
+      }
     });
 
     // Project management API: PATCH /v1/projects/:id

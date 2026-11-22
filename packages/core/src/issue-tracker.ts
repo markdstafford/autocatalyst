@@ -1,14 +1,6 @@
-import type { CredentialReference, TrackedIssue } from '@autocatalyst/api-contract';
+import type { CredentialReference, IssueTrackerErrorCode, TrackedIssue } from '@autocatalyst/api-contract';
 
-export type IssueTrackerErrorCode =
-  | 'tracker_not_configured'
-  | 'unsupported_tracker_provider'
-  | 'tracker_target_invalid'
-  | 'tracker_credential_missing'
-  | 'tracker_auth_failed'
-  | 'issue_not_found'
-  | 'tracker_provider_unavailable'
-  | 'tracker_response_invalid';
+export type { IssueTrackerErrorCode } from '@autocatalyst/api-contract';
 
 export interface IssueTrackerTarget {
   readonly provider: string;

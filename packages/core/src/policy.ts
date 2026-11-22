@@ -1,4 +1,4 @@
-import type { Principal } from '@autocatalyst/api-contract';
+import type { Principal, projectIssuePath } from '@autocatalyst/api-contract';
 
 export type PolicyResourceDescriptor =
   | { readonly kind: 'probe_resource_collection'; readonly path: '/v1/probe-resources' }
@@ -10,6 +10,7 @@ export type PolicyResourceDescriptor =
   | { readonly kind: 'secret_collection'; readonly path: '/v1/secrets' }
   | { readonly kind: 'project_collection'; readonly path: '/v1/projects' }
   | { readonly kind: 'project'; readonly id: string; readonly path: '/v1/projects/:id' }
+  | { readonly kind: 'project_issue'; readonly id: string; readonly issueNumber: string; readonly path: typeof projectIssuePath }
   | { readonly kind: 'conversation_collection'; readonly path: '/v1/conversations' }
   | { readonly kind: 'run_collection'; readonly path: '/v1/runs' }
   | { readonly kind: 'run'; readonly id: string; readonly path: '/v1/runs/:id' }
@@ -40,6 +41,7 @@ export type PolicyAction =
   | 'project.create'
   | 'project.list'
   | 'project.read'
+  | 'project_issue.read'
   | 'project.update'
   | 'conversation.create'
   | 'run.list'

@@ -1,28 +1,41 @@
-import type { CreateConversationSubmission, CredentialReference, Project, TrackedIssue, CreateRunWorkKind } from '@autocatalyst/api-contract';
+import {
+  issueWorkKindSchema,
+  type CreateConversationSubmission,
+  type CreateRunWorkKind,
+  type CredentialReference,
+  type IssueReferenceIntakeErrorCode,
+  type IssueWorkKind,
+  type IssueWorkKindDerivation,
+  type Project,
+  type ProjectIssueLookupResponse,
+  type TrackedIssue
+} from '@autocatalyst/api-contract';
 import { IssueTrackerError } from './issue-tracker.js';
 import type { IssueTrackerRegistry } from './issue-tracker-registry.js';
 import { getRunWorkflowForWorkKind } from './run-workflows.js';
 
-export type IssueReferenceIntakeErrorCode =
-  | 'tracker_not_configured'
-  | 'unsupported_tracker_provider'
-  | 'tracker_target_invalid'
-  | 'tracker_credential_missing'
-  | 'tracker_read_failed'
-  | 'issue_reference_ambiguous'
-  | 'work_kind_unresolved';
+export type { IssueReferenceIntakeErrorCode } from '@autocatalyst/api-contract';
+
+interface TrackerReadFailure {
+  readonly error: IssueTrackerError;
+  readonly provider: string;
+  readonly repository: string;
+  readonly issueNumber: number;
+}
 
 export class IssueReferenceIntakeError extends Error {
   readonly code: IssueReferenceIntakeErrorCode;
-  readonly safeDetails?: Record<string, unknown>;
+  readonly #trackerFailure: TrackerReadFailure | undefined;
 
-  constructor(code: IssueReferenceIntakeErrorCode, message: string, safeDetails?: Record<string, unknown>) {
+  constructor(code: IssueReferenceIntakeErrorCode, message: string, trackerFailure?: TrackerReadFailure) {
     super(message);
     this.name = 'IssueReferenceIntakeError';
     this.code = code;
-    if (safeDetails !== undefined) {
-      this.safeDetails = safeDetails;
-    }
+    this.#trackerFailure = trackerFailure;
+  }
+
+  get trackerFailure(): TrackerReadFailure | undefined {
+    return this.#trackerFailure;
   }
 }
 
@@ -39,6 +52,7 @@ export interface ResolvedConversationCreate {
 }
 
 export interface IssueReferenceIntakeResolver {
+  lookup(project: Project, issueNumber: number): Promise<ProjectIssueLookupResponse>;
   resolve(input: ResolveConversationCreateInput): Promise<ResolvedConversationCreate>;
 }
 
@@ -66,44 +80,50 @@ function extractIssueNumbers(body: string): Set<number> {
   return numbers;
 }
 
-const WORK_KIND_LABELS = new Set<string>(['feature', 'enhancement', 'bug', 'chore']);
-const TITLE_PREFIX_MAP: ReadonlyMap<string, CreateRunWorkKind> = new Map([
+const WORK_KIND_LABELS: ReadonlySet<string> = new Set(issueWorkKindSchema.options);
+const TITLE_PREFIX_MAP: ReadonlyMap<string, IssueWorkKind> = new Map([
   ['feat:', 'feature'],
   ['fix:', 'bug'],
   ['chore:', 'chore']
 ]);
 
-function settleWorkKind(issue: TrackedIssue, workflowLookup: (wk: string) => unknown): CreateRunWorkKind {
-  const workKindLabels = issue.labels
+function deriveWorkKind(issue: TrackedIssue): {
+  workKind: IssueWorkKindDerivation;
+  matchedLabels: IssueWorkKind[];
+} {
+  const matchedLabels = issue.labels
     .map(l => l.toLowerCase().trim())
-    .filter(l => WORK_KIND_LABELS.has(l));
+    .filter((label): label is IssueWorkKind => WORK_KIND_LABELS.has(label));
 
-  if (workKindLabels.length > 1) {
-    throw new IssueReferenceIntakeError('work_kind_unresolved',
-      `Issue has ambiguous work-kind labels: ${workKindLabels.join(', ')}.`);
+  if (matchedLabels.length > 1) {
+    return { workKind: { kind: null, source: 'none', reason: 'ambiguous_labels' }, matchedLabels };
   }
 
-  if (workKindLabels.length === 1) {
-    const workKind = workKindLabels[0] as CreateRunWorkKind;
-    if (!workflowLookup(workKind)) {
-      throw new IssueReferenceIntakeError('work_kind_unresolved', `No workflow found for work kind: ${workKind}.`);
-    }
-    return workKind;
+  const [kindFromLabel] = matchedLabels;
+  if (kindFromLabel !== undefined) {
+    return { workKind: { kind: kindFromLabel, source: 'label' }, matchedLabels };
   }
 
-  // Title prefix fallback
   const titleLower = issue.title.toLowerCase().trim();
-  for (const [prefix, workKind] of TITLE_PREFIX_MAP) {
+  for (const [prefix, kind] of TITLE_PREFIX_MAP) {
     if (titleLower.startsWith(prefix)) {
-      if (!workflowLookup(workKind)) {
-        throw new IssueReferenceIntakeError('work_kind_unresolved', `No workflow found for work kind: ${workKind}.`);
-      }
-      return workKind;
+      return { workKind: { kind, source: 'title_prefix' }, matchedLabels };
     }
   }
+  return { workKind: { kind: null, source: 'none', reason: 'no_match' }, matchedLabels };
+}
 
-  throw new IssueReferenceIntakeError('work_kind_unresolved',
-    'Issue has no recognized work-kind label or title prefix.');
+function settleWorkKind(issue: TrackedIssue, workflowLookup: (wk: string) => unknown): IssueWorkKind {
+  const { workKind, matchedLabels } = deriveWorkKind(issue);
+  if (workKind.source === 'none') {
+    throw new IssueReferenceIntakeError('work_kind_unresolved', workKind.reason === 'ambiguous_labels'
+      ? `Issue has ambiguous work-kind labels: ${matchedLabels.join(', ')}.`
+      : 'Issue has no recognized work-kind label or title prefix.');
+  }
+  if (!workflowLookup(workKind.kind)) {
+    throw new IssueReferenceIntakeError('work_kind_unresolved', `No workflow found for work kind: ${workKind.kind}.`);
+  }
+  return workKind.kind;
 }
 
 function resolveCredential(project: Project): CredentialReference {
@@ -137,11 +157,19 @@ export class DefaultIssueReferenceIntakeResolver implements IssueReferenceIntake
     this.#workflowLookup = options.workflowLookup ?? getRunWorkflowForWorkKind;
   }
 
+  async lookup(project: Project, issueNumber: number): Promise<ProjectIssueLookupResponse> {
+    const issue = await this.#readIssue(project, issueNumber);
+    return {
+      issue: { number: issue.number, title: issue.title, url: issue.url, labels: issue.labels, state: issue.state },
+      workKind: deriveWorkKind(issue).workKind
+    };
+  }
+
   async resolve(input: ResolveConversationCreateInput): Promise<ResolvedConversationCreate> {
     const { submission, project } = input;
 
     // Determine if this is an issue-reference create
-    let issueNumber: number | null = null;
+    let issueNumber: number;
 
     if (submission.kind === 'issue_reference') {
       issueNumber = submission.issue.number;
@@ -176,7 +204,16 @@ export class DefaultIssueReferenceIntakeResolver implements IssueReferenceIntake
       };
     }
 
-    // Resolve issue reference
+    const trackedIssue = await this.#readIssue(project, issueNumber);
+    const explicitKind = submission.kind === 'issue_reference' ? submission.workKind : undefined;
+    return {
+      workKind: explicitKind ?? settleWorkKind(trackedIssue, this.#workflowLookup),
+      trackedIssue,
+      messageBody: submission.body
+    };
+  }
+
+  async #readIssue(project: Project, issueNumber: number): Promise<TrackedIssue> {
     if (!project.issueTrackerSetting) {
       throw new IssueReferenceIntakeError('tracker_not_configured',
         'Project has no issue tracker configured.');
@@ -192,38 +229,24 @@ export class DefaultIssueReferenceIntakeResolver implements IssueReferenceIntake
 
     const credentialRef = resolveCredential(project);
 
+    const { owner, name } = project.hostRepository;
     const target = {
       provider,
-      repository: {
-        owner: project.hostRepository.owner,
-        name: project.hostRepository.name
-      },
+      repository: { owner, name },
       credentialRef
     };
 
-    let trackedIssue: TrackedIssue;
     try {
-      trackedIssue = await adapter.read({ target, issueNumber: issueNumber! });
+      return await adapter.read({ target, issueNumber });
     } catch (error: unknown) {
       if (error instanceof IssueTrackerError) {
         throw new IssueReferenceIntakeError('tracker_read_failed',
-          `Failed to read issue from tracker: ${error.code}.`,
-          { trackerCode: error.code, ...error.safeDetails }
+          'Failed to read issue from tracker.',
+          { error, provider, repository: `${owner}/${name}`, issueNumber }
         );
-      }
-      if (error instanceof IssueReferenceIntakeError) {
-        throw error;
       }
       throw new IssueReferenceIntakeError('tracker_read_failed',
         'Failed to read issue from tracker.');
     }
-
-    const workKind = settleWorkKind(trackedIssue, this.#workflowLookup);
-
-    return {
-      workKind,
-      trackedIssue,
-      messageBody: submission.body
-    };
   }
 }

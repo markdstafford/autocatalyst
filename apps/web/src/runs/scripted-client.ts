@@ -93,6 +93,7 @@ export function createScriptedClient(init?: { runs?: readonly Run[]; projects?: 
       createSecret: notImplemented('createSecret'),
       createProject: notImplemented('createProject'),
       getProject: notImplemented('getProject'),
+      lookupProjectIssue: notImplemented('lookupProjectIssue'),
       updateProject: notImplemented('updateProject'),
       createConversationWithFirstRun: notImplemented('createConversationWithFirstRun'),
       getRun: notImplemented('getRun'),

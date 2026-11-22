@@ -1185,7 +1185,7 @@ async function buildReconcileApp(
       clock: () => now
     },
     projects: harness.domainRepos.projects,
-    issueReferenceIntakeResolver: { resolve: async () => ({ kind: 'error' as const, code: 'tracker_not_found' as const }) },
+    issueReferenceIntakeResolver: { lookup: vi.fn(), resolve: vi.fn() },
     pullRequests: harness.domainRepos.pullRequests,
     sessions: harness.domainRepos.sessions
   });

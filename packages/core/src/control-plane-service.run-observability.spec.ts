@@ -169,6 +169,7 @@ function makeService(options?: {
       update: vi.fn(async () => null)
     },
     issueReferenceIntakeResolver: {
+      lookup: vi.fn(),
       resolve: vi.fn()
     },
     pullRequests: options?.pullRequests ?? makeFakePullRequestRepo(),

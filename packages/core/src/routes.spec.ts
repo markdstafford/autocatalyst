@@ -26,16 +26,25 @@ import {
   runReplyResponseSchema,
   runSpecResponseSchema,
   type ProbeResource,
+  type Project,
   type Run
 } from '@autocatalyst/api-contract';
 
 import { SecretStoreLockedError } from './secret.js';
 
-import { ControlPlaneServiceError, type ControlPlaneService } from './control-plane-service.js';
+import {
+  ControlPlaneServiceError,
+  DefaultControlPlaneService,
+  type ControlPlaneService,
+  type DefaultControlPlaneServiceOptions
+} from './control-plane-service.js';
+import { DefaultIssueReferenceIntakeResolver } from './issue-reference-intake.js';
+import { IssueTrackerError } from './issue-tracker.js';
+import { StaticIssueTrackerRegistry } from './issue-tracker-registry.js';
 import { hardcodedDevelopmentPrincipal } from './principal.js';
 import { registerControlPlaneRoutes } from './routes.js';
 import type { ControlPlaneRouteDependencies } from './routes.js';
-import type { PolicyDecisionInput } from './policy.js';
+import { permissivePolicyDecisionPoint, type PolicyDecisionInput } from './policy.js';
 import type { RunEventSubscription } from './run-events.js';
 
 function expectNoSentinels(serialized: string): void {
@@ -90,6 +99,193 @@ function createFakeControlPlaneService(): ControlPlaneService {
     tick: vi.fn(async () => ({ status: 'noop' as const }))
   } as unknown as ControlPlaneService;
 }
+
+describe('project issue lookup and conversation intake', () => {
+  const issue = {
+    number: 27, title: 'A closed feature', labels: ['feature'],
+    url: 'https://github.com/acme/demo/issues/27', state: 'closed' as const
+  };
+  const project: Project = {
+    id: 'proj_1', owner: hardcodedDevelopmentPrincipal as Project['owner'], tenant: hardcodedDevelopmentPrincipal.tenantId,
+    displayName: 'Demo', repoUrl: 'https://github.com/acme/demo',
+    hostRepository: { provider: 'github', owner: 'acme', name: 'demo' },
+    workspaceRootOverride: null, issueTrackerSetting: { provider: 'github' }, codeHostSetting: null,
+    credentialRefs: [{ id: 'credential-ref-sentinel', purpose: 'issue_tracker' }],
+    createdAt: '2026-11-21T00:00:00.000Z', updatedAt: '2026-11-21T00:00:00.000Z'
+  };
+  const lookupPath = '/v1/projects/proj_1/issues';
+  let server: Awaited<ReturnType<typeof buildServer>>['app'] | undefined;
+
+  afterEach(async () => {
+    await server?.close();
+    server = undefined;
+  });
+
+  async function setup(projectSettings: Partial<Project> = {}, auth = { allowed: true, model: false }) {
+    const tenantProject = { ...project, ...projectSettings };
+    const otherProject = { ...project, id: 'other', tenant: 'tenant_other', owner: { ...project.owner, tenantId: 'tenant_other' } };
+    const findById = vi.fn(async (tenantOrId: string, id?: string) => {
+      const found = [tenantProject, otherProject].find(p => p.id === (id ?? tenantOrId)) ?? null;
+      return id === undefined || found?.tenant === tenantOrId ? found : null;
+    });
+    const read = vi.fn().mockResolvedValue({ ...issue, body: 'tracker-body-sentinel' });
+    const issues = new DefaultIssueReferenceIntakeResolver({ registry: new StaticIssueTrackerRegistry({ github: { read } }) });
+    const createConversationWithFirstRun = vi.fn();
+    const policy = { authorize: vi.fn().mockResolvedValue({ allowed: auth.allowed }) };
+    const projects = { findById, create: vi.fn(), list: vi.fn(), update: vi.fn() };
+    const controlPlane = new DefaultControlPlaneService({
+      ...({} as DefaultControlPlaneServiceOptions),
+      projects, policy: permissivePolicyDecisionPoint, issueReferenceIntakeResolver: issues,
+      orchestrator: {
+        createConversationWithFirstRun, createRun: vi.fn(), applyDirective: vi.fn(), dispatch: vi.fn(),
+        tick: vi.fn(), replyToRun: vi.fn(), detectMerges: vi.fn(), refreshRunPullRequest: vi.fn(),
+        reopenFailedRun: vi.fn(), admitForDispatch: vi.fn()
+      }
+    });
+    const { app, authorization } = await buildServer({
+      projects, controlPlane, policy,
+      ...(auth.model ? { auth: {
+        bearerToken: 'test-token',
+        resolvePrincipal: () => ({ ...hardcodedDevelopmentPrincipal, kind: 'model' as const })
+      } } : {})
+    });
+    server = app;
+    const lookup = (url = `${lookupPath}/27`) => app.inject({ method: 'GET', url, headers: authorization });
+    const start = (projectId = 'proj_1') => app.inject({
+      method: 'POST', url: '/v1/conversations', headers: authorization,
+      payload: {
+        projectId, identity: 'test', topic: { title: 'Track issue 27' },
+        submission: { kind: 'issue_reference', body: 'Start #27', workKind: 'bug', issue: { number: 27 } }
+      }
+    });
+    return { app, lookup, start, findById, policy, read, createConversationWithFirstRun };
+  }
+
+  it('authenticates and passes the raw descriptor to policy before reading the tenant project', async () => {
+    const { app, lookup, findById, policy, read, createConversationWithFirstRun } = await setup();
+    for (const headers of [{}, { authorization: 'Bearer invalid' }]) {
+      expect((await app.inject({ method: 'GET', url: `${lookupPath}/invalid`, headers })).statusCode).toBe(401);
+    }
+    expect(policy.authorize).not.toHaveBeenCalled();
+    expect(findById).not.toHaveBeenCalled();
+    const found = await lookup(`${lookupPath}/00027`);
+    expect(found.statusCode).toBe(200);
+    expect(found.json()).toEqual({ issue, workKind: { kind: 'feature', source: 'label' } });
+    expect(policy.authorize).toHaveBeenCalledExactlyOnceWith({
+      principal: hardcodedDevelopmentPrincipal, action: 'project_issue.read',
+      resource: { kind: 'project_issue', id: 'proj_1', issueNumber: '00027', path: '/v1/projects/:id/issues/:number' }
+    });
+    expect(policy.authorize).toHaveBeenCalledBefore(findById);
+    expect(findById).toHaveBeenCalledExactlyOnceWith(hardcodedDevelopmentPrincipal.tenantId, 'proj_1');
+    expect(read).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ issueNumber: 27 }));
+    expect(createConversationWithFirstRun).not.toHaveBeenCalled();
+  });
+
+  it.each([{ allowed: false, model: false }, { allowed: true, model: true }])(
+    'rejects policy denial or model principals before parameter validation and I/O: %j', async auth => {
+      const { lookup, findById, policy, read } = await setup({}, auth);
+      const response = await lookup(`${lookupPath}/not-a-number`);
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toEqual({ error: { code: 'forbidden', message: 'Forbidden.' } });
+      expect(policy.authorize).toHaveBeenCalledOnce();
+      expect(findById).not.toHaveBeenCalled();
+      expect(read).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each(['0', '-1', '27.5', 'abc', '1e2', '9007199254740992'])('rejects invalid path number %s before I/O', async number => {
+    const { lookup, findById, read } = await setup();
+    const response = await lookup(`${lookupPath}/${number}`);
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: { code: 'validation_error' } });
+    expect(findById).not.toHaveBeenCalled();
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  const trackerContext = { provider: 'github', repository: 'acme/demo', issueNumber: 27 };
+  const sentinel = 'secret-and-raw-output-sentinel';
+  const authFailure = new IssueTrackerError('tracker_auth_failed', sentinel, {
+    safeDetails: { ...trackerContext, trackerCode: sentinel, code: sentinel, rawOutput: sentinel, credential: sentinel },
+    cause: new Error(sentinel)
+  });
+
+  it.each([
+    { label: 'no tracker', projectSettings: { issueTrackerSetting: null }, details: { code: 'tracker_not_configured' } },
+    { label: 'no provider adapter', projectSettings: { issueTrackerSetting: { provider: 'unsupported' } }, details: { code: 'unsupported_tracker_provider' } },
+    { label: 'no credential reference', projectSettings: { credentialRefs: [] }, details: { code: 'tracker_credential_missing' } },
+    { label: 'rejected credential', failure: authFailure,
+      details: { code: 'tracker_auth_failed', trackerCode: 'tracker_auth_failed', ...trackerContext } },
+    { label: 'unusable credential', failure: new IssueTrackerError('tracker_credential_missing', sentinel, { safeDetails: { provider: 'github' } }),
+      details: { code: 'tracker_credential_missing', trackerCode: 'tracker_credential_missing', provider: 'github' } },
+    { label: 'invalid target', failure: new IssueTrackerError('tracker_target_invalid', sentinel),
+      details: { code: 'tracker_target_invalid', trackerCode: 'tracker_target_invalid' } },
+    { label: 'provider outage', failure: new IssueTrackerError('tracker_provider_unavailable', sentinel, {
+      safeDetails: { provider: sentinel, repository: sentinel, issueNumber: '27', credentialRef: sentinel }
+    }), details: { code: 'tracker_provider_unavailable', trackerCode: 'tracker_provider_unavailable' } },
+    { label: 'invalid provider response', failure: new IssueTrackerError('tracker_response_invalid', sentinel),
+      details: { code: 'tracker_response_invalid', trackerCode: 'tracker_response_invalid' } },
+    { label: 'unclassified read failure', failure: new Error(sentinel), details: { code: 'tracker_read_failed' } }
+  ])('normalizes $label identically at lookup and start', async ({ projectSettings, failure, details }) => {
+    const { lookup, start, read, createConversationWithFirstRun } = await setup(projectSettings);
+    if (failure) read.mockRejectedValue(failure);
+    const preview = await lookup();
+    const create = await start();
+    for (const response of [preview, create]) {
+      expect(response.statusCode).toBe(400);
+      expect(response.json().error.code).toBe('intake_routing_error');
+      expect(response.json().error.details).toEqual(details);
+      expect(response.body).not.toContain(sentinel);
+      expect(response.body).not.toContain('credential-ref-sentinel');
+    }
+    expect(create.json()).toEqual(preview.json());
+    if (failure === authFailure) expect(create.json().error.message).toBe('Failed to read issue from tracker: tracker_auth_failed.');
+    expect(createConversationWithFirstRun).not.toHaveBeenCalled();
+  });
+
+  it('hides absent and cross-tenant projects identically and preserves the POST intake error', async () => {
+    const { lookup, start, read, createConversationWithFirstRun } = await setup();
+    for (const id of ['missing', 'other']) {
+      const response = await lookup(`/v1/projects/${id}/issues/27`);
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({ error: { code: 'not_found', message: 'Project not found.', details: { resource: 'project' } } });
+      const create = await start(id);
+      expect(create.statusCode).toBe(400);
+      expect(create.json()).toEqual({
+        error: { code: 'intake_routing_error', message: `Project '${id}' is not accessible.`, details: { code: 'project_not_accessible' } }
+      });
+    }
+    expect(read).not.toHaveBeenCalled();
+    expect(createConversationWithFirstRun).not.toHaveBeenCalled();
+  });
+
+  it('distinguishes a missing issue in GET and rereads when starting a run', async () => {
+    const { lookup, start, read, createConversationWithFirstRun } = await setup();
+    expect((await lookup()).statusCode).toBe(200);
+    read.mockRejectedValue(new IssueTrackerError('issue_not_found', sentinel, { safeDetails: trackerContext }));
+    const create = await start();
+    expect(create.statusCode).toBe(400);
+    expect(create.json()).toEqual({ error: {
+      code: 'intake_routing_error', message: 'Failed to read issue from tracker: issue_not_found.',
+      details: { code: 'issue_not_found', trackerCode: 'issue_not_found', ...trackerContext }
+    } });
+    const missing = await lookup();
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toEqual({ error: { code: 'not_found', message: 'Issue not found.', details: { resource: 'issue' } } });
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(createConversationWithFirstRun).not.toHaveBeenCalled();
+  });
+
+  it('returns a sanitized 500 on unexpected repository and issue projection failures', async () => {
+    const { lookup, findById, read } = await setup();
+    findById.mockRejectedValueOnce(new Error(sentinel));
+    read.mockResolvedValueOnce({ ...issue, url: sentinel });
+    for (let i = 0; i < 2; i++) {
+      const lookupResponse = await lookup();
+      expect(lookupResponse.statusCode).toBe(500);
+      expect(lookupResponse.json()).toEqual({ error: { code: 'internal_error', message: 'An internal server error occurred.' } });
+    }
+  });
+});
 
 async function buildServer(overrides?: Partial<ControlPlaneRouteDependencies>) {
   const bearerToken = 'test-token';
@@ -770,7 +966,7 @@ describe('registerControlPlaneRoutes', () => {
   it('POST /v1/conversations maps intake_routing_error to 400 with details', async () => {
     const controlPlane = createFakeControlPlaneService();
     (controlPlane.createConversationWithFirstRun as ReturnType<typeof vi.fn>).mockRejectedValue(
-      new ControlPlaneServiceError('intake_routing_error', 'Unknown work kind.', { details: { workKind: 'bogus' } })
+      new ControlPlaneServiceError('intake_routing_error', 'Unknown work kind.', { details: { code: 'unknown_work_kind' } })
     );
     const { app, authorization } = await buildServer({ controlPlane });
     server = app;
@@ -788,6 +984,7 @@ describe('registerControlPlaneRoutes', () => {
     expect(response.statusCode).toBe(400);
     const parsed = errorResponseSchema.parse(response.json());
     expect(parsed.error.code).toBe('intake_routing_error');
+    expect(parsed.error.details).toEqual({ code: 'unknown_work_kind' });
   });
 
   it('POST /v1/conversations maps active_run_conflict to 409 with details', async () => {
