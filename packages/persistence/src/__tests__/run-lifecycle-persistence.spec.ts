@@ -122,10 +122,19 @@ describe('recordRunStepTransition', () => {
         runId,
         currentStep: 'spec.author',
         terminal: false,
+        sourceRunStepId: t1.runStep.id,
+        checkpointResult: { result: 'closed' },
+        destinationCheckpointResult: { resume: 'opened' },
         runStep: { phase: 'spec', step: 'spec.author', role: 'none', startedAt: new Date().toISOString(), endedAt: null, durationMs: null }
       });
       expect(t2.runStep.occurrence.index).toBe(2);
       expect(t2.runStep.occurrence.attempt).toBe(2);
+      expect(t2.runStep.checkpointResult).toEqual({ resume: 'opened' });
+      expect((await repos.runSteps.findById(t2.runStep.id))?.checkpointResult).toEqual({ resume: 'opened' });
+      expect(await repos.runSteps.findById(t1.runStep.id)).toMatchObject({
+        endedAt: t2.runStep.startedAt,
+        checkpointResult: { result: 'closed' }
+      });
 
       database.close();
     });
@@ -158,6 +167,9 @@ describe('recordRunStepTransition', () => {
         runId: startResult.run.id,
         currentStep: 'spec.author',
         terminal: false,
+        sourceRunStepId: startResult.runStep.id,
+        checkpointResult: { result: 'closed' },
+        destinationCheckpointResult: { resume: 'opened' },
         runStep: { phase: 'spec', step: 'spec.author', role: 'none', startedAt: new Date().toISOString(), endedAt: null, durationMs: null }
       })).rejects.toThrow();
 
@@ -167,6 +179,10 @@ describe('recordRunStepTransition', () => {
 
       const run = await repos.runs.findById(startResult.run.id);
       expect(run?.currentStep).toBe('intake');
+      expect(await repos.runSteps.findById(startResult.runStep.id)).toMatchObject({
+        endedAt: null,
+        checkpointResult: null
+      });
 
       database.close();
     });

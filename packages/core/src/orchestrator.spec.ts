@@ -2551,12 +2551,19 @@ describe('reviewed step integration — transitions and checkpoint persistence',
     expect(result.run.currentStep).toBe('spec.human_review');
   });
 
-  it('implementation.build max-round exhaustion transitions run to implementation.awaiting_input', async () => {
+  it.each([
+    ['max_rounds', { pause: {
+      kind: 'convergence_escalation',
+      producingStep: 'implementation.build',
+      question: 'Convergence escalated: max_rounds. No open feedback items. What guidance should the implementer follow?'
+    } }],
+    ['needs_input', undefined]
+  ] as const)('pauses implementation.build after %s, marking only convergence escalations', async (outcome, pause) => {
     const existing = makeRun({ currentStep: 'implementation.build' });
     const awaitingInput = makeRun({ currentStep: 'implementation.awaiting_input' });
     const awaitingStep = makeRunStep({ id: 'step_2', step: 'implementation.awaiting_input', phase: 'implementation' });
     const currentRunStep = makeRunStep({ step: 'implementation.build', phase: 'implementation' });
-    const escalatedCheckpoint = { ...convergedCheckpoint, step: 'implementation.build', outcome: 'max_rounds' as const };
+    const pausedCheckpoint = { ...convergedCheckpoint, step: 'implementation.build', outcome };
     const recordTransition = vi.fn().mockResolvedValue({ run: awaitingInput, runStep: awaitingStep });
     const runs = makeFakeRunRepo({
       findById: vi.fn()
@@ -2568,8 +2575,8 @@ describe('reviewed step integration — transitions and checkpoint persistence',
       listByRun: vi.fn().mockResolvedValue([currentRunStep])
     });
     const { engine } = makeConvergenceEngine({
-      workResult: { directive: 'needs_input', question: 'Convergence escalated: max_rounds' },
-      checkpointResult: escalatedCheckpoint
+      workResult: { directive: 'needs_input', question: outcome === 'needs_input' ? 'Which package owns this type?' : 'Convergence escalated: max_rounds' },
+      checkpointResult: pausedCheckpoint
     });
 
     const { orchestrator } = makeOrchestrator({
@@ -2585,6 +2592,12 @@ describe('reviewed step integration — transitions and checkpoint persistence',
     expect(result.run.currentStep).toBe('implementation.awaiting_input');
     const transitionCall = recordTransition.mock.calls[0]?.[0];
     expect(transitionCall?.currentStep).toBe('implementation.awaiting_input');
+    expect(transitionCall?.checkpointResult).toEqual(pausedCheckpoint);
+    if (pause === undefined) {
+      expect(transitionCall).not.toHaveProperty('destinationCheckpointResult');
+    } else {
+      expect(transitionCall?.destinationCheckpointResult).toEqual(pause);
+    }
   });
 
   it('implementation.plan uses passthrough (not convergence engine) when convergence engine is present', async () => {
@@ -3049,11 +3062,12 @@ describe('DefaultOrchestrator.replyToRun', () => {
   // --- implementation.awaiting_input guidance ---
 
   it('records convergence guidance and advances awaiting input to implementation.build', async () => {
+    const question = 'Convergence escalated: max_rounds. Open feedback: fb_1.';
     const awaitingStep = makeRunStep({
       id: 'step_awaiting',
       step: 'implementation.awaiting_input',
       checkpointResult: {
-        pause: { kind: 'convergence_escalation', producingStep: 'implementation.build' }
+        pause: { kind: 'convergence_escalation', producingStep: 'implementation.build', question }
       }
     });
     const existing = makeRun({ currentStep: 'implementation.awaiting_input' });
@@ -3082,21 +3096,22 @@ describe('DefaultOrchestrator.replyToRun', () => {
     expect(result.classification).toEqual({ directive: 'advance', pauseKind: 'convergence_escalation' });
     expect(result.run.currentStep).toBe('implementation.build');
 
-    // First call: recordConvergenceEscalationGuidance stamps awaiting_input step
-    const firstCall = updateCheckpoint.mock.calls[0]?.[0];
-    expect(firstCall?.runStepId).toBe('step_awaiting');
-    const awaitingCp = firstCall?.checkpointResult as { pause: { kind: string; humanGuidance: string } };
-    expect(awaitingCp.pause.kind).toBe('convergence_escalation');
-    expect(awaitingCp.pause.humanGuidance).toBe('Prefer public API; do not broaden auth.');
-
-    // Second call: #replyToAwaitingInput stamps the new implementation.build step
-    // so build dispatch reads guidance from the current execution context.
-    expect(updateCheckpoint).toHaveBeenCalledTimes(2);
-    const secondCall = updateCheckpoint.mock.calls[1]?.[0];
-    expect(secondCall?.runStepId).toBe('step_build');
-    const buildCp = secondCall?.checkpointResult as { resumedFromAwaitingInputStepId: string; humanGuidance: string };
-    expect(buildCp.resumedFromAwaitingInputStepId).toBe('step_awaiting');
-    expect(buildCp.humanGuidance).toBe('Prefer public API; do not broaden auth.');
+    expect(updateCheckpoint).toHaveBeenCalledTimes(1);
+    expect(updateCheckpoint).toHaveBeenCalledWith(expect.objectContaining({
+      runStepId: 'step_awaiting',
+      checkpointResult: { pause: {
+        kind: 'convergence_escalation',
+        producingStep: 'implementation.build',
+        question,
+        humanGuidance: 'Prefer public API; do not broaden auth.'
+      } }
+    }));
+    expect(recordTransition).toHaveBeenCalledWith(expect.objectContaining({
+      destinationCheckpointResult: {
+        resumedFromAwaitingInputStepId: 'step_awaiting',
+        humanGuidance: 'Prefer public API; do not broaden auth.'
+      }
+    }));
   });
 
   it('build dispatch reads humanGuidance from current build step checkpoint', async () => {

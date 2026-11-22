@@ -22,6 +22,7 @@ import type {
   CreateTopicInput,
   Feedback,
   FeedbackStatus,
+  JsonValue,
   Message,
   Project,
   Publication,
@@ -202,7 +203,8 @@ type DrizzleTx = Parameters<Parameters<DrizzleDb['transaction']>[0]>[0];
 function buildRunStepInsideTransaction(
   tx: DrizzleTx,
   runId: string,
-  input: LifecycleRunStepInput
+  input: LifecycleRunStepInput,
+  checkpointResult: JsonValue = null
 ): RunStep {
   const existingForRun: number = tx.select({ value: count() }).from(runSteps).where(eq(runSteps.runId, runId)).all()[0]?.value ?? 0;
   const existingForStep: number = tx.select({ value: count() }).from(runSteps).where(and(eq(runSteps.runId, runId), eq(runSteps.step, input.step))).all()[0]?.value ?? 0;
@@ -217,7 +219,7 @@ function buildRunStepInsideTransaction(
     endedAt: input.endedAt,
     durationMs: input.durationMs,
     occurrence,
-    checkpointResult: null
+    checkpointResult
   });
   tx.insert(runSteps).values({
     id: entity.id,
@@ -229,7 +231,7 @@ function buildRunStepInsideTransaction(
     endedAt: entity.endedAt,
     durationMs: entity.durationMs,
     occurrenceJson: stringifyJsonValue(occurrenceSchema, entity.occurrence),
-    checkpointResultJson: null
+    checkpointResultJson: nullableJsonForRow(jsonValueSchema, entity.checkpointResult)
   }).run();
   return entity;
 }
@@ -889,7 +891,7 @@ export class DrizzleRunRepository implements RunRepository {
             .run();
         }
       }
-      const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep);
+      const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep, input.destinationCheckpointResult);
       return { run, runStep };
     });
   }

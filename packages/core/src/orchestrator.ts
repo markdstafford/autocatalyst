@@ -31,6 +31,7 @@ import {
 import { validatePullRequestFinalizeResult } from './pr-finalize-result-validation.js';
 import {
   ConvergenceCheckpointError,
+  buildConvergenceEscalationPause,
   getConvergenceEscalationPause,
   recordConvergenceEscalationGuidance
 } from './convergence-checkpoint.js';
@@ -167,6 +168,7 @@ export interface ApplyOrchestratedDirectiveInput {
   readonly directive: RunDirective;
   readonly tenant: string;
   readonly checkpointResult?: JsonValue;
+  readonly destinationCheckpointResult?: JsonValue;
   readonly principal?: NonModelPrincipal;
   readonly reason?: string;
   readonly origin?: 'runner' | 'human' | 'system';
@@ -651,6 +653,7 @@ export class DefaultOrchestrator implements Orchestrator {
         runId: input.runId,
         directive: input.directive,
         ...(input.checkpointResult !== undefined ? { checkpointResult: input.checkpointResult } : {}),
+        ...(input.destinationCheckpointResult !== undefined ? { destinationCheckpointResult: input.destinationCheckpointResult } : {}),
         ...(normalizedFailureReason !== undefined ? { reason: normalizedFailureReason } : {}),
         ...(this.#clock !== undefined ? { clock: this.#clock } : {})
       });
@@ -725,7 +728,7 @@ export class DefaultOrchestrator implements Orchestrator {
           throw new OrchestratorError('unknown_work_kind', `Unknown work kind '${run.workKind}'.`);
         }
         const runSteps = this.#runSteps !== undefined ? await this.#runSteps.listByRun(input.runId) : [];
-        const runStep = runSteps.find(s => s.step === run.currentStep) ?? {
+        const runStep = [...runSteps].reverse().find(s => s.step === run.currentStep && s.endedAt === null) ?? {
           id: `${input.runId}_step`,
           runId: input.runId,
           phase: stepDefinition.phase,
@@ -778,11 +781,13 @@ export class DefaultOrchestrator implements Orchestrator {
           return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason, origin: 'runner' });
         }
         if (result.workResult.directive === 'needs_input') {
+          const pause = buildConvergenceEscalationPause(result.checkpointResult);
           return this.applyDirective({
             runId: input.runId,
             directive: 'needs_input',
             tenant: input.tenant,
             checkpointResult: result.checkpointResult as unknown as JsonValue,
+            ...(pause !== null ? { destinationCheckpointResult: pause } : {}),
             origin: 'runner'
           });
         }
@@ -1239,17 +1244,8 @@ export class DefaultOrchestrator implements Orchestrator {
       tenant: input.tenant,
       directive: 'advance',
       origin: 'human',
-      principal: input.principal
-    });
-    // Stamp guidance on the new implementation.build step so build dispatch reads it from
-    // the current execution context rather than searching all historical awaiting_input steps.
-    // The per-run queue ensures auto-dispatch reads the stamped checkpoint (it is queued
-    // behind this replyToRun operation and cannot start until the lock is released).
-    await this.#runSteps!.updateCheckpoint({
-      runStepId: moved.runStep.id,
-      runId: input.runId,
-      tenant: input.run.tenant,
-      checkpointResult: {
+      principal: input.principal,
+      destinationCheckpointResult: {
         resumedFromAwaitingInputStepId: pause.runStep.id,
         humanGuidance: input.request.body
       }
