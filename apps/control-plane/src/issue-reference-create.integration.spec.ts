@@ -6,6 +6,14 @@ import { randomUUID } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  createConversationWithFirstRunResponseSchema,
+  projectIssueLookupResponseSchema,
+  projectResponseSchema,
+  runListResponseSchema,
+  type CreateConversationSubmission,
+  type IssueWorkKindDerivation
+} from '@autocatalyst/api-contract';
+import {
   ControlPlaneServiceError,
   DefaultControlPlaneService,
   DefaultIssueReferenceIntakeResolver,
@@ -26,6 +34,7 @@ import {
 } from '@autocatalyst/persistence';
 
 import { loadSpecAuthorPromptInput } from './spec-authoring-context-loader.js';
+import { createControlPlaneServer } from './server.js';
 
 const SENTINEL_TOKEN = 'sentinel-test-token-abc123-do-not-leak';
 const FAKE_GH_ISSUE_NUMBER = 71;
@@ -41,6 +50,117 @@ const realisticGhOutput = JSON.stringify({
 });
 
 const owner = hardcodedDevelopmentPrincipal;
+
+it('looks up and starts from tracked issues through the production server', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'project-issue-lookup-'));
+  const headers = { authorization: 'Bearer issue-lookup-test' };
+  const fixtures: { number: number; title: string; labels: string[]; state: 'open' | 'closed'; workKind: IssueWorkKindDerivation }[] = [
+    { number: 27, title: 'New feedback', labels: ['feature'], state: 'open', workKind: { kind: 'feature', source: 'label' } },
+    { number: 28, title: 'Startup regression', labels: [], state: 'open', workKind: { kind: null, source: 'none', reason: 'no_match' } },
+    { number: 29, title: 'fix: Ambiguous issue', labels: ['feature', 'bug'], state: 'open', workKind: { kind: null, source: 'none', reason: 'ambiguous_labels' } },
+    { number: 30, title: 'Chore: Closed housekeeping', labels: [], state: 'closed', workKind: { kind: 'chore', source: 'title_prefix' } },
+    { number: 31, title: 'fix: Free-form route', labels: [], state: 'open', workKind: { kind: 'bug', source: 'title_prefix' } }
+  ];
+  const urlFor = (number: number) => `https://github.com/acme/demo/issues/${number}`;
+  const body = 'Full tracked issue body, not a lookup field.';
+  let app: Awaited<ReturnType<typeof createControlPlaneServer>> | undefined;
+  try {
+    const executablePath = join(dir, 'fake-gh');
+    const cases = fixtures.map(({ number, title, labels, state }) => `  ${number})
+    printf '%s\n' '${JSON.stringify({ number, title, body, labels: labels.map(name => ({ name })), state: state.toUpperCase(), url: urlFor(number) })}'
+    ;;`).join('\n');
+    await writeFile(executablePath, `#!/bin/sh
+[ "$1 $2 $4 $5" = 'issue view --repo acme/demo' ] || exit 1
+[ "$GH_TOKEN" = '${SENTINEL_TOKEN}' ] || exit 1
+case "$3" in
+${cases}
+  *) exit 1 ;;
+esac
+`, { mode: 0o755 });
+
+    const server = await createControlPlaneServer({
+      databasePath: join(dir, 'test.sqlite'),
+      bearerToken: 'issue-lookup-test',
+      masterSecret: MASTER_SECRET,
+      autoDispatch: { enabled: false },
+      githubIssueTracker: { executablePath }
+    });
+    app = server;
+    const secret = await server.inject({ method: 'POST', url: '/v1/secrets', headers, payload: { value: SENTINEL_TOKEN } });
+    expect(secret.statusCode).toBe(201);
+    const { handle } = secret.json<{ handle: string }>();
+    const created = await server.inject({
+      method: 'POST', url: '/v1/projects', headers,
+      payload: {
+        displayName: 'Demo', repoUrl: 'https://github.com/acme/demo',
+        hostRepository: { provider: 'github', owner: 'acme', name: 'demo' },
+        issueTrackerSetting: { provider: 'github', credentialRef: { id: handle, purpose: 'issue_tracker' } }
+      }
+    });
+    expect(created.statusCode).toBe(201);
+    const projectId = projectResponseSchema.parse(created.json()).id;
+    const list = async () => {
+      const response = await server.inject({ method: 'GET', url: '/v1/runs', headers });
+      expect(response.statusCode).toBe(200);
+      return runListResponseSchema.parse(response.json()).runs;
+    };
+    const start = (submission: CreateConversationSubmission | (typeof unlabeled & { workKind: 'question' })) =>
+      server.inject({
+        method: 'POST', url: '/v1/conversations', headers,
+        payload: { projectId, identity: randomUUID(), topic: { title: 'Track issue' }, submission }
+      });
+
+    for (const { number, title, labels, state, workKind } of fixtures) {
+      const response = await server.inject({ method: 'GET', url: `/v1/projects/${projectId}/issues/${number}`, headers });
+      expect(response.statusCode).toBe(200);
+      expect(projectIssueLookupResponseSchema.parse(response.json())).toEqual({
+        issue: { number, title, url: urlFor(number), labels, state }, workKind
+      });
+      expect(response.body).not.toContain(body);
+      expect(response.body).not.toContain(SENTINEL_TOKEN);
+    }
+    expect(await list()).toEqual([]);
+
+    const reference = (number: number) => ({
+      kind: 'issue_reference' as const, body: `Start issue #${number}`, issue: { number }
+    });
+    const unlabeled = reference(28);
+    const implicit = await start(unlabeled);
+    expect(implicit.statusCode).toBe(400);
+    expect(implicit.json()).toEqual({ error: {
+      code: 'intake_routing_error', message: 'Issue has no recognized work-kind label or title prefix.',
+      details: { code: 'work_kind_unresolved' }
+    } });
+    const invalid = await start({ ...unlabeled, workKind: 'question' });
+    expect(invalid.statusCode).toBe(400);
+    expect(invalid.json().error.code).toBe('validation_error');
+    expect(await list()).toEqual([]);
+
+    const submissions = [
+      [{ ...unlabeled, workKind: 'bug' }, 28, 'bug'],
+      [{ ...reference(27), workKind: 'chore' }, 27, 'chore'],
+      [{ ...reference(29), workKind: 'enhancement' }, 29, 'enhancement'],
+      [{ ...reference(30), workKind: 'feature' }, 30, 'feature'],
+      [{ kind: 'free_form', body: 'Start #31', workKind: 'question' }, 31, 'bug']
+    ] as const;
+    for (const [submission, number, workKind] of submissions) {
+      const response = await start(submission);
+      expect(response.statusCode).toBe(201);
+      const { run, message } = createConversationWithFirstRunResponseSchema.parse(response.json());
+      expect(run.workKind).toBe(workKind);
+      expect(run.trackedIssue).toMatchObject({ number, body, state: number === 30 ? 'closed' : 'open' });
+      expect(message?.body).toBe(submission.body);
+    }
+    const runs = await list();
+    expect(runs).toHaveLength(submissions.length);
+    expect(Object.fromEntries(runs.map(run => [run.trackedIssue?.number, run.workKind]))).toEqual(
+      Object.fromEntries(submissions.map(([, number, workKind]) => [number, workKind]))
+    );
+  } finally {
+    await app?.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 async function createSuccessFakeGh(dir: string): Promise<string> {
   const scriptPath = join(dir, 'fake-gh-success');
@@ -345,6 +465,7 @@ describe('issue-reference create failure cases', () => {
       }
       expect(caught).toBeInstanceOf(ControlPlaneServiceError);
       expect((caught as ControlPlaneServiceError).code).toBe('intake_routing_error');
+      expect((caught as ControlPlaneServiceError).details).toEqual({ code: 'issue_reference_ambiguous' });
     }, tmpDir);
   });
 

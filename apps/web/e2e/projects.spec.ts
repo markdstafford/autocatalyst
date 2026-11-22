@@ -121,10 +121,16 @@ test('sets up projects from an empty tenant and keeps credentials write-only thr
       }));
       expect(containsValue(await body.innerText()), 'credential in rendered text or toast').toBe(false);
       expect(containsValue(storage), 'credential in browser storage').toBe(false);
-      // A snapshot can include a control's value on a separate line; inspect the
-      // role/name lines rather than treating the password input value as page text.
-      const roleLines = (await body.ariaSnapshot()).split('\n').filter((line) => !line.trimStart().startsWith('- /'));
-      expect(containsValue(roleLines.join('\n')), 'credential in accessibility tree').toBe(false);
+      // ARIA snapshots serialize password input values as well as names. Use
+      // Chromium's computed names so a legitimate typed value is not a false leak.
+      const cdp = await context.newCDPSession(page);
+      try {
+        const { nodes } = await cdp.send('Accessibility.getFullAXTree');
+        const names = nodes.map((node) => String(node.name?.value ?? '')).join('\n');
+        expect(containsValue(names), 'credential in accessible names').toBe(false);
+      } finally {
+        await cdp.detach();
+      }
     }
 
     await issue.fill(values[0]!);

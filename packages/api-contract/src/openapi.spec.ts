@@ -62,6 +62,68 @@ describe('OpenAPI generation', () => {
     expect(createOp.responses?.['201']).toBeDefined();
   });
 
+  it('documents signed-in issue lookup and the shared intake errors', () => {
+    const document = generateOpenApiDocument();
+    const lookup = document.paths['/v1/projects/{id}/issues/{number}']?.['get'] as {
+      parameters: unknown[];
+      security: unknown[];
+      responses: Record<string, unknown>;
+    };
+    const create = document.paths['/v1/conversations']?.['post'] as { responses: Record<string, unknown> };
+    const ref = (name: string) => ({ content: { 'application/json': { schema: { $ref: `#/components/schemas/${name}` } } } });
+    expect(lookup.security).toEqual([{ bearerAuth: [] }]);
+    expect(lookup.parameters).toEqual([
+      { name: 'id', in: 'path', required: true, schema: { type: 'string', minLength: 1 } },
+      { name: 'number', in: 'path', required: true, schema: { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER } }
+    ]);
+    expect(lookup.responses).toMatchObject({
+      200: ref('ProjectIssueLookupResponse'),
+      400: ref('IntakeBadRequestResponse'),
+      401: ref('ErrorResponse'),
+      403: ref('ErrorResponse'),
+      404: ref('ProjectIssueNotFoundResponse'),
+      500: ref('ErrorResponse')
+    });
+    expect(create.responses['400']).toMatchObject(ref('IntakeBadRequestResponse'));
+
+    const schemas = document.components?.['schemas'] as Record<string, unknown>;
+    expect(schemas['ProjectIssueLookupResponse']).toMatchObject({
+      required: ['issue', 'workKind'],
+      properties: {
+        issue: { required: ['number', 'title', 'url', 'labels', 'state'], additionalProperties: false },
+        workKind: { anyOf: [
+          { required: ['kind', 'source'], additionalProperties: false },
+          { required: ['kind', 'source', 'reason'], properties: { kind: { nullable: true, enum: [null] } } }
+        ] }
+      }
+    });
+    expect(schemas['ProjectIssueNotFoundResponse']).toMatchObject({
+      properties: { error: { properties: { details: { properties: { resource: { enum: ['project', 'issue'] } } } } } }
+    });
+    expect(schemas['IntakeBadRequestResponse']).toMatchObject({
+      anyOf: [
+        { properties: { error: {
+          required: ['code', 'message', 'details'],
+          properties: {
+            code: { enum: ['intake_routing_error'] },
+            details: { anyOf: [
+              { required: ['code'], additionalProperties: false },
+              { required: ['code', 'trackerCode'], additionalProperties: false }
+            ] }
+          }
+        } } },
+        { properties: { error: { properties: { code: { enum: ['validation_error'] } } } } }
+      ]
+    });
+    const request = schemas['CreateConversationWithFirstRunRequest'] as {
+      properties: { submission: { oneOf: unknown[] } };
+    };
+    expect(request.properties.submission.oneOf[0]).toMatchObject({
+      required: ['kind', 'body', 'issue'],
+      properties: { kind: { enum: ['issue_reference'] }, workKind: { enum: ['feature', 'enhancement', 'bug', 'chore'] } }
+    });
+  });
+
   it('documents run resource routes', () => {
     const document = generateOpenApiDocument();
     expect(document.paths['/v1/runs/{id}']?.get?.responses?.['200']).toBeDefined();

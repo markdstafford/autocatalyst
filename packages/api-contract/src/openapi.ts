@@ -22,6 +22,7 @@ import {
 } from './conversation-ingress.js';
 import { errorResponseSchema } from './errors.js';
 import { degradedHealthStatusCode, healthResponseSchema } from './health.js';
+import { intakeBadRequestResponseSchema } from './intake-errors.js';
 import { principalDiagnosticPath, principalDiagnosticResponseSchema } from './principal.js';
 import {
   createProbeResourceRequestSchema,
@@ -60,6 +61,13 @@ import {
   updateProjectRequestSchema,
   updateProjectSuccessStatusCode
 } from './project.js';
+import {
+  lookupProjectIssueSuccessStatusCode,
+  projectIssueLookupResponseSchema,
+  projectIssueNotFoundResponseSchema,
+  projectIssuePath,
+  projectIssuePathParamsSchema
+} from './project-issue.js';
 import { eventsStreamPath } from './sse.js';
 import {
   runSpecPath,
@@ -146,6 +154,9 @@ export function generateOpenApiDocument(): OpenApiDocument {
 
   const HealthResponse = registry.register('HealthResponse', healthResponseSchema);
   const ErrorResponse = registry.register('ErrorResponse', errorResponseSchema);
+  const IntakeBadRequestResponse = registry.register('IntakeBadRequestResponse', intakeBadRequestResponseSchema);
+  const ProjectIssueNotFoundResponse = registry.register('ProjectIssueNotFoundResponse', projectIssueNotFoundResponseSchema);
+  const ProjectIssueLookupResponse = registry.register('ProjectIssueLookupResponse', projectIssueLookupResponseSchema);
   const CreateProbeResourceRequest = registry.register(
     'CreateProbeResourceRequest',
     createProbeResourceRequestSchema
@@ -398,6 +409,22 @@ export function generateOpenApiDocument(): OpenApiDocument {
     }
   });
 
+  registry.registerPath({
+    method: 'get',
+    path: projectIssuePath.replace(/:(\w+)/gu, '{$1}'),
+    tags: ['projects'],
+    security: [{ bearerAuth: [] }],
+    request: { params: projectIssuePathParamsSchema },
+    responses: {
+      [lookupProjectIssueSuccessStatusCode]: jsonResponse(ProjectIssueLookupResponse, 'Issue summary and derived work kind.'),
+      400: jsonResponse(IntakeBadRequestResponse, 'Validation error or issue intake routing error.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      403: jsonResponse(ErrorResponse, 'Forbidden (model principal or policy denial).'),
+      404: jsonResponse(ProjectIssueNotFoundResponse, 'Project is absent or inaccessible, or the issue was not found.'),
+      500: jsonResponse(ErrorResponse, 'Internal server error.')
+    }
+  });
+
   // PATCH /v1/projects/{id}
   registry.registerPath({
     method: 'patch',
@@ -428,7 +455,7 @@ export function generateOpenApiDocument(): OpenApiDocument {
     responses: {
       [createConversationSuccessStatusCode]: jsonResponse(CreateConversationWithFirstRunResponse, 'Created conversation with first run.'),
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
-      400: jsonResponse(ErrorResponse, 'Validation error.'),
+      400: jsonResponse(IntakeBadRequestResponse, 'Validation error or issue intake routing error.'),
       409: jsonResponse(ErrorResponse, 'Conflict.')
     }
   });
