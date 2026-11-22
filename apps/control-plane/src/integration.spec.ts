@@ -12,6 +12,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   configurationRecordListResponseSchema,
   configurationRecordResponseSchema,
+  convergenceCheckpointSchema,
   createProbeResourceSuccessStatusCode,
   createSecretResponseSchema,
   degradedHealthStatusCode,
@@ -30,13 +31,17 @@ import {
 } from '@autocatalyst/api-contract';
 import {
   addressFeedback,
+  buildImplementationBuildTaskInputs,
   buildProviderAdapterKey,
   createExtensionRegistryCatalog,
+  createLayeredConvergenceEngine,
+  defaultReviewerWorkspacePolicy,
   hardcodedDevelopmentPrincipal,
   type ControlPlaneService,
   type ConvergenceEngine,
   type ConvergenceEngineInput,
   type FeedbackLifecycleDependencies,
+  type ModelRoutingResolution,
   type PolicyDecisionInput,
   type ProviderCompositionResult,
   type RunUnitOfWork
@@ -3485,7 +3490,7 @@ async function seedRunAtImplementationHumanReview(databasePath: string): Promise
   return { runId: run.id };
 }
 
-async function seedRunAtAwaitingInputWithConvergenceEscalation(
+async function seedRunAtImplementationBuild(
   databasePath: string
 ): Promise<{ runId: string }> {
   const seedDb = createSqliteDatabase({ path: databasePath });
@@ -3495,7 +3500,7 @@ async function seedRunAtAwaitingInputWithConvergenceEscalation(
   const project = await seedRepos.projects.create({
     owner: hardcodedDevelopmentPrincipal,
     tenant: hardcodedDevelopmentPrincipal.tenantId,
-    displayName: 'Reply Awaiting Input Project',
+    displayName: 'Convergence Escalation Project',
     repoUrl: 'https://example.test/reply-awaiting',
     hostRepository: { provider: 'github', owner: 'test', name: 'reply-awaiting' },
     workspaceRootOverride: null,
@@ -3517,30 +3522,23 @@ async function seedRunAtAwaitingInputWithConvergenceEscalation(
     title: 'Reply awaiting input topic',
     kind: 'main'
   });
-  const run = await seedRepos.runs.create({
-    topicId: topic.id,
-    owner: hardcodedDevelopmentPrincipal,
-    tenant: hardcodedDevelopmentPrincipal.tenantId,
-    workKind: 'chore',
-    currentStep: 'implementation.awaiting_input',
-    terminal: false
-  });
-
-  const runStep = await seedRepos.runSteps.create({
-    runId: run.id,
-    phase: 'implementation',
-    step: 'implementation.awaiting_input',
-    role: 'implementer',
-    startedAt: new Date().toISOString(),
-    endedAt: null,
-    durationMs: null,
-    occurrence: { index: 0, attempt: 1, key: 'impl-awaiting-input-0' }
-  });
-  await seedRepos.runSteps.updateCheckpoint({
-    runStepId: runStep.id,
-    runId: run.id,
-    tenant: hardcodedDevelopmentPrincipal.tenantId,
-    checkpointResult: { pause: { kind: 'convergence_escalation', producingStep: 'implementation.build' } }
+  const { run } = await seedRepos.runs.recordRunLifecycleStart({
+    run: {
+      topicId: topic.id,
+      owner: hardcodedDevelopmentPrincipal,
+      tenant: hardcodedDevelopmentPrincipal.tenantId,
+      workKind: 'bug',
+      currentStep: 'implementation.build',
+      terminal: false
+    },
+    runStep: {
+      phase: 'implementation',
+      step: 'implementation.build',
+      role: 'none',
+      startedAt: new Date().toISOString(),
+      endedAt: null,
+      durationMs: null
+    }
   });
 
   seedDb.close();
@@ -3732,53 +3730,169 @@ describe('run replies integration', () => {
     });
   }, 30_000);
 
-  it('POST /v1/runs/:id/replies with guidance at implementation.awaiting_input classifies pauseKind=convergence_escalation', async () => {
+  it('persists both convergence escalation outcomes and dispatches each guidance reply to the resumed implementer', async () => {
     await withTempDatabasePath(async (databasePath) => {
-      const { runId } = await seedRunAtAwaitingInputWithConvergenceEscalation(databasePath);
+      const { runId } = await seedRunAtImplementationBuild(databasePath);
+      const convergenceDb = createSqliteDatabase({ path: databasePath });
+      const { feedback, runSteps } = createDrizzleDomainRepositories(convergenceDb);
+      const route = (role: string): ModelRoutingResolution => ({
+        routeId: role,
+        profileId: role,
+        routingTableId: 'test-routing',
+        profile: {
+          mode: 'agent',
+          providerKind: claudeProviderKind,
+          adapterId: claudeAgentAdapterId,
+          configurationRecordId: role,
+          profileName: role,
+          model: { provider: claudeProviderKind, model: role },
+          inferenceSettings: {},
+          endpoint: {},
+          connectionMechanism: 'process_environment'
+        },
+        credentialReference: { required: true, secretHandle: 'unused', authTarget: 'process_environment' }
+      });
+      const implementerInputs: Array<{
+        guidance: string | undefined;
+        checkpoint: unknown;
+      }> = [];
+      let reviewCount = 0;
+      const convergenceEngine = createLayeredConvergenceEngine({
+        feedback,
+        runSteps,
+        getPolicy: () => ({ depth: 'build_only', maxRounds: 3 }),
+        routing: {
+          resolveAgentRoute: vi.fn(),
+          resolveDirectRoute: vi.fn(),
+          resolveDistinctAgentRoutes: vi.fn().mockResolvedValue({
+            resolutionsByRole: { implementer: route('implementer'), reviewer: route('reviewer') }
+          })
+        },
+        git: {
+          commitFiles: async () => ({ commitSha: null, changedFileCount: 0, changedFilePaths: [] }),
+          captureCheckpointRef: vi.fn(),
+          readFileAtRef: vi.fn(),
+          listFilesAtRef: vi.fn(),
+          getChangedFiles: vi.fn(),
+          reviewerPolicy: defaultReviewerWorkspacePolicy
+        },
+        dispatcher: {
+          async runRole(input) {
+            const workResult = { directive: 'advance' } as const;
+            if (input.role === 'implementer') {
+              const steps = await runSteps.listByRun(runId);
+              implementerInputs.push({
+                guidance: buildImplementationBuildTaskInputs(input).humanGuidance,
+                checkpoint: steps.find((step) => step.step === 'implementation.build' && step.endedAt === null)?.checkpointResult
+              });
+              return {
+                workResult,
+                dispositions: input.reviewContext?.requiredDispositions?.map(({ feedbackId }) => ({
+                  feedbackId, disposition: 'fixed', summary: 'Addressed in this round.'
+                })) ?? []
+              };
+            }
 
+            reviewCount++;
+            if (reviewCount === 6) return { workResult, reviewerResult: { status: 'satisfied' } };
+            // The first two reviews repeat a blocker (oscillation). After the first
+            // reply the set shrinks from two blockers to one, then reaches the round cap.
+            return {
+              workResult,
+              reviewerResult: {
+                status: 'findings',
+                findings: Array.from({ length: reviewCount === 3 ? 2 : 1 }, (_, index) => ({
+                  title: `Blocker ${Math.max(2, reviewCount)}-${index}`,
+                  body: 'The reviewer could not verify the fix.',
+                  severity: 'blocker'
+                }))
+              }
+            };
+          }
+        }
+      });
+
+      let controlPlane: ControlPlaneService | undefined;
       const app = await createControlPlaneServer({
-        autoDispatch: { enabled: false },
         databasePath,
         bearerToken: BEARER_TOKEN,
-        masterSecret: MASTER_SECRET
+        masterSecret: MASTER_SECRET,
+        convergenceEngine,
+        onControlPlaneReady: (service) => { controlPlane = service; }
       });
       try {
-        const resp = await app.inject({
-          method: 'POST',
-          url: `/v1/runs/${runId}/replies`,
-          headers: {
-            authorization: `Bearer ${BEARER_TOKEN}`,
-            'content-type': 'application/json'
-          },
-          payload: {
-            kind: 'guidance',
-            body: 'Prefer the public API option and document the trade-off in the PR.'
-          }
+        if (controlPlane === undefined) throw new Error('control-plane service not exposed');
+        await controlPlane.tick({
+          principal: hardcodedDevelopmentPrincipal,
+          tenant: hardcodedDevelopmentPrincipal.tenantId,
+          runId
         });
-        expect(resp.statusCode).toBe(200);
-        const body = runReplyResponseSchema.parse(resp.json());
-        expect(body.classification.directive).toBe('advance');
-        expect(body.classification.pauseKind).toBe('convergence_escalation');
 
-        // Verify guidance was persisted to the awaiting_input run step's checkpoint.
-        const verifyDb = createSqliteDatabase({ path: databasePath });
-        try {
-          const verifyRepos = createDrizzleDomainRepositories(verifyDb);
-          const steps = await verifyRepos.runSteps.listByRun(runId);
-          const awaitingStep = steps.find((s) => s.step === 'implementation.awaiting_input');
-          expect(awaitingStep).toBeDefined();
-          const checkpoint = awaitingStep!.checkpointResult as
-            | { pause?: { kind?: string; humanGuidance?: string } }
-            | null;
-          expect(checkpoint?.pause?.kind).toBe('convergence_escalation');
-          expect(checkpoint?.pause?.humanGuidance).toBe(
-            'Prefer the public API option and document the trade-off in the PR.'
-          );
-        } finally {
-          verifyDb.close();
+        const headers = { authorization: `Bearer ${BEARER_TOKEN}` };
+        const inject: Parameters<typeof pollForStep>[0] = (request) => app.inject({ ...request, method: 'GET' });
+        const readSteps = async () => {
+          const response = await app.inject({ method: 'GET', url: `/v1/runs/${runId}/steps`, headers });
+          expect(response.statusCode).toBe(200);
+          return runStepListResponseSchema.parse(response.json()).steps;
+        };
+        const verifyPauseAndReply = async (
+          outcome: 'oscillation' | 'max_rounds', attempt: number, guidance: string
+        ) => {
+          const steps = await readSteps();
+          const build = steps.find((step) => step.step === 'implementation.build' && step.occurrence.attempt === attempt);
+          expect(build?.endedAt).toEqual(expect.any(String));
+          const report = convergenceCheckpointSchema.parse(build?.checkpointResult);
+          expect(report.outcome).toBe(outcome);
+          expect(report.rounds).toHaveLength(outcome === 'oscillation' ? 2 : 3);
+          expect(report.openFeedbackIds.length).toBeGreaterThan(0);
+
+          const pauseStep = steps.find((step) => step.step === 'implementation.awaiting_input' && step.endedAt === null);
+          expect(pauseStep?.occurrence.attempt).toBe(attempt);
+          const pause = {
+            kind: 'convergence_escalation',
+            producingStep: 'implementation.build',
+            question: `Convergence escalated: ${outcome}. Open feedback: ${report.openFeedbackIds.join(', ')}. What guidance should the implementer follow?`
+          };
+          expect(pauseStep?.checkpointResult).toEqual({ pause });
+
+          const reply = await app.inject({
+            method: 'POST',
+            url: `/v1/runs/${runId}/replies`,
+            headers,
+            payload: { kind: 'guidance', body: guidance }
+          });
+          expect(reply.statusCode).toBe(200);
+          const body = runReplyResponseSchema.parse(reply.json());
+          expect(body.run.currentStep).toBe('implementation.build');
+          expect(body.classification).toEqual({ directive: 'advance', pauseKind: 'convergence_escalation' });
+          return { id: pauseStep?.id, checkpoint: { pause: { ...pause, humanGuidance: guidance } } };
+        };
+
+        const firstGuidance = 'Use the public API path only.';
+        const secondGuidance = 'Keep the fallback internal.\nAdd a regression test.';
+        const firstPause = await verifyPauseAndReply('oscillation', 1, firstGuidance);
+        await pollForStep(inject, runId, BEARER_TOKEN, 'implementation.awaiting_input', 2_000);
+        const secondPause = await verifyPauseAndReply('max_rounds', 2, secondGuidance);
+        await pollForStep(inject, runId, BEARER_TOKEN, 'implementation.human_review', 2_000);
+
+        const finalSteps = await readSteps();
+        for (const pause of [firstPause, secondPause]) {
+          const step = finalSteps.find((step) => step.id === pause.id);
+          expect(step?.endedAt).toEqual(expect.any(String));
+          expect(step?.checkpointResult).toEqual(pause.checkpoint);
         }
+        expect(implementerInputs.map(({ guidance }) => guidance)).toEqual([
+          undefined, undefined, firstGuidance, undefined, undefined, secondGuidance
+        ]);
+        expect(implementerInputs[2]?.checkpoint).toEqual({
+          resumedFromAwaitingInputStepId: firstPause.id, humanGuidance: firstGuidance
+        });
+        expect(implementerInputs[5]?.checkpoint).toEqual({
+          resumedFromAwaitingInputStepId: secondPause.id, humanGuidance: secondGuidance
+        });
       } finally {
         await app.close();
+        convergenceDb.close();
       }
     });
   });

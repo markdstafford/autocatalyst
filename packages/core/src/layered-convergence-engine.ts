@@ -300,6 +300,9 @@ export function createLayeredConvergenceEngine(
       const implReviewContext: ReviewContext = {
         previousRounds: state.allRounds.map((r) => r),
         routingDistinct: routes.routingInfo.distinct,
+        ...(state.allRounds.length === 0 && input.humanGuidance !== undefined
+          ? { humanGuidance: input.humanGuidance }
+          : {}),
         altitudeContext: {
           altitude,
           altitudeRound: roundNumber,

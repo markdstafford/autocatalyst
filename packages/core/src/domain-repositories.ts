@@ -95,7 +95,10 @@ export interface RecordRunStepTransitionInput {
   readonly terminal: boolean;
   readonly runStep: LifecycleRunStepInput;
   readonly sourceRunStepId?: string;
+  /** Final checkpoint for the occurrence being closed. */
   readonly checkpointResult?: JsonValue;
+  /** Initial checkpoint for the occurrence being opened in the same transition. */
+  readonly destinationCheckpointResult?: JsonValue;
   readonly failureReason?: string;
 }
 
