@@ -68,8 +68,11 @@ import {
   createProjectRequestSchema,
   createProjectSuccessStatusCode,
   getProjectSuccessStatusCode,
+  lookupProjectIssueSuccessStatusCode,
   listProjectsSuccessStatusCode,
   projectCollectionPath,
+  projectIssueLookupResponseSchema,
+  projectIssuePath,
   projectListResponseSchema,
   projectResponseSchema,
   updateProjectRequestSchema,
@@ -86,6 +89,7 @@ import {
   type RunStatus,
   type RunWaitingOn,
   type Project,
+  type ProjectIssueLookupResponse,
   type ProjectListResponse,
   type UpdateProjectRequest,
   type AppendRunFeedbackThreadRequest,
@@ -148,6 +152,7 @@ export interface ControlPlaneClient {
   createProject(request: CreateProjectRequest): Promise<Project>;
   listProjects(): Promise<ProjectListResponse>;
   getProject(id: string): Promise<Project>;
+  lookupProjectIssue(projectId: string, number: number): Promise<ProjectIssueLookupResponse>;
   updateProject(id: string, patch: UpdateProjectRequest): Promise<Project>;
   createConversationWithFirstRun(request: CreateConversationWithFirstRunRequest): Promise<CreateConversationWithFirstRunResponse>;
   listRuns(options?: ListRunsOptions): Promise<RunListResponse>;
@@ -375,6 +380,21 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
         throw new Error(`Expected ${getProjectSuccessStatusCode} from getProject, received ${response.status}.`);
       }
       return projectResponseSchema.parse(await parseJson(response));
+    },
+
+    async lookupProjectIssue(projectId, number) {
+      const path = projectIssuePath
+        .replace(':id', encodeURIComponent(projectId))
+        .replace(':number', encodeURIComponent(number));
+      const response = await fetchImplementation(
+        urlFor(baseUrl, path),
+        { method: 'GET', headers: protectedHeaders(bearerToken) }
+      );
+      await throwForError(response);
+      if (response.status !== lookupProjectIssueSuccessStatusCode) {
+        throw new Error(`Expected ${lookupProjectIssueSuccessStatusCode} from lookupProjectIssue, received ${response.status}.`);
+      }
+      return projectIssueLookupResponseSchema.parse(await parseJson(response));
     },
 
     async updateProject(id, patch) {

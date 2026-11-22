@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { Project } from '@autocatalyst/api-contract';
-import { DefaultIssueReferenceIntakeResolver, IssueReferenceIntakeError } from './issue-reference-intake.js';
+import { issueWorkKindSchema, type IssueWorkKindDerivation, type Project } from '@autocatalyst/api-contract';
+import { DefaultIssueReferenceIntakeResolver, type ResolveConversationCreateInput } from './issue-reference-intake.js';
 import { IssueTrackerError } from './issue-tracker.js';
 import type { IssueTrackerRegistry } from './issue-tracker-registry.js';
 
@@ -29,6 +29,12 @@ const enrichedIssue = {
   state: 'open' as const,
   url: 'https://github.com/markdstafford/autocatalyst/issues/71'
 };
+
+const issueReferenceInput = {
+  submission: { kind: 'issue_reference', body: 'work on issue 71', issue: { number: 71 } },
+  project: baseProject,
+  tenant: 'tenant_abc'
+} satisfies ResolveConversationCreateInput;
 
 function makeRegistry(issue = enrichedIssue): IssueTrackerRegistry {
   return {
@@ -146,38 +152,62 @@ describe('DefaultIssueReferenceIntakeResolver', () => {
 
   // --- Work-kind settlement ---
 
-  it('settles feature from feature label', async () => {
-    const resolver = new DefaultIssueReferenceIntakeResolver({ registry: makeRegistry({ ...enrichedIssue, labels: ['feature'], title: 'no prefix here' }) });
-    const result = await resolver.resolve({
-      submission: { kind: 'issue_reference', body: 'issue', issue: { number: 71 } },
-      project: baseProject, tenant: 'tenant_abc'
+  it.each<[string[], string, IssueWorkKindDerivation, string?]>([
+    [[' ENHANCEMENT ', 'backend'], 'fix: disagrees', { kind: 'enhancement', source: 'label' }],
+    [['question'], '  FEAT: add', { kind: 'feature', source: 'title_prefix' }],
+    [[], 'FIX: broken', { kind: 'bug', source: 'title_prefix' }],
+    [[], '  Chore: tidy', { kind: 'chore', source: 'title_prefix' }],
+    [['feature', 'bug'], 'fix: disagrees', { kind: null, source: 'none', reason: 'ambiguous_labels' },
+      'Issue has ambiguous work-kind labels: feature, bug.'],
+    [[' Feature', 'FEATURE '], 'chore: tidy', { kind: null, source: 'none', reason: 'ambiguous_labels' },
+      'Issue has ambiguous work-kind labels: feature, feature.'],
+    [[], 'fix this (no literal prefix)', { kind: null, source: 'none', reason: 'no_match' },
+      'Issue has no recognized work-kind label or title prefix.']
+  ])('derives the same kind for lookup and implicit intake: %j / %s', async (labels, title, workKind, message) => {
+    const resolver = new DefaultIssueReferenceIntakeResolver({
+      registry: makeRegistry({ ...enrichedIssue, labels, title })
     });
-    expect(result.workKind).toBe('feature');
-  });
-
-  it('settles bug from fix: title prefix when no work-kind label', async () => {
-    const resolver = new DefaultIssueReferenceIntakeResolver({ registry: makeRegistry({ ...enrichedIssue, labels: [], title: 'fix: broken thing' }) });
-    const result = await resolver.resolve({
-      submission: { kind: 'issue_reference', body: 'issue', issue: { number: 71 } },
-      project: baseProject, tenant: 'tenant_abc'
+    expect(await resolver.lookup(baseProject, 71)).toEqual({
+      issue: { number: 71, title, labels, state: 'open', url: enrichedIssue.url },
+      workKind
     });
-    expect(result.workKind).toBe('bug');
+    if (workKind.kind === null) {
+      await expect(resolver.resolve(issueReferenceInput)).rejects.toMatchObject({ code: 'work_kind_unresolved', message });
+    } else {
+      await expect(resolver.resolve(issueReferenceInput)).resolves.toMatchObject({ workKind: workKind.kind });
+    }
   });
 
-  it('refuses ambiguous labels', async () => {
-    const resolver = new DefaultIssueReferenceIntakeResolver({ registry: makeRegistry({ ...enrichedIssue, labels: ['feature', 'bug'] }) });
-    await expect(resolver.resolve({
-      submission: { kind: 'issue_reference', body: 'issue', issue: { number: 71 } },
-      project: baseProject, tenant: 'tenant_abc'
-    })).rejects.toMatchObject({ code: 'work_kind_unresolved' });
+  it('checks workflow availability only for implicit intake', async () => {
+    const workflowLookup = vi.fn().mockReturnValue(undefined);
+    const resolver = new DefaultIssueReferenceIntakeResolver({ registry: makeRegistry(), workflowLookup });
+    const result = await resolver.lookup(baseProject, 71);
+    expect(result.workKind).toEqual({ kind: 'feature', source: 'label' });
+    expect(workflowLookup).not.toHaveBeenCalled();
+    await expect(resolver.resolve(issueReferenceInput)).rejects.toMatchObject({
+      code: 'work_kind_unresolved',
+      message: 'No workflow found for work kind: feature.'
+    });
+    expect(workflowLookup).toHaveBeenCalledWith('feature');
   });
 
-  it('refuses when no work-kind cue found', async () => {
-    const resolver = new DefaultIssueReferenceIntakeResolver({ registry: makeRegistry({ ...enrichedIssue, labels: [], title: 'some random title' }) });
-    await expect(resolver.resolve({
-      submission: { kind: 'issue_reference', body: 'issue', issue: { number: 71 } },
-      project: baseProject, tenant: 'tenant_abc'
-    })).rejects.toMatchObject({ code: 'work_kind_unresolved' });
+  it.each(issueWorkKindSchema.options)('uses explicit %s despite ambiguity, after sharing the same tracker read as lookup', async workKind => {
+    const issue = { ...enrichedIssue, labels: ['feature', 'bug'], state: 'closed' as const };
+    const read = vi.fn().mockResolvedValue(issue);
+    const workflowLookup = vi.fn();
+    const resolver = new DefaultIssueReferenceIntakeResolver({ registry: { get: () => ({ read }) }, workflowLookup });
+    const credentialRef = { id: 'preferred_credential', purpose: 'issue_tracker' as const };
+    const project = { ...baseProject, issueTrackerSetting: { provider: 'github', credentialRef } };
+    await resolver.lookup(project, 71);
+    expect(await resolver.resolve({
+      ...issueReferenceInput, project, submission: { ...issueReferenceInput.submission, workKind }
+    })).toEqual({ workKind, trackedIssue: issue, messageBody: issueReferenceInput.submission.body });
+    const expectedRead = {
+      target: { provider: 'github', repository: { owner: 'markdstafford', name: 'autocatalyst' }, credentialRef },
+      issueNumber: 71
+    };
+    expect(read.mock.calls).toEqual([[expectedRead], [expectedRead]]);
+    expect(workflowLookup).not.toHaveBeenCalled();
   });
 
   // --- Output normalization and safe error wrapping ---
@@ -198,7 +228,7 @@ describe('DefaultIssueReferenceIntakeResolver', () => {
     expect(result.workKind).toBe('feature'); // from enriched issue labels
   });
 
-  it('wraps IssueTrackerError as tracker_read_failed with safe details', async () => {
+  it('still requires a tracker read for explicit intake and retains trusted context for normalization', async () => {
     const registry: IssueTrackerRegistry = {
       get: vi.fn().mockReturnValue({
         read: vi.fn().mockRejectedValue(
@@ -207,16 +237,14 @@ describe('DefaultIssueReferenceIntakeResolver', () => {
       })
     };
     const resolver = new DefaultIssueReferenceIntakeResolver({ registry });
-    try {
-      await resolver.resolve({
-        submission: { kind: 'issue_reference', body: 'issue', issue: { number: 71 } },
-        project: baseProject, tenant: 'tenant_abc'
-      });
-      expect.fail('should throw');
-    } catch (e: unknown) {
-      const err = e as IssueReferenceIntakeError;
-      expect(err.code).toBe('tracker_read_failed');
-      expect(err.safeDetails?.trackerCode).toBe('issue_not_found');
-    }
+    await expect(resolver.resolve({
+      ...issueReferenceInput, submission: { ...issueReferenceInput.submission, workKind: 'bug' }
+    })).rejects.toMatchObject({
+      code: 'tracker_read_failed',
+      trackerFailure: {
+        error: { code: 'issue_not_found' },
+        provider: 'github', repository: 'markdstafford/autocatalyst', issueNumber: 71
+      }
+    });
   });
 });

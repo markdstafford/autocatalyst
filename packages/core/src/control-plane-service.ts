@@ -8,6 +8,8 @@ import type {
   FeedbackTarget,
   NonModelPrincipal,
   Principal,
+  ProjectIssueLookupResponse,
+  IntakeRoutingErrorDetails,
   Run,
   RunListCursor,
   RunStatus,
@@ -24,7 +26,7 @@ import type {
   SpecAuthorFrontmatter,
   UpdateRunFeedbackRequest
 } from '@autocatalyst/api-contract';
-import { createConversationWithFirstRunResponseSchema, feedbackResponseSchema, pullRequestReconciliationResponseSchema, runFeedbackListResponseSchema, runPullRequestResponseSchema, runPullRequestRefreshPath, runPullRequestRefreshResponseSchema, pullRequestCheckFailedErrorCode, pullRequestCheckFailedMessage, runRecoveryResponseSchema, runReplyResponseSchema, runSessionListResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
+import { createConversationWithFirstRunResponseSchema, feedbackResponseSchema, issueTrackerErrorCodeSchema, pullRequestReconciliationResponseSchema, runFeedbackListResponseSchema, runPullRequestResponseSchema, runPullRequestRefreshPath, runPullRequestRefreshResponseSchema, pullRequestCheckFailedErrorCode, pullRequestCheckFailedMessage, runRecoveryResponseSchema, runReplyResponseSchema, runSessionListResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
 import type { ReconcilePullRequestsResponse } from '@autocatalyst/api-contract';
 
 import {
@@ -103,6 +105,12 @@ export class ControlPlaneServiceError extends Error {
 }
 
 // --- Input/result types ---
+
+export interface ServiceLookupProjectIssueInput {
+  readonly principal: Principal;
+  readonly projectId: string;
+  readonly issueNumber: number;
+}
 
 export interface ServiceCreateConversationInput {
   readonly principal: Principal;
@@ -256,6 +264,7 @@ export type ServiceListRunSessionsResult = RunSessionListResponse;
 // --- Service interface ---
 
 export interface ControlPlaneService {
+  lookupProjectIssue(input: ServiceLookupProjectIssueInput): Promise<ProjectIssueLookupResponse>;
   createConversationWithFirstRun(
     input: ServiceCreateConversationInput
   ): Promise<CreateConversationWithFirstRunResponse>;
@@ -303,6 +312,42 @@ export interface DefaultControlPlaneServiceOptions {
 }
 
 // --- Implementation ---
+
+function normalizeIntakeFailure(error: unknown, operation: 'lookup' | 'create'): ControlPlaneServiceError {
+  if (!(error instanceof IssueReferenceIntakeError)) throw error;
+
+  const read = error.trackerFailure;
+  if (!read) {
+    return new ControlPlaneServiceError('intake_routing_error', error.message, {
+      details: { code: error.code } satisfies IntakeRoutingErrorDetails
+    });
+  }
+
+  const trackerCode = issueTrackerErrorCodeSchema.safeParse(read.error.code);
+  if (!trackerCode.success) {
+    return new ControlPlaneServiceError('intake_routing_error', 'Failed to read issue from tracker.', {
+      details: { code: 'tracker_read_failed' } satisfies IntakeRoutingErrorDetails
+    });
+  }
+  const code = trackerCode.data;
+  if (operation === 'lookup' && code === 'issue_not_found') {
+    return new ControlPlaneServiceError('not_found', 'Issue not found.', { details: { resource: 'issue' } });
+  }
+
+  const context = read.error.safeDetails;
+  const matchesContext = (key: string, value: string | number): boolean =>
+    context !== undefined && Object.getOwnPropertyDescriptor(context, key)?.value === value;
+  const details: IntakeRoutingErrorDetails = {
+    code,
+    trackerCode: code,
+    ...(matchesContext('provider', read.provider) ? { provider: read.provider } : {}),
+    ...(matchesContext('repository', read.repository) ? { repository: read.repository } : {}),
+    ...(matchesContext('issueNumber', read.issueNumber) && Number.isFinite(read.issueNumber)
+      ? { issueNumber: read.issueNumber }
+      : {})
+  };
+  return new ControlPlaneServiceError('intake_routing_error', `Failed to read issue from tracker: ${code}.`, { details });
+}
 
 function isActiveRunConflictError(error: unknown): boolean {
   return error instanceof Error && error.name === 'ActiveRunConflictPersistenceError';
@@ -442,6 +487,22 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     this.#recovery = options.recovery;
   }
 
+  async lookupProjectIssue(input: ServiceLookupProjectIssueInput): Promise<ProjectIssueLookupResponse> {
+    const { principal, projectId, issueNumber } = input;
+    if (principal.kind === 'model') {
+      throw new ControlPlaneServiceError('forbidden', 'Forbidden.');
+    }
+    const project = await this.#projects.findById(principal.tenantId, projectId);
+    if (project === null) {
+      throw new ControlPlaneServiceError('not_found', 'Project not found.', { details: { resource: 'project' } });
+    }
+    try {
+      return await this.#issueReferenceIntakeResolver.lookup(project, issueNumber);
+    } catch (error) {
+      throw normalizeIntakeFailure(error, 'lookup');
+    }
+  }
+
   async createConversationWithFirstRun(
     input: ServiceCreateConversationInput
   ): Promise<CreateConversationWithFirstRunResponse> {
@@ -464,7 +525,8 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     if (project === null || project.tenant !== input.tenant) {
       throw new ControlPlaneServiceError(
         'intake_routing_error',
-        `Project '${request.projectId}' is not accessible.`
+        `Project '${request.projectId}' is not accessible.`,
+        { details: { code: 'project_not_accessible' } satisfies IntakeRoutingErrorDetails }
       );
     }
 
@@ -477,13 +539,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
         tenant: input.tenant
       });
     } catch (error: unknown) {
-      if (error instanceof IssueReferenceIntakeError) {
-        throw new ControlPlaneServiceError('intake_routing_error', error.message, {
-          ...(error.safeDetails !== undefined ? { details: error.safeDetails } : {}),
-          cause: error
-        });
-      }
-      throw error;
+      throw normalizeIntakeFailure(error, 'create');
     }
 
     let result: OrchestratedConversationResult;
@@ -504,7 +560,10 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     } catch (error) {
       if (error instanceof OrchestratorError) {
         if (error.code === 'unknown_work_kind' || error.code === 'invalid_transition') {
-          throw new ControlPlaneServiceError('intake_routing_error', error.message, { cause: error });
+          throw new ControlPlaneServiceError('intake_routing_error', error.message, {
+            details: { code: error.code } satisfies IntakeRoutingErrorDetails,
+            cause: error
+          });
         }
         if (error.code === 'active_run_conflict') {
           throw new ControlPlaneServiceError('active_run_conflict', error.message, {

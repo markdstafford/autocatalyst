@@ -87,7 +87,7 @@ function makeService(options?: {
     workspaceFilesystem: { writeFile: vi.fn(), readFile: vi.fn() },
     feedbackLifecycle: { feedback: { create: vi.fn(), findById: vi.fn(), listByRun: vi.fn(), updateStatusAndAppendThread: vi.fn(), appendThreadEntry: vi.fn() }, ids: () => 'id_1', clock: () => ts },
     projects: { create: vi.fn(), findById: vi.fn(), list: vi.fn(), update: vi.fn() },
-    issueReferenceIntakeResolver: { resolve: vi.fn() },
+    issueReferenceIntakeResolver: { lookup: vi.fn(), resolve: vi.fn() },
     pullRequests: { create: vi.fn(), findById: vi.fn(), findByRun: vi.fn(), updateState: vi.fn(), listOpen: vi.fn() },
     sessions: { create: vi.fn(), findById: vi.fn(), listByRun: vi.fn() },
     recovery: options?.recovery ?? makeRecovery()
