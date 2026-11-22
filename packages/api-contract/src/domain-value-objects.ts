@@ -38,12 +38,14 @@ export const costSchema = z.object({
   tokens: tokenBreakdownSchema
 }).strict();
 
+export const trackedIssueStateSchema = z.enum(['open', 'closed', 'merged', 'unknown']);
+
 export type TrackedIssue = {
   number: number;
   title: string;
   body: string;
   labels: string[];
-  state: 'open' | 'closed' | 'merged' | 'unknown';
+  state: z.infer<typeof trackedIssueStateSchema>;
   url: string;
 };
 
@@ -52,7 +54,7 @@ export const trackedIssueSchema = z.object({
   title: z.string().min(1),
   body: z.string().optional(),
   labels: z.array(z.string().min(1)).optional(),
-  state: z.enum(['open', 'closed', 'merged', 'unknown']),
+  state: trackedIssueStateSchema,
   url: z.string().url()
 }).strict()
   .transform((v): TrackedIssue => ({

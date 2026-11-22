@@ -220,6 +220,7 @@ function makeFakeProjectRepository(project: Project | null = baseProject): Proje
 
 function makePassThroughResolver(): IssueReferenceIntakeResolver {
   return {
+    lookup: vi.fn(),
     resolve: vi.fn().mockImplementation(async (input: { submission: { kind: string; body: string; workKind?: string; trackedIssue?: unknown } }) => {
       const sub = input.submission;
       if (sub.kind === 'free_form' || sub.kind === 'question' || sub.kind === 'list_to_file') {
@@ -336,16 +337,16 @@ describe('DefaultControlPlaneService.createConversationWithFirstRun', () => {
     expect(result.message).toBeUndefined();
   });
 
-  it('maps unknown_work_kind from orchestrator to intake_routing_error', async () => {
+  it.each(['unknown_work_kind', 'invalid_transition'] as const)('maps %s from orchestrator to intake_routing_error', async code => {
     const orchestrator = makeFakeOrchestrator({
       createConversationWithFirstRun: vi
         .fn()
-        .mockRejectedValue(new OrchestratorError('unknown_work_kind', "Unknown work kind 'foo'."))
+        .mockRejectedValue(new OrchestratorError(code, 'Cannot start this run.'))
     });
     const service = makeService({ orchestrator });
     await expect(
       service.createConversationWithFirstRun({ principal, tenant: 'tenant_1', request: baseRequest })
-    ).rejects.toMatchObject({ code: 'intake_routing_error' });
+    ).rejects.toMatchObject({ code: 'intake_routing_error', message: 'Cannot start this run.', details: { code } });
   });
 
   it('maps active_run_conflict from orchestrator to service error with details', async () => {
@@ -401,6 +402,7 @@ describe('DefaultControlPlaneService.createConversationWithFirstRun intake', () 
       labels: ['bug']
     };
     const resolver: IssueReferenceIntakeResolver = {
+      lookup: vi.fn(),
       resolve: vi.fn().mockResolvedValue({
         workKind: 'bug',
         trackedIssue,
@@ -431,6 +433,7 @@ describe('DefaultControlPlaneService.createConversationWithFirstRun intake', () 
       }
     };
     const resolver: IssueReferenceIntakeResolver = {
+      lookup: vi.fn(),
       resolve: vi.fn().mockResolvedValue({
         workKind: 'feature',
         messageBody: 'please look at issue #7'
@@ -445,6 +448,7 @@ describe('DefaultControlPlaneService.createConversationWithFirstRun intake', () 
 
   it('returns intake_routing_error when resolver refuses and does not call orchestrator', async () => {
     const resolver: IssueReferenceIntakeResolver = {
+      lookup: vi.fn(),
       resolve: vi.fn().mockRejectedValue(
         new IssueReferenceIntakeError('work_kind_unresolved', 'Cannot settle work kind.')
       )
@@ -453,7 +457,7 @@ describe('DefaultControlPlaneService.createConversationWithFirstRun intake', () 
     const service = makeService({ orchestrator, issueReferenceIntakeResolver: resolver });
     await expect(
       service.createConversationWithFirstRun({ principal, tenant: 'tenant_1', request: baseRequest })
-    ).rejects.toMatchObject({ code: 'intake_routing_error' });
+    ).rejects.toMatchObject({ code: 'intake_routing_error', details: { code: 'work_kind_unresolved' } });
     expect(orchestrator.createConversationWithFirstRun).not.toHaveBeenCalled();
   });
 
@@ -462,7 +466,7 @@ describe('DefaultControlPlaneService.createConversationWithFirstRun intake', () 
     const service = makeService({ orchestrator, projects: makeFakeProjectRepository(null) });
     await expect(
       service.createConversationWithFirstRun({ principal, tenant: 'tenant_1', request: baseRequest })
-    ).rejects.toMatchObject({ code: 'intake_routing_error' });
+    ).rejects.toMatchObject({ code: 'intake_routing_error', details: { code: 'project_not_accessible' } });
     expect(orchestrator.createConversationWithFirstRun).not.toHaveBeenCalled();
   });
 
@@ -472,7 +476,7 @@ describe('DefaultControlPlaneService.createConversationWithFirstRun intake', () 
     const service = makeService({ orchestrator, projects: makeFakeProjectRepository(otherTenantProject) });
     await expect(
       service.createConversationWithFirstRun({ principal, tenant: 'tenant_1', request: baseRequest })
-    ).rejects.toMatchObject({ code: 'intake_routing_error' });
+    ).rejects.toMatchObject({ code: 'intake_routing_error', details: { code: 'project_not_accessible' } });
     expect(orchestrator.createConversationWithFirstRun).not.toHaveBeenCalled();
   });
 });

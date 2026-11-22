@@ -284,6 +284,7 @@ export function createScriptedDetailClient(init?: { run?: Run }): ScriptedDetail
     createProject: notImplemented('createProject'),
     listProjects: notImplemented('listProjects'),
     getProject: notImplemented('getProject'),
+    lookupProjectIssue: notImplemented('lookupProjectIssue'),
     updateProject: notImplemented('updateProject'),
     createConversationWithFirstRun: notImplemented('createConversationWithFirstRun'),
     listRuns: notImplemented('listRuns'),

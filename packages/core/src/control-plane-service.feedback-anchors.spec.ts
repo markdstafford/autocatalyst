@@ -226,7 +226,7 @@ function makeHarness(options: HarnessOptions = {}) {
     workspaceFilesystem,
     feedbackLifecycle: { feedback, ids: (() => { let n = 0; return () => `tid_${++n}`; })(), clock: () => timestamp },
     projects: { create: vi.fn(), findById: vi.fn(), list: vi.fn(), update: vi.fn() } as never,
-    issueReferenceIntakeResolver: { resolve: vi.fn() } as never,
+    issueReferenceIntakeResolver: { lookup: vi.fn(), resolve: vi.fn() },
     pullRequests: { create: vi.fn(), findById: vi.fn(), findByRun: vi.fn(), updateState: vi.fn(), listOpen: vi.fn() } as never,
     sessions: { create: vi.fn(), findById: vi.fn(), listByRun: vi.fn() } as never
   });

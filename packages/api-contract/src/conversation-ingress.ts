@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { channelReferenceSchema, trackedIssueSchema } from './domain-value-objects.js';
 import { conversationSchema } from './conversation.js';
 import { messageSchema } from './message.js';
-import { createRunWorkKindSchema, runSchema } from './run.js';
+import { createRunWorkKindSchema, issueWorkKindSchema, runSchema } from './run.js';
 import { runStepSchema } from './run-step.js';
 import { topicSchema } from './topic.js';
 
@@ -15,7 +15,8 @@ export const submissionKindSchema = z.enum(['issue_reference', 'free_form', 'que
 export const issueReferenceSubmissionSchema = z.object({
   kind: z.literal('issue_reference'),
   body: z.string().min(1),
-  issue: z.object({ number: z.number().int().min(1) }).strict()
+  issue: z.object({ number: z.number().int().min(1) }).strict(),
+  workKind: issueWorkKindSchema.optional()
 }).strict();
 
 export const freeFormSubmissionSchema = z.object({
