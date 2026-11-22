@@ -32,8 +32,7 @@ export function AppRoutes(): ReactNode {
     <Routes>
       <Route path="/" element={<Navigate to="/runs" replace />} />
       <Route element={<ShellLayout />}>
-        <Route path="/runs" element={<RunsPage />} />
-        <Route path="/runs/:runId" element={<RunsPage />} />
+        <Route path="/runs/:runId?" element={<RunsPage />} />
         <Route path="/settings" element={<Navigate to="/settings/connection" replace />} />
         <Route path="/settings/connection" element={<ConnectionPage />} />
         <Route path="/settings/projects/:projectId?" element={<ProjectsPage />} />

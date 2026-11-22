@@ -18,11 +18,13 @@ interface SelectProps {
   readonly disabled?: boolean;
   readonly error?: string | undefined;
   readonly placeholder?: string;
+  readonly describedBy?: string | undefined;
+  readonly triggerRef?: React.Ref<HTMLButtonElement>;
 }
 
 /** Labelled, token-styled single selection. Base UI owns focus and keyboard behavior. */
 export function Select({
-  label, options, value, onValueChange, required = false, disabled = false, error, placeholder
+  label, options, value, onValueChange, required = false, disabled = false, error, placeholder, describedBy, triggerRef
 }: SelectProps): ReactNode {
   return (
     <Field label={label} {...(error !== undefined ? { error } : {})}>
@@ -33,7 +35,7 @@ export function Select({
         disabled={disabled}
         onValueChange={(next) => { if (next !== null) onValueChange(next); }}
       >
-        <BaseSelect.Trigger className="flex h-control-base w-full items-center justify-between gap-2 rounded-sm border border-border bg-background px-2 text-sm text-text data-[invalid]:border-red focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-60">
+        <BaseSelect.Trigger ref={triggerRef} {...(describedBy !== undefined ? { 'aria-describedby': describedBy } : {})} className="flex h-control-base w-full items-center justify-between gap-2 rounded-sm border border-border bg-background px-2 text-sm text-text data-[invalid]:border-red focus:outline-none focus:ring-2 focus:ring-focus disabled:opacity-60">
           <BaseSelect.Value className="truncate" placeholder={placeholder} />
           <BaseSelect.Icon><ChevronDown aria-hidden size={14} /></BaseSelect.Icon>
         </BaseSelect.Trigger>

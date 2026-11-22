@@ -14,7 +14,7 @@ import { Button } from './button.js';
 export interface EmptyStateAction {
   /** The action's button label. */
   readonly label: string;
-  onClick(): void;
+  onClick(opener: HTMLElement): void;
 }
 
 export interface EmptyStateProps {
@@ -46,7 +46,7 @@ export function EmptyState({ title, message, action, className, ...rest }: Empty
         </p>
       ) : null}
       {action !== undefined ? (
-        <Button variant="primary" className="mt-2" onClick={action.onClick}>
+        <Button variant="primary" className="mt-2" onClick={(event) => action.onClick(event.currentTarget)}>
           {action.label}
         </Button>
       ) : null}

@@ -474,3 +474,31 @@ describe('useRunList replaceRun', () => {
     expect(screen.getByTestId('rows').textContent).toBe('r1');
   });
 });
+
+describe('useRunList create handoff', () => {
+  it('keeps the created row through an absent first read and merges by existing freshness once listed', async () => {
+    const created = { ...makeRun({ id: 'new' }), updatedAt: '2026-01-02T00:00:00.000Z' };
+    const stale = { ...created, currentStep: 'spec.author', updatedAt: '2026-01-01T00:00:00.000Z' };
+    const advanced = { ...created, currentStep: 'implementation.human_review', updatedAt: '2026-01-03T00:00:00.000Z' };
+    const prior = makeRun({ id: 'prior' });
+    const listRuns = vi.fn<ControlPlaneClient['listRuns']>()
+      .mockResolvedValueOnce({ runs: [prior] })
+      .mockResolvedValueOnce({ runs: [stale, prior] })
+      .mockResolvedValueOnce({ runs: [advanced, prior] });
+    const spies = defaults();
+    const props = { client: { listRuns }, connected: true, routeRunId: created.id, ...spies };
+    const { rerender } = render(<Harness {...props} createdRun={created} />);
+    await waitFor(() => expect(screen.getByTestId('rows').textContent).toBe('new,prior'));
+    expect(screen.getByTestId('selected').textContent).toBe('new');
+    expect(listRuns).toHaveBeenCalledTimes(1);
+    rerender(<Harness {...props} />);
+
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+    expect(screen.getByTestId('steps').textContent).toContain('new:spec.human_review');
+    expect(screen.getByTestId('rows').textContent).toBe('new,prior');
+    await act(async () => { document.dispatchEvent(new Event('visibilitychange')); });
+    expect(screen.getByTestId('steps').textContent).toContain('new:implementation.human_review');
+    expect(screen.getByTestId('selected').textContent).toBe('new');
+    expect(spies.navigateToRun).not.toHaveBeenCalled();
+  });
+});

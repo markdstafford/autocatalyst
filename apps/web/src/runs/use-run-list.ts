@@ -24,6 +24,8 @@ export interface UseRunListOptions {
   onListLostChange(lost: boolean): void;
   readonly pollIntervalMs?: number;
   readonly requestArgs?: RunListRequestArgs;
+  /** Server row from a create response, supplied only on its destination address. */
+  readonly createdRun?: Run;
   now?(): number;
 }
 
@@ -47,6 +49,8 @@ interface Scope {
   busy: boolean;
   listLost: boolean;
   pageCount: number;
+  awaitingListRunId?: string;
+  suspended: boolean;
 }
 
 export interface RunListState extends Omit<View, 'started' | 'nextCursor'> {
@@ -56,6 +60,8 @@ export interface RunListState extends Omit<View, 'started' | 'nextCursor'> {
   loadNextPage(): void;
   /** Refresh a present row without allowing a later, stale poll to revert it. */
   replaceRun(run: Run): void;
+  /** Retire source reads synchronously before navigation to the created run. */
+  prepareCreatedRun(): void;
 }
 
 function isUnauthorized(error: unknown): boolean {
@@ -76,10 +82,11 @@ export function useRunList(options: UseRunListOptions): RunListState {
   });
   const scope = useMemo<Scope>(() => {
     const args = JSON.parse(filter) as RunListRequestArgs;
+    const arrival = connected ? latest.current.createdRun : undefined;
     const initial: View = {
-      phase: connected ? 'loading' : 'no-token',
-      rows: [],
-      selectedRunId: undefined,
+      phase: arrival !== undefined ? 'ready' : connected ? 'loading' : 'no-token',
+      rows: arrival === undefined ? [] : [arrival],
+      selectedRunId: arrival?.id,
       nextCursor: undefined,
       nowIso: new Date((latest.current.now ?? Date.now)()).toISOString(),
       isPaging: false,
@@ -98,7 +105,8 @@ export function useRunList(options: UseRunListOptions): RunListState {
       active: false,
       busy: false,
       listLost: false,
-      pageCount: 0
+      pageCount: 0,
+      suspended: false
     };
   }, [client, connected, filter]);
 
@@ -122,6 +130,14 @@ export function useRunList(options: UseRunListOptions): RunListState {
   }, []);
 
   const commitRows = useCallback((incoming: Run[], nextCursor: string | undefined, pageCount: number): void => {
+    const newId = scope.awaitingListRunId;
+    if (newId !== undefined) {
+      if (incoming.some((run) => run.id === newId)) delete scope.awaitingListRunId;
+      else {
+        const created = scope.view.rows.find((run) => run.id === newId);
+        if (created !== undefined) incoming = [created, ...incoming];
+      }
+    }
     const rows = mergeRunRows(scope.view.rows, incoming);
     const ids = rows.map((row) => row.id);
     const selectedRunId = scope.view.selectedRunId === undefined
@@ -133,7 +149,7 @@ export function useRunList(options: UseRunListOptions): RunListState {
   }, [scope, commit, navigateSelection]);
 
   const read = useCallback(async (kind: 'initial' | 'poll' | 'next'): Promise<void> => {
-    if (!scope.active || scope.busy || (kind === 'next' && scope.view.nextCursor === undefined)) return;
+    if (!scope.active || scope.suspended || scope.busy || (kind === 'next' && scope.view.nextCursor === undefined)) return;
     const generation = scope.generation;
     scope.busy = true;
     if (kind === 'next') commit({ isPaging: true });
@@ -173,7 +189,7 @@ export function useRunList(options: UseRunListOptions): RunListState {
   useLayoutEffect(() => {
     if (!connected) return;
     scope.active = true;
-    void read('initial');
+    if (latest.current.createdRun === undefined) void read('initial');
     return () => {
       scope.active = false;
       scope.generation++;
@@ -182,6 +198,19 @@ export function useRunList(options: UseRunListOptions): RunListState {
       latest.current.onListLostChange(false);
     };
   }, [connected, scope, read]);
+
+  const { createdRun } = options;
+  useLayoutEffect(() => {
+    if (!scope.active || createdRun === undefined) return;
+    const rows = mergeRunRows(scope.view.rows, [createdRun, ...scope.view.rows.filter((run) => run.id !== createdRun.id)]);
+    scope.awaitingListRunId = createdRun.id;
+    scope.suspended = false;
+    commit({
+      rows, selectedRunId: createdRun.id, phase: 'ready', started: true, isPaging: false,
+      nowIso: new Date((latest.current.now ?? Date.now)()).toISOString()
+    });
+    void read('poll');
+  }, [createdRun, scope, commit, read]);
 
   useEffect(() => {
     if (!view.started) return;
@@ -230,5 +259,11 @@ export function useRunList(options: UseRunListOptions): RunListState {
     if (rows !== scope.view.rows) commit({ rows });
   }, [scope, commit]);
 
-  return { ...view, hasNextPage: view.nextCursor !== undefined, select, move, loadNextPage, replaceRun };
+  const prepareCreatedRun = useCallback((): void => {
+    scope.suspended = true;
+    scope.busy = false;
+    scope.generation++;
+  }, [scope]);
+
+  return { ...view, hasNextPage: view.nextCursor !== undefined, select, move, loadNextPage, replaceRun, prepareCreatedRun };
 }

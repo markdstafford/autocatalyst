@@ -5,7 +5,7 @@
  * address changes, route-id selection, the no-runs empty state, and the no-token
  * connect prompt that issues no request.
  */
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom';
@@ -14,8 +14,8 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { AppRoutes } from '../app.js';
 import { clearBearerToken, writeBearerToken } from '../auth/token-store.js';
 import { ControlPlaneClientProvider } from '../client/client-provider.js';
-import { makeProject, makePullRequest, makeRun } from '../runs/run-fixtures.js';
-import { readPreferences } from '../theme/preferences.js';
+import { makeCreateRunResponse, makeProject, makePullRequest, makeRun } from '../runs/run-fixtures.js';
+import { readPreferences, writePreferences } from '../theme/preferences.js';
 import { ThemeProvider } from '../theme/theme-provider.js';
 import type { Project, PullRequest, Run, RunPullRequestRefreshResponse } from '@autocatalyst/api-contract';
 
@@ -38,9 +38,18 @@ interface SeamState {
   pullRequest?: PullRequest;
   refreshResponse?: RunPullRequestRefreshResponse;
   checks: string[];
+  listResponses: Promise<Response>[];
+  issueStatus: number;
+  createStatus: number;
+  createdRun?: Run;
+  issuePaths: string[];
+  creates: number;
 }
 
-const seam: SeamState = { runs: [], projects: [], runsStatus: 200, projectsStatus: 200, filters: [], checks: [] };
+const seam: SeamState = {
+  runs: [], projects: [], runsStatus: 200, projectsStatus: 200, filters: [], checks: [], listResponses: [],
+  issueStatus: 200, createStatus: 201, issuePaths: [], creates: 0
+};
 
 function errorResponse(code: string, status: number): Response {
   return jsonResponse({ error: { code, message: 'x' } }, status);
@@ -77,6 +86,21 @@ function sseResponse(init?: RequestInit): Response {
 
 const fetchSeam: typeof globalThis.fetch = async (input, init) => {
   const url = requestUrl(input);
+  const path = new URL(url).pathname;
+  if (/^\/v1\/projects\/[^/]+\/issues\//u.test(path)) {
+    seam.issuePaths.push(path);
+    if (seam.issueStatus !== 200) return errorResponse('unauthorized', seam.issueStatus);
+    return jsonResponse({
+      issue: { number: 5, title: 'New issue', url: 'https://example.test/issues/5', labels: [], state: 'open' },
+      workKind: { kind: 'feature', source: 'label' }
+    });
+  }
+  if (path === '/v1/conversations' && init?.method === 'POST') {
+    seam.creates++;
+    if (seam.createStatus !== 201) return errorResponse('unauthorized', seam.createStatus);
+    if (seam.createdRun === undefined) throw new Error('Missing create fixture');
+    return jsonResponse(makeCreateRunResponse(seam.createdRun), 201);
+  }
   if (url.includes('/v1/projects')) {
     return seam.projectsStatus === 200 ? jsonResponse({ projects: seam.projects }, 200) : errorResponse('internal_error', seam.projectsStatus);
   }
@@ -106,18 +130,21 @@ const fetchSeam: typeof globalThis.fetch = async (input, init) => {
   // A single-run resource read (getRun): /v1/runs/<id> with no further segment.
   const resourceMatch = /\/v1\/runs\/([^/?]+)$/u.exec(url);
   if (resourceMatch !== null) {
-    const run = seam.runs.find((r) => r.id === resourceMatch[1]);
+    const run = seam.runs.find((r) => r.id === resourceMatch[1]) ??
+      (seam.createdRun?.id === resourceMatch[1] ? seam.createdRun : undefined);
     if (run === undefined) {
       return errorResponse('not_found', 404);
     }
     return jsonResponse(run, 200);
   }
   if (url.includes('/v1/runs')) {
+    const project = new URL(url).searchParams.get('projectId');
+    seam.filters.push(project);
+    const pending = seam.listResponses.shift();
+    if (pending !== undefined) return pending;
     if (seam.runsStatus !== 200) {
       return jsonResponse({ error: { code: 'internal_error', message: 'boom' } }, seam.runsStatus);
     }
-    const project = new URL(url).searchParams.get('projectId');
-    seam.filters.push(project);
     return jsonResponse({ runs: project === null ? seam.runs : seam.runs.filter((run) => run.projectId === project) }, 200);
   }
   // Health and anything else.
@@ -153,6 +180,12 @@ beforeEach(() => {
   seam.projectsStatus = 200;
   seam.filters = [];
   seam.checks = [];
+  seam.listResponses = [];
+  seam.issueStatus = 200;
+  seam.createStatus = 201;
+  seam.issuePaths = [];
+  seam.creates = 0;
+  delete seam.createdRun;
   delete seam.pullRequest;
   delete seam.refreshResponse;
 });
@@ -384,13 +417,126 @@ describe('RunsPage empty state', () => {
     expect(screen.queryByText('Add a project to get started')).toBeNull();
   });
 
-  it('shows the no-runs empty state without a Start a run button', async () => {
+  it('opens the shared start dialog from the no-runs state', async () => {
     writeBearerToken('token-abc');
     seam.runs = [];
     seam.projects = [makeProject()];
     renderRuns('/runs');
-    await screen.findByTestId('runs-empty-no-runs');
+    const empty = await screen.findByTestId('runs-empty-no-runs');
     expect(screen.getByText('A run starts from a tracked issue.')).toBeDefined();
-    expect(screen.queryByRole('button', { name: /start a run/i })).toBeNull();
+    const opener = within(empty).getByRole('button', { name: 'Start a run' });
+    await userEvent.click(opener);
+    expect(screen.getByRole('dialog', { name: 'Start a run' })).toBeDefined();
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(document.activeElement).toBe(opener));
+  });
+});
+
+describe('start-run wiring', () => {
+  function sidebarStart(): HTMLElement {
+    return within(screen.getByRole('navigation', { name: 'Primary' })).getByRole('button', { name: 'Start a run' });
+  }
+
+  function dialog(): ReturnType<typeof within> {
+    return within(screen.getByRole('dialog', { name: 'Start a run' }));
+  }
+
+  async function resolveIssue(): Promise<void> {
+    const field = await dialog().findByRole('textbox', { name: 'Issue reference' });
+    fireEvent.change(field, { target: { value: '#5' } });
+    fireEvent.keyDown(field, { key: 'Enter' });
+  }
+
+  it('keeps the hover sidebar visible for focus return and handles Select Escape before dialog Escape', async () => {
+    writeBearerToken('token-abc');
+    seam.projects = [makeProject()];
+    renderRuns();
+    await screen.findByTestId('runs-empty-no-runs');
+    fireEvent.keyDown(document.body, { key: '[' });
+    expect(screen.queryByRole('navigation', { name: 'Primary' })).toBeNull();
+    fireEvent.pointerEnter(screen.getByTestId('sidebar-hover-zone'));
+    const opener = sidebarStart();
+    await userEvent.click(opener);
+    fireEvent.pointerLeave(document.querySelector('nav')!);
+    await userEvent.click(dialog().getByRole('combobox', { name: 'Project' }));
+    expect(await screen.findByRole('option')).toBeDefined();
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('option')).toBeNull());
+    expect(dialog().getByRole('combobox', { name: 'Project' })).toBeDefined();
+    fireEvent.keyDown(dialog().getByRole('combobox', { name: 'Project' }), { key: ',', ctrlKey: true });
+    expect(screen.getByTestId('location').textContent).toBe('/runs');
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(document.activeElement).toBe(opener));
+    expect(screen.queryByRole('dialog', { name: 'Start a run' })).toBeNull();
+  });
+
+  it.each(['lookup', 'create'])('handles a bearer 401 during %s inside the dialog instead of redirecting', async (source) => {
+    writeBearerToken('token-abc');
+    seam.projects = [makeProject()];
+    if (source === 'lookup') seam.issueStatus = 401;
+    else seam.createStatus = 401;
+    renderRuns();
+    await screen.findByTestId('runs-empty-no-runs');
+    await userEvent.click(sidebarStart());
+    await resolveIssue();
+    if (source === 'create') {
+      await dialog().findByRole('region', { name: 'Issue preview' });
+      await userEvent.click(dialog().getByRole('button', { name: 'Start run' }));
+    }
+    await dialog().findByRole('heading', { name: 'Connect to the control plane' });
+    expect(dialog().queryByRole('combobox')).toBeNull();
+    expect(dialog().queryByRole('button', { name: /retry|start run/iu })).toBeNull();
+    expect(seam.issuePaths).toHaveLength(1);
+    expect(seam.creates).toBe(source === 'create' ? 1 : 0);
+    expect(screen.getByTestId('location').textContent).toBe('/runs');
+    await userEvent.click(dialog().getByRole('button', { name: 'Open connection settings' }));
+    await waitFor(() => {
+      expect(screen.getByTestId('location').textContent).toBe('/settings/connection');
+      expect(screen.getByRole('main').contains(document.activeElement)).toBe(true);
+    });
+  });
+
+  it.each(['matching', 'different'])('lands immediately from a %s filter, superseding an in-flight list read', async (filter) => {
+    const project = makeProject({ id: 'destination', displayName: 'Destination' });
+    const source = filter === 'matching' ? project : makeProject({ id: 'source', displayName: 'Source' });
+    seam.projects = filter === 'matching' ? [project] : [project, source];
+    writeBearerToken('token-abc');
+    writePreferences({ ...readPreferences(), detailPaneVisible: false });
+    let finishOld!: (response: Response) => void;
+    let finishRefresh!: (response: Response) => void;
+    seam.listResponses = [
+      new Promise((resolve) => { finishOld = resolve; }),
+      new Promise((resolve) => { finishRefresh = resolve; })
+    ];
+    const created = makeRun({ id: 'run-new', issueTitle: 'New issue', issueNumber: 5, projectId: project.id });
+    seam.createdRun = created;
+    renderRuns('/runs?project=' + source.id);
+    await userEvent.click(sidebarStart());
+    if (filter === 'different') {
+      const field = await dialog().findByRole('textbox', { name: 'Issue reference' });
+      expect(field.hasAttribute('disabled')).toBe(true);
+      await userEvent.click(dialog().getByRole('combobox', { name: 'Project' }));
+      await userEvent.click(await screen.findByRole('option', { name: 'Destination' }));
+    }
+    await resolveIssue();
+    await dialog().findByRole('region', { name: 'Issue preview' });
+    await userEvent.click(dialog().getByRole('button', { name: 'Start run' }));
+    const row = await screen.findByTestId('run-row-run-new');
+    expect(row.getAttribute('aria-selected')).toBe('true');
+    await waitFor(() => expect(document.activeElement).toBe(row));
+    expect(screen.getByTestId('pane-run-title').textContent).toBe('New issue');
+    expect(screen.queryByRole('dialog', { name: 'Start a run' })).toBeNull();
+    expect(seam.filters).toEqual([source.id, filter === 'matching' ? project.id : null]);
+    const address = '/runs/run-new' + (filter === 'matching' ? '?project=' + project.id : '');
+    expect(screen.getByTestId('location').textContent).toBe(address);
+
+    await act(async () => {
+      finishOld(jsonResponse({ runs: [makeRun({ id: 'run-old', projectId: source.id })] }));
+      finishRefresh(errorResponse('internal_error', 503));
+    });
+    expect(screen.queryByTestId('run-row-run-old')).toBeNull();
+    expect(row.getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByTestId('location').textContent).toBe(address);
+    expect(screen.getByTestId('pane-run-title').textContent).toBe('New issue');
   });
 });
