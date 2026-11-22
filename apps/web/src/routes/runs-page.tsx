@@ -14,7 +14,7 @@
  * shell `listLost` flag, which the footer reads.
  */
 import type { Run } from '@autocatalyst/api-contract';
-import { useCallback, useEffect, useMemo, useRef, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLocation, useNavigate, useOutletContext, useParams } from 'react-router-dom';
 
 import { hasBearerToken } from '../auth/token-store.js';
@@ -38,14 +38,23 @@ import { ResizeHandle } from '../ui/resize-handle.js';
 
 export function RunsPage(): ReactNode {
   const navigate = useNavigate();
-  const projectId = projectIdFromSearch(useLocation().search);
+  const location = useLocation();
+  const projectId = projectIdFromSearch(location.search);
   const { runId: routeRunId } = useParams();
   const connected = hasBearerToken();
   const { client, authorization } = useControlPlaneConnection();
-  const currentPrincipalId = useCurrentPrincipalId(client, connected);
+  const canRead = connected && authorization !== 'unauthorized';
+  const currentPrincipalId = useCurrentPrincipalId(client, canRead);
   const { setListLost } = useConnectionState();
-  const { detailPaneVisible, sidePaneWidthPx, setPaneWidth } = useOutletContext<RunsOutletContext>();
+  const { detailPaneVisible, sidePaneWidthPx, setPaneWidth, startRunOpen, openStartRun, receiveCreatedRun } = useOutletContext<RunsOutletContext>();
   const mainRef = useRef<HTMLDivElement | null>(null);
+  const [handoff, setHandoff] = useState<{
+    readonly run: Run;
+    readonly client: typeof client;
+    readonly projectId: string | undefined;
+  }>();
+  const createdRun = handoff !== undefined && handoff.client === client &&
+    routeRunId === handoff.run.id && handoff.projectId === projectId ? handoff.run : undefined;
 
   const navigateToRun = useCallback(
     (id: string, options: { readonly replace: boolean }): void => {
@@ -57,30 +66,48 @@ export function RunsPage(): ReactNode {
 
   const state = useRunList({
     client,
-    connected,
+    connected: canRead,
     routeRunId,
     navigateToRun,
     onListLostChange: setListLost,
+    ...(createdRun !== undefined ? { createdRun } : {}),
     ...(projectId !== undefined ? { requestArgs: { projectId } } : {})
   });
+
+  const { prepareCreatedRun } = state;
+  useLayoutEffect(() => {
+    receiveCreatedRun.current = (run) => {
+      prepareCreatedRun();
+      const destinationProjectId = projectId === run.projectId ? projectId : undefined;
+      setHandoff({ run, client, projectId: destinationProjectId });
+      const path = runPath(run.id);
+      navigate(destinationProjectId === undefined ? path : projectRunsPath(destinationProjectId, path));
+    };
+    return () => { receiveCreatedRun.current = null; };
+  }, [receiveCreatedRun, prepareCreatedRun, client, projectId, navigate]);
+
+  // The handoff is only for the first landing, not later history traversal.
+  useEffect(() => {
+    if (createdRun !== undefined) setHandoff(undefined);
+  }, [createdRun]);
 
   const { phase: projectsPhase, projects, lookup, refresh } = useProjectDirectory();
   const projectNames = useMemo(() => buildProjectNameMap(projects), [projects]);
   useEffect(() => {
-    if (!connected) return;
+    if (!canRead) return;
     const ids = referencedProjectIds(state.rows);
     if (projectId !== undefined) ids.push(projectId);
     lookup(ids);
-  }, [connected, state.rows, projectId, lookup]);
+  }, [canRead, state.rows, projectId, lookup]);
 
   // Detail reads and check state belong to the selection even while the pane is closed.
-  const selectedRun: Run | undefined = connected ? state.rows.find((run) => run.id === state.selectedRunId) : undefined;
+  const selectedRun: Run | undefined = canRead ? state.rows.find((run) => run.id === state.selectedRunId) : undefined;
   const detail = useRunDetail({
     run: selectedRun,
     client,
     visible: detailPaneVisible,
     replaceRun: state.replaceRun,
-    onUnauthorized: () => navigate(CONNECTION_PATH)
+    onUnauthorized: () => { if (!startRunOpen) navigate(CONNECTION_PATH); }
   });
 
   // The run list owns the selection keys. The registry gates `j`/`k`/arrows on focus
@@ -95,13 +122,13 @@ export function RunsPage(): ReactNode {
     }
   });
 
-  // A 401 is an authorization state, not a lost connection: route to the connection
-  // page. Polling stops because this route unmounts.
+  // A 401 is an authorization state, not a lost connection. While the dialog is open
+  // it owns recovery; otherwise keep the Runs route's redirect to Connection settings.
   useEffect(() => {
-    if (authorization === 'unauthorized') {
+    if (!startRunOpen && authorization === 'unauthorized') {
       navigate(CONNECTION_PATH);
     }
-  }, [authorization, navigate]);
+  }, [authorization, navigate, startRunOpen]);
 
   const onResize = useCallback(
     (nextWidthPx: number): void => {
@@ -203,12 +230,13 @@ export function RunsPage(): ReactNode {
         </div>
       );
     }
-    // Ready with no rows: the design-system no-runs empty state, no Start a run button.
+    // Ready with no rows: the same dialog is also available from the sidebar.
     return (
       <EmptyState
         data-testid="runs-empty-no-runs"
         title="No runs yet"
         message="A run starts from a tracked issue."
+        action={{ label: 'Start a run', onClick: openStartRun }}
       />
     );
   }

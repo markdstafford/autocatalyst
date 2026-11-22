@@ -12,7 +12,7 @@
  * Settings. In settings, Connection and Projects sit below the Back button.
  */
 import type { Project } from '@autocatalyst/api-contract';
-import { ArrowLeft, FolderGit2, ListChecks, PlugZap, Settings as SettingsIcon } from 'lucide-react';
+import { ArrowLeft, FolderGit2, ListChecks, Plus, PlugZap, Settings as SettingsIcon } from 'lucide-react';
 import { forwardRef, type ReactNode } from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 
@@ -39,7 +39,10 @@ function rowClass({ isActive }: { isActive: boolean }): string {
     : `${ROW_BASE} text-subtext hover:bg-hover hover:text-text`;
 }
 
-function PrimaryNav({ projects }: { readonly projects: readonly Project[] }): ReactNode {
+function PrimaryNav({ projects, onStartRun }: {
+  readonly projects: readonly Project[];
+  onStartRun?(opener: HTMLElement): void;
+}): ReactNode {
   const location = useLocation();
   const runs = isRunsPath(location.pathname);
   const projectId = runs ? projectIdFromSearch(location.search) : undefined;
@@ -50,10 +53,21 @@ function PrimaryNav({ projects }: { readonly projects: readonly Project[] }): Re
         <span className={TITLE_TEXT_CLASSES}>Autocatalyst</span>
       </div>
       <div className={`${LIST_CLASSES} min-h-0`}>
-        <Link to={RUNS_PATH} className={rowClass({ isActive: allRunsActive })} aria-current={allRunsActive ? 'page' : undefined}>
-          <ListChecks aria-hidden size={14} />
-          <span>Runs</span>
-        </Link>
+        <div className="flex items-center gap-1">
+          <Link to={RUNS_PATH} className={`${rowClass({ isActive: allRunsActive })} min-w-0 flex-1`} aria-current={allRunsActive ? 'page' : undefined}>
+            <ListChecks aria-hidden size={14} />
+            <span>Runs</span>
+          </Link>
+          {onStartRun !== undefined ? (
+            <Tooltip label="Start a run">
+              <Button variant="secondary" size="control-sm" aria-label="Start a run"
+                className="aspect-square border-0 bg-transparent px-0 text-subtext hover:bg-hover hover:text-text"
+                onClick={(event) => onStartRun(event.currentTarget)}>
+                <Plus size={14} aria-hidden />
+              </Button>
+            </Tooltip>
+          ) : null}
+        </div>
         {projects.length > 0 ? (
           <div role="group" aria-label="Projects" className="flex min-h-0 flex-col gap-0.5 overflow-auto">
             <div className="flex items-center gap-2 px-2 py-1 text-xs font-medium text-subtext">
@@ -158,13 +172,14 @@ export interface SidebarProps {
   readonly projects?: readonly Project[];
   canLeaveConnection?(): boolean;
   onCloseSettings(): void;
+  onStartRun?(opener: HTMLElement): void;
   /** Whether Connection is checking a token; soft-disables the settings Back button. */
   readonly settingsCheckPending?: boolean;
   onPointerLeave?(event: React.PointerEvent<HTMLElement>): void;
 }
 
 export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
-  { mode, settings, projects = [], canLeaveConnection, onCloseSettings, settingsCheckPending = false, onPointerLeave },
+  { mode, settings, projects = [], canLeaveConnection, onCloseSettings, settingsCheckPending = false, onPointerLeave, onStartRun },
   ref
 ): ReactNode {
   const hidden = mode === 'hidden';
@@ -181,7 +196,7 @@ export const Sidebar = forwardRef<HTMLElement, SidebarProps>(function Sidebar(
         <SettingsNav onCloseSettings={onCloseSettings} checkPending={settingsCheckPending}
           {...(canLeaveConnection !== undefined ? { canLeaveConnection } : {})} />
       ) : (
-        <PrimaryNav projects={projects} />
+        <PrimaryNav projects={projects} {...(onStartRun !== undefined ? { onStartRun } : {})} />
       )}
     </nav>
   );

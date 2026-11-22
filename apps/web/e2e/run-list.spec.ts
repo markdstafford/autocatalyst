@@ -187,7 +187,7 @@ test.describe('run list', () => {
     }
   });
 
-  test('a project without runs shows the no-runs state without a Start a run button', async ({
+  test('a project without runs offers the shared start dialog in the no-runs state', async ({
     browser,
     fakeServer,
     connectedStatePath
@@ -202,7 +202,7 @@ test.describe('run list', () => {
     try {
       await expect(page.getByTestId('runs-empty-no-runs')).toBeVisible();
       await expect(page.getByText('A run starts from a tracked issue.')).toBeVisible();
-      await expect(page.getByRole('button', { name: /start a run/i })).toHaveCount(0);
+      await expect(page.getByTestId('runs-empty-no-runs').getByRole('button', { name: 'Start a run' })).toBeVisible();
     } finally {
       await close();
     }

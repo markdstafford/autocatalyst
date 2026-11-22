@@ -1,9 +1,9 @@
 import type { Project } from '@autocatalyst/api-contract';
-import type { ControlPlaneClient } from '@autocatalyst/sdk';
+import { ControlPlaneClientError, type ControlPlaneClient } from '@autocatalyst/sdk';
 import { createContext, useContext, useEffect, useLayoutEffect, useMemo, useSyncExternalStore, type ReactNode } from 'react';
 
 import { hasBearerToken } from '../auth/token-store.js';
-import { useControlPlaneClient } from '../client/client-provider.js';
+import { useControlPlaneConnection } from '../client/client-provider.js';
 
 interface Snapshot {
   readonly phase: 'loading' | 'ready' | 'error';
@@ -17,6 +17,8 @@ export function createProjectDirectory(client: Pick<ControlPlaneClient, 'listPro
   const lookedUp = new Set<string>();
   const queuedLookups = new Set<string>();
   const published = new Map<string, Project>();
+  // A read that began before an unavailable-project report cannot reconcile it.
+  const unavailable = new Map<string, number>();
   let revision = 0;
   let pending = false;
   let active = true;
@@ -33,10 +35,16 @@ export function createProjectDirectory(client: Pick<ControlPlaneClient, 'listPro
     pending = true;
     queuedLookups.clear();
     const read = ++revision;
+    if (snapshot.phase === 'error') update({ ...snapshot, phase: 'loading' });
+    let rejected = false;
     try {
       const { projects } = await client.listProjects();
       if (!active || read !== revision) return;
       const records = new Map(projects.map((project) => [project.id, project]));
+      for (const [id, since] of unavailable) {
+        if (since <= read) unavailable.delete(id);
+        else records.delete(id);
+      }
       for (const [id, saved] of published) {
         const record = records.get(id);
         if (record === undefined || record.updatedAt < saved.updatedAt) {
@@ -45,8 +53,10 @@ export function createProjectDirectory(client: Pick<ControlPlaneClient, 'listPro
           published.delete(id);
         }
       }
-      update({ phase: 'ready', projects: [...records.values()] });
-    } catch {
+      const needsReconciliation = [...unavailable.values()].some((since) => since > read);
+      update({ phase: needsReconciliation ? 'loading' : 'ready', projects: [...records.values()] });
+    } catch (error) {
+      rejected = error instanceof ControlPlaneClientError && error.status === 401;
       if (active && read === revision && snapshot.phase !== 'ready') {
         update({ phase: 'error', projects: snapshot.projects });
       }
@@ -55,8 +65,10 @@ export function createProjectDirectory(client: Pick<ControlPlaneClient, 'listPro
         pending = false;
         // An ID discovered during the read may not have existed when it began.
         // Give such IDs one follow-up if still unknown, not one request per poll.
-        if ([...queuedLookups].some((id) => !knows(id))) void refresh();
+        const followUp = [...queuedLookups].some((id) => !knows(id)) ||
+          [...unavailable.values()].some((since) => since > read);
         queuedLookups.clear();
+        if (followUp && !rejected) void refresh();
       }
     }
   }
@@ -72,7 +84,15 @@ export function createProjectDirectory(client: Pick<ControlPlaneClient, 'listPro
       if (snapshot.phase === 'loading') void refresh();
     },
     refresh,
+    reconcileUnavailable(id: string): void {
+      if (!active) return;
+      unavailable.set(id, revision + 1);
+      published.delete(id);
+      update({ phase: 'loading', projects: snapshot.projects.filter((project) => project.id !== id) });
+      void refresh();
+    },
     lookup(ids: readonly string[]): void {
+      if (!active) return;
       for (const id of ids) {
         if (!lookedUp.has(id) && !knows(id)) {
           lookedUp.add(id);
@@ -85,6 +105,7 @@ export function createProjectDirectory(client: Pick<ControlPlaneClient, 'listPro
       if (!active) return;
       revision++;
       pending = false;
+      unavailable.delete(project.id);
       published.set(project.id, project);
       const records = new Map(snapshot.projects.map((record) => [record.id, record]));
       records.set(project.id, project);
@@ -98,22 +119,28 @@ type Directory = ReturnType<typeof createProjectDirectory>;
 const DirectoryContext = createContext<Directory | undefined>(undefined);
 
 export function ProjectDirectoryProvider({ children }: { readonly children: ReactNode }): ReactNode {
-  const client = useControlPlaneClient();
-  const connected = hasBearerToken();
+  const { client, authorization } = useControlPlaneConnection();
+  const connected = hasBearerToken() && authorization !== 'unauthorized';
   const directory = useMemo(() => createProjectDirectory(client), [client]);
   useLayoutEffect(() => {
-    directory.setActive(true);
+    directory.setActive(connected);
     return () => directory.setActive(false);
-  }, [directory]);
+  }, [connected, directory]);
   useEffect(() => {
     if (connected) directory.start();
   }, [connected, directory]);
   return <DirectoryContext.Provider value={directory}>{children}</DirectoryContext.Provider>;
 }
 
-export function useProjectDirectory(): Snapshot & Pick<Directory, 'publish' | 'lookup' | 'refresh'> {
+export function useProjectDirectory(): Snapshot & Pick<Directory, 'publish' | 'lookup' | 'refresh' | 'reconcileUnavailable'> {
   const directory = useContext(DirectoryContext);
   if (directory === undefined) throw new Error('ProjectDirectoryProvider is required.');
   const snapshot = useSyncExternalStore(directory.subscribe, directory.getSnapshot);
-  return { ...snapshot, publish: directory.publish, lookup: directory.lookup, refresh: directory.refresh };
+  return {
+    ...snapshot,
+    publish: directory.publish,
+    lookup: directory.lookup,
+    refresh: directory.refresh,
+    reconcileUnavailable: directory.reconcileUnavailable
+  };
 }

@@ -24,12 +24,14 @@
  * `]` toggles the detail pane on the runs route, and `?` opens the shortcuts overlay.
  * All keys flow through the action registry.
  */
-import { useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import type { Run } from '@autocatalyst/api-contract';
+import { startTransition, useCallback, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 
 import { hasBearerToken } from '../auth/token-store.js';
 import { ProjectDirectoryProvider, useProjectDirectory } from '../projects/project-directory.js';
 import { RunDetailFooterProvider, useRunDetailFooter } from '../runs/run-detail-footer.js';
+import { StartRunDialog } from '../runs/start-run-dialog.js';
 import { clampPaneWidth } from '../theme/preferences.js';
 import { useTheme } from '../theme/theme-provider.js';
 import { ConnectionStateProvider, useConnectionState } from './connection-state.js';
@@ -51,6 +53,9 @@ export interface RunsOutletContext {
   readonly sidePaneWidthPx: number;
   /** Persist a new pane width, clamped to the design-system range and the main area. */
   setPaneWidth(nextWidthPx: number, mainAreaWidthPx?: number): void;
+  readonly startRunOpen: boolean;
+  openStartRun(opener: HTMLElement): void;
+  readonly receiveCreatedRun: { current: ((run: Run) => void) | null };
 }
 
 export function ShellLayout(): ReactNode {
@@ -86,6 +91,23 @@ function ShellLayoutInner(): ReactNode {
 
   const [hoverOpen, setHoverOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [startOpen, setStartOpen] = useState(false);
+  const startRunOpen = paneEnabled && startOpen;
+  const opener = useRef<HTMLElement | null>(null);
+  const receiveCreatedRun = useRef<((run: Run) => void) | null>(null);
+  const focusTarget = useRef<'opener' | 'settings' | 'run'>('opener');
+  const main = useRef<HTMLElement>(null);
+
+  useLayoutEffect(() => {
+    if (!paneEnabled) setStartOpen(false);
+  }, [paneEnabled]);
+
+  const openStartRun = (element: HTMLElement): void => {
+    opener.current = element;
+    focusTarget.current = 'opener';
+    setStartOpen(true);
+  };
+
   const sidebarRef = useRef<HTMLElement | null>(null);
   const focusProjects = useRef(false);
   useLayoutEffect(() => {
@@ -170,21 +192,24 @@ function ShellLayoutInner(): ReactNode {
     openShortcuts: () => {
       setShortcutsOpen(true);
     }
-  });
+  }, !startRunOpen);
 
   const sidebarMode: SidebarMode = sidebarOpen ? 'docked' : hoverOpen ? 'overlay' : 'hidden';
 
   const handleOverlayPointerLeave = useCallback((): void => {
     // Close only if focus is not inside the overlay.
-    if (sidebarRef.current?.contains(document.activeElement) !== true) {
+    if (!startRunOpen && sidebarRef.current?.contains(document.activeElement) !== true) {
       setHoverOpen(false);
     }
-  }, []);
+  }, [startRunOpen]);
 
   const outletContext: RunsOutletContext = {
     detailPaneVisible: preferences.detailPaneVisible,
     sidePaneWidthPx: preferences.sidePaneWidthPx,
-    setPaneWidth
+    setPaneWidth,
+    startRunOpen,
+    openStartRun,
+    receiveCreatedRun
   };
 
   return (
@@ -197,6 +222,7 @@ function ShellLayoutInner(): ReactNode {
             settings={settings}
             projects={projects}
             onCloseSettings={closeSettings}
+            {...(paneEnabled ? { onStartRun: openStartRun } : {})}
             settingsCheckPending={connectionState.settingsCheckPending}
             canLeaveConnection={() => !connectionState.isSettingsCheckPending()}
             {...(sidebarMode === 'overlay' ? { onPointerLeave: handleOverlayPointerLeave } : {})}
@@ -204,7 +230,7 @@ function ShellLayoutInner(): ReactNode {
 
           <div className="flex min-w-0 flex-1 flex-col">
             <Header projectName={projectName} />
-            <main className="min-h-0 flex-1 overflow-hidden bg-background">
+            <main ref={main} tabIndex={-1} className="min-h-0 flex-1 overflow-hidden bg-background focus:outline-none">
               <Outlet context={outletContext} />
             </main>
           </div>
@@ -242,6 +268,36 @@ function ShellLayoutInner(): ReactNode {
           />
         ) : null}
 
+        <StartRunDialog open={startRunOpen} onClose={() => setStartOpen(false)}
+          returnFocus={() => {
+            if (focusTarget.current === 'run') {
+              return main.current?.querySelector<HTMLElement>('[data-run-id][aria-selected="true"]') ?? main.current ?? false;
+            }
+            if (focusTarget.current === 'settings') {
+              return main.current?.querySelector<HTMLElement>('h2[tabindex="-1"]') ?? main.current ?? false;
+            }
+            const target = opener.current;
+            return target?.isConnected && target.closest('[inert]') === null ? target : main.current ?? false;
+          }}
+          onNavigate={(path, fromRuns) => {
+            focusTarget.current = 'settings';
+            opener.current = null;
+            startTransition(() => {
+              setStartOpen(false);
+              setHoverOpen(false);
+              navigate(path, fromRuns ? { state: { fromRuns: true } } : undefined);
+            });
+          }}
+          onCreated={(run) => {
+            focusTarget.current = 'run';
+            opener.current = null;
+            startTransition(() => {
+              setStartOpen(false);
+              setHoverOpen(false);
+              updatePreferences({ detailPaneVisible: true });
+              receiveCreatedRun.current?.(run);
+            });
+          }} />
         <ShortcutsOverlay open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
       </div>
     </>

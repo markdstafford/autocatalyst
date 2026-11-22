@@ -21,7 +21,7 @@ export interface ShellKeyHandlers {
   openShortcuts?(): void;
 }
 
-export function useShellKeys(handlers: ShellKeyHandlers): void {
+export function useShellKeys(handlers: ShellKeyHandlers, enabled = true): void {
   const map: ActionHandlers = {
     'sidebar-toggle': handlers.toggleSidebar,
     'settings-toggle': handlers.toggleSettings,
@@ -29,5 +29,5 @@ export function useShellKeys(handlers: ShellKeyHandlers): void {
     ...(handlers.togglePane !== undefined ? { 'pane-toggle': handlers.togglePane } : {}),
     ...(handlers.openShortcuts !== undefined ? { 'open-shortcuts': handlers.openShortcuts } : {})
   };
-  useActionKeys(map);
+  useActionKeys(enabled ? map : {});
 }

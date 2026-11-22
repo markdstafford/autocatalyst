@@ -60,6 +60,31 @@ describe('project directory', () => {
     expect(listProjects).toHaveBeenCalledTimes(2);
   });
 
+  it('reconciles an unavailable project after an already pending read without republishing the stale entry', async () => {
+    const stale = makeProject({ id: 'stale' });
+    const fresh = makeProject({ id: 'fresh' });
+    let finishOld!: (result: { projects: typeof stale[] }) => void;
+    let finishNew!: (result: { projects: typeof stale[] }) => void;
+    const listProjects = vi.fn()
+      .mockResolvedValueOnce({ projects: [stale] })
+      .mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; }))
+      .mockImplementationOnce(() => new Promise((resolve) => { finishNew = resolve; }));
+    const directory = createProjectDirectory({ listProjects });
+    await directory.refresh();
+
+    const olderRead = directory.refresh();
+    directory.reconcileUnavailable(stale.id);
+    expect(directory.getSnapshot()).toEqual({ phase: 'loading', projects: [] });
+    expect(listProjects).toHaveBeenCalledTimes(2);
+    finishOld({ projects: [stale] });
+    await olderRead;
+    expect(directory.getSnapshot()).toEqual({ phase: 'loading', projects: [] });
+    expect(listProjects).toHaveBeenCalledTimes(3);
+    finishNew({ projects: [fresh] });
+    await Promise.resolve();
+    expect(directory.getSnapshot()).toEqual({ phase: 'ready', projects: [fresh] });
+  });
+
   it('does not publish to a retired client', () => {
     const listProjects = vi.fn();
     const directory = createProjectDirectory({ listProjects });
