@@ -118,6 +118,7 @@ export interface RecoverFailedRunInput {
   readonly runId: string;
   readonly reDispatchStep: string;
   readonly runStep: LifecycleRunStepInput;
+  readonly destinationCheckpointResult?: JsonValue;
 }
 
 export interface RecoverFailedRunResult {
@@ -232,7 +233,18 @@ export interface FeedbackAnchorOffsetsPersistenceInput {
   readonly to: number;
 }
 
+export interface SpecReviewAnchorPersistenceInput {
+  readonly feedbackId: string;
+  readonly runId: string;
+  readonly tenant: string;
+  readonly artifactId: string;
+  readonly anchor: Extract<Feedback['anchor'], { kind: 'artifact_range' }> | null;
+}
+
 export interface FeedbackRepository {
+  /** Host-created, retryable model finding. The supplied ID comes from convergence state only. */
+  createSpecReviewFinding?(id: string, input: CreateFeedbackInput): Promise<Feedback>;
+  bindSpecReviewAnchor?(input: SpecReviewAnchorPersistenceInput): Promise<void>;
   create(input: CreateFeedbackInput): Promise<Feedback>;
   findById(id: string): Promise<Feedback | null>;
   listByRun(runId: string): Promise<readonly Feedback[]>;

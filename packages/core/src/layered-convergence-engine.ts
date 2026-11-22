@@ -1,3 +1,4 @@
+import { runSpecConvergence } from './spec-convergence.js';
 import type {
   AltitudeCheckpointRef,
   ConvergenceCheckpoint,
@@ -930,6 +931,6 @@ export function createLayeredConvergenceEngine(
     };
   }
 
-  return { run: runEngine };
+  return { run: runEngine, runSpec: input => runSpecConvergence(input, options) };
 }
 

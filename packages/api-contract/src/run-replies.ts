@@ -20,7 +20,8 @@ export const runReplyRequestSchema = z.discriminatedUnion('kind', [
   }).strict(),
   z.object({
     kind: z.literal('guidance'),
-    body: z.string().min(1)
+    body: z.string().min(1),
+    pauseStepId: z.string().min(1).optional()
   }).strict(),
   // Request changes over already-raised open feedback. Carries no other fields: it operates on
   // comments already raised rather than creating a new item, so the reply response classifies the
@@ -34,7 +35,7 @@ export const runReplyClassificationSchema = z.object({
   directive: z.enum(['advance', 'revise']),
   target: feedbackTargetSchema.optional(),
   createdFeedbackId: z.string().min(1).optional(),
-  pauseKind: z.literal('convergence_escalation').optional()
+  pauseKind: z.enum(['convergence_escalation', 'spec_question']).optional()
 }).strict();
 
 export const runReplyResponseSchema = z.object({

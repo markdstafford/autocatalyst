@@ -20,6 +20,7 @@ import type {
   Run,
   RunFeedbackListResponse,
   RunPullRequestResponse,
+  RunStep,
   RunReplyRequest,
   RunReplyResponse,
   RunSessionListResponse,
@@ -54,6 +55,7 @@ export interface ScriptedDetailClient {
   readonly client: ControlPlaneClient;
   // Read sources.
   setRun(run: Run): void;
+  setSteps(steps: readonly RunStep[]): void;
   setRunError(error: unknown): void;
   setPullRequest(value: PullRequest | null): void;
   setPullRequestError(error: unknown): void;
@@ -142,6 +144,7 @@ export function createScriptedDetailClient(init?: { run?: Run }): ScriptedDetail
   const encoder = new TextEncoder();
   let run: Run = init?.run ?? makeRun();
   let runError: unknown;
+  let steps: readonly RunStep[] = [];
   let pullRequest: PullRequest | null = null;
   let pullRequestError: unknown;
   let sessions: readonly Session[] = [];
@@ -288,7 +291,7 @@ export function createScriptedDetailClient(init?: { run?: Run }): ScriptedDetail
     updateProject: notImplemented('updateProject'),
     createConversationWithFirstRun: notImplemented('createConversationWithFirstRun'),
     listRuns: notImplemented('listRuns'),
-    listRunSteps: notImplemented('listRunSteps'),
+    async listRunSteps() { return { steps }; },
     async createRunFeedback(_id: string, request: CreateRunFeedbackRequest): Promise<Feedback> {
       const created: FeedbackResponse = {
         id: `fb-${feedbackList.length + 1}`,
@@ -347,7 +350,7 @@ export function createScriptedDetailClient(init?: { run?: Run }): ScriptedDetail
       if (replyError !== undefined) {
         throw replyError;
       }
-      const directive = request.kind === 'approve' ? 'advance' : 'revise';
+      const directive = request.kind === 'approve' || request.kind === 'guidance' ? 'advance' : 'revise';
       return { run, classification: { directive } } as RunReplyResponse;
     },
     recoverRun: notImplemented('recoverRun'),
@@ -361,6 +364,7 @@ export function createScriptedDetailClient(init?: { run?: Run }): ScriptedDetail
       run = next;
       runError = undefined;
     },
+    setSteps(next) { steps = next; },
     setRunError(error) {
       runError = error;
     },

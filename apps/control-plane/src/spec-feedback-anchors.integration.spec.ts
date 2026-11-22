@@ -1,3 +1,4 @@
+import { reviewedSpecCompletionStub, stubSpecHead } from './spec-completion.test-helper.js';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -285,7 +286,7 @@ describe('spec feedback anchors integration (production server, no model calls)'
         const specAuthoringDependencies: SpecAuthoringServiceDependencies = {
           artifacts: domainRepos.artifacts,
           filesystem: sharedFilesystem,
-          git: { commitFiles: vi.fn().mockResolvedValue({}) },
+          git: stubSpecHead({ commitFiles: vi.fn().mockResolvedValue({}) }),
           clock: () => new Date().toISOString(),
           feedbackLifecycle
         };
@@ -295,7 +296,8 @@ describe('spec feedback anchors integration (production server, no model calls)'
           conversationIngress,
           events: eventBus,
           dispatchQueue,
-          unitOfWork,
+          convergenceEngine: reviewedSpecCompletionStub(unitOfWork, feedbackLifecycle),
+          runSteps: domainRepos.runSteps,
           autoDispatch: { enabled: false },
           specAuthoringDependencies,
           feedbackLifecycleDependencies: feedbackLifecycle,

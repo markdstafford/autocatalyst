@@ -1,3 +1,4 @@
+import { publicSpecCheckpoint } from './spec-convergence.js';
 import { randomUUID } from 'node:crypto';
 import {
   clientRunEventSchema,
@@ -41,7 +42,7 @@ export function createRunStateTransitionEvent(input: CreateRunStateTransitionEve
       ...(input.directive === 'fail' && input.reason !== undefined ? { reason: input.reason } : {})
     },
     run: input.run,
-    runStep: input.runStep,
+    runStep: { ...input.runStep, checkpointResult: publicSpecCheckpoint(input.runStep.checkpointResult) },
     tenant: input.tenant,
     createdAt
   });
@@ -74,7 +75,7 @@ export function createRunRecoveryEvent(input: CreateRunRecoveryEventInput): RunR
       provisioningOutcome: input.provisioningOutcome
     },
     run: input.run,
-    runStep: input.runStep,
+    runStep: { ...input.runStep, checkpointResult: publicSpecCheckpoint(input.runStep.checkpointResult) },
     tenant: input.tenant,
     createdAt
   });

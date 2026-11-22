@@ -1,3 +1,4 @@
+import type { SpecConvergenceInput, SpecConvergenceResult } from './spec-convergence.js';
 import { createHash } from 'node:crypto';
 import type {
   ConvergenceCheckpoint,
@@ -215,6 +216,7 @@ export interface ConvergenceEngineResult {
 }
 
 export interface ConvergenceEngine {
+  runSpec?(input: SpecConvergenceInput): Promise<SpecConvergenceResult>;
   run(input: ConvergenceEngineInput): Promise<ConvergenceEngineResult>;
 }
 

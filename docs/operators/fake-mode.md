@@ -212,7 +212,8 @@ The state directory is the control surface — there are no runtime scripting ro
 | `failures/issue-<n>.json` | Failure control `{"step":"<step id>"}` |
 | `failures/issue-<n>.json.fired` | Renamed after the failure fired once |
 | `launch-context/<runId>-<seq>.json` | Recorded scripted-launch context |
-| `counters/launch.count` | Scripted model launch counter |
+| `counters/launch.count` | Total scripted model sessions, including reviewers |
+| `counters/spec-author-<runId>.count` | Per-run fixture author pass; reviewer sessions do not increment it |
 
 ### Pull request state files
 
@@ -239,6 +240,12 @@ paragraphs, a table, a bullet list, a fenced code block, an astral emoji (`🚀`
 Multilingual Plane) before passage A, and passages A through D. Passages C and D appear before passage A; passage B and an `## Open questions`
 heading appear after it.
 
+Each feature or enhancement pass launches an author and a separate read-only reviewer under
+`spec.author`. The scripted reviewer is satisfied by default. The selected draft reaches
+`spec.human_review` only after both sessions are recorded; this review does not approve the spec.
+When checking launch counts in tests, wait for the persisted gate or both role sessions, not just the
+first launch record.
+
 A paragraph before the table carries two links so link rendering can be checked by hand: a safe
 `https://github.com/autocatalyst-fixtures/demo-app` link that renders as a real clickable anchor, and
 a `javascript:alert(1)` link using an unsupported scheme that must render as plain, non-clickable
@@ -252,12 +259,13 @@ changes — deterministically:
   (shifting passage A by the inserted source length in Unicode code points),
 - removes passage B and its `Open questions` heading,
 - leaves passages C and D in place (they precede the insertion point and do not move),
-- marks every open spec comment `addressed` with a thread response.
+- returns a fixed disposition for each carried feedback ID, which moves human comments to `addressed`.
 
 Each later pass changes only a final line naming the pass number.
 
 Bug runs run `spec.author` as a bug triage that advances the run; they do not create a
-file-canonical spec, so `GET /v1/runs/:id/spec` returns 404 for bug runs.
+file-canonical spec, so `GET /v1/runs/:id/spec` returns 404 for bug runs. Bug triage and file-issue
+authoring still use one launch without a spec reviewer.
 
 ## Safe deletion
 

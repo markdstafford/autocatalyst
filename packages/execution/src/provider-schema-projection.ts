@@ -32,12 +32,25 @@ export class ProviderSchemaProjectionError extends UnsupportedProviderCapability
 export function projectStepResultSchemaForProvider(input: {
   readonly schemaId: string;
   readonly schema: z.ZodTypeAny;
+  readonly step?: string;
   readonly target: ProviderSchemaProjectionTarget;
 }): ProviderSchemaProjection {
   const mechanism: StructuredAgentResultCaptureMechanism =
     input.target === 'openai_agents_output_type' ? 'openai_output_type' : 'claude_structured_output';
 
-  const schema = buildProjectedSchema(input.schemaId, input.target);
+  const completed = buildProjectedSchema(input.schemaId, input.target, input.step);
+  // The provider transport can also carry a question. Completed result contracts
+  // stay unchanged and the adapter emits a runner pause instead of writing JSON.
+  const schema = input.step === 'spec.author' &&
+    (input.schemaId === 'autocatalyst.reviewer_result.v1' || input.schemaId === 'autocatalyst.reviewed_spec_author.v1')
+    ? {
+      type: 'object',
+      properties: { response: { anyOf: [completed, {
+        type: 'object', properties: { directive: { type: 'string', enum: ['needs_input'] }, question: { type: 'string' } },
+        required: ['directive', 'question'], additionalProperties: false
+      }] } },
+      required: ['response'], additionalProperties: false
+    } : completed;
 
   return {
     schemaId: input.schemaId,
@@ -49,11 +62,22 @@ export function projectStepResultSchemaForProvider(input: {
 
 function buildProjectedSchema(
   schemaId: string,
-  target: ProviderSchemaProjectionTarget
+  target: ProviderSchemaProjectionTarget,
+  step?: string
 ): ProviderStructuredOutputSchema {
   switch (schemaId) {
     case 'autocatalyst.reviewer_result.v1':
-      return buildReviewerResultProjection(target);
+      return buildReviewerResultProjection(target, step === 'spec.author');
+    case 'autocatalyst.reviewed_spec_author.v1':
+      return {
+        type: 'object',
+        properties: {
+          spec: buildSpecAuthorProjection(target),
+          dispositions: dispositionArrayProjection()
+        },
+        required: ['spec', 'dispositions'],
+        additionalProperties: false
+      };
     case 'autocatalyst.implementer_dispositions.v1':
       return buildImplementerDispositionsProjection(target);
     case 'autocatalyst.spec_author.v1':
@@ -115,7 +139,18 @@ const claudeFindingItem = {
 //   - 'findings' branch: non-empty findings array required
 // This addresses the weakening flagged in INIT-2.
 // ---------------------------------------------------------------------------
-function buildReviewerResultProjection(target: ProviderSchemaProjectionTarget): ProviderStructuredOutputSchema {
+function specFindingItem(target: ProviderSchemaProjectionTarget) {
+  const strict = target === 'openai_agents_output_type';
+  const base = strict ? strictFindingItem : claudeFindingItem;
+  return { anyOf: [
+    { ...base, properties: { ...base.properties, scope: { type: 'string', enum: ['document'] } }, required: [...base.required, 'scope'] },
+    { ...base, properties: { ...base.properties, scope: { type: 'string', enum: ['passage'] },
+      passageQuote: strict ? { anyOf: [{ type: 'string' }, { type: 'null' }] } : { type: 'string' } },
+      required: [...base.required, 'scope', ...(strict ? ['passageQuote'] : [])] }
+  ] };
+}
+
+function buildReviewerResultProjection(target: ProviderSchemaProjectionTarget, spec = false): ProviderStructuredOutputSchema {
   if (target === 'openai_agents_output_type') {
     // OpenAI strict mode requires type: 'object' at the root — bare anyOf is rejected by the SDK.
     // Discriminated union enforcement (satisfied requires no findings, findings requires non-empty)
@@ -126,7 +161,7 @@ function buildReviewerResultProjection(target: ProviderSchemaProjectionTarget): 
         status: { type: 'string', enum: ['satisfied', 'findings'] },
         findings: {
           anyOf: [
-            { type: 'array', items: strictFindingItem },
+            { type: 'array', items: spec ? specFindingItem(target) : strictFindingItem },
             { type: 'null' }
           ]
         }
@@ -143,7 +178,7 @@ function buildReviewerResultProjection(target: ProviderSchemaProjectionTarget): 
         type: 'object',
         properties: {
           status: { type: 'string', enum: ['satisfied'] },
-          findings: { type: 'array', items: claudeFindingItem, maxItems: 0 }
+          findings: { type: 'array', items: spec ? specFindingItem(target) : claudeFindingItem, maxItems: 0 }
         },
         required: ['status'],
         additionalProperties: false
@@ -152,7 +187,7 @@ function buildReviewerResultProjection(target: ProviderSchemaProjectionTarget): 
         type: 'object',
         properties: {
           status: { type: 'string', enum: ['findings'] },
-          findings: { type: 'array', items: claudeFindingItem, minItems: 1 }
+          findings: { type: 'array', items: spec ? specFindingItem(target) : claudeFindingItem, minItems: 1 }
         },
         required: ['status', 'findings'],
         additionalProperties: false
@@ -172,7 +207,7 @@ function buildReviewerResultProjection(target: ProviderSchemaProjectionTarget): 
 // enforces branch-specific required fields (summary for fixed, reason for
 // declined). This addresses the weakening flagged in INIT-2.
 // ---------------------------------------------------------------------------
-function buildImplementerDispositionsProjection(target: ProviderSchemaProjectionTarget): ProviderStructuredOutputSchema {
+function dispositionArrayProjection() {
   const fixedItem = {
     type: 'object',
     properties: {
@@ -195,10 +230,11 @@ function buildImplementerDispositionsProjection(target: ProviderSchemaProjection
     additionalProperties: false
   };
 
-  const dispositionsArray = {
-    type: 'array',
-    items: { anyOf: [fixedItem, declinedItem] }
-  };
+  return { type: 'array', items: { anyOf: [fixedItem, declinedItem] } };
+}
+
+function buildImplementerDispositionsProjection(target: ProviderSchemaProjectionTarget): ProviderStructuredOutputSchema {
+  const dispositionsArray = dispositionArrayProjection();
 
   if (target === 'openai_agents_output_type') {
     // OpenAI strict mode: dispositions in required, nullable because the canonical

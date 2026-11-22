@@ -79,3 +79,28 @@ export function validateSpecAnchor(input: {
 
   // 9. Accept.
 }
+
+
+export type SpecQuoteLookup =
+  | { readonly status: 'missing' | 'not_found' | 'non_unique' }
+  | { readonly status: 'unique'; readonly from: number; readonly to: number };
+
+export function locateSpecQuote(markdown: string, quote: string | undefined): SpecQuoteLookup {
+  if (quote === undefined || !quote.trim()) return { status: 'missing' };
+  // JS indexes strings by code units. Ignore half-surrogate matches and advance
+  // by one position to detect overlaps before converting the sole match to code points.
+  const insideSurrogatePair = (index: number): boolean => {
+    const before = markdown.charCodeAt(index - 1);
+    const after = markdown.charCodeAt(index);
+    return before >= 0xd800 && before <= 0xdbff && after >= 0xdc00 && after <= 0xdfff;
+  };
+  let first = -1;
+  for (let index = markdown.indexOf(quote); index >= 0; index = markdown.indexOf(quote, index + 1)) {
+    if (insideSurrogatePair(index) || insideSurrogatePair(index + quote.length)) continue;
+    if (first >= 0) return { status: 'non_unique' };
+    first = index;
+  }
+  if (first < 0) return { status: 'not_found' };
+  const from = Array.from(markdown.slice(0, first)).length;
+  return { status: 'unique', from, to: from + Array.from(quote).length };
+}

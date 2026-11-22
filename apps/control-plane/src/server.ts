@@ -17,6 +17,7 @@ import {
   buildImplementationBuildContext,
   buildPullRequestFinalizePrompt,
   buildSpecAuthorContext,
+  buildReviewedSpecAuthorContext,
   isCumulativeImplementationSummary,
   type CumulativeImplementationSummary,
   composeAgentProviderAdapterRegistry,
@@ -90,6 +91,8 @@ import {
   createExecutionMaterializer,
   provisionWorkspace,
   createSpecAuthorResultContract,
+  createReviewedSpecAuthorResultContract,
+  createSpecReviewerResultContract,
   createStepResultContractRegistry,
   WorkspaceProvisioningError,
   registerPullRequestFinalizeResultContract,
@@ -581,7 +584,7 @@ export interface ControlPlaneStepResultContractRegistryOptions {
 export function createControlPlaneStepResultContractRegistry(
   options: ControlPlaneStepResultContractRegistryOptions = {}
 ): StepResultContractRegistry {
-  return registerPullRequestFinalizeResultContract(
+  const registry = registerPullRequestFinalizeResultContract(
     registerImplementerDispositionsResultContract(
       registerReviewerResultContract(
         registerSpecAuthorResultContract(
@@ -594,6 +597,11 @@ export function createControlPlaneStepResultContractRegistry(
     ),
     { resultFile: 'pr-finalize-result.json' }
   );
+  registry.register(createSpecReviewerResultContract());
+  registry.register(createReviewedSpecAuthorResultContract(
+    options.specAuthorIdentity !== undefined ? { trustedSpeccedBy: options.specAuthorIdentity } : {}
+  ));
+  return registry;
 }
 
 // Default registry used by tests and as fallback. Uses 'autocatalyst' as specced_by.
@@ -641,6 +649,20 @@ export function resolveScratchResultValidationConfig(
   if (step === 'spec.author' && (workKind === 'feature' || workKind === 'enhancement')) {
     const trustedSpeccedBy = readSpecAuthorTrustedSpeccedBy(context);
     const trackedIssueNumber = readSpecAuthorTrackedIssueNumber(context);
+    const reviewed = context.task.inputs['specReview'];
+    if (reviewed && typeof reviewed === 'object' && !Array.isArray(reviewed) && (role === 'reviewer' || role === 'implementer')) {
+      const task = reviewed as { canonicalPath?: string; requiredFeedbackIds?: string[] };
+      const contract = role === 'reviewer' ? createSpecReviewerResultContract() : createReviewedSpecAuthorResultContract({
+        kind: workKind === 'feature' ? 'feature_spec' : 'enhancement_spec',
+        ...(task.canonicalPath !== undefined ? { canonicalPath: task.canonicalPath } : {}),
+        requiredFeedbackIds: task.requiredFeedbackIds ?? [],
+        ...(trustedSpeccedBy !== undefined ? { trustedSpeccedBy } : {}),
+        ...(trackedIssueNumber !== undefined ? { trackedIssueNumber } : {}),
+        ...(options.clock !== undefined ? { clock: options.clock } : {})
+      });
+      return { mode: 'scratch_file' as const, contract, step, schemaId: contract.schemaId,
+        resultFile: readImplementationBuildResultFile(context) ?? '' };
+    }
     const contract = createSpecAuthorResultContract({
       ...(trustedSpeccedBy !== undefined ? { trustedSpeccedBy } : {}),
       ...(options.clock !== undefined ? { clock: options.clock } : {}),
@@ -694,6 +716,7 @@ export function createDelegatingExecutionEntryPoint(input: {
   readonly resolveRole?: (step: string) => string;
   readonly onWorkspaceRootResolved?: (runId: string, repoRoot: string, branchName: string, provisionedBaseRef?: string) => void | Promise<void>;
   readonly registry?: StepResultContractRegistry;
+  readonly resolvePinnedRoute?: (context: ExecutionContext) => ModelRoutingResolution | undefined;
 }): ExecutionEntryPoint {
   const { resolveRole } = input;
   /**
@@ -743,17 +766,23 @@ export function createDelegatingExecutionEntryPoint(input: {
       const resolvedRole = typeof taskInputRole === 'string'
         ? taskInputRole
         : resolveRole !== undefined ? resolveRole(entryInput.context.run.currentStep) : undefined;
+      const pinnedRoute = input.resolvePinnedRoute?.(entryInput.context);
       const runnerFactoryInput: AgentRunnerFactoryInput = {
         runId: entryInput.context.run.id,
         step: entryInput.context.run.currentStep,
         tenant: entryInput.context.run.tenant,
+        ...(pinnedRoute ? { pinnedProfile: pinnedRoute } : {}),
         ...(resolvedRole !== undefined ? { role: resolvedRole } : {})
       };
       const runner = await input.factory.createRunner(runnerFactoryInput);
       const perRunEntryPoint = createExecutionEntryPoint({
         runner,
         materialize: materializeWithScratch,
-        resultValidation: (entryInput) => resolveScratchResultValidationConfig(entryInput.context, input.registry)
+        resultValidation: (entryInput) => {
+          const config = resolveScratchResultValidationConfig(entryInput.context, input.registry);
+          if (!entryInput.transportRetry || !entryInput.context.task.inputs['specReview'] || !config.resultFile) return config;
+          return { ...config, resultFile: config.resultFile.replace(/\.json$/u, `-transport-${entryInput.transportRetry}.json`) };
+        }
       });
       yield* perRunEntryPoint.execute(entryInput);
     }
@@ -873,23 +902,28 @@ export function createNodeWorkspaceFilesystem(): WorkspaceFileSystemPort {
 
 function createNodeWorkspaceGit(): WorkspaceGitPort {
   return {
+    async readHeadFile({ workspaceRepoRoot, relativePath }) {
+      assertWithinWorkspaceRootLexical(workspaceRepoRoot, relativePath);
+      const { stdout: listing } = await execFileAsync('git', ['ls-tree', 'HEAD', '--', relativePath], { cwd: workspaceRepoRoot });
+      if (listing.length === 0) return null;
+      const { stdout } = await execFileAsync('git', ['show', `HEAD:${relativePath}`], { cwd: workspaceRepoRoot });
+      return stdout;
+    },
     async commitFiles(input) {
       const cwd = input.workspaceRepoRoot;
       await execFileAsync('git', ['-C', cwd, 'add', '--', ...input.relativePaths]);
-      try {
-        await execFileAsync('git', [
-          '-C', cwd,
-          '-c', 'user.name=Autocatalyst',
-          '-c', 'user.email=autocatalyst@local',
-          'commit', '-m', input.message
-        ]);
-      } catch (err) {
-        // Tolerate "nothing to commit" on retry — treat as success.
-        const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes('nothing to commit') && !msg.includes('nothing added to commit')) {
-          throw err;
-        }
+      if (input.expectedContents !== undefined) {
+        const { stdout: staged } = await execFileAsync('git', ['show', `:${input.relativePaths[0]!}`], { cwd });
+        if (staged !== input.expectedContents) throw new Error('Git staged different spec bytes than were reviewed.');
       }
+      const { stdout } = await execFileAsync('git', ['diff', '--cached', '--name-only', 'HEAD', '--', ...input.relativePaths], { cwd });
+      if (!stdout) return {};
+      await execFileAsync('git', [
+        '-C', cwd,
+        '-c', 'user.name=Autocatalyst',
+        '-c', 'user.email=autocatalyst@local',
+        'commit', '-m', input.message, '--only', '--', ...input.relativePaths
+      ]);
       return {};
     }
   };
@@ -1335,7 +1369,9 @@ export async function createControlPlaneServer(
     const stepResultContractRegistry = createControlPlaneStepResultContractRegistry({
       ...(options.specAuthorIdentity !== undefined ? { specAuthorIdentity: options.specAuthorIdentity } : {})
     });
+    const pinnedSpecRoutes = new WeakMap<ExecutionContext, ModelRoutingResolution>();
     const entryPoint = createDelegatingExecutionEntryPoint({
+      resolvePinnedRoute: context => pinnedSpecRoutes.get(context),
       factory: runnerFactory,
       materialize: (context) => materializer.materialize(context),
       // Default to 'implementer' for routing until per-step role catalog is wired in.
@@ -1380,7 +1416,8 @@ export async function createControlPlaneServer(
         });
 
         // Load spec-authoring context for spec.author runs
-        let specAuthorContext: ReturnType<typeof buildSpecAuthorContext> | undefined;
+        const roleInput = workInput as RunRoleWorkInput;
+        let specAuthorContext: ReturnType<typeof buildSpecAuthorContext> | ReturnType<typeof buildReviewedSpecAuthorContext> | undefined;
         if (
           workInput.run.currentStep === 'spec.author' &&
           (workInput.run.workKind === 'feature' || workInput.run.workKind === 'enhancement')
@@ -1389,12 +1426,16 @@ export async function createControlPlaneServer(
             const promptInput = await loadSpecAuthorPromptInput({
               runId: workInput.runId,
               tenantId: workInput.tenant,
-              repositories: domainRepos
+              repositories: domainRepos,
+              loadRevisionFeedback: roleInput.specReview === undefined
             });
-            specAuthorContext = buildSpecAuthorContext({
+            const authorInput = {
               ...promptInput,
               ...(options.specAuthorIdentity !== undefined ? { specAuthorIdentity: options.specAuthorIdentity } : {})
-            });
+            };
+            specAuthorContext = roleInput.specReview
+              ? buildReviewedSpecAuthorContext(authorInput, roleInput.role, roleInput.round, roleInput.specReview)
+              : buildSpecAuthorContext(authorInput);
           } catch (error) {
             if (error instanceof SpecAuthoringContextLoadError) {
               throw new ExecutionContextResolutionError(
@@ -1409,7 +1450,6 @@ export async function createControlPlaneServer(
 
         const isReadOnlySession = (workInput as RunRoleWorkInput).toolPolicyMode === 'read_only';
 
-        const roleInput = workInput as RunRoleWorkInput;
         const isImplementationBuildRoleSession =
           workInput.run.currentStep === 'implementation.build' &&
           roleInput.role !== undefined &&
@@ -1501,7 +1541,7 @@ export async function createControlPlaneServer(
           }
         }
 
-        return createExecutionContextResolver({
+        const context = await createExecutionContextResolver({
           secretsAvailable: false,
           ...(workspace !== undefined ? { workspace } : {}),
           // Reviewer sessions must not receive write-capable tools.
@@ -1569,6 +1609,8 @@ export async function createControlPlaneServer(
             return undefined;
           }
         }).resolve(workInput);
+        if (roleInput.specReview && roleInput.route) pinnedSpecRoutes.set(context, roleInput.route as ModelRoutingResolution);
+        return context;
       },
       ...(options.resolveExecutionMode !== undefined && { resolveExecutionMode: options.resolveExecutionMode }),
       eventsStore: eventBus,

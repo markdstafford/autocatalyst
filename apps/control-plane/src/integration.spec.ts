@@ -1,3 +1,4 @@
+import { reviewedSpecCompletionStub } from './spec-completion.test-helper.js';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
@@ -2878,7 +2879,7 @@ describe('real feature dispatch workspace context', () => {
               importance: 'normal',
               createdAt: new Date().toISOString(),
               type: 'runner_terminal_result',
-              result: { directive: 'advance' }
+              result: { directive: 'fail', reason: 'runner_failed_before_terminal_result' }
             } as RunnerEvent;
           }
           return {
@@ -2929,9 +2930,7 @@ describe('real feature dispatch workspace context', () => {
 
           expect(capturedMemorySnapshot).toEqual({ providerKind: 'openai', adapterId: 'openai-agents-sdk', state: { previousResponseId: 'server_smoke_response' } });
 
-          // The run transitions to terminal after the tick (either advanced or failed
-          // — the fake adapter does not write a result file so scratch_file validation
-          // converts the advance directive to a fail, which is expected).
+          // The adapter stops before writing a draft; this test exercises session setup only.
           const runResp = await fetch(`${baseUrl}/v1/runs/${runId}`, { headers: authHeaders });
           expect(runResp.status).toBe(200);
           const runBody = runSchema.parse(await runResp.json());
@@ -3346,9 +3345,7 @@ describe('spec authoring dispatch context', () => {
           await bootstrap.close();
         }
 
-        // Seed a run directly at spec.author to avoid the two-dispatch workspace conflict.
-        // The real workspace provisioner throws run_workspace_exists on the second dispatch for
-        // the same runId. By starting at spec.author we dispatch once and capture real context.
+        // Start at spec.author to isolate the context setup for the author role.
         const { runId } = await seedSpecAuthorRun({ databasePath, projectId });
 
         const capturedTaskFacts: Array<{
@@ -3357,8 +3354,7 @@ describe('spec authoring dispatch context', () => {
         }> = [];
 
         // Fake adapter that captures task prompt and inputs at startSession time.
-        // The spec.author advance will fail (no conformant scratch file written) — that is
-        // acceptable because we only need the context captured at startSession time.
+        // Stop before writing a draft; this test only needs the context at startSession time.
         const fakeOpenAIAdapter = createOpenAIAgentAdapter();
         fakeOpenAIAdapter.startSession = async (input) => {
           const runId = input.telemetryContext.runId;
@@ -3377,7 +3373,7 @@ describe('spec authoring dispatch context', () => {
               importance: 'normal',
               createdAt: new Date().toISOString(),
               type: 'runner_terminal_result',
-              result: { directive: 'advance' }
+              result: { directive: 'fail', reason: 'runner_failed_before_terminal_result' }
             } as RunnerEvent;
           }
           return {
@@ -3413,13 +3409,12 @@ describe('spec authoring dispatch context', () => {
           if (controlPlane === undefined) throw new Error('control-plane not exposed');
 
           // Single tick dispatches spec.author, which should supply real spec-authoring context.
-          // The advance may fail (no conformant scratch file) — that is acceptable because we
-          // only care that startSession was called with the correct context.
+          // The adapter fails after recording context, so there is no reviewer launch.
           await controlPlane.tick({
             principal: hardcodedDevelopmentPrincipal,
             tenant: hardcodedDevelopmentPrincipal.tenantId,
             runId
-          }).catch(() => { /* spec.author advance failing due to no scratch file is expected */ });
+          });
 
           // Assert spec authoring context was injected at startSession call time.
           expect(capturedTaskFacts).toHaveLength(1);
@@ -3431,7 +3426,7 @@ describe('spec authoring dispatch context', () => {
 
           // taskInputs must carry the spec author schema contract
           const inputs = capture.inputs as Record<string, unknown>;
-          expect(inputs['schemaId']).toBe('autocatalyst.spec_author.v1');
+          expect(inputs['schemaId']).toBe('autocatalyst.reviewed_spec_author.v1');
           const outputContract = inputs['outputContract'] as Record<string, unknown>;
           expect(outputContract['expectedKind']).toBe('feature_spec');
         } finally {
@@ -3660,11 +3655,15 @@ describe('run replies integration', () => {
           return { directive: 'advance' as const };
         });
 
+        const feedbackDb = createSqliteDatabase({ path: databasePath });
         const app = await createControlPlaneServer({
           databasePath,
           bearerToken: BEARER_TOKEN,
           masterSecret: MASTER_SECRET,
-          unitOfWork: { run: unitRun }
+          convergenceEngine: reviewedSpecCompletionStub({ run: unitRun }, {
+            feedback: createDrizzleDomainRepositories(feedbackDb).feedback,
+            clock: () => new Date().toISOString(), ids: () => 'scripted-revision'
+          })
         });
         try {
           const feedbackResp = await app.inject({
@@ -3723,6 +3722,7 @@ describe('run replies integration', () => {
           }
         } finally {
           await app.close();
+          feedbackDb.close();
         }
       } finally {
         await rm(tempDir, { recursive: true, force: true });

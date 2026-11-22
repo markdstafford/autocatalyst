@@ -19,6 +19,7 @@ export interface RunnerEventConsumerDependencies {
 
 export interface ConsumeRunnerEventsInput extends RunnerEventConsumerDependencies {
   readonly events: AsyncIterable<unknown>;
+  readonly privateSpecResult?: boolean;
   readonly runId: string;
   readonly tenant: string;
 }
@@ -29,7 +30,7 @@ export interface ConsumeRunnerEventsResult {
   readonly sessionMetadata?: ExecutionTerminalResultEvent['sessionMetadata'];
 }
 
-function toClientTerminalEvent(event: ExecutionTerminalResultEvent): RunnerTerminalResultClientEvent {
+function toClientTerminalEvent(event: ExecutionTerminalResultEvent, hideResult = false): RunnerTerminalResultClientEvent {
   const base: RunnerTerminalResultClientEvent = {
     id: event.id,
     type: 'runner_terminal_result',
@@ -37,7 +38,7 @@ function toClientTerminalEvent(event: ExecutionTerminalResultEvent): RunnerTermi
     step: event.step,
     importance: event.importance,
     createdAt: event.createdAt,
-    result: event.result,
+    result: hideResult && event.result.directive !== 'fail' ? { directive: event.result.directive } : event.result,
     ...(event.resultContract !== undefined ? { resultContract: event.resultContract } : {})
   };
   return base;
@@ -78,7 +79,7 @@ export async function consumeRunnerEvents(input: ConsumeRunnerEventsInput): Prom
       if (event.type === 'runner_terminal_result') {
         terminalSeen = true;
         terminalEvent = event;
-        const clientEvent: ClientRunEvent = toClientTerminalEvent(event);
+        const clientEvent: ClientRunEvent = toClientTerminalEvent(event, input.privateSpecResult);
         try {
           await input.eventsStore.append({ scope, event: clientEvent });
         } catch {
@@ -89,6 +90,7 @@ export async function consumeRunnerEvents(input: ConsumeRunnerEventsInput): Prom
         }
         continue;
       }
+      if (input.privateSpecResult) continue; // Role activity is exposed via durable sessions, not raw scratch transcripts.
       const clientEvent: ClientRunEvent = clientRunEventSchema.parse(event);
       try {
         await input.eventsStore.append({ scope, event: clientEvent });

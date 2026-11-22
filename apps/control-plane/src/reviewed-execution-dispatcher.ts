@@ -143,10 +143,13 @@ export function createReviewedExecutionDispatcher(
 
       let checkpointResult: JsonValue | undefined;
       let workResult: RunWorkResult;
+      let recorded: { sessionId?: string; modelPrincipal?: Principal } = {};
 
       try {
         const result = await unitOfWork.runWithCheckpoint(augmentedInput);
         workResult = result.workResult;
+        if (input.specReview) recorded = { ...(result.sessionId ? { sessionId: result.sessionId } : {}),
+          ...(result.modelPrincipal ? { modelPrincipal: result.modelPrincipal } : {}) };
         checkpointResult = result.checkpointResult;
       } catch (error) {
         // Sanitize unexpected throws through the existing failure path.
@@ -161,6 +164,7 @@ export function createReviewedExecutionDispatcher(
 
       const dispatchResult: ReviewedRoleDispatchResult = {
         workResult,
+        ...recorded,
         ...(checkpointResult !== undefined ? { sessionCheckpointResult: checkpointResult } : {}),
         ...(sessionMeta.sessionId !== undefined ? { sessionId: sessionMeta.sessionId } : {}),
         ...(sessionMeta.lastPosition !== undefined ? { lastPosition: sessionMeta.lastPosition } : {}),

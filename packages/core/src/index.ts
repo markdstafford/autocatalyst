@@ -286,6 +286,7 @@ export * from './spec-freeze.js';
 
 export * from './convergence-engine.js';
 
+export type { SpecReviewAnchorPersistenceInput } from './domain-repositories.js';
 export { createLayeredConvergenceEngine } from './layered-convergence-engine.js';
 export type { LayeredConvergenceEngineOptions } from './layered-convergence-engine.js';
 
@@ -326,6 +327,7 @@ export {
   SpecAuthorContextError,
   assertSupportedSpecAuthorWorkKind,
   buildSpecAuthorContext,
+  buildReviewedSpecAuthorContext,
   buildSpecAuthorPrompt,
   buildSpecAuthorTaskInputs,
   toSafeDetails

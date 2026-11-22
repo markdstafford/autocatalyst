@@ -45,6 +45,7 @@ export interface ExecutionEntryPointInput {
   readonly context: ExecutionContext;
   readonly correlationId?: string;
   readonly modelMemory?: AgentModelMemoryContinuity;
+  readonly transportRetry?: number;
 }
 
 export interface NoExecutionResultValidationConfig {

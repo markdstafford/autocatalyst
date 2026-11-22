@@ -1,3 +1,5 @@
+import { FeedbackConcurrentModificationError } from './domain-repositories.js';
+import { hasSpecConvergenceState, publicSpecCheckpoint, recoverableSelectedSpecCheckpoint } from './spec-convergence.js';
 import type {
   Artifact,
   CreateConversationWithFirstRunRequest,
@@ -674,7 +676,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     }
 
     const steps = await this.#runSteps.listByRun(input.runId);
-    return { steps };
+    return { steps: steps.map(step => ({ ...step, checkpointResult: publicSpecCheckpoint(step.checkpointResult) })) };
   }
 
   async subscribeRunEvents(input: ServiceSubscribeRunEventsInput): Promise<RunEventSubscription> {
@@ -1005,6 +1007,9 @@ export class DefaultControlPlaneService implements ControlPlaneService {
 
     // Model principals are authors, not operators, for this route (maps to 403).
     const actor = requireNonModelPrincipal(input.principal);
+    if (input.request.status === 'wont_fix' && actor.kind !== 'human') {
+      throw new ControlPlaneServiceError('forbidden', 'Only a human can decline a model finding.');
+    }
 
     // Load + tenant-scope the run. Missing and cross-tenant both resolve to 404.
     const run = await this.#runs.findById(input.runId);
@@ -1025,6 +1030,27 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     }
 
     const request = input.request;
+
+    if (request.status === 'wont_fix') {
+      if (!this.#orchestrator.declineSpecFinding) {
+        throw new ControlPlaneServiceError('conflict', 'Bounded spec review is not active.');
+      }
+      try {
+        const updated = await this.#orchestrator.declineSpecFinding({
+          runId: input.runId, tenant: input.tenant, feedbackId: input.feedbackId, principal: actor, body: request.body
+        });
+        return feedbackResponseSchema.parse(updated);
+      } catch (error) {
+        if (error instanceof OrchestratorError && error.code === 'missing_run') {
+          throw new ControlPlaneServiceError('not_found', error.message);
+        }
+        if ((error instanceof OrchestratorError && error.code === 'invalid_transition') ||
+            error instanceof FeedbackConcurrentModificationError) {
+          throw new ControlPlaneServiceError('conflict', 'The finding is no longer eligible to be declined.');
+        }
+        throw error;
+      }
+    }
 
     if (request.status === 'resolved') {
       const result = await this.#resolveViaLifecycle(input.feedbackId, actor, request.body);
@@ -1247,7 +1273,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
         }
         if (error.code === 'invalid_transition') {
           const details = error.details as { code?: unknown } | null;
-          if (details !== null && typeof details === 'object' && (details.code === 'feedback_gate_blocked' || details.code === 'request_changes_conflict')) {
+          if (details !== null && typeof details === 'object' && (details.code === 'feedback_gate_blocked' || details.code === 'request_changes_conflict' || details.code === 'stale_pause')) {
             throw new ControlPlaneServiceError('conflict', error.message, { details: error.details, cause: error });
           }
           throw new ControlPlaneServiceError('invalid_transition', error.message, { details: error.details, cause: error });
@@ -1324,7 +1350,9 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     try {
       plan = resolveRecoveryPlan({
         stoppedStep,
-        ...(input.request.mode !== undefined ? { explicitMode: input.request.mode } : {}),
+        ...(input.request.mode !== undefined ? { explicitMode: input.request.mode } :
+          stoppedStep.step === 'spec.author' && recoverableSelectedSpecCheckpoint(stoppedStep.checkpointResult)
+            ? { explicitMode: 'resume' } : {}),
         hasCommittedCheckpoints
       });
     } catch (error) {
@@ -1362,7 +1390,10 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       reopened = await this.#orchestrator.reopenFailedRun({
         runId: run.id,
         reDispatchStep: plan.reDispatchStep,
-        runStep: buildEntryRunStep(reDispatchDefinition, startedAt)
+        runStep: buildEntryRunStep(reDispatchDefinition, startedAt),
+        ...(plan.mode === 'resume' && plan.reDispatchStep === 'spec.author' &&
+          hasSpecConvergenceState(stoppedStep.checkpointResult) && stoppedStep.checkpointResult !== null
+          ? { destinationCheckpointResult: stoppedStep.checkpointResult } : {})
       }, input.tenant);
     } catch (error) {
       if (isActiveRunConflictError(error)) {

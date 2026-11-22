@@ -1,4 +1,4 @@
-import type { ExecutionContext, JsonValue } from '@autocatalyst/api-contract';
+import type { ExecutionContext, JsonValue, Principal } from '@autocatalyst/api-contract';
 import {
   RunnerProtocolError,
   PreTerminalRunnerFailure,
@@ -102,8 +102,15 @@ export type ExecutionRunUnitOfWorkResult = RunWorkResult & {
   readonly checkpointResult?: JsonValue;
 };
 
+interface RecordedWork {
+  workResult: RunWorkResult;
+  checkpointResult?: JsonValue;
+  sessionId?: string;
+  modelPrincipal?: Principal;
+}
+
 export interface ExecutionRunUnitOfWork extends RunUnitOfWork {
-  runWithCheckpoint(input: RunWorkInput): Promise<{ workResult: RunWorkResult; checkpointResult?: JsonValue }>;
+  runWithCheckpoint(input: RunWorkInput): Promise<RecordedWork>;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,7 +154,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
       const inner = await this.runWithCheckpoint(input);
       return inner.workResult;
     },
-    async runWithCheckpoint(input: RunWorkInput): Promise<{ workResult: RunWorkResult; checkpointResult?: JsonValue }> {
+    async runWithCheckpoint(input: RunWorkInput): Promise<RecordedWork> {
       let context: ExecutionContext;
       try {
         context = await options.resolveContext(input);
@@ -164,6 +171,10 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
         ? await options.resolveExecutionMode(input, context)
         : { mode: 'agent' as const };
 
+      const privateSpecResult = (input as RunRoleWorkInput).specReview !== undefined;
+      if (modeResolution.mode === 'direct' && privateSpecResult) {
+        return { workResult: { directive: 'fail', reason: 'route_mode_mismatch' } };
+      }
       if (modeResolution.mode === 'direct') {
         if (options.direct === undefined) {
           return { workResult: { directive: 'fail' as const, reason: 'Execution failed: direct_port_not_configured' } };
@@ -300,8 +311,9 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
       // Bounded session-retry loop. Breaks out on a terminal result (advance/needs_input/fail) and
       // returns a fail directive when a transient session failure cannot be recovered.
       for (;;) {
-        const events = options.execute.execute({ context, correlationId: input.runId });
-        const tapped = onEvent === undefined
+        const events = options.execute.execute({ context, correlationId: input.runId,
+          ...(privateSpecResult && retriesUsed > 0 ? { transportRetry: retriesUsed } : {}) });
+        const tapped = onEvent === undefined || privateSpecResult
           ? events
           : (async function* () {
               for await (const event of events) {
@@ -317,6 +329,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
           consumeResult = await consumeRunnerEvents({
             eventsStore,
             events: tapped,
+            ...(privateSpecResult ? { privateSpecResult: true } : {}),
             runId: input.runId,
             tenant: input.tenant
           });
@@ -368,7 +381,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
         const meta = consumeResult.sessionMetadata;
         const outcome = deriveAgentOutcome(consumeResult.workResult);
         try {
-          await recordExecutionSession(
+          const session = await recordExecutionSession(
             { sessions: options.sessions, ...(options.logger !== undefined ? { logger: options.logger } : {}) },
             {
               runId: input.runId,
@@ -388,6 +401,8 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
               ...(meta.toolCallCount !== undefined ? { toolCallCount: meta.toolCallCount } : {})
             }
           );
+          if (privateSpecResult) return { ...consumeResult, sessionId: session.id,
+            modelPrincipal: { id: `${meta.model.provider}:${meta.model.model}`, kind: 'model', tenantId: input.tenant } };
         } catch (recordError) {
           if (recordError instanceof ExecutionSessionRecordingError) {
             // For advance and needs_input results: session persistence failure fails the dispatch.
