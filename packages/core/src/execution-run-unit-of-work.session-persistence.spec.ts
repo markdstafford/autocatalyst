@@ -279,17 +279,13 @@ describe('execution-run-unit-of-work session persistence', () => {
     // Original fail reason should be preserved (normalized to safe fallback since 'provider_auth_failed' is allowlisted)
     expect(result.directive).toBe('fail');
     // The logger should have been called for the error (may be called by recorder and/or unit-of-work)
-    expect(logger.error).toHaveBeenCalled();
-    // Verify each log call includes only safe fields
-    for (const call of (logger.error as ReturnType<typeof vi.fn>).mock.calls) {
-      const logFields = call[0] as Record<string, unknown>;
-      expect(logFields).toHaveProperty('runId');
-      expect(logFields).toHaveProperty('step');
-      expect(logFields).toHaveProperty('role');
-      expect(logFields).toHaveProperty('errorName');
-      // Should not leak raw error messages in any log call
-      expect(JSON.stringify(logFields)).not.toContain('DB write failed');
-    }
+    expect(logger.error.mock.calls).toEqual([
+      [{ runId, step: 'implementation.build', role: 'implementer', code: 'session_persistence_failed' },
+        'Failed to persist execution session.'],
+      [{ runId, step: 'implementation.build', role: 'implementer', errorName: 'ExecutionSessionRecordingError',
+        errorCode: 'session_persistence_failed' },
+        'Failed to record session for failed dispatch; original failure reason preserved.']
+    ]);
   });
 
   it('does not record when no sessionMetadata is present on terminal event', async () => {
@@ -569,15 +565,13 @@ describe('execution-run-unit-of-work session persistence', () => {
     expect(result.directive).toBe('fail');
     expect((result as { reason?: string }).reason).not.toBe('session_persistence_failed');
     // The persistence failure must be logged with only safe fields.
-    expect(logger.error).toHaveBeenCalled();
-    for (const call of (logger.error as ReturnType<typeof vi.fn>).mock.calls) {
-      const logFields = call[0] as Record<string, unknown>;
-      expect(logFields).toHaveProperty('runId');
-      expect(logFields).toHaveProperty('step');
-      expect(logFields).toHaveProperty('role');
-      expect(logFields).toHaveProperty('errorName');
-      expect(JSON.stringify(logFields)).not.toContain('DB write failed');
-    }
+    expect(logger.error.mock.calls).toEqual([
+      [{ runId, step: 'implementation.build', role: 'implementer', code: 'session_persistence_failed' },
+        'Failed to persist execution session.'],
+      [{ runId, step: 'implementation.build', role: 'implementer', errorName: 'ExecutionSessionRecordingError',
+        errorCode: 'session_persistence_failed' },
+        'Failed to record session for pre-terminal runner failure; original failure reason preserved.']
+    ]);
   });
 
   // ---------------------------------------------------------------------------
