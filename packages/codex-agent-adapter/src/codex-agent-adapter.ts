@@ -158,6 +158,7 @@ const CODEX_TOOL_CATEGORY_MAP: Readonly<Record<string, readonly string[]>> = {
 };
 
 const CODEX_WRITE_TOOLS = new Set(['write_file', 'apply_patch']);
+const REVIEWED_SPEC_READ_TOOLS = ['Read', 'Glob', 'Grep'] as const;
 
 // ---------------------------------------------------------------------------
 // Helpers: tool policy -> sandbox + allowed tools
@@ -607,7 +608,16 @@ export function createCodexAgentAdapter(
         'repoRoot' in workspace ? workspace.repoRoot : 'scratchRoot' in workspace ? workspace.scratchRoot : workspace.workspaceRoots[0];
       const cancellation = new AbortController();
 
-      const allowedTools = mapAllowedToolsForCodex(env.toolPolicy.allowedTools, sandbox);
+      const requestedTools = env.toolPolicy.allowedTools;
+      // Codex implements the spec workflow's read/search tools through its native
+      // shell. Translate the complete policy only when the read-only sandbox is
+      // enforced. The native launcher still rejects other policies without shell.
+      const usesReviewedSpecReadPolicy =
+        sandbox === 'read-only' &&
+        isReviewedSpecCapture(input.structuredResultCapture) &&
+        requestedTools.length === REVIEWED_SPEC_READ_TOOLS.length &&
+        REVIEWED_SPEC_READ_TOOLS.every(tool => requestedTools.includes(tool));
+      const allowedTools = usesReviewedSpecReadPolicy ? ['shell'] : mapAllowedToolsForCodex(requestedTools, sandbox);
       const prompt = env.context.task.prompt;
 
       let metadataResolve!: (value: AgentProviderSessionMetadata) => void;
