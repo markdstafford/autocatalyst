@@ -143,3 +143,8 @@ export * from './spec-authoring.js';
 export * from './run-spec.js';
 export * from './convergence.js';
 export * from './pr-reconciliation.js';
+
+export * from './session-usage.js';
+export * from './model-rate-table.js';
+export * from './session-pricing.js';
+export type { ModelRateRecord } from './configuration-record.js';

@@ -4,6 +4,7 @@
  * time, tokens, and cost facts, each with its own loading / success / error rendering, the
  * three cost cases, and the rule that one failed read never blanks the others.
  */
+import type { SessionCostTotal } from '@autocatalyst/api-contract';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
@@ -16,9 +17,14 @@ const loadingPr: PullRequestFact = { status: 'loading' };
 const noPr: PullRequestFact = { status: 'success', value: null };
 const loadingSessions: SessionsFact = { status: 'loading' };
 
-function sessionsOk(value: ReturnType<typeof makeSession>[]): SessionsFact {
-  return { status: 'success', value };
+function sessionsOk(value: ReturnType<typeof makeSession>[], runCost?: SessionCostTotal): SessionsFact {
+  return { status: 'success', value, ...(runCost === undefined ? {} : { runCost }) };
 }
+
+const priced: SessionCostTotal = {
+  basis: 'api_list_price', knownSubtotalUsd: 300_000_001, complete: true,
+  sessionCount: 2, pricedSessionCount: 2, unpricedSessionCount: 0, gaps: []
+};
 
 describe('RunDetailSummary', () => {
   it('renders every fact with no progress bar', () => {
@@ -156,29 +162,43 @@ describe('RunDetailSummary', () => {
     expect(screen.getByTestId('pane-summary-cost').textContent).toBe('—');
   });
 
-  it('sums priced cost and shows a dollar amount', () => {
+  it('renders the API amount instead of summing session costs', () => {
     render(
       <RunDetailSummary
         run={makeRun()}
         pullRequest={noPr}
         sessions={sessionsOk([
           makeSession({ id: 's1', usd: 100_000_000 }),
-          makeSession({ id: 's2', usd: 200_000_000 })
-        ])}
+          makeSession({ id: 's2', usd: 100 })
+        ], priced)}
       />
     );
-    expect(screen.getByTestId('pane-summary-cost').textContent).toBe('$0.30');
+    expect(screen.getByTestId('pane-summary-cost').textContent).toContain('$0.300000001');
   });
 
-  it('shows Unknown cost when a session is unpriced', () => {
-    render(
-      <RunDetailSummary
-        run={makeRun()}
-        pullRequest={noPr}
-        sessions={sessionsOk([makeSession({ id: 's1', usd: 100_000_000 }), makeSession({ id: 's2', usd: null })])}
-      />
-    );
-    expect(screen.getByTestId('pane-summary-cost').textContent).toBe('Unknown');
+  it('distinguishes empty, unavailable, incomplete and estimated cost', async () => {
+    const user = userEvent.setup();
+    const run = makeRun({ status: 'in_progress' });
+    const { rerender } = render(<RunDetailSummary run={run} pullRequest={noPr} sessions={sessionsOk([])} />);
+    expect(screen.getByTestId('pane-summary-cost').getAttribute('aria-label')).toBe('No recorded sessions so far');
+    const sessions = [makeSession()];
+    rerender(<RunDetailSummary run={run} pullRequest={noPr} sessions={sessionsOk(sessions)} />);
+    expect(screen.getByTestId('pane-summary-cost').textContent).toBe('Pricing unavailable so far');
+    rerender(<RunDetailSummary run={run} pullRequest={noPr} sessions={sessionsOk(sessions, {
+      ...priced, sessionCount: 1, pricedSessionCount: 0, unpricedSessionCount: 1, knownSubtotalUsd: null, complete: false
+    })} />);
+    expect(screen.getByTestId('pane-summary-cost').textContent).toBe('Unknown so far · API list price · Incomplete');
+    rerender(<RunDetailSummary run={run} pullRequest={noPr} sessions={sessionsOk(sessions, {
+      ...priced, sessionCount: 1, pricedSessionCount: 1, knownSubtotalUsd: 0, complete: false,
+      gaps: [{ code: 'estimated_request_size', method: 'nearest_sample', tokenClass: 'freshInput', tokenCount: '50',
+        provider: 'openai', model: 'served', hasUnknownTokenCount: false, sessionCount: 1 }]
+    })} />);
+    const cost = screen.getByTestId('pane-summary-cost');
+    expect(cost.textContent).toBe('$0.00 so far · API list price · Incomplete · Includes estimates');
+    await user.tab();
+    await user.tab();
+    expect(document.activeElement).toBe(cost);
+    expect(await screen.findByText(/Long-context pricing band estimated.*50 tokens/)).toBeDefined();
   });
 
   it('reveals the token breakdown in a tooltip on hover', async () => {
@@ -191,8 +211,8 @@ describe('RunDetailSummary', () => {
       />
     );
     const tokens = screen.getByTestId('pane-summary-tokens');
-    expect(tokens.textContent).toBe('1.1K');
+    expect(tokens.textContent).toBe('1.1K · Legacy');
     await user.hover(tokens);
-    expect(await screen.findByText('Input 1,000 · Output 50 · Cache read 10 · Cache write 5')).toBeDefined();
+    expect(await screen.findByText(/Legacy: 1,065 tokens in 1 session/)).toBeDefined();
   });
 });

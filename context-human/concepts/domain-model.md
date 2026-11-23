@@ -141,31 +141,18 @@ enters produces a `RunStep`, recording when it started and ended (its duration).
 for every step, including gates and system steps, keeps the run's timeline in one place. `RunStep` is
 parented to the `Run` (`Run` to `RunStep` is one-to-many; a step can recur as a run loops).
 
-A **`Session`** is the atomic cost and telemetry record: one model's single go within a step, at
-`(run, phase, step, role, round)` grain. It carries the resolved model, the inference settings (thinking
-or effort level), the start, end, and duration, the normalized token breakdown, a `usage_available`
-flag, the assistant-turn and tool counts, the outcome, and an embedded **`Cost`**. The cost unit is the
-session (ADR-015): one session is one model at one rate, so it carries exactly one `Cost`. `Session` is
-parented to the `Run` (`Run` to `Session` is one-to-many; a step that runs several
-rounds between the implementer and reviewer leaves several session rows). A gate, and any human- or
-system-driven step,
-runs no session, so it bears no cost. A bounded direct call (classification at intake, PR-title
-generation) also runs a session, attributed to the run it resolves to with a null phase and an empty
-(`none`) role, so its spend is counted rather than lost. `(step, role)`, step, and phase are not stored
-cost records of their own; they are `GROUP BY` aggregations over the session rows.
+A **`Session`** is one recorded model invocation within a run and step, attributed to its role
+and round. A bounded direct call uses the same grain; intake work can have a null phase and role
+`none`. A session keeps the dispatch model, inference settings, timing, counts, and outcome.
+New sessions also carry normalized usage groups with disjoint counts and separate served billing
+keys when known. A group is not a new session.
 
-**`Cost`** is a value object, not a scalar: a `model` (provider and name), a monetary `usd` (an integer
-count of nano-dollars, never a float), and a `tokens` breakdown (`input`, `output`, `cache_read`,
-`cache_write`). A `Session` carries one `Cost`.
-
-Cost rolls up the hierarchy by summation: sessions sum to `(step, role)`, step, and phase totals, and
-on up to `Run`, `Topic`, `Conversation`, and `Project`. These rollups are **computed live**: a
-query sums the session rows that exist when it runs, so a backfilled rate or a late-arriving session is
-reflected on the next read with no stored rollup to keep in step. A cached, present-when-complete
-**`aggregateCost`** column at `Run` and above (carrying the null-and-propagate-on-new-run invalidation a
-stored rollup needs) is a **deferred** optimization, taken only if read volume ever makes live summing
-slow. A per-step, per-phase, per-model, or per-token breakdown at any level is a dedicated query over
-the `Session` rows rather than a pre-stored rollup.
+Stored **`Cost`** retains the dispatch model and the same numeric token projection as the session.
+Those projections can contain zero placeholders and inclusive input; they are not billing
+evidence. New rows store a null amount. Run-session reads compute price, basis, coverage gaps,
+and selected rate IDs, using the normalized evidence and effective rates ([ADR-034](../adrs/adr-034-cache-aware-session-pricing.md)).
+Legacy rows keep their stored data. Logical step and run totals sum priced session reads,
+not a database sum of stored amounts.
 
 ## Project
 
@@ -241,7 +228,7 @@ across arbitrary entities have a concrete use, rather than building it speculati
 - `acceptance-testing` — owns when a `TestResult` is captured and how it gates run completion; this
   concept owns its shape.
 - `observability`/`cost` — write and read the `Session` record this concept owns: `observability`
-  records its execution metadata, `cost` prices its tokens into the embedded `Cost`.
+  records its execution metadata, and `cost` computes the price at read time.
 
 ## Constraints and decisions
 
@@ -251,9 +238,8 @@ across arbitrary entities have a concrete use, rather than building it speculati
   workflow (ADR-017); document-intrinsic lifecycle stays in committed frontmatter.
 - `Feedback` is first-class, run-parented, and gates run completion (ADR-018).
 - A `TestResult` is run-parented, records a human test pass, and references the `Feedback` it raised.
-- The atomic cost unit is the `Session`; `Cost` is a structured value object embedded on it, and
-  `(step, role)`, step, phase, and above are live `GROUP BY` rollups, with a cached `aggregateCost`
-  deferred (ADR-015).
+- The atomic cost unit is the session. Logical step and run amounts are computed on read;
+  other rollups and cached aggregates are deferred ([ADR-034](../adrs/adr-034-cache-aware-session-pricing.md)).
 - Every major entity carries `owner` and `tenant`, including a `kind` (`human`/`model`/`system`) on the
   `Principal` (ADR-009).
 - Normalized tables for entities, embedded JSON for value objects (ADR-019, ADR-004).

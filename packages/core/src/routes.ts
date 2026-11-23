@@ -152,6 +152,7 @@ import {
   type ProbeResourceRepository
 } from './probe-resource.js';
 import {
+  ModelRateConflictError,
   assertActiveRoutesReferenceDispatchableProfiles,
   assertProviderProfileUpdateDoesNotBreakActiveRoutes,
   createConfigurationRecord,
@@ -511,10 +512,14 @@ export async function registerControlPlaneRoutes(
       const principal = requirePrincipalFromRequest(request);
       let body: CreateConfigurationRecordRequest;
       try {
-        body = createConfigurationRecordRequestSchema.parse({
-          ...request.body as object,
-          tenant: principal.tenantId
-        });
+        const submitted = request.body as { kind?: unknown; tenant?: unknown } | null;
+        body = createConfigurationRecordRequestSchema.parse(
+          submitted?.kind === 'model_rate_table' ? request.body : { ...submitted, tenant: principal.tenantId }
+        );
+        if (body.tenant !== principal.tenantId) {
+          await reply.status(400).send(errorResponse('validation_error', 'Tenant does not match request scope.'));
+          return;
+        }
       } catch (error) {
         await sendValidationError(reply, error);
         return;
@@ -536,10 +541,15 @@ export async function registerControlPlaneRoutes(
           return;
         }
       }
-      const record = configurationRecordResponseSchema.parse(
-        await createConfigurationRecord(dependencies.configurationRecords, body)
-      );
-      await reply.status(createConfigurationRecordSuccessStatusCode).send(record);
+      try {
+        const record = configurationRecordResponseSchema.parse(
+          await createConfigurationRecord(dependencies.configurationRecords, body)
+        );
+        await reply.status(createConfigurationRecordSuccessStatusCode).send(record);
+      } catch (error) {
+        if (!(error instanceof ModelRateConflictError)) throw error;
+        await reply.status(409).send(errorResponse('conflict', error.message));
+      }
     });
 
     protectedApp.get(configurationRecordCollectionPath, {
@@ -594,9 +604,17 @@ export async function registerControlPlaneRoutes(
         await sendValidationError(reply, error);
         return;
       }
+      const existing = await dependencies.configurationRecords.findById(principal.tenantId, params.id);
+      if (existing === null) {
+        await reply.status(404).send(errorResponse(notFoundErrorCode, 'Configuration record not found.'));
+        return;
+      }
+      if (existing.kind === 'model_rate_table') {
+        await reply.status(409).send(errorResponse('conflict', new ModelRateConflictError().message));
+        return;
+      }
       if (body.kind === 'model_routing_table') {
         const existingRecords = await dependencies.configurationRecords.list(principal.tenantId);
-        const existing = await dependencies.configurationRecords.findById(principal.tenantId, params.id);
         const mergedSettings = existing !== null
           ? { ...(existing.settings as object), ...(body.settings as object) }
           : body.settings;
@@ -617,7 +635,6 @@ export async function registerControlPlaneRoutes(
         }
       } else if (body.kind === 'provider_profile') {
         const existingRecords = await dependencies.configurationRecords.list(principal.tenantId);
-        const existing = await dependencies.configurationRecords.findById(principal.tenantId, params.id);
         const existingSettings = existing?.kind === 'provider_profile' ? (existing.settings as Record<string, unknown>) : {};
         const mergedSettings = { ...existingSettings, ...(body.settings as Record<string, unknown>) };
         const otherRecords = existingRecords.filter((r) => r.id !== params.id);
@@ -651,7 +668,16 @@ export async function registerControlPlaneRoutes(
         await sendValidationError(reply, error);
         return;
       }
-      const deleted = await deleteConfigurationRecord(dependencies.configurationRecords, principal.tenantId, params.id);
+      let deleted: boolean;
+      try {
+        const existing = await dependencies.configurationRecords.findById(principal.tenantId, params.id);
+        if (existing?.kind === 'model_rate_table') throw new ModelRateConflictError();
+        deleted = await deleteConfigurationRecord(dependencies.configurationRecords, principal.tenantId, params.id);
+      } catch (error) {
+        if (!(error instanceof ModelRateConflictError)) throw error;
+        await reply.status(409).send(errorResponse('conflict', error.message));
+        return;
+      }
       if (!deleted) {
         await reply.status(404).send(errorResponse(notFoundErrorCode, 'Configuration record not found.'));
         return;

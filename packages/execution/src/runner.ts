@@ -1,5 +1,5 @@
 import type { MaterializedExecutionEnvironment } from './materialized-environment.js';
-import type { InferenceSettings, ModelIdentity, TokenBreakdown, RunnerEvent } from '@autocatalyst/api-contract';
+import type { InferenceSettings, ModelIdentity, SessionUsage, TokenBreakdown, RunnerEvent } from '@autocatalyst/api-contract';
 import type { StructuredAgentResultCapture } from './structured-result-capture.js';
 import type { AgentModelMemoryContinuity } from './agent-model-memory.js';
 
@@ -43,6 +43,7 @@ export interface RunnerSessionMetadata {
   readonly outcome: 'succeeded' | 'failed' | 'cancelled' | 'timeout';
   readonly tokens?: TokenBreakdown;
   readonly usageAvailable?: boolean;
+  readonly usage?: SessionUsage;
   readonly assistantTurnCount?: number;
   readonly toolCallCount?: number;
 }

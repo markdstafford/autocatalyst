@@ -610,8 +610,9 @@ describe('execution-run-unit-of-work session persistence', () => {
     });
 
     await expect(unitOfWork.run(makeRoleInput('implementer', 1))).rejects.toBeInstanceOf(RunnerProtocolError);
-    // Must NOT silently swallow into a { directive: 'fail' } and must NOT call sessions.create
-    expect(sessions.create).not.toHaveBeenCalled();
+    // Keep the original protocol failure while recording the attempt once.
+    expect(sessions.create).toHaveBeenCalledTimes(1);
+    expect(sessions.create).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'failed' }));
   });
 });
 

@@ -291,6 +291,7 @@ export function generateOpenApiDocument(): OpenApiDocument {
       body: { content: { 'application/json': { schema: CreateConfigurationRecordRequest } } }
     },
     responses: {
+      409: jsonResponse(ErrorResponse, 'Rate publication conflict.'),
       [createConfigurationRecordSuccessStatusCode]: jsonResponse(ConfigurationRecord, 'Created configuration record.'),
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
       400: jsonResponse(ErrorResponse, 'Validation error.')
@@ -331,6 +332,7 @@ export function generateOpenApiDocument(): OpenApiDocument {
       body: { content: { 'application/json': { schema: UpdateConfigurationRecordRequest } } }
     },
     responses: {
+      409: jsonResponse(ErrorResponse, 'Rate revisions are immutable.'),
       200: jsonResponse(ConfigurationRecord, 'Updated configuration record.'),
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
       400: jsonResponse(ErrorResponse, 'Validation error.'),
@@ -346,6 +348,8 @@ export function generateOpenApiDocument(): OpenApiDocument {
     request: { params: ConfigurationRecordIdParams },
     responses: {
       204: { description: 'Deleted configuration record.' },
+      409: jsonResponse(ErrorResponse, 'Rate revisions are immutable.'),
+      400: jsonResponse(ErrorResponse, 'Validation error.'),
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
       404: jsonResponse(ErrorResponse, 'Configuration record not found.')
     }

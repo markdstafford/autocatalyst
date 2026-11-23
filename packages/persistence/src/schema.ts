@@ -18,7 +18,11 @@ export const configurationRecords = sqliteTable('configuration_records', {
   createdAt: text('created_at').notNull(),
   updatedAt: text('updated_at').notNull()
 }, (table) => [
-  index('configuration_records_tenant_kind_idx').on(table.tenant, table.kind)
+  index('configuration_records_tenant_kind_idx').on(table.tenant, table.kind),
+  uniqueIndex('configuration_model_rate_revision_idx').on(
+    table.tenant, sql`json_extract(${table.settingsJson}, '$.provider')`, sql`json_extract(${table.settingsJson}, '$.model')`,
+    sql`json_extract(${table.settingsJson}, '$.effectiveAt')`, sql`json_extract(${table.settingsJson}, '$.revision')`
+  ).where(sql`${table.kind} = 'model_rate_table'`)
 ]);
 
 export const secretStoreMetadata = sqliteTable('secret_store_metadata', {
@@ -219,7 +223,8 @@ export const sessions = sqliteTable('sessions', {
   assistantTurnCount: integer('assistant_turn_count').notNull(),
   toolCallCount: integer('tool_call_count').notNull(),
   outcome: text('outcome').notNull(),
-  costJson: text('cost_json').notNull()
+  costJson: text('cost_json').notNull(),
+  usageJson: text('usage_json')
 }, (table) => [
   index('sessions_run_started_idx').on(table.runId, table.startedAt),
   index('sessions_run_step_role_idx').on(table.runId, table.step, table.role),

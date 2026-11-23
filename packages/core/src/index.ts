@@ -13,7 +13,7 @@ export type { BearerAuthOptions } from './auth.js';
 export { permissivePolicyDecisionPoint, authorizeRequest } from './policy.js';
 export type { PolicyDecisionPoint, PolicyDecisionInput, PolicyDecision, PolicyAction, PolicyResourceDescriptor } from './policy.js';
 
-export { createConfigurationRecord, listConfigurationRecords, getConfigurationRecord, updateConfigurationRecord, deleteConfigurationRecord } from './configuration-record.js';
+export { ModelRateConflictError, createConfigurationRecord, listConfigurationRecords, getConfigurationRecord, updateConfigurationRecord, deleteConfigurationRecord } from './configuration-record.js';
 export type { ConfigurationRecordRepository, CreateConfigurationRecordInput, UpdateConfigurationRecordInput } from './configuration-record.js';
 
 export { createSecret, SecretStoreLockedError, SecretResolutionError } from './secret.js';

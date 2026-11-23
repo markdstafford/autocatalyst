@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import { ProviderConnectionError, ProviderProtocolError, UnsupportedProviderCapabilityError, runtimeSkillsCatalogRoot } from '@autocatalyst/execution';
 
+import { CodexUsage } from './codex-usage.js';
 import { CodexAuthenticationError, type CodexAuthProbe } from './codex-auth.js';
 import type { CodexNativeEvent, CodexSessionLaunch } from './codex-agent-adapter.js';
 
@@ -93,13 +94,13 @@ export class CodexAppServerClient {
         }
       } catch { this.#fail(); }
     });
-    this.#timer = setTimeout(() => this.#fail(), timeoutMs);
+    this.#timer = setTimeout(() => this.#fail(new ProviderConnectionError('timeout', 'Codex app-server timed out.')), timeoutMs);
     this.#signal = signal;
-    this.#abort = () => this.#fail();
+    this.#abort = () => this.#fail(new DOMException('Codex session was cancelled.', 'AbortError'));
     signal?.addEventListener('abort', this.#abort, { once: true });
   }
-  #fail(): void {
-    this.#error ??= failure();
+  #fail(error: Error = failure()): void {
+    this.#error ??= error;
     for (const pending of this.#pending.values()) pending.reject(this.#error);
     this.#pending.clear(); this.#wake?.();
     this.close();
@@ -124,6 +125,9 @@ export class CodexAppServerClient {
     const packet = this.#notifications.shift();
     this.#wake = undefined;
     return packet ?? {};
+  }
+  drainNotifications(): RecordValue[] {
+    return this.#notifications.splice(0);
   }
   close(): void {
     clearTimeout(this.#timer);
@@ -176,6 +180,7 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
     const client = await openCodexAppServer({ binary, ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
       ...(options.env !== undefined ? { env: options.env } : {}), timeoutMs: options.timeoutMs ?? 600_000,
       ...(options.signal !== undefined ? { signal: options.signal } : {}) });
+    let accounting: CodexUsage | undefined;
     try {
       const isolation = await checkAccount(client);
       for (const skill of options.skills ?? []) {
@@ -193,33 +198,35 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
           'sandbox_workspace_write.exclude_tmpdir_env_var': true }
       });
       const thread = record(response['thread']);
-      if (typeof thread['id'] !== 'string' || response['modelProvider'] !== 'openai' || response['model'] !== options.model) throw failure();
+      if (typeof thread['id'] !== 'string' || !thread['id'] || response['modelProvider'] !== 'openai' || response['model'] !== options.model) throw failure();
       const sandbox = record(response['sandbox']);
       const expected = options.sandbox === 'read-only' ? 'readOnly' : 'workspaceWrite';
       if (sandbox['type'] !== expected) throw failure();
-      await client.rpc('turn/start', {
+      accounting = new CodexUsage(thread['id'], { provider: 'openai', model: options.model });
+      const turnResponse = await client.rpc('turn/start', {
         threadId: thread['id'], sandboxPolicy: codexSandboxPolicy(options.sandbox, options.workspaceRoots ?? []), input: [
           { type: 'text', text: options.prompt, text_elements: [] },
           ...(options.skills ?? []).map(skill => ({ type: 'skill', name: skill.ref, path: path.join(skill.hostPath, 'SKILL.md') }))
         ]
       });
+      const turn = record(turnResponse['turn']);
+      const turnId = turn['id'];
+      if (typeof turnId !== 'string' || !turnId) throw failure();
+      accounting.ownTurn(turnId);
       yield { type: 'skills_delivered', refs: (options.skills ?? []).map(skill => skill.ref) };
       let finalText: string | undefined;
-      let usage: { input_tokens?: number; output_tokens?: number } | undefined;
       while (true) {
         const packet = await client.next(); const params = record(packet['params']);
+        accounting.observe(packet['method'], params);
         if (params['threadId'] !== thread['id']) continue;
+        const packetTurn = packet['method'] === 'turn/completed' ? record(params['turn'])['id'] : params['turnId'];
+        if (packetTurn !== turnId) continue;
         if (packet['method'] === 'item/completed' || packet['method'] === 'item/started') {
           const item = record(params['item']);
           if (packet['method'] === 'item/completed' && item['type'] === 'agentMessage' && typeof item['text'] === 'string') {
             finalText = item['text']; yield { type: 'agent_message', content: finalText };
           } else if (['commandExecution', 'fileChange', 'mcpToolCall'].includes(String(item['type']))) {
             yield { type: 'tool_call', tool: { name: String(item['type']) }, completed: packet['method'] === 'item/completed' };
-          }
-        } else if (packet['method'] === 'thread/tokenUsage/updated') {
-          const total = record(record(params['tokenUsage'])['total']);
-          if (typeof total['inputTokens'] === 'number' && typeof total['outputTokens'] === 'number') {
-            usage = { input_tokens: total['inputTokens'], output_tokens: total['outputTokens'] };
           }
         } else if (packet['method'] === 'turn/completed') {
           if (record(params['turn'])['status'] !== 'completed') throw failure();
@@ -230,13 +237,20 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
             catch { throw new ProviderProtocolError('structured_result_invalid', 'Codex final output is not JSON.'); }
           }
           yield { type: 'result', ...(structuredOutput !== undefined ? { structuredOutput } : {}),
-            ...(usage !== undefined ? { usage } : {}), result: { directive: 'advance', output: finalText } };
+            result: { directive: 'advance', output: finalText } };
           return;
         }
       }
     } catch (error) {
-      if (error instanceof CodexAuthenticationError || error instanceof ProviderProtocolError || error instanceof ProviderConnectionError) throw error;
+      if (error instanceof CodexAuthenticationError || error instanceof ProviderProtocolError ||
+          error instanceof ProviderConnectionError || (error instanceof Error && error.name === 'AbortError')) throw error;
       throw failure();
-    } finally { client.close(); }
+    } finally {
+      client.close();
+      if (accounting !== undefined) {
+        for (const packet of client.drainNotifications()) accounting.observe(packet['method'], packet['params']);
+        options.onUsage?.(accounting.evidence(), [...accounting.anomalies]);
+      }
+    }
   };
 }

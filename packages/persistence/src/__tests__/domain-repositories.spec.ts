@@ -495,6 +495,15 @@ describe('DrizzleDomainRepositories round-trip', () => {
       expect(session.sequence).toBe(1);
       expect(await repos.sessions.listByRun(run.id)).toHaveLength(1);
 
+      const { id: _id, sequence: _sequence, cost: storedCost, ...validCreate } = session;
+      await expect(repos.sessions.create({ ...validCreate, cost: { model: storedCost.model, tokens: storedCost.tokens } }))
+        .resolves.toMatchObject({ cost: { usd: null } });
+      for (const fields of [{ usd: 0 }, { usd: 10 }, { gaps: [] }, { complete: false }, { rateVersionIds: [] }, { basis: 'api_list_price' }]) {
+        await expect(repos.sessions.create({
+          ...validCreate, cost: { ...storedCost, ...fields }
+        } as Parameters<typeof repos.sessions.create>[0])).rejects.toThrow();
+      }
+
       const testResult = await repos.testResults.create({
         runId: run.id,
         tester: owner,

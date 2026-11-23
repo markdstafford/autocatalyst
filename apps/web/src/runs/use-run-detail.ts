@@ -347,7 +347,8 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
           .listRunSessions(id)
           .then((response) => {
             if (!signal.aborted) {
-              setSessions({ status: 'success', value: response.sessions });
+              setSessions({ status: 'success', value: response.sessions,
+                ...(response.costTotals === undefined ? {} : { runCost: response.costTotals.run }) });
             }
           })
           .catch((error: unknown) => {

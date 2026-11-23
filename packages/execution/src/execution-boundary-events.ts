@@ -5,6 +5,7 @@ import {
   runnerTerminalStepResultSchema,
   inferenceSettingsSchema,
   modelIdentitySchema,
+  sessionUsageSchema,
   tokenBreakdownSchema
 } from '@autocatalyst/api-contract';
 import type { RunnerEvent } from '@autocatalyst/api-contract';
@@ -19,6 +20,7 @@ const executionSessionMetadataSchema = z.object({
   outcome: z.enum(['succeeded', 'failed', 'cancelled', 'timeout']),
   tokens: tokenBreakdownSchema.optional(),
   usageAvailable: z.boolean().optional(),
+  usage: sessionUsageSchema.optional(),
   assistantTurnCount: z.number().int().min(0).optional(),
   toolCallCount: z.number().int().min(0).optional()
 }).strict();

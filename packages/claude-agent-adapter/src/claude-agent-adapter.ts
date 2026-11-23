@@ -1,3 +1,4 @@
+import { ClaudeUsage, type ClaudeAccountingAnomaly } from './claude-usage.js';
 import { access, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -80,6 +81,7 @@ export interface ClaudeNativeEvent {
 }
 
 export interface ClaudeSessionLaunchOptions {
+  readonly onUsage?: (usage: AgentTokenUsage, anomalies?: readonly ClaudeAccountingAnomaly[]) => void;
   readonly prompt: string;
   readonly cwd?: string;
   readonly env?: Record<string, string>;
@@ -102,7 +104,13 @@ export interface ClaudeAgentAdapterLogger {
   error(event: string, fields: unknown): void;
 }
 
+export type ClaudeSdkQuery = (input: {
+  prompt: string; options?: Record<string, unknown>;
+}) => AsyncIterable<Record<string, unknown>>;
+
 export interface ClaudeAgentAdapterOptions {
+  /** Native message source; the default is the pinned Claude Agent SDK query. */
+  readonly queryClaudeSdk?: ClaudeSdkQuery;
   readonly launchClaudeSession?: ClaudeSessionLaunch;
   readonly supportedInferenceSettings?: ReadonlySet<string>;
   readonly clock?: () => string;
@@ -259,13 +267,12 @@ function isNonRetryableStructuredError(err: unknown): boolean {
 // mapNativeEvent. Dynamic import keeps the package buildable and unit-testable
 // while still making the adapter package own its provider SDK dependency.
 async function* realSDKLaunch(
-  opts: ClaudeSessionLaunchOptions
+  opts: ClaudeSessionLaunchOptions,
+  queryOverride?: ClaudeSdkQuery
 ): AsyncIterable<ClaudeNativeEvent> {
-  type QueryFn = (input: { prompt: string; options?: Record<string, unknown> }) => AsyncIterable<Record<string, unknown>>;
-  let query: QueryFn;
+  let query: ClaudeSdkQuery;
   try {
-    const sdk = await import('@anthropic-ai/claude-agent-sdk') as { query: QueryFn };
-    query = sdk.query;
+    query = queryOverride ?? (await import('@anthropic-ai/claude-agent-sdk') as { query: ClaudeSdkQuery }).query;
   } catch {
     throw new ProviderConnectionError(
       'process_launch_failed',
@@ -282,60 +289,66 @@ async function* realSDKLaunch(
     ...(opts.structuredResult !== undefined ? { outputFormat: opts.structuredResult.outputFormat } : {})
   };
 
-  for await (const msg of query({ prompt: opts.prompt, options: sdkOpts })) {
-    if (msg['type'] === 'assistant') {
-      const inner = msg['message'] as Record<string, unknown> | undefined;
-      const content = inner?.['content'];
-      if (Array.isArray(content)) {
-        for (const block of content as Record<string, unknown>[]) {
-          if (block['type'] === 'text' && typeof block['text'] === 'string') {
-            yield { type: 'assistant', content: block['text'] };
-          } else if (block['type'] === 'tool_use' && typeof block['name'] === 'string') {
-            yield { type: 'tool_use', tool: { name: block['name'], input: block['input'] } };
+  const accounting = new ClaudeUsage(typeof sdkOpts['resume'] === 'string' || typeof sdkOpts['resumeSessionAt'] === 'string' || sdkOpts['continue'] === true);
+  try {
+    for await (const msg of query({ prompt: opts.prompt, options: sdkOpts })) {
+      accounting.observe(msg);
+      if (msg['type'] === 'assistant') {
+        const inner = msg['message'] as Record<string, unknown> | undefined;
+        const content = inner?.['content'];
+        if (Array.isArray(content)) {
+          for (const block of content as Record<string, unknown>[]) {
+            if (block['type'] === 'text' && typeof block['text'] === 'string') {
+              yield { type: 'assistant', content: block['text'] };
+            } else if (block['type'] === 'tool_use' && typeof block['name'] === 'string') {
+              yield { type: 'tool_use', tool: { name: block['name'], input: block['input'] } };
+            }
           }
         }
+      } else if (msg['type'] === 'result') {
+        const subtype = msg['subtype'] as string | undefined;
+        const usage = msg['usage'] as Record<string, unknown> | undefined;
+        if (subtype === 'success') {
+          const input_tokens =
+            typeof usage?.['input_tokens'] === 'number' ? (usage['input_tokens'] as number) : undefined;
+          const output_tokens =
+            typeof usage?.['output_tokens'] === 'number' ? (usage['output_tokens'] as number) : undefined;
+          const hasTokens = input_tokens !== undefined && output_tokens !== undefined;
+          yield {
+            type: 'result',
+            ...(msg['structured_output'] !== undefined ? { structuredOutput: msg['structured_output'] } : {}),
+            result: {
+              is_error: msg['is_error'] === true,
+              ...(typeof msg['result'] === 'string' ? { output: msg['result'] } : {}),
+              ...(hasTokens
+                ? { total_tokens: input_tokens + output_tokens, input_tokens, output_tokens }
+                : {})
+            }
+          };
+        } else {
+          // Error result subtypes (error_max_turns, error_during_execution, etc.)
+          const errors = Array.isArray(msg['errors']) ? (msg['errors'] as unknown[]).map(String) : [];
+          yield {
+            type: 'result',
+            result: {
+              is_error: true,
+              ...(errors.length > 0 ? { output: errors.join('\n') } : {})
+            }
+          };
+        }
       }
-    } else if (msg['type'] === 'result') {
-      const subtype = msg['subtype'] as string | undefined;
-      const usage = msg['usage'] as Record<string, unknown> | undefined;
-      if (subtype === 'success') {
-        const input_tokens =
-          typeof usage?.['input_tokens'] === 'number' ? (usage['input_tokens'] as number) : undefined;
-        const output_tokens =
-          typeof usage?.['output_tokens'] === 'number' ? (usage['output_tokens'] as number) : undefined;
-        const hasTokens = input_tokens !== undefined && output_tokens !== undefined;
-        yield {
-          type: 'result',
-          ...(msg['structured_output'] !== undefined ? { structuredOutput: msg['structured_output'] } : {}),
-          result: {
-            is_error: msg['is_error'] === true,
-            ...(typeof msg['result'] === 'string' ? { output: msg['result'] } : {}),
-            ...(hasTokens
-              ? { total_tokens: input_tokens + output_tokens, input_tokens, output_tokens }
-              : {})
-          }
-        };
-      } else {
-        // Error result subtypes (error_max_turns, error_during_execution, etc.)
-        const errors = Array.isArray(msg['errors']) ? (msg['errors'] as unknown[]).map(String) : [];
-        yield {
-          type: 'result',
-          result: {
-            is_error: true,
-            ...(errors.length > 0 ? { output: errors.join('\n') } : {})
-          }
-        };
-      }
+    // Other messages are not used for UI events.
     }
-    // System, user, status, hook, task, and other messages are intentionally ignored.
+  } finally {
+    opts.onUsage?.(accounting.evidence(), [...accounting.anomalies]);
   }
 }
 
-function defaultLaunch(): ClaudeSessionLaunch {
+function defaultLaunch(query?: ClaudeSdkQuery): ClaudeSessionLaunch {
   // realSDKLaunch is an async generator function; it satisfies ClaudeSessionLaunch
   // (returns AsyncIterable<ClaudeNativeEvent>). Dynamic import means the SDK is
   // only required at runtime — tests inject launchClaudeSession instead.
-  return realSDKLaunch;
+  return (options) => realSDKLaunch(options, query);
 }
 
 function createClaudeStructuredResultDefinition(
@@ -366,7 +379,7 @@ function createClaudeStructuredResultDefinition(
 export function createClaudeAgentAdapter(
   options: ClaudeAgentAdapterOptions = {}
 ): AgentProviderAdapter {
-  const launch = options.launchClaudeSession ?? defaultLaunch();
+  const launch = options.launchClaudeSession ?? defaultLaunch(options.queryClaudeSdk);
   const supportedInference = options.supportedInferenceSettings ?? new Set<string>();
   const clock = options.clock ?? (() => new Date().toISOString());
   const idGenerator =
@@ -513,9 +526,10 @@ export function createClaudeAgentAdapter(
       });
       metadata.catch(() => undefined);
 
+      let tokenUsage: AgentTokenUsage = { available: false };
       async function* mapEvents(): AsyncIterable<RunnerEvent> {
         let outcome: 'succeeded' | 'failed' | 'canceled' = 'succeeded';
-        let tokenUsage: AgentTokenUsage = { available: false };
+
         let pendingResult: PendingResult | undefined;
         let capturedStructuredResult: { readonly value: unknown } | undefined;
         // Safe session diagnostics captured for the failure path (counts/timing only, no content).
@@ -598,6 +612,10 @@ export function createClaudeAgentAdapter(
           }, { runId, step, clock, idGenerator, knownSecretValues });
 
           const native = launch({
+            onUsage: (usage, anomalies) => {
+              tokenUsage = usage;
+              for (const code of anomalies ?? []) safeLog('warn', 'claude.adapter.invalid_accounting', { runId, step, code });
+            },
             prompt,
             ...(cwd !== undefined ? { cwd } : {}),
             env: launchEnv,
@@ -752,6 +770,7 @@ export function createClaudeAgentAdapter(
       const session: AgentProviderSession = {
         events: mapEvents(),
         metadata,
+        getTokenUsage: () => tokenUsage,
         async close() { skillMaterialization.cleanup(); }
       };
       return session;

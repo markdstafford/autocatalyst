@@ -103,10 +103,13 @@ Reads are ordinary REST:
 - A run exposes the ordered phases of its workflow and the expected path of steps through it, so a
   client draws progress from the run and never from a fixed list. This holds for a workflow that adds,
   drops, or reorders phases (`run`, `workflow`).
-- `GET /runs/{id}/steps` returns the run's step occurrences (the timeline and its cost rolled up to
-  `(step, role)`). Cost rides on the resource it belongs to: a run, topic, conversation, or project
-  exposes its cost as integer minor units (nano-dollars, not a float), computed live from the session
-  rows; a cached `aggregateCost` is a deferred optimization (see `domain-model`, `cost`).
+- `GET /runs/{id}/steps` returns the run's step occurrences.
+- `GET /v1/runs/{id}/sessions` returns ordered sessions, normalized usage where present, and
+  API list-price amounts, selected revision IDs, typed gaps, and logical step and run totals
+  ([ADR-034](../adrs/adr-034-cache-aware-session-pricing.md)). Amounts are integer nano-dollars. With no sessions, the run subtotal
+  is null and the step list is empty. No other resource read gains pricing totals.
+- Configuration-record POST and GET support `model_rate_table` revisions, including retractions.
+  Publication against a stale or incorrect head conflicts, as do mutations of rate revisions.
 
 A run's live progress is a **stream**:
 

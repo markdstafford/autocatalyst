@@ -82,10 +82,15 @@ describe('domain schema migrations', () => {
       // Simulate a database already migrated through 0009 (sessions without `sequence`).
       // Drizzle applies a migration when lastAppliedTimestamp < migration.folderMillis; the
       // 0010 migration uses folderMillis=1792500000000, so marking everything before it as
-      // applied causes only 0010 to run.
+      // applied causes later migrations (0010 onward) to run.
       const PRE_0010_TIMESTAMP = 1792499999999;
       const rawDb = new Database(databasePath);
       rawDb.exec(`
+        CREATE TABLE configuration_records (
+          id text PRIMARY KEY NOT NULL, tenant text NOT NULL, kind text NOT NULL,
+          provider_kind text, adapter_id text, settings_json text NOT NULL,
+          created_at text NOT NULL, updated_at text NOT NULL
+        );
         CREATE TABLE runs (
           id text PRIMARY KEY NOT NULL, topic_id text NOT NULL, owner_json text NOT NULL,
           tenant text NOT NULL, work_kind text NOT NULL, current_step text NOT NULL,
@@ -109,7 +114,7 @@ describe('domain schema migrations', () => {
       const model = JSON.stringify({ provider: 'openai', model: 'gpt-4.1' });
       const inference = JSON.stringify({});
       const tokens = JSON.stringify({ input: 1, output: 2, cacheRead: 0, cacheWrite: 0 });
-      const costJson = JSON.stringify({ model: { provider: 'openai', model: 'gpt-4.1' }, usd: null, tokens: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 } });
+      const costJson = JSON.stringify({ model: { provider: 'openai', model: 'gpt-4.1' }, usd: 125, tokens: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 } });
       rawDb.prepare(`INSERT INTO runs (id, topic_id, owner_json, tenant, work_kind, current_step, terminal, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run('run_seq', 'topic_seq', '{}', 'tenant1', 'feature', 'spec.author', 0, now, now);
       const insertSession = rawDb.prepare(`INSERT INTO sessions (id, run_id, phase, step, role, round, model_json, inference_settings_json, started_at, ended_at, duration_ms, tokens_json, usage_available, assistant_turn_count, tool_call_count, outcome, cost_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
@@ -127,6 +132,8 @@ describe('domain schema migrations', () => {
           { id: 'sess_a', sequence: 1 },
           { id: 'sess_b', sequence: 2 }
         ]);
+        expect(internal.client.prepare('SELECT tokens_json, cost_json, usage_json FROM sessions WHERE id = ?').get('sess_a'))
+          .toEqual({ tokens_json: tokens, cost_json: costJson, usage_json: null });
       } finally {
         database.close();
       }

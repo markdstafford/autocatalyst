@@ -1139,7 +1139,8 @@ function makeResponsesSSEBody(
   respId: string,
   output: unknown[]
 ): ReadableStream<Uint8Array> {
-  const usageJson = JSON.stringify({ input_tokens: 12, output_tokens: 6, total_tokens: 18, input_tokens_details: {}, output_tokens_details: {} });
+  const usageJson = JSON.stringify({ input_tokens: 12, output_tokens: 6, total_tokens: 18,
+    input_tokens_details: { cached_tokens: 8 }, output_tokens_details: { reasoning_tokens: 2 } });
   const responseJson = JSON.stringify({
     id: respId,
     object: 'realtime.response',
@@ -1251,6 +1252,10 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
         });
         await expect(session.metadata).rejects.toMatchObject({ safeDetails: { sdkErrorName: 'MaxTurnsExceededError' } });
         expect(call).toBe(OPENAI_AGENT_MAX_TURNS);
+        expect(session.getTokenUsage?.()).toMatchObject({
+          available: true,
+          usage: { coverage: 'partial', totals: { freshInput: call * 4, cacheRead: call * 8, output: call * 6 } }
+        });
         expect(errors).toContainEqual(expect.objectContaining({ sdkErrorName: 'MaxTurnsExceededError', maxTurns: OPENAI_AGENT_MAX_TURNS }));
         expect(JSON.stringify(errors)).not.toContain(FAKE_SECRET);
         expect(JSON.stringify(errors)).not.toContain('Review the README.');
@@ -1286,7 +1291,14 @@ describe('createOpenAIAgentAdapter — real @openai/agents integration (fetch-mo
       const metadata = await session.metadata;
       expect(metadata.outcome).toBe('succeeded');
       expect(metadata.launchMechanism).toBe('fetch_transport');
-      expect(metadata.tokenUsage.available).toBe(true);
+      expect(metadata.tokenUsage).toMatchObject({
+        available: true,
+        tokens: { input: call * 12, cacheRead: call * 8, cacheWrite: 0, output: call * 6 },
+        usage: { coverage: 'complete', totals: {
+          freshInput: call * 4, cacheRead: call * 8, cacheWrite: 'not_applicable', output: call * 6,
+          reasoningOutput: call * 2
+        }, groups: [{ model: { provider: 'openai', model: 'gpt-4.1' }, requestInputTokens: 12 }] }
+      });
 
       await session.close?.();
     } finally {

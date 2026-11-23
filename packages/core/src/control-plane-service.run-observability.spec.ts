@@ -224,7 +224,10 @@ describe('DefaultControlPlaneService.listRunSessions', () => {
   it('returns sessions for a valid tenant-owned run', async () => {
     const sessions = makeFakeSessionRepo();
     const service = makeService({ sessions });
-    expect(await service.listRunSessions({ principal, tenant: 'tenant_1', runId: 'run_1' })).toEqual({ sessions: [session] });
+    expect(await service.listRunSessions({ principal, tenant: 'tenant_1', runId: 'run_1' })).toMatchObject({
+      sessions: [{ ...session, cost: { ...session.cost, usd: null, complete: false, basis: 'api_list_price' } }],
+      costTotals: { run: { sessionCount: 1, knownSubtotalUsd: null, unpricedSessionCount: 1 } }
+    });
     expect(sessions.listByRun).toHaveBeenCalledWith('run_1');
   });
 
@@ -233,7 +236,9 @@ describe('DefaultControlPlaneService.listRunSessions', () => {
       listByRun: vi.fn().mockResolvedValue([])
     });
     const service = makeService({ sessions });
-    expect(await service.listRunSessions({ principal, tenant: 'tenant_1', runId: 'run_1' })).toEqual({ sessions: [] });
+    expect(await service.listRunSessions({ principal, tenant: 'tenant_1', runId: 'run_1' })).toMatchObject({ sessions: [], costTotals: { run: {
+      knownSubtotalUsd: null, complete: false, sessionCount: 0, pricedSessionCount: 0, unpricedSessionCount: 0, gaps: []
+    }, steps: [] } });
   });
 
   it('throws not_found for a cross-tenant run', async () => {

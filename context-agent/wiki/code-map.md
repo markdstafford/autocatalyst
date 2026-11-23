@@ -3,10 +3,22 @@
 - Runtime Micromanager source, pin, synchronization, fidelity checks and E2E handoff: [micromanager-runtime.md](micromanager-runtime.md).
 - Web client design system (tokens, shell dimensions, alignment rules, component rules): [design-system.md](design-system.md).
 
-Last updated: 2026-11-22 (start a run from an issue, #143).
+Last updated: 2026-11-23 (cache-aware session pricing, #194).
 
 > How agents navigate the codebase. Keep this current: whenever you add, move, or significantly
 > change a module, update the relevant section in the same change.
+
+## Cache-aware session pricing (#194)
+
+See [session pricing](session-pricing.md) for capture and debugging. Contracts live in
+session-usage.ts, model-rate-table.ts, and session-pricing.ts in api-contract. Provider trackers
+live in codex-usage.ts and claude-usage.ts; shared normalization is in execution/usage-normalization.ts.
+OpenAI Agents consumes native terminal Responses events; direct adapters normalize response usage
+and use the dispatch logger for stable accounting anomaly codes without native payloads.
+The unit of work passes evidence to execution-session-recorder.ts; persistence migration 0011 and
+DrizzleSessionRepository.readPricingSnapshot preserve evidence and select relevant rate history.
+Core session-pricing.ts computes session prices and logical totals. In the web app, use-run-detail.ts
+passes the run total; run-summary-totals.ts formats exact currency and displays disjoint token counts.
 
 ## Recent agent notes
 

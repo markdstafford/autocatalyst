@@ -28,7 +28,8 @@ import type {
   RunStatus,
   RunStep,
   RunWaitingOn,
-  Session,
+  StoredSession,
+  ModelRateRecord,
   TestResult,
   Topic
 } from '@autocatalyst/api-contract';
@@ -311,9 +312,13 @@ export interface RunStepRepository {
 }
 
 export interface SessionRepository {
-  create(input: CreateSessionInput): Promise<Session>;
-  findById(id: string): Promise<Session | null>;
-  listByRun(runId: string): Promise<readonly Session[]>;
+  create(input: CreateSessionInput): Promise<StoredSession>;
+  findById(id: string): Promise<StoredSession | null>;
+  listByRun(runId: string): Promise<readonly StoredSession[]>;
+  readPricingSnapshot?(tenant: string, runId: string): Promise<{
+    sessions: readonly StoredSession[];
+    history: readonly ModelRateRecord[];
+  }>;
 }
 
 export interface TestResultRepository {

@@ -10,3 +10,5 @@ export type {
   ClaudeSessionLaunchOptions,
   ClaudeNativeEvent
 } from './claude-agent-adapter.js';
+
+export type { ClaudeSdkQuery } from './claude-agent-adapter.js';

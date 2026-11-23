@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { modelRatePublicationSchema, modelRateSettingsSchema } from './model-rate-table.js';
 import { secretHandleSchema } from './secret.js';
 import { inferenceSettingsSchema, modelIdentitySchema, sessionRoleSchema } from './domain-value-objects.js';
 
@@ -10,7 +11,7 @@ export const configurationRecordIdParamsSchema = z.object({
   id: z.string().min(1)
 }).strict();
 
-export const configurationRecordKindSchema = z.enum(['provider_profile', 'model_routing_table']);
+export const configurationRecordKindSchema = z.enum(['provider_profile', 'model_routing_table', 'model_rate_table']);
 
 const httpHeaderNameSchema = z.string().regex(/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u);
 
@@ -144,7 +145,8 @@ export const modelRoutingErrorCodeSchema = z.enum([
 
 export const configurationRecordSettingsSchema = z.union([
   providerProfileSettingsSchema,
-  modelRoutingTableSettingsSchema
+  modelRoutingTableSettingsSchema,
+  modelRateSettingsSchema
 ]);
 
 // --- Update settings schemas ---
@@ -205,7 +207,8 @@ const createModelRoutingTableRequestSchema = z.object({
 
 export const createConfigurationRecordRequestSchema = z.discriminatedUnion('kind', [
   createProviderProfileRequestSchema,
-  createModelRoutingTableRequestSchema
+  createModelRoutingTableRequestSchema,
+  z.object({ tenant: z.string().min(1), kind: z.literal('model_rate_table'), settings: modelRatePublicationSchema }).strict()
 ]);
 
 // --- Update request schemas ---
@@ -259,7 +262,11 @@ const modelRoutingTableResponseSchema = z.object({
 
 export const configurationRecordResponseSchema = z.discriminatedUnion('kind', [
   providerProfileResponseSchema,
-  modelRoutingTableResponseSchema
+  modelRoutingTableResponseSchema,
+  z.object({
+    id: z.string().min(1), tenant: z.string().min(1), kind: z.literal('model_rate_table'),
+    settings: modelRateSettingsSchema, createdAt: z.string().datetime(), updatedAt: z.string().datetime()
+  }).strict()
 ]);
 
 export const configurationRecordListResponseSchema = z.object({
@@ -289,3 +296,5 @@ export type UpdateModelRoutingTableSettings = z.infer<typeof updateModelRoutingT
 export type ModelRoutingErrorCode = z.infer<typeof modelRoutingErrorCodeSchema>;
 // Re-export InferenceSettings from domain-value-objects for convenience
 export type { InferenceSettings } from './domain-value-objects.js';
+
+export type ModelRateRecord = Extract<ConfigurationRecord, { kind: 'model_rate_table' }>;

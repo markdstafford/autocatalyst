@@ -1,4 +1,4 @@
-import type { InferenceSettings, JsonValue, ModelIdentity, RunnerEndpointSettings, TokenBreakdown } from '@autocatalyst/api-contract';
+import type { InferenceSettings, JsonValue, ModelIdentity, RunnerEndpointSettings, SessionUsage, TokenBreakdown } from '@autocatalyst/api-contract';
 import type { RunnerEvent } from '@autocatalyst/api-contract';
 
 import type { RunnerRunInput } from './runner.js';
@@ -91,6 +91,7 @@ export interface AgentProviderSessionInput {
 export interface AgentTokenUsage {
   readonly available: boolean;
   readonly tokens?: TokenBreakdown;
+  readonly usage?: SessionUsage;
 }
 
 export interface AgentProviderSessionMetadata {
@@ -104,6 +105,8 @@ export interface AgentProviderSessionMetadata {
 export interface AgentProviderSession {
   readonly events: AsyncIterable<RunnerEvent>;
   readonly metadata: Promise<AgentProviderSessionMetadata>;
+  /** Attempt-local evidence, also available when the event stream or metadata rejects. */
+  getTokenUsage?(): AgentTokenUsage | undefined;
   close?(): Promise<void>;
 }
 
