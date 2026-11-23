@@ -9,5 +9,6 @@ superseded_by: null
 - API-secret requirements remain the default; Codex validates the operator's enterprise sign-in without resolving an API secret.
 - Native-event mocks alone missed an invented launch message and unsupported login flag. Executable fixtures now exercise initialize/account/thread/turn and failure notifications.
 - Runtime skills use actual catalog SKILL.md input items, not unmounted virtual paths; unrelated plugins/skills and host MCP tools are excluded from the model session.
+- For reviewed spec sessions, the Codex adapter translates the workflow’s complete Read/Glob/Grep policy to its native shell under the read-only, network-disabled sandbox. Other policies without shell remain unsupported by the native launcher.
 **Constraints:** Pin CLI 0.160.1; enforce explicit sandbox policies and schema validation before result writes; bound subprocess lifetime and never retry a model session. Actual OS permission verification starts no model turn. Human-owned transport addendum remains proposed for review.
 **Rejected:** Copying cached credentials or API-key fallback — wrong identity/billing boundary; accepting a final message as successful completion without turn/completed — hides failed turns; fake-session tests as sole proof — do not exercise the production protocol.
