@@ -34,8 +34,9 @@ describe('Codex pinned accounting', () => {
     update(tracker, 'a', [500, 300, 100, 2], undefined, 'unrelated');
     complete(tracker, 'a');
     expect(tracker.evidence().usage).toMatchObject({ coverage: 'complete', groups: [
-      { requestInputTokens: null, inputTotalCeilingTokens: 160, requestSizeHint: { method: 'nearest_sample', inputTokens: 120 } }
+      { requestInputTokens: null, inputTotalCeilingTokens: 160 }
     ] });
+    expect(tracker.evidence().usage?.groups[0]?.requestSizeHint).toBeUndefined();
     tracker.ownTurn('b');
     update(tracker, 'b', [200, 80, 20, 6], [40, 20, 10, 2]);
     update(tracker, 'b', [10, 5, 21, 7], [10, 5, 1, 1]);

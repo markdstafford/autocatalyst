@@ -13,6 +13,7 @@ Last updated: 2026-11-23 (cache-aware session pricing, #194).
 See [session pricing](session-pricing.md) for capture and debugging. Contracts live in
 session-usage.ts, model-rate-table.ts, and session-pricing.ts in api-contract. Provider trackers
 live in codex-usage.ts and claude-usage.ts; shared normalization is in execution/usage-normalization.ts.
+Codex lends size hints to unsized groups only from separate, matched single-request deltas.
 OpenAI Agents consumes native terminal Responses events; direct adapters normalize response usage
 and use the dispatch logger for stable accounting anomaly codes without native payloads.
 The unit of work passes evidence to execution-session-recorder.ts; persistence migration 0011 and

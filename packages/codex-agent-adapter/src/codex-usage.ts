@@ -115,8 +115,7 @@ export class CodexUsage {
     const sampleValid = !unexpectedWrites && sample !== null && last[1] != null && last[1] <= sample &&
       last[2] != null && (last[3] == null || last[3] <= last[2]);
     const positive = delta.slice(0, 3).some((n) => n !== null && n > 0);
-    const exact = sampleValid && positive && delta.slice(0, 3).every((n, i) => n !== null && n === last[i]);
-    if (sampleValid && positive) this.#samples.push({ index, size: sample });
+    const matchesLast = sampleValid && positive && delta.slice(0, 3).every((n, i) => n !== null && n === last[i]);
     if (input !== null && delta[1] != null && delta[1] > input) this.anomalies.add('invalid_cache_split');
     const tokens = openAIUsageTokens(input, delta[1] ?? null, delta[2] ?? null, delta[3] ?? null, unexpectedWrites);
     const seen = [...this.#turns.values()];
@@ -128,7 +127,11 @@ export class CodexUsage {
     if (turns.length > 1) this.#incomplete = true;
     turn.updated = true;
     this.#lastTurn = turn;
-    this.#observations.push({ group: usageGroup(this.#model, tokens, exact && turns.length === 1, input), turns, index });
+    const exact = matchesLast && turns.length === 1;
+    // An unmatched last has no request ID to prove a separate owned sample. Only a verified
+    // single-request delta can lend its size to a different, unsized observation.
+    if (exact) this.#samples.push({ index, size: sample });
+    this.#observations.push({ group: usageGroup(this.#model, tokens, exact, input), turns, index });
   }
 
   evidence(): AgentTokenUsage {

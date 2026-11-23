@@ -382,8 +382,16 @@ createInterface({input:process.stdin}).on('line', (line) => {
     sandbox:{type:params.sandbox==='read-only'?'readOnly':'workspaceWrite'}});
   else if (method === 'turn/start') {
     const input = {threadId:params.threadId,turnId:'turn'};
-    const counters = {inputTokens:100,cachedInputTokens:60,outputTokens:10,reasoningOutputTokens:4};
-    send({method:'thread/tokenUsage/updated',params:{...input,tokenUsage:{total:counters,last:counters}}});
+    const sizeEvidence = process.env.FIXTURE_SIZE_EVIDENCE;
+    const total = {inputTokens:sizeEvidence?160:100,cachedInputTokens:60,outputTokens:10,reasoningOutputTokens:4};
+    const last = !sizeEvidence ? total : sizeEvidence === 'none' ? undefined :
+      {inputTokens:120,cachedInputTokens:20,outputTokens:2,reasoningOutputTokens:1};
+    const usage = (total,last) => send({method:'thread/tokenUsage/updated',params:{...input,tokenUsage:{total,last}}});
+    usage(total,last);
+    if (sizeEvidence === 'separate') {
+      usage({inputTokens:390,cachedInputTokens:90,outputTokens:14,reasoningOutputTokens:5},
+        {inputTokens:230,cachedInputTokens:30,outputTokens:4,reasoningOutputTokens:1});
+    }
     if (process.env.FIXTURE_TIMEOUT) { reply({turn:{id:'turn'}}); return; }
     send({method:'item/completed',params:{...input,item:{type:'agentMessage',text:'fixture'}}});
     send({method:'turn/completed',params:{...input,turn:{id:'turn',status:process.env.FIXTURE_FAILED?'failed':'completed'}}});
@@ -602,6 +610,58 @@ describe('run observability integration: completed run readable', () => {
         ],
         costTotals: { run: { knownSubtotalUsd: 944000, pricedSessionCount: 3, complete: false } }
       });
+    } finally {
+      await rm(dir, { force: true, recursive: true });
+    }
+  });
+
+  it.each([
+    { evidence: 'unmatched', method: 'lowest_feasible', band: 0, usd: 468000 },
+    { evidence: 'none', method: 'lowest_feasible', band: 0, usd: 468000 },
+    { evidence: 'separate', method: 'nearest_sample', band: 101, usd: 2637000 }
+  ])('prices the 160-token Codex wire group with $evidence size evidence', async ({ evidence, method, band, usd }) => {
+    harness = await setupObservabilityHarness(false);
+    const { app, authHeaders, run, sessions } = harness;
+    const dir = await mkdtemp(join(tmpdir(), 'cost-codex-band-'));
+    try {
+      const binary = join(dir, 'codex.cjs');
+      await writeFile(binary, '#!' + process.execPath + '\n' + codexWire, { mode: 0o700 });
+      const adapter = createCodexAgentAdapter({ codexBinary: binary });
+      const attempt = await runNativeAttempt({
+        run, sessions, scratchRoot: dir, adapter, env: { FIXTURE_SIZE_EVIDENCE: evidence }
+      });
+      expect(attempt.directive).toBe('advance');
+
+      const rates = { freshInput: 3000, cacheRead: 300, output: 15000, cacheWrite: 'not_applicable' };
+      const published = await app.inject({ method: 'POST', url: '/v1/configuration-records', headers: authHeaders, payload: {
+        tenant: owner.tenantId, kind: 'model_rate_table', settings: {
+          provider: 'openai', model: 'served-test-model', effectiveAt: '2026-11-23T10:00:00.000Z', action: 'set',
+          bands: [
+            { minRequestInputTokens: 0, rates },
+            { minRequestInputTokens: 101, rates: { ...rates, freshInput: 6000 } },
+            ...(evidence === 'separate' ? [{ minRequestInputTokens: 201, rates: { ...rates, freshInput: 9000 } }] : [])
+          ]
+        }
+      } });
+      expect(published.statusCode).toBe(201);
+      const response = await app.inject({ method: 'GET', url: '/v1/runs/' + run.id + '/sessions', headers: authHeaders });
+      expect(response.statusCode).toBe(200);
+      const { sessions: recorded, costTotals } = response.json();
+      expect(recorded).toMatchObject([{
+        usage: { coverage: 'complete', groups: [
+          { requestInputTokens: null, inputTotalCeilingTokens: 160,
+            tokens: { freshInput: 100, cacheRead: 60, cacheWrite: 'not_applicable', output: 10 } },
+          ...(evidence === 'separate' ? [{ requestInputTokens: 230, tokens: { freshInput: 200, cacheRead: 30, output: 4 } }] : [])
+        ] },
+        cost: { usd, complete: false, rateVersionIds: [published.json().id], gaps: [{
+          code: 'estimated_request_size', tokenCount: '100', tokenClass: 'freshInput', groupIndex: 0,
+          method, bandMinRequestInputTokens: band
+        }] }
+      }]);
+      expect(recorded[0].usage.groups[0].requestSizeHint).toEqual(
+        evidence === 'separate' ? { method: 'nearest_sample', inputTokens: 230 } : undefined
+      );
+      expect(costTotals.run).toMatchObject({ knownSubtotalUsd: usd, complete: false, pricedSessionCount: 1 });
     } finally {
       await rm(dir, { force: true, recursive: true });
     }

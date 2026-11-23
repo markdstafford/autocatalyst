@@ -21,6 +21,11 @@
   tenant history in one transaction; the core pricing module uses bigint and adds separate
   amount-only overflow gaps. Browser Summary formats its API subtotal and counts normalized
   groups independently of price completeness.
+- Codex's unmatched `last` does not qualify as a request-size hint. In worked fixture 4,
+  using size 120 would select band 101, contrary to the example's band 0. Without separate
+  evidence, capture leaves the hint absent and pricing returns 468000 with `lowest_feasible`.
+  Fixture 5's separate matched request still yields a clamped `nearest_sample` estimate.
+  Both cases run from the pinned wire fixture through SQLite and the HTTP read.
 - Focused tests: session-pricing.spec.ts (contract and core), codex-app-server.spec.ts and
   codex-usage.spec.ts, claude-usage.spec.ts, configuration-record-repository.spec.ts,
   pr-lifecycle.run-observability.integration.spec.ts (Fastify inject + SDK), run-detail-summary.spec.tsx.
