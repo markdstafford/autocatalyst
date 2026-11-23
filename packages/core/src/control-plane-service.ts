@@ -1,3 +1,4 @@
+import { priceRunSessions } from './session-pricing.js';
 import { FeedbackConcurrentModificationError } from './domain-repositories.js';
 import { hasSpecConvergenceState, publicSpecCheckpoint, recoverableSelectedSpecCheckpoint } from './spec-convergence.js';
 import type {
@@ -24,7 +25,6 @@ import type {
   RunSessionListResponse,
   RunSpecResponse,
   RunStep,
-  Session,
   SpecAuthorFrontmatter,
   UpdateRunFeedbackRequest
 } from '@autocatalyst/api-contract';
@@ -1211,13 +1211,14 @@ export class DefaultControlPlaneService implements ControlPlaneService {
   async listRunSessions(input: ServiceListRunSessionsInput): Promise<ServiceListRunSessionsResult> {
     await requireTenantRun({ runs: this.#runs, runId: input.runId, tenant: input.tenant });
 
-    let sessions: readonly Session[];
     try {
-      sessions = await this.#sessions.listByRun(input.runId);
+      const snapshot = this.#sessions.readPricingSnapshot === undefined
+        ? { sessions: await this.#sessions.listByRun(input.runId), history: [] }
+        : await this.#sessions.readPricingSnapshot(input.tenant, input.runId);
+      return runSessionListResponseSchema.parse(priceRunSessions(snapshot.sessions, snapshot.history));
     } catch (error) {
       throw persistenceFailed('Failed to list run sessions.', error);
     }
-    return runSessionListResponseSchema.parse({ sessions });
   }
 
   async replyToRun(input: ServiceReplyToRunInput): Promise<RunReplyResponse> {

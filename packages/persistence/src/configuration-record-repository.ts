@@ -1,23 +1,24 @@
 import { randomUUID } from 'node:crypto';
 
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 
 import type {
   ConfigurationRecord,
   ConfigurationRecordSettings,
   CreateConfigurationRecordRequest,
   ModelRoutingTableSettings,
+  ModelRateRecord,
   UpdateConfigurationRecordRequest,
   UpdateModelRoutingTableSettings
 } from '@autocatalyst/api-contract';
-import { configurationRecordResponseSchema } from '@autocatalyst/api-contract';
+import { configurationRecordResponseSchema, createConfigurationRecordRequestSchema, modelRateSettingsSchema } from '@autocatalyst/api-contract';
 
-import type { ConfigurationRecordRepository } from '@autocatalyst/core';
+import { ModelRateConflictError, type ConfigurationRecordRepository } from '@autocatalyst/core';
 
 import { configurationRecords } from './schema.js';
 import { asInternalSqliteDatabase, type SqliteDatabase } from './sqlite.js';
 
-function rowToRecord(row: {
+export function rowToRecord(row: {
   id: string;
   tenant: string;
   kind: string;
@@ -105,6 +106,8 @@ export class DrizzleConfigurationRecordRepository implements ConfigurationRecord
   }
 
   async create(input: CreateConfigurationRecordRequest): Promise<ConfigurationRecord> {
+    input = createConfigurationRecordRequestSchema.parse(input);
+    if (input.kind === 'model_rate_table') return this.#publishRate(input);
     const now = new Date().toISOString();
     const id = `cfg_${randomUUID()}`;
 
@@ -112,14 +115,12 @@ export class DrizzleConfigurationRecordRepository implements ConfigurationRecord
       await this.assertSingleActiveRoutingTable(input.tenant);
     }
 
-    const isProviderProfile = input.kind === 'provider_profile';
-
     this.#database.drizzle.insert(configurationRecords).values({
       id,
       tenant: input.tenant,
       kind: input.kind,
-      providerKind: isProviderProfile ? input.providerKind : null,
-      adapterId: isProviderProfile ? input.adapterId : null,
+      providerKind: input.kind === 'provider_profile' ? input.providerKind : null,
+      adapterId: input.kind === 'provider_profile' ? input.adapterId : null,
       settingsJson: JSON.stringify(input.settings),
       createdAt: now,
       updatedAt: now
@@ -129,12 +130,43 @@ export class DrizzleConfigurationRecordRepository implements ConfigurationRecord
       id,
       tenant: input.tenant,
       kind: input.kind,
-      providerKind: isProviderProfile ? input.providerKind : null,
-      adapterId: isProviderProfile ? input.adapterId : null,
+      providerKind: input.kind === 'provider_profile' ? input.providerKind : null,
+      adapterId: input.kind === 'provider_profile' ? input.adapterId : null,
       settingsJson: JSON.stringify(input.settings),
       createdAt: now,
       updatedAt: now
     });
+  }
+
+  #publishRate(input: Extract<CreateConfigurationRecordRequest, { kind: 'model_rate_table' }>): ModelRateRecord {
+    const candidate = input.settings;
+    return this.#database.drizzle.transaction((tx) => {
+      const row = tx.select().from(configurationRecords).where(and(
+        eq(configurationRecords.tenant, input.tenant),
+        sql`${configurationRecords.kind} = 'model_rate_table'`,
+        sql`json_extract(${configurationRecords.settingsJson}, '$.provider') = ${candidate.provider}`,
+        sql`json_extract(${configurationRecords.settingsJson}, '$.model') = ${candidate.model}`,
+        sql`json_extract(${configurationRecords.settingsJson}, '$.effectiveAt') = ${candidate.effectiveAt}`
+      )).orderBy(sql`json_extract(${configurationRecords.settingsJson}, '$.revision') DESC`).limit(1).get();
+      const head = row === undefined ? undefined : rowToRecord(row) as ModelRateRecord;
+      if (candidate.correctsId !== head?.id ||
+          (candidate.action === 'retract' && head?.settings.action !== 'set')) throw new ModelRateConflictError();
+      const settings = modelRateSettingsSchema.parse({
+        ...candidate, revision: (head?.settings.revision ?? 0) + 1,
+        ...(candidate.action === 'set' ? { basis: 'api_list_price' } : {})
+      });
+      if (head?.settings.action === 'set' && settings.action === 'set') {
+        const schedule = (set: typeof settings) => JSON.stringify([set.basis, set.contextLimitTokens, set.bands]);
+        if (schedule(settings) === schedule(head.settings)) throw new ModelRateConflictError();
+      }
+      const now = new Date().toISOString();
+      const record = {
+        id: `cfg_${randomUUID()}`, tenant: input.tenant, kind: input.kind, providerKind: null, adapterId: null,
+        settingsJson: JSON.stringify(settings), createdAt: now, updatedAt: now
+      };
+      tx.insert(configurationRecords).values(record).run();
+      return rowToRecord(record) as ModelRateRecord;
+    }, { behavior: 'immediate' });
   }
 
   async list(tenant: string): Promise<readonly ConfigurationRecord[]> {
@@ -164,6 +196,7 @@ export class DrizzleConfigurationRecordRepository implements ConfigurationRecord
       return null;
     }
 
+    if (existing.kind === 'model_rate_table') throw new ModelRateConflictError();
     if (input.kind !== existing.kind) {
       throw new Error(`Cannot update configuration record kind ${existing.kind} with body kind ${input.kind}`);
     }
@@ -275,6 +308,7 @@ export class DrizzleConfigurationRecordRepository implements ConfigurationRecord
       return false;
     }
 
+    if (existing.kind === 'model_rate_table') throw new ModelRateConflictError();
     this.#database.drizzle
       .delete(configurationRecords)
       .where(and(eq(configurationRecords.tenant, tenant), eq(configurationRecords.id, id)))

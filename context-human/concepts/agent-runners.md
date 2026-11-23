@@ -100,15 +100,11 @@ stream; it does not decide what a human sees.
 
 ## Telemetry
 
-Every runner emits the same telemetry as it goes, rather than a post-hoc tally: session start and
-completion, assistant-turn and tool counts, duration, token usage, and outcome, with redacted
-diagnostics captured on failure. Each record is tagged with its `(run, phase, step, role)` context
-and the resolved model and inference settings. Direct calls thread the same telemetry context as
-agent sessions, so a bounded call's tokens correlate back to its run. This metadata is the raw
-material `cost` prices into each session's embedded `Cost` (ADR-015), which `cost` and `run` then roll
-up to `(step, role)` and above; the runner emits the metadata and owns no cost record itself.
-Uniformity across all runners holds because the work lives in the shared connection layer and one
-orchestrator per mode.
+Every runner emits the same session telemetry: counts, duration, outcome, and redacted diagnostics.
+Adapters interpret native counters, deduplicate work inside one attempt, and separate observed
+usage from result validation. Failed, interrupted, or parse-failed attempts retain owned
+observations and explicit gaps. The runner carries this evidence to the recorder; it does not
+look up rates or compute cost ([ADR-034](../adrs/adr-034-cache-aware-session-pricing.md)).
 
 ## Tool policy and skill materialization
 

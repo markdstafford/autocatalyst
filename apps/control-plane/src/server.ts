@@ -1036,7 +1036,7 @@ export async function createControlPlaneServer(
     });
     const anthropicDirectKey = buildProviderAdapterKey(anthropicProviderKind, anthropicDirectAdapterId);
     if (!merged.has(anthropicDirectKey)) {
-      merged.set(anthropicDirectKey, () => createAnthropicDirectAdapter());
+      merged.set(anthropicDirectKey, () => createAnthropicDirectAdapter({ logger: agentAdapterLogger }));
     }
     realDispatchRegistryEntries.push({
       providerKind: anthropicProviderKind,
@@ -1046,7 +1046,7 @@ export async function createControlPlaneServer(
     });
     const openaiDirectKey = buildProviderAdapterKey(openaiProviderKind, openaiDirectAdapterId);
     if (!merged.has(openaiDirectKey)) {
-      merged.set(openaiDirectKey, () => createOpenAIDirectAdapter());
+      merged.set(openaiDirectKey, () => createOpenAIDirectAdapter({ logger: agentAdapterLogger }));
     }
     realDispatchRegistryEntries.push({
       providerKind: openaiProviderKind,

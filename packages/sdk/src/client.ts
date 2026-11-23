@@ -160,6 +160,8 @@ export interface ControlPlaneClient {
   listRunSteps(id: string): Promise<RunStepListResponse>;
   refreshRunPullRequest(id: string): Promise<RunPullRequestRefreshResponse>;
   getRunPullRequest(id: string): Promise<RunPullRequestResponse>;
+  /** Cost is in integer nano-dollars at API list price. Use usage, not compatibility
+   * tokens or cost.tokens, for disjoint counts: compatibility zeros may be placeholders. */
   listRunSessions(id: string): Promise<RunSessionListResponse>;
   subscribeRunEvents(id: string, options?: RunEventsStreamOptions): Promise<RunEventsResponse>;
   getRunSpec(id: string): Promise<RunSpecResponse>;

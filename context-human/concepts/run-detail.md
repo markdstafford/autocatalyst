@@ -35,6 +35,15 @@ bar shows the run's phases, with the current phase and step marked and gates sho
 The phases come from the run's workflow, so a workflow that adds, drops, or reorders phases needs no change
 to the client. The bar labels each phase from the workflow's data and compacts itself when there are many.
 
+Summary's Cost row uses the run subtotal from the API ([ADR-034](../adrs/adr-034-cache-aware-session-pricing.md)). It says API list price,
+not a subscription charge, and adds “so far” while the run is active. With no recorded sessions
+it shows a dash, not a priced zero. It marks unknown or partial amounts as incomplete and labels
+estimated bands. Focus or hover to see actual reasons, affected sessions and known tokens.
+
+Tokens uses disjoint fresh input, cache reads, cache writes, and output. The tooltip distinguishes
+measured counts, unknown counts, and classes that do not apply. Legacy counts are shown separately
+because they can overlap or contain placeholders. Refresh updates both rows.
+
 ## Activity
 
 Activity is the record of what happened. It lists the run's steps, with each step's sessions and live events

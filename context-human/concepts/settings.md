@@ -42,6 +42,13 @@ rules. The records are:
 - **Policy knobs** — the batch cap on issue filing (`intake`), the workspace retention windows
   (ADR-021), and the request timeout and retry posture (`agent-runners`, ADR-023).
 
+### Publishing model rates
+
+Use the configuration-record API or SDK to publish `model_rate_table` records. Rates are
+tenant-scoped and independent of profiles, with no defaults or UI editor. Set, correct, retract,
+and restore slots by appending revisions; history remains readable and PATCH or DELETE cannot
+change a stored rate revision ([ADR-034](../adrs/adr-034-cache-aware-session-pricing.md)). See [cost](cost.md) for rate units and selection.
+
 ## Secret references, not secrets
 
 A setting that needs a secret carries a **reference** to a credential; the secret itself lives in the

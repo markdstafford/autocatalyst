@@ -23,6 +23,8 @@ import OpenAI from 'openai';
 import { z } from 'zod/v4';
 
 import type {
+  AgentTokenUsage,
+  NativeUsageAnomaly,
   AgentProviderAdapter,
   AgentProviderSession,
   AgentProviderSessionInput,
@@ -34,6 +36,7 @@ import type {
   StructuredAgentResultCapture
 } from '@autocatalyst/execution';
 import {
+  compactUsageGroups, normalizeOpenAIResponse, normalizeSessionUsage, usageCount, usageRecord,
   assertSerializableStructuredResult,
   buildSafeAdapterFailureLogDetail,
   ClassifiedProviderFailureError,
@@ -110,6 +113,7 @@ export type OpenAISandboxClientFactory = (
  * RunItem-shaped events without driving the model.
  */
 export interface OpenAIRunSessionInput {
+  readonly reportInvalidUsage?: (code: NativeUsageAnomaly) => void;
   readonly prompt: string;
   readonly model: string;
   readonly instructions: string;
@@ -132,6 +136,7 @@ export interface OpenAIRunSessionInput {
 
 export interface OpenAIRunOutcome {
   readonly items: AsyncIterable<RunItem> | Iterable<RunItem>;
+  readonly getTokenUsage?: () => AgentTokenUsage;
   /**
    * The terminal result of the run. `directive` maps to the canonical terminal
    * directive; `output` (if present) is written to the step-result file.
@@ -990,8 +995,8 @@ function isNonEmptyString(value: unknown): value is string {
  */
 interface StreamRunResultView {
   readonly finalOutput: unknown;
+  readonly cancelled?: boolean;
   readonly lastResponseId: string | undefined;
-  readonly state: { readonly _context: { readonly usage?: { readonly inputTokens?: number; readonly outputTokens?: number } } };
 }
 
 /**
@@ -1001,6 +1006,7 @@ interface StreamRunResultView {
 type StreamedRunnerRunView = StreamRunResultView & AsyncIterable<{
   readonly type: string;
   readonly item?: RunItem;
+  readonly data?: unknown;
 }>;
 
 function isRunItemStreamEvent(event: { readonly type: string; readonly item?: RunItem }): event is { readonly type: 'run_item_stream_event'; readonly item: RunItem } {
@@ -1065,6 +1071,26 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
   });
   result.catch(() => undefined);
 
+  const responses = new Map<string, AgentTokenUsage>();
+  const reportedAnomalies = new Set<NativeUsageAnomaly>();
+  const reportInvalidUsage = (code: NativeUsageAnomaly) => {
+    if (reportedAnomalies.has(code)) return;
+    reportedAnomalies.add(code);
+    input.reportInvalidUsage?.(code);
+  };
+  let accountingClosed = false;
+  let unknownResponse = false;
+  const getTokenUsage = () => {
+    const values = [...responses.values()];
+    const groups = values.flatMap((value) => value.usage?.groups ?? []);
+    // Each terminal response describes one request, regardless of its cache split.
+    const inputs = groups.flatMap(({ requestInputTokens }) => requestInputTokens === null ? [] : [requestInputTokens]);
+    const sum = inputs.reduce((total, size) => total + BigInt(size), 0n);
+    return normalizeSessionUsage(compactUsageGroups(groups),
+      accountingClosed && !unknownResponse && values.every((value) => value.available),
+      inputs.length > 0 && sum <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(sum) : null);
+  };
+
   async function* drive(): AsyncIterable<RunItem> {
     let failureStage: 'sdk_run_start' | 'sdk_stream' | 'sdk_completion' = 'sdk_run_start';
     try {
@@ -1078,6 +1104,18 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
 
       failureStage = 'sdk_stream';
       for await (const event of stream) {
+        if (event.type === 'raw_model_stream_event') {
+          const eventData = usageRecord(event.data);
+          const raw = usageRecord(eventData['event']);
+          if (eventData['type'] === 'model' && ['response.completed', 'response.failed', 'response.incomplete'].includes(String(raw['type']))) {
+            const response = usageRecord(raw['response']);
+            const id = response['id'];
+            if (typeof id === 'string' && id.length > 0) {
+              const observed = normalizeOpenAIResponse(response['usage'], response['model'], reportInvalidUsage);
+              if (observed.available || !responses.has(id)) responses.set(id, observed);
+            } else unknownResponse = true;
+          }
+        }
         if (isRunItemStreamEvent(event)) {
           yield event.item;
         }
@@ -1085,7 +1123,7 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
 
       failureStage = 'sdk_completion';
       const streamResult = stream as unknown as StreamRunResultView;
-      const usage = streamResult.state._context.usage;
+      accountingClosed = streamResult.cancelled !== true;
       const lastResponseId = streamResult.lastResponseId;
       const responsesContinuity: OpenAIResponsesContinuityState | undefined = lastResponseId !== undefined
         ? { previousResponseId: lastResponseId }
@@ -1093,9 +1131,6 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
       resolveResult({
         directive: 'advance',
         ...(streamResult.finalOutput !== undefined ? { output: streamResult.finalOutput } : {}),
-        ...(usage
-          ? { tokenUsage: { input: usage.inputTokens ?? 0, output: usage.outputTokens ?? 0 } }
-          : {}),
         ...(responsesContinuity !== undefined ? { responsesContinuity } : {})
       });
     } catch (err) {
@@ -1121,7 +1156,7 @@ function defaultRunAgentSession(input: OpenAIRunSessionInput): OpenAIRunOutcome 
     }
   }
 
-  return { items: drive(), result };
+  return { items: drive(), result, getTokenUsage };
 }
 
 /**
@@ -1446,6 +1481,9 @@ export function createOpenAIAgentAdapter(
 
       setupStage = 'sdk_run_start';
       const outcome = await runAgentSession({
+        reportInvalidUsage: (code) => safeLog('warn', 'openai.adapter.invalid_accounting', {
+          runId: input.telemetryContext.runId, step: input.telemetryContext.step, code
+        }),
         prompt: input.runInput.environment.context.task.prompt,
         model: input.profile.model.model,
         instructions,
@@ -1466,6 +1504,8 @@ export function createOpenAIAgentAdapter(
         metadataReject = reject;
       });
       metadataPromise.catch(() => undefined);
+      let legacyUsage: AgentTokenUsage = { available: false };
+      const getTokenUsage = () => outcome.getTokenUsage?.() ?? legacyUsage;
 
       async function* events(): AsyncIterable<RunnerEvent> {
         const ctx: EventContext = {
@@ -1500,6 +1540,12 @@ export function createOpenAIAgentAdapter(
 
           failureStage = 'sdk_result';
           let terminal = await outcome.result;
+          if (terminal.tokenUsage !== undefined) {
+            legacyUsage = { available: true, tokens: {
+              input: usageCount(terminal.tokenUsage.input) ?? 0,
+              output: usageCount(terminal.tokenUsage.output) ?? 0, cacheRead: 0, cacheWrite: 0
+            } };
+          }
 
           // Cache optional continuity without losing a completed model result.
           if (input.modelMemory !== undefined && terminal.responsesContinuity !== undefined) {
@@ -1607,9 +1653,7 @@ export function createOpenAIAgentAdapter(
             outcome: terminal.directive === 'fail' ? 'failed' : 'succeeded',
             launchMechanism: 'fetch_transport',
             degradedCapabilities: inferenceMapping.degraded,
-            tokenUsage: terminal.tokenUsage
-              ? { available: true, tokens: { input: terminal.tokenUsage.input, output: terminal.tokenUsage.output, cacheRead: 0, cacheWrite: 0 } }
-              : { available: false },
+            tokenUsage: getTokenUsage(),
             model: input.profile.model
           });
         } catch (err) {
@@ -1647,12 +1691,16 @@ export function createOpenAIAgentAdapter(
           });
           metadataReject(thrown);
           throw thrown;
+        } finally {
+          metadataResolve({ outcome: 'canceled', launchMechanism: 'fetch_transport',
+            degradedCapabilities: inferenceMapping.degraded, tokenUsage: getTokenUsage(), model: input.profile.model });
         }
       }
 
       return {
         events: events(),
         metadata: metadataPromise,
+        getTokenUsage,
         async close(): Promise<void> {
           await sandboxHandle.close?.();
         }
