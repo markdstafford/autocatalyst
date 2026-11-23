@@ -87,10 +87,11 @@ export const updateRunFeedbackParamsSchema = z.object({
   feedbackId: z.string().min(1)
 }).strict();
 
-export const updateRunFeedbackRequestSchema = z.object({
-  status: z.enum(['resolved', 'open']),
-  body: z.string().min(1).optional()
-}).strict();
+export const updateRunFeedbackRequestSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('resolved'), body: z.string().min(1).optional() }).strict(),
+  z.object({ status: z.literal('open'), body: z.string().min(1).optional() }).strict(),
+  z.object({ status: z.literal('wont_fix'), body: z.string().trim().min(1) }).strict()
+]);
 
 export type FeedbackStatus = z.infer<typeof feedbackStatusSchema>;
 export type FeedbackTarget = z.infer<typeof feedbackTargetSchema>;

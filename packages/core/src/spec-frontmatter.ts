@@ -88,3 +88,26 @@ export function parseSpecFrontmatter(markdown: string): SpecAuthorFrontmatter {
   }
   return validateCommittedSpecFrontmatter(raw);
 }
+
+
+/** Keep creation metadata; do not introduce a date-only diff on an unchanged revision. */
+export function renderReviewedSpecCandidate<T extends { frontmatter: SpecAuthorFrontmatter; body: string }>(
+  spec: T, previousMarkdown: string | undefined, canonicalMarkdown?: string
+): { spec: T; markdown: string } {
+  const baseline = canonicalMarkdown ?? previousMarkdown;
+  let frontmatter = spec.frontmatter;
+  if (baseline !== undefined) {
+    const previous = parseSpecFrontmatter(baseline);
+    frontmatter = { ...frontmatter, created: previous.created, specced_by: previous.specced_by };
+    for (const markdown of [canonicalMarkdown, previousMarkdown]) {
+      if (markdown === undefined) continue;
+      const preservedDate = { ...frontmatter, last_updated: parseSpecFrontmatter(markdown).last_updated };
+      if (renderCommittedSpecMarkdown({ frontmatter: preservedDate, body: spec.body }) === markdown) {
+        frontmatter = preservedDate;
+        break;
+      }
+    }
+  }
+  const normalized = { ...spec, frontmatter };
+  return { spec: normalized, markdown: renderCommittedSpecMarkdown({ ...normalized, requireDraftStatus: true }) };
+}

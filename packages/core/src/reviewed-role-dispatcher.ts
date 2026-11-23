@@ -1,3 +1,4 @@
+import type { SpecReviewSessionInput } from './spec-convergence.js';
 import type { JsonValue } from '@autocatalyst/api-contract';
 import type {
   AltitudeCheckpointRef,
@@ -40,6 +41,7 @@ export interface ReviewContext {
 export interface RunRoleWorkInput extends RunWorkInput {
   readonly role: 'implementer' | 'reviewer';
   readonly round: number;
+  readonly specReview?: SpecReviewSessionInput;
   readonly reviewContext?: ReviewContext;
   readonly toolPolicyMode?: ToolPolicyMode;
   readonly routeProfileId?: string;

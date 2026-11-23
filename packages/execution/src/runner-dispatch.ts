@@ -27,6 +27,7 @@ export interface AgentRunnerFactoryInput {
   readonly phase?: string;
   readonly step: string;
   readonly role?: string;
+  readonly pinnedProfile?: AgentProfileResolution;
 }
 
 export interface AgentRunnerFactory {
@@ -60,7 +61,7 @@ export function createAgentRunnerFactory(options: CreateAgentRunnerFactoryOption
   return {
     async createRunner(input: AgentRunnerFactoryInput): Promise<Runner> {
       // Step a: resolve profile
-      const resolution = await resolveProfile(input);
+      const resolution = input.pinnedProfile ?? await resolveProfile(input);
       const { profile, credentialReference } = resolution;
 
       // Step a (validation): ensure profile is present

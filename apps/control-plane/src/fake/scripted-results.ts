@@ -12,6 +12,7 @@ export interface ScriptedSessionSelection {
   readonly issueNumber?: number;
   /** 1-based spec.author pass number (for deterministic revisions). */
   readonly specAuthorPass?: number;
+  readonly requiredFeedbackIds?: readonly string[];
 }
 
 function isStructured(schemaId: string | undefined): boolean {
@@ -67,7 +68,13 @@ export function buildScriptedPrFinalizeResult(): Record<string, unknown> {
 /** Select the result object this scripted session should return. */
 export function selectScriptedResult(selection: ScriptedSessionSelection): Record<string, unknown> {
   if (selection.step === 'spec.author' && (selection.workKind === 'feature' || selection.workKind === 'enhancement')) {
-    return buildScriptedSpecAuthorResult(selection);
+    if (selection.role === 'reviewer') return buildScriptedReviewerResult();
+    const spec = buildScriptedSpecAuthorResult(selection);
+    return selection.resultSchemaId === 'autocatalyst.reviewed_spec_author.v1'
+      ? { spec, dispositions: (selection.requiredFeedbackIds ?? []).map(feedbackId => ({
+          feedbackId, disposition: 'fixed', summary: 'Addressed in the deterministic spec revision.'
+        })) }
+      : spec;
   }
   if (selection.step === 'implementation.build' && selection.role === 'reviewer') {
     return buildScriptedReviewerResult();

@@ -25,6 +25,8 @@ import {
   classifyProviderFailure,
   filterSafeClassificationDetails,
   projectStepResultSchemaForProvider,
+  isReviewedSpecCapture,
+  decodeSpecRoleProviderResult,
   runtimeSkillsCatalogRoot,
   writeScratchStepResultFile,
   type ProxyUpstreamFailureRecord
@@ -341,6 +343,7 @@ function createClaudeStructuredResultDefinition(
 ): ClaudeStructuredResultDefinition {
   const projection = projectStepResultSchemaForProvider({
     schemaId: capture.schemaId,
+    step: capture.step,
     schema: capture.schema,
     target: 'claude_output_format'
   });
@@ -396,6 +399,7 @@ export function createClaudeAgentAdapter(
   }
 
   return {
+    supportsSpecReview: true,
     providerKind: claudeProviderKind,
     adapterId: claudeAgentAdapterId,
     supportedConnectionMechanism: 'process_environment',
@@ -452,7 +456,9 @@ export function createClaudeAgentAdapter(
           : workspace.workspaceRoots[0];
 
       const baseAllowedTools = mapAllowedToolsForClaude(env.toolPolicy.allowedTools);
-      const allowedTools = baseAllowedTools;
+      const reviewedSpec = isReviewedSpecCapture(input.structuredResultCapture);
+      const allowedTools = reviewedSpec && input.telemetryContext.role !== 'reviewer'
+        ? [...baseAllowedTools, 'Skill'] : baseAllowedTools;
       const prompt = env.context.task.prompt;
 
       // Materialize resolved skills into real Claude SDK LOCAL PLUGINS
@@ -564,7 +570,7 @@ export function createClaudeAgentAdapter(
             launchConfig: launchConfig.redacted,
             ...(structuredResult !== undefined ? {
               schemaId: structuredResult.projection.schemaId,
-              resultFile: input.structuredResultCapture?.resultFile,
+              ...(!isReviewedSpecCapture(input.structuredResultCapture) ? { resultFile: input.structuredResultCapture?.resultFile } : {}),
               resultCaptureMechanism: structuredResult.projection.mechanism
             } : {})
           });
@@ -602,6 +608,7 @@ export function createClaudeAgentAdapter(
                     // Local plugins carry the skills; `skills: 'all'` loads every
                     // discovered skill into the system prompt.
                     ...(skillPlugins.length > 0 ? { plugins: skillPlugins, skills: 'all' } : {}),
+                    ...(reviewedSpec ? { tools: allowedTools, additionalDirectories: [...workspace.workspaceRoots] } : {}),
                     ...(structuredResult !== undefined ? { outputFormat: structuredResult.outputFormat } : {})
                   }
                 }
@@ -651,10 +658,16 @@ export function createClaudeAgentAdapter(
                 { providerKind: profile.providerKind, adapterId: claudeAgentAdapterId }
               );
             }
-            await writeClaudeStructuredResultFile(env, input.structuredResultCapture, capturedStructuredResult.value);
+            const decoded = decodeSpecRoleProviderResult(input.structuredResultCapture, capturedStructuredResult.value);
+            if (decoded.kind === 'question') {
+              yield { ...buildTerminalResult({ runId, step, clock, idGenerator, directive: 'advance' }),
+                type: 'runner_terminal_result', result: { directive: 'needs_input', question: decoded.question } };
+              return;
+            }
+            await writeClaudeStructuredResultFile(env, input.structuredResultCapture, decoded.value);
             safeLog('info', 'claude.adapter.result_capture_diagnostic', {
               runId, step, schemaId: input.structuredResultCapture.schemaId,
-              resultFile: input.structuredResultCapture.resultFile,
+              ...(!isReviewedSpecCapture(input.structuredResultCapture) ? { resultFile: input.structuredResultCapture.resultFile } : {}),
               captureStage: 'capture_complete', resultCaptureMechanism: structuredResult.projection.mechanism
             });
             yield buildTerminalResult({ runId, step, clock, idGenerator, directive: 'advance' });
@@ -708,7 +721,7 @@ export function createClaudeAgentAdapter(
             ...(structuredResult !== undefined && input.structuredResultCapture !== undefined ? {
               structuredResultCapture: true,
               schemaId: input.structuredResultCapture.schemaId,
-              resultFile: input.structuredResultCapture.resultFile,
+              ...(!isReviewedSpecCapture(input.structuredResultCapture) ? { resultFile: input.structuredResultCapture.resultFile } : {}),
               resultCaptureMechanism: structuredResult.projection.mechanism
             } : {})
           });

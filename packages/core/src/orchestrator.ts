@@ -1,3 +1,5 @@
+import type { Feedback } from '@autocatalyst/api-contract';
+import { eligibleSpecFinding, publicSpecCheckpoint, type SpecQuestionPause } from './spec-convergence.js';
 import type {
   ChannelReference,
   Conversation,
@@ -214,7 +216,16 @@ export interface ReplyToRunResult extends OrchestratedRunResult {
 
 // --- Orchestrator interface ---
 
+export interface DeclineSpecFindingInput {
+  readonly runId: string;
+  readonly tenant: string;
+  readonly feedbackId: string;
+  readonly principal: NonModelPrincipal;
+  readonly body: string;
+}
+
 export interface Orchestrator {
+  declineSpecFinding?(input: DeclineSpecFindingInput): Promise<Feedback>;
   createRun(input: CreateOrchestratedRunInput): Promise<OrchestratedRunResult>;
   createConversationWithFirstRun(input: CreateOrchestratedConversationInput): Promise<OrchestratedConversationResult>;
   applyDirective(input: ApplyOrchestratedDirectiveInput): Promise<OrchestratedRunResult>;
@@ -393,7 +404,7 @@ export class DefaultOrchestrator implements Orchestrator {
 
     this.#scheduleAutoDispatch(state.run);
 
-    return { run: state.run, runStep: state.runStep };
+    return { run: state.run, runStep: { ...state.runStep, checkpointResult: publicSpecCheckpoint(state.runStep.checkpointResult) } };
   }
 
   async createConversationWithFirstRun(
@@ -677,7 +688,7 @@ export class DefaultOrchestrator implements Orchestrator {
       ...(normalizedFailureReason !== undefined ? { reason: normalizedFailureReason } : {})
     });
 
-    return { run: state.run, runStep: state.runStep };
+    return { run: state.run, runStep: { ...state.runStep, checkpointResult: publicSpecCheckpoint(state.runStep.checkpointResult) } };
   }
 
   async dispatch(input: DispatchRunInput): Promise<OrchestratedRunResult> {
@@ -718,6 +729,64 @@ export class DefaultOrchestrator implements Orchestrator {
           reason: 'issue_63_reply_ingress_uses_existing_build_convergence'
         }
       }));
+    }
+
+    const workflow = getRunWorkflowForWorkKind(run.workKind);
+    if (stepDefinition?.id === 'spec.author' && stepDefinition.roles.includes('reviewer') &&
+        stepDefinition.roles.includes('implementer') &&
+        (workflow?.artifactKind === 'feature_spec' || workflow?.artifactKind === 'enhancement_spec')) {
+      return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
+        const active = await this.#runs.findById(run.id);
+        const steps = await this.#runSteps?.listByRun(run.id) ?? [];
+        const runStep = steps.find(step => step.step === 'spec.author' && step.endedAt === null);
+        if (!active || active.currentStep !== 'spec.author' || active.terminal) {
+          throw new OrchestratorError('invalid_transition', 'Run no longer waiting for spec authoring.');
+        }
+        const fail = (reason: string) => this.applyDirective({
+          runId: run.id, tenant: run.tenant, directive: 'fail', origin: 'runner', reason
+        });
+        const engine = this.#convergenceEngine;
+        const deps = this.#specAuthoringDependencies;
+        const resolveWorkspace = this.#resolveWorkspaceContext;
+        if (!engine?.runSpec || !runStep || !deps?.git.readHeadFile || !resolveWorkspace) {
+          return fail('spec_review_not_configured');
+        }
+        const readHeadFile = deps.git.readHeadFile;
+        const readHead = async (path: string) => {
+          const workspace = await resolveWorkspace({ runId: run.id });
+          return readHeadFile({ workspaceRepoRoot: workspace.workspaceRepoRoot, relativePath: path });
+        };
+        const marker = runStep.checkpointResult as { specAnswer?: { sourceStepId: string; role: 'implementer' | 'reviewer'; body: string } } | null;
+        const workspace = await resolveWorkspace({ runId: run.id }).catch(() => undefined);
+        try {
+          const result = await engine.runSpec({
+            run, runId: run.id, tenant: run.tenant, runStep, stepDefinition, workflow, steps, readHead,
+            ...(workspace ? { workspace } : {}),
+            ...(marker?.specAnswer ? { answer: marker.specAnswer } : {}),
+            readCanonicalSpec: async () => {
+              const artifact = await deps.artifacts.findByRunAndKind({ runId: run.id, kind: workflow.artifactKind! });
+              if (!artifact) return undefined;
+              if (artifact.tenant !== run.tenant || artifact.runId !== run.id) throw new Error('Invalid spec artifact.');
+              const markdown = await readHead(artifact.location);
+              if (markdown === null) throw new Error('Spec artifact has no committed Markdown.');
+              return { path: artifact.location, markdown };
+            },
+            complete: async (spec, markdown) => {
+              const result = await this.#runSpecAuthoringCompletion(run.id, run, spec, markdown);
+              return result.kind === 'ok' ? result.output : undefined;
+            }
+          });
+          if (result.directive === 'fail') return fail(result.reason);
+          return this.applyDirective({
+            runId: run.id, tenant: run.tenant, directive: result.directive, origin: 'runner',
+            checkpointResult: result.checkpoint,
+            ...(result.directive === 'needs_input' ? { destinationCheckpointResult: { pause: result.pause } } : {})
+          });
+        } catch (cause) {
+          this.#logger?.warn('Spec convergence failed.', { runId: run.id, ...this.#safeCause(cause) });
+          return fail(safeFailureReasonFromError(cause) ?? 'spec_authoring_failed');
+        }
+      });
     }
 
     if (stepDefinition !== null && this.#isReviewedProducingStep(stepDefinition) && this.#convergenceEngine !== undefined) {
@@ -944,21 +1013,6 @@ export class DefaultOrchestrator implements Orchestrator {
         });
       }
 
-      // For spec.author advance: run completion service before persisting transition.
-      if (result.directive === 'advance' && run.currentStep === 'spec.author' && (run.workKind === 'feature' || run.workKind === 'enhancement')) {
-        const completionResult = await this.#runSpecAuthoringCompletion(input.runId, run, result.result);
-        if (completionResult.kind === 'failed') {
-          return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason: 'spec_authoring_failed', origin: 'runner' });
-        }
-        return this.applyDirective({
-          runId: input.runId,
-          directive: 'advance',
-          tenant: input.tenant,
-          checkpointResult: completionResult.checkpointResult as JsonValue,
-          origin: 'runner'
-        });
-      }
-
       // For bug spec.author advance: record an issue-canonical bug_triage artifact.
       // Bug triage has no committed spec file and no spec.human_review gate, so this is
       // best-effort and never blocks advancement.
@@ -982,9 +1036,6 @@ export class DefaultOrchestrator implements Orchestrator {
   }
 
   #isReviewedProducingStep(stepDefinition: RunStepDefinition): boolean {
-    // Scoped to implementation.build only. spec.author also carries both roles but has
-    // a spec-artifact completion step (#runSpecAuthoringCompletion) that must run after
-    // convergence — that wiring is tracked separately; until then keep it on the one-shot path.
     return (
       stepDefinition.id === 'implementation.build' &&
       stepDefinition.waitingOn === 'ai' &&
@@ -1118,6 +1169,35 @@ export class DefaultOrchestrator implements Orchestrator {
     return { status: 'dispatched', runId: input.runId };
   }
 
+  async declineSpecFinding(input: DeclineSpecFindingInput): Promise<Feedback> {
+    if (input.principal.kind !== 'human' || input.principal.tenantId !== input.tenant || !input.body.trim()) {
+      throw new OrchestratorError('forbidden', 'A human reason is required to decline a finding.');
+    }
+    return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
+      const deps = this.#feedbackLifecycleDependencies;
+      if (!this.#runSteps || !deps) throw new OrchestratorError('persistence_failed', 'Spec review feedback is unavailable.');
+      const run = await this.#runs.findById(input.runId);
+      const item = await deps.feedback.findById(input.feedbackId);
+      if (!run || run.tenant !== input.tenant || !item || item.tenant !== input.tenant || item.runId !== run.id) {
+        throw new OrchestratorError('missing_run', 'Run or feedback not found.');
+      }
+      const steps = await this.#runSteps.listByRun(run.id);
+      const gate = steps.find(step => step.step === 'spec.human_review' && step.endedAt === null);
+      const source = gate && [...steps].sort((a, b) => b.occurrence.index - a.occurrence.index)
+        .find(step => step.step === 'spec.author' && step.endedAt !== null && step.occurrence.index < gate.occurrence.index);
+      if (!gate || run.terminal || run.currentStep !== 'spec.human_review' ||
+          item.target !== 'artifact' || item.status !== 'open' || item.thread[0]?.author.kind !== 'model' ||
+          !eligibleSpecFinding(source?.checkpointResult, item.id)) {
+        throw new OrchestratorError('invalid_transition', 'The finding is not open at the current bounded spec review gate.');
+      }
+      const time = deps.clock();
+      return deps.feedback.updateStatusAndAppendThread({
+        feedbackId: item.id, expectedStatus: 'open', nextStatus: 'wont_fix', updatedAt: time,
+        threadEntry: { id: deps.ids(), author: input.principal, body: input.body.trim(), createdAt: time }
+      });
+    });
+  }
+
   async replyToRun(input: ReplyToRunInput): Promise<ReplyToRunResult> {
     return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
       const run = await this.#runs.findById(input.runId);
@@ -1129,21 +1209,29 @@ export class DefaultOrchestrator implements Orchestrator {
         return this.#replyToHumanReviewGate({ ...input, run });
       }
 
+      if (run.currentStep === 'spec.awaiting_input') {
+        return this.#replyToSpecQuestion({ ...input, run });
+      }
       if (run.currentStep === 'implementation.awaiting_input') {
         return this.#replyToAwaitingInput({ ...input, run });
       }
 
       const currentStepDef = getRunStepDefinition(run.currentStep);
       if (currentStepDef?.waitingOn === 'human') {
-        throw new OrchestratorError('invalid_transition', `Step '${run.currentStep}' does not support this reply kind.`);
+        const stale = input.request.kind === 'guidance' && input.request.pauseStepId !== undefined;
+        throw new OrchestratorError('invalid_transition', `Step '${run.currentStep}' does not support this reply kind.`,
+          stale ? { details: { code: 'stale_pause' } } : {});
       }
-      throw new OrchestratorError('invalid_transition', `Run '${input.runId}' is not waiting on human input.`);
+      const stale = input.request.kind === 'guidance' && input.request.pauseStepId !== undefined;
+      throw new OrchestratorError('invalid_transition', `Run '${input.runId}' is not waiting on human input.`,
+        stale ? { details: { code: 'stale_pause' } } : {});
     });
   }
 
   async #replyToHumanReviewGate(input: ReplyToRunInput & { readonly run: Run }): Promise<ReplyToRunResult> {
     if (input.request.kind === 'guidance') {
-      throw new OrchestratorError('invalid_transition', `Guidance replies are only supported at implementation.awaiting_input.`);
+      throw new OrchestratorError('invalid_transition', 'Guidance replies are only supported at an active input pause.',
+        input.request.pauseStepId ? { details: { code: 'stale_pause' } } : {});
     }
     if (this.#feedbackLifecycleDependencies === undefined) {
       throw new OrchestratorError('persistence_failed', 'Feedback lifecycle dependencies required for human review replies.');
@@ -1216,6 +1304,23 @@ export class DefaultOrchestrator implements Orchestrator {
     return { ...moved, classification: { directive: 'advance', target } };
   }
 
+  async #replyToSpecQuestion(input: ReplyToRunInput & { readonly run: Run }): Promise<ReplyToRunResult> {
+    if (input.principal.kind !== 'human' || input.request.kind !== 'guidance' || !input.request.body.trim()) {
+      throw new OrchestratorError('invalid_transition', 'Only human guidance is supported at spec.awaiting_input.');
+    }
+    const steps = await this.#runSteps?.listByRun(input.runId);
+    const active = steps?.find(step => step.step === 'spec.awaiting_input' && step.endedAt === null);
+    const pause = (active?.checkpointResult as { pause?: SpecQuestionPause } | null)?.pause;
+    if (!active || pause?.kind !== 'spec_question' || input.request.pauseStepId !== active.id) {
+      throw new OrchestratorError('invalid_transition', 'The spec question is stale or was already answered.', { details: { code: 'stale_pause' } });
+    }
+    const moved = await this.applyDirective({
+      runId: input.runId, tenant: input.tenant, directive: 'advance', origin: 'human', principal: input.principal,
+      destinationCheckpointResult: { specAnswer: { sourceStepId: pause.sourceStepId, role: pause.role, body: input.request.body } }
+    });
+    return { ...moved, classification: { directive: 'advance', pauseKind: 'spec_question' } };
+  }
+
   async #replyToAwaitingInput(input: ReplyToRunInput & { readonly run: Run }): Promise<ReplyToRunResult> {
     if (input.request.kind !== 'guidance') {
       throw new OrchestratorError('invalid_transition', 'Only guidance replies are supported at implementation.awaiting_input.');
@@ -1229,6 +1334,9 @@ export class DefaultOrchestrator implements Orchestrator {
         { run: input.run, expectedStepId: 'implementation.awaiting_input' },
         { runSteps: this.#runSteps }
       );
+      if (input.request.pauseStepId !== undefined && input.request.pauseStepId !== pause.runStep.id) {
+        throw new OrchestratorError('invalid_transition', 'The guidance reply is stale.');
+      }
       await recordConvergenceEscalationGuidance(
         { run: input.run, runStep: pause.runStep, guidance: input.request.body },
         { runSteps: this.#runSteps }
@@ -1410,8 +1518,9 @@ export class DefaultOrchestrator implements Orchestrator {
   async #runSpecAuthoringCompletion(
     runId: string,
     run: Run,
-    result: Readonly<Record<string, unknown>> | undefined
-  ): Promise<{ kind: 'ok'; checkpointResult: CompleteSpecAuthoringOutput['checkpointResult'] } | { kind: 'failed' }> {
+    result: SpecAuthorResult,
+    reviewedMarkdown: string
+  ): Promise<{ kind: 'ok'; output: CompleteSpecAuthoringOutput } | { kind: 'failed' }> {
     if (this.#specAuthoringDependencies === undefined || this.#resolveWorkspaceContext === undefined) {
       this.#logger?.warn('spec.author advanced but specAuthoringDependencies or resolveWorkspaceContext not configured.', { runId });
       return { kind: 'failed' };
@@ -1429,7 +1538,8 @@ export class DefaultOrchestrator implements Orchestrator {
       const output = await completeSpecAuthoring(
         {
           run,
-          result: result as unknown as SpecAuthorResult,
+          result,
+          reviewedMarkdown,
           workspaceRepoRoot: workspaceContext.workspaceRepoRoot,
           workspaceHandle: workspaceContext.workspaceHandle
         },
@@ -1455,7 +1565,7 @@ export class DefaultOrchestrator implements Orchestrator {
         }
       }
 
-      return { kind: 'ok', checkpointResult: output.checkpointResult };
+      return { kind: 'ok', output };
     } catch (cause) {
       this.#logger?.warn('spec.author completion service failed.', { runId, ...this.#safeCause(cause) });
       return { kind: 'failed' };

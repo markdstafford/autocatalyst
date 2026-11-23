@@ -16,7 +16,7 @@ import {
   type WorkspaceContextResolver
 } from './orchestrator.js';
 import type { SpecAuthoringServiceDependencies } from './spec-authoring-service.js';
-import { SpecAuthoringError } from './spec-authoring-service.js';
+import { renderCommittedSpecMarkdown } from './spec-frontmatter.js';
 import type { SpecApprovalFinalizerDependencies } from './spec-approval-finalizer.js';
 import type { SpecFreezeDependencies, freezeRunSpecForPullRequest as freezeRunSpecForPullRequestFn } from './spec-freeze.js';
 import { SpecFreezeError } from './spec-freeze.js';
@@ -223,8 +223,8 @@ describe('DefaultOrchestrator.createRun', () => {
     });
     const runs = makeFakeRunRepo({
       // Lifecycle start puts the run at spec.author (an AI step that triggers unit-of-work auto-dispatch)
-      recordRunLifecycleStart: vi.fn().mockResolvedValue({ run: makeRun({ currentStep: 'spec.author' }), runStep: makeRunStep({ step: 'spec.author', phase: 'spec' }) }),
-      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'spec.author' })),
+      recordRunLifecycleStart: vi.fn().mockResolvedValue({ run: makeRun({ currentStep: 'spec.author', workKind: 'bug' }), runStep: makeRunStep({ step: 'spec.author', phase: 'spec' }) }),
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'spec.author', workKind: 'bug' })),
       // Transition to a human gate so auto-dispatch stops after the first dispatch instead
       // of re-dispatching an ever-advancing fake forever.
       recordRunStepTransition: vi.fn().mockResolvedValue({
@@ -240,7 +240,7 @@ describe('DefaultOrchestrator.createRun', () => {
     const { orchestrator } = makeOrchestrator({ runs, events: publisher, unitOfWork: { run: unitRun } });
 
     // createRun resolves with the committed run — it does NOT await unit completion
-    const result = await orchestrator.createRun({ topicId: 'topic_1', owner, tenant: 'tenant_1', workKind: 'feature' });
+    const result = await orchestrator.createRun({ topicId: 'topic_1', owner, tenant: 'tenant_1', workKind: 'bug' });
     expect(result).toMatchObject({ run: { id: 'run_1', currentStep: 'spec.author' } });
 
     // The event was published before auto-dispatch started
@@ -788,7 +788,7 @@ describe('DefaultOrchestrator.dispatch', () => {
   });
 
   it('errors if no unit of work is configured', async () => {
-    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'spec.author' })) });
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'spec.author', workKind: 'bug' })) });
     const { orchestrator } = makeOrchestrator({ runs });
     await expect(
       orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' })
@@ -923,7 +923,7 @@ describe('DefaultOrchestrator — auto-dispatch failure reasons', () => {
     // The unit-of-work throws ModelRoutingConfigurationError — this escapes dispatch()
     // and is caught by the .catch() in #scheduleAutoDispatch, invoking #handleAutoDispatchFailure.
     // After Task 4, that handler maps the error to 'profile_incomplete' via safeFailureReasonFromError.
-    const specAuthorRun = makeRun({ currentStep: 'spec.author' });
+    const specAuthorRun = makeRun({ currentStep: 'spec.author', workKind: 'bug' });
     const specAuthorStep = makeRunStep({ step: 'spec.author', phase: 'spec' });
     const failedRun = makeRun({ currentStep: 'failed', terminal: true });
     const failedStep = makeRunStep({ step: 'failed' });
@@ -953,7 +953,7 @@ describe('DefaultOrchestrator — auto-dispatch failure reasons', () => {
       topicId: 'topic_1',
       owner,
       tenant: 'tenant_1',
-      workKind: 'feature'
+      workKind: 'bug'
     });
 
     // Wait for the detached auto-dispatch (which throws) and the subsequent
@@ -1149,7 +1149,7 @@ function makeSpecAuthorResult() {
       specced_by: 'autocatalyst'
     },
     body: '# Test\n\nBody.'
-  };
+  } as const;
 }
 
 describe('DefaultOrchestrator.dispatch — system steps', () => {
@@ -1216,172 +1216,49 @@ describe('DefaultOrchestrator.dispatch — human-waiting steps', () => {
 });
 
 describe('DefaultOrchestrator.dispatch — spec.author completion', () => {
-  it('calls completeSpecAuthoring before persisting spec.author advance', async () => {
-    const specAuthorResult = makeSpecAuthorResult();
+  it.each(['complete', 'commit_failure', 'metadata_failure'] as const)('runs reviewed completion before the gate: %s', async scenario => {
+    const spec = makeSpecAuthorResult();
+    const markdown = renderCommittedSpecMarkdown(spec);
     const existing = makeRun({ currentStep: 'spec.author' });
-    const updated = makeRun({ currentStep: 'spec.human_review' });
-    const updatedStep = makeRunStep({ id: 'step_2', step: 'spec.human_review', phase: 'spec' });
-    const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
-    const runs = makeFakeRunRepo({
-      findById: vi.fn().mockResolvedValue(existing),
-      recordRunStepTransition: recordTransition
+    const succeeded = scenario === 'complete';
+    const destination = succeeded ? 'spec.human_review' : 'failed';
+    const recordTransition = vi.fn().mockResolvedValue({
+      run: makeRun({ currentStep: destination, terminal: !succeeded }),
+      runStep: makeRunStep({ step: destination })
     });
-    const unitOfWork: RunUnitOfWork = {
-      run: vi.fn().mockResolvedValue({ directive: 'advance', result: specAuthorResult })
-    };
-    const specAuthoringDeps = makeSpecAuthoringDeps();
-    const resolveWorkspaceContext = vi.fn().mockResolvedValue({
-      workspaceRepoRoot: '/workspace/repo',
-      workspaceHandle: 'ws_1'
+    const runs = makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(existing), recordRunStepTransition: recordTransition });
+    const runSteps = makeFakeRunStepRepo({
+      listByRun: vi.fn().mockResolvedValue([makeRunStep({ step: 'spec.author', phase: 'spec' })])
     });
-
-    const { orchestrator } = makeOrchestrator({
-      runs,
-      unitOfWork,
-      specAuthoringDependencies: specAuthoringDeps,
-      resolveWorkspaceContext
-    });
-
-    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
-
-    expect(resolveWorkspaceContext).toHaveBeenCalledWith({ runId: 'run_1' });
-    expect(specAuthoringDeps.filesystem.writeFile).toHaveBeenCalledTimes(1);
-    expect(specAuthoringDeps.git.commitFiles).toHaveBeenCalledTimes(1);
-    expect(recordTransition).toHaveBeenCalledTimes(1);
-    // The checkpoint passed to applyDirective should include the artifact id from completion
-    const transitionCall = recordTransition.mock.calls[0]?.[0];
-    expect(transitionCall?.checkpointResult?.artifactId).toBe('art_1');
-    expect(result.run.currentStep).toBe('spec.human_review');
-  });
-
-  it('does not advance when completeSpecAuthoring throws', async () => {
-    const specAuthorResult = makeSpecAuthorResult();
-    const existing = makeRun({ currentStep: 'spec.author' });
-    const failed = makeRun({ currentStep: 'failed', terminal: true });
-    const failedStep = makeRunStep({ step: 'failed' });
-    const recordTransition = vi.fn().mockResolvedValue({ run: failed, runStep: failedStep });
-    const runs = makeFakeRunRepo({
-      findById: vi.fn().mockResolvedValue(existing),
-      recordRunStepTransition: recordTransition
-    });
-    const unitOfWork: RunUnitOfWork = {
-      run: vi.fn().mockResolvedValue({ directive: 'advance', result: specAuthorResult })
-    };
-    const specAuthoringDeps = makeSpecAuthoringDeps({
+    const specAuthoringDependencies = makeSpecAuthoringDeps({
+      filesystem: { writeFile: vi.fn().mockResolvedValue(undefined), readFile: vi.fn().mockResolvedValue(markdown) },
       git: {
-        commitFiles: vi.fn().mockRejectedValue(new SpecAuthoringError('spec_commit_failed', 'git failed'))
-      } as unknown as SpecAuthoringServiceDependencies['git']
+        readHeadFile: vi.fn().mockResolvedValueOnce(null).mockResolvedValue(markdown),
+        commitFiles: scenario === 'commit_failure' ? vi.fn().mockRejectedValue(new Error('git failed')) : vi.fn().mockResolvedValue({})
+      }
     });
-    const resolveWorkspaceContext = vi.fn().mockResolvedValue({
-      workspaceRepoRoot: '/workspace/repo',
-      workspaceHandle: 'ws_1'
-    });
-
+    const convergenceEngine: ConvergenceEngine = {
+      run: vi.fn(),
+      runSpec: vi.fn(async input => {
+        const output = await input.complete(spec, markdown);
+        return output ? { directive: 'advance', checkpoint: output.checkpointResult }
+          : { directive: 'fail', reason: 'spec_authoring_failed' };
+      })
+    };
+    const upsert = scenario === 'metadata_failure' ? vi.fn().mockRejectedValue(new Error('sqlite write failed')) : vi.fn();
+    const unitOfWork = { run: vi.fn() };
     const { orchestrator } = makeOrchestrator({
-      runs,
-      unitOfWork,
-      specAuthoringDependencies: specAuthoringDeps,
-      resolveWorkspaceContext
+      runs, runSteps, unitOfWork, convergenceEngine, specAuthoringDependencies,
+      resolveWorkspaceContext: vi.fn().mockResolvedValue({ workspaceRepoRoot: '/workspace/repo', workspaceHandle: 'ws_1' }),
+      runWorkspaceMetadata: { upsert, findByRunId: vi.fn() },
+      autoDispatch: { enabled: false }
     });
-
     const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
-
-    // Should have applied fail directive — run does not advance to spec.human_review
-    expect(result.run.currentStep).toBe('failed');
-    expect(result.run.terminal).toBe(true);
-    // Transition was called once; the resulting run is terminal (failed)
+    expect(unitOfWork.run).not.toHaveBeenCalled();
+    expect(specAuthoringDependencies.git.commitFiles).toHaveBeenCalledTimes(1);
+    expect(result.run.currentStep).toBe(destination);
     expect(recordTransition).toHaveBeenCalledTimes(1);
-  });
-
-  it('does not advance when workspace metadata persistence fails', async () => {
-    const specAuthorResult = makeSpecAuthorResult();
-    const existing = makeRun({ currentStep: 'spec.author' });
-    const failed = makeRun({ currentStep: 'failed', terminal: true });
-    const failedStep = makeRunStep({ step: 'failed' });
-    const recordTransition = vi.fn().mockResolvedValue({ run: failed, runStep: failedStep });
-    const runs = makeFakeRunRepo({
-      findById: vi.fn().mockResolvedValue(existing),
-      recordRunStepTransition: recordTransition
-    });
-    const unitOfWork: RunUnitOfWork = {
-      run: vi.fn().mockResolvedValue({ directive: 'advance', result: specAuthorResult })
-    };
-    const specAuthoringDeps = makeSpecAuthoringDeps();
-    const resolveWorkspaceContext = vi.fn().mockResolvedValue({
-      workspaceRepoRoot: '/workspace/repo',
-      workspaceHandle: 'ws_1'
-    });
-    const upsert = vi.fn().mockRejectedValue(new Error('sqlite write failed'));
-    const runWorkspaceMetadata = {
-      upsert,
-      findByRunId: vi.fn().mockResolvedValue(null)
-    } as unknown as RunWorkspaceMetadataRepository;
-
-    const { orchestrator } = makeOrchestrator({
-      runs,
-      unitOfWork,
-      specAuthoringDependencies: specAuthoringDeps,
-      resolveWorkspaceContext,
-      runWorkspaceMetadata
-    });
-
-    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
-
-    // The spec was authored, but the run must not enter the gate without a
-    // recoverable workspace-metadata record — it fails instead of advancing.
-    expect(specAuthoringDeps.git.commitFiles).toHaveBeenCalledTimes(1);
-    expect(upsert).toHaveBeenCalledTimes(1);
-    const transitionCall = recordTransition.mock.calls[0]?.[0];
-    expect(transitionCall?.currentStep).toBe('failed');
-    expect(result.run.currentStep).toBe('failed');
-    expect(result.run.terminal).toBe(true);
-  });
-
-  it('does not advance when resolveWorkspaceContext throws', async () => {
-    const specAuthorResult = makeSpecAuthorResult();
-    const existing = makeRun({ currentStep: 'spec.author' });
-    const failed = makeRun({ currentStep: 'failed', terminal: true });
-    const failedStep = makeRunStep({ step: 'failed' });
-    const recordTransition = vi.fn().mockResolvedValue({ run: failed, runStep: failedStep });
-    const runs = makeFakeRunRepo({
-      findById: vi.fn().mockResolvedValue(existing),
-      recordRunStepTransition: recordTransition
-    });
-    const unitOfWork: RunUnitOfWork = {
-      run: vi.fn().mockResolvedValue({ directive: 'advance', result: specAuthorResult })
-    };
-
-    const { orchestrator } = makeOrchestrator({
-      runs,
-      unitOfWork,
-      specAuthoringDependencies: makeSpecAuthoringDeps(),
-      resolveWorkspaceContext: vi.fn().mockRejectedValue(new Error('workspace unavailable'))
-    });
-
-    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
-    expect(result.run.currentStep).toBe('failed');
-    expect(result.run.terminal).toBe(true);
-  });
-
-  it('falls through to fail when specAuthoringDependencies not configured for spec.author advance', async () => {
-    const specAuthorResult = makeSpecAuthorResult();
-    const existing = makeRun({ currentStep: 'spec.author' });
-    const failed = makeRun({ currentStep: 'failed', terminal: true });
-    const failedStep = makeRunStep({ step: 'failed' });
-    const recordTransition = vi.fn().mockResolvedValue({ run: failed, runStep: failedStep });
-    const runs = makeFakeRunRepo({
-      findById: vi.fn().mockResolvedValue(existing),
-      recordRunStepTransition: recordTransition
-    });
-    const unitOfWork: RunUnitOfWork = {
-      run: vi.fn().mockResolvedValue({ directive: 'advance', result: specAuthorResult })
-    };
-    // No specAuthoringDependencies or resolveWorkspaceContext injected
-    const { orchestrator } = makeOrchestrator({ runs, unitOfWork });
-
-    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
-    expect(result.run.currentStep).toBe('failed');
-    expect(result.run.terminal).toBe(true);
+    if (succeeded) expect(recordTransition.mock.calls[0]?.[0]?.checkpointResult?.artifactId).toBe('art_1');
   });
 
   it('does NOT call completeSpecAuthoring when workKind is not feature or enhancement', async () => {
@@ -1911,10 +1788,10 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
       return { directive: 'advance' };
     });
     const runs = makeFakeRunRepo({
-      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'spec.author' })),
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'spec.author', workKind: 'bug' })),
       recordRunStepTransition: vi.fn()
-        .mockResolvedValueOnce({ run: makeRun({ currentStep: 'spec.author' }), runStep: makeRunStep({ step: 'spec.author', phase: 'spec' }) })
-        .mockResolvedValueOnce({ run: makeRun({ currentStep: 'spec.author' }), runStep: makeRunStep({ step: 'spec.author', phase: 'spec' }) })
+        .mockResolvedValueOnce({ run: makeRun({ currentStep: 'spec.author', workKind: 'bug' }), runStep: makeRunStep({ step: 'spec.author', phase: 'spec' }) })
+        .mockResolvedValueOnce({ run: makeRun({ currentStep: 'spec.author', workKind: 'bug' }), runStep: makeRunStep({ step: 'spec.author', phase: 'spec' }) })
     });
     const { orchestrator } = makeOrchestrator({ runs, unitOfWork: { run: unitRun } });
 
@@ -1930,7 +1807,7 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
   it('catches detached dispatch rejections and safely fails an eligible run', async () => {
     const logger = { warn: vi.fn() };
     // spec.author is an AI step — it goes through the unit of work and can fail there.
-    const runAtDispatch = makeRun({ currentStep: 'spec.author' });
+    const runAtDispatch = makeRun({ currentStep: 'spec.author', workKind: 'bug' });
     const failedRun = makeRun({ currentStep: 'failed', terminal: true });
     // findById is called four times in the failure path:
     //   1. dispatch() reads the run before invoking unitOfWork
@@ -1954,7 +1831,7 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
     const unitRun = vi.fn().mockRejectedValue(new Error('provider token secret=do-not-log'));
     const { orchestrator } = makeOrchestrator({ runs, unitOfWork: { run: unitRun }, logger });
 
-    await orchestrator.createRun({ topicId: 'topic_1', owner, tenant: 'tenant_1', workKind: 'feature' });
+    await orchestrator.createRun({ topicId: 'topic_1', owner, tenant: 'tenant_1', workKind: 'bug' });
 
     await vi.waitFor(() => expect(recordRunStepTransition).toHaveBeenCalledWith(expect.objectContaining({ currentStep: 'failed' })));
     expect(logger.warn).toHaveBeenCalledWith(
@@ -1966,7 +1843,7 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
 
   it('records auto_dispatch_failed reason when auto-dispatch fails an eligible run', async () => {
     // spec.author is an AI step — it goes through the unit of work and can fail there.
-    const runAtDispatch = makeRun({ currentStep: 'spec.author' });
+    const runAtDispatch = makeRun({ currentStep: 'spec.author', workKind: 'bug' });
     const failedRun = makeRun({ currentStep: 'failed', terminal: true, failureReason: 'auto_dispatch_failed' });
     // findById is called: (1) dispatch pre-check, (2) failure handler re-read, (3) applyDirective guard, (4) applyRunDirective
     const findById = vi.fn()
@@ -1986,7 +1863,7 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
     const unitRun = vi.fn().mockRejectedValue(new Error('unexpected unit failure'));
     const { orchestrator } = makeOrchestrator({ runs, unitOfWork: { run: unitRun } });
 
-    await orchestrator.createRun({ topicId: 'topic_1', owner, tenant: 'tenant_1', workKind: 'feature' });
+    await orchestrator.createRun({ topicId: 'topic_1', owner, tenant: 'tenant_1', workKind: 'bug' });
 
     await vi.waitFor(() => expect(recordRunStepTransition).toHaveBeenCalledWith(expect.objectContaining({ currentStep: 'failed' })));
     const transitionCall = recordRunStepTransition.mock.calls[0]?.[0];
@@ -1997,16 +1874,16 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
     const logger = { warn: vi.fn() };
     // spec.author is an AI step — it goes through the unit of work and can fail there.
     const runs = makeFakeRunRepo({
-      recordRunLifecycleStart: vi.fn().mockResolvedValue({ run: makeRun({ currentStep: 'spec.author' }), runStep: makeRunStep({ step: 'spec.author', phase: 'spec' }) }),
+      recordRunLifecycleStart: vi.fn().mockResolvedValue({ run: makeRun({ currentStep: 'spec.author', workKind: 'bug' }), runStep: makeRunStep({ step: 'spec.author', phase: 'spec' }) }),
       findById: vi.fn()
-        .mockResolvedValueOnce(makeRun({ currentStep: 'spec.author' }))
+        .mockResolvedValueOnce(makeRun({ currentStep: 'spec.author', workKind: 'bug' }))
         .mockResolvedValueOnce(makeRun({ currentStep: 'spec.human_review' })),
       recordRunStepTransition: vi.fn()
     });
     const unitRun = vi.fn().mockRejectedValue(new Error('runner unavailable'));
     const { orchestrator } = makeOrchestrator({ runs, unitOfWork: { run: unitRun }, logger });
 
-    await orchestrator.createRun({ topicId: 'topic_1', owner, tenant: 'tenant_1', workKind: 'feature' });
+    await orchestrator.createRun({ topicId: 'topic_1', owner, tenant: 'tenant_1', workKind: 'bug' });
     await vi.waitFor(() => expect(unitRun).toHaveBeenCalledTimes(1));
     await new Promise<void>((resolve) => setImmediate(resolve));
 
@@ -2020,7 +1897,7 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
   ] as const)('does not auto-dispatch terminal step %s', async (step) => {
     const unitRun = vi.fn().mockResolvedValue({ directive: 'advance' });
     const runs = makeFakeRunRepo({
-      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'spec.author' })),
+      findById: vi.fn().mockResolvedValue(makeRun({ currentStep: 'spec.author', workKind: 'bug' })),
       recordRunStepTransition: vi.fn().mockResolvedValue({
         run: makeRun({ currentStep: step, terminal: true }),
         runStep: makeRunStep({ id: `${step}_step`, step })
@@ -2058,7 +1935,7 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
   });
 
   it('threads unit-of-work fail reason through to the persisted run and published event', async () => {
-    const existing = makeRun({ currentStep: 'spec.author' });
+    const existing = makeRun({ currentStep: 'spec.author', workKind: 'bug' });
     const failed = makeRun({ currentStep: 'failed', terminal: true, failureReason: 'provider_auth_failed' });
     const failedStep = makeRunStep({ step: 'failed' });
     const recordTransition = vi.fn().mockResolvedValue({ run: failed, runStep: failedStep });
@@ -2084,7 +1961,7 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
   });
 
   it('normalizes an unsafe unit-of-work fail reason before persisting', async () => {
-    const existing = makeRun({ currentStep: 'spec.author' });
+    const existing = makeRun({ currentStep: 'spec.author', workKind: 'bug' });
     const failed = makeRun({ currentStep: 'failed', terminal: true, failureReason: 'runner_failed_before_terminal_result' });
     const failedStep = makeRunStep({ step: 'failed' });
     const recordTransition = vi.fn().mockResolvedValue({ run: failed, runStep: failedStep });
@@ -2122,16 +1999,16 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
         // 2nd call: applyRunDirective reads run to perform transition
         .mockResolvedValueOnce(makeRun({ currentStep: 'intake' }))
         // 3rd call: auto-dispatched dispatch() reads the run — now at spec.author (an AI step)
-        .mockResolvedValueOnce(makeRun({ currentStep: 'spec.author' }))
+        .mockResolvedValueOnce(makeRun({ currentStep: 'spec.author', workKind: 'bug' }))
         // 4th call: applyDirective guard check inside the auto-dispatched dispatch path
-        .mockResolvedValueOnce(makeRun({ currentStep: 'spec.author' }))
+        .mockResolvedValueOnce(makeRun({ currentStep: 'spec.author', workKind: 'bug' }))
         // 5th call: applyRunDirective reads run again to perform 2nd transition
-        .mockResolvedValueOnce(makeRun({ currentStep: 'spec.author' })),
+        .mockResolvedValueOnce(makeRun({ currentStep: 'spec.author', workKind: 'bug' })),
       recordRunStepTransition: vi
         .fn()
         // 1st: explicit applyDirective intake->spec.author (triggers auto-dispatch)
         .mockResolvedValueOnce({
-          run: makeRun({ currentStep: 'spec.author' }),
+          run: makeRun({ currentStep: 'spec.author', workKind: 'bug' }),
           runStep: makeRunStep({ id: 'step_2', step: 'spec.author', phase: 'spec' })
         })
         // 2nd: auto-dispatched applyDirective (spec.author->spec.human_review — human, no further dispatch)
@@ -2168,48 +2045,25 @@ describe('DefaultOrchestrator.dispatch — reviewed step selection', () => {
   }
 
   const advanceCheckpoint = {
-    kind: 'convergence_review' as const,
-    step: 'spec.author',
-    maxRounds: 3,
-    routing: { distinct: true },
-    rounds: [],
-    outcome: 'converged' as const,
-    openFeedbackIds: [],
-    lastPositions: {},
-    currentAltitude: 'build' as const,
-    acceptedCheckpoints: []
+    kind: 'convergence_review' as const, step: 'implementation.build', maxRounds: 3,
+    routing: { distinct: true }, rounds: [], outcome: 'converged' as const, openFeedbackIds: [],
+    lastPositions: {}, currentAltitude: 'build' as const, acceptedCheckpoints: []
   };
 
-  it('keeps spec.author on one-shot path even when convergence engine is present', async () => {
-    // spec.author carries both implementer+reviewer roles but is excluded from convergence to
-    // preserve its #runSpecAuthoringCompletion path. Only implementation.build is convergence-routed.
+  it('fails explicitly instead of one-shot authoring when the spec strategy is not wired', async () => {
     const existing = makeRun({ currentStep: 'spec.author' });
-    const updated = makeRun({ currentStep: 'spec.human_review' });
-    const updatedStep = makeRunStep({ id: 'step_2', step: 'spec.human_review', phase: 'spec' });
-    const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
-    const runs = makeFakeRunRepo({
-      findById: vi.fn().mockResolvedValue(existing),
-      recordRunStepTransition: recordTransition
+    const recordTransition = vi.fn().mockResolvedValue({
+      run: makeRun({ currentStep: 'failed', terminal: true }),
+      runStep: makeRunStep({ step: 'failed' })
     });
-    const unitRun = vi.fn().mockResolvedValue({ directive: 'advance' });
-    const { engine, calls } = makeConvergenceEngine({
-      workResult: { directive: 'advance', result: advanceCheckpoint as unknown as Readonly<Record<string, unknown>> },
-      checkpointResult: advanceCheckpoint
-    });
-
+    const unitOfWork = { run: vi.fn() };
     const { orchestrator } = makeOrchestrator({
-      runs,
-      unitOfWork: { run: unitRun },
-      convergenceEngine: engine,
-      autoDispatch: { enabled: false }
+      runs: makeFakeRunRepo({ findById: vi.fn().mockResolvedValue(existing), recordRunStepTransition: recordTransition }),
+      unitOfWork, autoDispatch: { enabled: false }
     });
-
-    const result = await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
-
-    // Convergence engine must NOT be invoked for spec.author
-    expect(calls).toHaveLength(0);
-    expect(unitRun).toHaveBeenCalledTimes(1);
-    expect(result.run.currentStep).toBe('spec.human_review');
+    await orchestrator.dispatch({ runId: 'run_1', tenant: 'tenant_1' });
+    expect(unitOfWork.run).not.toHaveBeenCalled();
+    expect(recordTransition).toHaveBeenCalledWith(expect.objectContaining({ failureReason: 'spec_review_not_configured' }));
   });
 
   it('delegates implementation.build to convergence engine', async () => {
@@ -2450,14 +2304,10 @@ describe('reviewed step integration — transitions and checkpoint persistence',
     acceptedCheckpoints: []
   };
 
-  it('spec.author stays on one-shot path (not routed through convergence engine)', async () => {
-    // spec.author carries both implementer+reviewer roles but must NOT go through convergence —
-    // it has a separate spec-artifact completion step (#runSpecAuthoringCompletion) that the
-    // convergence branch never calls. Scoping convergence to implementation.build only prevents
-    // that regression.
-    const existing = makeRun({ currentStep: 'spec.author' });
-    const updated = makeRun({ currentStep: 'spec.human_review' });
-    const updatedStep = makeRunStep({ id: 'step_2', step: 'spec.human_review', phase: 'spec' });
+  it('keeps bug on the issue-canonical one-shot path', async () => {
+    const existing = makeRun({ currentStep: 'spec.author', workKind: 'bug' });
+    const updated = makeRun({ currentStep: 'implementation.plan' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'implementation.plan', phase: 'spec' });
     const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
     const runs = makeFakeRunRepo({
       findById: vi.fn().mockResolvedValue(existing),
@@ -2481,7 +2331,7 @@ describe('reviewed step integration — transitions and checkpoint persistence',
     // Convergence engine must NOT be called for spec.author
     expect(calls).toHaveLength(0);
     expect(unitRun).toHaveBeenCalledTimes(1);
-    expect(result.run.currentStep).toBe('spec.human_review');
+    expect(result.run.currentStep).toBe('implementation.plan');
   });
 
   it('implementation.build convergence advances run to implementation.human_review', async () => {
@@ -2517,13 +2367,10 @@ describe('reviewed step integration — transitions and checkpoint persistence',
     expect(transitionCall?.currentStep).toBe('implementation.human_review');
   });
 
-  it('implementation.build max-round exhaustion via one-shot path (spec.author stays on one-shot path)', async () => {
-    // Verify spec.author is NOT sent to convergence even with convergence engine present.
-    // spec.author carries both roles but is excluded from convergence to preserve its
-    // #runSpecAuthoringCompletion path.
-    const existing = makeRun({ currentStep: 'spec.author' });
-    const updated = makeRun({ currentStep: 'spec.human_review' });
-    const updatedStep = makeRunStep({ id: 'step_2', step: 'spec.human_review', phase: 'spec' });
+  it('keeps file_issue on the issue-canonical one-shot path', async () => {
+    const existing = makeRun({ currentStep: 'spec.author', workKind: 'file_issue' });
+    const updated = makeRun({ currentStep: 'issues.file' });
+    const updatedStep = makeRunStep({ id: 'step_2', step: 'issues.file', phase: 'spec' });
     const recordTransition = vi.fn().mockResolvedValue({ run: updated, runStep: updatedStep });
     const runs = makeFakeRunRepo({
       findById: vi.fn().mockResolvedValue(existing),
@@ -2548,7 +2395,7 @@ describe('reviewed step integration — transitions and checkpoint persistence',
     // Convergence engine must NOT be called for spec.author
     expect(calls).toHaveLength(0);
     expect(unitRun).toHaveBeenCalledTimes(1);
-    expect(result.run.currentStep).toBe('spec.human_review');
+    expect(result.run.currentStep).toBe('issues.file');
   });
 
   it.each([

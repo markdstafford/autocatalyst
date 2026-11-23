@@ -1,3 +1,4 @@
+import { locateSpecQuote } from './spec-anchor-validator.js';
 import { describe, expect, it } from 'vitest';
 
 import type { FeedbackAnchor } from '@autocatalyst/api-contract';
@@ -67,5 +68,17 @@ describe('validateSpecAnchor', () => {
       anchor: artifactRange({ from: 3, to: 8, quotedText: 'Hello' }),
       currentSpec: emojiSpec
     }))).toBe('text_mismatch');
+  });
+});
+
+
+describe('locateSpecQuote', () => {
+  it('counts overlapping matches, not just disjoint copies', () => {
+    expect(locateSpecQuote('🚀 ababa', 'aba')).toEqual({ status: 'non_unique' });
+  });
+
+  it('rejects a partial Unicode scalar and returns code-point bounds for exact matches', () => {
+    expect(locateSpecQuote('🚀 scope', '\ud83d')).toEqual({ status: 'not_found' });
+    expect(locateSpecQuote('🚀 scope', ' scope')).toEqual({ status: 'unique', from: 1, to: 7 });
   });
 });

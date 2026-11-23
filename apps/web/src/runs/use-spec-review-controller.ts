@@ -56,6 +56,9 @@ export interface SpecReviewController {
   cardState(id: string): CardActionState;
   canResolve(id: string): boolean;
   canReopen(id: string): boolean;
+  canDecline?(id: string): boolean;
+  decline?(id: string, reason: string): void;
+  readonly boundedHandoff?: boolean;
   resolve(id: string): void;
   reopen(id: string, reason: string): void;
 }
@@ -67,6 +70,9 @@ export interface UseSpecReviewControllerOptions {
   readonly currentPrincipalId: string | undefined;
   resolveComment(feedbackId: string): Promise<RunActionResult>;
   reopenComment(feedbackId: string, reason: string): Promise<RunActionResult>;
+  readonly currentPrincipalIsHuman?: boolean;
+  readonly outstandingModelFindings?: readonly string[];
+  declineFinding?(feedbackId: string, reason: string): Promise<RunActionResult>;
 }
 
 export function useSpecReviewController(options: UseSpecReviewControllerOptions): SpecReviewController {
@@ -224,6 +230,16 @@ export function useSpecReviewController(options: UseSpecReviewControllerOptions)
     [runCardAction, reopenComment]
   );
 
+  const canDecline = (id: string): boolean => {
+    const item = byId.get(id);
+    return atGate && currentPrincipalId !== undefined && options.currentPrincipalIsHuman !== false &&
+      options.declineFinding !== undefined && !!options.outstandingModelFindings?.includes(id) &&
+      item?.target === 'artifact' && item.status === 'open' && item.thread[0]?.author.kind === 'model';
+  };
+  const decline = (id: string, reason: string): void => {
+    if (canDecline(id) && options.declineFinding) runCardAction(id, () => options.declineFinding!(id, reason));
+  };
+
   const cardState = useCallback(
     (id: string): CardActionState => cardStates.get(id) ?? { busy: false },
     [cardStates]
@@ -246,6 +262,9 @@ export function useSpecReviewController(options: UseSpecReviewControllerOptions)
     cardState,
     canResolve,
     canReopen,
+    canDecline,
+    decline,
+    boundedHandoff: atGate && options.outstandingModelFindings !== undefined,
     resolve,
     reopen
   };

@@ -2,6 +2,8 @@ import {
   ExecutionMaterializationError,
   ProviderConfigurationError,
   ProviderConnectionError,
+  ProviderProtocolError,
+  UnsupportedProviderCapabilityError,
   isClassifiedProviderFailureError,
   classifyProviderFailure,
   formatExecutionFailureReason,
@@ -22,6 +24,11 @@ export function safeFailureReasonFromError(error: unknown): SanitizedFailureReas
   }
   if (error instanceof ProviderConnectionError) {
     return makeSanitizedFailureReason(error.code) ?? formatExecutionFailureReason(error.code);
+  }
+  if (error instanceof ProviderProtocolError || error instanceof UnsupportedProviderCapabilityError) {
+    if (error.code === 'missing_structured_result') return 'structured_result_missing';
+    if (error.code === 'duplicate_structured_result') return 'structured_result_invalid';
+    return makeSanitizedFailureReason(error.code);
   }
   if (error instanceof ExecutionMaterializationError) {
     return formatExecutionFailureReason(error.code);

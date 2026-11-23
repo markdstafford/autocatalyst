@@ -8,12 +8,15 @@ import {
   prFinalizeCleanResultNormalizer,
   prFinalizeNullStripNormalizer,
   reviewerNullFindingsNormalizer,
-  reviewerResultNormalizer
+  reviewerResultNormalizer,
+  normalizeSpecReviewerResult
 } from './result-normalizers.js';
 import {
   implementerDispositionsResultSchema,
   prFinalizeResultSchema,
   reviewerResultSchema,
+  specReviewerResultSchema,
+  reviewedSpecAuthorResultSchema,
   specAuthorFrontmatterSchema,
   specAuthorResultSchema
 } from '@autocatalyst/api-contract';
@@ -95,6 +98,7 @@ export function resolveStepResultContract(input: {
 }
 
 export const SPEC_AUTHOR_SCHEMA_ID = 'autocatalyst.spec_author.v1' as const;
+export const REVIEWED_SPEC_AUTHOR_SCHEMA_ID = 'autocatalyst.reviewed_spec_author.v1' as const;
 export const SYSTEM_SPEC_AUTHOR_SPECCED_BY = 'autocatalyst' as const;
 export const REVIEWER_RESULT_SCHEMA_ID = 'autocatalyst.reviewer_result.v1' as const;
 export const IMPLEMENTER_DISPOSITIONS_SCHEMA_ID = 'autocatalyst.implementer_dispositions.v1' as const;
@@ -206,6 +210,50 @@ export function registerSpecAuthorResultContract(
   options: SpecAuthorResultContractOptions = {}
 ): StepResultContractRegistry {
   return registry.register(createSpecAuthorResultContract(options));
+}
+
+export interface ReviewedSpecAuthorContractOptions extends SpecAuthorResultContractOptions {
+  readonly requiredFeedbackIds?: readonly string[];
+  readonly canonicalPath?: string;
+  readonly kind?: 'feature_spec' | 'enhancement_spec';
+}
+
+export function createReviewedSpecAuthorResultContract(
+  options: ReviewedSpecAuthorContractOptions = {}
+): StepResultContractDefinition {
+  const normalizeSpec = createSpecAuthorFrontmatterNormalizer(resolveSpecAuthorStampOptions(options));
+  return {
+    step: 'spec.author',
+    schemaId: REVIEWED_SPEC_AUTHOR_SCHEMA_ID,
+    schema: z.preprocess(candidate => {
+      if (candidate === null || typeof candidate !== 'object' || Array.isArray(candidate)) return candidate;
+      const envelope = candidate as Record<string, unknown>;
+      const normalized = normalizeSpec.normalize({ candidate: envelope['spec'], schemaId: SPEC_AUTHOR_SCHEMA_ID, step: 'spec.author', attempt: 0 });
+      return normalized.status === 'changed' ? { ...envelope, spec: normalized.candidate } : candidate;
+    }, reviewedSpecAuthorResultSchema.superRefine(({ spec, dispositions }, ctx) => {
+      if (/^---\s*$/u.test(spec.body.split('\n')[0] ?? '')) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['spec', 'body'], message: 'Keep frontmatter outside the body.' });
+      }
+      const ids = dispositions.map(d => d.feedbackId);
+      if (new Set(ids).size !== ids.length || (options.requiredFeedbackIds !== undefined &&
+        (ids.length !== options.requiredFeedbackIds.length ||
+          options.requiredFeedbackIds.some(id => !ids.includes(id))))) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['dispositions'], message: 'Disposition each required feedback ID exactly once.' });
+      }
+      if ((options.canonicalPath !== undefined && spec.relativePath !== options.canonicalPath) ||
+          (options.kind !== undefined && spec.kind !== options.kind)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['spec', 'relativePath'], message: 'Use the required spec kind and canonical path.' });
+      }
+    }))
+  };
+}
+
+export function createSpecReviewerResultContract(): StepResultContractDefinition {
+  return {
+    step: 'spec.author',
+    schemaId: REVIEWER_RESULT_SCHEMA_ID,
+    schema: z.preprocess(normalizeSpecReviewerResult, specReviewerResultSchema)
+  };
 }
 
 export interface PullRequestFinalizeResultContractOptions {

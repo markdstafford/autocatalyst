@@ -108,6 +108,8 @@ export interface AgentProviderSession {
 }
 
 export interface AgentProviderAdapter {
+  /** Enforces read-only access to both roots and captures verdicts outside model tools. */
+  readonly supportsSpecReview?: true;
   /** External authentication is owned and validated by the adapter, e.g. an approved local account. */
   readonly credentialRequirement?: 'required' | 'external';
   readonly providerKind: string;

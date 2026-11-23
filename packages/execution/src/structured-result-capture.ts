@@ -93,3 +93,22 @@ export function assertSerializableStructuredResult(value: unknown): void {
     );
   }
 }
+
+const specQuestionResultSchema = z.object({
+  directive: z.literal('needs_input'),
+  question: z.string().refine(question => question.trim().length > 0)
+}).strict();
+
+export function isReviewedSpecCapture(capture: StructuredAgentResultCapture | undefined): boolean {
+  return capture?.step === 'spec.author' &&
+    (capture.schemaId === 'autocatalyst.reviewer_result.v1' || capture.schemaId === 'autocatalyst.reviewed_spec_author.v1');
+}
+
+export function decodeSpecRoleProviderResult(capture: StructuredAgentResultCapture, value: unknown):
+  { kind: 'complete'; value: unknown } | { kind: 'question'; question: string } {
+  if (!isReviewedSpecCapture(capture)) return { kind: 'complete', value };
+  const payload = value && typeof value === 'object' && !Array.isArray(value) &&
+    Object.keys(value).length === 1 && 'response' in value ? value.response : value;
+  const question = specQuestionResultSchema.safeParse(payload);
+  return question.success ? { kind: 'question', question: question.data.question } : { kind: 'complete', value: payload };
+}

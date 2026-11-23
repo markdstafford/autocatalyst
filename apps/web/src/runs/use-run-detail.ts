@@ -27,7 +27,7 @@
  */
 import type { ControlPlaneClient } from '@autocatalyst/sdk';
 import { ControlPlaneClientError } from '@autocatalyst/sdk';
-import type { FeedbackResponse, Run } from '@autocatalyst/api-contract';
+import type { FeedbackResponse, Run, RunStep } from '@autocatalyst/api-contract';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import type { FrameReaderLogger } from './run-events-frame-reader.js';
@@ -64,6 +64,10 @@ export interface UseRunDetailOptions {
 }
 
 export interface RunDetailState {
+  readonly specHandoff?: { readonly outcome: 'max_rounds' | 'oscillation'; readonly outstandingIds: readonly string[] };
+  readonly specQuestion?: { readonly stepId: string; readonly role: 'implementer' | 'reviewer'; readonly question: string };
+  declineFinding?(feedbackId: string, reason: string): Promise<RunActionResult>;
+  answerSpecQuestion?(pauseStepId: string, body: string): Promise<RunActionResult>;
   readonly pullRequest: PullRequestFact;
   readonly pullRequestCheck: PullRequestCheck;
   readonly checkPullRequest?: () => void;
@@ -147,6 +151,34 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
     streamLoop(signal: AbortSignal): Promise<void>;
     check(): Promise<void>;
   } | undefined>(undefined);
+
+  const [specSteps, setSpecSteps] = useState<{ id: string; step: string; steps: readonly RunStep[] }>();
+  const currentStep = run?.currentStep;
+  useEffect(() => {
+    if (runId === undefined || (currentStep !== 'spec.human_review' && currentStep !== 'spec.awaiting_input')) return;
+    let active = true;
+    void (async () => {
+      try {
+        const { steps } = await client.listRunSteps(runId);
+        if (active) setSpecSteps({ id: runId, step: currentStep, steps });
+      } catch {
+        if (active) setSpecSteps(undefined);
+      }
+    })();
+    return () => { active = false; };
+  }, [client, runId, currentStep, run?.updatedAt]);
+  const steps = specSteps?.id === runId && specSteps?.step === currentStep ? specSteps?.steps ?? [] : [];
+  const activeStep = steps.find(step => step.step === currentStep && step.endedAt === null);
+  const priorAuthor = activeStep && [...steps].sort((a, b) => b.occurrence.index - a.occurrence.index)
+    .find(step => step.step === 'spec.author' && step.occurrence.index < activeStep.occurrence.index);
+  const audit = priorAuthor?.checkpointResult as { producingStep?: string; outcome?: string; openFeedbackIds?: string[] } | null;
+  const pause = (activeStep?.checkpointResult as { pause?: { kind?: string; role?: string; question?: string } } | null)?.pause;
+  const specHandoff: RunDetailState['specHandoff'] = currentStep === 'spec.human_review' && audit?.producingStep === 'spec.author' &&
+    (audit.outcome === 'max_rounds' || audit.outcome === 'oscillation')
+    ? { outcome: audit.outcome, outstandingIds: audit.openFeedbackIds ?? [] } : undefined;
+  const specQuestion = currentStep === 'spec.awaiting_input' && activeStep && pause?.kind === 'spec_question' &&
+    (pause.role === 'implementer' || pause.role === 'reviewer') && typeof pause.question === 'string'
+    ? { stepId: activeStep.id, role: pause.role, question: pause.question } as const : undefined;
 
   useLayoutEffect(() => {
     if (runId === undefined) {
@@ -628,6 +660,35 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
     }
   }
 
+  async function declineFinding(feedbackId: string, reason: string): Promise<RunActionResult> {
+    if (runId === undefined) return { status: 'error', error: new Error('No run is selected.') };
+    const selection = selectionRef.current;
+    try {
+      const updated = await client.updateRunFeedback(runId, feedbackId, { status: 'wont_fix', body: reason });
+      if (selection === selectionRef.current) {
+        setSpec(previous => previous.status === 'ready' ? {
+          ...previous, feedback: previous.feedback.map(item => item.id === feedbackId ? updated : item)
+        } : previous);
+        selection?.refresh();
+      }
+      return { status: 'ok' };
+    } catch (error: unknown) {
+      return { status: 'error', error };
+    }
+  }
+
+  async function answerSpecQuestion(pauseStepId: string, body: string): Promise<RunActionResult> {
+    if (runId === undefined) return { status: 'error', error: new Error('No run is selected.') };
+    const selection = selectionRef.current;
+    try {
+      await client.replyToRun(runId, { kind: 'guidance', pauseStepId, body });
+      selection?.refresh();
+      return { status: 'ok' };
+    } catch (error: unknown) {
+      return { status: 'error', error };
+    }
+  }
+
   const selectedOwner = selectionRef.current;
   return {
     pullRequest,
@@ -642,6 +703,10 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
     reloadSpec,
     replyToGate,
     resolveComment,
-    reopenComment
+    reopenComment,
+    declineFinding,
+    answerSpecQuestion,
+    ...(specHandoff ? { specHandoff } : {}),
+    ...(specQuestion ? { specQuestion } : {})
   };
 }

@@ -356,13 +356,16 @@ export function SpecReview(props: SpecReviewProps): ReactNode {
     }
     const canResolve = controller.canResolve(id);
     const canReopen = controller.canReopen(id);
+    const canDecline = controller.canDecline?.(id) ?? false;
     const state = controller.cardState(id);
-    if (!canResolve && !canReopen && state.error === undefined && !state.busy) {
+    if (!canResolve && !canReopen && !canDecline && state.error === undefined && !state.busy) {
       return undefined;
     }
     return {
       canResolve,
       canReopen,
+      canDecline,
+      onDecline: reason => controller.decline?.(id, reason),
       state,
       onResolve: () => controller.resolve(id),
       onReopen: (reason) => controller.reopen(id, reason)
@@ -372,6 +375,9 @@ export function SpecReview(props: SpecReviewProps): ReactNode {
   return (
     <div ref={wrapperRef} className="flex min-h-full gap-4">
       <div data-doc-column className="relative min-w-0 flex-1">
+        {controller?.boundedHandoff ? (
+          <p role="status" className="mb-3 text-sm text-subtext">Automated spec review did not converge. Review the outstanding findings before approving.</p>
+        ) : null}
         <SpecDocument markdown={markdown} />
 
         {/* Marker overlay. Shorter ranges render last so they sit on top of longer ones. */}
@@ -537,6 +543,8 @@ function MarkerButton({ comment, rects, selected, flashing, onSelect }: MarkerBu
 export interface CardActionProps {
   readonly canResolve: boolean;
   readonly canReopen: boolean;
+  readonly canDecline?: boolean;
+  onDecline?(reason: string): void;
   readonly state: CardActionState;
   onResolve(): void;
   onReopen(reason: string): void;
@@ -601,7 +609,7 @@ function CommentCard({ comment, nowIso, selected, actions, onSelect }: CommentCa
 }
 
 function CardActions({ commentId, actions }: { readonly commentId: string; readonly actions: CardActionProps }): ReactNode {
-  const [reopening, setReopening] = useState(false);
+  const [action, setAction] = useState<'reopen' | 'decline' | null>(null);
   const [reason, setReason] = useState('');
   const stop = (event: { stopPropagation(): void }): void => event.stopPropagation();
 
@@ -612,11 +620,11 @@ function CardActions({ commentId, actions }: { readonly commentId: string; reado
           {actions.state.error}
         </p>
       ) : null}
-      {reopening ? (
+      {action ? (
         <div>
           <Textarea
-            data-testid={`reopen-reason-${commentId}`}
-            aria-label="Reopen reason"
+            data-testid={`${action}-reason-${commentId}`}
+            aria-label={action === 'reopen' ? 'Reopen reason' : 'Decline reason'}
             value={reason}
             onChange={(event) => setReason(event.target.value)}
             rows={2}
@@ -625,7 +633,7 @@ function CardActions({ commentId, actions }: { readonly commentId: string; reado
             <button
               type="button"
               onClick={() => {
-                setReopening(false);
+                setAction(null);
                 setReason('');
               }}
               className="rounded-sm border border-border px-2 py-1 text-xs"
@@ -634,19 +642,20 @@ function CardActions({ commentId, actions }: { readonly commentId: string; reado
             </button>
             <button
               type="button"
-              data-testid={`reopen-confirm-${commentId}`}
+              data-testid={`${action}-confirm-${commentId}`}
               disabled={reason.trim() === '' || actions.state.busy}
               onClick={() => {
                 if (reason.trim() === '') {
                   return;
                 }
-                actions.onReopen(reason);
-                setReopening(false);
+                if (action === 'reopen') actions.onReopen(reason);
+                else actions.onDecline?.(reason);
+                setAction(null);
                 setReason('');
               }}
               className="rounded-sm bg-primary px-2 py-1 text-xs text-on-primary disabled:opacity-50"
             >
-              Reopen
+              {action === 'reopen' ? 'Reopen' : 'Confirm decline'}
             </button>
           </div>
         </div>
@@ -664,15 +673,26 @@ function CardActions({ commentId, actions }: { readonly commentId: string; reado
               Resolve
             </button>
           ) : null}
+          {actions.canDecline ? (
+            <button
+              type="button"
+              data-testid={`decline-${commentId}`}
+              disabled={actions.state.busy}
+              onClick={() => setAction('decline')}
+              className="rounded-sm border border-border px-2 py-1 text-xs disabled:opacity-50"
+            >
+              Decline finding
+            </button>
+          ) : null}
           {actions.canReopen ? (
             <button
               type="button"
               data-testid={`reopen-${commentId}`}
               disabled={actions.state.busy}
-              onClick={() => setReopening(true)}
+              onClick={() => setAction('reopen')}
               className="rounded-sm border border-border px-2 py-1 text-xs disabled:opacity-50"
             >
-              Reopen
+              {action === 'reopen' ? 'Reopen' : 'Confirm decline'}
             </button>
           ) : null}
         </div>

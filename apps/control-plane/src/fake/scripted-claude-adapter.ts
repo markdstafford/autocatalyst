@@ -87,6 +87,7 @@ function readIssueNumberFromInputs(taskInputs: Record<string, unknown> | undefin
 export function createScriptedClaudeAdapter(deps: ScriptedClaudeAdapterDependencies): AgentProviderAdapter {
   return {
     credentialRequirement: 'required',
+    supportsSpecReview: true,
     providerKind: claudeProviderKind,
     adapterId: claudeAgentAdapterId,
     supportedConnectionMechanism: 'process_environment',
@@ -104,7 +105,7 @@ export function createScriptedClaudeAdapter(deps: ScriptedClaudeAdapterDependenc
       const issueNumber = issueFromInputs ?? (deps.resolveIssueNumber !== undefined ? await deps.resolveIssueNumber(runId) : undefined);
 
       const launchSequence = await bumpLaunchCounter(deps.paths);
-      const specAuthorPass = step === 'spec.author' ? await bumpSpecAuthorPass(deps.paths, runId) : undefined;
+      const specAuthorPass = step === 'spec.author' && role !== 'reviewer' ? await bumpSpecAuthorPass(deps.paths, runId) : undefined;
 
       await recordLaunchContext(deps.paths, {
         runId,
@@ -135,7 +136,9 @@ export function createScriptedClaudeAdapter(deps: ScriptedClaudeAdapterDependenc
         }
       }
 
+      const review = taskInputs?.['specReview'] as { requiredFeedbackIds?: readonly string[] } | undefined;
       const selection: ScriptedSessionSelection = {
+        ...(review?.requiredFeedbackIds ? { requiredFeedbackIds: review.requiredFeedbackIds } : {}),
         step,
         workKind,
         ...(role !== undefined ? { role } : {}),

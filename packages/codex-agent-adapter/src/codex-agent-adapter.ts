@@ -17,6 +17,8 @@ import {
   ProviderProtocolError,
   UnsupportedProviderCapabilityError,
   assertSerializableStructuredResult,
+  isReviewedSpecCapture,
+  decodeSpecRoleProviderResult,
   buildSafeAdapterFailureLogDetail,
   classifyProviderFailure,
   filterSafeClassificationDetails,
@@ -556,6 +558,7 @@ export function createCodexAgentAdapter(
   }
 
   return {
+    supportsSpecReview: true,
     providerKind: codexProviderKind,
     adapterId: codexAgentAdapterId,
     supportedConnectionMechanism: 'process_environment',
@@ -573,7 +576,7 @@ export function createCodexAgentAdapter(
       const inferenceMapping = buildCodexConfig(profile, supportedInference);
 
       const role = resolveRole(input);
-      const sandbox = sandboxForRole(role);
+      const sandbox = isReviewedSpecCapture(input.structuredResultCapture) ? 'read-only' : sandboxForRole(role);
       if (!acceptedSandboxValues.has(sandbox)) {
         throw new UnsupportedProviderCapabilityError(
           'tool_policy_unsupported',
@@ -696,7 +699,7 @@ export function createCodexAgentAdapter(
             ...(structuredResult !== undefined
               ? {
                   schemaId: structuredResult.schemaId,
-                  resultFile: structuredResult.resultFile,
+                  ...(!isReviewedSpecCapture(input.structuredResultCapture) ? { resultFile: structuredResult.resultFile } : {}),
                   resultCaptureMechanism: structuredResult.mechanism
                 }
               : {})
@@ -774,8 +777,13 @@ export function createCodexAgentAdapter(
                 { providerKind: profile.providerKind, adapterId: codexAgentAdapterId }
               );
             }
-            await writeCodexStructuredResultFile(env, input.structuredResultCapture, capturedStructuredResult.value);
-            yield buildTerminalResult({ ctx: mapCtx, directive: 'advance' });
+            const decoded = decodeSpecRoleProviderResult(input.structuredResultCapture, capturedStructuredResult.value);
+            if (decoded.kind === 'complete') {
+              await writeCodexStructuredResultFile(env, input.structuredResultCapture, decoded.value);
+              yield buildTerminalResult({ ctx: mapCtx, directive: 'advance' });
+            } else {
+              yield buildTerminalResult({ ctx: mapCtx, directive: 'needs_input', question: decoded.question });
+            }
             metadataResolve({
               outcome: 'succeeded',
               launchMechanism: 'process_environment',
@@ -818,7 +826,7 @@ export function createCodexAgentAdapter(
               ? {
                   structuredResultCapture: true,
                   schemaId: structuredResult.schemaId,
-                  resultFile: structuredResult.resultFile,
+                  ...(!isReviewedSpecCapture(input.structuredResultCapture) ? { resultFile: structuredResult.resultFile } : {}),
                   resultCaptureMechanism: structuredResult.mechanism
                 }
               : {})

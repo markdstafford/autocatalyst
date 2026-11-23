@@ -24,7 +24,7 @@ import { ProjectEmptyState } from '../projects/project-empty-state.js';
 import { RunDetailPane } from '../runs/run-detail-pane.js';
 import { buildProjectNameMap, referencedProjectIds } from '../runs/run-list-projects.js';
 import { RunTable } from '../runs/run-table.js';
-import { useCurrentPrincipalId } from '../runs/use-current-principal.js';
+import { useCurrentPrincipal } from '../runs/use-current-principal.js';
 import { useRunDetail } from '../runs/use-run-detail.js';
 import { useRunList } from '../runs/use-run-list.js';
 import { useConnectionState } from '../shell/connection-state.js';
@@ -44,7 +44,7 @@ export function RunsPage(): ReactNode {
   const connected = hasBearerToken();
   const { client, authorization } = useControlPlaneConnection();
   const canRead = connected && authorization !== 'unauthorized';
-  const currentPrincipalId = useCurrentPrincipalId(client, canRead);
+  const currentPrincipal = useCurrentPrincipal(client, canRead);
   const { setListLost } = useConnectionState();
   const { detailPaneVisible, sidePaneWidthPx, setPaneWidth, startRunOpen, openStartRun, receiveCreatedRun } = useOutletContext<RunsOutletContext>();
   const mainRef = useRef<HTMLDivElement | null>(null);
@@ -178,7 +178,7 @@ export function RunsPage(): ReactNode {
             <RunDetailPane
               run={selectedRun}
               detail={detail}
-              {...(currentPrincipalId !== undefined ? { currentPrincipalId } : {})}
+              {...(currentPrincipal !== undefined ? { currentPrincipalId: currentPrincipal.id, currentPrincipalIsHuman: currentPrincipal.kind === 'human' } : {})}
             />
           </div>
         </>

@@ -1,3 +1,4 @@
+import { isReviewedSpecCapture } from './structured-result-capture.js';
 import { runnerEventSchema, type RunnerEvent } from '@autocatalyst/api-contract';
 import { createNoopAgentModelMemoryStore } from './agent-model-memory.js';
 import { createScratchAgentModelMemoryStore } from './scratch-model-memory.js';
@@ -61,6 +62,12 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
         );
       }
 
+      const coldSpecReviewer = telemetryContext.step === 'spec.author' && telemetryContext.role === 'reviewer';
+      if (coldSpecReviewer && (!adapter.supportsSpecReview || !input.structuredResultCapture ||
+          input.environment.workspace.shape !== 'two_roots' ||
+          input.environment.toolPolicy.allowedTools.some(tool => !['Read', 'Glob', 'Grep'].includes(tool)))) {
+        throw new ProviderConfigurationError('unsupported_adapter', 'The reviewer adapter cannot enforce scoped spec review.');
+      }
       const startedAt = clock();
       const startedAtIso = new Date(startedAt).toISOString();
 
@@ -80,7 +87,7 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
           structuredResultCapture: true,
           schemaId: input.structuredResultCapture.schemaId,
           captureStep: input.structuredResultCapture.step,
-          resultFile: input.structuredResultCapture.resultFile
+          ...(!isReviewedSpecCapture(input.structuredResultCapture) ? { resultFile: input.structuredResultCapture.resultFile } : {})
         } : {})
       });
 
@@ -115,7 +122,7 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
               }
             })
       });
-      const scopedModelMemory = input.modelMemory?.forProvider?.({
+      const scopedModelMemory = coldSpecReviewer ? undefined : input.modelMemory?.forProvider?.({
         providerKind: profile.providerKind,
         adapterId: profile.adapterId,
         profileName: profile.profileName
