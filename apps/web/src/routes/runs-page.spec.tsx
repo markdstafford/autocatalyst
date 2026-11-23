@@ -105,7 +105,7 @@ const fetchSeam: typeof globalThis.fetch = async (input, init) => {
     return seam.projectsStatus === 200 ? jsonResponse({ projects: seam.projects }, 200) : errorResponse('internal_error', seam.projectsStatus);
   }
   // Selected-run detail reads (checked before the run collection/resource).
-  const detailMatch = /\/v1\/runs\/([^/?]+)\/(pull-request\/refresh|pull-request|sessions|spec|events)/u.exec(url);
+  const detailMatch = /\/v1\/runs\/([^/?]+)\/(pull-request\/refresh|pull-request|sessions|spec|steps|events)/u.exec(url);
   if (detailMatch !== null) {
     const kind = detailMatch[2];
     if (kind === 'events') {
@@ -113,6 +113,9 @@ const fetchSeam: typeof globalThis.fetch = async (input, init) => {
     }
     if (kind === 'sessions') {
       return jsonResponse({ sessions: [] }, 200);
+    }
+    if (kind === 'steps') {
+      return jsonResponse({ steps: [] }, 200);
     }
     if (kind === 'pull-request/refresh' && init?.method === 'POST' && detailMatch[1] !== undefined) {
       seam.checks.push(detailMatch[1]);
