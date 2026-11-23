@@ -1,12 +1,12 @@
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
-import { runtimeSkillsCatalogRoot } from '@autocatalyst/execution';
+import { createReviewedSpecAuthorResultContract, runtimeSkillsCatalogRoot, type ResolvedAgentRunnerProfile } from '@autocatalyst/execution';
 
 import { codexAuthProbe, codexProcessEnvironment, codexSessionLaunch, openCodexAppServer } from './codex-app-server.js';
-import type { CodexNativeEvent, CodexSessionLaunchOptions } from './codex-agent-adapter.js';
+import { codexAgentAdapterId, codexProviderKind, createCodexAgentAdapter, type CodexNativeEvent, type CodexSessionLaunchOptions } from './codex-agent-adapter.js';
 
 // A separate executable speaks the wire protocol. No native-session seam or paid model.
 const fixture = `
@@ -30,10 +30,12 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   respond({thread:{id:'thread_fixture'},model:v.model,modelProvider:'openai',sandbox:{type:sandbox==='read-only'?'readOnly':'workspaceWrite'}});
  } else if (p.method === 'turn/start') {
   if (process.env.AC_MODE==='hang') return;
+  if (process.env.AC_MODE==='reviewed-spec' &&
+      (sandbox !== 'read-only' || v.sandboxPolicy.type !== 'readOnly' || v.sandboxPolicy.networkAccess !== false)) process.exit(11);
   if (v.input.some(i=>i.type==='skill')) fs.writeFileSync('skill-input.json',JSON.stringify(v.input));
   send({method:'item/started',params:{threadId:v.threadId,item:{type:'commandExecution'}}});
   send({method:'item/completed',params:{threadId:v.threadId,item:{type:'commandExecution'}}});
-  send({method:'item/completed',params:{threadId:v.threadId,item:{type:'agentMessage',text:process.env.AC_MODE==='badjson'?'not JSON':'{"status":"satisfied","findings":[]}'}}});
+  send({method:'item/completed',params:{threadId:v.threadId,item:{type:'agentMessage',text:process.env.AC_MODE==='badjson'?'not JSON':(process.env.AC_SPEC_RESULT || '{"status":"satisfied","findings":[]}')}}});
   send({method:'thread/tokenUsage/updated',params:{threadId:v.threadId,tokenUsage:{total:{inputTokens:5,outputTokens:3}}}});
   send({method:'turn/completed',params:{threadId:v.threadId,turn:{status:process.env.AC_MODE==='failed'?'failed':'completed'}}});
   respond({turn:{id:'turn_fixture'}});
@@ -64,6 +66,89 @@ describe('Codex app-server wire boundary', () => {
       expect(events.at(-1)?.usage).toEqual({ input_tokens: 5, output_tokens: 3 });
     });
   });
+  it('authors a reviewed spec through the native launcher under read-only, network-disabled permissions', async () => {
+    await withCli(async (binary, repoRoot) => {
+      const scratchRoot = path.join(repoRoot, 'scratch');
+      await mkdir(scratchRoot);
+      const workspaceRoots = [repoRoot, scratchRoot];
+      const allowedTools = ['Read', 'Glob', 'Grep'];
+      const skills = { requested: [], resolved: [] };
+      const draft = {
+        spec: {
+          kind: 'feature_spec',
+          slug: 'reviewed-draft',
+          relativePath: 'context-human/specs/feature-reviewed-draft.md',
+          frontmatter: {},
+          body: '# Draft\n'
+        },
+        dispositions: []
+      };
+      const profile: ResolvedAgentRunnerProfile = {
+        mode: 'agent',
+        adapterId: codexAgentAdapterId,
+        providerKind: codexProviderKind,
+        profileName: 'test',
+        model: { provider: 'openai', model: 'test-model' },
+        inferenceSettings: {},
+        endpoint: {},
+        connectionMechanism: 'process_environment'
+      };
+      const adapter = createCodexAgentAdapter({ launchCodexSession: codexSessionLaunch(binary), probeCodexAuth: codexAuthProbe(binary) });
+      const session = adapter.startSession({
+        profile,
+        connection: {
+          profile,
+          credentialResolved: false,
+          createFetchTransport() { throw new Error('Codex uses the subprocess transport'); },
+          createProcessLaunchConfig() {
+            return {
+              environment: { AC_MODE: 'reviewed-spec', AC_SPEC_RESULT: JSON.stringify(draft) },
+              secretVariableNames: [], degradedCapabilities: [], redacted: {}
+            };
+          }
+        },
+        telemetryContext: { runId: 'run-1', step: 'spec.author', role: 'implementer' },
+        structuredResultCapture: {
+          step: 'spec.author',
+          schemaId: 'autocatalyst.reviewed_spec_author.v1',
+          schema: createReviewedSpecAuthorResultContract({ kind: 'feature_spec' }).schema,
+          required: true,
+          resultFile: 'author.json'
+        },
+        runInput: {
+          environment: {
+            context: {
+              run: { id: 'run-1', tenant: 'test', workKind: 'feature', currentStep: 'spec.author' },
+              task: { prompt: 'Return the draft as JSON.', inputs: {} },
+              workspaceIntent: { shape: 'none' },
+              secretBindings: [],
+              toolPolicy: { allowedTools, workspaceScope: 'declared_workspace' },
+              capabilityRequirements: { shell: { kind: 'bash', required: false }, paths: { canonicalWorkspacePaths: true }, lsp: { requested: false } },
+              skills
+            },
+            workspace: { shape: 'two_roots', repoRoot, scratchRoot, workspaceRoots, branchName: 'work', provisionedBaseRef: 'origin/main' },
+            environment: { variables: {}, secretVariableNames: [] },
+            toolPolicy: { allowedTools, workspaceRoots },
+            capabilities: { shell: { kind: 'bash', available: true }, paths: { repoRoot, scratchRoot }, lsp: { requested: false, available: false } },
+            skills
+          }
+        }
+      });
+      const events = [];
+      for await (const event of session.events) events.push(event);
+      expect(events.at(-1)).toMatchObject({ result: { directive: 'advance' } });
+      expect(JSON.parse(await readFile(path.join(scratchRoot, 'author.json'), 'utf8'))).toEqual(draft);
+    });
+  });
+
+  it('rejects a native launch whose policy does not permit shell', async () => {
+    await withCli(async (binary, cwd) => {
+      const options = { ...launchOptions(cwd), allowedTools: ['Read'] };
+      await expect(codexSessionLaunch(binary)(options)[Symbol.asyncIterator]().next())
+        .rejects.toMatchObject({ code: 'tool_policy_unsupported' });
+    });
+  });
+
   it('passes a real runtime catalog SKILL.md through native skill input', async () => {
     await withCli(async (binary, cwd) => {
       const hostPath = path.join(runtimeSkillsCatalogRoot, 'assets/mm/plugins/mm/skills/writing-guidelines');

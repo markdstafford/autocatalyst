@@ -10,6 +10,7 @@ export const knownFailureReasonCodes = [
   'structured_result_invalid',
   'structured_result_missing',
   'structured_result_unsupported',
+  'tool_policy_unsupported',
   'auto_dispatch_failed',
   'runner_failed_before_terminal_result',
   'workspace_provisioning_failed',
