@@ -1,3 +1,5 @@
+import { specAuthorResultSchema } from '@autocatalyst/api-contract';
+import { renderCommittedSpecMarkdown } from './spec-frontmatter.js';
 /**
  * Integration tests: feedback gate block/unblock/approve cycle
  *
@@ -366,10 +368,17 @@ function makeFakeFilesystem(): { port: WorkspaceFileSystemPort; files: Map<strin
   return { port, files };
 }
 
-function makeFakeGit(): { port: WorkspaceGitPort; commits: CommitRecord[] } {
+function makeFakeGit(files: ReadonlyMap<string, string>): { port: WorkspaceGitPort; commits: CommitRecord[] } {
   const commits: CommitRecord[] = [];
+  const head = new Map<string, string>();
   const port: WorkspaceGitPort = {
+    async readHeadFile({ workspaceRepoRoot, relativePath }) { return head.get(`${workspaceRepoRoot}/${relativePath}`) ?? null; },
     async commitFiles(input) {
+      for (const path of input.relativePaths) {
+        const key = `${input.workspaceRepoRoot}/${path}`;
+        const contents = files.get(key);
+        if (contents !== undefined) head.set(key, contents);
+      }
       commits.push({ workspaceRepoRoot: input.workspaceRepoRoot, relativePaths: [...input.relativePaths], message: input.message });
       return { commitSha: `sha_${commits.length}` };
     }
@@ -426,7 +435,7 @@ async function makeAuthoredSpecAtReviewHarness(): Promise<TestHarness> {
   const feedbackRepository = new InMemoryFeedbackRepository();
   const runWorkspaceMetadataRepository = new InMemoryRunWorkspaceMetadataRepository();
   const { port: filesystem, files } = makeFakeFilesystem();
-  const { port: git } = makeFakeGit();
+  const { port: git } = makeFakeGit(files);
 
   const feedbackDeps: FeedbackLifecycleDependencies = {
     feedback: feedbackRepository,
@@ -451,7 +460,27 @@ async function makeAuthoredSpecAtReviewHarness(): Promise<TestHarness> {
     },
     events: new InMemoryRunEventBus(),
     dispatchQueue: new RunDispatchQueue({ maxConcurrent: 4 }),
-    unitOfWork,
+    runSteps: {
+      async listByRun(runId) {
+        const step = await runRepository.findLatestOpenRunStep({ runId, step: 'spec.author' });
+        return step ? [step] : [];
+      },
+      async create() { throw new Error('Unexpected create.'); },
+      async findById() { return null; },
+      async updateCheckpoint() { throw new Error('Unexpected checkpoint.'); }
+    },
+    convergenceEngine: {
+      async run() { throw new Error('Unexpected build.'); },
+      async runSpec(input) {
+        const work = await unitOfWork.run(input);
+        if (work.directive !== 'advance') throw new Error('Unexpected test directive.');
+        const parsed = specAuthorResultSchema.safeParse(work.result);
+        if (!parsed.success) return { directive: 'fail', reason: 'spec_author_result_invalid' };
+        const output = await input.complete(parsed.data, renderCommittedSpecMarkdown(parsed.data));
+        return output ? { directive: 'advance', checkpoint: output.checkpointResult }
+          : { directive: 'fail', reason: 'spec_authoring_failed' };
+      }
+    },
     clock: () => timestamp,
     autoDispatch: { enabled: false },
     specAuthoringDependencies: {

@@ -31,6 +31,21 @@ export const reviewerResultSchema = z.discriminatedUnion('status', [
   findingsReviewerResultSchema
 ]);
 
+const specFindingBaseSchema = reviewerFindingSchema.omit({ anchor: true });
+export const specReviewerFindingSchema = z.discriminatedUnion('scope', [
+  specFindingBaseSchema.extend({ scope: z.literal('document') }).strict(),
+  specFindingBaseSchema.extend({
+    scope: z.literal('passage'),
+    passageQuote: z.string().optional()
+  }).strict()
+]);
+export const specReviewerResultSchema = z.discriminatedUnion('status', [
+  satisfiedReviewerResultSchema.extend({ findings: z.array(specReviewerFindingSchema).length(0).optional() }),
+  findingsReviewerResultSchema.extend({ findings: z.array(specReviewerFindingSchema).min(1) })
+]);
+export type SpecReviewerFinding = z.infer<typeof specReviewerFindingSchema>;
+export type SpecReviewerResult = z.infer<typeof specReviewerResultSchema>;
+
 const fixedFindingDispositionSchema = z.object({
   feedbackId: z.string().min(1),
   disposition: z.literal('fixed'),

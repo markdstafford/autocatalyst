@@ -41,6 +41,8 @@ import {
   filterSafeClassificationDetails,
   notifyToolInputSchema,
   projectStepResultSchemaForProvider,
+  isReviewedSpecCapture,
+  decodeSpecRoleProviderResult,
   ProviderProtocolError,
   reportProgressToolInputSchema,
   runtimeSkillsCatalogRoot,
@@ -78,6 +80,7 @@ export interface OpenAISandboxClientFactoryInput {
   readonly workspace: OpenAIWorkspaceSandboxConfig;
   /** The validated NoopSnapshotSpec; bound to the client, never a process global. */
   readonly snapshot: NoopSnapshotSpec;
+  readonly workspaceReadOnly?: boolean;
   /** Secret-stripped environment variables to seed the sandbox with. */
   readonly environment: Readonly<Record<string, string>>;
   readonly telemetryContext: AgentProviderSessionInput['telemetryContext'];
@@ -182,6 +185,7 @@ export function createOpenAIStructuredResultConfiguration(
 ): OpenAIStructuredResultConfiguration {
   const projection = projectStepResultSchemaForProvider({
     schemaId: capture.schemaId,
+    step: capture.step,
     schema: capture.schema,
     target: 'openai_agents_output_type'
   });
@@ -200,7 +204,7 @@ function shouldUseOpenAIOutputType(
   role: AgentProviderSessionInput['telemetryContext']['role']
 ): boolean {
   if (structuredResult === undefined) return false;
-  if (structuredResult.capture.step === 'spec.author') return false;
+  if (structuredResult.capture.step === 'spec.author') return isReviewedSpecCapture(structuredResult.capture);
   if (structuredResult.capture.step === 'implementation.build' && role === 'reviewer') return false;
   return true;
 }
@@ -1138,7 +1142,7 @@ function makeDefaultSandboxClientFactory(workspaceBaseDir?: string): OpenAISandb
       staged.workspace,
       factoryInput.environment,
       factoryInput.skillMounts ?? [],
-      factoryInput.telemetryContext.role === 'reviewer'
+      factoryInput.workspaceReadOnly ?? factoryInput.telemetryContext.role === 'reviewer'
     );
     let client: UnixLocalSandboxClient;
     let session: SandboxSessionLike;
@@ -1208,6 +1212,7 @@ export function createOpenAIAgentAdapter(
   const eventIdGenerator = options.eventIdGenerator ?? (() => `evt_${Math.random().toString(36).slice(2)}`);
 
   return {
+    supportsSpecReview: true,
     providerKind: openaiProviderKind,
     adapterId: openaiAgentAdapterId,
     supportedConnectionMechanism: 'fetch_transport',
@@ -1243,6 +1248,7 @@ export function createOpenAIAgentAdapter(
       if (input.structuredResultCapture !== undefined) {
         structuredResult = createOpenAIStructuredResultConfiguration(input.structuredResultCapture);
       }
+      const reviewedSpec = isReviewedSpecCapture(input.structuredResultCapture);
       const openAIOutputTypeStructuredResult = shouldUseOpenAIOutputType(structuredResult, input.telemetryContext.role)
         ? structuredResult
         : undefined;
@@ -1260,7 +1266,7 @@ export function createOpenAIAgentAdapter(
         workspaceRootCount: workspace.workspaceRoots.length,
         ...(structuredResult !== undefined ? {
           schemaId: structuredResult.capture.schemaId,
-          resultFile: structuredResult.capture.resultFile,
+          ...(!isReviewedSpecCapture(input.structuredResultCapture) ? { resultFile: structuredResult.capture.resultFile } : {}),
           resultCaptureMechanism
         } : {})
       });
@@ -1327,6 +1333,7 @@ export function createOpenAIAgentAdapter(
         sandboxHandle = await sandboxClientFactory({
           workspace,
           snapshot,
+          ...(reviewedSpec ? { workspaceReadOnly: true } : {}),
           environment: safeEnvironment,
           telemetryContext: input.telemetryContext,
           skillMounts: skillMaterialization.mounts
@@ -1347,7 +1354,7 @@ export function createOpenAIAgentAdapter(
           ...(structuredResult !== undefined ? {
             structuredResultCapture: true,
             schemaId: structuredResult.capture.schemaId,
-            resultFile: structuredResult.capture.resultFile,
+            ...(!isReviewedSpecCapture(input.structuredResultCapture) ? { resultFile: structuredResult.capture.resultFile } : {}),
             resultCaptureMechanism
           } : {}),
           ...safeDetail
@@ -1393,7 +1400,7 @@ export function createOpenAIAgentAdapter(
       });
 
       const inferenceMapping = mapInferenceSettings(input.profile);
-      const tools = createProgressTools();
+      const tools = reviewedSpec && input.telemetryContext.role === 'reviewer' ? [] : createProgressTools();
 
       // The manifest the run driver hands to the SandboxAgent mirrors the one the
       // client used to open the session, so defaultManifest matches the session
@@ -1404,7 +1411,7 @@ export function createOpenAIAgentAdapter(
         workspace,
         safeEnvironment,
         skillMaterialization.mounts,
-        input.telemetryContext.role === 'reviewer'
+        reviewedSpec || input.telemetryContext.role === 'reviewer'
       );
       const runManifest = sandboxHandle.manifest ?? manifest;
 
@@ -1492,7 +1499,7 @@ export function createOpenAIAgentAdapter(
           }
 
           failureStage = 'sdk_result';
-          const terminal = await outcome.result;
+          let terminal = await outcome.result;
 
           // Cache optional continuity without losing a completed model result.
           if (input.modelMemory !== undefined && terminal.responsesContinuity !== undefined) {
@@ -1515,6 +1522,13 @@ export function createOpenAIAgentAdapter(
                 });
               } catch { /* Optional diagnostics must not discard the result either. */ }
             }
+          }
+
+          if (terminal.directive === 'advance' && reviewedSpec && openAIOutputTypeStructuredResult) {
+            const decoded = decodeSpecRoleProviderResult(openAIOutputTypeStructuredResult.capture, terminal.output);
+            terminal = decoded.kind === 'question'
+              ? { ...terminal, directive: 'needs_input', question: decoded.question }
+              : { ...terminal, output: decoded.value };
           }
 
           // Result-file handoff: write the final output to the scratch root.
@@ -1557,7 +1571,7 @@ export function createOpenAIAgentAdapter(
           if (terminal.directive === 'advance' && structuredResult !== undefined) {
             safeLog('info', 'openai.adapter.result_capture_diagnostic', {
               runId: ctx.runId, step: ctx.step, captureStage: 'capture_complete',
-              schemaId: structuredResult.capture.schemaId, resultFile: structuredResult.capture.resultFile,
+              schemaId: structuredResult.capture.schemaId, ...(!isReviewedSpecCapture(input.structuredResultCapture) ? { resultFile: structuredResult.capture.resultFile } : {}),
               resultCaptureMechanism: openAIOutputTypeStructuredResult !== undefined ? 'openai_output_type' : 'sandbox_or_final_output'
             });
           }
@@ -1626,7 +1640,7 @@ export function createOpenAIAgentAdapter(
             ...(structuredResult !== undefined ? {
               structuredResultCapture: true,
               schemaId: structuredResult.capture.schemaId,
-              resultFile: structuredResult.capture.resultFile,
+              ...(!isReviewedSpecCapture(input.structuredResultCapture) ? { resultFile: structuredResult.capture.resultFile } : {}),
               resultCaptureMechanism
             } : {}),
             ...safeDetail

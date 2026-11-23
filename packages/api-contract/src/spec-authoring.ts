@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { findingDispositionSchema } from './convergence.js';
 
 export const specArtifactKindSchema = z.enum(['feature_spec', 'enhancement_spec']);
 export const committedSpecStatusSchema = z.enum(['draft', 'approved', 'implementing', 'complete', 'superseded']);
@@ -43,3 +44,16 @@ export type SpecArtifactKind = z.infer<typeof specArtifactKindSchema>;
 export type CommittedSpecStatus = z.infer<typeof committedSpecStatusSchema>;
 export type SpecAuthorFrontmatter = z.infer<typeof specAuthorFrontmatterSchema>;
 export type SpecAuthorResult = z.infer<typeof specAuthorResultSchema>;
+
+
+export const reviewedSpecAuthorResultSchema = z.object({
+  spec: specAuthorResultSchema,
+  dispositions: z.array(findingDispositionSchema)
+}).strict().superRefine(({ dispositions }, ctx) => {
+  for (const [index, disposition] of dispositions.entries()) {
+    if (!(disposition.disposition === 'fixed' ? disposition.summary : disposition.reason).trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['dispositions', index], message: 'A nonblank response is required.' });
+    }
+  }
+});
+export type ReviewedSpecAuthorResult = z.infer<typeof reviewedSpecAuthorResultSchema>;

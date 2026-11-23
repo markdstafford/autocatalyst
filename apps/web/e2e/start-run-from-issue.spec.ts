@@ -114,7 +114,9 @@ test('starts an unseeded feature, revises and approves it, and finishes at merge
   const spec = page.getByTestId('spec-gate-decision');
   await expect(spec).toHaveText('Approve');
   const initialSpecLaunches = await fakeServer.readLaunchCount();
-  expect(initialSpecLaunches).toBeGreaterThan(0);
+  expect(initialSpecLaunches).toBe(2);
+  const sdk = sdkFor(fakeServer);
+  expect((await sdk.listRunSessions(id)).sessions.map(session => session.role)).toEqual(['implementer', 'reviewer']);
   await page.getByRole('tab', { name: 'Spec' }).click();
   await expect(page.getByTestId('spec-document')).toContainText(PASSAGE);
   await selectAndComment(page, PASSAGE, 'Clarify uniqueness scope.');
@@ -125,7 +127,9 @@ test('starts an unseeded feature, revises and approves it, and finishes at merge
   await expect(card.getByTestId('status-chip')).toHaveText('addressed', { timeout: 20_000 });
   await expect(spec).toHaveText('Approve');
   const revisedSpecLaunches = await fakeServer.readLaunchCount();
-  expect(revisedSpecLaunches).toBeGreaterThan(initialSpecLaunches);
+  expect(revisedSpecLaunches).toBe(initialSpecLaunches + 2);
+  expect((await sdk.listRunSessions(id)).sessions.filter(session => session.step === 'spec.author').map(session => session.role))
+    .toEqual(['implementer', 'reviewer', 'implementer', 'reviewer']);
   await spec.click();
   await expect(page.getByTestId('spec-gate-decision-copy')).toContainText(/confirm.*addressed comment/iu);
   await page.getByTestId('spec-gate-decision-confirm').click();
@@ -156,7 +160,6 @@ test('starts an unseeded feature, revises and approves it, and finishes at merge
   await expect(pr).toHaveText('#' + number + ' · Merged');
   await expect(page.getByTestId('pane-status')).toHaveText('Done');
 
-  const sdk = sdkFor(fakeServer);
   expect(await sdk.getRun(id)).toMatchObject({ status: 'done', workKind: 'feature' });
   const { sessions } = await sdk.listRunSessions(id);
   expect(sessions.map((session) => session.step)).toEqual(expect.arrayContaining(['spec.author', 'implementation.build', 'pr.finalize']));

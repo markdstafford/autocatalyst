@@ -405,3 +405,20 @@ function setAtPath(input: unknown, path: readonly (string | number)[], value: un
   const source = input !== null && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : {};
   return { ...source, [head as string]: setAtPath(source[head as string], tail, value) };
 }
+
+/** Remove only nullable provider placeholders; never change passage quote bytes. */
+export function normalizeSpecReviewerResult(value: unknown): unknown {
+  if (!isPlainObject(value)) return value;
+  if (value['status'] === 'satisfied' && value['findings'] === null) {
+    const { findings: _findings, ...rest } = value;
+    return rest;
+  }
+  if (!Array.isArray(value['findings'])) return value;
+  return { ...value, findings: value['findings'].map(finding => {
+    if (!isPlainObject(finding)) return finding;
+    const normalized = { ...finding };
+    if (normalized['externalId'] === null) delete normalized['externalId'];
+    if (normalized['scope'] === 'passage' && normalized['passageQuote'] === null) delete normalized['passageQuote'];
+    return normalized;
+  }) };
+}

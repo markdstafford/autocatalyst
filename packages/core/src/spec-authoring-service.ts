@@ -39,10 +39,15 @@ export interface WorkspaceFileSystemPort {
 }
 
 export interface WorkspaceGitPort {
+  readHeadFile?(input: {
+    readonly workspaceRepoRoot: string;
+    readonly relativePath: string;
+  }): Promise<string | null>;
   commitFiles(input: {
     readonly workspaceRepoRoot: string;
     readonly relativePaths: readonly string[];
     readonly message: string;
+    readonly expectedContents?: string;
   }): Promise<{ readonly commitSha?: string }>;
 }
 
@@ -59,11 +64,13 @@ export interface CompleteSpecAuthoringInput {
   readonly result: SpecAuthorResult;
   readonly workspaceRepoRoot: string;
   readonly workspaceHandle: string;
+  readonly reviewedMarkdown?: string;
 }
 
 export interface CompleteSpecAuthoringOutput {
   readonly artifact: Artifact;
   readonly committedPath: string;
+  readonly committedMarkdown?: string;
   readonly artifactCreated: 'created' | 'recovered';
   readonly checkpointResult: {
     readonly artifactId: string;
@@ -133,6 +140,7 @@ async function writeValidateAndCommitSpec(input: {
   readonly kind: 'feature_spec' | 'enhancement_spec';
   readonly slug: string;
   readonly operation: 'add' | 'revise';
+  readonly reviewed?: boolean;
 }, deps: Pick<SpecAuthoringServiceDependencies, 'filesystem' | 'git'>): Promise<void> {
   const { workspaceRepoRoot, relativePath, contents, kind, slug, operation } = input;
 
@@ -145,6 +153,7 @@ async function writeValidateAndCommitSpec(input: {
   try {
     const written = await deps.filesystem.readFile({ workspaceRepoRoot, relativePath });
     parseSpecFrontmatter(written);
+    if (input.reviewed && written !== contents) throw new Error('Spec contents changed during write.');
   } catch (cause) {
     throw new SpecAuthoringError('spec_file_validation_failed', 'Spec file validation failed after write.', { cause });
   }
@@ -154,6 +163,7 @@ async function writeValidateAndCommitSpec(input: {
     await deps.git.commitFiles({
       workspaceRepoRoot,
       relativePaths: [relativePath],
+      ...(input.reviewed ? { expectedContents: contents } : {}),
       message: operation === 'add'
         ? `docs: add ${prefix} spec ${slug}`
         : `docs: revise ${prefix} spec ${slug}`
@@ -184,7 +194,26 @@ export async function completeSpecAuthoring(
 
   const typedKind = kind as 'feature_spec' | 'enhancement_spec';
 
-  if (existingArtifact === null) {
+  if (input.reviewedMarkdown !== undefined) {
+    if (input.reviewedMarkdown !== contents || deps.git.readHeadFile === undefined) {
+      throw new SpecAuthoringError('spec_file_validation_failed', 'Reviewed Markdown or HEAD reader is invalid.');
+    }
+    if (existingArtifact !== null) assertExistingArtifactLocation(existingArtifact, relativePath);
+    const target = { workspaceRepoRoot, relativePath };
+    const head = await deps.git.readHeadFile(target);
+    if (head !== contents) {
+      await writeValidateAndCommitSpec({
+        ...target, contents, kind: typedKind, slug, reviewed: true, operation: head === null ? 'add' : 'revise'
+      }, deps);
+    }
+    // A recovered commit is authoritative; reconcile the working copy used by the spec API.
+    if (await deps.filesystem.readFile(target).catch(() => null) !== contents) {
+      await deps.filesystem.writeFile({ ...target, contents });
+    }
+    if (await deps.git.readHeadFile(target) !== contents || await deps.filesystem.readFile(target) !== contents) {
+      throw new SpecAuthoringError('spec_commit_failed', 'Committed spec differs from the reviewed Markdown.');
+    }
+  } else if (existingArtifact === null) {
     await writeValidateAndCommitSpec({
       workspaceRepoRoot,
       relativePath,
@@ -239,7 +268,7 @@ export async function completeSpecAuthoring(
     throw new SpecAuthoringError('spec_artifact_persistence_failed', 'Failed to persist spec artifact.', { cause });
   }
 
-  if (deps.feedbackLifecycle !== undefined) {
+  if (input.reviewedMarkdown === undefined && deps.feedbackLifecycle !== undefined) {
     await addressOpenFeedbackForRunTarget({
       runId: run.id,
       target: 'artifact',
@@ -250,6 +279,7 @@ export async function completeSpecAuthoring(
 
   return {
     artifact,
+    ...(input.reviewedMarkdown !== undefined ? { committedMarkdown: contents } : {}),
     committedPath: relativePath,
     artifactCreated,
     checkpointResult: {

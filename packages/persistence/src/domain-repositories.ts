@@ -86,6 +86,7 @@ import type {
   CreateConversationTopicMessageAndRunResult,
   DomainRepositories,
   FeedbackAnchorOffsetsPersistenceInput,
+  SpecReviewAnchorPersistenceInput,
   FeedbackRepository,
   FeedbackStatusTransitionPersistenceInput,
   FeedbackThreadAppendPersistenceInput,
@@ -928,7 +929,7 @@ export class DrizzleRunRepository implements RunRepository {
       const run = this.#rowToRun(updatedRows[0]);
       // Create a new open RunStep for the re-dispatch step. Earlier rows, including the
       // terminal `failed` row, are left untouched so run history stays auditable.
-      const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep);
+      const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep, input.destinationCheckpointResult);
       return { run, runStep };
     });
   }
@@ -1086,12 +1087,47 @@ export class DrizzleFeedbackRepository implements FeedbackRepository {
   }
 
   async create(input: CreateFeedbackInput): Promise<Feedback> {
+    return this.#create(input, `fb_${randomUUID()}`);
+  }
+
+  async createSpecReviewFinding(id: string, input: CreateFeedbackInput): Promise<Feedback> {
+    if (!/^fb_spec_[a-f0-9]{64}$/u.test(id) || input.target !== 'artifact' || input.status !== 'open' || input.anchor !== undefined ||
+        input.thread[0]?.author.kind !== 'model') throw new Error('Invalid spec review feedback.');
+    this.#create(input, id, true);
+    const row = await this.findById(id);
+    if (row === null || row.runId !== input.runId || row.tenant !== input.tenant ||
+        row.target !== 'artifact' || row.thread[0]?.author.kind !== 'model') {
+      throw new Error('Spec review feedback identity mismatch.');
+    }
+    return row;
+  }
+
+  async bindSpecReviewAnchor(input: SpecReviewAnchorPersistenceInput): Promise<void> {
+    this.#database.drizzle.transaction(tx => {
+      const item = tx.select().from(feedback).where(eq(feedback.id, input.feedbackId)).get();
+      const artifact = tx.select().from(artifacts).where(eq(artifacts.id, input.artifactId)).get();
+      if (!/^fb_spec_[a-f0-9]{64}$/u.test(input.feedbackId) || item === undefined || artifact === undefined || item.runId !== input.runId ||
+          item.tenant !== input.tenant || item.target !== 'artifact' ||
+          artifact.runId !== input.runId || artifact.tenant !== input.tenant ||
+          (artifact.kind !== 'feature_spec' && artifact.kind !== 'enhancement_spec') ||
+          parseJsonValue(feedbackThreadSchema, item.threadJson)[0]?.author.kind !== 'model' ||
+          (input.anchor !== null && input.anchor.artifactId !== input.artifactId)) {
+        throw new Error('Invalid spec review anchor target.');
+      }
+      const next = nullableJsonForRow(feedbackAnchorSchema, input.anchor ?? undefined);
+      if (item.anchorJson !== next) {
+        tx.update(feedback).set({ anchorJson: next }).where(eq(feedback.id, item.id)).run();
+      }
+    });
+  }
+
+  #create(input: CreateFeedbackInput, id: string, retryable = false): Feedback {
     const parsed = createFeedbackInputSchema.parse(input);
     const parentRows = this.#database.drizzle.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
     requireParent(parentRows, parsed.runId, 'Run');
     const now = nowIso();
     const entity: Feedback = validateEntity(feedbackSchema, {
-      id: `fb_${randomUUID()}`,
+      id,
       runId: parsed.runId,
       owner: parsed.owner,
       tenant: parsed.tenant,
@@ -1105,7 +1141,7 @@ export class DrizzleFeedbackRepository implements FeedbackRepository {
       updatedAt: now
     });
 
-    this.#database.drizzle.insert(feedback).values({
+    const insert = this.#database.drizzle.insert(feedback).values({
       id: entity.id,
       runId: entity.runId,
       ownerJson: stringifyJsonValue(nonModelPrincipalSchema, entity.owner),
@@ -1118,7 +1154,9 @@ export class DrizzleFeedbackRepository implements FeedbackRepository {
       threadJson: stringifyJsonValue(feedbackThreadSchema, entity.thread),
       createdAt: entity.createdAt,
       updatedAt: entity.updatedAt
-    }).run();
+    });
+    if (retryable) insert.onConflictDoNothing({ target: feedback.id }).run();
+    else insert.run();
 
     return entity;
   }
@@ -1159,20 +1197,14 @@ export class DrizzleFeedbackRepository implements FeedbackRepository {
       }
       const existingThread = parseJsonValue(feedbackThreadSchema, current.threadJson);
       const nextThread = [...existingThread, input.threadEntry];
-      tx.update(feedback)
+      const updated = tx.update(feedback)
         .set({
           status: input.nextStatus,
           threadJson: stringifyJsonValue(feedbackThreadSchema, nextThread),
           updatedAt: input.updatedAt
         })
-        .where(eq(feedback.id, input.feedbackId))
-        .run();
-      const updated = tx
-        .select()
-        .from(feedback)
-        .where(eq(feedback.id, input.feedbackId))
-        .limit(1)
-        .all()[0];
+        .where(and(eq(feedback.id, input.feedbackId), eq(feedback.status, input.expectedStatus)))
+        .returning().get();
       if (updated === undefined) {
         throw new Error(`Feedback '${input.feedbackId}' does not exist after update.`);
       }

@@ -49,6 +49,7 @@ export interface LoadSpecAuthorPromptInputRequest {
   readonly repositories: DomainRepositories;
   readonly repositoriesEnforceTenantIsolation?: boolean;
   readonly issues?: IssueContextReader;
+  readonly loadRevisionFeedback?: boolean;
 }
 
 function assertTenant(entity: { readonly tenant: string }, tenantId: string, entityName: string, runId: string): void {
@@ -132,10 +133,11 @@ export async function loadSpecAuthorPromptInput(request: LoadSpecAuthorPromptInp
     throw new SpecAuthoringContextLoadError('missing_request_context', 'Spec authoring context has no actionable request text.', toSafeDetails({ runId: request.runId }));
   }
 
-  // Open, human-authored artifact feedback (a spec.human_review revise reply) must be delivered to
-  // the author so the revised spec actually addresses the change request. Reviewer/system feedback
+  // The legacy bare author consumes open human feedback directly. Reviewed authoring carries
+  // its own exact ID set and never loads additional items into the model task.
+  // Reviewer/system feedback
   // (non-human authors) is excluded.
-  const allFeedback = await request.repositories.feedback.listByRun(run.id);
+  const allFeedback = request.loadRevisionFeedback === false ? [] : await request.repositories.feedback.listByRun(run.id);
   const revisionFeedback: SpecAuthorRevisionFeedback[] = allFeedback
     .filter((fb) => fb.target === 'artifact' && fb.status === 'open' && fb.thread[0]?.author.kind === 'human')
     .map((fb) => ({ title: fb.title, body: fb.body }));

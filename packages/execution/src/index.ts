@@ -29,6 +29,9 @@ export {
 export {
   createStepResultContractRegistry,
   createSpecAuthorResultContract,
+  createReviewedSpecAuthorResultContract,
+  createSpecReviewerResultContract,
+  REVIEWED_SPEC_AUTHOR_SCHEMA_ID,
   createPullRequestFinalizeResultContract,
   resolveStepResultContract,
   registerSpecAuthorResultContract,
@@ -109,6 +112,8 @@ export {
 export {
   createStructuredAgentResultCapture,
   assertSerializableStructuredResult,
+  isReviewedSpecCapture,
+  decodeSpecRoleProviderResult,
   type StructuredAgentResultCapture,
   type StructuredAgentResultCaptureMechanism,
   type CreateStructuredAgentResultCaptureInput,

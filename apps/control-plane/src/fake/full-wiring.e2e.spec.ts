@@ -187,6 +187,7 @@ describe('production entrypoint fake-mode wiring (spawned child process)', () =>
     const runId = await startRun(client, projectId, 1);
 
     await waitForStep(client, runId, 'spec.human_review');
+    expect((await client.listRunSessions(runId)).sessions.map(session => session.role)).toEqual(['implementer', 'reviewer']);
 
     // First spec pass contains passage B; anchor feedback to passage A.
     const firstSpec = await client.getRunSpec(runId);
@@ -211,6 +212,8 @@ describe('production entrypoint fake-mode wiring (spawned child process)', () =>
     expect(revised).toContain(SPEC_REVISION_INSERT.trimEnd());
     expect(revised).not.toContain(SPEC_PASSAGE_B);
     expect(revised.trimEnd().endsWith('Pass 2.')).toBe(true);
+    expect((await client.listRunSessions(runId)).sessions.map(session => session.role))
+      .toEqual(['implementer', 'reviewer', 'implementer', 'reviewer']);
 
     // Approve the spec gate, then the implementation gate, reaching the PR gate.
     await client.replyToRun(runId, { kind: 'approve', body: 'Approved spec.' });

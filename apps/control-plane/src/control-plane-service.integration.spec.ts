@@ -1,3 +1,4 @@
+import { reviewedSpecCompletionStub, stubSpecHead } from './spec-completion.test-helper.js';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -300,14 +301,15 @@ describe('control-plane-service auto-dispatch integration (SQLite + real orchest
         conversationIngress,
         events: eventBus,
         dispatchQueue,
-        unitOfWork: { run: unitRun },
+        convergenceEngine: reviewedSpecCompletionStub({ run: unitRun }),
+        runSteps: domainRepos.runSteps,
         specAuthoringDependencies: {
           artifacts: domainRepos.artifacts,
           filesystem: {
             writeFile: vi.fn().mockResolvedValue(undefined),
             readFile: vi.fn().mockResolvedValue(authoredSpecContents)
           },
-          git: { commitFiles: vi.fn().mockResolvedValue({}) }
+          git: stubSpecHead({ commitFiles: vi.fn().mockResolvedValue({}) })
         },
         resolveWorkspaceContext: vi.fn().mockResolvedValue({
           workspaceRepoRoot: '/tmp/service-auto-dispatch',
@@ -415,7 +417,7 @@ describe('execution boundary integration (real StubRunner through two-root works
     await fs.rm(tempRoot, { recursive: true, force: true });
   });
 
-  it('dispatches a feature run through the full execution boundary and advances to the next step', async () => {
+  it('dispatches a bug run through the full execution boundary and advances to the next step', async () => {
     const database = createSqliteDatabase({ path: ':memory:' });
     await migrateSqliteDatabase(database);
     try {
@@ -502,7 +504,7 @@ describe('execution boundary integration (real StubRunner through two-root works
           projectId: project.id,
           identity: 'boundary-test',
           topic: { title: 'Boundary Integration Topic' },
-          submission: { kind: 'free_form', body: 'build something', workKind: 'feature' }
+          submission: { kind: 'free_form', body: 'build something', workKind: 'bug' }
         }
       });
 
@@ -1017,7 +1019,7 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
       const specAuthoringDependencies: SpecAuthoringServiceDependencies = {
         artifacts: domainRepos.artifacts,
         filesystem: sharedFilesystem,
-        git: { commitFiles: vi.fn().mockResolvedValue({}) },
+        git: stubSpecHead({ commitFiles: vi.fn().mockResolvedValue({}) }),
         clock: () => new Date().toISOString()
       };
 
@@ -1026,7 +1028,8 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
         conversationIngress,
         events: eventBus,
         dispatchQueue,
-        unitOfWork,
+        convergenceEngine: reviewedSpecCompletionStub(unitOfWork),
+        runSteps: domainRepos.runSteps,
         autoDispatch: { enabled: false },
         specAuthoringDependencies,
         resolveWorkspaceContext: async ({ runId: rId }) => {
@@ -1253,7 +1256,7 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
       const specAuthoringDependencies: SpecAuthoringServiceDependencies = {
         artifacts: domainRepos.artifacts,
         filesystem: sharedFilesystem,
-        git: { commitFiles: vi.fn().mockResolvedValue({}) },
+        git: stubSpecHead({ commitFiles: vi.fn().mockResolvedValue({}) }),
         clock: () => new Date().toISOString()
       };
 
@@ -1262,7 +1265,8 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
         conversationIngress,
         events: eventBus,
         dispatchQueue,
-        unitOfWork,
+        convergenceEngine: reviewedSpecCompletionStub(unitOfWork),
+        runSteps: domainRepos.runSteps,
         autoDispatch: { enabled: false },
         specAuthoringDependencies,
         resolveWorkspaceContext: async ({ runId: rId }) => {
@@ -1464,7 +1468,7 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
       const specAuthoringDependencies: SpecAuthoringServiceDependencies = {
         artifacts: domainRepos.artifacts,
         filesystem: sharedFilesystem,
-        git: { commitFiles: vi.fn().mockResolvedValue({}) },
+        git: stubSpecHead({ commitFiles: vi.fn().mockResolvedValue({}) }),
         clock: () => new Date().toISOString()
       };
 
@@ -1473,7 +1477,8 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
         conversationIngress,
         events: eventBus,
         dispatchQueue,
-        unitOfWork,
+        convergenceEngine: reviewedSpecCompletionStub(unitOfWork),
+        runSteps: domainRepos.runSteps,
         autoDispatch: { enabled: false },
         specAuthoringDependencies,
         resolveWorkspaceContext: async ({ runId: rId }) => {
@@ -1663,7 +1668,7 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
       const specAuthoringDependencies: SpecAuthoringServiceDependencies = {
         artifacts: domainRepos.artifacts,
         filesystem: { writeFile: vi.fn(), readFile: vi.fn().mockResolvedValue('') },
-        git: { commitFiles: vi.fn().mockResolvedValue({}) }
+        git: stubSpecHead({ commitFiles: vi.fn().mockResolvedValue({}) })
       };
 
       const orchestrator = new DefaultOrchestrator({
@@ -1671,7 +1676,8 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
         conversationIngress,
         events: eventBus,
         dispatchQueue,
-        unitOfWork,
+        convergenceEngine: reviewedSpecCompletionStub(unitOfWork),
+        runSteps: domainRepos.runSteps,
         autoDispatch: { enabled: false },
         specAuthoringDependencies,
         resolveWorkspaceContext: async ({ runId: rId }) => {
@@ -1848,7 +1854,7 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
       const specAuthoringDependencies: SpecAuthoringServiceDependencies = {
         artifacts: domainRepos.artifacts,
         filesystem: sharedFilesystem,
-        git: { commitFiles: vi.fn().mockResolvedValue({}) },
+        git: stubSpecHead({ commitFiles: vi.fn().mockResolvedValue({}) }),
         clock: () => new Date().toISOString()
       };
 
@@ -1857,7 +1863,8 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
         conversationIngress,
         events: eventBus,
         dispatchQueue,
-        unitOfWork,
+        convergenceEngine: reviewedSpecCompletionStub(unitOfWork),
+        runSteps: domainRepos.runSteps,
         // auto-dispatch enabled (default): run advances through intake → spec.author automatically
         specAuthoringDependencies,
         resolveWorkspaceContext: async ({ runId: rId }) => {
@@ -2098,7 +2105,7 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
       const specAuthoringDependencies: SpecAuthoringServiceDependencies = {
         artifacts: domainRepos.artifacts,
         filesystem: sharedFilesystem,
-        git: { commitFiles: vi.fn().mockResolvedValue({}) },
+        git: stubSpecHead({ commitFiles: vi.fn().mockResolvedValue({}) }),
         clock: fixedClock
       };
 
@@ -2107,7 +2114,8 @@ describe('spec-authoring end-to-end through real contract (SQLite + real git + h
         conversationIngress,
         events: eventBus,
         dispatchQueue,
-        unitOfWork,
+        convergenceEngine: reviewedSpecCompletionStub(unitOfWork),
+        runSteps: domainRepos.runSteps,
         autoDispatch: { enabled: false },
         specAuthoringDependencies,
         resolveWorkspaceContext: async ({ runId: rId }) => {

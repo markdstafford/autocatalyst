@@ -1,3 +1,4 @@
+import type { SpecReviewSessionInput } from './spec-convergence.js';
 import type { Conversation, Message, Project, Run, Topic } from '@autocatalyst/api-contract';
 
 export type SpecAuthorSupportedWorkKind = 'feature' | 'enhancement';
@@ -222,7 +223,7 @@ function sortMessages(messages: readonly Message[] | undefined): readonly Messag
   return [...(messages ?? [])].sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
-export function buildSpecAuthorPrompt(input: SpecAuthorPromptInput): string {
+export function buildSpecAuthorPrompt(input: SpecAuthorPromptInput, reviewed?: SpecReviewSessionInput): string {
   const workKind = validateInput(input);
   const contract = outputContractFor(workKind, input.specAuthorIdentity);
   const issueLine = input.linkedIssue !== undefined
@@ -265,10 +266,19 @@ export function buildSpecAuthorPrompt(input: SpecAuthorPromptInput): string {
     '- Treat the task list as planning output only; it does not authorize implementation.',
     '',
     'Output contract:',
-    `- Write scratch result file: ${contract.resultFile}.`,
+    ...(reviewed ? [
+      '- Return the reviewed-author JSON envelope { spec, dispositions }.',
+      '- Return dispositions as an array (empty only if there are no required IDs). Each item must have its exact feedbackId, disposition "fixed" with a nonblank summary, or disposition "declined" with a nonblank reason.',
+      '- Only the host writes and commits files. Return the result through the adapter, not a write tool.',
+      '- Where the provider requests a response transport field, put the envelope inside response. If human input is necessary, return { directive: "needs_input", question } in place of the completed envelope.',
+      `- Review focus: ${reviewed.focus}.`,
+      ...(reviewed.canonicalPath ? [`- Use the pinned canonical path ${reviewed.canonicalPath}.`] : []),
+      ...(reviewed.answer ? ['Human answer for this session:', reviewed.answer] : []),
+      ...(reviewed.correction ? [reviewed.correction] : [])
+    ] : [`- Write scratch result file: ${contract.resultFile}.`]),
     `- Use kind: ${contract.expectedKind}.`,
     `- Use relativePath pattern: ${contract.expectedRelativePathPattern}.`,
-    '- The JSON result must contain exactly the schema fields `kind`, `slug`, `relativePath`, `frontmatter`, and `body`.',
+    `- The ${reviewed ? 'nested spec payload' : 'JSON result'} must contain exactly the schema fields \`kind\`, \`slug\`, \`relativePath\`, \`frontmatter\`, and \`body\`.`,
     '- The model-authored JSON may include `frontmatter`, but the model does not own system frontmatter fields.',
     `- The system will stamp \`frontmatter.created\`, \`frontmatter.last_updated\`, \`frontmatter.status\`, \`frontmatter.issue\`, and \`frontmatter.specced_by\` before validation and commit.`,
     `- The stamped \`frontmatter.status\` is \`${contract.frontmatter.status}\`; the stamped \`frontmatter.specced_by\` is \`${contract.frontmatter.trustedSpeccedBy}\`.`,
@@ -288,7 +298,11 @@ export function buildSpecAuthorPrompt(input: SpecAuthorPromptInput): string {
     '',
     'Conversation messages, chronological:',
     ...(messageLines.length > 0 ? messageLines : ['- none supplied']),
-    ...revisionLines,
+    ...(reviewed ? [
+      'Required dispositions and feedback history:', JSON.stringify(reviewed.feedback ?? []),
+      'Prior dispositions:', JSON.stringify(reviewed.priorDispositions ?? []),
+      ...(reviewed.previousMarkdown ? ['Previous draft:', reviewed.previousMarkdown] : [])
+    ] : revisionLines),
     '',
     'Return no alternate result shape.'
   ].join('\n');
@@ -379,4 +393,39 @@ export function buildSpecAuthorContext(input: SpecAuthorPromptInput): SpecAuthor
     prompt: buildSpecAuthorPrompt(input),
     taskInputs: buildSpecAuthorTaskInputs(input)
   };
+}
+
+export function buildReviewedSpecAuthorContext(
+  input: SpecAuthorPromptInput, role: 'implementer' | 'reviewer', round: number, reviewed: SpecReviewSessionInput
+): { prompt: string; taskInputs: Record<string, unknown> } {
+  const base = buildSpecAuthorTaskInputs(input);
+  const schemaId = role === 'reviewer' ? 'autocatalyst.reviewer_result.v1' : 'autocatalyst.reviewed_spec_author.v1';
+  const { revisionFeedback: _revisionFeedback, ...shared } = base;
+  const taskInputs = {
+    ...shared, role, round, schemaId, resultFile: reviewed.resultFile,
+    outputContract: { ...base.outputContract, schemaId, resultFile: reviewed.resultFile },
+    specReview: {
+      ...(reviewed.canonicalPath ? { canonicalPath: reviewed.canonicalPath } : {}),
+      ...(reviewed.candidateKey ? { candidateKey: reviewed.candidateKey } : {}),
+      ...(role === 'implementer' ? { requiredFeedbackIds: reviewed.feedback?.map(item => item.feedbackId) ?? [] } : {})
+    },
+    ...(role === 'reviewer' ? { accessMode: 'read_only', sessionMode: 'code_review' } : {})
+  };
+  if (role === 'implementer') return { prompt: buildSpecAuthorPrompt(input, reviewed), taskInputs };
+  const prompt = [
+    'Independently review the complete candidate Markdown. You have read-only access; do not write files or change state.',
+    `Read this candidate in the workspace scratch root: ${reviewed.candidateKey} (../scratch/${reviewed.candidateKey} from the repository root).`,
+    `Canonical destination (not the file to review): ${reviewed.canonicalPath}.`,
+    `Review focus: ${reviewed.focus}. Check scope, contradictions, edge cases, and testability. Read relevant cited concepts and ADRs from the repository.`,
+    'Where the provider requests a response transport field, put the verdict inside response. If human input is necessary, return { directive: "needs_input", question } in place of the verdict.',
+    'Return only the reviewer JSON verdict. Use status "satisfied" with no findings or status "findings" with findings.',
+    'Each finding has title, body, severity (blocker, warning, or info), and scope ("passage" or "document").',
+    'For a passage finding, copy one short exact contiguous passageQuote from the Markdown source; check that it appears only once. Do not rewrite whitespace.',
+    'Use document scope only for document-wide findings and omit passageQuote for those. Never provide an anchor, offset, path, or artifact ID.',
+    'Request:', input.request.text,
+    ...(input.linkedIssue ? ['Linked issue:', JSON.stringify(input.linkedIssue)] : []),
+    ...(reviewed.answer ? ['Human answer for this session:', reviewed.answer] : []),
+    ...(reviewed.correction ? [reviewed.correction] : [])
+  ].join('\n');
+  return { prompt, taskInputs };
 }

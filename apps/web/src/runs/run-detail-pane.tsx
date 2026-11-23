@@ -29,7 +29,7 @@ import { RunDetailSpecTab } from './run-detail-spec-tab.js';
 import { RunDetailSpecOverlay } from './run-detail-spec-overlay.js';
 import { RUN_DETAIL_TABS, resolveVisibleTab, tabsForRun, type RunDetailTabId } from './run-detail-tabs.js';
 import { ImplementationGateDecision, SpecGateDecision } from './spec-gate-decision.js';
-import { isSpecGateDecisionAvailable } from './spec-decision.js';
+import { decisionErrorInfo, isSpecGateDecisionAvailable } from './spec-decision.js';
 import type { RunDetailState } from './use-run-detail.js';
 import { useSpecReviewController } from './use-spec-review-controller.js';
 import { actionTooltipKey, getAction } from '../shell/action-registry.js';
@@ -37,6 +37,7 @@ import { isMacPlatform } from '../shell/key-utils.js';
 import { useActionKeys } from '../shell/use-action-keys.js';
 import { EmptyState } from '../ui/empty-state.js';
 import { Button } from '../ui/button.js';
+import { Textarea } from '../ui/textarea.js';
 import { Tooltip } from '../ui/tooltip.js';
 import { TabPanel, Tabs } from '../ui/tabs.js';
 
@@ -46,6 +47,7 @@ export interface RunDetailPaneProps {
   readonly detail: RunDetailState;
   /** The loaded current operator principal id, or undefined when unknown (non-fatal). */
   readonly currentPrincipalId?: string;
+  readonly currentPrincipalIsHuman?: boolean;
 }
 
 const EMPTY_PANE_BAR = <div data-testid="pane-bar" className="h-pane-bar shrink-0 border-b border-border px-3" />;
@@ -53,7 +55,7 @@ const EMPTY_PANE_BAR = <div data-testid="pane-bar" className="h-pane-bar shrink-
 export function RunDetailPane({
   run,
   detail,
-  currentPrincipalId
+  currentPrincipalId, currentPrincipalIsHuman
 }: RunDetailPaneProps): ReactNode {
   return (
     <aside
@@ -81,7 +83,7 @@ export function RunDetailPane({
           </div>
         </>
       ) : (
-        <RunDetailBody run={run} detail={detail} currentPrincipalId={currentPrincipalId} />
+        <RunDetailBody run={run} detail={detail} currentPrincipalId={currentPrincipalId} currentPrincipalIsHuman={currentPrincipalIsHuman} />
       )}
     </aside>
   );
@@ -91,9 +93,10 @@ interface RunDetailBodyProps {
   readonly run: Run;
   readonly detail: RunDetailState;
   readonly currentPrincipalId: string | undefined;
+  readonly currentPrincipalIsHuman: boolean | undefined;
 }
 
-function RunDetailBody({ run, detail, currentPrincipalId }: RunDetailBodyProps): ReactNode {
+function RunDetailBody({ run, detail, currentPrincipalId, currentPrincipalIsHuman }: RunDetailBodyProps): ReactNode {
   const [keptTabId, setKeptTabId] = useState<RunDetailTabId>('summary');
   const [overlayOpen, setOverlayOpen] = useState(false);
 
@@ -109,7 +112,10 @@ function RunDetailBody({ run, detail, currentPrincipalId }: RunDetailBodyProps):
     run,
     currentPrincipalId,
     resolveComment: detail.resolveComment,
-    reopenComment: detail.reopenComment
+    reopenComment: detail.reopenComment,
+    ...(currentPrincipalIsHuman !== undefined ? { currentPrincipalIsHuman } : {}),
+    ...(detail.declineFinding ? { declineFinding: detail.declineFinding } : {}),
+    ...(detail.specHandoff ? { outstandingModelFindings: detail.specHandoff.outstandingIds } : {})
   });
 
   const availableTabs = tabsForRun();
@@ -200,6 +206,9 @@ function RunDetailBody({ run, detail, currentPrincipalId }: RunDetailBodyProps):
       <div data-testid="pane-body" className="flex min-h-0 flex-1 flex-col">
         <div className="shrink-0 px-4 pb-4 pt-4">
           <RunDetailHeader run={run} />
+          {detail.specQuestion && detail.answerSpecQuestion && currentPrincipalIsHuman !== false ? (
+            <SpecQuestionReply key={detail.specQuestion.stepId} pause={detail.specQuestion} answer={detail.answerSpecQuestion} />
+          ) : null}
         </div>
         <Tabs
           label="Run detail sections"
@@ -243,11 +252,13 @@ function RunDetailBody({ run, detail, currentPrincipalId }: RunDetailBodyProps):
             />
           </TabPanel>
           <TabPanel value="activity" className={panelClass}>
-            <EmptyState
-              data-testid="pane-activity-empty"
-              title={ACTIVITY_EMPTY_STATE.title}
-              message={ACTIVITY_EMPTY_STATE.line}
-            />
+            {detail.sessions.status === 'success' && detail.sessions.value.some(session => session.step === 'spec.author') ? (
+              <ul className="space-y-1 text-sm" aria-label="Spec authoring sessions">
+                {detail.sessions.value.filter(session => session.step === 'spec.author').map(session => (
+                  <li key={session.id}>spec.author · {session.role} · round {session.round} · {session.outcome}</li>
+                ))}
+              </ul>
+            ) : <EmptyState data-testid="pane-activity-empty" title={ACTIVITY_EMPTY_STATE.title} message={ACTIVITY_EMPTY_STATE.line} />}
           </TabPanel>
         </Tabs>
       </div>
@@ -269,5 +280,33 @@ function RunDetailBody({ run, detail, currentPrincipalId }: RunDetailBodyProps):
         />
       ) : null}
     </>
+  );
+}
+
+function SpecQuestionReply({ pause, answer }: {
+  pause: NonNullable<RunDetailState['specQuestion']>;
+  answer: NonNullable<RunDetailState['answerSpecQuestion']>;
+}): ReactNode {
+  const [body, setBody] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  return (
+    <form className="mt-2 space-y-2" onSubmit={event => {
+      event.preventDefault();
+      if (!body.trim() || busy) return;
+      setBusy(true);
+      setError(undefined);
+      void answer(pause.stepId, body.trim()).then(result => {
+        if (result.status === 'error') {
+          setError(decisionErrorInfo(result.error).message);
+          setBusy(false);
+        }
+      });
+    }}>
+      <p className="text-sm">Spec {pause.role === 'implementer' ? 'author' : 'reviewer'} asks: {pause.question}</p>
+      <Textarea aria-label="Answer spec question" value={body} onChange={event => setBody(event.target.value)} rows={2} />
+      {error ? <p role="alert" className="text-sm text-red">{error}</p> : null}
+      <Button type="submit" disabled={busy || !body.trim()}>Send answer</Button>
+    </form>
   );
 }

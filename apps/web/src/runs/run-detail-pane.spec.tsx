@@ -2,6 +2,7 @@
  * RunDetailPane tests: the complementary region, the header, the four-tab model with
  * kept selection, the Summary facts, the empty states, and the no-run / run-gone states.
  */
+import type { Session } from '@autocatalyst/api-contract';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -19,10 +20,10 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-function renderPane(run = makeRun({ id: 'run-1', workKind: 'feature' })) {
+function renderPane(run = makeRun({ id: 'run-1', workKind: 'feature' }), sessions: readonly Session[] = []) {
   const scripted = createScriptedDetailClient({ run });
   scripted.setPullRequest(null);
-  scripted.setSessions([makeSession()]);
+  scripted.setSessions(sessions);
   scripted.setSpec('drafting');
   const replaceRun = vi.fn();
   const onUnauthorized = vi.fn();
@@ -73,6 +74,23 @@ describe('RunDetailPane', () => {
 
     await user.click(screen.getByRole('tab', { name: 'Activity' }));
     expect(screen.getByTestId('pane-activity-empty').textContent).toContain(ACTIVITY_EMPTY_STATE.title);
+  });
+
+  it('shows spec author and reviewer sessions in Activity while excluding implementation sessions', async () => {
+    const user = userEvent.setup();
+    renderPane(makeRun(), [
+      { ...makeSession({ id: 'author' }), round: 1 },
+      { ...makeSession({ id: 'reviewer', sequence: 2 }), role: 'reviewer', round: 1 },
+      { ...makeSession({ id: 'implementation', sequence: 3 }), step: 'implementation.build' }
+    ]);
+
+    await user.click(screen.getByRole('tab', { name: 'Activity' }));
+    const activity = await screen.findByRole('list', { name: 'Spec authoring sessions' });
+    expect(within(activity).getAllByRole('listitem').map((item) => item.textContent)).toEqual([
+      'spec.author · implementer · round 1 · succeeded',
+      'spec.author · reviewer · round 1 · succeeded'
+    ]);
+    expect(screen.queryByTestId('pane-activity-empty')).toBeNull();
   });
 
   it('shows the spec no-spec empty state for a non-spec work kind without reading the spec', async () => {

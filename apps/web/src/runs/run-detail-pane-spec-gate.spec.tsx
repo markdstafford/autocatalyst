@@ -3,7 +3,7 @@
  * bridge (counts published while the Spec tab is active and cleared when the overlay opens), and the
  * single-SpecReview-instance rule when the expanded overlay is open.
  */
-import type { FeedbackResponse, Run } from '@autocatalyst/api-contract';
+import type { FeedbackResponse, Run, RunStep } from '@autocatalyst/api-contract';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
@@ -47,13 +47,14 @@ function FooterProbe(): ReactNode {
   );
 }
 
-function renderGatePane(run: Run, feedbackList: FeedbackResponse[]) {
+function renderGatePane(run: Run, feedbackList: FeedbackResponse[], steps: RunStep[] = []) {
   const scripted = createScriptedDetailClient({ run });
   scripted.setPullRequest(null);
   scripted.setSessions([makeSession()]);
   scripted.setSpec('ready');
   scripted.setSpecMarkdown(SPEC_MD);
   scripted.setFeedback(feedbackList);
+  scripted.setSteps(steps);
   render(
     <RunDetailFooterProvider>
       <RunDetailPane
@@ -71,6 +72,32 @@ function renderGatePane(run: Run, feedbackList: FeedbackResponse[]) {
 }
 
 describe('RunDetailPane — spec gate', () => {
+  it('shows bounded review and confirms a reason on eligible model findings without approving', async () => {
+    const user = userEvent.setup();
+    const model = { id: 'anthropic:reviewer', kind: 'model' as const, tenantId: 'tenant-1' };
+    const item = feedback({ id: 'model-1', thread: [{ id: 't1', author: model, body: 'Concern', createdAt: NOW }] });
+    const steps: RunStep[] = [
+      { id: 'author', runId: 'run-1', phase: 'spec', step: 'spec.author', role: 'none',
+        startedAt: NOW, endedAt: NOW, durationMs: 0, occurrence: { index: 1, attempt: 1 },
+        checkpointResult: { producingStep: 'spec.author', outcome: 'max_rounds', openFeedbackIds: [item.id] } },
+      { id: 'gate', runId: 'run-1', phase: 'spec', step: 'spec.human_review', role: 'none',
+        startedAt: NOW, endedAt: null, durationMs: null, occurrence: { index: 2, attempt: 1 }, checkpointResult: null }
+    ];
+    const scripted = renderGatePane(makeRun({ id: 'run-1', workKind: 'feature' }), [item], steps);
+    await user.click(screen.getByRole('tab', { name: 'Spec' }));
+    expect(await screen.findByText(/Automated spec review did not converge/u)).toBeDefined();
+    await user.click(await screen.findByRole('button', { name: 'Decline finding' }));
+    const confirm = screen.getByRole('button', { name: 'Confirm decline' }) as HTMLButtonElement;
+    expect(confirm.disabled).toBe(true);
+    await user.type(screen.getByLabelText('Decline reason'), 'Accept the current scope.');
+    await user.click(confirm);
+    await waitFor(() => expect(screen.getByTestId('status-chip').textContent).toBe('wont_fix'));
+    expect(scripted.feedbackUpdateCalls).toEqual([{ feedbackId: item.id,
+      request: { status: 'wont_fix', body: 'Accept the current scope.' } }]);
+    expect(scripted.replyCalls).toEqual([]);
+    expect(screen.getByTestId('spec-gate-decision').textContent).toBe('Approve');
+  });
+
   it('shows the decision label in the pane bar for a spec-gate run', async () => {
     renderGatePane(makeRun({ id: 'run-1', workKind: 'feature' }), [anchoredOpen('c1', 9, 14)]);
     await waitFor(() => expect(screen.getByTestId('spec-gate-decision').textContent).toBe('Request changes (1)'));

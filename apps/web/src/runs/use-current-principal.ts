@@ -11,6 +11,7 @@
  * stays authoritative for 403/409. The id reloads when the client changes (a new bearer token) so it
  * never carries a stale operator across a reconnection.
  */
+import type { Principal } from '@autocatalyst/api-contract';
 import type { ControlPlaneClient } from '@autocatalyst/sdk';
 import { useEffect, useState } from 'react';
 
@@ -19,26 +20,30 @@ import { useEffect, useState } from 'react';
  * lookup failed (unknown identity). Loads once whenever `client` or `enabled` changes.
  */
 export function useCurrentPrincipalId(client: ControlPlaneClient, enabled: boolean): string | undefined {
-  const [principalId, setPrincipalId] = useState<string | undefined>(undefined);
+  return useCurrentPrincipal(client, enabled)?.id;
+}
+
+export function useCurrentPrincipal(client: ControlPlaneClient, enabled: boolean): Principal | undefined {
+  const [principal, setPrincipal] = useState<Principal | undefined>(undefined);
 
   useEffect(() => {
     if (!enabled) {
-      setPrincipalId(undefined);
+      setPrincipal(undefined);
       return;
     }
     let cancelled = false;
     // Clear any prior operator before the new lookup resolves so copy/actions never show a stale id.
-    setPrincipalId(undefined);
+    setPrincipal(undefined);
     void (async () => {
       try {
         const { principal } = await client.getPrincipal();
         if (!cancelled) {
-          setPrincipalId(principal.id);
+          setPrincipal(principal);
         }
       } catch {
         // Unknown identity is non-fatal: leave the id undefined.
         if (!cancelled) {
-          setPrincipalId(undefined);
+          setPrincipal(undefined);
         }
       }
     })();
@@ -47,5 +52,5 @@ export function useCurrentPrincipalId(client: ControlPlaneClient, enabled: boole
     };
   }, [client, enabled]);
 
-  return principalId;
+  return principal;
 }
