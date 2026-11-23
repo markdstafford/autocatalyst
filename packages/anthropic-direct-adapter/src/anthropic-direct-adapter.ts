@@ -1,11 +1,11 @@
 import type {
-  AgentTokenUsage,
   DirectProviderAdapter,
   DirectProviderCallInput,
   DirectProviderCallResult,
   ProviderCapabilityDegradation
 } from '@autocatalyst/execution';
 import {
+  anthropicUsageTokens, normalizeSessionUsage, usageBillingKey, usageGroup,
   DirectProviderProtocolError,
   ProviderConnectionError
 } from '@autocatalyst/execution';
@@ -37,34 +37,12 @@ interface AnthropicTextBlock {
 }
 type AnthropicContentBlock = AnthropicToolUseBlock | AnthropicTextBlock;
 
-interface AnthropicUsage {
-  input_tokens?: number;
-  output_tokens?: number;
-  cache_read_input_tokens?: number;
-  cache_creation_input_tokens?: number;
-}
-
 interface AnthropicMessagesResponse {
   id?: string;
   content: AnthropicContentBlock[];
   model?: string;
-  usage?: AnthropicUsage;
+  usage?: unknown;
   stop_reason?: string;
-}
-
-function mapTokenUsage(usage: AnthropicUsage | undefined): AgentTokenUsage {
-  if (usage === undefined) return { available: false };
-  const input = usage.input_tokens ?? 0;
-  const output = usage.output_tokens ?? 0;
-  return {
-    available: true,
-    tokens: {
-      input,
-      output,
-      cacheRead: usage.cache_read_input_tokens ?? 0,
-      cacheWrite: usage.cache_creation_input_tokens ?? 0
-    }
-  };
 }
 
 export function createAnthropicDirectAdapter(
@@ -173,12 +151,16 @@ export function createAnthropicDirectAdapter(
 
       // Extract exactly one structured candidate
       const candidate = extractCandidate(parsed, toolName);
+      const tokens = anthropicUsageTokens(parsed.usage, false, (code) =>
+        options.logger?.warn('anthropic.direct.invalid_accounting', {
+          runId: input.telemetryContext.runId, step: input.telemetryContext.step, code
+        }));
 
       return {
         candidate,
         metadata: {
           outcome: 'succeeded',
-          tokenUsage: mapTokenUsage(parsed.usage),
+          tokenUsage: normalizeSessionUsage([usageGroup(usageBillingKey(anthropicProviderKind, parsed.model), tokens, true)], true),
           degradedCapabilities,
           model: profile.model,
           purpose: call.purpose

@@ -1,11 +1,11 @@
 import type {
-  AgentTokenUsage,
   DirectProviderAdapter,
   DirectProviderCallInput,
   DirectProviderCallResult,
   ProviderCapabilityDegradation
 } from '@autocatalyst/execution';
 import {
+  normalizeOpenAIResponse, usageRecord,
   DirectProviderProtocolError,
   ProviderConnectionError
 } from '@autocatalyst/execution';
@@ -45,32 +45,11 @@ interface OpenAIChoice {
   finish_reason?: string;
 }
 
-interface OpenAIUsage {
-  prompt_tokens?: number;
-  completion_tokens?: number;
-  total_tokens?: number;
-}
-
 interface OpenAIChatCompletionResponse {
   id?: string;
   model?: string;
   choices?: OpenAIChoice[];
-  usage?: OpenAIUsage;
-}
-
-function mapTokenUsage(usage: OpenAIUsage | undefined): AgentTokenUsage {
-  if (usage === undefined) return { available: false };
-  const input = usage.prompt_tokens ?? 0;
-  const output = usage.completion_tokens ?? 0;
-  return {
-    available: true,
-    tokens: {
-      input,
-      output,
-      cacheRead: 0,
-      cacheWrite: 0
-    }
-  };
+  usage?: unknown;
 }
 
 export function createOpenAIDirectAdapter(
@@ -185,12 +164,21 @@ export function createOpenAIDirectAdapter(
 
       // Extract exactly one structured candidate
       const candidate = extractCandidate(parsed, toolName);
+      const usage = usageRecord(parsed.usage);
+      const tokenUsage = normalizeOpenAIResponse({
+        input_tokens: usage['prompt_tokens'],
+        input_tokens_details: usage['prompt_tokens_details'],
+        output_tokens: usage['completion_tokens'],
+        output_tokens_details: usage['completion_tokens_details']
+      }, parsed.model, (code) => options.logger?.warn('openai.direct.invalid_accounting', {
+        runId: input.telemetryContext.runId, step: input.telemetryContext.step, code
+      }));
 
       return {
         candidate,
         metadata: {
           outcome: 'succeeded',
-          tokenUsage: mapTokenUsage(parsed.usage),
+          tokenUsage,
           degradedCapabilities,
           model: profile.model,
           purpose: call.purpose

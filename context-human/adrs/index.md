@@ -25,7 +25,7 @@ which changes over time.
 | [ADR-012 — LLM output tolerance](adr-012-llm-output-tolerance.md) | Treat model output as a soft contract via a tolerance pipeline. |
 | [ADR-013 — Core domain vocabulary](adr-013-core-domain-vocabulary.md) | `Conversation`, `Topic`, `Message`, `Run`, `Project`. |
 | [ADR-014 — Work hierarchy](adr-014-work-hierarchy.md) | The `Conversation -> Topic -> Run` hierarchy; one active run per topic as a durable database invariant. |
-| [ADR-015 — Run lifecycle](adr-015-run-lifecycle.md) | A workflow-driven step machine; phases `spec`/`implementation`/`docs`/`pr`; intrinsic `waiting_on`; cost per session (rolled up through `(step, role)`); a per-state recovery policy owned by `run`. |
+| [ADR-015 — Run lifecycle](adr-015-run-lifecycle.md) | A workflow-driven step machine; phases `spec`/`implementation`/`docs`/`pr`; intrinsic `waiting_on`; cost per session (pricing refined by [ADR-034](adr-034-cache-aware-session-pricing.md)); a per-state recovery policy owned by `run`. |
 | [ADR-016 — Intent model](adr-016-intent-model.md) | Window-intent is the workflow; `MessageIntent` is transient; no durable `WorkKind`. |
 | [ADR-017 — Single Artifact model](adr-017-single-artifact-model.md) | One `Artifact` model, defined by visibility outside Autocatalyst on approval. |
 | [ADR-018 — Feedback first-class](adr-018-feedback-first-class.md) | `Feedback` is a first-class, run-parented, run-gating entity with a per-item thread. |
@@ -45,3 +45,4 @@ which changes over time.
 | [ADR-031 — The web client is one stateless web app](adr-031-web-client-architecture.md) | One web app that talks only to the control plane and keeps no run state; the desktop app wraps it and a mobile mode shows a subset. |
 | [ADR-032 — Web client stack](adr-032-web-client-stack.md) | React 19 with Vite, Tailwind 4, headless Base UI primitives behind the client's own components, lucide-react, Shiki, Vitest, and Playwright. |
 | [ADR-033 — Spec comment anchors](adr-033-spec-comment-anchors.md) | A spec anchor is code-point offsets plus the quoted text; when read, offsets that no longer match are repaired by searching for the quote, and marked stale when it is gone; optional at the control plane, required by the web client. |
+| [ADR-034 — Cache-aware session pricing](adr-034-cache-aware-session-pricing.md) | Proposed: normalize owned usage and price it at read time against immutable effective-dated rate revisions. |

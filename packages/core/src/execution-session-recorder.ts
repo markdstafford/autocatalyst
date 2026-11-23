@@ -4,9 +4,10 @@ import type {
   Session,
   SessionOutcome,
   SessionRole,
+  SessionUsage,
   TokenBreakdown
 } from '@autocatalyst/api-contract';
-import { createSessionInputSchema } from '@autocatalyst/api-contract';
+import { createSessionInputSchema, sessionUsageSchema, deriveUsageTotals } from '@autocatalyst/api-contract';
 import type { SessionRepository } from './domain-repositories.js';
 
 const zeroTokens: TokenBreakdown = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
@@ -45,6 +46,7 @@ export interface RecordExecutionSessionInput {
   readonly model: ModelIdentity;
   readonly inferenceSettings: InferenceSettings;
   readonly tokens?: TokenBreakdown;
+  readonly usage?: SessionUsage;
   readonly usageAvailable?: boolean;
   readonly assistantTurnCount?: number;
   readonly toolCallCount?: number;
@@ -69,6 +71,13 @@ export async function recordExecutionSession(
   input: RecordExecutionSessionInput
 ): Promise<Session> {
   const usage = resolveUsage(input);
+  const evidence = sessionUsageSchema.safeParse(input.usage);
+  if (input.usage !== undefined && !evidence.success) {
+    dependencies.logger?.warn({ runId: input.runId, step: input.step, code: 'invalid_usage_evidence' },
+      'Invalid accounting evidence was omitted.');
+  }
+  const normalized: SessionUsage = evidence.success ? evidence.data :
+    { coverage: 'unavailable', groups: [], totals: deriveUsageTotals([], 'unavailable') };
   // Map needs_input to succeeded (it's a successful session that awaits human input)
   const persistedOutcome: string = input.outcome === 'needs_input' ? 'succeeded' : input.outcome;
 
@@ -87,11 +96,11 @@ export async function recordExecutionSession(
       durationMs: durationMs(input.startedAt, input.endedAt),
       tokens: usage.tokens,
       usageAvailable: usage.usageAvailable,
+      usage: normalized,
       assistantTurnCount: input.assistantTurnCount ?? 0,
       toolCallCount: input.toolCallCount ?? 0,
       outcome: persistedOutcome,
-      // The Session is the cost unit, but this feature stores only raw tokens and performs no
-      // pricing: usd is left null for a later cost feature to populate. Per ADR-015.
+      // Prices are computed at read time; never write a price back to session evidence.
       cost: { model: input.model, usd: null, tokens: usage.tokens }
     });
   } catch {
@@ -105,7 +114,7 @@ export async function recordExecutionSession(
     return await dependencies.sessions.create(createInput);
   } catch (error) {
     dependencies.logger?.error(
-      { runId: input.runId, step: input.step, role: input.role, errorName: error instanceof Error ? error.name : 'UnknownError' },
+      { runId: input.runId, step: input.step, role: input.role, code: 'session_persistence_failed' },
       'Failed to persist execution session.'
     );
     throw new ExecutionSessionRecordingError('session_persistence_failed', 'Failed to persist execution session.', error);

@@ -1,3 +1,4 @@
+import type { CodexAccountingAnomaly } from './codex-usage.js';
 import { access, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -88,6 +89,7 @@ export interface CodexNativeEvent {
 }
 
 export interface CodexSessionLaunchOptions {
+  readonly onUsage?: (usage: AgentTokenUsage, anomalies?: readonly CodexAccountingAnomaly[]) => void;
   readonly prompt: string;
   readonly instructions: string;
   readonly signal?: AbortSignal;
@@ -628,8 +630,8 @@ export function createCodexAgentAdapter(
       });
       metadata.catch(() => undefined);
 
+      let tokenUsage: AgentTokenUsage = { available: false };
       async function* mapEvents(): AsyncIterable<RunnerEvent> {
-        let tokenUsage: AgentTokenUsage = { available: false };
         let pendingResult: PendingResult | undefined;
         let capturedStructuredResult: { readonly value: unknown } | undefined;
         let resultSeen = false;
@@ -738,6 +740,10 @@ export function createCodexAgentAdapter(
             sandbox,
             allowedTools,
             ...(Object.keys(inferenceMapping.config).length > 0 ? { config: inferenceMapping.config } : {}),
+            onUsage: (usage, anomalies) => {
+              tokenUsage = usage;
+              for (const code of anomalies ?? []) safeLog('warn', 'codex.adapter.invalid_accounting', { runId, step, code });
+            },
             auth: { mode: 'enterprise_sign_in' },
             ...(skillMaterialization.mounts.length > 0 ? { skills: skillMaterialization.mounts } : {}),
             ...(structuredResult !== undefined ? { structuredResult } : {})
@@ -844,10 +850,13 @@ export function createCodexAgentAdapter(
           const thrown = classified ?? err;
           metadataReject(thrown);
           throw thrown;
+        } finally {
+          metadataResolve({ outcome: 'canceled', launchMechanism: 'process_environment',
+            degradedCapabilities, tokenUsage, model: profile.model });
         }
       }
 
-      return { events: mapEvents(), metadata, async close() { cancellation.abort(); } };
+      return { events: mapEvents(), metadata, getTokenUsage: () => tokenUsage, async close() { cancellation.abort(); } };
     }
   };
 }

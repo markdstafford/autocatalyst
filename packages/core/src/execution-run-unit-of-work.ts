@@ -221,6 +221,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
                   outcome: 'succeeded',
                   model: meta.model!,
                   inferenceSettings: telemetry.inferenceSettings,
+                  ...(meta.tokenUsage.usage !== undefined ? { usage: meta.tokenUsage.usage } : {}),
                   ...(meta.tokenUsage.available === true && meta.tokenUsage.tokens !== undefined
                     ? { tokens: meta.tokenUsage.tokens, usageAvailable: true }
                     : { usageAvailable: false }),
@@ -280,9 +281,10 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
               round: deriveRound(input),
               startedAt: preTerminalMeta.startedAt,
               endedAt: preTerminalMeta.endedAt,
-              outcome: 'failed',
+              outcome: preTerminalMeta.outcome === 'succeeded' ? 'failed' : preTerminalMeta.outcome,
               model: preTerminalMeta.model,
               inferenceSettings: preTerminalMeta.inferenceSettings,
+              ...(preTerminalMeta.usage !== undefined ? { usage: preTerminalMeta.usage } : {}),
               ...(preTerminalMeta.usageAvailable === true && preTerminalMeta.tokens !== undefined
                 ? { tokens: preTerminalMeta.tokens, usageAvailable: true }
                 : { usageAvailable: false }),
@@ -342,6 +344,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
           // metadata before the protocol violation) must still propagate as a protocol error,
           // not be downgraded to an ordinary run failure.
           if (error instanceof PreTerminalRunnerFailure && error.cause instanceof RunnerProtocolError) {
+            await recordPreTerminalFailedSession(error.sessionMetadata);
             throw error.cause;
           }
           // For pre-terminal runner failures, record a failed session row from the cached metadata.
@@ -379,7 +382,8 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
       // Record durable session when session metadata and sessions repo are available.
       if (options.sessions !== undefined && consumeResult.sessionMetadata !== undefined) {
         const meta = consumeResult.sessionMetadata;
-        const outcome = deriveAgentOutcome(consumeResult.workResult);
+        const outcome = meta.outcome === 'cancelled' || meta.outcome === 'timeout'
+          ? meta.outcome : deriveAgentOutcome(consumeResult.workResult);
         try {
           const session = await recordExecutionSession(
             { sessions: options.sessions, ...(options.logger !== undefined ? { logger: options.logger } : {}) },
@@ -394,6 +398,7 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
               outcome,
               model: meta.model,
               inferenceSettings: meta.inferenceSettings,
+              ...(meta.usage !== undefined ? { usage: meta.usage } : {}),
               ...(meta.usageAvailable === true && meta.tokens !== undefined
                 ? { tokens: meta.tokens, usageAvailable: true }
                 : { usageAvailable: false }),

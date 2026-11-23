@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -55,6 +56,18 @@ export async function migrateSqliteDatabase(database: SqliteDatabase): Promise<v
   // PRAGMA foreign_keys changes are no-ops inside a transaction; disable/re-enable outside
   internal.client.pragma('foreign_keys = OFF');
   try {
+    // Historical journal entry 0006 has a timestamp earlier than 0004. A database
+    // upgraded across that boundary may have skipped it even though later entries
+    // are recorded. Repair that shape before 0011 builds its tenant-scoped index.
+    const configuration = internal.client.pragma('table_info(configuration_records)') as { name: string }[];
+    const journal = internal.client.prepare("select 1 from sqlite_master where name = '__drizzle_migrations'").get();
+    if (configuration.length > 0 && !configuration.some(({ name }) => name === 'tenant') && journal !== undefined) {
+      const cutoff = internal.client.prepare('select max(created_at) as last from __drizzle_migrations').get() as { last: number | null };
+      if (cutoff.last !== null && cutoff.last >= 1749494400000) {
+        const repair = readFileSync(join(migrationsFolder, '0006_configuration_record_tenant_and_routing.sql'), 'utf8');
+        internal.client.transaction(() => { internal.client.exec(repair); }).immediate();
+      }
+    }
     migrate(internal.drizzle, { migrationsFolder });
   } finally {
     internal.client.pragma('foreign_keys = ON');

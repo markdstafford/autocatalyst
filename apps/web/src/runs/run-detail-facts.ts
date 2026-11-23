@@ -6,7 +6,7 @@
  * read never blanks the other facts. Defined here (not in the data hook) so the display
  * components can import the types without importing the hook.
  */
-import type { FeedbackResponse, PullRequest, Session } from '@autocatalyst/api-contract';
+import type { FeedbackResponse, PullRequest, Session, SessionCostTotal } from '@autocatalyst/api-contract';
 
 /** A single independently-loaded fact: loading, a value, or an inline error. */
 export type FactState<T> =
@@ -27,7 +27,7 @@ export interface PullRequestCheck {
 }
 
 /** The sessions fact, from which the time/token/cost totals are computed. */
-export type SessionsFact = FactState<readonly Session[]>;
+export type SessionsFact = FactState<readonly Session[]> & { readonly runCost?: SessionCostTotal };
 
 /**
  * The Spec-tab discriminator:

@@ -511,11 +511,13 @@ describe('anthropic-direct-adapter: production connection seam', () => {
     expect(result.metadata.outcome).toBe('succeeded');
   });
 
-  it('correctly maps token usage from the real transport response', async () => {
+  it.each([false, true])('correctly maps token usage from the real transport response (invalid split: %s)', async (invalidSplit) => {
+    const warn = vi.fn();
     const outerFetch: typeof globalThis.fetch = async () => new Response(JSON.stringify({
       content: [{ type: 'tool_use', id: 'tu_2', name: 'autocatalyst_direct_result', input: { result: 'ok' } }],
       model: 'claude-3-5-sonnet-latest',
-      usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 30, cache_creation_input_tokens: 10 }
+      usage: { input_tokens: 100, output_tokens: 50, cache_read_input_tokens: 30, cache_creation_input_tokens: 10,
+        cache_creation: { ephemeral_5m_input_tokens: invalidSplit ? 8 : 7, ephemeral_1h_input_tokens: 3 } }
     }), { status: 200, headers: { 'content-type': 'application/json' } });
 
     const profile: ResolvedAgentRunnerProfile = {
@@ -523,7 +525,7 @@ describe('anthropic-direct-adapter: production connection seam', () => {
       providerKind: anthropicProviderKind,
       adapterId: anthropicDirectAdapterId,
       profileName: 'prod-seam-usage',
-      model: { provider: 'anthropic', model: 'claude-3-5-sonnet-latest' },
+      model: { provider: 'anthropic', model: 'dispatch-alias' },
       inferenceSettings: {},
       endpoint: {},
       connectionMechanism: 'fetch_transport'
@@ -537,7 +539,7 @@ describe('anthropic-direct-adapter: production connection seam', () => {
       fetch: outerFetch
     });
 
-    const adapter = createAnthropicDirectAdapter();
+    const adapter = createAnthropicDirectAdapter({ logger: { info() {}, warn, error() {} } });
     const schema = z.object({ result: z.string() });
     const result = await adapter.call({
       call: {
@@ -557,5 +559,16 @@ describe('anthropic-direct-adapter: production connection seam', () => {
       expect(result.metadata.tokenUsage.tokens.cacheRead).toBe(30);
       expect(result.metadata.tokenUsage.tokens.cacheWrite).toBe(10);
     }
+    expect(result.metadata.tokenUsage.usage).toMatchObject({
+      coverage: 'complete',
+      groups: [{ model: { provider: 'anthropic', model: 'claude-3-5-sonnet-latest' }, requestInputTokens: 140,
+        tokens: { freshInput: 100, cacheRead: 30, cacheWrite: 10, output: 50 } }]
+    });
+    expect(result.metadata.tokenUsage.usage?.groups[0]?.tokens.cacheWriteByRetention)
+      .toEqual(invalidSplit ? undefined : { '5m': 7, '1h': 3 });
+    if (invalidSplit) {
+      expect(warn).toHaveBeenCalledExactlyOnceWith('anthropic.direct.invalid_accounting',
+        { runId: 'run_seam_2', step: 'usage_test', code: 'invalid_retention_split' });
+    } else expect(warn).not.toHaveBeenCalled();
   });
 });

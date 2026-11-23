@@ -34,7 +34,7 @@ The dividing line is durability.
 
 Keeping the two apart lets each carry the retention it wants: a run's cost and timeline kept
 indefinitely, the diagnostic firehose dropped on a short window, instead of one policy compromising
-both. A single fact about a finished session lands in both: priced into the durable record, and emitted
+both. A single fact about a finished session lands in both: recorded as evidence in the durable store, and emitted
 as a metric for aggregate dashboards. That is two readers with two lifetimes, not duplication.
 
 ## The durable record
@@ -54,9 +54,10 @@ A run's durable history is two layers in the database.
   act in *within* a step (implementer before reviewer) is a property of the convergence loop, owned
   by `review`/`workflow` (ADR-026); this concept records the resulting order, it does not define it.
 
-The `Session` record is also the unit cost prices (ADR-015): observability records its execution
-metadata, and `cost` prices the tokens into its embedded `Cost`. Its shape belongs to `domain-model`;
-this concept describes what observability writes into it and reads back out.
+The `Session` is the unit cost prices (ADR-015, [ADR-034](../adrs/adr-034-cache-aware-session-pricing.md)). Adapters retain and deduplicate
+owned usage within each attempt, including evidence received before a failed native or parsing
+outcome. Observability persists the evidence, not the price. Cost reads that evidence and rates
+from the durable store. Logs and metrics stay in the separate diagnostic store.
 
 **Per-turn and per-tool detail is not durable here.** It streams live for an in-flight run and to the
 telemetry backend, retained there long enough to debug. A turn carries little durable value on its

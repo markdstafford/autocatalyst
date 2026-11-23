@@ -1,3 +1,4 @@
+import { rowToRecord } from './configuration-record-repository.js';
 import { randomUUID } from 'node:crypto';
 
 import { and, asc, count, desc, eq, inArray, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
@@ -31,7 +32,8 @@ import type {
   RunStatus,
   RunStep,
   RunWaitingOn,
-  Session,
+  StoredSession,
+  ModelRateRecord,
   TestResult,
   Topic,
   TrackedIssue
@@ -70,7 +72,8 @@ import {
   pullRequestSchema,
   runSchema,
   runStepSchema,
-  sessionSchema,
+  storedSessionSchema,
+  sessionUsageSchema,
   testResultEvidenceSchema,
   testResultSchema,
   testingGuideResultSchema,
@@ -138,6 +141,7 @@ import {
   runWorkspaceMetadata,
   runs,
   sessions,
+  configurationRecords,
   testResults,
   topics
 } from './schema.js';
@@ -1595,7 +1599,7 @@ export class DrizzleSessionRepository implements SessionRepository {
     this.#database = asInternalSqliteDatabase(database);
   }
 
-  async create(input: CreateSessionInput): Promise<Session> {
+  async create(input: CreateSessionInput): Promise<StoredSession> {
     const parsed = createSessionInputSchema.parse(input);
     // Allocate the per-run sequence and insert atomically so concurrent creates for the same
     // run cannot collide on a stale max. The unique (run_id, sequence) index is the final
@@ -1609,7 +1613,7 @@ export class DrizzleSessionRepository implements SessionRepository {
         .where(eq(sessions.runId, parsed.runId))
         .all()[0];
       const nextSequence = (maxRow?.value ?? 0) + 1;
-      const entity: Session = validateEntity(sessionSchema, {
+      const entity: StoredSession = validateEntity(storedSessionSchema, {
         id: `sess_${randomUUID()}`,
         runId: parsed.runId,
         sequence: nextSequence,
@@ -1627,7 +1631,8 @@ export class DrizzleSessionRepository implements SessionRepository {
         assistantTurnCount: parsed.assistantTurnCount,
         toolCallCount: parsed.toolCallCount,
         outcome: parsed.outcome,
-        cost: parsed.cost
+        ...(parsed.usage === undefined ? {} : { usage: parsed.usage }),
+        cost: { ...parsed.cost, usd: null }
       });
 
       tx.insert(sessions).values({
@@ -1648,6 +1653,7 @@ export class DrizzleSessionRepository implements SessionRepository {
         assistantTurnCount: entity.assistantTurnCount,
         toolCallCount: entity.toolCallCount,
         outcome: entity.outcome,
+        usageJson: entity.usage === undefined ? null : stringifyJsonValue(sessionUsageSchema, entity.usage),
         costJson: stringifyJsonValue(costSchema, entity.cost)
       }).run();
 
@@ -1655,13 +1661,13 @@ export class DrizzleSessionRepository implements SessionRepository {
     });
   }
 
-  async findById(id: string): Promise<Session | null> {
+  async findById(id: string): Promise<StoredSession | null> {
     const rows = this.#database.drizzle.select().from(sessions).where(eq(sessions.id, id)).limit(1).all();
     const row = rows[0];
     return row === undefined ? null : this.#rowToSession(row);
   }
 
-  async listByRun(runId: string): Promise<readonly Session[]> {
+  async listByRun(runId: string): Promise<readonly StoredSession[]> {
     // Deterministic per-run ordering by the allocated sequence; startedAt/id remain only as
     // defensive tie-breakers for any legacy rows that might share a sequence.
     const rows = this.#database.drizzle
@@ -1673,8 +1679,33 @@ export class DrizzleSessionRepository implements SessionRepository {
     return rows.map((row) => this.#rowToSession(row));
   }
 
-  #rowToSession(row: typeof sessions.$inferSelect): Session {
-    return validateEntity(sessionSchema, {
+  async readPricingSnapshot(tenant: string, runId: string): Promise<{
+    sessions: StoredSession[];
+    history: ModelRateRecord[];
+  }> {
+    return this.#database.drizzle.transaction((tx) => {
+      const recorded = tx.select().from(sessions).innerJoin(runs, eq(sessions.runId, runs.id))
+        .where(and(eq(sessions.runId, runId), eq(runs.tenant, tenant)))
+        .orderBy(asc(sessions.sequence), asc(sessions.startedAt), asc(sessions.id))
+        .all().map((row) => this.#rowToSession(row.sessions));
+      const keys = new Set(recorded.flatMap((session) => session.usage?.groups.flatMap(({ model }) =>
+        model === null ? [] : [JSON.stringify([model.provider, model.model])]) ?? []));
+      if (keys.size === 0) return { sessions: recorded, history: [] };
+      const encodedKeys = JSON.stringify([...keys].map((key) => JSON.parse(key) as [string, string]));
+      const history = tx.select().from(configurationRecords).where(and(
+        eq(configurationRecords.tenant, tenant),
+        sql`${configurationRecords.kind} = 'model_rate_table'`,
+        sql`(json_extract(${configurationRecords.settingsJson}, '$.provider'),
+              json_extract(${configurationRecords.settingsJson}, '$.model')) IN (
+          SELECT json_extract(value, '$[0]'), json_extract(value, '$[1]') FROM json_each(${encodedKeys})
+        )`
+      )).all().map((row) => rowToRecord(row) as ModelRateRecord);
+      return { sessions: recorded, history };
+    });
+  }
+
+  #rowToSession(row: typeof sessions.$inferSelect): StoredSession {
+    return validateEntity(storedSessionSchema, {
       id: row.id,
       runId: row.runId,
       sequence: row.sequence,
@@ -1692,6 +1723,7 @@ export class DrizzleSessionRepository implements SessionRepository {
       assistantTurnCount: row.assistantTurnCount,
       toolCallCount: row.toolCallCount,
       outcome: row.outcome,
+      ...(row.usageJson === null ? {} : { usage: parseJsonValue(sessionUsageSchema, row.usageJson) }),
       cost: parseJsonValue(costSchema, row.costJson)
     });
   }

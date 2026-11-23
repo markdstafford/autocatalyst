@@ -1,5 +1,5 @@
 import { isReviewedSpecCapture } from './structured-result-capture.js';
-import { runnerEventSchema, type RunnerEvent } from '@autocatalyst/api-contract';
+import { runnerEventSchema, sessionUsageSchema, type RunnerEvent } from '@autocatalyst/api-contract';
 import { createNoopAgentModelMemoryStore } from './agent-model-memory.js';
 import { createScratchAgentModelMemoryStore } from './scratch-model-memory.js';
 
@@ -10,7 +10,7 @@ import type {
   AgentProviderSession,
   ResolvedAgentRunnerProfile
 } from './agent-provider-adapter.js';
-import { ProviderConfigurationError } from './agent-provider-adapter.js';
+import { ProviderConfigurationError, ProviderConnectionError } from './agent-provider-adapter.js';
 import type { Runner, RunnerCloseResult, RunnerRunInput, RunnerSessionMetadata } from './runner.js';
 import { RunnerProtocolError } from './runner.js';
 
@@ -146,7 +146,7 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
       let seenTerminal = false;
       let assistantTurnCount = 0;
       let toolCallCount = 0;
-      let outcome: 'succeeded' | 'failed' = 'succeeded';
+      let outcome: RunnerSessionMetadata['outcome'] = 'succeeded';
 
       try {
         for await (const rawEvent of session.events) {
@@ -194,7 +194,8 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
           );
         }
       } catch (err) {
-        outcome = 'failed';
+        outcome = err instanceof ProviderConnectionError && err.code === 'timeout' ? 'timeout'
+          : err instanceof Error && err.name === 'AbortError' ? 'cancelled' : 'failed';
         throw err;
       } finally {
         // Resolve metadata (best-effort; don't throw if unavailable)
@@ -216,7 +217,19 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
         const endedAtIso = new Date(endedAtMs).toISOString();
         const durationMs = endedAtMs - startedAt;
         // Local outcome takes priority when stream errored; use session metadata otherwise.
-        const resolvedOutcome = outcome === 'failed' ? outcome : (metadata?.outcome ?? outcome);
+        const resolvedOutcome = outcome !== 'succeeded' ? outcome : (metadata?.outcome ?? outcome);
+        let tokenUsage = metadata?.tokenUsage;
+        let accountingFailed = false;
+        try {
+          tokenUsage = session.getTokenUsage?.() ?? tokenUsage;
+        } catch {
+          accountingFailed = true;
+        }
+        const evidence = sessionUsageSchema.safeParse(tokenUsage?.usage);
+        if (accountingFailed || (tokenUsage?.usage !== undefined && !evidence.success)) {
+          telemetry?.emit('agent_orchestrator_accounting_unavailable',
+            { code: 'invalid_usage_evidence', runId: telemetryContext.runId, step: telemetryContext.step });
+        }
         telemetry?.emit('agent_orchestrator_session_end', {
           runId: telemetryContext.runId,
           phase: telemetryContext.phase,
@@ -227,14 +240,13 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
           assistantTurnCount,
           toolCallCount,
           degradedCapabilities: metadata?.degradedCapabilities ?? [],
-          tokenUsage: metadata?.tokenUsage ?? { available: false }
+          tokenUsage: tokenUsage ?? { available: false }
         });
 
         // Cache safe session metadata for getSessionMetadata()
         const sessionModel = metadata?.model ?? profile.model;
         const mappedOutcome: RunnerSessionMetadata['outcome'] =
           resolvedOutcome === 'canceled' ? 'cancelled' : resolvedOutcome;
-        const tokenUsage = metadata?.tokenUsage;
         // Normalize token counts to the strict TokenBreakdown shape: all four fields
         // required. The adapter may produce a looser shape (e.g. { input, output, total }
         // without cacheRead/cacheWrite), so we fill defaults to avoid schema validation
@@ -254,6 +266,7 @@ export function createAgentOrchestratorRunner(options: CreateAgentOrchestratorRu
           startedAt: startedAtIso,
           endedAt: endedAtIso,
           outcome: mappedOutcome,
+          ...(evidence.success ? { usage: evidence.data } : {}),
           ...(normalizedTokens !== undefined
             ? { tokens: normalizedTokens, usageAvailable: true }
             : { usageAvailable: tokenUsage?.available ?? false }),

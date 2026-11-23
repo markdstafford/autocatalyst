@@ -1,108 +1,85 @@
-/**
- * Pure, integer-exact Summary totals for the detail pane: completed-session time, a
- * compact token total with breakdown, and a nano-dollar cost total.
- *
- * React- and SDK-free so the arithmetic is unit-tested in isolation. The sums stay on
- * integers and never touch floating point: durations are integer milliseconds, tokens
- * are integer counts, and cost is summed as integer nano-dollars and converted to a
- * dollar string only for display. Summing the integer nano-dollars first is what keeps
- * a total like $0.10 + $0.20 exactly $0.30 instead of the $0.30000000000000004 a
- * float sum of dollar amounts would produce.
- */
-import type { Session } from '@autocatalyst/api-contract';
+import { usageTokenClasses, type Session, type SessionCostTotal } from '@autocatalyst/api-contract';
 
-/** Nano-dollars (1e-9 USD) per whole dollar. `cost.usd` is an integer nano-dollar value. */
-export const NANO_DOLLARS_PER_USD = 1_000_000_000;
+const labels = { freshInput: 'Fresh input', cacheRead: 'Cache reads', cacheWrite: 'Cache writes', output: 'Output' } as const;
 
-export interface TokenBreakdown {
-  readonly input: number;
-  readonly output: number;
-  readonly cacheRead: number;
-  readonly cacheWrite: number;
+export function summaryDuration(sessions: readonly Session[]): number | null {
+  return sessions.length === 0 ? null : sessions.reduce((ms, session) => ms + (session.durationMs ?? 0), 0);
 }
 
-export type TimeTotal = { readonly kind: 'dash' } | { readonly kind: 'value'; readonly ms: number };
-
-export type TokenTotal =
-  | { readonly kind: 'dash' }
-  | { readonly kind: 'value'; readonly total: number; readonly breakdown: TokenBreakdown };
-
-/**
- * Cost total. `dash` when there are no sessions, `unknown` when at least one session
- * has no priced cost (so no misleading partial sum is shown), otherwise the summed
- * integer nano-dollars.
- */
-export type CostTotal =
-  | { readonly kind: 'dash' }
-  | { readonly kind: 'unknown' }
-  | { readonly kind: 'value'; readonly nanoUsd: number };
-
-export interface SummaryTotals {
-  readonly time: TimeTotal;
-  readonly tokens: TokenTotal;
-  readonly cost: CostTotal;
-}
-
-/** Whether a session's cost is priced: a defined, non-null integer nano-dollar `usd`. */
-function isPriced(session: Session): boolean {
-  return session.cost.usd !== null && session.cost.usd !== undefined;
-}
-
-/**
- * Compute all three totals from the run's durable sessions. One pass; every branch is
- * integer-only.
- */
-export function computeSummaryTotals(sessions: readonly Session[]): SummaryTotals {
-  if (sessions.length === 0) {
-    return { time: { kind: 'dash' }, tokens: { kind: 'dash' }, cost: { kind: 'dash' } };
-  }
-
-  // Time: sum only completed sessions (non-null durationMs). Running sessions have a
-  // null durationMs and do not contribute.
-  let timeMs = 0;
-  for (const session of sessions) {
-    if (session.durationMs !== null) {
-      timeMs += session.durationMs;
+export function summaryTokens(sessions: readonly Session[]): { text: string; detail: string } {
+  const recorded = sessions.flatMap(({ usage }) => usage === undefined ? [] : [usage]);
+  const legacy = sessions.filter(({ usage }) => usage === undefined);
+  const legacySum = legacy.reduce((sum, { tokens }) =>
+    sum + Object.values(tokens).reduce((subtotal, count) => subtotal + BigInt(count), 0n), 0n);
+  const missingWork = legacy.length > 0 || recorded.some(({ coverage }) => coverage !== 'complete');
+  let incomplete = missingWork;
+  let sum: bigint | null = null;
+  const classes = usageTokenClasses.map((key) => {
+    let known: bigint | null = null;
+    let missing = missingWork;
+    let allNotApplicable = !missingWork && recorded.length > 0;
+    for (const { groups } of recorded) {
+      for (const { tokens } of groups) {
+        const count = tokens[key];
+        allNotApplicable &&= count === 'not_applicable';
+        if (typeof count === 'number') known = (known ?? 0n) + BigInt(count);
+        if (count === null) {
+          missing = true;
+          if (key === 'cacheWrite') {
+            for (const bucket of Object.values(tokens.cacheWriteByRetention ?? {})) known = (known ?? 0n) + BigInt(bucket);
+          }
+        }
+      }
     }
-  }
-
-  // Tokens: sum all four classes across every session.
-  let input = 0;
-  let output = 0;
-  let cacheRead = 0;
-  let cacheWrite = 0;
-  for (const session of sessions) {
-    input += session.tokens.input;
-    output += session.tokens.output;
-    cacheRead += session.tokens.cacheRead;
-    cacheWrite += session.tokens.cacheWrite;
-  }
-  const tokenBreakdown: TokenBreakdown = { input, output, cacheRead, cacheWrite };
-  const tokenTotal = input + output + cacheRead + cacheWrite;
-
-  // Cost: unknown if any session lacks a priced cost; otherwise sum integer nano-dollars.
-  let cost: CostTotal;
-  if (sessions.some((session) => !isPriced(session))) {
-    cost = { kind: 'unknown' };
-  } else {
-    let nanoUsd = 0;
-    for (const session of sessions) {
-      // Priced above, so `usd` is a defined integer here.
-      nanoUsd += session.cost.usd as number;
-    }
-    cost = { kind: 'value', nanoUsd };
-  }
-
+    if (known !== null) sum = (sum ?? 0n) + known;
+    incomplete ||= missing;
+    return labels[key] + ': ' + (known === null ? allNotApplicable ? 'Not applicable' : 'Unknown' :
+      known.toLocaleString('en-US') + (missing ? ' (incomplete)' : ''));
+  });
+  const legacyDetail = legacy.length > 0
+    ? ' Legacy: ' + legacySum.toLocaleString('en-US') + ' tokens in ' + legacy.length +
+      ' ' + (legacy.length === 1 ? 'session' : 'sessions') + '. Counts may overlap or contain placeholders.'
+    : '';
   return {
-    time: { kind: 'value', ms: timeMs },
-    tokens: { kind: 'value', total: tokenTotal, breakdown: tokenBreakdown },
-    cost
+    text: recorded.length === 0 ? formatCompactTokens(legacySum) + ' · Legacy' :
+      (sum === null ? 'Unknown' : formatCompactTokens(sum)) + (incomplete || sum === null ? ' · Incomplete' : ''),
+    detail: classes.join(' · ') + '.' + legacyDetail
   };
 }
 
-// ---------------------------------------------------------------------------
-// Display formatting (string output only; no arithmetic that affects the sums)
-// ---------------------------------------------------------------------------
+const gapCopy: Record<SessionCostTotal['gaps'][number]['code'], string> = {
+  legacy_cache_detail: 'Legacy counts do not establish the cache split',
+  missing_usage: 'Usage counts were not reported',
+  partial_usage: 'Some work may not have been recorded',
+  missing_model: 'Served model is unknown',
+  missing_rate: 'No matching rate',
+  missing_cache_retention: 'Cache write retention was not reported',
+  incompatible_rate: 'Reported usage is incompatible with the rate',
+  missing_request_size: 'These tokens could not be priced in any feasible band',
+  estimated_request_size: 'Long-context pricing band estimated',
+  amount_overflow: 'Amount exceeds the displayable range'
+};
+
+export function describeRunCost(total: SessionCostTotal): string {
+  const lines = ['Recorded sessions only. API list price is not a subscription charge.'];
+  if (!total.complete && total.knownSubtotalUsd !== null) lines.push('This is the known subtotal.');
+  for (const gap of total.gaps) {
+    const key = [gap.provider, gap.model].filter(Boolean).join('/');
+    const details = [
+      gap.sessionCount === 0 ? 'run subtotal' : gap.sessionCount + (gap.sessionCount === 1 ? ' session' : ' sessions'),
+      ...(gap.tokenClass === undefined ? [] : [labels[gap.tokenClass]]),
+      ...(gap.tokenCount === null ? [] : [BigInt(gap.tokenCount).toLocaleString('en-US') + ' tokens'])
+    ];
+    lines.push(gapCopy[gap.code] + (key === '' ? '' : ' (' + key + ')') + ': ' + details.join(', ') + '.');
+    if (gap.hasUnknownTokenCount) lines.push('Additional affected tokens cannot be counted.');
+    if (gap.code === 'estimated_request_size') {
+      lines.push(gap.method === 'lowest_feasible'
+        ? 'Used the lowest feasible band; the true amount may be higher.'
+        : 'Used a request-size sample; the true amount may differ in either direction.');
+    }
+  }
+  return lines.join(' ');
+}
 
 const SECOND_MS = 1000;
 const MINUTE_MS = 60 * SECOND_MS;
@@ -128,44 +105,17 @@ export function formatDurationMs(ms: number): string {
   return `${seconds}s`;
 }
 
-/** A compact token count: `1.2K`, `3.4M`, or the plain number below 1,000. */
-export function formatCompactTokens(total: number): string {
-  if (total < 1_000) {
-    return String(total);
-  }
-  if (total < 1_000_000) {
-    return `${trimTenth(total / 1_000)}K`;
-  }
-  return `${trimTenth(total / 1_000_000)}M`;
+export function formatCompactTokens(total: bigint): string {
+  if (total < 1_000n) return String(total);
+  const unit = total < 1_000_000n ? 1_000n : 1_000_000n;
+  const tenths = (total * 10n + unit / 2n) / unit;
+  const fraction = tenths % 10n;
+  return String(tenths / 10n) + (fraction === 0n ? '' : '.' + fraction) + (unit === 1_000n ? 'K' : 'M');
 }
 
-/** One decimal place, with a trailing `.0` trimmed. */
-function trimTenth(value: number): string {
-  const fixed = value.toFixed(1);
-  return fixed.endsWith('.0') ? fixed.slice(0, -2) : fixed;
-}
-
-/** The token breakdown as tooltip text, each class labeled. */
-export function formatTokenBreakdown(breakdown: TokenBreakdown): string {
-  return [
-    `Input ${breakdown.input.toLocaleString('en-US')}`,
-    `Output ${breakdown.output.toLocaleString('en-US')}`,
-    `Cache read ${breakdown.cacheRead.toLocaleString('en-US')}`,
-    `Cache write ${breakdown.cacheWrite.toLocaleString('en-US')}`
-  ].join(' · ');
-}
-
-/**
- * Format an integer nano-dollar amount as a dollar string, computed digit-by-digit
- * from the integer so no floating-point division is used. At least two fraction
- * digits; trailing zeros beyond the second are trimmed.
- */
 export function formatNanoUsd(nanoUsd: number): string {
-  const whole = Math.trunc(nanoUsd / NANO_DOLLARS_PER_USD);
-  const fraction = nanoUsd % NANO_DOLLARS_PER_USD;
-  let fractionDigits = String(fraction).padStart(9, '0').replace(/0+$/u, '');
-  if (fractionDigits.length < 2) {
-    fractionDigits = fractionDigits.padEnd(2, '0');
-  }
-  return `$${whole.toLocaleString('en-US')}.${fractionDigits}`;
+  const amount = BigInt(nanoUsd);
+  const unit = 1_000_000_000n;
+  const digits = String(amount % unit).padStart(9, '0').replace(/0+$/u, '').padEnd(2, '0');
+  return '$' + (amount / unit).toLocaleString('en-US') + '.' + digits;
 }

@@ -493,3 +493,59 @@ describe('DrizzleConfigurationRecordRepository', () => {
     });
   });
 });
+
+describe('immutable model rate revisions', () => {
+  it('publishes corrections, retractions and restoration against one current same-slot head', async () => {
+    await withTempDatabasePath(async (path) => {
+      const database = createSqliteDatabase({ path });
+      const another = createSqliteDatabase({ path });
+      try {
+        await migrateSqliteDatabase(database);
+        const repository = new DrizzleConfigurationRecordRepository(database);
+        const concurrent = new DrizzleConfigurationRecordRepository(another);
+        const slot = { provider: 'openai', model: 'served', effectiveAt: '2026-11-23T10:00:00.000Z' };
+        const bands = [{ minRequestInputTokens: 0, rates: { freshInput: 1000, output: 2000, cacheRead: 100,
+          cacheWrite: { '5m': 50, '1h': 60 } } }];
+        const initial = { tenant: TEST_TENANT, kind: 'model_rate_table', settings: { ...slot, action: 'set', bands } } as const;
+        const head = await repository.create({ ...initial, settings: { ...initial.settings, bands } });
+        expect(head.kind).toBe('model_rate_table');
+        expect(head.settings).toMatchObject({ revision: 1, basis: 'api_list_price' });
+        expect(head.createdAt).toBe(head.updatedAt);
+        const conflict = { name: 'ModelRateConflictError' };
+        const publish = (fields: { correctsId: string; contextLimitTokens?: number }) =>
+          ({ ...initial, settings: { ...initial.settings, bands, ...fields } });
+        await expect(repository.create(publish({ correctsId: head.id }))).rejects.toMatchObject(conflict);
+        await expect(repository.create({ ...publish({ correctsId: head.id }), tenant: 'different' })).rejects.toMatchObject(conflict);
+        await expect(repository.create({
+          ...initial, settings: { ...initial.settings, bands, model: 'wrong', correctsId: head.id }
+        })).rejects.toMatchObject(conflict);
+        await expect(repository.create({
+          ...initial, settings: { ...initial.settings, bands, effectiveAt: '2026-11-23T11:00:00.000Z' }
+        })).resolves.toMatchObject({ settings: { revision: 1 } });
+
+        const results = await Promise.allSettled([
+          repository.create(publish({ correctsId: head.id, contextLimitTokens: 100 })),
+          concurrent.create(publish({ correctsId: head.id, contextLimitTokens: 200 }))
+        ]);
+        const corrected = results[0];
+        expect(corrected).toMatchObject({ status: 'fulfilled', value: { settings: { revision: 2 } } });
+        expect(results[1]).toMatchObject({ status: 'rejected', reason: conflict });
+        if (corrected?.status !== 'fulfilled') throw new Error('Expected winning correction.');
+        const retracted = await repository.create({
+          ...initial, settings: { ...slot, action: 'retract', correctsId: corrected.value.id }
+        });
+        expect(retracted.settings).toMatchObject({ revision: 3, action: 'retract' });
+        await expect(repository.create(publish({ correctsId: retracted.id }))).resolves.toMatchObject({
+          settings: { revision: 4, action: 'set' }
+        });
+        expect(await repository.findById(TEST_TENANT, head.id)).toEqual(head);
+        expect(await repository.findById('different', head.id)).toBeNull();
+        await expect(repository.update(TEST_TENANT, head.id, { kind: 'provider_profile', providerKind: 'invalid' })).rejects.toMatchObject(conflict);
+        await expect(repository.delete(TEST_TENANT, head.id)).rejects.toMatchObject(conflict);
+      } finally {
+        another.close();
+        database.close();
+      }
+    });
+  });
+});

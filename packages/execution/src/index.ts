@@ -381,3 +381,8 @@ export {
   type ProxyUpstreamFailureOutcome,
   type ProxyUpstreamFailureRecord
 } from './loopback-proxy.js';
+
+export {
+  anthropicUsageTokens, compactUsageGroups, normalizeOpenAIResponse, normalizeSessionUsage,
+  openAIUsageTokens, usageBillingKey, usageCount, usageGroup, usageRecord, type NativeUsageAnomaly
+} from './usage-normalization.js';

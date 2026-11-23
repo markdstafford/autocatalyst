@@ -40,6 +40,20 @@ describe('OpenAPI generation', () => {
     expect(document.paths['/v1/secrets']?.post).toBeDefined();
   });
 
+  it('documents immutable rate publication and additive priced session reads', () => {
+    const document = generateOpenApiDocument();
+    const records = document.paths['/v1/configuration-records'];
+    const item = document.paths['/v1/configuration-records/{id}'];
+    expect(records?.post?.responses['409']).toBeDefined();
+    expect(item?.patch?.responses['409']).toBeDefined();
+    expect(item?.delete?.responses['409']).toBeDefined();
+    expect(JSON.stringify(document.components?.schemas?.['CreateConfigurationRecordRequest'])).toContain('model_rate_table');
+    const read = JSON.stringify(document.components?.schemas?.['RunSessionListResponse']);
+    for (const field of ['costTotals', 'rateVersionIds', 'estimated_request_size', 'requestInputTokens', 'placeholder']) {
+      expect(read).toContain(field);
+    }
+  });
+
   it('documents no-content delete and unauthorized responses for protected routes', () => {
     const document = generateOpenApiDocument();
     const deleteOperation = document.paths['/v1/configuration-records/{id}']?.delete as {

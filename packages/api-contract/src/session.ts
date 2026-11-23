@@ -2,6 +2,19 @@ import { z } from 'zod';
 
 import { costSchema, inferenceSettingsSchema, modelIdentitySchema, sessionRoleSchema, tokenBreakdownSchema } from './domain-value-objects.js';
 
+import { sessionUsageSchema, safeCountSchema } from './session-usage.js';
+import { sessionCostGapSchema, sessionCostTotalsSchema } from './session-pricing.js';
+import { priceBasisSchema } from './model-rate-table.js';
+
+export const createSessionCostSchema = costSchema.extend({ usd: z.null().optional() });
+const pricedCostSchema = costSchema.extend({
+  usd: safeCountSchema.nullable(), basis: priceBasisSchema, complete: z.boolean(),
+  rateVersionIds: z.array(z.string().min(1)), gaps: z.array(sessionCostGapSchema)
+});
+const compatibilityTokens = tokenBreakdownSchema.describe(
+  'Compatibility projection: zero can be a placeholder, not a measured count. Use session usage for disjoint counts and missing states.'
+);
+
 export const sessionOutcomeSchema = z.enum(['succeeded', 'failed', 'cancelled', 'timeout']);
 
 function requireCostTokensMatchSessionTokens<T extends { tokens: unknown; cost: { tokens: unknown } }>(value: T, context: z.RefinementCtx): void {
@@ -16,7 +29,7 @@ function requireCostTokensMatchSessionTokens<T extends { tokens: unknown; cost: 
   }
 }
 
-export const sessionSchema = z.object({
+const storedSession = z.object({
   id: z.string().min(1),
   runId: z.string().min(1),
   // Deterministic per-run ordering. Monotonically increases (starting at 1) for each
@@ -32,13 +45,19 @@ export const sessionSchema = z.object({
   startedAt: z.string().datetime(),
   endedAt: z.string().datetime().nullable(),
   durationMs: z.number().int().min(0).nullable(),
-  tokens: tokenBreakdownSchema,
+  tokens: compatibilityTokens,
   usageAvailable: z.boolean(),
+  usage: sessionUsageSchema.optional(),
   assistantTurnCount: z.number().int().min(0),
   toolCallCount: z.number().int().min(0),
   outcome: sessionOutcomeSchema,
-  cost: costSchema
-}).strict().superRefine(requireCostTokensMatchSessionTokens);
+  cost: costSchema.extend({ tokens: compatibilityTokens })
+}).strict();
+
+export const storedSessionSchema = storedSession.superRefine(requireCostTokensMatchSessionTokens);
+export const sessionSchema = storedSession.extend({
+  cost: z.union([pricedCostSchema.extend({ tokens: compatibilityTokens }), storedSession.shape.cost])
+}).superRefine(requireCostTokensMatchSessionTokens);
 
 export const createSessionInputSchema = z.object({
   runId: z.string().min(1),
@@ -51,21 +70,26 @@ export const createSessionInputSchema = z.object({
   startedAt: z.string().datetime(),
   endedAt: z.string().datetime().nullable(),
   durationMs: z.number().int().min(0).nullable(),
-  tokens: tokenBreakdownSchema,
+  tokens: compatibilityTokens,
   usageAvailable: z.boolean(),
+  usage: sessionUsageSchema.optional(),
   assistantTurnCount: z.number().int().min(0),
   toolCallCount: z.number().int().min(0),
   outcome: sessionOutcomeSchema,
-  cost: costSchema
+  cost: createSessionCostSchema
 }).strict().superRefine(requireCostTokensMatchSessionTokens);
 
 export const runSessionsPath = '/v1/runs/:id/sessions' as const;
 export const listRunSessionsSuccessStatusCode = 200 as const;
 export const runSessionListResponseSchema = z.object({
-  sessions: z.array(sessionSchema)
+  sessions: z.array(sessionSchema),
+  costTotals: sessionCostTotalsSchema.optional()
 }).strict();
 export type RunSessionListResponse = z.infer<typeof runSessionListResponseSchema>;
 
 export type SessionOutcome = z.infer<typeof sessionOutcomeSchema>;
 export type Session = z.infer<typeof sessionSchema>;
 export type CreateSessionInput = z.infer<typeof createSessionInputSchema>;
+
+export type StoredSession = z.infer<typeof storedSessionSchema>;
+export type PricedSessionCost = z.infer<typeof pricedCostSchema>;

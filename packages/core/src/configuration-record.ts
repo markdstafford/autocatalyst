@@ -72,6 +72,13 @@ export function assertProviderProfileUpdateDoesNotBreakActiveRoutes(
   }
 }
 
+export class ModelRateConflictError extends Error {
+  constructor() {
+    super('Rate publication conflicts with the current revision, or the record is immutable.');
+    this.name = 'ModelRateConflictError';
+  }
+}
+
 export type CreateConfigurationRecordInput = CreateConfigurationRecordRequest;
 export type UpdateConfigurationRecordInput = UpdateConfigurationRecordRequest;
 

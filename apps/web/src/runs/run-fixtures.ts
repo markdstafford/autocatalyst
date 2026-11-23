@@ -71,6 +71,7 @@ export function makeRun(overrides: MakeRunOverrides = {}): Run {
 }
 
 export interface MakeSessionOverrides {
+  readonly usage?: Session["usage"];
   readonly id?: string;
   readonly runId?: string;
   readonly sequence?: number;
@@ -103,6 +104,7 @@ export function makeSession(overrides: MakeSessionOverrides = {}): Session {
     durationMs,
     tokens,
     usageAvailable: true,
+    ...(overrides.usage === undefined ? {} : { usage: overrides.usage }),
     assistantTurnCount: 1,
     toolCallCount: 0,
     outcome: overrides.outcome ?? 'succeeded',

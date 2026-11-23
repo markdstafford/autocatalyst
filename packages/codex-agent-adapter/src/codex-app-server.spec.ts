@@ -1,3 +1,4 @@
+import type { AgentTokenUsage } from '@autocatalyst/execution';
 import { mkdir, mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -27,17 +28,21 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
   if (fs.realpathSync(v.cwd) !== fs.realpathSync(process.cwd()) || v.approvalPolicy !== 'never' || v.allowProviderModelFallback !== false) process.exit(9);
   if (v.config['mcp_servers.personal.enabled'] !== false) process.exit(10);
   sandbox=v.sandbox;
-  respond({thread:{id:'thread_fixture'},model:v.model,modelProvider:'openai',sandbox:{type:sandbox==='read-only'?'readOnly':'workspaceWrite'}});
+  respond({thread:{id:'thread_fixture'},model:process.env.AC_MODE==='mismatch'?'unexpected':v.model,
+    ...(process.env.AC_MODE==='absent' ? {} : {modelProvider:'openai'}),sandbox:{type:sandbox==='read-only'?'readOnly':'workspaceWrite'}});
  } else if (p.method === 'turn/start') {
+  fs.writeFileSync('turn-started','yes');
   if (process.env.AC_MODE==='hang') return;
+  const counters={inputTokens:100,cachedInputTokens:60,outputTokens:10,reasoningOutputTokens:4};
   if (process.env.AC_MODE==='reviewed-spec' &&
       (sandbox !== 'read-only' || v.sandboxPolicy.type !== 'readOnly' || v.sandboxPolicy.networkAccess !== false)) process.exit(11);
   if (v.input.some(i=>i.type==='skill')) fs.writeFileSync('skill-input.json',JSON.stringify(v.input));
-  send({method:'item/started',params:{threadId:v.threadId,item:{type:'commandExecution'}}});
-  send({method:'item/completed',params:{threadId:v.threadId,item:{type:'commandExecution'}}});
-  send({method:'item/completed',params:{threadId:v.threadId,item:{type:'agentMessage',text:process.env.AC_MODE==='badjson'?'not JSON':(process.env.AC_SPEC_RESULT || '{"status":"satisfied","findings":[]}')}}});
-  send({method:'thread/tokenUsage/updated',params:{threadId:v.threadId,tokenUsage:{total:{inputTokens:5,outputTokens:3}}}});
-  send({method:'turn/completed',params:{threadId:v.threadId,turn:{status:process.env.AC_MODE==='failed'?'failed':'completed'}}});
+  send({method:'item/started',params:{threadId:v.threadId,turnId:'turn_fixture',item:{type:'commandExecution'}}});
+  send({method:'item/completed',params:{threadId:v.threadId,turnId:'turn_fixture',item:{type:'commandExecution'}}});
+  send({method:'item/completed',params:{threadId:v.threadId,turnId:'turn_fixture',item:{type:'agentMessage',text:process.env.AC_MODE==='badjson'?'not JSON':(process.env.AC_SPEC_RESULT || '{"status":"satisfied","findings":[]}')}}});
+  send({method:'thread/tokenUsage/updated',params:{threadId:v.threadId,turnId:'turn_fixture',tokenUsage:{total:counters,last:counters}}});
+  if (process.env.AC_MODE==='timeout-with-usage') { respond({turn:{id:'turn_fixture'}}); return; }
+  send({method:'turn/completed',params:{threadId:v.threadId,turn:{id:'turn_fixture',status:process.env.AC_MODE==='failed'?'failed':'completed'}}});
   respond({turn:{id:'turn_fixture'}});
  } else send({id:p.id,error:{code:-32601,message:'Unexpected method'}});
 });
@@ -45,7 +50,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
 
 async function withCli(action: (binary: string, cwd: string) => Promise<void>): Promise<void> {
   const cwd = await mkdtemp(path.join(tmpdir(), 'codex-wire-'));
-  const binary = path.join(cwd, 'codex');
+  const binary = path.join(cwd, 'codex.cjs');
   await writeFile(binary, `#!${process.execPath}\n${fixture}`, { mode: 0o700 });
   try { await action(binary, cwd); } finally { await rm(cwd, { recursive: true, force: true }); }
 }
@@ -60,10 +65,21 @@ describe('Codex app-server wire boundary', () => {
   it('uses version/initialize/account/thread/turn and retains notifications before the RPC reply', async () => {
     await withCli(async (binary, cwd) => {
       const events: CodexNativeEvent[] = [];
-      for await (const event of codexSessionLaunch(binary)(launchOptions(cwd))) events.push(event);
+      let usage: AgentTokenUsage | undefined;
+      for await (const event of codexSessionLaunch(binary)({ ...launchOptions(cwd), onUsage: (observed) => { usage = observed; } })) events.push(event);
       expect(events.map(event => event.type)).toEqual(['skills_delivered', 'tool_call', 'tool_call', 'agent_message', 'result']);
       expect(events.at(-1)?.structuredOutput).toEqual({ status: 'satisfied', findings: [] });
-      expect(events.at(-1)?.usage).toEqual({ input_tokens: 5, output_tokens: 3 });
+      expect(usage).toMatchObject({ tokens: { input: 100, output: 10, cacheRead: 60, cacheWrite: 0 },
+        usage: { coverage: 'complete', totals: { freshInput: 40, cacheRead: 60, cacheWrite: 'not_applicable', output: 10, reasoningOutput: 4 },
+          groups: [{ model: { provider: 'openai', model: 'test-model' }, requestInputTokens: 100 }] } });
+    });
+  });
+  it.each(['absent', 'mismatch'])('does not start a turn when launch confirmation is %s', async (mode) => {
+    await withCli(async (binary, cwd) => {
+      await expect((async () => {
+        for await (const event of codexSessionLaunch(binary)(launchOptions(cwd, mode))) void event;
+      })()).rejects.toThrow();
+      await expect(readFile(path.join(cwd, 'turn-started'))).rejects.toMatchObject({ code: 'ENOENT' });
     });
   });
   it('authors a reviewed spec through the native launcher under read-only, network-disabled permissions', async () => {
@@ -187,6 +203,16 @@ describe('Codex app-server wire boundary', () => {
       const pending = launch.next();
       cancellation.abort();
       await expect(pending).rejects.toThrow();
+    });
+  });
+  it('retains owned counters when the turn times out without closure', async () => {
+    await withCli(async (binary, cwd) => {
+      let usage: AgentTokenUsage | undefined;
+      await expect((async () => {
+        for await (const event of codexSessionLaunch(binary)({ ...launchOptions(cwd, 'timeout-with-usage'), timeoutMs: 500,
+          onUsage: (observed) => { usage = observed; } })) void event;
+      })()).rejects.toMatchObject({ code: 'timeout' });
+      expect(usage?.usage).toMatchObject({ coverage: 'partial', totals: { freshInput: 40, cacheRead: 60, output: 10 } });
     });
   });
   it('strips API credentials from explicitly supplied process environment', () => {

@@ -122,6 +122,7 @@ describe('recordExecutionSession', () => {
       durationMs: 60000,
       tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       usageAvailable: false,
+      usage: { coverage: 'unavailable', totals: { freshInput: null, cacheRead: null, cacheWrite: null, output: null }, groups: [] },
       assistantTurnCount: 0,
       toolCallCount: 0,
       outcome: 'succeeded',
@@ -181,13 +182,20 @@ describe('recordExecutionSession', () => {
   });
 
   it('surfaces repository create failures', async () => {
+    const failure = new Error('DB connection failed');
+    failure.name = 'native-private-id';
     const sessions = makeSessions({
-      create: vi.fn().mockRejectedValue(new Error('DB connection failed'))
+      create: vi.fn().mockRejectedValue(failure)
     });
+    const logger = { error: vi.fn(), warn: vi.fn() };
 
     await expect(
-      recordExecutionSession({ sessions }, baseInput)
+      recordExecutionSession({ sessions, logger }, baseInput)
     ).rejects.toThrow(ExecutionSessionRecordingError);
+    expect(logger.error).toHaveBeenCalledExactlyOnceWith(
+      { runId: 'run_1', step: 'implementation.build', role: 'implementer', code: 'session_persistence_failed' },
+      'Failed to persist execution session.'
+    );
 
     await expect(
       recordExecutionSession({ sessions }, baseInput)

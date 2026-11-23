@@ -8,9 +8,7 @@
  * Each fact renders its own loading, success, and error state, so a failed pull request
  * or sessions read shows an inline message on that fact alone and never blanks the
  * others. The step and failure facts come straight from the selected run, which the list
- * already loaded. Time, tokens, and cost are computed from the sessions fact by the pure
- * integer helpers in `run-summary-totals.ts`; the token breakdown and the cost-unknown
- * reason appear in tooltips.
+ * already loaded. Time and tokens use the recorded sessions; Cost uses the API subtotal.
  */
 import type { Run } from '@autocatalyst/api-contract';
 import { LoaderCircle } from 'lucide-react';
@@ -19,13 +17,7 @@ import type { ReactNode } from 'react';
 import { CELL_DASH } from './run-fields.js';
 import type { PullRequestCheck, PullRequestFact, SessionsFact } from './run-detail-facts.js';
 import { formatRunFailureReason } from './run-failure-reason.js';
-import {
-  computeSummaryTotals,
-  formatCompactTokens,
-  formatDurationMs,
-  formatNanoUsd,
-  formatTokenBreakdown
-} from './run-summary-totals.js';
+import { describeRunCost, formatDurationMs, formatNanoUsd, summaryDuration, summaryTokens } from './run-summary-totals.js';
 import { DescriptionItem, DescriptionList } from '../ui/description-list.js';
 import { Button } from '../ui/button.js';
 import { Tooltip } from '../ui/tooltip.js';
@@ -37,9 +29,6 @@ export interface RunDetailSummaryProps {
   readonly onCheckPullRequest?: () => void;
   readonly sessions: SessionsFact;
 }
-
-/** The reason shown when at least one session has no priced cost. */
-const COST_UNKNOWN_REASON = 'A model used in this run has no configured rate, so the cost is unknown.';
 
 export function RunDetailSummary({
   run, pullRequest, pullRequestCheck = {}, onCheckPullRequest, sessions
@@ -66,7 +55,7 @@ export function RunDetailSummary({
       </DescriptionItem>
       <DescriptionItem label="Time">{renderTime(sessions)}</DescriptionItem>
       <DescriptionItem label="Tokens">{renderTokens(sessions)}</DescriptionItem>
-      <DescriptionItem label="Cost">{renderCost(sessions)}</DescriptionItem>
+      <DescriptionItem label="Cost">{renderCost(sessions, run.status === 'in_progress')}</DescriptionItem>
     </DescriptionList>
   );
 }
@@ -140,10 +129,10 @@ function renderTime(fact: SessionsFact): ReactNode {
       </span>
     );
   }
-  const totals = computeSummaryTotals(fact.value);
+  const duration = summaryDuration(fact.value);
   return (
     <span data-testid="pane-summary-time" className="tabular-nums">
-      {totals.time.kind === 'dash' ? CELL_DASH : formatDurationMs(totals.time.ms)}
+      {duration === null ? CELL_DASH : formatDurationMs(duration)}
     </span>
   );
 }
@@ -159,20 +148,20 @@ function renderTokens(fact: SessionsFact): ReactNode {
       </span>
     );
   }
-  const totals = computeSummaryTotals(fact.value);
-  if (totals.tokens.kind === 'dash') {
+  if (fact.value.length === 0) {
     return <span data-testid="pane-summary-tokens" className="tabular-nums">{CELL_DASH}</span>;
   }
+  const tokens = summaryTokens(fact.value);
   return (
-    <Tooltip label={formatTokenBreakdown(totals.tokens.breakdown)} delay={0}>
+    <Tooltip label={tokens.detail} delay={0}>
       <span data-testid="pane-summary-tokens" tabIndex={0} className="tabular-nums underline decoration-dotted">
-        {formatCompactTokens(totals.tokens.total)}
+        {tokens.text}
       </span>
     </Tooltip>
   );
 }
 
-function renderCost(fact: SessionsFact): ReactNode {
+function renderCost(fact: SessionsFact, running: boolean): ReactNode {
   if (fact.status === 'loading') {
     return <span data-testid="pane-summary-cost" className="text-subtext">Loading…</span>;
   }
@@ -183,22 +172,21 @@ function renderCost(fact: SessionsFact): ReactNode {
       </span>
     );
   }
-  const totals = computeSummaryTotals(fact.value);
-  if (totals.cost.kind === 'dash') {
-    return <span data-testid="pane-summary-cost" className="tabular-nums">{CELL_DASH}</span>;
+  const progress = running ? ' so far' : '';
+  const total = fact.runCost;
+  if ((total?.sessionCount ?? fact.value.length) === 0) {
+    return <span data-testid="pane-summary-cost" className="tabular-nums" aria-label={'No recorded sessions' + progress}>{CELL_DASH}</span>;
   }
-  if (totals.cost.kind === 'unknown') {
-    return (
-      <Tooltip label={COST_UNKNOWN_REASON} delay={0}>
-        <span data-testid="pane-summary-cost" tabIndex={0} className="underline decoration-dotted">
-          Unknown
-        </span>
-      </Tooltip>
-    );
+  if (total === undefined) {
+    return <span data-testid="pane-summary-cost">Pricing unavailable{progress}</span>;
   }
+  const amount = total.knownSubtotalUsd === null ? 'Unknown' : formatNanoUsd(total.knownSubtotalUsd);
+  const estimates = total.gaps.some(({ code }) => code === 'estimated_request_size');
   return (
-    <span data-testid="pane-summary-cost" className="tabular-nums">
-      {formatNanoUsd(totals.cost.nanoUsd)}
-    </span>
+    <Tooltip label={describeRunCost(total)} delay={0}>
+      <span data-testid="pane-summary-cost" tabIndex={0} className="tabular-nums underline decoration-dotted">
+        {amount}{progress} · API list price{!total.complete ? ' · Incomplete' : ''}{estimates ? ' · Includes estimates' : ''}
+      </span>
+    </Tooltip>
   );
 }
