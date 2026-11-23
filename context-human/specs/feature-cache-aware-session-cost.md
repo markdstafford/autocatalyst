@@ -9,60 +9,59 @@ specced_by: autocatalyst
 
 ## What
 
-Autocatalyst records fresh input, cache reads, cache writes, and output for each recorded model session. Operators can see what the recorded work would cost at configured API list prices, including work done through a subscription. When only part can be priced, Autocatalyst shows the known subtotal and explains what it excludes.
+Autocatalyst records fresh input, cache reads, cache writes, and output for each recorded model session. Operators can see what that work costs at configured API list prices, including work done through a subscription. When only part of a run can be priced, Autocatalyst shows what is known and explains what is missing.
 
 ## Why
 
-Current totals can hide most of a session's usage. One Claude session showed 40 ordinary input tokens while its native records showed about 993,000 cache reads and 115,000 cache writes. Codex reported millions of cumulative input tokens in #169 without a cache split. A comparable token breakdown and a labeled price let operators compare runs without mistaking list prices for a bill.
+Current totals can hide most of a session’s usage. One Claude session showed 40 ordinary input tokens while native records showed about 993,000 cache reads and 115,000 cache writes. Codex reported 7.34 million cumulative input tokens in #169 without a cache split. A comparable breakdown and a labeled price let operators compare runs without mistaking list prices for a bill.
 
 ## Personas
 
-- **Enzo: Engineer** — configures rates and compares usage and price coverage across runs.
-- **Phoebe: PM** — checks run progress and wants to see its cost so far without inspecting individual sessions.
+- **Enzo: Engineer** — publishes rates and compares usage and cost across runs.
+- **Phoebe: PM** — checks progress and cost without inspecting individual sessions.
 
 ## Narratives
 
 ### Compare two runs
 
-Enzo opens a completed bug run and sees how much input came from cache. He compares it with a feature run on the same pricing basis. The feature run shows a subtotal. Its tooltip identifies one model with no rate and another group without enough information to choose a long-context rate.
+Enzo opens a completed bug run and checks how much input came from cache. He compares it with a feature run at the same pricing basis. The feature run shows a known subtotal: one model has no rate, and some tokens cannot be assigned a long-context rate.
 
-Enzo publishes the missing rate, effective before the session started. On refresh, that session contributes to the subtotal without rerunning any work. The long-context gap remains visible. Both runs still say “API list price.”
+Enzo publishes the missing rate, effective before the session started. On refresh, the session contributes without rerunning any work. The long-context gap remains visible, and both runs still say “API list price.”
 
 ### Check a run in progress
 
-Phoebe opens a running feature run. Summary shows its cost so far and explains that it covers recorded sessions only. Before the first session was recorded, Summary said no sessions had been recorded so far rather than showing a zero-dollar charge.
+Phoebe opens a running feature run. Summary shows cost so far and explains that it covers recorded sessions only. Before the first session was recorded, it showed a dash rather than a zero-dollar charge.
 
-A timed-out attempt contributes the usage it already reported. Phoebe focuses the Cost tooltip and sees that some usage from the attempt may be missing. The Tokens tooltip distinguishes reported counts from unknown counts and classes that do not apply.
+A timed-out attempt contributes the usage it reported. Phoebe focuses the Cost tooltip and sees that the attempt may have used more tokens than were recorded. The Tokens tooltip distinguishes reported counts from unknown counts and classes that do not apply.
 
 ## User stories
 
 **Compare two runs**
 
-- Enzo can compare token classes without counting cached input or reasoning twice.
+- Enzo can compare the four token classes without counting cached input or reasoning twice.
 - Enzo can publish, read, correct, and retract rates through the API or SDK.
-- Enzo can price earlier sessions by publishing a rate without rewriting stored usage.
-- Enzo can retrieve session, step, and run prices and see why any work was excluded.
-- Enzo can record the immutable rate versions used for a comparison.
+- Enzo can price earlier sessions by publishing a rate without rewriting usage.
+- Enzo can retrieve session, step, and run amounts and see which charges are missing and why.
+- Enzo can record the rate revisions used for a comparison.
 
 **Check a run in progress**
 
 - Phoebe can see cost so far and tell that it is not a subscription charge.
 - Phoebe can distinguish a complete amount, an incomplete subtotal, unknown cost, and no recorded sessions.
-- Phoebe can inspect actual gap reasons with a pointer or keyboard.
-- Phoebe can distinguish known, unknown, not-applicable, and legacy token data.
+- Phoebe can inspect actual reasons with a pointer or keyboard.
+- Phoebe can distinguish measured, unknown, not-applicable, and legacy token data.
 - Phoebe can see newly recorded sessions on refresh, including usage from unsuccessful attempts.
 
 ## Goals
 
-- Every new recorded session contains normalized usage or explicit missing states, independent of rate availability and attempt outcome.
-- Each charge uses disjoint stored token counts and a session-effective rate. Missing request size never causes the service to guess a price.
-- Session reads return exact integer nano-dollar amounts with coverage metadata, plus logical step and run totals. A backdated publication takes effect on the next read without a backfill job.
-- Summary displays the basis, the four token classes, and the reasons and known sizes of price gaps. A representative bug run and feature run cover both adapters and establish the baseline for #195.
+- Every new recorded session has normalized usage or explicit missing states, regardless of rate availability and outcome.
+- Session reads return exact integer nano-dollar charges for the terms that can be priced, rate revision IDs, and gaps. The same read returns logical step and run subtotals. A backdated rate applies on the next read without a backfill job.
+- Summary shows the pricing basis, all four token classes, and reasons for incomplete cost. A representative bug run and feature run cover both adapters and establish the baseline for #195.
 
 ## Non-goals
 
-- A rate management UI, bundled rates, or automatic retrieval of provider prices.
-- Rollups above the run, extra role or phase totals, or the tuning analytics in `cost.md`.
+- Rate management UI, bundled rates, or automatic retrieval of provider prices.
+- Rollups above the run, separate phase or role totals, or tuning analytics.
 - Reconstructing legacy cache splits or tracking launches interrupted before their sessions are recorded.
 - Recording or pricing failed direct calls before #122 records them. Successful direct calls that already produce sessions are in scope.
 - Subscription charges, allowances, forecasts, budgets, or alerts.
@@ -73,43 +72,47 @@ A timed-out attempt contributes the usage it already reported. Phoebe focuses th
 
 ```mermaid
 flowchart TD
-    A[Open run detail and select Summary] --> B{Any recorded sessions?}
+    A[Open run detail and select Summary] --> B{Recorded sessions?}
     B -->|No| C[Show no recorded sessions]
-    B -->|Yes| D{What can be priced?}
-    D -->|Complete| E[Show price and basis]
-    D -->|Some| F[Show known subtotal and Incomplete]
-    D -->|No displayable amount| G[Show Unknown and Incomplete]
-    F --> H[Focus or hover to inspect reasons]
-    G --> H
-    H -->|Missing rate| I[Publish through API or SDK and refresh]
-    I --> B
+    B -->|Yes| D[Show cost or unknown with basis and coverage]
+    D --> E[Focus or hover to inspect gaps]
+    E -->|Missing rate| F[Publish through API or SDK and refresh]
+    F --> B
 ```
 
 ### Summary rows
 
-Use the existing description list and keyboard-focusable tooltips in `run-detail-summary.tsx`. Keep Time, navigation, loading and fetch errors, and the existing refresh path. Use API totals for Cost; do not reprice or sum session prices in the browser. Use the running column for `in_progress` and the non-running column otherwise. Format nano-dollars exactly, with at least two decimal places and no cent rounding.
+Keep the existing description list, Time row, loading and fetch-error states, keyboard-focusable tooltips, and refresh path. Use the API total for Cost. Do not price or sum session costs in the browser. Format integer nano-dollars exactly, with at least two fractional digits and up to nine as needed. Append `so far` to the amount or status for `in_progress`, including in accessible text. That label describes run progress, not whether all recorded sessions are priced.
 
-| Cost state | Non-running | Running |
-| --- | --- | --- |
-| Complete with a numeric amount | `$0.42 · API list price` | `$0.42 so far · API list price` |
-| Incomplete with a numeric subtotal | `At least $0.42 · API list price · Incomplete` | `At least $0.42 so far · API list price · Incomplete` |
-| Recorded sessions but no displayable amount, including aggregate overflow | `Unknown · API list price · Incomplete` | `Unknown so far · API list price · Incomplete` |
-| No recorded sessions | `—` (accessible detail: `No recorded sessions`) | `—` (accessible detail: `No recorded sessions so far`) |
-| Nonempty response from an older server without `costTotals` | `Pricing unavailable` | `Pricing unavailable so far` |
+| Cost state | Example for a non-running run |
+| --- | --- |
+| Complete | `$0.42 · API list price` |
+| Incomplete with a known subtotal | `$0.42 · API list price · Incomplete` (tooltip identifies this as the known subtotal) |
+| Recorded sessions, no displayable subtotal | `Unknown · API list price · Incomplete` |
+| No recorded sessions | `—` (accessible text: `No recorded sessions`, or `No recorded sessions so far` when running) |
+| Older server with sessions but no `costTotals` | `Pricing unavailable` |
 
-A priced zero displays `$0.00`; an incomplete numeric zero uses the incomplete row. Cost details say `Recorded sessions only` and explain that API list price is not a subscription charge. Show **Incomplete** without relying on color or interaction. The tooltip names actual gap reasons, billing keys when known, affected sessions, and known token counts. For example: “1.2M tokens with no rate for openai/gpt-6.2-sol (2 sessions)” or “80K tokens without request-size evidence for long-context pricing (1 session).” Say when the affected count is unknown or additional tokens may be affected. Explain representation overflow separately; it does not imply missing usage. There is no estimated-band state.
+A measured and priced zero displays `$0.00`; if other charges are unknown, it still says **Incomplete**. Show that label without relying on color or interaction. In the tooltip, say `Recorded sessions only` and explain that API list price is not a subscription charge. List actual gap reasons, affected billing keys where known, session counts, and affected token counts where known. For `missing_request_size`, explain that the omitted tokens may have different rates depending on request size; do not show a guessed charge. Say when additional affected tokens cannot be counted. Explain representation overflow separately from missing usage.
 
-The Tokens row sums known disjoint Fresh input, Cache reads, Cache writes, and Output counts. Show all four classes in the tooltip. A class is `Not applicable` only when every recorded session establishes that state, and `Unknown` if it has no known count and is not ruled out. Mark known subtotals **Incomplete** when applicable counts or invocation coverage are missing. With no known normalized count, show `Unknown · Incomplete`; with no sessions, show `—`. Reasoning and reported retention breakdowns may appear beneath their parent classes but do not add to totals. Sum known counts exactly from groups, including when a session total cannot fit in a safe JSON integer.
+The Tokens row uses the disjoint counts in normalized `usage` groups, with exact integer sums. Show Fresh input, Cache reads, Cache writes, and Output in the tooltip. A class is `Not applicable` only when every recorded session establishes that state; show `Unknown` when no count is known and the class is not ruled out. Mark a known subtotal **Incomplete** if counts or invocation coverage are missing. Unknown rate or request size does not make a measured token count incomplete. With no known normalized count, show `Unknown · Incomplete`; with no sessions, show `—`. Reasoning and retention buckets may appear under their parent classes but never add to the total.
 
-For an all-legacy run, retain the old compact sum, including a reported zero, with a **Legacy** label. List normalized classes as unknown and explain that the old sum (`tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite`) may overlap or contain placeholders. For mixed runs, show only normalized counts in the compact subtotal and mark it incomplete. Show the separate legacy sum and number of excluded sessions in the tooltip. Never combine those sums.
+For all-legacy runs, keep the old compact sum, including zero, with a **Legacy** label. List normalized classes as unknown and explain that the legacy sum may overlap or contain placeholders. For mixed runs, mark the normalized subtotal incomplete and show the separate legacy sum and session count in the tooltip. Never add the two sums.
 
 ## Tech spec
 
 ### Introduction and overview
 
-This work completes pricing deferred by [durable session telemetry](feature-durable-session-run-step-telemetry.md) (#89) and extends the [run detail pane](feature-run-detail-pane.md). It follows SQLite/Drizzle (ADR-004/019), contract-first `/v1` (ADR-005–007), service-owned configuration (ADR-008), tenant authorization (ADR-009), and existing web conventions (ADR-031/032). It amends the [cost concept](../concepts/cost.md) and [run lifecycle decision](../adrs/adr-015-run-lifecycle.md).
+This work completes pricing deferred by [durable session telemetry](feature-durable-session-run-step-telemetry.md) (#89) and extends the [run detail pane](feature-run-detail-pane.md). It follows SQLite/Drizzle (ADR-004/019), contract-first `/v1` (ADR-005–007), service-owned configuration (ADR-008), tenant authorization (ADR-009), the two telemetry stores (ADR-030), and existing web conventions (ADR-031/032 and `context-agent/wiki/design-system.md`). Session grain and attribution remain as in ADR-015; see Contract updates for the pricing refinement. No new pricing store or higher-level rollup ships.
 
-A **nano-dollar** is one billionth of a US dollar. **Request size** is one provider request's input, counting each applicable fresh, read, and write token once. A **band** maps request sizes to a rate schedule. A **billing key** is the provider and exact served model ID. A **gap** identifies an unpriced portion or an amount that cannot be represented. Exact pricing means exact arithmetic with supported usage and configured rates, not invoice reconciliation.
+| Term | Meaning |
+| --- | --- |
+| Billing key | Provider and exact served model ID. Distinct from the model Autocatalyst dispatched. |
+| Counter scope and meaning | Scope is the work a counter covers: one request, a thread to date, or an invocation result. Meaning is what it counts, such as inclusive or fresh input. Convert to the same disjoint classes and verify scope before comparing or subtracting two observations. |
+| Usage group | Disjoint work with one billing key (or no provable key) and common request-size evidence. An inclusive remainder is counted once, not once per possible model. |
+| Closed input coverage | The group has a validated inclusive input count or all applicable input counts are known. Their total bounds every request in that group even if other groups in the invocation are missing. |
+| Request size, ceiling, and hint | Size is one request’s input: fresh, reads, and writes once each. A ceiling bounds every request in a group. A hint is one observed size from the same owned thread and attempt that cannot be tied to the billed counts; it does not resolve a band. |
+| Band and treatment | A band selects rates by request size. Treatment for a disjoint token portion is a numeric rate, non-applicability, or a reason it cannot be charged. Treatment is invariant when it resolves to the same result in every feasible band. |
+| Nano-dollar and gap | A nano-dollar is one billionth of a US dollar. A gap names the evidence or representation problem that prevented pricing; it is not a zero charge. |
 
 ### System design and architecture
 
@@ -122,11 +125,11 @@ flowchart LR
     F --> G[(Immutable rate revisions)]
     D --> H[Run session read service]
     G --> H
-    H --> I[Session prices and step and run totals]
+    H --> I[Session prices and logical totals]
     I --> J[SDK and Summary]
 ```
 
-Adapters interpret native usage. The agent runner, direct orchestrator, and execution unit of work carry observations independently of structured-result parsing. `execution-session-recorder.ts` writes usage, not computed prices. The control plane authorizes reads, selects rates, and prices sessions. The client formats those prices.
+Adapters interpret native usage. The agent runner, direct orchestrator, and execution unit of work carry it independently of structured-result parsing. `execution-session-recorder.ts` writes usage, not prices. The control plane selects rates and computes amounts; the client formats them.
 
 ```mermaid
 sequenceDiagram
@@ -134,60 +137,63 @@ sequenceDiagram
     participant D as SQLite
     participant A as Control plane
     participant O as Operator
-    R->>D: Store attempt outcome and usage
+    R->>D: Store outcome and usage
     O->>A: Read run sessions
-    A->>D: Read sessions and rate history in one snapshot
-    A-->>O: Subtotal and missing-rate gap
-    O->>A: Publish rate effective before session start
-    A->>D: Append immutable rate revision
-    O->>A: Read the same run sessions
+    A->>D: Read sessions and tenant rate history in one snapshot
+    A-->>O: Return known amounts and gaps
+    O->>A: Publish a rate effective before session start
+    A->>D: Append an immutable rate revision
+    O->>A: Read the same sessions
     A->>D: Read unchanged usage and updated rate history
-    A-->>O: Updated amounts, selected version IDs, and remaining gaps
+    A-->>O: Return updated amounts and selected revisions
 ```
 
 ### Detailed design
 
 #### Usage and persistence
 
-Add optional `usage` to stored and read session shapes and `CreateSessionInput`. Add nullable `sessions.usage_json TEXT`; serialize validated JSON and omit `usage` on reads of rows with a null column. The runtime recorder always supplies `usage` for new sessions. Leave old rows, legacy JSON, session identity, ordering, and sequence allocation unchanged. Groups are embedded accounting evidence, not new sessions or a durable log of native requests.
+Add nullable `sessions.usage_json TEXT` with a Drizzle migration (`ALTER TABLE sessions ADD COLUMN usage_json TEXT`). Store validated JSON. Add optional `usage` to the create, stored, and HTTP session shapes; omit it for rows with a null column. The recorder supplies it on every new recorded session. No backfill. Preserve session identity, sequence, ordering, and legacy JSON. Groups are embedded accounting evidence, not new sessions or a native request log.
 
-- `usage` has `coverage: complete | partial | unavailable`, `totals`, and `groups`. Coverage describes whether native accounting spans the invocation, separately from whether every class is known. `partial` means some work may be missing; `unavailable` means no validated owned normalized counts remain. An unsuccessful attempt can have complete coverage if native accounting closes it.
-- `totals` and each group's `tokens` carry `freshInput`, `cacheRead`, `cacheWrite`, and `output`. Values are nonnegative safe integers (including reported or proven zero), `null` for unknown, or `not_applicable` when the provider does not use the class. Optional `cacheWriteByRetention` preserves reported buckets (`5m`, `1h`, and recognized native labels without a supported rate). Optional `reasoningOutput` is a subset of output. Bucket and reasoning counts are nonnegative safe integers. Validate subsets independently so a bad subset does not discard a valid parent count.
-- A group has `model: {provider, model} | null`, `requestInputTokens: nonnegative safe integer | null`, and `tokens`. A Codex group can carry a validated `contextWindowTokens` upper bound (positive safe integer); it is never a measured request size. Combine disjoint observations only when their billing identity, size or bound evidence, and counter treatment agree. Keep an unpartitionable remainder once, with null model if attribution is unknown. Never use a multi-request total as a request size.
-- `Session.model` and `cost.model` still describe dispatch. Confirmed Codex `modelProvider: 'openai'`, native OpenAI agent usage, and OpenAI direct usage use billing provider `openai`. Claude agent and Anthropic direct use `anthropic`. Match exact served IDs, without aliases or dispatch fallback except when the transport guarantees the requested identity for that work. Do not assign an unidentified child or remainder to the parent model.
-- Compute totals from disjoint groups. For a class with known counts, sum those counts; groups and coverage signal any missing portion. If none are known, report `not_applicable` only when native evidence establishes non-applicability for the invocation, otherwise `null`. If a known sum exceeds the safe integer range, use `null` for the total and keep the groups. Subsets never inflate their parents. Totals are for reporting and never generate a second charge. Validate supplied totals against groups and the allowed coverage and applicability states; normalize inconsistent native evidence before create, not on a later read.
+- `usage` contains `coverage: complete | partial | unavailable`, `totals`, and ordered `groups`. Coverage tracks whether evidence accounts for the invocation, not whether every counter is known. `partial` means other work may be missing; `unavailable` means there are no validated owned normalized counts. Native closure can make an unsuccessful attempt complete.
+- `totals` and each group’s `tokens` carry `freshInput`, `cacheRead`, `cacheWrite`, and `output`. Values are nonnegative safe integers (including proved zero), `null` for unknown, or `not_applicable`. Optional `cacheWriteByRetention` holds known counts keyed by `5m`, `1h`, or another reported retention label. Optional `reasoningOutput` is a subset of output. A bad subset does not invalidate a valid parent count. Keep independently validated buckets if the total is unknown.
+- Each group also has `model: {provider, model} | null` and `requestInputTokens: nonnegative safe integer | null`. It may carry positive `contextWindowTokens` only if native evidence bounds all requests it represents, and `inputTotalCeilingTokens` only from closed input coverage (zero is valid). Do not use a known subtotal, an unsafe sum, or observations from a different scope as a bound. A closed group can belong to a partial invocation.
+- An unsized group may carry `requestSizeHint: {method: 'nearest_sample' | 'largest_sample', inputTokens}` for diagnostics only. Use a validated single-request sample from the same native thread and attempt. Pick the closest in native observation order to the group’s observations, breaking ties by earliest sample; if the group cannot be placed in that order, pick the largest eligible sample. Exclude replays, earlier resumed work, and unrelated threads. Do not attach a hint to a group spanning threads. Hints never establish attribution, coverage, a bound, or a charge.
+- Preserve groups separately unless they cover disjoint work, have the same billing key and input accounting rules, and can be combined without losing exact sizes or changing which requests a bound or sample describes. Keep an unpartitionable inclusive count once, with null model if unproved. Never copy session totals into another chargeable group. Do not persist native thread or request IDs.
+- Use `openai` for confirmed Codex and native OpenAI work and `anthropic` for Claude and native Anthropic work. Match exact served IDs, without aliases or dispatch fallback except where a transport confirms identity for the represented work. `Session.model` and `cost.model` still describe dispatch.
+- Derive totals from disjoint groups. A known subtotal is not a complete total when a group or invocation coverage is missing. With no known count, use `not_applicable` only when established for the invocation; otherwise use null. On safe-integer overflow set the affected total to null and keep the groups. Totals do not generate charges. Validate derived totals, bounds, subsets, and coverage before persisting.
 
-**Compatibility projection.** New `tokens` and `cost.tokens` contain identical numeric projections. `input` remains provider-native inclusive input for Codex and OpenAI, and fresh input for Claude and Anthropic direct. Keep valid native inclusive input even if its cache split is unknown. Project output including reasoning, cache reads, and cache writes. Use zero for unknown, non-applicable, or unrepresentable counts only in the compatibility projection; a projection zero is not pricing evidence. `usageAvailable` means at least one validated count is available, not complete usage. Legacy rows keep their stored compatibility values. Their computed read prices are null with `legacy_cache_detail` and, when `usageAvailable` was false, `missing_usage`. Neither reason claims a known token count. Document projections and units in OpenAPI and SDK docs.
+**Compatibility projections — exception for spec-gate approval.** The “never zero for missing values” rule applies to normalized `usage`. The existing strict numeric `tokens` and `cost.tokens` remain identical compatibility projections, with zero placeholders for unknown, not-applicable, or unrepresentable counts. Keep `input` inclusive for Codex and OpenAI and fresh for Claude and Anthropic; preserve validated native inclusive input even when its split is unknown. Project output including reasoning, cache reads, and cache writes. `usageAvailable` means at least one validated count is available, not complete usage. OpenAPI and SDK descriptions for both projections must explain that zero need not be measured; Summary and clients that need missing states must read `usage`. Approval at `spec.human_review` accepts this exception for those two fields only.
 
-**Create, stored, and read costs.** Keep distinct schemas. The strict create cost accepts only `{model, tokens, usd?: null}` and still requires `cost.tokens` to match session `tokens`. Omission of `usd` is accepted and the repository writes `null`; explicit `null` is accepted. Any non-null amount, including zero, or any computed field (`basis`, `complete`, `rateVersionIds`, `gaps`) fails create validation, even when a computed field is empty. Do not strip these fields silently. There is no public session-create route to add. The stored `cost_json` keeps its original three-field shape; the stored-row decoder still tolerates legacy omission or an old numeric `usd`, neither of which is trusted as a computed price. Keep computed metadata out of the repository create result and stored JSON. Only the run-session read service constructs the priced response schema.
+**Create, stored, and read costs.** Strict create cost accepts only `{model, tokens, usd?: null}`; `cost.tokens` must match session `tokens`. Persistence writes `usd: null`. Reject a non-null amount, including zero, and any computed field, including `gaps: []`. Keep the original three-field `cost_json` shape. The stored decoder tolerates legacy omission or a numeric `usd`, but read-time pricing does not rely on those values. There is no public session-create route. Neither stored JSON nor the create result carries computed metadata. Legacy rows retain their stored projections and `usageAvailable`; their priced reads return null with `legacy_cache_detail`, plus `missing_usage` if `usageAvailable` was false. Neither gap asserts a token count.
 
 #### Native capture and attempt boundaries
 
-Accumulate observations across turns owned by one invocation and attempt. A retry is a separate attempt. Deduplicate by native request identity or cumulative counter position within its scope, not by equal counts. On success, native failure, cancellation, timeout, or structured-result failure, retain observations already received. Do not wait for a success payload after termination or let accounting change the outcome. A negative or unsafe count, unexplained reset, or invalid subset invalidates only dependent accounting. A request-boundary fallback may fill a gap only when scope and counter meaning agree; never add it to native counts for the same work.
+Accumulate only work owned by one invocation and attempt, across all of its turns. Retries are separate attempts. Deduplicate by request identity or cumulative counter position, not equality of independently scoped request counts. Carry observations received before native failure, cancellation, timeout, or result parsing failure to the same recorder as successful usage. Do not wait for a success payload after termination or change the execution outcome because accounting failed. Use a secondary summary only to replace overlapping evidence or fill a verified residual; do not add it to counts for the same work.
 
-**Codex app-server 0.160.1.** Decode `thread/tokenUsage/updated` for owned threads and accepted turn IDs. From `tokenUsage.total`, take inclusive input, cached input, output, and the reasoning subset. Compute fresh input as inclusive minus cached input when both validate. Writes do not apply. Account for growth in comparable totals once. `tokenUsage.last` and `modelContextWindow` provide evidence, not additional tokens.
+**Codex app-server 0.160.1** (`packages/codex-agent-adapter/src/codex-app-server.ts`). Match `thread/start` response `thread.id`, `modelProvider`, and `model` with the existing `openai` and no-fallback launch guard. Use `turn/start` response `turn.id` to bind owned turns and process queued notifications after acknowledgement. Match `thread/tokenUsage/updated.params.{threadId,turnId}` to an owned turn. Use `tokenUsage.total` counters `inputTokens` (inclusive), `cachedInputTokens`, `outputTokens`, and `reasoningOutputTokens`. Subtract cached from inclusive when both validate; reasoning never adds to output. Cache writes do not apply to the confirmed OpenAI path. Treat a contradictory positive wire `cacheWriteInputTokens` as a capture anomaly: keep independently valid counts but do not assume that input still splits into only fresh and reads. Do not add `tokenUsage.last` to `total` or use `totalTokens` as a fifth class.
 
-- **Fresh thread.** Start at zero. Confirm the billing key from `thread/start` when it confirms the exact requested model and OpenAI provider, fallback is disabled, and no override or reroute applies. An owned final-turn usage update followed by matching native completion closes coverage, including native error completion with the same evidence. A later application parse failure does not undo closure.
-- **Resume.** Subtract a pre-turn baseline only if native evidence binds it to the same counter scope before invocation work begins. Neither a stored previous attempt nor the first post-start total proves a baseline. Without one, keep independently identified owned requests or valid deltas between owned observations. Never charge the initial resumed total. Mark coverage partial if counts remain and unavailable otherwise.
-- **Interruption or reset.** Keep attributable counts. Without closure use partial coverage, or unavailable if nothing remains. Do not treat a reset as a new scope without evidence that it is disjoint.
-- **Reroute and child work.** Attribute ranges only when native boundaries isolate them and identify the served model. Require native child ownership and evidence of inclusion in parent totals or disjoint child counts. Completion alone does not prove inclusion. A failed spawn without a child ID or work does not show execution. Keep an unpartitionable inclusive count once, under a null billing key; mark unaccounted work partial and ignore unrelated threads.
+| Native case | Rule for 0.160.1 |
+| --- | --- |
+| Fresh and multi-turn | Start the fresh thread at zero. Attribute growth of comparable `total` counters once. An update spanning multiple requests is not a request-size sample. An owned final-turn update and matching `turn/completed.params.{threadId,turn.id,turn.status}` close the ordinary path when no counter interval is missing or ambiguous; failed native completion may also close it. Result parsing is independent. |
+| Resume | The production launcher currently uses `thread/start`. For resumed native streams, `thread/resume` identifies the thread but does not provide a pre-turn `tokenUsage.total` baseline tied to the resumed counter. The first owned update anchors later same-scope deltas; it does not contribute its total or `last`. A second owned monotonic update can contribute the difference, but coverage stays partial. One update alone yields unavailable usage. Do not use a prior session’s stored totals or invent a resume-baseline notification. |
+| Replay, reset, interruption | Unchanged snapshots add no counts or new samples. On an unexplained drop, stop using the affected counter for deltas in that scope; keep earlier proved counts and mark partial if work may be lost. Do not restart from zero without a new owned fresh thread. Keep observations received before termination; without closure mark partial or unavailable. |
+| Reroute | `model/rerouted.params.{threadId,turnId,fromModel,toModel,reason}` flags the affected turn. The notification has no counter offset or request ID that joins it to `tokenUsage.total` or `last`. Mark ranges overlapping that turn unattributed, including previously buffered deltas for it. Keep their validated counts once; do not assign the whole turn to `toModel` or split it at notification arrival. Other turns retain their confirmed key only if the identity for those turns is established and their deltas do not cross the ambiguous range. |
+| Child threads | Use `item/started` and `item/completed` with `params.{threadId,turnId}` and `item.type: collabAgentToolCall`, `item.senderThreadId`, and `item.receiverThreadIds` to link child work. `item.agentsStates` describes lifecycle, not accounting. A failed spawn with no child ID or work is not proof of execution. For linked children, the stream does not prove whether child counts overlap a parent total or provide a joined served key for their usage. Do not add child counters to the parent total. Keep any potentially inclusive parent range once with null key, and mark partial when child coverage cannot be established. Ignore unrelated thread notifications. |
+| Size | `tokenUsage.last.inputTokens` can be exact size for a positive owned delta when `last` matches all applicable pricing counters of that delta and thus accounts for it. A nonmatching `last` has no request identity on this notification to prove a disjoint subtraction; keep the whole delta unsized. An eligible owned `last` can be a diagnostic hint only. `modelContextWindow` alone does not prove a bound for all requests in a cumulative range. |
 
-Treat validated `last.inputTokens` as the last request's inclusive size, not as the size of a turn or cumulative delta. Use it for a positive owned delta when `last`'s normalized pricing counters match that delta. If they differ, split out `last` only when native evidence identifies a distinct owned request inside the delta and class-by-class subtraction is valid. The remaining delta has null size. A replay or unchanged observation adds neither counts nor size evidence. Retain a native context ceiling only when it bounds every request represented by the group. Never use cumulative input, a neighboring sample, or the largest observed `last` as a request-size bound.
+Treat reroute and child classification as provisional until the attempt ends, so late markers can remove a key without adding or deleting counters. Test the unsupported cases against the pinned wire shape, not against simulated metadata the app-server does not send. Do not add provider resume support to the launcher as part of this feature.
 
-**Claude Agent SDK 0.3.177.** Read `message.model` and `message.usage`. Deduplicate by native `request_id` where available, otherwise stable `message.id` within the SDK session and parent-tool scope. Join streamed frames to the final assistant record; repeated frames and content blocks add nothing. Distinct native requests count even if their output is superseded. Use `parent_tool_use_id` and linked sub-agent metadata to prove ownership, not model identity. Normalize `input_tokens` as fresh, `cache_read_input_tokens` as reads, and `cache_creation_input_tokens` as writes. Preserve validated `cache_creation.ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens`. Derive size only from a final single-request record with all applicable input counts. `modelUsage` is a keyed aggregate, not request-size or retention evidence. Do not price from SDK `contextWindow`, `total_cost_usd`, or `modelUsage.costUSD`.
+**Claude Agent SDK** (adapter dependency `^0.3.177`; exercise the lockfile-resolved version). Read `message.model` and `message.usage` on final assistant records. Deduplicate by `request_id`, otherwise stable `message.id` scoped to SDK session and parent tool. Associate streamed frames with the final record; repeated frames and content blocks do not add requests. Count distinct native requests even if output is superseded. Use `parent_tool_use_id` and linked child lifecycle metadata for ownership, not model identity. Map `input_tokens` to fresh, `cache_read_input_tokens` to reads, and `cache_creation_input_tokens` to writes. Keep `cache_creation.ephemeral_5m_input_tokens` and `ephemeral_1h_input_tokens` where validated. Derive exact size only for a single request with closed input coverage. `modelUsage` is a keyed aggregate, not request-size or retention evidence. Do not price from SDK `contextWindow`, `total_cost_usd`, or `modelUsage.costUSD`.
 
-- **Keyed result without child work.** Use each active-invocation keyed aggregate once, including a usable native error result. Subtract reconciled final requests by exact model key. Keep any supported positive remainder under that key with unknown size and retention unless reported independently. If overlap is unresolved or contradictory, retain the authoritative scoped aggregate once and mark coverage partial for potentially omitted work.
-- **Keyed result with child work.** To close coverage, prove child ownership and closure and reconcile child usage with the keyed totals. Without a scoped native child total, require a closed child lifecycle, linked final requests, and exact per-model equality between deduplicated requests and keyed totals for applicable counters. Keep reconciled request groups, not a second copy of the aggregates. A positive aggregate, completion marker, or unexplained remainder alone does not prove inclusion. If reconciliation fails, keep only proven non-overlapping counts and mark uncovered work partial.
-- **Unkeyed terminal usage.** Compare or fill counters only for a matching scope: the active invocation without child evidence. Keep exact request attribution where final requests account for the summary. Otherwise keep an uncovered count once with null model. Do not use an unkeyed summary to close child coverage.
-- **Missing result, resume, or parse failure.** Exclude earlier and unowned work. Retain valid owned observations without summing ambiguous overlap. A matched native result remains usable if application parsing fails later. Without closure use partial coverage, or unavailable if no owned counts remain.
+- With no child work, use a terminal `modelUsage` aggregate once per exact key when scoped to the invocation, including a usable error result. Subtract deduplicated final requests only when containment is established and the counts reconcile. Keep any remaining counts at that key, with unknown size and retention unless independently reported. If overlap cannot be resolved, use the authoritative scoped aggregate once instead of the overlapping requests. Mark coverage partial if work may have been omitted.
+- With children, keep linked final requests with proved ownership. For closure without a scoped native child total, require the child lifecycle to close and deduplicated requests to match the terminal keyed totals exactly by model and applicable counter. Then keep the requests, not another copy of the totals. An unexplained remainder or completion marker does not prove inclusion. If reconciliation fails, keep only proven non-overlapping work and mark partial.
+- Use unkeyed terminal usage only for the matching active invocation with no child evidence. If it provably contains the final requests, keep those and their exact keys, and retain the uncovered remainder once with null key. If containment cannot be established, do not sum them; prefer the authoritative scoped inclusive aggregate once, without model attribution. Unkeyed usage does not close child coverage. On resume or missing result, exclude prior and unowned work; keep independently owned observations.
 
-**Other recorded calls.** Normalize existing OpenAI agent sessions and successful OpenAI and Anthropic direct calls from native usage and served identity. OpenAI cached input is a subset of inclusive input; writes do not apply. Anthropic direct uses the Claude split. Apply the same ownership and deduplication rules if a stream covers multiple requests. Make no extra inference calls for accounting.
+**Other recorded calls.** Normalize OpenAI agent sessions and successful OpenAI and Anthropic direct calls at their existing native response boundaries. OpenAI cached input is a subset of inclusive input and writes do not apply. Anthropic direct uses the Claude counter meanings. Use native served identity, the same ownership and deduplication rules, and a single-response size only when it represents one request and closes applicable input counts. Make no extra inference calls.
 
 #### Effective-dated rate configuration
 
-Add configuration kind `model_rate_table`. One record is one immutable revision of a slot keyed by `(tenant, provider, model, effectiveAt)`. Store settings in `configuration_records.settings_json`; leave profile-only columns null. Rates are independent of provider profiles. The service ships no rates. The only supported basis is `api_list_price`, displayed as `API list price`.
-
-Strict shapes below use `?` for an omitted optional field, not a nullable field. Unlisted fields are rejected. A correction replaces the whole schedule. A retraction repeats the slot key; the server does not infer it from the ID.
+Add `model_rate_table` to configuration records. One record is one immutable revision of a slot keyed by `(tenant, provider, model, effectiveAt)`. Store settings in `configuration_records.settings_json` with profile-only columns null. Rates are independent of profiles. No rates ship. The only basis is `api_list_price`, displayed as `API list price`.
 
 ```text
 Slot = { provider, model, effectiveAt }
@@ -199,117 +205,110 @@ CreateRequest = { tenant, kind: 'model_rate_table', settings: InitialSet | Corre
 SetRead = Slot & { action: 'set', correctsId?, revision, basis: 'api_list_price', contextLimitTokens?, bands: Band[] }
 RetractionRead = Slot & { action: 'retract', correctsId, revision }
 Record = { id, tenant, kind: 'model_rate_table', settings: SetRead | RetractionRead, createdAt, updatedAt }
-List = { records: ConfigurationRecord[] }  // existing union gains Record
 Band = { minRequestInputTokens, rates: { freshInput, cacheRead, output, cacheWrite } }
 cacheWrite = 'not_applicable' | rate | { '5m': rate, '1h': rate }
 ```
 
-- `provider` and `model` are case-sensitive nonempty strings without padding or control characters. `effectiveAt` is a valid UTC instant in canonical millisecond form (`YYYY-MM-DDTHH:mm:ss.sssZ`). `correctsId` is a nonempty configuration record ID. `contextLimitTokens`, when present, is a positive safe integer: an operator assertion of a model-wide upper bound on the input measure used by the bands, across all transports sharing that key. Do not set it to a transport-specific cap or when the bound is not known. Default omitted basis to `api_list_price` before storage and comparison. Retractions have no pricing fields. The service assigns `revision`, `id`, `createdAt`, and `updatedAt`; each revision has `updatedAt === createdAt`, its own publication time.
-- Each set has one or more bands. Minimums are nonnegative safe integers, start at zero, and strictly increase. A band includes its minimum and excludes the next; the last band has no upper bound. A tier that applies to **more than** `T` tokens starts at `T + 1`. All rates are nonnegative safe integers in nano-dollars per token, and every shown class is required. Convert decimal USD quotes per million tokens by exact multiplication by 1,000 (`$3.00` becomes `3000`). Reject unrepresentable rates rather than rounding.
-- Initial publication requires no revisions in the slot, including retracted ones. A correction or retraction names the current head of the tenant and slot. Retraction requires an active set; a set can correct a retraction to restore the slot. Missing, stale, foreign, wrong-kind, and wrong-slot targets yield the same sanitized conflict.
-- Reject a no-op correction with `409` only when it corrects an active head and the canonical schedules match: same normalized basis, optional context limit (including absence), and ordered bounds, rates, and write treatments. Key order does not matter. Identical schedules at different effective instants are allowed. Restoration can reuse the retracted schedule.
-- Validate the head, assign the one-based revision, and insert in one SQLite writer transaction. Add a partial unique index for `kind = 'model_rate_table'` over `tenant` and the JSON-extracted provider, model, effective instant, and revision. Serialize contenders or re-read after a write conflict; only one publication against a given head can succeed. Leave other kinds unchanged. Keep all revisions readable. Guard PATCH and DELETE by stored kind, not the request kind.
+- Shapes are strict; optional is not nullable. Provider and model are case-sensitive nonempty strings without padding or control characters. `effectiveAt` is a valid UTC instant in canonical millisecond form `YYYY-MM-DDTHH:mm:ss.sssZ`. `correctsId` is a nonempty configuration record ID. Optional `contextLimitTokens` is a positive safe integer: an input ceiling asserted by the operator for the key across all transports, not a single transport’s cap. Default omitted basis before storage and comparison. The service assigns the ID, one-based revision, and publication time (`updatedAt === createdAt`).
+- Require at least one band. Inclusive minimums are safe integers starting at zero and increasing strictly. The last band has no upper bound. A tier for **more than** `T` input tokens starts at `T + 1`. Require every shown class. Rates are nonnegative safe integers in nano-dollars per token. Multiply the provider’s USD per million tokens by 1,000 exactly (`$3.00` becomes `3000`); reject unrepresentable rates rather than rounding.
+- First publication requires no slot history. Correction or retraction names the current head in the same tenant and slot. A retraction requires an active set; a set can correct a retraction to restore it. Missing, stale, foreign, wrong-kind, and wrong-slot IDs produce the same sanitized conflict. Reject an identical normalized schedule correcting an active head, including its basis and optional context limit. Key order does not matter. Allow identical schedules at distinct effective instants and allow restoration.
+- Add a partial unique index for `kind = 'model_rate_table'` over tenant and JSON-extracted provider, model, effective instant, and revision. Read the head, assign the revision, and insert in one SQLite writer transaction. Serialize writers or recheck the head on conflict. Only one publication against a given head succeeds. Keep prior revisions readable. Guard PATCH and DELETE by stored kind; leave other kinds unchanged.
 
-Retraction hides only its slot and may expose an earlier active slot. It is not a zero rate. Correct a mistyped date or model by retracting the old slot and publishing the intended one as separate publications. Normal reads use current history. For offline comparison, retain the selected record IDs and session set. Old slot heads can be reconstructed from immutable `createdAt` and per-slot revision order; retain the selected IDs rather than relying on timestamps alone when publications share a tick. There is no historical-read API or rate snapshot stored on sessions.
+Retraction hides only its slot and may expose an earlier one. To fix an incorrect date or key, retract the wrong slot and publish the intended one. For offline reproduction, retain the session set and selected revision IDs, not just publication times. No as-of endpoint, session rate snapshot, or computed cache ships. A later cache must match fresh computation.
 
 #### Read-time pricing and rollups
 
-**1. Select the session-effective schedule.** Authorize the run, then read its sessions and relevant rate history in one committed snapshot. For each key use the highest revision of each slot, ignore retracted heads, and choose the latest active `effectiveAt <= Session.startedAt`. Use that start for every group. Do not fall back to an earlier slot because the selected one cannot price a class. This feature ships no computed-price cache; any subsequent cache must equal a fresh computation.
-
-**2. Resolve bands without guessing.**
-
-- With exact request size, choose its band. Exact evidence wins over ceilings.
-- Without exact size, start with every band. Apply the selected slot's `contextLimitTokens` to **every** group that resolves to that slot, regardless of transport. A native ceiling is additional evidence only when validated for the group's entire scope. Ignore a configured ceiling if an exact size for that billing key in the session exceeds it; ignore a native ceiling if exact evidence within its scope contradicts it. With two valid ceilings use the smaller one. Exclude only bands whose inclusive minimum is **greater than** the resulting ceiling. No ceiling means no exclusion. Do not use aggregate counts as bounds.
-- With one possible band, apply it. With several, compare the treatment for each independent term. For a reported retention bucket, compare the rates for that bucket, not the whole schedule. Price invariant terms; leave band-dependent positive terms unpriced with `missing_request_size`. A known zero never causes a band gap: count it as a priced zero if all possible treatments charge that term numerically, otherwise it adds neither a charge nor a gap. Non-applicable usage never needs a band. For an unknown count, use `missing_usage` if every possible treatment needs that count and no band choice can recover it; if the band would determine whether the count is needed, use `missing_request_size`. Never estimate or choose a fallback band.
-
-**3. Apply treatments once.** Usage describes what happened; the rate describes what is charged. `not_applicable` differs from numeric zero.
-
-| Usage | Resolved treatment | Result |
-| --- | --- | --- |
-| Known positive count | `not_applicable` | Sized `incompatible_rate`; no charge for those tokens. |
-| Known zero | `not_applicable` | No charge and no gap. |
-| `not_applicable` | Any | No charge and no gap. |
-| `null` | `not_applicable` | No charge and no gap. |
-| `null` | Numeric or retention schedule | `missing_usage` for the unknown portion, even at a zero rate; independently price eligible known buckets. |
-| Known count | Numeric or compatible retention schedule | Charge eligible known counts once, including a reported zero with numeric treatment. |
-
-For flat writes use the total, not the buckets again. For tiered writes, price validated supported buckets independently. A known zero total against a retention schedule contributes a priced zero. A positive unallocated remainder gets `missing_cache_retention`; when the total is missing and a remainder cannot be ruled out, use `missing_usage` with unknown count. A known unsupported bucket gets `incompatible_rate`, not a second gap as an unallocated remainder. If bucket counts exceed a valid total, discard the split; retain the total for flat rates and treat its retention as unresolved for tiered rates. With a choice of bands, compare the treatment of each disjoint write portion; if a flat and a tiered band both remain possible, a reported bucket can still price at a common applicable rate. An unallocated remainder is not priced unless its treatment is conclusive without assigning it a bucket. Reasoning stays in output.
-
-**Gap priority.** For each affected portion, stop at the first blocking reason: (1) unknown billing identity → `missing_model`; (2) no effective schedule → `missing_rate`; (3) unresolved band-dependent treatment → `missing_request_size`; (4) missing count, missing retention, or incompatible treatment → the corresponding treatment gap. Do not repeat the portion under downstream reasons. Exclude non-applicable and known-zero counts from sized gaps. A coverage gap describes different work: add `partial_usage` with unknown count for work outside retained observations. If no usable normalized observations remain, report `missing_usage` without inventing group-level blockers. Use the separate legacy rules for rows without `usage`.
-
-**4. Compute the session amount.** Multiply and sum with `bigint`. Return `cost.usd` as a safe JSON integer in nano-dollars if at least one supported term has a known count and numeric charge and the sum fits. Return null when nothing is priceable or the amount overflows; add `amount_overflow` only for the latter. `cost.complete` requires closed coverage, no gaps, and a representable amount. For example, 100 inclusive input, 60 reads, and 10 output (including 4 reasoning), at rates 3000 fresh, 300 read, and 15000 output, yield `288000`. Adding 25 known writes against `not_applicable` leaves the subtotal at `288000` and adds a sized incompatibility gap. There is no second price field.
-
-**5. Roll up returned session amounts.** Sum numeric `cost.usd` values with `bigint` for each logical `(phase, step)` and once for the run. Logical steps span occurrences, roles, and rounds; direct-call phase can be null. An empty run has a zero empty sum, no gaps, and is complete. A nonempty collection with no numeric prices has a null subtotal. An overflowing sum is null with `complete: false` and an aggregate `amount_overflow` gap. A numeric subtotal is complete only if every included session is complete. Included charges use established rates and excluded charges cannot be negative, so a numeric subtotal is a lower bound for recorded sessions at the configured basis.
+1. **Select a schedule.** Authorize the run. Read its sessions and relevant tenant rate history in one committed snapshot. Take the highest revision in each slot and ignore retracted heads. For each group with a key, select the latest active slot whose `effectiveAt` is at or before `Session.startedAt`. Parse both as UTC instants before comparison; do not compare raw timestamp strings. Preserve the meaning of fractional precision accepted by the session schema. Equality is inclusive, even for `.000Z` versus `Z`. Use session start for every group. Do not fall back to an earlier slot because a selected schedule cannot price a class.
+2. **Find feasible bands.** Validated exact request size selects its band directly. Otherwise take the minimum of the configured model-wide ceiling, validated native ceiling, and closed group input total, ignoring absent values. Ignore a configured ceiling contradicted by exact evidence for the key in the session, and a native ceiling contradicted in its scope. Reject an internally inconsistent group-total ceiling at capture. Remove bands with a minimum above the ceiling. With no ceiling remove none. A group total above a threshold does not prove any request crossed it. Do not clamp or use a sample hint, even when it lies inside the feasible range.
+3. **Split usage once.** Fresh input, cache reads, and output are separate portions; reasoning never adds to output. Split writes into known retention buckets and, when total writes are known, the nonnegative remainder. If a split exceeds a valid total, discard the split and keep the total as the remainder. With unknown total writes, keep supported bucket evidence and an unknown remainder unless additional writes are ruled out. A flat rate applies to each disjoint write portion; do not charge the write total again. A retention schedule applies to known supported buckets; an unsupported known bucket is incompatible. A positive unallocated remainder under a retention schedule lacks retention evidence.
+4. **Resolve each portion across feasible bands.** Known positive tokens with the same numeric rate in every feasible band are charged once, including at a configured zero rate. If all bands yield the same blocker, return that blocker. If positive tokens have different treatments (including a rate versus a blocker), omit the charge and report `missing_request_size` for those tokens. In particular, a mixed flat/tiered schedule can price a known bucket at a shared rate. A positive remainder with a flat rate in one band but no retention evidence in another is a size gap until its band is resolved. A known zero with numeric treatment in every feasible band contributes a measured priced zero; different numeric rates do not matter for zero. A zero with any nonnumeric treatment does not establish a priced amount and adds no token gap. `not_applicable` adds neither cost nor gap. An unknown count gets `missing_usage` unless all feasible bands establish non-applicability; known write buckets are tested separately. Never estimate a band or fold unknown premiums into the known subtotal.
+5. **Build session cost.** For each unpriced portion give the first blocker: `missing_model`, `missing_rate`, then the applicable treatment blocker (`missing_usage`, `missing_cache_retention`, `incompatible_rate`, or `missing_request_size`). Give sized gaps only for disjoint positive counts. Add an unsized `partial_usage` when other work may be missing. If coverage is unavailable return `missing_usage`, without speculative group gaps. Use the legacy rule for rows without normalized usage. Multiply and sum numeric terms with `bigint`. `cost.usd` is a safe JSON integer in nano-dollars when at least one measured numeric term contributes and the result fits; it can be a partial known amount. Return null if no term is priceable or if the amount overflows. Add `amount_overflow` only for overflow; if nothing is priceable and no other gap explains it, report `missing_usage` (no usable chargeable count). `cost.complete` requires closed coverage, no gaps, and a representable amount. There is no second price field.
+6. **Sum session amounts.** Sum numeric session amounts with `bigint`, once per logical `(phase, step)` and once for the run. Logical steps span occurrences, roles, and rounds; direct-call phase can be null. A nonempty collection with no numeric prices has a null subtotal. If the sum overflows, return null and a separate rollup overflow gap. A numeric subtotal is complete only when every included session is complete. For zero recorded sessions return `sessionCount: 0`, `knownSubtotalUsd: null`, `complete: false`, zero priced and unpriced counts, and no gaps or step entries. This is an empty observation, not a zero charge. Clients use the existing run status to label a running result `so far`; `complete` refers to recorded pricing coverage only, not run status.
 
 #### API, SDK, and errors
 
 | Route | Contract |
 | --- | --- |
-| `POST /v1/configuration-records` | Accept `CreateRequest`, return `201` and `Record`. Invalid shape or data returns `400 validation_error`; publication conflicts return sanitized `409`. |
-| `GET /v1/configuration-records`, `GET /v1/configuration-records/:id` | Return existing list and item shapes with the new union variant, including old revisions and retractions. Unknown or other-tenant IDs return `404`. |
-| `PATCH` or `DELETE /v1/configuration-records/:id` | Valid mutation of an in-tenant rate record returns `409`; malformed requests return `400`; valid requests for unknown or other-tenant IDs return `404`. There is no mutable rate PATCH variant. |
-| `GET /v1/runs/:id/sessions` | Preserve ordered `sessions`; add `costTotals: {run, steps}` from the same snapshot. Keep existing missing and other-tenant behavior. No new query options or endpoint. |
+| `POST /v1/configuration-records` | Accept `CreateRequest`; return `201` and `Record`. Invalid shape or data: `400 validation_error`; publication conflict: sanitized `409`. |
+| `GET /v1/configuration-records`, `GET /v1/configuration-records/:id` | Preserve list/item envelopes and add the new union variant, including history and retractions. Unknown or other-tenant item: `404`. |
+| `PATCH` or `DELETE /v1/configuration-records/:id` | Valid mutation against a rate record in the caller’s tenant: `409`. Malformed request: `400`. Valid request for unknown or other-tenant ID: `404`. Do not add a rate PATCH variant. |
+| `GET /v1/runs/:id/sessions` | Return `200` with the same ordered `sessions` and `costTotals: {run, steps}` from the same snapshot. Keep existing missing and other-tenant behavior. No new route or query option. |
 
-Extend shared Zod schemas, generated OpenAPI, and SDK configuration and session types. Additive read fields are optional in new client decoders for older servers; upgraded HTTP session reads always populate pricing metadata and omit `usage` only for rows without normalized evidence stored. Older clients with strict decoders may need an SDK upgrade. Keep existing auth and sanitized errors. Gaps are successful read results.
+Extend shared Zod schemas, generated OpenAPI, and SDK methods and types. New decoders accept older read responses without additive fields. Upgraded HTTP reads always return pricing metadata and omit `usage` only on rows without it. Older strict clients may need an SDK upgrade. Preserve existing authentication, authorization, and sanitized operational error responses. Pricing gaps are successful reads, not HTTP errors.
 
-- Session `cost` keeps `model`, `tokens`, and `usd`; add `basis: 'api_list_price'`, `complete: boolean`, `rateVersionIds: string[]` (sorted distinct selected set IDs, including sets that charge nothing), and `gaps`. Each gap has `code`, optional billing `provider` and `model` when known, optional zero-based `groupIndex` when group-specific, and `tokenCount`. Codes: `legacy_cache_detail`, `missing_usage`, `partial_usage`, `missing_model`, `missing_rate`, `missing_request_size`, `missing_cache_retention`, `incompatible_rate`, `amount_overflow`.
-- `tokenCount` is a nonnegative decimal integer string, or null for unquantifiable usage or amount-only gaps. Count only disjoint known tokens blocked by that gap, not guessed counts, legacy inclusive totals, or overlapping subsets. Keep sized and unknown gaps separate. Amount overflow is not a second token assignment.
-- Each total contains `knownSubtotalUsd: safe integer | null` in nano-dollars, `basis`, `complete`, `pricedSessionCount`, `unpricedSessionCount`, and `gaps`. Step entries also carry `phase: string | null` and `step: string`. Priced and unpriced counts distinguish numeric amounts from null, not complete amounts from incomplete ones. Group gaps by `(code, provider, model)`; return the keys, sum of known affected tokens as `tokenCount` (decimal string or null if none known), `hasUnknownTokenCount: boolean`, and distinct affected `sessionCount`. Amount-only gaps set the flag false. Aggregate-only overflow has `sessionCount: 0` and `tokenCount: null`. Sort steps by `(phase, step)` and grouped gaps by `(code, provider, model)`, null or missing keys first. Pass the run total through `use-run-detail.ts` to Summary.
+- Session `cost` retains `model`, `tokens`, `usd` and adds `basis: 'api_list_price'`, `complete: boolean`, `rateVersionIds: string[]`, and `gaps`. IDs are sorted distinct selected set records, including selected sets that charge nothing.
+- A session gap has `code`, `tokenCount`, optional known `provider` and `model`, optional zero-based `groupIndex`, and optional `tokenClass: freshInput | cacheRead | cacheWrite | output` (required for `missing_request_size`). Codes: `legacy_cache_detail`, `missing_usage`, `partial_usage`, `missing_model`, `missing_rate`, `missing_cache_retention`, `incompatible_rate`, `missing_request_size`, `amount_overflow`. `tokenCount` is a nonnegative decimal integer string for a known disjoint affected count or null for unknown counts and amount-only gaps. Keep sized and unsized gaps separate. Do not size an overflow gap or count overlapping subsets.
+- Each total contains `knownSubtotalUsd: safe integer | null`, `basis`, `complete`, `sessionCount`, `pricedSessionCount`, `unpricedSessionCount`, and `gaps`. The last two counts classify numeric versus null session amounts, not complete versus incomplete amounts, and sum to `sessionCount`. Step entries add `phase: string | null` and `step: string`. The basis is the same on empty and nonempty results.
+- Group rollup gaps by `(code, provider, model, tokenClass)`. Return the sum of known affected tokens as a decimal string or null if none are known, a `hasUnknownTokenCount` flag, and distinct affected `sessionCount`. Amount-only gaps set the flag false. A rollup-only overflow has `sessionCount: 0` and `tokenCount: null`; keep it distinct from session overflow. Sort steps and grouped gaps by key, null or omitted first. Pass the run total through `use-run-detail.ts` to Summary.
 
 ### Security, privacy, and compliance
 
-Use existing configuration and session policy actions and principal-derived tenant scope. Validate the create envelope against that scope. Authorize runs before pricing and tenant-scope history, head, and correction queries. Do not reveal whether a rejected correction target exists in another tenant. Keep raw events, prompts, outputs, secrets, subscription identifiers, and native correlation IDs out of durable usage and diagnostics. Render model identifiers as text.
+Use existing configuration and session policy actions and principal-derived tenant scope. Check the create envelope against that scope. Authorize the run before pricing and tenant-scope schedule, head, and correction lookups. Do not expose the existence of foreign correction IDs. Keep raw events, prompts, outputs, secrets, subscription identifiers, and provider correlation IDs out of durable usage and diagnostics. Render model IDs as text.
 
 ### Observability
 
-Durable sessions remain the usage source of truth. Log sanitized warnings for invalid native accounting and persistence failures with stable reason codes and local run or session context where available. Ordinary price gaps are not API failures. Execution does not depend on rate availability. Add no metrics backend or alerts.
+Durable sessions remain the usage source of truth. Log sanitized warnings for malformed native accounting and persistence failures, with stable reason codes and local run or session context where available. Missing rates and other ordinary gaps are data, not execution or HTTP failures. Add no metrics backend or alerts.
 
 ### Testing plan
 
 #### Worked fixtures
 
-For the table, `F/R/W/O` means fresh input, cache reads, cache writes, and output; `NA` means `not_applicable`. Group sizes are `requestInputTokens`; omitted optional evidence is absent. Use uniform illustrative rates `3000/300/15000` for `F/R/O`, Codex writes `not_applicable`, and Claude retention rates `5m:4000`, `1h:6000`. The banded OpenAI schedule adds a band at 101 input tokens with fresh rate `6000`; all other treatments stay the same. Use `openai/gpt-5.4` for the confirmed Codex key and distinct confirmed Anthropic keys for the Claude parent and child. Both Anthropic keys use the same illustrative schedule. Each input below is attributed to one invocation; no additional observations arrive.
+`F/R/W/O` denotes fresh input, cache reads, cache writes, and output; `NA` means `not_applicable`. Illustrative base rates are `3000/300/15000` for `F/R/O`, Codex writes `NA`, and Claude writes `5m:4000` and `1h:6000`. The banded OpenAI schedule adds a band starting at 101 with fresh rate `6000`; other rates are unchanged.
 
-| Case and fixture input | Expected `usage` | Expected read `cost.usd`, `complete`, and `gaps` |
-| --- | --- | --- |
-| Resumed Codex with proven same-scope baseline `(inclusive, read, output) = (1000,600,100)`. Owned final total `(1100,660,110)`, aligned `last` `(100,60,10)`, reasoning subset 4, then matching completion. Uniform rates. | Complete; one group, size 100, `40/60/NA/10`, reasoning 4. Totals match the group. | `288000`, true, `[]`. |
-| Same resumed counters without a proven pre-turn baseline or independently attributable request. Only the final cumulative total arrives after start; `last` has no independent ownership evidence. | Unavailable; no groups; totals `null/null/NA/null`. | `null`, false; only `missing_usage` with `tokenCount: null`, no group or billing key. |
-| Fresh, closed Codex thread grows from zero to `(100,60,10)` in one owned update. `last` is `(20,10,2)` with no evidence to isolate it; no native or configured ceiling. Banded rates. | Complete; one confirmed-model group, size null, `40/60/NA/10`. Totals match. Do not split out or add `last`. | `168000` (`60 × 300 + 10 × 15000`), false; only `missing_request_size` on group 0 for the OpenAI key, `tokenCount: '40'`. |
-| Claude parent final record `40/60/20/10` (20 at `5m`); linked, closed child final record `10/20/5/4` (5 at `1h`). Keyed terminal counts exactly match each model's request. | Complete; parent group size 120, child group size 35, each with its model and reported bucket. Totals `50/80/25/14`; buckets `5m:20`, `1h:5`. Do not add terminal totals again. | `494000` (`368000 + 126000`), true, `[]`. |
-| Claude single final record `40/60/25/10`, only 20 writes reported in `5m`, with matching keyed result. | Complete; one group, size 125, `40/60/25/10`; retained bucket `5m:20`. Totals match. Do not invent a bucket for the other 5. | `368000`, false; only `missing_cache_retention` on group 0 for the parent key, `tokenCount: '5'`. |
-| Same active OpenAI slot for a Codex and an OpenAI direct session. Both have one confirmed group `40/60/NA/10` without exact size or native ceiling. Banded schedule with `contextLimitTokens: 100`. | Both preserve complete coverage, the same billing key and counts, and null request size. Dispatch differs. The configured limit is not written into either usage record. | Each returns `288000`, true, `[]`, and the same selected version ID. With limit 101 instead, each returns `168000`, false, with the sized `missing_request_size` gap from the unmatched-delta fixture. |
+| Fixture | Expected usage and price |
+| --- | --- |
+| Fresh confirmed Codex; a matched owned update has total and `last` `(inclusive, cached, output) = (100,60,10)` with reasoning 4, followed by matching completion. | `40/60/NA/10`, exact size 100, reasoning 4. `288000`, complete. |
+| Resumed Codex: first owned update `(1000,600,100)`, second `(1100,660,110)` with aligned `last` `(100,60,10)`, then completion. | Only the delta counts: `40/60/NA/10`, `288000`, incomplete with unsized `partial_usage`. With only the first update, no group or hint, null amount, `missing_usage`. |
+| Fresh closed Codex group `(100,60,10)` with unmatched `last` `(20,10,2)` and no other ceiling. | Size null, ceiling 100. Do not add or isolate `last`. Band 101 is impossible; `288000`, complete. |
+| Fresh closed Codex group `(160,60,10)` with unmatched `last` `(120,20,2)`; repeat with no sample. | Size null, ceiling 160. Both variants return `168000` for reads and output, incomplete with `missing_request_size` for 100 fresh tokens. No sample or fallback changes the amount. |
+| Same 160-token group with a size hint of 230 from a separate owned request in the same thread; add a band at 201. | The 201 band is out of bounds for the group. Do not clamp the hint or select a band with it. The group’s charge stays `168000` with a sized fresh-input gap. Assert the other request is accounted for separately. |
+| Codex reroute notification with `fromModel` and `toModel` inside one turn whose total reaches `(100,60,10)`; no usage-to-reroute join. | One `40/60/NA/10` group with null key, not two model charges; null amount with `missing_model` for 110 tokens. With a linked child and unproved inclusion, keep that range once, do not add the child counter, and also report `partial_usage`. |
+| Claude final parent `40/60/20/10` (20 at `5m`) and linked closed child `10/20/5/4` (5 at `1h`), each with served key; keyed terminal counts match. | Sizes 120 and 35, totals `50/80/25/14`. `494000` (`368000 + 126000`), complete. Do not charge terminal totals again. |
+| Claude final `40/60/25/10`, with only 20 writes reported at `5m`; keyed result agrees. | Size 125, `368000`, incomplete with `missing_cache_retention` for five writes. |
+| Unsized Claude `40/100/25/10`, including 20 writes at `5m`; both bands feasible. Bands differ only in writes: one flat `4000`, the other `5m:4000, 1h:6000`. | `380000`: `120000 + 30000 + 80000 + 150000`. The 20 known bucket tokens are charged once. The five unallocated writes get one `missing_request_size` gap. If exact size selects the tiered band, that gap becomes `missing_cache_retention`; if it selects flat, amount becomes `400000` complete. |
+| Claude scoped unkeyed terminal total `100/100/0/20` proves containment of a final attributed request `40/60/0/10`; no key evidence for the residual. | Keep the final request and exactly one null-key group `60/40/0/10`. Full token totals remain `100/100/0/20`. `288000` incomplete, with `missing_model` for 110 tokens; never price the remainder at dispatch. |
+| Shared OpenAI slot for Codex and OpenAI direct, each with closed `40/60/NA/10` group and no exact size. Test configured limits 100 and 101. | Both have their own 100-token group ceiling and return `288000` with the same revision for either limit. With a genuinely unbounded group, a configured 100 admits only band 0 and a configured 101 admits both. |
 
 #### Automated coverage
 
-- Run the native worked cases through pinned event decoding, production dispatch, attempt telemetry, SQLite, and `GET /v1/runs/:id/sessions`. Assert the worked `usage`, price, completeness, and gaps. Use seeded normalized groups for the paired Codex/direct HTTP test so neither side has exact size evidence. Separately run native OpenAI agent and direct fixtures to prove shared billing keys. No automated test makes a model call.
-- Cover multi-turn growth, replay, resumed deltas after an untrusted initial total, reset, reroute, linked and unaccounted child work, and failure, cancellation, timeout, and application parse failure. Assert closure independently of result success. Test exact band crossings without repricing earlier work, isolated `last`, native ceiling below and equal to a band boundary, native and configured ceilings together, and exact evidence that contradicts a ceiling. No unresolved term receives an estimated charge.
-- Test every applicability case, unknown and invalid counters, unsupported buckets, retention overflow beyond a valid total, missing model and rate, priced zero, wholly unpriced and partial sessions, and session and aggregate amount overflow. Check disjoint gap sizes, mixed known and unknown counts, and distinct session counts. Assert legacy rows are unchanged after migration and on disk after reads.
-- At the session create contract and repository, accept omitted and null `usd`, then inspect `cost_json` for only `model`, `tokens`, and `usd: null`. Reject non-null `usd`, including zero, and each computed field individually, including `gaps: []`. Assert no insert for invalid input and prove that HTTP reads compute fields without writing them back.
-- Test strict rate shapes in HTTP, SDK, and OpenAPI. Cover timestamps, stale/foreign/wrong-slot targets, concurrent publishers, invalid schedules, stored-kind mutation guards, same-slot no-ops with a defaulted basis, and identical schedules at different effective instants. Prove that a backdated rate prices unchanged stored usage on the next read, a future slot does not, and a retraction works with or without an earlier active slot. Test tenant isolation and snapshot consistency for session prices and totals.
-- Test every Cost table row in both run states, priced zero, overflow details, reason counts, keyboard focus, refresh, and old-server responses. Test normalized, legacy, and mixed Tokens states and preservation of loading and errors. Exercise opening Summary and refreshing after a rate publication with scripted data.
+- Drive native fixtures through pinned wire or SDK decoding, production dispatch, attempt telemetry, SQLite, and `GET /v1/runs/:id/sessions`. Extend the Codex executable fixture in `codex-app-server.spec.ts` with turn IDs and cache counters. Verify the launch guard rejects absent or mismatched confirmation before starting a turn. No automated test calls a model.
+- Cover multi-turn growth, replay, reset, resumed deltas without a baseline, reroutes, child overlap, and unsuccessful attempts. Assert coverage independently of outcome. Claude fixtures exercise unkeyed containment, contradictory aggregates, linked and unaccounted children, retention, and resume. Verify exact sizes, intersecting and contradicted ceilings, and ignored hints. Include a session with only band-dependent known positive terms and no other priceable term; it must return null, with sized gaps.
+- Test numeric zero versus missing and not applicable, unsupported retention, invalid splits, missing model or rate, and session or rollup overflow. Assert sized and unknown gaps, distinct affected session counts, and logical step grouping across roles and rounds. Verify an empty running run and empty step list, a wholly unpriced nonempty run, and a complete priced-zero run are distinguishable in HTTP and SDK.
+- Verify legacy projections survive migration and reads unchanged. At create and repository boundaries accept omitted or null `usd`; reject every non-null value, including zero, and each read-only field, including `gaps: []`. Inspect stored JSON and prove reads do not write back computed prices.
+- Test strict rate shapes and SDK/OpenAPI, invalid schedules and dates, stale/foreign/wrong-slot targets, concurrent writers, mutation guards, normalized no-ops, and identical schedules at different effective instants. Exercise a rate effective at `2026-11-23T10:00:00.000Z` with a session starting `2026-11-23T10:00:00Z`: select the new revision, but select the prior one for `09:59:59.999Z` on that day. Publish a backdated rate after recording and assert the next read prices unchanged usage. Verify future slots, correction, retraction, restoration, one-snapshot consistency, and tenant isolation.
+- Test all Summary states, exact display, keyboard focus, gap copy and sizes, normalized, legacy and mixed token displays, refresh, and older responses. Exercise the Summary flow with scripted data before and after rate publication.
 
 #### Operator baseline for #195
 
-After implementation, enter real API list rates and record one representative bug run and one feature run in `docs/operators/cache-aware-run-cost-baseline.md`. Cover Codex and Claude across the two runs, with at least one normally recorded numeric price from each. An all-unpriced result does not qualify. Use exact billing keys and accurate schedules; choose models or runs with enough evidence for at least a numeric subtotal. Do not flatten real bands or retention tiers, or assign a request to a band without evidence. Fixture rates are not defaults.
+After implementation, publish real list rates and record one representative bug run and one feature run in `docs/operators/cache-aware-run-cost-baseline.md`. Cover both Codex and Claude across the two runs, with at least one normally recorded numeric amount from each. For Codex verify a confirmed ordinary parent launch, attributable counts, and a rate for the exact key. If confirmation fails, diagnose the version and handshake without forcing attribution. Do not flatten real bands or retention schedules to obtain a number. If either adapter cannot produce a numeric amount, record the blocker and leave the baseline criterion unmet.
 
-Record run and session IDs, billing keys, usage by class and reported retention, session and run amounts and basis, effective dates, immutable selected version IDs, and gaps with token and session counts. For each adapter, report priced and unpriced shares of known disjoint tokens, with unpriced counts by reason. Disclose unquantifiable and legacy usage separately with no invented size or percentage. Explain how to publish matching rates, refresh and repeat the comparison, and use the recorded session set and selected revisions to reproduce the figures offline. Do not call the figures subscription charges.
+Record run and session IDs, keys, usage by class and reported retention, amounts and basis, effective dates, selected revision IDs, and gap counts and reasons. For each adapter, separate exactly priced tokens from unpriced tokens by reason, including missing size, and give shares over known disjoint tokens. Report unquantifiable and legacy usage separately without inventing a size or percentage. Distinguish amount overflow from token coverage. Explain how to publish matching rates, refresh, repeat the comparison, and reproduce it offline with the recorded session set and revisions. These are not subscription charges.
 
 ### Alternatives considered
 
-- **Freeze prices on write.** Late rates would require rewriting records. Read-time pricing uses unchanged usage immediately.
-- **Estimate bands or add a second price field.** A nearby sample does not establish a request's band. Keep one amount, price invariant terms, and report `missing_request_size` rather than guessing.
-- **Price all work at the dispatched model.** This misprices reroutes and child work. Use supported billing attribution instead.
-- **Drop all charges when one term is unknown.** This hides measured work with a supported rate. Keep independent charges and describe exclusions.
+- **Freeze prices on write.** Stable amounts would make late rates require a rewrite or backfill. Read-time pricing and immutable revisions support both immediate publication and offline reproduction.
+- **Choose a band using an observed sample or the cheapest feasible band.** That produces a number for more tokens but assigns an unproved charge to `cost.usd`; a cheapest-band fallback can hide the whole premium. Keep invariant charges and report a sized exclusion instead. Do not introduce a second price field.
+- **Price every token at the dispatched model.** Simpler lookup would misprice reroutes and children. Keep only supported billing attribution.
+- **Discard a session’s whole price if one term is unknown.** That hides independent, exact charges. Keep a known subtotal with explicit gaps; use null when nothing is priceable.
 
-### Risks and contract updates
+### Risks
 
-Streams may omit model, retention, or band evidence. Pin transport fixtures and use gaps rather than guessing ownership or size. A correction or retraction can change the next read for an old run; report selected versions. An incorrect operator-supplied model-wide context limit can exclude a valid band. Document the operator assertion and ignore contradicted ceilings as specified. Scope indexed history reads to the tenant and relevant keys; defer caching until read volume warrants it.
+Native streams do not always identify served models, retention, or request sizes. Pin realistic fixtures, keep unattributed usage, and expect some recorded work to remain unpriced. Corrections and retractions can change later reads of old runs, so expose revision IDs. A wrong operator-supplied context limit can exclude a valid band; document its scope and ignore it when exact evidence contradicts it. Scope indexed reads to the tenant and relevant keys. Defer caching until read volume calls for it.
 
-In the implementation PR, amend `context-human/concepts/cost.md` to replace completion-time frozen prices and the one-model premise with invocation-grain usage groups, separate dispatch and billing identities, and pricing on read at the session start's effective rates. Replace alongside-profile rates and the `(provider, model, token-type)` key with independent tenant-scoped configuration keyed by provider, model, and effective instant within the tenant. Describe immutable slot revisions, corrections and retractions, disjoint token-class treatments, request-size bands, the shared model-wide ceiling, exact evidence and invariant terms, the list-price basis, and known subtotals with sized and unknown gaps. Explain offline reproduction using retained revisions and selected IDs, not frozen prices, backfill jobs, or a historical-read endpoint.
+### Contract updates
 
-Update the `cost.md` API relationship: session `cost.usd` and logical step/run `costTotals` use integer **nano-dollars** and appear with gap metadata on `GET /v1/runs/:id/sessions`. Distinguish stored usage and compatibility cost fields from read-only pricing. Leave higher rollups and tuning analytics as future intent. Clarify in ADR-008 that the API enables editing through a UX where one exists; rate management is API/SDK only. Service ownership, tenant scope, and validation policy are unchanged.
+The same implementation PR updates `context-human/concepts/cost.md` and [ADR-015](../adrs/adr-015-run-lifecycle.md) and adds a new **proposed** ADR at the next available number (currently ADR-034). In ADR-015, add a visible amendment immediately after `Accepted.` in `## Status`. Link the new ADR and identify the one-model assumption, session price computation, and cost rollup passages being refined. Say that the run lifecycle and session attribution remain in force. Keep ADR-015’s original decision, accepted status, and unsuperseded state. Leave ADR-008 unchanged; API-only rate management already fits it.
 
-Amend ADR-015's session definition, cost decision, rollups, consequences, and alternatives where they assume one model, one rate, or SQL-only sums. Keep session grain and step, role, and round attribution. Align affected `domain-model`, `observability`, `agent-runners`, `settings`, `api`, and `run-detail` concepts. Update the concept and ADR indexes, agent telemetry standard, affected agent wiki contracts, and `context-agent/wiki/code-map.md`. Approval at the spec gate covers the intended contract changes; implementation PR review covers the exact wording of human-owned docs.
+The proposed ADR links back to ADR-015 and records multi-model usage groups within the same session grain, immutable effective-dated tenant rates, read-time pricing as of session start, and exact known charges with gaps for unresolved terms. Preserve session step/role/round attribution. Approval at `spec.human_review` covers this ADR proposal, the ADR-015 amendment, the concept changes below, and the legacy `tokens`/`cost.tokens` zero-placeholder exception. Human review of the implementation PR covers wording and ADR status.
+
+- `cost.md`: Replace frozen completion-time prices and one-model pricing with read-time charges for disjoint groups. Describe revisions, corrections, retractions, retention, request bands, ceilings, invariant charges, unpriced gaps, nano-dollar session and step/run amounts, API list-price basis, and offline reproduction. Leave higher rollups and tuning analytics as future intent.
+- `domain-model.md`: Preserve invocation grain and dispatch identity. Explain normalized groups, compatibility projections, stored versus computed cost, and logical sums over session reads rather than SQL sums of stored prices.
+- `observability.md` and `agent-runners.md`: Describe adapter ownership of normalized evidence, attempt deduplication, and usage retained independently of parsing and terminal outcome. Preserve the two-store boundary; runners do not price sessions.
+- `settings.md`: Describe API/SDK-only publication, tenant scope, immutable history, no defaults, and independence from profiles.
+- `api.md`: Describe the configuration variant, priced session metadata, and logical step/run totals, including the empty result. Do not imply changes to other resource reads.
+- `run-detail.md`: Describe basis, incomplete and running/empty states, actual gap reasons, and disjoint token counts with legacy shown separately.
+
+Link the updated concepts to the new ADR. Index it and cross-reference it from the ADR-015 entry in `context-human/adrs/index.md`; update affected summaries in `context-human/concepts/index.md`. Update `context-agent/standards/telemetry-conventions.md`, affected agent wiki notes, and `context-agent/wiki/code-map.md` with capture, persistence, pricing, and Summary wiring.
 
 ## Task list
 
@@ -317,93 +316,90 @@ This list is planning output for the spec gate. It does not authorize implementa
 
 - [ ] **Story: Record disjoint usage for every session**
   - [ ] **Task: Persist normalized usage and separate cost schemas**
-    - **Description**: Add the usage schemas and nullable migration, and separate strict create cost, stored cost, and HTTP read cost.
+    - **Description**: Add group and coverage schemas, the nullable usage column, legacy projections, and separate create, stored, and read costs.
     - **Acceptance criteria**:
-      - [ ] New rows store explicit coverage and counts, disjoint groups, matching compatibility projections, and stored `cost.usd: null`. Old rows are not rewritten.
-      - [ ] Contract and repository tests accept omitted or null `usd`, reject non-null amounts and all computed fields, and verify the persisted JSON shape.
+      - [ ] New rows retain explicit usage states and matching projections with `cost_json.usd: null`; migration and reads do not rewrite legacy rows.
+      - [ ] Create and repository tests accept null or omitted `usd` and reject non-null amounts and read-only fields.
     - **Dependencies**: None
   - [ ] **Task: Carry usage through attempt recording**
-    - **Description**: Pass observations through execution and the recorder separately from structured results.
+    - **Description**: Thread observations through the runner, direct orchestrator, unit of work, and recorder independently of result validation.
     - **Acceptance criteria**:
-      - [ ] Failed, cancelled, timed-out, and parse-failed agent attempts retain available observations without changing the attempt outcome.
-      - [ ] Failed direct-call recording is unchanged.
+      - [ ] Failed, cancelled, timed-out, and parse-failed agent attempts retain owned counts without changing outcomes. Failed direct-call recording is unchanged.
     - **Dependencies**: Task: Persist normalized usage and separate cost schemas
-  - [ ] **Task: Capture Codex counters and attribution**
-    - **Description**: Normalize owned thread and turn counters, including resume, reset, and child attribution.
+  - [ ] **Task: Capture Codex thread and turn usage**
+    - **Description**: Decode owned pinned-wire updates and calculate monotonic deltas without assuming a resume baseline.
     - **Acceptance criteria**:
-      - [ ] Fresh, resumed, multi-turn, duplicate, reset, rerouted, child, and interrupted fixtures retain only owned usage.
-      - [ ] Billing identity differs from dispatch; writes do not apply and reasoning is counted once.
+      - [ ] Fresh, resumed, multi-turn, replayed, reset, and interrupted streams match the coverage rules; reasoning is counted once and ordinary OpenAI writes are not applicable.
+      - [ ] The executable fixture confirms the launch key and rejects missing or mismatched confirmation before a turn.
     - **Dependencies**: Task: Carry usage through attempt recording
-  - [ ] **Task: Preserve Codex request-size evidence**
-    - **Description**: Store exact request sizes and validated native ceilings from pinned wire fixtures.
+  - [ ] **Task: Handle Codex reroutes and child overlap**
+    - **Description**: Classify affected ranges using native reroute, collaboration, and turn IDs without inventing accounting boundaries.
     - **Acceptance criteria**:
-      - [ ] Aligned and independently isolated `last` observations retain exact size; unmatched deltas keep null size.
-      - [ ] Replays add neither counts nor evidence, and ceilings are not stored as sizes.
-    - **Dependencies**: Task: Capture Codex counters and attribution
+      - [ ] Native fixtures leave affected ranges unattributed, keep inclusive counts once, and report uncovered child work as partial. Unrelated threads and failed spawns with no work do not add counts.
+    - **Dependencies**: Task: Capture Codex thread and turn usage
   - [ ] **Task: Reconcile Claude usage and retention**
-    - **Description**: Deduplicate owned final requests and reconcile keyed results, residuals, and child work.
+    - **Description**: Deduplicate final requests and reconcile keyed and unkeyed results, residuals, retention, and linked children.
     - **Acceptance criteria**:
-      - [ ] Fixtures preserve buckets and request sizes and distinguish reconciled from unaccounted child work.
-      - [ ] Interrupted and resumed invocations retain owned usage without claiming unsupported closure.
+      - [ ] Matched requests are not charged twice. Tests preserve the unpartitionable null-key remainder once and distinguish reconciled children from uncovered work.
     - **Dependencies**: Task: Carry usage through attempt recording
   - [ ] **Task: Normalize other recorded calls**
-    - **Description**: Map native OpenAI agent and successful OpenAI and Anthropic direct usage.
+    - **Description**: Map existing OpenAI agent and successful OpenAI and Anthropic direct usage into the same contract.
     - **Acceptance criteria**:
-      - [ ] Native fixtures preserve cache data and missing states and share confirmed OpenAI billing keys with Codex.
+      - [ ] Native fixtures preserve cache split and missing states and show confirmed Codex and OpenAI direct share billing keys.
     - **Dependencies**: Task: Carry usage through attempt recording
-- [ ] **Story: Publish rates and return session, step, and run prices**
-  - [ ] **Task: Store immutable rate revisions**
-    - **Description**: Add strict rate schemas, the partial unique index, and transactional publication.
+  - [ ] **Task: Preserve request size evidence**
+    - **Description**: Store exact sizes, proved ceilings, and diagnostic hints separately.
     - **Acceptance criteria**:
-      - [ ] Sets, corrections, retractions, and restorations append revisions. Same-slot no-ops fail; identical schedules in different slots succeed.
-      - [ ] Invalid schedules, competing replacements, and stale, foreign, or wrong-slot targets fail as specified.
+      - [ ] Aligned `last` establishes size; unmatched updates retain null size. Closed totals can bound unsized work. Tests exclude replays, earlier resumed work, and cross-thread samples.
+    - **Dependencies**: Task: Handle Codex reroutes and child overlap; Task: Reconcile Claude usage and retention; Task: Normalize other recorded calls
+- [ ] **Story: Publish rates and return priced session reads**
+  - [ ] **Task: Store immutable rate revisions**
+    - **Description**: Add strict schedule schemas, the slot/revision index, and transactional publication.
+    - **Acceptance criteria**:
+      - [ ] Set, correction, retraction, and restoration append immutable records. Invalid schedules, normalized same-slot no-ops, invalid targets, and losing concurrent publications fail.
     - **Dependencies**: None
   - [ ] **Task: Expose rate publication and history**
-    - **Description**: Add the configuration kind to API and SDK contracts and OpenAPI. Guard mutations by stored kind.
+    - **Description**: Extend the configuration API, SDK, and OpenAPI; guard mutations by stored kind.
     - **Acceptance criteria**:
-      - [ ] Strict create and read shapes match the spec, retractions repeat the slot key, and `updatedAt === createdAt` per revision.
-      - [ ] Old revisions remain readable and immutable; other tenants cannot read or reference them successfully.
+      - [ ] Creation and history reads use the stated shapes and statuses. Rate revisions stay immutable; other tenants cannot read or reference them.
     - **Dependencies**: Task: Store immutable rate revisions
-  - [ ] **Task: Resolve schedules and eligible bands**
-    - **Description**: Select session-effective rates and resolve bands from exact sizes, valid ceilings, or invariant treatments.
+  - [ ] **Task: Resolve schedules and feasible bands**
+    - **Description**: Compare parsed instants and select session-effective schedules and bands using exact sizes or valid ceilings.
     - **Acceptance criteria**:
-      - [ ] Uniform schedules, exact crossings, and inclusive ceiling boundaries select correctly, without estimates.
-      - [ ] The shared-slot Codex and OpenAI direct cases match for both configured limits; native ceilings and contradictory exact evidence follow the same precedence rules in tests.
-    - **Dependencies**: Task: Persist normalized usage and separate cost schemas; Task: Store immutable rate revisions
+      - [ ] Equal instants at different precisions select the new rate; the preceding instant selects the prior one. Shared-slot and contradicted-bound cases match the worked fixtures.
+      - [ ] No hint, including one above a valid ceiling, and no lowest-band fallback can select an unproved treatment.
+    - **Dependencies**: Task: Preserve request size evidence; Task: Store immutable rate revisions
   - [ ] **Task: Compute session charges and gaps**
-    - **Description**: Apply disjoint rate treatments with integer arithmetic and return the read-side cost object.
+    - **Description**: Apply disjoint token treatments with integer arithmetic and assemble priced read metadata.
     - **Acceptance criteria**:
-      - [ ] Tests cover applicability, retention residuals, sized and unknown gaps, partial prices, known zero, and overflow without duplicate charges or gap counts.
-    - **Dependencies**: Task: Resolve schedules and eligible bands
-  - [ ] **Task: Expose priced session reads and rollups**
-    - **Description**: Compose priced sessions and logical step and run totals in the existing route and client contract.
+      - [ ] Tests pass for invariant charges, sized request-size gaps, mixed flat/tiered writes, retention residuals, unknown counts, priced zero, null prices, and overflow. No portion contributes to two charges or two sized gaps.
+    - **Dependencies**: Task: Resolve schedules and feasible bands
+  - [ ] **Task: Expose session reads and logical rollups**
+    - **Description**: Return priced sessions and step/run totals through one snapshot, route, and SDK result.
     - **Acceptance criteria**:
-      - [ ] HTTP reads sum numeric partial prices and expose sized and unknown gaps plus distinct affected sessions. Empty, wholly unpriced, and overflowing totals remain distinct.
-      - [ ] Backdated rates price unchanged rows on the next read. Future slots, corrections, and retractions behave as specified. Reads are tenant-consistent and do not write computed prices back.
+      - [ ] Totals include numeric partial amounts and grouped gaps. Empty, wholly unpriced, priced-zero, and overflowing totals are distinct; empty returns session count zero and a null subtotal.
+      - [ ] Backdated publication prices unchanged rows on the next read. Future slots, correction, retraction, and restoration select the expected IDs without writing prices back or leaking tenant data.
     - **Dependencies**: Task: Compute session charges and gaps; Task: Expose rate publication and history
 - [ ] **Story: Show and verify recorded run costs**
   - [ ] **Task: Render Summary cost and token coverage**
-    - **Description**: Display the API cost total and normalized counts in the existing Summary rows, with separate legacy evidence.
+    - **Description**: Use API run totals for Cost and normalized usage for Tokens, with legacy counts kept separate.
     - **Acceptance criteria**:
-      - [ ] Running and non-running Cost strings match the design. Pointer and keyboard users can inspect reasons, counts, and unknown portions.
-      - [ ] Normalized, legacy, mixed, zero, empty, loading, error, older-server, and refresh states follow the design without double counting.
-    - **Dependencies**: Task: Expose priced session reads and rollups
+      - [ ] Running, empty, numeric, incomplete, unknown, older-server, loading, error, and refresh states follow the design. Pointer and keyboard users can inspect actual gap reasons and affected counts.
+      - [ ] The four token classes and legacy/mixed displays never double-count a class or show a placeholder as measured usage.
+    - **Dependencies**: Task: Expose session reads and logical rollups
   - [ ] **Task: Verify native dispatch through HTTP reads**
     - **Description**: Drive pinned native fixtures through production dispatch, recording, and API reads without inference calls.
     - **Acceptance criteria**:
-      - [ ] Resume with and without a baseline and the unmatched `last` delta match the worked usage, amount, and gap assertions.
-      - [ ] Claude parent/child reconciliation and the retention remainder match the worked assertions; other recorded paths and unsuccessful agent attempts preserve attributable evidence.
-      - [ ] The paired Codex and OpenAI direct HTTP test proves one shared slot narrows bands identically without exact size evidence.
-    - **Dependencies**: Task: Preserve Codex request-size evidence; Task: Reconcile Claude usage and retention; Task: Normalize other recorded calls; Task: Expose priced session reads and rollups
+      - [ ] Worked Codex and Claude cases and unsuccessful attempts return the expected evidence, prices, and gaps. Shared Codex and OpenAI direct keys select the same revisions.
+    - **Dependencies**: Task: Preserve request size evidence; Task: Expose session reads and logical rollups
   - [ ] **Task: Update cost contracts and operator guidance**
-    - **Description**: Document cost and configuration, stored versus read fields, and offline comparison.
+    - **Description**: Document rate operation, read-time pricing, gap rules, compatibility, and reproduction in the same implementation PR.
     - **Acceptance criteria**:
-      - [ ] The same implementation PR updates `cost.md`, ADR-015, the ADR-008 clarification, affected concepts, indexes, agent contracts, and code map as specified.
-      - [ ] API and operator guidance explain publication, nano-dollar totals, shared ceilings, effective dates, version IDs, and the distinction from a subscription bill.
-    - **Dependencies**: Task: Expose priced session reads and rollups; Task: Render Summary cost and token coverage
+      - [ ] The PR updates `cost.md`, adds the new proposed ADR, and adds the linked ADR-015 amendment identifying the refined assumptions. ADR-015 stays accepted and not superseded; ADR-008 is unchanged.
+      - [ ] Update both ADR index entries, listed concepts and index, telemetry standard, affected agent wiki notes, and code map. OpenAPI and SDK explain compatibility placeholders and direct readers to `usage`.
+    - **Dependencies**: Task: Expose session reads and logical rollups; Task: Render Summary cost and token coverage
   - [ ] **Task: Record the operator baseline**
-    - **Description**: Enter real rates and document representative bug and feature runs for #195.
+    - **Description**: Enter real list rates and document one representative bug and feature run for #195.
     - **Acceptance criteria**:
-      - [ ] The baseline contains a numeric amount from each adapter, usage by class, basis and selected versions, and priced and unpriced shares with unknown counts disclosed.
-      - [ ] A reader can repeat the comparison without guessing bands or mistaking the amount for a subscription charge.
+      - [ ] Both adapters have a normally recorded numeric amount. The baseline shows usage, basis, revisions, priced and unpriced token shares, and unquantifiable gaps, and explains how to repeat the comparison.
     - **Dependencies**: Task: Verify native dispatch through HTTP reads; Task: Update cost contracts and operator guidance
