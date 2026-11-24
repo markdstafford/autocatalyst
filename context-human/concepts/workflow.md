@@ -1,6 +1,6 @@
 ---
 created: 2026-06-06
-last_updated: 2026-06-07
+last_updated: 2026-11-24
 status: active
 roadmap: flow
 ---
@@ -21,7 +21,7 @@ A **step** is an implemented code primitive — `spec.author`, `implementation.b
 each a unit of work with a definite behavior. A **workflow** is data: an ordered subset of one shared
 step catalog together with the moves between those steps. Each work kind — `feature`, `enhancement`,
 `bug`, `chore`, `file_issue`, `question` — is its own workflow, composing the steps it needs and the
-transitions among them.
+transitions among them. Each workflow carries its ordered phases with display labels.
 
 There is one shared catalog, and workflows compose from it freely. Two workflows may overlap on the
 same steps, and a step may be used by only one work kind; neither is forced. A lighter chore composes a

@@ -103,6 +103,7 @@ import {
   runRecoveryRequestSchema,
   runRecoveryResponseSchema
 } from './run-recovery.js';
+import { getRunWorkflowSuccessStatusCode, runWorkflowPath, runWorkflowResponseSchema } from './run-workflow.js';
 import {
   pullRequestReconciliationPath,
   pullRequestReconciliationResponseSchema,
@@ -195,6 +196,7 @@ export function generateOpenApiDocument(): OpenApiDocument {
   const RunReplyRequest = registry.register('RunReplyRequest', runReplyRequestSchema);
   const RunReplyResponse = registry.register('RunReplyResponse', runReplyResponseSchema);
   const RunReplyParams = registry.register('RunReplyParams', z.object({ id: z.string().min(1) }).strict());
+  const RunWorkflowResponse = registry.register('RunWorkflowResponse', runWorkflowResponseSchema);
   const RunRecoveryRequest = registry.register('RunRecoveryRequest', runRecoveryRequestSchema);
   const RunRecoveryResponse = registry.register('RunRecoveryResponse', runRecoveryResponseSchema);
   const RunRecoveryParams = registry.register('RunRecoveryParams', z.object({ id: z.string().min(1) }).strict());
@@ -520,6 +522,24 @@ export function generateOpenApiDocument(): OpenApiDocument {
       [getRunSuccessStatusCode]: jsonResponse(Run, 'Run.'),
       401: jsonResponse(ErrorResponse, 'Unauthorized.'),
       404: jsonResponse(ErrorResponse, 'Run not found.')
+    }
+  });
+
+  registry.registerPath({
+    method: 'get',
+    path: runWorkflowPath.replace(':id', '{id}'),
+    tags: ['runs'],
+    summary: 'Read the workflow definition for a run',
+    description: 'Phase labels, expected steps, off-path steps, and transitions. Independent of run progress and step history.',
+    security: [{ bearerAuth: [] }],
+    request: { params: RunIdParams },
+    responses: {
+      [getRunWorkflowSuccessStatusCode]: jsonResponse(RunWorkflowResponse, 'Run workflow definition.'),
+      400: jsonResponse(ErrorResponse, 'Invalid run ID.'),
+      401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+      403: jsonResponse(ErrorResponse, 'Forbidden by policy or model principal.'),
+      404: jsonResponse(ErrorResponse, 'Run not found in the authenticated tenant.'),
+      500: jsonResponse(ErrorResponse, 'Internal server error.')
     }
   });
 

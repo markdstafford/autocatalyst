@@ -128,6 +128,7 @@ export * from './message.js';
 export * from './run.js';
 export * from './run-replies.js';
 export * from './run-recovery.js';
+export * from './run-workflow.js';
 export * from './artifact.js';
 export * from './feedback.js';
 export * from './publication.js';

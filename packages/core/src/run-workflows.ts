@@ -1,4 +1,4 @@
-import type { RunStepId } from './run-step-catalog.js';
+import type { RunPhase, RunStepId } from './run-step-catalog.js';
 import type { StepConvergencePolicy } from './convergence-policy.js';
 
 export type { StepConvergencePolicy } from './convergence-policy.js';
@@ -6,13 +6,15 @@ export type { StepConvergencePolicy } from './convergence-policy.js';
 export const runWorkflowIds = ['feature', 'enhancement', 'bug', 'chore', 'file_issue', 'question'] as const;
 export type RunWorkflowId = typeof runWorkflowIds[number];
 export type RunDirective = 'advance' | 'revise' | 'needs_input' | 'cancel' | 'fail';
-export type WorkflowTransitionTable = Readonly<Partial<Record<RunStepId, Readonly<Partial<Record<RunDirective, RunStepId>>>>>>;
+type WorkflowTransitionSlots = Readonly<Partial<Record<RunDirective, RunStepId | undefined>>>;
+export type WorkflowTransitionTable = Readonly<Partial<Record<RunStepId, WorkflowTransitionSlots | undefined>>>;
 export type RunArtifactKind = 'feature_spec' | 'enhancement_spec' | 'bug_triage';
 
 export interface RunWorkflowDefinition {
   readonly id: RunWorkflowId;
   readonly workKind: string;
   readonly artifactKind?: RunArtifactKind;
+  readonly phases: readonly { readonly id: NonNullable<RunPhase>; readonly label: string }[];
   readonly steps: readonly RunStepId[];
   readonly transitions: WorkflowTransitionTable;
   readonly convergence?: Readonly<Partial<Record<RunStepId, StepConvergencePolicy>>>;
@@ -47,11 +49,24 @@ const featureLikeTransitions: WorkflowTransitionTable = {
   'pr.human_review': { ...featureAdvanceTransitions['pr.human_review'], revise: 'pr.finalize' }
 };
 
+const implementationAndPrPhases = [
+  { id: 'implementation', label: 'Implementation' },
+  { id: 'pr', label: 'Pull request' }
+] as const;
+const specPhase = { id: 'spec', label: 'Spec' } as const;
+
 export const runWorkflows: Readonly<Record<RunWorkflowId, RunWorkflowDefinition>> = {
-  feature: { id: 'feature', workKind: 'feature', artifactKind: 'feature_spec', steps: featureSteps, transitions: featureLikeTransitions },
-  enhancement: { id: 'enhancement', workKind: 'enhancement', artifactKind: 'enhancement_spec', steps: featureSteps, transitions: featureLikeTransitions },
+  feature: {
+    id: 'feature', workKind: 'feature', artifactKind: 'feature_spec',
+    phases: [specPhase, ...implementationAndPrPhases], steps: featureSteps, transitions: featureLikeTransitions
+  },
+  enhancement: {
+    id: 'enhancement', workKind: 'enhancement', artifactKind: 'enhancement_spec',
+    phases: [specPhase, ...implementationAndPrPhases], steps: featureSteps, transitions: featureLikeTransitions
+  },
   bug: {
-    id: 'bug', workKind: 'bug', artifactKind: 'bug_triage', steps: bugSteps,
+    id: 'bug', workKind: 'bug', artifactKind: 'bug_triage',
+    phases: [{ id: 'spec', label: 'Triage' }, ...implementationAndPrPhases], steps: bugSteps,
     transitions: {
       ...bugAdvanceTransitions,
       'spec.author': { ...bugAdvanceTransitions['spec.author'], needs_input: 'spec.awaiting_input' },
@@ -64,7 +79,7 @@ export const runWorkflows: Readonly<Record<RunWorkflowId, RunWorkflowDefinition>
     }
   },
   chore: {
-    id: 'chore', workKind: 'chore', steps: choreSteps,
+    id: 'chore', workKind: 'chore', phases: implementationAndPrPhases, steps: choreSteps,
     transitions: {
       ...choreAdvanceTransitions,
       'implementation.build': { ...choreAdvanceTransitions['implementation.build'], needs_input: 'implementation.awaiting_input' },
@@ -75,14 +90,14 @@ export const runWorkflows: Readonly<Record<RunWorkflowId, RunWorkflowDefinition>
     }
   },
   file_issue: {
-    id: 'file_issue', workKind: 'file_issue', steps: fileIssueSteps,
+    id: 'file_issue', workKind: 'file_issue', phases: [specPhase], steps: fileIssueSteps,
     transitions: {
       ...fileIssueAdvanceTransitions,
       'spec.author': { ...fileIssueAdvanceTransitions['spec.author'], needs_input: 'spec.awaiting_input' },
       'spec.awaiting_input': { advance: 'spec.author' }
     }
   },
-  question: { id: 'question', workKind: 'question', steps: questionSteps, transitions: advanceTransitions(questionSteps) }
+  question: { id: 'question', workKind: 'question', phases: [], steps: questionSteps, transitions: advanceTransitions(questionSteps) }
 };
 
 const knownRunWorkflowIds = new Set<string>(runWorkflowIds);

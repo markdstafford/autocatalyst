@@ -117,7 +117,7 @@ export {
   runStepIds,
   terminalSteps
 } from './run-step-catalog.js';
-export type { RunPhase, RunStepDefinition, RunStepId, RunStepRole, WaitingOn } from './run-step-catalog.js';
+export type { RunPhase, RunStepDefinition, RunStepId, RunStepKind, RunStepRole, WaitingOn } from './run-step-catalog.js';
 
 export * from './convergence-policy.js';
 
@@ -137,6 +137,9 @@ export {
   runWorkflows
 } from './run-workflows.js';
 export type { RunArtifactKind, RunDirective, RunWorkflowDefinition, RunWorkflowId, WorkflowTransitionTable } from './run-workflows.js';
+
+export { defaultRunWorkflowResolver } from './run-workflow-resolver.js';
+export type { RunWorkflowResolver, RunWorkflowResolverInput } from './run-workflow-resolver.js';
 
 export { nextWorkflowStep } from './run-transition.js';
 export type { TransitionErrorCode, TransitionResult } from './run-transition.js';
