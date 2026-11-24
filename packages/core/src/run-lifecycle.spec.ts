@@ -345,4 +345,21 @@ describe('checked workflow resolution', () => {
       expect(recordRunStepTransition).not.toHaveBeenCalled();
     }
   });
+
+  it.each([
+    ['cancel', undefined],
+    ['fail', { advance: undefined }]
+  ] as const)('%s cannot stop an off-path step with only an empty transition slot', async (directive, slot) => {
+    const run = makeRun({ currentStep: 'docs.update' });
+    const recordRunStepTransition = vi.fn();
+    const workflowResolver = () => ({
+      ...runWorkflows.feature,
+      transitions: { ...runWorkflows.feature.transitions, 'docs.update': slot }
+    });
+    await expect(applyRunDirective({
+      runs: makeRunRepository({ findById: async () => run, recordRunStepTransition }),
+      runId: run.id, directive, workflowResolver
+    })).rejects.toMatchObject({ code: 'invalid_transition', transitionCode: 'step_not_in_workflow' });
+    expect(recordRunStepTransition).not.toHaveBeenCalled();
+  });
 });
