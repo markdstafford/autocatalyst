@@ -96,7 +96,7 @@ flowchart LR
     Catalog --> Project
 ```
 
-`createControlPlaneServer` gives the orchestrator and service the same resolver. The engine uses the checked definition for creation, workflow-dependent dispatch, and table directives. The service projects the checked definition with catalog metadata, without reading history. Global stop directives use the catalog, not a resolved definition.
+`createControlPlaneServer` gives the orchestrator and service the same resolver. The engine uses the checked definition for creation, workflow-dependent dispatch, and table directives. The service projects the checked definition with catalog metadata, without reading history. Global stop directives resolve the definition like every other directive, as today.
 
 ```mermaid
 sequenceDiagram
@@ -168,11 +168,9 @@ Use one catalog-aware validation function for definitions supplied by the resolv
 
 The read returns a sanitized `500` for a visible run if resolution returns `null`, throws, or returns an invalid definition. It returns no partial workflow, repairs no metadata, and does not use a fallback. For engine callers, a missing definition uses the existing `unknown_work_kind` path. An invalid definition or resolver exception uses the internal workflow/persistence error path, not an invalid user directive. Creation records no entry step and table directive application records no transition when resolution fails. Dispatch that needs the definition stops on that error rather than choosing a default or a different dispatch path. A valid definition with no requested edge keeps existing invalid-transition handling.
 
-#### Keep global stops independent of resolution
+#### Global stops are unchanged
 
-In `applyRunDirective`, after the existing missing-run and terminal-run checks, handle `cancel` and `fail` before invoking the resolver. From any known nonterminal current step, persist the existing transition to `canceled` or `failed`, respectively. Check terminality from the catalog as well as the stored flag. Reject an unknown or terminal current step without a write. Do not require membership in a freshly resolved definition for a stop. Keep the common transition persistence path, including source occurrence closure, terminal step recording, failure reason handling, and the orchestrator's event publication after persistence.
-
-Keep `nextWorkflowStep` behavior for callers that supply a definition. Share the global stop destination rule rather than introducing a second mapping. Give `applyRunDirective` a stop result variant with `workflow: null` and transition data containing `from`, `directive`, and `to` without a `workflowId`. Its table-driven result and `startRunLifecycle` still return a real definition. The orchestrator uses the shared persisted `run` and `runStep` fields for stop and table results. No synthetic definition or ID is needed, and no HTTP stop response changes.
+`cancel` and `fail` keep their current lifecycle behavior. `applyRunDirective` resolves the workflow and applies `nextWorkflowStep` for them as for any other directive, including the existing `step_not_in_workflow` guard, and no result shape changes. The built-in resolver cannot fail for a stored run, so stops stay available in this feature. A resolver that can fail, such as a future per-project workflow source, must decide how stops behave when resolution fails; that decision is out of scope here.
 
 #### HTTP and SDK contract
 
@@ -198,7 +196,7 @@ In OpenAPI, describe `transitions` as the explicit table edges. State that `canc
 
 ### Security, privacy, and compliance
 
-Add `run_workflow.read` and `{ kind: 'run_workflow', id, path: '/v1/runs/:id/workflow' }` in `packages/core/src/policy.ts`. Follow recover: authorize in the protected route before handler work, then authorize in the service before the principal kind check or repository access. After policy allows the request, call `requireNonModelPrincipal`. Scope the read to the authenticated principal's tenant. A missing run and a foreign run return the same not-found envelope. Do not call the resolver for denied requests, model principals, missing runs, or foreign runs. The response contains definition metadata only, with no history, run content, identities, or credentials.
+Add `run_workflow.read` and `{ kind: 'run_workflow', id, path: '/v1/runs/:id/workflow' }` in `packages/core/src/policy.ts`. Follow recover: authorize in the protected route before handler work, then authorize in the service before the principal kind check or repository access. After policy allows the request, call `requireNonModelPrincipal`. Extend it to take an action-specific message; this read uses "Model principals cannot read run workflows." Existing feedback callers keep their current message. Scope the read to the authenticated principal's tenant. A missing run and a foreign run return the same not-found envelope. Do not call the resolver for denied requests, model principals, missing runs, or foreign runs. The response contains definition metadata only, with no history, run content, identities, or credentials.
 
 ### Observability
 
@@ -208,9 +206,9 @@ Use existing HTTP request telemetry and sanitized internal error handling. Do no
 
 - **Catalog and projection:** Test the six exact phase lists and labels and separately compare IDs to first appearance on each expected path. Classify every catalog step, including unused docs steps, and check the terminal kind and waiting class in both directions. Assert exact step order, uniqueness, roles, null phases, off-path phase membership, and exact table edges, including revision and pause return. Assert no synthesized stop or operator edges.
 - **Malformed definitions:** Feed the projection separately mutated definitions for a mismatched `workKind`, wrong family ID, bad phase order or membership, a blank label, and a transition-only step whose non-null phase isn't declared. For the last case, keep the expected phase list valid, for example by adding a transition to `spec.awaiting_input` in a definition with no spec phase. Assert rejection before any response object is returned. Exercise a malformed definition, a `null` result, and a thrown resolver error over HTTP for a visible run; assert sanitized `500` responses with no definition details. Check that an invalid definition also prevents lifecycle start and table transition writes.
-- **Lifecycle stops and resolver boundaries:** With separate stored nonterminal fixtures, run `cancel` and `fail` using resolver spies configured to return `null` or throw. Assert no resolver call, the expected terminal occurrence, closure of the source occurrence, and preserved failure reason for `fail`. Assert missing, terminal, and unknown-step cases perform no transition write, and an `advance` with a `null` resolution reports `unknown_work_kind` without a write. Scan non-test `packages/core/src` for `getRunWorkflowForWorkKind`; permit it only in `run-workflows.ts`, the resolver, intake's import and default lookup, and the `index.ts` export.
+- **Lifecycle and resolver boundaries:** Assert that `cancel` and `fail` still resolve the definition and follow the existing `nextWorkflowStep` rules, including `step_not_in_workflow` and `terminal_step`, with unchanged results. Assert an `advance` with a `null` resolution reports `unknown_work_kind` without a write. Scan non-test `packages/core/src` for `getRunWorkflowForWorkKind`; permit it only in `run-workflows.ts`, the resolver, intake's import and default lookup, and the `index.ts` export.
 - **Project selection and family IDs:** Seed two topics in different projects in one tenant. With the same project-aware resolver, real orchestrator and service, and auto-dispatch disabled, create two feature runs through `DefaultOrchestrator.createRun` using topic context only. Give one project a valid test definition with a distinct entry step and `advance` target. Assert its persisted entry, service read, and next step agree; assert the other project receives the default. Assert the two bodies both report `workflowId: feature` but differ in path, and that creation and stored-run resolution find the project through the same topic relationship.
-- **HTTP, policy, and SDK:** Read all six built-ins over HTTP; compare on-path order with the workflow constants and phase labels with explicit expectations. Compare full response bodies at `intake` and `done` for one run. Assert policy action and descriptor, policy and model check ordering, denial and model `403` responses, and identical missing and foreign `404` bodies. Use spies to prove the repository and resolver calls stop at the appropriate checks. Test SDK parsing of valid and malformed success bodies. In `openapi.spec.ts`, assert the operation, `403`, `404`, and the transition and family ID descriptions.
+- **HTTP, policy, and SDK:** Read all six built-ins over HTTP; compare on-path order with the workflow constants and phase labels with explicit expectations. Drive one `question` run with scripted sessions from `intake` through `question.answer` to `done`; read `/workflow` at `intake` and at `done` and assert identical bodies. A feature run cannot reach `done` here because the spec freeze needs a spec. Assert policy action and descriptor, policy and model check ordering, denial and model `403` responses (asserting the model-principal message), and identical missing and foreign `404` bodies. Use spies to prove the repository and resolver calls stop at the appropriate checks. Test SDK parsing of valid and malformed success bodies. In `openapi.spec.ts`, assert the operation, `403`, `404`, and the transition and family ID descriptions.
 - **Production wiring:** Use `createControlPlaneServer` with scripted sessions and real orchestrator dispatch. Start a feature and bug through `POST /v1/conversations`. Assert the feature has a `spec.human_review` gate, the bug has none, and the bug's first phase is Triage. Drive the bug past triage so the check covers more than intake. Assert every `/steps` row's `step` is in the workflow for its run.
 - **Production override:** In a separate server test, inject a feature definition with the same `feature` ID, the `spec` phase and its steps and edges removed, `implementation` relabeled, and `intake.advance` pointing to `implementation.plan`. Start through `POST /v1/conversations`, and assert the resolver receives the selected project at creation. Assert the read returns the override, then drive the real orchestrator with scripted sessions from `intake` through `implementation.human_review`. Assert that history follows the returned path and never enters `spec.*`. Stop before `pr.finalize`: the unchanged feature spec freeze still requires a spec. No test makes a live model call.
 
@@ -229,12 +227,12 @@ Expect Spec, Implementation, and Pull request in order, `spec.human_review` as a
 - **Derive the path from history in the client.** This avoids a new read but omits steps not yet reached and duplicates labels and workflow knowledge.
 - **Resolve the definition independently in the route and engine.** This works for static tables but lets selection drift. Sharing resolution and validation keeps the consumers aligned without adding storage.
 - **Widen the workflow ID set.** This could distinguish definitions if IDs were assigned and managed as versions. Keep the existing family IDs because this feature does not store or manage custom definitions.
-- **Resolve the workflow for stop directives.** This could preserve a definition in the stop result, but it could also prevent operators from stopping a run when resolution fails. A global stop needs only the current step and catalog.
+- **Bypass resolution for stop directives.** This would keep stops available if a resolver could fail, but it changes lifecycle behavior, drops the `step_not_in_workflow` guard, and adds a result shape the issue does not ask for. The built-in resolver cannot fail, so stops keep resolving; revisit when a resolver can fail.
 
 ### Risks
 
 - **Creation and the read choose different definitions.** Require project context for new conversations and topic context for existing topics; test project selection across creation, read, and advance. Without a snapshot, a resolver implementation is responsible for keeping its selection stable for the run's lifetime.
-- **Invalid metadata hides a phase member or disagrees with the engine.** Validate before projection and engine use; reject the whole definition on failure and leave global stops available.
+- **Invalid metadata hides a phase member or disagrees with the engine.** Validate before projection and engine use; reject the whole definition on failure.
 - **A client confuses workflow identity with definition identity or history.** Document the family ID and occurrence join key. Test distinct bodies with a shared ID and identical bodies across lifecycle states for a single run.
 - **The endpoint reveals a hidden run.** Check policy, principal kind, and tenant before resolution; test the short circuits and identical `404` envelopes.
 
@@ -255,12 +253,6 @@ Expect Spec, Implementation, and Pull request in order, `spec.human_review` as a
       - [ ] The server gives both consumers one resolver. The source scan permits direct static lookup only in the workflow module, resolver, intake default lookup and import, and public export.
       - [ ] Invalid definitions fail the shared checks; missing or invalid definitions do not produce lifecycle start or table transition writes.
     - **Dependencies**: Task: Declare phase labels and catalog kinds
-  - [ ] **Task: Keep global stops available without a definition**
-    - **Description**: Route `cancel` and `fail` through the existing lifecycle persistence path without resolving a workflow. Return a stop-specific result without a synthetic definition or ID.
-    - **Acceptance criteria**:
-      - [ ] Lifecycle tests prove both stops record the correct terminal step and close the source occurrence without calling an unavailable resolver. Failure reasons are preserved.
-      - [ ] Missing runs, terminal runs or steps, and unknown current steps produce no transition write. A table directive still requires resolution.
-    - **Dependencies**: Task: Centralize and validate run workflow resolution
 - [ ] **Story: Read a run's workflow over HTTP**
   - [ ] **Task: Define the contract and SDK read**
     - **Description**: Add the shared response schema, OpenAPI operation, and schema-parsing SDK method.
@@ -273,7 +265,7 @@ Expect Spec, Implementation, and Pull request in order, `spec.human_review` as a
     - **Acceptance criteria**:
       - [ ] Projection tests assert exact step and edge output, including off-path phase members, null phases, revision and pause edges, and the two appended stop destinations.
       - [ ] Malformed definitions are rejected before projection; visible runs with absent, throwing, or invalid resolution get a sanitized `500` without a partial body or fallback.
-      - [ ] Policy runs before data access, model principals get `403` under permissive policy, and missing and foreign runs get identical `404` bodies without resolver calls.
+      - [ ] Policy runs before data access, model principals get `403` with the workflow-specific message under permissive policy, and missing and foreign runs get identical `404` bodies without resolver calls.
       - [ ] The handler validates the response without reading history or mutating run state.
     - **Dependencies**: Task: Centralize and validate run workflow resolution; Task: Define the contract and SDK read
 - [ ] **Story: Verify and document the shared workflow**
@@ -281,7 +273,7 @@ Expect Spec, Implementation, and Pull request in order, `spec.human_review` as a
     - **Description**: Exercise all six HTTP reads and the production feature and bug wiring with deterministic fixtures and scripted sessions.
     - **Acceptance criteria**:
       - [ ] All six reads match expected step order and phase labels. `question` has no phases and `file_issue` has only Spec.
-      - [ ] Reads of the same run at `intake` and `done` yield identical bodies.
+      - [ ] Reads of one scripted `question` run at `intake` and at `done` yield identical bodies.
       - [ ] Feature and bug runs created over HTTP expose the expected gate difference and Triage label. Every recorded step is in the matching workflow. No live model calls occur.
     - **Dependencies**: Task: Project and serve the tenant-scoped workflow
   - [ ] **Task: Verify project selection on existing-topic creation**
@@ -297,8 +289,8 @@ Expect Spec, Implementation, and Pull request in order, `spec.human_review` as a
       - [ ] The run starts over HTTP, follows the override from intake through implementation review, and stops before `pr.finalize`. No live model calls occur.
     - **Dependencies**: Task: Project and serve the tenant-scoped workflow
   - [ ] **Task: Document the workflow read and metadata**
-    - **Description**: Record the endpoint and its source of truth in the agent code map. Propose the concept update for human approval.
+    - **Description**: Record the endpoint and its source of truth in the agent code map. Add the concept sentence covered by spec approval.
     - **Acceptance criteria**:
       - [ ] `context-agent/wiki/code-map.md` records the route, resolver, phase labels, and catalog `kind`.
-      - [ ] With human approval, add one sentence to `context-human/concepts/workflow.md`: “Each workflow carries its ordered phases with display labels.” Follow `context-agent/standards/editorial-guidelines.md` and leave the docs-phase design unchanged.
+      - [ ] Add one sentence to `context-human/concepts/workflow.md` (approving this spec at `spec.human_review` approves the sentence; PR review approves its wording): “Each workflow carries its ordered phases with display labels.” Follow `context-agent/standards/editorial-guidelines.md` and leave the docs-phase design unchanged.
     - **Dependencies**: Task: Project and serve the tenant-scoped workflow
