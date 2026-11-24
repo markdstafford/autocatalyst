@@ -3,7 +3,8 @@ import type { CreateRunInput, JsonValue, NonModelPrincipal, Run, RunStep, Testin
 import type { LifecycleRunStepInput, RunRepository } from './domain-repositories.js';
 import { deriveRunTerminal, getRunStepDefinition, type RunStepDefinition } from './run-step-catalog.js';
 import { nextWorkflowStep, type TransitionErrorCode, type TransitionResult } from './run-transition.js';
-import { getRunWorkflowForWorkKind, type RunDirective, type RunWorkflowDefinition } from './run-workflows.js';
+import type { RunDirective, RunWorkflowDefinition } from './run-workflows.js';
+import { requestedWorkflowWorkKind, resolveRunWorkflow, type RunWorkflowResolver, type RunWorkflowResolverInput } from './run-workflow-resolver.js';
 
 export type RunLifecycleErrorCode =
   | 'unknown_work_kind'
@@ -34,6 +35,7 @@ export class RunLifecycleError extends Error {
 
 export interface StartRunLifecycleInput {
   readonly runs: RunRepository;
+  readonly workflowResolver?: RunWorkflowResolver;
   readonly run: {
     readonly topicId: string;
     readonly owner: NonModelPrincipal;
@@ -47,6 +49,7 @@ export interface StartRunLifecycleInput {
 
 export interface ApplyRunDirectiveInput {
   readonly runs: RunRepository;
+  readonly workflowResolver?: RunWorkflowResolver;
   readonly runId: string;
   readonly directive: RunDirective;
   readonly checkpointResult?: JsonValue;
@@ -71,16 +74,25 @@ export function buildEntryRunStep(step: RunStepDefinition, startedAt: string): L
   return { phase: step.phase, step: step.id, role: 'none', startedAt, endedAt: null, durationMs: null };
 }
 
-function requireWorkflowForWorkKind(workKind: string): RunWorkflowDefinition {
-  const workflow = getRunWorkflowForWorkKind(workKind);
-  if (workflow === null) {
-    throw new RunLifecycleError('unknown_work_kind', `Unknown work kind '${workKind}'.`);
+export async function requireRunWorkflow(
+  input: RunWorkflowResolverInput,
+  resolver?: RunWorkflowResolver
+): Promise<RunWorkflowDefinition> {
+  let checked;
+  try {
+    checked = await resolveRunWorkflow(input, resolver);
+  } catch (cause) {
+    throw new RunLifecycleError('unknown_workflow', 'Failed to resolve run workflow.', { cause });
   }
-  return workflow;
+  if (checked === null) {
+    throw new RunLifecycleError('unknown_work_kind', `Unknown work kind '${requestedWorkflowWorkKind(input)}'.`);
+  }
+  return checked.definition;
 }
 
 export async function startRunLifecycle(input: StartRunLifecycleInput): Promise<RunLifecycleState> {
-  const workflow = requireWorkflowForWorkKind(input.run.workKind);
+  const { topicId, tenant, workKind } = input.run;
+  const workflow = await requireRunWorkflow({ kind: 'existing_topic', topicId, tenant, workKind }, input.workflowResolver);
   const firstStep = workflow.steps[0] as string | undefined;
   if (firstStep === undefined) {
     throw new RunLifecycleError('unknown_workflow', `Workflow '${workflow.id}' has no steps.`);
@@ -118,7 +130,7 @@ export async function applyRunDirective(input: ApplyRunDirectiveInput): Promise<
   if (existing.terminal) {
     throw new RunLifecycleError('terminal_run', `Run '${input.runId}' is terminal.`);
   }
-  const workflow = requireWorkflowForWorkKind(existing.workKind);
+  const workflow = await requireRunWorkflow({ kind: 'existing_run', run: existing }, input.workflowResolver);
   const transition = nextWorkflowStep(workflow, existing.currentStep, input.directive);
   if (!transition.ok) {
     throw new RunLifecycleError('invalid_transition', transition.message, { transitionCode: transition.code });

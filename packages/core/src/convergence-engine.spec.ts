@@ -399,6 +399,7 @@ function makeRouting(distinct: boolean): ModelRoutingResolver {
 const stepDefBoth: RunStepDefinition = {
   id: 'implementation.build',
   phase: 'implementation',
+  kind: 'work',
   waitingOn: 'ai',
   roles: ['implementer', 'reviewer']
 };
@@ -406,6 +407,7 @@ const stepDefBoth: RunStepDefinition = {
 const stepDefImplementerOnly: RunStepDefinition = {
   id: 'implementation.plan',
   phase: 'implementation',
+  kind: 'work',
   waitingOn: 'ai',
   roles: ['implementer']
 };
@@ -438,6 +440,7 @@ const fakeRunStep: RunStep = {
 const fakeWorkflow: RunWorkflowDefinition = {
   id: 'feature',
   workKind: 'feature',
+  phases: [{ id: 'implementation', label: 'Implementation' }],
   steps: ['implementation.build', 'done'],
   transitions: {
     'implementation.build': { advance: 'done', needs_input: 'implementation.awaiting_input' }

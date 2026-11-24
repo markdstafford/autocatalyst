@@ -63,8 +63,8 @@ describe('run workflows', () => {
       }
       for (const [source, directives] of Object.entries(workflow.transitions)) {
         expect(isKnownRunStepId(source)).toBe(true);
-        for (const destination of Object.values(directives)) {
-          expect(isKnownRunStepId(destination)).toBe(true);
+        for (const destination of Object.values(directives ?? {})) {
+          if (destination !== undefined) expect(isKnownRunStepId(destination)).toBe(true);
         }
       }
     }

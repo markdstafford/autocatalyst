@@ -20,6 +20,7 @@ import type {
   RunPullRequestRefreshResponse,
   RunRecoveryRequest,
   RunRecoveryResponse,
+  RunWorkflowResponse,
   RunReplyRequest,
   RunReplyResponse,
   RunSessionListResponse,
@@ -28,8 +29,11 @@ import type {
   SpecAuthorFrontmatter,
   UpdateRunFeedbackRequest
 } from '@autocatalyst/api-contract';
-import { createConversationWithFirstRunResponseSchema, feedbackResponseSchema, issueTrackerErrorCodeSchema, pullRequestReconciliationResponseSchema, runFeedbackListResponseSchema, runPullRequestResponseSchema, runPullRequestRefreshPath, runPullRequestRefreshResponseSchema, pullRequestCheckFailedErrorCode, pullRequestCheckFailedMessage, runRecoveryResponseSchema, runReplyResponseSchema, runSessionListResponseSchema, runSpecResponseSchema } from '@autocatalyst/api-contract';
+import { createConversationWithFirstRunResponseSchema, feedbackResponseSchema, issueTrackerErrorCodeSchema, pullRequestReconciliationResponseSchema, runFeedbackListResponseSchema, runPullRequestResponseSchema, runPullRequestRefreshPath, runPullRequestRefreshResponseSchema, pullRequestCheckFailedErrorCode, pullRequestCheckFailedMessage, runRecoveryResponseSchema, runReplyResponseSchema, runSessionListResponseSchema, runSpecResponseSchema, runWorkflowPath } from '@autocatalyst/api-contract';
 import type { ReconcilePullRequestsResponse } from '@autocatalyst/api-contract';
+
+import { defaultRunWorkflowResolver, resolveRunWorkflow, type RunWorkflowResolver } from './run-workflow-resolver.js';
+import { projectRunWorkflow } from './run-workflow-projection.js';
 
 import {
   createRunRecoveryEvent
@@ -143,6 +147,11 @@ export interface ServiceGetRunInput {
 
 export interface ServiceGetRunResult {
   readonly run: Run;
+}
+
+export interface ServiceGetRunWorkflowInput {
+  readonly principal: Principal;
+  readonly runId: string;
 }
 
 export interface ServiceListRunStepsInput {
@@ -272,6 +281,7 @@ export interface ControlPlaneService {
   ): Promise<CreateConversationWithFirstRunResponse>;
   listRuns(input: ServiceListRunsInput): Promise<ServiceListRunsResult>;
   getRun(input: ServiceGetRunInput): Promise<ServiceGetRunResult>;
+  getRunWorkflow(input: ServiceGetRunWorkflowInput): Promise<RunWorkflowResponse>;
   listRunSteps(input: ServiceListRunStepsInput): Promise<ServiceListRunStepsResult>;
   subscribeRunEvents(input: ServiceSubscribeRunEventsInput): Promise<RunEventSubscription>;
   replayRunEvents(input: ServiceReplayRunEventsInput): Promise<RunEventReplayResult>;
@@ -292,6 +302,7 @@ export interface ControlPlaneService {
 // --- Constructor options ---
 
 export interface DefaultControlPlaneServiceOptions {
+  readonly workflowResolver?: RunWorkflowResolver;
   readonly orchestrator: Orchestrator;
   readonly runs: RunRepository;
   readonly runSteps: RunStepRepository;
@@ -390,6 +401,7 @@ async function requireTenantRun(input: {
   readonly runs: RunRepository;
   readonly runId: string;
   readonly tenant: string;
+  readonly notFoundMessage?: string;
 }): Promise<Run> {
   let run: Run | null;
   try {
@@ -398,14 +410,17 @@ async function requireTenantRun(input: {
     throw persistenceFailed('Failed to load run.', error);
   }
   if (run === null || run.tenant !== input.tenant) {
-    throw new ControlPlaneServiceError('not_found', `Run '${input.runId}' not found.`);
+    throw new ControlPlaneServiceError('not_found', input.notFoundMessage ?? `Run '${input.runId}' not found.`);
   }
   return run;
 }
 
-function requireNonModelPrincipal(principal: Principal): NonModelPrincipal {
+function requireNonModelPrincipal(
+  principal: Principal,
+  message = 'Model principals cannot create feedback.'
+): NonModelPrincipal {
   if (principal.kind === 'model') {
-    throw new ControlPlaneServiceError('unauthorized', 'Model principals cannot create feedback.');
+    throw new ControlPlaneServiceError('unauthorized', message);
   }
   return principal as NonModelPrincipal;
 }
@@ -457,6 +472,7 @@ function mapRunToApiRun(run: Run, projectId?: string): Run {
 export class DefaultControlPlaneService implements ControlPlaneService {
   readonly #orchestrator: Orchestrator;
   readonly #runs: RunRepository;
+  readonly #workflowResolver: RunWorkflowResolver;
   readonly #runSteps: RunStepRepository;
   readonly #events: RunEventStore;
   readonly #policy: PolicyDecisionPoint;
@@ -474,6 +490,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
   constructor(options: DefaultControlPlaneServiceOptions) {
     this.#orchestrator = options.orchestrator;
     this.#runs = options.runs;
+    this.#workflowResolver = options.workflowResolver ?? defaultRunWorkflowResolver;
     this.#runSteps = options.runSteps;
     this.#events = options.events;
     this.#policy = options.policy;
@@ -655,6 +672,29 @@ export class DefaultControlPlaneService implements ControlPlaneService {
 
     const projectId = await this.#resolveRunProjectId(run);
     return { run: mapRunToApiRun(run, projectId) };
+  }
+
+  async getRunWorkflow({ principal, runId }: ServiceGetRunWorkflowInput): Promise<RunWorkflowResponse> {
+    const decision = await this.#policy.authorize({
+      principal,
+      action: 'run_workflow.read',
+      resource: { kind: 'run_workflow', id: runId, path: runWorkflowPath }
+    });
+    if (!decision.allowed) {
+      throw new ControlPlaneServiceError('forbidden', 'Not authorized to read run workflows.');
+    }
+    requireNonModelPrincipal(principal, 'Model principals cannot read run workflows.');
+
+    const run = await requireTenantRun({
+      runs: this.#runs, runId, tenant: principal.tenantId, notFoundMessage: 'Run not found.'
+    });
+    try {
+      const workflow = await resolveRunWorkflow({ kind: 'existing_run', run }, this.#workflowResolver);
+      if (workflow !== null) return projectRunWorkflow(run.workKind, workflow);
+    } catch (error) {
+      throw persistenceFailed('Failed to resolve run workflow.', error);
+    }
+    throw persistenceFailed('Run workflow is unavailable.');
   }
 
   async listRunSteps(input: ServiceListRunStepsInput): Promise<ServiceListRunStepsResult> {

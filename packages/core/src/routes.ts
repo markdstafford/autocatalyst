@@ -7,6 +7,9 @@ import {
   runRepliesPath,
   runReplyRequestSchema,
   runReplyResponseSchema,
+  getRunWorkflowSuccessStatusCode,
+  runWorkflowPath,
+  runWorkflowResponseSchema,
   recoverRunSuccessStatusCode,
   runRecoveryPath,
   runRecoveryRequestSchema,
@@ -1294,6 +1297,38 @@ export async function registerControlPlaneRoutes(
           runId: params.id
         });
         await reply.status(getRunSuccessStatusCode).send(result.run);
+      } catch (error) {
+        if (error instanceof ControlPlaneServiceError) {
+          await handleControlPlaneServiceError(request, reply, error);
+          return;
+        }
+        throw error;
+      }
+    });
+
+    protectedApp.get(runWorkflowPath, {
+      preHandler: authorizePreHandler(dependencies.policy, 'run_workflow.read', (request) => ({
+        kind: 'run_workflow',
+        id: (request.params as RunIdParams).id,
+        path: runWorkflowPath
+      }))
+    }, async (request, reply) => {
+      let params: RunIdParams;
+      try {
+        params = runIdParamsSchema.parse(request.params);
+      } catch (error) {
+        await sendValidationError(reply, error);
+        return;
+      }
+
+      const principal = requirePrincipalFromRequest(request);
+      try {
+        const result = await dependencies.controlPlane.getRunWorkflow({ principal, runId: params.id });
+        const parsed = runWorkflowResponseSchema.safeParse(result);
+        if (!parsed.success) {
+          throw new ControlPlaneServiceError('persistence_failed', 'Invalid run workflow response.');
+        }
+        await reply.status(getRunWorkflowSuccessStatusCode).send(parsed.data);
       } catch (error) {
         if (error instanceof ControlPlaneServiceError) {
           await handleControlPlaneServiceError(request, reply, error);
