@@ -21,6 +21,14 @@ DrizzleSessionRepository.readPricingSnapshot preserve evidence and select releva
 Core session-pricing.ts computes session prices and logical totals. In the web app, use-run-detail.ts
 passes the run total; run-summary-totals.ts formats exact currency and displays disjoint token counts.
 
+## Run workflow definition read (#151)
+
+- `GET /v1/runs/:id/workflow` and SDK `getRunWorkflow(id)` return the ordered expected path, phase labels, and explicit transition table edges. Join a `/steps` occurrence's `step` to a workflow step's `id`; the definition is independent of history. The workflow ID identifies a family, not a version or cache key.
+- `packages/core/src/run-workflows.ts` owns built-in paths, labels, and edges; `run-step-catalog.ts` owns each step's explicit `kind`, phase, waiting class, and roles. `waitingOn` still drives terminality.
+- `run-workflow-resolver.ts` owns selection and catalog-aware validation. The server threads the same resolver into the orchestrator and service. Creation supplies the selected project or tenant-scoped topic; subsequent lookups supply the persisted run. Selection must agree across the three contexts and stay stable across steps. Intake's static work-kind lookup is a pre-run check, not a second run resolver.
+- `run-workflow-projection.ts` projects the checked path and edges, appending catalog-ordered off-path endpoints and the two global stop destinations. Policy and the non-model/tenant guards run before resolution; a missing or invalid definition for a visible run is an internal fault, not a fallback. Cancel and fail still use the lifecycle's normal workflow resolution and membership guard.
+- Focused coverage: `pnpm nx test core -- run-workflow-projection.spec.ts run-lifecycle.spec.ts routes.spec.ts` and `pnpm nx test control-plane -- run-workflow.integration.spec.ts` (SQLite and scripted fake-mode sessions).
+
 ## Recent agent notes
 
 - 2026-11-23: Spec-convergence web test fixtures (#147 / PR #193). `routes/runs-page.spec.tsx` handles the selected run’s `/steps` read before its collection fallback so step-history reads cannot be counted as unfiltered list reads or consume queued list responses. `runs/run-detail-pane.spec.tsx` uses empty sessions for empty-state scenarios and separately verifies the Activity list includes spec implementer/reviewer sessions while excluding implementation sessions.

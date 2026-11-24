@@ -1063,3 +1063,45 @@ describe('ControlPlaneClient.getPrincipal', () => {
     });
   });
 });
+
+describe('getRunWorkflow', () => {
+  const question = {
+    workflowId: 'question', workKind: 'question', phases: [],
+    steps: [
+      { id: 'intake', phase: null, kind: 'work', waitingOn: 'system', roles: [], onPath: true },
+      { id: 'question.answer', phase: null, kind: 'work', waitingOn: 'ai', roles: ['implementer'], onPath: true },
+      { id: 'done', phase: null, kind: 'terminal', waitingOn: 'none', roles: [], onPath: true },
+      { id: 'canceled', phase: null, kind: 'terminal', waitingOn: 'none', roles: [], onPath: false },
+      { id: 'failed', phase: null, kind: 'terminal', waitingOn: 'none', roles: [], onPath: false }
+    ],
+    transitions: [
+      { from: 'intake', directive: 'advance', to: 'question.answer' },
+      { from: 'question.answer', directive: 'advance', to: 'done' }
+    ]
+  };
+
+  function setup(body: unknown) {
+    const fetch = vi.fn<typeof globalThis.fetch>(async () => Response.json(body));
+    const client = createControlPlaneClient({ baseUrl: 'http://localhost:3000', bearerToken: 'sdk-token', fetch });
+    return { client, fetch };
+  }
+
+  it('reads and parses an authenticated workflow response', async () => {
+    const { client, fetch } = setup(question);
+    await expect(client.getRunWorkflow('run/1')).resolves.toEqual(question);
+    expect(fetch).toHaveBeenCalledExactlyOnceWith(new URL('http://localhost:3000/v1/runs/run%2F1/workflow'), {
+      method: 'GET', headers: { authorization: 'Bearer sdk-token' }
+    });
+  });
+
+  it.each([
+    { ...question, workflowId: '' },
+    { ...question, phases: [{ id: 'spec', label: '   ', steps: [] }] },
+    { ...question, history: [] },
+    { ...question, steps: [{ ...question.steps[0], unexpected: true }] },
+    { ...question, transitions: [{ from: 'intake', directive: 'cancel', to: 'canceled' }] }
+  ])('rejects malformed workflow success bodies', async (body) => {
+    const { client } = setup(body);
+    await expect(client.getRunWorkflow('run_1')).rejects.toMatchObject({ name: 'ZodError' });
+  });
+});

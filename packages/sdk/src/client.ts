@@ -52,6 +52,9 @@ import {
   runRepliesPath,
   runReplyRequestSchema,
   runReplyResponseSchema,
+  getRunWorkflowSuccessStatusCode,
+  runWorkflowPath,
+  runWorkflowResponseSchema,
   recoverRunSuccessStatusCode,
   runRecoveryPath,
   runRecoveryRequestSchema,
@@ -100,6 +103,7 @@ import {
   type ReconcilePullRequestsResponse,
   type RunRecoveryRequest,
   type RunRecoveryResponse,
+  type RunWorkflowResponse,
   type RunReplyRequest,
   type RunReplyResponse,
   type CreateSecretResponse,
@@ -157,6 +161,7 @@ export interface ControlPlaneClient {
   createConversationWithFirstRun(request: CreateConversationWithFirstRunRequest): Promise<CreateConversationWithFirstRunResponse>;
   listRuns(options?: ListRunsOptions): Promise<RunListResponse>;
   getRun(id: string): Promise<Run>;
+  getRunWorkflow(id: string): Promise<RunWorkflowResponse>;
   listRunSteps(id: string): Promise<RunStepListResponse>;
   refreshRunPullRequest(id: string): Promise<RunPullRequestRefreshResponse>;
   getRunPullRequest(id: string): Promise<RunPullRequestResponse>;
@@ -469,6 +474,18 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
       );
       await throwForError(response);
       return runSchema.parse(await parseJson(response));
+    },
+
+    async getRunWorkflow(id) {
+      const response = await fetchImplementation(
+        urlFor(baseUrl, runWorkflowPath.replace(':id', () => encodeURIComponent(id))),
+        { method: 'GET', headers: protectedHeaders(bearerToken) }
+      );
+      await throwForError(response);
+      if (response.status !== getRunWorkflowSuccessStatusCode) {
+        throw new Error(`Expected ${getRunWorkflowSuccessStatusCode} from getRunWorkflow, received ${response.status}.`);
+      }
+      return runWorkflowResponseSchema.parse(await parseJson(response));
     },
 
     async listRunSteps(id) {

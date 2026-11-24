@@ -78,12 +78,14 @@ import { createRunStateTransitionEvent, type RunEventStore } from './run-events.
 import {
   applyRunDirective,
   buildEntryRunStep,
+  requireRunWorkflow,
   RunLifecycleError,
   startRunLifecycle,
   type RunLifecycleState
 } from './run-lifecycle.js';
 import { deriveRunTerminal, getRunStepDefinition, type RunStepDefinition } from './run-step-catalog.js';
-import { getRunWorkflowForWorkKind, type RunDirective } from './run-workflows.js';
+import type { RunDirective, RunWorkflowDefinition } from './run-workflows.js';
+import { defaultRunWorkflowResolver, type RunWorkflowResolver, type RunWorkflowResolverInput } from './run-workflow-resolver.js';
 import { safeFailureReasonFromError } from './safe-failure-reason.js';
 
 // --- Error types ---
@@ -260,6 +262,7 @@ export interface AutoDispatchOptions {
 }
 
 export interface DefaultOrchestratorOptions {
+  readonly workflowResolver?: RunWorkflowResolver;
   readonly runs: RunRepository;
   readonly conversationIngress: ConversationIngressRepository;
   readonly events: RunEventStore;
@@ -295,6 +298,11 @@ export interface PullRequestOpenWiringDependencies {
   readonly runWorkspaceGit?: Pick<RunWorkspaceGitPort, 'getChangedFiles'>;
 }
 
+function isWorkflowResolutionFailure(error: unknown): boolean {
+  return error instanceof OrchestratorError && error.cause instanceof RunLifecycleError &&
+    (error.cause.code === 'unknown_workflow' || error.cause.code === 'unknown_work_kind');
+}
+
 function defaultIsActiveRunConflict(error: unknown): boolean {
   return error instanceof Error && error.name === 'ActiveRunConflictPersistenceError';
 }
@@ -310,6 +318,7 @@ function unwrapCause(error: unknown): unknown {
 
 export class DefaultOrchestrator implements Orchestrator {
   readonly #runs: RunRepository;
+  readonly #workflowResolver: RunWorkflowResolver;
   readonly #conversationIngress: ConversationIngressRepository;
   readonly #events: RunEventStore;
   readonly #dispatchQueue: RunDispatchQueue;
@@ -337,6 +346,7 @@ export class DefaultOrchestrator implements Orchestrator {
 
   constructor(options: DefaultOrchestratorOptions) {
     this.#runs = options.runs;
+    this.#workflowResolver = options.workflowResolver ?? defaultRunWorkflowResolver;
     this.#conversationIngress = options.conversationIngress;
     this.#events = options.events;
     this.#dispatchQueue = options.dispatchQueue;
@@ -366,10 +376,14 @@ export class DefaultOrchestrator implements Orchestrator {
     try {
       state = await startRunLifecycle({
         runs: this.#runs,
+        workflowResolver: this.#workflowResolver,
         run: input,
         ...(this.#clock !== undefined ? { clock: this.#clock } : {})
       });
     } catch (error) {
+      if (error instanceof RunLifecycleError && error.code !== 'start_persistence_failed') {
+        throw this.#mapLifecycleError(error);
+      }
       const conflictSource = this.#isActiveRunConflict(error)
         ? error
         : this.#isActiveRunConflict(unwrapCause(error))
@@ -410,10 +424,8 @@ export class DefaultOrchestrator implements Orchestrator {
   async createConversationWithFirstRun(
     input: CreateOrchestratedConversationInput
   ): Promise<OrchestratedConversationResult> {
-    const workflow = getRunWorkflowForWorkKind(input.workKind);
-    if (workflow === null) {
-      throw new OrchestratorError('unknown_work_kind', `Unknown work kind '${input.workKind}'.`);
-    }
+    const { workKind, tenant, projectId } = input;
+    const workflow = await this.#requireWorkflow({ kind: 'new_conversation', workKind, tenant, projectId });
     const firstStep = workflow.steps[0];
     if (firstStep === undefined) {
       throw new OrchestratorError('persistence_failed', `Workflow '${workflow.id}' has no steps.`);
@@ -661,6 +673,7 @@ export class DefaultOrchestrator implements Orchestrator {
     try {
       state = await applyRunDirective({
         runs: this.#runs,
+        workflowResolver: this.#workflowResolver,
         runId: input.runId,
         directive: input.directive,
         ...(input.checkpointResult !== undefined ? { checkpointResult: input.checkpointResult } : {}),
@@ -731,10 +744,11 @@ export class DefaultOrchestrator implements Orchestrator {
       }));
     }
 
-    const workflow = getRunWorkflowForWorkKind(run.workKind);
-    if (stepDefinition?.id === 'spec.author' && stepDefinition.roles.includes('reviewer') &&
-        stepDefinition.roles.includes('implementer') &&
-        (workflow?.artifactKind === 'feature_spec' || workflow?.artifactKind === 'enhancement_spec')) {
+    const workflow = stepDefinition?.id === 'spec.author' && stepDefinition.roles.includes('reviewer') &&
+        stepDefinition.roles.includes('implementer')
+      ? await this.#requireWorkflow({ kind: 'existing_run', run })
+      : undefined;
+    if (stepDefinition !== null && (workflow?.artifactKind === 'feature_spec' || workflow?.artifactKind === 'enhancement_spec')) {
       return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
         const active = await this.#runs.findById(run.id);
         const steps = await this.#runSteps?.listByRun(run.id) ?? [];
@@ -792,10 +806,7 @@ export class DefaultOrchestrator implements Orchestrator {
     if (stepDefinition !== null && this.#isReviewedProducingStep(stepDefinition) && this.#convergenceEngine !== undefined) {
       const convergenceEngine = this.#convergenceEngine;
       return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
-        const workflow = getRunWorkflowForWorkKind(run.workKind);
-        if (workflow === null) {
-          throw new OrchestratorError('unknown_work_kind', `Unknown work kind '${run.workKind}'.`);
-        }
+        const workflow = await this.#requireWorkflow({ kind: 'existing_run', run });
         const runSteps = this.#runSteps !== undefined ? await this.#runSteps.listByRun(input.runId) : [];
         const runStep = [...runSteps].reverse().find(s => s.step === run.currentStep && s.endedAt === null) ?? {
           id: `${input.runId}_step`,
@@ -898,11 +909,8 @@ export class DefaultOrchestrator implements Orchestrator {
         return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason: result.reason, origin: 'runner' });
       }
       if (result.directive === 'needs_input') {
-        const workflow = getRunWorkflowForWorkKind(run.workKind);
-        const hasNeedsInputEdge =
-          workflow !== null &&
-          (workflow.transitions as Record<string, Record<string, string> | undefined>)[run.currentStep]?.['needs_input'] !== undefined;
-        if (!hasNeedsInputEdge) {
+        const workflow = await this.#requireWorkflow({ kind: 'existing_run', run });
+        if (stepDefinition === null || workflow.transitions[stepDefinition.id]?.needs_input === undefined) {
           throw new OrchestratorError(
             'invalid_transition',
             `Step '${run.currentStep}' in workflow '${run.workKind}' has no 'needs_input' edge.`
@@ -1084,6 +1092,7 @@ export class DefaultOrchestrator implements Orchestrator {
             runWorkspaceGit: prDeps.runWorkspaceGit ?? noopRunWorkspaceGit
           });
         } catch (cause) {
+          if (isWorkflowResolutionFailure(cause)) throw cause;
           const safeCode = (cause as { code?: string } | null)?.code;
           this.#logger?.warn('pr.open handler failed.', { runId: input.runId, code: safeCode, ...this.#safeCause(cause) });
           return this.applyDirective({
@@ -1408,7 +1417,7 @@ export class DefaultOrchestrator implements Orchestrator {
       errorName: error instanceof Error ? error.name : typeof error
     });
 
-    if (this.#isExpectedAutoDispatchFailure(error)) {
+    if (isWorkflowResolutionFailure(error) || this.#isExpectedAutoDispatchFailure(error)) {
       return;
     }
 
@@ -1603,6 +1612,15 @@ export class DefaultOrchestrator implements Orchestrator {
       // Post-commit append failures must not fail the API call — the lifecycle
       // already advanced; we just lose the live stream notification.
       this.#logger?.warn('Failed to append run state transition event after commit.', { runId: args.runId, ...this.#safeCause(error) });
+    }
+  }
+
+  async #requireWorkflow(input: RunWorkflowResolverInput): Promise<RunWorkflowDefinition> {
+    try {
+      return await requireRunWorkflow(input, this.#workflowResolver);
+    } catch (error) {
+      if (error instanceof RunLifecycleError) throw this.#mapLifecycleError(error);
+      throw error;
     }
   }
 

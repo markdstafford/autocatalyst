@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type {
   RecordRunLifecycleStartInput,
@@ -7,6 +7,7 @@ import type {
   RecordRunStepTransitionResult,
   RunRepository
 } from './domain-repositories.js';
+import { runWorkflows } from './run-workflows.js';
 import { applyRunDirective, startRunLifecycle } from './run-lifecycle.js';
 import type { Run, RunStep } from '@autocatalyst/api-contract';
 
@@ -47,6 +48,7 @@ function makeRunRepository(overrides: Partial<RunRepository> = {}): RunRepositor
   return {
     create: () => Promise.reject(new Error('not implemented')),
     findById: () => Promise.resolve(null),
+    findActiveByTopic: () => Promise.resolve(null),
     listByTopic: () => Promise.resolve([]),
     listByTenant: () => Promise.resolve({ runs: [] }),
     recordRunLifecycleStart: () => Promise.reject(new Error('not implemented')),
@@ -272,4 +274,75 @@ describe('applyRunDirective', () => {
   });
 
 
+});
+
+describe('checked workflow resolution', () => {
+  const invalid = { ...runWorkflows.feature, phases: [] };
+
+  it('does not record an entry step for an invalid definition', async () => {
+    const recordRunLifecycleStart = vi.fn();
+    const workflowResolver = vi.fn().mockResolvedValue(invalid);
+    await expect(startRunLifecycle({
+      runs: makeRunRepository({ recordRunLifecycleStart }),
+      run: { owner, topicId: 'topic_1', tenant: owner.tenantId, workKind: 'feature' },
+      workflowResolver
+    })).rejects.toMatchObject({ code: 'unknown_workflow' });
+    expect(workflowResolver).toHaveBeenCalledWith({
+      kind: 'existing_topic', topicId: 'topic_1', tenant: owner.tenantId, workKind: 'feature'
+    });
+    expect(recordRunLifecycleStart).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [invalid, 'unknown_workflow'],
+    [null, 'unknown_work_kind']
+  ] as const)('does not record a transition on resolution failure (%s)', async (definition, code) => {
+    const run = makeRun();
+    const recordRunStepTransition = vi.fn();
+    const workflowResolver = vi.fn().mockResolvedValue(definition);
+    await expect(applyRunDirective({
+      runs: makeRunRepository({ findById: async () => run, recordRunStepTransition }),
+      runId: run.id, directive: 'advance', workflowResolver
+    })).rejects.toMatchObject({ code });
+    expect(workflowResolver).toHaveBeenCalledWith({ kind: 'existing_run', run });
+    expect(recordRunStepTransition).not.toHaveBeenCalled();
+  });
+
+  it.each([['cancel', 'canceled'], ['fail', 'failed']] as const)('%s resolves and preserves stop results', async (directive, to) => {
+    const run = makeRun({ currentStep: 'spec.awaiting_input' });
+    const stopped = makeRun({ currentStep: to, terminal: true });
+    const runStep = makeRunStep({ step: to });
+    const recordRunStepTransition = vi.fn().mockResolvedValue({ run: stopped, runStep });
+    const workflowResolver = vi.fn().mockReturnValue(runWorkflows.feature);
+    const result = await applyRunDirective({
+      runs: makeRunRepository({ findById: async () => run, recordRunStepTransition }),
+      runId: run.id, directive, workflowResolver
+    });
+    expect(workflowResolver).toHaveBeenCalledExactlyOnceWith({ kind: 'existing_run', run });
+    expect(result).toEqual({
+      run: stopped, runStep, workflow: runWorkflows.feature,
+      step: { id: to, phase: null, waitingOn: 'none', roles: [], kind: 'terminal' },
+      transition: { ok: true, workflowId: 'feature', from: run.currentStep, directive, to }
+    });
+    expect(recordRunStepTransition).toHaveBeenCalledWith(expect.objectContaining({ currentStep: to, terminal: true }));
+  });
+
+  it.each(['cancel', 'fail'] as const)('%s retains membership and terminal guards', async (directive) => {
+    for (const [currentStep, transitionCode] of [
+      ['docs.update', 'step_not_in_workflow'],
+      ['done', 'terminal_step']
+    ] as const) {
+      // A real terminal run is caught by terminal_run first; use a stale flag to
+      // exercise nextWorkflowStep's independent catalog-based guard.
+      const run = makeRun({ currentStep });
+      const recordRunStepTransition = vi.fn();
+      const workflowResolver = vi.fn().mockReturnValue(runWorkflows.feature);
+      await expect(applyRunDirective({
+        runs: makeRunRepository({ findById: async () => run, recordRunStepTransition }),
+        runId: run.id, directive, workflowResolver
+      })).rejects.toMatchObject({ code: 'invalid_transition', transitionCode });
+      expect(workflowResolver).toHaveBeenCalledExactlyOnceWith({ kind: 'existing_run', run });
+      expect(recordRunStepTransition).not.toHaveBeenCalled();
+    }
+  });
 });

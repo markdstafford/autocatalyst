@@ -31,6 +31,8 @@ import {
   DefaultControlPlaneService,
   DefaultIssueReferenceIntakeResolver,
   DefaultOrchestrator,
+  defaultRunWorkflowResolver,
+  type RunWorkflowResolver,
   createExtensionRegistryCatalog,
   defaultExtensionRegistryCatalog,
   emptyProviderAdapterMap,
@@ -181,6 +183,7 @@ export interface WorkspaceRootOptions {
 }
 
 export interface ControlPlaneServerOptions {
+  readonly workflowResolver?: RunWorkflowResolver;
   readonly databasePath: string;
   readonly bearerToken: string;
   readonly masterSecret: string;
@@ -1752,7 +1755,9 @@ export async function createControlPlaneServer(
     throw new Error(`Workspace root not available for run '${runId}'. The run may not have been dispatched yet.`);
   };
 
+  const workflowResolver = options.workflowResolver ?? defaultRunWorkflowResolver;
   const orchestrator = new DefaultOrchestrator({
+    workflowResolver,
     runs: domainRepos.runs,
     conversationIngress,
     events: eventBus,
@@ -1863,6 +1868,7 @@ export async function createControlPlaneServer(
   }
 
   const controlPlane = new DefaultControlPlaneService({
+    workflowResolver,
     orchestrator,
     runs: domainRepos.runs,
     runSteps: domainRepos.runSteps,

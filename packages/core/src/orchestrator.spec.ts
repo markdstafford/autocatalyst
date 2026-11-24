@@ -21,6 +21,8 @@ import type { SpecApprovalFinalizerDependencies } from './spec-approval-finalize
 import type { SpecFreezeDependencies, freezeRunSpecForPullRequest as freezeRunSpecForPullRequestFn } from './spec-freeze.js';
 import { SpecFreezeError } from './spec-freeze.js';
 import { ModelRoutingConfigurationError } from './model-routing-resolver.js';
+import type { RunWorkflowResolver } from './run-workflow-resolver.js';
+import { runWorkflows } from './run-workflows.js';
 import type { ConvergenceEngine, ConvergenceEngineInput } from './convergence-engine.js';
 
 const timestamp = '2026-06-08T00:00:00.000Z';
@@ -157,6 +159,7 @@ function makeFakeRunStepRepo(overrides: Partial<RunStepRepository> = {}): RunSte
 
 function makeOrchestrator(opts: {
   runs?: RunRepository;
+  workflowResolver?: RunWorkflowResolver;
   conversationIngress?: ConversationIngressRepository;
   events?: RunEventPublisher;
   dispatchQueue?: RunDispatchQueue;
@@ -188,6 +191,7 @@ function makeOrchestrator(opts: {
     conversationIngress,
     events,
     dispatchQueue,
+    ...(opts.workflowResolver !== undefined ? { workflowResolver: opts.workflowResolver } : {}),
     ...(opts.unitOfWork !== undefined ? { unitOfWork: opts.unitOfWork } : {}),
     ...(opts.clock !== undefined ? { clock: opts.clock } : {}),
     ...(opts.eventIdGenerator !== undefined ? { eventIdGenerator: opts.eventIdGenerator } : {}),
@@ -3096,5 +3100,51 @@ describe('DefaultOrchestrator.admitForDispatch', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(unitRun).not.toHaveBeenCalled();
+  });
+});
+
+describe('workflow resolution failures at orchestration boundaries', () => {
+  it('does not write a conversation or its entry step when the resolver throws', async () => {
+    const workflowResolver = vi.fn().mockRejectedValue(new Error('resolver failed'));
+    const { orchestrator, conversationIngress } = makeOrchestrator({ workflowResolver });
+    await expect(orchestrator.createConversationWithFirstRun({
+      projectId: 'project_1', workKind: 'feature', tenant: owner.tenantId, owner,
+      identity: 'source_1', topic: { title: 'Topic' }
+    })).rejects.toMatchObject({ code: 'persistence_failed' });
+    expect(workflowResolver).toHaveBeenCalledExactlyOnceWith({
+      kind: 'new_conversation', projectId: 'project_1', workKind: 'feature', tenant: owner.tenantId
+    });
+    expect(conversationIngress.createConversationTopicMessageAndRun).not.toHaveBeenCalled();
+  });
+
+  it.each(['spec.author', 'implementation.build'])('does not fall back to unreviewed dispatch at %s', async (currentStep) => {
+    const run = makeRun({ currentStep });
+    const workflowResolver = vi.fn().mockResolvedValue({ ...runWorkflows.feature, phases: [] });
+    const reviewed = { run: vi.fn(), runSpec: vi.fn() };
+    const unitOfWork = { run: vi.fn() };
+    const { orchestrator, runs } = makeOrchestrator({
+      runs: makeFakeRunRepo({ findById: async () => run }),
+      workflowResolver, unitOfWork, convergenceEngine: reviewed
+    });
+    await expect(orchestrator.dispatch({ runId: run.id, tenant: run.tenant }))
+      .rejects.toMatchObject({ code: 'persistence_failed' });
+    expect(reviewed.runSpec).not.toHaveBeenCalled();
+    expect(reviewed.run).not.toHaveBeenCalled();
+    expect(unitOfWork.run).not.toHaveBeenCalled();
+    expect(runs.recordRunStepTransition).not.toHaveBeenCalled();
+  });
+
+  it('does not treat missing resolution as an invalid runner needs_input edge', async () => {
+    const run = makeRun({ workKind: 'question', currentStep: 'question.answer' });
+    const workflowResolver = vi.fn().mockReturnValue(null);
+    const { orchestrator, runs } = makeOrchestrator({
+      runs: makeFakeRunRepo({ findById: async () => run }),
+      workflowResolver,
+      unitOfWork: { run: vi.fn().mockResolvedValue({ directive: 'needs_input', question: 'Continue?' }) }
+    });
+    await expect(orchestrator.dispatch({ runId: run.id, tenant: run.tenant }))
+      .rejects.toMatchObject({ code: 'unknown_work_kind' });
+    expect(workflowResolver).toHaveBeenCalledExactlyOnceWith({ kind: 'existing_run', run });
+    expect(runs.recordRunStepTransition).not.toHaveBeenCalled();
   });
 });

@@ -41,6 +41,8 @@ import {
 import { DefaultIssueReferenceIntakeResolver } from './issue-reference-intake.js';
 import { IssueTrackerError } from './issue-tracker.js';
 import { StaticIssueTrackerRegistry } from './issue-tracker-registry.js';
+import { runWorkflows } from './run-workflows.js';
+import type { RunRepository, RunStepRepository } from './domain-repositories.js';
 import { hardcodedDevelopmentPrincipal } from './principal.js';
 import { registerControlPlaneRoutes } from './routes.js';
 import type { ControlPlaneRouteDependencies } from './routes.js';
@@ -65,6 +67,9 @@ function createFakeControlPlaneService(): ControlPlaneService {
     }),
     getRun: vi.fn(async () => {
       throw new Error('controlPlane.getRun not stubbed for this test');
+    }),
+    getRunWorkflow: vi.fn(async () => {
+      throw new Error('controlPlane.getRunWorkflow not stubbed for this test');
     }),
     listRunSteps: vi.fn(async () => {
       throw new Error('controlPlane.listRunSteps not stubbed for this test');
@@ -2529,5 +2534,132 @@ describe('registerControlPlaneRoutes', () => {
       expect(response.statusCode).toBe(403);
       expect(errorResponseSchema.parse(response.json()).error.code).toBe('forbidden');
     });
+  });
+});
+
+describe('GET /v1/runs/:id/workflow', () => {
+  const run: Run = {
+    id: 'run_workflow', topicId: 'topic_workflow', tenant: hardcodedDevelopmentPrincipal.tenantId,
+    owner: { ...hardcodedDevelopmentPrincipal, kind: 'human' }, workKind: 'question',
+    currentStep: 'intake', terminal: false,
+    createdAt: '2026-11-24T00:00:00.000Z', updatedAt: '2026-11-24T00:00:00.000Z'
+  };
+  const url = `/v1/runs/${run.id}/workflow`;
+  const fault = { error: { code: 'internal_error', message: 'An internal server error occurred.' } };
+  let app: Awaited<ReturnType<typeof buildServer>>['app'] | undefined;
+
+  afterEach(async () => {
+    await app?.close();
+    app = undefined;
+  });
+
+  async function setup(kind: 'human' | 'model' = 'human') {
+    const principal = { ...hardcodedDevelopmentPrincipal, kind };
+    const routePolicy = { authorize: vi.fn().mockResolvedValue({ allowed: true }) };
+    const servicePolicy = { authorize: vi.fn().mockResolvedValue({ allowed: true }) };
+    const findById = vi.fn<RunRepository['findById']>().mockResolvedValue(run);
+    const listByRun = vi.fn<RunStepRepository['listByRun']>();
+    const resolver = vi.fn().mockResolvedValue(runWorkflows.question);
+    const controlPlane = new DefaultControlPlaneService({
+      ...({} as DefaultControlPlaneServiceOptions),
+      policy: servicePolicy,
+      runs: { ...({} as RunRepository), findById },
+      runSteps: { ...({} as RunStepRepository), listByRun },
+      workflowResolver: resolver
+    });
+    const server = await buildServer({
+      auth: { bearerToken: 'test-token', resolvePrincipal: () => principal },
+      controlPlane,
+      policy: routePolicy
+    });
+    app = server.app;
+    const request = () => server.app.inject({ url, headers: server.authorization });
+    const decision = { principal, action: 'run_workflow.read', resource: { kind: 'run_workflow', id: run.id, path: '/v1/runs/:id/workflow' } };
+    return { server, request, decision, routePolicy, servicePolicy, findById, listByRun, resolver };
+  }
+
+  it('authenticates and authorizes both layers before loading the run and never reads history', async () => {
+    const { server, request, decision, routePolicy, servicePolicy, findById, listByRun, resolver } = await setup();
+    expect((await server.app.inject({ url })).statusCode).toBe(401);
+    expect(routePolicy.authorize).not.toHaveBeenCalled();
+
+    const response = await request();
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ workflowId: 'question', phases: [] });
+    expect(routePolicy.authorize).toHaveBeenCalledExactlyOnceWith(decision);
+    expect(servicePolicy.authorize).toHaveBeenCalledExactlyOnceWith(decision);
+    expect(findById).toHaveBeenCalledExactlyOnceWith(run.id);
+    expect(resolver).toHaveBeenCalledExactlyOnceWith({ kind: 'existing_run', run });
+    const order = [routePolicy.authorize, servicePolicy.authorize, findById, resolver]
+      .map(spy => spy.mock.invocationCallOrder[0]!);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(listByRun).not.toHaveBeenCalled();
+  });
+
+  it('returns a validation envelope for an empty run ID without loading a run', async () => {
+    const { server, findById, servicePolicy, resolver } = await setup();
+    const response = await server.app.inject({ url: '/v1/runs//workflow', headers: server.authorization });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: { code: 'validation_error' } });
+    expect(servicePolicy.authorize).not.toHaveBeenCalled();
+    expect(findById).not.toHaveBeenCalled();
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it('checks route policy, then service policy, then rejects a model principal before repository access', async () => {
+    const { request, decision, routePolicy, servicePolicy, findById, resolver } = await setup('model');
+    routePolicy.authorize.mockResolvedValueOnce({ allowed: false });
+    expect((await request()).statusCode).toBe(403);
+    expect(routePolicy.authorize).toHaveBeenCalledWith(decision);
+    expect(servicePolicy.authorize).not.toHaveBeenCalled();
+
+    servicePolicy.authorize.mockResolvedValueOnce({ allowed: false });
+    const denied = await request();
+    expect(denied.statusCode).toBe(403);
+    expect(denied.json()).toEqual({ error: { code: 'forbidden', message: 'Not authorized to read run workflows.' } });
+
+    const model = await request();
+    expect(model.statusCode).toBe(403);
+    expect(model.json()).toEqual({ error: { code: 'forbidden', message: 'Model principals cannot read run workflows.' } });
+    expect(findById).not.toHaveBeenCalled();
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it('returns identical 404s for absent and foreign runs without resolving them', async () => {
+    const { request, findById, resolver } = await setup();
+    findById.mockResolvedValueOnce(null).mockResolvedValueOnce({ ...run, tenant: 'foreign-tenant' });
+    for (let i = 0; i < 2; i++) {
+      const response = await request();
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({ error: { code: 'not_found', message: 'Run not found.' } });
+    }
+    expect(findById).toHaveBeenCalledTimes(2);
+    expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it('returns sanitized faults for invalid, missing, and throwing resolvers', async () => {
+    const { request, resolver } = await setup();
+    resolver
+      .mockResolvedValueOnce({ ...runWorkflows.question, id: 'invalid-workflow-sentinel' })
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error('resolver-error-sentinel'));
+    for (let i = 0; i < 3; i++) {
+      const response = await request();
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual(fault);
+    }
+    expect(resolver).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not publish malformed success data from the service', async () => {
+    const controlPlane = createFakeControlPlaneService();
+    vi.mocked(controlPlane.getRunWorkflow).mockResolvedValueOnce({
+      workflowId: '', workKind: 'question', phases: [], steps: [], transitions: []
+    });
+    const server = await buildServer({ controlPlane });
+    app = server.app;
+    const response = await app.inject({ url, headers: server.authorization });
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual(fault);
   });
 });

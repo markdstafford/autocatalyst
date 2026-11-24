@@ -67,6 +67,31 @@ describe('OpenAPI generation', () => {
     expect(createOperation.responses?.['401']).toBeDefined();
   });
 
+  it('documents the protected workflow read, family ID and explicit transitions', () => {
+    const document = generateOpenApiDocument();
+    const operation = document.paths['/v1/runs/{id}/workflow']?.['get'] as
+      { responses: Record<string, unknown> } | undefined;
+    expect(operation).toMatchObject({
+      security: [{ bearerAuth: [] }],
+      parameters: [expect.objectContaining({ in: 'path', name: 'id', required: true })]
+    });
+    for (const status of ['200', '400', '401', '403', '404', '500']) {
+      expect(operation?.responses[status]).toBeDefined();
+    }
+    expect(operation?.responses['200']).toMatchObject({
+      content: { 'application/json': { schema: { $ref: '#/components/schemas/RunWorkflowResponse' } } }
+    });
+    const schemas = document.components?.['schemas'] as Record<string, unknown> | undefined;
+    expect(schemas?.['RunWorkflowResponse']).toMatchObject({
+      properties: {
+        workflowId: { description: expect.stringMatching(/family ID.*not a unique definition ID, version, or cache key/) },
+        transitions: { description: expect.stringMatching(
+          /Explicit transition table edges.*every nonterminal step.*canceled and failed.*not listed.*Recover reopens a failed run.*stopped step and recovery mode.*Set step moves a run back to a step it already reached.*outside the table/
+        ) }
+      }
+    });
+  });
+
   it('documents conversation ingress route', () => {
     const document = generateOpenApiDocument();
     expect(document.paths['/v1/conversations']?.post).toBeDefined();

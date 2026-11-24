@@ -14,6 +14,7 @@ export type PolicyResourceDescriptor =
   | { readonly kind: 'conversation_collection'; readonly path: '/v1/conversations' }
   | { readonly kind: 'run_collection'; readonly path: '/v1/runs' }
   | { readonly kind: 'run'; readonly id: string; readonly path: '/v1/runs/:id' }
+  | { readonly kind: 'run_workflow'; readonly id: string; readonly path: '/v1/runs/:id/workflow' }
   | { readonly kind: 'run_steps'; readonly id: string; readonly path: '/v1/runs/:id/steps' }
   | { readonly kind: 'run_events'; readonly id: string; readonly path: '/v1/runs/:id/events' }
   | { readonly kind: 'run_spec'; readonly id: string; readonly path: '/v1/runs/:id/spec' }
@@ -46,6 +47,7 @@ export type PolicyAction =
   | 'conversation.create'
   | 'run.list'
   | 'run.read'
+  | 'run_workflow.read'
   | 'run_steps.list'
   | 'run_events.stream'
   | 'run.tick'
