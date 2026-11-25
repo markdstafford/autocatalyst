@@ -2,8 +2,7 @@
  * The Summary tab: a compact fact list of the details the header does not already own.
  * The header carries the issue, work kind, and state, so Summary shows only the step (for
  * an in-progress run), the failure reason (for a failed run), the pull request, and the
- * time, tokens, and cost totals. It is a fact list, not a progress view: there is no
- * progress bar.
+ * time, tokens, and cost totals. The pane renders workflow progress above this fact list.
  *
  * Each fact renders its own loading, success, and error state, so a failed pull request
  * or sessions read shows an inline message on that fact alone and never blanks the

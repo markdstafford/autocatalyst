@@ -2,6 +2,7 @@ import {
   RunnerProtocolError,
   validateExecutionBoundaryEventStream,
   normalizeFailureReasonForPublicSurface,
+  type ExecutionBoundaryEvent,
   type ExecutionTerminalResultEvent
 } from '@autocatalyst/execution';
 import {
@@ -31,6 +32,10 @@ export interface ConsumeRunnerEventsResult {
 }
 
 function toClientTerminalEvent(event: ExecutionTerminalResultEvent, hideResult = false): RunnerTerminalResultClientEvent {
+  const reason = event.result.directive === 'fail' ? normalizeFailureReasonForPublicSurface(event.result.reason) : undefined;
+  const result = hideResult
+    ? { directive: event.result.directive, ...(reason ? { reason } : {}) }
+    : event.result;
   const base: RunnerTerminalResultClientEvent = {
     id: event.id,
     type: 'runner_terminal_result',
@@ -38,10 +43,37 @@ function toClientTerminalEvent(event: ExecutionTerminalResultEvent, hideResult =
     step: event.step,
     importance: event.importance,
     createdAt: event.createdAt,
-    result: hideResult && event.result.directive !== 'fail' ? { directive: event.result.directive } : event.result,
+    result,
     ...(event.resultContract !== undefined ? { resultContract: event.resultContract } : {})
   };
   return base;
+}
+
+/** Publish content-free activity for private spec roles, never their scratch transcript.
+ * Free-form fields (including tool names and model-supplied progress labels) are private.
+ */
+function publicSpecActivity(event: Exclude<ExecutionBoundaryEvent, ExecutionTerminalResultEvent>): ClientRunEvent | undefined {
+  switch (event.type) {
+    case 'runner_assistant_turn':
+      return { ...event, message: { role: 'assistant', content: 'Assistant turn' } };
+    case 'runner_tool_activity': {
+      const { action, status } = event.tool;
+      return { ...event, tool: {
+        name: 'Tool',
+        action: action === 'invoke' || action === 'result' ? action : 'activity',
+        status: status === 'started' || status === 'completed' || status === 'failed' ? status : 'recorded'
+      } };
+    }
+    case 'runner_progress': {
+      const progress = event.progress;
+      if (progress.kind === 'task_progress') {
+        return { ...event, progress: { ...progress, label: 'Session progress' } };
+      }
+      return { ...event, progress: { kind: 'intent', summary: 'Progress reported' } };
+    }
+    default:
+      return undefined;
+  }
 }
 
 function mapTerminalToWorkResult(event: ExecutionTerminalResultEvent): RunWorkResult {
@@ -90,8 +122,9 @@ export async function consumeRunnerEvents(input: ConsumeRunnerEventsInput): Prom
         }
         continue;
       }
-      if (input.privateSpecResult) continue; // Role activity is exposed via durable sessions, not raw scratch transcripts.
-      const clientEvent: ClientRunEvent = clientRunEventSchema.parse(event);
+      const publicEvent = input.privateSpecResult ? publicSpecActivity(event) : event;
+      if (publicEvent === undefined) continue;
+      const clientEvent: ClientRunEvent = clientRunEventSchema.parse(publicEvent);
       try {
         await input.eventsStore.append({ scope, event: clientEvent });
       } catch {

@@ -63,6 +63,7 @@ export async function ensureFakeState(stateDir: string): Promise<FakeStatePaths>
   await mkdir(paths.workspacesRoot, { recursive: true });
   await mkdir(paths.pullRequestsDir, { recursive: true });
   await mkdir(paths.failuresDir, { recursive: true });
+  await mkdir(paths.delaysDir, { recursive: true });
   await mkdir(paths.countersDir, { recursive: true });
   await mkdir(paths.launchContextDir, { recursive: true });
 

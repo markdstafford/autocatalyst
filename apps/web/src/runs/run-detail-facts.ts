@@ -6,7 +6,9 @@
  * read never blanks the other facts. Defined here (not in the data hook) so the display
  * components can import the types without importing the hook.
  */
-import type { FeedbackResponse, PullRequest, Session, SessionCostTotal } from '@autocatalyst/api-contract';
+import type { FeedbackResponse, PullRequest, Session, SessionCostTotal, RunStep, RunWorkflowResponse } from '@autocatalyst/api-contract';
+
+import type { RunActivityBuffer } from './run-activity-buffer.js';
 
 /** A single independently-loaded fact: loading, a value, or an inline error. */
 export type FactState<T> =
@@ -27,7 +29,7 @@ export interface PullRequestCheck {
 }
 
 /** The sessions fact, from which the time/token/cost totals are computed. */
-export type SessionsFact = FactState<readonly Session[]> & { readonly runCost?: SessionCostTotal };
+export type SessionsFact = FactState<readonly Session[]> & { readonly runCost?: SessionCostTotal; readonly value?: readonly Session[] };
 
 /**
  * The Spec-tab discriminator:
@@ -49,3 +51,18 @@ export type SpecDiscriminator =
       readonly feedback: readonly FeedbackResponse[];
     }
   | { readonly status: 'error'; readonly message: string };
+
+export interface ActivityRead<T> {
+  readonly pending: boolean;
+  readonly value?: T;
+  readonly error?: string;
+}
+
+export interface ActivityFacts {
+  readonly workflow: ActivityRead<RunWorkflowResponse>;
+  readonly steps: ActivityRead<readonly RunStep[]>;
+  readonly buffer: RunActivityBuffer;
+  readonly connection: 'connecting' | 'attached' | 'reconnecting' | 'ended';
+  readonly replayGap: boolean;
+  readonly runError?: string | undefined;
+}

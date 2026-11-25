@@ -16,6 +16,7 @@ export interface FakeStatePaths {
   readonly pullRequestsDir: string;
   readonly pullRequestCounterFile: string;
   readonly failuresDir: string;
+  readonly delaysDir: string;
   readonly countersDir: string;
   readonly launchContextDir: string;
   readonly launchCounterFile: string;
@@ -37,6 +38,7 @@ export function resolveFakeStatePaths(stateDirInput: string): FakeStatePaths {
     pullRequestsDir: join(stateDir, 'pull-requests'),
     pullRequestCounterFile: join(stateDir, 'pull-requests', 'counter'),
     failuresDir: join(stateDir, 'failures'),
+    delaysDir: join(stateDir, 'delays'),
     countersDir: join(stateDir, 'counters'),
     launchContextDir: join(stateDir, 'launch-context'),
     launchCounterFile: join(stateDir, 'counters', 'launch.count')

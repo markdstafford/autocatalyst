@@ -92,6 +92,8 @@ export interface FakeServer {
   writePullRequestState(pullRequestNumber: number, state: string): Promise<void>;
   /** Write a scripted-failure file (`failures/issue-<n>.json`). */
   writeFailure(issueNumber: number, step: string): Promise<void>;
+  /** Write the documented one-shot delay control for a scripted launch. */
+  writeDelay(issueNumber: number, step: string, ms: number): Promise<void>;
   /**
    * Run the built seed entry against this server and return the JSON it prints.
    * Imports nothing from the control plane — it spawns the built script.
@@ -312,6 +314,12 @@ class FakeServerProcess implements FakeServer {
       `${JSON.stringify({ step })}\n`,
       'utf-8'
     );
+  }
+
+  async writeDelay(issueNumber: number, step: string, ms: number): Promise<void> {
+    const dir = join(this.stateDir, 'delays');
+    await mkdir(dir, { recursive: true });
+    await writeFile(join(dir, `issue-${issueNumber}.json`), JSON.stringify({ step, ms }), 'utf8');
   }
 
   async seed(input: { scenario: string; issue?: number }): Promise<SeedResult> {

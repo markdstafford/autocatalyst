@@ -89,6 +89,18 @@ export function selectScriptedResult(selection: ScriptedSessionSelection): Recor
   return { directive: 'advance' };
 }
 
+export function scriptedTaskProgress(label: string, completed: number, total: number): ClaudeNativeEvent {
+  return { type: 'tool_use', tool: { name: 'report_progress', input: { label, completed, total } } };
+}
+
+export function scriptedPrelude(): ClaudeNativeEvent[] {
+  return [
+    { type: 'assistant', content: 'Scripted fake-mode session.' },
+    { type: 'tool_use', tool: { name: 'Read' } },
+    scriptedTaskProgress('Scripted work', 0, 1)
+  ];
+}
+
 /**
  * Build the native Claude event sequence for a scripted session. The lifecycle
  * advance is driven by the written result file (structured capture or legacy
@@ -100,8 +112,7 @@ export function buildScriptedSessionEvents(selection: ScriptedSessionSelection):
 
   if (isStructured(selection.resultSchemaId)) {
     return [
-      { type: 'assistant', content: 'Scripted fake-mode session.' },
-      { type: 'tool_use', tool: { name: 'report_progress', input: { note: 'scripted' } } },
+      ...scriptedPrelude(),
       {
         type: 'result',
         structuredOutput: result,
@@ -111,7 +122,7 @@ export function buildScriptedSessionEvents(selection: ScriptedSessionSelection):
   }
 
   return [
-    { type: 'assistant', content: 'Scripted fake-mode session.' },
+    ...scriptedPrelude(),
     {
       type: 'result',
       result: { output: JSON.stringify(result), is_error: false, ...usage }

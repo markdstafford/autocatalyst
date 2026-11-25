@@ -64,3 +64,15 @@ export function runStateChip(run: Run): RunStateChip | null {
     }
   }
 }
+
+/** The durable read's terminal outcome, without interpreting any catalog step IDs. */
+export function terminalRunStatus(run: Run): 'done' | 'failed' | 'canceled' | undefined {
+  switch (run.status) {
+    case 'done':
+    case 'failed':
+    case 'canceled':
+      return run.status;
+    default:
+      return undefined;
+  }
+}

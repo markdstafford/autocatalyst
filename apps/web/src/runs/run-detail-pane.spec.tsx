@@ -7,12 +7,12 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { attempt } from './run-activity.test-helper.js';
 import { makePullRequest, makeRun, makeSession } from './run-fixtures.js';
 import { RunDetailHarness as RunDetailPane } from './run-detail-pane.test-helper.js';
 import { createScriptedDetailClient } from './scripted-detail-client.js';
 import {
   ACCEPTANCE_EMPTY_STATE,
-  ACTIVITY_EMPTY_STATE,
   SPEC_EMPTY_STATES
 } from './run-detail-empty-states.js';
 
@@ -60,9 +60,9 @@ describe('RunDetailPane', () => {
     expect(screen.getByRole('tab', { name: 'Summary' }).getAttribute('aria-selected')).toBe('true');
   });
 
-  it('shows each non-Summary empty state when its tab is selected', async () => {
+  it('shows each non-Summary empty state without another stream or workflow read on tab changes', async () => {
     const user = userEvent.setup();
-    renderPane(makeRun({ workKind: 'feature' }));
+    const { scripted } = renderPane(makeRun({ workKind: 'feature' }));
 
     await user.click(screen.getByRole('tab', { name: 'Spec' }));
     await waitFor(() =>
@@ -73,24 +73,26 @@ describe('RunDetailPane', () => {
     expect(screen.getByTestId('pane-acceptance-empty').textContent).toContain(ACCEPTANCE_EMPTY_STATE.title);
 
     await user.click(screen.getByRole('tab', { name: 'Activity' }));
-    expect(screen.getByTestId('pane-activity-empty').textContent).toContain(ACTIVITY_EMPTY_STATE.title);
+    expect(await screen.findByText('No recorded attempts.')).toBeDefined();
+    expect(scripted.counts.subscribe).toBe(1);
+    expect(scripted.counts.workflow).toBe(1);
+    expect(scripted.counts.sessions).toBe(1);
   });
 
-  it('shows spec author and reviewer sessions in Activity while excluding implementation sessions', async () => {
+  it('places recorded sessions under their matching attempt only', async () => {
     const user = userEvent.setup();
-    renderPane(makeRun(), [
+    const { scripted } = renderPane(makeRun(), [
       { ...makeSession({ id: 'author' }), round: 1 },
       { ...makeSession({ id: 'reviewer', sequence: 2 }), role: 'reviewer', round: 1 },
       { ...makeSession({ id: 'implementation', sequence: 3 }), step: 'implementation.build' }
     ]);
 
+    scripted.setSteps([attempt('spec.author', 0, 0, 1)]);
     await user.click(screen.getByRole('tab', { name: 'Activity' }));
-    const activity = await screen.findByRole('list', { name: 'Spec authoring sessions' });
-    expect(within(activity).getAllByRole('listitem').map((item) => item.textContent)).toEqual([
-      'spec.author · implementer · round 1 · succeeded',
-      'spec.author · reviewer · round 1 · succeeded'
-    ]);
-    expect(screen.queryByTestId('pane-activity-empty')).toBeNull();
+    await user.click(await screen.findByRole('button', { name: /spec.author Done/ }));
+    expect(screen.getByText(/implementer · round 1/)).toBeDefined();
+    expect(screen.getByText(/reviewer · round 1/)).toBeDefined();
+    expect(screen.queryByText(/round 0/)).toBeNull();
   });
 
   it('shows the spec no-spec empty state for a non-spec work kind without reading the spec', async () => {
@@ -164,7 +166,7 @@ describe('RunDetailPane', () => {
       await user.click(screen.getByRole('tab', { name: 'Acceptance' }));
       expect(screen.getByTestId('pane-acceptance-empty')).toBeDefined();
       await user.click(screen.getByRole('tab', { name: 'Activity' }));
-      expect(screen.getByTestId('pane-activity-empty')).toBeDefined();
+      expect(await screen.findByText('No recorded attempts.')).toBeDefined();
       unmount();
     }
   });

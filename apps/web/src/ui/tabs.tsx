@@ -83,15 +83,16 @@ export function Tabs({
 }
 
 export interface TabPanelProps {
+  readonly keepMounted?: boolean;
   readonly value: string;
   readonly children: ReactNode;
   readonly className?: string;
 }
 
 /** A single tab panel, shown when its `value` matches the selected tab. */
-export function TabPanel({ value, children, className }: TabPanelProps): ReactNode {
+export function TabPanel({ value, children, className, keepMounted = false }: TabPanelProps): ReactNode {
   return (
-    <BaseTabs.Panel value={value} className={className ?? ''}>
+    <BaseTabs.Panel keepMounted={keepMounted} value={value} className={className ?? ''}>
       {children}
     </BaseTabs.Panel>
   );

@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -151,6 +151,28 @@ async function waitForRevisedSpec(app: FastifyInstance, runId: string, timeoutMs
   }
   throw new Error(`Timed out waiting for run ${runId} to produce the revised spec. Last spec:\n${last}`);
 }
+
+it('delays the matched injected failure without recording a session prematurely', async () => {
+  const { app, stateDir } = await startFakeServer();
+  const projectId = await createSecretAndProject(app);
+  const paths = resolveFakeStatePaths(stateDir);
+  const issue = 7;
+  const step = 'spec.author';
+  const control = JSON.stringify({ step, ms: 1_400 });
+  await writeFile(join(paths.delaysDir, `issue-${issue}.json`), control, 'utf8');
+  await writeFile(join(paths.failuresDir, `issue-${issue}.json`), JSON.stringify({ step }), 'utf8');
+
+  const runId = await startRunFromIssue(app, projectId, issue);
+  const sessions = () => app.inject({ method: 'GET', url: `/v1/runs/${runId}/sessions`, headers: AUTH });
+  await expect.poll(() => readFile(join(paths.delaysDir, `issue-${issue}.json.fired`), 'utf8').catch(() => ''),
+    { timeout: 10_000 }).toBe(control);
+  expect((await getRun(app, runId)).currentStep).toBe(step);
+  expect((await sessions()).json().sessions).toEqual([]);
+  await waitForStep(app, runId, 'failed');
+  const [failedSession] = (await sessions()).json().sessions;
+  expect(failedSession).toMatchObject({ step, outcome: 'failed' });
+  expect(failedSession.durationMs).toBeGreaterThanOrEqual(1_400);
+}, 30_000);
 
 describe('fake mode end-to-end (in-process)', () => {
   it('drives a feature run from issue intake to done with a deterministic spec', async () => {

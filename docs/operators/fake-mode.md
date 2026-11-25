@@ -211,6 +211,8 @@ The state directory is the control surface — there are no runtime scripting ro
 | `pull-requests/<n>.json` | PR record (number, branch, url) |
 | `failures/issue-<n>.json` | Failure control `{"step":"<step id>"}` |
 | `failures/issue-<n>.json.fired` | Renamed after the failure fired once |
+| `delays/issue-<n>.json` | Delay control `{"step":"<step id>","ms":5000}` |
+| `delays/issue-<n>.json.fired` | Renamed when a matching launch claims the delay |
 | `launch-context/<runId>-<seq>.json` | Recorded scripted-launch context |
 | `counters/launch.count` | Total scripted model sessions, including reviewers |
 | `counters/spec-author-<runId>.count` | Per-run fixture author pass; reviewer sessions do not increment it |
@@ -232,6 +234,28 @@ To force a scripted model session to fail at a given step for an issue, write
 first matching launch fails and the file is renamed with a `.fired` suffix. Valid failure step ids
 are the AI steps that launch a scripted session: `spec.author`, `implementation.build`,
 `pr.finalize`. The `failed` scenario writes `{"step":"spec.author"}` for issue 6.
+
+### Scripted activity and delays
+
+Every scripted launch emits an assistant turn, an ordinary tool activity event, and task progress
+before it concludes, even when you inject a failure. The normal Claude adapter maps these events.
+For private spec author and reviewer sessions, the stream shows generic activity labels and progress
+counts, not scratch content.
+
+To follow a live authoring attempt on spare issue 7, write this file before starting the run:
+
+```bash
+mkdir -p .autocatalyst-fake/delays
+printf '%s\n' '{"step":"spec.author","ms":5000}' > .autocatalyst-fake/delays/issue-7.json
+```
+
+Use a positive issue number, a nonempty step ID, and a positive safe integer duration in
+milliseconds. If you configured a different fake state directory, put the file under its
+`delays/` subdirectory instead. The first matching launch renames the file to
+`issue-7.json.fired` and holds its conclusion for at least the specified duration. It emits progress
+once per elapsed second, including the final second when the delay ends on a whole second.
+A missing, malformed, or nonmatching file has no effect. If a failure file also matches, the delayed
+launch still fails. You can watch the running attempt on the Activity tab.
 
 ## Scripted spec content and revision
 
