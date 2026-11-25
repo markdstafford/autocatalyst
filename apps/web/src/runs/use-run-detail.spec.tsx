@@ -6,9 +6,11 @@
  * terminal-stream stop behavior.
  */
 import { act, renderHook, waitFor } from '@testing-library/react';
+import { StrictMode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { makeRun, makeSession } from './run-fixtures.js';
+import { assistant, at, attempt, workflow } from './run-activity.test-helper.js';
+import { makeRun, makeSession, makeTransitionEvent } from './run-fixtures.js';
 import {
   createScriptedDetailClient,
   cursorExpiredError,
@@ -418,5 +420,146 @@ describe('useRunDetail gate decisions and feedback lifecycle', () => {
       outcome = await result.current.resolveComment('fb-1');
     });
     expect(outcome?.status).toBe('error');
+  });
+});
+
+describe('Activity lifetime', () => {
+  it('reads the workflow once for an actual initial selection under Strict Mode', async () => {
+    const scripted = createScriptedDetailClient();
+    renderHook(useRunDetail, { initialProps: props({ client: scripted.client }), wrapper: StrictMode });
+    await waitFor(() => expect(scripted.counts.getRun).toBe(1));
+    expect(scripted.counts.workflow).toBe(1);
+  });
+
+  it('restores held facts and events before any reselected reads or replay, using its own cursor', async () => {
+    const selected = { ...makeRun(), currentStep: 'write' };
+    const heldStep = attempt('write', 0, 0, null);
+    const streamed = assistant('payload-1', 1);
+    const scripted = createScriptedDetailClient({ run: selected });
+    scripted.setSteps([heldStep]);
+    scripted.setWorkflow(workflow());
+    scripted.setSessions([makeSession()]);
+    const options = props({ client: scripted.client, run: selected });
+    const { rerender, result } = renderHook(useRunDetail, { initialProps: options });
+    await waitFor(() => expect(result.current.activity.steps.value).toEqual([heldStep]));
+    expect(scripted.subscribeCalls[0]).toMatchObject({ replay: 'retained' });
+    expect(scripted.subscribeCalls[0]?.lastEventId).toBeUndefined();
+    await act(async () => {
+      scripted.latestStream()?.push(`id: frame-1\ndata: ${JSON.stringify(streamed)}\n\nid: cursor-only\n\n`);
+    });
+    const oldStream = scripted.latestStream();
+    expect(result.current.activity.buffer.forAttempt(heldStep.id).map(event => event.id)).toEqual(['payload-1']);
+
+    scripted.hold();
+    scripted.setWorkflow({ ...workflow(), phases: [] });
+    rerender({ ...options, run: makeRun({ id: 'run-2' }) });
+    expect(oldStream?.closed).toBe(true);
+    expect(result.current.activity.buffer.forAttempt(heldStep.id)).toHaveLength(0);
+    expect(result.current.activity.workflow.value).toBeUndefined();
+    await waitFor(() => expect(scripted.counts.workflow).toBe(2));
+    rerender(options);
+    expect(result.current.activity.buffer.forAttempt(heldStep.id)).toHaveLength(1);
+    expect(result.current.activity.workflow.value).toEqual(workflow());
+    expect(result.current.activity.steps.value).toEqual([heldStep]);
+    expect(result.current.sessions.status).toBe('success');
+    await waitFor(() => expect(scripted.counts.workflow).toBe(3));
+    expect(scripted.subscribeCalls.at(-1)?.lastEventId).toBe('cursor-only');
+    expect(scripted.subscribeCalls.at(-1)?.replay).toBeUndefined();
+    await act(async () => {
+      scripted.latestStream()?.push(`id: frame-replay\ndata: ${JSON.stringify(streamed)}\n\n`);
+      scripted.release();
+    });
+    expect(result.current.activity.workflow.value?.phases).toEqual([]);
+    expect(result.current.activity.buffer.forAttempt(heldStep.id)).toHaveLength(1);
+  });
+
+  it('refreshes mutable facts on recovery and cursor loss, retaining rows even through read failures', async () => {
+    const selected = { ...makeRun({ status: 'failed' }), currentStep: 'error-stop' };
+    const scripted = createScriptedDetailClient({ run: selected });
+    const steps = [attempt('write', 0, 0, 1), attempt('error-stop', 1, 1, null)];
+    scripted.setSteps(steps);
+    scripted.setWorkflow(workflow());
+    const options = props({ client: scripted.client, run: selected, reconnectDelayMs: 5 });
+    const { result, rerender } = renderHook(useRunDetail, { initialProps: options });
+    await waitFor(() => expect(result.current.activity.steps.value).toEqual(steps));
+
+    const current = attempt('write', 2, 2, null, 2);
+    const fresh = { ...makeRun(), currentStep: current.step, updatedAt: at(2) };
+    scripted.setRun(fresh);
+    scripted.setSteps([...steps, current]);
+    scripted.setSessions([makeSession()]);
+    await act(async () => {
+      scripted.latestStream()?.push(`id: recovery-cursor\ndata: ${JSON.stringify({
+        ...makeTransitionEvent({ run: fresh }), id: 'recover', type: 'run_recovery', runStep: current,
+        transition: undefined, createdAt: at(2),
+        recovery: { mode: 'resume', baseKind: 'run_branch', reDispatchStep: 'write', provisioningOutcome: 'present' }
+      })}\n\n`);
+    });
+    await waitFor(() => expect(result.current.activity.steps.value?.at(-1)).toEqual(current));
+    expect(result.current.activity.buffer.forAttempt(current.id)).toHaveLength(1);
+    expect(result.current.sessions.value).toHaveLength(1);
+    expect(scripted.counts.sessions).toBe(2);
+    rerender({ ...options, run: fresh });
+
+    scripted.setStepsError(serverError());
+    scripted.setSessionsError(serverError());
+    scripted.failSubscribeOnce(cursorExpiredError());
+    await act(async () => { scripted.latestStream()?.close(); });
+    // The subscribed run is kept open once its authoritative read reports recovery.
+    await waitFor(() => expect(result.current.activity.replayGap).toBe(true));
+    await waitFor(() => expect(result.current.activity.steps.error).toBe('Boom.'));
+    expect(scripted.subscribeCalls.at(-1)).toMatchObject({ replay: 'retained' });
+    expect(scripted.counts.workflow).toBe(1);
+    expect(result.current.activity.steps.value?.at(-1)).toEqual(current);
+    expect(result.current.activity.buffer.forAttempt(current.id)).toHaveLength(1);
+    expect(result.current.sessions.status).toBe('error');
+    expect(result.current.sessions.value).toHaveLength(1);
+
+    scripted.setWorkflowError(serverError());
+    rerender({ ...options, run: undefined });
+    rerender(options);
+    await waitFor(() => expect(result.current.activity.workflow.error).toBe('Boom.'));
+    expect(result.current.activity.workflow.value).toBeUndefined();
+    expect(result.current.activity.steps.value?.at(-1)).toEqual(current);
+  });
+
+  it('drops held state on principal, SDK client, or mount changes', async () => {
+    const selected = { ...makeRun(), currentStep: 'write' };
+    const scripted = createScriptedDetailClient({ run: selected });
+    scripted.setSteps([attempt('write', 0, 0, null)]);
+    const config = { ...props({ client: scripted.client, run: selected }), principalId: 'alice' };
+    const { result, rerender, unmount } = renderHook(useRunDetail, { initialProps: config });
+    await waitFor(() => expect(result.current.activity.steps.value).toHaveLength(1));
+    await act(async () => {
+      scripted.latestStream()?.push(`id: alice-cursor\ndata: ${JSON.stringify(assistant('alice event', 1))}\n\n`);
+    });
+    scripted.hold();
+    rerender({ ...config, principalId: 'bob' });
+    expect(result.current.activity.steps.value).toBeUndefined();
+    expect(result.current.activity.buffer.forAttempt('attempt-0')).toEqual([]);
+    expect(scripted.subscribeCalls.at(-1)).toMatchObject({ replay: 'retained' });
+    const next = createScriptedDetailClient({ run: selected });
+    next.hold();
+    rerender({ ...config, client: next.client });
+    expect(result.current.activity.steps.value).toBeUndefined();
+    expect(next.subscribeCalls[0]).toMatchObject({ replay: 'retained' });
+    unmount();
+    const reloaded = renderHook(useRunDetail, { initialProps: config });
+    expect(reloaded.result.current.activity.steps.value).toBeUndefined();
+    expect(scripted.subscribeCalls.at(-1)).toMatchObject({ replay: 'retained' });
+    scripted.release();
+    next.release();
+  });
+
+  it('falls back to mutable reads if initial stream attachment fails', async () => {
+    const scripted = createScriptedDetailClient();
+    scripted.failSubscribeOnce(serverError());
+    const { result } = renderHook(useRunDetail, {
+      initialProps: props({ client: scripted.client, reconnectDelayMs: 30_000 })
+    });
+    await waitFor(() => expect(result.current.activity.steps.value).toEqual([]));
+    expect(scripted.counts.steps).toBe(1);
+    expect(scripted.counts.subscribe).toBe(1);
+    expect(result.current.activity.connection).toBe('reconnecting');
   });
 });

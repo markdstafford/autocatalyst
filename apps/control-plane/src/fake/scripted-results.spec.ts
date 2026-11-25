@@ -122,6 +122,15 @@ describe('selectScriptedResult', () => {
 });
 
 describe('buildScriptedSessionEvents', () => {
+  it.each(['autocatalyst.reviewer_result.v1', 'any'])('plays assistant, ordinary tool, and task progress before %s', (resultSchemaId) => {
+    const events = buildScriptedSessionEvents({ step: 'spec.author', workKind: 'feature', resultSchemaId });
+    expect(events.map(event => event.type)).toEqual(['assistant', 'tool_use', 'tool_use', 'result']);
+    expect(events[1]?.tool?.name).toBe('Read');
+    expect(events[2]?.tool).toEqual({
+      name: 'report_progress', input: { label: 'Scripted work', completed: 0, total: 1 }
+    });
+  });
+
   it('emits a structured result event for structured captures', () => {
     const events = buildScriptedSessionEvents({ step: 'implementation.build', workKind: 'feature', role: 'reviewer', resultSchemaId: 'autocatalyst.reviewer_result.v1' });
     const resultEvent = events.find((event) => event.type === 'result');

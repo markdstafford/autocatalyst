@@ -1,8 +1,7 @@
 /**
  * A scripted `ControlPlaneClient` for the detail-pane hook tests.
  *
- * It implements the five methods `useRunDetail` uses (`getRun`, `getRunPullRequest`,
- * `listRunSessions`, `getRunSpec`, `subscribeRunEvents`) and leaves the rest throwing, so
+ * It implements the detail reads, actions and subscription and leaves unrelated methods throwing, so
  * tests drive the real SDK interface. The reads are controllable (fixed values, queued
  * errors, and an optional gate that holds every read until released, so a test can keep a
  * refresh in flight while it delivers frames). Each `subscribeRunEvents` call creates a
@@ -21,6 +20,7 @@ import type {
   RunFeedbackListResponse,
   RunPullRequestResponse,
   RunStep,
+  RunWorkflowResponse,
   RunReplyRequest,
   RunReplyResponse,
   RunSessionListResponse,
@@ -56,6 +56,9 @@ export interface ScriptedDetailClient {
   // Read sources.
   setRun(run: Run): void;
   setSteps(steps: readonly RunStep[]): void;
+  setStepsError(error: unknown): void;
+  setWorkflow(workflow: RunWorkflowResponse): void;
+  setWorkflowError(error: unknown): void;
   setRunError(error: unknown): void;
   setPullRequest(value: PullRequest | null): void;
   setPullRequestError(error: unknown): void;
@@ -97,6 +100,8 @@ export interface ScriptedDetailClient {
     getRun: number;
     pullRequest: number;
     sessions: number;
+    steps: number;
+    workflow: number;
     spec: number;
     subscribe: number;
     principal: number;
@@ -145,6 +150,9 @@ export function createScriptedDetailClient(init?: { run?: Run }): ScriptedDetail
   let run: Run = init?.run ?? makeRun();
   let runError: unknown;
   let steps: readonly RunStep[] = [];
+  let stepsError: unknown;
+  let workflow: RunWorkflowResponse = { workflowId: 'fixture', workKind: run.workKind, phases: [], steps: [], transitions: [] };
+  let workflowError: unknown;
   let pullRequest: PullRequest | null = null;
   let pullRequestError: unknown;
   let sessions: readonly Session[] = [];
@@ -165,7 +173,7 @@ export function createScriptedDetailClient(init?: { run?: Run }): ScriptedDetail
   const subscribeErrors: unknown[] = [];
   const subscribeCalls: (RunEventsStreamOptions | undefined)[] = [];
   const streams: StreamHandle[] = [];
-  const counts = { getRun: 0, pullRequest: 0, sessions: 0, spec: 0, subscribe: 0, principal: 0, reply: 0, feedbackUpdate: 0 };
+  const counts = { getRun: 0, pullRequest: 0, sessions: 0, steps: 0, workflow: 0, spec: 0, subscribe: 0, principal: 0, reply: 0, feedbackUpdate: 0 };
 
   async function gated(): Promise<void> {
     if (gate !== undefined) {
@@ -291,7 +299,18 @@ export function createScriptedDetailClient(init?: { run?: Run }): ScriptedDetail
     updateProject: notImplemented('updateProject'),
     createConversationWithFirstRun: notImplemented('createConversationWithFirstRun'),
     listRuns: notImplemented('listRuns'),
-    async listRunSteps() { return { steps }; },
+    async getRunWorkflow() {
+      counts.workflow += 1;
+      await gated();
+      if (workflowError !== undefined) throw workflowError;
+      return workflow;
+    },
+    async listRunSteps() {
+      counts.steps += 1;
+      await gated();
+      if (stepsError !== undefined) throw stepsError;
+      return { steps };
+    },
     async createRunFeedback(_id: string, request: CreateRunFeedbackRequest): Promise<Feedback> {
       const created: FeedbackResponse = {
         id: `fb-${feedbackList.length + 1}`,
@@ -364,7 +383,10 @@ export function createScriptedDetailClient(init?: { run?: Run }): ScriptedDetail
       run = next;
       runError = undefined;
     },
-    setSteps(next) { steps = next; },
+    setSteps(next) { steps = next; stepsError = undefined; },
+    setStepsError(error) { stepsError = error; },
+    setWorkflow(next) { workflow = next; workflowError = undefined; },
+    setWorkflowError(error) { workflowError = error; },
     setRunError(error) {
       runError = error;
     },

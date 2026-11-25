@@ -106,6 +106,8 @@ export function RunsPage(): ReactNode {
     run: selectedRun,
     client,
     visible: detailPaneVisible,
+    principalId: currentPrincipal?.id,
+    authorized: canRead,
     replaceRun: state.replaceRun,
     onUnauthorized: () => { if (!startRunOpen) navigate(CONNECTION_PATH); }
   });

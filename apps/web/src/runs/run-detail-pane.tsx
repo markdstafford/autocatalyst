@@ -21,9 +21,11 @@ import type { Run } from '@autocatalyst/api-contract';
 import { Maximize2 } from 'lucide-react';
 import { useEffect, useState, type ReactNode } from 'react';
 
-import { ACCEPTANCE_EMPTY_STATE, ACTIVITY_EMPTY_STATE } from './run-detail-empty-states.js';
+import { ACCEPTANCE_EMPTY_STATE } from './run-detail-empty-states.js';
 import { useRunDetailFooterOptional } from './run-detail-footer.js';
 import { RunDetailHeader } from './run-detail-header.js';
+import { RunActivity } from './run-activity.js';
+import { RunProgress } from './run-progress.js';
 import { RunDetailSummary } from './run-detail-summary.js';
 import { RunDetailSpecTab } from './run-detail-spec-tab.js';
 import { RunDetailSpecOverlay } from './run-detail-spec-overlay.js';
@@ -221,6 +223,7 @@ function RunDetailBody({ run, detail, currentPrincipalId, currentPrincipalIsHuma
           }}
         >
           <TabPanel value="summary" className={panelClass}>
+            <RunProgress run={run} workflow={detail.activity.workflow.value} attempts={detail.activity.steps.value} />
             <RunDetailSummary
               run={run}
               pullRequest={detail.pullRequest}
@@ -251,14 +254,8 @@ function RunDetailBody({ run, detail, currentPrincipalId, currentPrincipalIsHuma
               message={ACCEPTANCE_EMPTY_STATE.line}
             />
           </TabPanel>
-          <TabPanel value="activity" className={panelClass}>
-            {detail.sessions.status === 'success' && detail.sessions.value.some(session => session.step === 'spec.author') ? (
-              <ul className="space-y-1 text-sm" aria-label="Spec authoring sessions">
-                {detail.sessions.value.filter(session => session.step === 'spec.author').map(session => (
-                  <li key={session.id}>spec.author · {session.role} · round {session.round} · {session.outcome}</li>
-                ))}
-              </ul>
-            ) : <EmptyState data-testid="pane-activity-empty" title={ACTIVITY_EMPTY_STATE.title} message={ACTIVITY_EMPTY_STATE.line} />}
+          <TabPanel value="activity" className={panelClass} keepMounted>
+            <RunActivity run={run} activity={detail.activity} sessions={detail.sessions} active={visibleTab === 'activity'} />
           </TabPanel>
         </Tabs>
       </div>

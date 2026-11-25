@@ -5,9 +5,7 @@ import {
   claudeAgentAdapterId,
   claudeProviderKind,
   createClaudeAgentAdapter,
-  type ClaudeAgentAdapterLogger,
-  type ClaudeNativeEvent,
-  type ClaudeSessionLaunch
+  type ClaudeAgentAdapterLogger
 } from '@autocatalyst/claude-agent-adapter';
 import { buildProviderAdapterKey, type ProviderAdapterFactory } from '@autocatalyst/core';
 import type {
@@ -22,8 +20,9 @@ import {
   consumeFailureIfMatches,
   recordLaunchContext
 } from './launch-context.js';
+import { claimLaunchDelay, launchScript } from './scripted-launch.js';
 import type { FakeStatePaths } from './paths.js';
-import { buildScriptedSessionEvents, type ScriptedSessionSelection } from './scripted-results.js';
+import { buildScriptedSessionEvents, scriptedPrelude, type ScriptedSessionSelection } from './scripted-results.js';
 
 /** The adapter key fake mode must occupy — the real Claude Agent SDK key. */
 export const scriptedClaudeAdapterKey = buildProviderAdapterKey(claudeProviderKind, claudeAgentAdapterId);
@@ -32,28 +31,8 @@ export interface ScriptedClaudeAdapterDependencies {
   readonly paths: FakeStatePaths;
   readonly logger?: ClaudeAgentAdapterLogger;
   /** Resolve the tracked issue number for a run when it is not in the task inputs. */
+  readonly isStillRunning?: (runId: string, step: string) => Promise<boolean>;
   readonly resolveIssueNumber?: (runId: string) => Promise<number | undefined> | number | undefined;
-}
-
-function launchFrom(events: readonly ClaudeNativeEvent[]): ClaudeSessionLaunch {
-  return () => {
-    async function* iterate(): AsyncIterable<ClaudeNativeEvent> {
-      for (const event of events) {
-        yield event;
-      }
-    }
-    return iterate();
-  };
-}
-
-function failingLaunch(error: Error): ClaudeSessionLaunch {
-  return () => {
-    async function* iterate(): AsyncIterable<ClaudeNativeEvent> {
-      throw error;
-      yield {} as ClaudeNativeEvent; // unreachable
-    }
-    return iterate();
-  };
 }
 
 function readRole(taskInputs: Record<string, unknown> | undefined): string | undefined {
@@ -117,18 +96,13 @@ export function createScriptedClaudeAdapter(deps: ScriptedClaudeAdapterDependenc
         ...(role !== undefined ? { role } : {})
       });
 
-      // Failure injection: the first matching launch for the issue+step fails.
-      if (issueNumber !== undefined && (await consumeFailureIfMatches(deps.paths, issueNumber, step))) {
-        const base = createClaudeAgentAdapter({
-          ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-          launchClaudeSession: failingLaunch(new Error('fake-mode scripted failure injected'))
-        });
-        return base.startSession(input);
-      }
+      const failed = issueNumber !== undefined && await consumeFailureIfMatches(deps.paths, issueNumber, step);
+      const delay = issueNumber === undefined ? undefined : await claimLaunchDelay(deps.paths, issueNumber, step);
+      const controller = new AbortController();
 
       // Implementer sessions write a deterministic committable file into the
       // workspace repo so the convergence engine records an implementerCommitSha.
-      if (step === 'implementation.build' && role === 'implementer') {
+      if (!failed && step === 'implementation.build' && role === 'implementer') {
         const workspace = input.runInput.environment.workspace as { shape?: string; repoRoot?: string };
         if (workspace.shape === 'two_roots' && typeof workspace.repoRoot === 'string') {
           const filePath = join(workspace.repoRoot, `fake-implementer-round-${round ?? 1}.txt`);
@@ -146,12 +120,22 @@ export function createScriptedClaudeAdapter(deps: ScriptedClaudeAdapterDependenc
         ...(issueNumber !== undefined ? { issueNumber } : {}),
         ...(specAuthorPass !== undefined ? { specAuthorPass } : {})
       };
-      const events = buildScriptedSessionEvents(selection);
+      const events = failed ? scriptedPrelude() : buildScriptedSessionEvents(selection);
       const base = createClaudeAgentAdapter({
         ...(deps.logger !== undefined ? { logger: deps.logger } : {}),
-        launchClaudeSession: launchFrom(events)
+        launchClaudeSession: launchScript({
+          events,
+          failed,
+          ms: delay ?? 0,
+          signal: controller.signal,
+          stillRunning: () => deps.isStillRunning?.(runId, step) ?? Promise.resolve(true)
+        })
       });
-      return base.startSession(input);
+      const session = await base.startSession(input);
+      return { ...session, async close() {
+        controller.abort();
+        await session.close?.();
+      } };
     }
   };
 }

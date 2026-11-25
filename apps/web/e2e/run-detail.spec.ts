@@ -264,6 +264,7 @@ for (const scheme of ['light', 'dark'] as const) {
       try {
         await expect(page.locator('[role="row"][data-run-id]')).toHaveCount(1);
 
+        await expect(page.getByTestId('run-progress')).toBeVisible();
         const assertLayout = async (): Promise<void> => {
           const pane = await page.getByRole('complementary', { name: 'Run detail' }).boundingBox();
           const bar = await page.getByTestId('pane-bar').boundingBox();
@@ -271,6 +272,16 @@ for (const scheme of ['light', 'dark'] as const) {
           const meta = await page.getByTestId('pane-meta').boundingBox();
           const tabs = await page.getByRole('tablist').boundingBox();
           const body = await page.getByTestId('pane-body').boundingBox();
+          const phases = await page.getByTestId('run-progress').getByRole('listitem').all();
+          expect(phases).toHaveLength(3);
+          if (body) {
+            for (const phase of phases) {
+              const segment = await phase.boundingBox();
+              expect(segment).not.toBeNull();
+              expect(segment!.x).toBeGreaterThanOrEqual(body.x + 16 - EDGE);
+              expect(segment!.x + segment!.width).toBeLessThanOrEqual(body.x + body.width - 16 + EDGE);
+            }
+          }
           expect(pane && bar && title && meta && tabs && body).toBeTruthy();
           if (pane && bar && title && meta && tabs && body) {
             // The body scrolls under the pane bar.

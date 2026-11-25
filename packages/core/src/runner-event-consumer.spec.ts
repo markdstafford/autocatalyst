@@ -68,3 +68,31 @@ describe('consumeRunnerEvents — fail reason normalization', () => {
     expect(result.workResult).toEqual({ directive: 'fail', reason: 'transient_provider_failure' });
   });
 });
+
+it('exposes content-free spec activity without publishing private scratch content or result bytes', async () => {
+  const store = new InMemoryRetainedRunEventStore();
+  const scope = { runId, tenant };
+  const privateText = 'unpublished candidate scratch sentinel';
+  const base = { runId, step: 'spec.author', importance: 'normal', createdAt: '2026-06-09T00:00:00.000Z' } as const;
+  const events: ExecutionBoundaryEvent[] = [
+    { ...base, id: 'turn', type: 'runner_assistant_turn', message: { role: privateText, content: privateText } },
+    { ...base, id: 'tool', type: 'runner_tool_activity', tool: { name: privateText, action: privateText, status: privateText } },
+    { ...base, id: 'progress', type: 'runner_progress', progress: { kind: 'task_progress', label: privateText, completed: 1, total: 3 } },
+    { ...base, id: 'checkpoint', type: 'runner_step_checkpoint', checkpoint: { durable: true, name: privateText, data: {} } },
+    { ...base, id: 'notice', type: 'runner_notification', notification: { severity: 'info', message: privateText } },
+    makeTerminalEvent('advance', { result: { body: privateText } })
+  ];
+  const result = await consumeRunnerEvents({
+    eventsStore: store, ...scope, privateSpecResult: true,
+    events: (async function* () { yield* events; })()
+  });
+  expect(result.workResult).toMatchObject({ result: { body: privateText } });
+  const replay = await store.replayAfter({ ...scope, replay: 'retained' });
+  expect(replay.status).toBe('ok');
+  if (replay.status !== 'ok') return;
+  expect(replay.events.map(event => event.type)).toEqual([
+    'runner_assistant_turn', 'runner_tool_activity', 'runner_progress', 'runner_terminal_result'
+  ]);
+  expect(replay.events[2]).toMatchObject({ progress: { label: 'Session progress', completed: 1, total: 3 } });
+  expect(JSON.stringify(replay.events)).not.toContain(privateText);
+});

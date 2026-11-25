@@ -7,14 +7,14 @@
  * The selected run has one source of truth — the run list state. This hook never holds a
  * second authoritative run copy: the run it displays is the `run` prop (read from list
  * state), and every transition reread flows back through `replaceRun(run)`. The hook
- * owns the independent facts (pull request, sessions, and spec) and transient check feedback.
+ * owns the independent facts, the per-run Activity cache, and transient check feedback.
  *
  * Lifecycle, per ADR-031 (stateless client) and the spec's stream-first ordering:
  *  1. With the pane visible, subscribe (with the current
- *     cursor), and wait for the stream response to begin BEFORE the initial reads, so a
+ *     cursor or retained replay), and wait for attachment before initial mutable reads so a
  *     transition that lands between attach and the first read is not missed. A hidden
  *     pane can still load selection facts without keeping a stream open.
- *  2. Transition frames are invalidation triggers: they coalesce into at most one
+ *  2. Transition and recovery frames are invalidation triggers: they coalesce into at most one
  *     trailing refresh while a refresh is in flight, so three quick transitions cause at
  *     most two refreshes.
  *  3. Reads and pull request checks belong to a selection, not to the stream. A check
@@ -27,8 +27,8 @@
  */
 import type { ControlPlaneClient } from '@autocatalyst/sdk';
 import { ControlPlaneClientError } from '@autocatalyst/sdk';
-import type { FeedbackResponse, Run, RunStep } from '@autocatalyst/api-contract';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import type { FeedbackResponse, Run, RunStep, RunWorkflowResponse } from '@autocatalyst/api-contract';
+import { useLayoutEffect, useRef, useState } from 'react';
 
 import type { FrameReaderLogger } from './run-events-frame-reader.js';
 import { readRunEventFrames } from './run-events-frame-reader.js';
@@ -38,7 +38,8 @@ import {
   RUN_EVENTS_RECONNECT_MAX_DELAY_MS
 } from './run-events-reconnect.js';
 import { canCheckPullRequest, pullRequestCheckErrorMessage } from './pull-request-check.js';
-import type { PullRequestCheck, PullRequestFact, SessionsFact, SpecDiscriminator } from './run-detail-facts.js';
+import { RunActivityBuffer } from './run-activity-buffer.js';
+import type { ActivityFacts, PullRequestCheck, PullRequestFact, SessionsFact, SpecDiscriminator } from './run-detail-facts.js';
 import { isStrictlyNewer } from './run-row-merge.js';
 import { isSpecCapableWorkKind } from './run-spec-kinds.js';
 import { codePointLength } from '../features/spec/code-points.js';
@@ -51,6 +52,8 @@ export interface UseRunDetailOptions {
   readonly run: Run | undefined;
   /** Whether the detail pane is shown. False closes the stream. */
   readonly visible: boolean;
+  readonly principalId?: string | undefined;
+  readonly authorized?: boolean;
   /** Push an authoritative `getRun` result back into the single source of truth. */
   replaceRun(run: Run): void;
   /** Called on a 401 from the stream: navigate to the connection page. */
@@ -72,6 +75,7 @@ export interface RunDetailState {
   readonly pullRequestCheck: PullRequestCheck;
   readonly checkPullRequest?: () => void;
   readonly sessions: SessionsFact;
+  readonly activity: ActivityFacts;
   readonly spec: SpecDiscriminator;
   /** True once the run is reported gone (a 404 on the stream or a reread). */
   readonly runGone: boolean;
@@ -117,8 +121,22 @@ function pullRequestIdentity(fact: PullRequestFact): string | undefined {
   return fact.status === 'success' ? fact.value?.id : undefined;
 }
 
+interface HeldRunDetail {
+  workflow?: RunWorkflowResponse;
+  steps?: readonly RunStep[];
+  sessions?: Extract<SessionsFact, { status: 'success' }>;
+  readonly buffer: RunActivityBuffer;
+  cursor?: string | undefined;
+  replayGap: boolean;
+}
+
+const emptyActivity: ActivityFacts = {
+  workflow: { pending: true }, steps: { pending: true }, buffer: new RunActivityBuffer(),
+  connection: 'connecting', replayGap: false
+};
+
 export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
-  const { client, run, visible, replaceRun, onUnauthorized, log } = options;
+  const { client, run, visible, replaceRun, onUnauthorized, log, principalId, authorized = true } = options;
   const runId = run?.id;
   const baseDelayMs = options.reconnectDelayMs ?? RUN_EVENTS_RECONNECT_DELAY_MS;
   const maxDelayMs = options.reconnectMaxDelayMs ?? RUN_EVENTS_RECONNECT_MAX_DELAY_MS;
@@ -128,6 +146,15 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
   // For eligibility only; the list row remains the displayed run.
   const [projectedRun, setProjectedRun] = useState<Run>();
   const [sessions, setSessions] = useState<SessionsFact>({ status: 'loading' });
+  const [activity, setActivity] = useState<ActivityFacts>(emptyActivity);
+  const cacheRef = useRef<{ client: ControlPlaneClient; authorized: boolean; principalId: string | undefined; runs: Map<string, HeldRunDetail> } | undefined>(undefined);
+  if (cacheRef.current === undefined || cacheRef.current.client !== client || cacheRef.current.authorized !== authorized ||
+    (principalId !== undefined && cacheRef.current.principalId !== undefined && cacheRef.current.principalId !== principalId)) {
+    cacheRef.current = { client, authorized, principalId, runs: new Map() };
+  } else if (principalId !== undefined) {
+    cacheRef.current.principalId = principalId;
+  }
+  const cache = cacheRef.current.runs;
   const [spec, setSpec] = useState<SpecDiscriminator>({ status: 'loading' });
   const [runGone, setRunGone] = useState(false);
 
@@ -148,27 +175,15 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
     refresh(): void;
     readIfInitial(): void;
     skipSelectionCheck(): void;
-    streamLoop(signal: AbortSignal): Promise<void>;
+    streamLoop(controller: AbortController): Promise<void>;
     check(): Promise<void>;
   } | undefined>(undefined);
 
-  const [specSteps, setSpecSteps] = useState<{ id: string; step: string; steps: readonly RunStep[] }>();
   const currentStep = run?.currentStep;
-  useEffect(() => {
-    if (runId === undefined || (currentStep !== 'spec.human_review' && currentStep !== 'spec.awaiting_input')) return;
-    let active = true;
-    void (async () => {
-      try {
-        const { steps } = await client.listRunSteps(runId);
-        if (active) setSpecSteps({ id: runId, step: currentStep, steps });
-      } catch {
-        if (active) setSpecSteps(undefined);
-      }
-    })();
-    return () => { active = false; };
-  }, [client, runId, currentStep, run?.updatedAt]);
-  const steps = specSteps?.id === runId && specSteps?.step === currentStep ? specSteps?.steps ?? [] : [];
-  const activeStep = steps.find(step => step.step === currentStep && step.endedAt === null);
+  const steps = activity.steps.value ?? [];
+  const activeStep = steps.reduce<RunStep | undefined>((latest, step) =>
+    step.step === currentStep && step.endedAt === null && (!latest || step.occurrence.index > latest.occurrence.index)
+      ? step : latest, undefined);
   const priorAuthor = activeStep && [...steps].sort((a, b) => b.occurrence.index - a.occurrence.index)
     .find(step => step.step === 'spec.author' && step.occurrence.index < activeStep.occurrence.index);
   const audit = priorAuthor?.checkpointResult as { producingStep?: string; outcome?: string; openFeedbackIds?: string[] } | null;
@@ -181,7 +196,9 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
     ? { stepId: activeStep.id, role: pause.role, question: pause.question } as const : undefined;
 
   useLayoutEffect(() => {
-    if (runId === undefined) {
+    if (runId === undefined || !authorized) {
+      setActivity(emptyActivity);
+      setSessions({ status: 'loading' });
       return;
     }
 
@@ -190,12 +207,36 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
 
     // New selection (including A → B → A): all async work closes over this owner.
     const id = runId;
+    const held: HeldRunDetail = cache.get(id) ?? { buffer: new RunActivityBuffer(), replayGap: false };
+    cache.set(id, held);
+    function publishActivity(patch: Partial<ActivityFacts> = {}): void {
+      if (!signal.aborted) setActivity(previous => ({ ...previous, ...patch }));
+    }
+    setActivity({
+      workflow: { pending: true, ...(held.workflow ? { value: held.workflow } : {}) },
+      steps: { pending: true, ...(held.steps ? { value: held.steps } : {}) },
+      buffer: held.buffer, connection: 'connecting', replayGap: held.replayGap
+    });
+    void (async () => {
+      // A Strict Mode effect probe is cleaned up before starting its read.
+      await Promise.resolve();
+      if (signal.aborted) return;
+      try {
+        const workflow = await client.getRunWorkflow(id);
+        if (signal.aborted) return;
+        held.workflow = workflow;
+        publishActivity({ workflow: { pending: false, value: workflow } });
+      } catch (error: unknown) {
+        publishActivity({ workflow: { pending: false, error: errorMessage(error, 'Workflow read failed.') } });
+      }
+    })();
     let refreshInFlight = false;
     let trailingRefresh = false;
     let initialRead = true;
     let skipSelectionCheck = false;
     let readRun: Run | undefined;
     let gone = false;
+    let stopStream: (() => void) | undefined;
     let fact: PullRequestFact = { status: 'loading' };
     let checkInfo: PullRequestCheck = {};
     let checkInFlight = false;
@@ -203,7 +244,7 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
     setPullRequest(fact);
     setPullRequestCheck(checkInfo);
     setProjectedRun(undefined);
-    setSessions({ status: 'loading' });
+    setSessions(held.sessions ?? { status: 'loading' });
     setSpec(isSpecCapableWorkKind(runRef.current?.workKind ?? '') ? { status: 'loading' } : { status: 'no-spec' });
     setRunGone(false);
 
@@ -281,6 +322,7 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
     function stopGone(): void {
       if (!signal.aborted) {
         gone = true;
+        stopStream?.();
         setRunGone(true);
       }
     }
@@ -307,10 +349,13 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
           return undefined;
         }
         applyRun(fresh);
+        publishActivity({ runError: undefined });
         return fresh;
       }).catch((error: unknown) => {
         if (isStatus(error, 404)) {
           stopGone();
+        } else {
+          publishActivity({ runError: errorMessage(error, 'Run read failed.') });
         }
         return undefined;
       });
@@ -342,18 +387,34 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
         }
       }));
 
+      publishActivity({ steps: { pending: true, ...(held.steps ? { value: held.steps } : {}) } });
+      reads.push((async () => {
+        try {
+          const { steps } = await client.listRunSteps(id);
+          if (signal.aborted) return;
+          held.steps = steps;
+          held.buffer.reconcile(steps);
+          publishActivity({ steps: { pending: false, value: steps } });
+        } catch (error: unknown) {
+          publishActivity({ steps: { pending: false, ...(held.steps ? { value: held.steps } : {}),
+            error: errorMessage(error, 'Steps read failed.') } });
+        }
+      })());
+
       reads.push(
         client
           .listRunSessions(id)
           .then((response) => {
             if (!signal.aborted) {
-              setSessions({ status: 'success', value: response.sessions,
-                ...(response.costTotals === undefined ? {} : { runCost: response.costTotals.run }) });
+              held.sessions = { status: 'success', value: response.sessions,
+                ...(response.costTotals === undefined ? {} : { runCost: response.costTotals.run }) };
+              setSessions(held.sessions);
             }
           })
           .catch((error: unknown) => {
             if (!signal.aborted) {
-              setSessions({ status: 'error', message: errorMessage(error, 'Sessions could not be read.') });
+              setSessions({ status: 'error', message: errorMessage(error, 'Sessions could not be read.'),
+                ...(held.sessions ? { value: held.sessions.value } : {}) });
             }
           })
       );
@@ -431,17 +492,19 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
       return Math.min(current * 2, maxDelayMs);
     }
 
-    async function streamLoop(streamSignal: AbortSignal): Promise<void> {
-      let cursor: string | undefined;
+    async function streamLoop(controller: AbortController): Promise<void> {
+      stopStream = () => controller.abort();
+      const streamSignal = controller.signal;
       let backoff: number | undefined;
       let firstAttach = true;
       let recoverAfterAttach = false;
+      publishActivity({ connection: 'connecting' });
 
-      while (!streamSignal.aborted && !signal.aborted) {
+      while (!streamSignal.aborted && !signal.aborted && !gone) {
         let body: ReadableStream<Uint8Array> | null = null;
         try {
           const { response } = await client.subscribeRunEvents(id, {
-            ...(cursor !== undefined ? { lastEventId: cursor } : {}),
+            ...(held.cursor ? { lastEventId: held.cursor } : { replay: 'retained' }),
             signal: streamSignal
           });
           if (streamSignal.aborted || signal.aborted) {
@@ -462,11 +525,20 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
             return;
           }
           if (reaction === 'cursor_lost') {
-            cursor = undefined;
+            if (!held.cursor) {
+              publishActivity({ connection: 'ended' });
+              if (initialRead) void refresh();
+              return;
+            }
+            held.cursor = undefined;
+            held.replayGap = true;
+            publishActivity({ replayGap: true, connection: 'reconnecting' });
             recoverAfterAttach = true;
             backoff = undefined;
             continue;
           }
+          if (initialRead) void refresh();
+          publishActivity({ connection: 'reconnecting' });
           backoff = nextDelay(backoff);
           await abortableDelay(backoff, streamSignal);
           continue;
@@ -474,27 +546,30 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
 
         // Attached. Start the initial reads on first attach, or the recovery refresh
         // after a cursor-loss resubscribe.
-        if (firstAttach) {
+        publishActivity({ connection: 'attached' });
+        if (firstAttach || recoverAfterAttach) {
           firstAttach = false;
-          void refresh();
-        } else if (recoverAfterAttach) {
           recoverAfterAttach = false;
           void refresh();
         }
 
         try {
           if (body !== null) {
-            for await (const frame of readRunEventFrames(body, logRef.current === undefined ? {} : { log: logRef.current })) {
-              if (streamSignal.aborted || signal.aborted) {
-                return;
-              }
-              backoff = undefined; // a valid frame resets the backoff
-              if (frame.id !== undefined) {
-                cursor = frame.id;
-              }
-              if (frame.event.type === 'run_state_transition') {
-                void refresh();
-              }
+            const updateCursor = (id: string): void => {
+              if (streamSignal.aborted || signal.aborted) return;
+              held.cursor = id;
+              backoff = undefined;
+            };
+            const log = logRef.current;
+            for await (const frame of readRunEventFrames(body, { onCursor: updateCursor, ...(log ? { log } : {}) })) {
+              if (streamSignal.aborted || signal.aborted) return;
+              backoff = undefined;
+              if (frame.id !== undefined) updateCursor(frame.id);
+              if (frame.event.runId !== id) continue;
+              const invalidated = frame.event.type === 'run_state_transition' || frame.event.type === 'run_recovery';
+              const display = held.buffer.add(frame.event, held.steps ?? []);
+              if (display || invalidated) publishActivity();
+              if (invalidated) void refresh();
             }
           }
         } catch (error) {
@@ -511,11 +586,20 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
             return;
           }
           if (reaction === 'cursor_lost') {
-            cursor = undefined;
+            if (!held.cursor) {
+              publishActivity({ connection: 'ended' });
+              if (initialRead) void refresh();
+              return;
+            }
+            held.cursor = undefined;
+            held.replayGap = true;
+            publishActivity({ replayGap: true, connection: 'reconnecting' });
             recoverAfterAttach = true;
             backoff = undefined;
             continue;
           }
+          if (initialRead) void refresh();
+          publishActivity({ connection: 'reconnecting' });
           backoff = nextDelay(backoff);
           await abortableDelay(backoff, streamSignal);
           continue;
@@ -527,8 +611,10 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
           return;
         }
         if ((latestProjection(readRun, runRef.current) ?? runRef.current)?.terminal) {
+          publishActivity({ connection: 'ended' });
           return;
         }
+        publishActivity({ connection: 'reconnecting' });
         backoff = nextDelay(backoff);
         await abortableDelay(backoff, streamSignal);
       }
@@ -550,9 +636,9 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
       controller.abort();
       selectionRef.current = undefined;
     };
-  }, [client, runId, baseDelayMs, maxDelayMs]);
+  }, [client, cache, authorized, runId, baseDelayMs, maxDelayMs]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const selection = selectionRef.current;
     if (selection === undefined) {
       return;
@@ -562,9 +648,9 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
       return;
     }
     const stream = new AbortController();
-    void selection.streamLoop(stream.signal);
+    void selection.streamLoop(stream);
     return () => stream.abort();
-  }, [client, runId, visible, baseDelayMs, maxDelayMs]);
+  }, [client, cache, authorized, runId, visible, baseDelayMs, maxDelayMs]);
 
   async function createSpecComment(input: CreateCommentInput): Promise<CreateCommentResult> {
     const currentSpec = specRef.current;
@@ -698,6 +784,7 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
       ? { checkPullRequest: () => void selectedOwner.check() }
       : {}),
     sessions,
+    activity,
     spec,
     runGone,
     createSpecComment,

@@ -339,10 +339,17 @@ viewport, including the footer, with `--color-background` fill and `role="dialog
 `--height-pane-bar` high with the run title, the position, the decision button, and a close button. The body
 has 24 px padding and a centered column. `Escape` closes it, after any confirm popover on top.
 
-**Progress bar.** One segment per workflow stage, from data. A segment is 6 px high with `--radius-xs`:
+**Progress bar.** One segment per returned workflow phase, in server order. A segment is 6 px high with `--radius-xs`:
 done is `--color-subtext`, current is `--color-text`, upcoming is `--color-surface-1`. From 6 segments, only
 the current segment shows its label, and the others show their number with the label in a tooltip. The bar
-never uses the primary fill, because the status chip is the attention signal.
+never uses the primary fill, because the status chip is the attention signal. A 6 px `--color-overlay`
+ring sits at each on-path gate's ordinal midpoint among nonterminal path members in its phase.
+Fill the ring with `--color-text` only while the run waits there. Gate rings are indicators, not
+controls; hover and focus reveal the step ID, and the accessible label says whether it is waiting.
+The bar is named **Run progress** and describes the phase positions and states in text. Below the bar,
+show the actual current step in `--font-mono`, preceded by its phase label if there is one. On a stop,
+the bar can mark a different position than the current-step line. With no phases or a failed workflow
+read, keep the step line and omit the bar.
 
 ## Spec reading column
 
@@ -464,7 +471,13 @@ malformed client input (an in-progress run with `waitingOn: none` or missing): t
 **Step markers** (Activity), 14 px: done is CheckCircle2 in `--color-green`, failed is XCircle in
 `--color-red`, canceled is XCircle in `--color-overlay`, waiting on you is Hand in `--color-primary`, running
 is a spinning Loader2 in `--color-primary`, skipped is MinusCircle in `--color-overlay`, and not started or
-not reached is Circle in `--color-overlay`. Skipped and not-reached rows are dimmed.
+not reached is Circle in `--color-overlay`. Only Skipped and Not started are dimmed; neither has a
+disclosure or a duration. Ended attempts and superseded terminal occurrences use a static outline
+Square in `--color-overlay` at normal opacity. An Ended attempt uses the **Ended** label and can
+expand; a superseded terminal row uses the monospaced step ID as its label and cannot expand.
+The Running marker spins only when motion is allowed. A running attempt opens by default and
+honors manual collapse. In an expanded attempt, **Earlier events are not shown** denotes client
+eviction for that attempt, not an unknown replay gap.
 
 **Connection.** When the connection is lost or degraded, the list zone shows an 8 px `--color-red` dot and
 "Connection lost" in `--color-red`. A healthy connection shows nothing.
