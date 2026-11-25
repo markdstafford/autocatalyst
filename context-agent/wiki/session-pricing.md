@@ -1,7 +1,7 @@
 # Session pricing wiring
 
 - Adapters interpret attempt-local evidence before result validation. Codex's tracker takes
-  only owned 0.160.1 thread/turn observations; a fresh counter starts at zero and a resumed one
+  only owned thread/turn observations from the pinned app-server; a fresh counter starts at zero and a resumed one
   anchors on the first owned update. If a pricing counter loses its baseline, later valid
   snapshots do not recover that interval. Claude deduplicates final-message requests and reconciles
   scoped terminal totals instead of adding them. Explicit SDK subagent lifecycle can establish

@@ -1,7 +1,7 @@
 import { ClassifiedProviderFailureError } from '@autocatalyst/execution';
 
 // ---------------------------------------------------------------------------
-// Codex enterprise sign-in authentication
+// Codex ChatGPT sign-in authentication
 //
 // The adapter runs against an operator-approved Codex / ChatGPT enterprise
 // sign-in held by the Codex CLI's own on-host credential cache. The adapter
@@ -9,7 +9,7 @@ import { ClassifiedProviderFailureError } from '@autocatalyst/execution';
 // probe that reports a safe status and, on failure, a safe failure code.
 // ---------------------------------------------------------------------------
 
-export type CodexAuthMode = 'enterprise_sign_in';
+export type CodexAuthMode = 'enterprise_sign_in' | 'business_sign_in';
 
 export type CodexAuthFailureCode =
   | 'missing_sign_in'
@@ -45,13 +45,13 @@ export type CodexAuthProbe = (
 // account identity, token, cached-credential path, or upstream message text.
 const AUTH_FAILURE_MESSAGES: Record<CodexAuthFailureCode, string> = {
   missing_sign_in:
-    'Codex enterprise sign-in is missing on the host. Complete the operator-approved Codex sign-in before running this profile.',
+    'Codex ChatGPT sign-in is missing on the host. Complete the operator-approved Codex sign-in before running this profile.',
   expired_sign_in:
-    'Codex enterprise sign-in has expired. Re-run the operator-approved Codex sign-in before running this profile.',
+    'Codex ChatGPT sign-in has expired. Re-run the operator-approved Codex sign-in before running this profile.',
   disallowed_plan:
     'The signed-in Codex account plan is not allowed for this profile.',
   account_mismatch:
-    'The signed-in Codex account does not match the approved enterprise identity for this profile.'
+    'The signed-in Codex account does not match the approved ChatGPT identity for this profile.'
 };
 
 export function codexAuthFailureMessage(code: CodexAuthFailureCode): string {
@@ -70,12 +70,12 @@ export class CodexAuthenticationError extends ClassifiedProviderFailureError {
   readonly authFailureCode: CodexAuthFailureCode;
   readonly authMode: CodexAuthMode;
 
-  constructor(code: CodexAuthFailureCode, providerKind: string) {
+  constructor(code: CodexAuthFailureCode, providerKind: string, authMode: CodexAuthMode = 'enterprise_sign_in') {
     super('provider_auth_failed', { providerKind });
     this.name = 'CodexAuthenticationError';
     this.message = AUTH_FAILURE_MESSAGES[code];
     this.authFailureCode = code;
-    this.authMode = 'enterprise_sign_in';
+    this.authMode = authMode;
   }
 }
 

@@ -2,6 +2,7 @@ export {
   createCodexAgentAdapter,
   codexProviderKind,
   codexAgentAdapterId,
+  codexBusinessAdapterId,
   codexStructuredResultMechanism
 } from './codex-agent-adapter.js';
 export type {
@@ -18,6 +19,7 @@ export {
   codexAuthFailureMessage,
   isCodexAuthenticationError
 } from './codex-auth.js';
+export { CODEX_SUPPORTED_VERSION } from './codex-app-server.js';
 export type {
   CodexAuthMode,
   CodexAuthFailureCode,

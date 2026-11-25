@@ -7,10 +7,10 @@ import path from 'node:path';
 import { ProviderConnectionError, ProviderProtocolError, UnsupportedProviderCapabilityError, runtimeSkillsCatalogRoot } from '@autocatalyst/execution';
 
 import { CodexUsage } from './codex-usage.js';
-import { CodexAuthenticationError, type CodexAuthProbe } from './codex-auth.js';
+import { CodexAuthenticationError, type CodexAuthProbe, type CodexAuthMode } from './codex-auth.js';
 import type { CodexNativeEvent, CodexSessionLaunch } from './codex-agent-adapter.js';
 
-export const CODEX_SUPPORTED_VERSION = '0.160.1';
+export const CODEX_SUPPORTED_VERSION = '0.171.0';
 type RecordValue = Record<string, unknown>;
 function record(value: unknown): RecordValue {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as RecordValue : {};
@@ -136,13 +136,14 @@ export class CodexAppServerClient {
   }
 }
 
-async function checkAccount(client: CodexAppServerClient): Promise<RecordValue> {
+async function checkAccount(client: CodexAppServerClient, authMode: CodexAuthMode = 'enterprise_sign_in'): Promise<RecordValue> {
   const response = await client.rpc('account/read', { refreshToken: true });
   const account = record(response['account']);
-  if (!account['type']) throw new CodexAuthenticationError('missing_sign_in', 'codex');
-  if (account['type'] !== 'chatgpt') throw new CodexAuthenticationError('account_mismatch', 'codex');
-  if (!['enterprise', 'enterprise_cbp_usage_based'].includes(String(account['planType']))) {
-    throw new CodexAuthenticationError('disallowed_plan', 'codex');
+  if (!account['type']) throw new CodexAuthenticationError('missing_sign_in', 'codex', authMode);
+  if (account['type'] !== 'chatgpt') throw new CodexAuthenticationError('account_mismatch', 'codex', authMode);
+  const allowedPlans = authMode === 'business_sign_in' ? ['team', 'business', 'self_serve_business_prolite'] : ['enterprise', 'enterprise_cbp_usage_based'];
+  if (!allowedPlans.includes(String(account['planType']))) {
+    throw new CodexAuthenticationError('disallowed_plan', 'codex', authMode);
   }
   // Custom upstreams would bypass the explicitly selected enterprise route.
   const config = record((await client.rpc('config/read', { includeLayers: false }))['config']);
@@ -155,10 +156,10 @@ async function checkAccount(client: CodexAppServerClient): Promise<RecordValue> 
   return isolation;
 }
 
-export function codexAuthProbe(binary: string): CodexAuthProbe {
+export function codexAuthProbe(binary: string, authMode: CodexAuthMode = 'enterprise_sign_in'): CodexAuthProbe {
   return async (input) => {
     const client = await openCodexAppServer({ binary, env: input.env, ...(input.cwd !== undefined ? { cwd: input.cwd } : {}), ...(input.signal !== undefined ? { signal: input.signal } : {}) });
-    try { await checkAccount(client); return { status: 'authenticated', accountType: 'enterprise' }; }
+    try { await checkAccount(client, authMode); return { status: 'authenticated', accountType: authMode === 'business_sign_in' ? 'business' : 'enterprise' }; }
     catch (error) {
       if (error instanceof CodexAuthenticationError) return { status: 'unauthenticated', code: error.authFailureCode };
       throw error;
@@ -182,7 +183,7 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
       ...(options.signal !== undefined ? { signal: options.signal } : {}) });
     let accounting: CodexUsage | undefined;
     try {
-      const isolation = await checkAccount(client);
+      const isolation = await checkAccount(client, options.auth.mode);
       for (const skill of options.skills ?? []) {
         const actual = await realpath(skill.hostPath);
         const root = await realpath(runtimeSkillsCatalogRoot);

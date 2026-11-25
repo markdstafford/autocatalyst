@@ -45,6 +45,7 @@ import {
 
 export const codexProviderKind = 'codex' as const;
 export const codexAgentAdapterId = 'codex-app-server' as const;
+export const codexBusinessAdapterId = 'codex-app-server-business' as const;
 
 /** Codex sandbox filesystem permission values validated against the runtime. */
 export type CodexSandboxValue = 'read-only' | 'workspace-write';
@@ -121,6 +122,7 @@ export interface CodexAgentAdapterLogger {
 }
 
 export interface CodexAgentAdapterOptions {
+  readonly authentication?: CodexAuthMode;
   /** Override the default real app-server subprocess launch (tests inject a fake). */
   readonly launchCodexSession?: CodexSessionLaunch;
   /** Override the default enterprise sign-in probe (tests inject deterministic outcomes). */
@@ -529,9 +531,11 @@ function buildTerminalResult(args: {
 export function createCodexAgentAdapter(
   options: CodexAgentAdapterOptions = {}
 ): AgentProviderAdapter {
+  const authMode = options.authentication ?? 'enterprise_sign_in';
+  const adapterId = authMode === 'business_sign_in' ? codexBusinessAdapterId : codexAgentAdapterId;
   const codexBinary = options.codexBinary ?? 'codex';
   const launch = options.launchCodexSession ?? codexSessionLaunch(codexBinary);
-  const probeAuth = options.probeCodexAuth ?? codexAuthProbe(codexBinary);
+  const probeAuth = options.probeCodexAuth ?? codexAuthProbe(codexBinary, authMode);
   const supportedInference =
     options.supportedInferenceSettings ?? new Set<string>(DEFAULT_SUPPORTED_INFERENCE_KEYS);
   const acceptedSandboxValues =
@@ -563,7 +567,7 @@ export function createCodexAgentAdapter(
   return {
     supportsSpecReview: true,
     providerKind: codexProviderKind,
-    adapterId: codexAgentAdapterId,
+    adapterId,
     supportedConnectionMechanism: 'process_environment',
     credentialRequirement: 'external',
 
@@ -584,7 +588,7 @@ export function createCodexAgentAdapter(
         throw new UnsupportedProviderCapabilityError(
           'tool_policy_unsupported',
           `Codex runtime does not accept the sandbox value "${sandbox}" required for role "${role ?? 'unknown'}".`,
-          { providerKind: profile.providerKind, adapterId: codexAgentAdapterId, capability: `sandbox:${sandbox}` }
+          { providerKind: profile.providerKind, adapterId, capability: `sandbox:${sandbox}` }
         );
       }
 
@@ -651,7 +655,7 @@ export function createCodexAgentAdapter(
               runId,
               step,
               providerKind: profile.providerKind,
-              adapterId: codexAgentAdapterId,
+              adapterId,
               profileName: profile.profileName
             });
             throw err;
@@ -682,24 +686,24 @@ export function createCodexAgentAdapter(
               runId,
               step,
               providerKind: profile.providerKind,
-              adapterId: codexAgentAdapterId,
-              authMode: 'enterprise_sign_in',
+              adapterId,
+              authMode,
               authFailureCode: authResult.code,
               failureReason: 'provider_auth_failed'
             });
-            throw new CodexAuthenticationError(authResult.code, profile.providerKind);
+            throw new CodexAuthenticationError(authResult.code, profile.providerKind, authMode);
           }
 
           safeLog('info', 'codex.adapter.session_start', {
             runId,
             step,
             providerKind: profile.providerKind,
-            adapterId: codexAgentAdapterId,
+            adapterId,
             profileName: profile.profileName,
             configurationRecordId: profile.configurationRecordId,
             model: profile.model.model,
             mechanism: profile.connectionMechanism,
-            authMode: 'enterprise_sign_in',
+            authMode,
             accountType: authResult.accountType,
             sandbox,
             allowedToolsCount: allowedTools.length,
@@ -744,7 +748,7 @@ export function createCodexAgentAdapter(
               tokenUsage = usage;
               for (const code of anomalies ?? []) safeLog('warn', 'codex.adapter.invalid_accounting', { runId, step, code });
             },
-            auth: { mode: 'enterprise_sign_in' },
+            auth: { mode: authMode },
             ...(skillMaterialization.mounts.length > 0 ? { skills: skillMaterialization.mounts } : {}),
             ...(structuredResult !== undefined ? { structuredResult } : {})
           });
@@ -760,7 +764,7 @@ export function createCodexAgentAdapter(
                   throw new ProviderProtocolError(
                     'duplicate_structured_result',
                     'Codex session returned structured output more than once.',
-                    { providerKind: profile.providerKind, adapterId: codexAgentAdapterId }
+                    { providerKind: profile.providerKind, adapterId }
                   );
                 }
                 capturedStructuredResult = { value: ev.structuredOutput };
@@ -769,7 +773,7 @@ export function createCodexAgentAdapter(
                 throw new ProviderProtocolError(
                   'impossible_session_sequence',
                   'Codex session produced more than one terminal result.',
-                  { providerKind: profile.providerKind, adapterId: codexAgentAdapterId }
+                  { providerKind: profile.providerKind, adapterId }
                 );
               }
               resultSeen = true;
@@ -790,7 +794,7 @@ export function createCodexAgentAdapter(
               throw new ProviderProtocolError(
                 'missing_structured_result',
                 'Codex session ended without returning structured output.',
-                { providerKind: profile.providerKind, adapterId: codexAgentAdapterId }
+                { providerKind: profile.providerKind, adapterId }
               );
             }
             const decoded = decodeSpecRoleProviderResult(input.structuredResultCapture, capturedStructuredResult.value);
@@ -833,7 +837,7 @@ export function createCodexAgentAdapter(
           safeLog('error', 'codex.adapter.session_failed', {
             runId,
             step,
-            adapterId: codexAgentAdapterId,
+            adapterId,
             ...safeDetail,
             ...(classified !== undefined ? { failureReason: classified.failureReason } : {}),
             ...(err instanceof CodexAuthenticationError ? { failureReason: 'provider_auth_failed', authFailureCode: err.authFailureCode } : {}),

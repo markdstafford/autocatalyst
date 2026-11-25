@@ -709,6 +709,35 @@ describe('model routing integration (real SQLite DB + mocked adapters)', () => {
 });
 
 describe('dispatch through createRoutingProfileResolver', () => {
+  it.each([false, true])('validates the required role group before session dispatch (collision=%s)', async (collision) => {
+    await withTempDb(async (repo) => {
+      const claude = await repo.create(CLAUDE_PROFILE);
+      const openai = await repo.create(OPENAI_PROFILE);
+      await repo.create({
+        tenant: TENANT,
+        kind: 'model_routing_table',
+        settings: {
+          active: true,
+          entries: [
+            { id: 'author', route: { mode: 'agent', step: 'spec.author', role: 'implementer' }, profileId: openai.id },
+            { id: 'review', route: { mode: 'agent', step: 'spec.author', role: 'reviewer' }, profileId: collision ? openai.id : claude.id }
+          ],
+          roleDistinctRequirements: [{ step: 'spec.author', mode: 'agent', roles: ['implementer', 'reviewer'], distinctBy: 'model' }]
+        }
+      });
+      const resolver = createModelRoutingResolver({ configuration: configurationReaderFor(repo), agentAdapters, directAdapters });
+      const bridge = createRoutingProfileResolver({ resolver, fallbackTenant: TENANT });
+      for (const role of ['implementer', 'reviewer']) {
+        const result = bridge.resolveAgentProfile({ runId: 'run_required_pair', step: 'spec.author', role, tenant: TENANT });
+        if (collision) {
+          await expect(result).rejects.toMatchObject({ code: 'role_distinct_unsatisfied' });
+        } else {
+          expect((await result).profile.providerKind).toBe(role === 'implementer' ? 'openai' : 'anthropic');
+        }
+      }
+    });
+  });
+
   it('resolves exact agent route through routing profile resolver', async () => {
     await withTempDb(async (repo) => {
       const claude = await repo.create(CLAUDE_PROFILE);

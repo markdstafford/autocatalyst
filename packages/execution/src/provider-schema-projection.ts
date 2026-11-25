@@ -134,10 +134,9 @@ const claudeFindingItem = {
 //   findingsReviewerResultSchema:  { status: 'findings',  findings: [min 1] }
 // ])
 //
-// Provider projection uses anyOf with two branches so the provider can enforce:
-//   - 'satisfied' branch: findings absent/null/empty
-//   - 'findings' branch: non-empty findings array required
-// This addresses the weakening flagged in INIT-2.
+// Both provider transports require an object root. Branch-specific requirements
+// (satisfied has no findings; findings has at least one) remain enforced by the
+// canonical schema at result capture, before a result file or advance event.
 // ---------------------------------------------------------------------------
 function specFindingItem(target: ProviderSchemaProjectionTarget) {
   const strict = target === 'openai_agents_output_type';
@@ -171,28 +170,16 @@ function buildReviewerResultProjection(target: ProviderSchemaProjectionTarget, s
     };
   }
 
-  // Claude target: not strict mode, but still enforce discriminated branches.
+  // Claude's structured-output tool rejects root-level unions. Preserve branch
+  // validation in the canonical schema at capture, after this transport projection.
   return {
-    anyOf: [
-      {
-        type: 'object',
-        properties: {
-          status: { type: 'string', enum: ['satisfied'] },
-          findings: { type: 'array', items: spec ? specFindingItem(target) : claudeFindingItem, maxItems: 0 }
-        },
-        required: ['status'],
-        additionalProperties: false
-      },
-      {
-        type: 'object',
-        properties: {
-          status: { type: 'string', enum: ['findings'] },
-          findings: { type: 'array', items: spec ? specFindingItem(target) : claudeFindingItem, minItems: 1 }
-        },
-        required: ['status', 'findings'],
-        additionalProperties: false
-      }
-    ]
+    type: 'object',
+    properties: {
+      status: { type: 'string', enum: ['satisfied', 'findings'] },
+      findings: { type: 'array', items: spec ? specFindingItem(target) : claudeFindingItem }
+    },
+    required: ['status'],
+    additionalProperties: false
   };
 }
 

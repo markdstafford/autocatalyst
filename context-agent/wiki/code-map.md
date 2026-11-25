@@ -1,5 +1,9 @@
 # Code map
 
+- Claude `reasoningEffort` maps to SDK effort and adaptive thinking. Subscription launches use the host Claude CLI. Codex is pinned to 0.171.0 for GPT-6.2 access.
+
+- Subscription dispatch: `claude-agent-adapter/src/subscription-auth.ts` owns login probing and credential masking; separate Claude subscription and Codex Business adapter identities are registered in `apps/control-plane/src/server.ts`. Model routing honors `credentialRequirement: external` at resolution and HTTP validation. See [subscription-provider-dispatch](../decisions/subscription-provider-dispatch.md) and [operator setup](../../docs/operators/subscription-dispatch.md).
+
 - Runtime Micromanager source, pin, synchronization, fidelity checks and E2E handoff: [micromanager-runtime.md](micromanager-runtime.md).
 - Web client design system (tokens, shell dimensions, alignment rules, component rules): [design-system.md](design-system.md).
 
@@ -358,7 +362,7 @@ Use the established initial tags as examples:
 
 ## Codex adapter protocol and salvage verification (2026-10-23)
 
-- `packages/codex-agent-adapter/src/codex-app-server.ts` owns the pinned 0.160.1 executable version check, bounded stdio JSON-RPC client, enterprise account probe, actual thread/turn lifecycle and native skill inputs. No invented start_session protocol. `codex-app-server.spec.ts` tests a child executable at the wire boundary; auth/failure streams do not consume inference.
+- `packages/codex-agent-adapter/src/codex-app-server.ts` owns the pinned 0.171.0 executable version check, bounded stdio JSON-RPC client, enterprise account probe, actual thread/turn lifecycle and native skill inputs. No invented start_session protocol. `codex-app-server.spec.ts` tests a child executable at the wire boundary; auth/failure streams do not consume inference.
 - `codex-agent-adapter.ts` validates captured values against `capture.schema` before writing, separates per-round/finalizer files, rejects missing terminal completion, and exposes session cancellation. `skill-materialization.ts` resolves real catalog directories, not virtual mounts; native skill delivery is reported only after turn/start accepts inputs.
 - `AgentProviderAdapter.credentialRequirement` defaults to required; external-auth adapters explicitly select `external`. `createExplicitProfileResolver` honors it; Codex validates its account itself. Tests prove no secret lookup and unchanged existing provider behavior.
 - `packages/codex-agent-adapter/tools/probe-permissions.mjs` uses real app-server command/exec with the production permission helper and zero model turns; implementer-write control and reviewer-write denial must both pass. Run after `pnpm nx build codex-agent-adapter`.
@@ -376,3 +380,5 @@ Use the established initial tags as examples:
 - OpenAI spec authors write to the absolute sandbox scratch result path. Capture also checks the sandbox repository root, covering repository-relative writes. Actual capture mode is logged separately from schema projection. Reviewer restrictions and NoopSnapshotSpec remain unchanged.
 - `packages/openai-agent-adapter/src/openai-agent-adapter.ts` records fixed failure stages across SDK streaming/completion, model-memory persistence, result parsing/writing and terminal emission, retaining allowlisted error/cause classes and codes without messages/content. See `../decisions/openai-completion-failure-diagnostics.md`.
 - Provider dependencies belong to their adapter packages; real dispatch wires safe metadata loggers. Runtime skill preparation reports requested/resolved refs and delivery mode; log output never proves model compliance by itself.
+
+- Routing dispatch bridge: `apps/control-plane/src/server.ts` `createRoutingProfileResolver` revalidates a table-required distinct role group when the per-session factory encounters the single-role guard. Regression coverage in `model-routing.integration.spec.ts` checks both roles and rejects same-model collisions.

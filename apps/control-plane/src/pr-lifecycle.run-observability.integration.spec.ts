@@ -20,7 +20,7 @@ import { describe, expect, it, vi, afterEach } from 'vitest';
 import Fastify, { type FastifyBaseLogger } from 'fastify';
 
 import { createControlPlaneClient } from '@autocatalyst/sdk';
-import { createCodexAgentAdapter } from '@autocatalyst/codex-agent-adapter';
+import { CODEX_SUPPORTED_VERSION, createCodexAgentAdapter } from '@autocatalyst/codex-agent-adapter';
 import { z } from 'zod';
 import { createOpenAIDirectAdapter } from '@autocatalyst/openai-direct-adapter';
 import { createClaudeAgentAdapter } from '@autocatalyst/claude-agent-adapter';
@@ -369,7 +369,7 @@ async function runNativeAttempt(input: {
 // A pinned JSON-RPC subprocess. The fixture never starts Codex or accesses an account.
 const codexWire = `
 const { createInterface } = require('node:readline');
-if (process.argv.includes('--version')) { console.log('codex-cli 0.160.1'); process.exit(0); }
+if (process.argv.includes('--version')) { console.log('codex-cli ${CODEX_SUPPORTED_VERSION}'); process.exit(0); }
 const send = message => console.log(JSON.stringify(message));
 createInterface({input:process.stdin}).on('line', (line) => {
   const {id, method, params} = JSON.parse(line);

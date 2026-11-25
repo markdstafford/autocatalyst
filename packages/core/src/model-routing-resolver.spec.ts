@@ -1016,3 +1016,18 @@ describe('resolveDistinctAgentRoutes', () => {
     expect(result.resolutionsByRole['reviewer'].profileId).toBe('cfg_claude2_b');
   });
 });
+
+
+describe('externally authenticated model routes', () => {
+  it('resolves a subscription route with no API credential or secret validation', async () => {
+    const profile: ConfigurationRecord = { ...claudeProfile, adapterId: 'subscription', settings: { profileName: 'Team', model: { provider: 'anthropic', model: 'sonnet' } } };
+    const table: ConfigurationRecord = { ...routingTable, settings: { active: true, entries: [{ id: 'subscription', route: { mode: 'agent', step: 'impl', role: 'implementer' }, profileId: profile.id }] } };
+    const adapter = { ...makeAgentAdapter('anthropic', 'subscription', 'process_environment'), credentialRequirement: 'external' as const };
+    const validate = vi.fn(async () => { throw new Error('No API secret should be validated'); });
+    const resolver = createModelRoutingResolver({ ...makeDefaultOptions(), configuration: makeReader([profile, table]), agentAdapters: makeAgentRegistry(adapter), validateCredentialReference: validate });
+    const result = await resolver.resolveAgentRoute({ tenant: profile.tenant, step: 'impl', role: 'implementer' });
+    expect(result.credentialReference).toEqual({ required: false, authTarget: 'process_environment' });
+    expect(result.profile.adapterId).toBe('subscription');
+    expect(validate).not.toHaveBeenCalled();
+  });
+});

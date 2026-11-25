@@ -223,7 +223,9 @@ async function resolveEntryToProfile(
       }
     );
   }
-  if (profileSettings.credentialSecretHandle === undefined) {
+  const adapterKey = getAgentProviderAdapterKey(profileRecord.providerKind, profileRecord.adapterId);
+  const credentialRequired = mode === 'direct' || options.agentAdapters.get(adapterKey)?.credentialRequirement !== 'external';
+  if (credentialRequired && profileSettings.credentialSecretHandle === undefined) {
     throw new ModelRoutingConfigurationError(
       'profile_incomplete',
       'Provider profile is missing credential reference.',
@@ -239,7 +241,6 @@ async function resolveEntryToProfile(
   }
 
   // Look up adapter in the mode-specific registry
-  const adapterKey = getAgentProviderAdapterKey(profileRecord.providerKind, profileRecord.adapterId);
 
   let connectionMechanism: 'fetch_transport' | 'process_environment';
   if (mode === 'agent') {
@@ -332,13 +333,13 @@ async function resolveEntryToProfile(
     connectionMechanism === 'fetch_transport' ? 'header' : 'process_environment';
 
   const credentialReference: ResolvedAgentCredentialReference = {
-    required: true,
-    secretHandle: profileSettings.credentialSecretHandle,
+    required: credentialRequired,
+    ...(profileSettings.credentialSecretHandle !== undefined ? { secretHandle: profileSettings.credentialSecretHandle } : {}),
     authTarget
   };
 
   // Validate credential reference if validator is provided
-  if (options.validateCredentialReference) {
+  if (options.validateCredentialReference && credentialRequired) {
     try {
       await options.validateCredentialReference({ tenant, profile, credentialReference });
     } catch {
