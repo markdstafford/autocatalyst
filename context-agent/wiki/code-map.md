@@ -3,7 +3,7 @@
 - Runtime Micromanager source, pin, synchronization, fidelity checks and E2E handoff: [micromanager-runtime.md](micromanager-runtime.md).
 - Web client design system (tokens, shell dimensions, alignment rules, component rules): [design-system.md](design-system.md).
 
-Last updated: 2026-11-24 (run progress and activity, #152).
+Last updated: 2026-11-24 (run progress and activity, #152; build-round component coverage).
 
 > How agents navigate the codebase. Keep this current: whenever you add, move, or significantly
 > change a module, update the relevant section in the same change.
@@ -16,6 +16,7 @@ Last updated: 2026-11-24 (run progress and activity, #152).
 - `run-activity-event-text.ts` is the exhaustive plain-text formatter, including refresh-only transitions. `run-activity-buffer.ts` pins events to occurrence IDs using timestamps and transition/recovery hints, tracks affected attempts on eviction, and enforces `RUN_ACTIVITY_EVENTS_PER_RUN = 500` with a time/ID replay cutoff.
 - `apps/control-plane/src/fake/scripted-launch.ts` claims `delays/issue-<n>.json` once, emits per-second native progress and aborts on session close or a stopped run. `scripted-results.ts` builds the native prelude. `packages/core/src/runner-event-consumer.ts` [projects content-free activity for private spec roles](../decisions/private-spec-activity-projection.md), through the same normal runner publication path.
 - Verify with `pnpm nx test web`, the control-plane fake-mode `activity-stream.integration.spec.ts`, and `pnpm nx e2e web` (served build: `apps/web/e2e/progress-and-activity.spec.ts`, plus min/max progress geometry in `run-detail.spec.ts`).
+- Component coverage in `run-activity.spec.tsx` checks marker glyphs, color tokens, and labels against explicit occurrences and placeholders, plus all expanded session fields. `run-progress.spec.tsx` covers three-phase fills and full labels, arbitrary four-phase order, and seven-phase compact labels. Run them from `apps/web` with `pnpm exec vitest run src/runs/run-activity.spec.tsx src/runs/run-progress.spec.tsx`; point `TMPDIR` at writable scratch if the sandbox denies the OS temp directory.
 
 ## Cache-aware session pricing (#194)
 

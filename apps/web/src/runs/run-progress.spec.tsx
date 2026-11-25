@@ -6,6 +6,36 @@ import { makeRun } from './run-fixtures.js';
 import { RunProgress } from './run-progress.js';
 import { projectProgress } from './run-progress-projection.js';
 
+it('shows full labels and distinct done, current, and upcoming fills for three phases', () => {
+  const base = workflow();
+  const definition = {
+    ...base,
+    phases: [base.phases[0]!, { ...base.phases[1]!, steps: ['assemble'] }, { id: 'close-out', label: 'Verify', steps: ['sign'] }],
+    steps: base.steps.map(step => step.id === 'sign' ? { ...step, phase: 'close-out' } : step)
+  };
+  const run = { ...makeRun({ waitingOn: 'ai' }), currentStep: 'assemble' };
+  render(<RunProgress run={run} workflow={definition} attempts={undefined} />);
+
+  const bar = screen.getByRole('group', { name: 'Run progress' });
+  const segments = within(bar).getAllByRole('listitem');
+  const expected = [
+    { label: 'Prepare', state: 'done', fill: 'bg-subtext' },
+    { label: 'Ship', state: 'current', fill: 'bg-text' },
+    { label: 'Verify', state: 'upcoming', fill: 'bg-surface-1' }
+  ];
+  expect(segments).toHaveLength(expected.length);
+  for (const [index, { label, state, fill }] of expected.entries()) {
+    const segment = segments[index]!;
+    expect(within(segment).getByText(label, { exact: true })).toBeDefined();
+    expect(within(segment).getByText(`Phase ${index + 1} of 3, ${label}: ${state}.`)).toBeDefined();
+    expect(segment.querySelector(`div.${fill}`)).not.toBeNull();
+    expect(segment.getAttribute('aria-current')).toBe(state === 'current' ? 'step' : null);
+  }
+  const description = document.getElementById(bar.getAttribute('aria-describedby') ?? '');
+  expect(description?.textContent).toBe('Phase 2 of 3, Ship, step assemble.');
+  expect(screen.getByTestId('run-progress-step').textContent).toBe('Ship · assemble');
+});
+
 it('renders arbitrary phase order, labels and compact-number tooltips with keyboard focus', async () => {
   const base = workflow();
   const options = { run: { ...makeRun(), currentStep: 'look' }, attempts: undefined };
@@ -21,6 +51,11 @@ it('renders arbitrary phase order, labels and compact-number tooltips with keybo
   rerender(<RunProgress {...options} workflow={{ ...base, phases: [...extras, ...base.phases] }} />);
   expect(segments()).toHaveLength(7);
   expect(segments()[5]?.getAttribute('aria-current')).toBe('step');
+  expect(segments().map(segment => segment.dataset['phaseState']))
+    .toEqual(['done', 'done', 'done', 'done', 'done', 'current', 'upcoming']);
+  for (const [index, label] of ['1', '2', '3', '4', '5', 'Prepare', '7'].entries()) {
+    expect(within(segments()[index]!).getByText(label, { exact: true })).toBeDefined();
+  }
   const numbered = within(segments()[0]!).getByText('1', { exact: true });
   const context = document.getElementById(bar().getAttribute('aria-describedby') ?? '');
   expect(context?.textContent).toContain('Phase 6 of 7, Prepare, step look.');
