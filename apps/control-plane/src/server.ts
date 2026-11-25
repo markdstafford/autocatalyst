@@ -126,6 +126,7 @@ import {
 } from '@autocatalyst/execution';
 import {
   claudeAgentAdapterId,
+  claudeSubscriptionAdapterId,
   claudeProviderKind,
   createClaudeAgentAdapter
 } from '@autocatalyst/claude-agent-adapter';
@@ -145,6 +146,7 @@ import {
 } from '@autocatalyst/openai-agent-adapter';
 import {
   codexAgentAdapterId,
+  codexBusinessAdapterId,
   codexProviderKind,
   createCodexAgentAdapter
 } from '@autocatalyst/codex-agent-adapter';
@@ -473,12 +475,32 @@ export function createRoutingProfileResolver(options: {
           { tenant, runId: factoryInput.runId, step: factoryInput.step, mode: 'agent' }
         );
       }
-      const resolution = await options.resolver.resolveAgentRoute({
+      const routeInput = {
         tenant,
         runId: factoryInput.runId,
         step: factoryInput.step,
         role: roleParse.data
-      });
+      };
+      let resolution: ModelRoutingResolution;
+      try {
+        resolution = await options.resolver.resolveAgentRoute(routeInput);
+      } catch (error) {
+        // The execution factory resolves each session after convergence has resolved
+        // the pair. Revalidate the complete required group rather than bypassing
+        // the single-role guard or dropping the distinct-model requirement.
+        if (!(error instanceof ModelRoutingConfigurationError) ||
+            error.code !== 'role_distinct_unsatisfied' ||
+            !error.safeDetails?.roles?.includes(roleParse.data)) {
+          throw error;
+        }
+        const group = await options.resolver.resolveDistinctAgentRoutes({
+          tenant,
+          runId: factoryInput.runId,
+          step: factoryInput.step,
+          roles: error.safeDetails.roles
+        });
+        resolution = group.resolutionsByRole[roleParse.data]!;
+      }
       return { profile: resolution.profile, credentialReference: resolution.credentialReference };
     },
     async resolveDirectProfile(factoryInput) {
@@ -1041,6 +1063,21 @@ export async function createControlPlaneServer(
       displayName: 'Claude Agent SDK',
       capabilities: ['agent_session']
     });
+    // Subscription adapters are explicit identities; API profiles remain opt-in.
+    for (const [providerKind, adapterId, makeAdapter] of [
+      [claudeProviderKind, claudeSubscriptionAdapterId, () => createClaudeAgentAdapter({ authentication: 'subscription', logger: agentAdapterLogger })],
+      [codexProviderKind, codexBusinessAdapterId, () => createCodexAgentAdapter({ authentication: 'business_sign_in', logger: agentAdapterLogger })]
+    ] as const) {
+      const key = buildProviderAdapterKey(providerKind, adapterId);
+      if (!merged.has(key)) merged.set(key, ({ configurationRecord }) => {
+        const settings = configurationRecord.settings as ProviderProfileSettings;
+        if (settings.credentialSecretHandle !== undefined || Object.entries(settings.endpoint ?? {}).some(([name, value]) =>
+          !['requestTimeoutMs', 'maxRetries'].includes(name) && !(name === 'proxyMode' && value === 'disabled')
+        )) throw new ProviderConfigurationError('invalid_endpoint', 'Subscription profiles cannot reference API credentials or gateway alterations.');
+        return makeAdapter();
+      });
+      realDispatchRegistryEntries.push({ providerKind, adapterId, displayName: adapterId, capabilities: ['agent_session'] });
+    }
     const anthropicDirectKey = buildProviderAdapterKey(anthropicProviderKind, anthropicDirectAdapterId);
     if (!merged.has(anthropicDirectKey)) {
       merged.set(anthropicDirectKey, () => createAnthropicDirectAdapter({ logger: agentAdapterLogger }));
@@ -1965,6 +2002,12 @@ export async function createControlPlaneServer(
     policy,
     probeResources: new DrizzleProbeResourceRepository(database),
     configurationRecords,
+    providerCredentialRequired: (profile) => !providerCompositionResult.composed.some(binding =>
+      binding.configurationRecordId === profile.id &&
+      binding.providerKind === ('providerKind' in profile ? profile.providerKind : undefined) &&
+      binding.adapterId === ('adapterId' in profile ? profile.adapterId : undefined) &&
+      (binding.adapter as { credentialRequirement?: string }).credentialRequirement === 'external'
+    ),
     secrets: secretStore,
     projects: domainRepos.projects,
     controlPlane

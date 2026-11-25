@@ -12,7 +12,7 @@ import { codexAgentAdapterId, codexProviderKind, createCodexAgentAdapter, type C
 // A separate executable speaks the wire protocol. No native-session seam or paid model.
 const fixture = `
 const fs = require('node:fs');
-if (process.argv.includes('--version')) { console.log('codex-cli ' + (process.env.AC_MODE === 'version' ? '0.0.0' : '0.160.1')); process.exit(); }
+if (process.argv.includes('--version')) { console.log('codex-cli ' + (process.env.AC_MODE === 'version' ? '0.0.0' : '0.171.0')); process.exit(); }
 if (process.argv.includes('--sandbox') || process.env.OPENAI_API_KEY) process.exit(7);
 let initialized = false, ready = false, sandbox;
 function send(value) { process.stdout.write(JSON.stringify(value)+'\\n'); }
@@ -22,7 +22,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line', line 
  if (p.method === 'initialize') { initialized=true; respond({userAgent:'fixture'}); }
  else if (p.method === 'initialized') ready=true;
  else if (!initialized || !ready) process.exit(8);
- else if (p.method === 'account/read') respond({account:process.env.AC_MODE==='noauth'?null:{type:'chatgpt',planType:process.env.AC_MODE==='plan'?'free':'enterprise_cbp_usage_based'}});
+ else if (p.method === 'account/read') respond({account:process.env.AC_MODE==='noauth'?null:{type:'chatgpt',planType:process.env.AC_PLAN || (process.env.AC_MODE==='plan'?'free':'enterprise_cbp_usage_based')}});
  else if (p.method === 'config/read') respond({config:{mcp_servers:{personal:{command:'must-not-run'}}}});
  else if (p.method === 'thread/start') {
   if (fs.realpathSync(v.cwd) !== fs.realpathSync(process.cwd()) || v.approvalPolicy !== 'never' || v.allowProviderModelFallback !== false) process.exit(9);
@@ -221,5 +221,28 @@ describe('Codex app-server wire boundary', () => {
     expect(env['OPENAI_BASE_URL']).toBeUndefined();
     expect(env['CODEX_ACCESS_TOKEN']).toBeUndefined();
     expect(env['KEEP']).toBe('safe');
+  });
+});
+
+
+describe('Codex Business authentication', () => {
+  it.each(['team', 'business', 'self_serve_business_prolite'])('accepts the explicitly selected Business login (%s)', async plan => {
+    await withCli(async (binary, cwd) => {
+      expect(await codexAuthProbe(binary, 'business_sign_in')({ cwd, env: { AC_PLAN: plan } })).toEqual({ status: 'authenticated', accountType: 'business' });
+      const options = { ...launchOptions(cwd), auth: { mode: 'business_sign_in' as const }, env: { AC_PLAN: plan, OPENAI_API_KEY: 'must-not-forward' } };
+      const events: CodexNativeEvent[] = [];
+      for await (const event of codexSessionLaunch(binary)(options)) events.push(event);
+      expect(events.at(-1)?.type).toBe('result');
+    });
+  });
+  it.each(['free', 'pro', 'enterprise'])('refuses to switch to another plan (%s)', async plan => {
+    await withCli(async (binary, cwd) => {
+      expect(await codexAuthProbe(binary, 'business_sign_in')({ cwd, env: { AC_PLAN: plan } })).toEqual({ status: 'unauthenticated', code: 'disallowed_plan' });
+    });
+  });
+  it('preserves the Enterprise adapter restriction for existing profiles', async () => {
+    await withCli(async (binary, cwd) => {
+      expect(await codexAuthProbe(binary)({ cwd, env: { AC_PLAN: 'team' } })).toEqual({ status: 'unauthenticated', code: 'disallowed_plan' });
+    });
   });
 });

@@ -33,6 +33,8 @@ import {
   type ProxyUpstreamFailureRecord
 } from '@autocatalyst/execution';
 
+import { claudeSubscriptionEnvironment, probeClaudeSubscription } from './subscription-auth.js';
+
 import { materializeClaudeSkillPlugins } from './skill-materialization.js';
 
 // ---------------------------------------------------------------------------
@@ -41,6 +43,7 @@ import { materializeClaudeSkillPlugins } from './skill-materialization.js';
 
 export const claudeProviderKind = 'anthropic' as const;
 export const claudeAgentAdapterId = 'claude-agent-sdk' as const;
+export const claudeSubscriptionAdapterId = 'claude-agent-sdk-subscription' as const;
 
 // ---------------------------------------------------------------------------
 // Structured result output format
@@ -111,6 +114,8 @@ export type ClaudeSdkQuery = (input: {
 export interface ClaudeAgentAdapterOptions {
   /** Native message source; the default is the pinned Claude Agent SDK query. */
   readonly queryClaudeSdk?: ClaudeSdkQuery;
+  readonly authentication?: 'api_key' | 'subscription';
+  readonly probeSubscriptionAuth?: (env: Record<string, string>) => Promise<boolean>;
   readonly launchClaudeSession?: ClaudeSessionLaunch;
   readonly supportedInferenceSettings?: ReadonlySet<string>;
   readonly clock?: () => string;
@@ -143,15 +148,12 @@ function mapAllowedToolsForClaude(allowedTools: readonly string[]): string[] {
   return Array.from(new Set(mapped));
 }
 
-// Inference settings the Claude Agent SDK does NOT plumb into agent mode.
-// (Everything currently in the InferenceSettings schema falls into this set;
-// the SDK only exposes the model via the launch env / options, never
-// per-request inference knobs from agent mode.)
+// Sampling controls are unsupported in agent mode. Reasoning effort maps to the
+// SDK effort option with adaptive thinking.
 const DEFAULT_UNSUPPORTED_INFERENCE_KEYS: readonly string[] = [
   'temperature',
   'topP',
   'maxOutputTokens',
-  'reasoningEffort',
   'seed'
 ];
 
@@ -379,6 +381,9 @@ function createClaudeStructuredResultDefinition(
 export function createClaudeAgentAdapter(
   options: ClaudeAgentAdapterOptions = {}
 ): AgentProviderAdapter {
+  const subscription = options.authentication === 'subscription';
+  const adapterId = subscription ? claudeSubscriptionAdapterId : claudeAgentAdapterId;
+  const probeAuth = options.probeSubscriptionAuth ?? probeClaudeSubscription;
   const launch = options.launchClaudeSession ?? defaultLaunch(options.queryClaudeSdk);
   const supportedInference = options.supportedInferenceSettings ?? new Set<string>();
   const clock = options.clock ?? (() => new Date().toISOString());
@@ -414,12 +419,18 @@ export function createClaudeAgentAdapter(
   return {
     supportsSpecReview: true,
     providerKind: claudeProviderKind,
-    adapterId: claudeAgentAdapterId,
+    adapterId,
     supportedConnectionMechanism: 'process_environment',
+    ...(subscription ? { credentialRequirement: 'external' as const } : {}),
 
     startSession(input: AgentProviderSessionInput): AgentProviderSession {
       const { runInput, profile, connection, telemetryContext } = input;
       const env = runInput.environment;
+      if (subscription && Object.entries(profile.endpoint).some(([key, value]) =>
+        !['requestTimeoutMs', 'maxRetries'].includes(key) && !(key === 'proxyMode' && value === 'disabled')
+      )) {
+        throw new ProviderConfigurationError('invalid_endpoint', 'Subscription profiles cannot use API credentials or gateway alterations.');
+      }
       const runId = env.context.run.id;
       const step = env.context.run.currentStep;
 
@@ -443,7 +454,7 @@ export function createClaudeAgentAdapter(
             `Claude Agent SDK does not support required inference setting "${key}".`,
             {
               providerKind: profile.providerKind,
-              adapterId: claudeAgentAdapterId,
+              adapterId,
               capability: key
             }
           );
@@ -495,7 +506,7 @@ export function createClaudeAgentAdapter(
         runId,
         step,
         providerKind: profile.providerKind,
-        adapterId: claudeAgentAdapterId,
+        adapterId,
         profileName: profile.profileName,
         requestedSkillCount: env.skills.requested.length,
         requestedSkillRefs: [...env.skills.requested],
@@ -512,7 +523,7 @@ export function createClaudeAgentAdapter(
           runId,
           step,
           providerKind: profile.providerKind,
-          adapterId: claudeAgentAdapterId,
+          adapterId,
           profileName: profile.profileName,
           requestedSkillRefs: [...env.skills.requested]
         });
@@ -556,7 +567,7 @@ export function createClaudeAgentAdapter(
               runId,
               step,
               providerKind: profile.providerKind,
-              adapterId: claudeAgentAdapterId,
+              adapterId,
               profileName: profile.profileName,
               telemetryContext
             });
@@ -565,13 +576,25 @@ export function createClaudeAgentAdapter(
 
           // The connection.environment IS the overlay; tests check that secret
           // values do not leak out of launch logs. We DO NOT log the env map.
-          const launchEnv: Record<string, string> = { ...launchConfig.environment };
+          const launchEnv = subscription
+            ? claudeSubscriptionEnvironment(launchConfig.environment)
+            : { ...launchConfig.environment };
+          // Ambient effort/budget variables take precedence over SDK options in
+          // Claude Code; mask them whenever the profile explicitly owns effort.
+          if (inference.reasoningEffort !== undefined) {
+            launchEnv['CLAUDE_CODE_EFFORT_LEVEL'] = inference.reasoningEffort;
+            launchEnv['MAX_THINKING_TOKENS'] = '';
+            launchEnv['CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING'] = '';
+          }
+          if (subscription && !await probeAuth(launchEnv)) {
+            throw new ClassifiedProviderFailureError('provider_auth_failed', { providerKind: claudeProviderKind });
+          }
 
           safeLog('info', 'claude.adapter.session_start', {
             runId,
             step,
             providerKind: profile.providerKind,
-            adapterId: claudeAgentAdapterId,
+            adapterId,
             profileName: profile.profileName,
             configurationRecordId: profile.configurationRecordId,
             model: profile.model.model,
@@ -620,9 +643,12 @@ export function createClaudeAgentAdapter(
             ...(cwd !== undefined ? { cwd } : {}),
             env: launchEnv,
             allowedTools,
-            ...((skillPlugins.length > 0 || structuredResult !== undefined)
+            ...((subscription || inference.reasoningEffort !== undefined || skillPlugins.length > 0 || structuredResult !== undefined)
               ? {
                   options: {
+                    model: profile.model.model,
+                    ...(subscription ? { pathToClaudeCodeExecutable: 'claude', settingSources: [], settings: { forceLoginMethod: 'claudeai', apiKeyHelper: '' } } : {}),
+                    ...(inference.reasoningEffort !== undefined ? { effort: inference.reasoningEffort, thinking: { type: 'adaptive' } } : {}),
                     // Local plugins carry the skills; `skills: 'all'` loads every
                     // discovered skill into the system prompt.
                     ...(skillPlugins.length > 0 ? { plugins: skillPlugins, skills: 'all' } : {}),
@@ -642,7 +668,7 @@ export function createClaudeAgentAdapter(
                 throw new ProviderProtocolError(
                   'duplicate_structured_result',
                   'Claude session returned structured_output more than once.',
-                  { providerKind: profile.providerKind, adapterId: claudeAgentAdapterId }
+                  { providerKind: profile.providerKind, adapterId }
                 );
               }
               capturedStructuredResult = { value: ev.structuredOutput };
@@ -673,7 +699,7 @@ export function createClaudeAgentAdapter(
               throw new ProviderProtocolError(
                 'missing_structured_result',
                 'Claude session ended without returning structured_output.',
-                { providerKind: profile.providerKind, adapterId: claudeAgentAdapterId }
+                { providerKind: profile.providerKind, adapterId }
               );
             }
             const decoded = decodeSpecRoleProviderResult(input.structuredResultCapture, capturedStructuredResult.value);
@@ -723,7 +749,7 @@ export function createClaudeAgentAdapter(
           safeLog('error', 'claude.adapter.session_failed', {
             runId,
             step,
-            adapterId: claudeAgentAdapterId,
+            adapterId,
             ...safeDetail,
             // Safe scalar diagnostics — class/cause/errno/exit/signal/timing/event counts only.
             errorClass: errorClassName(err),
@@ -760,7 +786,7 @@ export function createClaudeAgentAdapter(
               runId,
               step,
               providerKind: profile.providerKind,
-              adapterId: claudeAgentAdapterId,
+              adapterId,
               outcome
             });
           }

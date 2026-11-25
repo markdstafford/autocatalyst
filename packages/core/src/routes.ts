@@ -198,6 +198,7 @@ export interface ControlPlaneRouteDependencies {
   readonly policy: PolicyDecisionPoint;
   readonly probeResources: ProbeResourceRepository;
   readonly configurationRecords: ConfigurationRecordRepository;
+  readonly providerCredentialRequired?: (profile: ConfigurationRecord) => boolean;
   readonly secrets: SecretStore & SecretExistenceChecker;
   readonly projects: ProjectRepository;
   readonly controlPlane: ControlPlaneService;
@@ -538,7 +539,7 @@ export async function registerControlPlaneRoutes(
           updatedAt: new Date().toISOString()
         } as ConfigurationRecord;
         try {
-          assertActiveRoutesReferenceDispatchableProfiles(existingRecords, candidate);
+          assertActiveRoutesReferenceDispatchableProfiles(existingRecords, candidate, dependencies.providerCredentialRequired);
         } catch (error) {
           await reply.status(422).send(errorResponse(error instanceof Error ? error.message : 'validation_failed', 'Routing table references an incomplete or missing profile.'));
           return;
@@ -631,7 +632,7 @@ export async function registerControlPlaneRoutes(
         } as ConfigurationRecord;
         const otherRecords = existingRecords.filter((r) => r.id !== params.id);
         try {
-          assertActiveRoutesReferenceDispatchableProfiles(otherRecords, candidate);
+          assertActiveRoutesReferenceDispatchableProfiles(otherRecords, candidate, dependencies.providerCredentialRequired);
         } catch (error) {
           await reply.status(422).send(errorResponse(error instanceof Error ? error.message : 'validation_failed', 'Routing table references an incomplete or missing profile.'));
           return;
@@ -642,7 +643,10 @@ export async function registerControlPlaneRoutes(
         const mergedSettings = { ...existingSettings, ...(body.settings as Record<string, unknown>) };
         const otherRecords = existingRecords.filter((r) => r.id !== params.id);
         try {
-          assertProviderProfileUpdateDoesNotBreakActiveRoutes(otherRecords, params.id, mergedSettings);
+          const mergedProfile = existing?.kind === 'provider_profile'
+            ? { ...existing, ...body, settings: mergedSettings } as ConfigurationRecord : existing;
+          assertProviderProfileUpdateDoesNotBreakActiveRoutes(otherRecords, params.id, mergedSettings,
+            mergedProfile === null ? true : dependencies.providerCredentialRequired?.(mergedProfile) ?? true);
         } catch (error) {
           await reply.status(422).send(errorResponse(error instanceof Error ? error.message : 'validation_failed', 'Clearing dispatch-required fields while an active routing table references this profile is not allowed.'));
           return;

@@ -1330,3 +1330,65 @@ describe('createClaudeAgentAdapter — safe session diagnostics and proxy-backed
     expectNoSentinels(serialized);
   });
 });
+
+
+describe('Claude subscription authentication', () => {
+  it('uses host sign-in with API/gateway settings masked even when inherited from the parent', async () => {
+    const launches: ClaudeSessionLaunchOptions[] = [];
+    vi.stubEnv('ANTHROPIC_API_KEY', 'parent-api-key');
+    vi.stubEnv('CLAUDE_CODE_USE_BEDROCK', '1');
+    try {
+      const adapter = createClaudeAgentAdapter({ authentication: 'subscription', probeSubscriptionAuth: async () => true,
+        launchClaudeSession: async function* (options) { launches.push(options); yield { type: 'result', result: { output: 'OK' } }; } });
+      expect(adapter.adapterId).toBe('claude-agent-sdk-subscription');
+      expect(adapter.credentialRequirement).toBe('external');
+      const { input } = makeSessionInput({ profile: makeProfile({ model: { provider: 'anthropic', model: 'sonnet' } }) });
+      await collect((await adapter.startSession(input)).events);
+      expect(launches).toHaveLength(1);
+      for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK']) {
+        expect(launches[0]?.env?.[key]).toBe('');
+      }
+      expect(launches[0]?.options).toMatchObject({ model: 'sonnet', settingSources: [], settings: { forceLoginMethod: 'claudeai', apiKeyHelper: '' } });
+    } finally { vi.unstubAllEnvs(); }
+  });
+  it('fails before inference when subscription sign-in is unavailable', async () => {
+    const launch = vi.fn(async function* () { yield { type: 'result' }; });
+    const adapter = createClaudeAgentAdapter({ authentication: 'subscription', probeSubscriptionAuth: async () => false, launchClaudeSession: launch });
+    const { input } = makeSessionInput();
+    await expect(collect((await adapter.startSession(input)).events)).rejects.toMatchObject({ failureReason: 'provider_auth_failed' });
+    expect(launch).not.toHaveBeenCalled();
+  });
+  it('rejects a gateway endpoint on a subscription profile', () => {
+    const adapter = createClaudeAgentAdapter({ authentication: 'subscription' });
+    const { input } = makeSessionInput({ profile: makeProfile({ endpoint: { baseUrl: 'https://gateway.invalid' } }) });
+    expect(() => adapter.startSession(input)).toThrow('Subscription profiles cannot');
+  });
+});
+
+
+describe('Claude reasoning effort', () => {
+  it.each(['low', 'medium', 'high'] as const)('passes %s effort and adaptive thinking to the SDK without a degradation', async effort => {
+    const profile = makeProfile({ inferenceSettings: { reasoningEffort: effort }, endpoint: { requiredAlterations: { inferenceSettings: ['reasoningEffort'] } } });
+    const { input: baseInput } = makeSessionInput({ profile });
+    const input = { ...baseInput, connection: makeConnection(profile, {
+      CLAUDE_CODE_EFFORT_LEVEL: 'max', MAX_THINKING_TOKENS: '0', CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING: '1'
+    }).connection };
+    const { launch, calls } = fakeLaunch([{ type: 'result', result: { output: '' } }]);
+    const session = await createClaudeAgentAdapter({ launchClaudeSession: launch }).startSession(input);
+    await collect(session.events);
+    expect(calls[0]?.options).toMatchObject({ effort, thinking: { type: 'adaptive' } });
+    expect(calls[0]?.env?.CLAUDE_CODE_EFFORT_LEVEL).toBe(effort);
+    expect(calls[0]?.env?.MAX_THINKING_TOKENS).toBe('');
+    expect(calls[0]?.env?.CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING).toBe('');
+    const metadata = await session.metadata;
+    expect(metadata.degradedCapabilities.some(d => d.capability === 'inference_setting:reasoningEffort')).toBe(false);
+  });
+  it('keeps unconfigured reasoning at the provider default', async () => {
+    const { input } = makeSessionInput();
+    const { launch, calls } = fakeLaunch([{ type: 'result', result: { output: '' } }]);
+    const session = await createClaudeAgentAdapter({ launchClaudeSession: launch }).startSession(input);
+    await collect(session.events);
+    expect(calls[0]?.options?.effort).toBeUndefined();
+    expect(calls[0]?.env?.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
+  });
+});

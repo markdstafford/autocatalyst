@@ -6,7 +6,8 @@ import type {
 
 export function assertActiveRoutesReferenceDispatchableProfiles(
   records: readonly ConfigurationRecord[],
-  candidate: ConfigurationRecord
+  candidate: ConfigurationRecord,
+  credentialRequired: (profile: ConfigurationRecord) => boolean = () => true
 ): void {
   if (candidate.kind !== 'model_routing_table') return;
   const settings = candidate.settings;
@@ -36,7 +37,7 @@ export function assertActiveRoutesReferenceDispatchableProfiles(
     if (!pSettings['model']) {
       throw new Error('profile_incomplete');
     }
-    if (!pSettings['credentialSecretHandle']) {
+    if (credentialRequired(profile) && !pSettings['credentialSecretHandle']) {
       throw new Error('profile_incomplete');
     }
   }
@@ -45,7 +46,8 @@ export function assertActiveRoutesReferenceDispatchableProfiles(
 export function assertProviderProfileUpdateDoesNotBreakActiveRoutes(
   records: readonly ConfigurationRecord[],
   profileId: string,
-  mergedProfileSettings: Record<string, unknown>
+  mergedProfileSettings: Record<string, unknown>,
+  credentialRequired = true
 ): void {
   const activeRoutingTables = records.filter((r) => {
     if (r.kind !== 'model_routing_table') return false;
@@ -66,7 +68,7 @@ export function assertProviderProfileUpdateDoesNotBreakActiveRoutes(
     if (!mergedProfileSettings['model']) {
       throw new Error('profile_incomplete');
     }
-    if (!mergedProfileSettings['credentialSecretHandle']) {
+    if (credentialRequired && !mergedProfileSettings['credentialSecretHandle']) {
       throw new Error('profile_incomplete');
     }
   }

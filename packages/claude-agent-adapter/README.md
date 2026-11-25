@@ -32,9 +32,13 @@ model bytes.
 
 ## Inference setting capability
 
-The Claude Agent SDK runs Claude Code autonomously. Inference settings such as
-`temperature`, `topP`, `maxOutputTokens`, `reasoningEffort`, and `seed` are
-Messages-API concerns and are **not** plumbed into the agent-mode launch.
+The adapter maps `reasoningEffort` (`low`, `medium`, `high`) to SDK `effort` and
+`thinking: { type: "adaptive" }`. Explicit effort also owns the child effort
+environment and masks inherited fixed-budget/adaptive-disable variables.
+Subscription sessions use the signed-in `claude` executable on PATH so new models
+are not constrained by an older SDK-bundled CLI.
+
+`temperature`, `topP`, `maxOutputTokens`, and `seed` remain unsupported in agent mode.
 - If a profile sets one of these and the endpoint does **not** mark it as a
   `requiredAlterations.inferenceSettings` entry, the adapter records a
   `ProviderCapabilityDegradation` on the session metadata.

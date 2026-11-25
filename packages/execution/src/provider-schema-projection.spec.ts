@@ -231,48 +231,17 @@ describe('discriminated union branch constraints (INIT-2)', () => {
       expect(hasNullBranch).toBe(true);
     });
 
-    it('claude projection has a branch with status: findings and minItems: 1', () => {
+    it('uses a tool-compatible Claude root while capture retains the reviewer branch rules', () => {
       const projection = projectStepResultSchemaForProvider({
-        schemaId: 'autocatalyst.reviewer_result.v1',
-        schema: reviewerResultSchema,
-        target: 'claude_output_format'
+        schemaId: 'autocatalyst.reviewer_result.v1', schema: reviewerResultSchema, target: 'claude_output_format'
       });
       const schema = projection.schema as JsonSchema;
-      const branches = (schema['anyOf'] as JsonSchema[]) ?? [];
-      const findingsBranch = branches.find(
-        (b) => {
-          const statusProp = (b['properties'] as JsonSchema | undefined)?.['status'];
-          return (statusProp as JsonSchema | undefined)?.['enum']?.[0] === 'findings';
-        }
-      );
-      expect(findingsBranch).toBeDefined();
-      const findingsProp = (findingsBranch?.['properties'] as JsonSchema | undefined)?.['findings'] as JsonSchema | undefined;
-      expect(findingsProp?.['minItems']).toBe(1);
-    });
-
-    it('near-miss: claude projection findings branch requires non-empty findings (structural check)', () => {
-      // For the Claude target, the discriminated union is represented as anyOf branches.
-      // The findings branch must have minItems: 1.
-      // For the OpenAI target, discriminated union enforcement is delegated to the execution
-      // boundary (canonical Zod schema), because the OpenAI Agents SDK requires type: 'object'
-      // at the root and rejects bare anyOf.
-      const projection = projectStepResultSchemaForProvider({
-        schemaId: 'autocatalyst.reviewer_result.v1',
-        schema: reviewerResultSchema,
-        target: 'claude_output_format'
-      });
-      const schema = projection.schema as JsonSchema;
-      const branches = (schema['anyOf'] as JsonSchema[]) ?? [];
-      // Every branch that allows status: 'findings' must have minItems: 1 on findings
-      const findingsBranches = branches.filter((b) => {
-        const statusEnum = ((b['properties'] as JsonSchema | undefined)?.['status'] as JsonSchema | undefined)?.['enum'];
-        return Array.isArray(statusEnum) && statusEnum.includes('findings') && !statusEnum.includes('satisfied');
-      });
-      expect(findingsBranches.length).toBeGreaterThan(0);
-      for (const branch of findingsBranches) {
-        const findings = (branch['properties'] as JsonSchema | undefined)?.['findings'] as JsonSchema | undefined;
-        expect(findings?.['minItems']).toBeGreaterThanOrEqual(1);
-      }
+      expect(schema['type']).toBe('object');
+      expect(schema['anyOf']).toBeUndefined();
+      expect(schema['oneOf']).toBeUndefined();
+      expect(reviewerResultSchema.safeParse({ status: 'satisfied', findings: [] }).success).toBe(true);
+      expect(reviewerResultSchema.safeParse({ status: 'findings', findings: [] }).success).toBe(false);
+      expect(reviewerResultSchema.safeParse({ status: 'satisfied', findings: [{ title: 'Bad', body: 'Bad', severity: 'blocker' }] }).success).toBe(false);
     });
   });
 
@@ -419,4 +388,12 @@ describe('discriminated union branch constraints (INIT-2)', () => {
       expect(itemProps.sort()).toEqual(itemRequired.sort());
     });
   });
+});
+
+
+it('gives every Claude output projection an object root accepted by the structured-output tool', () => {
+  for (const schemaId of coveredSchemaIds) {
+    const projection = projectStepResultSchemaForProvider({ schemaId, schema: schemaFixtures[schemaId], target: 'claude_output_format' });
+    expect((projection.schema as JsonSchema)['type']).toBe('object');
+  }
 });

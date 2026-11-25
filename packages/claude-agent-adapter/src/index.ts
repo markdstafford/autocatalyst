@@ -1,7 +1,8 @@
 export {
   createClaudeAgentAdapter,
   claudeProviderKind,
-  claudeAgentAdapterId
+  claudeAgentAdapterId,
+  claudeSubscriptionAdapterId
 } from './claude-agent-adapter.js';
 export type {
   ClaudeAgentAdapterOptions,

@@ -20,5 +20,5 @@ try {
     sandboxPolicy: codexSandboxPolicy('read-only', [cwd]) });
   assert.notEqual(readonly.exitCode, 0, 'Reviewer write must be rejected.');
   assert.equal(await readFile(file, 'utf8'), 'before');
-  console.log(JSON.stringify({ runtime: '0.160.1', modelTurns: 0, implementerWritePersisted: true, reviewerWriteRejected: true, reviewerFileUnchanged: true }));
+  console.log(JSON.stringify({ runtime: '0.171.0', modelTurns: 0, implementerWritePersisted: true, reviewerWriteRejected: true, reviewerFileUnchanged: true }));
 } finally { client.close(); await rm(cwd, { recursive: true, force: true }); }

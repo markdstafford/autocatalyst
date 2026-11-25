@@ -1,6 +1,6 @@
 /**
  * Shared constants for deterministic fake mode. These are documented local test
- * values only (see docs/operators/fake-mode.md). Nothing here is a real secret.
+ * values only (see README.md#fake-mode). Nothing here is a real secret.
  */
 
 /** Development tenant used for startup composition and all fake fixtures. */
