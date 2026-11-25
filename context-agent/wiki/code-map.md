@@ -2,7 +2,7 @@
 
 - Claude `reasoningEffort` maps to SDK effort and adaptive thinking. Subscription launches use the host Claude CLI. Codex is pinned to 0.171.0 for GPT-6.2 access.
 
-- Subscription dispatch: `claude-agent-adapter/src/subscription-auth.ts` owns login probing and credential masking; separate Claude subscription and Codex Business adapter identities are registered in `apps/control-plane/src/server.ts`. Model routing honors `credentialRequirement: external` at resolution and HTTP validation. See [subscription-provider-dispatch](../decisions/subscription-provider-dispatch.md) and [operator setup](../../docs/operators/subscription-dispatch.md).
+- Subscription dispatch: `claude-agent-adapter/src/subscription-auth.ts` owns login probing and credential masking; separate Claude subscription and Codex Business adapter identities are registered in `apps/control-plane/src/server.ts`. Model routing honors `credentialRequirement: external` at resolution and HTTP validation. See [subscription-provider-dispatch](../decisions/subscription-provider-dispatch.md) and [operator setup](../../docs/operators/real-dispatch.md#subscription-sign-in).
 
 - Runtime Micromanager source, pin, synchronization, fidelity checks and E2E handoff: [micromanager-runtime.md](micromanager-runtime.md).
 - Web client design system (tokens, shell dimensions, alignment rules, component rules): [design-system.md](design-system.md).
