@@ -32,3 +32,19 @@
   This managed environment cannot bind loopback ports; use Fastify inject for fixture-only HTTP.
   If the long workspace path exceeds Nx's socket limit, run with `NX_DAEMON=false NX_ISOLATE_PLUGINS=false`
   and set `TMPDIR` to writable scratch. Per-package Vitest configs can run focused fixtures directly.
+
+
+## Measure a live baseline for #195
+
+Use a representative bug and feature that together capture real Codex and
+Claude usage. Read each run's sessions to find the exact billing keys. Publish
+the providers' API list prices as `model_rate_table` records with effective
+dates covering those sessions. Convert USD per million tokens to nano-dollars
+per token by multiplying by 1,000. Preserve request bands and cache-write
+retention rates.
+
+Read the sessions again and save the run and session IDs, exact billing keys,
+usage groups, priced amounts, gaps, and selected rate revisions. Report exact,
+estimated, and unpriced shares of known disjoint tokens separately, alongside
+unknown counts and overflow. Retain the selected revisions so the estimate can
+be reproduced later. Synthetic fixture prices do not count as a live baseline.

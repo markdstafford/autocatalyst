@@ -18,11 +18,51 @@ a sequence of issues, each a vertically complete capability that lands as one pu
 - [`context-human/concepts/`](context-human/concepts/index.md) — the architectural contracts.
 - [`context-human/adrs/`](context-human/adrs/index.md) — the architecture decision records.
 
-## Real runner dispatch
+## Run locally
 
-Real runner dispatch is opt-in for the control-plane entrypoint. See
-[`docs/operators/real-dispatch.md`](docs/operators/real-dispatch.md) for startup flags, environment
-variables, and a Grove-backed Claude Agent SDK provider-profile example.
+From the repository root, run `pnpm install` and `pnpm nx build web`.
+
+### Fake mode
+
+Use fake mode to try the UI with scripted runs. It uses no model or GitHub calls.
+The serve command resets the previous fake state. Start it in one terminal and
+seed example runs from another:
+
+```sh
+AUTOCATALYST_CLIENT_DIR=apps/web/dist pnpm nx run control-plane:serve-fake
+pnpm nx run control-plane:seed-fake -- --scenario all
+```
+
+Open http://localhost:4010 and connect with `fake-mode-token`.
+
+### Real mode
+
+Start the server with your own bearer token and database encryption secret:
+
+```sh
+mkdir -p .data .data/repos .data/workspaces
+AUTOCATALYST_REAL_DISPATCH=1 \
+AUTOCATALYST_CLIENT_DIR=apps/web/dist \
+AUTOCATALYST_REPOS_ROOT=.data/repos \
+AUTOCATALYST_WORKSPACES_ROOT=.data/workspaces \
+CONTROL_PLANE_PORT=4010 \
+CONTROL_PLANE_DATABASE_PATH=.data/control-plane.sqlite \
+CONTROL_PLANE_BEARER_TOKEN="${CONTROL_PLANE_BEARER_TOKEN:?set a local bearer token}" \
+CONTROL_PLANE_MASTER_SECRET="${CONTROL_PLANE_MASTER_SECRET:?set a database encryption secret}" \
+pnpm nx serve control-plane
+```
+
+Connect with that bearer token and configure a project and provider profiles.
+For subscription profiles, sign in on the server host and put the CLIs on its PATH:
+
+| Provider | Adapter ID | Host login |
+|---|---|---|
+| `codex` | `codex-app-server-business` | `codex login` with a ChatGPT Business account. Use CLI 0.171.0. |
+| `anthropic` | `claude-agent-sdk-subscription` | `claude auth login` with a Claude subscription. |
+
+Give each profile an explicit model. Restart after saving the profiles, then
+activate a routing table that references them. Subscription profiles reject API
+credentials and gateway overrides.
 
 ## Contributing
 

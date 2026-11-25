@@ -11,7 +11,7 @@
  * because `serve-fake` removes the shared `.autocatalyst-fake/` directory.
  *
  * The control surface is the state directory on disk (see
- * `docs/operators/fake-mode.md`): the scripted-launch counter, the pull request
+ * `README.md#fake-mode`): the scripted-launch counter, the pull request
  * state files, and the scripted-failure files. The helpers below are the only
  * sanctioned way for a spec to read or write those files — specs do not build
  * paths themselves.

@@ -196,7 +196,7 @@ curl -sS -X POST -H 'Authorization: Bearer fake-mode-token' -H 'content-type: ap
   'http://127.0.0.1:4010/v1/runs/<run-id>/pull-request/refresh'
 ```
 
-Expect `open` and `pr.human_review`. Write `merged` to the printed `pullRequestStateFile` (see [fake mode](../../docs/operators/fake-mode.md#pull-request-state-files)) and expect `merged` and `done` on refresh. Seed a fresh `pr-open` run on a different fixture issue with `--issue`, write `closed` to its state file, and expect `closed`, `failed`, and `pull_request_closed_without_merge`.
+Expect `open` and `pr.human_review`. Write `merged` to the printed `pullRequestStateFile` (see [fake mode](../../context-agent/wiki/code-map.md#fake-mode-deterministic-local-test-harness)) and expect `merged` and `done` on refresh. Seed a fresh `pr-open` run on a different fixture issue with `--issue`, write `closed` to its state file, and expect `closed`, `failed`, and `pull_request_closed_without_merge`.
 
 ### Alternatives considered
 
