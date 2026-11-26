@@ -4157,15 +4157,19 @@ describe('PR lifecycle through the booted control-plane server', () => {
           await writeFile(join(repoRoot, 'context-human', 'specs', 'enhancement-pr-server.md'), SPEC_MARKDOWN, 'utf-8');
           await execFileAsync('git', ['add', '.'], { cwd: repoRoot });
           await execFileAsync('git', ['commit', '-m', 'seed spec'], { cwd: repoRoot });
+          await execFileAsync('git', ['push', 'origin', 'main'], { cwd: repoRoot });
           await execFileAsync('git', ['checkout', '-b', BRANCH], { cwd: repoRoot });
 
           // 2. Fake `gh` covering the code-host PR verbs — no real network. Matched on the first
           //    two args so PR body text can never collide with a verb pattern.
-          const prViewJson = JSON.stringify({ number: 4321, url: PR_URL, state: 'OPEN', headRefName: BRANCH, mergedAt: null });
+          const prViewJson = JSON.stringify({
+            number: 4321, url: PR_URL, state: 'OPEN', headRefName: BRANCH, mergedAt: null,
+            headRepository: { name: 'testrepo' }, headRepositoryOwner: { login: 'testorg' }, baseRefName: 'main'
+          });
           const fakeGh = join(ghDir, 'fake-gh');
           await writeFile(
             fakeGh,
-            `#!/bin/sh\ncase "$1 $2" in\n  "pr list") echo '[]' ;;\n  "pr create") echo '${PR_URL}' ;;\n  "pr view") echo '${prViewJson}' ;;\n  *) echo "unexpected gh args: $*" 1>&2; exit 1 ;;\nesac\n`,
+            `#!/bin/sh\ncase "$1 $2" in\n  "pr list") echo '[]' ;;\n  "pr create") echo '${PR_URL}' ;;\n  "pr view") head=$(git --git-dir='${bareRemote}' rev-parse 'refs/heads/${BRANCH}') && printf '%s,"%s":"%s"}\\n' '${prViewJson.slice(0, -1)}' headRefOid "$head" ;;\n  *) exit 1 ;;\nesac\n`,
             'utf-8'
           );
           await chmod(fakeGh, 0o755);
@@ -4186,7 +4190,7 @@ describe('PR lifecycle through the booted control-plane server', () => {
             owner: hardcodedDevelopmentPrincipal,
             tenant: hardcodedDevelopmentPrincipal.tenantId,
             displayName: 'PR Server Boot Project',
-            repoUrl: 'https://github.com/testorg/testrepo',
+            repoUrl: `file://${bareRemote}`,
             hostRepository: { provider: 'github', owner: 'testorg', name: 'testrepo' },
             workspaceRootOverride: null,
             issueTrackerSetting: null,
@@ -4256,6 +4260,11 @@ describe('PR lifecycle through the booted control-plane server', () => {
               completedAt: now
             } as unknown as Parameters<typeof seedRepos.runSteps.updateCheckpoint>[0]['checkpointResult']
           });
+          // Startup checks the retained local ref under the canonical host clone.
+          const host = join(reposRoot, 'testorg', 'testrepo');
+          await mkdir(join(reposRoot, 'testorg'), { recursive: true });
+          await execFileAsync('git', ['clone', '--branch', 'main', bareRemote, host]);
+          await execFileAsync('git', ['branch', `enhancement/pr-server-boot-${run.id.slice(4).replace(/[^a-zA-Z0-9]/gu, '').slice(0, 8)}`, 'main'], { cwd: host });
           seedDb.close();
 
           // 4. Boot the REAL server. We deliberately do NOT inject pullRequestOpenDependencies or

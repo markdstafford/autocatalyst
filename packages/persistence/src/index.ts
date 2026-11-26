@@ -30,3 +30,5 @@ export {
   withTempDatabasePath
 } from './sqlite.js';
 export type { InternalSqliteDatabase, SqliteDatabase } from './sqlite.js';
+
+export { DrizzleRepairRepository } from './pr-ci-repair-repository.js';

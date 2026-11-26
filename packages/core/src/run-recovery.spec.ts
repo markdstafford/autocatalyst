@@ -100,3 +100,31 @@ describe('resolveRecoveryPlan', () => {
     expect(() => resolveRecoveryPlan({ stoppedStep: step('question.answer'), hasCommittedCheckpoints: false })).toThrow(RecoveryPlanError);
   });
 });
+
+describe('publication-specific Resume', () => {
+  it.each([
+    ['pr.finalize', 'pr_integration_conflict'],
+    ['pr.open', 'pr_publication_refresh_exhausted'],
+    ['pr.finalize', 'pr_target_verification_failed'],
+    ['pr.open', 'pr_target_verification_failed']
+  ])('keeps the branch and starts fresh finalization for %s / %s in both Resume forms', (stopped, code) => {
+    const input = {
+      stoppedStep: step(stopped, { checkpointResult: { kind: 'publication_stop', code } }),
+      failureReason: code, hasCommittedCheckpoints: false
+    };
+    const expected = { mode: 'resume', reDispatchStep: 'pr.finalize', baseKind: 'run_branch', existingWorkspaceBehavior: 'keep' };
+    expect(resolveRecoveryPlan(input)).toEqual(expected);
+    expect(resolveRecoveryPlan({ ...input, explicitMode: 'resume' })).toEqual(expected);
+    expect(resolveRecoveryPlan({ ...input, explicitMode: 'start_over' })).toMatchObject({ baseKind: 'current_default_branch' });
+  });
+
+  it('retains unrelated create recovery and rejects unmatched host markers', () => {
+    const input = {
+      stoppedStep: step('pr.open', { checkpointResult: { kind: 'publication_stop', code: 'pr_integration_conflict' } }),
+      failureReason: 'pr_integration_conflict', hasCommittedCheckpoints: true
+    };
+    expect(resolveRecoveryPlan(input).reDispatchStep).toBe('pr.open');
+    expect(resolveRecoveryPlan({ ...input, explicitMode: 'resume' }).reDispatchStep).toBe('pr.open');
+    expect(resolveRecoveryPlan({ ...input, failureReason: 'runner_failed_before_terminal_result' }).reDispatchStep).toBe('pr.open');
+  });
+});

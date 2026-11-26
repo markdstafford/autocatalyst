@@ -47,6 +47,27 @@ function props(overrides: HarnessOverrides): UseRunDetailOptions {
 }
 
 describe('useRunDetail stream-first initial reads', () => {
+  it('answers the saved repair guidance question by exact pause occurrence after reload', async () => {
+    const run = { ...makeRun(), currentStep: 'implementation.awaiting_input' };
+    const scripted = createScriptedDetailClient({ run });
+    const pause = attempt('implementation.awaiting_input', 3, 1, null);
+    const question = 'Should repair use the correction on main?';
+    scripted.setSteps([{
+      ...pause,
+      checkpointResult: { pause: { kind: 'convergence_escalation', producingStep: 'implementation.build', question } },
+      systemActivity: [{
+        key: 'repair-pause-3', timestamp: pause.startedAt, kind: 'ci_guidance', code: 'repair_needs_guidance',
+        ordinal: 1, limit: 2, headSha: 'a'.repeat(40), checks: []
+      }]
+    }]);
+    const { result } = renderHook(() => useRunDetail(props({ client: scripted.client, run })));
+    await waitFor(() => expect(result.current.guidancePause).toEqual({ kind: 'repair', stepId: pause.id, question }));
+    await act(async () => {
+      expect(await result.current.answerGuidance?.(pause.id, 'Use main')).toEqual({ status: 'ok' });
+    });
+    expect(scripted.replyCalls).toEqual([{ kind: 'guidance', pauseStepId: pause.id, body: 'Use main' }]);
+  });
+
   it('opens one stream before the initial reads and loads every fact', async () => {
     const scripted = createScriptedDetailClient({ run: makeRun({ id: 'r1', workKind: 'feature' }) });
     scripted.setPullRequest(null);

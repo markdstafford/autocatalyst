@@ -24,6 +24,10 @@ import {
 } from './implementation-summary.js';
 import type { ApplyOrchestratedDirectiveInput, OrchestratedRunResult } from './orchestrator.js';
 import type { RunWorkspaceGitPort } from './run-workspace-git.js';
+import {
+  findPublicationReceipt, initialPullRequestBase, publicationAttestation, publicationEpoch, publicationRefreshLimit,
+  resolvePublicationBinding, type PublicationGitPort, type PublicationPushReceipt, type PublicationWorkspace
+} from './pr-publication.js';
 
 // --- Error type ---
 
@@ -81,11 +85,14 @@ export interface PullRequestOpenHandlerDependencies {
   readonly applyDirective: (input: ApplyOrchestratedDirectiveInput) => Promise<OrchestratedRunResult>;
   readonly clock: () => string;
   readonly runWorkspaceGit: Pick<RunWorkspaceGitPort, 'getChangedFiles'>;
+  readonly publicationGit?: PublicationGitPort;
+  readonly publicationRemoteOverride?: string;
 }
 
 // --- Checkpoint shape ---
 
 export interface PullRequestOpenCheckpoint {
+  readonly receipt?: PublicationPushReceipt;
   readonly kind: 'pull_request_open';
   readonly provider: string;
   readonly number: number;
@@ -149,7 +156,7 @@ function resolveCodeHostBinding(project: {
     },
     credentialRef: project.codeHostSetting.credentialRef,
     // Sensible default until projects carry a configured default branch.
-    baseBranch: 'main'
+    baseBranch: initialPullRequestBase
   };
 }
 
@@ -185,8 +192,9 @@ async function emitPullRequestOpenedEvent(
 function buildRenderableCumulativeSummary(input: {
   readonly cumulativeSummary: CumulativeImplementationSummary;
   readonly diffPaths: readonly string[];
+  readonly pinnedDiff: boolean;
 }): CumulativeImplementationSummary {
-  const changedFiles = mergeChangedFiles(input.cumulativeSummary.changedFiles, input.diffPaths);
+  const changedFiles = mergeChangedFiles(input.pinnedDiff ? [] : input.cumulativeSummary.changedFiles, input.diffPaths);
   const fallbackSummary = summarizeChangedPaths(changedFiles);
   const existingSummary = input.cumulativeSummary.cumulativeSummary.trim();
   const isPlaceholder = LEGACY_TEXT_PLACEHOLDER_PATTERN.test(existingSummary);
@@ -225,20 +233,20 @@ export async function handlePullRequestOpen(
 
   // 2. Resolve project chain (needed for both idempotency refresh path and create path).
   const topic = await deps.topics.findById(run.topicId);
-  if (topic === null) {
+  if (topic === null || topic.tenant !== tenant) {
     throw new PullRequestOpenHandlerError('missing_topic', `Topic '${run.topicId}' does not exist.`);
   }
   const conversation = await deps.conversations.findById(topic.conversationId);
-  if (conversation === null) {
+  if (conversation === null || conversation.tenant !== tenant) {
     throw new PullRequestOpenHandlerError('missing_conversation', `Conversation '${topic.conversationId}' does not exist.`);
   }
   const project = await deps.projects.findById(conversation.projectId);
-  if (project === null) {
+  if (project === null || project.tenant !== tenant) {
     throw new PullRequestOpenHandlerError('missing_project', `Project '${conversation.projectId}' does not exist.`);
   }
 
   const binding = resolveCodeHostBinding(project);
-  if (binding === null) {
+  if (binding === null || project.codeHostSetting?.provider !== project.hostRepository.provider) {
     throw new PullRequestOpenHandlerError(
       'missing_code_host_setting',
       'Project has no code-host setting or credential reference.',
@@ -270,7 +278,7 @@ export async function handlePullRequestOpen(
 
   // 3. Idempotency: if a local PR is already recorded, refresh state from the provider.
   const existingPullRequest = await deps.pullRequests.findByRun(runId);
-  if (existingPullRequest !== null && existingPullRequest.state === 'open') {
+  if (deps.publicationGit === undefined && existingPullRequest !== null && existingPullRequest.state === 'open') {
     let providerFacts: CodeHostPullRequestFacts | null = null;
     try {
       providerFacts = await codeHostPort.read({
@@ -342,8 +350,43 @@ export async function handlePullRequestOpen(
   // 5. Load pr.finalize checkpoint and implementation cumulative summary.
   const runSteps = await deps.runSteps.listByRun(runId);
   const finalizeStep = [...runSteps]
-    .reverse()
-    .find((s) => s.step === 'pr.finalize' && s.checkpointResult !== null);
+    .sort((a, b) => b.occurrence.index - a.occurrence.index)
+    .find((s) => s.step === 'pr.finalize');
+  const workspace = deps.publicationGit !== undefined
+    ? (await resolvePublicationBinding(run, {
+        ...deps, resolveCredential: async () => credential
+      })).workspace
+    : undefined;
+  const guard = workspace !== undefined && deps.publicationGit !== undefined
+    ? makePublicationGuard(run, runSteps, workspace, deps.publicationGit, deps)
+    : undefined;
+  if (guard !== undefined) {
+    const candidate = publicationAttestation(finalizeStep, guard.workspace);
+    // A provider-side create can be recovered independently of target drift, but only with an exact receipt.
+    const targetSha = await guard.git.readTarget(guard.workspace);
+    let prior: CodeHostPullRequestFacts | null;
+    try {
+      prior = existingPullRequest === null
+      ? await codeHostPort.findByBranch({ target: binding.target, headBranch: branch, baseBranch: binding.baseBranch, credential })
+      : await codeHostPort.read({ target: binding.target, number: existingPullRequest.number, credential });
+    } catch (cause) {
+      if (targetSha === null) return guard.stop('pr_target_verification_failed', 'target_unavailable', candidate, null);
+      throw cause;
+    }
+    if (prior !== null) {
+      if (prior.state !== 'open') throw new PullRequestOpenHandlerError('pull_request_recovery_pr_not_open', 'The existing pull request is no longer open.');
+      const receipt = prior.headSha !== undefined ? findPublicationReceipt(runSteps, runId, guard.workspace, prior.headSha) : null;
+      if (receipt === null || !matchesPublication(prior, guard.workspace, receipt.headSha, binding.target.provider) ||
+          (existingPullRequest !== null && prior.number !== existingPullRequest.number)) {
+        throw new PullRequestOpenHandlerError('pull_request_recovery_missing_provider_match', 'Existing pull request does not match a verified publication receipt.');
+      }
+      return guard.advance(existingPullRequest ?? await persistPullRequest(deps, runId, run, prior), receipt, true);
+    }
+    if (targetSha === null) return guard.stop('pr_target_verification_failed', 'target_unavailable', candidate, null);
+    if (candidate === null || candidate.targetSha !== targetSha || await guard.git.readCandidate(guard.workspace) !== candidate.publishSha) {
+      return guard.refresh(candidate, targetSha);
+    }
+  }
   if (finalizeStep === undefined) {
     throw new PullRequestOpenHandlerError(
       'missing_pr_finalize_checkpoint',
@@ -376,16 +419,18 @@ export async function handlePullRequestOpen(
   }
 
   // 6. Recover final branch diff paths and build renderable summary.
-  const baseRef = workspaceMeta.provisionedBaseRef?.trim() || binding.baseBranch;
+  const candidate = workspace === undefined ? null : publicationAttestation(finalizeStep, workspace);
+  const baseRef = candidate?.targetSha ?? (workspaceMeta.provisionedBaseRef?.trim() || binding.baseBranch);
   let diffPaths: readonly string[] = [];
   try {
     const diffEntries = await deps.runWorkspaceGit.getChangedFiles({
       workspaceRepoRoot: workspaceMeta.workspaceRepoRoot,
-      baseRef
+      baseRef,
+      ...(candidate !== null ? { headRef: candidate.publishSha } : {})
     });
     diffPaths = diffEntries.map((entry) => entry.path);
   } catch (cause) {
-    if (cumulativeSummary.cumulativeSummary.trim().length === 0 && cumulativeSummary.changedFiles.length === 0) {
+    if (candidate !== null || (cumulativeSummary.cumulativeSummary.trim().length === 0 && cumulativeSummary.changedFiles.length === 0)) {
       throw new PullRequestOpenHandlerError(
         'missing_implementation_summary',
         `Unable to recover changed files for run '${runId}'.`,
@@ -393,7 +438,7 @@ export async function handlePullRequestOpen(
       );
     }
   }
-  const renderableSummary = buildRenderableCumulativeSummary({ cumulativeSummary, diffPaths });
+  const renderableSummary = buildRenderableCumulativeSummary({ cumulativeSummary, diffPaths, pinnedDiff: candidate !== null });
 
   // 7. Build PR content.
   const content = buildPullRequestContent({
@@ -403,6 +448,52 @@ export async function handlePullRequestOpen(
     reconciledSummary: finalize.reconciledSummary,
     titleSubject: finalize.titleSubject
   });
+
+  if (guard !== undefined && candidate !== null) {
+    const currentTarget = await guard.git.readTarget(guard.workspace);
+    if (currentTarget === null) return guard.stop('pr_target_verification_failed', 'target_unavailable', candidate, null);
+    if (currentTarget !== candidate.targetSha || await guard.git.readCandidate(guard.workspace) !== candidate.publishSha) {
+      return guard.refresh(candidate, currentTarget);
+    }
+    const pushed = await guard.git.pushCandidate(guard.workspace, candidate.publishSha);
+    let receipt = findPublicationReceipt(runSteps, runId, guard.workspace, candidate.publishSha);
+    if (pushed === 'pushed') {
+      receipt = {
+        kind: 'publication_push_receipt', runId, repository: guard.workspace.repository,
+        branch, headSha: candidate.publishSha
+      };
+      await deps.runSteps.updateCheckpoint({
+        runId, tenant, runStepId: guard.stepId,
+        checkpointResult: { kind: 'publication_pushed', receipt }
+      });
+    }
+    if (pushed === 'unverified' || receipt === null) {
+      return guard.stop('pr_publication_push_unverified', 'push_unverified', candidate, currentTarget, receipt);
+    }
+    const targetAfterPush = await guard.git.readTarget(guard.workspace);
+    if (targetAfterPush === null) return guard.stop('pr_target_verification_failed', 'target_unavailable', candidate, null, receipt);
+    if (targetAfterPush !== candidate.targetSha || await guard.git.readCandidate(guard.workspace) !== candidate.publishSha) {
+      return guard.refresh(candidate, targetAfterPush, receipt);
+    }
+    if (await guard.git.readSource(guard.workspace) !== candidate.publishSha) {
+      return guard.stop('pr_publication_push_unverified', 'push_unverified', candidate, targetAfterPush, receipt);
+    }
+
+    let facts: CodeHostPullRequestFacts | null;
+    try {
+      facts = await codeHostPort.create({
+        target: binding.target, workspaceRepoRoot: workspaceMeta.workspaceRepoRoot, branch,
+        baseBranch: binding.baseBranch, content, credential, branchAlreadyPushed: true
+      });
+    } catch (error) {
+      facts = await codeHostPort.findByBranch({ target: binding.target, headBranch: branch, baseBranch: binding.baseBranch, credential }).catch(() => null);
+      if (facts === null) throw error;
+    }
+    if (!matchesPublication(facts, guard.workspace, receipt.headSha, binding.target.provider)) {
+      throw new PullRequestOpenHandlerError('pull_request_recovery_missing_provider_match', 'Provider pull request does not match the published candidate.');
+    }
+    return guard.advance(await persistPullRequest(deps, runId, run, facts), receipt, false);
+  }
 
   // 8. findByBranch recovery decision table (before create).
   let providerExisting: CodeHostPullRequestFacts | null = null;
@@ -584,6 +675,58 @@ export async function handlePullRequestOpen(
     idempotent: false,
     completedAt: deps.clock()
   });
+}
+
+function matchesPublication(facts: CodeHostPullRequestFacts, workspace: PublicationWorkspace, headSha: string, provider: string): boolean {
+  if (facts.provider !== provider || facts.state !== 'open' || facts.branch !== workspace.branch || facts.baseBranch !== workspace.base ||
+      facts.headSha !== headSha || facts.headRepository?.toLowerCase() !== workspace.repository.toLowerCase() ||
+      !Number.isSafeInteger(facts.number) || facts.number < 1) return false;
+  if (provider !== 'github') return false;
+  return facts.url.toLowerCase() === `https://github.com/${workspace.repository}/pull/${facts.number}`.toLowerCase();
+}
+
+function makePublicationGuard(
+  run: Run, steps: readonly import('@autocatalyst/api-contract').RunStep[], workspace: PublicationWorkspace,
+  git: PublicationGitPort, deps: PullRequestOpenHandlerDependencies
+) {
+  const current = steps.find(step => step.step === 'pr.open' && step.endedAt === null);
+  if (current === undefined) throw new PullRequestOpenHandlerError('invalid_step', 'Missing current publication occurrence.');
+  const epoch = publicationEpoch(steps);
+  const stop = (
+    code: string, safeReason: string, candidate: ReturnType<typeof publicationAttestation>,
+    observedTargetSha: string | null, receipt: PublicationPushReceipt | null = null
+  ) => deps.applyDirective({
+    runId: run.id, tenant: run.tenant, expectedStepId: current.id, origin: 'system',
+    ...(code === 'pr_publication_refreshed'
+      ? { directive: 'revise', refreshPublication: true }
+      : { directive: 'fail', reason: code }),
+    checkpointResult: {
+      kind: 'publication_stop', code, safeReason, timestamp: deps.clock(), base: workspace.base,
+      repository: workspace.repository, branch: workspace.branch, reviewedSha: candidate?.reviewedSha ?? null,
+      targetSha: candidate?.targetSha ?? null, observedTargetSha, publishSha: candidate?.publishSha ?? null,
+      refreshCount: epoch.count + (code === 'pr_publication_refreshed' ? 1 : 0),
+      sourcePushed: epoch.sourcePushed || receipt !== null,
+      ...(receipt !== null ? { receipt } : {})
+    }
+  });
+  return {
+    stepId: current.id, workspace, git, stop,
+    refresh: (candidate: ReturnType<typeof publicationAttestation>, observed: string, receipt?: PublicationPushReceipt) =>
+      stop(epoch.count < publicationRefreshLimit ? 'pr_publication_refreshed' : 'pr_publication_refresh_exhausted',
+        candidate === null ? 'attestation_missing' : candidate.targetSha !== observed ? 'target_changed' : 'candidate_changed',
+        candidate, observed, receipt),
+    async advance(pr: PullRequest, receipt: PublicationPushReceipt, idempotent: boolean) {
+      await emitPullRequestOpenedEvent(deps, run.id, run.tenant, pr);
+      return deps.applyDirective({
+        runId: run.id, tenant: run.tenant, expectedStepId: current.id, origin: 'system', directive: 'advance',
+        publicationProvenance: { pullRequestId: pr.id, headSha: receipt.headSha },
+        checkpointResult: {
+          kind: 'pull_request_open', provider: pr.provider, number: pr.number, url: pr.url,
+          branch: pr.branch, idempotent, completedAt: deps.clock(), receipt
+        }
+      });
+    }
+  };
 }
 
 async function persistPullRequest(

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { prCiCoverageSchema, runSystemActivitySchema } from './run-system-activity.js';
 import { convergenceCheckpointSchema } from './convergence.js';
 import { jsonValueSchema, sessionRoleSchema } from './domain-value-objects.js';
 
@@ -41,7 +42,9 @@ export const runStepSchema = z.object({
   endedAt: z.string().datetime().nullable(),
   durationMs: z.number().int().min(0).nullable(),
   occurrence: occurrenceSchema,
-  checkpointResult: checkpointResultSchema
+  checkpointResult: checkpointResultSchema,
+  systemActivity: z.array(runSystemActivitySchema).optional(),
+  prCiCoverage: prCiCoverageSchema.optional()
 }).strict();
 
 export const createRunStepInputSchema = z.object({

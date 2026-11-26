@@ -1,3 +1,4 @@
+import { readGitHubRequiredChecks } from './github-required-checks.js';
 import { GhExecError, executeGh as defaultExecuteGh } from '@autocatalyst/github-issue-tracker-adapter';
 import type { GhExecInput, GhExecResult } from '@autocatalyst/github-issue-tracker-adapter';
 import type {
@@ -38,7 +39,7 @@ export interface GitHubCodeHostAdapterOptions {
   readonly timeoutMs?: number;
 }
 
-const PR_JSON_FIELDS = 'number,url,state,headRefName,mergedAt';
+const PR_JSON_FIELDS = 'number,url,state,headRefName,mergedAt,headRefOid,headRepository,headRepositoryOwner,baseRefName';
 
 interface GitHubPullRequestResponse {
   readonly number: number;
@@ -46,6 +47,10 @@ interface GitHubPullRequestResponse {
   readonly state: string;
   readonly headRefName: string;
   readonly mergedAt?: string | null;
+  readonly headRefOid?: unknown;
+  readonly headRepository?: { name?: unknown } | null;
+  readonly headRepositoryOwner?: { login?: unknown } | null;
+  readonly baseRefName?: unknown;
 }
 
 export function createGitHubCodeHostAdapter(options: GitHubCodeHostAdapterOptions): CodeHostPort {
@@ -59,7 +64,7 @@ class GitHubCodeHostAdapter implements CodeHostPort {
     const repo = repositorySlug(input.target);
 
     // Push the branch to origin first so GitHub can create a PR against it.
-    await this.options.git.pushBranch({
+    if (!input.branchAlreadyPushed) await this.options.git.pushBranch({
       workspaceRepoRoot: input.workspaceRepoRoot,
       branch: input.branch,
       remote: 'origin'
@@ -103,6 +108,40 @@ class GitHubCodeHostAdapter implements CodeHostPort {
   }
 
   async read(input: ReadCodeHostPullRequestInput): Promise<CodeHostPullRequestFacts> {
+    return this.readWithDeadline(input, input.deadlineMs);
+  }
+
+  async observeCi(input: ReadCodeHostPullRequestInput & { readonly deadlineMs: number }) {
+    const repo = repositorySlug(input.target);
+    if (input.target.provider !== 'github' || !/^[a-z0-9_.-]+\/[a-z0-9_.-]+$/iu.test(repo) ||
+        !Number.isSafeInteger(input.number) || input.number <= 0) {
+      throw new CodeHostError('unsafe_provider_error', 'Invalid pull request binding.');
+    }
+    const validateIdentity = (facts: CodeHostPullRequestFacts) => {
+      if (facts.number !== input.number || facts.url.toLowerCase() !== `https://github.com/${repo}/pull/${input.number}`.toLowerCase()) {
+        throw new CodeHostError('unsafe_provider_error', 'GitHub pull request identity changed.');
+      }
+    };
+    const first = await this.readWithDeadline(input, input.deadlineMs);
+    validateIdentity(first);
+    if (first.state !== 'open' || first.headSha === undefined || first.baseBranch === undefined ||
+        first.headRepository?.toLowerCase() !== repo.toLowerCase()) return { facts: first, failures: null };
+    const checks = await readGitHubRequiredChecks({
+      owner: input.target.owner, name: input.target.name, oid: first.headSha, number: input.number,
+      read: args => this.runGh(args, input.credential.token, { provider: 'github', repository: repo, number: input.number }, input.deadlineMs)
+    }).catch(() => null);
+    // Obtain terminal evidence even when checks were unreadable. A failed second read
+    // cannot certify any CI snapshot, but a verified terminal read never requires CI.
+    const last = await this.readWithDeadline(input, input.deadlineMs).catch(() => null);
+    if (last === null) return { facts: first, failures: null };
+    validateIdentity(last);
+    const unchanged = last.state === 'open' && first.headSha === last.headSha && first.branch === last.branch &&
+      first.headRepository === last.headRepository && first.baseBranch === last.baseBranch;
+    return unchanged && Date.now() < input.deadlineMs && checks !== null ? { facts: last, ...checks }
+      : { facts: last, failures: null };
+  }
+
+  private async readWithDeadline(input: ReadCodeHostPullRequestInput, deadlineMs?: number): Promise<CodeHostPullRequestFacts> {
     const repo = repositorySlug(input.target);
     const args = [
       'pr', 'view', String(input.number),
@@ -114,7 +153,7 @@ class GitHubCodeHostAdapter implements CodeHostPort {
       provider: 'github',
       repository: repo,
       number: input.number
-    });
+    }, deadlineMs);
 
     const parsed = this.parseJson(stdout, { provider: 'github', repository: repo, number: input.number });
     return this.toFacts(parsed, { provider: 'github', repository: repo, number: input.number });
@@ -126,6 +165,7 @@ class GitHubCodeHostAdapter implements CodeHostPort {
       'pr', 'list',
       '--repo', repo,
       '--head', input.headBranch,
+      ...(input.baseBranch !== undefined ? ['--base', input.baseBranch] : []),
       '--state', 'all',
       '--json', PR_JSON_FIELDS
     ];
@@ -252,18 +292,24 @@ class GitHubCodeHostAdapter implements CodeHostPort {
   private async runGh(
     args: readonly string[],
     token: string,
-    safeDetails: Record<string, unknown>
+    safeDetails: Record<string, unknown>,
+    deadlineMs?: number
   ): Promise<string> {
+    const remaining = deadlineMs === undefined ? undefined : deadlineMs - Date.now();
+    if (remaining !== undefined && remaining <= 0) throw new CodeHostError('provider_unavailable', 'Provider deadline elapsed.');
+    const timeoutMs = remaining === undefined ? this.options.timeoutMs : Math.min(remaining, this.options.timeoutMs ?? remaining);
     try {
       const exec = this.options.executeGh ?? defaultExecuteGh;
       const result = await exec({
         args,
         token,
         ...(this.options.ghExecutablePath !== undefined ? { executablePath: this.options.ghExecutablePath } : {}),
-        ...(this.options.timeoutMs !== undefined ? { timeoutMs: this.options.timeoutMs } : {})
+        ...(timeoutMs !== undefined ? { timeoutMs } : {})
       });
+      if (result.truncated) throw new CodeHostError('unsafe_provider_error', 'GitHub response exceeded its output bound.');
       return result.stdout;
     } catch (error: unknown) {
+      if (error instanceof CodeHostError) throw error;
       if (error instanceof GhExecError) {
         throw new CodeHostError(
           mapGhExecErrorCode(error.code),
@@ -304,7 +350,11 @@ class GitHubCodeHostAdapter implements CodeHostPort {
       number: response.number,
       url: response.url,
       state,
-      branch: response.headRefName
+      branch: response.headRefName,
+      ...(typeof response.headRefOid === 'string' && /^[a-f0-9]{40}$/u.test(response.headRefOid) ? { headSha: response.headRefOid } : {}),
+      ...(typeof response.headRepository?.name === 'string' && typeof response.headRepositoryOwner?.login === 'string'
+        ? { headRepository: `${response.headRepositoryOwner.login}/${response.headRepository.name}` } : {}),
+      ...(typeof response.baseRefName === 'string' ? { baseBranch: response.baseRefName } : {})
     };
   }
 }

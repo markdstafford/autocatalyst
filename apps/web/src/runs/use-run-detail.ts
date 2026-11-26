@@ -68,9 +68,11 @@ export interface UseRunDetailOptions {
 
 export interface RunDetailState {
   readonly specHandoff?: { readonly outcome: 'max_rounds' | 'oscillation'; readonly outstandingIds: readonly string[] };
-  readonly specQuestion?: { readonly stepId: string; readonly role: 'implementer' | 'reviewer'; readonly question: string };
+  readonly guidancePause?:
+    | { readonly kind: 'spec'; readonly stepId: string; readonly role: 'implementer' | 'reviewer'; readonly question: string }
+    | { readonly kind: 'repair'; readonly stepId: string; readonly question: string };
   declineFinding?(feedbackId: string, reason: string): Promise<RunActionResult>;
-  answerSpecQuestion?(pauseStepId: string, body: string): Promise<RunActionResult>;
+  answerGuidance?(pauseStepId: string, body: string): Promise<RunActionResult>;
   readonly pullRequest: PullRequestFact;
   readonly pullRequestCheck: PullRequestCheck;
   readonly checkPullRequest?: () => void;
@@ -191,9 +193,12 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
   const specHandoff: RunDetailState['specHandoff'] = currentStep === 'spec.human_review' && audit?.producingStep === 'spec.author' &&
     (audit.outcome === 'max_rounds' || audit.outcome === 'oscillation')
     ? { outcome: audit.outcome, outstandingIds: audit.openFeedbackIds ?? [] } : undefined;
-  const specQuestion = currentStep === 'spec.awaiting_input' && activeStep && pause?.kind === 'spec_question' &&
+  const guidancePause: RunDetailState['guidancePause'] = currentStep === 'spec.awaiting_input' && activeStep && pause?.kind === 'spec_question' &&
     (pause.role === 'implementer' || pause.role === 'reviewer') && typeof pause.question === 'string'
-    ? { stepId: activeStep.id, role: pause.role, question: pause.question } as const : undefined;
+    ? { kind: 'spec', stepId: activeStep.id, role: pause.role, question: pause.question }
+    : currentStep === 'implementation.awaiting_input' && activeStep && pause?.kind === 'convergence_escalation' &&
+      typeof pause.question === 'string' && activeStep.systemActivity?.some(entry => entry.kind === 'ci_guidance')
+      ? { kind: 'repair', stepId: activeStep.id, question: pause.question } : undefined;
 
   useLayoutEffect(() => {
     if (runId === undefined || !authorized) {
@@ -566,7 +571,8 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
               backoff = undefined;
               if (frame.id !== undefined) updateCursor(frame.id);
               if (frame.event.runId !== id) continue;
-              const invalidated = frame.event.type === 'run_state_transition' || frame.event.type === 'run_recovery';
+              const invalidated = frame.event.type === 'run_state_transition' || frame.event.type === 'run_recovery' ||
+                (frame.event.type === 'runner_step_checkpoint' && frame.event.checkpoint.name === 'pr_ci_activity');
               const display = held.buffer.add(frame.event, held.steps ?? []);
               if (display || invalidated) publishActivity();
               if (invalidated) void refresh();
@@ -764,7 +770,7 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
     }
   }
 
-  async function answerSpecQuestion(pauseStepId: string, body: string): Promise<RunActionResult> {
+  async function answerGuidance(pauseStepId: string, body: string): Promise<RunActionResult> {
     if (runId === undefined) return { status: 'error', error: new Error('No run is selected.') };
     const selection = selectionRef.current;
     try {
@@ -793,8 +799,8 @@ export function useRunDetail(options: UseRunDetailOptions): RunDetailState {
     resolveComment,
     reopenComment,
     declineFinding,
-    answerSpecQuestion,
+    answerGuidance,
     ...(specHandoff ? { specHandoff } : {}),
-    ...(specQuestion ? { specQuestion } : {})
+    ...(guidancePause ? { guidancePause } : {})
   };
 }

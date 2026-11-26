@@ -1,0 +1,255 @@
+Proposed contract and operator updates for issue #201. Do not apply during implementation.
+Use these changes as input to the initial run's docs.update and docs.human_review.
+
+diff --git a/context-human/concepts/run.md b/context-human/concepts/run.md
+--- a/context-human/concepts/run.md
++++ b/context-human/concepts/run.md
+@@ -196,6 +196,20 @@
+ confirmation is therefore a mode choice — accept the policy default, or pick `resume`/`start_over`
+ explicitly (`hitl`).
+ 
++An initial publication failure resumes at a fresh `pr.finalize` occurrence, on the same run
++branch, only for these host-recorded step and code pairs:
++
++| Step | Code |
++| --- | --- |
++| `pr.finalize` | `pr_integration_conflict` |
++| `pr.finalize` or `pr.open` | `pr_target_verification_failed` |
++| `pr.open` | `pr_publication_refresh_exhausted` |
++
++Both omitted mode and explicit `resume` apply this exception. Earlier occurrences stay in
++history, but prior attestations cannot authorize publication and the two-refresh budget starts
++again. An unrelated create error with committed work still resumes at `pr.open`.
++Explicit `start_over` is unchanged.
++
+ ## Relationships
+ 
+ - `domain-model` — owns the `Run`, `Topic`, `Conversation`, `Artifact`, `Feedback`, `RunStep`, and
+diff --git a/context-human/concepts/hitl.md b/context-human/concepts/hitl.md
+--- a/context-human/concepts/hitl.md
++++ b/context-human/concepts/hitl.md
+@@ -87,6 +87,12 @@
+ that default — `resume` keeps the run branch and continues the failed step, `start_over` restarts the
+ phase on a freshly fetched default branch.
+ 
++Initial PR publication has a narrow Resume exception for named host-recorded step/code
++pairs (see [Run](run.md#resume-and-recovery-policy)). Both forms of Resume keep the branch
++and re-enter finalization. A conflict that exists only on the host needs an authorized
++operator to resolve and commit it first. CI repair outcomes on an open PR are not failed-run
++Resume cases. An exact guidance reply can continue a paused repair without another attempt.
++
+ ## A reply to a stopped run
+ 
+ A reply that arrives for a run that has already stopped — a `failed` or `canceled` run — is neither
+diff --git a/context-human/specs/feature-recover-failed-run.md b/context-human/specs/feature-recover-failed-run.md
+--- a/context-human/specs/feature-recover-failed-run.md
++++ b/context-human/specs/feature-recover-failed-run.md
+@@ -14,6 +14,20 @@
+ Recovery uses the run's durable history to choose where work resumes. By default, failures in the specification phase start over from `spec.author` on a freshly fetched default branch, while failures later in the workflow resume at the failed step on the existing run branch when committed work is present. The operator can override the default with `mode: resume` or `mode: start_over`.
+ 
+ The feature is backend-only. It adds an API action, service/orchestrator recovery behavior, workspace provisioning options, SDK support, OpenAPI coverage, tests, and narrow concept/code-map documentation updates.
++
++An initial publication failure resumes at a fresh `pr.finalize` occurrence, on the same run
++branch, only for these host-recorded step and code pairs:
++
++| Step | Code |
++| --- | --- |
++| `pr.finalize` | `pr_integration_conflict` |
++| `pr.finalize` or `pr.open` | `pr_target_verification_failed` |
++| `pr.open` | `pr_publication_refresh_exhausted` |
++
++Both omitted mode and explicit `resume` apply this exception. Earlier occurrences stay in
++history, but prior attestations cannot authorize publication and the two-refresh budget starts
++again. An unrelated create error with committed work still resumes at `pr.open`.
++Explicit `start_over` is unchanged.
+ 
+ ## Why
+ 
+diff --git a/context-human/adrs/adr-015-run-lifecycle.md b/context-human/adrs/adr-015-run-lifecycle.md
+--- a/context-human/adrs/adr-015-run-lifecycle.md
++++ b/context-human/adrs/adr-015-run-lifecycle.md
+@@ -78,6 +78,20 @@
+   per-tenant, or user-edited workflows are out of scope here. Expressing workflows as data makes such an
+   engine an additive change — loading the tables from a different source — rather than a teardown of
+   hardcoded transitions, so it can be added when it is wanted.
++
++An initial publication failure resumes at a fresh `pr.finalize` occurrence, on the same run
++branch, only for these host-recorded step and code pairs:
++
++| Step | Code |
++| --- | --- |
++| `pr.finalize` | `pr_integration_conflict` |
++| `pr.finalize` or `pr.open` | `pr_target_verification_failed` |
++| `pr.open` | `pr_publication_refresh_exhausted` |
++
++Both omitted mode and explicit `resume` apply this exception. Earlier occurrences stay in
++history, but prior attestations cannot authorize publication and the two-refresh budget starts
++again. An unrelated create error with committed work still resumes at `pr.open`.
++Explicit `start_over` is unchanged.
+ 
+ ## Consequences
+ 
+diff --git a/context-human/adrs/adr-025-workflow-step-catalog.md b/context-human/adrs/adr-025-workflow-step-catalog.md
+--- a/context-human/adrs/adr-025-workflow-step-catalog.md
++++ b/context-human/adrs/adr-025-workflow-step-catalog.md
+@@ -81,6 +81,18 @@
+   producing step; for `pr.finalize` it is the implementation gate. The directive vocabulary stays at the
+   five values of ADR-012/ADR-015; backward edges are ordinary table data.
+ 
++A host-only publication guard can return `pr.open` to a fresh `pr.finalize` twice when
++the reviewed candidate is stale. The reviewer sees the integrated target commit; the host
++verifies the resulting attestation before the source push and again before PR creation.
++A target verification failure is not a drift refresh.
++
++A post-publication CI repair reuses the run and PR. Its converged build enters `pr.finalize`
++without implementation approval or the docs phase. If final review blocks the fix, stop the
++attempt rather than requesting a human re-decision. A changed, reviewed tree can be pushed to
++the same PR; no attempt can merge it. Each admitted nonterminal outcome opens a new
++`pr.human_review` occurrence. A verified merge or close supersedes an active repair and
++opens no replacement gate.
++
+ ## Consequences
+ 
+ **Positive:**
+diff --git a/context-human/concepts/workflow.md b/context-human/concepts/workflow.md
+--- a/context-human/concepts/workflow.md
++++ b/context-human/concepts/workflow.md
+@@ -177,6 +177,18 @@
+ through `pr.finalize`. The directive vocabulary stays at its five values (`run`, ADR-012); a backward
+ edge is ordinary table data the transition rule carries (ADR-025).
+ 
++A host-only publication guard can return `pr.open` to a fresh `pr.finalize` twice when
++the reviewed candidate is stale. The reviewer sees the integrated target commit; the host
++verifies the resulting attestation before the source push and again before PR creation.
++A target verification failure is not a drift refresh.
++
++A post-publication CI repair reuses the run and PR. Its converged build enters `pr.finalize`
++without implementation approval or the docs phase. If final review blocks the fix, stop the
++attempt rather than requesting a human re-decision. A changed, reviewed tree can be pushed to
++the same PR; no attempt can merge it. Each admitted nonterminal outcome opens a new
++`pr.human_review` occurrence. A verified merge or close supersedes an active repair and
++opens no replacement gate.
++
+ ## The command path
+ 
+ A deterministic path runs alongside the path classification chooses. A command (an authenticated
+diff --git a/context-human/adrs/adr-029-compaction-doc-update-step.md b/context-human/adrs/adr-029-compaction-doc-update-step.md
+--- a/context-human/adrs/adr-029-compaction-doc-update-step.md
++++ b/context-human/adrs/adr-029-compaction-doc-update-step.md
+@@ -65,6 +65,12 @@
+ - **The compaction method stays a micromanager skill the step invokes** (`mm-integration`). Autocatalyst
+   owns the step, the gate, and where the diffs go; the method of refreshing docs belongs to the skill.
+ 
++A post-publication CI repair is the exception to the docs phase. Its build may maintain
++directly affected agent-owned context, but it does not run `docs.update` or `docs.human_review`
++and does not produce a `DocDiffProposal`. If the fix needs an edit to human-owned docs or a
++frozen spec, stop the repair and hand it back to the engineer. Human-owned docs already in
++the merged target do not count as repair-authored edits.
++
+ ## Consequences
+ 
+ **Positive:**
+diff --git a/context-human/concepts/docs-model.md b/context-human/concepts/docs-model.md
+--- a/context-human/concepts/docs-model.md
++++ b/context-human/concepts/docs-model.md
+@@ -92,6 +92,12 @@
+ the doc gate, because the agent-owned tree is the agent's to keep current. This pattern lets the
+ next agent work the codebase without a person reconstructing context by hand.
+ 
++A post-publication CI repair is the exception to the docs phase. Its build may maintain
++directly affected agent-owned context, but it does not run `docs.update` or `docs.human_review`
++and does not produce a `DocDiffProposal`. If the fix needs an edit to human-owned docs or a
++frozen spec, stop the repair and hand it back to the engineer. Human-owned docs already in
++the merged target do not count as repair-authored edits.
++
+ ## Relationships
+ 
+ - `spec-lifecycle` — owns the per-spec frozen document compaction reads from; this concept owns the wider
+diff --git a/context-human/concepts/index.md b/context-human/concepts/index.md
+--- a/context-human/concepts/index.md
++++ b/context-human/concepts/index.md
+@@ -13,8 +13,8 @@
+ | [architecture](architecture.md) | The static topology: one service, two planes, hosting, persistence, the API envelope, configuration, the identity/tenancy seam, extensibility, and the repository layout. |
+ | [execution-runtime](execution-runtime.md) | The layer beneath a run: the Execution Context, driving an agent session, the event protocol, the result contract, concurrency, and recovery. |
+ | [domain-model](domain-model.md) | Core entities and relationships, including invocation-grain sessions, billing evidence, and compatibility cost and token projections. |
+-| [run](run.md) | The run lifecycle: phase/step/session/role/gate, the step-primitives catalog, `waiting_on`, workflows-as-data, the transition rule, the review loop, intent-upgrade, and resume. |
+-| [workflow](workflow.md) | What fills the run machine: the step catalog and per-step behavior, roles, the implementer–reviewer convergence and its max-rounds bound, gate mechanics, workflows composing the catalog as data, the generalized `revise`, and the deterministic command path. |
++| [run](run.md) | The run lifecycle: phase/step/session/role/gate, the step-primitives catalog, `waiting_on`, workflows-as-data, the transition rule, the review loop, intent-upgrade, and resume. Named initial publication failures return to finalization; open-PR repairs do not use failed-run Resume. |
++| [workflow](workflow.md) | What fills the run machine: the step catalog and per-step behavior, roles, the implementer–reviewer convergence and its max-rounds bound, gate mechanics, workflows composing the catalog as data, the generalized `revise`, and the deterministic command path. Includes guarded publication refreshes and the existing-PR repair path. |
+ | [review](review.md) | In-step convergence review: the implementer and reviewer roles within a step, the per-round loop, the implementer-decides-convergence rule, reviews steering the workflow through `revise`, single-model degradation, and a finding as a `Feedback` item. |
+ | [orchestrator](orchestrator.md) | The single mutation authority and scheduler: ingestion through the service interface, the topic-keyed dedup gate, dispatch across the `Runner` boundary, concurrency, operator actions, and recovery. |
+ | [api](api.md) | Versioned REST and SSE, naming and auth, configuration including immutable rate publication, and run-session prices and totals. |
+@@ -24,14 +24,14 @@
+ | [model-routing](model-routing.md) | The selection policy: the `(step, role)` routing key, the declarative routing table and resolution, profiles and inference settings, role-distinct routing for convergence, and the model-management configuration model. |
+ | [runtime-skills](runtime-skills.md) | The skills provisioning subsystem: the runtime-owned catalog and index, dependency resolution, the provider-neutral skill-ref model, the route-to-skill mapping, provisioning visibility, and injected runtime instructions. |
+ | [feedback](feedback.md) | The feedback-loop behavior: one item type attributed to principals, native creation, disposition authority, gating at a human-review gate, batch addressing, the resolution contract check, spec amendment from implementation feedback, and post-PR feedback. |
+-| [hitl](hitl.md) | The human pause-and-resume semantics: one pause mechanism with gate / model-question / convergence-escalation flavors, the valid reply directives per pause, explicit recovery versus the `set-step` operator force, and the reply-to-a-stopped-run behavior. |
++| [hitl](hitl.md) | The human pause-and-resume semantics: one pause mechanism with gate / model-question / convergence-escalation flavors, the valid reply directives per pause, explicit recovery versus the `set-step` operator force, and the reply-to-a-stopped-run behavior. Repair guidance uses the exact pause occurrence without spending another attempt. |
+ | [intents](intents.md) | Per-message classification as the message's impact on the run (`create`/`advance`/`revise`/`answer`), the create attachments (new topic / upgrade / divert), context as the run's current step, and the two-stage issue-reference create. |
+ | [acceptance-testing](acceptance-testing.md) | The human-test gate: the testing guide as a `Publication`, the run-parented test-result record built around `Feedback`, manual-first testing with evidence in scratch, and click-into results. |
+ | [commands](commands.md) | The operator command surface: authenticated channel-agnostic actions (`cancel`, `set-step`, archive-with-tombstone cleanup), informational reads collapsing into the API, a `Principal` on every call, and the destructive-purge confirmation. |
+ | [intake](intake.md) | How work enters and binds to `Conversation`/`Topic`/`Run`: entry as resource creation, the four entry kinds, the `Project` binding and server-assigned identity with the repository guard, the two-stage issue-reference create, list filing, the swappable duplicate capability, and acknowledgement. |
+ | [trackers](trackers.md) | The issue/PR tracker integration: the provider-neutral issue-tracker port and the git-shaped code-host port, agents reading only through defined tools, the run-parented `PR` record with detected merge status, source config and credentials, triage and AI titles, conventional-commit titles, and the cumulative PR summary. |
+ | [spec-lifecycle](spec-lifecycle.md) | The spec as a durable versioned document: the committed file versus the database entity, the five-value frontmatter status machine and the one-way mapping from operational status, the frontmatter contract, the per-kind canonical record (file/issue/other/none), authoring and commit location, supersession, and the freeze at `pr.finalize`. |
+-| [docs-model](docs-model.md) | The whole-corpus doc model: the two ownership trees and the `AGENTS.md` map, hub-and-spoke progressive disclosure, the bounded lossy-by-design `spec.md`, the two indexes, bottom-up compaction in the `docs.update` step, agents maintaining their own context, and reflexive versus repository-health compaction. |
++| [docs-model](docs-model.md) | The whole-corpus doc model: the two ownership trees and the `AGENTS.md` map, hub-and-spoke progressive disclosure, the bounded lossy-by-design `spec.md`, the two indexes, bottom-up compaction in the `docs.update` step, agents maintaining their own context, and reflexive versus repository-health compaction. Post-publication CI repairs bypass compaction and stop on human-owned edits. |
+ | [mm-integration](mm-integration.md) | The boundary with micromanager: the delegation test and what is built versus invoked, the three invoked skills (planning, issue-triage, compaction), the uniform invocation envelope, the one-time config read, version dependence through the manifest, and the methods taken up later. |
+ | [observability](observability.md) | Durable run and session telemetry, including attempt-scoped usage, separate from ephemeral OTLP logs and metrics. |
+ | [cost](cost.md) | API list-price computation from normalized usage and immutable effective-dated rates; exact amounts, estimated bands, gaps, and logical step and run totals. |
+diff --git a/context-human/adrs/index.md b/context-human/adrs/index.md
+--- a/context-human/adrs/index.md
++++ b/context-human/adrs/index.md
+@@ -25,7 +25,7 @@
+ | [ADR-012 — LLM output tolerance](adr-012-llm-output-tolerance.md) | Treat model output as a soft contract via a tolerance pipeline. |
+ | [ADR-013 — Core domain vocabulary](adr-013-core-domain-vocabulary.md) | `Conversation`, `Topic`, `Message`, `Run`, `Project`. |
+ | [ADR-014 — Work hierarchy](adr-014-work-hierarchy.md) | The `Conversation -> Topic -> Run` hierarchy; one active run per topic as a durable database invariant. |
+-| [ADR-015 — Run lifecycle](adr-015-run-lifecycle.md) | A workflow-driven step machine; phases `spec`/`implementation`/`docs`/`pr`; intrinsic `waiting_on`; cost per session (pricing refined by [ADR-034](adr-034-cache-aware-session-pricing.md)); a per-state recovery policy owned by `run`. |
++| [ADR-015 — Run lifecycle](adr-015-run-lifecycle.md) | A workflow-driven step machine; phases `spec`/`implementation`/`docs`/`pr`; intrinsic `waiting_on`; cost per session (pricing refined by [ADR-034](adr-034-cache-aware-session-pricing.md)); a per-state recovery policy owned by `run`. Named initial publication stops use fresh finalization on Resume. |
+ | [ADR-016 — Intent model](adr-016-intent-model.md) | Window-intent is the workflow; `MessageIntent` is transient; no durable `WorkKind`. |
+ | [ADR-017 — Single Artifact model](adr-017-single-artifact-model.md) | One `Artifact` model, defined by visibility outside Autocatalyst on approval. |
+ | [ADR-018 — Feedback first-class](adr-018-feedback-first-class.md) | `Feedback` is a first-class, run-parented, run-gating entity with a per-item thread. |
+@@ -36,11 +36,11 @@
+ | [ADR-022 addendum — Codex app-server transport](adr-022-addendum-codex-app-server-transport.md) | Proposed: Codex JSON-RPC subprocess, enterprise account authentication, native skill inputs, and explicit filesystem policies. |
+ | [ADR-023 — Request-alteration boundary](adr-023-request-alteration-boundary.md) | Per-endpoint request alteration owned by the connection layer, used by every runner: header rewrite, `base_url`/auth, timeout/retry, redacted request/response logging. |
+ | [ADR-024 — Role-aware routing key](adr-024-role-aware-routing-key.md) | Agent work routes on `(step, role)`, direct calls on `(step)`; specificity-ordered resolution with a typed miss; role-distinct models expressible; overrides additive. |
+-| [ADR-025 — Workflow step catalog and composition](adr-025-workflow-step-catalog.md) | Steps are code primitives, a workflow is data composing a subset; `spec.*` catalog with explicit `phase`; `build` completes from agreed branch state; configurable implementation depth; `pr.finalize` is the final `ai` review with the spec freeze a side effect, separate from `pr.open`; `file_issue` writes through a deterministic `issues.file` step; `revise` generalized to the table's target. |
++| [ADR-025 — Workflow step catalog and composition](adr-025-workflow-step-catalog.md) | Steps are code primitives, a workflow is data composing a subset; `spec.*` catalog with explicit `phase`; `build` completes from agreed branch state; configurable implementation depth; `pr.finalize` is the final `ai` review with the spec freeze a side effect, separate from `pr.open`; `file_issue` writes through a deterministic `issues.file` step; `revise` generalized to the table's target. System-only publication refresh and repair edges preserve workflow IDs. |
+ | [ADR-026 — In-step convergence review](adr-026-in-step-convergence-review.md) | A reviewer is a role inside the producing step; the implementer decides convergence and the reviewer cannot veto; advance on convergence or human sign-off, escalate at max rounds; depth configurable; a finding is a `Feedback` item; single-model warns, never skips. |
+ | [ADR-027 — Contract verification at step boundaries](adr-027-step-contract-verification.md) | Each step declares its result shape; deterministic repair then validation; a fixable violation returns to the agent before downstream logic runs; distinct from the quality convergence loop. |
+ | [ADR-028 — Spec amendable through implementation](adr-028-spec-amendable-through-implementation.md) | The spec gate is approve-to-build-from; the implementer amends the spec then makes the change, confirmed at the implementation gate; freeze at `pr.finalize`, durable at merge. |
+-| [ADR-029 — Compaction and doc-update step](adr-029-compaction-doc-update-step.md) | A `docs` phase between implementation and pr; `docs.update` runs bottom-up compaction; `docs.human_review` gates the human-owned doc diffs and skips when there are none; doc changes land on the code's branch. |
++| [ADR-029 — Compaction and doc-update step](adr-029-compaction-doc-update-step.md) | A `docs` phase between implementation and pr; `docs.update` runs bottom-up compaction; `docs.human_review` gates the human-owned doc diffs and skips when there are none; doc changes land on the code's branch. Existing-PR CI repair skips docs compaction and review. |
+ | [ADR-030 — Observability two-store telemetry](adr-030-observability-two-store-telemetry.md) | Two stores: the durable DB (source of truth) holds a session-grain record of every run; an ephemeral OTLP/Victoria backend holds logs and metrics. Recorded from the first run; OTel-SDK emission; traces deferred; observability owns the operational-visibility model. |
+ | [ADR-031 — The web client is one stateless web app](adr-031-web-client-architecture.md) | One web app that talks only to the control plane and keeps no run state; the desktop app wraps it and a mobile mode shows a subset. |
+ | [ADR-032 — Web client stack](adr-032-web-client-stack.md) | React 19 with Vite, Tailwind 4, headless Base UI primitives behind the client's own components, lucide-react, Shiki, Vitest, and Playwright. |
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -73,3 +73,27 @@
+ 
+ No license is granted yet; all rights reserved. A license will be added before the project opens to
+ outside use or contribution.
++
++## PR integration and CI repair
++
++Before opening a PR, Autocatalyst integrates the target branch and reviews the combined
++tree. If Activity reports a conflict, an authorized host operator uses the repository,
++run ID and source branch shown there to locate the retained workspace under its configured
++root. Confirm the branch and recorded commit before making changes. Commit the resolution
++and leave a clean worktree, then use Resume. If only the branch remains, use the normal
++run-branch materialization. If the branch expired, Resume cannot recover it.
++
++Periodic CI watching is off by default. To enable it, set
++`AUTOCATALYST_PR_RECONCILE_TICKER=true`, a positive `AUTOCATALYST_PR_RECONCILE_INTERVAL_MS`
++and one `AUTOCATALYST_PR_RECONCILE_TENANT`. Authorize the reconciliation system principal
++for that tenant. Other tenants, and deployments with the ticker off, can observe CI
++through authorized batch reconciliation. Otherwise follow the PR link to check CI on GitHub.
++
++`AUTOCATALYST_PR_CI_REPAIR_LIMIT` defaults to 2 admitted attempts per PR. Set it to a
++nonnegative safe integer; 0 disables new repair attempts without disabling CI observation
++or terminal reconciliation. Repairs update the same PR and never merge it.
++
++If Activity says a workspace is held after an interruption, do not dispatch, materialize or
++clean it up. An authorized host operator confirms old workers and pushes are finished before
++salvaging it. Engineers can continue from an authorized clone and merge or close on GitHub.
++There is no product action to release an unconfirmed hold.
