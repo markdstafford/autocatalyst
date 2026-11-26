@@ -1,7 +1,7 @@
 ---
 created: 2026-11-25
-last_updated: 2026-11-25
-status: approved
+last_updated: 2026-11-26
+status: complete
 issue: 201
 specced_by: autocatalyst
 ---
