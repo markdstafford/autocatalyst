@@ -29,6 +29,7 @@ export interface PublicationGitPort {
   readTarget(input: PublicationWorkspace): Promise<string | null>;
   readSource(input: PublicationWorkspace): Promise<string | null>;
   readCandidate(input: PublicationWorkspace): Promise<string | null>;
+  readTree?(input: PublicationWorkspace, commit: string): Promise<string | null>;
   verifyFreeze(input: PublicationWorkspace, reviewedSha: string, freeze: SpecFreezeResult): Promise<boolean>;
   sameTree(input: PublicationWorkspace, first: string, second: string): Promise<boolean>;
   pushCandidate(input: PublicationWorkspace, headSha: string, expectedOldHead?: string, authorize?: () => Promise<boolean>): Promise<'pushed' | 'already_present' | 'unverified'>;
@@ -76,7 +77,9 @@ const attestationSchema = z.object({
   base: z.string().min(1).max(250),
   targetSha: fullGitSha,
   reviewedSha: fullGitSha,
-  publishSha: fullGitSha
+  publishSha: fullGitSha,
+  reviewedTree: fullGitSha.optional(),
+  reviewOccurrenceId: z.string().min(1).optional()
 }).strict();
 
 const receiptSchema = z.object({
@@ -96,7 +99,8 @@ export function publicationAttestation(step: RunStep | undefined, workspace: Pub
   const checkpoint = fields(step?.checkpointResult ?? null);
   if (checkpoint['kind'] !== 'pull_request_finalize' || checkpoint['directive'] !== 'advance') return null;
   const parsed = attestationSchema.safeParse(checkpoint['attestation']);
-  if (!parsed.success) return null;
+  if (!parsed.success || (parsed.data.reviewedTree !== undefined) !== (parsed.data.reviewOccurrenceId !== undefined) ||
+      (parsed.data.reviewOccurrenceId !== undefined && parsed.data.reviewOccurrenceId !== step?.id)) return null;
   const { repository, branch, base } = parsed.data;
   return repository === workspace.repository && branch === workspace.branch && base === workspace.base ? parsed.data : null;
 }

@@ -40,6 +40,77 @@ import {
 
 const SECRET_TOKEN = 'sk-ant-secret-12345';
 
+describe('Claude native conversation launch options', () => {
+  async function drain(input: AgentProviderSessionInput, query: NonNullable<Parameters<typeof createClaudeAgentAdapter>[0]>['queryClaudeSdk']) {
+    const adapter = createClaudeAgentAdapter(query ? { queryClaudeSdk: query } : {});
+    const session = await adapter.startSession(input);
+    const events: RunnerEvent[] = [];
+    try {
+      for await (const event of session.events) events.push(event);
+      return events;
+    } finally { await session.close?.(); }
+  }
+
+  it.each(['unrelated', 'unverified', 'verified'] as const)('uses the correct fresh options for %s launch', async mode => {
+    const { input } = makeSessionInput();
+    const calls: unknown[] = [];
+    await drain({
+      ...input, runInput: {
+        ...input.runInput, ...(mode !== 'unrelated' ? {
+          nativeConversation: { mode: 'fresh_only' as const, verifiedNonPersistence: mode === 'verified' }
+        } : {})
+      }
+    }, async function* ({ options }) {
+      calls.push(options);
+      yield { type: 'result', subtype: 'success', result: 'OK' };
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).not.toHaveProperty('resume');
+    expect(calls[0]).not.toHaveProperty('continue');
+    if (mode === 'verified') expect(calls[0]).toHaveProperty('persistSession', false);
+    else expect(calls[0]).not.toHaveProperty('persistSession');
+  });
+
+  it.each(['missing', 'wrong-root', 'resume'] as const)('handles a %s root session without replaying work', async mode => {
+    const cwd = await mkdtemp(path.join(tmpdir(), 'claude-native-conversation-'));
+    try {
+      const { input } = makeSessionInput({ repoRoot: cwd, scratchRoot: cwd });
+      const completed = vi.fn();
+      const lookupRootSession = vi.fn(async () => mode !== 'missing');
+      const query = vi.fn(async function* ({ options }: { options?: Record<string, unknown> }) {
+        expect(options).toMatchObject({ persistSession: true, resume: 'root-session', cwd });
+        expect(options).not.toHaveProperty('continue');
+        yield { type: 'system', subtype: 'init', session_id: mode === 'wrong-root' ? 'subagent' : 'root-session' };
+        yield { type: 'assistant', session_id: 'root-session', isReplay: true,
+          message: { id: 'previous', content: [{ type: 'text', text: 'HISTORICAL' }] } };
+        const current = { type: 'assistant', session_id: 'root-session', parent_tool_use_id: null,
+          message: { id: 'current', content: [{ type: 'text', text: 'CURRENT' }] } };
+        yield current;
+        yield current;
+        yield { type: 'result', subtype: 'success', session_id: 'root-session', result: 'OK' };
+      });
+      const result = drain({
+        ...input, runInput: { ...input.runInput, nativeConversation: {
+          mode: 'retained', resumeId: 'root-session', verifyLaunch: async () => true, lookupRootSession, completed
+        } }
+      }, query);
+      if (mode === 'missing') {
+        await expect(result).rejects.toMatchObject({ name: 'NativeResumeRefused', launched: false });
+        expect(query).not.toHaveBeenCalled();
+      } else if (mode === 'wrong-root') {
+        await expect(result).rejects.toMatchObject({ code: 'invalid_provider_event' });
+        expect(completed).not.toHaveBeenCalled();
+      } else {
+        const events = await result;
+        expect(events.filter(event => event.type === 'runner_assistant_turn')).toHaveLength(1);
+        expect(JSON.stringify(events)).not.toContain('HISTORICAL');
+        expect(completed).toHaveBeenCalledExactlyOnceWith('root-session');
+      }
+      expect(lookupRootSession).toHaveBeenCalledExactlyOnceWith('root-session', cwd);
+    } finally { await rm(cwd, { recursive: true, force: true }); }
+  });
+});
+
 function makeProfile(overrides?: Partial<ResolvedAgentRunnerProfile>): ResolvedAgentRunnerProfile {
   return {
     mode: 'agent',

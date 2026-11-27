@@ -337,6 +337,8 @@ export function createLayeredConvergenceEngine(
         run: input.run,
         tenant: input.tenant,
         role: 'implementer',
+        reviewedOccurrence: { id: input.runStep.id, workflow: input.workflow,
+          ...(input.stillOwns ? { stillOwns: input.stillOwns } : {}) },
         ...(input.ciRepair !== undefined ? { ciRepair: input.ciRepair } : {}),
         round: roundNumber,
         reviewContext: implReviewContext,
@@ -464,6 +466,8 @@ export function createLayeredConvergenceEngine(
         run: input.run,
         tenant: input.tenant,
         role: 'reviewer',
+        reviewedOccurrence: { id: input.runStep.id, workflow: input.workflow,
+          ...(input.stillOwns ? { stillOwns: input.stillOwns } : {}) },
         ...(input.ciRepair !== undefined ? { ciRepair: input.ciRepair } : {}),
         round: roundNumber,
         reviewContext: {

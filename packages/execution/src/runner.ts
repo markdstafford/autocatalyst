@@ -1,3 +1,4 @@
+import type { NativeConversationTurn } from './native-conversation.js';
 import type { MaterializedExecutionEnvironment } from './materialized-environment.js';
 import type { InferenceSettings, ModelIdentity, SessionUsage, TokenBreakdown, RunnerEvent } from '@autocatalyst/api-contract';
 import type { StructuredAgentResultCapture } from './structured-result-capture.js';
@@ -33,6 +34,8 @@ export interface RunnerRunInput {
   readonly correlationId?: string;
   readonly structuredResultCapture?: StructuredAgentResultCapture;
   readonly modelMemory?: AgentModelMemoryContinuity;
+  readonly nativeConversation?: NativeConversationTurn;
+  readonly onAttemptLaunch?: (launch: Pick<RunnerSessionMetadata, 'model' | 'inferenceSettings' | 'startedAt'>) => void;
 }
 
 export interface RunnerSessionMetadata {

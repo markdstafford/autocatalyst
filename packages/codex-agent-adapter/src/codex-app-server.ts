@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
-import { ProviderConnectionError, ProviderProtocolError, UnsupportedProviderCapabilityError, runtimeSkillsCatalogRoot } from '@autocatalyst/execution';
+import { NativeResumeRefused, ProviderConnectionError, ProviderProtocolError, UnsupportedProviderCapabilityError, runtimeSkillsCatalogRoot } from '@autocatalyst/execution';
 
 import { CodexUsage } from './codex-usage.js';
 import { CodexAuthenticationError, type CodexAuthProbe, type CodexAuthMode } from './codex-auth.js';
@@ -53,7 +53,7 @@ export async function openCodexAppServer(options: {
 
 export class CodexAppServerClient {
   readonly #child;
-  readonly #pending = new Map<number, { resolve(value: RecordValue): void; reject(error: Error): void }>();
+  readonly #pending = new Map<number, { resolve(value: RecordValue): void; reject(error: Error): void; resumeId?: string }>();
   readonly #notifications: RecordValue[] = [];
   #wake: (() => void) | undefined;
   #id = 0;
@@ -80,7 +80,12 @@ export class CodexAppServerClient {
         if (typeof packet['id'] === 'number' && !packet['method']) {
           const pending = this.#pending.get(packet['id']);
           this.#pending.delete(packet['id']);
-          if (packet['error']) pending?.reject(failure());
+          if (packet['error']) {
+            const rpcError = record(packet['error']);
+            const missing = pending?.resumeId !== undefined && rpcError['code'] === -32600 &&
+              rpcError['message'] === `no rollout found for thread id ${pending.resumeId}`;
+            pending?.reject(missing ? new NativeResumeRefused('missing', true) : failure());
+          }
           else pending?.resolve(record(packet['result']));
         } else if (typeof packet['method'] === 'string') {
           // Never approve escalations, shell commands, edits, or dynamic tools.
@@ -113,7 +118,9 @@ export class CodexAppServerClient {
     if (this.#error) return Promise.reject(this.#error);
     const id = ++this.#id;
     return new Promise((resolve, reject) => {
-      this.#pending.set(id, { resolve, reject });
+      this.#pending.set(id, { resolve, reject,
+        ...(method === 'thread/resume' && typeof params['threadId'] === 'string' ? { resumeId: params['threadId'] } : {})
+      });
       this.#child.stdin.write(JSON.stringify({ id, method, params }) + '\n');
     });
   }
@@ -136,11 +143,13 @@ export class CodexAppServerClient {
   }
 }
 
-async function checkAccount(client: CodexAppServerClient, authMode: CodexAuthMode = 'enterprise_sign_in'): Promise<RecordValue> {
+async function checkAccount(client: CodexAppServerClient, authMode: CodexAuthMode = 'enterprise_sign_in',
+  verifyBinding?: (account: unknown) => Promise<boolean>): Promise<RecordValue> {
   const response = await client.rpc('account/read', { refreshToken: true });
   const account = record(response['account']);
   if (!account['type']) throw new CodexAuthenticationError('missing_sign_in', 'codex', authMode);
   if (account['type'] !== 'chatgpt') throw new CodexAuthenticationError('account_mismatch', 'codex', authMode);
+  if (verifyBinding && !await verifyBinding(account)) throw new CodexAuthenticationError('account_mismatch', 'codex', authMode);
   const allowedPlans = authMode === 'business_sign_in' ? ['team', 'business', 'self_serve_business_prolite'] : ['enterprise', 'enterprise_cbp_usage_based'];
   if (!allowedPlans.includes(String(account['planType']))) {
     throw new CodexAuthenticationError('disallowed_plan', 'codex', authMode);
@@ -178,32 +187,49 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
     if (options.allowedTools !== undefined && !options.allowedTools.includes('shell')) {
       throw new UnsupportedProviderCapabilityError('tool_policy_unsupported', 'Codex requires a tool policy permitting its native shell.');
     }
+    const retention = options.conversation?.mode === 'retained' ? options.conversation : undefined;
+    if (retention && (!retention.verifyAccount || !await retention.verifyLaunch())) throw failure();
     const client = await openCodexAppServer({ binary, ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
-      ...(options.env !== undefined ? { env: options.env } : {}), timeoutMs: options.timeoutMs ?? 600_000,
+      env: { ...options.env, ...retention?.scopeEnvironment }, timeoutMs: options.timeoutMs ?? 600_000,
       ...(options.signal !== undefined ? { signal: options.signal } : {}) });
     let accounting: CodexUsage | undefined;
     try {
-      const isolation = await checkAccount(client, options.auth.mode);
+      const isolation = await checkAccount(client, options.auth.mode, retention?.verifyAccount);
       for (const skill of options.skills ?? []) {
         const actual = await realpath(skill.hostPath);
         const root = await realpath(runtimeSkillsCatalogRoot);
         if (!actual.startsWith(root + path.sep)) throw failure();
         await readFile(path.join(actual, 'SKILL.md'), 'utf8');
       }
-      const response = await client.rpc('thread/start', {
-        cwd: options.cwd, model: options.model, modelProvider: 'openai', allowProviderModelFallback: false,
-        approvalPolicy: 'never', sandbox: options.sandbox, ephemeral: true,
+      const request = {
+        cwd: options.cwd, model: options.model, modelProvider: 'openai',
+        approvalPolicy: 'never', sandbox: options.sandbox,
         baseInstructions: options.instructions,
         config: { ...options.config, ...isolation, 'sandbox_workspace_write.writable_roots': options.workspaceRoots ?? [],
           'sandbox_workspace_write.network_access': false, 'sandbox_workspace_write.exclude_slash_tmp': true,
           'sandbox_workspace_write.exclude_tmpdir_env_var': true }
-      });
+      };
+      const resumeId = retention?.resumeId;
+      const response = resumeId ? await client.rpc('thread/resume', {
+        ...request, threadId: resumeId, excludeTurns: true
+      }) : await client.rpc('thread/start', { ...request, allowProviderModelFallback: false, ephemeral: !retention });
       const thread = record(response['thread']);
       if (typeof thread['id'] !== 'string' || !thread['id'] || response['modelProvider'] !== 'openai' || response['model'] !== options.model) throw failure();
       const sandbox = record(response['sandbox']);
       const expected = options.sandbox === 'read-only' ? 'readOnly' : 'workspaceWrite';
       if (sandbox['type'] !== expected) throw failure();
-      accounting = new CodexUsage(thread['id'], { provider: 'openai', model: options.model });
+      if (retention) {
+        const roots = options.workspaceRoots ?? [];
+        const writable = sandbox['writableRoots'];
+        const wrongWorkspacePolicy = expected === 'workspaceWrite' && (
+          sandbox['excludeSlashTmp'] !== true || sandbox['excludeTmpdirEnvVar'] !== true ||
+          !Array.isArray(writable) || writable.length !== roots.length || roots.some(root => !writable.includes(root))
+        );
+        if (!options.cwd || response['cwd'] !== options.cwd || response['approvalPolicy'] !== 'never' ||
+            sandbox['networkAccess'] === true || wrongWorkspacePolicy ||
+            (resumeId && thread['id'] !== resumeId)) throw failure();
+      }
+      accounting = new CodexUsage(thread['id'], { provider: 'openai', model: options.model }, resumeId !== undefined);
       const turnResponse = await client.rpc('turn/start', {
         threadId: thread['id'], sandboxPolicy: codexSandboxPolicy(options.sandbox, options.workspaceRoots ?? []), input: [
           { type: 'text', text: options.prompt, text_elements: [] },
@@ -216,6 +242,7 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
       accounting.ownTurn(turnId);
       yield { type: 'skills_delivered', refs: (options.skills ?? []).map(skill => skill.ref) };
       let finalText: string | undefined;
+      const seen = new Set<string>();
       while (true) {
         const packet = await client.next(); const params = record(packet['params']);
         accounting.observe(packet['method'], params);
@@ -224,6 +251,11 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
         if (packetTurn !== turnId) continue;
         if (packet['method'] === 'item/completed' || packet['method'] === 'item/started') {
           const item = record(params['item']);
+          if (typeof item['id'] === 'string') {
+            const key = JSON.stringify([packet['method'], item['id']]);
+            if (seen.has(key)) continue;
+            seen.add(key);
+          } else if (resumeId) continue;
           if (packet['method'] === 'item/completed' && item['type'] === 'agentMessage' && typeof item['text'] === 'string') {
             finalText = item['text']; yield { type: 'agent_message', content: finalText };
           } else if (['commandExecution', 'fileChange', 'mcpToolCall'].includes(String(item['type']))) {
@@ -237,13 +269,14 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
             try { structuredOutput = JSON.parse(finalText); }
             catch { throw new ProviderProtocolError('structured_result_invalid', 'Codex final output is not JSON.'); }
           }
+          retention?.completed(thread['id']);
           yield { type: 'result', ...(structuredOutput !== undefined ? { structuredOutput } : {}),
             result: { directive: 'advance', output: finalText } };
           return;
         }
       }
     } catch (error) {
-      if (error instanceof CodexAuthenticationError || error instanceof ProviderProtocolError ||
+      if (error instanceof NativeResumeRefused || error instanceof CodexAuthenticationError || error instanceof ProviderProtocolError ||
           error instanceof ProviderConnectionError || (error instanceof Error && error.name === 'AbortError')) throw error;
       throw failure();
     } finally {

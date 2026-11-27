@@ -1,3 +1,4 @@
+import { NativeResumeRefused } from '@autocatalyst/execution';
 import { ClaudeUsage, type ClaudeAccountingAnomaly } from './claude-usage.js';
 import { access, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -84,6 +85,7 @@ export interface ClaudeNativeEvent {
 }
 
 export interface ClaudeSessionLaunchOptions {
+  readonly conversation?: import('@autocatalyst/execution').NativeConversationTurn;
   readonly onUsage?: (usage: AgentTokenUsage, anomalies?: readonly ClaudeAccountingAnomaly[]) => void;
   readonly prompt: string;
   readonly cwd?: string;
@@ -282,24 +284,72 @@ async function* realSDKLaunch(
     );
   }
 
+  const retention = opts.conversation?.mode === 'retained' ? opts.conversation : undefined;
+  if (retention && !await retention.verifyLaunch()) {
+    throw new ProviderConfigurationError('unsupported_required_capability', 'Native conversation confinement was not verified.');
+  }
+  if (retention?.resumeId && (!opts.cwd || !await retention.lookupRootSession?.(retention.resumeId, opts.cwd))) {
+    throw new NativeResumeRefused('missing', false);
+  }
   const sdkOpts: Record<string, unknown> = {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
-    ...(opts.env !== undefined ? { env: opts.env } : {}),
+    ...(opts.env !== undefined || retention?.scopeEnvironment ? { env: { ...opts.env, ...retention?.scopeEnvironment } } : {}),
     ...(opts.allowedTools !== undefined ? { allowedTools: opts.allowedTools } : {}),
     permissionMode: 'dontAsk',
     ...(opts.options ?? {}),
     ...(opts.structuredResult !== undefined ? { outputFormat: opts.structuredResult.outputFormat } : {})
   };
 
-  const accounting = new ClaudeUsage(typeof sdkOpts['resume'] === 'string' || typeof sdkOpts['resumeSessionAt'] === 'string' || sdkOpts['continue'] === true);
+  if (opts.conversation) {
+    delete sdkOpts['resume'];
+    delete sdkOpts['resumeSessionAt'];
+    delete sdkOpts['continue'];
+    delete sdkOpts['forkSession'];
+    if (retention) {
+      sdkOpts['persistSession'] = true;
+      sdkOpts['resume'] = retention.resumeId;
+      if (!retention.resumeId) delete sdkOpts['resume'];
+    } else if (opts.conversation.mode === 'fresh_only' && opts.conversation.verifiedNonPersistence) {
+      sdkOpts['persistSession'] = false;
+    }
+  }
+  let root: string | undefined;
+  const retainedEvents = new Set<string>();
+  const linkedTools = new Set<string>();
+  const accounting = new ClaudeUsage(retention?.resumeId !== undefined);
+  const invalidRetainedRoot = () => new ProviderProtocolError('invalid_provider_event', 'Claude root conversation did not match the current query.');
   try {
     for await (const msg of query({ prompt: opts.prompt, options: sdkOpts })) {
+      if (retention && msg['type'] === 'system' && msg['subtype'] === 'init') {
+        const id = msg['session_id'];
+        if (typeof id !== 'string' || !id || (root !== undefined && id !== root) ||
+            (retention.resumeId !== undefined && id !== retention.resumeId)) throw invalidRetainedRoot();
+        root = id;
+      }
+      if (retention && (msg['type'] === 'assistant' || msg['type'] === 'result')) {
+        if (msg['isReplay'] === true || msg['is_replay'] === true) {
+          accounting.observe(msg);
+          continue;
+        }
+        if (!root) throw invalidRetainedRoot();
+        const child = msg['type'] === 'assistant' && typeof msg['parent_tool_use_id'] === 'string';
+        if (child && (!linkedTools.has(msg['parent_tool_use_id'] as string) || msg['session_id'] !== root)) continue;
+        if (msg['session_id'] !== root) throw invalidRetainedRoot();
+      }
       accounting.observe(msg);
       if (msg['type'] === 'assistant') {
         const inner = msg['message'] as Record<string, unknown> | undefined;
         const content = inner?.['content'];
         if (Array.isArray(content)) {
-          for (const block of content as Record<string, unknown>[]) {
+          for (const [index, block] of (content as Record<string, unknown>[]).entries()) {
+            if (retention) {
+              const messageId = inner?.['id'];
+              if (typeof messageId !== 'string' || !messageId) continue;
+              const event = JSON.stringify([messageId, block['type'], block['id'] ?? index]);
+              if (retainedEvents.has(event)) continue;
+              retainedEvents.add(event);
+              if (block['type'] === 'tool_use' && typeof block['id'] === 'string') linkedTools.add(block['id']);
+            }
             if (block['type'] === 'text' && typeof block['text'] === 'string') {
               yield { type: 'assistant', content: block['text'] };
             } else if (block['type'] === 'tool_use' && typeof block['name'] === 'string') {
@@ -311,6 +361,7 @@ async function* realSDKLaunch(
         const subtype = msg['subtype'] as string | undefined;
         const usage = msg['usage'] as Record<string, unknown> | undefined;
         if (subtype === 'success') {
+          if (root && msg['is_error'] !== true) retention?.completed(root);
           const input_tokens =
             typeof usage?.['input_tokens'] === 'number' ? (usage['input_tokens'] as number) : undefined;
           const output_tokens =
@@ -635,6 +686,7 @@ export function createClaudeAgentAdapter(
           }, { runId, step, clock, idGenerator, knownSecretValues });
 
           const native = launch({
+            ...(runInput.nativeConversation ? { conversation: runInput.nativeConversation } : {}),
             onUsage: (usage, anomalies) => {
               tokenUsage = usage;
               for (const code of anomalies ?? []) safeLog('warn', 'claude.adapter.invalid_accounting', { runId, step, code });
@@ -734,6 +786,8 @@ export function createClaudeAgentAdapter(
           const proxyEvidence = connection.getProxyFailureEvidence?.();
           if (
             classified === undefined &&
+            !(err instanceof NativeResumeRefused) &&
+            runInput.nativeConversation?.mode !== 'retained' &&
             !isNonRetryableStructuredError(err) &&
             proxyEvidenceQualifies(proxyEvidence)
           ) {

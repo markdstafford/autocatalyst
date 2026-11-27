@@ -11,6 +11,10 @@
   The execution terminal or PreTerminalRunnerFailure carries it into the unit of work. The
   recorder writes explicit unavailable usage when no evidence is usable and always stores null USD.
   Failed direct calls still have no durable session.
+- Reviewed attempts allocate a local `sess_...` ID before native dispatch. Migration 0014 records
+  the exact convergence occurrence and launch evidence separately from the provider handle. A
+  restart can record a known launch with unavailable usage and no invented end time. A preflight
+  miss without a launch produces no synthetic Session. See [reviewed agent conversations](reviewed-agent-conversations.md).
 - Migration 0011 adds nullable usage_json and the partial expression index for model rate
   revisions. Never fill in legacy splits. The SQLite bootstrap repairs historical 0006 ordering
   only when the tenant column is genuinely missing and Drizzle would skip that entry.

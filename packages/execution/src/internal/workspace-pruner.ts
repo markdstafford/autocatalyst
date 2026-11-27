@@ -9,12 +9,14 @@ import {
 } from '../workspace.js';
 import type { WorkspaceDriver } from './workspace-driver.js';
 import { consoleWorkspaceLogger, type WorkspaceLogger } from './workspace-logger.js';
+import { drainPrivateConversationScopes, type WorkspaceConversationWriter } from './workspace-conversation-custody.js';
 import { assertPathInsideRootWithoutFinalSymlinkResolution } from './workspace-paths.js';
 
 export interface WorkspacePrunerDependencies {
   readonly driver: WorkspaceDriver;
   readonly now?: () => number;
   readonly logger?: WorkspaceLogger;
+  readonly conversationWriterExited?: (marker: WorkspaceConversationWriter) => Promise<boolean>;
 }
 
 export interface WorkspacePruner {
@@ -90,6 +92,23 @@ export function createWorkspacePruner(dependencies: WorkspacePrunerDependencies)
         );
       } catch {
         return finish(request, startedAt, 'rejected', 'out_of_root_path');
+      }
+
+      const target = path.resolve(request.targetPath);
+      const runRoot = request.mode === 'worktree' && path.basename(target) === 'repo' ? path.dirname(target) : target;
+      if (path.basename(runRoot) === request.runId) {
+        const drained = await drainPrivateConversationScopes({
+          runRoot, runId: request.runId,
+          ...(dependencies.conversationWriterExited ? { writerExited: dependencies.conversationWriterExited } : {}),
+          async removeOwnedScope(scope) {
+            await assertPathInsideRootWithoutFinalSymlinkResolution(
+              { root: runRoot, rootKind: 'workspace', targetPath: scope, intent: 'delete' },
+              { pathExists: p => driver.pathExists(p), realpath: p => driver.realpath(p) }
+            );
+            await driver.removeDirectory({ workspaceRoot: runRoot, targetPath: scope });
+          }
+        });
+        if (!drained) return finish(request, startedAt, 'rejected', 'conversation_writer_unverified');
       }
 
       let stat: Awaited<ReturnType<WorkspaceDriver['statPath']>>;

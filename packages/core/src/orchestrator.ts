@@ -138,6 +138,7 @@ export interface RunWorkInput {
   readonly runId: string;
   readonly run: Run;
   readonly tenant: string;
+  readonly publicationReview?: import('./pr-finalize.js').PublicationReviewSnapshot;
 }
 
 export type RunWorkResult =
@@ -1080,6 +1081,7 @@ export class DefaultOrchestrator implements Orchestrator {
       try {
         const result = await engine.runSpec({
           run, runId: run.id, tenant: run.tenant, runStep, stepDefinition, workflow, steps, readHead, commitResult: commit,
+          stillOwns: () => this.#dispatchSourceMatches(source),
           ...(workspace ? { workspace } : {}),
           ...(marker?.specAnswer ? { answer: marker.specAnswer } : {}),
           readCanonicalSpec: async () => {
@@ -1159,6 +1161,15 @@ export class DefaultOrchestrator implements Orchestrator {
         stepDefinition,
         workflow,
         commitResult: commit,
+        stillOwns: () => this.#dispatchSourceMatches(source),
+        ...(() => {
+          for (const prior of [...runSteps].reverse()) {
+            if (prior.id === runStep.id || prior.step !== 'implementation.build') continue;
+            const parsed = convergenceCheckpointSchema.safeParse(prior.checkpointResult);
+            if (parsed.success) return { priorCheckpoint: parsed.data };
+          }
+          return {};
+        })(),
         ...(resolvedWorkspace !== undefined ? { workspace: resolvedWorkspace } : {}),
         ...(humanGuidance !== undefined ? { humanGuidance } : {})
       });
@@ -1249,7 +1260,15 @@ export class DefaultOrchestrator implements Orchestrator {
       }
       if (!await this.#dispatchSourceMatches(source)) throw new StaleDispatchError();
     }
-    const baseWorkInput: RunWorkInput = { runId: input.runId, run, tenant: input.tenant };
+    const treeSha = integrated && publication?.readTree
+      ? await publication.readTree(integrated.workspace, integrated.headSha) : undefined;
+    if (treeSha === null) return publicationStop('pr_integration_workspace_unavailable', { safeReason: 'tree_unavailable' });
+    const baseWorkInput: RunWorkInput = { runId: input.runId, run, tenant: input.tenant,
+      ...(integrated && finalizationStepId ? { publicationReview: {
+        occurrenceId: finalizationStepId, candidateSha: integrated.headSha, targetSha: integrated.targetSha,
+        ...(treeSha ? { treeSha } : {})
+      } } : {})
+    };
     const workInput: RunWorkInput = run.currentStep === 'pr.finalize'
       ? { ...baseWorkInput, toolPolicyMode: 'read_only' } as unknown as RunWorkInput
       : baseWorkInput;
@@ -1296,6 +1315,14 @@ export class DefaultOrchestrator implements Orchestrator {
           });
         }
         const parsed = finalized.value;
+        const invalidateCandidate = () => apply({
+          runId: run.id, tenant: run.tenant, origin: 'system', directive: 'advance',
+          ...(finalizationStepId !== undefined ? { expectedStepId: finalizationStepId } : {}),
+          checkpointResult: { kind: 'publication_candidate_invalidated' }
+        });
+        if (integrated && publication &&
+            (await publication.readCandidate(integrated.workspace) !== integrated.headSha ||
+             await publication.readTarget(integrated.workspace) !== integrated.targetSha)) return invalidateCandidate();
 
         if (parsed.directive === 'revise') {
           if (this.#feedbackLifecycleDependencies !== undefined) {
@@ -1331,14 +1358,6 @@ export class DefaultOrchestrator implements Orchestrator {
         // Freeze failure becomes a `fail` directive with reason `spec_freeze_failed` so the
         // run never advances to pr.open with an unfrozen spec.
         let publishSha = integrated?.headSha;
-        const invalidateCandidate = () => apply({
-          runId: run.id, tenant: run.tenant, origin: 'system', directive: 'advance',
-          ...(finalizationStepId !== undefined ? { expectedStepId: finalizationStepId } : {}),
-          checkpointResult: { kind: 'publication_candidate_invalidated' }
-        });
-        if (integrated !== undefined && await publication?.readCandidate(integrated.workspace) !== integrated.headSha) {
-          return invalidateCandidate();
-        }
         const isSpecBearingWorkflow = run.workKind === 'feature' || run.workKind === 'enhancement';
         if (isSpecBearingWorkflow && this.#specFreezeDependencies !== undefined) {
           if (this.#resolveWorkspaceContext === undefined) {
@@ -1394,7 +1413,8 @@ export class DefaultOrchestrator implements Orchestrator {
             ...(integrated !== undefined && publishSha !== undefined ? {
               attestation: {
                 repository: integrated.workspace.repository, branch: integrated.workspace.branch,
-                base: integrated.workspace.base, targetSha: integrated.targetSha, reviewedSha: integrated.headSha, publishSha
+                base: integrated.workspace.base, targetSha: integrated.targetSha, reviewedSha: integrated.headSha, publishSha,
+                ...(treeSha ? { reviewedTree: treeSha, reviewOccurrenceId: finalizationStepId! } : {})
               },
               integration: { sourceSha: integrated.sourceSha, refreshCount: epoch.count }
             } : {})
@@ -1550,27 +1570,28 @@ export class DefaultOrchestrator implements Orchestrator {
       observe: (run, pr, ci) => readPullRequest(run, pr, this.#pullRequestLifecycleDependencies(), true, Date.now() + 30_000, ci),
       transition: input => this.#withRunMutation(input.from, () => this.#moveRepair(input)),
       onWorkspaceDrained: run => this.#invalidateRepairActivity(run),
-      build: async (run, runStep, repair, stillOwns) => {
+      build: async (run, runStep, repair, stillOwns, prBinding) => {
         if (this.#convergenceEngine === undefined || this.#resolveWorkspaceContext === undefined) throw new Error('repair_build_not_configured');
         const workflow = await this.#requireWorkflow({ kind: 'existing_run', run });
         const marker = runStep.checkpointResult as { humanGuidance?: unknown; resumedFromAwaitingInputStepId?: string } | null;
         const guidance = marker?.humanGuidance;
-        const history = marker?.resumedFromAwaitingInputStepId === undefined ? [] : await this.#runSteps?.listByRun(run.id) ?? [];
+        const history = await this.#runSteps?.listByRun(run.id) ?? [];
         const pause = history.find(step => step.id === marker?.resumedFromAwaitingInputStepId && step.step === 'implementation.awaiting_input');
-        const previous = pause === undefined ? undefined : history.find(step =>
-          step.occurrence.index === pause.occurrence.index - 1 && step.step === 'implementation.build');
+        const previous = pause === undefined ? [...history].reverse().find(step =>
+          step.id !== runStep.id && step.step === 'implementation.build' && convergenceCheckpointSchema.safeParse(step.checkpointResult).success
+        ) : history.find(step => step.occurrence.index === pause.occurrence.index - 1 && step.step === 'implementation.build');
         const checkpoint = convergenceCheckpointSchema.safeParse(previous?.checkpointResult);
         return this.#convergenceEngine.run({
           run, runId: run.id, tenant: run.tenant, runStep, workflow, stepDefinition: getRunStepDefinition('implementation.build')!,
           workspace: await this.#resolveWorkspaceContext({ runId: run.id }),
           ...(typeof guidance === 'string' ? { humanGuidance: guidance } : {}),
-          ciRepair: { failedHead: repair.headSha, failures: repair.failures }, stillOwns,
+          ciRepair: { failedHead: repair.headSha, failures: repair.failures, prBinding }, stillOwns,
           ...(checkpoint.success ? { priorCheckpoint: checkpoint.data } : {})
         });
       },
-      review: async run => {
+      review: async (run, publicationReview) => {
         if (this.#unitOfWork === undefined) throw new Error('repair_review_not_configured');
-        return this.#unitOfWork.run({ run, runId: run.id, tenant: run.tenant, toolPolicyMode: 'read_only' } as RunWorkInput);
+        return this.#unitOfWork.run({ run, runId: run.id, tenant: run.tenant, toolPolicyMode: 'read_only', publicationReview } as RunWorkInput);
       }
     };
   }

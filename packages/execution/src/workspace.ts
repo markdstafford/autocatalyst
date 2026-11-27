@@ -214,7 +214,8 @@ export type WorkspacePruneErrorCode =
   | 'missing_host_repository'
   | 'directory_remove_failed'
   | 'worktree_remove_failed'
-  | 'worktree_admin_prune_failed';
+  | 'worktree_admin_prune_failed'
+  | 'conversation_writer_unverified';
 
 export interface WorkspacePruneErrorContext {
   readonly runId?: string;

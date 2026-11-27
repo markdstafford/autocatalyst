@@ -1630,7 +1630,7 @@ export class DrizzleSessionRepository implements SessionRepository {
     this.#database = asInternalSqliteDatabase(database);
   }
 
-  async create(input: CreateSessionInput): Promise<StoredSession> {
+  async create(input: CreateSessionInput, attemptId?: string): Promise<StoredSession> {
     const parsed = createSessionInputSchema.parse(input);
     // Allocate the per-run sequence and insert atomically so concurrent creates for the same
     // run cannot collide on a stale max. The unique (run_id, sequence) index is the final
@@ -1638,6 +1638,15 @@ export class DrizzleSessionRepository implements SessionRepository {
     return this.#database.drizzle.transaction((tx) => {
       const parentRows = tx.select({ id: runs.id }).from(runs).where(eq(runs.id, parsed.runId)).limit(1).all();
       requireParent(parentRows, parsed.runId, 'Run');
+      if (attemptId !== undefined) {
+        const prior = tx.select().from(sessions).where(eq(sessions.id, attemptId)).get();
+        if (prior !== undefined) {
+          if (prior.runId !== parsed.runId || prior.step !== parsed.step || prior.role !== parsed.role || prior.round !== parsed.round) {
+            throw new Error('Session attempt binding mismatch.');
+          }
+          return this.#rowToSession(prior);
+        }
+      }
       const maxRow = tx
         .select({ value: sql<number>`coalesce(max(${sessions.sequence}), 0)` })
         .from(sessions)
@@ -1645,7 +1654,7 @@ export class DrizzleSessionRepository implements SessionRepository {
         .all()[0];
       const nextSequence = (maxRow?.value ?? 0) + 1;
       const entity: StoredSession = validateEntity(storedSessionSchema, {
-        id: `sess_${randomUUID()}`,
+        id: attemptId ?? `sess_${randomUUID()}`,
         runId: parsed.runId,
         sequence: nextSequence,
         phase: parsed.phase,
@@ -1999,6 +2008,7 @@ export class DrizzleRunWorkspaceMetadataRepository implements RunWorkspaceMetada
         workspaceHandle: input.workspaceHandle,
         workspaceRepoRoot: input.workspaceRepoRoot,
         provisionedBaseRef: input.provisionedBaseRef ?? null,
+        generation: randomUUID(),
         createdAt: input.createdAt
       })
       .onConflictDoUpdate({
@@ -2006,6 +2016,10 @@ export class DrizzleRunWorkspaceMetadataRepository implements RunWorkspaceMetada
         set: {
           workspaceHandle: input.workspaceHandle,
           workspaceRepoRoot: input.workspaceRepoRoot,
+          generation: sql`case when ${runWorkspaceMetadata.workspaceHandle} <> ${input.workspaceHandle}
+            or ${runWorkspaceMetadata.workspaceRepoRoot} <> ${input.workspaceRepoRoot} then ${randomUUID()} else ${runWorkspaceMetadata.generation} end`,
+          enrollmentProof: sql`case when ${runWorkspaceMetadata.workspaceHandle} <> ${input.workspaceHandle}
+            or ${runWorkspaceMetadata.workspaceRepoRoot} <> ${input.workspaceRepoRoot} then null else ${runWorkspaceMetadata.enrollmentProof} end`,
           // Preserve an existing non-null provisionedBaseRef so idempotent re-materializations
           // (which may reconstruct an approximate ref) do not overwrite the exact ref captured
           // during first provisioning.

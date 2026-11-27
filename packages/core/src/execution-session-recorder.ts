@@ -36,6 +36,7 @@ export interface ExecutionSessionRecorderDependencies {
 
 export interface RecordExecutionSessionInput {
   readonly runId: string;
+  readonly attemptId?: string;
   readonly phase: string | null;
   readonly step: string;
   readonly role: SessionRole;
@@ -111,7 +112,7 @@ export async function recordExecutionSession(
   }
 
   try {
-    return await dependencies.sessions.create(createInput);
+    return await dependencies.sessions.create(createInput, input.attemptId);
   } catch (error) {
     dependencies.logger?.error(
       { runId: input.runId, step: input.step, role: input.role, code: 'session_persistence_failed' },

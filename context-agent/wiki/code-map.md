@@ -7,10 +7,19 @@
 - Runtime Micromanager source, pin, synchronization, fidelity checks and E2E handoff: [micromanager-runtime.md](micromanager-runtime.md).
 - Web client design system (tokens, shell dimensions, alignment rules, component rules): [design-system.md](design-system.md).
 
-Last updated: 2026-11-27 (run operator actions and named run views, #153 and #156).
+Last updated: 2026-11-27 (reviewed conversation foundations, #195).
 
 > How agents navigate the codebase. Keep this current: whenever you add, move, or significantly
 > change a module, update the relevant section in the same change.
+
+## Reviewed agent conversations (#195)
+
+- `apps/control-plane/src/reviewed-conversation.ts` owns continuity admission, worktree-instance proof, and the release-owned qualification lists. `server.ts` passes host-only occurrence and route data after materialization; these do not enter task-input JSON.
+- `packages/persistence/src/agent-conversation-repository.ts` and migration `0014_agent_conversation_slots.sql` own slot CAS, per-key dispatch ordering, generation enrollment, and interrupted-dispatch evidence. Public Sessions remain one row per invocation; native handles are not Session IDs.
+- `packages/core/src/reviewed-handoff.ts` builds bounded optional evidence; `execution-run-unit-of-work.ts` records attempts and allows only one positively proven resume fallback. `packages/execution/src/native-conversation.ts` is the private native handoff instead of scratch model memory.
+- `packages/codex-agent-adapter/src/codex-app-server.ts` owns thread start/resume and acknowledged-turn filtering. Claude's SDK launcher in `claude-agent-adapter.ts` owns root validation, fresh-option compatibility, and scoped lookup requirements.
+- `packages/execution/src/internal/workspace-conversation-custody.ts` and `workspace-pruner.ts` own private-writer markers and guarded reclamation. `publication-git.ts` materializes final review source and a target-to-candidate diff from pinned objects, not from worktree contents.
+- Production retention remains disabled. See [qualification and verification](reviewed-agent-conversations.md) before attempting enablement or release.
 
 ## Run operator actions (#153)
 

@@ -90,6 +90,7 @@ export interface CodexNativeEvent {
 }
 
 export interface CodexSessionLaunchOptions {
+  readonly conversation?: import('@autocatalyst/execution').NativeConversationTurn;
   readonly onUsage?: (usage: AgentTokenUsage, anomalies?: readonly CodexAccountingAnomaly[]) => void;
   readonly prompt: string;
   readonly instructions: string;
@@ -733,6 +734,7 @@ export function createCodexAgentAdapter(
           const instructions = instructionParts.join('\n\n');
 
           const native = launch({
+            ...(runInput.nativeConversation ? { conversation: runInput.nativeConversation } : {}),
             prompt,
             instructions,
             model: profile.model.model,

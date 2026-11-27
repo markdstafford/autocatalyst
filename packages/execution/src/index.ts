@@ -386,3 +386,5 @@ export {
   anthropicUsageTokens, compactUsageGroups, normalizeOpenAIResponse, normalizeSessionUsage,
   openAIUsageTokens, usageBillingKey, usageCount, usageGroup, usageRecord, type NativeUsageAnomaly
 } from './usage-normalization.js';
+
+export * from './native-conversation.js';

@@ -341,7 +341,7 @@ export interface RunStepRepository {
 }
 
 export interface SessionRepository {
-  create(input: CreateSessionInput): Promise<StoredSession>;
+  create(input: CreateSessionInput, attemptId?: string): Promise<StoredSession>;
   findById(id: string): Promise<StoredSession | null>;
   listByRun(runId: string): Promise<readonly StoredSession[]>;
   readPricingSnapshot?(tenant: string, runId: string): Promise<{

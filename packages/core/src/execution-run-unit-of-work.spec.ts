@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { ExecutionContext } from '@autocatalyst/api-contract';
 import type { ExecutionBoundaryEvent, ExecutionEntryPoint, ExecutionEntryPointInput, DirectCallRequest } from '@autocatalyst/execution';
-import { createExecutionEntryPoint, ClassifiedProviderFailureError, ExecutionMaterializationError, SkillCatalogResolutionError, ProviderConnectionError } from '@autocatalyst/execution';
+import { NativeResumeRefused, PreTerminalRunnerFailure, createExecutionEntryPoint, ClassifiedProviderFailureError, ExecutionMaterializationError, SkillCatalogResolutionError, ProviderConnectionError } from '@autocatalyst/execution';
 import type { Runner, RunnerRunInput } from '@autocatalyst/execution';
 import { ModelRoutingConfigurationError } from './model-routing-resolver.js';
 import type { RunWorkInput } from './orchestrator.js';
@@ -31,6 +31,45 @@ function makeInput(overrides: Partial<RunWorkInput> = {}): RunWorkInput {
     ...overrides
   };
 }
+
+describe('reviewed invocation fallback', () => {
+  it.each(['missing', 'preflight', 'ambiguous'] as const)('accounts for %s without duplicating work', async reason => {
+    const meta = {
+      model: { provider: 'codex', model: 'test' }, inferenceSettings: {},
+      startedAt: '2026-06-09T00:00:00.000Z', endedAt: '2026-06-09T00:00:01.000Z',
+      outcome: 'failed' as const
+    };
+    const attempts: string[] = [];
+    const prepare = vi.fn(async ({ fallback }: { fallback: boolean }) => fallback
+      ? { mode: 'fresh_only' as const, verifiedNonPersistence: false }
+      : { mode: 'retained' as const, resumeId: 'prior-thread', verifyLaunch: async () => true, completed() { /* no-op */ } });
+    const create = vi.fn(async (_input: unknown, id?: string) => ({ id } as never));
+    const finish = vi.fn(async () => undefined);
+    const environment = { context: makeContext() } as Parameters<
+      NonNullable<ExecutionEntryPointInput['prepareConversation']>
+    >[0];
+    const uow = createExecutionRunUnitOfWork({
+      reviewedAttempt: () => ({ prepare, finish, freshHandoff: 'Durable handoff' }),
+      resolveContext: async () => makeContext(),
+      sessions: { create } as unknown as NonNullable<Parameters<typeof createExecutionRunUnitOfWork>[0]['sessions']>,
+      execute: {
+        async *execute(input) {
+          attempts.push(input.attemptId!);
+          await input.prepareConversation?.(environment);
+          if (attempts.length === 1) throw new PreTerminalRunnerFailure(
+            reason === 'ambiguous' ? new Error('Unknown execution state') : new NativeResumeRefused('missing', reason === 'missing'),
+            meta
+          );
+          yield { ...makeTerminalEvent('advance'), sessionMetadata: { ...meta, outcome: 'succeeded' } } as ExecutionBoundaryEvent;
+        }
+      }
+    });
+    expect((await uow.runWithCheckpoint(makeInput())).workResult.directive).toBe(reason === 'ambiguous' ? 'fail' : 'advance');
+    expect(new Set(attempts).size).toBe(reason === 'ambiguous' ? 1 : 2);
+    expect(create.mock.calls.map(([, id]) => id)).toEqual(reason === 'preflight' ? [attempts[1]] : attempts);
+    expect(finish.mock.calls.length).toBe(reason === 'ambiguous' ? 1 : 2);
+  });
+});
 
 function makeContext(): ExecutionContext {
   return {

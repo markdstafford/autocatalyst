@@ -99,6 +99,13 @@
       "when": 1795737600000,
       "tag": "0013_run_archive",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "6",
+      "when": 1795741200000,
+      "tag": "0014_agent_conversation_slots",
+      "breakpoints": true
     }
   ]
 }

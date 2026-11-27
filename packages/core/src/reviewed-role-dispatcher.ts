@@ -38,11 +38,23 @@ export interface ReviewContext {
   readonly humanGuidance?: string;
 }
 
+export interface RepairTurnEvidence {
+  readonly failedHead: string;
+  readonly failures: readonly import('./code-host.js').RequiredCheckEvidence[];
+  readonly prBinding?: { readonly repository: string; readonly id: string; readonly number: number; readonly branch: string };
+}
+
 export interface RunRoleWorkInput extends RunWorkInput {
   readonly role: 'implementer' | 'reviewer';
   readonly round: number;
+  /** Controller-owned values, never projected as writable task inputs. */
+  readonly reviewedOccurrence?: {
+    readonly id: string;
+    readonly workflow: import('./run-workflows.js').RunWorkflowDefinition;
+    readonly stillOwns?: () => Promise<boolean>;
+  };
   readonly specReview?: SpecReviewSessionInput;
-  readonly ciRepair?: { readonly failedHead: string; readonly failures: readonly import('./code-host.js').RequiredCheckEvidence[] };
+  readonly ciRepair?: RepairTurnEvidence;
   readonly reviewContext?: ReviewContext;
   readonly toolPolicyMode?: ToolPolicyMode;
   readonly routeProfileId?: string;

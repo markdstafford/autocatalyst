@@ -148,7 +148,7 @@ export function createReviewedExecutionDispatcher(
       try {
         const result = await unitOfWork.runWithCheckpoint(augmentedInput);
         workResult = result.workResult;
-        if (input.specReview) recorded = { ...(result.sessionId ? { sessionId: result.sessionId } : {}),
+        if (input.specReview || input.reviewedOccurrence) recorded = { ...(result.sessionId ? { sessionId: result.sessionId } : {}),
           ...(result.modelPrincipal ? { modelPrincipal: result.modelPrincipal } : {}) };
         checkpointResult = result.checkpointResult;
       } catch (error) {
