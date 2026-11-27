@@ -4,7 +4,7 @@ import { promisify } from 'node:util';
 import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
-import { NativeResumeRefused, ProviderConnectionError, ProviderProtocolError, UnsupportedProviderCapabilityError, runtimeSkillsCatalogRoot } from '@autocatalyst/execution';
+import { NativeResumeRefused, ProviderConnectionError, ProviderProtocolError, UnsupportedProviderCapabilityError, protectedHistoryRoots, runtimeSkillsCatalogRoot } from '@autocatalyst/execution';
 
 import { CodexUsage } from './codex-usage.js';
 import { CodexAuthenticationError, type CodexAuthProbe, type CodexAuthMode } from './codex-auth.js';
@@ -35,7 +35,7 @@ export function codexProcessEnvironment(overrides: Readonly<Record<string, strin
 /** Version and JSON-RPC boundary used by auth, production turns and no-inference probes. */
 export async function openCodexAppServer(options: {
   binary: string; cwd?: string; env?: Readonly<Record<string, string>>;
-  timeoutMs?: number; signal?: AbortSignal;
+  timeoutMs?: number; signal?: AbortSignal; experimentalApi?: boolean;
 }): Promise<CodexAppServerClient> {
   const env = codexProcessEnvironment(options.env);
   try {
@@ -45,7 +45,10 @@ export async function openCodexAppServer(options: {
   if (options.signal?.aborted) throw failure();
   const client = new CodexAppServerClient(options.binary, env, options.cwd, options.timeoutMs ?? 30_000, options.signal);
   try {
-    await client.rpc('initialize', { clientInfo: { name: 'autocatalyst', title: 'Autocatalyst', version: '0.1.0' } });
+    await client.rpc('initialize', {
+      clientInfo: { name: 'autocatalyst', title: 'Autocatalyst', version: '0.1.0' },
+      ...(options.experimentalApi ? { capabilities: { experimentalApi: true } } : {})
+    });
     client.notify('initialized', {});
     return client;
   } catch { client.close(); throw failure(); }
@@ -188,8 +191,26 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
       throw new UnsupportedProviderCapabilityError('tool_policy_unsupported', 'Codex requires a tool policy permitting its native shell.');
     }
     const retention = options.conversation?.mode === 'retained' ? options.conversation : undefined;
-    if (retention && (!retention.verifyAccount || !await retention.verifyLaunch())) throw failure();
+    const workspaceRoots = options.workspaceRoots ?? [];
+    const workspaces = options.cwd ? [...new Set([options.cwd, ...workspaceRoots])] : workspaceRoots;
+    const historyRoots = protectedHistoryRoots(retention?.protectedHistoryRoots, workspaces);
+    if (retention && (!historyRoots || !retention.verifyAccount || !await retention.verifyLaunch())) throw failure();
+    const permissionId = 'autocatalyst-retained';
+    const permissionBase = options.sandbox === 'read-only' ? ':read-only' : ':workspace';
+    const protectedProfile = historyRoots ? {
+      default_permissions: permissionId,
+      permissions: { [permissionId]: {
+        extends: permissionBase,
+        network: { enabled: false },
+        filesystem: {
+          ':tmpdir': 'read', ':slash_tmp': 'read',
+          ...Object.fromEntries(workspaces.map(root => [root, options.sandbox === 'read-only' ? 'read' : 'write'])),
+          ...Object.fromEntries(historyRoots.map(root => [root, 'deny']))
+        }
+      } }
+    } : undefined;
     const client = await openCodexAppServer({ binary, ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+      ...(protectedProfile ? { experimentalApi: true } : {}),
       env: { ...options.env, ...retention?.scopeEnvironment }, timeoutMs: options.timeoutMs ?? 600_000,
       ...(options.signal !== undefined ? { signal: options.signal } : {}) });
     let accounting: CodexUsage | undefined;
@@ -203,11 +224,14 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
       }
       const request = {
         cwd: options.cwd, model: options.model, modelProvider: 'openai',
-        approvalPolicy: 'never', sandbox: options.sandbox,
+        approvalPolicy: 'never',
+        ...(protectedProfile ? { permissions: permissionId, workspaceRoots: workspaces } : { sandbox: options.sandbox }),
         baseInstructions: options.instructions,
-        config: { ...options.config, ...isolation, 'sandbox_workspace_write.writable_roots': options.workspaceRoots ?? [],
+        config: { ...options.config, ...isolation, ...(protectedProfile ?? {
+          'sandbox_workspace_write.writable_roots': workspaceRoots,
           'sandbox_workspace_write.network_access': false, 'sandbox_workspace_write.exclude_slash_tmp': true,
-          'sandbox_workspace_write.exclude_tmpdir_env_var': true }
+          'sandbox_workspace_write.exclude_tmpdir_env_var': true
+        }) }
       };
       const resumeId = retention?.resumeId;
       const response = resumeId ? await client.rpc('thread/resume', {
@@ -219,19 +243,23 @@ export function codexSessionLaunch(binary: string): CodexSessionLaunch {
       const expected = options.sandbox === 'read-only' ? 'readOnly' : 'workspaceWrite';
       if (sandbox['type'] !== expected) throw failure();
       if (retention) {
-        const roots = options.workspaceRoots ?? [];
+        const permission = record(response['activePermissionProfile']);
         const writable = sandbox['writableRoots'];
         const wrongWorkspacePolicy = expected === 'workspaceWrite' && (
           sandbox['excludeSlashTmp'] !== true || sandbox['excludeTmpdirEnvVar'] !== true ||
-          !Array.isArray(writable) || writable.length !== roots.length || roots.some(root => !writable.includes(root))
+          !Array.isArray(writable) || writable.some(root => !workspaces.includes(root)) ||
+          workspaces.some(root => root !== options.cwd && !writable.includes(root))
         );
         if (!options.cwd || response['cwd'] !== options.cwd || response['approvalPolicy'] !== 'never' ||
-            sandbox['networkAccess'] === true || wrongWorkspacePolicy ||
+            permission['id'] !== permissionId || permission['extends'] !== permissionBase ||
+            sandbox['networkAccess'] !== false || wrongWorkspacePolicy ||
             (resumeId && thread['id'] !== resumeId)) throw failure();
       }
       accounting = new CodexUsage(thread['id'], { provider: 'openai', model: options.model }, resumeId !== undefined);
       const turnResponse = await client.rpc('turn/start', {
-        threadId: thread['id'], sandboxPolicy: codexSandboxPolicy(options.sandbox, options.workspaceRoots ?? []), input: [
+        threadId: thread['id'],
+        ...(protectedProfile ? { permissions: permissionId } : { sandboxPolicy: codexSandboxPolicy(options.sandbox, workspaceRoots) }),
+        input: [
           { type: 'text', text: options.prompt, text_elements: [] },
           ...(options.skills ?? []).map(skill => ({ type: 'skill', name: skill.ref, path: path.join(skill.hostPath, 'SKILL.md') }))
         ]

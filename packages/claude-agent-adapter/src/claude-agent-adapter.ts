@@ -1,4 +1,4 @@
-import { NativeResumeRefused } from '@autocatalyst/execution';
+import { NativeResumeRefused, protectedHistoryRoots } from '@autocatalyst/execution';
 import { ClaudeUsage, type ClaudeAccountingAnomaly } from './claude-usage.js';
 import { access, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -89,6 +89,7 @@ export interface ClaudeSessionLaunchOptions {
   readonly onUsage?: (usage: AgentTokenUsage, anomalies?: readonly ClaudeAccountingAnomaly[]) => void;
   readonly prompt: string;
   readonly cwd?: string;
+  readonly workspaceRoots?: readonly string[];
   readonly env?: Record<string, string>;
   readonly allowedTools?: string[];
   readonly options?: Record<string, unknown>;
@@ -285,7 +286,9 @@ async function* realSDKLaunch(
   }
 
   const retention = opts.conversation?.mode === 'retained' ? opts.conversation : undefined;
-  if (retention && !await retention.verifyLaunch()) {
+  const historyRoots = protectedHistoryRoots(retention?.protectedHistoryRoots,
+    opts.workspaceRoots ?? (opts.cwd ? [opts.cwd] : []));
+  if (retention && (!historyRoots || !await retention.verifyLaunch())) {
     throw new ProviderConfigurationError('unsupported_required_capability', 'Native conversation confinement was not verified.');
   }
   if (retention?.resumeId && (!opts.cwd || !await retention.lookupRootSession?.(retention.resumeId, opts.cwd))) {
@@ -306,6 +309,29 @@ async function* realSDKLaunch(
     delete sdkOpts['continue'];
     delete sdkOpts['forkSession'];
     if (retention) {
+      const configured = sdkOpts['settings'];
+      if (configured !== undefined && (typeof configured !== 'object' || configured === null || Array.isArray(configured))) {
+        throw new ProviderConfigurationError('unsupported_required_capability', 'Native conversation settings could not be protected.');
+      }
+      const settings = configured as Record<string, unknown> | undefined;
+      if (settings?.['sandbox'] !== undefined) {
+        throw new ProviderConfigurationError('unsupported_required_capability', 'Native conversation sandbox has conflicting settings.');
+      }
+      const protectedRoots = historyRoots!;
+      const permissions = settings?.['permissions'] as { deny?: string[] } | undefined;
+      sdkOpts['settingSources'] = [];
+      sdkOpts['settings'] = {
+        ...settings,
+        permissions: {
+          ...permissions,
+          deny: [...(permissions?.deny ?? []), ...protectedRoots.flatMap(root =>
+            ['Read(/' + root + ')', 'Read(/' + root + '/**)', 'Edit(/' + root + ')', 'Edit(/' + root + '/**)'])]
+        },
+        sandbox: {
+          enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false,
+          filesystem: { denyRead: protectedRoots, denyWrite: protectedRoots }
+        }
+      };
       sdkOpts['persistSession'] = true;
       sdkOpts['resume'] = retention.resumeId;
       if (!retention.resumeId) delete sdkOpts['resume'];
@@ -694,6 +720,7 @@ export function createClaudeAgentAdapter(
             prompt,
             ...(cwd !== undefined ? { cwd } : {}),
             env: launchEnv,
+            workspaceRoots: env.workspace.workspaceRoots,
             allowedTools,
             ...((subscription || inference.reasoningEffort !== undefined || skillPlugins.length > 0 || structuredResult !== undefined)
               ? {

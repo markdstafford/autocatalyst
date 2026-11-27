@@ -78,7 +78,19 @@ describe('Claude native conversation launch options', () => {
       const completed = vi.fn();
       const lookupRootSession = vi.fn(async () => mode !== 'missing');
       const query = vi.fn(async function* ({ options }: { options?: Record<string, unknown> }) {
-        expect(options).toMatchObject({ persistSession: true, resume: 'root-session', cwd });
+        expect(options).toMatchObject({
+          persistSession: true, resume: 'root-session', cwd, settingSources: [],
+          settings: {
+            permissions: { deny: [
+              'Read(/' + cwd + '-history)', 'Read(/' + cwd + '-history/**)',
+              'Edit(/' + cwd + '-history)', 'Edit(/' + cwd + '-history/**)'
+            ] },
+            sandbox: {
+              enabled: true, failIfUnavailable: true, allowUnsandboxedCommands: false,
+              filesystem: { denyRead: [cwd + '-history'], denyWrite: [cwd + '-history'] }
+            }
+          }
+        });
         expect(options).not.toHaveProperty('continue');
         yield { type: 'system', subtype: 'init', session_id: mode === 'wrong-root' ? 'subagent' : 'root-session' };
         yield { type: 'assistant', session_id: 'root-session', isReplay: true,
@@ -91,7 +103,8 @@ describe('Claude native conversation launch options', () => {
       });
       const result = drain({
         ...input, runInput: { ...input.runInput, nativeConversation: {
-          mode: 'retained', resumeId: 'root-session', verifyLaunch: async () => true, lookupRootSession, completed
+          mode: 'retained', resumeId: 'root-session', verifyLaunch: async () => true,
+          protectedHistoryRoots: [cwd + '-history'], lookupRootSession, completed
         } }
       }, query);
       if (mode === 'missing') {
