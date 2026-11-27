@@ -102,6 +102,8 @@ function makeFakeOrchestrator(overrides?: Partial<Orchestrator>): Orchestrator {
   return {
     createRun: vi.fn(),
     createConversationWithFirstRun: vi.fn().mockResolvedValue(makeOrchestratedResult()),
+    cancelRun: vi.fn(),
+    setRunStep: vi.fn(),
     applyDirective: vi.fn(),
     dispatch: vi.fn(),
     tick: vi.fn().mockResolvedValue({ status: 'noop' }),

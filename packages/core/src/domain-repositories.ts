@@ -25,6 +25,7 @@ import type {
   PullRequest,
   Run,
   RunListCursor,
+  RunArchiveFilter,
   RunStatus,
   RunStep,
   RunWaitingOn,
@@ -67,6 +68,8 @@ export interface ConversationRepository {
 }
 
 export interface TopicRepository {
+  /** Update only the title of a tenant-owned topic; return null for absent or foreign IDs. */
+  updateTitle?(tenant: string, id: string, title: string): Promise<Topic | null>;
   create(input: CreateTopicInput): Promise<Topic>;
   findById(id: string): Promise<Topic | null>;
   listByConversation(conversationId: string): Promise<readonly Topic[]>;
@@ -90,7 +93,28 @@ export interface RecordRunLifecycleStartResult {
   readonly runStep: RunStep;
 }
 
+export class RunTransitionConflictError extends Error {
+  constructor(readonly code: 'missing_run' | 'terminal_run' | 'source_step_mismatch' | 'source_occurrence_mismatch') {
+    super('Run transition source changed.');
+    this.name = 'RunTransitionConflictError';
+  }
+}
+
+export class ArchivedRunRecoveryError extends Error {
+  constructor() {
+    super('Unarchive the run before recovering it.');
+    this.name = 'ArchivedRunRecoveryError';
+  }
+}
+
+export interface RunReadContext {
+  readonly projectId: string;
+  readonly title?: string;
+}
+
 export interface RecordRunStepTransitionInput {
+  readonly expectedStep: string;
+  readonly abandonInput?: boolean;
   readonly runId: string;
   readonly currentStep: string;
   readonly terminal: boolean;
@@ -128,11 +152,12 @@ export interface RecoverFailedRunResult {
 }
 
 /**
- * Server-side filters for the run collection read. Each field is a de-duplicated set of validated
- * values parsed from one comma-separated query parameter. Items within a field combine with OR;
+ * Server-side filters for the run collection read. Archive visibility is a single mode; the other
+ * fields are de-duplicated sets of comma-separated values. Items within a field combine with OR;
  * different fields combine with AND. All filtering happens in the SQL query before page selection.
  */
 export interface ListRunsByTenantFilters {
+  readonly archived?: RunArchiveFilter;
   readonly status?: readonly RunStatus[];
   readonly waitingOn?: readonly RunWaitingOn[];
   readonly workKind?: readonly string[];
@@ -156,6 +181,8 @@ export interface ListRunsByTenantResult {
 }
 
 export interface RunRepository {
+  setArchived?(runId: string, tenant: string, archivedAt: string | null): Promise<Run | null>;
+  resolveRunContext?(runId: string): Promise<RunReadContext | null>;
   create(input: CreateRunInput): Promise<Run>;
   findById(id: string): Promise<Run | null>;
   findActiveByTopic(topicId: string): Promise<Run | null>;

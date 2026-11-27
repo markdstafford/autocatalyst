@@ -85,6 +85,13 @@
       "when": 1795400000000,
       "tag": "0011_session_usage_and_rates",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1795737600000,
+      "tag": "0012_run_archive",
+      "breakpoints": true
     }
   ]
 }

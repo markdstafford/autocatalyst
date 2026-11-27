@@ -310,6 +310,25 @@ describe('OpenAPI generation', () => {
     expect((operation as { responses?: Record<string, unknown> })?.responses?.['500']).toBeDefined();
   });
 
+  it('documents each operator action and the set_step event', () => {
+    const { paths, components } = generateOpenApiDocument();
+    for (const [method, suffix, required] of [
+      ['post', '/cancel', false], ['post', '/archive', false], ['post', '/unarchive', false],
+      ['post', '/set-step', true], ['patch', '', true]
+    ] as const) {
+      const operation = paths[`/v1/runs/{id}${suffix}`]?.[method];
+      expect(operation?.requestBody).toMatchObject({ required });
+      expect(Object.keys(operation?.responses ?? {})).toEqual(expect.arrayContaining(['200', '400', '403', '404', '409']));
+    }
+    expect(components?.schemas?.['RunStateTransitionEvent']).toMatchObject({
+      properties: { transition: { properties: { directive: { enum: expect.arrayContaining(['set_step']) } } } }
+    });
+    expect(paths['/v1/runs']?.get?.parameters).toEqual(expect.arrayContaining([
+      expect.objectContaining({ in: 'query', name: 'archived', schema: expect.objectContaining({ enum: ['exclude', 'include', 'only'] }) })
+    ]));
+    expect(paths['/v1/runs/{id}/replies']?.post?.description).toContain('current pauseStepId');
+  });
+
   it('documents the run recovery endpoint', () => {
     const document = generateOpenApiDocument();
     const operation = document.paths['/v1/runs/{id}/recover']?.post as

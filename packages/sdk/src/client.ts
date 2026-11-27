@@ -123,6 +123,12 @@ import {
   type UpdateConfigurationRecordRequest
 } from '@autocatalyst/api-contract';
 
+import {
+  archiveRunPath, cancelRunPath, unarchiveRunPath, setRunStepPath, renameRunPath,
+  renameRunRequestSchema, setRunStepRequestSchema, runActionResponseSchema,
+  type RenameRunRequest, type SetRunStepRequest, type RunActionResponse, type RunArchiveFilter
+} from '@autocatalyst/api-contract';
+
 export interface ControlPlaneClientOptions {
   readonly baseUrl: string | URL;
   readonly fetch?: typeof globalThis.fetch;
@@ -135,6 +141,7 @@ export interface ControlPlaneClientOptions {
  * repeated keys, which the server rejects).
  */
 export interface ListRunsOptions {
+  readonly archived?: RunArchiveFilter;
   readonly status?: RunStatus | readonly RunStatus[];
   readonly waitingOn?: RunWaitingOn | readonly RunWaitingOn[];
   readonly workKind?: CreateRunWorkKind | readonly CreateRunWorkKind[];
@@ -174,6 +181,13 @@ export interface ControlPlaneClient {
   listRunFeedback(id: string): Promise<RunFeedbackListResponse>;
   appendRunFeedbackThreadReply(id: string, feedbackId: string, request: AppendRunFeedbackThreadRequest): Promise<FeedbackResponse>;
   updateRunFeedback(id: string, feedbackId: string, request: UpdateRunFeedbackRequest): Promise<FeedbackResponse>;
+  cancelRun(id: string): Promise<RunActionResponse>;
+  archiveRun(id: string): Promise<RunActionResponse>;
+  unarchiveRun(id: string): Promise<RunActionResponse>;
+  setRunStep(id: string, request: SetRunStepRequest): Promise<RunActionResponse>;
+  renameRun(id: string, request: RenameRunRequest): Promise<RunActionResponse>;
+  /** After set-step abandons an implementation pause, refresh and pass the current pauseStepId
+   * with guidance. An abandoned or missing required ID is rejected with 409 stale_pause. */
   replyToRun(id: string, request: RunReplyRequest): Promise<RunReplyResponse>;
   getPrincipal(): Promise<PrincipalDiagnosticResponse>;
   recoverRun(id: string, request?: RunRecoveryRequest): Promise<RunRecoveryResponse>;
@@ -239,7 +253,24 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
     throw new Error('A fetch implementation is required.');
   }
 
+  const runAction = async (method: 'POST' | 'PATCH', path: string, id: string, body: object) => {
+    const response = await fetchImplementation(urlFor(baseUrl, path.replace(':id', encodeURIComponent(id))), {
+      method,
+      headers: protectedHeaders(bearerToken, { 'content-type': 'application/json' }),
+      body: JSON.stringify(body)
+    });
+    await throwForError(response);
+    if (response.status !== 200) throw new Error(`Expected 200 from run action, received ${response.status}.`);
+    return runActionResponseSchema.parse(await parseJson(response));
+  };
+
   return {
+    cancelRun: (id) => runAction('POST', cancelRunPath, id, {}),
+    archiveRun: (id) => runAction('POST', archiveRunPath, id, {}),
+    unarchiveRun: (id) => runAction('POST', unarchiveRunPath, id, {}),
+    setRunStep: async (id, request) => runAction('POST', setRunStepPath, id, setRunStepRequestSchema.parse(request)),
+    renameRun: async (id, request) => runAction('PATCH', renameRunPath, id, renameRunRequestSchema.parse(request)),
+
     async getHealth() {
       const response = await fetchImplementation(urlFor(baseUrl, '/health'), { method: 'GET' });
       if (response.ok || response.status === degradedHealthStatusCode) {
@@ -452,6 +483,7 @@ export function createControlPlaneClient(options: ControlPlaneClientOptions): Co
         appendFilter('waitingOn', options.waitingOn);
         appendFilter('workKind', options.workKind);
         appendFilter('projectId', options.projectId);
+        appendFilter('archived', options.archived);
         if (options.limit !== undefined) {
           url.searchParams.set('limit', String(options.limit));
         }

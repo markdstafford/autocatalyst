@@ -1,6 +1,6 @@
 import type { CreateRunInput, JsonValue, NonModelPrincipal, Run, RunStep, TestingGuideResult, TrackedIssue } from '@autocatalyst/api-contract';
 
-import type { LifecycleRunStepInput, RunRepository } from './domain-repositories.js';
+import { RunTransitionConflictError, type LifecycleRunStepInput, type RunRepository } from './domain-repositories.js';
 import { deriveRunTerminal, getRunStepDefinition, type RunStepDefinition } from './run-step-catalog.js';
 import { nextWorkflowStep, type TransitionErrorCode, type TransitionResult } from './run-transition.js';
 import type { RunDirective, RunWorkflowDefinition } from './run-workflows.js';
@@ -13,6 +13,8 @@ export type RunLifecycleErrorCode =
   | 'terminal_run'
   | 'invalid_transition'
   | 'start_persistence_failed'
+  | 'source_step_mismatch'
+  | 'source_occurrence_mismatch'
   | 'transition_persistence_failed';
 
 export class RunLifecycleError extends Error {
@@ -52,6 +54,8 @@ export interface ApplyRunDirectiveInput {
   readonly workflowResolver?: RunWorkflowResolver;
   readonly runId: string;
   readonly directive: RunDirective;
+  readonly source?: Run;
+  readonly sourceRunStepId?: string;
   readonly checkpointResult?: JsonValue;
   readonly destinationCheckpointResult?: JsonValue;
   readonly reason?: string;
@@ -123,7 +127,7 @@ export async function startRunLifecycle(input: StartRunLifecycleInput): Promise<
 }
 
 export async function applyRunDirective(input: ApplyRunDirectiveInput): Promise<RunLifecycleState> {
-  const existing = await input.runs.findById(input.runId);
+  const existing = input.source ?? await input.runs.findById(input.runId);
   if (existing === null) {
     throw new RunLifecycleError('missing_run', `Run '${input.runId}' does not exist.`);
   }
@@ -140,15 +144,17 @@ export async function applyRunDirective(input: ApplyRunDirectiveInput): Promise<
     throw new RunLifecycleError('unknown_workflow', `Transition destination '${transition.to}' is not a known step.`);
   }
   try {
-    const sourceRunStep = input.runs.findLatestOpenRunStep
+    const sourceRunStep = input.sourceRunStepId === undefined && input.runs.findLatestOpenRunStep
       ? await input.runs.findLatestOpenRunStep({ runId: existing.id, step: existing.currentStep })
       : null;
     const recorded = await input.runs.recordRunStepTransition({
       runId: existing.id,
+      expectedStep: existing.currentStep,
       currentStep: step.id,
       terminal: deriveRunTerminal(step.id),
       runStep: buildEntryRunStep(step, now(input.clock)),
-      ...(sourceRunStep !== null ? { sourceRunStepId: sourceRunStep.id } : {}),
+      ...(input.sourceRunStepId !== undefined ? { sourceRunStepId: input.sourceRunStepId }
+        : sourceRunStep !== null ? { sourceRunStepId: sourceRunStep.id } : {}),
       ...(input.checkpointResult !== undefined ? { checkpointResult: input.checkpointResult } : {}),
       ...(input.destinationCheckpointResult !== undefined ? { destinationCheckpointResult: input.destinationCheckpointResult } : {}),
       ...(input.directive === 'fail' && input.reason !== undefined ? { failureReason: input.reason } : {})
@@ -158,6 +164,7 @@ export async function applyRunDirective(input: ApplyRunDirectiveInput): Promise<
     if (error instanceof RunLifecycleError) {
       throw error;
     }
+    if (error instanceof RunTransitionConflictError) throw new RunLifecycleError(error.code, error.message, { cause: error });
     throw new RunLifecycleError('transition_persistence_failed', 'Failed to record run lifecycle transition.', { cause: error });
   }
 }

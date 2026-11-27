@@ -78,6 +78,9 @@ export interface PullRequestOpenHandlerDependencies {
   readonly codeHosts: CodeHostRegistry;
   readonly resolveCredential: ResolveCodeHostCredential;
   readonly events: RunEventPublisher;
+  readonly withResultCommit?: (
+    commit: (apply: PullRequestOpenHandlerDependencies['applyDirective']) => Promise<OrchestratedRunResult>
+  ) => Promise<OrchestratedRunResult>;
   readonly applyDirective: (input: ApplyOrchestratedDirectiveInput) => Promise<OrchestratedRunResult>;
   readonly clock: () => string;
   readonly runWorkspaceGit: Pick<RunWorkspaceGitPort, 'getChangedFiles'>;
@@ -268,6 +271,24 @@ export async function handlePullRequestOpen(
     });
   }
 
+  const commitResult = deps.withResultCommit ?? ((commit) => commit(deps.applyDirective));
+  const commitOpened = (
+    getFacts: () => Promise<Pick<PullRequest, 'provider' | 'number' | 'url' | 'branch'>>,
+    idempotent: boolean
+  ) => commitResult(async (applyDirective) => {
+    const facts = await getFacts();
+    await emitPullRequestOpenedEvent(deps, runId, tenant, facts);
+    return advanceWithCheckpoint({ ...deps, applyDirective }, run, tenant, {
+      kind: 'pull_request_open',
+      provider: facts.provider,
+      number: facts.number,
+      url: facts.url,
+      branch: facts.branch,
+      idempotent,
+      completedAt: deps.clock()
+    });
+  });
+
   // 3. Idempotency: if a local PR is already recorded, refresh state from the provider.
   const existingPullRequest = await deps.pullRequests.findByRun(runId);
   if (existingPullRequest !== null && existingPullRequest.state === 'open') {
@@ -286,23 +307,22 @@ export async function handlePullRequestOpen(
 
     const effectiveState = providerFacts?.state ?? existingPullRequest.state;
     if (effectiveState === 'merged' || effectiveState === 'closed') {
-      // Update local state then fail — pr.open cannot proceed against a non-open PR.
-      try {
-        await deps.pullRequests.updateState({
-          runId,
-          tenant,
-          state: effectiveState,
-          updatedAt: deps.clock(),
-          expectedState: 'open'
-        });
-      } catch {
-        // Swallow — failing to persist the state change does not change the error we surface.
-      }
-      throw new PullRequestOpenHandlerError(
-        'pull_request_recovery_pr_not_open',
-        `Existing pull request for run '${runId}' is no longer open (state='${effectiveState}').`,
-        { details: { state: effectiveState, number: existingPullRequest.number, provider: existingPullRequest.provider } }
-      );
+      return commitResult(async (applyDirective) => {
+        try {
+          await deps.pullRequests.updateState({
+            runId, tenant, state: effectiveState, updatedAt: deps.clock(), expectedState: 'open'
+          });
+        } catch {
+          // State refresh is best effort; the PR is not open either way.
+        }
+        const error = new PullRequestOpenHandlerError(
+          'pull_request_recovery_pr_not_open',
+          `Existing pull request for run '${runId}' is no longer open (state='${effectiveState}').`,
+          { details: { state: effectiveState, number: existingPullRequest.number, provider: existingPullRequest.provider } }
+        );
+        if (deps.withResultCommit === undefined) throw error;
+        return applyDirective({ runId, tenant, directive: 'fail', origin: 'system', reason: `pr_open_${error.code}` });
+      });
     }
 
     const facts = providerFacts ?? {
@@ -312,21 +332,7 @@ export async function handlePullRequestOpen(
       state: existingPullRequest.state,
       branch: existingPullRequest.branch
     };
-    await emitPullRequestOpenedEvent(deps, runId, tenant, {
-      url: facts.url,
-      provider: facts.provider,
-      number: facts.number,
-      branch: facts.branch
-    });
-    return await advanceWithCheckpoint(deps, run, tenant, {
-      kind: 'pull_request_open',
-      provider: facts.provider,
-      number: facts.number,
-      url: facts.url,
-      branch: facts.branch,
-      idempotent: true,
-      completedAt: deps.clock()
-    });
+    return commitOpened(async () => facts, true);
   }
 
   // 4. Load workspace metadata for repo root and branch.
@@ -441,22 +447,7 @@ export async function handlePullRequestOpen(
       );
     }
     // Open PR found on provider but not yet persisted locally: reuse it.
-    const persisted = await persistPullRequest(deps, runId, run, providerExisting);
-    await emitPullRequestOpenedEvent(deps, runId, tenant, {
-      url: persisted.url,
-      provider: persisted.provider,
-      number: persisted.number,
-      branch: persisted.branch
-    });
-    return advanceWithCheckpoint(deps, run, tenant, {
-      kind: 'pull_request_open',
-      provider: persisted.provider,
-      number: persisted.number,
-      url: persisted.url,
-      branch: persisted.branch,
-      idempotent: false,
-      completedAt: deps.clock()
-    });
+    return commitOpened(() => persistPullRequest(deps, runId, run, providerExisting), false);
   }
 
   // 9. Create the PR via the code-host port.
@@ -491,22 +482,8 @@ export async function handlePullRequestOpen(
       recovered = null;
     }
     if (recovered !== null && recovered.state === 'open') {
-      const persisted = await persistPullRequest(deps, runId, run, recovered);
-      await emitPullRequestOpenedEvent(deps, runId, tenant, {
-        url: persisted.url,
-        provider: persisted.provider,
-        number: persisted.number,
-        branch: persisted.branch
-      });
-      return advanceWithCheckpoint(deps, run, tenant, {
-        kind: 'pull_request_open',
-        provider: persisted.provider,
-        number: persisted.number,
-        url: persisted.url,
-        branch: persisted.branch,
-        idempotent: false,
-        completedAt: deps.clock()
-      });
+      const existing = recovered;
+      return commitOpened(() => persistPullRequest(deps, runId, run, existing), false);
     }
     throw new PullRequestOpenHandlerError(
       'pull_request_recovery_unknown_create_outcome',
@@ -515,20 +492,12 @@ export async function handlePullRequestOpen(
     );
   }
 
-  // 10. Persist the PR record. On persistence failure, retry findByBranch.
-  let persisted: PullRequest;
+  // Persist and advance together. A local persistence error can trigger a remote
+  // lookup, but that lookup must happen after releasing the result-commit lock.
   try {
-    persisted = await deps.pullRequests.create({
-      runId,
-      owner: run.owner as NonModelPrincipal,
-      tenant: run.tenant,
-      provider: facts.provider,
-      number: facts.number,
-      url: facts.url,
-      state: facts.state,
-      branch: facts.branch
-    });
+    return await commitOpened(() => persistPullRequest(deps, runId, run, facts), false);
   } catch (persistError) {
+    if (!(persistError instanceof PullRequestOpenHandlerError) || persistError.code !== 'persistence_failed') throw persistError;
     let recovered: CodeHostPullRequestFacts | null = null;
     try {
       recovered = await codeHostPort.findByBranch({
@@ -541,49 +510,15 @@ export async function handlePullRequestOpen(
       recovered = null;
     }
     if (recovered !== null && recovered.state === 'open') {
-      try {
-        persisted = await deps.pullRequests.create({
-          runId,
-          owner: run.owner as NonModelPrincipal,
-          tenant: run.tenant,
-          provider: recovered.provider,
-          number: recovered.number,
-          url: recovered.url,
-          state: recovered.state,
-          branch: recovered.branch
-        });
-      } catch (retryCause) {
-        throw new PullRequestOpenHandlerError('persistence_failed', 'Failed to persist pull-request record.', {
-          cause: retryCause
-        });
-      }
-    } else {
-      throw new PullRequestOpenHandlerError(
-        'pull_request_recovery_missing_provider_match',
-        'Persistence of the created pull request failed and no matching open PR was found by branch.',
-        { cause: persistError }
-      );
+      const existing = recovered;
+      return commitOpened(() => persistPullRequest(deps, runId, run, existing), false);
     }
+    throw new PullRequestOpenHandlerError(
+      'pull_request_recovery_missing_provider_match',
+      'Persistence of the created pull request failed and no matching open PR was found by branch.',
+      { cause: persistError.cause }
+    );
   }
-
-  // 11. Emit the runner_notification event with safe facts only.
-  await emitPullRequestOpenedEvent(deps, runId, tenant, {
-    url: persisted.url,
-    provider: persisted.provider,
-    number: persisted.number,
-    branch: persisted.branch
-  });
-
-  // 12. Advance to pr.human_review with a checkpoint carrying safe PR facts.
-  return advanceWithCheckpoint(deps, run, tenant, {
-    kind: 'pull_request_open',
-    provider: persisted.provider,
-    number: persisted.number,
-    url: persisted.url,
-    branch: persisted.branch,
-    idempotent: false,
-    completedAt: deps.clock()
-  });
 }
 
 async function persistPullRequest(

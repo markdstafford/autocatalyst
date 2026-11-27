@@ -373,6 +373,11 @@ export function createScriptedDetailClient(init?: { run?: Run }): ScriptedDetail
       return { run, classification: { directive } } as RunReplyResponse;
     },
     recoverRun: notImplemented('recoverRun'),
+    cancelRun: notImplemented('cancelRun'),
+    archiveRun: notImplemented('archiveRun'),
+    unarchiveRun: notImplemented('unarchiveRun'),
+    setRunStep: notImplemented('setRunStep'),
+    renameRun: notImplemented('renameRun'),
     refreshRunPullRequest: notImplemented('refreshRunPullRequest'),
     reconcilePullRequests: notImplemented('reconcilePullRequests')
   } as ControlPlaneClient;

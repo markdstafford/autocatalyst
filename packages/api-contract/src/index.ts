@@ -149,3 +149,4 @@ export * from './session-usage.js';
 export * from './model-rate-table.js';
 export * from './session-pricing.js';
 export type { ModelRateRecord } from './configuration-record.js';
+export * from './run-operator-actions.js';

@@ -5,11 +5,12 @@ export {
 export type {
   ControlPlaneClient,
   ControlPlaneClientOptions,
+  ListRunsOptions,
   RunEventsStreamOptions,
   RunEventsResponse
 } from './client.js';
 
 export type {
   BillingKey, ModelRateBand, ModelRatePublication, ModelRateRecord, ModelRateSettings,
-  PricedSessionCost, RunSessionListResponse, SessionCostGap, SessionCostTotal, SessionCostTotals, SessionUsage, UsageGroup
+  PricedSessionCost, RenameRunRequest, RunActionResponse, RunArchiveFilter, SetRunStepRequest, RunSessionListResponse, SessionCostGap, SessionCostTotal, SessionCostTotals, SessionUsage, UsageGroup
 } from '@autocatalyst/api-contract';

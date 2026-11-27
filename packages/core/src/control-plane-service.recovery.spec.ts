@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Principal, Run, RunStep } from '@autocatalyst/api-contract';
 
 import { ControlPlaneServiceError, DefaultControlPlaneService } from './control-plane-service.js';
-import type { RunRepository, RunStepRepository } from './domain-repositories.js';
+import { ArchivedRunRecoveryError, type RunRepository, type RunStepRepository } from './domain-repositories.js';
 import type { Orchestrator } from './orchestrator.js';
 import { permissivePolicyDecisionPoint, type PolicyDecisionPoint } from './policy.js';
 import { InMemoryRunEventBus } from './run-events.js';
@@ -104,6 +104,30 @@ async function expectConflict(promise: Promise<unknown>, messageMatch?: RegExp):
 }
 
 describe('DefaultControlPlaneService.recoverRun', () => {
+  it('refuses an archived failed run before workspace preparation', async () => {
+    const recovery = makeRecovery();
+    const { service, recoverFailedRun, admitForDispatch } = makeService({ run: makeRun({ archivedAt: ts }), recovery });
+    await expect(service.recoverRun({ principal, tenant: owner.tenantId, runId: 'run_1', request: {} })).rejects.toMatchObject({
+      code: 'conflict', details: { reason: expect.stringMatching(/unarchive/i) }
+    });
+    expect(recovery.detectCommittedCheckpoints).not.toHaveBeenCalled();
+    expect(recovery.materializeWorkspace).not.toHaveBeenCalled();
+    expect(recoverFailedRun).not.toHaveBeenCalled();
+    expect(admitForDispatch).not.toHaveBeenCalled();
+  });
+
+  it('maps an archive that wins after preparation to the same conflict without dispatching', async () => {
+    const recovery = makeRecovery();
+    const { service, admitForDispatch } = makeService({
+      recovery, recoverFailedRun: vi.fn().mockRejectedValue(new ArchivedRunRecoveryError())
+    });
+    await expect(service.recoverRun({ principal, tenant: owner.tenantId, runId: 'run_1', request: {} })).rejects.toMatchObject({
+      code: 'conflict', details: { reason: expect.stringMatching(/unarchive/i) }
+    });
+    expect(recovery.materializeWorkspace).toHaveBeenCalledOnce();
+    expect(admitForDispatch).not.toHaveBeenCalled();
+  });
+
   it('resumes an implementation failure with committed checkpoints (omitted mode)', async () => {
     const recovery = makeRecovery();
     const { service, recoverFailedRun, admitForDispatch } = makeService({ recovery });

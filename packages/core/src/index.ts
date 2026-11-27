@@ -104,7 +104,7 @@ export type {
   UpdateRunStepCheckpointInput
 } from './domain-repositories.js';
 
-export { FeedbackConcurrentModificationError, PullRequestStateConflictError } from './domain-repositories.js';
+export { RunTransitionConflictError, ArchivedRunRecoveryError, FeedbackConcurrentModificationError, PullRequestStateConflictError } from './domain-repositories.js';
 
 export {
   deriveRunTerminal,

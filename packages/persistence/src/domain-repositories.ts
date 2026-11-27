@@ -1,7 +1,7 @@
 import { rowToRecord } from './configuration-record-repository.js';
 import { randomUUID } from 'node:crypto';
 
-import { and, asc, count, desc, eq, inArray, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
 import { z } from 'zod';
 
 import type {
@@ -119,7 +119,7 @@ import type {
   UpdatePullRequestStateInput,
   UpdateRunStepCheckpointInput
 } from '@autocatalyst/core';
-import { FeedbackConcurrentModificationError, PullRequestStateConflictError, runStepDefinitions } from '@autocatalyst/core';
+import { RunTransitionConflictError, ArchivedRunRecoveryError, FeedbackConcurrentModificationError, PullRequestStateConflictError, runStepDefinitions } from '@autocatalyst/core';
 
 import { ActiveRunConflictPersistenceError, isActiveRunConstraintViolation } from './active-run-conflict.js';
 import {
@@ -505,6 +505,14 @@ export class DrizzleTopicRepository implements TopicRepository {
     return row === undefined ? null : this.#rowToTopic(row);
   }
 
+  async updateTitle(tenant: string, id: string, title: string): Promise<Topic | null> {
+    const [row] = this.#database.drizzle.update(topics)
+      .set({ title, updatedAt: nowIso() })
+      .where(and(eq(topics.id, id), eq(topics.tenant, tenant)))
+      .returning().all();
+    return row === undefined ? null : this.#rowToTopic(row);
+  }
+
   async listByConversation(conversationId: string): Promise<readonly Topic[]> {
     const rows = this.#database.drizzle
       .select()
@@ -713,6 +721,8 @@ export class DrizzleRunRepository implements RunRepository {
 
     // Tenant scoping is mandatory and comes from the authenticated caller, never from query input.
     const conditions: SQL[] = [eq(runs.tenant, tenant)];
+    if (filters?.archived === 'only') conditions.push(isNotNull(runs.archivedAt));
+    else if (filters?.archived !== 'include') conditions.push(isNull(runs.archivedAt));
 
     if (filters?.workKind !== undefined && filters.workKind.length > 0) {
       conditions.push(inArray(runs.workKind, [...filters.workKind]));
@@ -744,10 +754,10 @@ export class DrizzleRunRepository implements RunRepository {
     // Join run → topic → conversation once for the whole page so projectId resolution and project
     // filtering stay a constant number of queries (never one read per run).
     const rows = this.#database.drizzle
-      .select({ run: runs, projectId: conversations.projectId })
+      .select({ run: runs, projectId: conversations.projectId, title: topics.title })
       .from(runs)
-      .innerJoin(topics, eq(runs.topicId, topics.id))
-      .innerJoin(conversations, eq(topics.conversationId, conversations.id))
+      .innerJoin(topics, and(eq(runs.topicId, topics.id), eq(runs.tenant, topics.tenant)))
+      .innerJoin(conversations, and(eq(topics.conversationId, conversations.id), eq(topics.tenant, conversations.tenant)))
       .where(and(...conditions))
       .orderBy(desc(runs.createdAt), desc(runs.id))
       // Request one extra row so nextCursor is emitted only when a further match actually exists.
@@ -755,7 +765,7 @@ export class DrizzleRunRepository implements RunRepository {
       .all();
 
     const page = rows.slice(0, limit);
-    const mapped = page.map((row) => this.#rowToRun(row.run, row.projectId));
+    const mapped = page.map((row) => this.#rowToRun(row.run, row));
     if (rows.length > limit && page.length > 0) {
       const last = page[page.length - 1]!;
       return { runs: mapped, nextCursor: { createdAt: last.run.createdAt, id: last.run.id } };
@@ -764,15 +774,32 @@ export class DrizzleRunRepository implements RunRepository {
   }
 
   async resolveProjectId(runId: string): Promise<string | null> {
+    return (await this.resolveRunContext(runId))?.projectId ?? null;
+  }
+
+  async resolveRunContext(runId: string) {
     const row = this.#database.drizzle
-      .select({ projectId: conversations.projectId })
+      .select({ projectId: conversations.projectId, title: topics.title })
       .from(runs)
-      .innerJoin(topics, eq(runs.topicId, topics.id))
-      .innerJoin(conversations, eq(topics.conversationId, conversations.id))
+      .innerJoin(topics, and(eq(runs.topicId, topics.id), eq(runs.tenant, topics.tenant)))
+      .innerJoin(conversations, and(eq(topics.conversationId, conversations.id), eq(topics.tenant, conversations.tenant)))
       .where(eq(runs.id, runId))
       .limit(1)
       .all()[0];
-    return row === undefined ? null : row.projectId;
+    return row ?? null;
+  }
+
+  async setArchived(runId: string, tenant: string, archivedAt: string | null): Promise<Run | null> {
+    return this.#database.drizzle.transaction((tx) => {
+      const scope = and(eq(runs.id, runId), eq(runs.tenant, tenant));
+      const [updated] = tx.update(runs).set({ archivedAt, updatedAt: nowIso() })
+        .where(and(scope, archivedAt === null
+          ? isNotNull(runs.archivedAt)
+          : and(eq(runs.terminal, true), inArray(runs.currentStep, ['done', 'failed', 'canceled']), isNull(runs.archivedAt))))
+        .returning().all();
+      const row = updated ?? tx.select().from(runs).where(scope).get();
+      return row === undefined ? null : this.#rowToRun(row);
+    }, { behavior: 'immediate' });
   }
 
   async listNonTerminal(): Promise<readonly Run[]> {
@@ -785,7 +812,7 @@ export class DrizzleRunRepository implements RunRepository {
     return rows.map((row) => this.#rowToRun(row));
   }
 
-  #rowToRun(row: typeof runs.$inferSelect, projectId?: string | null): Run {
+  #rowToRun(row: typeof runs.$inferSelect, context?: { projectId: string; title: string }): Run {
     const trackedIssue = parseNullableJsonValue(persistedTrackedIssueSchema, row.trackedIssueJson);
     const testingGuideResult = parseNullableJsonValue(testingGuideResultSchema, row.testingGuideResultJson);
     return validateEntity(runSchema, {
@@ -796,7 +823,8 @@ export class DrizzleRunRepository implements RunRepository {
       workKind: row.workKind,
       currentStep: row.currentStep,
       terminal: row.terminal,
-      ...(projectId === undefined || projectId === null ? {} : { projectId }),
+      ...(context === undefined ? {} : { projectId: context.projectId, title: context.title }),
+      ...(row.archivedAt === null ? {} : { archivedAt: row.archivedAt }),
       ...(trackedIssue === null ? {} : { trackedIssue }),
       ...(testingGuideResult === null ? {} : { testingGuideResult }),
       ...(row.failureReason === null || row.failureReason === undefined ? {} : { failureReason: row.failureReason }),
@@ -851,59 +879,49 @@ export class DrizzleRunRepository implements RunRepository {
 
   async recordRunStepTransition(input: RecordRunStepTransitionInput): Promise<RecordRunStepTransitionResult> {
     return this.#database.drizzle.transaction((tx) => {
-      const updatedRows = tx.update(runs)
-        .set({
-          currentStep: input.currentStep,
-          terminal: input.terminal,
-          failureReason: input.currentStep === 'failed' ? (input.failureReason ?? null) : null,
-          updatedAt: nowIso()
-        })
-        .where(eq(runs.id, input.runId))
-        .returning()
-        .all();
-      if (updatedRows[0] === undefined) {
-        throw new Error(`Run '${input.runId}' does not exist.`);
+      const existing = tx.select().from(runs).where(eq(runs.id, input.runId)).get();
+      if (existing === undefined) throw new RunTransitionConflictError('missing_run');
+      if (existing.terminal) throw new RunTransitionConflictError('terminal_run');
+      if (existing.currentStep !== input.expectedStep) throw new RunTransitionConflictError('source_step_mismatch');
+
+      const source = tx.select().from(runSteps)
+        .where(and(eq(runSteps.runId, input.runId), eq(runSteps.step, input.expectedStep), isNull(runSteps.endedAt)))
+        .orderBy(desc(runSteps.startedAt), desc(runSteps.id)).get();
+      if (input.sourceRunStepId !== undefined && source?.id !== input.sourceRunStepId) {
+        throw new RunTransitionConflictError('source_occurrence_mismatch');
       }
-      const run = this.#rowToRun(updatedRows[0]);
-      if (input.sourceRunStepId !== undefined) {
-        // Close the occurrence being left: stamp endedAt at the transition time and compute
-        // durationMs. The new occurrence's startedAt is the transition instant. This runs for
-        // every transition, including repeated entries for looping steps, so each occurrence
-        // carries bounds without any post-run backfill.
-        const checkpointJson = input.checkpointResult !== undefined
-          ? stringifyJsonValue(jsonValueSchema, input.checkpointResult)
-          : undefined;
-        const sourceRows = tx.select().from(runSteps).where(eq(runSteps.id, input.sourceRunStepId)).limit(1).all();
-        const source = sourceRows[0];
-        if (source !== undefined && source.endedAt === null) {
-          const transitionAt = input.runStep.startedAt;
-          const started = Date.parse(source.startedAt);
-          const ended = Date.parse(transitionAt);
-          const duration = Number.isFinite(started) && Number.isFinite(ended) && ended >= started ? ended - started : null;
-          tx.update(runSteps)
-            .set({
-              endedAt: transitionAt,
-              durationMs: duration,
-              ...(checkpointJson !== undefined ? { checkpointResultJson: checkpointJson } : {})
-            })
-            .where(eq(runSteps.id, input.sourceRunStepId))
-            .run();
-        } else if (checkpointJson !== undefined) {
-          // Source already closed (defensive): still persist the checkpoint result.
-          tx.update(runSteps)
-            .set({ checkpointResultJson: checkpointJson })
-            .where(eq(runSteps.id, input.sourceRunStepId))
-            .run();
+
+      const [updated] = tx.update(runs).set({
+        currentStep: input.currentStep,
+        terminal: input.terminal,
+        failureReason: input.currentStep === 'failed' ? (input.failureReason ?? null) : null,
+        updatedAt: nowIso()
+      }).where(and(eq(runs.id, input.runId), eq(runs.terminal, false), eq(runs.currentStep, input.expectedStep)))
+        .returning().all();
+      if (updated === undefined) throw new RunTransitionConflictError('source_step_mismatch');
+      const run = this.#rowToRun(updated);
+      if (source !== undefined) {
+        let checkpoint = input.checkpointResult;
+        if (input.abandonInput) {
+          const prior = parseNullableJsonValue(jsonValueSchema, source.checkpointResultJson);
+          checkpoint = { ...(prior && typeof prior === 'object' && !Array.isArray(prior) ? prior : {}), abandonedBySetStep: true };
         }
+        const transitionAt = input.runStep.startedAt;
+        const duration = Date.parse(transitionAt) - Date.parse(source.startedAt);
+        tx.update(runSteps).set({
+          endedAt: transitionAt,
+          durationMs: Number.isFinite(duration) && duration >= 0 ? duration : null,
+          ...(checkpoint === undefined ? {} : { checkpointResultJson: stringifyJsonValue(jsonValueSchema, checkpoint) })
+        }).where(eq(runSteps.id, source.id)).run();
       }
       const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep, input.destinationCheckpointResult);
       return { run, runStep };
-    });
+    }, { behavior: 'immediate' });
   }
 
   async recoverFailedRun(input: RecoverFailedRunInput): Promise<RecoverFailedRunResult> {
     return this.#database.drizzle.transaction((tx) => {
-      const existingRow = tx.select({ topicId: runs.topicId }).from(runs).where(eq(runs.id, input.runId)).limit(1).all()[0];
+      const existingRow = tx.select({ topicId: runs.topicId, archivedAt: runs.archivedAt }).from(runs).where(eq(runs.id, input.runId)).limit(1).all()[0];
       const topicId = existingRow?.topicId ?? '';
       // Guarded update: only a failed terminal run may be reopened. The WHERE clause asserts
       // the run is currently terminal and at the `failed` step so a concurrent change cannot
@@ -918,7 +936,7 @@ export class DrizzleRunRepository implements RunRepository {
             failureReason: null,
             updatedAt: nowIso()
           })
-          .where(and(eq(runs.id, input.runId), eq(runs.terminal, true), eq(runs.currentStep, 'failed')))
+          .where(and(eq(runs.id, input.runId), eq(runs.terminal, true), eq(runs.currentStep, 'failed'), isNull(runs.archivedAt)))
           .returning()
           .all();
       } catch (error) {
@@ -928,14 +946,15 @@ export class DrizzleRunRepository implements RunRepository {
         throw error;
       }
       if (updatedRows[0] === undefined) {
-        throw new Error(`Run '${input.runId}' is not a recoverable failed run.`);
+        if (existingRow?.archivedAt != null) throw new ArchivedRunRecoveryError();
+        throw new RunTransitionConflictError('terminal_run');
       }
       const run = this.#rowToRun(updatedRows[0]);
       // Create a new open RunStep for the re-dispatch step. Earlier rows, including the
       // terminal `failed` row, are left untouched so run history stays auditable.
       const runStep = buildRunStepInsideTransaction(tx, run.id, input.runStep, input.destinationCheckpointResult);
       return { run, runStep };
-    });
+    }, { behavior: 'immediate' });
   }
 
   async findLatestOpenRunStep(input: { runId: string; step: string }): Promise<RunStep | null> {

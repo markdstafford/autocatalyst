@@ -17,7 +17,7 @@ export const runEventsSuccessStatusCode = 200 as const;
 export const runEventsMediaType = 'text/event-stream' as const;
 export const runStateTransitionEventName = 'run_state_transition' as const;
 
-export const runStateTransitionKindSchema = z.enum(['start', 'advance', 'revise', 'needs_input', 'cancel', 'fail']);
+export const runStateTransitionKindSchema = z.enum(['start', 'advance', 'revise', 'needs_input', 'cancel', 'fail', 'set_step']);
 
 const runStateTransitionPayloadSchema = z.object({
   directive: runStateTransitionKindSchema,
