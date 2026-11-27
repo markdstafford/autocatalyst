@@ -27,6 +27,7 @@ async function setupFailedRun(repos: ReturnType<typeof createDrizzleDomainReposi
 
   // Transition the run to the terminal failed state (closing the build step occurrence).
   await repos.runs.recordRunStepTransition({
+    expectedStep: 'implementation.build',
     runId,
     currentStep: 'failed',
     terminal: true,
@@ -128,5 +129,32 @@ describe('recoverFailedRun', () => {
 
       database.close();
     });
+  });
+});
+
+it('makes archive and failed-only reopen mutually exclusive in storage', async () => {
+  await withTempDatabasePath(async (databasePath) => {
+    const database = createSqliteDatabase({ path: databasePath });
+    await migrateSqliteDatabase(database);
+    const repos = createDrizzleDomainRepositories(database);
+    try {
+      const { runId } = await setupFailedRun(repos);
+      const reDispatchStep = 'implementation.build';
+      const at = new Date().toISOString();
+      const reopen = () => repos.runs.recoverFailedRun({
+        runId, reDispatchStep,
+        runStep: { phase: 'implementation', step: reDispatchStep, role: 'none', startedAt: at, endedAt: null, durationMs: null }
+      });
+      expect((await repos.runs.findById(runId))?.archivedAt).toBeUndefined();
+      expect((await repos.runs.setArchived(runId, owner.tenantId, at))?.archivedAt).toBe(at);
+      await expect(reopen()).rejects.toMatchObject({ name: 'ArchivedRunRecoveryError', message: expect.stringMatching(/unarchive/i) });
+      expect(await repos.runSteps.listByRun(runId)).toHaveLength(2);
+      expect((await repos.runs.setArchived(runId, owner.tenantId, null))?.archivedAt).toBeUndefined();
+      await expect(reopen()).resolves.toMatchObject({ run: { currentStep: reDispatchStep, terminal: false } });
+      expect((await repos.runs.setArchived(runId, owner.tenantId, at))?.archivedAt).toBeUndefined();
+      expect(await repos.runs.setArchived(runId, 'foreign_tenant', at)).toBeNull();
+    } finally {
+      database.close();
+    }
   });
 });

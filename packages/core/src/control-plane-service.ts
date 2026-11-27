@@ -1,7 +1,7 @@
 import type { RepairActivityReader } from './pr-ci-repair.js';
 import { publicationRecoveryStep } from './pr-publication.js';
 import { priceRunSessions } from './session-pricing.js';
-import { FeedbackConcurrentModificationError } from './domain-repositories.js';
+import { ArchivedRunRecoveryError, RunTransitionConflictError, FeedbackConcurrentModificationError, type RunReadContext, type TopicRepository } from './domain-repositories.js';
 import { hasSpecConvergenceState, publicSpecCheckpoint, recoverableSelectedSpecCheckpoint } from './spec-convergence.js';
 import type {
   Artifact,
@@ -32,6 +32,7 @@ import type {
   UpdateRunFeedbackRequest
 } from '@autocatalyst/api-contract';
 import { createConversationWithFirstRunResponseSchema, feedbackResponseSchema, issueTrackerErrorCodeSchema, pullRequestReconciliationResponseSchema, runFeedbackListResponseSchema, runPullRequestResponseSchema, runPullRequestRefreshPath, runPullRequestRefreshResponseSchema, pullRequestCheckFailedErrorCode, pullRequestCheckFailedMessage, runRecoveryResponseSchema, runReplyResponseSchema, runSessionListResponseSchema, runSpecResponseSchema, runWorkflowPath } from '@autocatalyst/api-contract';
+import { runActionResponseSchema, renameRunRequestSchema, type RunActionResponse, type RenameRunRequest, type SetRunStepRequest } from '@autocatalyst/api-contract';
 import type { ReconcilePullRequestsResponse } from '@autocatalyst/api-contract';
 
 import { defaultRunWorkflowResolver, resolveRunWorkflow, type RunWorkflowResolver } from './run-workflow-resolver.js';
@@ -57,11 +58,13 @@ import type { IssueReferenceIntakeResolver, ResolvedConversationCreate } from '.
 import { IssueReferenceIntakeError } from './issue-reference-intake.js';
 import {
   OrchestratorError,
+  type OperatorTransitionInput,
   type OrchestratedConversationResult,
+  type OrchestratedRunResult,
   type Orchestrator,
   type OrchestratorErrorCode
 } from './orchestrator.js';
-import type { PolicyDecisionPoint, PolicyResourceDescriptor } from './policy.js';
+import { runOperatorPolicy, type PolicyDecisionPoint, type PolicyResourceDescriptor } from './policy.js';
 import type { RunEventStore, RunEventSubscription } from './run-events.js';
 import type { RunEventReplayResult } from '@autocatalyst/api-contract';
 import { parseSpecFrontmatter } from './spec-frontmatter.js';
@@ -124,6 +127,11 @@ export interface ServiceCreateConversationInput {
   readonly principal: Principal;
   readonly tenant: string;
   readonly request: CreateConversationWithFirstRunRequest;
+}
+
+export interface ServiceRunActionInput {
+  readonly principal: Principal;
+  readonly runId: string;
 }
 
 export interface ServiceListRunsInput {
@@ -294,6 +302,11 @@ export interface ControlPlaneService {
   appendRunFeedbackThreadReply(input: AppendRunFeedbackThreadReplyInput): Promise<FeedbackResponse>;
   updateRunFeedback(input: ServiceUpdateRunFeedbackInput): Promise<FeedbackResponse>;
   replyToRun(input: ServiceReplyToRunInput): Promise<RunReplyResponse>;
+  cancelRun(input: ServiceRunActionInput): Promise<RunActionResponse>;
+  archiveRun(input: ServiceRunActionInput): Promise<RunActionResponse>;
+  unarchiveRun(input: ServiceRunActionInput): Promise<RunActionResponse>;
+  setRunStep(input: ServiceRunActionInput & { request: SetRunStepRequest }): Promise<RunActionResponse>;
+  renameRun(input: ServiceRunActionInput & { request: RenameRunRequest }): Promise<RunActionResponse>;
   recoverRun(input: ServiceRecoverRunInput): Promise<ServiceRecoverRunResult>;
   reconcilePullRequests(input: ServiceReconcilePullRequestsInput): Promise<ServiceReconcilePullRequestsResult>;
   refreshRunPullRequest(input: ServiceRefreshRunPullRequestInput): Promise<RunPullRequestRefreshResponse>;
@@ -307,6 +320,7 @@ export interface DefaultControlPlaneServiceOptions {
   readonly workflowResolver?: RunWorkflowResolver;
   readonly orchestrator: Orchestrator;
   readonly runs: RunRepository;
+  readonly topics?: TopicRepository;
   readonly runSteps: RunStepRepository;
   readonly events: RunEventStore;
   readonly policy: PolicyDecisionPoint;
@@ -418,7 +432,7 @@ async function requireTenantRun(input: {
   return run;
 }
 
-function requireNonModelPrincipal(
+export function requireNonModelPrincipal(
   principal: Principal,
   message = 'Model principals cannot create feedback.'
 ): NonModelPrincipal {
@@ -463,18 +477,18 @@ function withDerivedWaitingOn(run: Run): Run {
  * responses so those row fields agree for the same run. Run events deliberately use
  * {@link withDerivedWaitingOn} instead so they do not claim `status`/`projectId`.
  */
-function mapRunToApiRun(run: Run, projectId?: string): Run {
-  const resolvedProjectId = projectId ?? run.projectId;
+function mapRunToApiRun(run: Run, context?: RunReadContext): Run {
   return {
     ...withDerivedWaitingOn(run),
     status: deriveRunStatus(run),
-    ...(resolvedProjectId !== undefined ? { projectId: resolvedProjectId } : {})
+    ...context
   };
 }
 
 export class DefaultControlPlaneService implements ControlPlaneService {
   readonly #orchestrator: Orchestrator;
   readonly #runs: RunRepository;
+  readonly #topics: TopicRepository | undefined;
   readonly #workflowResolver: RunWorkflowResolver;
   readonly #runSteps: RunStepRepository;
   readonly #events: RunEventStore;
@@ -494,6 +508,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
   constructor(options: DefaultControlPlaneServiceOptions) {
     this.#orchestrator = options.orchestrator;
     this.#runs = options.runs;
+    this.#topics = options.topics;
     this.#workflowResolver = options.workflowResolver ?? defaultRunWorkflowResolver;
     this.#runSteps = options.runSteps;
     this.#events = options.events;
@@ -641,20 +656,23 @@ export class DefaultControlPlaneService implements ControlPlaneService {
    * Returns undefined only when the repository implementation does not support resolution (test
    * doubles); production persistence always implements it.
    */
-  async #resolveRunProjectId(run: Run): Promise<string | undefined> {
-    if (this.#runs.resolveProjectId === undefined) {
-      return undefined;
-    }
-    let projectId: string | null;
+  async #resolveRunContext(run: Run): Promise<RunReadContext | undefined> {
+    if (this.#runs.resolveRunContext === undefined && this.#runs.resolveProjectId === undefined) return undefined;
+    let context: RunReadContext | null;
     try {
-      projectId = await this.#runs.resolveProjectId(run.id);
+      if (this.#runs.resolveRunContext !== undefined) {
+        context = await this.#runs.resolveRunContext(run.id);
+      } else {
+        const projectId = await this.#runs.resolveProjectId!(run.id);
+        context = projectId === null ? null : { projectId };
+      }
     } catch (error) {
-      throw persistenceFailed('Failed to resolve run project.', error);
+      throw persistenceFailed('Failed to resolve run context.', error);
     }
-    if (projectId === null) {
+    if (context === null) {
       throw persistenceFailed(`Run '${run.id}' has no resolvable project (missing topic or conversation).`);
     }
-    return projectId;
+    return context;
   }
 
   async getRun(input: ServiceGetRunInput): Promise<ServiceGetRunResult> {
@@ -675,8 +693,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       throw new ControlPlaneServiceError('forbidden', 'Run not accessible.');
     }
 
-    const projectId = await this.#resolveRunProjectId(run);
-    return { run: mapRunToApiRun(run, projectId) };
+    return { run: mapRunToApiRun(run, await this.#resolveRunContext(run)) };
   }
 
   async getRunWorkflow({ principal, runId }: ServiceGetRunWorkflowInput): Promise<RunWorkflowResponse> {
@@ -1231,7 +1248,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
         try {
           return runPullRequestRefreshResponseSchema.parse({
             pullRequest: result.pullRequest,
-            run: mapRunToApiRun(result.run, await this.#resolveRunProjectId(result.run))
+            run: mapRunToApiRun(result.run, await this.#resolveRunContext(result.run))
           });
         } catch {
           throw persistenceFailed('Failed to project refreshed run pull request.');
@@ -1290,7 +1307,7 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' is terminal.`);
     }
     const stepDefinition = getRunStepDefinition(run.currentStep);
-    if (stepDefinition?.waitingOn !== 'human') throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' is not waiting on human input.`);
+    if (input.request.kind !== 'guidance' && stepDefinition?.waitingOn !== 'human') throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' is not waiting on human input.`);
 
     // At the spec review gate, a present anchor on a feedback reply is validated against the current
     // spec before the orchestrator creates an item or applies a directive. Rejection leaves the run
@@ -1311,8 +1328,8 @@ export class DefaultControlPlaneService implements ControlPlaneService {
         principal,
         request: input.request
       });
-      const projectId = await this.#resolveRunProjectId(result.run);
-      return runReplyResponseSchema.parse({ run: mapRunToApiRun(result.run, projectId), classification: result.classification });
+      const context = await this.#resolveRunContext(result.run);
+      return runReplyResponseSchema.parse({ run: mapRunToApiRun(result.run, context), classification: result.classification });
     } catch (error) {
       if (error instanceof OrchestratorError) {
         if (error.details !== null && typeof error.details === 'object' && (error.details as { code?: unknown }).code === 'unsupported_pause') {
@@ -1325,11 +1342,87 @@ export class DefaultControlPlaneService implements ControlPlaneService {
           }
           throw new ControlPlaneServiceError('invalid_transition', error.message, { details: error.details, cause: error });
         }
-        if (error.code === 'terminal_run') throw new ControlPlaneServiceError('conflict', error.message, { cause: error });
+        if (error.code === 'terminal_run' || error.code === 'conflict') throw new ControlPlaneServiceError('conflict', error.message, { details: error.details, cause: error });
         throw new ControlPlaneServiceError(mapOrchestratorErrorCode(error.code), error.message, { details: error.details, cause: error });
       }
       throw error;
     }
+  }
+
+  async #authorizeRunAction(input: ServiceRunActionInput, name: keyof typeof runOperatorPolicy) {
+    const { principal, runId } = input;
+    const { action, ...descriptor } = runOperatorPolicy[name];
+    const decision = await this.#policy.authorize({ principal, action, resource: { ...descriptor, id: runId } });
+    if (!decision.allowed) throw new ControlPlaneServiceError('forbidden', 'Forbidden.');
+    return requireNonModelPrincipal(principal, 'Model principals cannot perform run operator actions.');
+  }
+
+  #runActionNotFound(runId: string): never {
+    throw new ControlPlaneServiceError('not_found', `Run '${runId}' not found.`);
+  }
+
+  async #projectRunAction(run: Run): Promise<RunActionResponse> {
+    return runActionResponseSchema.parse({ run: mapRunToApiRun(run, await this.#resolveRunContext(run)) });
+  }
+
+  async #applyOperatorTransition(
+    input: ServiceRunActionInput,
+    name: 'cancelRun' | 'setRunStep',
+    transition: (mutation: OperatorTransitionInput) => Promise<OrchestratedRunResult>
+  ): Promise<RunActionResponse> {
+    const principal = await this.#authorizeRunAction(input, name);
+    const mutation = { runId: input.runId, tenant: principal.tenantId, principal };
+    try {
+      const result = await transition(mutation);
+      return this.#projectRunAction(result.run);
+    } catch (error) {
+      if (!(error instanceof OrchestratorError)) throw error;
+      if (error.code === 'missing_run') this.#runActionNotFound(input.runId);
+      const code = error.code === 'terminal_run' || error.code === 'conflict' ? 'conflict'
+        : error.code === 'invalid_transition' ? 'invalid_transition' : 'persistence_failed';
+      throw new ControlPlaneServiceError(code, error.message, { cause: error, details: error.details });
+    }
+  }
+
+  cancelRun(input: ServiceRunActionInput) {
+    return this.#applyOperatorTransition(input, 'cancelRun', (mutation) => this.#orchestrator.cancelRun(mutation));
+  }
+
+  setRunStep(input: ServiceRunActionInput & { request: SetRunStepRequest }) {
+    return this.#applyOperatorTransition(input, 'setRunStep',
+      (mutation) => this.#orchestrator.setRunStep({ ...mutation, step: input.request.step }));
+  }
+
+  async #setRunArchived(input: ServiceRunActionInput, archive: boolean) {
+    const principal = await this.#authorizeRunAction(input, archive ? 'archiveRun' : 'unarchiveRun');
+    if (this.#runs.setArchived === undefined) throw persistenceFailed('Archive storage not configured.');
+    const run = await this.#runs.setArchived(input.runId, principal.tenantId, archive ? new Date().toISOString() : null);
+    if (run === null) this.#runActionNotFound(input.runId);
+    if (archive && run.archivedAt === undefined) {
+      const reason = 'Only finished runs can be archived.';
+      throw new ControlPlaneServiceError('conflict', reason, { details: { reason } });
+    }
+    return this.#projectRunAction(run);
+  }
+
+  archiveRun(input: ServiceRunActionInput) {
+    return this.#setRunArchived(input, true);
+  }
+
+  unarchiveRun(input: ServiceRunActionInput) {
+    return this.#setRunArchived(input, false);
+  }
+
+  async renameRun(input: ServiceRunActionInput & { request: RenameRunRequest }) {
+    const principal = await this.#authorizeRunAction(input, 'renameRun');
+    const run = await this.#runs.findById(input.runId);
+    if (run === null || run.tenant !== principal.tenantId) this.#runActionNotFound(input.runId);
+    if (this.#topics?.updateTitle === undefined) throw persistenceFailed('Topic title storage not configured.');
+    const { title } = renameRunRequestSchema.parse(input.request);
+    const topic = await this.#topics.updateTitle(principal.tenantId, run.topicId, title);
+    if (topic === null) throw persistenceFailed('Run topic missing during rename.');
+    const context = await this.#resolveRunContext(run);
+    return runActionResponseSchema.parse({ run: { ...mapRunToApiRun(run, context), title: topic.title } });
   }
 
   async recoverRun(input: ServiceRecoverRunInput): Promise<ServiceRecoverRunResult> {
@@ -1343,14 +1436,6 @@ export class DefaultControlPlaneService implements ControlPlaneService {
 
     // Model principals cannot recover runs (maps to 403).
     requireNonModelPrincipal(input.principal);
-
-    if (this.#recovery === undefined) {
-      throw persistenceFailed('Recovery is not configured.');
-    }
-    if (this.#runs.recoverFailedRun === undefined) {
-      throw persistenceFailed('Run repository does not support recovery.');
-    }
-    const recovery = this.#recovery;
 
     // Load + tenant scope. Missing and cross-tenant both resolve to 404 (no tenant disclosure).
     const run = await this.#runs.findById(input.runId);
@@ -1368,6 +1453,19 @@ export class DefaultControlPlaneService implements ControlPlaneService {
     if (!run.terminal || run.currentStep !== 'failed') {
       throw new ControlPlaneServiceError('conflict', `Run '${input.runId}' is not a stopped failed run and cannot be recovered.`);
     }
+
+    if (run.archivedAt !== undefined) {
+      const reason = new ArchivedRunRecoveryError().message;
+      throw new ControlPlaneServiceError('conflict', reason, { details: { reason } });
+    }
+
+    if (this.#recovery === undefined) {
+      throw persistenceFailed('Recovery is not configured.');
+    }
+    if (this.#runs.recoverFailedRun === undefined) {
+      throw persistenceFailed('Run repository does not support recovery.');
+    }
+    const recovery = this.#recovery;
 
     // The stopped step comes from durable RunStep history.
     let steps: readonly RunStep[];
@@ -1454,11 +1552,14 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       if (isActiveRunConflictError(error)) {
         throw new ControlPlaneServiceError('active_run_conflict', `Active run conflict for run '${input.runId}'.`, { cause: error });
       }
+      if (error instanceof ArchivedRunRecoveryError || error instanceof RunTransitionConflictError) {
+        const reason = error instanceof ArchivedRunRecoveryError ? error.message : 'Run is no longer a stopped failed run.';
+        throw new ControlPlaneServiceError('conflict', reason, { details: { reason }, cause: error });
+      }
       throw persistenceFailed('Failed to reopen run.', error);
     }
 
-    // Resolve projectId once for both the recovery event and the response so they agree.
-    const recoveredProjectId = await this.#resolveRunProjectId(reopened.run);
+    const recoveredContext = await this.#resolveRunContext(reopened.run);
 
     // Publish a durable/live recovery event (post-commit; non-fatal on failure).
     try {
@@ -1485,6 +1586,6 @@ export class DefaultControlPlaneService implements ControlPlaneService {
       // Dispatch admission is best-effort; the run is reopened and will be picked up on tick.
     }
 
-    return runRecoveryResponseSchema.parse({ run: mapRunToApiRun(reopened.run, recoveredProjectId), mode: plan.mode });
+    return runRecoveryResponseSchema.parse({ run: mapRunToApiRun(reopened.run, recoveredContext), mode: plan.mode });
   }
 }

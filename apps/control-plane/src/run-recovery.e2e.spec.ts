@@ -127,6 +127,7 @@ describe('run recovery (production server wiring)', () => {
 
     // Transition the run to the terminal failed state.
     await repos.runs.recordRunStepTransition({
+      expectedStep: options.failedStep,
       runId, currentStep: 'failed', terminal: true, failureReason: 'provider_auth_failed',
       sourceRunStepId: start.runStep.id,
       runStep: { phase: null, step: 'failed', role: 'none', startedAt: new Date().toISOString(), endedAt: null, durationMs: null }
@@ -273,6 +274,7 @@ describe('run recovery (production server wiring)', () => {
       runStep: { phase: 'spec', step: 'spec.author', role: 'implementer', startedAt: new Date().toISOString(), endedAt: null, durationMs: null }
     });
     await repos.runs.recordRunStepTransition({
+      expectedStep: 'spec.author',
       runId: start.run.id, currentStep: 'canceled', terminal: true,
       sourceRunStepId: start.runStep.id,
       runStep: { phase: null, step: 'canceled', role: 'none', startedAt: new Date().toISOString(), endedAt: null, durationMs: null }

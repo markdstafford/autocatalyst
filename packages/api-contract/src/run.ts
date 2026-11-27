@@ -23,10 +23,12 @@ export const runSchema = z.object({
   workKind: runWorkKindSchema,
   currentStep: z.string().min(1),
   waitingOn: waitingOnSchema.optional(),
-  // API-read-only fields. The read mapper fills `status` and `projectId` for list/get/reply/recover
-  // responses; persisted rows and run-event payloads parse without them, so both stay optional.
+  // API-read metadata. Status is derived; projectId and title come from the topic and
+  // conversation. Persisted rows and event payloads can omit all three.
   status: runStatusSchema.optional(),
   projectId: z.string().min(1).optional(),
+  title: z.string().min(1).optional(),
+  archivedAt: z.string().datetime().optional(),
   // Temporary persistence discriminator for the one-active-run partial index. ADR-015 will reconcile
   // terminality to the workflow step catalog's waiting_on-derived source of truth when that feature lands.
   terminal: z.boolean(),
@@ -152,7 +154,11 @@ function commaSeparatedFilter<Output>(item: z.ZodType<Output>, label: string): z
   }) as unknown as z.ZodType<Output[], z.ZodTypeDef, unknown>;
 }
 
+export const runArchiveFilterSchema = z.enum(['exclude', 'include', 'only']);
+export type RunArchiveFilter = z.infer<typeof runArchiveFilterSchema>;
+
 export const listRunsQuerySchema = z.object({
+  archived: runArchiveFilterSchema.optional(),
   status: commaSeparatedFilter(runStatusSchema, 'status').optional(),
   waitingOn: commaSeparatedFilter(waitingOnSchema, 'waitingOn').optional(),
   workKind: commaSeparatedFilter(createRunWorkKindSchema, 'workKind').optional(),

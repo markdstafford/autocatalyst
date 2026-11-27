@@ -106,6 +106,7 @@ describe('recordRunStepTransition', () => {
       await repos.runSteps.updateCheckpoint({ runStepId: startResult.runStep.id, runId, tenant: 'tenant_1', checkpointResult: legacyCheckpoint });
 
       const t1 = await repos.runs.recordRunStepTransition({
+        expectedStep: 'intake',
         runId,
         currentStep: 'spec.author',
         terminal: false,
@@ -119,6 +120,7 @@ describe('recordRunStepTransition', () => {
       expect((await repos.runSteps.findById(startResult.runStep.id))?.checkpointResult).toEqual(legacyCheckpoint);
 
       const t2 = await repos.runs.recordRunStepTransition({
+        expectedStep: 'spec.author',
         runId,
         currentStep: 'spec.author',
         terminal: false,
@@ -164,6 +166,7 @@ describe('recordRunStepTransition', () => {
         .run();
 
       await expect(repos.runs.recordRunStepTransition({
+        expectedStep: 'intake',
         runId: startResult.run.id,
         currentStep: 'spec.author',
         terminal: false,
@@ -195,6 +198,7 @@ describe('recordRunStepTransition', () => {
       const repos = createDrizzleDomainRepositories(database);
 
       await expect(repos.runs.recordRunStepTransition({
+        expectedStep: 'intake',
         runId: 'run_nonexistent',
         currentStep: 'spec.author',
         terminal: false,
@@ -225,6 +229,7 @@ describe('recordRunStepTransition', () => {
       });
 
       const transitioned = await repos.runs.recordRunStepTransition({
+        expectedStep: 'spec.author',
         runId: startResult.run.id,
         currentStep: 'failed',
         terminal: true,
@@ -235,5 +240,59 @@ describe('recordRunStepTransition', () => {
 
       database.close();
     });
+  });
+});
+
+it('guards both the expected step and occurrence before closing an abandoned input pause', async () => {
+  await withTempDatabasePath(async (databasePath) => {
+    const database = createSqliteDatabase({ path: databasePath });
+    await migrateSqliteDatabase(database);
+    const repos = createDrizzleDomainRepositories(database);
+    try {
+      const tenant = owner.tenantId;
+      const project = await repos.projects.create({
+        owner, tenant, displayName: 'P', repoUrl: 'https://example.test',
+        hostRepository: { provider: 'github', owner: 'test', name: 'repo' },
+        workspaceRootOverride: null, issueTrackerSetting: null, codeHostSetting: null, credentialRefs: []
+      });
+      const conversation = await repos.conversations.create({ projectId: project.id, owner, tenant, identity: 'guard', activeTopicId: null });
+      const topic = await repos.topics.create({ conversationId: conversation.id, owner, tenant, title: 'T', kind: 'main' });
+      const startedAt = '2026-11-27T12:00:00.000Z';
+      const pause = 'implementation.awaiting_input';
+      const start = await repos.runs.recordRunLifecycleStart({
+        run: { topicId: topic.id, owner, tenant, workKind: 'feature', currentStep: pause, terminal: false },
+        runStep: { phase: 'implementation', step: pause, role: 'none', startedAt, endedAt: null, durationMs: null }
+      });
+      const runId = start.run.id;
+      const checkpoint = { pause: { question: 'Use the public API?' }, other: 'keep' };
+      await repos.runSteps.updateCheckpoint({ runId, tenant, runStepId: start.runStep.id, checkpointResult: checkpoint });
+      const transition = {
+        runId, expectedStep: pause, currentStep: 'spec.human_review', terminal: false, abandonInput: true,
+        sourceRunStepId: start.runStep.id,
+        runStep: { phase: 'spec', step: 'spec.human_review', role: 'none', startedAt, endedAt: null, durationMs: null }
+      } as const;
+
+      await expect(repos.runs.recordRunStepTransition({ ...transition, expectedStep: 'implementation.build' }))
+        .rejects.toMatchObject({ code: 'source_step_mismatch' });
+      await expect(repos.runs.recordRunStepTransition({ ...transition, sourceRunStepId: 'old_occurrence' }))
+        .rejects.toMatchObject({ code: 'source_occurrence_mismatch' });
+      expect(await repos.runs.findById(runId)).toEqual(start.run);
+      expect(await repos.runSteps.listByRun(runId)).toEqual([{ ...start.runStep, checkpointResult: checkpoint }]);
+
+      const move = await repos.runs.recordRunStepTransition(transition);
+      expect(move.runStep.checkpointResult).toBeNull();
+      expect(await repos.runSteps.findById(start.runStep.id)).toMatchObject({
+        endedAt: startedAt, checkpointResult: { ...checkpoint, abandonedBySetStep: true }
+      });
+      await repos.runs.recordRunStepTransition({
+        runId, expectedStep: 'spec.human_review', currentStep: 'canceled', terminal: true,
+        runStep: { phase: null, step: 'canceled', role: 'none', startedAt, endedAt: null, durationMs: null }
+      });
+      await expect(repos.runs.recordRunStepTransition({ ...transition, expectedStep: 'canceled' }))
+        .rejects.toMatchObject({ code: 'terminal_run' });
+      expect(await repos.runSteps.listByRun(runId)).toHaveLength(3);
+    } finally {
+      database.close();
+    }
   });
 });

@@ -1,4 +1,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { emptyRunActionRequestSchema, setRunStepRequestSchema, renameRunRequestSchema, runActionResponseSchema,
+  type RunActionResponse } from '@autocatalyst/api-contract';
+import { runOperatorPolicy } from './policy.js';
+import { requireNonModelPrincipal, type ServiceRunActionInput } from './control-plane-service.js';
+
 import { z, ZodError } from 'zod';
 
 import {
@@ -916,6 +921,7 @@ export async function registerControlPlaneRoutes(
       }
 
       const filters: ListRunsByTenantFilters = {
+        ...(query.archived !== undefined ? { archived: query.archived } : {}),
         ...(query.status !== undefined ? { status: query.status } : {}),
         ...(query.waitingOn !== undefined ? { waitingOn: query.waitingOn } : {}),
         ...(query.workKind !== undefined ? { workKind: query.workKind } : {}),
@@ -1153,6 +1159,48 @@ export async function registerControlPlaneRoutes(
         throw error;
       }
     });
+
+    function registerRunAction<Body>(
+      name: keyof typeof runOperatorPolicy,
+      method: 'POST' | 'PATCH',
+      schema: z.ZodType<Body>,
+      optional: boolean,
+      perform: (input: ServiceRunActionInput, body: Body) => Promise<RunActionResponse>
+    ) {
+      const { action, ...descriptor } = runOperatorPolicy[name];
+      protectedApp.route({
+        method, url: descriptor.path,
+        preHandler: authorizePreHandler(dependencies.policy, action, (request) => ({
+          ...descriptor, id: (request.params as { id: string }).id
+        })),
+        async handler(request, reply) {
+          try {
+            const principal = requireNonModelPrincipal(requirePrincipalFromRequest(request),
+              'Model principals cannot perform run operator actions.');
+            let params: RunIdParams;
+            let body: Body;
+            try {
+              params = runIdParamsSchema.parse(request.params);
+              body = schema.parse(optional && request.body === undefined ? {} : request.body);
+            } catch (error) {
+              await sendValidationError(reply, error);
+              return;
+            }
+            const result = await perform({ principal, runId: params.id }, body);
+            await reply.status(200).send(runActionResponseSchema.parse(result));
+          } catch (error) {
+            if (!(error instanceof ControlPlaneServiceError)) throw error;
+            await handleControlPlaneServiceError(request, reply, error);
+          }
+        }
+      });
+    }
+
+    registerRunAction('cancelRun', 'POST', emptyRunActionRequestSchema, true, (input) => dependencies.controlPlane.cancelRun(input));
+    registerRunAction('archiveRun', 'POST', emptyRunActionRequestSchema, true, (input) => dependencies.controlPlane.archiveRun(input));
+    registerRunAction('unarchiveRun', 'POST', emptyRunActionRequestSchema, true, (input) => dependencies.controlPlane.unarchiveRun(input));
+    registerRunAction('setRunStep', 'POST', setRunStepRequestSchema, false, (input, request) => dependencies.controlPlane.setRunStep({ ...input, request }));
+    registerRunAction('renameRun', 'PATCH', renameRunRequestSchema, false, (input, request) => dependencies.controlPlane.renameRun({ ...input, request }));
 
     // Recover a failed run: POST /v1/runs/:id/recover
     protectedApp.post(runRecoveryPath, {

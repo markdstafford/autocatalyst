@@ -1,3 +1,4 @@
+import { guardConvergenceFeedback, commitConvergenceEffect, StaleDispatchError } from './dispatch-result-commits.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
 import { lstat, open, realpath, writeFile } from 'node:fs/promises';
@@ -257,10 +258,11 @@ export async function runSpecConvergence(
   try {
     result = await runSpecReview(input, options, policy, progress, tags);
   } catch (cause) {
-    logFailure((cause == null ? undefined : safeFailureReasonFromError(cause)) ?? 'spec_authoring_failed');
+    if (cause instanceof StaleDispatchError) throw cause;
+    await commitConvergenceEffect(input.commitResult, async () => logFailure((cause == null ? undefined : safeFailureReasonFromError(cause)) ?? 'spec_authoring_failed'));
     throw cause;
   }
-  if (result.directive === 'fail') logFailure(result.reason);
+  if (result.directive === 'fail') await commitConvergenceEffect(input.commitResult, async () => logFailure(result.reason));
   return result;
 }
 
@@ -272,6 +274,7 @@ async function runSpecReview(
   tags: Readonly<Record<string, string>>
 ): Promise<SpecConvergenceResult> {
   const { run, runStep } = input;
+  options = { ...options, feedback: guardConvergenceFeedback(options.feedback, input.commitResult) };
   const fail = (reason: string): SpecConvergenceResult => ({ directive: 'fail', reason });
   if (!options.feedback.createSpecReviewFinding || !options.feedback.bindSpecReviewAnchor) {
     return fail('spec_review_not_configured');
@@ -308,8 +311,8 @@ async function runSpecReview(
   progress.round = current.round;
   if (current.pause) return { directive: 'needs_input', pause: current.pause, checkpoint: checkpoint(current) };
   const persist = async () => {
-    await options.runSteps.updateCheckpoint({ runStepId: runStep.id, runId: run.id, tenant: run.tenant,
-      checkpointResult: checkpoint(current) });
+    await commitConvergenceEffect(input.commitResult, () => options.runSteps.updateCheckpoint({ runStepId: runStep.id, runId: run.id, tenant: run.tenant,
+      checkpointResult: checkpoint(current) }));
   };
   let workspace = input.workspace;
   const getWorkspace = async () => {

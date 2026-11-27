@@ -1104,7 +1104,40 @@ describe('DrizzleDomainRepositories round-trip', () => {
       });
     });
 
-    it('resolves projectId for a full page in a constant number of queries', async () => {
+    it('filters archive visibility and status before cursor paging across tied timestamps', async () => {
+      await withRepositories(async (repos, database) => {
+        const { topic, project } = await createProjectConversationAndTopic(repos, {
+          tenant: owner.tenantId, owner, identity: 'archive-page', title: 'Shared archive topic'
+        });
+        const at = '2026-11-27T12:00:00.000Z';
+        const fixture = await Promise.all(['done', 'canceled', 'failed', 'done', 'failed'].map(async (currentStep, index) => {
+          const run = await repos.runs.create({ topicId: topic.id, owner, tenant: owner.tenantId, workKind: 'bug', currentStep, terminal: true });
+          if (index % 2 === 0) await repos.runs.setArchived(run.id, owner.tenantId, at);
+          return { ...run, archived: index % 2 === 0 };
+        }));
+        asInternalSqliteDatabase(database).client.prepare('UPDATE runs SET created_at = ?').run(at);
+
+        for (const mode of [undefined, 'exclude', 'include', 'only'] as const) {
+          const ids: string[] = [];
+          const filters = {
+            ...(mode === undefined ? {} : { archived: mode }),
+            projectId: [project.id], status: ['done', 'failed'] as const, workKind: ['bug']
+          };
+          let page = await repos.runs.listByTenant(owner.tenantId, { limit: 1, filters });
+          for (;;) {
+            ids.push(...page.runs.map(run => run.id));
+            expect(page.runs.every(run => run.title === topic.title)).toBe(true);
+            if (!page.nextCursor) break;
+            page = await repos.runs.listByTenant(owner.tenantId, { limit: 1, filters, cursor: page.nextCursor });
+          }
+          const matched = fixture.filter(run => run.currentStep !== 'canceled' &&
+            (mode === 'include' || run.archived === (mode === 'only')));
+          expect(ids).toEqual(matched.map(run => run.id).sort().reverse());
+        }
+      });
+    });
+
+    it('projects projectId and title for a full page in a constant number of queries', async () => {
       await withRepositories(async (repos, database) => {
         const setup = await createProjectConversationAndTopic(repos, {
           tenant: 'tenant_1',
@@ -1145,7 +1178,11 @@ describe('DrizzleDomainRepositories round-trip', () => {
           return executions;
         };
 
-        const fullPageQueries = await measure(() => repos.runs.listByTenant('tenant_1', { limit: 100 }));
+        const fullPageQueries = await measure(async () => {
+          const page = await repos.runs.listByTenant('tenant_1', { limit: 100 });
+          expect(page.runs).toHaveLength(100);
+          expect(page.runs.every(run => run.title === setup.topic.title && run.projectId === setup.project.id)).toBe(true);
+        });
         const singleRowQueries = await measure(() => repos.runs.listByTenant('tenant_1', { limit: 1 }));
 
         // Project resolution is a join on the page query, so query count does not grow with rows.
@@ -1414,6 +1451,7 @@ describe('DrizzleDomainRepositories round-trip', () => {
       });
 
       const recorded = await repos.runs.recordRunStepTransition({
+        expectedStep: 'intake',
         runId: run.id,
         currentStep: 'failed',
         terminal: true,
@@ -1510,7 +1548,7 @@ describe('DrizzleDomainRepositories round-trip', () => {
     });
   });
 
-  it('clears stale failureReason when a transition targets a non-failed state', async () => {
+  it('clears the failure reason when recovery reopens a failed run', async () => {
     await withRepositories(async (repos) => {
       const setup = await createProjectConversationAndTopic(repos, {
         tenant: 'tenant_1',
@@ -1524,6 +1562,7 @@ describe('DrizzleDomainRepositories round-trip', () => {
       });
 
       await repos.runs.recordRunStepTransition({
+        expectedStep: 'intake',
         runId: run.id,
         currentStep: 'failed',
         terminal: true,
@@ -1531,10 +1570,9 @@ describe('DrizzleDomainRepositories round-trip', () => {
         runStep: { phase: null, step: 'failed', role: 'none', startedAt: new Date().toISOString(), endedAt: null, durationMs: null }
       });
 
-      const recovered = await repos.runs.recordRunStepTransition({
+      const recovered = await repos.runs.recoverFailedRun({
         runId: run.id,
-        currentStep: 'spec.human_review',
-        terminal: false,
+        reDispatchStep: 'spec.human_review',
         runStep: { phase: 'spec', step: 'spec.human_review', role: 'none', startedAt: new Date().toISOString(), endedAt: null, durationMs: null }
       });
       expect(recovered.run.failureReason).toBeUndefined();

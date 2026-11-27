@@ -305,6 +305,7 @@ describe('issue-reference create integration (realistic fake gh)', () => {
 
       // Follow the production no-reader path from persisted intake to authoring.
       await domainRepos.runs.recordRunStepTransition({
+        expectedStep: response.run.currentStep,
         runId: response.run.id,
         currentStep: 'spec.author',
         terminal: false,

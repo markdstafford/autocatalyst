@@ -114,6 +114,8 @@ function makeService(options?: {
     orchestrator: {
       createRun: vi.fn(),
       createConversationWithFirstRun: vi.fn(),
+      cancelRun: vi.fn(),
+      setRunStep: vi.fn(),
       applyDirective: vi.fn(),
       dispatch: vi.fn(),
       tick: vi.fn().mockResolvedValue({ status: 'noop' }),

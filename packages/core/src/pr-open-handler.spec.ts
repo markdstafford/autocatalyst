@@ -821,6 +821,18 @@ describe('guarded publication', () => {
     }));
   });
 
+  it('does not record a receipt or create a PR if cancellation wins during the push', async () => {
+    const f = fixture({ targets: [targetSha, targetSha] });
+    const stale = new Error('Publication occurrence changed.');
+    const withResultCommit = vi.fn(async () => { throw stale; });
+
+    await expect(handlePullRequestOpen('run_1', 'tenant_1', { ...f.deps, withResultCommit })).rejects.toBe(stale);
+    expect(f.pushCandidate).toHaveBeenCalledOnce();
+    expect(f.deps.runSteps.updateCheckpoint).not.toHaveBeenCalled();
+    expect(f.create).not.toHaveBeenCalled();
+    expect(f.applyDirective).not.toHaveBeenCalled();
+  });
+
   it('does not create a PR if the source moved after the verified push', async () => {
     const f = fixture({ targets: [targetSha, targetSha, targetSha], source: different });
     await handlePullRequestOpen('run_1', 'tenant_1', f.deps);

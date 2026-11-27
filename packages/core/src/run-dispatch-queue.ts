@@ -43,6 +43,10 @@ export class RunDispatchQueue {
     });
   }
 
+  hasWorkForRun(runId: string): boolean {
+    return this.#runTails.has(runId);
+  }
+
   enqueueForRun<T>(runId: string, work: () => Promise<T>): Promise<T> {
     const previous = this.#runTails.get(runId) ?? Promise.resolve();
     const next = previous.catch(() => undefined).then(() => this.enqueue(work));

@@ -1,3 +1,4 @@
+import { guardConvergenceFeedback, commitConvergenceEffect } from './dispatch-result-commits.js';
 import { runSpecConvergence } from './spec-convergence.js';
 import type {
   AltitudeCheckpointRef,
@@ -187,14 +188,15 @@ export function createLayeredConvergenceEngine(
   // raw CAS the persistence layer permits; best-effort so a resolution failure cannot crash a run.
   const resolveEngineReviewerFeedback = async (
     feedbackIds: Iterable<string>,
-    tenant: string
+    tenant: string,
+    feedback: LayeredConvergenceEngineOptions['feedback']
   ): Promise<void> => {
     const systemPrincipal: Principal = { id: 'system', kind: 'system', tenantId: tenant };
     for (const feedbackId of feedbackIds) {
       try {
-        const existing = await options.feedback.findById(feedbackId);
+        const existing = await feedback.findById(feedbackId);
         if (existing === null || existing.status !== 'open') continue;
-        await options.feedback.updateStatusAndAppendThread({
+        await feedback.updateStatusAndAppendThread({
           feedbackId,
           expectedStatus: 'open',
           nextStatus: 'resolved',
@@ -224,6 +226,7 @@ export function createLayeredConvergenceEngine(
     readonly humanFeedback: readonly Feedback[];
   }): Promise<AltitudeLoopOutcome> {
     const { altitude, maxRounds, depth, input, routes, state, humanFeedback } = params;
+    const feedback = guardConvergenceFeedback(options.feedback, input.commitResult);
 
     // May start as undefined for runs whose workspace is provisioned during the first
     // implementer dispatch (e.g. chore/bug runs). Refreshed via workspaceContextRefresher
@@ -280,9 +283,9 @@ export function createLayeredConvergenceEngine(
     const addressFixedHumanFeedback = async (): Promise<void> => {
       for (const feedbackId of fixedHumanFeedbackIds) {
         try {
-          const existing = await options.feedback.findById(feedbackId);
+          const existing = await feedback.findById(feedbackId);
           if (existing === null || existing.status !== 'open') continue;
-          await options.feedback.updateStatusAndAppendThread({
+          await feedback.updateStatusAndAppendThread({
             feedbackId,
             expectedStatus: 'open',
             nextStatus: 'addressed',
@@ -417,12 +420,12 @@ export function createLayeredConvergenceEngine(
 
       // 2) Commit implementer changes
       const commitMessage = `convergence(${input.stepDefinition.id}): ${altitude} round ${roundNumber} implementer`;
-      const commitResult = await options.git.commitFiles({
+      const commitResult = await commitConvergenceEffect(input.commitResult, () => options.git.commitFiles({
         runId: input.runId,
         workspaceRepoRoot: resolvedWorkspace?.workspaceRepoRoot ?? '',
         message: commitMessage,
         allowEmpty: true
-      });
+      })) ?? { commitSha: null, changedFileCount: 0, changedFilePaths: [] };
 
       // Update cumulative altitude tracking so no-op rounds can re-run deterministic checks.
       if (commitResult.commitSha !== null) {
@@ -574,7 +577,7 @@ export function createLayeredConvergenceEngine(
                     altitude
                   }) as ConvergenceRoundFinding
               ),
-              repository: options.feedback,
+              repository: feedback,
               ...(options.clock !== undefined ? { clock: options.clock } : {}),
               ...(options.idGenerator !== undefined ? { idGenerator: options.idGenerator } : {})
             })
@@ -615,7 +618,7 @@ export function createLayeredConvergenceEngine(
               altitude,
               round: roundNumber,
               findings: deterministicFindings,
-              repository: options.feedback,
+              repository: feedback,
               deterministicFeedbackIdByKey,
               ...(options.clock !== undefined ? { clock: options.clock } : {}),
               ...(options.idGenerator !== undefined ? { idGenerator: options.idGenerator } : {})
@@ -722,12 +725,12 @@ export function createLayeredConvergenceEngine(
         acceptedCheckpoints: state.acceptedCheckpoints
       });
       try {
-        await options.runSteps.updateCheckpoint({
+        await commitConvergenceEffect(input.commitResult, () => options.runSteps.updateCheckpoint({
           runStepId: input.runStep.id,
           runId: input.runId,
           tenant: input.tenant,
           checkpointResult: snapshot as unknown as JsonValue
-        });
+        }));
       } catch (err) {
         options.logger?.warn('layered convergence checkpoint persistence failed', {
           runId: input.runId,
@@ -875,12 +878,13 @@ export function createLayeredConvergenceEngine(
           altWorkspace?.workspaceRepoRoot !== undefined
         ) {
           try {
-            const refResult = await options.git.captureCheckpointRef({
+            const refResult = await commitConvergenceEffect(input.commitResult, () => options.git.captureCheckpointRef({
               runId: input.runId,
               workspaceRepoRoot: altWorkspace.workspaceRepoRoot,
               altitude: altitude as Exclude<ImplementationAltitude, 'build'>,
               commitSha: lastCommitSha
-            });
+            }));
+            if (refResult === undefined) continue;
             state.acceptedCheckpoints.push({
               altitude: altitude as Exclude<ImplementationAltitude, 'build'>,
               ref: refResult.ref,
@@ -923,7 +927,8 @@ export function createLayeredConvergenceEngine(
 
     // All altitudes accepted. Resolve the reviewer feedback the engine authored so stale open
     // convergence artifacts do not block the human review gate the run now advances toward.
-    await resolveEngineReviewerFeedback(state.createdReviewerFeedbackIds, input.tenant);
+    await resolveEngineReviewerFeedback(state.createdReviewerFeedbackIds, input.tenant,
+      guardConvergenceFeedback(options.feedback, input.commitResult));
 
     const checkpoint = buildLayeredCheckpoint({
       step: input.stepDefinition.id,

@@ -1,3 +1,4 @@
+import { guardConvergenceFeedback, commitConvergenceEffect, type CommitDispatchResult } from './dispatch-result-commits.js';
 import type { SpecConvergenceInput, SpecConvergenceResult } from './spec-convergence.js';
 import { createHash } from 'node:crypto';
 import type {
@@ -198,6 +199,7 @@ export interface ConvergenceEngineOptions {
 }
 
 export interface ConvergenceEngineInput {
+  readonly commitResult?: CommitDispatchResult;
   readonly runId: string;
   readonly run: Run;
   readonly tenant: string;
@@ -293,10 +295,14 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
     let escalation: ConvergenceEscalationReason | undefined;
 
     // ---- Construct feedbackLifecycle deps if possible ----------------------
+    const feedback = guardConvergenceFeedback(options.feedback, input.commitResult);
     const feedbackLifecycleDeps: FeedbackLifecycleDependencies | undefined =
       options.idGenerator !== undefined && options.clock !== undefined
-        ? { feedback: options.feedback, ids: options.idGenerator, clock: options.clock }
-        : options.feedbackLifecycle;
+        ? { feedback, ids: options.idGenerator, clock: options.clock }
+        : options.feedbackLifecycle === undefined ? undefined : {
+            ...options.feedbackLifecycle, feedback: options.feedbackLifecycle.feedback === options.feedback
+              ? feedback : guardConvergenceFeedback(options.feedbackLifecycle.feedback, input.commitResult)
+          };
 
     // Load open implementation feedback from human revisions to seed round 1 context.
     if (feedbackLifecycleDeps !== undefined) {
@@ -441,12 +447,12 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
 
       // 2) Commit implementer's changes BEFORE reviewer runs.
       const commitMessage = `convergence(${input.stepDefinition.id}): round ${roundNumber} implementer`;
-      const commitResult = await options.git.commitFiles({
+      const commitResult = await commitConvergenceEffect(input.commitResult, () => options.git.commitFiles({
         runId: input.runId,
         workspaceRepoRoot: input.workspace?.workspaceRepoRoot ?? '',
         message: commitMessage,
         allowEmpty: true
-      });
+      })) ?? { commitSha: null, changedFileCount: 0, changedFilePaths: [] };
 
       // 3) Reviewer (read-only).
       const reviewDispatch: ReviewedRoleDispatchResult = await options.dispatcher.runRole({
@@ -561,7 +567,7 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
             step: input.stepDefinition.id,
             reviewerPrincipal,
             findings,
-            repository: options.feedback,
+            repository: feedback,
             ...(options.clock !== undefined ? { clock: options.clock } : {}),
             ...(options.idGenerator !== undefined ? { idGenerator: options.idGenerator } : {})
           })
@@ -646,12 +652,12 @@ export function createConvergenceEngine(options: ConvergenceEngineOptions): Conv
         lastReviewerLastPosition
       });
       try {
-        await options.runSteps.updateCheckpoint({
+        await commitConvergenceEffect(input.commitResult, () => options.runSteps.updateCheckpoint({
           runStepId: input.runStep.id,
           runId: input.runId,
           tenant: input.tenant,
           checkpointResult: checkpoint as unknown as JsonValue
-        });
+        }));
       } catch (err) {
         options.logger?.warn('convergence checkpoint persistence failed', {
           runId: input.runId,

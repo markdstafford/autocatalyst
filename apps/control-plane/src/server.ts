@@ -1035,7 +1035,8 @@ export async function createControlPlaneServer(
         paths: fakeStatePaths,
         isStillRunning: async (runId, step) => {
           const run = await domainReposFakeRef.current?.runs.findById(runId);
-          return run !== null && run !== undefined && !run.terminal && run.currentStep === step;
+          // Cancel leaves the session alone so fake mode can expose its late result too.
+          return run != null && (run.currentStep === 'canceled' || (!run.terminal && run.currentStep === step));
         },
         resolveIssueNumber: async (runId) => {
           const run = await domainReposFakeRef.current?.runs.findById(runId);
@@ -1938,6 +1939,7 @@ ${implementationBuildContext.prompt}`;
   }
 
   const controlPlane = new DefaultControlPlaneService({
+    topics: domainRepos.topics,
     workflowResolver,
     orchestrator,
     runs: domainRepos.runs,

@@ -26,7 +26,7 @@ function hasPhaseLocalPauseTarget(phase: RunPhase, ownedSteps: ReadonlySet<RunSt
   return isKnownRunStepId(pauseId) && ownedSteps.has(pauseId);
 }
 
-function workflowOwnedSteps(workflow: RunWorkflowDefinition): ReadonlySet<RunStepId> {
+export function workflowOwnedSteps(workflow: RunWorkflowDefinition): ReadonlySet<RunStepId> {
   const owned = new Set<RunStepId>(workflow.steps);
   for (const [source, directives] of Object.entries(workflow.transitions)) {
     if (directives !== undefined) {

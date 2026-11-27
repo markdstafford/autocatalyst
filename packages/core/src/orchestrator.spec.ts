@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Artifact, Conversation, Feedback, Message, NonModelPrincipal, Run, RunStateTransitionEvent, RunStep, Topic } from '@autocatalyst/api-contract';
 import type { RunReplyRequest } from '@autocatalyst/api-contract';
 
-import type { ConversationIngressRepository, FeedbackRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository } from './domain-repositories.js';
+import { RunTransitionConflictError } from './domain-repositories.js';
+import type { RecordRunStepTransitionInput, ConversationIngressRepository, FeedbackRepository, RunRepository, RunStepRepository, RunWorkspaceMetadataRepository } from './domain-repositories.js';
 import type { FeedbackLifecycleDependencies } from './feedback-lifecycle.js';
 import { SpecReviewGateBlockedError } from './spec-review-gate.js';
 import { RunDispatchQueue } from './run-dispatch-queue.js';
@@ -179,7 +180,7 @@ function makeOrchestrator(opts: {
   runWorkspaceMetadata?: RunWorkspaceMetadataRepository;
   runSteps?: RunStepRepository;
   convergenceEngine?: ConvergenceEngine;
-  logger?: { warn: ReturnType<typeof vi.fn> };
+  logger?: { warn: ReturnType<typeof vi.fn>; info?: ReturnType<typeof vi.fn> };
   autoDispatch?: AutoDispatchOptions;
 } = {}) {
   const runs = opts.runs ?? makeFakeRunRepo();
@@ -1813,16 +1814,7 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
     // spec.author is an AI step — it goes through the unit of work and can fail there.
     const runAtDispatch = makeRun({ currentStep: 'spec.author', workKind: 'bug' });
     const failedRun = makeRun({ currentStep: 'failed', terminal: true });
-    // findById is called four times in the failure path:
-    //   1. dispatch() reads the run before invoking unitOfWork
-    //   2. #handleAutoDispatchFailure re-reads the run to check current state
-    //   3. applyDirective({ directive: 'fail' }) reads the run in the guard check
-    //   4. applyRunDirective() reads the run again to perform the transition
-    const findById = vi.fn()
-      .mockResolvedValueOnce(runAtDispatch)
-      .mockResolvedValueOnce(runAtDispatch)
-      .mockResolvedValueOnce(runAtDispatch)
-      .mockResolvedValueOnce(runAtDispatch);
+    const findById = vi.fn().mockResolvedValue(runAtDispatch);
     const recordRunStepTransition = vi.fn().mockResolvedValue({
       run: failedRun,
       runStep: makeRunStep({ id: 'failed_step', step: 'failed' })
@@ -1849,12 +1841,7 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
     // spec.author is an AI step — it goes through the unit of work and can fail there.
     const runAtDispatch = makeRun({ currentStep: 'spec.author', workKind: 'bug' });
     const failedRun = makeRun({ currentStep: 'failed', terminal: true, failureReason: 'auto_dispatch_failed' });
-    // findById is called: (1) dispatch pre-check, (2) failure handler re-read, (3) applyDirective guard, (4) applyRunDirective
-    const findById = vi.fn()
-      .mockResolvedValueOnce(runAtDispatch)
-      .mockResolvedValueOnce(runAtDispatch)
-      .mockResolvedValueOnce(runAtDispatch)
-      .mockResolvedValueOnce(runAtDispatch);
+    const findById = vi.fn().mockResolvedValue(runAtDispatch);
     const recordRunStepTransition = vi.fn().mockResolvedValue({
       run: failedRun,
       runStep: makeRunStep({ id: 'failed_step', step: 'failed' })
@@ -1881,7 +1868,8 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
       recordRunLifecycleStart: vi.fn().mockResolvedValue({ run: makeRun({ currentStep: 'spec.author', workKind: 'bug' }), runStep: makeRunStep({ step: 'spec.author', phase: 'spec' }) }),
       findById: vi.fn()
         .mockResolvedValueOnce(makeRun({ currentStep: 'spec.author', workKind: 'bug' }))
-        .mockResolvedValueOnce(makeRun({ currentStep: 'spec.human_review' })),
+        .mockResolvedValueOnce(makeRun({ currentStep: 'spec.author', workKind: 'bug' }))
+        .mockResolvedValue(makeRun({ currentStep: 'spec.human_review' })),
       recordRunStepTransition: vi.fn()
     });
     const unitRun = vi.fn().mockRejectedValue(new Error('runner unavailable'));
@@ -1995,19 +1983,10 @@ describe('DefaultOrchestrator auto-dispatch policy', () => {
     const unitRun = vi.fn().mockResolvedValue({ directive: 'advance' });
     const logger = { warn: vi.fn() };
     // applyDirective transitions intake->spec.author, triggering auto-dispatch.
-    // dispatch() reads the run fresh — return spec.author so it goes through unitRun.
     const runs = makeFakeRunRepo({
       findById: vi.fn()
-        // 1st call: applyDirective guard check reads run at intake
         .mockResolvedValueOnce(makeRun({ currentStep: 'intake' }))
-        // 2nd call: applyRunDirective reads run to perform transition
-        .mockResolvedValueOnce(makeRun({ currentStep: 'intake' }))
-        // 3rd call: auto-dispatched dispatch() reads the run — now at spec.author (an AI step)
-        .mockResolvedValueOnce(makeRun({ currentStep: 'spec.author', workKind: 'bug' }))
-        // 4th call: applyDirective guard check inside the auto-dispatched dispatch path
-        .mockResolvedValueOnce(makeRun({ currentStep: 'spec.author', workKind: 'bug' }))
-        // 5th call: applyRunDirective reads run again to perform 2nd transition
-        .mockResolvedValueOnce(makeRun({ currentStep: 'spec.author', workKind: 'bug' })),
+        .mockResolvedValue(makeRun({ currentStep: 'spec.author', workKind: 'bug' })),
       recordRunStepTransition: vi
         .fn()
         // 1st: explicit applyDirective intake->spec.author (triggers auto-dispatch)
@@ -2947,9 +2926,9 @@ describe('DefaultOrchestrator.replyToRun', () => {
     expect(result.classification).toEqual({ directive: 'advance', pauseKind: 'convergence_escalation' });
     expect(result.run.currentStep).toBe('implementation.build');
 
-    expect(updateCheckpoint).toHaveBeenCalledTimes(1);
-    expect(updateCheckpoint).toHaveBeenCalledWith(expect.objectContaining({
-      runStepId: 'step_awaiting',
+    expect(updateCheckpoint).not.toHaveBeenCalled();
+    expect(runs.recordRunStepTransition).toHaveBeenCalledWith(expect.objectContaining({
+      sourceRunStepId: 'step_awaiting',
       checkpointResult: { pause: {
         kind: 'convergence_escalation',
         producingStep: 'implementation.build',
@@ -3146,5 +3125,390 @@ describe('workflow resolution failures at orchestration boundaries', () => {
       .rejects.toMatchObject({ code: 'unknown_work_kind' });
     expect(workflowResolver).toHaveBeenCalledExactlyOnceWith({ kind: 'existing_run', run });
     expect(runs.recordRunStepTransition).not.toHaveBeenCalled();
+  });
+});
+
+describe('run operator transitions', () => {
+  const input = { runId: 'run_1', tenant: owner.tenantId, principal: owner };
+  const makeBarrier = () => {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => { release = resolve; });
+    return { promise, release };
+  };
+
+  function liveRun(currentStep: string, steps: RunStep[] = [], workKind = 'bug') {
+    let run = makeRun({ currentStep, workKind });
+    const state = {
+      history: steps,
+      get run() { return run; },
+      open: () => [...steps].reverse().find((row) => row.endedAt === null && row.step === run.currentStep) ?? null,
+      changeStep: (step: string, terminal = false) => { run = { ...run, currentStep: step, terminal }; }
+    };
+    const record = vi.fn(async (write: RecordRunStepTransitionInput) => {
+      if (run.terminal) throw new RunTransitionConflictError('terminal_run');
+      if (run.currentStep !== write.expectedStep) throw new RunTransitionConflictError('source_step_mismatch');
+      const open = state.open();
+      if (write.sourceRunStepId !== undefined && open?.id !== write.sourceRunStepId) {
+        throw new RunTransitionConflictError('source_occurrence_mismatch');
+      }
+      if (open) {
+        const previous = open.checkpointResult as object | null;
+        steps[steps.indexOf(open)] = {
+          ...open, endedAt: timestamp,
+          checkpointResult: write.abandonInput ? { ...previous, abandonedBySetStep: true }
+            : (write.checkpointResult ?? open.checkpointResult)
+        };
+      }
+      state.changeStep(write.currentStep, write.terminal);
+      const step = makeRunStep({
+        ...write.runStep, id: `occ_${steps.length}`, checkpointResult: write.destinationCheckpointResult ?? null,
+        occurrence: { index: steps.length, attempt: steps.filter(row => row.step === write.currentStep).length + 1 }
+      });
+      steps.push(step);
+      return { run, runStep: step };
+    });
+    return {
+      ...state, state, record,
+      runs: makeFakeRunRepo({ findById: async () => state.run, findLatestOpenRunStep: async () => state.open(), recordRunStepTransition: record }),
+      runSteps: makeFakeRunStepRepo({ listByRun: async () => steps })
+    };
+  }
+
+  it.each([
+    ['moves once', 1, false, 2],
+    ['becomes terminal', 1, true, 1],
+    ['keeps moving', 3, false, 3]
+  ] as const)('bounds cancel retry when the repository reports that the run %s', async (_name, mismatches, terminal, attempts) => {
+    const live = liveRun('implementation.build');
+    const { publisher, events } = makeRecordingPublisher();
+    const change = (write: RecordRunStepTransitionInput) => {
+      live.state.changeStep(terminal ? 'done' : write.expectedStep === 'implementation.build'
+        ? 'implementation.human_review' : 'implementation.build', terminal);
+      throw new RunTransitionConflictError('source_step_mismatch');
+    };
+    const record = vi.fn(live.record);
+    for (let n = 0; n < mismatches; n++) record.mockImplementationOnce(change);
+    live.runs.recordRunStepTransition = record;
+    const { orchestrator } = makeOrchestrator({ runs: live.runs, events: publisher, autoDispatch: { enabled: false } });
+    if (mismatches === 1 && !terminal) {
+      await expect(orchestrator.cancelRun(input)).resolves.toMatchObject({ run: { currentStep: 'canceled' } });
+      expect(events.map(event => event.transition)).toEqual([
+        { directive: 'cancel', fromStep: 'implementation.human_review', toStep: 'canceled' }
+      ]);
+    } else {
+      await expect(orchestrator.cancelRun(input)).rejects.toMatchObject({
+        code: terminal ? 'terminal_run' : 'conflict',
+        details: { reason: expect.stringMatching(terminal ? /terminal/ : /kept moving/) }
+      });
+      expect(events).toEqual([]);
+    }
+    expect(record).toHaveBeenCalledTimes(attempts);
+  });
+
+  it('drops a result bound to a previous visit of the same step', async () => {
+    const live = liveRun('spec.author', [makeRunStep({ id: 'old', step: 'spec.author', phase: 'spec' })]);
+    const release = makeBarrier();
+    const entered = makeBarrier();
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const { publisher, events } = makeRecordingPublisher();
+    const { orchestrator } = makeOrchestrator({
+      ...live, events: publisher, logger, autoDispatch: { enabled: false },
+      unitOfWork: { async run() { entered.release(); await release.promise; return { directive: 'advance' }; } }
+    });
+    const work = orchestrator.dispatch(input);
+    await entered.promise;
+    // Simulate storage having left and returned to the same step while the session was open.
+    live.history[0] = { ...live.history[0]!, endedAt: timestamp };
+    live.history.push(makeRunStep({ id: 'new', step: 'spec.author', phase: 'spec' }));
+    release.release();
+    await expect(work).resolves.toMatchObject({ runStep: { id: 'new' } });
+    expect(live.record).not.toHaveBeenCalled();
+    expect(events).toEqual([]);
+    expect(logger.info).toHaveBeenCalledExactlyOnceWith('dispatch_result_discarded', { runId: input.runId, step: 'spec.author' });
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it.each(['implementation.build', 'intake'] as const)('does not start queued %s work after cancellation', async (step) => {
+    const live = liveRun(step, [makeRunStep({ step, phase: step === 'intake' ? null : 'implementation' })]);
+    const release = makeBarrier();
+    const queue = new RunDispatchQueue({ maxConcurrent: 1 });
+    const block = queue.enqueue(() => release.promise);
+    const unitOfWork = { run: vi.fn() };
+    const { orchestrator } = makeOrchestrator({ ...live, unitOfWork, dispatchQueue: queue, autoDispatch: { enabled: false } });
+    const work = orchestrator.dispatch(input);
+    await vi.waitFor(() => expect(queue.queuedCount).toBe(1));
+    await expect(orchestrator.cancelRun(input)).resolves.toMatchObject({ run: { currentStep: 'canceled' } });
+    release.release();
+    await block;
+    await work;
+    expect(unitOfWork.run).not.toHaveBeenCalled();
+    expect(live.record).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ currentStep: 'canceled' }));
+  });
+
+  it('does not let cancel split PR feedback from its directive', async () => {
+    const live = liveRun('pr.finalize', [makeRunStep({ step: 'pr.finalize', phase: 'pr' })]);
+    const entered = makeBarrier();
+    const release = makeBarrier();
+    const { publisher, events } = makeRecordingPublisher();
+    const create = vi.fn(async () => { entered.release(); await release.promise; });
+    const { orchestrator } = makeOrchestrator({
+      ...live, events: publisher, autoDispatch: { enabled: false },
+      feedbackLifecycleDependencies: { feedback: { create } as unknown as FeedbackRepository, clock: () => timestamp, ids: () => 'fb' },
+      unitOfWork: { async run() { return { directive: 'advance', result: {
+        directive: 'revise',
+        findings: [{ summary: 'Fix this', severity: 'blocker' }, { summary: 'Fix that', severity: 'warning' }]
+      } }; } }
+    });
+    const dispatch = orchestrator.dispatch(input);
+    await entered.promise;
+    const cancel = orchestrator.cancelRun(input);
+    expect(events).toEqual([]);
+    release.release();
+    await dispatch;
+    await cancel;
+    expect(create).toHaveBeenCalledTimes(2);
+    expect(events.map(event => event.transition)).toEqual([
+      { directive: 'revise', fromStep: 'pr.finalize', toStep: 'implementation.human_review' },
+      { directive: 'cancel', fromStep: 'implementation.human_review', toStep: 'canceled' }
+    ]);
+  });
+
+  it.each(['advance', 'revise'] as const)('drops stale PR finalization (%s) without feedback or freezing the spec', async (directive) => {
+    const live = liveRun('pr.finalize', [makeRunStep({ step: 'pr.finalize', phase: 'pr' })], 'feature');
+    const entered = makeBarrier();
+    const release = makeBarrier();
+    const freeze = vi.fn();
+    const create = vi.fn();
+    const logger = { info: vi.fn(), warn: vi.fn() };
+    const { publisher, events } = makeRecordingPublisher();
+    const { orchestrator } = makeOrchestrator({
+      ...live, events: publisher, logger, autoDispatch: { enabled: false },
+      resolveWorkspaceContext: async () => ({ workspaceRepoRoot: '/workspace', workspaceHandle: 'run' }),
+      freezeRunSpecForPullRequest: freeze,
+      specFreezeDependencies: {} as SpecFreezeDependencies,
+      feedbackLifecycleDependencies: { feedback: { create } as unknown as FeedbackRepository, clock: () => timestamp, ids: () => 'fb' },
+      unitOfWork: { async run() {
+        entered.release();
+        await release.promise;
+        return { directive: 'advance', result: directive === 'advance' ? {
+          directive, titleSubject: 'Implement the change', reconciledSummary: 'Ready to open', validationSummary: [], findings: []
+        } : { directive, findings: [{ summary: 'Fix this', severity: 'blocker' }] } };
+      } }
+    });
+    const work = orchestrator.dispatch(input);
+    await entered.promise;
+    await orchestrator.cancelRun(input);
+    release.release();
+    await work;
+    expect(freeze).not.toHaveBeenCalled();
+    expect(create).not.toHaveBeenCalled();
+    expect(events.map(event => event.transition.directive)).toEqual(['cancel']);
+    expect(logger.info).toHaveBeenCalledExactlyOnceWith('dispatch_result_discarded', { runId: input.runId, step: 'pr.finalize' });
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it('opens a new attempt at a reached human gate without dispatching', async () => {
+    const target = 'implementation.human_review';
+    const live = liveRun('pr.human_review', [
+      makeRunStep({ step: target, phase: 'implementation', checkpointResult: { old: true }, endedAt: timestamp }),
+      makeRunStep({ id: 'current', step: 'pr.human_review', phase: 'pr' })
+    ]);
+    const unitOfWork = { run: vi.fn() };
+    const { orchestrator } = makeOrchestrator({ ...live, unitOfWork });
+    await expect(orchestrator.setRunStep({ ...input, step: target })).resolves.toMatchObject({
+      run: { currentStep: target }, runStep: { checkpointResult: null, occurrence: { attempt: 2 } }
+    });
+    expect(unitOfWork.run).not.toHaveBeenCalled();
+    expect(live.history[0]?.checkpointResult).toEqual({ old: true });
+  });
+
+  it('serializes set step with guidance and abandons only the old pause', async () => {
+    const cp = { pause: { kind: 'convergence_escalation', producingStep: 'implementation.build', question: 'Which API?' } };
+    const live = liveRun('implementation.awaiting_input', [
+      makeRunStep({ id: 'triage', step: 'spec.author', phase: 'spec', endedAt: timestamp }),
+      makeRunStep({ id: 'build', step: 'implementation.build', phase: 'implementation', endedAt: timestamp }),
+      makeRunStep({ id: 'old-pause', step: 'implementation.awaiting_input', phase: 'implementation', checkpointResult: cp })
+    ]);
+    const entered = makeBarrier();
+    const releaseWrite = makeBarrier();
+    const releaseSession = makeBarrier();
+    live.record.mockImplementationOnce(async (write) => {
+      entered.release();
+      await releaseWrite.promise;
+      return live.record(write);
+    });
+    const { orchestrator } = makeOrchestrator({
+      ...live, autoDispatch: { enabled: false },
+      unitOfWork: { async run() { await releaseSession.promise; return { directive: 'advance' }; } }
+    });
+    const reply = (pauseStepId?: string) => orchestrator.replyToRun({
+      ...input, request: { kind: 'guidance', body: 'Use the public API.', ...(pauseStepId === undefined ? {} : { pauseStepId }) }
+    });
+    const moved = orchestrator.setRunStep({ ...input, step: 'spec.author' });
+    await entered.promise;
+    const staleReply = reply('old-pause');
+    releaseWrite.release();
+    await expect(moved).resolves.toMatchObject({ runStep: { checkpointResult: null } });
+    await expect(staleReply).rejects.toMatchObject({ code: 'conflict', details: { code: 'stale_pause' } });
+    expect(live.history.find(row => row.id === 'old-pause')?.checkpointResult).toEqual({ ...cp, abandonedBySetStep: true });
+    // Move the fake storage through a second input occurrence; the old occurrence never accepts replies.
+    live.state.changeStep('implementation.awaiting_input');
+    live.history.push(makeRunStep({ id: 'new-pause', step: 'implementation.awaiting_input', phase: 'implementation', checkpointResult: cp }));
+    await expect(reply('old-pause')).rejects.toMatchObject({ code: 'conflict', details: { code: 'stale_pause' } });
+    await expect(reply()).rejects.toMatchObject({ code: 'conflict', details: { code: 'stale_pause' } });
+    await expect(reply('new-pause')).resolves.toMatchObject({ run: { currentStep: 'implementation.build' } });
+    expect(live.runSteps.updateCheckpoint).not.toHaveBeenCalled();
+    releaseSession.release();
+  });
+  const bugWithEdgeOnlyGate: typeof runWorkflows.bug = {
+    ...runWorkflows.bug,
+    transitions: {
+      ...runWorkflows.bug.transitions,
+      'spec.author': { ...runWorkflows.bug.transitions['spec.author'], revise: 'spec.human_review' }
+    }
+  };
+
+  it.each([
+    ['not-a-step', 'Unknown target step.'],
+    ['docs.update', 'Target is not part of the run workflow.'],
+    ['intake', 'Target has no phase.'],
+    ['implementation.awaiting_input', 'Target is an input pause.'],
+    ['failed', 'Target is terminal.'],
+    ['implementation.human_review', 'Target is the current step.'],
+    ['spec.human_review', 'Target has no position in workflow.steps'],
+    ['implementation.plan', 'Run has not reached the target step.'],
+    ['pr.finalize', 'Target is not strictly earlier than the current workflow position.']
+  ])('rejects %s with the target-specific reason', async (step, reason) => {
+    const live = liveRun('implementation.human_review', [
+      makeRunStep({ step: 'pr.finalize', phase: 'pr', endedAt: timestamp }),
+      makeRunStep({ id: 'current', step: 'implementation.human_review', phase: 'implementation' })
+    ]);
+    const { orchestrator } = makeOrchestrator({ ...live, workflowResolver: () => bugWithEdgeOnlyGate });
+    await expect(orchestrator.setRunStep({ ...input, step })).rejects.toMatchObject({
+      code: 'invalid_transition', details: { reason }
+    });
+    expect(live.record).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['spec.human_review', undefined],
+    ['implementation.awaiting_input', {}],
+    ['implementation.awaiting_input', { advance: 'spec.human_review' }]
+  ] as const)('treats missing stored workflow positions as internal errors at %s (%j)', async (source, pauseEdge) => {
+    const live = liveRun(source);
+    const workflowResolver = () => ({
+      ...bugWithEdgeOnlyGate,
+      transitions: {
+        ...bugWithEdgeOnlyGate.transitions,
+        ...(pauseEdge === undefined ? {} : { 'implementation.awaiting_input': pauseEdge })
+      }
+    });
+    const logger = { warn: vi.fn() };
+    const { orchestrator } = makeOrchestrator({ ...live, workflowResolver, logger });
+    await expect(orchestrator.setRunStep({ ...input, step: 'spec.author' })).rejects.toMatchObject({ code: 'persistence_failed' });
+    expect(logger.warn).toHaveBeenCalledOnce();
+    expect(live.record).not.toHaveBeenCalled();
+  });
+
+  it('uses the pause advance destination as its lower bound for backward moves', async () => {
+    const live = liveRun('implementation.awaiting_input', [
+      makeRunStep({ step: 'implementation.build', phase: 'implementation', endedAt: timestamp }),
+      makeRunStep({ id: 'pause', step: 'implementation.awaiting_input', phase: 'implementation' })
+    ]);
+    const { orchestrator } = makeOrchestrator(live);
+    await expect(orchestrator.setRunStep({ ...input, step: 'implementation.build' })).rejects.toMatchObject({
+      code: 'invalid_transition', details: { reason: expect.stringContaining('not strictly earlier') }
+    });
+  });
+
+  it('checks terminality before targets and directs failed runs to recovery', async () => {
+    const live = liveRun('failed');
+    live.state.changeStep('failed', true);
+    const { orchestrator } = makeOrchestrator(live);
+    await expect(orchestrator.setRunStep({ ...input, step: 'unrecognized' })).rejects.toMatchObject({
+      code: 'terminal_run', details: { reason: 'Run is failed; use POST /v1/runs/run_1/recover.' }
+    });
+    expect(live.record).not.toHaveBeenCalled();
+  });
+
+  it('blocks a valid move while dispatch has a reservation, is queued, or is running', async () => {
+    const live = liveRun('implementation.build', [
+      makeRunStep({ step: 'spec.author', phase: 'spec', endedAt: timestamp }),
+      makeRunStep({ id: 'build', step: 'implementation.build', phase: 'implementation' })
+    ]);
+    const reserveEntered = makeBarrier();
+    const releaseReserve = makeBarrier();
+    vi.spyOn(live.runs, 'findLatestOpenRunStep').mockImplementationOnce(async () => {
+      reserveEntered.release();
+      await releaseReserve.promise;
+      return live.state.open();
+    });
+    const dispatchQueue = new RunDispatchQueue({ maxConcurrent: 1 });
+    const releaseQueue = makeBarrier();
+    const queuedBehind = dispatchQueue.enqueue(() => releaseQueue.promise);
+    const running = makeBarrier();
+    const releaseWork = makeBarrier();
+    const { orchestrator } = makeOrchestrator({
+      ...live, dispatchQueue, autoDispatch: { enabled: false },
+      unitOfWork: { async run() { running.release(); await releaseWork.promise; return { directive: 'advance' }; } }
+    });
+    const work = orchestrator.dispatch(input);
+    const move = () => orchestrator.setRunStep({ ...input, step: 'spec.author' });
+    const busy = { code: 'conflict', details: { reason: expect.stringMatching(/busy/) } };
+    try {
+      await reserveEntered.promise;
+      const competing = expect(move()).rejects.toMatchObject(busy);
+      releaseReserve.release();
+      await competing;
+      await vi.waitFor(() => expect(dispatchQueue.queuedCount).toBe(1));
+      await expect(move()).rejects.toMatchObject(busy);
+      releaseQueue.release();
+      await queuedBehind;
+      await running.promise;
+      await expect(move()).rejects.toMatchObject(busy);
+    } finally {
+      releaseReserve.release();
+      releaseQueue.release();
+      releaseWork.release();
+      await work;
+    }
+  });
+
+  it('lets a winning move publish before admission and never reserves the old occurrence', async () => {
+    const live = liveRun('implementation.build', [
+      makeRunStep({ step: 'spec.author', phase: 'spec', endedAt: timestamp }),
+      makeRunStep({ id: 'build', step: 'implementation.build', phase: 'implementation' })
+    ]);
+    const entered = makeBarrier();
+    const release = makeBarrier();
+    const enteredWork = makeBarrier();
+    const releaseWork = makeBarrier();
+    const { publisher, events } = makeRecordingPublisher();
+    const run = vi.fn<RunUnitOfWork['run']>(async () => {
+      enteredWork.release();
+      await releaseWork.promise;
+      return { directive: 'advance' };
+    });
+    live.record.mockImplementationOnce(async (write) => {
+      entered.release();
+      await release.promise;
+      return live.record(write);
+    });
+    const { orchestrator } = makeOrchestrator({ ...live, events: publisher, unitOfWork: { run } });
+    const move = orchestrator.setRunStep({ ...input, step: 'spec.author' });
+    await entered.promise;
+    const admit = orchestrator.admitForDispatch(input);
+    expect(run).not.toHaveBeenCalled();
+    release.release();
+    try {
+      await move;
+      await admit;
+      await enteredWork.promise;
+      expect(run).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ run: expect.objectContaining({ currentStep: 'spec.author' }) }));
+      expect(events.map(event => event.transition.directive)).toEqual(['set_step']);
+      await orchestrator.cancelRun(input);
+    } finally {
+      releaseWork.release();
+    }
   });
 });

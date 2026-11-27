@@ -90,6 +90,11 @@ function createFakeControlPlaneService(): ControlPlaneService {
     listRunSessions: vi.fn(async () => {
       throw new Error('not stubbed');
     }),
+    cancelRun: vi.fn(),
+    archiveRun: vi.fn(),
+    unarchiveRun: vi.fn(),
+    setRunStep: vi.fn(),
+    renameRun: vi.fn(),
     tick: vi.fn(async () => ({ status: 'noop' as const }))
   };
 }

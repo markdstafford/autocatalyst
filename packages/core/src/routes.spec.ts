@@ -97,6 +97,11 @@ function createFakeControlPlaneService(): ControlPlaneService {
     replyToRun: vi.fn(async () => {
       throw new Error('controlPlane.replyToRun not stubbed for this test');
     }),
+    cancelRun: vi.fn(),
+    archiveRun: vi.fn(),
+    unarchiveRun: vi.fn(),
+    setRunStep: vi.fn(),
+    renameRun: vi.fn(),
     recoverRun: vi.fn(async () => {
       throw new Error('controlPlane.recoverRun not stubbed for this test');
     }),
@@ -142,6 +147,8 @@ describe('project issue lookup and conversation intake', () => {
       ...({} as DefaultControlPlaneServiceOptions),
       projects, policy: permissivePolicyDecisionPoint, issueReferenceIntakeResolver: issues,
       orchestrator: {
+        createConversationWithFirstRun, createRun: vi.fn(), cancelRun: vi.fn(),
+        createConversationWithFirstRun, createRun: vi.fn(), setRunStep: vi.fn(),
         createConversationWithFirstRun, createRun: vi.fn(), applyDirective: vi.fn(), dispatch: vi.fn(),
         tick: vi.fn(), replyToRun: vi.fn(), detectMerges: vi.fn(), refreshRunPullRequest: vi.fn(),
         reopenFailedRun: vi.fn(), admitForDispatch: vi.fn()

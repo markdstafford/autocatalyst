@@ -1,3 +1,6 @@
+import { ArchivedRunRecoveryError, RunTransitionConflictError } from './domain-repositories.js';
+import { workflowOwnedSteps } from './run-transition.js';
+import { StaleDispatchError, type CommitDispatchResult } from './dispatch-result-commits.js';
 import { convergenceCheckpointSchema } from '@autocatalyst/api-contract';
 import { randomUUID } from 'node:crypto';
 import { findCurrentRepair, type RepairDecision, type RepairMove, type RepairRepository } from './pr-ci-repair.js';
@@ -39,8 +42,7 @@ import { validatePullRequestFinalizeResult } from './pr-finalize-result-validati
 import {
   ConvergenceCheckpointError,
   buildConvergenceEscalationPause,
-  getConvergenceEscalationPause,
-  recordConvergenceEscalationGuidance
+  getConvergenceEscalationPause
 } from './convergence-checkpoint.js';
 
 import type {
@@ -100,6 +102,7 @@ export type OrchestratorErrorCode =
   | 'active_run_conflict'
   | 'missing_run'
   | 'terminal_run'
+  | 'conflict'
   | 'invalid_transition'
   | 'unknown_work_kind'
   | 'forbidden'
@@ -187,6 +190,32 @@ export interface ApplyOrchestratedDirectiveInput {
   readonly publicationProvenance?: { readonly pullRequestId: string; readonly headSha: string };
 }
 
+export interface OperatorTransitionInput extends DispatchRunInput {
+  readonly principal: NonModelPrincipal;
+}
+
+interface DispatchSource {
+  readonly run: Run;
+  readonly runStep: RunStep | null;
+}
+
+interface DispatchReservation extends DispatchSource {
+  readonly automatic: boolean;
+  readonly result: Promise<OrchestratedRunResult>;
+  readonly resolve: (result: OrchestratedRunResult) => void;
+  readonly reject: (error: unknown) => void;
+  continuation?: DispatchSource;
+}
+
+type CommitDispatchTransition = (
+  work: (apply: Orchestrator['applyDirective']) => Promise<OrchestratedRunResult>
+) => Promise<OrchestratedRunResult>;
+
+type ApplyLockedDirective = (
+  input: ApplyOrchestratedDirectiveInput,
+  source?: DispatchSource
+) => Promise<OrchestratedRunResult>;
+
 export interface DispatchRunInput {
   readonly runId: string;
   readonly tenant: string;
@@ -240,6 +269,8 @@ export interface Orchestrator {
   createRun(input: CreateOrchestratedRunInput): Promise<OrchestratedRunResult>;
   createConversationWithFirstRun(input: CreateOrchestratedConversationInput): Promise<OrchestratedConversationResult>;
   applyDirective(input: ApplyOrchestratedDirectiveInput): Promise<OrchestratedRunResult>;
+  cancelRun(input: OperatorTransitionInput): Promise<OrchestratedRunResult>;
+  setRunStep(input: OperatorTransitionInput & { step: string }): Promise<OrchestratedRunResult>;
   dispatch(input: DispatchRunInput): Promise<OrchestratedRunResult>;
   tick(input: TickInput): Promise<TickResult>;
   replyToRun(input: ReplyToRunInput): Promise<ReplyToRunResult>;
@@ -340,7 +371,7 @@ export class DefaultOrchestrator implements Orchestrator {
   readonly #clock: (() => string) | undefined;
   readonly #eventIdGenerator: (() => string) | undefined;
   readonly #isActiveRunConflict: (error: unknown) => boolean;
-  readonly #logger: { warn(message: string, details?: unknown): void; info?(message: string, details?: unknown): void } | undefined;
+  readonly #logger: DefaultOrchestratorOptions['logger'];
   readonly #specAuthoringDependencies: SpecAuthoringServiceDependencies | undefined;
   readonly #resolveWorkspaceContext: WorkspaceContextResolver | undefined;
   readonly #runWorkspaceMetadata: RunWorkspaceMetadataRepository | undefined;
@@ -358,7 +389,7 @@ export class DefaultOrchestrator implements Orchestrator {
   readonly #batchCursor = new Map<string, { createdAt: string; id: string }>();
   readonly #pullRequestOpenDependencies: PullRequestOpenWiringDependencies | undefined;
   readonly #autoDispatchEnabled: boolean;
-  readonly #autoDispatchInFlightRunIds = new Set<string>();
+  readonly #dispatchReservations = new Map<string, DispatchReservation>();
   readonly #runMutationTails = new Map<string, Promise<void>>();
 
   constructor(options: DefaultOrchestratorOptions) {
@@ -424,16 +455,7 @@ export class DefaultOrchestrator implements Orchestrator {
       throw new OrchestratorError('persistence_failed', 'Failed to create run.', { cause: error });
     }
 
-    await this.#publishEvent({
-      runId: state.run.id,
-      directive: 'start',
-      toStep: state.run.currentStep,
-      run: state.run,
-      runStep: state.runStep,
-      tenant: state.run.tenant
-    });
-
-    this.#scheduleAutoDispatch(state.run);
+    await this.#publishRunStart(state);
 
     return { run: state.run, runStep: { ...state.runStep, checkpointResult: publicSpecCheckpoint(state.runStep.checkpointResult) } };
   }
@@ -528,44 +550,160 @@ export class DefaultOrchestrator implements Orchestrator {
       });
     }
 
-    await this.#publishEvent({
-      runId: result.run.id,
-      directive: 'start',
-      toStep: result.run.currentStep,
-      run: result.run,
-      runStep: result.runStep,
-      tenant: result.run.tenant
-    });
-
-    this.#scheduleAutoDispatch(result.run);
+    await this.#publishRunStart(result);
 
     return result;
   }
 
-  // This lock serializes short mutations, not runner dispatch or provider reads.
+  #mutationKey({ tenant, runId }: DispatchRunInput): string {
+    return JSON.stringify([tenant, runId]);
+  }
+
+  // Serialize local writes and reservations, never enqueue, runner waits or provider reads.
   async #withRunMutation<T>(
-    { tenant, runId }: DispatchRunInput,
-    work: (applyDirective: Orchestrator['applyDirective']) => Promise<T>
+    input: DispatchRunInput,
+    work: (applyDirective: ApplyLockedDirective, admit: (result: DispatchSource, force?: boolean) => Promise<void>) => Promise<T>
   ): Promise<T> {
-    const key = JSON.stringify([tenant, runId]);
+    const key = this.#mutationKey(input);
     const previous = this.#runMutationTails.get(key);
     let release!: () => void;
     const tail = new Promise<void>((resolve) => { release = resolve; });
     this.#runMutationTails.set(key, tail);
     await previous;
 
-    let transitionedRun: Run | undefined;
+    let launch: DispatchReservation | undefined;
+    const admit = async (result: DispatchSource, force = false) => {
+      if ((!force && !this.#autoDispatchEnabled) || result.run.terminal || !this.#shouldAutoDispatch(result.run)) return;
+      const occupied = this.#dispatchReservations.get(key);
+      if (occupied !== undefined) {
+        occupied.continuation = result;
+      } else {
+        launch = this.#reserveDispatch(result.run, result.runStep, true);
+      }
+    };
     try {
-      return await work(async (input) => {
-        const result = await this.#applyDirectiveUnderLock(input);
-        transitionedRun = result.run;
-        return result;
-      });
+      return await work(async (directive, source) => {
+        const result = await this.#applyDirectiveUnderLock(directive, source);
+        // The next dispatch needs its persisted checkpoint, including a private spec answer.
+        await admit(result);
+        return { ...result, runStep: { ...result.runStep, checkpointResult: publicSpecCheckpoint(result.runStep.checkpointResult) } };
+      }, admit);
     } finally {
       if (this.#runMutationTails.get(key) === tail) this.#runMutationTails.delete(key);
       release();
-      if (transitionedRun !== undefined) this.#scheduleAutoDispatch(transitionedRun);
+      if (launch !== undefined) this.#launchDispatch(launch);
     }
+  }
+
+  async #publishRunStart(result: OrchestratedRunResult): Promise<void> {
+    const input = { tenant: result.run.tenant, runId: result.run.id };
+    await this.#withRunMutation(input, async (_apply, admit) => {
+      await this.#publishEvent({ ...input, ...result, directive: 'start', toStep: result.run.currentStep });
+      if (this.#autoDispatchEnabled && !result.run.terminal && this.#shouldAutoDispatch(result.run) &&
+        await this.#dispatchSourceMatches(result)) await admit(result);
+    });
+  }
+
+  async #requireOperatorRun(input: DispatchRunInput): Promise<Run> {
+    const run = await this.#runs.findById(input.runId);
+    if (run === null || run.tenant !== input.tenant) throw new OrchestratorError('missing_run', 'Run not found.');
+    if (run.terminal) {
+      const reason = run.currentStep === 'failed'
+        ? `Run is failed; use POST /v1/runs/${run.id}/recover.`
+        : `Run is terminal (${run.currentStep}).`;
+      throw new OrchestratorError('terminal_run', reason, { details: { reason } });
+    }
+    return run;
+  }
+
+  cancelRun(input: OperatorTransitionInput): Promise<OrchestratedRunResult> {
+    return this.#withRunMutation(input, async (applyDirective) => {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const run = await this.#requireOperatorRun(input);
+        try {
+          return await applyDirective({ ...input, directive: 'cancel', origin: 'human' }, { run, runStep: null });
+        } catch (error) {
+          const conflict = this.#transitionConflict(error);
+          if (conflict === 'terminal_run') {
+            await this.#requireOperatorRun(input);
+            const reason = 'Run became terminal before cancellation.';
+            throw new OrchestratorError('conflict', reason, { details: { reason } });
+          }
+          if (conflict !== 'source_step_mismatch') throw error;
+        }
+      }
+      const reason = 'Run kept moving; refresh and retry cancellation.';
+      throw new OrchestratorError('conflict', reason, { details: { reason } });
+    });
+  }
+
+  setRunStep(input: OperatorTransitionInput & { step: string }): Promise<OrchestratedRunResult> {
+    return this.#withRunMutation(input, async (_apply, admit) => {
+      const run = await this.#requireOperatorRun(input);
+      const workflow = await this.#requireWorkflow({ kind: 'existing_run', run }).catch((error: unknown) => {
+        this.#logger?.warn('Stored run workflow could not be resolved.', { runId: run.id, step: run.currentStep });
+        throw error;
+      });
+      const source = getRunStepDefinition(run.currentStep);
+      const isPause = source?.kind === 'pause';
+      const positionId = isPause ? workflow.transitions[source.id]?.advance : source?.id;
+      const position = positionId === undefined ? null : getRunStepDefinition(positionId);
+      const sourceIndex = position === null ? -1 : workflow.steps.indexOf(position.id);
+      if (sourceIndex < 0 || position?.kind === 'terminal' || position?.kind === 'pause') {
+        this.#logger?.warn('Stored run has no usable workflow position.', { runId: run.id, step: run.currentStep });
+        throw new OrchestratorError('persistence_failed', 'Stored run has no usable workflow position.');
+      }
+
+      const reject = (reason: string): never => {
+        throw new OrchestratorError('invalid_transition', reason, { details: { reason } });
+      };
+      const target = getRunStepDefinition(input.step) ?? reject('Unknown target step.');
+      if (target.kind === 'terminal') reject('Target is terminal.');
+      if (!workflowOwnedSteps(workflow).has(target.id)) reject('Target is not part of the run workflow.');
+      if (target.kind === 'pause') reject('Target is an input pause.');
+      if (target.phase === null) reject('Target has no phase.');
+      if (target.id === run.currentStep) reject('Target is the current step.');
+      const targetIndex = workflow.steps.indexOf(target.id);
+      if (targetIndex < 0) reject('Target has no position in workflow.steps');
+      if (this.#runSteps === undefined) throw new OrchestratorError('persistence_failed', 'Run history is not configured.');
+      const history = await this.#runSteps.listByRun(run.id);
+      if (!history.some((step) => step.step === target.id)) reject('Run has not reached the target step.');
+      if (targetIndex >= sourceIndex) reject('Target is not strictly earlier than the current workflow position.');
+      const repairs = await this.#pullRequestOpenDependencies?.repair?.repository.listByRun(run.id, run.tenant) ?? [];
+      if (findCurrentRepair(repairs) !== undefined || repairs.some(row => row.workspaceHold) ||
+          this.#dispatchReservations.has(this.#mutationKey(input)) || this.#dispatchQueue.hasWorkForRun(run.id)) {
+        const reason = 'Run is busy with dispatch work; try again after it settles.';
+        throw new OrchestratorError('conflict', reason, { details: { reason } });
+      }
+
+      const open = await this.#openRunStep(run);
+      if (open === null) {
+        const reason = 'Current step occurrence is no longer open.';
+        throw new OrchestratorError('conflict', reason, { details: { reason } });
+      }
+      let result: OrchestratedRunResult;
+      try {
+        result = await this.#runs.recordRunStepTransition({
+          runId: run.id, expectedStep: run.currentStep, currentStep: target.id, terminal: false,
+          sourceRunStepId: open.id, abandonInput: isPause,
+          runStep: buildEntryRunStep(target, this.#clock?.() ?? new Date().toISOString())
+        });
+      } catch (error) {
+        if (!(error instanceof RunTransitionConflictError)) throw error;
+        const reason = 'Run changed before the step move could commit.';
+        throw new OrchestratorError('conflict', reason, { details: { reason }, cause: error });
+      }
+      await this.#publishEvent({
+        ...result, runId: run.id, tenant: run.tenant, directive: 'set_step', fromStep: run.currentStep, toStep: target.id
+      });
+      await admit(result, true);
+      return result;
+    });
+  }
+
+  #transitionConflict(error: unknown): RunTransitionConflictError['code'] | undefined {
+    const cause = error instanceof OrchestratorError && error.cause instanceof RunLifecycleError ? error.cause.cause : undefined;
+    return cause instanceof RunTransitionConflictError ? cause.code : undefined;
   }
 
   applyDirective(input: ApplyOrchestratedDirectiveInput): Promise<OrchestratedRunResult> {
@@ -581,12 +719,13 @@ export class DefaultOrchestrator implements Orchestrator {
       if (run === null || run.tenant !== tenant) {
         throw new OrchestratorError('missing_run', 'Run not found.');
       }
+      if (run.archivedAt !== undefined && run.currentStep === 'failed') throw new ArchivedRunRecoveryError();
       return this.#runs.recoverFailedRun(input);
     });
   }
 
-  async #applyDirectiveUnderLock(input: ApplyOrchestratedDirectiveInput): Promise<OrchestratedRunResult> {
-    const existing = await this.#runs.findById(input.runId);
+  async #applyDirectiveUnderLock(input: ApplyOrchestratedDirectiveInput, source?: DispatchSource): Promise<OrchestratedRunResult> {
+    const existing = source?.run ?? await this.#runs.findById(input.runId);
     if (existing === null) {
       throw new OrchestratorError('missing_run', `Run '${input.runId}' does not exist.`);
     }
@@ -728,6 +867,8 @@ export class DefaultOrchestrator implements Orchestrator {
         workflowResolver: this.#workflowResolver,
         runId: input.runId,
         directive: input.directive,
+        source: existing,
+        ...(source?.runStep == null ? {} : { sourceRunStepId: source.runStep.id }),
         ...(input.refreshPublication ? { refreshPublication: true } : {}),
         ...(input.publicationProvenance !== undefined ? { publicationProvenance: input.publicationProvenance } : {}),
         ...(input.checkpointResult !== undefined ? { checkpointResult: input.checkpointResult } : {}),
@@ -755,35 +896,134 @@ export class DefaultOrchestrator implements Orchestrator {
       ...(normalizedFailureReason !== undefined ? { reason: normalizedFailureReason } : {})
     });
 
-    return { run: state.run, runStep: { ...state.runStep, checkpointResult: publicSpecCheckpoint(state.runStep.checkpointResult) } };
+    return { run: state.run, runStep: state.runStep };
+  }
+
+  async #openRunStep(run: Run): Promise<RunStep | null> {
+    if (this.#runs.findLatestOpenRunStep !== undefined) {
+      return this.#runs.findLatestOpenRunStep({ runId: run.id, step: run.currentStep });
+    }
+    const steps = await this.#runSteps?.listByRun(run.id) ?? [];
+    return [...steps].reverse().find((step) => step.step === run.currentStep && step.endedAt === null) ?? null;
+  }
+
+  #reserveDispatch(run: Run, runStep: RunStep | null, automatic: boolean): DispatchReservation {
+    let resolve!: DispatchReservation['resolve'];
+    let reject!: DispatchReservation['reject'];
+    const result = new Promise<OrchestratedRunResult>((ok, fail) => { resolve = ok; reject = fail; });
+    const reservation = { run, runStep, automatic, result, resolve, reject };
+    this.#dispatchReservations.set(this.#mutationKey({ runId: run.id, tenant: run.tenant }), reservation);
+    // Auto-dispatch is detached; explicit callers still receive the result/rejection.
+    void result.catch(() => undefined);
+    return reservation;
+  }
+
+  async #dispatchSourceMatches(source: DispatchSource): Promise<boolean> {
+    const run = await this.#runs.findById(source.run.id);
+    if (run === null || run.tenant !== source.run.tenant || run.terminal || run.currentStep !== source.run.currentStep) return false;
+    const hasOpenStepLookup = this.#runs.findLatestOpenRunStep !== undefined;
+    // Legacy test doubles may not have a step store. In production an open
+    // occurrence must exist, and merely returning to the same name is stale.
+    if (!hasOpenStepLookup && this.#runSteps === undefined) return true;
+    if (hasOpenStepLookup && source.runStep === null) return false;
+    return ((await this.#openRunStep(run))?.id ?? null) === (source.runStep?.id ?? null);
+  }
+
+  #launchDispatch(reservation: DispatchReservation): void {
+    const { run } = reservation;
+    const input = { runId: run.id, tenant: run.tenant };
+    let discarded = false;
+    const discard = () => {
+      if (discarded) return;
+      discarded = true;
+      this.#logger?.info?.('dispatch_result_discarded', { runId: run.id, step: run.currentStep });
+    };
+    const commit: CommitDispatchResult = (work) => this.#withRunMutation(input, async () => {
+      if (discarded || !await this.#dispatchSourceMatches(reservation)) {
+        discard();
+        return undefined;
+      }
+      return work();
+    });
+    const commitTransition: CommitDispatchTransition = (work) => this.#withRunMutation(input, async (applyLocked) => {
+      if (discarded || !await this.#dispatchSourceMatches(reservation)) {
+        discard();
+        throw new StaleDispatchError();
+      }
+      return work((directive) => applyLocked(directive, reservation));
+    });
+    const apply: Orchestrator['applyDirective'] = (directive) => commitTransition((applyLocked) => applyLocked(directive));
+
+    const perform = async () => {
+      let result: OrchestratedRunResult | undefined;
+      let failure: unknown;
+      try {
+        result = await this.#dispatchQueue.enqueueForRun(run.id, async () => {
+          const current = await this.#withRunMutation(input, async () => this.#dispatchSourceMatches(reservation));
+          if (!current) throw new StaleDispatchError();
+          return this.#dispatchReserved(input, reservation, apply, commit, commitTransition);
+        });
+      } catch (error) {
+        const conflict = this.#transitionConflict(error);
+        if (error instanceof StaleDispatchError || conflict !== undefined || !await this.#dispatchSourceMatches(reservation)) {
+          discard();
+          const current = await this.#runs.findById(run.id);
+          const step = current === null ? null : await this.#openRunStep(current);
+          if (current !== null && step !== null) {
+            result = { run: current, runStep: { ...step, checkpointResult: publicSpecCheckpoint(step.checkpointResult) } };
+          } else failure = new OrchestratorError('conflict', 'Dispatch source changed.');
+        } else {
+          failure = error;
+          if (reservation.automatic) await this.#handleAutoDispatchFailure(run, error, apply);
+        }
+      } finally {
+        await this.#withRunMutation(input, async (_apply, admit) => {
+          this.#dispatchReservations.delete(this.#mutationKey(input));
+          const next = reservation.continuation;
+          if (next !== undefined && await this.#dispatchSourceMatches(next)) await admit(next);
+        });
+      }
+      if (result !== undefined) reservation.resolve(result);
+      else reservation.reject(failure);
+    };
+    void perform().catch(reservation.reject);
   }
 
   async dispatch(input: DispatchRunInput): Promise<OrchestratedRunResult> {
-    const run = await this.#runs.findById(input.runId);
-    if (run === null) {
-      throw new OrchestratorError('missing_run', `Run '${input.runId}' does not exist.`);
-    }
-    if (run.tenant !== input.tenant) {
-      throw new OrchestratorError('forbidden', `Run '${input.runId}' does not belong to tenant '${input.tenant}'.`);
-    }
-    if (run.terminal) {
-      throw new OrchestratorError('terminal_run', `Run '${input.runId}' is terminal.`);
-    }
+    let launch: DispatchReservation | undefined;
+    const reservation = await this.#withRunMutation(input, async () => {
+      const run = await this.#runs.findById(input.runId);
+      if (run === null) throw new OrchestratorError('missing_run', `Run '${input.runId}' does not exist.`);
+      if (run.tenant !== input.tenant) throw new OrchestratorError('forbidden', 'Run is not accessible.');
+      if (run.terminal) throw new OrchestratorError('terminal_run', `Run '${run.id}' is terminal.`);
+      const occupied = this.#dispatchReservations.get(this.#mutationKey(input));
+      if (occupied !== undefined) return occupied;
+      launch = this.#reserveDispatch(run, await this.#openRunStep(run), false);
+      return launch;
+    });
+    if (launch !== undefined) this.#launchDispatch(launch);
+    return reservation.result;
+  }
 
+  async #dispatchReserved(
+    input: DispatchRunInput,
+    source: DispatchSource,
+    apply: Orchestrator['applyDirective'],
+    commit: CommitDispatchResult,
+    commitTransition: CommitDispatchTransition
+  ): Promise<OrchestratedRunResult> {
+    const { run } = source;
     const repairs = await this.#pullRequestOpenDependencies?.repair?.repository.listByRun(run.id, run.tenant) ?? [];
     if (repairs.some(row => row.workspaceHold)) {
       throw new OrchestratorError('invalid_transition', 'The run workspace is held for host inspection.');
     }
     const repair = findCurrentRepair(repairs);
     if (repair !== undefined) {
-      return this.#dispatchQueue.enqueueForRun(run.id, async () => {
-        const current = findCurrentRepair(await this.#pullRequestOpenDependencies!.repair!.repository.listByRun(run.id, run.tenant));
-        const step = current?.currentStepId == null ? null : await this.#runSteps?.findById(current.currentStepId);
-        if (current?.state !== 'queued' || step == null || step.id !== repair.currentStepId || step.endedAt !== null) {
-          throw new OrchestratorError('invalid_transition', 'The repair occurrence is no longer queued.');
-        }
-        return executeRepair({ run, runStep: step }, current, this.#repairWorker());
-      });
+      const step = source.runStep;
+      if (repair.state !== 'queued' || step === null || step.id !== repair.currentStepId || step.endedAt !== null) {
+        throw new OrchestratorError('invalid_transition', 'The repair occurrence is no longer queued.');
+      }
+      return executeRepair({ run, runStep: step }, repair, this.#repairWorker());
     }
 
     const stepDefinition = getRunStepDefinition(run.currentStep);
@@ -795,14 +1035,14 @@ export class DefaultOrchestrator implements Orchestrator {
     }
 
     if (stepDefinition?.waitingOn === 'system') {
-      return this.#dispatchSystemStep(input, run);
+      return this.#dispatchSystemStep(input, source, apply, commitTransition);
     }
 
     // implementation.plan deterministic passthrough: records an explicit checkpoint and advances
     // to implementation.build without dispatching an AI prompt. Planning is intentionally a no-op
     // for issue 63; a real plan step is tracked for a future issue.
     if (run.currentStep === 'implementation.plan') {
-      return this.#dispatchQueue.enqueueForRun(input.runId, async () => this.applyDirective({
+      return apply({
         runId: input.runId,
         tenant: input.tenant,
         directive: 'advance',
@@ -811,7 +1051,7 @@ export class DefaultOrchestrator implements Orchestrator {
           kind: 'implementation_plan_passthrough',
           reason: 'issue_63_reply_ingress_uses_existing_build_convergence'
         }
-      }));
+      });
     }
 
     const workflow = stepDefinition?.id === 'spec.author' && stepDefinition.roles.includes('reviewer') &&
@@ -819,148 +1059,144 @@ export class DefaultOrchestrator implements Orchestrator {
       ? await this.#requireWorkflow({ kind: 'existing_run', run })
       : undefined;
     if (stepDefinition !== null && (workflow?.artifactKind === 'feature_spec' || workflow?.artifactKind === 'enhancement_spec')) {
-      return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
-        const active = await this.#runs.findById(run.id);
-        const steps = await this.#runSteps?.listByRun(run.id) ?? [];
-        const runStep = steps.find(step => step.step === 'spec.author' && step.endedAt === null);
-        if (!active || active.currentStep !== 'spec.author' || active.terminal) {
-          throw new OrchestratorError('invalid_transition', 'Run no longer waiting for spec authoring.');
-        }
-        const fail = (reason: string) => this.applyDirective({
-          runId: run.id, tenant: run.tenant, directive: 'fail', origin: 'runner', reason
-        });
-        const engine = this.#convergenceEngine;
-        const deps = this.#specAuthoringDependencies;
-        const resolveWorkspace = this.#resolveWorkspaceContext;
-        if (!engine?.runSpec || !runStep || !deps?.git.readHeadFile || !resolveWorkspace) {
-          return fail('spec_review_not_configured');
-        }
-        const readHeadFile = deps.git.readHeadFile;
-        const readHead = async (path: string) => {
-          const workspace = await resolveWorkspace({ runId: run.id });
-          return readHeadFile({ workspaceRepoRoot: workspace.workspaceRepoRoot, relativePath: path });
-        };
-        const marker = runStep.checkpointResult as { specAnswer?: { sourceStepId: string; role: 'implementer' | 'reviewer'; body: string } } | null;
-        const workspace = await resolveWorkspace({ runId: run.id }).catch(() => undefined);
-        try {
-          const result = await engine.runSpec({
-            run, runId: run.id, tenant: run.tenant, runStep, stepDefinition, workflow, steps, readHead,
-            ...(workspace ? { workspace } : {}),
-            ...(marker?.specAnswer ? { answer: marker.specAnswer } : {}),
-            readCanonicalSpec: async () => {
-              const artifact = await deps.artifacts.findByRunAndKind({ runId: run.id, kind: workflow.artifactKind! });
-              if (!artifact) return undefined;
-              if (artifact.tenant !== run.tenant || artifact.runId !== run.id) throw new Error('Invalid spec artifact.');
-              const markdown = await readHead(artifact.location);
-              if (markdown === null) throw new Error('Spec artifact has no committed Markdown.');
-              return { path: artifact.location, markdown };
-            },
-            complete: async (spec, markdown) => {
-              const result = await this.#runSpecAuthoringCompletion(run.id, run, spec, markdown);
-              return result.kind === 'ok' ? result.output : undefined;
-            }
-          });
-          if (result.directive === 'fail') return fail(result.reason);
-          return this.applyDirective({
-            runId: run.id, tenant: run.tenant, directive: result.directive, origin: 'runner',
-            checkpointResult: result.checkpoint,
-            ...(result.directive === 'needs_input' ? { destinationCheckpointResult: { pause: result.pause } } : {})
-          });
-        } catch (cause) {
-          this.#logger?.warn('Spec convergence failed.', { runId: run.id, ...this.#safeCause(cause) });
-          return fail(safeFailureReasonFromError(cause) ?? 'spec_authoring_failed');
-        }
+      const steps = await this.#runSteps?.listByRun(run.id) ?? [];
+      const runStep = source.runStep;
+      const fail = (reason: string) => apply({
+        runId: run.id, tenant: run.tenant, directive: 'fail', origin: 'runner', reason
       });
+      const engine = this.#convergenceEngine;
+      const deps = this.#specAuthoringDependencies;
+      const resolveWorkspace = this.#resolveWorkspaceContext;
+      if (!engine?.runSpec || !runStep || !deps?.git.readHeadFile || !resolveWorkspace) {
+        return fail('spec_review_not_configured');
+      }
+      const readHeadFile = deps.git.readHeadFile;
+      const readHead = async (path: string) => {
+        const workspace = await resolveWorkspace({ runId: run.id });
+        return readHeadFile({ workspaceRepoRoot: workspace.workspaceRepoRoot, relativePath: path });
+      };
+      const marker = runStep.checkpointResult as { specAnswer?: { sourceStepId: string; role: 'implementer' | 'reviewer'; body: string } } | null;
+      const workspace = await resolveWorkspace({ runId: run.id }).catch(() => undefined);
+      try {
+        const result = await engine.runSpec({
+          run, runId: run.id, tenant: run.tenant, runStep, stepDefinition, workflow, steps, readHead, commitResult: commit,
+          ...(workspace ? { workspace } : {}),
+          ...(marker?.specAnswer ? { answer: marker.specAnswer } : {}),
+          readCanonicalSpec: async () => {
+            const artifact = await deps.artifacts.findByRunAndKind({ runId: run.id, kind: workflow.artifactKind! });
+            if (!artifact) return undefined;
+            if (artifact.tenant !== run.tenant || artifact.runId !== run.id) throw new Error('Invalid spec artifact.');
+            const markdown = await readHead(artifact.location);
+            if (markdown === null) throw new Error('Spec artifact has no committed Markdown.');
+            return { path: artifact.location, markdown };
+          },
+          complete: async (spec, markdown) => {
+            const context = await resolveWorkspace({ runId: run.id });
+            const result = await commit(() => this.#runSpecAuthoringCompletion(run.id, run, spec, markdown, context));
+            if (result === undefined) throw new StaleDispatchError();
+            return result.kind === 'ok' ? result.output : undefined;
+          }
+        });
+        if (result.directive === 'fail') return fail(result.reason);
+        return apply({
+          runId: run.id, tenant: run.tenant, directive: result.directive, origin: 'runner',
+          checkpointResult: result.checkpoint,
+          ...(result.directive === 'needs_input' ? { destinationCheckpointResult: { pause: result.pause } } : {})
+        });
+      } catch (cause) {
+        if (cause instanceof StaleDispatchError || this.#transitionConflict(cause) || !await this.#dispatchSourceMatches(source)) throw cause;
+        this.#logger?.warn('Spec convergence failed.', { runId: run.id, ...this.#safeCause(cause) });
+        return fail(safeFailureReasonFromError(cause) ?? 'spec_authoring_failed');
+      }
     }
 
     if (stepDefinition !== null && this.#isReviewedProducingStep(stepDefinition) && this.#convergenceEngine !== undefined) {
       const convergenceEngine = this.#convergenceEngine;
-      return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
-        const workflow = await this.#requireWorkflow({ kind: 'existing_run', run });
-        const runSteps = this.#runSteps !== undefined ? await this.#runSteps.listByRun(input.runId) : [];
-        const runStep = [...runSteps].reverse().find(s => s.step === run.currentStep && s.endedAt === null) ?? {
-          id: `${input.runId}_step`,
-          runId: input.runId,
-          phase: stepDefinition.phase,
-          step: stepDefinition.id,
-          role: 'none' as const,
-          startedAt: this.#clock?.() ?? new Date().toISOString(),
-          endedAt: null,
-          durationMs: null,
-          occurrence: { index: 0, attempt: 1 },
-          checkpointResult: null
-        };
-        // Read guidance from the current build step checkpoint (stamped during guidance reply).
-        // If the checkpoint carries resumedFromAwaitingInputStepId, follow the reference to load
-        // the guidance from that specific pause step rather than searching all history.
-        const humanGuidance: string | undefined = (() => {
-          const buildCp = runStep.checkpointResult as {
-            humanGuidance?: string;
-            resumedFromAwaitingInputStepId?: string;
-          } | null;
-          if (buildCp === null || typeof buildCp !== 'object') return undefined;
-          if (typeof buildCp.humanGuidance === 'string') return buildCp.humanGuidance;
-          if (typeof buildCp.resumedFromAwaitingInputStepId === 'string') {
-            const pauseStepId = buildCp.resumedFromAwaitingInputStepId;
-            const pauseStep = runSteps.find(s => s.id === pauseStepId);
-            if (pauseStep !== undefined) {
-              const cp = pauseStep.checkpointResult as { pause?: { kind?: string; humanGuidance?: string } } | null;
-              if (cp?.pause?.kind === 'convergence_escalation' && typeof cp.pause.humanGuidance === 'string') {
-                return cp.pause.humanGuidance;
-              }
+      const workflow = await this.#requireWorkflow({ kind: 'existing_run', run });
+      const runSteps = this.#runSteps !== undefined ? await this.#runSteps.listByRun(input.runId) : [];
+      const runStep = source.runStep ?? {
+        id: `${input.runId}_step`,
+        runId: input.runId,
+        phase: stepDefinition.phase,
+        step: stepDefinition.id,
+        role: 'none' as const,
+        startedAt: this.#clock?.() ?? new Date().toISOString(),
+        endedAt: null,
+        durationMs: null,
+        occurrence: { index: 0, attempt: 1 },
+        checkpointResult: null
+      };
+      // Read guidance from the current build step checkpoint (stamped during guidance reply).
+      // If the checkpoint carries resumedFromAwaitingInputStepId, follow the reference to load
+      // the guidance from that specific pause step rather than searching all history.
+      const humanGuidance: string | undefined = (() => {
+        const buildCp = runStep.checkpointResult as {
+          humanGuidance?: string;
+          resumedFromAwaitingInputStepId?: string;
+        } | null;
+        if (buildCp === null || typeof buildCp !== 'object') return undefined;
+        if (typeof buildCp.humanGuidance === 'string') return buildCp.humanGuidance;
+        if (typeof buildCp.resumedFromAwaitingInputStepId === 'string') {
+          const pauseStepId = buildCp.resumedFromAwaitingInputStepId;
+          const pauseStep = runSteps.find(s => s.id === pauseStepId);
+          if (pauseStep !== undefined) {
+            const cp = pauseStep.checkpointResult as { pause?: { kind?: string; humanGuidance?: string } } | null;
+            if (cp?.pause?.kind === 'convergence_escalation' && typeof cp.pause.humanGuidance === 'string') {
+              return cp.pause.humanGuidance;
             }
           }
-          return undefined;
-        })();
-        const resolvedWorkspace = this.#resolveWorkspaceContext !== undefined
-          ? await this.#resolveWorkspaceContext({ runId: input.runId }).catch(() => undefined)
-          : undefined;
-        const result = await convergenceEngine.run({
-          runId: input.runId,
-          run,
-          tenant: input.tenant,
-          runStep,
-          stepDefinition,
-          workflow,
-          ...(resolvedWorkspace !== undefined ? { workspace: resolvedWorkspace } : {}),
-          ...(humanGuidance !== undefined ? { humanGuidance } : {})
-        });
+        }
+        return undefined;
+      })();
+      const resolvedWorkspace = this.#resolveWorkspaceContext !== undefined
+        ? await this.#resolveWorkspaceContext({ runId: input.runId }).catch(() => undefined)
+        : undefined;
+      const result = await convergenceEngine.run({
+        runId: input.runId,
+        run,
+        tenant: input.tenant,
+        runStep,
+        stepDefinition,
+        workflow,
+        commitResult: commit,
+        ...(resolvedWorkspace !== undefined ? { workspace: resolvedWorkspace } : {}),
+        ...(humanGuidance !== undefined ? { humanGuidance } : {})
+      });
 
-        if (result.workResult.directive === 'fail') {
-          const reason = result.workResult.reason;
-          return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason, origin: 'runner' });
-        }
-        if (result.workResult.directive === 'needs_input') {
-          const pause = buildConvergenceEscalationPause(result.checkpointResult);
-          return this.applyDirective({
-            runId: input.runId,
-            directive: 'needs_input',
-            tenant: input.tenant,
-            checkpointResult: result.checkpointResult as unknown as JsonValue,
-            ...(pause !== null ? { destinationCheckpointResult: pause } : {}),
-            origin: 'runner'
-          });
-        }
-        const convergenceClock = this.#clock ?? (() => new Date().toISOString());
-        let enrichedCheckpoint: unknown = result.checkpointResult;
-        if (result.checkpointResult.rounds.length > 0) {
-          try {
-            const cumulativeSummary = buildCumulativeImplementationSummary({
-              rounds: buildImplementationSummaryRoundInputs(result.checkpointResult.rounds),
-              completedAt: convergenceClock()
-            });
-            enrichedCheckpoint = { ...result.checkpointResult, cumulativeSummary };
-          } catch {
-            // Non-fatal: pr-open-handler will surface a clear error if summary is missing
-          }
-        }
-        return this.applyDirective({
+      if (result.workResult.directive === 'fail') {
+        const reason = result.workResult.reason;
+        return apply({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason, origin: 'runner' });
+      }
+      if (result.workResult.directive === 'needs_input') {
+        const pause = buildConvergenceEscalationPause(result.checkpointResult);
+        return apply({
           runId: input.runId,
-          directive: 'advance',
+          directive: 'needs_input',
           tenant: input.tenant,
-          checkpointResult: enrichedCheckpoint as unknown as JsonValue,
+          checkpointResult: result.checkpointResult as unknown as JsonValue,
+          ...(pause !== null ? { destinationCheckpointResult: pause } : {}),
           origin: 'runner'
         });
+      }
+      const convergenceClock = this.#clock ?? (() => new Date().toISOString());
+      let enrichedCheckpoint: unknown = result.checkpointResult;
+      if (result.checkpointResult.rounds.length > 0) {
+        try {
+          const cumulativeSummary = buildCumulativeImplementationSummary({
+            rounds: buildImplementationSummaryRoundInputs(result.checkpointResult.rounds),
+            completedAt: convergenceClock()
+          });
+          enrichedCheckpoint = { ...result.checkpointResult, cumulativeSummary };
+        } catch {
+          // Non-fatal: pr-open-handler will surface a clear error if summary is missing
+        }
+      }
+      return apply({
+        runId: input.runId,
+        directive: 'advance',
+        tenant: input.tenant,
+        checkpointResult: enrichedCheckpoint as unknown as JsonValue,
+        origin: 'runner'
       });
     }
 
@@ -969,56 +1205,70 @@ export class DefaultOrchestrator implements Orchestrator {
     }
     const unitOfWork = this.#unitOfWork;
 
-    return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
-      const prDeps = this.#pullRequestOpenDependencies;
-      const publication = run.currentStep === 'pr.finalize' ? prDeps?.publicationGit : undefined;
-      let integrated: { workspace: Awaited<ReturnType<typeof resolvePublicationBinding>>['workspace']; sourceSha: string; targetSha: string; headSha: string } | undefined;
-      let finalizationStepId: string | undefined;
-      let epoch = { count: 0, sourcePushed: false };
-      const publicationStop = (code: string, details: Record<string, JsonValue> = {}) => this.applyDirective({
-        runId: run.id, tenant: run.tenant, origin: 'system', directive: 'fail', reason: code,
-        ...(finalizationStepId !== undefined ? { expectedStepId: finalizationStepId } : {}),
-        checkpointResult: {
-          kind: 'publication_stop', code, base: initialPullRequestBase,
-          timestamp: (this.#clock ?? (() => new Date().toISOString()))(),
-          refreshCount: epoch.count, sourcePushed: epoch.sourcePushed, ...details
-        }
-      });
-      if (publication !== undefined && prDeps !== undefined && this.#runWorkspaceMetadata !== undefined) {
-        const current = await this.#runs.findLatestOpenRunStep?.({ runId: run.id, step: 'pr.finalize' });
-        if (current == null) throw new OrchestratorError('invalid_transition', 'Finalization occurrence changed.');
-        finalizationStepId = current.id;
-        epoch = publicationEpoch(await this.#runSteps!.listByRun(run.id));
-        let binding;
-        try {
-          binding = await resolvePublicationBinding(run, { ...prDeps, runWorkspaceMetadata: this.#runWorkspaceMetadata });
-        } catch {
-          return publicationStop('pr_target_verification_failed', { safeReason: 'binding_unavailable' });
-        }
-        const { workspace } = binding;
-        const evidence = { branch: workspace.branch, repository: workspace.repository };
-        const integration = await publication.integrate(workspace);
-        switch (integration.kind) {
-          case 'target_unverified':
-            return publicationStop('pr_target_verification_failed', { ...evidence, safeReason: 'target_unavailable', sourceSha: integration.sourceSha ?? null });
-          case 'workspace_unavailable':
-            return publicationStop('pr_integration_workspace_unavailable', { ...evidence, safeReason: 'workspace_not_ready' });
-          case 'conflict':
-            return publicationStop('pr_integration_conflict', {
-              ...evidence, sourceSha: integration.sourceSha, targetSha: integration.targetSha,
-              paths: [...integration.paths], cleanup: integration.cleanup
-            });
-          case 'integrated':
-            integrated = { workspace, ...integration };
-        }
+    const prDeps = this.#pullRequestOpenDependencies;
+    const publication = run.currentStep === 'pr.finalize' ? prDeps?.publicationGit : undefined;
+    let integrated: { workspace: Awaited<ReturnType<typeof resolvePublicationBinding>>['workspace']; sourceSha: string; targetSha: string; headSha: string } | undefined;
+    let finalizationStepId: string | undefined;
+    let epoch = { count: 0, sourcePushed: false };
+    const publicationStop = (code: string, details: Record<string, JsonValue> = {}) => apply({
+      runId: run.id, tenant: run.tenant, origin: 'system', directive: 'fail', reason: code,
+      ...(finalizationStepId !== undefined ? { expectedStepId: finalizationStepId } : {}),
+      checkpointResult: {
+        kind: 'publication_stop', code, base: initialPullRequestBase,
+        timestamp: (this.#clock ?? (() => new Date().toISOString()))(),
+        refreshCount: epoch.count, sourcePushed: epoch.sourcePushed, ...details
       }
-      const baseWorkInput: RunWorkInput = { runId: input.runId, run, tenant: input.tenant };
-      const workInput: RunWorkInput = run.currentStep === 'pr.finalize'
-        ? { ...baseWorkInput, toolPolicyMode: 'read_only' } as unknown as RunWorkInput
-        : baseWorkInput;
-      const result = await unitOfWork.run(workInput);
+    });
+    if (publication !== undefined && prDeps !== undefined && this.#runWorkspaceMetadata !== undefined) {
+      const current = source.runStep;
+      if (current == null) throw new OrchestratorError('invalid_transition', 'Finalization occurrence changed.');
+      finalizationStepId = current.id;
+      if (this.#runSteps === undefined) throw new OrchestratorError('persistence_failed', 'Finalization requires run history.');
+      epoch = publicationEpoch(await this.#runSteps.listByRun(run.id));
+      let binding;
+      try {
+        binding = await resolvePublicationBinding(run, { ...prDeps, runWorkspaceMetadata: this.#runWorkspaceMetadata });
+      } catch {
+        return publicationStop('pr_target_verification_failed', { safeReason: 'binding_unavailable' });
+      }
+      const { workspace } = binding;
+      const evidence = { branch: workspace.branch, repository: workspace.repository };
+      const integration = await publication.integrate(workspace);
+      switch (integration.kind) {
+        case 'target_unverified':
+          return publicationStop('pr_target_verification_failed', { ...evidence, safeReason: 'target_unavailable', sourceSha: integration.sourceSha ?? null });
+        case 'workspace_unavailable':
+          return publicationStop('pr_integration_workspace_unavailable', { ...evidence, safeReason: 'workspace_not_ready' });
+        case 'conflict':
+          return publicationStop('pr_integration_conflict', {
+            ...evidence, sourceSha: integration.sourceSha, targetSha: integration.targetSha,
+            paths: [...integration.paths], cleanup: integration.cleanup
+          });
+        case 'integrated':
+          integrated = { workspace, ...integration };
+      }
+      if (!await this.#dispatchSourceMatches(source)) throw new StaleDispatchError();
+    }
+    const baseWorkInput: RunWorkInput = { runId: input.runId, run, tenant: input.tenant };
+    const workInput: RunWorkInput = run.currentStep === 'pr.finalize'
+      ? { ...baseWorkInput, toolPolicyMode: 'read_only' } as unknown as RunWorkInput
+      : baseWorkInput;
+    const result = await unitOfWork.run(workInput);
+    if (!await this.#dispatchSourceMatches(source)) throw new StaleDispatchError();
+    const finalized = result.directive === 'advance' && run.currentStep === 'pr.finalize'
+      ? await validatePullRequestFinalizeResult({ runId: input.runId, rawResult: result.result })
+      : undefined;
+    let workspaceForFreeze: WorkspaceContext | undefined;
+    let workspaceError: unknown;
+    if (finalized?.status === 'valid' && finalized.value.directive === 'advance' &&
+      (run.workKind === 'feature' || run.workKind === 'enhancement') &&
+      this.#specFreezeDependencies !== undefined && this.#resolveWorkspaceContext !== undefined) {
+      try { workspaceForFreeze = await this.#resolveWorkspaceContext({ runId: input.runId }); }
+      catch (error) { workspaceError = error; }
+    }
+    return commitTransition(async (apply) => {
       if (result.directive === 'fail') {
-        return this.applyDirective({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason: result.reason, origin: 'runner' });
+        return apply({ runId: input.runId, directive: 'fail', tenant: input.tenant, reason: result.reason, origin: 'runner' });
       }
       if (result.directive === 'needs_input') {
         const workflow = await this.#requireWorkflow({ kind: 'existing_run', run });
@@ -1034,19 +1284,18 @@ export class DefaultOrchestrator implements Orchestrator {
       // then validates). A `revise` directive routes back to implementation.human_review and records
       // Feedback for any blockers/warnings. An `advance` directive stores a sanitized checkpoint and
       // advances toward pr.open. T-009 will insert a deterministic spec freeze before the advance is applied.
-      if (result.directive === 'advance' && run.currentStep === 'pr.finalize') {
-        const validation = await validatePullRequestFinalizeResult({ runId: input.runId, rawResult: result.result });
-        if (validation.status === 'failed') {
-          this.#logger?.warn('pr.finalize result failed validation.', { runId: input.runId, reason: validation.reason });
-          return this.applyDirective({
+      if (finalized !== undefined) {
+        if (finalized.status === 'failed') {
+          this.#logger?.warn('pr.finalize result failed validation.', { runId: input.runId, reason: finalized.reason });
+          return apply({
             runId: input.runId,
             directive: 'fail',
             tenant: input.tenant,
-            reason: validation.reason,
+            reason: finalized.reason,
             origin: 'runner'
           });
         }
-        const parsed = validation.value;
+        const parsed = finalized.value;
 
         if (parsed.directive === 'revise') {
           if (this.#feedbackLifecycleDependencies !== undefined) {
@@ -1068,7 +1317,7 @@ export class DefaultOrchestrator implements Orchestrator {
               }
             }
           }
-          return this.applyDirective({
+          return apply({
             runId: input.runId,
             directive: 'revise',
             tenant: input.tenant,
@@ -1082,7 +1331,7 @@ export class DefaultOrchestrator implements Orchestrator {
         // Freeze failure becomes a `fail` directive with reason `spec_freeze_failed` so the
         // run never advances to pr.open with an unfrozen spec.
         let publishSha = integrated?.headSha;
-        const invalidateCandidate = () => this.applyDirective({
+        const invalidateCandidate = () => apply({
           runId: run.id, tenant: run.tenant, origin: 'system', directive: 'advance',
           ...(finalizationStepId !== undefined ? { expectedStepId: finalizationStepId } : {}),
           checkpointResult: { kind: 'publication_candidate_invalidated' }
@@ -1094,7 +1343,7 @@ export class DefaultOrchestrator implements Orchestrator {
         if (isSpecBearingWorkflow && this.#specFreezeDependencies !== undefined) {
           if (this.#resolveWorkspaceContext === undefined) {
             this.#logger?.warn('Spec freeze configured without workspace context resolver.', { runId: input.runId });
-            return this.applyDirective({
+            return apply({
               runId: input.runId,
               directive: 'fail',
               tenant: input.tenant,
@@ -1102,12 +1351,9 @@ export class DefaultOrchestrator implements Orchestrator {
               origin: 'runner'
             });
           }
-          let workspaceContext: WorkspaceContext;
-          try {
-            workspaceContext = await this.#resolveWorkspaceContext({ runId: input.runId });
-          } catch (cause) {
-            this.#logger?.warn('Failed to resolve workspace context for spec freeze.', { runId: input.runId, ...this.#safeCause(cause) });
-            return this.applyDirective({
+          if (workspaceForFreeze === undefined) {
+            this.#logger?.warn('Failed to resolve workspace context for spec freeze.', { runId: input.runId, ...this.#safeCause(workspaceError) });
+            return apply({
               runId: input.runId,
               directive: 'fail',
               tenant: input.tenant,
@@ -1117,7 +1363,7 @@ export class DefaultOrchestrator implements Orchestrator {
           }
           try {
             const freeze = await this.#freezeRunSpecForPullRequest(
-              { run, workspaceRepoRoot: workspaceContext.workspaceRepoRoot },
+              { run, workspaceRepoRoot: workspaceForFreeze.workspaceRepoRoot },
               this.#specFreezeDependencies
             );
             if (integrated !== undefined) {
@@ -1129,7 +1375,7 @@ export class DefaultOrchestrator implements Orchestrator {
           } catch (cause) {
             const safeCode = cause instanceof SpecFreezeError ? cause.code : 'spec_freeze_failed';
             this.#logger?.warn('Spec freeze failed before pr.open.', { runId: input.runId, code: safeCode, ...this.#safeCause(cause) });
-            return this.applyDirective({
+            return apply({
               runId: input.runId,
               directive: 'fail',
               tenant: input.tenant,
@@ -1139,7 +1385,7 @@ export class DefaultOrchestrator implements Orchestrator {
           }
         }
 
-        return this.applyDirective({
+        return apply({
           runId: input.runId,
           directive: 'advance',
           tenant: input.tenant,
@@ -1170,7 +1416,7 @@ export class DefaultOrchestrator implements Orchestrator {
         result.directive === 'advance' && result.result !== undefined
           ? (result.result as JsonValue)
           : undefined;
-      return this.applyDirective({
+      return apply({
         runId: input.runId,
         directive,
         tenant: input.tenant,
@@ -1189,9 +1435,11 @@ export class DefaultOrchestrator implements Orchestrator {
     );
   }
 
-  async #dispatchSystemStep(input: DispatchRunInput, run: Run): Promise<OrchestratedRunResult> {
+  async #dispatchSystemStep(input: DispatchRunInput, source: DispatchSource,
+    apply: Orchestrator['applyDirective'], commitTransition: CommitDispatchTransition): Promise<OrchestratedRunResult> {
+    const { run } = source;
     if (run.currentStep === 'intake') {
-      return this.applyDirective({ runId: input.runId, directive: 'advance', tenant: input.tenant, origin: 'system' });
+      return apply({ runId: input.runId, directive: 'advance', tenant: input.tenant, origin: 'system' });
     }
 
     if (run.currentStep === 'pr.open') {
@@ -1208,53 +1456,53 @@ export class DefaultOrchestrator implements Orchestrator {
       const prDeps = this.#pullRequestOpenDependencies;
       const runSteps = this.#runSteps;
       const runWorkspaceMetadata = this.#runWorkspaceMetadata;
-      return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
-        try {
-          const noopRunWorkspaceGit: Pick<RunWorkspaceGitPort, 'getChangedFiles'> = {
-            async getChangedFiles() { return []; }
-          };
-          return await handlePullRequestOpen(input.runId, input.tenant, {
-            runs: this.#runs,
-            conversations: prDeps.conversations,
-            topics: prDeps.topics,
-            projects: prDeps.projects,
-            pullRequests: prDeps.pullRequests,
-            runSteps,
-            runWorkspaceMetadata,
-            codeHosts: prDeps.codeHosts,
-            resolveCredential: prDeps.resolveCredential,
-            events: this.#events,
-            applyDirective: (directiveInput) => this.applyDirective(directiveInput),
-            clock: this.#clock ?? (() => new Date().toISOString()),
-            runWorkspaceGit: prDeps.runWorkspaceGit ?? noopRunWorkspaceGit,
-            ...(prDeps.publicationGit !== undefined ? { publicationGit: prDeps.publicationGit } : {}),
-            ...(prDeps.publicationRemoteOverride !== undefined ? { publicationRemoteOverride: prDeps.publicationRemoteOverride } : {})
-          });
-        } catch (cause) {
-          if (isWorkflowResolutionFailure(cause)) throw cause;
-          const safeCode = (cause as { code?: string } | null)?.code;
-          this.#logger?.warn('pr.open handler failed.', { runId: input.runId, code: safeCode, ...this.#safeCause(cause) });
-          if (prDeps.publicationGit !== undefined && (safeCode === 'missing_credential' || safeCode === 'missing_code_host_setting')) {
-            const history = await runSteps.listByRun(run.id);
-            const prior = publicationEpoch(history);
-            const step = history.find(row => row.step === 'pr.open' && row.endedAt === null);
-            if (step !== undefined) return this.applyDirective({
-              runId: run.id, tenant: run.tenant, origin: 'system', directive: 'fail',
-              expectedStepId: step.id, reason: 'pr_target_verification_failed', checkpointResult: {
-                kind: 'publication_stop', code: 'pr_target_verification_failed', timestamp: this.#repairClock(),
-                base: initialPullRequestBase, refreshCount: prior.count, sourcePushed: prior.sourcePushed, safeReason: 'binding_unavailable'
-              }
-            });
-          }
-          return this.applyDirective({
-            runId: input.runId,
-            directive: 'fail',
-            tenant: input.tenant,
-            reason: typeof safeCode === 'string' ? `pr_open_${safeCode}` : 'pr_open_failed',
-            origin: 'system'
+      try {
+        const noopRunWorkspaceGit: Pick<RunWorkspaceGitPort, 'getChangedFiles'> = {
+          async getChangedFiles() { return []; }
+        };
+        return await handlePullRequestOpen(input.runId, input.tenant, {
+          runs: this.#runs,
+          conversations: prDeps.conversations,
+          topics: prDeps.topics,
+          projects: prDeps.projects,
+          pullRequests: prDeps.pullRequests,
+          runSteps,
+          runWorkspaceMetadata,
+          codeHosts: prDeps.codeHosts,
+          resolveCredential: prDeps.resolveCredential,
+          events: this.#events,
+          applyDirective: apply,
+          withResultCommit: commitTransition,
+          clock: this.#clock ?? (() => new Date().toISOString()),
+          runWorkspaceGit: prDeps.runWorkspaceGit ?? noopRunWorkspaceGit,
+          ...(prDeps.publicationGit !== undefined ? { publicationGit: prDeps.publicationGit } : {}),
+          ...(prDeps.publicationRemoteOverride !== undefined ? { publicationRemoteOverride: prDeps.publicationRemoteOverride } : {})
+        });
+      } catch (cause) {
+        if (cause instanceof StaleDispatchError || this.#transitionConflict(cause) || isWorkflowResolutionFailure(cause) ||
+          !await this.#dispatchSourceMatches(source)) throw cause;
+        const safeCode = (cause as { code?: string } | null)?.code;
+        this.#logger?.warn('pr.open handler failed.', { runId: input.runId, code: safeCode, ...this.#safeCause(cause) });
+        if (prDeps.publicationGit !== undefined && (safeCode === 'missing_credential' || safeCode === 'missing_code_host_setting')) {
+          const history = await runSteps.listByRun(run.id);
+          const prior = publicationEpoch(history);
+          const step = history.find(row => row.step === 'pr.open' && row.endedAt === null);
+          if (step !== undefined) return apply({
+            runId: run.id, tenant: run.tenant, origin: 'system', directive: 'fail',
+            expectedStepId: step.id, reason: 'pr_target_verification_failed', checkpointResult: {
+              kind: 'publication_stop', code: 'pr_target_verification_failed', timestamp: this.#repairClock(),
+              base: initialPullRequestBase, refreshCount: prior.count, sourcePushed: prior.sourcePushed, safeReason: 'binding_unavailable'
+            }
           });
         }
-      });
+        return apply({
+          runId: input.runId,
+          directive: 'fail',
+          tenant: input.tenant,
+          reason: typeof safeCode === 'string' ? `pr_open_${safeCode}` : 'pr_open_failed',
+          origin: 'system'
+        });
+      }
     }
 
     throw new OrchestratorError(
@@ -1347,7 +1595,14 @@ export class DefaultOrchestrator implements Orchestrator {
       if (stepId === undefined || this.#repairWakeups.has(stepId)) return;
       this.#repairWakeups.add(stepId);
       try {
-        await this.dispatch({ runId: run.id, tenant: run.tenant });
+        const input = { runId: run.id, tenant: run.tenant };
+        const occupied = this.#dispatchReservations.get(this.#mutationKey(input));
+        if (occupied !== undefined && occupied.runStep?.id !== stepId) {
+          await occupied.result.catch(() => undefined);
+        }
+        const current = await this.#runs.findLatestOpenRunStep?.({ runId: run.id, step: 'implementation.build' });
+        if (current?.id !== stepId) return;
+        await this.dispatch(input);
       } finally {
         this.#repairWakeups.delete(stepId);
       }
@@ -1426,14 +1681,13 @@ export class DefaultOrchestrator implements Orchestrator {
   }
 
   async admitForDispatch(input: DispatchRunInput): Promise<void> {
-    const run = await this.#runs.findById(input.runId);
-    if (run === null || run.tenant !== input.tenant || run.terminal) {
-      return;
-    }
-    // Reuse the exact auto-dispatch path used after a normal transition, so a recovered run
-    // is admitted through the dispatch queue, per-run serialization, and concurrency limit
-    // rather than invoking the runner directly.
-    this.#scheduleAutoDispatch(run);
+    if (!this.#autoDispatchEnabled) return;
+    await this.#withRunMutation(input, async (_apply, admit) => {
+      const run = await this.#runs.findById(input.runId);
+      if (run === null || run.tenant !== input.tenant || run.terminal || !this.#shouldAutoDispatch(run) ||
+        this.#dispatchReservations.has(this.#mutationKey(input))) return;
+      await admit({ run, runStep: await this.#openRunStep(run) });
+    });
   }
 
   async tick(input: TickInput): Promise<TickResult> {
@@ -1496,21 +1750,42 @@ export class DefaultOrchestrator implements Orchestrator {
   }
 
   async replyToRun(input: ReplyToRunInput): Promise<ReplyToRunResult> {
-    return this.#dispatchQueue.enqueueForRun(input.runId, async () => {
+    return this.#withRunMutation(input, async (apply) => {
       const run = await this.#runs.findById(input.runId);
       if (run === null) throw new OrchestratorError('missing_run', `Run '${input.runId}' does not exist.`);
       if (run.tenant !== input.tenant) throw new OrchestratorError('forbidden', `Run '${input.runId}' does not belong to tenant '${input.tenant}'.`);
-      if (run.terminal) throw new OrchestratorError('terminal_run', `Run '${input.runId}' is terminal.`);
+      if (run.terminal) {
+        const message = run.currentStep === 'canceled' ? `Run '${run.id}' was canceled and cannot be recovered.`
+          : run.currentStep === 'failed' ? `Run '${run.id}' is stopped; use POST /v1/runs/${run.id}/recover to recover it.`
+          : `Run '${run.id}' is terminal.`;
+        throw new OrchestratorError('terminal_run', message);
+      }
+
+      if (input.request.kind === 'guidance') {
+        const pauseId = input.request.pauseStepId;
+        const history = await this.#runSteps?.listByRun(run.id) ?? [];
+        const abandoned = history.some(step =>
+          (step.checkpointResult as { abandonedBySetStep?: boolean } | null)?.abandonedBySetStep === true &&
+          (pauseId !== undefined ? step.id === pauseId : step.step === 'implementation.awaiting_input' &&
+            run.currentStep !== 'spec.awaiting_input'));
+        if (abandoned) {
+          throw new OrchestratorError('conflict', 'This input request was abandoned. Refresh and supply the current pauseStepId.',
+            { details: { code: 'stale_pause' } });
+        }
+        if (getRunStepDefinition(run.currentStep)?.waitingOn !== 'human') {
+          throw new OrchestratorError('conflict', 'Run is not waiting on human input.');
+        }
+      }
 
       if (isHumanReviewGateStep(run.currentStep)) {
-        return this.#replyToHumanReviewGate({ ...input, run });
+        return this.#replyToHumanReviewGate({ ...input, run }, apply);
       }
 
       if (run.currentStep === 'spec.awaiting_input') {
-        return this.#replyToSpecQuestion({ ...input, run });
+        return this.#replyToSpecQuestion({ ...input, run }, apply);
       }
       if (run.currentStep === 'implementation.awaiting_input') {
-        return this.#replyToAwaitingInput({ ...input, run });
+        return this.#replyToAwaitingInput({ ...input, run }, apply);
       }
 
       const currentStepDef = getRunStepDefinition(run.currentStep);
@@ -1525,7 +1800,7 @@ export class DefaultOrchestrator implements Orchestrator {
     });
   }
 
-  async #replyToHumanReviewGate(input: ReplyToRunInput & { readonly run: Run }): Promise<ReplyToRunResult> {
+  async #replyToHumanReviewGate(input: ReplyToRunInput & { readonly run: Run }, apply: ApplyLockedDirective): Promise<ReplyToRunResult> {
     if (input.request.kind === 'guidance') {
       throw new OrchestratorError('invalid_transition', 'Guidance replies are only supported at an active input pause.',
         input.request.pauseStepId ? { details: { code: 'stale_pause' } } : {});
@@ -1554,7 +1829,7 @@ export class DefaultOrchestrator implements Orchestrator {
           { details: { code: 'request_changes_conflict' } }
         );
       }
-      const moved = await this.applyDirective({ runId: input.runId, tenant: input.tenant, directive: 'revise', origin: 'human', principal: input.principal });
+      const moved = await apply({ runId: input.runId, tenant: input.tenant, directive: 'revise', origin: 'human', principal: input.principal });
       // Intentionally no createdFeedbackId: request_changes operates over existing comments.
       return { ...moved, classification: { directive: 'revise', target } };
     }
@@ -1570,7 +1845,7 @@ export class DefaultOrchestrator implements Orchestrator {
         body: input.request.body,
         ...(input.request.anchor !== undefined ? { anchor: input.request.anchor } : {})
       }, this.#feedbackLifecycleDependencies);
-      const moved = await this.applyDirective({ runId: input.runId, tenant: input.tenant, directive: 'revise', origin: 'human', principal: input.principal });
+      const moved = await apply({ runId: input.runId, tenant: input.tenant, directive: 'revise', origin: 'human', principal: input.principal });
       return { ...moved, classification: { directive: 'revise', target, createdFeedbackId: feedback.id } };
     }
 
@@ -1597,11 +1872,11 @@ export class DefaultOrchestrator implements Orchestrator {
       }
     }
 
-    const moved = await this.applyDirective({ runId: input.runId, tenant: input.tenant, directive: 'advance', origin: 'human', principal: input.principal });
+    const moved = await apply({ runId: input.runId, tenant: input.tenant, directive: 'advance', origin: 'human', principal: input.principal });
     return { ...moved, classification: { directive: 'advance', target } };
   }
 
-  async #replyToSpecQuestion(input: ReplyToRunInput & { readonly run: Run }): Promise<ReplyToRunResult> {
+  async #replyToSpecQuestion(input: ReplyToRunInput & { readonly run: Run }, apply: ApplyLockedDirective): Promise<ReplyToRunResult> {
     if (input.principal.kind !== 'human' || input.request.kind !== 'guidance' || !input.request.body.trim()) {
       throw new OrchestratorError('invalid_transition', 'Only human guidance is supported at spec.awaiting_input.');
     }
@@ -1611,14 +1886,14 @@ export class DefaultOrchestrator implements Orchestrator {
     if (!active || pause?.kind !== 'spec_question' || input.request.pauseStepId !== active.id) {
       throw new OrchestratorError('invalid_transition', 'The spec question is stale or was already answered.', { details: { code: 'stale_pause' } });
     }
-    const moved = await this.applyDirective({
+    const moved = await apply({
       runId: input.runId, tenant: input.tenant, directive: 'advance', origin: 'human', principal: input.principal,
       destinationCheckpointResult: { specAnswer: { sourceStepId: pause.sourceStepId, role: pause.role, body: input.request.body } }
-    });
+    }, { run: input.run, runStep: active });
     return { ...moved, classification: { directive: 'advance', pauseKind: 'spec_question' } };
   }
 
-  async #replyToAwaitingInput(input: ReplyToRunInput & { readonly run: Run }): Promise<ReplyToRunResult> {
+  async #replyToAwaitingInput(input: ReplyToRunInput & { readonly run: Run }, apply: ApplyLockedDirective): Promise<ReplyToRunResult> {
     if (input.request.kind !== 'guidance') {
       throw new OrchestratorError('invalid_transition', 'Only guidance replies are supported at implementation.awaiting_input.');
     }
@@ -1637,46 +1912,46 @@ export class DefaultOrchestrator implements Orchestrator {
         const pause = await getConvergenceEscalationPause(
           { run: input.run, expectedStepId: 'implementation.awaiting_input' }, { runSteps: this.#runSteps });
         if (pause.runStep.id !== repair.currentStepId) throw new OrchestratorError('invalid_transition', 'The repair pause changed.');
-        const moved = await this.#withRunMutation(input, () => this.#moveRepair({
+        const moved = await this.#moveRepair({
           from: repair, state: 'queued', now: this.#repairClock(), nextStep: 'implementation.build',
           checkpoint: { pause: { ...pause.checkpoint.pause, humanGuidance: body } },
           initialCheckpoint: { resumedFromAwaitingInputStepId: pause.runStep.id, humanGuidance: body }
-        }));
+        });
         if (moved?.transition === undefined) throw new OrchestratorError('invalid_transition', 'The repair pause changed.');
         this.#wakeRepair(moved.transition.run, moved.transition.runStep.id);
         return { ...moved.transition, classification: { directive: 'advance', pauseKind: 'convergence_escalation' } };
       }
     }
-    let pause: { runStep: RunStep };
+    let pause: Awaited<ReturnType<typeof getConvergenceEscalationPause>>;
     try {
       pause = await getConvergenceEscalationPause(
         { run: input.run, expectedStepId: 'implementation.awaiting_input' },
         { runSteps: this.#runSteps }
       );
       if (input.request.pauseStepId !== undefined && input.request.pauseStepId !== pause.runStep.id) {
-        throw new OrchestratorError('invalid_transition', 'The guidance reply is stale.');
+        throw new OrchestratorError('conflict', 'The guidance reply is stale.', { details: { code: 'stale_pause' } });
       }
-      await recordConvergenceEscalationGuidance(
-        { run: input.run, runStep: pause.runStep, guidance: input.request.body },
-        { runSteps: this.#runSteps }
-      );
+      if (pause.runStep.endedAt !== null) {
+        throw new OrchestratorError('conflict', 'The guidance reply is stale.', { details: { code: 'stale_pause' } });
+      }
     } catch (error) {
       if (error instanceof ConvergenceCheckpointError && error.code === 'invalid_pause') {
         throw new OrchestratorError('invalid_transition', 'Unsupported awaiting-input pause.', { details: { code: 'unsupported_pause' }, cause: error });
       }
       throw error;
     }
-    const moved = await this.applyDirective({
+    const moved = await apply({
       runId: input.runId,
       tenant: input.tenant,
       directive: 'advance',
       origin: 'human',
       principal: input.principal,
+      checkpointResult: { ...pause.checkpoint, pause: { ...pause.checkpoint.pause, humanGuidance: input.request.body } },
       destinationCheckpointResult: {
         resumedFromAwaitingInputStepId: pause.runStep.id,
         humanGuidance: input.request.body
       }
-    });
+    }, { run: input.run, runStep: pause.runStep });
     return { ...moved, classification: { directive: 'advance', pauseKind: 'convergence_escalation' } };
   }
 
@@ -1693,31 +1968,7 @@ export class DefaultOrchestrator implements Orchestrator {
     return stepDefinition.waitingOn === 'system' || stepDefinition.waitingOn === 'ai';
   }
 
-  #scheduleAutoDispatch(run: Run): void {
-    if (!this.#autoDispatchEnabled) return;
-    if (!this.#shouldAutoDispatch(run)) return;
-    if (this.#autoDispatchInFlightRunIds.has(run.id)) return;
-
-    this.#autoDispatchInFlightRunIds.add(run.id);
-    // Capture result outside the .then so .finally can reschedule after releasing the marker.
-    // Previously the marker was deleted in .then (before rescheduling) and again in .finally,
-    // which clobbered the marker the reschedule had just added — letting a second concurrent
-    // chain start. Now the marker is released exactly once, in .finally, then rescheduling runs.
-    let dispatchResult: OrchestratedRunResult | undefined;
-    void Promise.resolve()
-      .then(async () => {
-        dispatchResult = await this.dispatch({ runId: run.id, tenant: run.tenant });
-      })
-      .catch((error: unknown) => this.#handleAutoDispatchFailure(run, error))
-      .finally(() => {
-        this.#autoDispatchInFlightRunIds.delete(run.id);
-        if (dispatchResult !== undefined && dispatchResult.run.currentStep !== run.currentStep) {
-          this.#scheduleAutoDispatch(dispatchResult.run);
-        }
-      });
-  }
-
-  async #handleAutoDispatchFailure(run: Run, error: unknown): Promise<void> {
+  async #handleAutoDispatchFailure(run: Run, error: unknown, apply: Orchestrator['applyDirective']): Promise<void> {
     const code = error instanceof OrchestratorError ? error.code : 'unexpected_error';
     this.#logger?.warn('Auto-dispatch failed after a committed run transition.', {
       runId: run.id,
@@ -1749,8 +2000,9 @@ export class DefaultOrchestrator implements Orchestrator {
 
     const publicReason = safeFailureReasonFromError(error) ?? 'auto_dispatch_failed';
     try {
-      await this.applyDirective({ runId: run.id, tenant: run.tenant, directive: 'fail', reason: publicReason });
+      await apply({ runId: run.id, tenant: run.tenant, directive: 'fail', reason: publicReason });
     } catch (failError) {
+      if (failError instanceof StaleDispatchError || this.#transitionConflict(failError)) return;
       const failCode = failError instanceof OrchestratorError ? failError.code : 'unexpected_error';
       if (failError instanceof OrchestratorError && this.#isExpectedAutoDispatchFailure(failError)) {
         this.#logger?.warn('Auto-dispatch failure was not applied because run state changed.', {
@@ -1838,18 +2090,11 @@ export class DefaultOrchestrator implements Orchestrator {
     runId: string,
     run: Run,
     result: SpecAuthorResult,
-    reviewedMarkdown: string
+    reviewedMarkdown: string,
+    workspaceContext: WorkspaceContext
   ): Promise<{ kind: 'ok'; output: CompleteSpecAuthoringOutput } | { kind: 'failed' }> {
     if (this.#specAuthoringDependencies === undefined || this.#resolveWorkspaceContext === undefined) {
       this.#logger?.warn('spec.author advanced but specAuthoringDependencies or resolveWorkspaceContext not configured.', { runId });
-      return { kind: 'failed' };
-    }
-
-    let workspaceContext: WorkspaceContext;
-    try {
-      workspaceContext = await this.#resolveWorkspaceContext({ runId });
-    } catch (cause) {
-      this.#logger?.warn('Failed to resolve workspace context for spec.author completion.', { runId, ...this.#safeCause(cause) });
       return { kind: 'failed' };
     }
 
@@ -1947,6 +2192,9 @@ export class DefaultOrchestrator implements Orchestrator {
           cause: error,
           ...(error.transitionCode !== undefined ? { details: { transitionCode: error.transitionCode } } : {})
         });
+      case 'source_step_mismatch':
+      case 'source_occurrence_mismatch':
+        return new OrchestratorError('conflict', error.message, { cause: error, details: { reason: error.message } });
       case 'unknown_workflow':
       case 'start_persistence_failed':
       case 'transition_persistence_failed':

@@ -1,4 +1,5 @@
-import type { Principal, projectIssuePath } from '@autocatalyst/api-contract';
+import { archiveRunPath, cancelRunPath, renameRunPath, setRunStepPath, unarchiveRunPath,
+  type Principal, type projectIssuePath } from '@autocatalyst/api-contract';
 
 export type PolicyResourceDescriptor =
   | { readonly kind: 'probe_resource_collection'; readonly path: '/v1/probe-resources' }
@@ -22,11 +23,24 @@ export type PolicyResourceDescriptor =
   | { readonly kind: 'run_feedback_thread'; readonly id: string; readonly path: '/v1/runs/:id/feedback/:feedbackId/thread' }
   | { readonly kind: 'run_feedback_item'; readonly id: string; readonly path: '/v1/runs/:id/feedback/:feedbackId' }
   | { readonly kind: 'run_replies'; readonly id: string; readonly path: '/v1/runs/:id/replies' }
+  | { readonly kind: 'run_cancel'; readonly id: string; readonly path: '/v1/runs/:id/cancel' }
+  | { readonly kind: 'run_archive'; readonly id: string; readonly path: '/v1/runs/:id/archive' }
+  | { readonly kind: 'run_unarchive'; readonly id: string; readonly path: '/v1/runs/:id/unarchive' }
+  | { readonly kind: 'run_set_step'; readonly id: string; readonly path: '/v1/runs/:id/set-step' }
+  | { readonly kind: 'run_rename'; readonly id: string; readonly path: '/v1/runs/:id' }
   | { readonly kind: 'run_recovery'; readonly id: string; readonly path: '/v1/runs/:id/recover' }
   | { readonly kind: 'pull_request_reconciliation'; readonly path: '/v1/pull-requests/reconcile' }
   | { readonly kind: 'run_pull_request'; readonly id: string; readonly path: '/v1/runs/:id/pull-request' }
   | { readonly kind: 'run_pull_request_refresh'; readonly id: string; readonly path: '/v1/runs/:id/pull-request/refresh' }
   | { readonly kind: 'run_sessions'; readonly id: string; readonly path: '/v1/runs/:id/sessions' };
+
+export const runOperatorPolicy = {
+  cancelRun: { action: 'run_cancel.create', kind: 'run_cancel', path: cancelRunPath },
+  archiveRun: { action: 'run_archive.create', kind: 'run_archive', path: archiveRunPath },
+  unarchiveRun: { action: 'run_unarchive.create', kind: 'run_unarchive', path: unarchiveRunPath },
+  setRunStep: { action: 'run_set_step.create', kind: 'run_set_step', path: setRunStepPath },
+  renameRun: { action: 'run_rename.update', kind: 'run_rename', path: renameRunPath }
+} as const;
 
 export type PolicyAction =
   | 'probe_resource.create'
@@ -57,6 +71,11 @@ export type PolicyAction =
   | 'run_feedback.thread.append'
   | 'run_feedback.update'
   | 'run_replies.create'
+  | 'run_cancel.create'
+  | 'run_archive.create'
+  | 'run_unarchive.create'
+  | 'run_set_step.create'
+  | 'run_rename.update'
   | 'run_recovery.create'
   | 'pull_request.reconcile'
   | 'run_pull_request.read'

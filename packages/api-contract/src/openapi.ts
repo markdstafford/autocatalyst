@@ -4,6 +4,11 @@ import {
   extendZodWithOpenApi
 } from '@asteasolutions/zod-to-openapi';
 import { z } from 'zod';
+import { archiveRunPath, cancelRunPath, unarchiveRunPath, setRunStepPath, renameRunPath,
+  emptyRunActionRequestSchema, renameRunRequestSchema, setRunStepRequestSchema, runActionResponseSchema
+} from './run-operator-actions.js';
+import { runStateTransitionEventSchema } from './run-events.js';
+import { runArchiveFilterSchema } from './run.js';
 
 import {
   configurationRecordCollectionPath,
@@ -182,6 +187,7 @@ export function generateOpenApiDocument(): OpenApiDocument {
   );
   const Run = registry.register('Run', runSchema);
   const RunListResponse = registry.register('RunListResponse', runListResponseSchema);
+  registry.register('RunStateTransitionEvent', runStateTransitionEventSchema);
   const RunIdParams = registry.register('RunIdParams', runIdParamsSchema);
   const RunStepListResponse = registry.register('RunStepListResponse', runStepListResponseSchema);
   const RunSpecResponse = registry.register('RunSpecResponse', runSpecResponseSchema);
@@ -478,6 +484,7 @@ export function generateOpenApiDocument(): OpenApiDocument {
     tags: ['runs'],
     request: {
       query: z.object({
+        archived: runArchiveFilterSchema.optional().openapi({ description: 'Archive visibility; defaults to exclude.' }),
         status: commaFilterParam(
           'status',
           'Comma-separated run statuses (in_progress, done, failed, canceled). Items within the field combine with OR.'
@@ -571,7 +578,7 @@ export function generateOpenApiDocument(): OpenApiDocument {
     },
     responses: {
       200: {
-        description: 'SSE stream of run state transition events.',
+        description: 'SSE stream. The JSON data for run_state_transition frames follows the RunStateTransitionEvent schema.',
         content: {
           'text/event-stream': {
             schema: { type: 'string' }
@@ -687,7 +694,9 @@ export function generateOpenApiDocument(): OpenApiDocument {
       'Accepts a structured human reply for supported human-waiting run steps. Reply kinds: approve, ' +
       'feedback (optional anchor; a present spec anchor must reproduce its quotedText), guidance, and ' +
       'request_changes (operates over existing open spec feedback; classified as a revise directive ' +
-      'with no createdFeedbackId).',
+      'with no createdFeedbackId). After set-step abandons an implementation input pause, ' +
+      'refresh and supply the current pauseStepId with implementation guidance. ' +
+      'A stale or missing required occurrence ID returns 409 (stale_pause).',
     request: {
       params: RunReplyParams,
       body: {
@@ -708,13 +717,37 @@ export function generateOpenApiDocument(): OpenApiDocument {
     }
   });
 
+  const RunActionResponse = registry.register('RunActionResponse', runActionResponseSchema);
+  for (const [method, path, summary, schema, required] of [
+    ['post', cancelRunPath, 'Cancel an unfinished run', emptyRunActionRequestSchema, false],
+    ['post', archiveRunPath, 'Archive a finished run', emptyRunActionRequestSchema, false],
+    ['post', unarchiveRunPath, 'Unarchive a run', emptyRunActionRequestSchema, false],
+    ['post', setRunStepPath, 'Return a run to an earlier reached step', setRunStepRequestSchema, true],
+    ['patch', renameRunPath, 'Rename the topic shown on a run', renameRunRequestSchema, true]
+  ] as const) {
+    registry.registerPath({
+      method, path: path.replace(':id', '{id}'), summary, tags: ['runs'],
+      security: [{ bearerAuth: [] }],
+      request: { params: RunIdParams, body: { required, content: { 'application/json': { schema } } } },
+      responses: {
+        200: jsonResponse(RunActionResponse, 'Updated run.'),
+        400: jsonResponse(ErrorResponse, 'Invalid request or step target.'),
+        401: jsonResponse(ErrorResponse, 'Unauthorized.'),
+        403: jsonResponse(ErrorResponse, 'Forbidden by policy or model principal.'),
+        404: jsonResponse(ErrorResponse, 'Run not found.'),
+        409: jsonResponse(ErrorResponse, 'Run state conflicts with the action.'),
+        500: jsonResponse(ErrorResponse, 'Unexpected internal failure.')
+      }
+    });
+  }
+
   // POST /v1/runs/{id}/recover
   registry.registerPath({
     method: 'post',
     path: runRecoveryPath.replace(':id', '{id}') as '/v1/runs/{id}/recover',
     tags: ['runs'],
     summary: 'Recover a failed run',
-    description: 'Reopens a failed run and re-dispatches it from a policy- or mode-selected step.',
+    description: 'Reopens a failed run and re-dispatches it from a policy- or mode-selected step. Unarchive the run first if it is archived.',
     security: [{ bearerAuth: [] }],
     request: {
       params: RunRecoveryParams,
