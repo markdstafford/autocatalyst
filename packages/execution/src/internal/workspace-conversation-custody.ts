@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { lstat, mkdir, open, readdir, realpath } from 'node:fs/promises';
+import { lstat, mkdir, open, readdir, readlink, realpath, rename, rmdir, symlink, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 export const privateConversationDirectory = '.agent-conversations';
@@ -91,4 +91,206 @@ export async function drainPrivateConversationScopes(input: {
   } catch {
     return false;
   }
+}
+
+/** Known native history directories. Authentication stays in the dedicated provider home. */
+const providerHistoryDirectories = {
+  codex: ['sessions', 'archived_sessions'],
+  claude: ['projects']
+} as const;
+
+type HistoryProvider = keyof typeof providerHistoryDirectories;
+const nativeHistoryLeaseDirectory = '.autocatalyst-history-lease';
+const nativeHistoryRetiringDirectory = '.autocatalyst-history-retiring';
+const releasingNativeHomes = new Set<string>();
+
+async function exists(pathname: string): Promise<boolean> {
+  try { await lstat(pathname); return true; }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false; throw error; }
+}
+
+interface NativeHistoryLeaseMarker {
+  readonly provider: HistoryProvider;
+  readonly scope: string;
+  readonly writer: WorkspaceConversationWriter;
+}
+
+async function readPrivateOwner(directory: string): Promise<unknown> {
+  if (!await privateDirectory(directory)) throw new Error('Owned history directory cannot be verified.');
+  const manifest = path.join(directory, 'owner.json');
+  const stat = await lstat(manifest);
+  if (!stat.isFile() || stat.nlink !== 1 || stat.size > 8192 || (stat.mode & 0o077) !== 0 ||
+      (process.getuid && stat.uid !== process.getuid())) throw new Error('Native history lease owner cannot be verified.');
+  const handle = await open(manifest, 'r');
+  try {
+    const opened = await handle.stat();
+    if (opened.ino !== stat.ino || opened.dev !== stat.dev || opened.size !== stat.size) {
+      throw new Error('Native history lease was replaced.');
+    }
+    return JSON.parse(await handle.readFile('utf8')) as unknown;
+  } finally { await handle.close(); }
+}
+
+async function readNativeHistoryLease(lease: string): Promise<NativeHistoryLeaseMarker> {
+  const row = await readPrivateOwner(lease) as Partial<NativeHistoryLeaseMarker> | null;
+  if (!row || (row.provider !== 'codex' && row.provider !== 'claude') ||
+      typeof row.scope !== 'string' || !path.isAbsolute(row.scope) || path.normalize(row.scope) !== row.scope ||
+      !validWriter(row.writer)) throw new Error('Native history lease owner is invalid.');
+  return { provider: row.provider, scope: row.scope, writer: row.writer };
+}
+
+async function syncPrivateDirectory(dir: string): Promise<void> {
+  const handle = await open(dir, 'r');
+  try { await handle.sync(); } finally { await handle.close(); }
+}
+
+async function historyLinksMatch(home: string, marker: NativeHistoryLeaseMarker, allowMissing: boolean): Promise<boolean> {
+  for (const name of providerHistoryDirectories[marker.provider]) {
+    const link = path.join(home, name);
+    const stat = await lstat(link).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT') return undefined;
+      throw error;
+    });
+    if (stat === undefined && allowMissing) continue;
+    const target = path.join(marker.scope, name);
+    if (!stat?.isSymbolicLink() || await readlink(link) !== target || !await privateDirectory(target)) return false;
+  }
+  return true;
+}
+
+/**
+ * Route native histories to a private run-owned scope while keeping the
+ * provider home stable for sign-in. Use only dedicated homes owned by the
+ * launcher. An existing lease, ordinary history path, or unsafe path blocks
+ * admission. Recovery may remove links only after positive writer evidence.
+ */
+export async function acquireNativeHistoryLease(input: {
+  home: string;
+  scope: string;
+  provider: HistoryProvider;
+  writer: WorkspaceConversationWriter;
+  previousWriterExited?(writer: WorkspaceConversationWriter): Promise<boolean>;
+}): Promise<{ verify(): Promise<boolean> } | undefined> {
+  const { home, scope, provider, writer } = input;
+  const expectedRunRoot = path.dirname(path.dirname(scope));
+  if (!validWriter(writer) || path.basename(expectedRunRoot) !== writer.runId ||
+      path.basename(path.dirname(scope)) !== privateConversationDirectory ||
+      !scopeIdPattern.test(path.basename(scope)) ||
+      home === scope || home.startsWith(scope + path.sep) || scope.startsWith(home + path.sep)) return undefined;
+  const lease = path.join(home, nativeHistoryLeaseDirectory);
+  let previous: WorkspaceConversationWriter;
+  try {
+    if (!await privateDirectory(home) || !await privateDirectory(scope) ||
+        !await privateDirectory(path.dirname(scope)) || await exists(path.join(home, nativeHistoryRetiringDirectory)) ||
+        (await readdir(home)).some(name => (providerHistoryDirectories[provider] as readonly string[]).includes(name))) {
+      return undefined;
+    }
+    const owner = await readPrivateOwner(scope);
+    if (!validWriter(owner) || owner.tenant !== writer.tenant || owner.runId !== writer.runId ||
+        owner.generation !== writer.generation) return undefined;
+    previous = owner;
+    await mkdir(lease, { mode: 0o700 });
+    if (await exists(path.join(home, nativeHistoryRetiringDirectory))) {
+      await rmdir(lease);
+      return undefined;
+    }
+  } catch { return undefined; }
+
+  const marker = { provider, scope, writer } satisfies NativeHistoryLeaseMarker;
+  try {
+    if (previous.writerIdentity !== writer.writerIdentity || previous.descendantGroup !== writer.descendantGroup) {
+      if (!await input.previousWriterExited?.(previous)) {
+        await rmdir(lease);
+        return undefined;
+      }
+      // The caller owns this run's workspace mutation while changing writers.
+      // The pruner must see the new writer before native history is writable.
+      const pending = path.join(scope, '.owner-' + randomUUID());
+      const handle = await open(pending, 'wx', 0o600);
+      try {
+        await handle.writeFile(JSON.stringify(writer));
+        await handle.sync();
+      } finally { await handle.close(); }
+      await rename(pending, path.join(scope, 'owner.json'));
+      await syncPrivateDirectory(scope);
+    }
+    const owner = await open(path.join(lease, 'owner.json'), 'wx', 0o600);
+    try {
+      await owner.writeFile(JSON.stringify(marker));
+      await owner.sync();
+    } finally { await owner.close(); }
+    await syncPrivateDirectory(lease);
+    await syncPrivateDirectory(home);
+
+    // Refuse existing history dirs. This avoids taking over a regular login
+    // home or unlinking sessions left by a different writer.
+    if (!await historyLinksMatch(home, marker, true) ||
+        (await readdir(home)).some(name => (providerHistoryDirectories[provider] as readonly string[]).includes(name))) {
+      return undefined;
+    }
+    for (const name of providerHistoryDirectories[provider]) {
+      const target = path.join(scope, name);
+      try { await mkdir(target, { mode: 0o700 }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+      if (!await privateDirectory(target)) return undefined;
+      await symlink(target, path.join(home, name), 'dir');
+    }
+    await syncPrivateDirectory(scope);
+    await syncPrivateDirectory(home);
+    return {
+      async verify() {
+        try {
+          const actual = await readNativeHistoryLease(lease);
+          return actual.provider === provider && actual.scope === scope &&
+            actual.writer.writerIdentity === writer.writerIdentity &&
+            actual.writer.descendantGroup === writer.descendantGroup &&
+            actual.writer.runId === writer.runId && actual.writer.tenant === writer.tenant &&
+            actual.writer.generation === writer.generation && await historyLinksMatch(home, actual, false);
+        } catch { return false; }
+      }
+    };
+  } catch {
+    // A partial lease is durable. Leave it for recovery rather than redirect
+    // another process while the previous writer state could be uncertain.
+    return undefined;
+  }
+}
+
+/**
+ * Unlink only the expected redirections. The host runs under its existing
+ * single-dispatcher ownership. Rename first so a restart can retry a partially
+ * completed release and a new lease cannot race the old link cleanup.
+ */
+export async function releaseNativeHistoryLease(input: {
+  home: string;
+  writerExited(writer: WorkspaceConversationWriter): Promise<boolean>;
+}): Promise<boolean> {
+  const { home } = input;
+  if (releasingNativeHomes.has(home)) return false;
+  releasingNativeHomes.add(home);
+  const lease = path.join(home, nativeHistoryLeaseDirectory);
+  const retiring = path.join(home, nativeHistoryRetiringDirectory);
+  try {
+    if (!await privateDirectory(home)) return false;
+    const alreadyRetiring = await exists(retiring);
+    const marker = await readNativeHistoryLease(alreadyRetiring ? retiring : lease);
+    if (!await historyLinksMatch(home, marker, true) || !await input.writerExited(marker.writer)) return false;
+    if (!alreadyRetiring) {
+      await rename(lease, retiring);
+      await syncPrivateDirectory(home);
+    }
+    for (const name of providerHistoryDirectories[marker.provider]) {
+      const link = path.join(home, name);
+      if (await readlink(link).catch((error: NodeJS.ErrnoException) => {
+        if (error.code === 'ENOENT') return undefined;
+        throw error;
+      }) === path.join(marker.scope, name)) await unlink(link);
+    }
+    await syncPrivateDirectory(home);
+    await unlink(path.join(retiring, 'owner.json'));
+    await rmdir(retiring);
+    await syncPrivateDirectory(home);
+    return true;
+  } catch { return false; }
+  finally { releasingNativeHomes.delete(home); }
 }

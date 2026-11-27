@@ -20,7 +20,7 @@ Last updated: 2026-11-27 (reviewed conversation foundations, #195).
 - `packages/core/src/reviewed-handoff.ts` builds bounded optional evidence; `execution-run-unit-of-work.ts` records attempts and allows only one positively proven resume fallback. `packages/execution/src/native-conversation.ts` is the private native handoff instead of scratch model memory.
 - `packages/codex-agent-adapter/src/codex-app-server.ts` owns thread start/resume and acknowledged-turn filtering. Claude's SDK launcher in `claude-agent-adapter.ts` owns root validation, fresh-option compatibility, and scoped lookup requirements.
 - `packages/claude-agent-adapter/src/claude-non-persistence.live.spec.ts` is the opt-in native fixture for the bundled SDK and subscription CLI. It checks both history namespaces and uses the shipped fresh options as a positive control, without setting a production capability flag.
-- `packages/execution/src/internal/workspace-conversation-custody.ts` and `workspace-pruner.ts` own private-writer markers and guarded reclamation. `publication-git.ts` materializes final review source and a target-to-candidate diff from pinned objects, not from worktree contents.
+- `packages/execution/src/internal/workspace-conversation-custody.ts` and `workspace-pruner.ts` own private-writer markers, the exclusive native history routing lease, and guarded reclamation. `publication-git.ts` materializes final review source and a target-to-candidate diff from pinned objects, not from worktree contents.
 - Production retention remains disabled. See [qualification and verification](reviewed-agent-conversations.md) before attempting enablement or release.
 
 ## Run operator actions (#153)
