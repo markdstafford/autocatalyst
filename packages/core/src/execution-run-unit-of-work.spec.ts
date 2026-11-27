@@ -33,6 +33,31 @@ function makeInput(overrides: Partial<RunWorkInput> = {}): RunWorkInput {
 }
 
 describe('reviewed invocation fallback', () => {
+  it('prepares final review with the fresh-only resolver and no history or handoff', async () => {
+    const context = makeContext();
+    const run = { ...makeInput().run, currentStep: 'pr.finalize' as const };
+    const environment = { context } as Parameters<NonNullable<ExecutionEntryPointInput['prepareConversation']>>[0];
+    const prepareFreshConversation = vi.fn(async () => ({ mode: 'fresh_only' as const, verifiedNonPersistence: true }));
+    const uow = createExecutionRunUnitOfWork({
+      prepareFreshConversation,
+      resolveContext: async () => ({ ...context, run: { ...context.run, currentStep: run.currentStep } }),
+      execute: {
+        async *execute(input) {
+          expect(input.attemptId).toBeDefined();
+          expect(input.freshHandoff).toBeUndefined();
+          expect(input.nativeConversation).toBeUndefined();
+          expect(await input.prepareConversation?.(environment)).toEqual({
+            mode: 'fresh_only', verifiedNonPersistence: true
+          });
+          yield makeTerminalEvent('advance');
+        }
+      }
+    });
+
+    expect((await uow.runWithCheckpoint(makeInput({ run }))).workResult.directive).toBe('advance');
+    expect(prepareFreshConversation).toHaveBeenCalledOnce();
+  });
+
   it.each(['missing', 'preflight', 'ambiguous'] as const)('accounts for %s without duplicating work', async reason => {
     const meta = {
       model: { provider: 'codex', model: 'test' }, inferenceSettings: {},

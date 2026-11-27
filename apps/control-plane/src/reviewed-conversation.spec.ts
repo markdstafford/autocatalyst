@@ -3,12 +3,34 @@ import { mkdtemp, mkdir, realpath, rename, rm, writeFile } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { describe, expect, it } from 'vitest';
-import type { MaterializedExecutionEnvironment } from '@autocatalyst/execution';
-import { allowsRetention, reviewedScopeDigest, reviewedWorkspaceProof, type RetentionBuild } from './reviewed-conversation.js';
+import { describe, expect, it, vi } from 'vitest';
+import { claudeAgentAdapterId, claudeSubscriptionAdapterId } from '@autocatalyst/claude-agent-adapter';
+import type { MaterializedExecutionEnvironment, ResolvedAgentRunnerProfile } from '@autocatalyst/execution';
+import { allowsRetention, createFreshConversationResolver, reviewedScopeDigest, reviewedWorkspaceProof, type RetentionBuild } from './reviewed-conversation.js';
 
 const exec = promisify(execFile);
 describe('reviewed conversation admission', () => {
+  it('uses the verified fresh option only for the exact resolved Claude launch build', async () => {
+    const subscriptionBuild = 'subscription:0.3.177:2.1.328:darwin:arm64';
+    const env = { PATH: '/fixture/bin' };
+    const environment = { environment: { variables: env } } as unknown as MaterializedExecutionEnvironment;
+    const subscription = { providerKind: 'anthropic', adapterId: claudeSubscriptionAdapterId } as ResolvedAgentRunnerProfile;
+    const apiKey = { ...subscription, adapterId: claudeAgentAdapterId };
+    const readBuild = vi.fn(async (auth: 'subscription' | 'api_key') =>
+      auth === 'subscription' ? subscriptionBuild : 'api_key:0.3.177:2.1.177:darwin:arm64');
+    const resolve = createFreshConversationResolver(new Set([subscriptionBuild]), readBuild);
+
+    expect(await resolve(environment, subscription)).toEqual({ mode: 'fresh_only', verifiedNonPersistence: true });
+    expect(readBuild).toHaveBeenCalledWith('subscription', env);
+    expect(await resolve(environment, apiKey)).toEqual({ mode: 'fresh_only', verifiedNonPersistence: false });
+    expect(readBuild).toHaveBeenCalledWith('api_key', env);
+    expect(await resolve(environment, { ...subscription, providerKind: 'codex' })).toEqual({
+      mode: 'fresh_only', verifiedNonPersistence: false
+    });
+    expect(await resolve(environment)).toEqual({ mode: 'fresh_only', verifiedNonPersistence: false });
+    expect(readBuild).toHaveBeenCalledTimes(2);
+  });
+
   it('requires an exact release, including adapter, native runtime, confinement and authentication', () => {
     const exact: RetentionBuild = { provider: 'claude', adapterBuild: 'adapter', nativeBuild: 'runtime', confinementBuild: 'host', authMode: 'subscription' };
     expect(allowsRetention(exact)).toBe(false);

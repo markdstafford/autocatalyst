@@ -5,6 +5,7 @@
 - Slot admission requires both SQLite workspace generation and a host proof of the run directory, repo and scratch instances, linked worktree, and (in server composition) owning Git repository. A same-path replacement or explicit start-over fences prior completions. Do not infer handles from checkpoints, tool output, Sessions, or scratch.
 - The runner hands native IDs back privately. Publish a handle only after current completion, result acceptance, attempt recording, and ownership recheck. Slot publication failure does not replace an otherwise accepted result.
 - Scope custody is separate from workspace enrollment. The marker is host data outside the declared roots. Reclamation must not use PID absence as exit evidence. The existing guarded pruner leaves unknown writers untouched, including orphaned pre-handle scopes. Do not point `CODEX_HOME` or Claude config at a scope and call that confinement.
+- Production reviewed dispatch and `pr.finalize` share the fresh-session resolver. For either built-in Claude auth path, match the SDK version, CLI version, OS, architecture and auth path against the independent release list before setting `persistSession: false`.
 - `pr.finalize` never takes a slot or a handoff. Read the integrated commit copy and pinned diff under an attempt-specific scratch directory. Symlinks and gitlinks are described rather than followed. A result from a previous occurrence does not establish an attestation or a valid freeze.
 
 ## Qualification status — not ready to merge
@@ -16,6 +17,8 @@
 | Host transcript custody | Local marker/pruner fixtures verify guarded removal after positive writer/group evidence. This control-plane host composition does not have verified private process confinement and restart-stable writer/descendant evidence for either runtime. | No production retention admission |
 
 The managed build sandbox denies loopback listeners (`EPERM`), and the round 2 network probe could not resolve `api.anthropic.com`. Do not infer the Claude non-persistence override from the SDK method signature, substitute the scripted launch for native inference, or enable a retained build without the exact host qualification. The unverified ordinary Claude path executes with shipped options and never imports or saves a reusable handle. Arm B blocks for unverified non-persistence.
+
+The local macOS arm64 build resolved SDK 0.3.177 with subscription CLI 2.1.328 and bundled CLI 2.1.177. The disposable fixture home had no first-party subscription login in either namespace, and the local server had no Anthropic API key. The native fixture did not run a model turn. Production still has no verified custody launcher, so the retained comparison arm remains blocked and both release lists remain empty.
 
 ## Run the isolated Claude native fixture
 

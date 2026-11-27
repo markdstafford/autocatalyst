@@ -112,7 +112,9 @@ export async function recordExecutionSession(
   }
 
   try {
-    return await dependencies.sessions.create(createInput, input.attemptId);
+    return input.attemptId === undefined
+      ? await dependencies.sessions.create(createInput)
+      : await dependencies.sessions.create(createInput, input.attemptId);
   } catch (error) {
     dependencies.logger?.error(
       { runId: input.runId, step: input.step, role: input.role, code: 'session_persistence_failed' },

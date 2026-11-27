@@ -240,7 +240,7 @@ it.each([
   { workKind: 'feature', step: 'spec.author', blockRound: 1 },
   { workKind: 'enhancement', step: 'spec.author', blockRound: 2 },
   { workKind: 'chore', step: 'implementation.build', blockRound: 1 }
-] as const)('drops late $workKind convergence effects while recording all scripted rounds', async ({ workKind, step, blockRound }) => {
+] as const)('drops late $workKind convergence effects while recording launched sessions', async ({ workKind, step, blockRound }) => {
   const root = await mkdtemp(join(tmpdir(), 'ac-cancel-convergence-'));
   const databasePath = join(root, 'control-plane.sqlite');
   const repoRoot = join(root, 'repo');
@@ -336,9 +336,12 @@ it.each([
     expect(cancel.json().run.currentStep).toBe('canceled');
     release.resolve();
     await tick;
-    expect(roleCalls).toEqual(['implementer-1', 'reviewer-1', 'implementer-2', 'reviewer-2']);
+    const expectedCalls = spec
+      ? ['implementer-1', 'reviewer-1', 'implementer-2', 'reviewer-2']
+      : ['implementer-1'];
+    expect(roleCalls).toEqual(expectedCalls);
     const sessions = await app.inject({ method: 'GET', url: base + '/sessions', headers: authorization });
-    expect(sessions.json().sessions).toHaveLength(4);
+    expect(sessions.json().sessions).toHaveLength(expectedCalls.length);
     expect(await repos.feedback.listByRun(runId)).toEqual(before);
     expect((await repos.runSteps.findById(started.runStep.id))?.checkpointResult).toEqual(checkpoint);
     expect(await repos.artifacts.listByRun(runId)).toEqual([]);

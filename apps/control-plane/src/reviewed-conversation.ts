@@ -4,6 +4,9 @@ import { lstat, readFile, realpath } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { promisify } from 'node:util';
 
+import {
+  claudeAgentAdapterId, claudeProviderKind, claudeSubscriptionAdapterId, readClaudeLaunchBuild
+} from '@autocatalyst/claude-agent-adapter';
 import { implementerDispositionsResultSchema } from '@autocatalyst/api-contract';
 import type { ReviewedAttemptPort, RunRoleWorkInput } from '@autocatalyst/core';
 import type { MaterializedExecutionEnvironment, NativeConversationTurn, ResolvedAgentRunnerProfile } from '@autocatalyst/execution';
@@ -29,6 +32,26 @@ export interface RetentionBuild {
 const releaseRetentionBuilds: readonly RetentionBuild[] = Object.freeze([]);
 /** Independent of retention; an unverified launcher uses the shipped fresh path. */
 const releaseNonPersistentClaudeBuilds: ReadonlySet<string> = new Set();
+
+export type PrepareFreshConversation = (
+  environment: MaterializedExecutionEnvironment, profile?: ResolvedAgentRunnerProfile
+) => Promise<Extract<NativeConversationTurn, { mode: 'fresh_only' }>>;
+
+export function createFreshConversationResolver(
+  verifiedBuilds: ReadonlySet<string> = releaseNonPersistentClaudeBuilds,
+  readBuild = readClaudeLaunchBuild
+): PrepareFreshConversation {
+  return async (environment, profile) => {
+    const authentication = profile?.providerKind === claudeProviderKind
+      ? profile.adapterId === claudeSubscriptionAdapterId ? 'subscription'
+        : profile.adapterId === claudeAgentAdapterId ? 'api_key' : undefined
+      : undefined;
+    const build = authentication && verifiedBuilds.size > 0
+      ? await readBuild(authentication, environment.environment.variables)
+      : undefined;
+    return { mode: 'fresh_only', verifiedNonPersistence: build !== undefined && verifiedBuilds.has(build) };
+  };
+}
 
 export function allowsRetention(build: RetentionBuild, entries = releaseRetentionBuilds): boolean {
   return entries.some(entry => hash(entry) === hash(build));
@@ -118,7 +141,7 @@ export function createReviewedAttemptPort(input: {
   readonly freshHandoff: string;
   /** Internal qualification seam; server composition does not accept overrides. */
   readonly admit?: (environment: MaterializedExecutionEnvironment, generation: string, profile: ResolvedAgentRunnerProfile) => Promise<VerifiedLaunch | undefined>;
-  readonly nonPersistentBuild?: string;
+  readonly prepareFreshConversation?: PrepareFreshConversation;
   readonly benchmarkArm?: 'A' | 'B';
   readonly qualifiedBuild?: (build: RetentionBuild) => boolean;
 }): ReviewedAttemptPort | undefined {
@@ -127,6 +150,7 @@ export function createReviewedAttemptPort(input: {
   const step = roleInput.run.currentStep;
   if (!occurrence || (step !== 'spec.author' && step !== 'implementation.build') ||
       (step === 'spec.author' && !roleInput.specReview)) return undefined;
+  const prepareFreshConversation = input.prepareFreshConversation ?? createFreshConversationResolver();
   let prepared: ReviewedDispatchAttempt | undefined;
   let active: { attempt: ReviewedDispatchAttempt; claim: ConversationClaim; handle?: string; storageScope?: string } | undefined;
 
@@ -138,10 +162,7 @@ export function createReviewedAttemptPort(input: {
     freshHandoff: input.freshHandoff,
     async prepare({ attemptId, environment, fallback, profile }) {
       await assertOwner();
-      const fresh = {
-        mode: 'fresh_only',
-        verifiedNonPersistence: input.nonPersistentBuild !== undefined && releaseNonPersistentClaudeBuilds.has(input.nonPersistentBuild)
-      } as const;
+      const fresh = await prepareFreshConversation(environment, profile);
       const nativeProvider = profile?.providerKind === 'codex' || profile?.providerKind === 'anthropic';
       if (input.benchmarkArm === 'B') {
         if (!fresh.verifiedNonPersistence && profile?.providerKind !== 'codex') {

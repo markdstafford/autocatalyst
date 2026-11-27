@@ -59,6 +59,9 @@ export interface ExecutionRunUnitOfWorkOptions {
   readonly execute: ExecutionEntryPoint;
   readonly resolveContext: (input: RunWorkInput) => Promise<ExecutionContext>;
   readonly reviewedAttempt?: (context: ExecutionContext) => ReviewedAttemptPort | undefined;
+  readonly prepareFreshConversation?: (
+    environment: MaterializedExecutionEnvironment, profile?: ResolvedAgentRunnerProfile
+  ) => Promise<Extract<NativeConversationTurn, { mode: 'fresh_only' }>>;
   readonly resolveExecutionMode?: (
     input: RunWorkInput,
     context: ExecutionContext
@@ -350,7 +353,10 @@ export function createExecutionRunUnitOfWork(options: ExecutionRunUnitOfWorkOpti
               nativeMode = native?.mode;
               return native;
             }
-          } : finalReview ? { nativeConversation: { mode: 'fresh_only', verifiedNonPersistence: false } as const } : {}),
+          } : finalReview ? options.prepareFreshConversation
+            ? { prepareConversation: options.prepareFreshConversation }
+            : { nativeConversation: { mode: 'fresh_only', verifiedNonPersistence: false } as const }
+          : {}),
           ...(privateSpecResult && retriesUsed > 0 ? { transportRetry: retriesUsed } : {}) });
         const tapped = onEvent === undefined || privateSpecResult
           ? events

@@ -1,7 +1,9 @@
 import { createPrActivityReader } from '@autocatalyst/core';
 import { DrizzleAgentConversationRepository, DrizzleRepairRepository } from '@autocatalyst/persistence';
 import { createPublicationGit, materializePublicationReviewSnapshot } from './publication-git.js';
-import { createReviewedAttemptPort } from './reviewed-conversation.js';
+import {
+  createFreshConversationResolver, createReviewedAttemptPort, type PrepareFreshConversation
+} from './reviewed-conversation.js';
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { lstat, mkdir, readFile, realpath, writeFile, mkdtemp } from 'node:fs/promises';
@@ -1547,7 +1549,14 @@ export async function createControlPlaneServer(
       }
     };
 
+    const resolveFreshConversation = createFreshConversationResolver();
+    const prepareFreshConversation: PrepareFreshConversation = (environment, profile) => {
+      const builtIn = realDispatchEnabled && !fakeDispatchEnabled && profile !== undefined &&
+        !baseAdapters.has(buildProviderAdapterKey(profile.providerKind, profile.adapterId));
+      return resolveFreshConversation(environment, builtIn ? profile : undefined);
+    };
     const executionUnitOfWork = createExecutionRunUnitOfWork({
+      prepareFreshConversation,
       execute: entryPoint,
       sessions: domainRepos.sessions,
       reviewedAttempt: context => reviewedAttempts.get(context),
@@ -1821,7 +1830,7 @@ export async function createControlPlaneServer(
           const project = workspace?.project;
           const workspaceRoot = project?.workspaceRootOverride ?? workspace?.roots?.workspacesRoot;
           const port = createReviewedAttemptPort({
-            repository: agentConversations, roleInput, freshHandoff: renderReviewedHandoff({ evidence, requiredFindingIds, requiredDispositions }),
+            repository: agentConversations, roleInput, prepareFreshConversation, freshHandoff: renderReviewedHandoff({ evidence, requiredFindingIds, requiredDispositions }),
             ...(workspaceRoot ? { workspacesRoot: workspaceRoot } : {}),
             ...(project ? { repositoryIdentity: `${project.hostRepository.owner}/${project.hostRepository.name}`.toLowerCase() } : {}),
             ...(project && workspace?.roots ? {
